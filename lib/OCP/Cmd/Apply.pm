@@ -269,7 +269,6 @@ sub execute {
                         $created->{phase} = 'Pending';
                     }
                 }
-            }
 
             $config->add_node_status($created);
         }
