@@ -527,7 +527,7 @@ sub _install_cert_manager {
     # Wait for cert-manager to be ready
     print "    Waiting for cert-manager to be ready...\n";
     system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
-           "--timeout=120s", "deployment/cert-manager", "-n", "cert-manager") == 0
+           "--timeout=300s", "deployment/cert-manager", "-n", "cert-manager") == 0
         or die "cert-manager deployment not ready\n";
 
     # Create ClusterIssuers
@@ -630,10 +630,8 @@ sub _install_traefik {
     close $kc_fh;
     my $kc_path = $kc_fh->filename;
 
-    # Create Traefik namespace
-    system("kubectl", "--kubeconfig=$kc_path", "create", "namespace", "traefik", "--dry-run=client", "-o", "yaml", "|",
-           "kubectl", "--kubeconfig=$kc_path", "apply", "-f", "-") == 0
-        or die "Failed to create traefik namespace\n";
+    # Create Traefik namespace (ignore if exists)
+    system("kubectl --kubeconfig=$kc_path create namespace traefik 2>/dev/null || true");
 
     # Install Traefik CRDs
     my $crd_url = "https://raw.githubusercontent.com/traefik/traefik/v3.2/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml";
@@ -651,7 +649,7 @@ sub _install_traefik {
     # Wait for Traefik to be ready
     print "    Waiting for Traefik to be ready...\n";
     system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
-           "--timeout=120s", "deployment/traefik", "-n", "traefik") == 0
+           "--timeout=300s", "deployment/traefik", "-n", "traefik") == 0
         or die "Traefik deployment not ready\n";
 }
 
