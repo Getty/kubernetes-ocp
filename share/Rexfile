@@ -23,12 +23,29 @@ if ($ENV{REX_PRIVATE_KEY}) {
     key_auth;
 }
 
+# Helper: Check OS compatibility
+sub check_os {
+    my $os = operating_system();
+    my $version = operating_system_version();
+
+    say "Detected OS: $os $version";
+
+    # We support Debian-based systems (Debian, Ubuntu)
+    unless ($os eq 'Debian' || $os eq 'Ubuntu') {
+        say "WARNING: This OS ($os) is not officially tested.";
+        say "OCP is designed for Debian/Ubuntu. Proceed with caution.";
+    }
+}
+
 #
 # Common Tasks
 #
 
 desc "Prepare node for Kubernetes";
 task "prepare_node", sub {
+    # Check OS compatibility
+    check_os();
+
     # Disable swap
     run "swapoff -a || true";
     run "sed -i '/swap/d' /etc/fstab || true";
