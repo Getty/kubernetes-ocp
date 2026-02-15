@@ -376,8 +376,21 @@ sub _create_node {
             createdAt => _timestamp(),
         };
     }
+    elsif ($provider eq 'local') {
+        # Local provider - install on localhost
+        return {
+            name      => $node->{name},
+            role      => $node->{role},
+            pool      => $node->{pool},
+            provider  => 'local',
+            publicIp  => '127.0.0.1',
+            phase     => 'Provisioned',
+            createdAt => _timestamp(),
+        };
+    }
     else {
-        die "Unknown provider: $provider\n";
+        die "Unknown provider: $provider\n" .
+            "Supported providers: hetzner, ssh, local\n";
     }
 }
 

@@ -68,25 +68,46 @@ perl -Ilib bin/ocp --help
 
 ## Quick Start
 
+### Hetzner Cloud
 ```bash
-# Initialize project (generates keys, creates config)
+# Initialize project
 ocp init --hetzner
-# -> Prompts for Hetzner API token, stores encrypted
-
-# Edit cluster configuration
-vim ocp.yaml
 
 # Deploy cluster
 ocp apply
 
-# Check status
-ocp status
+# Get kubeconfig
+ocp kubeconfig > ~/.kube/config
+kubectl get nodes
+```
+
+### Local (Localhost)
+```bash
+# Initialize local cluster
+ocp init --provider=local --single
+
+# Add your SSH key to authorized_keys (for localhost SSH)
+cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
+
+# Deploy on localhost
+sudo ocp apply
 
 # Get kubeconfig
 ocp kubeconfig > ~/.kube/config
-
-# Use kubectl
 kubectl get nodes
+```
+
+### SSH (Existing Server)
+```bash
+# Initialize with SSH
+ocp init --provider=ssh --host=yourserver.com
+
+# Add public key to server
+cat .ocp/id_ed25519.pub
+# -> Copy to server's ~/.ssh/authorized_keys
+
+# Deploy
+ocp apply
 ```
 
 ## Commands
@@ -96,6 +117,7 @@ kubectl get nodes
 | `ocp init` | Initialize project (git, keys, config) |
 | `ocp init --hetzner` | Interactive Hetzner token setup |
 | `ocp init --provider=ssh --host=HOST` | SSH-only cluster (no cloud) |
+| `ocp init --provider=local` | Local single-node cluster (localhost) |
 | `ocp apply` | Reconcile cluster to match config |
 | `ocp status` | Show cluster status |
 | `ocp destroy` | Destroy cluster |
