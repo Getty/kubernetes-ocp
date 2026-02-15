@@ -38,6 +38,7 @@ sub run_task {
 
     my @cmd = (
         'rex',
+        '-d',              # Debug mode
         '-f', $rexfile,
         '-H', $self->host,
         '-u', $self->user,
@@ -64,7 +65,8 @@ sub run_task {
 
     push @cmd, $task;
 
-    print "Running: ", join(' ', @cmd), "\n" if $self->verbose;
+    print "Running Rex task: $task\n";
+    print "Command: ", join(' ', @cmd), "\n" if $self->verbose;
 
     my ($out, $err);
     my $success = run \@cmd, \undef, \$out, \$err;
@@ -73,6 +75,12 @@ sub run_task {
     if (defined $old_private_key) { $ENV{REX_PRIVATE_KEY} = $old_private_key; } else { delete $ENV{REX_PRIVATE_KEY}; }
     if (defined $old_public_key) { $ENV{REX_PUBLIC_KEY} = $old_public_key; } else { delete $ENV{REX_PUBLIC_KEY}; }
     if (defined $old_params) { $ENV{REX_TASK_PARAMS} = $old_params; } else { delete $ENV{REX_TASK_PARAMS}; }
+
+    # Always show Rex output for debugging
+    print "--- Rex Output ---\n";
+    print $out if $out;
+    print $err if $err;
+    print "--- End Rex Output ---\n";
 
     if (!$success) {
         croak "Rex task '$task' failed: $err";
