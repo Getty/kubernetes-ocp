@@ -142,23 +142,43 @@ OCP automatically detects it's running in a container and displays:
 
 Clear, transparent communication about what's happening!
 
-#### Using CPAN (Advanced)
-```bash
-# Install OCP via CPAN
-cpanm OCP
+#### Using CPAN (System-Wide Installation)
 
-# Initialize local cluster
+**Option 1: System-wide OCP + Direct Local Install**
+
+```bash
+# Install OCP system-wide (as root)
+sudo cpanm OCP
+
+# Initialize (as user)
 ocp init --provider local
 
-# Deploy directly (no SSH, requires root)
+# Deploy (as root - OCP must be in root's PATH)
 sudo ocp apply
 
-# Get kubeconfig
+# Get kubeconfig (as user)
 ocp kubeconfig > ~/.kube/config
 kubectl get nodes
 ```
 
-**Note:** When running natively (not in Docker), OCP installs Kubernetes directly without SSH.
+**Option 2: User Installation + SSH to Localhost** (Recommended)
+
+```bash
+# Install OCP as user
+cpanm OCP
+
+# Use SSH provider to localhost
+ocp init --provider ssh --host 127.0.0.1
+cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
+
+# Deploy via SSH (works with user's perl environment)
+ocp apply
+
+# Get kubeconfig
+ocp kubeconfig > ~/.kube/config
+```
+
+**Note:** Local provider requires root access to install Kubernetes. Either install OCP system-wide (Option 1) or use SSH to localhost (Option 2) to avoid sudo/environment issues.
 
 ### SSH (Existing Server)
 ```bash
