@@ -1,0 +1,68 @@
+# Omni Control Plane - Add Worker Node (Forgejo Actions)
+# Copy this to your repo's .forgejo/workflows/ directory
+#
+# Required Secrets:
+#   SSH_PRIVATE_KEY     - SSH key with root access to target server
+#   K3S_SERVER_URL      - K3s API URL (e.g., https://1.2.3.4:6443)
+#   K3S_TOKEN           - K3s cluster join token
+
+name: Add Worker Node
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: 'Worker node host (IP or hostname)'
+        required: true
+        type: string
+      role:
+        description: 'Node role (worker or server)'
+        required: false
+        default: 'worker'
+        type: string
+      labels:
+        description: 'Node labels (comma-separated)'
+        required: false
+        type: string
+
+env:
+  OCP_PATH: ./vendor/ocp
+
+jobs:
+  add-node:
+    runs-on: docker
+    container:
+      image: debian:bookworm-slim
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y openssh-client curl git
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Add Node
+        env:
+          OCP_SSH_KEY: ~/.ssh/id_rsa
+        run: |
+          ARGS="--server=${{ secrets.K3S_SERVER_URL }} --token=${{ secrets.K3S_TOKEN }}"
+          ARGS="$ARGS --role=${{ inputs.role }}"
+
+          if [ -n "${{ inputs.labels }}" ]; then
+            ARGS="$ARGS --labels=${{ inputs.labels }}"
+          fi
+
+          ${{ env.OCP_PATH }}/bin/add-node "${{ inputs.host }}" $ARGS
+
+      - name: Show Result
+        run: |
+          echo "Node ${{ inputs.host }} added as ${{ inputs.role }}"

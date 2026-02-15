@@ -1,0 +1,64 @@
+#!/usr/bin/env perl
+# PODNAME: robocop
+# ABSTRACT: OCP Kubernetes controller
+
+use strict;
+use warnings;
+use lib::relative '../lib';
+use OCP::Robocop::Controller;
+
+my $controller = OCP::Robocop::Controller->new(
+    namespace => $ENV{NAMESPACE} // 'ocp-system',
+    verbose   => $ENV{VERBOSE} // 1,
+);
+
+$controller->run;
+
+__END__
+
+=head1 NAME
+
+robocop - OCP Kubernetes controller
+
+=head1 SYNOPSIS
+
+    # Run in-cluster
+    robocop controller
+
+    # Run locally (dev)
+    export KUBECONFIG=~/.kube/config
+    robocop controller
+
+=head1 DESCRIPTION
+
+Robocop is the Kubernetes controller for OCP (Omni Control Plane).
+
+It watches OCPNode and OCPNodeProvider CRDs and reconciles cluster state by:
+
+- Provisioning infrastructure (Hetzner, SSH)
+- Installing Kubernetes (RKE2/K3s)
+- Managing node lifecycle
+
+=head1 ENVIRONMENT
+
+=over 4
+
+=item NAMESPACE
+
+Kubernetes namespace to watch (default: ocp-system)
+
+=item VERBOSE
+
+Enable verbose logging (default: 1)
+
+=item KUBECONFIG
+
+Path to kubeconfig (for local dev, in-cluster uses service account)
+
+=back
+
+=head1 SEE ALSO
+
+L<OCP::Robocop::Controller>
+
+=cut

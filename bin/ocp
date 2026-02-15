@@ -1,0 +1,73 @@
+#!/usr/bin/env perl
+# ABSTRACT: Omni Control Plane - Kubernetes Cluster Management
+# PODNAME: ocp
+
+use strict;
+use warnings;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+use OCP;
+
+OCP->new_with_cmd;
+
+__END__
+
+=head1 NAME
+
+ocp - Omni Control Plane CLI
+
+=head1 SYNOPSIS
+
+    # Hetzner Cloud server management
+    ocp hetzner list
+    ocp hetzner create --name=cp-1 --type=cpx21 --ssh-key=my-key
+    ocp hetzner delete --name=cp-1
+
+    # SSH key management
+    ocp hetzner ssh-keys --list
+    ocp hetzner ssh-keys --add=my-key --key-file=~/.ssh/id_rsa.pub
+
+    # Node management
+    ocp node add <host> --server=<url> --token=<token>
+    ocp node list
+    ocp node remove <name>
+
+    # Cluster operations
+    ocp cluster init --provider=hetzner
+    ocp cluster status
+    ocp cluster destroy
+
+=head1 DESCRIPTION
+
+OCP (Omni Control Plane) is a self-contained Kubernetes cluster management
+tool. It manages the complete lifecycle of k3s clusters across multiple
+providers (Hetzner Cloud, SSH-accessible servers, etc.).
+
+B<Note:> The recommended way to use OCP is via Docker:
+
+    docker run --rm -it \
+      -v ~/.ssh:/root/.ssh:ro \
+      -v $(pwd):/workspace \
+      -w /workspace \
+      -e HETZNER_API_TOKEN \
+      getty/ocp apply
+
+The Docker image includes all dependencies and is the primary supported method.
+CPAN installation is provided for users who prefer native Perl installations.
+
+=head1 ENVIRONMENT VARIABLES
+
+=over 4
+
+=item HETZNER_API_TOKEN
+
+Hetzner Cloud API token
+
+=item OCP_SSH_KEY
+
+Default SSH private key path
+
+=back
+
+=cut

@@ -1,0 +1,85 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ocp-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: robocop
+  namespace: ocp-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: robocop
+rules:
+# OCP CRDs
+- apiGroups:
+  - ocp.io
+  resources:
+  - ocpnodes
+  - ocpnodeproviders
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+
+- apiGroups:
+  - ocp.io
+  resources:
+  - ocpnodes/status
+  - ocpnodeproviders/status
+  verbs:
+  - get
+  - update
+  - patch
+
+# Core Kubernetes Nodes (to label/taint)
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+  - update
+
+# Secrets (for provider credentials, SSH keys)
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+
+# Events (for logging events)
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: robocop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: robocop
+subjects:
+- kind: ServiceAccount
+  name: robocop
+  namespace: ocp-system

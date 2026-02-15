@@ -1,0 +1,23 @@
+Revision history for OCP
+
+{{$NEXT}}
+    - RKE2 + K3s dual distribution support via Rex framework
+    - Cilium CNI installation (kube-proxy replacement, eBPF)
+    - GPU auto-detection and NVIDIA driver installation
+    - Single-node mode (control plane untainting)
+    - Rex-based server automation (share/Rexfile)
+    - Robocop Kubernetes controller for CRD-based node management
+      - OCPNode and OCPNodeProvider CRDs
+      - Net::Async::Kubernetes based reconciliation loop
+      - In-cluster controller deployment
+    - Development registry support (ocp dev command)
+      - Build robocop image from source
+      - In-cluster registry deployment
+      - Auto-update controller deployments
+    - CLI commands: init, apply, status, destroy, kubeconfig, hetzner, dev
+    - Hetzner Cloud provider support via WWW::Hetzner
+    - SSH provider for existing servers (control planes + workers)
+    - Pure Perl secrets management via Crypt::Age and File::SOPS
+    - Spec/Status separation (ocp.yaml vs .ocp/status.yaml)
+    - Age encryption for secrets (no external tools required)
+    - SSH key generation and management

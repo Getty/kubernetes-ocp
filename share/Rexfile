@@ -1,0 +1,322 @@
+# OCP Rexfile - Server Automation Tasks
+use Rex -feature => ['1.4'];
+use Rex::Commands::Run;
+use Rex::Commands::Fs;
+use Rex::Commands::File;
+use Rex::Commands::Service;
+use Rex::Commands::Pkg;
+
+# Authentication
+set connection => 'SSH';
+parallelism 1;
+
+# SSH config from environment
+if ($ENV{REX_PRIVATE_KEY}) {
+    private_key $ENV{REX_PRIVATE_KEY};
+    public_key $ENV{REX_PUBLIC_KEY} if $ENV{REX_PUBLIC_KEY};
+    key_auth;
+}
+
+#
+# Common Tasks
+#
+
+desc "Prepare node for Kubernetes";
+task "prepare_node", sub {
+    # Disable swap
+    run "swapoff -a || true";
+    run "sed -i '/swap/d' /etc/fstab || true";
+
+    # Load kernel modules
+    run "modprobe br_netfilter || true";
+    run "modprobe overlay || true";
+
+    file "/etc/modules-load.d/kubernetes.conf",
+        content => "br_netfilter\noverlay\n";
+
+    # Sysctl settings
+    file "/etc/sysctl.d/99-kubernetes.conf",
+        content => "net.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nnet.ipv4.ip_forward = 1\n";
+
+    run "sysctl --system > /dev/null 2>&1";
+};
+
+desc "Detect GPU and install drivers";
+task "detect_gpu", sub {
+    my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
+
+    if ($? == 0) {
+        say "GPU detected, installing drivers...";
+
+        # Detect provider
+        my $is_hetzner = run "curl -s http://169.254.169.254/hetzner/v1/metadata 2>/dev/null", auto_die => FALSE;
+
+        if ($? == 0) {
+            say "Hetzner Cloud detected";
+            do_task "install_nvidia_hetzner";
+        } else {
+            say "Bare metal GPU server";
+            do_task "install_nvidia_generic";
+        }
+    } else {
+        say "No GPU detected, skipping driver installation";
+    }
+};
+
+desc "Install NVIDIA drivers on Hetzner";
+task "install_nvidia_hetzner", sub {
+    # Hetzner-specific NVIDIA installation
+    run "apt-get update";
+    run "apt-get install -y linux-headers-\$(uname -r)";
+    run "apt-get install -y nvidia-driver nvidia-kernel-dkms";
+    run "modprobe nvidia";
+};
+
+desc "Install NVIDIA drivers generic";
+task "install_nvidia_generic", sub {
+    # Generic NVIDIA installation
+    run "apt-get update";
+    run "apt-get install -y linux-headers-\$(uname -r)";
+
+    # Add NVIDIA repo
+    run "apt-get install -y curl";
+    run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg";
+    run "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list";
+
+    run "apt-get update";
+    run "apt-get install -y nvidia-driver nvidia-container-toolkit";
+    run "modprobe nvidia";
+};
+
+#
+# RKE2 Tasks
+#
+
+desc "Install RKE2 server (control plane)";
+task "install_rke2_server", sub {
+    my $params = shift;
+    my $token = $params->{token} || _generate_token();
+    my $version = $params->{version} || '';
+    my $tls_san = $params->{tls_san} || '';
+
+    do_task "prepare_node";
+    do_task "detect_gpu";
+
+    # Create RKE2 config
+    my $config = "cni: none\ndisable-kube-proxy: true\n";
+    $config .= "token: $token\n";
+    $config .= "tls-san:\n  - $tls_san\n" if $tls_san;
+    $config .= "disable:\n  - rke2-ingress-nginx\n";
+
+    run "mkdir -p /etc/rancher/rke2";
+    file "/etc/rancher/rke2/config.yaml", content => $config;
+
+    # Install RKE2
+    my $install_cmd = "curl -sfL https://get.rke2.io | ";
+    $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
+    $install_cmd .= "sh -";
+
+    run $install_cmd;
+
+    # Start service
+    run "systemctl enable rke2-server.service";
+    run "systemctl start rke2-server.service";
+
+    # Wait for ready
+    say "Waiting for RKE2 to be ready...";
+    run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
+
+    say "RKE2 server ready";
+
+    # Return kubeconfig and token for OCP to store
+    my $kubeconfig = run "cat /etc/rancher/rke2/rke2.yaml";
+    say "KUBECONFIG_START";
+    say $kubeconfig;
+    say "KUBECONFIG_END";
+    say "TOKEN: $token";
+};
+
+desc "Install RKE2 agent (worker)";
+task "install_rke2_agent", sub {
+    my $params = shift;
+    my $server = $params->{server} or die "server URL required";
+    my $token = $params->{token} or die "token required";
+    my $version = $params->{version} || '';
+
+    do_task "prepare_node";
+    do_task "detect_gpu";
+
+    # Create RKE2 agent config
+    my $config = "server: $server\ntoken: $token\n";
+
+    run "mkdir -p /etc/rancher/rke2";
+    file "/etc/rancher/rke2/config.yaml", content => $config;
+
+    # Install RKE2 agent
+    my $install_cmd = "curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent ";
+    $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
+    $install_cmd .= "sh -";
+
+    run $install_cmd;
+
+    # Start service
+    run "systemctl enable rke2-agent.service";
+    run "systemctl start rke2-agent.service";
+
+    say "RKE2 agent joined cluster";
+};
+
+desc "Get RKE2 kubeconfig";
+task "get_rke2_kubeconfig", sub {
+    my $kubeconfig = run "cat /etc/rancher/rke2/rke2.yaml";
+    return $kubeconfig;
+};
+
+desc "Get RKE2 token";
+task "get_rke2_token", sub {
+    my $token = run "cat /var/lib/rancher/rke2/server/node-token";
+    chomp $token;
+    return $token;
+};
+
+#
+# K3s Tasks
+#
+
+desc "Install K3s server (control plane)";
+task "install_k3s_server", sub {
+    my $params = shift;
+    my $token = $params->{token} || _generate_token();
+    my $version = $params->{version} || '';
+
+    do_task "prepare_node";
+    do_task "detect_gpu";
+
+    # Install K3s
+    my $install_cmd = "curl -sfL https://get.k3s.io | ";
+    $install_cmd .= "INSTALL_K3S_VERSION=$version " if $version;
+    $install_cmd .= "K3S_TOKEN=$token ";
+    $install_cmd .= "sh -s - server --disable=traefik --disable=servicelb --write-kubeconfig-mode=644";
+
+    run $install_cmd;
+
+    # Wait for ready
+    say "Waiting for K3s to be ready...";
+    run "while ! kubectl get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
+
+    say "K3s server ready";
+};
+
+desc "Install K3s agent (worker)";
+task "install_k3s_agent", sub {
+    my $params = shift;
+    my $server = $params->{server} or die "server URL required";
+    my $token = $params->{token} or die "token required";
+    my $version = $params->{version} || '';
+
+    do_task "prepare_node";
+    do_task "detect_gpu";
+
+    # Install K3s agent
+    my $install_cmd = "curl -sfL https://get.k3s.io | ";
+    $install_cmd .= "INSTALL_K3S_VERSION=$version " if $version;
+    $install_cmd .= "K3S_URL=$server K3S_TOKEN=$token ";
+    $install_cmd .= "sh -s - agent";
+
+    run $install_cmd;
+
+    say "K3s agent joined cluster";
+};
+
+desc "Get K3s kubeconfig";
+task "get_k3s_kubeconfig", sub {
+    my $kubeconfig = run "cat /etc/rancher/k3s/k3s.yaml";
+    return $kubeconfig;
+};
+
+desc "Get K3s token";
+task "get_k3s_token", sub {
+    my $token = run "cat /var/lib/rancher/k3s/server/node-token";
+    chomp $token;
+    return $token;
+};
+
+#
+# Single-Node Tasks
+#
+
+desc "Untaint control plane (allow workloads)";
+task "untaint_control_plane", sub {
+    my $params = shift;
+    my $distribution = $params->{distribution} || 'rke2';
+
+    say "Removing control plane taints...";
+
+    if ($distribution eq 'rke2') {
+        # Wait for node to be registered
+        run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 2; done", timeout => 60;
+
+        # Get node name
+        my $node = run "/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o jsonpath='{.items[0].metadata.name}'";
+        chomp $node;
+
+        # Remove taints
+        run "/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml taint nodes $node node-role.kubernetes.io/control-plane:NoSchedule- || true";
+        run "/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml taint nodes $node node-role.kubernetes.io/master:NoSchedule- || true";
+    } else {
+        # K3s
+        run "while ! kubectl get nodes 2>/dev/null; do sleep 2; done", timeout => 60;
+
+        my $node = run "kubectl get nodes -o jsonpath='{.items[0].metadata.name}'";
+        chomp $node;
+
+        run "kubectl taint nodes $node node-role.kubernetes.io/control-plane:NoSchedule- || true";
+        run "kubectl taint nodes $node node-role.kubernetes.io/master:NoSchedule- || true";
+    }
+
+    say "Control plane untainted, workloads can be scheduled";
+};
+
+#
+# Helpers
+#
+
+sub _generate_token {
+    my $token = run "head -c 48 /dev/urandom | base64 | tr -d '\\n+/='";
+    chomp $token;
+    return substr($token, 0, 48);
+}
+
+#
+# Cilium Tasks
+#
+
+desc "Install Cilium CNI";
+task "install_cilium", sub {
+    my $params = shift;
+    my $distribution = $params->{distribution} || 'rke2';
+
+    say "Installing Cilium CNI...";
+
+    # Determine kubectl path
+    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
+    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+
+    # Install Cilium CLI
+    say "Installing Cilium CLI...";
+    run "curl -sfL https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz | tar xz -C /usr/local/bin";
+    run "chmod +x /usr/local/bin/cilium";
+
+    # Install Cilium
+    say "Installing Cilium into cluster...";
+    my $cilium_install = "KUBECONFIG=$kubeconfig cilium install --version 1.17.0";
+    run $cilium_install;
+
+    # Wait for Cilium to be ready
+    say "Waiting for Cilium to be ready...";
+    run "KUBECONFIG=$kubeconfig cilium status --wait --wait-duration=5m", timeout => 360;
+
+    say "Cilium installed successfully";
+};
+
+1;

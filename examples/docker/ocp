@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Omni Control Plane - Docker Wrapper
+#
+# Single-file script that runs OCP commands via Docker.
+# No installation needed - just Docker!
+#
+# Usage:
+#   ./ocp install-control-plane 192.168.1.100 --token=xxx
+#   ./ocp add-node 192.168.1.101 --server=https://192.168.1.100:6443 --token=xxx
+#   ./ocp add-docker-node vast-host --mode=tunnel --control-plane=1.2.3.4 --token=xxx
+
+set -euo pipefail
+
+OCP_IMAGE="${OCP_IMAGE:-raudssus/kubernetes-ocp:latest}"
+SSH_KEY="${OCP_SSH_KEY:-$HOME/.ssh/id_rsa}"
+OUTPUT_DIR="${OCP_OUTPUT_DIR:-.}"
+
+# Check Docker
+if ! command -v docker &>/dev/null; then
+    echo "ERROR: Docker is required"
+    exit 1
+fi
+
+# Check SSH key
+if [[ ! -f "$SSH_KEY" ]]; then
+    echo "ERROR: SSH key not found: $SSH_KEY"
+    echo "Set OCP_SSH_KEY to your SSH private key path"
+    exit 1
+fi
+
+# Build image locally if not using remote
+if [[ "$OCP_IMAGE" == *"raudssus/kubernetes-ocp"* ]] && ! docker image inspect "$OCP_IMAGE" &>/dev/null; then
+    # Check if we have local OCP
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -f "$SCRIPT_DIR/../../Dockerfile" ]]; then
+        echo "Building local OCP image..."
+        docker build -t ocp-local "$SCRIPT_DIR/../.." >/dev/null
+        OCP_IMAGE="ocp-local"
+    else
+        echo "ERROR: No OCP image available"
+        echo "Either set OCP_IMAGE or run from OCP repository"
+        exit 1
+    fi
+fi
+
+# Run command in Docker
+exec docker run --rm \
+    -v "$SSH_KEY:/root/.ssh/id_rsa:ro" \
+    -v "$OUTPUT_DIR:/output" \
+    -e OCP_SSH_KEY=/root/.ssh/id_rsa \
+    -e OCP_K3S_VERSION="${OCP_K3S_VERSION:-v1.31.3+k3s1}" \
+    "$OCP_IMAGE" \
+    "$*"
