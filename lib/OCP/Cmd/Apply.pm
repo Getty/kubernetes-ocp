@@ -123,43 +123,58 @@ sub execute {
         my $created = $self->_create_node($node, $config, $cloud, $ssh_public_key);
 
         if ($created) {
-            # Wait for SSH
-            print "  Waiting for SSH...\n";
-            my $ssh = OCP::SSH->new(
-                host     => $created->{publicIp},
-                key_file => $config->ssh_private_key_path,
-            );
+            # Get Kubernetes config
+            my $k8s = $config->kubernetes;
+            my $distribution = $k8s->{dist} || $k8s->{distribution} || 'rke2';
+            my $version = $k8s->{version} || '';
 
-            eval { $ssh->wait_for_ssh(120) };
-            if ($@) {
-                print "  WARNING: SSH not ready: $@\n";
-                $created->{phase} = 'SSHFailed';
-            } else {
+            # API port depends on distribution
+            my $api_port = $distribution eq 'k3s' ? 6443 : 9345;
+
+            # For non-local providers: Wait for SSH
+            unless ($node->{provider} eq 'local') {
+                print "  Waiting for SSH...\n";
+                my $ssh = OCP::SSH->new(
+                    host     => $created->{publicIp},
+                    key_file => $config->ssh_private_key_path,
+                );
+
+                eval { $ssh->wait_for_ssh(120) };
+                if ($@) {
+                    print "  WARNING: SSH not ready: $@\n";
+                    $created->{phase} = 'SSHFailed';
+                    $config->add_node_status($created);
+                    next;
+                }
                 print "  SSH ready.\n";
+            }
 
-                # Get Kubernetes config
-                my $k8s = $config->kubernetes;
-                my $distribution = $k8s->{dist} || $k8s->{distribution} || 'rke2';
-                my $version = $k8s->{version} || '';
-
-                # API port depends on distribution
-                my $api_port = $distribution eq 'k3s' ? 6443 : 9345;
-
-                # Install Kubernetes
-                if ($node->{role} eq 'control-plane' && !$cluster_info->{apiEndpoint}) {
+            # Install Kubernetes
+            if ($node->{role} eq 'control-plane' && !$cluster_info->{apiEndpoint}) {
                     # First control plane
                     print "  Installing $distribution server...\n";
-                    my $rex = OCP::Rex->new(
-                        host     => $created->{publicIp},
-                        key_file => $config->ssh_private_key_path,
-                        verbose  => $verbose,
-                    );
 
-                    my $result = $rex->install_server(
-                        distribution => $distribution,
-                        version      => $version,
-                        node_name    => $node->{name},
-                    );
+                    my $result;
+                    if ($node->{provider} eq 'local') {
+                        require OCP::Local;
+                        my $local = OCP::Local->new(verbose => $verbose);
+                        $result = $local->install_server(
+                            distribution => $distribution,
+                            version      => $version,
+                            node_name    => $node->{name},
+                        );
+                    } else {
+                        my $rex = OCP::Rex->new(
+                            host     => $created->{publicIp},
+                            key_file => $config->ssh_private_key_path,
+                            verbose  => $verbose,
+                        );
+                        $result = $rex->install_server(
+                            distribution => $distribution,
+                            version      => $version,
+                            node_name    => $node->{name},
+                        );
+                    }
 
                     $config->set_cluster_status(apiEndpoint => "https://$created->{publicIp}:$api_port");
                     $config->set_cluster_status(joinToken => $result->{token});
@@ -173,9 +188,20 @@ sub execute {
                     if ($config->single_node) {
                         print "  Single-node mode: untainting control plane...\n";
                         eval {
-                            $rex->run_task('untaint_control_plane',
-                                distribution => $distribution,
-                            );
+                            if ($node->{provider} eq 'local') {
+                                require OCP::Local;
+                                my $local = OCP::Local->new(verbose => $verbose);
+                                $local->untaint_control_plane(distribution => $distribution);
+                            } else {
+                                my $rex = OCP::Rex->new(
+                                    host     => $created->{publicIp},
+                                    key_file => $config->ssh_private_key_path,
+                                    verbose  => $verbose,
+                                );
+                                $rex->run_task('untaint_control_plane',
+                                    distribution => $distribution,
+                                );
+                            }
                         };
                         if ($@) {
                             print "  WARNING: Failed to untaint: $@\n";
@@ -187,9 +213,20 @@ sub execute {
                     # Install Cilium CNI
                     print "  Installing Cilium CNI...\n";
                     eval {
-                        $rex->run_task('install_cilium',
-                            distribution => $distribution,
-                        );
+                        if ($node->{provider} eq 'local') {
+                            require OCP::Local;
+                            my $local = OCP::Local->new(verbose => $verbose);
+                            $local->install_cilium(distribution => $distribution);
+                        } else {
+                            my $rex = OCP::Rex->new(
+                                host     => $created->{publicIp},
+                                key_file => $config->ssh_private_key_path,
+                                verbose  => $verbose,
+                            );
+                            $rex->run_task('install_cilium',
+                                distribution => $distribution,
+                            );
+                        }
                     };
                     if ($@) {
                         print "  WARNING: Cilium installation failed: $@\n";
@@ -205,7 +242,11 @@ sub execute {
                     my $api = $cluster_info->{apiEndpoint};
                     my $token = $cluster_info->{joinToken};
 
-                    if ($api && $token) {
+                    if ($node->{provider} eq 'local') {
+                        # Local provider doesn't support multiple nodes
+                        print "  WARNING: Local provider only supports single-node clusters.\n";
+                        $created->{phase} = 'Skipped';
+                    } elsif ($api && $token) {
                         print "  Joining cluster...\n";
                         my $rex = OCP::Rex->new(
                             host     => $created->{publicIp},
