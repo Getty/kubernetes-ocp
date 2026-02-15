@@ -85,6 +85,8 @@ task "detect_gpu", sub {
     say "=== End PCI Devices ===";
 
     # Check for virtualized GPU (skip these)
+    # Suppress Rex SSH2 uninitialized $? warnings
+    no warnings 'uninitialized';
     my $has_virtio = run "lspci | grep -iE '(virtio|qemu|vmware|virtualbox)'", auto_die => FALSE;
     my $is_virtual = ($? == 0 && $has_virtio);
 
@@ -95,6 +97,7 @@ task "detect_gpu", sub {
     # Check for AMD (but not if virtualized)
     my $has_amd = run "lspci | grep -iE '(vga|display|3d).*(amd|ati|radeon)'", auto_die => FALSE;
     my $amd_found = ($? == 0 && $has_amd && !$is_virtual);
+    use warnings 'uninitialized';
 
     say "GPU Detection Results:";
     say "  Virtualized GPU: " . ($is_virtual ? "YES (skipping driver installation)" : "no");
@@ -107,6 +110,7 @@ task "detect_gpu", sub {
         # Detect provider
         my $is_hetzner = run "curl -s http://169.254.169.254/hetzner/v1/metadata 2>/dev/null", auto_die => FALSE;
 
+        no warnings 'uninitialized';
         if ($? == 0) {
             say "Hetzner Cloud detected";
             do_task "install_nvidia_hetzner";
@@ -114,6 +118,7 @@ task "detect_gpu", sub {
             say "Bare metal NVIDIA GPU server";
             do_task "install_nvidia_generic";
         }
+        use warnings 'uninitialized';
     } elsif ($amd_found) {
         say "Installing AMD GPU drivers and ROCm...";
         do_task "install_amd_gpu";
