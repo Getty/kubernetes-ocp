@@ -84,15 +84,20 @@ task "detect_gpu", sub {
     say $lspci_output;
     say "=== End PCI Devices ===";
 
-    # Check for NVIDIA
-    my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
-    my $nvidia_found = ($? == 0 && $has_nvidia);
+    # Check for virtualized GPU (skip these)
+    my $has_virtio = run "lspci | grep -iE '(virtio|qemu|vmware|virtualbox)'", auto_die => FALSE;
+    my $is_virtual = ($? == 0 && $has_virtio);
 
-    # Check for AMD (Radeon, RX, VGA with AMD/ATI)
+    # Check for NVIDIA (but not if virtualized)
+    my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
+    my $nvidia_found = ($? == 0 && $has_nvidia && !$is_virtual);
+
+    # Check for AMD (but not if virtualized)
     my $has_amd = run "lspci | grep -iE '(vga|display|3d).*(amd|ati|radeon)'", auto_die => FALSE;
-    my $amd_found = ($? == 0 && $has_amd);
+    my $amd_found = ($? == 0 && $has_amd && !$is_virtual);
 
     say "GPU Detection Results:";
+    say "  Virtualized GPU: " . ($is_virtual ? "YES (skipping driver installation)" : "no");
     say "  NVIDIA: " . ($nvidia_found ? "YES" : "no");
     say "  AMD: " . ($amd_found ? "YES" : "no");
 
