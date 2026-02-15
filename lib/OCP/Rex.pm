@@ -5,7 +5,8 @@ use Moo;
 use Carp qw(croak);
 use IPC::Run qw(run);
 use Path::Tiny qw(path);
-use File::ShareDir::ProjectDistDir;
+use FindBin;
+use File::ShareDir qw(dist_dir);
 
 our $VERSION = '0.1.0';
 
@@ -87,15 +88,27 @@ sub run_task {
 sub _find_rexfile {
     my ($self) = @_;
 
-    # Use File::Share::ProjectDistDir to find Rexfile
-    # In dev: project root
-    # In installed: share/ directory
-    my $project_dir = path(dist_dir('OCP'));
-    my $rexfile = $project_dir->child('Rexfile');
+    # Try multiple locations:
+    # 1. Docker: /opt/ocp/src/share/Rexfile
+    # 2. Development: $FindBin::Bin/../share/Rexfile
+    # 3. Installed: File::ShareDir dist_dir
 
-    return $rexfile->stringify if $rexfile->exists;
+    my @locations = (
+        '/opt/ocp/src/share/Rexfile',                           # Docker
+        path($FindBin::Bin)->parent->child('share/Rexfile'),    # Dev
+    );
 
-    croak "Rexfile not found in project directory: $project_dir";
+    # Try installed location
+    eval {
+        my $dist_dir = dist_dir('OCP');
+        push @locations, path($dist_dir)->child('Rexfile');
+    };
+
+    for my $rexfile (@locations) {
+        return "$rexfile" if -f $rexfile;
+    }
+
+    die "Rexfile not found. Tried:\n" . join("\n", map { "  - $_" } @locations) . "\n";
 }
 
 sub install_server {
