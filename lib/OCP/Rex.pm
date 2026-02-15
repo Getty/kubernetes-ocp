@@ -38,7 +38,6 @@ sub run_task {
 
     my @cmd = (
         'rex',
-        '-d',              # Debug mode
         '-f', $rexfile,
         '-H', $self->host,
         '-u', $self->user,
