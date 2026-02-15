@@ -19,13 +19,27 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 ### Docker (recommended)
 
 ```bash
-docker pull raudssus/ocp
+docker pull raudssus/ocp:latest
 
-# Run with project mounted
+# Initialize new project
 docker run --rm -it \
   -v $(pwd):/project \
-  -e HETZNER_API_TOKEN \
+  raudssus/ocp init --hetzner
+
+# Deploy cluster
+docker run --rm -it \
+  -v $(pwd):/project \
+  -v ~/.ssh:/home/ocp/.ssh:ro \
   raudssus/ocp apply
+
+# Get kubeconfig
+docker run --rm -it \
+  -v $(pwd):/project \
+  raudssus/ocp kubeconfig -e
+
+# Alternative: Use alias for convenience
+alias ocp='docker run --rm -it -v $(pwd):/project raudssus/ocp'
+ocp status
 ```
 
 ### CPAN

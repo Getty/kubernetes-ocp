@@ -14,7 +14,7 @@ ARG OCP_GID=1000
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
   curl ca-certificates git openssh-client \
-  libexpat1-dev zlib1g-dev libssl-dev build-essential \
+  libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl =============================================================
@@ -84,6 +84,7 @@ FROM ocp-base AS ocp
 # Copy OCP source
 COPY --chown=ocp:ocp ./lib $OCP_ROOT/src/lib
 COPY --chown=ocp:ocp ./bin $OCP_ROOT/src/bin
+COPY --chown=ocp:ocp ./share $OCP_ROOT/src/share
 
 # Add bin to PATH
 ENV PATH="$OCP_ROOT/src/bin:${PATH}"

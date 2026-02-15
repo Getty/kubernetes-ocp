@@ -1,12 +1,16 @@
 # OCP Makefile
 
-.PHONY: all build test test-v clean docker-test
+# Docker image name
+IMAGE ?= raudssus/ocp
+TAG ?= latest
+
+.PHONY: all build test test-v clean docker-test docker-push docker-release
 
 all: build
 
 # Build Docker image
 build:
-	docker build -t ocp .
+	docker build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
 
 # Run tests locally (uses CPAN modules)
 test:
@@ -22,5 +26,17 @@ clean:
 
 # Quick test run with Docker
 docker-test: build
-	docker run --rm ocp --help
+	docker run --rm $(IMAGE):$(TAG) --help
 	@echo "Docker image works!"
+
+# Push to Docker Hub
+docker-push: build
+	docker push $(IMAGE):$(TAG)
+	docker push $(IMAGE):latest
+
+# Build and push release with version tag
+docker-release: build
+	@echo "Building release version $(TAG)"
+	docker push $(IMAGE):$(TAG)
+	docker push $(IMAGE):latest
+	@echo "Released $(IMAGE):$(TAG)"

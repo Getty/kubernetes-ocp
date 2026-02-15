@@ -1,0 +1,37 @@
+# Git
+.git
+.gitignore
+
+# Editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.tar.gz
+*.zip
+
+# Test files
+t/
+
+# Examples
+examples/
+
+# Documentation
+*.md
+!README.md
+PLANNING.md
+
+# CI/CD
+.github/
+
+# Dist::Zilla
+.build/
+
+# Local test dirs
+/tmp/
+
+# Node modules (if any)
+node_modules/
