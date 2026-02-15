@@ -8,7 +8,9 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 
 - **RKE2 + K3s Support** - Production-ready RKE2 or lightweight K3s via config
 - **Cilium CNI** - eBPF-based networking, kube-proxy replacement, service mesh
-- **GPU Support** - Auto-detection and NVIDIA driver installation
+- **Traefik Ingress** - HTTP/HTTPS ingress controller with automatic SSL (default enabled)
+- **cert-manager** - Automated SSL certificate management with Let's Encrypt support
+- **GPU Support** - Auto-detection and NVIDIA/AMD driver installation
 - **Single-Node Mode** - Control plane can host workloads (auto-untaint)
 
 ### Providers
@@ -268,6 +270,80 @@ workers:
 ssh:
   privateKey: .ocp/id_ed25519
   publicKey: .ocp/id_ed25519.pub
+
+# Optional: SSL configuration for Let's Encrypt
+ssl:
+  email: admin@example.com  # Required for Let's Encrypt, optional for self-signed
+
+# Optional: Disable components (default: all enabled)
+# notraefik: true  # Disable Traefik ingress controller
+# nocert: true     # Disable cert-manager
+```
+
+## SSL & Ingress
+
+OCP automatically installs **Traefik** (ingress controller) and **cert-manager** (SSL certificates).
+
+### Automatic SSL with Let's Encrypt
+
+For public clusters with a domain, add your email to enable Let's Encrypt:
+
+```yaml
+ssl:
+  email: admin@example.com
+```
+
+This creates three ClusterIssuers:
+- `selfsigned-issuer` - For internal/development certificates
+- `letsencrypt-prod` - Production Let's Encrypt certificates
+- `letsencrypt-staging` - Staging (for testing, to avoid rate limits)
+
+### Self-Signed Certificates (Local/Internal)
+
+For local or internal clusters, **omit the ssl.email** - OCP will only create the `selfsigned-issuer`:
+
+```yaml
+# No ssl block = self-signed certificates only
+name: mycluster
+```
+
+This protects against accidentally hitting Let's Encrypt rate limits on non-public clusters.
+
+### Example Ingress with SSL
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod  # or selfsigned-issuer
+spec:
+  ingressClassName: traefik
+  tls:
+  - hosts:
+    - myapp.example.com
+    secretName: myapp-tls  # cert-manager creates this automatically
+  rules:
+  - host: myapp.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: myapp
+            port:
+              number: 80
+```
+
+### Disable Traefik or cert-manager
+
+If you prefer to use a different ingress controller or certificate solution:
+
+```yaml
+notraefik: true  # Don't install Traefik (use nginx-ingress, etc.)
+nocert: true     # Don't install cert-manager (manual certificates)
 ```
 
 ## Project Structure
