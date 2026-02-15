@@ -154,7 +154,12 @@ sub fetch_kubeconfig_ssh {
     );
 
     my $result = $ssh->run("cat $path");
-    return '' if $result->{exit};
+
+    if ($result->{exit}) {
+        die "Failed to fetch kubeconfig from $path on ${\$self->host}\n" .
+            "Error: $result->{stderr}\n" .
+            "The kubeconfig file may not exist yet. RKE2/K3s installation might still be in progress.\n";
+    }
 
     my $kubeconfig = $result->{stdout};
 
