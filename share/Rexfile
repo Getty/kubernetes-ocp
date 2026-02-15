@@ -499,14 +499,19 @@ task "install_cilium", sub {
     run "curl -sfL https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz | tar xz -C /usr/local/bin";
     run "chmod +x /usr/local/bin/cilium";
 
-    # Install Cilium
+    # Install Cilium with LoadBalancer support
     say "Installing Cilium into cluster...";
-    my $cilium_install = "KUBECONFIG=$kubeconfig cilium install --version 1.17.0";
-    run $cilium_install;
+    run 'cilium install --version 1.17.0 ' .
+        '--set kubeProxyReplacement=true ' .
+        '--set k8sServiceHost=localhost ' .
+        '--set k8sServicePort=6443',
+        env => { KUBECONFIG => $kubeconfig };
 
     # Wait for Cilium to be ready
     say "Waiting for Cilium to be ready...";
-    run "KUBECONFIG=$kubeconfig cilium status --wait --wait-duration=5m", timeout => 360;
+    run 'cilium status --wait --wait-duration=5m',
+        env => { KUBECONFIG => $kubeconfig },
+        timeout => 360;
 
     say "Cilium installed successfully";
 };

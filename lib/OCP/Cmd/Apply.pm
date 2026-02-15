@@ -263,6 +263,32 @@ sub execute {
                         print "  Cilium ready.\n";
                     }
 
+                    # Install cert-manager (unless nocert: true)
+                    unless ($config->no_cert) {
+                        print "  Installing cert-manager...\n";
+                        eval {
+                            $self->_install_cert_manager($config, $created->{publicIp});
+                        };
+                        if ($@) {
+                            print "  WARNING: cert-manager installation failed: $@\n";
+                        } else {
+                            print "  cert-manager ready.\n";
+                        }
+                    }
+
+                    # Install Traefik (unless notraefik: true)
+                    unless ($config->no_traefik) {
+                        print "  Installing Traefik ingress controller...\n";
+                        eval {
+                            $self->_install_traefik($config, $created->{publicIp});
+                        };
+                        if ($@) {
+                            print "  WARNING: Traefik installation failed: $@\n";
+                        } else {
+                            print "  Traefik ready.\n";
+                        }
+                    }
+
                     $created->{phase} = 'Ready';
                     print "  Control plane ready.\n";
                 } else {
@@ -475,6 +501,232 @@ sub _timestamp {
     my @t = gmtime;
     return sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
         $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0]);
+}
+
+sub _install_cert_manager {
+    my ($self, $config, $host) = @_;
+
+    # Get kubeconfig
+    my $kubeconfig = $config->cluster_status->{kubeconfig};
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    # Write kubeconfig to temp file
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
+    # Install cert-manager from official manifests
+    my $version = 'v1.14.0';
+    my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
+
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $url) == 0
+        or die "Failed to install cert-manager\n";
+
+    # Wait for cert-manager to be ready
+    print "    Waiting for cert-manager to be ready...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
+           "--timeout=120s", "deployment/cert-manager", "-n", "cert-manager") == 0
+        or die "cert-manager deployment not ready\n";
+
+    # Create ClusterIssuers
+    $self->_create_cert_issuers($config, $kc_path);
+}
+
+sub _create_cert_issuers {
+    my ($self, $config, $kc_path) = @_;
+
+    my $email = $config->ssl_email;
+
+    # Create self-signed issuer (always, for internal certs)
+    my $selfsigned_issuer = <<'YAML';
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-issuer
+spec:
+  selfSigned: {}
+YAML
+
+    my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $fh $selfsigned_issuer;
+    close $fh;
+
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0
+        or warn "Failed to create selfsigned-issuer\n";
+
+    # If email provided, create Let's Encrypt issuers
+    if ($email) {
+        print "    Creating Let's Encrypt issuers (email: $email)...\n";
+
+        # Production issuer
+        my $le_prod = <<"YAML";
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: $email
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: traefik
+YAML
+
+        # Staging issuer
+        my $le_staging = <<"YAML";
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: $email
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+    - http01:
+        ingress:
+          class: traefik
+YAML
+
+        my $prod_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print $prod_fh $le_prod;
+        close $prod_fh;
+
+        my $staging_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print $staging_fh $le_staging;
+        close $staging_fh;
+
+        system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $prod_fh->filename) == 0
+            or warn "Failed to create letsencrypt-prod issuer\n";
+        system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $staging_fh->filename) == 0
+            or warn "Failed to create letsencrypt-staging issuer\n";
+
+        print "    ClusterIssuers created: selfsigned-issuer, letsencrypt-prod, letsencrypt-staging\n";
+    } else {
+        print "    ClusterIssuer created: selfsigned-issuer\n";
+        print "    (Add 'ssl: { email: your@email.com }' to ocp.yaml for Let's Encrypt)\n";
+    }
+}
+
+sub _install_traefik {
+    my ($self, $config, $host) = @_;
+
+    # Get kubeconfig
+    my $kubeconfig = $config->cluster_status->{kubeconfig};
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    # Write kubeconfig to temp file
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
+    # Create Traefik namespace
+    system("kubectl", "--kubeconfig=$kc_path", "create", "namespace", "traefik", "--dry-run=client", "-o", "yaml", "|",
+           "kubectl", "--kubeconfig=$kc_path", "apply", "-f", "-") == 0
+        or die "Failed to create traefik namespace\n";
+
+    # Install Traefik CRDs
+    my $crd_url = "https://raw.githubusercontent.com/traefik/traefik/v3.2/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml";
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $crd_url) == 0
+        or die "Failed to install Traefik CRDs\n";
+
+    # Install Traefik RBAC
+    my $rbac_url = "https://raw.githubusercontent.com/traefik/traefik/v3.2/docs/content/reference/dynamic-configuration/kubernetes-crd-rbac.yml";
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $rbac_url) == 0
+        or die "Failed to install Traefik RBAC\n";
+
+    # Create Traefik deployment
+    $self->_create_traefik_deployment($config, $kc_path);
+
+    # Wait for Traefik to be ready
+    print "    Waiting for Traefik to be ready...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
+           "--timeout=120s", "deployment/traefik", "-n", "traefik") == 0
+        or die "Traefik deployment not ready\n";
+}
+
+sub _create_traefik_deployment {
+    my ($self, $config, $kc_path) = @_;
+
+    # Minimal Traefik deployment
+    my $traefik_manifest = <<'YAML';
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik
+  namespace: traefik
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app: traefik
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: traefik
+  template:
+    metadata:
+      labels:
+        app: traefik
+    spec:
+      serviceAccountName: traefik
+      containers:
+      - name: traefik
+        image: traefik:v3.2
+        args:
+        - --api.dashboard=true
+        - --api.insecure=false
+        - --entrypoints.web.address=:80
+        - --entrypoints.websecure.address=:443
+        - --providers.kubernetescrd
+        - --providers.kubernetesingress
+        - --log.level=INFO
+        ports:
+        - name: web
+          containerPort: 80
+        - name: websecure
+          containerPort: 443
+        - name: admin
+          containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik
+  namespace: traefik
+spec:
+  type: LoadBalancer
+  selector:
+    app: traefik
+  ports:
+  - name: web
+    port: 80
+    targetPort: web
+  - name: websecure
+    port: 443
+    targetPort: websecure
+YAML
+
+    my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $fh $traefik_manifest;
+    close $fh;
+
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0
+        or die "Failed to create Traefik deployment\n";
 }
 
 1;

@@ -116,6 +116,14 @@ sub single_node {
     return (scalar(@$workers) == 0 && ($cp->{nodes} // $cp->{count} // 1) == 1);
 }
 
+# Add-on flags (default: enabled, set to true to disable)
+sub no_traefik { shift->spec->{notraefik} // 0 }
+sub no_cert { shift->spec->{nocert} // 0 }
+
+# SSL configuration (for cert-manager)
+sub ssl_config { shift->spec->{ssl} // {} }
+sub ssl_email { shift->spec->{ssl}{email} // '' }
+
 #
 # Status accessors
 #
