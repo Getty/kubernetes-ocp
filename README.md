@@ -82,20 +82,42 @@ kubectl get nodes
 ```
 
 ### Local (Localhost)
+
+#### Using Docker (Recommended)
 ```bash
 # Initialize local cluster
-ocp init --provider=local --single
+docker run --rm -v $(pwd):/project raudssus/ocp init --provider local
 
-# Add your SSH key to authorized_keys (for localhost SSH)
+# Add SSH key to localhost (required for Docker mode)
 cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
 
-# Deploy on localhost
+# Deploy (Docker → SSH → localhost)
+docker run --rm -v $(pwd):/project raudssus/ocp apply
+
+# Get kubeconfig
+docker run --rm -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
+kubectl get nodes
+```
+
+**Note:** When running in Docker, OCP uses SSH to connect to your host system (127.0.0.1) to install Kubernetes. This is clearly indicated during deployment.
+
+#### Using CPAN (Advanced)
+```bash
+# Install OCP via CPAN
+cpanm OCP
+
+# Initialize local cluster
+ocp init --provider local
+
+# Deploy directly (no SSH, requires root)
 sudo ocp apply
 
 # Get kubeconfig
 ocp kubeconfig > ~/.kube/config
 kubectl get nodes
 ```
+
+**Note:** When running natively (not in Docker), OCP installs Kubernetes directly without SSH.
 
 ### SSH (Existing Server)
 ```bash

@@ -131,8 +131,30 @@ sub execute {
             # API port depends on distribution
             my $api_port = $distribution eq 'k3s' ? 6443 : 9345;
 
-            # For non-local providers: Wait for SSH
-            unless ($node->{provider} eq 'local') {
+            # Local provider: Auto-detect Docker vs Native
+            my $use_ssh_for_local = 0;
+            if ($node->{provider} eq 'local') {
+                # Check if running in Docker
+                if (-f '/.dockerenv' || -f '/run/.containerenv') {
+                    print "\n";
+                    print "╔═══════════════════════════════════════════════════════════════╗\n";
+                    print "║  DOCKER MODE: Using SSH to localhost (127.0.0.1)             ║\n";
+                    print "║                                                               ║\n";
+                    print "║  OCP is running in Docker and needs SSH access to install     ║\n";
+                    print "║  Kubernetes on your host system.                             ║\n";
+                    print "║                                                               ║\n";
+                    print "║  Make sure you added the SSH key to your host:               ║\n";
+                    print "║    cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys         ║\n";
+                    print "╚═══════════════════════════════════════════════════════════════╝\n";
+                    print "\n";
+                    $use_ssh_for_local = 1;
+                } else {
+                    print "  Local mode: Installing directly on localhost (no SSH)\n";
+                }
+            }
+
+            # Wait for SSH (for non-local or Docker-based local)
+            if ($node->{provider} ne 'local' || $use_ssh_for_local) {
                 print "  Waiting for SSH...\n";
                 my $ssh = OCP::SSH->new(
                     host     => $created->{publicIp},
@@ -155,7 +177,8 @@ sub execute {
                     print "  Installing $distribution server...\n";
 
                     my $result;
-                    if ($node->{provider} eq 'local') {
+                    if ($node->{provider} eq 'local' && !$use_ssh_for_local) {
+                        # Native local installation (no SSH)
                         require OCP::Local;
                         my $local = OCP::Local->new(verbose => $verbose);
                         $result = $local->install_server(
@@ -164,6 +187,7 @@ sub execute {
                             node_name    => $node->{name},
                         );
                     } else {
+                        # SSH-based installation (remote or Docker-local)
                         my $rex = OCP::Rex->new(
                             host     => $created->{publicIp},
                             key_file => $config->ssh_private_key_path,
@@ -188,11 +212,13 @@ sub execute {
                     if ($config->single_node) {
                         print "  Single-node mode: untainting control plane...\n";
                         eval {
-                            if ($node->{provider} eq 'local') {
+                            if ($node->{provider} eq 'local' && !$use_ssh_for_local) {
+                                # Native local
                                 require OCP::Local;
                                 my $local = OCP::Local->new(verbose => $verbose);
                                 $local->untaint_control_plane(distribution => $distribution);
                             } else {
+                                # SSH-based
                                 my $rex = OCP::Rex->new(
                                     host     => $created->{publicIp},
                                     key_file => $config->ssh_private_key_path,
@@ -213,11 +239,13 @@ sub execute {
                     # Install Cilium CNI
                     print "  Installing Cilium CNI...\n";
                     eval {
-                        if ($node->{provider} eq 'local') {
+                        if ($node->{provider} eq 'local' && !$use_ssh_for_local) {
+                            # Native local
                             require OCP::Local;
                             my $local = OCP::Local->new(verbose => $verbose);
                             $local->install_cilium(distribution => $distribution);
                         } else {
+                            # SSH-based
                             my $rex = OCP::Rex->new(
                                 host     => $created->{publicIp},
                                 key_file => $config->ssh_private_key_path,
