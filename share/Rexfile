@@ -46,6 +46,9 @@ task "prepare_node", sub {
     # Check OS compatibility
     check_os();
 
+    # Ensure required packages are installed
+    pkg ["curl", "ca-certificates"], ensure => "present";
+
     # Disable swap
     run "swapoff -a || true";
     run "sed -i '/swap/d' /etc/fstab || true";
@@ -67,9 +70,10 @@ task "prepare_node", sub {
 desc "Detect GPU and install drivers";
 task "detect_gpu", sub {
     my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
+    my $has_amd = run "lspci | grep -i 'vga.*amd\\|amd.*radeon'", auto_die => FALSE;
 
-    if ($? == 0) {
-        say "GPU detected, installing drivers...";
+    if ($? == 0 && $has_nvidia) {
+        say "NVIDIA GPU detected, installing drivers...";
 
         # Detect provider
         my $is_hetzner = run "curl -s http://169.254.169.254/hetzner/v1/metadata 2>/dev/null", auto_die => FALSE;
@@ -78,9 +82,12 @@ task "detect_gpu", sub {
             say "Hetzner Cloud detected";
             do_task "install_nvidia_hetzner";
         } else {
-            say "Bare metal GPU server";
+            say "Bare metal NVIDIA GPU server";
             do_task "install_nvidia_generic";
         }
+    } elsif ($has_amd) {
+        say "AMD GPU detected, installing drivers...";
+        do_task "install_amd_gpu";
     } else {
         say "No GPU detected, skipping driver installation";
     }
@@ -89,25 +96,60 @@ task "detect_gpu", sub {
 desc "Install NVIDIA drivers on Hetzner";
 task "install_nvidia_hetzner", sub {
     # Hetzner-specific NVIDIA installation
-    run "apt-get update";
-    run "apt-get install -y linux-headers-\$(uname -r)";
-    run "apt-get install -y nvidia-driver nvidia-kernel-dkms";
+    update_package_db;
+
+    my $packages = case operating_system,
+        Debian => ["linux-headers-amd64", "nvidia-driver", "nvidia-kernel-dkms"],
+        Ubuntu => ["linux-headers-generic", "nvidia-driver-535"];
+
+    pkg $packages, ensure => "present";
     run "modprobe nvidia";
+};
+
+desc "Install AMD GPU drivers";
+task "install_amd_gpu", sub {
+    say "Installing AMD GPU drivers...";
+
+    # Ensure dependencies
+    pkg ["curl", "gnupg"], ensure => "present";
+    update_package_db;
+
+    my $packages = case operating_system,
+        Debian => ["firmware-amd-graphics", "libgl1-mesa-dri", "libglx-mesa0", "mesa-vulkan-drivers", "xserver-xorg-video-amdgpu"],
+        Ubuntu => ["mesa-utils", "mesa-vulkan-drivers", "libgl1-mesa-dri", "xserver-xorg-video-amdgpu"];
+
+    pkg $packages, ensure => "present";
+
+    # Load amdgpu module
+    run "modprobe amdgpu";
+
+    say "AMD GPU drivers installed";
 };
 
 desc "Install NVIDIA drivers generic";
 task "install_nvidia_generic", sub {
-    # Generic NVIDIA installation
-    run "apt-get update";
-    run "apt-get install -y linux-headers-\$(uname -r)";
+    # Ensure curl and gpg are installed
+    pkg ["curl", "gnupg"], ensure => "present";
 
-    # Add NVIDIA repo
-    run "apt-get install -y curl";
+    update_package_db;
+
+    my $headers = case operating_system,
+        Debian => ["linux-headers-amd64"],
+        Ubuntu => ["linux-headers-generic"];
+
+    pkg $headers, ensure => "present";
+
+    # Add NVIDIA repo (Debian/Ubuntu specific)
     run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg";
     run "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list";
 
-    run "apt-get update";
-    run "apt-get install -y nvidia-driver nvidia-container-toolkit";
+    update_package_db;
+
+    my $nvidia_packages = case operating_system,
+        Debian => ["nvidia-driver", "nvidia-container-toolkit"],
+        Ubuntu => ["nvidia-driver-535", "nvidia-container-toolkit"];
+
+    pkg $nvidia_packages, ensure => "present";
     run "modprobe nvidia";
 };
 
