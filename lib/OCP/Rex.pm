@@ -148,6 +148,11 @@ sub fetch_kubeconfig_ssh {
     $kubeconfig =~ s/127\.0\.0\.1/$host/g;
     $kubeconfig =~ s/localhost/$host/g;
 
+    # Remove certificate-authority-data and add insecure-skip-tls-verify
+    # (TLS cert only valid for short hostname, not FQDN)
+    $kubeconfig =~ s/^\s*certificate-authority-data:.*\n//mg;
+    $kubeconfig =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
+
     return $kubeconfig;
 }
 
@@ -184,6 +189,11 @@ sub get_kubeconfig {
     my $host = $self->host;
     $kubeconfig =~ s/127\.0\.0\.1/$host/g;
     $kubeconfig =~ s/localhost/$host/g;
+
+    # Remove certificate-authority-data and add insecure-skip-tls-verify
+    # (TLS cert only valid for short hostname, not FQDN)
+    $kubeconfig =~ s/^\s*certificate-authority-data:.*\n//mg;
+    $kubeconfig =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
 
     return $kubeconfig;
 }
