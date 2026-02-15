@@ -236,7 +236,7 @@ task "install_rke2_server", sub {
     $config .= "tls-san:\n  - $tls_san\n" if $tls_san;
     $config .= "disable:\n  - rke2-ingress-nginx\n";
 
-    run "mkdir -p /etc/rancher/rke2";
+    file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
     # Install RKE2
@@ -337,7 +337,7 @@ task "install_rke2_agent", sub {
     my $config = "server: $server\ntoken: $token\n";
     $config .= "node-name: $node_name\n" if $node_name;
 
-    run "mkdir -p /etc/rancher/rke2";
+    file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
     # Install RKE2 agent
