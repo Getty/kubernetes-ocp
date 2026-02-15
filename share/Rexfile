@@ -10,6 +10,12 @@ use Rex::Commands::Pkg;
 set connection => 'SSH';
 parallelism 1;
 
+# SSH options - disable strict host key checking
+set ssh_config_options => {
+    StrictHostKeyChecking => 'no',
+    UserKnownHostsFile    => '/dev/null',
+};
+
 # SSH config from environment
 if ($ENV{REX_PRIVATE_KEY}) {
     private_key $ENV{REX_PRIVATE_KEY};
