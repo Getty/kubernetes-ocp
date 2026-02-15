@@ -212,11 +212,14 @@ sub execute {
         my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
         my $dist = $self->dist // 'rke2';
 
+        # Local provider is always single-node
+        my $single_node = $self->single || ($provider eq 'local');
+
         my %opts = (
             name             => $name,
             dist             => $dist,
             provider         => $provider,
-            single_node      => $self->single,
+            single_node      => $single_node,
             host             => $self->host,
             service          => $self->service,
             ssh_private_key  => '.ocp/id_ed25519',
