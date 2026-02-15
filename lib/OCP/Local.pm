@@ -2,7 +2,6 @@ package OCP::Local;
 # ABSTRACT: Local RKE2/K3s installation (no SSH)
 
 use Moo;
-use Carp qw(croak);
 use IPC::Run qw(run);
 
 our $VERSION = '0.1.0';
@@ -23,7 +22,7 @@ sub install_server {
 
     # Check if running as root
     unless ($< == 0) {
-        croak "Local installation requires root. Run with sudo.\n";
+        die "Local installation requires root. Run with sudo.\n";
     }
 
     # Prepare node
@@ -182,7 +181,7 @@ sub _run {
     );
 
     unless ($success) {
-        croak "Command failed: $cmd\nError: $err\n";
+        die "Command failed: $cmd\nError: $err\n";
     }
 
     return $out;

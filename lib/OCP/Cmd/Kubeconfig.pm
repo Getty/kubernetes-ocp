@@ -84,7 +84,7 @@ sub execute {
     if ($self->output) {
         # Write to specific file
         my $out_file = $self->output;
-        open my $fh, '>', $out_file or die "Cannot write $out_file: $!";
+        open my $fh, '>', $out_file or die "Cannot write $out_file: $!\n";
         print $fh $kubeconfig;
         close $fh;
         chmod 0600, $out_file;
@@ -108,7 +108,7 @@ sub execute {
             $kube_file = "$kube_dir/config";
         }
 
-        open my $fh, '>', $kube_file or die "Cannot write $kube_file: $!";
+        open my $fh, '>', $kube_file or die "Cannot write $kube_file: $!\n";
         print $fh $kubeconfig;
         close $fh;
         chmod 0600, $kube_file;

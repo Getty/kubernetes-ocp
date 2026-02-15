@@ -162,8 +162,8 @@ sub execute {
 
         # Copy keys to .ocp/
         use File::Copy qw(copy);
-        copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!";
-        copy($pub_path, '.ocp/id_ed25519.pub') or die "Failed to copy public key: $!";
+        copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!\n";
+        copy($pub_path, '.ocp/id_ed25519.pub') or die "Failed to copy public key: $!\n";
         chmod 0600, '.ocp/id_ed25519';
         chmod 0644, '.ocp/id_ed25519.pub';
 
