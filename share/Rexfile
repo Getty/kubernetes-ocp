@@ -185,17 +185,33 @@ task "install_rke2_server", sub {
     $install_cmd .= "sh -";
 
     my $install_result = run $install_cmd, auto_die => FALSE;
+
+    # Always show install output
+    say "=== Install Output ===";
+    say $install_result;
+    say "=== End Install Output ===";
+    say "Exit code: $?";
+
     if ($? != 0) {
         say "ERROR: RKE2 installation failed!";
-        say $install_result;
         die "RKE2 install script failed";
     }
+
+    # Search for binary in multiple locations
+    say "Searching for RKE2 binary...";
+    my $locations = run "ls -la /usr/local/bin/rke2* /usr/bin/rke2* 2>&1 || true";
+    say $locations;
+
+    my $which = run "which rke2-server 2>&1 || echo 'not in PATH'";
+    say "which rke2-server: $which";
+
+    my $find = run "find /usr -name 'rke2-server' 2>/dev/null || true";
+    say "find results: $find";
 
     # Verify installation
     my $rke2_bin = run "ls -la /usr/local/bin/rke2-server 2>&1", auto_die => FALSE;
     if ($? != 0) {
-        say "ERROR: rke2-server binary not found after installation!";
-        say $rke2_bin;
+        say "ERROR: rke2-server binary not found at /usr/local/bin/rke2-server!";
         die "RKE2 binary missing";
     }
 
