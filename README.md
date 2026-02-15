@@ -142,6 +142,18 @@ OCP automatically detects it's running in a container and displays:
 
 Clear, transparent communication about what's happening!
 
+**Testing SSH connection:**
+
+```bash
+# Test if SSH key works (before running ocp apply)
+ssh -i .ocp/id_ed25519 root@127.0.0.1 'echo SSH works!'
+
+# Or for remote hosts
+ssh -i .ocp/id_ed25519 root@yourserver.com 'echo SSH works!'
+```
+
+If SSH doesn't work, make sure the public key is in `~/.ssh/authorized_keys` on the target host.
+
 #### Using CPAN (System-Wide Installation)
 
 **Option 1: System-wide OCP + Direct Local Install**
