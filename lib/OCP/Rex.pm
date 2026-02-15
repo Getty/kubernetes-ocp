@@ -144,8 +144,9 @@ sub _fetch_kubeconfig_ssh {
     my $kubeconfig = $result->{stdout};
 
     # Replace localhost/127.0.0.1 with actual host
-    $kubeconfig =~ s/127\.0\.0\.1/$self->host/g;
-    $kubeconfig =~ s/localhost/$self->host/g;
+    my $host = $self->host;
+    $kubeconfig =~ s/127\.0\.0\.1/$host/g;
+    $kubeconfig =~ s/localhost/$host/g;
 
     return $kubeconfig;
 }
@@ -179,9 +180,10 @@ sub get_kubeconfig {
 
     my $kubeconfig = $result->{stdout};
 
-    # Replace localhost/127.0.0.1 with actual IP
-    $kubeconfig =~ s/127\.0\.0\.1/$self->host/g;
-    $kubeconfig =~ s/localhost/$self->host/g;
+    # Replace localhost/127.0.0.1 with actual host
+    my $host = $self->host;
+    $kubeconfig =~ s/127\.0\.0\.1/$host/g;
+    $kubeconfig =~ s/localhost/$host/g;
 
     return $kubeconfig;
 }
