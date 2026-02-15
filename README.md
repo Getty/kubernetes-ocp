@@ -71,7 +71,13 @@ docker run --rm -it \
   raudssus/ocp kubeconfig > ~/.kube/config
 
 # Alternative: Use alias for convenience
+# Linux (use host network to access localhost)
+alias ocp='docker run --rm -it --net=host -v $(pwd):/project raudssus/ocp'
+
+# Mac/Windows (host.docker.internal works automatically)
 alias ocp='docker run --rm -it -v $(pwd):/project raudssus/ocp'
+
+# Then use it:
 ocp status
 ocp kubeconfig > ~/.kube/config
 ```
@@ -109,20 +115,26 @@ kubectl get nodes
 ### Local (Localhost)
 
 #### Using Docker (Recommended)
+
+**Linux:**
 ```bash
-# Initialize local cluster
-docker run --rm -v $(pwd):/project raudssus/ocp init --provider local
-
-# Add SSH key to localhost (required for Docker mode)
+# Use --net=host so container can access host's localhost
+docker run --rm --net=host -v $(pwd):/project raudssus/ocp init --provider local
 cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
-
-# Deploy (Docker → SSH → localhost)
-docker run --rm -v $(pwd):/project raudssus/ocp apply
-
-# Get kubeconfig
-docker run --rm -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
-kubectl get nodes
+docker run --rm --net=host -v $(pwd):/project raudssus/ocp apply
+docker run --rm --net=host -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
 ```
+
+**Mac/Windows:**
+```bash
+# host.docker.internal works automatically
+docker run --rm -v $(pwd):/project raudssus/ocp init --provider local
+cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
+docker run --rm -v $(pwd):/project raudssus/ocp apply
+docker run --rm -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
+```
+
+**Important:** On Linux, use `--net=host` to allow Docker to access your host's localhost (127.0.0.1). On Mac/Windows, `host.docker.internal` is available automatically.
 
 **What happens in Docker mode:**
 
