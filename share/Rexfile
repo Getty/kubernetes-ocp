@@ -139,21 +139,25 @@ task "install_amd_gpu", sub {
     update_package_db;
 
     # Determine AMD repo URL based on OS
-    my ($repo_os, $repo_dist) = case operating_system,
-        Debian => do {
-            my $version = operating_system_version();
-            # Debian 12 = bookworm, 13 = trixie
-            my $codename = $version >= 13 ? 'trixie' : 'bookworm';
-            ('debian', $codename);
-        },
-        Ubuntu => do {
-            my $version = operating_system_version();
-            # Map Ubuntu version to codename
-            my $codename = $version =~ /^24/ ? 'noble' :
-                          $version =~ /^22/ ? 'jammy' :
-                          $version =~ /^20/ ? 'focal' : 'jammy';
-            ('ubuntu', $codename);
-        };
+    my $os = operating_system();
+    my $version = operating_system_version();
+    my ($repo_os, $repo_dist);
+
+    if ($os eq 'Debian') {
+        $repo_os = 'debian';
+        # Debian 12 = bookworm, 13 = trixie
+        $repo_dist = $version >= 13 ? 'trixie' : 'bookworm';
+    } elsif ($os eq 'Ubuntu') {
+        $repo_os = 'ubuntu';
+        # Map Ubuntu version to codename
+        $repo_dist = $version =~ /^24/ ? 'noble' :
+                     $version =~ /^22/ ? 'jammy' :
+                     $version =~ /^20/ ? 'focal' : 'jammy';
+    } else {
+        die "Unsupported OS for AMD GPU: $os";
+    }
+
+    say "Detected OS: $os $version -> repo: $repo_os/$repo_dist";
 
     # Download and install amdgpu-install tool
     my $installer_url = "https://repo.radeon.com/amdgpu-install/6.4.1/$repo_os/$repo_dist/amdgpu-install_6.4.60401-1_all.deb";
