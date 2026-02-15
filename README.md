@@ -4,15 +4,40 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 
 ## Features
 
+### Core
+
 - **RKE2 + K3s Support** - Production-ready RKE2 or lightweight K3s via config
 - **Cilium CNI** - eBPF-based networking, kube-proxy replacement, service mesh
 - **GPU Support** - Auto-detection and NVIDIA driver installation
+- **Single-Node Mode** - Control plane can host workloads (auto-untaint)
+
+### Providers
+
+- **Hetzner Cloud** - Automated server provisioning with API integration
+- **SSH** - Use existing bare-metal or VMs as workers
+- **Local** - Install on localhost with intelligent mode detection:
+  - **Docker Mode**: When running `docker run raudssus/ocp`, automatically uses SSH to localhost (127.0.0.1) with clear user messaging
+  - **Native Mode**: When installed via CPAN, installs directly without SSH (requires sudo)
+  - Auto-detects environment and guides user through setup
+
+### Automation
+
 - **CRD-Based Management** - Robocop controller manages nodes via OCPNode/OCPNodeProvider CRDs
-- **Multiple Providers** - Hetzner Cloud for managed servers, SSH for existing machines
-- **Rex Automation** - Server provisioning via Rex framework
-- **Encrypted Secrets** - Pure Perl encryption via [Crypt::Age](https://metacpan.org/pod/Crypt::Age) and [File::SOPS](https://metacpan.org/pod/File::SOPS)
-- **Spec/Status Separation** - Clean state management with drift detection
+- **Rex Framework** - Server provisioning and configuration management (share/Rexfile)
+- **Drift Detection** - Spec/Status separation with automatic reconciliation
 - **Development Mode** - Built-in registry and image building from source
+
+### Security
+
+- **Encrypted Secrets** - Pure Perl encryption via [Crypt::Age](https://metacpan.org/pod/Crypt::Age) and [File::SOPS](https://metacpan.org/pod/File::SOPS)
+- **SSH Key Management** - Automatic key generation and distribution
+- **Age Encryption** - No external tools required (pure Perl implementation)
+
+### User Experience
+
+- **Clean Error Messages** - No Perl stacktraces, user-friendly output
+- **Auto-Detection** - Intelligent defaults based on environment
+- **Docker-First** - Optimized for Docker workflow, works natively too
 
 ## Installation
 
@@ -99,7 +124,23 @@ docker run --rm -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
 kubectl get nodes
 ```
 
-**Note:** When running in Docker, OCP uses SSH to connect to your host system (127.0.0.1) to install Kubernetes. This is clearly indicated during deployment.
+**What happens in Docker mode:**
+
+OCP automatically detects it's running in a container and displays:
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║  DOCKER MODE: Using SSH to localhost (127.0.0.1)             ║
+║                                                               ║
+║  OCP is running in Docker and needs SSH access to install     ║
+║  Kubernetes on your host system.                             ║
+║                                                               ║
+║  Make sure you added the SSH key to your host:               ║
+║    cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys         ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+Clear, transparent communication about what's happening!
 
 #### Using CPAN (Advanced)
 ```bash

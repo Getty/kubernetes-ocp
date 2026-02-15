@@ -14,6 +14,10 @@ Revision history for OCP
       - Build robocop image from source
       - In-cluster registry deployment
       - Auto-update controller deployments
+    - Local provider with auto-detection
+      - Docker mode: SSH to localhost with clear messaging
+      - Native mode: Direct installation via OCP::Local
+      - Automatic environment detection (/.dockerenv)
     - CLI commands: init, apply, status, destroy, kubeconfig, hetzner, dev
     - Hetzner Cloud provider support via WWW::Hetzner
     - SSH provider for existing servers (control planes + workers)
@@ -21,3 +25,4 @@ Revision history for OCP
     - Spec/Status separation (ocp.yaml vs .ocp/status.yaml)
     - Age encryption for secrets (no external tools required)
     - SSH key generation and management
+    - Clean error messages (no Perl stacktraces)
