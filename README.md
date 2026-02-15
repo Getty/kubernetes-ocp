@@ -32,14 +32,23 @@ docker run --rm -it \
   -v ~/.ssh:/home/ocp/.ssh:ro \
   raudssus/ocp apply
 
-# Get kubeconfig
+# Get kubeconfig (exported to .kube/config in project dir)
 docker run --rm -it \
   -v $(pwd):/project \
   raudssus/ocp kubeconfig -e
 
+# Copy to ~/.kube/config
+cp .kube/config ~/.kube/config
+
+# Or direct to stdout
+docker run --rm -it \
+  -v $(pwd):/project \
+  raudssus/ocp kubeconfig > ~/.kube/config
+
 # Alternative: Use alias for convenience
 alias ocp='docker run --rm -it -v $(pwd):/project raudssus/ocp'
 ocp status
+ocp kubeconfig > ~/.kube/config
 ```
 
 ### CPAN

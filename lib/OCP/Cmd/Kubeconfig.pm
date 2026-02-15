@@ -90,11 +90,24 @@ sub execute {
         chmod 0600, $out_file;
         print "Kubeconfig written to $out_file\n";
     } elsif ($self->export) {
-        # Export to ~/.kube/config
-        my $kube_dir = "$ENV{HOME}/.kube";
-        mkdir $kube_dir unless -d $kube_dir;
+        # Export to kubeconfig file
+        # In Docker: /project/.kube/config (shared with host)
+        # On host: ~/.kube/config
+        my $kube_dir;
+        my $kube_file;
 
-        my $kube_file = "$kube_dir/config";
+        if (-d '/project' && -w '/project') {
+            # Running in Docker with /project mount
+            $kube_dir = '/project/.kube';
+            mkdir $kube_dir unless -d $kube_dir;
+            $kube_file = "$kube_dir/config";
+        } else {
+            # Running on host
+            $kube_dir = "$ENV{HOME}/.kube";
+            mkdir $kube_dir unless -d $kube_dir;
+            $kube_file = "$kube_dir/config";
+        }
+
         open my $fh, '>', $kube_file or die "Cannot write $kube_file: $!";
         print $fh $kubeconfig;
         close $fh;
