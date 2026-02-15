@@ -612,7 +612,7 @@ YAML
         print "    ClusterIssuers created: selfsigned-issuer, letsencrypt-prod, letsencrypt-staging\n";
     } else {
         print "    ClusterIssuer created: selfsigned-issuer\n";
-        print "    (Add 'ssl: { email: your@email.com }' to ocp.yaml for Let's Encrypt)\n";
+        print "    (Add 'ssl: { email: your\@email.com }' to ocp.yaml for Let's Encrypt)\n";
     }
 }
 
