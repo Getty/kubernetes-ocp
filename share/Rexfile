@@ -69,11 +69,35 @@ task "prepare_node", sub {
 
 desc "Detect GPU and install drivers";
 task "detect_gpu", sub {
-    my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
-    my $has_amd = run "lspci | grep -i 'vga.*amd\\|amd.*radeon'", auto_die => FALSE;
+    # Ensure lspci is available
+    my $has_lspci = run "command -v lspci >/dev/null 2>&1 && echo yes || echo no", auto_die => FALSE;
+    chomp $has_lspci;
 
-    if ($? == 0 && $has_nvidia) {
-        say "NVIDIA GPU detected, installing drivers...";
+    if ($has_lspci ne 'yes') {
+        say "lspci not found, installing pciutils...";
+        pkg ["pciutils"], ensure => "present";
+    }
+
+    # Get full lspci output for debugging
+    my $lspci_output = run "lspci 2>&1", auto_die => FALSE;
+    say "=== PCI Devices ===";
+    say $lspci_output;
+    say "=== End PCI Devices ===";
+
+    # Check for NVIDIA
+    my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
+    my $nvidia_found = ($? == 0 && $has_nvidia);
+
+    # Check for AMD (Radeon, RX, VGA with AMD/ATI)
+    my $has_amd = run "lspci | grep -iE '(vga|display|3d).*(amd|ati|radeon)'", auto_die => FALSE;
+    my $amd_found = ($? == 0 && $has_amd);
+
+    say "GPU Detection Results:";
+    say "  NVIDIA: " . ($nvidia_found ? "YES" : "no");
+    say "  AMD: " . ($amd_found ? "YES" : "no");
+
+    if ($nvidia_found) {
+        say "Installing NVIDIA drivers...";
 
         # Detect provider
         my $is_hetzner = run "curl -s http://169.254.169.254/hetzner/v1/metadata 2>/dev/null", auto_die => FALSE;
@@ -85,8 +109,8 @@ task "detect_gpu", sub {
             say "Bare metal NVIDIA GPU server";
             do_task "install_nvidia_generic";
         }
-    } elsif ($has_amd) {
-        say "AMD GPU detected, installing drivers...";
+    } elsif ($amd_found) {
+        say "Installing AMD GPU drivers and ROCm...";
         do_task "install_amd_gpu";
     } else {
         say "No GPU detected, skipping driver installation";
