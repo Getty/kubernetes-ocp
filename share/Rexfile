@@ -246,9 +246,17 @@ task "install_rke2_server", sub {
 
     # Check if service started
     my $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
+    chomp $status;
+
     if ($status !~ /^active/) {
-        say "ERROR: rke2-server.service is not active!";
-        run "journalctl -u rke2-server.service -n 50 --no-pager";
+        say "ERROR: rke2-server.service is not active! Status: $status";
+        say "=== Service Status ===";
+        my $full_status = run "systemctl status rke2-server.service --no-pager || true";
+        say $full_status;
+        say "=== Journal Logs (last 50 lines) ===";
+        my $journal = run "journalctl -u rke2-server.service -n 50 --no-pager || true";
+        say $journal;
+        say "=== End Logs ===";
         die "RKE2 server failed to start";
     }
 
