@@ -14,7 +14,7 @@ on:
       - master
 
 env:
-  DOCKERHUB_REPO: raudssus/kubernetes-ocp
+  DOCKERHUB_REPO: raudssus/ocp
 
 jobs:
   build:
@@ -57,19 +57,9 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Update Docker Hub description
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        uses: peter-evans/dockerhub-description@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.DOCKERHUB_REPO }}
-          short-description: "Omni Control Plane - Minimal Kubernetes installer"
-          readme-filepath: ./README.md
