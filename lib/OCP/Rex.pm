@@ -115,7 +115,7 @@ sub install_server {
     );
 
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
-    my $kubeconfig = $self->_fetch_kubeconfig_ssh($distribution);
+    my $kubeconfig = $self->fetch_kubeconfig_ssh($distribution);
 
     return {
         token      => $token,
@@ -123,7 +123,7 @@ sub install_server {
     };
 }
 
-sub _fetch_kubeconfig_ssh {
+sub fetch_kubeconfig_ssh {
     my ($self, $distribution) = @_;
 
     $distribution ||= 'rke2';
