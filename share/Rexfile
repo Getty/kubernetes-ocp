@@ -106,24 +106,52 @@ task "install_nvidia_hetzner", sub {
     run "modprobe nvidia";
 };
 
-desc "Install AMD GPU drivers";
+desc "Install AMD GPU drivers and ROCm";
 task "install_amd_gpu", sub {
-    say "Installing AMD GPU drivers...";
+    say "Installing AMD GPU drivers and ROCm...";
 
     # Ensure dependencies
-    pkg ["curl", "gnupg"], ensure => "present";
+    pkg ["curl", "gnupg", "wget"], ensure => "present";
     update_package_db;
 
-    my $packages = case operating_system,
-        Debian => ["firmware-amd-graphics", "libgl1-mesa-dri", "libglx-mesa0", "mesa-vulkan-drivers", "xserver-xorg-video-amdgpu"],
-        Ubuntu => ["mesa-utils", "mesa-vulkan-drivers", "libgl1-mesa-dri", "xserver-xorg-video-amdgpu"];
+    # Determine AMD repo URL based on OS
+    my ($repo_os, $repo_dist) = case operating_system,
+        Debian => do {
+            my $version = operating_system_version();
+            # Debian 12 = bookworm, 13 = trixie
+            my $codename = $version >= 13 ? 'trixie' : 'bookworm';
+            ('debian', $codename);
+        },
+        Ubuntu => do {
+            my $version = operating_system_version();
+            # Map Ubuntu version to codename
+            my $codename = $version =~ /^24/ ? 'noble' :
+                          $version =~ /^22/ ? 'jammy' :
+                          $version =~ /^20/ ? 'focal' : 'jammy';
+            ('ubuntu', $codename);
+        };
 
-    pkg $packages, ensure => "present";
+    # Download and install amdgpu-install tool
+    my $installer_url = "https://repo.radeon.com/amdgpu-install/6.4.1/$repo_os/$repo_dist/amdgpu-install_6.4.60401-1_all.deb";
+
+    say "Downloading AMD GPU installer from $installer_url";
+    run "wget -O /tmp/amdgpu-install.deb $installer_url";
+
+    say "Installing amdgpu-install tool...";
+    run "apt install -y /tmp/amdgpu-install.deb";
+    run "rm /tmp/amdgpu-install.deb";
+
+    # Refresh repositories
+    update_package_db;
+
+    # Install ROCm stack (for ML/compute workloads on Kubernetes)
+    say "Installing ROCm stack...";
+    run "amdgpu-install -y --usecase=rocm --no-dkms";
 
     # Load amdgpu module
     run "modprobe amdgpu";
 
-    say "AMD GPU drivers installed";
+    say "AMD GPU drivers and ROCm installed";
 };
 
 desc "Install NVIDIA drivers generic";
