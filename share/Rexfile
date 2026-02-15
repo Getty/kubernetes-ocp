@@ -179,18 +179,61 @@ task "install_rke2_server", sub {
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
     # Install RKE2
+    say "Installing RKE2...";
     my $install_cmd = "curl -sfL https://get.rke2.io | ";
     $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
     $install_cmd .= "sh -";
 
-    run $install_cmd;
+    my $install_result = run $install_cmd, auto_die => FALSE;
+    if ($? != 0) {
+        say "ERROR: RKE2 installation failed!";
+        say $install_result;
+        die "RKE2 install script failed";
+    }
+
+    # Verify installation
+    my $rke2_bin = run "ls -la /usr/local/bin/rke2-server 2>&1", auto_die => FALSE;
+    if ($? != 0) {
+        say "ERROR: rke2-server binary not found after installation!";
+        say $rke2_bin;
+        die "RKE2 binary missing";
+    }
+
+    say "RKE2 installed successfully";
 
     # Start service
+    say "Starting RKE2 service...";
     run "systemctl enable rke2-server.service";
     run "systemctl start rke2-server.service";
 
-    # Wait for ready
-    say "Waiting for RKE2 to be ready...";
+    # Check if service started
+    my $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
+    if ($status !~ /^active/) {
+        say "ERROR: rke2-server.service is not active!";
+        run "journalctl -u rke2-server.service -n 50 --no-pager";
+        die "RKE2 server failed to start";
+    }
+
+    say "RKE2 service is running";
+
+    # Wait for kubeconfig to exist (max 60s)
+    say "Waiting for kubeconfig...";
+    run "timeout 60 bash -c 'while [ ! -f /etc/rancher/rke2/rke2.yaml ]; do sleep 2; done' || true";
+
+    # Check if it exists now
+    my $check = run "test -f /etc/rancher/rke2/rke2.yaml && echo EXISTS || echo MISSING", auto_die => FALSE;
+    chomp $check;
+
+    if ($check ne 'EXISTS') {
+        say "ERROR: kubeconfig not found after 60s!";
+        run "ls -la /etc/rancher/rke2/ || true";
+        run "journalctl -u rke2-server.service -n 100 --no-pager";
+        die "RKE2 kubeconfig not created";
+    }
+
+    say "Kubeconfig exists, waiting for API...";
+
+    # Wait for API to respond
     run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
 
     say "RKE2 server ready";
