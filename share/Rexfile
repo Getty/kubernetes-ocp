@@ -207,44 +207,41 @@ task "install_rke2_server", sub {
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
     # Install RKE2
-    say "Installing RKE2...";
+    say "[1/5] Installing RKE2...";
     my $install_cmd = "curl -sfL https://get.rke2.io | ";
     $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
     $install_cmd .= "sh -";
 
     my $install_result = run $install_cmd, auto_die => FALSE;
 
-    # Always show install output
-    say "=== Install Output ===";
-    say $install_result;
-    say "=== End Install Output ===";
-    say "Exit code: $?";
-
     if ($? != 0) {
         say "ERROR: RKE2 installation failed!";
+        say "=== Install Output ===";
+        say $install_result;
+        say "=== End Install Output ===";
         die "RKE2 install script failed";
     }
 
     # Verify installation - binary is called 'rke2', not 'rke2-server'
-    say "Verifying RKE2 installation...";
-    my $rke2_bin = run "ls -la /usr/local/bin/rke2 2>&1", auto_die => FALSE;
-    if ($? != 0) {
+    say "[2/5] Verifying RKE2 binary...";
+    my $rke2_bin = run "test -f /usr/local/bin/rke2 && echo OK || echo MISSING", auto_die => FALSE;
+    chomp $rke2_bin;
+
+    if ($rke2_bin ne 'OK') {
         say "ERROR: RKE2 binary not found at /usr/local/bin/rke2!";
-        say "Searching for RKE2 files:";
-        run "ls -la /usr/local/bin/rke2* 2>&1 || true";
+        say "=== Searching for RKE2 files ===";
+        my $search = run "ls -la /usr/local/bin/rke2* 2>&1 || true";
+        say $search;
         die "RKE2 binary missing";
     }
 
-    say "RKE2 binary found: $rke2_bin";
-
-    say "RKE2 installed successfully";
-
     # Start service
-    say "Starting RKE2 service...";
-    run "systemctl enable rke2-server.service";
-    run "systemctl start rke2-server.service";
+    say "[3/5] Enabling and starting RKE2 service...";
+    run "systemctl enable rke2-server.service 2>&1", auto_die => FALSE;
+    run "systemctl start rke2-server.service 2>&1", auto_die => FALSE;
 
     # Check if service started
+    say "[4/5] Checking service status...";
     my $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
     chomp $status;
 
@@ -260,10 +257,8 @@ task "install_rke2_server", sub {
         die "RKE2 server failed to start";
     }
 
-    say "RKE2 service is running";
-
     # Wait for kubeconfig to exist (max 60s)
-    say "Waiting for kubeconfig...";
+    say "[5/5] Waiting for Kubernetes to initialize...";
     run "timeout 60 bash -c 'while [ ! -f /etc/rancher/rke2/rke2.yaml ]; do sleep 2; done' || true";
 
     # Check if it exists now
@@ -272,17 +267,19 @@ task "install_rke2_server", sub {
 
     if ($check ne 'EXISTS') {
         say "ERROR: kubeconfig not found after 60s!";
-        run "ls -la /etc/rancher/rke2/ || true";
-        run "journalctl -u rke2-server.service -n 100 --no-pager";
+        say "=== Directory listing ===";
+        my $ls = run "ls -la /etc/rancher/rke2/ || true";
+        say $ls;
+        say "=== Journal Logs ===";
+        my $journal = run "journalctl -u rke2-server.service -n 100 --no-pager";
+        say $journal;
         die "RKE2 kubeconfig not created";
     }
-
-    say "Kubeconfig exists, waiting for API...";
 
     # Wait for API to respond
     run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
 
-    say "RKE2 server ready";
+    say "✓ RKE2 cluster ready";
 
     # Return kubeconfig and token for OCP to store
     my $kubeconfig = run "cat /etc/rancher/rke2/rke2.yaml";
