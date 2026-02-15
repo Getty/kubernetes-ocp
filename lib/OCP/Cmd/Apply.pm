@@ -377,13 +377,7 @@ sub _create_node {
         };
     }
     else {
-        if ($provider eq 'local') {
-            die "Local provider not yet implemented.\n" .
-                "For local Kubernetes, use: k3d, kind, or Docker Desktop.\n" .
-                "OCP is designed for remote clusters (ssh, hetzner).\n";
-        }
-        die "Unknown provider: $provider\n" .
-            "Supported providers: hetzner, ssh\n";
+        die "Unknown provider: $provider\n";
     }
 }
 
