@@ -105,13 +105,15 @@ sub install_server {
     my $version = $opts{version} || '';
     my $token = $opts{token} || $self->_generate_token();
     my $tls_san = $opts{tls_san} || $self->host;
+    my $node_name = $opts{node_name} || '';
 
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
-        token   => $token,
-        version => $version,
-        tls_san => $tls_san,
+        token     => $token,
+        version   => $version,
+        tls_san   => $tls_san,
+        node_name => $node_name,
     );
 
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
@@ -163,13 +165,15 @@ sub install_agent {
     my $server = $opts{server} or croak "server URL required";
     my $token = $opts{token} or croak "token required";
     my $version = $opts{version} || '';
+    my $node_name = $opts{node_name} || '';
 
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
     $self->run_task($task,
-        server  => $server,
-        token   => $token,
-        version => $version,
+        server    => $server,
+        token     => $token,
+        version   => $version,
+        node_name => $node_name,
     );
 
     return 1;

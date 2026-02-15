@@ -98,6 +98,7 @@ task "install_rke2_server", sub {
     my $token = $params->{token} || _generate_token();
     my $version = $params->{version} || '';
     my $tls_san = $params->{tls_san} || '';
+    my $node_name = $params->{node_name} || '';
 
     do_task "prepare_node";
     do_task "detect_gpu";
@@ -105,6 +106,7 @@ task "install_rke2_server", sub {
     # Create RKE2 config
     my $config = "cni: none\ndisable-kube-proxy: true\n";
     $config .= "token: $token\n";
+    $config .= "node-name: $node_name\n" if $node_name;
     $config .= "tls-san:\n  - $tls_san\n" if $tls_san;
     $config .= "disable:\n  - rke2-ingress-nginx\n";
 
@@ -142,12 +144,14 @@ task "install_rke2_agent", sub {
     my $server = $params->{server} or die "server URL required";
     my $token = $params->{token} or die "token required";
     my $version = $params->{version} || '';
+    my $node_name = $params->{node_name} || '';
 
     do_task "prepare_node";
     do_task "detect_gpu";
 
     # Create RKE2 agent config
     my $config = "server: $server\ntoken: $token\n";
+    $config .= "node-name: $node_name\n" if $node_name;
 
     run "mkdir -p /etc/rancher/rke2";
     file "/etc/rancher/rke2/config.yaml", content => $config;
@@ -188,6 +192,7 @@ task "install_k3s_server", sub {
     my $params = shift;
     my $token = $params->{token} || _generate_token();
     my $version = $params->{version} || '';
+    my $node_name = $params->{node_name} || '';
 
     do_task "prepare_node";
     do_task "detect_gpu";
@@ -196,6 +201,7 @@ task "install_k3s_server", sub {
     my $install_cmd = "curl -sfL https://get.k3s.io | ";
     $install_cmd .= "INSTALL_K3S_VERSION=$version " if $version;
     $install_cmd .= "K3S_TOKEN=$token ";
+    $install_cmd .= "K3S_NODE_NAME=$node_name " if $node_name;
     $install_cmd .= "sh -s - server --disable=traefik --disable=servicelb --write-kubeconfig-mode=644";
 
     run $install_cmd;
@@ -213,6 +219,7 @@ task "install_k3s_agent", sub {
     my $server = $params->{server} or die "server URL required";
     my $token = $params->{token} or die "token required";
     my $version = $params->{version} || '';
+    my $node_name = $params->{node_name} || '';
 
     do_task "prepare_node";
     do_task "detect_gpu";
@@ -221,6 +228,7 @@ task "install_k3s_agent", sub {
     my $install_cmd = "curl -sfL https://get.k3s.io | ";
     $install_cmd .= "INSTALL_K3S_VERSION=$version " if $version;
     $install_cmd .= "K3S_URL=$server K3S_TOKEN=$token ";
+    $install_cmd .= "K3S_NODE_NAME=$node_name " if $node_name;
     $install_cmd .= "sh -s - agent";
 
     run $install_cmd;

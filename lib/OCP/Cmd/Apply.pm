@@ -158,6 +158,7 @@ sub execute {
                     my $result = $rex->install_server(
                         distribution => $distribution,
                         version      => $version,
+                        node_name    => $node->{name},
                     );
 
                     $config->set_cluster_status(apiEndpoint => "https://$created->{publicIp}:$api_port");
@@ -217,6 +218,7 @@ sub execute {
                             server       => $api,
                             token        => $token,
                             version      => $version,
+                            node_name    => $node->{name},
                         );
 
                         $created->{phase} = 'Ready';
