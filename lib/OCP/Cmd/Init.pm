@@ -212,6 +212,14 @@ sub execute {
         my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
         my $dist = $self->dist // 'rke2';
 
+        # Validate: SSH provider requires --host
+        if ($provider eq 'ssh' && !$self->host) {
+            die "ERROR: SSH provider requires --host parameter.\n\n" .
+                "Did you mean:\n" .
+                "  ocp init --provider ssh --host yourserver.com\n" .
+                "  ocp init --provider local (for localhost)\n";
+        }
+
         # Local provider is always single-node
         my $single_node = $self->single || ($provider eq 'local');
 

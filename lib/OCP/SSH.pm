@@ -150,13 +150,21 @@ sub wait_for_ssh {
     $timeout //= 120;
     $interval //= 2;
 
+    # Allow Ctrl-C to interrupt
+    my $interrupted = 0;
+    local $SIG{INT} = sub {
+        $interrupted = 1;
+        die "Interrupted by user (Ctrl-C)\n";
+    };
+
     my $start = time;
     while (time - $start < $timeout) {
         return 1 if $self->is_reachable;
         sleep $interval;
+        last if $interrupted;
     }
 
-    croak "SSH not reachable on ${\$self->host} after ${timeout}s";
+    die "SSH not reachable on ${\$self->host} after ${timeout}s\n" if !$interrupted;
 }
 
 1;
