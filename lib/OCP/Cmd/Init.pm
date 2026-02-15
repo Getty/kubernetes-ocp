@@ -42,7 +42,7 @@ option dist => (
 option provider => (
     is     => 'ro',
     format => 's',
-    doc    => 'Infrastructure provider: hetzner (default), ssh, or local',
+    doc    => 'Infrastructure provider: hetzner (default) or ssh',
 );
 
 option single => (

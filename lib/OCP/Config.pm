@@ -281,17 +281,11 @@ sub write_spec {
             $spec->{cps}{nodes} = $opts{cp_nodes} // 'cp';
         }
     } elsif ($provider eq 'local') {
-        $spec->{cps} = {
-            provider => 'local',
-            nodes    => $opts{cp_nodes} // 'cp',
-        };
-        # Only set service if not 'none' (default)
-        if ($opts{service} && $opts{service} ne 'none') {
-            $spec->{cps}{service} = $opts{service};
-        }
-        if ($opts{network_interface}) {
-            $spec->{cps}{networkInterface} = $opts{network_interface};
-        }
+        die "Local provider not yet implemented.\n" .
+            "For local Kubernetes, use: k3d, kind, or Docker Desktop.\n" .
+            "OCP is designed for remote clusters (--provider=ssh or --provider=hetzner).\n";
+    } else {
+        die "Unknown provider: $provider\nSupported: hetzner, ssh\n";
     }
 
     # Single node setup
