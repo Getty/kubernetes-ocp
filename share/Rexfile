@@ -346,14 +346,14 @@ task "install_rke2_server", sub {
     run "systemctl enable rke2-server.service 2>&1", auto_die => FALSE;
     run "systemctl start rke2-server.service 2>&1", auto_die => FALSE;
 
-    # Wait for service to become active (up to 180s for first-time image pulls)
-    say "[4/5] Waiting for RKE2 service to become active (up to 3 min)...";
+    # Wait for service to become active (up to 600s - VMs/slow machines need more time)
+    say "[4/5] Waiting for RKE2 service to become active (up to 10 min)...";
     my $status;
-    for my $i (1..36) {
+    for my $i (1..60) {
         $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
         chomp $status;
         if ($status eq 'active') {
-            say "      RKE2 service is active after ~" . ($i * 5) . "s";
+            say "      RKE2 service is active after ~" . ($i * 10) . "s";
             last;
         }
         if ($status eq 'failed' || $status eq 'inactive') {
@@ -362,12 +362,12 @@ task "install_rke2_server", sub {
             say $journal;
             die "RKE2 server failed to start";
         }
-        say "      ... still $status (${i}/36)" if $i % 6 == 0;
-        sleep 5;
+        say "      ... still $status (${i}/60, " . ($i * 10) . "s)" if $i % 3 == 0;
+        sleep 10;
     }
 
     if ($status ne 'active') {
-        say "ERROR: rke2-server.service is not active after 180s! Status: $status";
+        say "ERROR: rke2-server.service is not active after 600s! Status: $status";
         say "=== Service Status ===";
         my $full_status = run "systemctl status rke2-server.service --no-pager || true";
         say $full_status;
