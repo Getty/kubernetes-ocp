@@ -13,10 +13,14 @@ set connection => 'OpenSSH';
 parallelism 1;
 
 # SSH options - disable strict host key checking for new servers
-set openssh_opt => {
+# NOTE: Must use Rex::Config->set_openssh_opt() directly!
+# "set openssh_opt => {...}" goes through generic set() which stores
+# in $set_param, but get_openssh_opt() reads from a separate %openssh_opt
+# variable. There is no SET_HANDLER registered to bridge them. Rex bug.
+Rex::Config->set_openssh_opt(
     StrictHostKeyChecking => 'no',
     UserKnownHostsFile    => '/dev/null',
-};
+);
 
 # SSH config from environment
 if ($ENV{REX_PRIVATE_KEY}) {
