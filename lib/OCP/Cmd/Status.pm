@@ -4,17 +4,14 @@ package OCP::Cmd::Status;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use JSON::MaybeXS;
+use Path::Tiny qw(path);
+use File::Temp;
 
 use OCP::Config;
+use OCP::Secrets;
 
 our $VERSION = '0.1.0';
-
-option live => (
-    is      => 'ro',
-    short   => 'l',
-    doc     => 'Check live status (SSH + K8s API)',
-    default => 0,
-);
 
 sub execute {
     my ($self, $args, $chain) = @_;
@@ -47,43 +44,106 @@ sub execute {
     print "Control Planes: $cp_nodes ($cp_type, $cp_provider)\n";
 
     for my $pool (@workers) {
-        my $nodes = $pool->{nodes} // $pool->{count} // 0;
+        my $nodes = ref($pool->{nodes}) eq 'ARRAY' ? scalar(@{$pool->{nodes}}) : ($pool->{nodes} // $pool->{count} // 0);
         my $provider = $pool->{provider} // 'ssh';
         print "Workers ($pool->{name}): $nodes ($provider)\n";
     }
     print "\n";
 
-    # Status from .ocp/status.yaml
-    my $nodes = $config->nodes_status;
-
-    unless ($nodes && @$nodes) {
+    # Live status via kubectl (BITSOW!)
+    unless ($config->cluster_exists) {
         print "=== Status ===\n";
-        print "No nodes deployed yet. Run 'ocp apply' to deploy.\n";
-        return;
+        print "No cluster deployed yet. Run 'ocp apply' to deploy.\n";
+        return 0;
     }
 
     print "=== Status ===\n";
-    print "Last reconciled: ", ($config->last_reconciled // 'never'), "\n";
-    print "Phase: ", $config->phase, "\n\n";
+    print "Cluster exists (kubeconfig.yaml found)\n\n";
 
-    printf "%-15s %-15s %-12s %-16s %s\n",
-        'NAME', 'ROLE', 'PHASE', 'IP', 'PROVIDER';
-    print "-" x 70, "\n";
+    # Decrypt kubeconfig to temp file
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    my $kc_content = $secrets->read_kubeconfig;
 
-    for my $node (@$nodes) {
-        printf "%-15s %-15s %-12s %-16s %s\n",
-            $node->{name} // '-',
-            $node->{role} // '-',
-            $node->{phase} // '-',
-            $node->{publicIp} // '-',
-            $node->{provider} // '-';
+    unless ($kc_content) {
+        print "ERROR: Cannot decrypt kubeconfig.yaml\n";
+        print "Make sure .ocp/age.key exists.\n";
+        return 1;
     }
 
-    # Kubeconfig info
-    my $cluster = $config->cluster_status;
-    if ($cluster && $cluster->{kubeconfig}) {
-        print "\nKubeconfig available. Export with: ocp kubeconfig\n";
+    # Write to temp file
+    my $kc_file = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_file $kc_content;
+    close $kc_file;
+    my $kc_path = $kc_file->filename;
+
+    # Get nodes via kubectl (LIVE!)
+    my $nodes_json = `kubectl --kubeconfig=$kc_path get nodes -o json 2>&1`;
+
+    if ($? != 0) {
+        print "WARNING: Cannot connect to cluster\n";
+        print "Error: $nodes_json\n";
+        print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
+        return 1;
     }
+
+    my $json = JSON::MaybeXS->new;
+    my $data = eval { $json->decode($nodes_json) };
+
+    if ($@ || !$data->{items}) {
+        print "ERROR parsing kubectl output\n";
+        return 1;
+    }
+
+    my @nodes = @{$data->{items}};
+
+    unless (@nodes) {
+        print "No nodes found in cluster.\n";
+        return 0;
+    }
+
+    # Show nodes
+    printf "%-20s %-10s %-15s %-12s %s\n",
+        'NAME', 'STATUS', 'ROLES', 'VERSION', 'INTERNAL-IP';
+    print "-" x 80, "\n";
+
+    for my $node (@nodes) {
+        my $name = $node->{metadata}{name};
+        my $version = $node->{status}{nodeInfo}{kubeletVersion};
+
+        # Status
+        my $ready = 'NotReady';
+        for my $cond (@{$node->{status}{conditions} // []}) {
+            if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
+                $ready = 'Ready';
+                last;
+            }
+        }
+
+        # Roles
+        my $labels = $node->{metadata}{labels} // {};
+        my @roles;
+        push @roles, 'control-plane' if $labels->{'node-role.kubernetes.io/control-plane'};
+        push @roles, 'master' if $labels->{'node-role.kubernetes.io/master'};
+        my $roles = @roles ? join(',', @roles) : '<none>';
+
+        # Internal IP
+        my $internal_ip = '';
+        for my $addr (@{$node->{status}{addresses} // []}) {
+            if ($addr->{type} eq 'InternalIP') {
+                $internal_ip = $addr->{address};
+                last;
+            }
+        }
+
+        printf "%-20s %-10s %-15s %-12s %s\n",
+            $name, $ready, $roles, $version, $internal_ip;
+    }
+
+    print "\n";
+    print "Kubeconfig: ocp kubeconfig -e\n";
+    print "kubectl: kubectl --kubeconfig=.kube/config get pods -A\n";
+
+    return 0;
 }
 
 1;

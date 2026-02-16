@@ -1,64 +1,55 @@
 #!/usr/bin/env perl
 # PODNAME: robocop
-# ABSTRACT: OCP Kubernetes controller
+# ABSTRACT: OCP robocop controller (in-cluster worker management)
 
 use strict;
 use warnings;
-use lib::relative '../lib';
-use OCP::Robocop::Controller;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+use OCP::Robocop;
 
-my $controller = OCP::Robocop::Controller->new(
-    namespace => $ENV{NAMESPACE} // 'ocp-system',
-    verbose   => $ENV{VERBOSE} // 1,
-);
-
-$controller->run;
+# Run robocop controller
+my $robocop = OCP::Robocop->new;
+$robocop->run;
 
 __END__
 
 =head1 NAME
 
-robocop - OCP Kubernetes controller
+robocop - OCP Kubernetes controller for worker management
 
 =head1 SYNOPSIS
 
-    # Run in-cluster
-    robocop controller
-
-    # Run locally (dev)
-    export KUBECONFIG=~/.kube/config
-    robocop controller
+    # Run robocop controller (inside K8s cluster)
+    robocop
 
 =head1 DESCRIPTION
 
-Robocop is the Kubernetes controller for OCP (Omni Control Plane).
+Robocop is the in-cluster controller that manages worker nodes automatically.
 
-It watches OCPNode and OCPNodeProvider CRDs and reconciles cluster state by:
+B<Security Model:>
 
-- Provisioning infrastructure (Hetzner, SSH)
-- Installing Kubernetes (RKE2/K3s)
-- Managing node lifecycle
+1. Waits for robo-ssh key injection (requires admin approval via PIN2)
+2. Stores key in memory only (never on disk!)
+3. Creates CRIU checkpoint in /dev/shm (tmpfs, RAM)
+4. Watches Node and NodePool CRDs
+5. Provisions workers using robo-key
+6. CANNOT access control planes (robo-key not authorized!)
+
+This script is the entry point for the robocop Deployment in Kubernetes.
 
 =head1 ENVIRONMENT
 
 =over 4
 
-=item NAMESPACE
+=item B<CHECKPOINT_DIR>
 
-Kubernetes namespace to watch (default: ocp-system)
-
-=item VERBOSE
-
-Enable verbose logging (default: 1)
-
-=item KUBECONFIG
-
-Path to kubeconfig (for local dev, in-cluster uses service account)
+Directory for CRIU checkpoints (default: /dev/shm/robocop)
 
 =back
 
 =head1 SEE ALSO
 
-L<OCP::Robocop::Controller>
+L<OCP::Robocop>
 
 =cut

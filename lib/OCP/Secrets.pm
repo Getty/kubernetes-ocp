@@ -30,6 +30,16 @@ has age_recipient_file => (
     builder => sub { shift->project_dir->child('.ocp', 'age.pub') },
 );
 
+has kubeconfig_file => (
+    is      => 'lazy',
+    builder => sub { shift->project_dir->child('kubeconfig.yaml') },
+);
+
+has age_key_enc_file => (
+    is      => 'lazy',
+    builder => sub { shift->project_dir->child('age.key.enc') },
+);
+
 #
 # Age key management
 #
@@ -69,6 +79,70 @@ sub age_recipient {
     my $recipient = $self->age_recipient_file->slurp;
     chomp $recipient;
     return $recipient;
+}
+
+#
+# Password-encrypted age.key (Defense in Depth!)
+#
+
+sub has_age_key_enc {
+    my ($self) = @_;
+    return -f $self->age_key_enc_file;
+}
+
+sub encrypt_age_key_with_password {
+    my ($self, $password) = @_;
+
+    unless ($self->has_age_key) {
+        croak "No age.key found. Run generate_age_key first.";
+    }
+
+    require OCP::Password;
+    my $age_key = $self->age_key_file->slurp;
+    my $encrypted = OCP::Password::encrypt_age_key($age_key, $password);
+
+    $self->age_key_enc_file->spew($encrypted);
+    return 1;
+}
+
+sub decrypt_age_key_with_password {
+    my ($self, $password) = @_;
+
+    unless ($self->has_age_key_enc) {
+        croak "No age.key.enc found.";
+    }
+
+    require OCP::Password;
+    my $encrypted = $self->age_key_enc_file->slurp;
+    chomp $encrypted;
+
+    my $age_key = OCP::Password::decrypt_age_key($encrypted, $password);
+
+    # Write to .ocp/age.key (cached)
+    $self->age_key_file->spew($age_key);
+    $self->age_key_file->chmod(0600);
+
+    return $age_key;
+}
+
+sub ensure_age_key {
+    my ($self, $password) = @_;
+
+    # If .ocp/age.key exists, we're good
+    return 1 if $self->has_age_key;
+
+    # Try to decrypt from age.key.enc
+    if ($self->has_age_key_enc) {
+        unless ($password) {
+            require OCP::Password;
+            $password = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
+        }
+        $self->decrypt_age_key_with_password($password);
+        return 1;
+    }
+
+    # No age.key available
+    croak "No age.key found. Run 'ocp init' first.";
 }
 
 #
@@ -189,6 +263,112 @@ sub set_hetzner_token {
     } else {
         $self->create_secrets(hetzner_token => $token);
     }
+}
+
+#
+# Kubeconfig management (encrypted file)
+#
+
+sub has_kubeconfig {
+    my ($self) = @_;
+    return -f $self->kubeconfig_file;
+}
+
+sub save_kubeconfig {
+    my ($self, $kubeconfig_yaml) = @_;
+
+    my $recipient = $self->age_recipient
+        or croak "No age recipient found. Generate age key first.";
+
+    # Encrypt kubeconfig with SOPS
+    my $encrypted = File::SOPS->encrypt(
+        data       => YAML::XS::Load($kubeconfig_yaml),
+        recipients => [$recipient],
+        format     => 'yaml',
+    );
+
+    $self->kubeconfig_file->spew($encrypted);
+    return 1;
+}
+
+sub read_kubeconfig {
+    my ($self) = @_;
+
+    return undef unless $self->has_kubeconfig;
+
+    my $identity = $self->age_key_file->slurp;
+    chomp $identity;
+
+    my $encrypted = $self->kubeconfig_file->slurp;
+
+    my $decrypted = File::SOPS->decrypt(
+        encrypted  => $encrypted,
+        identities => [$identity],
+        format     => 'yaml',
+    );
+
+    return YAML::XS::Dump($decrypted);
+}
+
+sub decrypt_kubeconfig_to_file {
+    my ($self, $target_file) = @_;
+
+    my $kubeconfig = $self->read_kubeconfig
+        or croak "No kubeconfig found";
+
+    # Ensure parent directory exists
+    my $target = path($target_file);
+    $target->parent->mkpath;
+
+    $target->spew($kubeconfig);
+    $target->chmod(0600);
+
+    return $target->stringify;
+}
+
+#
+# Generic encrypted file helper
+#
+
+sub encrypt_file {
+    my ($self, $content, $file) = @_;
+
+    my $recipient = $self->age_recipient
+        or croak "No age recipient found";
+
+    # If content is YAML string, parse it first
+    my $data = ref($content) ? $content : YAML::XS::Load($content);
+
+    my $encrypted = File::SOPS->encrypt(
+        data       => $data,
+        recipients => [$recipient],
+        format     => 'yaml',
+    );
+
+    my $file_path = $self->project_dir->child($file);
+    $file_path->spew($encrypted);
+
+    return 1;
+}
+
+sub decrypt_file {
+    my ($self, $file) = @_;
+
+    my $file_path = $self->project_dir->child($file);
+    return undef unless -f $file_path;
+
+    my $identity = $self->age_key_file->slurp;
+    chomp $identity;
+
+    my $encrypted = $file_path->slurp;
+
+    my $decrypted = File::SOPS->decrypt(
+        encrypted  => $encrypted,
+        identities => [$identity],
+        format     => 'yaml',
+    );
+
+    return YAML::XS::Dump($decrypted);
 }
 
 1;

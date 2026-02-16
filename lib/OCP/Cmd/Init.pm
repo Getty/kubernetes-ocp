@@ -5,6 +5,7 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use Path::Tiny qw(path);
+use File::Copy qw(copy move);
 
 use OCP::Config;
 use OCP::Secrets;
@@ -48,6 +49,11 @@ option provider => (
 option single => (
     is    => 'ro',
     doc   => 'Single-node cluster (control plane hosts workloads)',
+);
+
+option nopassword => (
+    is    => 'ro',
+    doc   => 'Disable encryption (local dev only)',
 );
 
 option host => (
@@ -106,14 +112,27 @@ sub execute {
     if ($self->no_git) {
         # Skip gitignore when git is disabled
     } elsif ($has_gitignore) {
-        # Check if .ocp/ is already in gitignore
+        # Check if .ocp/ and .kube/ are already in gitignore
         my $content = path('.gitignore')->slurp;
-        if ($content =~ /\.ocp\//) {
-            print "[ok] .gitignore exists (has .ocp/)\n";
-        } else {
-            print "[..] Adding .ocp/ to .gitignore\n";
-            path('.gitignore')->append("\n# OCP\n.ocp/\n");
+        my $needs_update = 0;
+        my $append = "\n# OCP\n";
+
+        unless ($content =~ /\.ocp\//) {
+            $append .= ".ocp/\n";
+            $needs_update = 1;
+        }
+
+        unless ($content =~ /\.kube\//) {
+            $append .= ".kube/\n";
+            $needs_update = 1;
+        }
+
+        if ($needs_update) {
+            print "[..] Updating .gitignore\n";
+            path('.gitignore')->append($append);
             print "[ok] Updated .gitignore\n";
+        } else {
+            print "[ok] .gitignore exists (has .ocp/ and .kube/)\n";
         }
     } else {
         print "[..] Creating .gitignore\n";
@@ -144,36 +163,133 @@ sub execute {
     }
 
     #
-    # Step 5: SSH key
+    # Step 4.5: Password-protect age.key (DEFAULT unless --nopassword)
     #
-    if ($self->ssh_key) {
-        # Use existing SSH key
-        my $key_path = $self->ssh_key;
-        $key_path =~ s/^~/$ENV{HOME}/;  # Expand ~
+    unless ($self->nopassword) {
+        if ($secrets->has_age_key_enc) {
+            print "[ok] age.key.enc exists (password-protected)\n";
+        } else {
+            print "\n";
+            print "Security Setup (Defense in Depth)\n";
+            print "═" x 60, "\n";
+            print "PIN1: Encrypts age.key (cluster access)\n";
+            print "PIN2: Encrypts admin SSH key (server access)\n";
+            print "Share PINs securely with team (NOT in git!)\n";
+            print "═" x 60, "\n\n";
 
-        unless (-f $key_path) {
-            die "SSH key not found: $key_path\n";
+            require OCP::Password;
+            my $pin1 = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
+            my $pin1_confirm = OCP::Password::prompt_password("Confirm PIN1: ");
+
+            if ($pin1 ne $pin1_confirm) {
+                die "PIN1 passwords don't match!\n";
+            }
+
+            print "[..] Encrypting age.key with PIN1\n";
+            $secrets->encrypt_age_key_with_password($pin1);
+            print "[ok] age.key.enc created (git this!)\n";
+            print "\n";
         }
+    }
 
-        my $pub_path = "$key_path.pub";
-        unless (-f $pub_path) {
-            die "SSH public key not found: $pub_path\n";
+    #
+    # Step 5: SSH keys (Two-Tier: robocop + admin)
+    #
+    require OCP::Keys;
+    my $keys_mgr = OCP::Keys->new(project_dir => $project_dir);
+
+    if ($self->nopassword) {
+        # Dev mode: No encryption, use existing or generate simple key
+        if ($self->ssh_key) {
+            my $key_path = $self->ssh_key;
+            $key_path =~ s/^~/$ENV{HOME}/;
+
+            unless (-f $key_path) {
+                die "SSH key not found: $key_path\n";
+            }
+
+            use File::Copy qw(copy);
+            copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!\n";
+            if (-f "$key_path.pub") {
+                copy("$key_path.pub", '.ocp/id_ed25519.pub');
+            }
+            chmod 0600, '.ocp/id_ed25519';
+
+            print "[ok] Using existing SSH key (no encryption): $key_path\n";
+        } else {
+            print "[..] Generating SSH key (no encryption)\n";
+            my $ssh_keys = $secrets->generate_ssh_key;
+            print "[ok] Generated SSH key: $ssh_keys->{public_key}\n";
         }
-
-        # Copy keys to .ocp/
-        use File::Copy qw(copy);
-        copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!\n";
-        copy($pub_path, '.ocp/id_ed25519.pub') or die "Failed to copy public key: $!\n";
-        chmod 0600, '.ocp/id_ed25519';
-        chmod 0644, '.ocp/id_ed25519.pub';
-
-        print "[ok] Using existing SSH key: $key_path\n";
-    } elsif ($secrets->has_ssh_key) {
-        print "[ok] SSH key exists\n";
     } else {
-        print "[..] Generating SSH key\n";
-        my $keys = $secrets->generate_ssh_key;
-        print "[ok] Generated SSH key: $keys->{public_key}\n";
+        # Secure mode (default): Two-tier SSH keys in keys.yaml
+        my $existing = $keys_mgr->list_keys;
+
+        if (@$existing && grep { $_->{purpose} eq 'automation' } @$existing) {
+            print "[ok] SSH keys exist in keys.yaml\n";
+        } else {
+            print "[..] Generating two-tier SSH keys\n";
+
+            my $datestamp = _datestamp();
+
+            # Generate robo-ssh key (automation, age only)
+            my $robo_keys = $secrets->generate_ssh_key;
+            move('.ocp/id_ed25519', ".ocp/robo-ssh-$datestamp") or die $!;
+            move('.ocp/id_ed25519.pub', ".ocp/robo-ssh-$datestamp.pub") or die $!;
+
+            my $robo_private = path(".ocp/robo-ssh-$datestamp")->slurp;
+            my $robo_public = path(".ocp/robo-ssh-$datestamp.pub")->slurp;
+            chomp $robo_public;
+
+            # Generate admin-ssh key (requires PIN2)
+            my $admin_keys = $secrets->generate_ssh_key;
+            move('.ocp/id_ed25519', ".ocp/admin-ssh-$datestamp") or die $!;
+            move('.ocp/id_ed25519.pub', ".ocp/admin-ssh-$datestamp.pub") or die $!;
+
+            my $admin_private = path(".ocp/admin-ssh-$datestamp")->slurp;
+            my $admin_public = path(".ocp/admin-ssh-$datestamp.pub")->slurp;
+            chomp $admin_public;
+
+            # Prompt for PIN2 (admin SSH access)
+            require OCP::Password;
+            my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin SSH access): ");
+            my $pin2_confirm = OCP::Password::prompt_password("Confirm PIN2: ");
+
+            if ($pin2 ne $pin2_confirm) {
+                die "PIN2 passwords don't match!\n";
+            }
+
+            # Add robo-key (age only, no PIN2)
+            $keys_mgr->add_key(
+                name    => "robo-ssh-$datestamp",
+                type    => 'ssh_ed25519',
+                purpose => 'automation',
+                private => $robo_private,
+                public  => $robo_public,
+                pin2    => undef,  # No PIN2 for automation!
+            );
+
+            # Add admin-key (age + PIN2)
+            $keys_mgr->add_key(
+                name    => "admin-ssh-$datestamp",
+                type    => 'ssh_ed25519',
+                purpose => 'admin',
+                private => $admin_private,
+                public  => $admin_public,
+                pin2    => $pin2,
+            );
+
+            # Cleanup: Remove temporary key files (keys are now in keys.yaml!)
+            unlink ".ocp/robo-ssh-$datestamp";
+            unlink ".ocp/robo-ssh-$datestamp.pub";
+            unlink ".ocp/admin-ssh-$datestamp";
+            unlink ".ocp/admin-ssh-$datestamp.pub";
+
+            print "[ok] Generated SSH keys:\n";
+            print "     - robo-ssh-$datestamp (automation, age encrypted)\n";
+            print "     - admin-ssh-$datestamp (admin, age+PIN2 encrypted)\n";
+            print "     Stored in keys.yaml (encrypted)\n";
+        }
     }
 
     #
@@ -248,9 +364,42 @@ sub execute {
 
     print "Files created:\n";
     print "  ocp.yaml        - Cluster specification (edit this)\n";
-    print "  secrets.yaml    - Encrypted secrets\n" if $secrets->has_secrets_file;
-    print "  .ocp/           - Status & keys (local only)\n";
+    print "  keys.yaml       - Encrypted SSH keys (git ✓)\n" unless $self->nopassword;
+    print "  secrets.yaml    - Encrypted secrets (git ✓)\n" if $secrets->has_secrets_file;
+    if ($secrets->has_age_key_enc) {
+        print "  age.key.enc     - Password-protected age key (git ✓)\n";
+    }
+    print "  .ocp/           - Keys & cache (gitignored)\n";
     print "  .gitignore      - Git ignore rules\n" unless $self->no_git;
+    print "\n";
+
+    if ($secrets->has_age_key_enc) {
+        print "🔐 Security (Defense in Depth - Two-Tier SSH Keys):\n";
+        print "  PIN1: Encrypts age.key (cluster access)\n";
+        print "  PIN2: Encrypts admin SSH key (control plane deployment)\n";
+        print "\n";
+        print "  admin-key:\n";
+        print "    - Control plane deployment (ocp apply)\n";
+        print "    - Manual SSH access (ocp ssh)\n";
+        print "    - Protected with age+PIN2 encryption\n";
+        print "\n";
+        print "  robo-key:\n";
+        print "    - Worker node automation ONLY (used by robocop controller)\n";
+        print "    - Protected with age encryption (no PIN2)\n";
+        print "    - Injected into robocop memory (never on disk!)\n";
+        print "    - CANNOT access control planes!\n";
+        print "\n";
+        print "  Team sharing: Repo (git) + PIN1 + PIN2 (via 1Password/Signal)\n";
+    } elsif (!$self->nopassword) {
+        print "🔐 Security Notes:\n";
+        print "  Two-tier SSH keys stored in keys.yaml (encrypted)\n";
+        print "  Admin key: Control planes + manual SSH\n";
+        print "  Robocop key: Workers only (automation)\n";
+    } else {
+        print "⚠️  Dev Mode (--nopassword):\n";
+        print "  Single SSH key in .ocp/id_ed25519 (NOT encrypted)\n";
+        print "  For development only! Use default mode for production.\n";
+    }
 
     # SSH provider instructions (only if new key was generated)
     my $init_provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
@@ -282,21 +431,17 @@ sub execute {
 
     print "\n";
     print "Next steps:\n";
-    if ($init_provider eq 'ssh' && !$self->ssh_key) {
-        # New key generated - need manual copy
-        print "  1. Add SSH key to your server (see above)\n";
-        print "  2. Review and edit ocp.yaml\n";
-        print "  3. Run: ocp apply\n";
-    } elsif ($init_provider eq 'ssh' && $self->ssh_key) {
-        # Existing key - ready to go
+    unless ($self->nopassword) {
         print "  1. Review and edit ocp.yaml\n";
-        print "  2. Run: ocp apply\n";
-    } elsif ($init_provider eq 'hetzner') {
-        print "  1. Review and edit ocp.yaml\n";
-        print "  2. Run: ocp apply (SSH key will be uploaded automatically)\n";
+        print "  2. Deploy control plane: ocp apply (requires PIN2)\n";
+        print "  3. Deploy robocop (optional): ocp deploy robocop\n";
+        print "  4. Inject robocop key: ocp inject-key (requires PIN2)\n";
+        print "  5. Add workers via CRDs (robocop automates this)\n";
     } else {
+        # Dev mode
         print "  1. Review and edit ocp.yaml\n";
-        print "  2. Run: ocp apply\n";
+        print "  2. Deploy cluster: ocp apply\n";
+        print "  3. Test with: kubectl get nodes\n";
     }
     print "\n";
 }
@@ -305,6 +450,7 @@ sub _gitignore_content {
     return <<'GITIGNORE';
 # OCP - Omni Control Plane
 .ocp/
+.kube/
 
 # Editor
 *~
@@ -316,6 +462,11 @@ sub _gitignore_content {
 .DS_Store
 Thumbs.db
 GITIGNORE
+}
+
+sub _datestamp {
+    my @t = gmtime;
+    return sprintf('%04d%02d%02d', $t[5]+1900, $t[4]+1, $t[3]);
 }
 
 1;

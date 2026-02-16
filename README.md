@@ -29,11 +29,18 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 - **Drift Detection** - Spec/Status separation with automatic reconciliation
 - **Development Mode** - Built-in registry and image building from source
 
-### Security
+### Security (Defense in Depth)
 
-- **Encrypted Secrets** - Pure Perl encryption via [Crypt::Age](https://metacpan.org/pod/Crypt::Age) and [File::SOPS](https://metacpan.org/pod/File::SOPS)
-- **SSH Key Management** - Automatic key generation and distribution
-- **Age Encryption** - No external tools required (pure Perl implementation)
+- **Two-Tier SSH Keys** - Separate keys for automation vs admin access:
+  - **admin-ssh** - Control plane deployment + manual SSH (age+PIN2 encrypted)
+  - **robo-ssh** - Worker automation ONLY (age encrypted, memory-only in robocop)
+- **PIN-Based Protection** - Two-factor defense:
+  - **PIN1** - Encrypts age.key (cluster access)
+  - **PIN2** - Encrypts admin-ssh key (control plane deployment)
+- **Memory-Only Secrets** - robo-ssh key stored in RAM only (CRIU checkpoints in tmpfs)
+- **Control Plane Isolation** - Robocop controller CANNOT access control planes
+- **Pure Perl Encryption** - No external tools required via [Crypt::Age](https://metacpan.org/pod/Crypt::Age) and [File::SOPS](https://metacpan.org/pod/File::SOPS)
+- **Git-Safe Secrets** - All secrets encrypted in repo, recoverable with PIN1+PIN2
 
 ### User Experience
 
@@ -361,19 +368,77 @@ myproject/
     └── id_ed25519.pub # SSH public key
 ```
 
-## Secrets Management
+## Security Model (Defense in Depth)
 
-OCP uses [File::SOPS](https://metacpan.org/pod/File::SOPS) format with [Crypt::Age](https://metacpan.org/pod/Crypt::Age) encryption - all in pure Perl.
+OCP implements a multi-layered security approach with PIN-based protection and key separation.
 
-```bash
-# Token is stored encrypted in secrets.yaml
-ocp init --hetzner
+### Two-Tier SSH Keys
 
-# Or set via environment variable
-export HETZNER_API_TOKEN="your-token"
+OCP generates separate SSH keys for different purposes:
+
+| Key | Purpose | Encryption | Usage |
+|-----|---------|------------|-------|
+| **admin-ssh** | Human access | age + PIN2 | Control plane deployment, manual SSH |
+| **robo-ssh** | Automation | age only | Worker provisioning (robocop controller) |
+
+**admin-key** is protected with **age + PIN2** (double encryption):
+- Used by `ocp apply` to deploy control planes
+- Used by `ocp ssh` for manual node access
+- Requires PIN2 every time (admin presence required!)
+- NEVER touches workers (that's robocop's job)
+
+**robo-key** is protected with **age only** (single encryption):
+- Used by robocop controller to provision workers
+- Stored in robocop's memory ONLY (never on disk!)
+- Injected with `ocp inject-key` (requires PIN2 for approval)
+- CANNOT access control planes (not authorized!)
+
+### PIN-Based Protection
+
+- **PIN1** - Encrypts `age.key` (cluster access)
+- **PIN2** - Encrypts `admin-ssh` key (control plane deployment)
+
+**Why two PINs?**
+- **Defense in Depth** - Repo alone is useless (needs PIN1)
+- **Admin Approval** - Control planes require admin presence (PIN2)
+- **Team Sharing** - Share repo (git) + PIN1 + PIN2 (via 1Password/Signal)
+- **Recovery** - Lost `.ocp/`? → `git clone + PIN1 + PIN2` = recovered!
+
+### Memory-Only Key Storage (Robocop)
+
+Robocop controller keeps robo-ssh key in RAM only:
+
+1. Admin runs `ocp inject-key` (requires PIN2)
+2. robo-key injected into robocop memory via TCP socket
+3. Robocop creates CRIU checkpoint in `/dev/shm` (tmpfs, RAM)
+4. If robocop crashes → restore from checkpoint (no re-injection!)
+5. If node reboots → checkpoint lost, need admin to re-inject
+
+**Security benefit:** robo-key NEVER on persistent disk!
+
+### File Structure
+
+```
+git-tracked (encrypted):
+├── ocp.yaml           # Cluster spec
+├── keys.yaml          # admin-ssh + robo-ssh (SOPS encrypted)
+├── age.key.enc        # PIN1-protected age key
+├── secrets.yaml       # Hetzner token, etc. (SOPS encrypted)
+└── kubeconfig.yaml    # Cluster access (SOPS encrypted)
+
+gitignored:
+├── .ocp/
+│   ├── age.key        # Decrypted (cached)
+│   └── age.pub        # Public key
+└── .kube/
+    └── config         # Decrypted kubeconfig (for kubectl)
 ```
 
-The `secrets.yaml` file can be safely committed to git - values are encrypted while keys remain readable:
+### Encryption Stack
+
+OCP uses [File::SOPS](https://metacpan.org/pod/File::SOPS) format with [Crypt::Age](https://metacpan.org/pod/Crypt::Age) encryption - **all in pure Perl** (no external tools!).
+
+**Example encrypted file:**
 
 ```yaml
 hetzner_token: ENC[AES256_GCM,data:...,iv:...,tag:...,type:str]
@@ -384,6 +449,39 @@ sops:
         -----BEGIN AGE ENCRYPTED FILE-----
         ...
 ```
+
+### Workflow
+
+```bash
+# 1. Initialize (generates keys, prompts for PIN1+PIN2)
+ocp init --hetzner
+
+# 2. Deploy control plane (requires PIN2)
+ocp apply
+
+# 3. Deploy robocop controller (no PIN needed yet)
+ocp deploy robocop
+
+# 4. Inject robo-key (requires PIN2 - admin approval!)
+ocp inject-key
+
+# 5. Add workers via CRDs (robocop automates this)
+kubectl apply -f worker-pool.yaml
+```
+
+### Dev Mode (--nopassword)
+
+For development/testing, you can disable encryption:
+
+```bash
+# Single key, no encryption
+ocp init --nopassword
+
+# No PIN prompts
+ocp apply
+```
+
+⚠️ **Only use in dev/testing!** Production should use default secure mode.
 
 ## Providers
 

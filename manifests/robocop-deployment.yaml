@@ -1,0 +1,123 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ocp-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: robocop
+  namespace: ocp-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: robocop
+rules:
+  # Watch and manage nodes
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Watch OCP CRDs
+  - apiGroups: ["ocp.io"]
+    resources: ["nodes", "nodepools"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+
+  - apiGroups: ["ocp.io"]
+    resources: ["nodes/status", "nodepools/status"]
+    verbs: ["update", "patch"]
+
+  # Read secrets (for SSH keys - NOT USED! Key in memory only!)
+  # - apiGroups: [""]
+  #   resources: ["secrets"]
+  #   verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: robocop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: robocop
+subjects:
+  - kind: ServiceAccount
+    name: robocop
+    namespace: ocp-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: robocop
+  namespace: ocp-system
+  labels:
+    app: robocop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: robocop
+  template:
+    metadata:
+      labels:
+        app: robocop
+    spec:
+      serviceAccountName: robocop
+
+      # hostPath volume for /dev/shm (RAM-backed checkpoint storage)
+      volumes:
+        - name: checkpoint-storage
+          hostPath:
+            path: /dev/shm/robocop
+            type: DirectoryOrCreate
+
+      containers:
+        - name: robocop
+          image: ghcr.io/getty/ocp-robocop:latest
+          imagePullPolicy: Always
+
+          # CRIU requires these capabilities
+          securityContext:
+            capabilities:
+              add:
+                - CHECKPOINT_RESTORE
+                - SYS_PTRACE
+                - SYS_ADMIN
+
+          volumeMounts:
+            - name: checkpoint-storage
+              mountPath: /dev/shm/robocop
+
+          env:
+            - name: CHECKPOINT_DIR
+              value: /dev/shm/robocop
+
+          ports:
+            - name: key-injection
+              containerPort: 9999
+              protocol: TCP
+
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: robocop
+  namespace: ocp-system
+spec:
+  selector:
+    app: robocop
+  ports:
+    - name: key-injection
+      port: 9999
+      targetPort: 9999
+      protocol: TCP
+  type: ClusterIP

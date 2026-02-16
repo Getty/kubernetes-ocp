@@ -4,8 +4,10 @@ package OCP::Cmd::Kubeconfig;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use Path::Tiny qw(path);
 
 use OCP::Config;
+use OCP::Secrets;
 
 our $VERSION = '0.1.0';
 
@@ -38,86 +40,52 @@ sub execute {
     }
 
     my $config = OCP::Config->new(file => $file);
-    my $cluster = $config->cluster_status;
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
     my $kubeconfig;
 
     if ($self->refresh) {
-        # Fetch fresh kubeconfig from server
-        unless ($cluster && $cluster->{distribution}) {
+        # Fetch fresh kubeconfig from server (BITSOW - need to find CP IP!)
+        # TODO: Implement refresh via Hetzner API or kubectl
+        die "--refresh not yet implemented in v0. Use kubeconfig.yaml.\n";
+    } else {
+        # Decrypt kubeconfig.yaml (BITSOW!)
+        unless ($config->cluster_exists) {
             die "No cluster deployed. Run 'ocp apply' first.\n";
         }
 
-        # Get control plane node
-        my $nodes = $config->nodes_status;
-        my ($cp) = grep { $_->{role} eq 'control-plane' } @$nodes;
+        $kubeconfig = $secrets->read_kubeconfig;
 
-        unless ($cp && $cp->{publicIp}) {
-            die "No control plane found.\n";
+        unless ($kubeconfig) {
+            die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n";
         }
-
-        print "Fetching fresh kubeconfig from $cp->{publicIp}...\n";
-
-        require OCP::Rex;
-        my $rex = OCP::Rex->new(
-            host     => $cp->{publicIp},
-            key_file => $config->ssh_private_key_path,
-        );
-
-        # Use direct SSH fetch (not Rex task which can fail)
-        $kubeconfig = $rex->fetch_kubeconfig_ssh($cluster->{distribution});
-
-        # Update status
-        $config->set_cluster_status(kubeconfig => $kubeconfig);
-        $config->save_status;
-
-        print "Kubeconfig refreshed and cached.\n";
-    } else {
-        # Use cached kubeconfig
-        unless ($cluster && $cluster->{kubeconfig}) {
-            die "No kubeconfig available. Run 'ocp apply' first or use --refresh.\n";
-        }
-
-        $kubeconfig = $cluster->{kubeconfig};
     }
 
     if ($self->output) {
         # Write to specific file
         my $out_file = $self->output;
-        open my $fh, '>', $out_file or die "Cannot write $out_file: $!\n";
-        print $fh $kubeconfig;
-        close $fh;
-        chmod 0600, $out_file;
+        path($out_file)->parent->mkpath;
+        path($out_file)->spew($kubeconfig);
+        path($out_file)->chmod(0600);
         print "Kubeconfig written to $out_file\n";
     } elsif ($self->export) {
-        # Export to kubeconfig file
-        # In Docker: /project/.kube/config (shared with host)
-        # On host: ~/.kube/config
-        my $kube_dir;
-        my $kube_file;
+        # Export to .kube/config (local project dir)
+        my $kube_dir = $config->project_dir->child('.kube');
+        $kube_dir->mkpath unless -d $kube_dir;
+        my $kube_file = $kube_dir->child('config');
 
-        if (-d '/project' && -w '/project') {
-            # Running in Docker with /project mount
-            $kube_dir = '/project/.kube';
-            mkdir $kube_dir unless -d $kube_dir;
-            $kube_file = "$kube_dir/config";
-        } else {
-            # Running on host
-            $kube_dir = "$ENV{HOME}/.kube";
-            mkdir $kube_dir unless -d $kube_dir;
-            $kube_file = "$kube_dir/config";
-        }
-
-        open my $fh, '>', $kube_file or die "Cannot write $kube_file: $!\n";
-        print $fh $kubeconfig;
-        close $fh;
-        chmod 0600, $kube_file;
+        $kube_file->spew($kubeconfig);
+        $kube_file->chmod(0600);
 
         print "Kubeconfig exported to $kube_file\n";
+        print "Use: export KUBECONFIG=.kube/config\n";
+        print "Or:  kubectl --kubeconfig=.kube/config get nodes\n";
     } else {
         # Print to stdout
         print $kubeconfig;
     }
+
+    return 0;
 }
 
 1;

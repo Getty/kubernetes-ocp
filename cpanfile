@@ -15,6 +15,10 @@ requires 'JSON::MaybeXS';
 requires 'File::ShareDir::ProjectDistDir';
 requires 'Try::Tiny';
 requires 'Types::Standard';
+requires 'Term::ANSIColor';
+requires 'Term::ReadKey';
+requires 'CryptX';
+requires 'Crypt::PBKDF2';
 
 # Robocop controller
 requires 'IO::Async';
