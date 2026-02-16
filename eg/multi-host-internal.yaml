@@ -1,0 +1,186 @@
+---
+# Multi-Host Setup mit internen Domains (kein externes DNS noetig)
+#
+# Zwei Apps auf unterschiedlichen Hostnamen:
+#   - app1.daniel  ->  "App 1 - Dashboard"
+#   - app2.daniel  ->  "App 2 - API"
+#
+# Setup:
+#   1. kubectl apply -f multi-host-internal.yaml
+#   2. In /etc/hosts auf deinem Rechner eintragen:
+#      <node-ip>  app1.daniel app2.daniel
+#   3. Browser: http://app1.daniel / http://app2.daniel
+#
+# Tipp: Unter macOS/Linux reicht ein Eintrag in /etc/hosts.
+#       Unter Windows: C:\Windows\System32\drivers\etc\hosts
+
+### App 1 - Dashboard ###
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app1-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>App 1 - Dashboard</title>
+      <style>
+        body {
+          font-family: sans-serif;
+          background: #1e3a5f;
+          color: white;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 100vh;
+          margin: 0;
+        }
+        .card {
+          background: rgba(255,255,255,0.1);
+          padding: 2em 3em;
+          border-radius: 12px;
+          text-align: center;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>App 1 - Dashboard</h1>
+        <p>Host: app1.daniel</p>
+        <p>Cilium Gateway API host-based routing</p>
+      </div>
+    </body>
+    </html>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app1
+  template:
+    metadata:
+      labels:
+        app: app1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: app1-html
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app1
+spec:
+  selector:
+    app: app1
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app1
+spec:
+  parentRefs:
+  - name: cilium-gateway
+    namespace: kube-system
+  hostnames:
+  - "app1.daniel"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: app1
+      port: 80
+
+### App 2 - API ###
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app2-html
+data:
+  index.html: |
+    {"status":"ok","app":"app2","host":"app2.daniel","message":"API is running"}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app2
+  template:
+    metadata:
+      labels:
+        app: app2
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: app2-html
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app2
+spec:
+  selector:
+    app: app2
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: app2
+spec:
+  parentRefs:
+  - name: cilium-gateway
+    namespace: kube-system
+  hostnames:
+  - "app2.daniel"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: app2
+      port: 80

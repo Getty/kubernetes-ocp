@@ -20,33 +20,10 @@ has project_dir => (
     builder => sub { path(shift->file)->parent },
 );
 
-# Status directory (.ocp/)
-has status_dir => (
-    is      => 'lazy',
-    builder => sub { shift->project_dir->child('.ocp') },
-);
-
-# Status file (.ocp/status.yaml)
-has status_file => (
-    is      => 'lazy',
-    builder => sub { shift->status_dir->child('status.yaml') },
-);
-
 # Spec data (from ocp.yaml)
 has spec => (
     is      => 'lazy',
     builder => '_load_spec',
-);
-
-# Status data (from .ocp/status.yaml)
-has status => (
-    is      => 'lazy',
-    builder => '_load_status',
-);
-
-has _status_dirty => (
-    is      => 'rw',
-    default => 0,
 );
 
 #
@@ -57,12 +34,6 @@ sub _load_spec {
     my ($self) = @_;
     return $self->_default_spec unless -f $self->file;
     return LoadFile($self->file);
-}
-
-sub _load_status {
-    my ($self) = @_;
-    return {} unless -f $self->status_file;
-    return LoadFile($self->status_file) // {};
 }
 
 sub _default_spec {
@@ -116,93 +87,34 @@ sub single_node {
     return (scalar(@$workers) == 0 && ($cp->{nodes} // $cp->{count} // 1) == 1);
 }
 
+sub distribution {
+    my $self = shift;
+    my $k8s = $self->kubernetes;
+    return $k8s->{dist} // $k8s->{distribution} // 'rke2';
+}
+
+sub version {
+    my $self = shift;
+    my $k8s = $self->kubernetes;
+    return $k8s->{version} // '';
+}
+
 # Add-on flags (default: enabled, set to true to disable)
 sub no_traefik { shift->spec->{notraefik} // 0 }
 sub no_cert { shift->spec->{nocert} // 0 }
+sub no_lbipam { shift->spec->{nolbipam} // 0 }
 
 # SSL configuration (for cert-manager)
 sub ssl_config { shift->spec->{ssl} // {} }
 sub ssl_email { shift->spec->{ssl}{email} // '' }
 
 #
-# Status accessors
+# Cluster existence check (BITSOW!)
 #
 
-sub cluster_status { shift->status->{cluster} // {} }
-sub nodes_status { shift->status->{nodes} // [] }
-sub phase { shift->status->{phase} // 'Unknown' }
-sub last_reconciled { shift->status->{lastReconciled} }
-
-#
-# Status management
-#
-
-sub set_status {
-    my ($self, $key, $value) = @_;
-    $self->status->{$key} = $value;
-    $self->_status_dirty(1);
-}
-
-sub set_cluster_status {
-    my ($self, $key, $value) = @_;
-    $self->status->{cluster} //= {};
-    $self->status->{cluster}{$key} = $value;
-    $self->_status_dirty(1);
-}
-
-sub add_node_status {
-    my ($self, $node) = @_;
-    $self->status->{nodes} //= [];
-
-    my $nodes = $self->status->{nodes};
-    my $found = 0;
-    for my $n (@$nodes) {
-        if ($n->{name} eq $node->{name}) {
-            %$n = %$node;
-            $found = 1;
-            last;
-        }
-    }
-    push @$nodes, $node unless $found;
-    $self->_status_dirty(1);
-}
-
-sub remove_node_status {
-    my ($self, $name) = @_;
-    return unless $self->status->{nodes};
-    $self->status->{nodes} = [
-        grep { $_->{name} ne $name } @{$self->status->{nodes}}
-    ];
-    $self->_status_dirty(1);
-}
-
-sub get_node_status {
-    my ($self, $name) = @_;
-    return unless $self->status->{nodes};
-    my ($node) = grep { $_->{name} eq $name } @{$self->status->{nodes}};
-    return $node;
-}
-
-#
-# Save methods
-#
-
-sub save_status {
+sub cluster_exists {
     my ($self) = @_;
-
-    # Ensure status directory exists
-    $self->status_dir->mkpath unless -d $self->status_dir;
-
-    # Update timestamp
-    $self->status->{lastReconciled} = _timestamp();
-
-    DumpFile($self->status_file->stringify, $self->status);
-    $self->_status_dirty(0);
-}
-
-sub save_status_if_dirty {
-    my ($self) = @_;
-    $self->save_status if $self->_status_dirty;
+    return -f $self->project_dir->child('kubeconfig.yaml');
 }
 
 #
@@ -237,16 +149,6 @@ sub _resolve_path {
 }
 
 #
-# Helpers
-#
-
-sub _timestamp {
-    my @t = gmtime;
-    return sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
-        $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0]);
-}
-
-#
 # Class methods for initialization
 #
 
@@ -258,15 +160,23 @@ sub write_spec {
     my $spec = {
         name => $opts{name} // 'mycluster',
         k8s => {
-            dist    => $opts{dist} // 'rke2',
-            version => $opts{version} // '',
+            dist => $opts{dist} // 'rke2',
         },
-        workers => [],
         ssh => {
             privateKey => $opts{ssh_private_key} // '.ocp/id_ed25519',
             publicKey  => $opts{ssh_public_key} // '.ocp/id_ed25519.pub',
         },
     };
+
+    # Only add version if specified
+    if ($opts{version}) {
+        $spec->{k8s}{version} = $opts{version};
+    }
+
+    # Only add workers if specified
+    if ($opts{workers} && @{$opts{workers}}) {
+        $spec->{workers} = $opts{workers};
+    }
 
     # Control plane config - provider specific
     if ($provider eq 'hetzner') {

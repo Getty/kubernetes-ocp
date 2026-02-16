@@ -1,0 +1,81 @@
+---
+# Simple single webserver with Cilium Gateway API
+# Access: http://<node-ip>/
+#
+# Usage:
+#   kubectl apply -f simple-webserver.yaml
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simple-web-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>Hello from OCP</title></head>
+    <body>
+      <h1>It works!</h1>
+      <p>Served by Cilium Gateway API</p>
+    </body>
+    </html>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-web
+  template:
+    metadata:
+      labels:
+        app: simple-web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: simple-web-html
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simple-web
+spec:
+  selector:
+    app: simple-web
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# HTTPRoute - routes traffic from the Gateway to the Service
+# Uses the default cilium-gateway in kube-system
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: simple-web
+spec:
+  parentRefs:
+  - name: cilium-gateway
+    namespace: kube-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: simple-web
+      port: 80

@@ -10,6 +10,7 @@ use OCP::Config;
 use OCP::Secrets;
 use OCP::SSH;
 use OCP::Rex;
+use OCP::Versions;
 use WWW::Hetzner::Cloud;
 
 our $VERSION = '0.1.0';
@@ -39,17 +40,101 @@ sub execute {
     my $config = OCP::Config->new(file => $file);
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
-    print "Applying config: $file\n";
+    print "╔═══════════════════════════════════════════════════════════════╗\n";
+    print "║  CONTROL PLANE DEPLOYMENT (requires admin authentication)    ║\n";
+    print "╚═══════════════════════════════════════════════════════════════╝\n\n";
+
     print "Cluster: ", $config->name, "\n\n";
 
-    # Get Hetzner token (from secrets or environment)
-    my $hetzner_token = $secrets->hetzner_token;
-    my $ssh_public_key = $config->ssh_public_key;
+    # Check if cluster already exists
+    if ($config->cluster_exists) {
+        print "[ok] Cluster already exists (kubeconfig.yaml found)\n";
+        print "     Control planes are already deployed.\n\n";
+        print "To manage workers, use:\n";
+        print "  kubectl apply -f workers.yaml\n";
+        print "  (or deploy robocop for automated management)\n";
+        return;
+    }
 
-    # Initialize providers
+    # Check if we're in no-password mode (no keys.yaml)
+    my $keys_file = $config->project_dir->child('keys.yaml');
+    my $no_password_mode = !-f $keys_file;
+
+    my $admin_key;
+    my $ssh_public_key;
+
+    if ($no_password_mode) {
+        # Dev mode: Use simple SSH key from .ocp/id_ed25519
+        print "Step 1: Dev mode (--no_password)\n";
+        print "        Using SSH key from .ocp/id_ed25519 (no encryption)\n";
+
+        # Still need age.key for secrets.yaml (but no PIN1 prompt in dev mode)
+        if ($secrets->has_age_key || $secrets->has_age_key_enc) {
+            eval { $secrets->ensure_age_key() };
+        }
+        print "\n";
+
+        my $ssh_private_key = $config->ssh_private_key_path;
+        my $ssh_public_key_path = $config->ssh_public_key_path;
+
+        unless (-f $ssh_private_key) {
+            die "ERROR: SSH private key not found: $ssh_private_key\n";
+        }
+
+        # Read keys
+        my $private_key_content = path($ssh_private_key)->slurp;
+        my $public_key_content = -f $ssh_public_key_path ? path($ssh_public_key_path)->slurp : '';
+        chomp $public_key_content;
+
+        # Fake admin_key structure for compatibility
+        $admin_key = {
+            name    => 'dev-ssh-key',
+            type    => 'ssh_ed25519',
+            purpose => 'dev',
+            private => $private_key_content,
+            public  => $public_key_content,
+        };
+
+        $ssh_public_key = $public_key_content;
+        print "[ok] SSH key loaded (dev mode)\n\n";
+
+    } else {
+        # Secure mode: Use admin-key from keys.yaml (requires PIN2)
+        print "Step 1: Unlock encrypted secrets (PIN1 required)\n";
+        $secrets->ensure_age_key();
+        print "[ok] Secrets unlocked\n\n";
+
+        print "Step 2: Admin authentication (PIN2 required)\n";
+        print "        Control plane deployment requires admin-key.\n\n";
+
+        require OCP::Keys;
+        require OCP::Password;
+
+        my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+        my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key): ");
+
+        $admin_key = $keys->get_admin_key($pin2);
+        unless ($admin_key) {
+            die "\nERROR: Wrong PIN2 or no admin-key found!\n";
+        }
+
+        print "[ok] admin-key decrypted: $admin_key->{name}\n";
+        print "[ok] Admin authenticated\n\n";
+
+        $ssh_public_key = $admin_key->{public};
+    }
+
+    # Get provider configuration
+    my $hetzner_token = $secrets->hetzner_token;
+
+    # Get control plane spec
+    my $cp_spec = $config->control_planes;
+    my $provider = $cp_spec->{provider};
+    my $num_control_planes = $cp_spec->{nodes} || 1;
+
+    # Initialize cloud provider if needed
     my $cloud;
-    my $cp = $config->control_planes;
-    if ($cp->{provider} eq 'hetzner') {
+    if ($provider eq 'hetzner') {
         unless ($hetzner_token) {
             die "Hetzner API token required.\n" .
                 "Set HETZNER_API_TOKEN or run 'ocp init --hetzner' to configure.\n";
@@ -57,457 +142,199 @@ sub execute {
         $cloud = WWW::Hetzner::Cloud->new(token => $hetzner_token);
     }
 
-    # Calculate desired state
-    my @desired_nodes = $self->_calculate_desired_nodes($config);
-
-    # Get current state
-    my @current_nodes = @{$config->nodes_status};
-
-    # Calculate diff
-    my (@to_create, @to_delete);
-
-    my %current_by_name = map { $_->{name} => $_ } @current_nodes;
-    my %desired_by_name = map { $_->{name} => $_ } @desired_nodes;
-
-    for my $node (@desired_nodes) {
-        if (!$current_by_name{$node->{name}}) {
-            push @to_create, $node;
-        }
-    }
-
-    for my $node (@current_nodes) {
-        if (!$desired_by_name{$node->{name}}) {
-            push @to_delete, $node;
-        }
-    }
-
-    # Show plan
-    if (@to_create) {
-        print "Nodes to CREATE:\n";
-        for my $n (@to_create) {
-            print "  + $n->{name} ($n->{role}, $n->{provider})\n";
-        }
-        print "\n";
-    }
-
-    if (@to_delete) {
-        print "Nodes to DELETE:\n";
-        for my $n (@to_delete) {
-            print "  - $n->{name}\n";
-        }
-        print "\n";
-    }
-
-    if (!@to_create && !@to_delete) {
-        print "Nothing to do. Cluster matches config.\n";
-        return;
-    }
+    my $deploy_step = $no_password_mode ? 2 : 3;
+    print "Step $deploy_step: Deploy control plane(s)\n";
+    print "        Provider: $provider\n";
+    print "        Count: $num_control_planes\n\n";
 
     if ($self->dry_run) {
         print "[Dry run - no changes made]\n";
         return;
     }
 
-    # Execute changes
-    my $cluster_info = $config->cluster_status;
+    # Deploy first control plane (RKE2 server)
+    my $cp_name = 'police1';  # RoboCop naming!
 
-    # Create nodes
-    for my $node (@to_create) {
-        my $display_name = $node->{name};
-        # For SSH provider, show the host instead of generic name
-        if ($node->{provider} eq 'ssh' && $node->{spec}{host}) {
-            $display_name = $node->{spec}{host};
-        }
-        print "Creating $display_name...\n";
+    print "Deploying control plane: $cp_name\n";
 
-        my $created = $self->_create_node($node, $config, $cloud, $ssh_public_key);
-
-        if ($created) {
-            # Get Kubernetes config
-            my $k8s = $config->kubernetes;
-            my $distribution = $k8s->{dist} || $k8s->{distribution} || 'rke2';
-            my $version = $k8s->{version} || '';
-
-            # API port depends on distribution
-            my $api_port = $distribution eq 'k3s' ? 6443 : 9345;
-
-            # Local provider: Auto-detect Docker vs Native
-            my $use_ssh_for_local = 0;
-            if ($node->{provider} eq 'local') {
-                # Check if running in Docker
-                if (-f '/.dockerenv' || -f '/run/.containerenv') {
-                    print "\n";
-                    print "╔═══════════════════════════════════════════════════════════════╗\n";
-                    print "║  DOCKER MODE: Using SSH to localhost (127.0.0.1)             ║\n";
-                    print "║                                                               ║\n";
-                    print "║  OCP is running in Docker and needs SSH access to install     ║\n";
-                    print "║  Kubernetes on your host system.                             ║\n";
-                    print "║                                                               ║\n";
-                    print "║  Make sure you added the SSH key to your host:               ║\n";
-                    print "║    cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys         ║\n";
-                    print "╚═══════════════════════════════════════════════════════════════╝\n";
-                    print "\n";
-                    $use_ssh_for_local = 1;
-                } else {
-                    print "  Local mode: Installing directly on localhost (no SSH)\n";
-                }
-            }
-
-            # Wait for SSH (for non-local or Docker-based local)
-            if ($node->{provider} ne 'local' || $use_ssh_for_local) {
-                print "  Waiting for SSH...\n";
-                my $ssh = OCP::SSH->new(
-                    host     => $created->{publicIp},
-                    key_file => $config->ssh_private_key_path,
-                );
-
-                eval { $ssh->wait_for_ssh(120) };
-                if ($@) {
-                    print "  WARNING: SSH not ready: $@\n";
-                    $created->{phase} = 'SSHFailed';
-                    $config->add_node_status($created);
-                    next;
-                }
-                print "  SSH ready.\n";
-            }
-
-            # Install Kubernetes
-            if ($node->{role} eq 'control-plane' && !$cluster_info->{apiEndpoint}) {
-                    # First control plane
-                    print "  Installing $distribution server...\n";
-
-                    my $result;
-                    if ($node->{provider} eq 'local' && !$use_ssh_for_local) {
-                        # Native local installation (no SSH)
-                        require OCP::Local;
-                        my $local = OCP::Local->new(verbose => $verbose);
-                        $result = $local->install_server(
-                            distribution => $distribution,
-                            version      => $version,
-                            node_name    => $node->{name},
-                        );
-                    } else {
-                        # SSH-based installation (remote or Docker-local)
-                        my $rex = OCP::Rex->new(
-                            host     => $created->{publicIp},
-                            key_file => $config->ssh_private_key_path,
-                            verbose  => $verbose,
-                        );
-                        $result = $rex->install_server(
-                            distribution => $distribution,
-                            version      => $version,
-                            node_name    => $node->{name},
-                        );
-                    }
-
-                    $config->set_cluster_status(apiEndpoint => "https://$created->{publicIp}:$api_port");
-                    $config->set_cluster_status(joinToken => $result->{token});
-                    $config->set_cluster_status(kubeconfig => $result->{kubeconfig});
-                    $config->set_cluster_status(distribution => $distribution);
-
-                    # Refresh cluster_info for subsequent nodes
-                    $cluster_info = $config->cluster_status;
-
-                    # Single-node mode: untaint control plane
-                    if ($config->single_node) {
-                        print "  Single-node mode: untainting control plane...\n";
-                        eval {
-                            if ($node->{provider} eq 'local' && !$use_ssh_for_local) {
-                                # Native local
-                                require OCP::Local;
-                                my $local = OCP::Local->new(verbose => $verbose);
-                                $local->untaint_control_plane(distribution => $distribution);
-                            } else {
-                                # SSH-based
-                                my $rex = OCP::Rex->new(
-                                    host     => $created->{publicIp},
-                                    key_file => $config->ssh_private_key_path,
-                                    verbose  => $verbose,
-                                );
-                                $rex->run_task('untaint_control_plane',
-                                    distribution => $distribution,
-                                );
-                            }
-                        };
-                        if ($@) {
-                            print "  WARNING: Failed to untaint: $@\n";
-                        } else {
-                            print "  Control plane can now host workloads.\n";
-                        }
-                    }
-
-                    # Install Cilium CNI
-                    print "  Installing Cilium CNI...\n";
-                    eval {
-                        if ($node->{provider} eq 'local' && !$use_ssh_for_local) {
-                            # Native local
-                            require OCP::Local;
-                            my $local = OCP::Local->new(verbose => $verbose);
-                            $local->install_cilium(distribution => $distribution);
-                        } else {
-                            # SSH-based
-                            my $rex = OCP::Rex->new(
-                                host     => $created->{publicIp},
-                                key_file => $config->ssh_private_key_path,
-                                verbose  => $verbose,
-                            );
-                            $rex->run_task('install_cilium',
-                                distribution => $distribution,
-                            );
-                        }
-                    };
-                    if ($@) {
-                        print "  WARNING: Cilium installation failed: $@\n";
-                        print "  You can install manually later with: cilium install\n";
-                    } else {
-                        print "  Cilium ready.\n";
-                    }
-
-                    # Install cert-manager (unless nocert: true)
-                    unless ($config->no_cert) {
-                        print "  Installing cert-manager...\n";
-                        eval {
-                            $self->_install_cert_manager($config, $created->{publicIp});
-                        };
-                        if ($@) {
-                            print "  WARNING: cert-manager installation failed: $@\n";
-                        } else {
-                            print "  cert-manager ready.\n";
-                        }
-                    }
-
-                    # Install Traefik (unless notraefik: true)
-                    unless ($config->no_traefik) {
-                        print "  Installing Traefik ingress controller...\n";
-                        eval {
-                            $self->_install_traefik($config, $created->{publicIp});
-                        };
-                        if ($@) {
-                            print "  WARNING: Traefik installation failed: $@\n";
-                        } else {
-                            print "  Traefik ready.\n";
-                        }
-                    }
-
-                    $created->{phase} = 'Ready';
-                    print "  Control plane ready.\n";
-                } else {
-                    # Worker or additional control plane
-                    my $api = $cluster_info->{apiEndpoint};
-                    my $token = $cluster_info->{joinToken};
-
-                    if ($node->{provider} eq 'local') {
-                        # Local provider doesn't support multiple nodes
-                        print "  WARNING: Local provider only supports single-node clusters.\n";
-                        $created->{phase} = 'Skipped';
-                    } elsif ($api && $token) {
-                        print "  Joining cluster...\n";
-                        my $rex = OCP::Rex->new(
-                            host     => $created->{publicIp},
-                            key_file => $config->ssh_private_key_path,
-                            verbose  => $verbose,
-                        );
-
-                        $rex->install_agent(
-                            distribution => $distribution,
-                            server       => $api,
-                            token        => $token,
-                            version      => $version,
-                            node_name    => $node->{name},
-                        );
-
-                        $created->{phase} = 'Ready';
-                        print "  Node joined.\n";
-                    } else {
-                        print "  WARNING: No cluster to join. Deploy control-plane first.\n";
-                        $created->{phase} = 'Pending';
-                    }
-                }
-
-            $config->add_node_status($created);
-        }
-    }
-
-    # Delete nodes
-    for my $node (@to_delete) {
-        print "Deleting $node->{name}...\n";
-        $self->_delete_node($node, $config, $cloud);
-        $config->remove_node_status($node->{name});
-        print "  Deleted.\n";
-    }
-
-    # Update overall status
-    $config->set_status(phase => 'Running');
-    $config->save_status;
-
-    print "\nApply complete. Run 'ocp status' to see results.\n";
-}
-
-sub _calculate_desired_nodes {
-    my ($self, $config) = @_;
-
-    my @nodes;
-
-    # Control planes
-    my $cp = $config->control_planes;
-    my @cp_names = _parse_node_names($cp);
-
-    for my $name (@cp_names) {
-        push @nodes, {
-            name     => $name,
-            role     => 'control-plane',
-            provider => $cp->{provider},
-            spec     => $cp,
-        };
-    }
-
-    # Workers
-    for my $pool (@{$config->workers}) {
-        my @worker_names = _parse_node_names($pool);
-
-        for my $name (@worker_names) {
-            push @nodes, {
-                name     => $name,
-                role     => 'worker',
-                pool     => $pool->{name},
-                provider => $pool->{provider} // 'ssh',
-                spec     => $pool,
-            };
-        }
-    }
-
-    return @nodes;
-}
-
-sub _parse_node_names {
-    my ($spec) = @_;
-
-    # If 'nodes' is specified, use those names
-    if (my $nodes = $spec->{nodes}) {
-        # Can be comma-separated string or array
-        if (ref $nodes eq 'ARRAY') {
-            # Array of hashes (SSH nodes with host)
-            if (ref $nodes->[0] eq 'HASH') {
-                return map { $_->{name} } @$nodes;
-            }
-            return @$nodes;
-        } else {
-            return split /\s*,\s*/, $nodes;
-        }
-    }
-
-    # Fall back to count with auto-generated names
-    my $count = $spec->{count} // 1;
-    my $prefix = $spec->{prefix} // 'node';
-    return map { "$prefix-$_" } (1 .. $count);
-}
-
-sub _create_node {
-    my ($self, $node, $config, $cloud, $ssh_public_key) = @_;
-
-    my $provider = $node->{provider};
+    # Create server (Hetzner/SSH)
+    my $cp_host;
+    my $cp_ip;
 
     if ($provider eq 'hetzner') {
-        die "Hetzner token not configured\n" unless $cloud;
+        print "  [..] Creating Hetzner server...\n";
 
-        my $spec = $node->{spec};
-        my $cluster_name = $config->name;
+        # Ensure SSH key in Hetzner Cloud
+        my $key_name = "ocp-" . $config->name . "-admin";
+        $cloud->ssh_keys->ensure($key_name, $admin_key->{public});
 
-        # Ensure SSH key exists in Hetzner
-        my $key_name = "ocp-$cluster_name";
-        if ($ssh_public_key) {
-            $cloud->ssh_keys->ensure($key_name, $ssh_public_key);
-        }
-
+        # Create server
         my $server = $cloud->servers->create(
-            name        => "$cluster_name-$node->{name}",
-            server_type => $spec->{serverType} // 'cpx21',
-            image       => $spec->{image} // 'debian-13',
-            location    => $spec->{location} // 'fsn1',
+            name        => $config->name . "-" . $cp_name,
+            server_type => $cp_spec->{serverType} // 'cx32',
+            image       => $cp_spec->{image} // 'debian-13',
+            location    => $cp_spec->{location} // 'fsn1',
             ssh_keys    => [$key_name],
             labels      => {
-                'ocp-cluster' => $cluster_name,
-                'ocp-role'    => $node->{role},
-                'ocp-node'    => $node->{name},
+                'ocp-cluster' => $config->name,
+                'ocp-role'    => 'control-plane',
+                'ocp-node'    => $cp_name,
             },
         );
 
-        # Wait for running
+        print "  [ok] Server created: " . $server->id . "\n";
+        print "  [..] Waiting for server to be running...\n";
+
         $server = $cloud->servers->wait_for_status($server->id, 'running', 120);
+        $cp_ip = $server->ipv4;
+        $cp_host = $cp_ip;
 
-        return {
-            name       => $node->{name},
-            role       => $node->{role},
-            pool       => $node->{pool},
-            provider   => 'hetzner',
-            providerId => $server->id,
-            publicIp   => $server->ipv4,
-            phase      => 'Provisioned',
-            createdAt  => _timestamp(),
-        };
+        print "  [ok] Server running: $cp_ip\n";
+
+    } elsif ($provider eq 'ssh') {
+        # SSH provider - use existing host
+        $cp_host = $cp_spec->{host} or die "SSH provider requires 'host' in controlPlanes spec\n";
+        $cp_ip = $cp_host;
+        print "  [ok] Using existing host: $cp_host\n";
+
+    } else {
+        die "Unsupported provider: $provider\n";
     }
-    elsif ($provider eq 'ssh') {
-        # SSH provider - node must already exist
-        my $spec = $node->{spec};
 
-        # Find host for this node
-        my $host;
-        if (ref $spec->{nodes} eq 'ARRAY') {
-            my ($node_spec) = grep { $_->{name} eq $node->{name} } @{$spec->{nodes}};
-            $host = $node_spec->{host} if $node_spec;
+    # Wait for SSH
+    print "  [..] Waiting for SSH to be ready...\n";
+
+    # Prepare SSH key file (Rex needs both private + .pub!)
+    my $ssh_key_path;
+    my $temp_key_file;
+    my $temp_pub_file;
+
+    if ($no_password_mode) {
+        # Dev mode: Use actual key file path directly (has .pub!)
+        $ssh_key_path = $config->ssh_private_key_path;
+    } else {
+        # Secure mode: Write BOTH private and public key to temp files
+        require File::Temp;
+
+        # Private key
+        $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
+        print $temp_key_file $admin_key->{private};
+        close $temp_key_file;
+        chmod 0600, $temp_key_file->filename;
+        $ssh_key_path = $temp_key_file->filename;
+
+        # Public key (Rex expects key_file.pub!)
+        my $pub_path = $temp_key_file->filename . '.pub';
+        path($pub_path)->spew($admin_key->{public});
+        chmod 0644, $pub_path;
+    }
+
+    my $ssh = OCP::SSH->new(
+        host     => $cp_host,
+        key_file => $ssh_key_path,
+        user     => 'root',
+    );
+
+    eval { $ssh->wait_for_ssh(120) };
+    if ($@) {
+        die "  [FAIL] SSH not ready: $@\n";
+    }
+    print "  [ok] SSH ready\n";
+
+    # Install RKE2 server
+    print "  [..] Installing RKE2 server...\n";
+
+    my $rex = OCP::Rex->new(
+        host     => $cp_host,
+        key_file => $ssh_key_path,
+        user     => 'root',
+        verbose  => $verbose,
+    );
+
+    my $distribution = $config->distribution || 'rke2';
+    my $version = $config->version || '';
+
+    my $result = $rex->install_server(
+        distribution => $distribution,
+        version      => $version,
+        node_name    => $cp_name,
+    );
+
+    print "  [ok] RKE2 server installed\n";
+
+    # Save kubeconfig (encrypted)
+    print "  [..] Saving kubeconfig...\n";
+    $secrets->save_kubeconfig($result->{kubeconfig});
+
+    # Also write decrypted to .kube/config for kubectl
+    my $kube_dir = $config->project_dir->child('.kube');
+    $kube_dir->mkpath unless -d $kube_dir;
+    my $kube_config = $kube_dir->child('config');
+    $kube_config->spew($result->{kubeconfig});
+    $kube_config->chmod(0600);
+
+    print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
+    print "  [ok] Kubeconfig written to .kube/config (for kubectl)\n";
+
+    # Install cert-manager (unless nocert: true)
+    unless ($config->no_cert) {
+        print "  [..] Installing cert-manager...\n";
+        eval {
+            $self->_install_cert_manager($config, $result->{kubeconfig});
+        };
+        if ($@) {
+            print "  [WARN] cert-manager installation failed: $@\n";
+        } else {
+            print "  [ok] cert-manager ready\n";
         }
-        $host //= $spec->{host};
+    }
 
-        die "SSH node '$node->{name}' requires 'host' in spec\n" unless $host;
+    # Setup Cilium Gateway API
+    print "  [..] Setting up Cilium Gateway API...\n";
+    eval {
+        $self->_setup_cilium_gateway($config, $result->{kubeconfig});
+    };
+    if ($@) {
+        print "  [WARN] Cilium Gateway setup failed: $@\n";
+    } else {
+        print "  [ok] Cilium Gateway ready\n";
+    }
 
-        return {
-            name      => $node->{name},
-            role      => $node->{role},
-            pool      => $node->{pool},
-            provider  => 'ssh',
-            publicIp  => $host,
-            phase     => 'Provisioned',
-            createdAt => _timestamp(),
+    # Setup LB-IPAM for bare-metal LoadBalancer support (unless nolbipam: true)
+    unless ($config->no_lbipam) {
+        print "  [..] Setting up LB-IPAM...\n";
+        eval {
+            $self->_setup_lb_ipam($cp_ip, $result->{kubeconfig});
         };
+        if ($@) {
+            print "  [WARN] LB-IPAM setup failed: $@\n";
+        } else {
+            print "  [ok] LB-IPAM ready\n";
+        }
     }
-    elsif ($provider eq 'local') {
-        # Local provider - install on localhost
-        return {
-            name      => $node->{name},
-            role      => $node->{role},
-            pool      => $node->{pool},
-            provider  => 'local',
-            publicIp  => '127.0.0.1',
-            phase     => 'Provisioned',
-            createdAt => _timestamp(),
-        };
-    }
-    else {
-        die "Unknown provider: $provider\n" .
-            "Supported providers: hetzner, ssh, local\n";
-    }
-}
 
-sub _delete_node {
-    my ($self, $node, $config, $cloud) = @_;
+    # Done!
+    print "\n";
+    print "╔═══════════════════════════════════════════════════════════════╗\n";
+    print "║  CONTROL PLANE DEPLOYED SUCCESSFULLY!                        ║\n";
+    print "╚═══════════════════════════════════════════════════════════════╝\n\n";
 
-    if ($node->{provider} eq 'hetzner' && $node->{providerId}) {
-        $cloud->servers->delete($node->{providerId}) if $cloud;
-    }
-    # SSH nodes: nothing to delete (we don't own the server)
-}
+    print "Cluster: ", $config->name, "\n";
+    print "Control Plane: $cp_name ($cp_ip)\n";
+    print "API Endpoint: https://$cp_ip:9345\n\n";
 
-sub _timestamp {
-    my @t = gmtime;
-    return sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
-        $t[5]+1900, $t[4]+1, $t[3], $t[2], $t[1], $t[0]);
+    print "Next steps:\n";
+    print "  1. Test cluster access:\n";
+    print "     kubectl get nodes\n\n";
+    print "  2. Deploy robocop for automated worker management:\n";
+    print "     ocp deploy robocop\n\n";
+    print "  3. Or manually add workers:\n";
+    print "     kubectl apply -f workers.yaml\n\n";
 }
 
 sub _install_cert_manager {
-    my ($self, $config, $host) = @_;
+    my ($self, $config, $kubeconfig) = @_;
 
-    # Get kubeconfig
-    my $kubeconfig = $config->cluster_status->{kubeconfig};
     die "No kubeconfig available\n" unless $kubeconfig;
 
     # Write kubeconfig to temp file
@@ -525,7 +352,7 @@ sub _install_cert_manager {
         or die "Failed to install cert-manager\n";
 
     # Wait for cert-manager to be ready
-    print "    Waiting for cert-manager to be ready...\n";
+    print "      Waiting for cert-manager to be ready...\n";
     system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
            "--timeout=300s", "deployment/cert-manager", "-n", "cert-manager") == 0
         or die "cert-manager deployment not ready\n";
@@ -538,6 +365,10 @@ sub _create_cert_issuers {
     my ($self, $config, $kc_path) = @_;
 
     my $email = $config->ssl_email;
+
+    # Wait a bit for webhook to be fully ready (timing issue)
+    print "      Waiting for cert-manager webhook to stabilize...\n";
+    sleep 5;
 
     # Create self-signed issuer (always, for internal certs)
     my $selfsigned_issuer = <<'YAML';
@@ -553,12 +384,24 @@ YAML
     print $fh $selfsigned_issuer;
     close $fh;
 
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0
-        or warn "Failed to create selfsigned-issuer\n";
+    # Retry up to 3 times (webhook might not be ready immediately)
+    my $retries = 3;
+    my $success = 0;
+    for my $attempt (1..$retries) {
+        if (system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0) {
+            $success = 1;
+            last;
+        }
+        if ($attempt < $retries) {
+            print "      Webhook not ready, retrying in 5s...\n";
+            sleep 5;
+        }
+    }
+    warn "Failed to create selfsigned-issuer after $retries attempts\n" unless $success;
 
     # If email provided, create Let's Encrypt issuers
     if ($email) {
-        print "    Creating Let's Encrypt issuers (email: $email)...\n";
+        print "      Creating Let's Encrypt issuers (email: $email)...\n";
 
         # Production issuer
         my $le_prod = <<"YAML";
@@ -574,8 +417,10 @@ spec:
       name: letsencrypt-prod
     solvers:
     - http01:
-        ingress:
-          class: traefik
+        gatewayHTTPRoute:
+          parentRefs:
+          - name: cilium-gateway
+            namespace: kube-system
 YAML
 
         # Staging issuer
@@ -592,8 +437,10 @@ spec:
       name: letsencrypt-staging
     solvers:
     - http01:
-        ingress:
-          class: traefik
+        gatewayHTTPRoute:
+          parentRefs:
+          - name: cilium-gateway
+            namespace: kube-system
 YAML
 
         my $prod_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
@@ -609,18 +456,16 @@ YAML
         system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $staging_fh->filename) == 0
             or warn "Failed to create letsencrypt-staging issuer\n";
 
-        print "    ClusterIssuers created: selfsigned-issuer, letsencrypt-prod, letsencrypt-staging\n";
+        print "      ClusterIssuers created: selfsigned-issuer, letsencrypt-prod, letsencrypt-staging\n";
     } else {
-        print "    ClusterIssuer created: selfsigned-issuer\n";
-        print "    (Add 'ssl: { email: your\@email.com }' to ocp.yaml for Let's Encrypt)\n";
+        print "      ClusterIssuer created: selfsigned-issuer\n";
+        print "      (Add 'ssl: { email: your\@email.com }' to ocp.yaml for Let's Encrypt)\n";
     }
 }
 
-sub _install_traefik {
-    my ($self, $config, $host) = @_;
+sub _setup_cilium_gateway {
+    my ($self, $config, $kubeconfig) = @_;
 
-    # Get kubeconfig
-    my $kubeconfig = $config->cluster_status->{kubeconfig};
     die "No kubeconfig available\n" unless $kubeconfig;
 
     # Write kubeconfig to temp file
@@ -630,101 +475,133 @@ sub _install_traefik {
     close $kc_fh;
     my $kc_path = $kc_fh->filename;
 
-    # Create Traefik namespace (ignore if exists)
-    system("kubectl --kubeconfig=$kc_path create namespace traefik 2>/dev/null || true");
+    # Gateway API CRDs are already installed by Rexfile (before Cilium)
 
-    # Install Traefik CRDs
-    my $crd_url = "https://raw.githubusercontent.com/traefik/traefik/v3.2/docs/content/reference/dynamic-configuration/kubernetes-crd-definition-v1.yml";
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $crd_url) == 0
-        or die "Failed to install Traefik CRDs\n";
+    # Create Cilium Gateway
+    print "      Creating Cilium Gateway...\n";
+    my $gateway = <<'YAML';
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cilium-gateway
+  namespace: kube-system
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    port: 443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: default-gateway-cert
+        namespace: kube-system
+YAML
 
-    # Install Traefik RBAC
-    my $rbac_url = "https://raw.githubusercontent.com/traefik/traefik/v3.2/docs/content/reference/dynamic-configuration/kubernetes-crd-rbac.yml";
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $rbac_url) == 0
-        or die "Failed to install Traefik RBAC\n";
+    my $gw_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $gw_fh $gateway;
+    close $gw_fh;
 
-    # Create Traefik deployment
-    $self->_create_traefik_deployment($config, $kc_path);
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $gw_fh->filename) == 0
+        or die "Failed to create Cilium Gateway\n";
 
-    # Wait for Traefik to be ready
-    print "    Waiting for Traefik to be ready...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
-           "--timeout=300s", "deployment/traefik", "-n", "traefik") == 0
-        or die "Traefik deployment not ready\n";
+    # Wait for Gateway to be ready
+    print "      Waiting for Gateway to be ready...\n";
+    for my $i (1..30) {
+        my $status = `kubectl --kubeconfig=$kc_path get gateway cilium-gateway -n kube-system -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null`;
+        if ($status eq 'True') {
+            print "      Gateway is ready!\n";
+            return;
+        }
+        sleep 2;
+    }
+    warn "Gateway may not be fully ready yet\n";
 }
 
-sub _create_traefik_deployment {
-    my ($self, $config, $kc_path) = @_;
+sub _setup_lb_ipam {
+    my ($self, $node_ip, $kubeconfig) = @_;
 
-    # Minimal Traefik deployment
-    my $traefik_manifest = <<'YAML';
-apiVersion: v1
-kind: ServiceAccount
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    # Resolve hostname to IP if needed
+    require Socket;
+    if ($node_ip !~ /^\d+\.\d+\.\d+\.\d+$/) {
+        my $packed = Socket::inet_aton($node_ip);
+        die "Cannot resolve $node_ip\n" unless $packed;
+        $node_ip = Socket::inet_ntoa($packed);
+        print "      Resolved to $node_ip\n";
+    }
+
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
+    my $manifest = <<"YAML";
+apiVersion: "cilium.io/v2alpha1"
+kind: CiliumLoadBalancerIPPool
 metadata:
-  name: traefik
-  namespace: traefik
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: traefik
-  namespace: traefik
-  labels:
-    app: traefik
+  name: default-pool
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: traefik
-  template:
-    metadata:
-      labels:
-        app: traefik
-    spec:
-      serviceAccountName: traefik
-      containers:
-      - name: traefik
-        image: traefik:v3.2
-        args:
-        - --api.dashboard=true
-        - --api.insecure=false
-        - --entrypoints.web.address=:80
-        - --entrypoints.websecure.address=:443
-        - --providers.kubernetescrd
-        - --providers.kubernetesingress
-        - --log.level=INFO
-        ports:
-        - name: web
-          containerPort: 80
-        - name: websecure
-          containerPort: 443
-        - name: admin
-          containerPort: 8080
+  blocks:
+  - cidr: "$node_ip/32"
 ---
-apiVersion: v1
-kind: Service
+apiVersion: "cilium.io/v2alpha1"
+kind: CiliumL2AnnouncementPolicy
 metadata:
-  name: traefik
-  namespace: traefik
+  name: default-l2
 spec:
-  type: LoadBalancer
-  selector:
-    app: traefik
-  ports:
-  - name: web
-    port: 80
-    targetPort: web
-  - name: websecure
-    port: 443
-    targetPort: websecure
+  interfaces:
+  - ^eth[0-9]+
+  - ^en[a-z0-9]+
+  externalIPs: true
+  loadBalancerIPs: true
 YAML
 
     my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $fh $traefik_manifest;
+    print $fh $manifest;
     close $fh;
 
     system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0
-        or die "Failed to create Traefik deployment\n";
+        or die "Failed to create LB-IPAM resources\n";
+
+    # Verify Gateway got an IP
+    sleep 2;
+    my $gw_ip = `kubectl --kubeconfig=$kc_path get gateway cilium-gateway -n kube-system -o jsonpath='{.status.addresses[0].value}' 2>/dev/null`;
+    if ($gw_ip) {
+        print "      Gateway external IP: $gw_ip\n";
+    }
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Apply - Deploy control plane (admin-key required)
+
+=head1 SYNOPSIS
+
+    # Deploy control plane (requires PIN2)
+    ocp apply
+
+=head1 DESCRIPTION
+
+Deploys the control plane using the admin-ssh key (requires PIN2).
+
+B<Security:> Control planes are SACRED\! Only admin-key can deploy them.
+Workers are managed by robocop controller using robo-key.
+
+=cut

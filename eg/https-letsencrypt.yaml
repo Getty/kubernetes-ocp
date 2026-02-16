@@ -1,0 +1,145 @@
+---
+# HTTPS Webserver mit Let's Encrypt Zertifikat
+#
+# Voraussetzungen:
+#   - cert-manager installiert (ocp apply macht das)
+#   - ClusterIssuer "letsencrypt-prod" existiert
+#   - Domain zeigt per DNS auf die Node-IP
+#   - Port 80 erreichbar (fuer HTTP-01 Challenge)
+#   - cilium-gateway existiert in kube-system (ocp apply macht das)
+#
+# Usage:
+#   1. Domain anpassen (EXAMPLE.COM ersetzen)
+#   2. kubectl apply -f https-letsencrypt.yaml
+#   3. Warten bis Certificate ready: kubectl get certificate -A
+#   4. Gateway HTTPS Listener updaten (siehe unten)
+#   5. Browser: https://deine-domain.de
+#
+# Hinweis: Wir nutzen den bestehenden cilium-gateway statt einen
+# neuen zu erstellen, weil auf Bare Metal nur eine IP verfuegbar ist.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: https-web-html
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>HTTPS Works!</title></head>
+    <body>
+      <h1>HTTPS with Let's Encrypt</h1>
+      <p>Secured by cert-manager + Cilium Gateway API</p>
+    </body>
+    </html>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: https-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: https-web
+  template:
+    metadata:
+      labels:
+        app: https-web
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html
+        configMap:
+          name: https-web-html
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: https-web
+spec:
+  selector:
+    app: https-web
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+# Schritt 1: Certificate holen (cert-manager nutzt HTTP-01 via Gateway API)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: https-web-cert
+  namespace: kube-system
+spec:
+  secretName: https-web-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+  - "EXAMPLE.COM"    # <-- HIER DEINE DOMAIN EINTRAGEN
+
+---
+# Schritt 2: HTTPS Listener zum bestehenden Gateway hinzufuegen
+# WICHTIG: Erst anwenden wenn Certificate READY ist!
+#   kubectl get certificate -n kube-system https-web-cert
+#
+# Das Gateway wird um einen HTTPS-Listener erweitert, der HTTP-
+# Listener bleibt bestehen. Bei mehreren Domains kann man mehrere
+# HTTPS-Listener mit verschiedenen certificateRefs hinzufuegen.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cilium-gateway
+  namespace: kube-system
+spec:
+  gatewayClassName: cilium
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    port: 443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: https-web-tls
+        namespace: kube-system
+
+---
+# Schritt 3: HTTPRoute - leitet Traffic zur App (HTTP + HTTPS)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: https-web
+spec:
+  parentRefs:
+  - name: cilium-gateway
+    namespace: kube-system
+  hostnames:
+  - "EXAMPLE.COM"    # <-- HIER DEINE DOMAIN EINTRAGEN
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: https-web
+      port: 80

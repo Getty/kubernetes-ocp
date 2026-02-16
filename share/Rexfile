@@ -132,9 +132,13 @@ task "install_nvidia_hetzner", sub {
     # Hetzner-specific NVIDIA installation
     update_package_db;
 
-    my $packages = case operating_system,
-        Debian => ["linux-headers-amd64", "nvidia-driver", "nvidia-kernel-dkms"],
-        Ubuntu => ["linux-headers-generic", "nvidia-driver-535"];
+    my $packages;
+    use v5.10;
+    given (operating_system) {
+        when ('Debian') { $packages = ["linux-headers-amd64", "nvidia-driver", "nvidia-kernel-dkms"]; }
+        when ('Ubuntu') { $packages = ["linux-headers-generic", "nvidia-driver-535"]; }
+        default         { die "Unsupported OS: " . operating_system; }
+    }
 
     pkg $packages, ensure => "present";
     run "modprobe nvidia";
@@ -199,9 +203,13 @@ task "install_nvidia_generic", sub {
 
     update_package_db;
 
-    my $headers = case operating_system,
-        Debian => ["linux-headers-amd64"],
-        Ubuntu => ["linux-headers-generic"];
+    my $headers;
+    use v5.10;
+    given (operating_system) {
+        when ('Debian') { $headers = ["linux-headers-amd64"]; }
+        when ('Ubuntu') { $headers = ["linux-headers-generic"]; }
+        default         { die "Unsupported OS: " . operating_system; }
+    }
 
     pkg $headers, ensure => "present";
 
@@ -211,9 +219,13 @@ task "install_nvidia_generic", sub {
 
     update_package_db;
 
-    my $nvidia_packages = case operating_system,
-        Debian => ["nvidia-driver", "nvidia-container-toolkit"],
-        Ubuntu => ["nvidia-driver-535", "nvidia-container-toolkit"];
+    my $nvidia_packages;
+    use v5.10;
+    given (operating_system) {
+        when ('Debian') { $nvidia_packages = ["nvidia-driver", "nvidia-container-toolkit"]; }
+        when ('Ubuntu') { $nvidia_packages = ["nvidia-driver-535", "nvidia-container-toolkit"]; }
+        default         { die "Unsupported OS: " . operating_system; }
+    }
 
     pkg $nvidia_packages, ensure => "present";
     run "modprobe nvidia";
@@ -278,13 +290,28 @@ task "install_rke2_server", sub {
     run "systemctl enable rke2-server.service 2>&1", auto_die => FALSE;
     run "systemctl start rke2-server.service 2>&1", auto_die => FALSE;
 
-    # Check if service started
-    say "[4/5] Checking service status...";
-    my $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
-    chomp $status;
+    # Wait for service to become active (up to 180s for first-time image pulls)
+    say "[4/5] Waiting for RKE2 service to become active (up to 3 min)...";
+    my $status;
+    for my $i (1..36) {
+        $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
+        chomp $status;
+        if ($status eq 'active') {
+            say "      RKE2 service is active after ~" . ($i * 5) . "s";
+            last;
+        }
+        if ($status eq 'failed' || $status eq 'inactive') {
+            say "ERROR: rke2-server.service is $status!";
+            my $journal = run "journalctl -u rke2-server.service -n 50 --no-pager || true";
+            say $journal;
+            die "RKE2 server failed to start";
+        }
+        say "      ... still $status (${i}/36)" if $i % 6 == 0;
+        sleep 5;
+    }
 
-    if ($status !~ /^active/) {
-        say "ERROR: rke2-server.service is not active! Status: $status";
+    if ($status ne 'active') {
+        say "ERROR: rke2-server.service is not active after 180s! Status: $status";
         say "=== Service Status ===";
         my $full_status = run "systemctl status rke2-server.service --no-pager || true";
         say $full_status;
@@ -488,6 +515,10 @@ sub _generate_token {
 # Cilium Tasks
 #
 
+# Cilium versions (keep in sync!)
+use constant CILIUM_VERSION     => '1.17.0';
+use constant CILIUM_CLI_VERSION => 'v0.16.23';
+
 desc "Install Cilium CNI";
 task "install_cilium", sub {
     my $params = shift;
@@ -499,17 +530,47 @@ task "install_cilium", sub {
     my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
     my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 
+    # Detect OS and Architecture
+    my $os_raw = run "uname -s", auto_die => FALSE;
+    chomp $os_raw;
+    my $os = lc($os_raw);  # linux, darwin
+
+    my $arch_raw = run "uname -m", auto_die => FALSE;
+    chomp $arch_raw;
+    # Map architecture names
+    my $arch = $arch_raw eq 'x86_64'  ? 'amd64' :
+               $arch_raw eq 'aarch64' ? 'arm64' :
+               $arch_raw eq 'arm64'   ? 'arm64' : $arch_raw;
+
     # Install Cilium CLI
-    say "Installing Cilium CLI...";
-    run "curl -sfL https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-amd64.tar.gz | tar xz -C /usr/local/bin";
+    say "Installing Cilium CLI " . CILIUM_CLI_VERSION . " for $os-$arch...";
+    my $cli_version = CILIUM_CLI_VERSION;
+    my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
+
+    run "curl -sfL $cli_url | tar xz -C /usr/local/bin";
     run "chmod +x /usr/local/bin/cilium";
 
-    # Install Cilium with LoadBalancer support
-    say "Installing Cilium into cluster...";
-    run 'cilium install --version 1.17.0 ' .
+    # Verify CLI version
+    my $cli_installed = run "cilium version --client 2>&1 | head -1", auto_die => FALSE;
+    say "Cilium CLI installed: $cli_installed";
+
+    # Install Gateway API CRDs BEFORE Cilium (required!)
+    say "Installing Gateway API CRDs v1.1.0...";
+    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml",
+        env => { KUBECONFIG => $kubeconfig };
+
+    # Also install experimental CRDs (TCPRoute, UDPRoute, TLSRoute)
+    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/experimental-install.yaml",
+        env => { KUBECONFIG => $kubeconfig },
+        auto_die => FALSE;
+
+    # Install Cilium with Gateway API + LoadBalancer support
+    say "Installing Cilium " . CILIUM_VERSION . " with Gateway API...";
+    run 'cilium install --version ' . CILIUM_VERSION . ' ' .
         '--set kubeProxyReplacement=true ' .
         '--set k8sServiceHost=localhost ' .
-        '--set k8sServicePort=6443',
+        '--set k8sServicePort=6443 ' .
+        '--set gatewayAPI.enabled=true',
         env => { KUBECONFIG => $kubeconfig };
 
     # Wait for Cilium to be ready
@@ -519,6 +580,88 @@ task "install_cilium", sub {
         timeout => 360;
 
     say "Cilium installed successfully";
+};
+
+#
+# Update Tasks
+#
+
+desc "Upgrade Cilium to newer version";
+task "upgrade_cilium", sub {
+    my $params = shift;
+    my $version = $params->{version} or die "version parameter required\n";
+    my $distribution = $params->{distribution} || 'rke2';
+
+    say "Upgrading Cilium to $version...";
+
+    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+
+    # Update Cilium CLI (might be needed for newer versions)
+    my $os_raw = run "uname -s", auto_die => FALSE;
+    chomp $os_raw;
+    my $os = lc($os_raw);
+
+    my $arch_raw = run "uname -m", auto_die => FALSE;
+    chomp $arch_raw;
+    my $arch = $arch_raw eq 'x86_64'  ? 'amd64' :
+               $arch_raw eq 'aarch64' ? 'arm64' :
+               $arch_raw eq 'arm64'   ? 'arm64' : $arch_raw;
+
+    my $cli_version = $params->{cli_version} || CILIUM_CLI_VERSION;
+    my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
+
+    say "Updating Cilium CLI to $cli_version...";
+    run "curl -sfL $cli_url | tar xz -C /usr/local/bin";
+    run "chmod +x /usr/local/bin/cilium";
+
+    # Upgrade Cilium in cluster
+    say "Upgrading Cilium in cluster to $version...";
+    run "cilium upgrade --version $version",
+        env => { KUBECONFIG => $kubeconfig };
+
+    # Wait for rollout
+    say "Waiting for Cilium rollout...";
+    run 'cilium status --wait --wait-duration=5m',
+        env => { KUBECONFIG => $kubeconfig },
+        timeout => 360;
+
+    say "Cilium upgraded successfully to $version";
+};
+
+desc "Upgrade Traefik to newer version";
+task "upgrade_traefik", sub {
+    my $params = shift;
+    my $version = $params->{version} or die "version parameter required\n";
+
+    say "Upgrading Traefik to $version...";
+    say "⚠️  Traefik upgrade not implemented yet (using plain manifests)";
+    say "Manual steps:";
+    say "  1. Update Traefik image tag in deployment";
+    say "  2. kubectl rollout restart -n traefik deployment/traefik";
+};
+
+desc "Upgrade cert-manager to newer version";
+task "upgrade_cert_manager", sub {
+    my $params = shift;
+    my $version = $params->{version} or die "version parameter required\n";
+    my $distribution = $params->{distribution} || 'rke2';
+
+    say "Upgrading cert-manager to $version...";
+
+    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
+
+    # cert-manager can be upgraded by applying new manifests
+    my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
+
+    say "Applying cert-manager $version manifests...";
+    run "$kubectl --kubeconfig=$kubeconfig apply -f $url";
+
+    say "Waiting for cert-manager rollout...";
+    run "$kubectl --kubeconfig=$kubeconfig wait --for=condition=Available " .
+        "--timeout=300s deployment/cert-manager -n cert-manager";
+
+    say "cert-manager upgraded successfully to $version";
 };
 
 1;

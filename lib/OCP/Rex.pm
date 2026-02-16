@@ -139,6 +139,9 @@ sub install_server {
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
     my $kubeconfig = $self->fetch_kubeconfig_ssh($distribution);
 
+    # Install Cilium (CNI) - required for nodes to become Ready
+    $self->run_task('install_cilium');
+
     return {
         token      => $token,
         kubeconfig => $kubeconfig,
