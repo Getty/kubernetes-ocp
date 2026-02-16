@@ -1,6 +1,27 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Core Registry: Pull-through cache (docker.io) + local registry
+      - ocp-cache (NodePort 30500) caches all Docker Hub pulls
+      - ocp-registry (NodePort 30501) for user images
+      - RKE2 registries.yaml auto-configured on all nodes
+      - Deployed first after node Ready (all subsequent pulls cached)
+    - Component reconciliation with hash tracking
+      - ocp apply on existing clusters checks/deploys missing components
+      - .ocp/deployed.yaml tracks MD5 of deployed manifests
+      - Changed manifests (new OCP version) trigger re-deploy
+    - Complete NVIDIA GPU support for Kubernetes
+      - Unified install_nvidia task (replaces separate Hetzner/generic)
+      - All required packages: nvidia-driver, nvidia-smi, libcuda1, nvidia-container-toolkit
+      - Kernel headers for running kernel (prevents DKMS mismatch)
+      - Verification: module loaded, nvidia-smi, libcuda, container-toolkit
+      - containerd nvidia runtime configured before RKE2 start (no restart needed)
+      - RuntimeClass + Device Plugin auto-deployed by ocp apply
+      - GPU pods work with runtimeClassName: nvidia + nvidia.com/gpu resource
+    - Cilium Gateway API (replaces Traefik)
+      - Gateway with HTTP/HTTPS listeners
+      - LB-IPAM for bare-metal LoadBalancer support
+      - CiliumL2AnnouncementPolicy for external IP
     - RKE2 + K3s dual distribution support via Rex framework
     - Cilium CNI installation (kube-proxy replacement, eBPF)
     - GPU auto-detection and NVIDIA driver installation

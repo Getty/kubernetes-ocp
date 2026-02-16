@@ -49,10 +49,8 @@ sub execute {
     # Check if cluster already exists
     if ($config->cluster_exists) {
         print "[ok] Cluster already exists (kubeconfig.yaml found)\n";
-        print "     Control planes are already deployed.\n\n";
-        print "To manage workers, use:\n";
-        print "  kubectl apply -f workers.yaml\n";
-        print "  (or deploy robocop for automated management)\n";
+        print "     Checking components...\n\n";
+        $self->_reconcile_components($config);
         return;
     }
 
@@ -333,6 +331,29 @@ sub execute {
         }
     }
 
+    # Deploy registry (pull-through cache + local) FIRST after node Ready
+    # This way all subsequent image pulls (cert-manager, etc.) go through cache
+    unless ($config->no_registry) {
+        print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
+        eval {
+            $self->_setup_registry($result->{kubeconfig}, $config);
+        };
+        if ($@) {
+            print "  [WARN] Registry setup failed: $@\n";
+        } else {
+            print "  [ok] OCP registry ready\n";
+        }
+    }
+
+    # Deploy GPU support (RuntimeClass + Device Plugin) if node has NVIDIA
+    print "  [..] Checking GPU support...\n";
+    eval {
+        $self->_setup_gpu_support($result->{kubeconfig}, $config);
+    };
+    if ($@) {
+        print "  [WARN] GPU setup failed: $@\n";
+    }
+
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
     my $cert_manager_applied = 0;
     unless ($config->no_cert) {
@@ -340,6 +361,7 @@ sub execute {
         eval {
             $self->_apply_cert_manager($result->{kubeconfig});
             $cert_manager_applied = 1;
+            $self->_save_deployed_hash($config, 'certmanager', 'v1.14.0');
         };
         if ($@) {
             print "  [WARN] cert-manager apply failed: $@\n";
@@ -686,6 +708,445 @@ YAML
     my $gw_ip = `kubectl --kubeconfig=$kc_path get gateway cilium-gateway -n kube-system -o jsonpath='{.status.addresses[0].value}' 2>/dev/null`;
     if ($gw_ip) {
         print "      Gateway external IP: $gw_ip\n";
+    }
+}
+
+#
+# Registry (Pull-Through Cache + Local)
+#
+
+sub _setup_registry {
+    my ($self, $kubeconfig, $config) = @_;
+
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    my $manifest = $self->_generate_registry_manifest;
+
+    # Check if already deployed with same manifest
+    require Digest::MD5;
+    my $hash = Digest::MD5::md5_hex($manifest);
+    my $deployed = $self->_load_deployed_hashes($config);
+
+    if (($deployed->{registry} // '') eq $hash) {
+        print "      Registry already deployed (up to date)\n";
+        return;
+    }
+
+    # Apply manifest
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
+    my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $manifest_fh $manifest;
+    close $manifest_fh;
+
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
+        or die "Failed to apply registry manifests\n";
+
+    # Wait for pods to be ready
+    print "      Waiting for ocp-cache...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
+           "--timeout=120s", "deployment/ocp-cache", "-n", "ocp-system") == 0
+        or warn "ocp-cache not ready within 120s\n";
+
+    print "      Waiting for ocp-registry...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
+           "--timeout=120s", "deployment/ocp-registry", "-n", "ocp-system") == 0
+        or warn "ocp-registry not ready within 120s\n";
+
+    # Save hash so we skip next time if unchanged
+    $self->_save_deployed_hash($config, 'registry', $hash);
+}
+
+sub _generate_registry_manifest {
+    return <<'YAML';
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ocp-system
+---
+# Pull-through cache for docker.io
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocp-cache-config
+  namespace: ocp-system
+data:
+  config.yml: |
+    version: 0.1
+    proxy:
+      remoteurl: https://registry-1.docker.io
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+      delete:
+        enabled: true
+    http:
+      addr: :5000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocp-cache
+  namespace: ocp-system
+  labels:
+    app: ocp-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ocp-cache
+  template:
+    metadata:
+      labels:
+        app: ocp-cache
+    spec:
+      containers:
+      - name: registry
+        image: registry:2
+        ports:
+        - containerPort: 5000
+          name: http
+        volumeMounts:
+        - name: config
+          mountPath: /etc/docker/registry
+        - name: data
+          mountPath: /var/lib/registry
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+      volumes:
+      - name: config
+        configMap:
+          name: ocp-cache-config
+      - name: data
+        hostPath:
+          path: /var/lib/ocp/cache
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocp-cache
+  namespace: ocp-system
+spec:
+  type: NodePort
+  selector:
+    app: ocp-cache
+  ports:
+  - port: 5000
+    targetPort: 5000
+    nodePort: 30500
+    protocol: TCP
+    name: http
+---
+# Local registry for user images
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocp-registry
+  namespace: ocp-system
+  labels:
+    app: ocp-registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ocp-registry
+  template:
+    metadata:
+      labels:
+        app: ocp-registry
+    spec:
+      containers:
+      - name: registry
+        image: registry:2
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: REGISTRY_STORAGE_DELETE_ENABLED
+          value: "true"
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/registry
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+      volumes:
+      - name: data
+        hostPath:
+          path: /var/lib/ocp/registry
+          type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocp-registry
+  namespace: ocp-system
+spec:
+  type: NodePort
+  selector:
+    app: ocp-registry
+  ports:
+  - port: 5000
+    targetPort: 5000
+    nodePort: 30501
+    protocol: TCP
+    name: http
+YAML
+}
+
+#
+# GPU Support (RuntimeClass + NVIDIA Device Plugin)
+#
+
+sub _setup_gpu_support {
+    my ($self, $kubeconfig, $config) = @_;
+
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
+    # Check if node has nvidia.com/gpu capacity (device plugin already running)
+    # or if nvidia runtime is configured in containerd
+    my $has_gpu = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.capacity.nvidia\\.com/gpu}' 2>/dev/null`;
+    my $has_runtime = `kubectl --kubeconfig=$kc_path get runtimeclass nvidia -o name 2>/dev/null`;
+
+    # Also check: does the node have nvidia containerd runtime?
+    # The Rexfile creates /etc/containerd/conf.d/99-nvidia.toml if GPU was detected.
+    # We detect this by looking at node labels or just trying to deploy.
+    # If no GPU, device plugin is harmless (reports 0 GPUs).
+
+    my $manifest = $self->_generate_gpu_manifest;
+
+    require Digest::MD5;
+    my $hash = Digest::MD5::md5_hex($manifest);
+    my $deployed = $self->_load_deployed_hashes($config);
+
+    if (($deployed->{gpu} // '') eq $hash) {
+        print "      GPU support already deployed (up to date)\n";
+        return;
+    }
+
+    print "      Deploying NVIDIA RuntimeClass + Device Plugin...\n";
+
+    my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $manifest_fh $manifest;
+    close $manifest_fh;
+
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
+        or die "Failed to apply GPU manifests\n";
+
+    # Wait for device plugin (short timeout, it's a DaemonSet)
+    print "      Waiting for NVIDIA device plugin...\n";
+    for my $i (1..12) {
+        my $ready = `kubectl --kubeconfig=$kc_path get ds -n kube-system nvidia-device-plugin-daemonset -o jsonpath='{.status.numberReady}' 2>/dev/null`;
+        chomp $ready;
+        if ($ready && $ready > 0) {
+            # Check if GPU is now visible
+            sleep 5;  # Give kubelet time to update capacity
+            my $gpu_count = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.capacity.nvidia\\.com/gpu}' 2>/dev/null`;
+            chomp $gpu_count;
+            if ($gpu_count && $gpu_count > 0) {
+                print "  [ok] GPU support ready ($gpu_count GPU(s) available)\n";
+            } else {
+                print "  [ok] Device plugin running (GPU may not be present on this node)\n";
+            }
+            last;
+        }
+        sleep 10;
+    }
+
+    $self->_save_deployed_hash($config, 'gpu', $hash);
+}
+
+sub _generate_gpu_manifest {
+    return <<'YAML';
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: nvidia
+handler: nvidia
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: nvidia-device-plugin-daemonset
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: nvidia-device-plugin-daemonset
+    spec:
+      runtimeClassName: nvidia
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      priorityClassName: system-node-critical
+      containers:
+      - name: nvidia-device-plugin-ctr
+        image: nvcr.io/nvidia/k8s-device-plugin:v0.17.0
+        env:
+        - name: FAIL_ON_INIT_ERROR
+          value: "false"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: device-plugin
+          mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+YAML
+}
+
+#
+# Deploy hash tracking (.ocp/deployed.yaml)
+#
+
+sub _deployed_hashes_path {
+    my ($self, $config) = @_;
+    return $config->project_dir->child('.ocp', 'deployed.yaml');
+}
+
+sub _load_deployed_hashes {
+    my ($self, $config) = @_;
+    my $path = $self->_deployed_hashes_path($config);
+    return {} unless -f $path;
+    require YAML::XS;
+    return YAML::XS::LoadFile($path->stringify) || {};
+}
+
+sub _save_deployed_hash {
+    my ($self, $config, $component, $hash) = @_;
+    my $hashes = $self->_load_deployed_hashes($config);
+    $hashes->{$component} = $hash;
+    my $path = $self->_deployed_hashes_path($config);
+    $path->parent->mkpath unless -d $path->parent;
+    require YAML::XS;
+    YAML::XS::DumpFile($path->stringify, $hashes);
+}
+
+#
+# Reconciliation for existing clusters
+#
+
+sub _reconcile_components {
+    my ($self, $config) = @_;
+
+    # Read kubeconfig from .kube/config
+    my $kube_config_path = $config->project_dir->child('.kube', 'config');
+    unless (-f $kube_config_path) {
+        print "  No .kube/config found, cannot reconcile components.\n";
+        print "  Run 'ocp kubeconfig' first.\n";
+        return;
+    }
+    my $kubeconfig = path($kube_config_path)->slurp;
+
+    my $updated = 0;
+    my $checked = 0;
+
+    # Registry
+    unless ($config->no_registry) {
+        $checked++;
+        print "  [..] Checking registry...\n";
+        eval {
+            my $deployed = $self->_load_deployed_hashes($config);
+            my $manifest = $self->_generate_registry_manifest;
+            require Digest::MD5;
+            my $current_hash = Digest::MD5::md5_hex($manifest);
+            my $was_missing = !exists $deployed->{registry};
+            my $was_different = ($deployed->{registry} // '') ne $current_hash;
+
+            $self->_setup_registry($kubeconfig, $config);
+
+            if ($was_missing) {
+                print "  [ok] Registry deployed (was missing)\n";
+                $updated++;
+            } elsif ($was_different) {
+                print "  [ok] Registry updated (manifest changed)\n";
+                $updated++;
+            } else {
+                print "  [ok] Registry up to date\n";
+            }
+        };
+        if ($@) {
+            print "  [WARN] Registry setup failed: $@\n";
+        }
+    }
+
+    # GPU support
+    {
+        $checked++;
+        print "  [..] Checking GPU support...\n";
+        eval {
+            my $deployed = $self->_load_deployed_hashes($config);
+            my $manifest = $self->_generate_gpu_manifest;
+            require Digest::MD5;
+            my $current_hash = Digest::MD5::md5_hex($manifest);
+            my $was_missing = !exists $deployed->{gpu};
+            my $was_different = ($deployed->{gpu} // '') ne $current_hash;
+
+            $self->_setup_gpu_support($kubeconfig, $config);
+
+            if ($was_missing) {
+                print "  [ok] GPU support deployed (was missing)\n";
+                $updated++;
+            } elsif ($was_different) {
+                print "  [ok] GPU support updated (manifest changed)\n";
+                $updated++;
+            } else {
+                print "  [ok] GPU support up to date\n";
+            }
+        };
+        if ($@) {
+            print "  [WARN] GPU setup failed: $@\n";
+        }
+    }
+
+    # cert-manager
+    unless ($config->no_cert) {
+        $checked++;
+        my $deployed = $self->_load_deployed_hashes($config);
+        if ($deployed->{certmanager}) {
+            print "  [ok] cert-manager already deployed\n";
+        } else {
+            print "  [..] cert-manager not tracked yet, skipping (deploy with fresh 'ocp apply')\n";
+        }
+    }
+
+    # Summary
+    print "\n";
+    if ($updated) {
+        print "  $updated component(s) updated, $checked checked.\n";
+    } else {
+        print "  All $checked component(s) up to date.\n";
     }
 }
 

@@ -7,11 +7,12 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 ### Core
 
 - **RKE2 + K3s Support** - Production-ready RKE2 or lightweight K3s via config
-- **Cilium CNI** - eBPF-based networking, kube-proxy replacement, service mesh
-- **Traefik Ingress** - HTTP/HTTPS ingress controller with automatic SSL (default enabled)
+- **Cilium CNI** - eBPF-based networking, kube-proxy replacement, Gateway API ingress
+- **Core Registry** - Pull-through cache for Docker Hub + local registry for user images
 - **cert-manager** - Automated SSL certificate management with Let's Encrypt support
-- **GPU Support** - Auto-detection and NVIDIA/AMD driver installation
+- **GPU Support** - Auto-detection, NVIDIA driver + container toolkit, Kubernetes device plugin
 - **Single-Node Mode** - Control plane can host workloads (auto-untaint)
+- **Component Reconciliation** - Re-run `ocp apply` to deploy missing components on existing clusters
 
 ### Providers
 
@@ -287,9 +288,23 @@ ssl:
 # nocert: true     # Disable cert-manager
 ```
 
+## Core Registry
+
+OCP deploys a registry stack on every cluster:
+
+- **ocp-cache** (NodePort 30500) - Pull-through cache for `docker.io`. Every image pulled once is cached locally. Subsequent pulls are instant and don't count against Docker Hub rate limits.
+- **ocp-registry** (NodePort 30501) - Local registry for user images. Push your own images without needing Docker Hub.
+
+RKE2's `registries.yaml` is auto-configured on all nodes to use the cache. containerd tries `localhost:30500` first and falls back to Docker Hub if the cache isn't running yet.
+
+```yaml
+# Disable registry (not recommended)
+noregistry: true
+```
+
 ## SSL & Ingress
 
-OCP automatically installs **Traefik** (ingress controller) and **cert-manager** (SSL certificates).
+OCP uses **Cilium Gateway API** for ingress and **cert-manager** for SSL certificates.
 
 ### Automatic SSL with Let's Encrypt
 
@@ -316,40 +331,32 @@ name: mycluster
 
 This protects against accidentally hitting Let's Encrypt rate limits on non-public clusters.
 
-### Example Ingress with SSL
+### Example HTTPRoute with SSL
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
   name: myapp
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod  # or selfsigned-issuer
 spec:
-  ingressClassName: traefik
-  tls:
-  - hosts:
-    - myapp.example.com
-    secretName: myapp-tls  # cert-manager creates this automatically
+  parentRefs:
+  - name: cilium-gateway
+    namespace: kube-system
+  hostnames:
+  - myapp.example.com
   rules:
-  - host: myapp.example.com
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: myapp
-            port:
-              number: 80
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: myapp
+      port: 80
 ```
 
-### Disable Traefik or cert-manager
-
-If you prefer to use a different ingress controller or certificate solution:
+### Disable cert-manager
 
 ```yaml
-notraefik: true  # Don't install Traefik (use nginx-ingress, etc.)
 nocert: true     # Don't install cert-manager (manual certificates)
 ```
 

@@ -105,20 +105,8 @@ task "detect_gpu", sub {
     say "  AMD: " . ($amd_found ? "YES" : "no");
 
     if ($nvidia_found) {
-        say "Installing NVIDIA drivers...";
-
-        # Detect provider
-        my $is_hetzner = run "curl -s http://169.254.169.254/hetzner/v1/metadata 2>/dev/null", auto_die => FALSE;
-
-        no warnings 'uninitialized';
-        if ($? == 0) {
-            say "Hetzner Cloud detected";
-            do_task "install_nvidia_hetzner";
-        } else {
-            say "Bare metal NVIDIA GPU server";
-            do_task "install_nvidia_generic";
-        }
-        use warnings 'uninitialized';
+        say "NVIDIA GPU detected, installing drivers...";
+        do_task "install_nvidia";
     } elsif ($amd_found) {
         say "Installing AMD GPU drivers and ROCm...";
         do_task "install_amd_gpu";
@@ -127,21 +115,60 @@ task "detect_gpu", sub {
     }
 };
 
-desc "Install NVIDIA drivers on Hetzner";
-task "install_nvidia_hetzner", sub {
-    # Hetzner-specific NVIDIA installation
+desc "Install NVIDIA GPU drivers and container toolkit";
+task "install_nvidia", sub {
+    say "Installing NVIDIA GPU drivers and container toolkit...";
+
+    my $os = operating_system();
+    my $running_kernel = run "uname -r", auto_die => FALSE;
+    chomp $running_kernel;
+    say "  OS: $os, Kernel: $running_kernel";
+
+    # 1. Install kernel headers (for running kernel + meta for future kernels)
     update_package_db;
 
-    my $packages;
-    use v5.10;
-    given (operating_system) {
-        when ('Debian') { $packages = ["linux-headers-amd64", "nvidia-driver", "nvidia-kernel-dkms"]; }
-        when ('Ubuntu') { $packages = ["linux-headers-generic", "nvidia-driver-535"]; }
-        default         { die "Unsupported OS: " . operating_system; }
+    my @driver_packages;
+    if ($os eq 'Debian') {
+        @driver_packages = (
+            "linux-headers-$running_kernel",  # DKMS builds for running kernel
+            "linux-headers-amd64",            # Meta for latest kernel
+            "nvidia-driver",                  # Driver meta-package (pulls dkms)
+            "nvidia-smi",                     # nvidia-smi tool
+            "libcuda1",                       # CUDA driver library (needed by container runtime!)
+        );
+    } elsif ($os eq 'Ubuntu') {
+        @driver_packages = (
+            "linux-headers-$running_kernel",
+            "linux-headers-generic",
+            "nvidia-driver-535",              # Includes nvidia-smi + libcuda on Ubuntu
+        );
+    } else {
+        die "Unsupported OS for NVIDIA: $os\n";
     }
 
-    pkg $packages, ensure => "present";
-    run "modprobe nvidia";
+    say "  Installing driver packages...";
+    pkg \@driver_packages, ensure => "present";
+
+    # 2. Add NVIDIA container toolkit repo and install
+    say "  Adding NVIDIA container toolkit repository...";
+    pkg ["curl", "gnupg"], ensure => "present";
+
+    run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
+        auto_die => FALSE;
+    run "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list";
+
+    update_package_db;
+
+    say "  Installing nvidia-container-toolkit...";
+    pkg ["nvidia-container-toolkit"], ensure => "present";
+
+    # 3. Load nvidia kernel module
+    run "modprobe nvidia", auto_die => FALSE;
+
+    # 4. Verify everything
+    _verify_nvidia();
+
+    say "NVIDIA GPU installation complete";
 };
 
 desc "Install AMD GPU drivers and ROCm";
@@ -196,40 +223,56 @@ task "install_amd_gpu", sub {
     say "AMD GPU drivers and ROCm installed";
 };
 
-desc "Install NVIDIA drivers generic";
-task "install_nvidia_generic", sub {
-    # Ensure curl and gpg are installed
-    pkg ["curl", "gnupg"], ensure => "present";
+sub _verify_nvidia {
+    say "  Verifying NVIDIA installation...";
+    my $ok = 1;
 
-    update_package_db;
-
-    my $headers;
-    use v5.10;
-    given (operating_system) {
-        when ('Debian') { $headers = ["linux-headers-amd64"]; }
-        when ('Ubuntu') { $headers = ["linux-headers-generic"]; }
-        default         { die "Unsupported OS: " . operating_system; }
+    # Check kernel module loaded
+    no warnings 'uninitialized';
+    my $lsmod = run "lsmod | grep '^nvidia '", auto_die => FALSE;
+    if ($? != 0 || !$lsmod) {
+        say "  [WARN] nvidia kernel module not loaded (reboot may be needed)";
+        my $dkms = run "dkms status 2>&1 | grep nvidia", auto_die => FALSE;
+        say "         DKMS: $dkms" if $dkms;
+        $ok = 0;
+    } else {
+        say "  [ok] nvidia kernel module loaded";
     }
 
-    pkg $headers, ensure => "present";
-
-    # Add NVIDIA repo (Debian/Ubuntu specific)
-    run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg";
-    run "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list";
-
-    update_package_db;
-
-    my $nvidia_packages;
-    use v5.10;
-    given (operating_system) {
-        when ('Debian') { $nvidia_packages = ["nvidia-driver", "nvidia-container-toolkit"]; }
-        when ('Ubuntu') { $nvidia_packages = ["nvidia-driver-535", "nvidia-container-toolkit"]; }
-        default         { die "Unsupported OS: " . operating_system; }
+    # Check nvidia-smi
+    my $smi = run "nvidia-smi -L 2>&1", auto_die => FALSE;
+    chomp $smi;
+    if ($smi =~ /GPU \d+:/) {
+        say "  [ok] $smi";
+    } else {
+        say "  [WARN] nvidia-smi not working: $smi";
+        $ok = 0;
     }
 
-    pkg $nvidia_packages, ensure => "present";
-    run "modprobe nvidia";
-};
+    # Check libcuda
+    my $libcuda = run "ldconfig -p | grep 'libcuda.so '", auto_die => FALSE;
+    if ($? == 0 && $libcuda) {
+        say "  [ok] libcuda available";
+    } else {
+        say "  [WARN] libcuda.so not found";
+        $ok = 0;
+    }
+
+    # Check container toolkit
+    my $ctk = run "nvidia-ctk --version 2>&1", auto_die => FALSE;
+    chomp $ctk;
+    if ($ctk =~ /\d+\.\d+/) {
+        say "  [ok] nvidia-container-toolkit installed";
+    } else {
+        say "  [WARN] nvidia-container-toolkit not found";
+        $ok = 0;
+    }
+    use warnings 'uninitialized';
+
+    unless ($ok) {
+        say "  [WARN] GPU verification incomplete - some features may not work until reboot";
+    }
+}
 
 #
 # RKE2 Tasks
@@ -255,6 +298,19 @@ task "install_rke2_server", sub {
 
     file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
+
+    # Configure pull-through cache mirror for docker.io
+    # containerd tries localhost:30500 first, falls back to docker.io if not yet running
+    my $registries = <<'REGISTRIES';
+mirrors:
+  docker.io:
+    endpoint:
+      - "http://localhost:30500"
+REGISTRIES
+    file "/etc/rancher/rke2/registries.yaml", content => $registries;
+
+    # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
+    _configure_nvidia_containerd();
 
     # Install RKE2
     say "[1/5] Installing RKE2...";
@@ -428,6 +484,18 @@ task "install_rke2_agent", sub {
     file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
+    # Configure pull-through cache mirror for docker.io
+    my $registries = <<'REGISTRIES';
+mirrors:
+  docker.io:
+    endpoint:
+      - "http://localhost:30500"
+REGISTRIES
+    file "/etc/rancher/rke2/registries.yaml", content => $registries;
+
+    # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
+    _configure_nvidia_containerd();
+
     # Install RKE2 agent
     my $install_cmd = "curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent ";
     $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
@@ -565,6 +633,45 @@ sub _generate_token {
     my $token = run "head -c 48 /dev/urandom | base64 | tr -d '\\n+/='";
     chomp $token;
     return substr($token, 0, 48);
+}
+
+sub _configure_nvidia_containerd {
+    # Check if nvidia-container-runtime is available
+    no warnings 'uninitialized';
+    my $has_runtime = run "command -v nvidia-container-runtime >/dev/null 2>&1 && echo yes || echo no", auto_die => FALSE;
+    chomp $has_runtime;
+    use warnings 'uninitialized';
+
+    return unless $has_runtime eq 'yes';
+
+    say "Configuring RKE2 containerd for NVIDIA GPU...";
+
+    # Create RKE2 containerd config template with import for nvidia config
+    file "/var/lib/rancher/rke2/agent/etc/containerd", ensure => 'directory';
+    file "/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl",
+        content => "imports = [\"/etc/containerd/conf.d/*.toml\"]\nversion = 2\n";
+
+    # Create nvidia containerd runtime config
+    my $nvidia_config = <<'TOML';
+version = 2
+
+[plugins]
+  [plugins."io.containerd.grpc.v1.cri"]
+    [plugins."io.containerd.grpc.v1.cri".containerd]
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
+          privileged_without_host_devices = false
+          runtime_engine = ""
+          runtime_root = ""
+          runtime_type = "io.containerd.runc.v2"
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
+            BinaryName = "/usr/bin/nvidia-container-runtime"
+TOML
+
+    file "/etc/containerd/conf.d", ensure => 'directory';
+    file "/etc/containerd/conf.d/99-nvidia.toml", content => $nvidia_config;
+
+    say "  [ok] containerd configured with nvidia runtime";
 }
 
 #

@@ -103,6 +103,7 @@ sub version {
 sub no_traefik { shift->spec->{notraefik} // 0 }
 sub no_cert { shift->spec->{nocert} // 0 }
 sub no_lbipam { shift->spec->{nolbipam} // 0 }
+sub no_registry { shift->spec->{noregistry} // 0 }
 
 # SSL configuration (for cert-manager)
 sub ssl_config { shift->spec->{ssl} // {} }
