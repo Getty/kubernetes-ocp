@@ -276,22 +276,8 @@ sub execute {
     print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
     print "  [ok] Kubeconfig written to .kube/config (for kubectl)\n";
 
-    # Apply cert-manager manifests (non-blocking, pods start in background)
-    my $cert_manager_applied = 0;
-    unless ($config->no_cert) {
-        print "  [..] Applying cert-manager manifests...\n";
-        eval {
-            $self->_apply_cert_manager($result->{kubeconfig});
-            $cert_manager_applied = 1;
-        };
-        if ($@) {
-            print "  [WARN] cert-manager apply failed: $@\n";
-        } else {
-            print "  [ok] cert-manager applied (starting in background)\n";
-        }
-    }
-
     # Wait for Cilium to be ready (node must become Ready first)
+    # Nothing can be scheduled until the node is Ready!
     print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
     {
         require File::Temp;
@@ -311,6 +297,21 @@ sub execute {
             sleep 10;
         }
         print "  [WARN] Node not Ready after 600s, continuing anyway...\n" unless $node_ready;
+    }
+
+    # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
+    my $cert_manager_applied = 0;
+    unless ($config->no_cert) {
+        print "  [..] Applying cert-manager manifests...\n";
+        eval {
+            $self->_apply_cert_manager($result->{kubeconfig});
+            $cert_manager_applied = 1;
+        };
+        if ($@) {
+            print "  [WARN] cert-manager apply failed: $@\n";
+        } else {
+            print "  [ok] cert-manager applied (starting in background)\n";
+        }
     }
 
     # Setup Cilium Gateway API (while cert-manager starts up)
@@ -603,6 +604,20 @@ sub _setup_lb_ipam {
         }
     }
     print "      LB-IPAM pool: $node_ip/32\n";
+
+    # Wait for Cilium operator to register LB-IPAM CRDs
+    print "      Waiting for CiliumLoadBalancerIPPool CRD...\n";
+    my $crd_ready = 0;
+    for my $i (1..30) {
+        my $check = `kubectl --kubeconfig=$kc_path get crd ciliumloadbalancerippools.cilium.io 2>/dev/null`;
+        if ($check =~ /ciliumloadbalancerippools/) {
+            $crd_ready = 1;
+            last;
+        }
+        print "      ... waiting for Cilium operator (${i}/30)\n" if $i % 5 == 0;
+        sleep 10;
+    }
+    die "CiliumLoadBalancerIPPool CRD not available after 300s\n" unless $crd_ready;
 
     my $manifest = <<"YAML";
 apiVersion: "cilium.io/v2alpha1"
