@@ -36,7 +36,6 @@ sub check_os {
 
     say "Detected OS: $os $version";
 
-    # We support Debian-based systems (Debian, Ubuntu)
     unless ($os eq 'Debian' || $os eq 'Ubuntu') {
         say "WARNING: This OS ($os) is not officially tested.";
         say "OCP is designed for Debian/Ubuntu. Proceed with caution.";
@@ -49,19 +48,18 @@ sub check_os {
 
 desc "Prepare node for Kubernetes";
 task "prepare_node", sub {
-    # Check OS compatibility
     check_os();
 
     # Ensure required packages are installed
     pkg ["curl", "ca-certificates"], ensure => "present";
 
     # Disable swap
-    run "swapoff -a || true";
-    run "sed -i '/swap/d' /etc/fstab || true";
+    run "swapoff -a", auto_die => FALSE;
+    delete_lines_matching "/etc/fstab", matching => qr/swap/;
 
     # Load kernel modules
-    run "modprobe br_netfilter || true";
-    run "modprobe overlay || true";
+    run "modprobe br_netfilter", auto_die => FALSE;
+    run "modprobe overlay", auto_die => FALSE;
 
     file "/etc/modules-load.d/kubernetes.conf",
         content => "br_netfilter\noverlay\n";
@@ -76,13 +74,7 @@ task "prepare_node", sub {
 desc "Detect GPU and install drivers";
 task "detect_gpu", sub {
     # Ensure lspci is available
-    my $has_lspci = run "command -v lspci >/dev/null 2>&1 && echo yes || echo no", auto_die => FALSE;
-    chomp $has_lspci;
-
-    if ($has_lspci ne 'yes') {
-        say "lspci not found, installing pciutils...";
-        pkg ["pciutils"], ensure => "present";
-    }
+    pkg ["pciutils"], ensure => "present" unless is_installed("pciutils");
 
     # Get full lspci output for debugging
     my $lspci_output = run "lspci 2>&1", auto_die => FALSE;
@@ -91,8 +83,6 @@ task "detect_gpu", sub {
     say "=== End PCI Devices ===";
 
     # Check for virtualized GPU (skip these)
-    # Suppress Rex SSH2 uninitialized $? warnings
-    no warnings 'uninitialized';
     my $has_virtio = run "lspci | grep -iE '(virtio|qemu|vmware|virtualbox)'", auto_die => FALSE;
     my $is_virtual = ($? == 0 && $has_virtio);
 
@@ -103,7 +93,6 @@ task "detect_gpu", sub {
     # Check for AMD (but not if virtualized)
     my $has_amd = run "lspci | grep -iE '(vga|display|3d).*(amd|ati|radeon)'", auto_die => FALSE;
     my $amd_found = ($? == 0 && $has_amd && !$is_virtual);
-    use warnings 'uninitialized';
 
     say "GPU Detection Results:";
     say "  Virtualized GPU: " . ($is_virtual ? "YES (skipping driver installation)" : "no");
@@ -129,13 +118,11 @@ task "install_nvidia", sub {
     say "Installing NVIDIA GPU drivers and container toolkit...";
 
     my $os = operating_system();
-    my $running_kernel = run "uname -r", auto_die => FALSE;
+    my $running_kernel = run "uname -r";
     chomp $running_kernel;
     say "  OS: $os, Kernel: $running_kernel";
 
-    # 1. Install kernel headers (for running kernel + meta for future kernels)
-    update_package_db;
-
+    # 1. Install kernel headers + driver packages
     my @driver_packages;
     if ($os eq 'Debian') {
         @driver_packages = (
@@ -156,15 +143,20 @@ task "install_nvidia", sub {
     }
 
     say "  Installing driver packages...";
+    update_package_db;
     pkg \@driver_packages, ensure => "present";
 
     # 2. Add NVIDIA container toolkit repo and install
     say "  Adding NVIDIA container toolkit repository...";
     pkg ["curl", "gnupg"], ensure => "present";
 
-    run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg",
+    # Download and dearmor GPG key (modern signed-by approach, not deprecated apt-key)
+    run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null",
         auto_die => FALSE;
-    run "curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list";
+
+    # Write sources.list directly (not curl|sed pipeline)
+    file "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
+        content => "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /\n";
 
     update_package_db;
 
@@ -180,23 +172,11 @@ task "install_nvidia", sub {
     say "NVIDIA GPU installation complete";
 };
 
-# TODO: AMD GPU/ROCm support needs proper implementation
-# AMD has dropped Debian entirely from ROCm packages (only Ubuntu/RHEL/SLES).
-# For K8s GPU workloads, the host only needs:
-#   1. amdgpu kernel module (mainline since Linux 4.15, already in Debian)
-#   2. /dev/kfd + /dev/dri available
-#   3. AMD GPU device plugin in the cluster
-# ROCm userspace belongs in the container images, not on the host.
-#
-# desc "Install AMD GPU drivers and ROCm";
-# task "install_amd_gpu", sub { ... };
-
 sub _verify_nvidia {
     say "  Verifying NVIDIA installation...";
     my $ok = 1;
 
     # Check kernel module loaded
-    no warnings 'uninitialized';
     my $lsmod = run "lsmod | grep '^nvidia '", auto_die => FALSE;
     if ($? != 0 || !$lsmod) {
         say "  [WARN] nvidia kernel module not loaded (reboot may be needed)";
@@ -209,11 +189,11 @@ sub _verify_nvidia {
 
     # Check nvidia-smi
     my $smi = run "nvidia-smi -L 2>&1", auto_die => FALSE;
-    chomp $smi;
-    if ($smi =~ /GPU \d+:/) {
+    chomp $smi if defined $smi;
+    if (defined $smi && $smi =~ /GPU \d+:/) {
         say "  [ok] $smi";
     } else {
-        say "  [WARN] nvidia-smi not working: $smi";
+        say "  [WARN] nvidia-smi not working: " . ($smi // 'no output');
         $ok = 0;
     }
 
@@ -227,15 +207,12 @@ sub _verify_nvidia {
     }
 
     # Check container toolkit
-    my $ctk = run "nvidia-ctk --version 2>&1", auto_die => FALSE;
-    chomp $ctk;
-    if ($ctk =~ /\d+\.\d+/) {
+    if (can_run("nvidia-ctk")) {
         say "  [ok] nvidia-container-toolkit installed";
     } else {
         say "  [WARN] nvidia-container-toolkit not found";
         $ok = 0;
     }
-    use warnings 'uninitialized';
 
     unless ($ok) {
         say "  [WARN] GPU verification incomplete - some features may not work until reboot";
@@ -269,13 +246,12 @@ task "install_rke2_server", sub {
 
     # Configure pull-through cache mirror for docker.io
     # containerd tries localhost:30500 first, falls back to docker.io if not yet running
-    my $registries = <<'REGISTRIES';
+    file "/etc/rancher/rke2/registries.yaml", content => <<'REGISTRIES';
 mirrors:
   docker.io:
     endpoint:
       - "http://localhost:30500"
 REGISTRIES
-    file "/etc/rancher/rke2/registries.yaml", content => $registries;
 
     # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
     _configure_nvidia_containerd();
@@ -372,8 +348,7 @@ REGISTRIES
 
     # Verify installation - check multiple possible locations
     say "[2/5] Verifying RKE2 binary...";
-    my $rke2_path = run "command -v rke2 || which rke2 2>/dev/null || echo ''", auto_die => FALSE;
-    chomp $rke2_path;
+    my $rke2_path = can_run("rke2");
 
     if (!$rke2_path) {
         # Check common paths explicitly
@@ -428,10 +403,7 @@ REGISTRIES
     run "timeout 60 bash -c 'while [ ! -f /etc/rancher/rke2/rke2.yaml ]; do sleep 2; done' || true";
 
     # Check if it exists now
-    my $check = run "test -f /etc/rancher/rke2/rke2.yaml && echo EXISTS || echo MISSING", auto_die => FALSE;
-    chomp $check;
-
-    if ($check ne 'EXISTS') {
+    if (!is_file("/etc/rancher/rke2/rke2.yaml")) {
         say "ERROR: kubeconfig not found after 60s!";
         say "=== Directory listing ===";
         my $ls = run "ls -la /etc/rancher/rke2/ || true";
@@ -445,7 +417,7 @@ REGISTRIES
     # Wait for API to respond
     run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
 
-    say "✓ RKE2 cluster ready";
+    say "RKE2 cluster ready";
 
     # Return kubeconfig and token for OCP to store
     my $kubeconfig = run "cat /etc/rancher/rke2/rke2.yaml";
@@ -474,13 +446,12 @@ task "install_rke2_agent", sub {
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
     # Configure pull-through cache mirror for docker.io
-    my $registries = <<'REGISTRIES';
+    file "/etc/rancher/rke2/registries.yaml", content => <<'REGISTRIES';
 mirrors:
   docker.io:
     endpoint:
       - "http://localhost:30500"
 REGISTRIES
-    file "/etc/rancher/rke2/registries.yaml", content => $registries;
 
     # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
     _configure_nvidia_containerd();
@@ -625,13 +596,7 @@ sub _generate_token {
 }
 
 sub _configure_nvidia_containerd {
-    # Check if nvidia-container-runtime is available
-    no warnings 'uninitialized';
-    my $has_runtime = run "command -v nvidia-container-runtime >/dev/null 2>&1 && echo yes || echo no", auto_die => FALSE;
-    chomp $has_runtime;
-    use warnings 'uninitialized';
-
-    return unless $has_runtime eq 'yes';
+    return unless can_run("nvidia-container-runtime");
 
     say "Configuring RKE2 containerd for NVIDIA GPU...";
 
@@ -641,7 +606,8 @@ sub _configure_nvidia_containerd {
         content => "imports = [\"/etc/containerd/conf.d/*.toml\"]\nversion = 2\n";
 
     # Create nvidia containerd runtime config
-    my $nvidia_config = <<'TOML';
+    file "/etc/containerd/conf.d", ensure => 'directory';
+    file "/etc/containerd/conf.d/99-nvidia.toml", content => <<'TOML';
 version = 2
 
 [plugins]
@@ -656,9 +622,6 @@ version = 2
           [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
             BinaryName = "/usr/bin/nvidia-container-runtime"
 TOML
-
-    file "/etc/containerd/conf.d", ensure => 'directory';
-    file "/etc/containerd/conf.d/99-nvidia.toml", content => $nvidia_config;
 
     say "  [ok] containerd configured with nvidia runtime";
 }
@@ -683,11 +646,11 @@ task "install_cilium", sub {
     my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 
     # Detect OS and Architecture
-    my $os_raw = run "uname -s", auto_die => FALSE;
+    my $os_raw = run "uname -s";
     chomp $os_raw;
     my $os = lc($os_raw);  # linux, darwin
 
-    my $arch_raw = run "uname -m", auto_die => FALSE;
+    my $arch_raw = run "uname -m";
     chomp $arch_raw;
     # Map architecture names
     my $arch = $arch_raw eq 'x86_64'  ? 'amd64' :
@@ -697,9 +660,9 @@ task "install_cilium", sub {
     # Install Cilium CLI (skip if already installed with correct version)
     my $cli_version = CILIUM_CLI_VERSION;
     my $existing_cli = run "cilium version --client 2>/dev/null | head -1", auto_die => FALSE;
-    chomp $existing_cli;
+    chomp $existing_cli if defined $existing_cli;
 
-    if ($existing_cli =~ /\Q$cli_version\E/) {
+    if ($existing_cli && $existing_cli =~ /\Q$cli_version\E/) {
         say "Cilium CLI $cli_version already installed";
     } else {
         say "Installing Cilium CLI $cli_version for $os-$arch...";
@@ -771,11 +734,11 @@ task "upgrade_cilium", sub {
     my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 
     # Update Cilium CLI (might be needed for newer versions)
-    my $os_raw = run "uname -s", auto_die => FALSE;
+    my $os_raw = run "uname -s";
     chomp $os_raw;
     my $os = lc($os_raw);
 
-    my $arch_raw = run "uname -m", auto_die => FALSE;
+    my $arch_raw = run "uname -m";
     chomp $arch_raw;
     my $arch = $arch_raw eq 'x86_64'  ? 'amd64' :
                $arch_raw eq 'aarch64' ? 'arm64' :
@@ -800,18 +763,6 @@ task "upgrade_cilium", sub {
         timeout => 360;
 
     say "Cilium upgraded successfully to $version";
-};
-
-desc "Upgrade Traefik to newer version";
-task "upgrade_traefik", sub {
-    my $params = shift;
-    my $version = $params->{version} or die "version parameter required\n";
-
-    say "Upgrading Traefik to $version...";
-    say "⚠️  Traefik upgrade not implemented yet (using plain manifests)";
-    say "Manual steps:";
-    say "  1. Update Traefik image tag in deployment";
-    say "  2. kubectl rollout restart -n traefik deployment/traefik";
 };
 
 desc "Upgrade cert-manager to newer version";
