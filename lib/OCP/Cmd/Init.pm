@@ -23,7 +23,7 @@ option force => (
     doc   => 'Overwrite existing files',
 );
 
-option no_git => (
+option nogit => (
     is    => 'ro',
     doc   => 'Skip git initialization',
 );
@@ -96,8 +96,8 @@ sub execute {
     #
     # Step 1: Git
     #
-    if ($self->no_git) {
-        print "[--] Skipping git (--no-git)\n";
+    if ($self->nogit) {
+        print "[--] Skipping git (--nogit)\n";
     } elsif ($has_git) {
         print "[ok] Git repository exists\n";
     } else {
@@ -109,7 +109,7 @@ sub execute {
     #
     # Step 2: .gitignore
     #
-    if ($self->no_git) {
+    if ($self->nogit) {
         # Skip gitignore when git is disabled
     } elsif ($has_gitignore) {
         # Check if .ocp/ and .kube/ are already in gitignore
@@ -370,7 +370,7 @@ sub execute {
         print "  age.key.enc     - Password-protected age key (git ✓)\n";
     }
     print "  .ocp/           - Keys & cache (gitignored)\n";
-    print "  .gitignore      - Git ignore rules\n" unless $self->no_git;
+    print "  .gitignore      - Git ignore rules\n" unless $self->nogit;
     print "\n";
 
     if ($secrets->has_age_key_enc) {
@@ -489,7 +489,7 @@ OCP::Cmd::Init - Initialize OCP project
     ocp init --hetzner
 
     # Without git initialization
-    ocp init --no-git
+    ocp init --nogit
 
 =head1 DESCRIPTION
 
@@ -499,6 +499,6 @@ exists and only creates what's missing.
 With --hetzner, prompts for Hetzner API token and stores it encrypted
 using SOPS/age.
 
-With --no-git, skips git repository initialization and .gitignore creation.
+With --nogit, skips git repository initialization and .gitignore creation.
 
 =cut
