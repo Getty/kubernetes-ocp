@@ -126,8 +126,12 @@ sub install_server {
     my $token = $opts{token} || $self->_generate_token();
     my $tls_san = $opts{tls_san} || $self->host;
     my $node_name = $opts{node_name} || '';
+    my $gpu = $opts{gpu} || 0;
 
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
+
+    # Pass GPU flag via env (Rexfile reads OCP_GPU directly)
+    local $ENV{OCP_GPU} = $gpu ? 1 : 0;
 
     $self->run_task($task,
         token     => $token,

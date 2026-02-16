@@ -73,10 +73,18 @@ task "prepare_node", sub {
 
 desc "Detect GPU and install drivers";
 task "detect_gpu", sub {
+    # GPU driver installation is opt-in via ocp.yaml: controlPlanes.gpu: true
+    # OCP_GPU env var is set by OCP::Rex when gpu is enabled
+    my $gpu_enabled = $ENV{OCP_GPU} // 0;
+
+    unless ($gpu_enabled) {
+        say "GPU support not enabled (set gpu: true in ocp.yaml to enable)";
+        return;
+    }
+
     # Ensure lspci is available
     pkg ["pciutils"], ensure => "present" unless is_installed("pciutils");
 
-    # Get full lspci output for debugging
     my $lspci_output = run "lspci 2>&1", auto_die => FALSE;
     say "=== PCI Devices ===";
     say $lspci_output;
@@ -86,16 +94,16 @@ task "detect_gpu", sub {
     my $has_virtio = run "lspci | grep -iE '(virtio|qemu|vmware|virtualbox)'", auto_die => FALSE;
     my $is_virtual = ($? == 0 && $has_virtio);
 
-    # Check for NVIDIA (but not if virtualized)
+    # Check for NVIDIA
     my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
     my $nvidia_found = ($? == 0 && $has_nvidia && !$is_virtual);
 
-    # Check for AMD (but not if virtualized)
+    # Check for AMD
     my $has_amd = run "lspci | grep -iE '(vga|display|3d).*(amd|ati|radeon)'", auto_die => FALSE;
     my $amd_found = ($? == 0 && $has_amd && !$is_virtual);
 
     say "GPU Detection Results:";
-    say "  Virtualized GPU: " . ($is_virtual ? "YES (skipping driver installation)" : "no");
+    say "  Virtualized GPU: " . ($is_virtual ? "YES (skipping)" : "no");
     say "  NVIDIA: " . ($nvidia_found ? "YES" : "no");
     say "  AMD: " . ($amd_found ? "YES" : "no");
 
@@ -103,13 +111,9 @@ task "detect_gpu", sub {
         say "NVIDIA GPU detected, installing drivers...";
         do_task "install_nvidia";
     } elsif ($amd_found) {
-        # TODO: AMD GPU/ROCm support needs proper implementation
-        # - AMD dropped Debian from ROCm packages entirely (only Ubuntu/RHEL/SLES)
-        # - For K8s, host only needs kernel amdgpu module + device plugin
-        # - ROCm userspace belongs in container images, not on host
-        say "AMD GPU detected, but AMD GPU support not yet implemented - skipping";
-    } else {
-        say "No GPU detected, skipping driver installation";
+        say "AMD GPU detected, but AMD driver support not yet implemented - skipping";
+    } elsif (!$nvidia_found && !$amd_found) {
+        say "gpu: true is set but no GPU hardware found - skipping driver installation";
     }
 };
 

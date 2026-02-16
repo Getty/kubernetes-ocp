@@ -105,6 +105,13 @@ sub no_cert { shift->spec->{nocert} // 0 }
 sub no_lbipam { shift->spec->{nolbipam} // 0 }
 sub no_registry { shift->spec->{noregistry} // 0 }
 
+# GPU support (opt-in: must be set explicitly in controlPlanes or node spec)
+sub gpu {
+    my $self = shift;
+    my $cp = $self->control_planes;
+    return $cp->{gpu} // 0;
+}
+
 # SSL configuration (for cert-manager)
 sub ssl_config { shift->spec->{ssl} // {} }
 sub ssl_email { shift->spec->{ssl}{email} // '' }
