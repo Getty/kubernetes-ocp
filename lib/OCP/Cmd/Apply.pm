@@ -276,20 +276,22 @@ sub execute {
     print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
     print "  [ok] Kubeconfig written to .kube/config (for kubectl)\n";
 
-    # Install cert-manager (unless nocert: true)
+    # Apply cert-manager manifests (non-blocking, pods start in background)
+    my $cert_manager_applied = 0;
     unless ($config->no_cert) {
-        print "  [..] Installing cert-manager...\n";
+        print "  [..] Applying cert-manager manifests...\n";
         eval {
-            $self->_install_cert_manager($config, $result->{kubeconfig});
+            $self->_apply_cert_manager($result->{kubeconfig});
+            $cert_manager_applied = 1;
         };
         if ($@) {
-            print "  [WARN] cert-manager installation failed: $@\n";
+            print "  [WARN] cert-manager apply failed: $@\n";
         } else {
-            print "  [ok] cert-manager ready\n";
+            print "  [ok] cert-manager applied (starting in background)\n";
         }
     }
 
-    # Setup Cilium Gateway API
+    # Setup Cilium Gateway API (while cert-manager starts up)
     print "  [..] Setting up Cilium Gateway API...\n";
     eval {
         $self->_setup_cilium_gateway($config, $result->{kubeconfig});
@@ -313,6 +315,19 @@ sub execute {
         }
     }
 
+    # Now wait for cert-manager and create issuers (had time to start during Gateway + LB-IPAM setup)
+    if ($cert_manager_applied) {
+        print "  [..] Waiting for cert-manager to be ready...\n";
+        eval {
+            $self->_wait_cert_manager_and_create_issuers($config, $result->{kubeconfig});
+        };
+        if ($@) {
+            print "  [WARN] cert-manager setup failed: $@\n";
+        } else {
+            print "  [ok] cert-manager ready\n";
+        }
+    }
+
     # Done!
     print "\n";
     print "╔═══════════════════════════════════════════════════════════════╗\n";
@@ -332,32 +347,39 @@ sub execute {
     print "     kubectl apply -f workers.yaml\n\n";
 }
 
-sub _install_cert_manager {
-    my ($self, $config, $kubeconfig) = @_;
+sub _apply_cert_manager {
+    my ($self, $kubeconfig) = @_;
 
     die "No kubeconfig available\n" unless $kubeconfig;
 
-    # Write kubeconfig to temp file
     require File::Temp;
     my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
     print $kc_fh $kubeconfig;
     close $kc_fh;
     my $kc_path = $kc_fh->filename;
 
-    # Install cert-manager from official manifests
     my $version = 'v1.14.0';
     my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
 
     system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $url) == 0
-        or die "Failed to install cert-manager\n";
+        or die "Failed to apply cert-manager manifests\n";
+}
 
-    # Wait for cert-manager to be ready
-    print "      Waiting for cert-manager to be ready...\n";
+sub _wait_cert_manager_and_create_issuers {
+    my ($self, $config, $kubeconfig) = @_;
+
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
     system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
-           "--timeout=300s", "deployment/cert-manager", "-n", "cert-manager") == 0
+           "--timeout=600s", "deployment/cert-manager", "-n", "cert-manager") == 0
         or die "cert-manager deployment not ready\n";
 
-    # Create ClusterIssuers
     $self->_create_cert_issuers($config, $kc_path);
 }
 
