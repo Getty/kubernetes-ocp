@@ -27,11 +27,16 @@ option only => (
     doc    => 'Only apply: control-planes, workers, or node name',
 );
 
+has ocp => (
+    is      => 'lazy',
+    default => sub { OCP->instance },
+);
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    my $file = $chain->[0]->config;
-    my $verbose = $chain->[0]->verbose;
+    my $file = $self->ocp->config;
+    my $verbose = $self->ocp->verbose;
 
     unless (-f $file) {
         die "Config file '$file' not found. Run 'ocp init' first.\n";
@@ -253,9 +258,12 @@ sub execute {
     my $version = $config->version || '';
 
     my $result = $rex->install_server(
-        distribution => $distribution,
-        version      => $version,
-        node_name    => $cp_name,
+        distribution      => $distribution,
+        version           => $version,
+        node_name         => $cp_name,
+        registry_cache    => $config->registry_cache,
+        registry_upstream => $config->registry_upstream,
+        registry_name     => $config->registry_name,
     );
 
     print "  [ok] RKE2 server installed\n";
@@ -332,17 +340,15 @@ sub execute {
     }
 
     # Deploy registry (pull-through cache + local) FIRST after node Ready
-    # This way all subsequent image pulls (cert-manager, etc.) go through cache
-    unless ($config->no_registry) {
-        print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
-        eval {
-            $self->_setup_registry($result->{kubeconfig}, $config);
-        };
-        if ($@) {
-            print "  [WARN] Registry setup failed: $@\n";
-        } else {
-            print "  [ok] OCP registry ready\n";
-        }
+    # Registry is always deployed — required infrastructure for robocop image delivery
+    print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
+    eval {
+        $self->_setup_registry($result->{kubeconfig}, $config);
+    };
+    if ($@) {
+        print "  [WARN] Registry setup failed: $@\n";
+    } else {
+        print "  [ok] OCP registry ready\n";
     }
 
     # Deploy GPU support (RuntimeClass + Device Plugin) if node has NVIDIA
@@ -471,97 +477,82 @@ sub _create_cert_issuers {
     print "      Waiting for cert-manager webhook to stabilize...\n";
     sleep 5;
 
-    # Create self-signed issuer (always, for internal certs)
-    my $selfsigned_issuer = <<'YAML';
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: selfsigned-issuer
-spec:
-  selfSigned: {}
-YAML
+    # Build issuer resources
+    my @issuers = (_selfsigned_issuer());
 
-    my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $fh $selfsigned_issuer;
-    close $fh;
-
-    # Retry up to 3 times (webhook might not be ready immediately)
-    my $retries = 3;
-    my $success = 0;
-    for my $attempt (1..$retries) {
-        if (system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0) {
-            $success = 1;
-            last;
-        }
-        if ($attempt < $retries) {
-            print "      Webhook not ready, retrying in 5s...\n";
-            sleep 5;
-        }
-    }
-    warn "Failed to create selfsigned-issuer after $retries attempts\n" unless $success;
-
-    # If email provided, create Let's Encrypt issuers
     if ($email) {
         print "      Creating Let's Encrypt issuers (email: $email)...\n";
+        push @issuers, _acme_issuer('letsencrypt-prod',
+            'https://acme-v02.api.letsencrypt.org/directory', $email);
+        push @issuers, _acme_issuer('letsencrypt-staging',
+            'https://acme-staging-v02.api.letsencrypt.org/directory', $email);
+    }
 
-        # Production issuer
-        my $le_prod = <<"YAML";
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: $email
-    privateKeySecretRef:
-      name: letsencrypt-prod
-    solvers:
-    - http01:
-        gatewayHTTPRoute:
-          parentRefs:
-          - name: cilium-gateway
-            namespace: kube-system
-YAML
+    # Apply each issuer (retry for webhook readiness)
+    for my $issuer (@issuers) {
+        my $name = $issuer->{metadata}{name};
+        my $yaml = $self->ocp->dump($issuer);
 
-        # Staging issuer
-        my $le_staging = <<"YAML";
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-staging
-spec:
-  acme:
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: $email
-    privateKeySecretRef:
-      name: letsencrypt-staging
-    solvers:
-    - http01:
-        gatewayHTTPRoute:
-          parentRefs:
-          - name: cilium-gateway
-            namespace: kube-system
-YAML
+        my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print $fh $yaml;
+        close $fh;
 
-        my $prod_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-        print $prod_fh $le_prod;
-        close $prod_fh;
+        my $retries = 3;
+        my $success = 0;
+        for my $attempt (1..$retries) {
+            if (system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0) {
+                $success = 1;
+                last;
+            }
+            if ($attempt < $retries) {
+                print "      Webhook not ready, retrying in 5s...\n";
+                sleep 5;
+            }
+        }
+        warn "Failed to create $name after $retries attempts\n" unless $success;
+    }
 
-        my $staging_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-        print $staging_fh $le_staging;
-        close $staging_fh;
+    my $names = join(', ', map { $_->{metadata}{name} } @issuers);
+    print "      ClusterIssuers created: $names\n";
 
-        system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $prod_fh->filename) == 0
-            or warn "Failed to create letsencrypt-prod issuer\n";
-        system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $staging_fh->filename) == 0
-            or warn "Failed to create letsencrypt-staging issuer\n";
-
-        print "      ClusterIssuers created: selfsigned-issuer, letsencrypt-prod, letsencrypt-staging\n";
-    } else {
-        print "      ClusterIssuer created: selfsigned-issuer\n";
+    unless ($email) {
         print "      (Add 'ssl: { email: your\@email.com }' to ocp.yaml for Let's Encrypt)\n";
     }
+}
+
+sub _selfsigned_issuer {
+    return {
+        apiVersion => 'cert-manager.io/v1',
+        kind       => 'ClusterIssuer',
+        metadata   => { name => 'selfsigned-issuer' },
+        spec       => { selfSigned => {} },
+    };
+}
+
+sub _acme_issuer {
+    my ($name, $server, $email) = @_;
+    return {
+        apiVersion => 'cert-manager.io/v1',
+        kind       => 'ClusterIssuer',
+        metadata   => { name => $name },
+        spec       => {
+            acme => {
+                server             => $server,
+                email              => $email,
+                privateKeySecretRef => { name => $name },
+                solvers            => [{
+                    http01 => {
+                        gatewayHTTPRoute => {
+                            parentRefs => [{
+                                name      => 'cilium-gateway',
+                                namespace => 'kube-system',
+                            }],
+                        },
+                    },
+                }],
+            },
+        },
+    };
 }
 
 sub _setup_cilium_gateway {
@@ -580,37 +571,40 @@ sub _setup_cilium_gateway {
 
     # Create Cilium Gateway
     print "      Creating Cilium Gateway...\n";
-    my $gateway = <<'YAML';
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: cilium-gateway
-  namespace: kube-system
-spec:
-  gatewayClassName: cilium
-  listeners:
-  - name: http
-    port: 80
-    protocol: HTTP
-    allowedRoutes:
-      namespaces:
-        from: All
-  - name: https
-    port: 443
-    protocol: HTTPS
-    allowedRoutes:
-      namespaces:
-        from: All
-    tls:
-      mode: Terminate
-      certificateRefs:
-      - kind: Secret
-        name: default-gateway-cert
-        namespace: kube-system
-YAML
+
+    my $gateway = {
+        apiVersion => 'gateway.networking.k8s.io/v1',
+        kind       => 'Gateway',
+        metadata   => { name => 'cilium-gateway', namespace => 'kube-system' },
+        spec       => {
+            gatewayClassName => 'cilium',
+            listeners        => [
+                {
+                    name     => 'http',
+                    port     => 80,
+                    protocol => 'HTTP',
+                    allowedRoutes => { namespaces => { from => 'All' } },
+                },
+                {
+                    name     => 'https',
+                    port     => 443,
+                    protocol => 'HTTPS',
+                    allowedRoutes => { namespaces => { from => 'All' } },
+                    tls => {
+                        mode            => 'Terminate',
+                        certificateRefs => [{
+                            kind      => 'Secret',
+                            name      => 'default-gateway-cert',
+                            namespace => 'kube-system',
+                        }],
+                    },
+                },
+            ],
+        },
+    };
 
     my $gw_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $gw_fh $gateway;
+    print $gw_fh $self->ocp->dump($gateway);
     close $gw_fh;
 
     system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $gw_fh->filename) == 0
@@ -675,26 +669,26 @@ sub _setup_lb_ipam {
     }
     die "CiliumLoadBalancerIPPool CRD not available after 300s\n" unless $crd_ready;
 
-    my $manifest = <<"YAML";
-apiVersion: "cilium.io/v2alpha1"
-kind: CiliumLoadBalancerIPPool
-metadata:
-  name: default-pool
-spec:
-  blocks:
-  - cidr: "$node_ip/32"
----
-apiVersion: "cilium.io/v2alpha1"
-kind: CiliumL2AnnouncementPolicy
-metadata:
-  name: default-l2
-spec:
-  interfaces:
-  - ^eth[0-9]+
-  - ^en[a-z0-9]+
-  externalIPs: true
-  loadBalancerIPs: true
-YAML
+    my @resources = (
+        {
+            apiVersion => 'cilium.io/v2alpha1',
+            kind       => 'CiliumLoadBalancerIPPool',
+            metadata   => { name => 'default-pool' },
+            spec       => { blocks => [{ cidr => "$node_ip/32" }] },
+        },
+        {
+            apiVersion => 'cilium.io/v2alpha1',
+            kind       => 'CiliumL2AnnouncementPolicy',
+            metadata   => { name => 'default-l2' },
+            spec       => {
+                interfaces      => ['^eth[0-9]+', '^en[a-z0-9]+'],
+                externalIPs     => \1,
+                loadBalancerIPs => \1,
+            },
+        },
+    );
+
+    my $manifest = $self->ocp->dump(@resources);
 
     my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
     print $fh $manifest;
@@ -720,7 +714,7 @@ sub _setup_registry {
 
     die "No kubeconfig available\n" unless $kubeconfig;
 
-    my $manifest = $self->_generate_registry_manifest;
+    my $manifest = $self->_generate_registry_manifest($config);
 
     # Check if already deployed with same manifest
     require Digest::MD5;
@@ -730,6 +724,18 @@ sub _setup_registry {
     if (($deployed->{registry} // '') eq $hash) {
         print "      Registry already deployed (up to date)\n";
         return;
+    }
+
+    # Log registry mode
+    if ($config->has_external_cache) {
+        print "      docker.io cache: ", $config->registry_cache, " (external)\n";
+    } else {
+        print "      docker.io cache: ocp-cache (built-in)\n";
+    }
+    if ($config->has_external_upstream) {
+        print "      ", $config->registry_name, ": ", $config->registry_upstream, " (external)\n";
+    } else {
+        print "      ", $config->registry_name, ": ocp-registry (built-in)\n";
     }
 
     # Apply manifest
@@ -746,165 +752,143 @@ sub _setup_registry {
     system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
         or die "Failed to apply registry manifests\n";
 
-    # Wait for pods to be ready
-    print "      Waiting for ocp-cache...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
-           "--timeout=120s", "deployment/ocp-cache", "-n", "ocp-system") == 0
-        or warn "ocp-cache not ready within 120s\n";
+    # Wait for deployed components
+    unless ($config->has_external_cache) {
+        print "      Waiting for ocp-cache...\n";
+        system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
+               "--timeout=120s", "deployment/ocp-cache", "-n", "ocp-system") == 0
+            or warn "ocp-cache not ready within 120s\n";
+    }
 
-    print "      Waiting for ocp-registry...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
-           "--timeout=120s", "deployment/ocp-registry", "-n", "ocp-system") == 0
-        or warn "ocp-registry not ready within 120s\n";
+    unless ($config->has_external_upstream) {
+        print "      Waiting for ocp-registry...\n";
+        system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
+               "--timeout=120s", "deployment/ocp-registry", "-n", "ocp-system") == 0
+            or warn "ocp-registry not ready within 120s\n";
+    }
 
     # Save hash so we skip next time if unchanged
     $self->_save_deployed_hash($config, 'registry', $hash);
 }
 
 sub _generate_registry_manifest {
-    return <<'YAML';
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: ocp-system
----
-# Pull-through cache for docker.io
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ocp-cache-config
-  namespace: ocp-system
-data:
-  config.yml: |
-    version: 0.1
-    proxy:
-      remoteurl: https://registry-1.docker.io
-    storage:
-      filesystem:
-        rootdirectory: /var/lib/registry
-      delete:
-        enabled: true
-    http:
-      addr: :5000
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ocp-cache
-  namespace: ocp-system
-  labels:
-    app: ocp-cache
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ocp-cache
-  template:
-    metadata:
-      labels:
-        app: ocp-cache
-    spec:
-      containers:
-      - name: registry
-        image: registry:2
-        ports:
-        - containerPort: 5000
-          name: http
-        volumeMounts:
-        - name: config
-          mountPath: /etc/docker/registry
-        - name: data
-          mountPath: /var/lib/registry
-        resources:
-          requests:
-            memory: "32Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-      volumes:
-      - name: config
-        configMap:
-          name: ocp-cache-config
-      - name: data
-        hostPath:
-          path: /var/lib/ocp/cache
-          type: DirectoryOrCreate
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ocp-cache
-  namespace: ocp-system
-spec:
-  type: NodePort
-  selector:
-    app: ocp-cache
-  ports:
-  - port: 5000
-    targetPort: 5000
-    nodePort: 30500
-    protocol: TCP
-    name: http
----
-# Local registry for user images
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ocp-registry
-  namespace: ocp-system
-  labels:
-    app: ocp-registry
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: ocp-registry
-  template:
-    metadata:
-      labels:
-        app: ocp-registry
-    spec:
-      containers:
-      - name: registry
-        image: registry:2
-        ports:
-        - containerPort: 5000
-          name: http
-        env:
-        - name: REGISTRY_STORAGE_DELETE_ENABLED
-          value: "true"
-        volumeMounts:
-        - name: data
-          mountPath: /var/lib/registry
-        resources:
-          requests:
-            memory: "32Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-      volumes:
-      - name: data
-        hostPath:
-          path: /var/lib/ocp/registry
-          type: DirectoryOrCreate
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ocp-registry
-  namespace: ocp-system
-spec:
-  type: NodePort
-  selector:
-    app: ocp-registry
-  ports:
-  - port: 5000
-    targetPort: 5000
-    nodePort: 30501
-    protocol: TCP
-    name: http
-YAML
+    my ($self, $config) = @_;
+
+    my $has_external_cache    = $config && $config->has_external_cache;
+    my $has_external_upstream = $config && $config->has_external_upstream;
+
+    my @resources;
+
+    # Namespace (always)
+    push @resources, {
+        apiVersion => 'v1',
+        kind       => 'Namespace',
+        metadata   => { name => 'ocp-system' },
+    };
+
+    # ocp-cache: pull-through cache for docker.io (unless external cache)
+    unless ($has_external_cache) {
+        my $cache_config_yml = $self->ocp->dump({
+            version => '0.1',
+            proxy   => { remoteurl => 'https://registry-1.docker.io' },
+            storage => {
+                filesystem => { rootdirectory => '/var/lib/registry' },
+                delete     => { enabled => \1 },
+            },
+            http => { addr => ':5000' },
+        });
+
+        push @resources, {
+            apiVersion => 'v1',
+            kind       => 'ConfigMap',
+            metadata   => { name => 'ocp-cache-config', namespace => 'ocp-system' },
+            data       => { 'config.yml' => $cache_config_yml },
+        };
+
+        push @resources, _registry_deployment('ocp-cache', {
+            config_map => 'ocp-cache-config',
+            host_path  => '/var/lib/ocp/cache',
+        });
+
+        push @resources, _nodeport_service('ocp-cache', 30500);
+    }
+
+    # ocp-registry: local registry (unless external upstream)
+    unless ($has_external_upstream) {
+        push @resources, _registry_deployment('ocp-registry', {
+            host_path => '/var/lib/ocp/registry',
+            env       => [{ name => 'REGISTRY_STORAGE_DELETE_ENABLED', value => 'true' }],
+        });
+
+        push @resources, _nodeport_service('ocp-registry', 30501);
+    }
+
+    return $self->ocp->dump(@resources);
+}
+
+sub _registry_deployment {
+    my ($name, $opts) = @_;
+
+    my @volume_mounts;
+    my @volumes;
+
+    if ($opts->{config_map}) {
+        push @volume_mounts, { name => 'config', mountPath => '/etc/docker/registry' };
+        push @volumes, { name => 'config', configMap => { name => $opts->{config_map} } };
+    }
+
+    push @volume_mounts, { name => 'data', mountPath => '/var/lib/registry' };
+    push @volumes, {
+        name     => 'data',
+        hostPath => { path => $opts->{host_path}, type => 'DirectoryOrCreate' },
+    };
+
+    my $container = {
+        name         => 'registry',
+        image        => 'registry:2',
+        ports        => [{ containerPort => 5000, name => 'http' }],
+        volumeMounts => \@volume_mounts,
+        resources    => {
+            requests => { memory => '32Mi', cpu => '50m' },
+            limits   => { memory => '128Mi' },
+        },
+    };
+
+    $container->{env} = $opts->{env} if $opts->{env};
+
+    return {
+        apiVersion => 'apps/v1',
+        kind       => 'Deployment',
+        metadata   => { name => $name, namespace => 'ocp-system', labels => { app => $name } },
+        spec       => {
+            replicas => 1,
+            selector => { matchLabels => { app => $name } },
+            template => {
+                metadata => { labels => { app => $name } },
+                spec     => { containers => [$container], volumes => \@volumes },
+            },
+        },
+    };
+}
+
+sub _nodeport_service {
+    my ($name, $node_port) = @_;
+    return {
+        apiVersion => 'v1',
+        kind       => 'Service',
+        metadata   => { name => $name, namespace => 'ocp-system' },
+        spec       => {
+            type     => 'NodePort',
+            selector => { app => $name },
+            ports    => [{
+                port       => 5000,
+                targetPort => 5000,
+                nodePort   => $node_port,
+                protocol   => 'TCP',
+                name       => 'http',
+            }],
+        },
+    };
 }
 
 #
@@ -976,54 +960,56 @@ sub _setup_gpu_support {
 }
 
 sub _generate_gpu_manifest {
-    return <<'YAML';
----
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: nvidia
-handler: nvidia
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: nvidia-device-plugin-daemonset
-  namespace: kube-system
-spec:
-  selector:
-    matchLabels:
-      app: nvidia-device-plugin-daemonset
-  updateStrategy:
-    type: RollingUpdate
-  template:
-    metadata:
-      labels:
-        app: nvidia-device-plugin-daemonset
-    spec:
-      runtimeClassName: nvidia
-      tolerations:
-      - key: nvidia.com/gpu
-        operator: Exists
-        effect: NoSchedule
-      priorityClassName: system-node-critical
-      containers:
-      - name: nvidia-device-plugin-ctr
-        image: nvcr.io/nvidia/k8s-device-plugin:v0.17.0
-        env:
-        - name: FAIL_ON_INIT_ERROR
-          value: "false"
-        securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop: ["ALL"]
-        volumeMounts:
-        - name: device-plugin
-          mountPath: /var/lib/kubelet/device-plugins
-      volumes:
-      - name: device-plugin
-        hostPath:
-          path: /var/lib/kubelet/device-plugins
-YAML
+    my ($self) = @_;
+
+    my @resources = (
+        {
+            apiVersion => 'node.k8s.io/v1',
+            kind       => 'RuntimeClass',
+            metadata   => { name => 'nvidia' },
+            handler    => 'nvidia',
+        },
+        {
+            apiVersion => 'apps/v1',
+            kind       => 'DaemonSet',
+            metadata   => { name => 'nvidia-device-plugin-daemonset', namespace => 'kube-system' },
+            spec       => {
+                selector       => { matchLabels => { app => 'nvidia-device-plugin-daemonset' } },
+                updateStrategy => { type => 'RollingUpdate' },
+                template       => {
+                    metadata => { labels => { app => 'nvidia-device-plugin-daemonset' } },
+                    spec     => {
+                        runtimeClassName   => 'nvidia',
+                        tolerations        => [{
+                            key      => 'nvidia.com/gpu',
+                            operator => 'Exists',
+                            effect   => 'NoSchedule',
+                        }],
+                        priorityClassName  => 'system-node-critical',
+                        containers         => [{
+                            name            => 'nvidia-device-plugin-ctr',
+                            image           => 'nvcr.io/nvidia/k8s-device-plugin:v0.17.0',
+                            env             => [{ name => 'FAIL_ON_INIT_ERROR', value => 'false' }],
+                            securityContext => {
+                                allowPrivilegeEscalation => \0,
+                                capabilities             => { drop => ['ALL'] },
+                            },
+                            volumeMounts => [{
+                                name      => 'device-plugin',
+                                mountPath => '/var/lib/kubelet/device-plugins',
+                            }],
+                        }],
+                        volumes => [{
+                            name     => 'device-plugin',
+                            hostPath => { path => '/var/lib/kubelet/device-plugins' },
+                        }],
+                    },
+                },
+            },
+        },
+    );
+
+    return $self->ocp->dump(@resources);
 }
 
 #
@@ -1039,8 +1025,8 @@ sub _load_deployed_hashes {
     my ($self, $config) = @_;
     my $path = $self->_deployed_hashes_path($config);
     return {} unless -f $path;
-    require YAML::XS;
-    return YAML::XS::LoadFile($path->stringify) || {};
+
+    return $self->ocp->load_file($path->stringify) || {};
 }
 
 sub _save_deployed_hash {
@@ -1049,8 +1035,8 @@ sub _save_deployed_hash {
     $hashes->{$component} = $hash;
     my $path = $self->_deployed_hashes_path($config);
     $path->parent->mkpath unless -d $path->parent;
-    require YAML::XS;
-    YAML::XS::DumpFile($path->stringify, $hashes);
+
+    $self->ocp->dump_file($path->stringify, $hashes);
 }
 
 #
@@ -1072,13 +1058,13 @@ sub _reconcile_components {
     my $updated = 0;
     my $checked = 0;
 
-    # Registry
-    unless ($config->no_registry) {
+    # Registry (always deployed — required infrastructure)
+    {
         $checked++;
         print "  [..] Checking registry...\n";
         eval {
             my $deployed = $self->_load_deployed_hashes($config);
-            my $manifest = $self->_generate_registry_manifest;
+            my $manifest = $self->_generate_registry_manifest($config);
             require Digest::MD5;
             my $current_hash = Digest::MD5::md5_hex($manifest);
             my $was_missing = !exists $deployed->{registry};

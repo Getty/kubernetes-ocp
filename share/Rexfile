@@ -305,14 +305,13 @@ task "install_rke2_server", sub {
     file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
-    # Configure pull-through cache mirror for docker.io
-    # containerd tries localhost:30500 first, falls back to docker.io if not yet running
-    file "/etc/rancher/rke2/registries.yaml", content => <<'REGISTRIES';
-mirrors:
-  docker.io:
-    endpoint:
-      - "http://localhost:30500"
-REGISTRIES
+    # Configure registry mirrors (pull-through cache + internal registry name)
+    my $registries = _generate_registries_yaml(
+        registry_cache    => $params->{registry_cache}    || '',
+        registry_upstream => $params->{registry_upstream}  || '',
+        registry_name     => $params->{registry_name}      || 'ocp.internal',
+    );
+    file "/etc/rancher/rke2/registries.yaml", content => $registries;
 
     # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
     _configure_nvidia_containerd();
@@ -506,13 +505,13 @@ task "install_rke2_agent", sub {
     file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
-    # Configure pull-through cache mirror for docker.io
-    file "/etc/rancher/rke2/registries.yaml", content => <<'REGISTRIES';
-mirrors:
-  docker.io:
-    endpoint:
-      - "http://localhost:30500"
-REGISTRIES
+    # Configure registry mirrors (pull-through cache + internal registry name)
+    my $registries = _generate_registries_yaml(
+        registry_cache    => $params->{registry_cache}    || '',
+        registry_upstream => $params->{registry_upstream}  || '',
+        registry_name     => $params->{registry_name}      || 'ocp.internal',
+    );
+    file "/etc/rancher/rke2/registries.yaml", content => $registries;
 
     # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
     _configure_nvidia_containerd();
@@ -654,6 +653,23 @@ sub _generate_token {
     my $token = run "head -c 48 /dev/urandom | base64 | tr -d '\\n+/='";
     chomp $token;
     return substr($token, 0, 48);
+}
+
+sub _generate_registries_yaml {
+    my (%opts) = @_;
+    my $cache_endpoint    = $opts{registry_cache}    || 'http://localhost:30500';
+    my $upstream_endpoint = $opts{registry_upstream}  || 'http://localhost:30501';
+    my $registry_name     = $opts{registry_name}      || 'ocp.internal';
+
+    return <<"YAML";
+mirrors:
+  docker.io:
+    endpoint:
+      - $cache_endpoint
+  $registry_name:
+    endpoint:
+      - $upstream_endpoint
+YAML
 }
 
 sub _configure_nvidia_containerd {

@@ -2,11 +2,16 @@ package OCP::Config;
 # ABSTRACT: OCP configuration and status management
 
 use Moo;
-use YAML::XS qw(LoadFile DumpFile);
+use OCP;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 
 our $VERSION = '0.1.0';
+
+has ocp => (
+    is      => 'lazy',
+    default => sub { OCP->instance },
+);
 
 # Config file path (ocp.yaml)
 has file => (
@@ -33,7 +38,7 @@ has spec => (
 sub _load_spec {
     my ($self) = @_;
     return $self->_default_spec unless -f $self->file;
-    return LoadFile($self->file);
+    return $self->ocp->load_file($self->file);
 }
 
 sub _default_spec {
@@ -103,7 +108,15 @@ sub version {
 sub no_traefik { shift->spec->{notraefik} // 0 }
 sub no_cert { shift->spec->{nocert} // 0 }
 sub no_lbipam { shift->spec->{nolbipam} // 0 }
-sub no_registry { shift->spec->{noregistry} // 0 }
+sub no_robocop { shift->spec->{norobocop} // 0 }
+
+# Registry configuration
+sub registry_config      { shift->spec->{registry} // {} }
+sub registry_cache       { shift->registry_config->{cache} // '' }
+sub registry_upstream    { shift->registry_config->{upstream} // '' }
+sub registry_name        { shift->registry_config->{name} // 'ocp.internal' }
+sub has_external_cache   { shift->registry_cache ne '' }
+sub has_external_upstream { shift->registry_upstream ne '' }
 
 # SSL configuration (for cert-manager)
 sub ssl_config { shift->spec->{ssl} // {} }
@@ -218,7 +231,7 @@ sub write_spec {
         $spec->{single} = 1;  # YAML will render as boolean true
     }
 
-    DumpFile($file, $spec);
+    OCP->instance->dump_file($file, $spec);
 }
 
 1;

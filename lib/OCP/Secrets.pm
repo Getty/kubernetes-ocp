@@ -2,13 +2,18 @@ package OCP::Secrets;
 # ABSTRACT: Secret management for OCP using Crypt::Age and File::SOPS
 
 use Moo;
+use OCP;
 use Path::Tiny qw(path);
 use Carp qw(croak);
-use YAML::XS;
 use Crypt::Age;
 use File::SOPS;
 
 our $VERSION = '0.1.0';
+
+has ocp => (
+    is      => 'lazy',
+    default => sub { OCP->instance },
+);
 
 has project_dir => (
     is       => 'ro',
@@ -282,7 +287,7 @@ sub save_kubeconfig {
 
     # Encrypt kubeconfig with SOPS
     my $encrypted = File::SOPS->encrypt(
-        data       => YAML::XS::Load($kubeconfig_yaml),
+        data       => $self->ocp->load($kubeconfig_yaml),
         recipients => [$recipient],
         format     => 'yaml',
     );
@@ -307,7 +312,7 @@ sub read_kubeconfig {
         format     => 'yaml',
     );
 
-    return YAML::XS::Dump($decrypted);
+    return $self->ocp->dump($decrypted);
 }
 
 sub decrypt_kubeconfig_to_file {
@@ -337,7 +342,7 @@ sub encrypt_file {
         or croak "No age recipient found";
 
     # If content is YAML string, parse it first
-    my $data = ref($content) ? $content : YAML::XS::Load($content);
+    my $data = ref($content) ? $content : $self->ocp->load($content);
 
     my $encrypted = File::SOPS->encrypt(
         data       => $data,
@@ -368,7 +373,7 @@ sub decrypt_file {
         format     => 'yaml',
     );
 
-    return YAML::XS::Dump($decrypted);
+    return $self->ocp->dump($decrypted);
 }
 
 1;

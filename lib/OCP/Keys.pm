@@ -2,15 +2,20 @@ package OCP::Keys;
 # ABSTRACT: Secure key management with double encryption (age + password)
 
 use Moo;
+use OCP;
 use Path::Tiny qw(path);
 use Carp qw(croak);
-use YAML::XS;
 use Crypt::Age;
 use File::SOPS;
 use Digest::SHA qw(sha256_hex);
 use MIME::Base64 qw(encode_base64 decode_base64);
 
 our $VERSION = '0.1.0';
+
+has ocp => (
+    is      => 'lazy',
+    default => sub { OCP->instance },
+);
 
 has project_dir => (
     is       => 'ro',

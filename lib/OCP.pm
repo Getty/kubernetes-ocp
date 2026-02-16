@@ -2,10 +2,43 @@ package OCP;
 # ABSTRACT: Omni Control Plane - Kubernetes Cluster Management
 
 use Moo;
+with 'MooX::Singleton';
 use MooX::Cmd;
 use MooX::Options;
+use YAML::XS ();
 
 our $VERSION = '0.1.0';
+
+# Register MooX::Cmd-created instance as singleton
+sub BUILD {
+    my ($self) = @_;
+    no strict 'refs';
+    ${"OCP::_instance"} //= $self;
+}
+
+#
+# YAML (central serialization)
+#
+
+sub dump {
+    my ($self, @resources) = @_;
+    return join('', map { YAML::XS::Dump($_) } @resources);
+}
+
+sub load {
+    my ($self, $string) = @_;
+    return YAML::XS::Load($string);
+}
+
+sub dump_file {
+    my ($self, $file, $data) = @_;
+    return YAML::XS::DumpFile("$file", $data);
+}
+
+sub load_file {
+    my ($self, $file) = @_;
+    return YAML::XS::LoadFile("$file");
+}
 
 option verbose => (
     is      => 'ro',
