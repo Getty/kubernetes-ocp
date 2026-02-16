@@ -256,7 +256,6 @@ sub execute {
         distribution => $distribution,
         version      => $version,
         node_name    => $cp_name,
-        gpu          => $config->gpu,
     );
 
     print "  [ok] RKE2 server installed\n";

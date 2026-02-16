@@ -31,9 +31,7 @@ Revision history for OCP
       - detect_gpu still detects AMD but skips driver installation
     - RKE2 + K3s dual distribution support via Rex framework
     - Cilium CNI installation (kube-proxy replacement, eBPF)
-    - GPU support opt-in via controlPlanes.gpu: true in ocp.yaml
-      - No longer auto-installs drivers on every node with a GPU
-      - OCP_GPU env var passed from CLI through Rex to Rexfile
+    - GPU auto-detection and NVIDIA driver installation
     - Single-node mode (control plane untainting)
     - Rex-based server automation (share/Rexfile)
     - Robocop Kubernetes controller for CRD-based node management
