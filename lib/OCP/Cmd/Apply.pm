@@ -291,6 +291,28 @@ sub execute {
         }
     }
 
+    # Wait for Cilium to be ready (node must become Ready first)
+    print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
+    {
+        require File::Temp;
+        my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print $kc_fh $result->{kubeconfig};
+        close $kc_fh;
+        my $kc_path = $kc_fh->filename;
+        my $node_ready = 0;
+        for my $i (1..60) {
+            my $status = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.conditions[?(\@.type=="Ready")].status}' 2>/dev/null`;
+            if ($status eq 'True') {
+                print "  [ok] Node is Ready after ~${\ ($i * 10)}s\n";
+                $node_ready = 1;
+                last;
+            }
+            print "      ... waiting (${i}/60)\n" if $i % 6 == 0;
+            sleep 10;
+        }
+        print "  [WARN] Node not Ready after 600s, continuing anyway...\n" unless $node_ready;
+    }
+
     # Setup Cilium Gateway API (while cert-manager starts up)
     print "  [..] Setting up Cilium Gateway API...\n";
     eval {
@@ -561,7 +583,6 @@ sub _setup_lb_ipam {
         my $packed = Socket::inet_aton($node_ip);
         die "Cannot resolve $node_ip\n" unless $packed;
         $node_ip = Socket::inet_ntoa($packed);
-        print "      Resolved to $node_ip\n";
     }
 
     require File::Temp;
@@ -569,6 +590,19 @@ sub _setup_lb_ipam {
     print $kc_fh $kubeconfig;
     close $kc_fh;
     my $kc_path = $kc_fh->filename;
+
+    # If IP is localhost/loopback, get the real node IP from Kubernetes
+    if ($node_ip =~ /^127\./) {
+        my $real_ip = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.addresses[?\@.type=="InternalIP"].address}' 2>/dev/null`;
+        chomp $real_ip;
+        if ($real_ip && $real_ip !~ /^127\./) {
+            print "      Using node IP $real_ip (instead of $node_ip)\n";
+            $node_ip = $real_ip;
+        } else {
+            print "      WARNING: Only loopback IP available, LB-IPAM may not work externally\n";
+        }
+    }
+    print "      LB-IPAM pool: $node_ip/32\n";
 
     my $manifest = <<"YAML";
 apiVersion: "cilium.io/v2alpha1"
