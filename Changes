@@ -22,6 +22,13 @@ Revision history for OCP
       - Gateway with HTTP/HTTPS listeners
       - LB-IPAM for bare-metal LoadBalancer support
       - CiliumL2AnnouncementPolicy for external IP
+    - Fix SSH host key verification (switch from Net::SSH2 to Net::OpenSSH)
+      - Net::SSH2 (libssh2) silently ignores StrictHostKeyChecking setting
+      - Unknown hosts no longer cause "Couldn't authenticate" errors
+    - AMD GPU: Robust ROCm installation with version fallbacks
+      - Tries ROCm 6.4.1, 6.3.3, 6.2.4 across distro versions
+      - Falls back to system amdgpu driver if no ROCm available
+      - Handles missing repos gracefully (e.g. Debian trixie)
     - RKE2 + K3s dual distribution support via Rex framework
     - Cilium CNI installation (kube-proxy replacement, eBPF)
     - GPU auto-detection and NVIDIA driver installation

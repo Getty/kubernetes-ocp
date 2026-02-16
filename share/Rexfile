@@ -6,12 +6,14 @@ use Rex::Commands::File;
 use Rex::Commands::Service;
 use Rex::Commands::Pkg;
 
-# Authentication
-set connection => 'SSH';
+# Authentication - use Net::OpenSSH (real ssh command, not libssh2)
+# Net::SSH2 (libssh2) ignores OpenSSH config options and has no way to
+# disable host key checking, causing "Couldn't authenticate" on unknown hosts.
+set connection => 'OpenSSH';
 parallelism 1;
 
-# SSH options - disable strict host key checking
-set ssh_config_options => {
+# SSH options - disable strict host key checking for new servers
+set openssh_opt => {
     StrictHostKeyChecking => 'no',
     UserKnownHostsFile    => '/dev/null',
 };
@@ -108,8 +110,11 @@ task "detect_gpu", sub {
         say "NVIDIA GPU detected, installing drivers...";
         do_task "install_nvidia";
     } elsif ($amd_found) {
-        say "Installing AMD GPU drivers and ROCm...";
-        do_task "install_amd_gpu";
+        # TODO: AMD GPU/ROCm support needs proper implementation
+        # - AMD dropped Debian from ROCm packages entirely (only Ubuntu/RHEL/SLES)
+        # - For K8s, host only needs kernel amdgpu module + device plugin
+        # - ROCm userspace belongs in container images, not on host
+        say "AMD GPU detected, but AMD GPU support not yet implemented - skipping";
     } else {
         say "No GPU detected, skipping driver installation";
     }
@@ -175,53 +180,151 @@ desc "Install AMD GPU drivers and ROCm";
 task "install_amd_gpu", sub {
     say "Installing AMD GPU drivers and ROCm...";
 
+    my $os = operating_system();
+    my $version = operating_system_version();
+    say "  OS: $os $version";
+
     # Ensure dependencies
     pkg ["curl", "gnupg", "wget"], ensure => "present";
     update_package_db;
 
-    # Determine AMD repo URL based on OS
-    my $os = operating_system();
-    my $version = operating_system_version();
-    my ($repo_os, $repo_dist);
+    # Determine AMD repo candidates based on OS
+    # Try exact distro first, then fall back to closest older release
+    # (AMD/ROCm is slow to add support for new distro versions)
+    my $repo_os;
+    my @repo_candidates;
 
     if ($os eq 'Debian') {
         $repo_os = 'debian';
-        # Debian 12 = bookworm, 13 = trixie
-        $repo_dist = $version >= 13 ? 'trixie' : 'bookworm';
+        if ($version >= 13) {
+            # Trixie: try trixie first, fall back to bookworm
+            @repo_candidates = ('trixie', 'bookworm');
+        } elsif ($version >= 12) {
+            @repo_candidates = ('bookworm');
+        } else {
+            say "[WARN] Debian $version is too old for ROCm (requires 12+)";
+            _install_amd_system_driver();
+            return;
+        }
     } elsif ($os eq 'Ubuntu') {
         $repo_os = 'ubuntu';
-        # Map Ubuntu version to codename
-        $repo_dist = $version =~ /^24/ ? 'noble' :
-                     $version =~ /^22/ ? 'jammy' :
-                     $version =~ /^20/ ? 'focal' : 'jammy';
+        if ($version =~ /^24/) {
+            @repo_candidates = ('noble', 'jammy');
+        } elsif ($version =~ /^22/) {
+            @repo_candidates = ('jammy');
+        } else {
+            say "[WARN] Ubuntu $version is not supported for ROCm (requires 22.04+)";
+            _install_amd_system_driver();
+            return;
+        }
     } else {
-        die "Unsupported OS for AMD GPU: $os";
+        say "[WARN] Unsupported OS for AMD GPU: $os";
+        _install_amd_system_driver();
+        return;
     }
 
-    say "Detected OS: $os $version -> repo: $repo_os/$repo_dist";
+    # Try ROCm versions from newest to oldest
+    my @rocm_versions = (
+        { ver => '6.4.1', pkg => '6.4.60401-1' },
+        { ver => '6.3.3', pkg => '6.3.60303-1' },
+        { ver => '6.2.4', pkg => '6.2.60204-1' },
+    );
 
-    # Download and install amdgpu-install tool
-    my $installer_url = "https://repo.radeon.com/amdgpu-install/6.4.1/$repo_os/$repo_dist/amdgpu-install_6.4.60401-1_all.deb";
+    my $installed = 0;
+    ROCM: for my $rocm (@rocm_versions) {
+        for my $dist (@repo_candidates) {
+            my $url = "https://repo.radeon.com/amdgpu-install/$rocm->{ver}/$repo_os/$dist/amdgpu-install_$rocm->{pkg}_all.deb";
+            say "  Trying ROCm $rocm->{ver} for $repo_os/$dist...";
 
-    say "Downloading AMD GPU installer from $installer_url";
-    run "wget -O /tmp/amdgpu-install.deb $installer_url";
+            run "wget -q -O /tmp/amdgpu-install.deb '$url' 2>&1", auto_die => FALSE;
 
-    say "Installing amdgpu-install tool...";
-    run "apt install -y /tmp/amdgpu-install.deb";
-    run "rm /tmp/amdgpu-install.deb";
+            no warnings 'uninitialized';
+            my $deb_size = run "wc -c < /tmp/amdgpu-install.deb 2>/dev/null || echo 0", auto_die => FALSE;
+            use warnings 'uninitialized';
+            chomp $deb_size;
 
-    # Refresh repositories
+            if ($deb_size > 1000) {
+                say "  [ok] Downloaded ROCm $rocm->{ver} ($repo_os/$dist, $deb_size bytes)";
+                $installed = _install_rocm_from_deb($rocm->{ver});
+                last ROCM if $installed;
+            } else {
+                say "  [skip] Not available at $url";
+                run "rm -f /tmp/amdgpu-install.deb", auto_die => FALSE;
+            }
+        }
+    }
+
+    unless ($installed) {
+        say "[WARN] No ROCm version available for $os $version";
+        _install_amd_system_driver();
+    }
+};
+
+sub _install_rocm_from_deb {
+    my ($rocm_ver) = @_;
+
+    say "  Installing amdgpu-install tool...";
+    no warnings 'uninitialized';
+    my $apt_out = run "apt-get install -y /tmp/amdgpu-install.deb 2>&1", auto_die => FALSE;
+    my $apt_ok = ($? == 0);
+    use warnings 'uninitialized';
+    run "rm -f /tmp/amdgpu-install.deb", auto_die => FALSE;
+
+    unless ($apt_ok) {
+        say "  [WARN] Failed to install amdgpu-install: $apt_out";
+        return 0;
+    }
+
     update_package_db;
 
-    # Install ROCm stack (for ML/compute workloads on Kubernetes)
-    say "Installing ROCm stack...";
-    run "amdgpu-install -y --usecase=rocm --no-dkms";
+    say "  Installing ROCm $rocm_ver stack (this may take a while)...";
+    no warnings 'uninitialized';
+    my $rocm_out = run "amdgpu-install -y --usecase=rocm --no-dkms 2>&1", auto_die => FALSE, timeout => 600;
+    my $rocm_ok = ($? == 0);
+    use warnings 'uninitialized';
+
+    unless ($rocm_ok) {
+        say "  [WARN] ROCm $rocm_ver install failed: " . (substr($rocm_out // '', -200) || 'no output');
+        return 0;
+    }
 
     # Load amdgpu module
-    run "modprobe amdgpu";
+    run "modprobe amdgpu", auto_die => FALSE;
 
-    say "AMD GPU drivers and ROCm installed";
-};
+    # Verify
+    no warnings 'uninitialized';
+    my $rocm_check = run "rocminfo 2>/dev/null | head -5 || echo 'rocminfo not available'", auto_die => FALSE;
+    use warnings 'uninitialized';
+    say "  ROCm verification: $rocm_check";
+
+    say "  [ok] AMD GPU with ROCm $rocm_ver installed";
+    return 1;
+}
+
+sub _install_amd_system_driver {
+    say "  Falling back to system AMDGPU driver (no ROCm/compute)...";
+
+    no warnings 'uninitialized';
+    my $has_firmware = run "dpkg -l firmware-amd-graphics 2>/dev/null | grep '^ii'", auto_die => FALSE;
+    use warnings 'uninitialized';
+
+    if (!$has_firmware) {
+        # Try non-free-firmware repo
+        run "apt-get install -y firmware-amd-graphics 2>&1", auto_die => FALSE;
+    }
+
+    run "modprobe amdgpu", auto_die => FALSE;
+
+    no warnings 'uninitialized';
+    my $loaded = run "lsmod | grep '^amdgpu '", auto_die => FALSE;
+    use warnings 'uninitialized';
+
+    if ($loaded) {
+        say "  [ok] System amdgpu driver loaded (no ROCm compute support)";
+    } else {
+        say "  [WARN] amdgpu driver not loaded (reboot may be needed)";
+    }
+}
 
 sub _verify_nvidia {
     say "  Verifying NVIDIA installation...";
@@ -339,11 +442,32 @@ REGISTRIES
     say "      Detecting latest RKE2 version...";
     my $rke2_version = $version;
     if (!$rke2_version) {
+        # Primary: channel server redirect (same method as official install script)
         $rke2_version = run "curl -sfL -w '%{url_effective}' -o /dev/null https://update.rke2.io/v1-release/channels/stable | sed 's|.*/||'",
             auto_die => FALSE;
-        chomp $rke2_version;
+        chomp $rke2_version if $rke2_version;
+
+        # Fallback: parse JSON from channel server
+        if (!$rke2_version) {
+            say "      Channel redirect failed, trying JSON parse...";
+            $rke2_version = run "curl -sfL https://update.rke2.io/v1-release/channels/stable 2>/dev/null | grep -oP '\"latest\"\\s*:\\s*\"\\K[^\"]+' || true",
+                auto_die => FALSE;
+            chomp $rke2_version if $rke2_version;
+        }
+
+        # Fallback 2: GitHub API
+        if (!$rke2_version) {
+            say "      Channel server unreachable, trying GitHub API...";
+            $rke2_version = run "curl -sfL https://api.github.com/repos/rancher/rke2/releases/latest 2>/dev/null | grep -oP '\"tag_name\"\\s*:\\s*\"\\K[^\"]+' || true",
+                auto_die => FALSE;
+            chomp $rke2_version if $rke2_version;
+        }
     }
     say "      RKE2 version: $rke2_version";
+
+    if (!$rke2_version) {
+        die "Could not detect RKE2 version - check DNS/network for update.rke2.io and api.github.com on this node";
+    }
 
     my $version_url = $rke2_version;
     $version_url =~ s/\+/%2B/g;
