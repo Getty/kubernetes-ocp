@@ -278,15 +278,46 @@ task "install_rke2_server", sub {
         die "Install script too small ($dl_size bytes) - download failed?";
     }
 
-    # Run install script with explicit exit code capture
+    # Pre-download RKE2 tarball (the install script uses curl -s which
+    # produces no output, causing Rex to kill the SSH channel on timeout)
+    say "      Detecting latest RKE2 version...";
+    my $rke2_version = $version;
+    if (!$rke2_version) {
+        $rke2_version = run "curl -sfL -w '%{url_effective}' -o /dev/null https://update.rke2.io/v1-release/channels/stable | sed 's|.*/||'",
+            auto_die => FALSE;
+        chomp $rke2_version;
+    }
+    say "      RKE2 version: $rke2_version";
+
+    my $version_url = $rke2_version;
+    $version_url =~ s/\+/%2B/g;
+    my $tarball_url = "https://github.com/rancher/rke2/releases/download/$version_url/rke2.linux-amd64.tar.gz";
+    my $checksum_url = "https://github.com/rancher/rke2/releases/download/$version_url/sha256sum-amd64.txt";
+
+    say "      Downloading RKE2 tarball (~60MB, this takes a moment)...";
+    run "mkdir -p /tmp/rke2-artifacts", auto_die => FALSE;
+
+    # Download with progress-bar so Rex sees output and doesn't kill the channel
+    run "curl -fL --progress-bar -o /tmp/rke2-artifacts/rke2.linux-amd64.tar.gz '$tarball_url' 2>&1",
+        auto_die => FALSE, timeout => 600;
+    run "curl -fsSL -o /tmp/rke2-artifacts/sha256sum-amd64.txt '$checksum_url' 2>&1",
+        auto_die => FALSE;
+
+    # Verify download
+    my $tarball_size = run "wc -c < /tmp/rke2-artifacts/rke2.linux-amd64.tar.gz 2>/dev/null || echo 0", auto_die => FALSE;
+    chomp $tarball_size;
+    say "      Tarball size: $tarball_size bytes";
+    if ($tarball_size < 1000000) {
+        die "RKE2 tarball too small ($tarball_size bytes) - download failed";
+    }
+
+    # Run install script pointing to our pre-downloaded artifacts
     say "      Running install script...";
-    my $install_cmd = "bash -x /tmp/rke2-install.sh 2>&1; echo RKE2_EXIT_CODE=\$?";
-    my $install_result = run $install_cmd,
-        auto_die => FALSE,
-        timeout => 300,
-        env => {
-            ($version ? (INSTALL_RKE2_VERSION => $version) : ()),
-        };
+    my $install_cmd = "INSTALL_RKE2_ARTIFACT_PATH=/tmp/rke2-artifacts ";
+    $install_cmd .= "INSTALL_RKE2_VERSION=$rke2_version " if $rke2_version;
+    $install_cmd .= "sh /tmp/rke2-install.sh 2>&1; echo RKE2_EXIT_CODE=\$?";
+
+    my $install_result = run $install_cmd, auto_die => FALSE, timeout => 120;
     say $install_result if $install_result;
 
     # Check explicit exit code from output
