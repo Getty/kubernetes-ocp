@@ -76,40 +76,42 @@ task "detect_gpu", sub {
     # Ensure lspci is available
     pkg ["pciutils"], ensure => "present" unless is_installed("pciutils");
 
-    # Get full lspci output for debugging
-    my $lspci_output = run "lspci 2>&1", auto_die => FALSE;
-    say "=== PCI Devices ===";
-    say $lspci_output;
-    say "=== End PCI Devices ===";
+    # Use lspci -nn for reliable detection via PCI class codes + vendor IDs
+    # Class [0300] = VGA controller, [0302] = 3D controller
+    # Vendor [10de] = NVIDIA, [1002] = AMD/ATI
+    my $pci_display = run "lspci -nn 2>&1 | grep -E '\\[03(00|02)\\]'", auto_die => FALSE;
+    say "=== Display Controllers ===";
+    say $pci_display || "(none found)";
+    say "=== End Display Controllers ===";
 
-    # Check for virtualized GPU (skip these)
-    my $has_virtio = run "lspci | grep -iE '(virtio|qemu|vmware|virtualbox)'", auto_die => FALSE;
-    my $is_virtual = ($? == 0 && $has_virtio);
+    # Match only actual display controllers (VGA/3D) by vendor ID
+    my $nvidia_found = ($pci_display && $pci_display =~ /\[10de:[0-9a-f]{4}\]/i);
+    my $amd_found    = ($pci_display && $pci_display =~ /\[1002:[0-9a-f]{4}\]/i);
 
-    # Check for NVIDIA (but not if virtualized)
-    my $has_nvidia = run "lspci | grep -i nvidia", auto_die => FALSE;
-    my $nvidia_found = ($? == 0 && $has_nvidia && !$is_virtual);
+    # Check for virtual GPU passthrough (skip these — no host driver needed)
+    my $is_virtual = 0;
+    if ($pci_display && $pci_display =~ /\[(1af4|1b36|15ad|80ee):[0-9a-f]{4}\]/i) {
+        # 1af4=virtio, 1b36=QEMU, 15ad=VMware, 80ee=VirtualBox
+        $is_virtual = 1;
+    }
 
-    # Check for AMD (but not if virtualized)
-    my $has_amd = run "lspci | grep -iE '(vga|display|3d).*(amd|ati|radeon)'", auto_die => FALSE;
-    my $amd_found = ($? == 0 && $has_amd && !$is_virtual);
+    say "GPU Detection:";
+    say "  NVIDIA display controller: " . ($nvidia_found ? "YES" : "no");
+    say "  AMD display controller: " . ($amd_found ? "YES" : "no");
+    say "  Virtual GPU: " . ($is_virtual ? "YES (skipping)" : "no");
 
-    say "GPU Detection Results:";
-    say "  Virtualized GPU: " . ($is_virtual ? "YES (skipping driver installation)" : "no");
-    say "  NVIDIA: " . ($nvidia_found ? "YES" : "no");
-    say "  AMD: " . ($amd_found ? "YES" : "no");
+    if ($is_virtual) {
+        say "Virtual GPU detected — host driver installation skipped";
+        return;
+    }
 
     if ($nvidia_found) {
         say "NVIDIA GPU detected, installing drivers...";
         do_task "install_nvidia";
     } elsif ($amd_found) {
-        # TODO: AMD GPU/ROCm support needs proper implementation
-        # - AMD dropped Debian from ROCm packages entirely (only Ubuntu/RHEL/SLES)
-        # - For K8s, host only needs kernel amdgpu module + device plugin
-        # - ROCm userspace belongs in container images, not on host
-        say "AMD GPU detected, but AMD GPU support not yet implemented - skipping";
+        say "AMD GPU detected, but AMD driver support not yet implemented — skipping";
     } else {
-        say "No GPU detected, skipping driver installation";
+        say "No discrete GPU detected";
     }
 };
 
