@@ -256,20 +256,35 @@ task "install_rke2_server", sub {
     file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
-    # Install RKE2 (download script first, then run - pipes over SSH are unreliable)
+    # Install RKE2
     say "[1/5] Installing RKE2...";
-    run "curl -fL https://get.rke2.io -o /tmp/rke2-install.sh 2>&1", auto_die => FALSE;
-    my $dl_check = run "test -s /tmp/rke2-install.sh && echo OK || echo FAIL", auto_die => FALSE;
-    chomp $dl_check;
-    if ($dl_check ne 'OK') {
-        die "Failed to download RKE2 install script";
+
+    # Pre-flight: verify connectivity to GitHub releases
+    say "      Checking connectivity...";
+    my $head_check = run "curl -sfI https://github.com/rancher/rke2/releases 2>&1 | head -1", auto_die => FALSE;
+    chomp $head_check;
+    say "      GitHub releases: $head_check";
+    unless ($head_check =~ /200|301|302/) {
+        die "Cannot reach GitHub releases - check network/DNS: $head_check";
     }
 
-    my $install_cmd = "";
-    $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
-    $install_cmd .= "sh /tmp/rke2-install.sh 2>&1";
+    # Download install script
+    say "      Downloading install script...";
+    run "curl -fL https://get.rke2.io -o /tmp/rke2-install.sh 2>&1", auto_die => FALSE;
+    my $dl_size = run "wc -c < /tmp/rke2-install.sh 2>/dev/null || echo 0", auto_die => FALSE;
+    chomp $dl_size;
+    say "      Install script: $dl_size bytes";
+    if ($dl_size < 1000) {
+        die "Install script too small ($dl_size bytes) - download failed?";
+    }
 
-    my $install_result = run $install_cmd, auto_die => FALSE;
+    # Run install script with full output
+    say "      Running install script...";
+    my $install_cmd = "INSTALL_RKE2_DEBUG=true ";
+    $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
+    $install_cmd .= "bash /tmp/rke2-install.sh 2>&1";
+
+    my $install_result = run $install_cmd, auto_die => FALSE, timeout => 300;
     say $install_result if $install_result;
 
     # Verify installation - check multiple possible locations
