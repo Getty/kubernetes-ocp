@@ -278,14 +278,21 @@ task "install_rke2_server", sub {
         die "Install script too small ($dl_size bytes) - download failed?";
     }
 
-    # Run install script with full output
+    # Run install script with explicit exit code capture
     say "      Running install script...";
-    my $install_cmd = "INSTALL_RKE2_DEBUG=true ";
-    $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
-    $install_cmd .= "bash /tmp/rke2-install.sh 2>&1";
-
-    my $install_result = run $install_cmd, auto_die => FALSE, timeout => 300;
+    my $install_cmd = "bash -x /tmp/rke2-install.sh 2>&1; echo RKE2_EXIT_CODE=\$?";
+    my $install_result = run $install_cmd,
+        auto_die => FALSE,
+        timeout => 300,
+        env => {
+            ($version ? (INSTALL_RKE2_VERSION => $version) : ()),
+        };
     say $install_result if $install_result;
+
+    # Check explicit exit code from output
+    my ($exit_code) = ($install_result || '') =~ /RKE2_EXIT_CODE=(\d+)/;
+    $exit_code //= -1;
+    say "      Install script exit code: $exit_code";
 
     # Verify installation - check multiple possible locations
     say "[2/5] Verifying RKE2 binary...";
