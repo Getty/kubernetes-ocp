@@ -256,11 +256,18 @@ task "install_rke2_server", sub {
     file "/etc/rancher/rke2", ensure => 'directory';
     file "/etc/rancher/rke2/config.yaml", content => $config;
 
-    # Install RKE2
+    # Install RKE2 (download script first, then run - pipes over SSH are unreliable)
     say "[1/5] Installing RKE2...";
-    my $install_cmd = "curl -sfL https://get.rke2.io | ";
+    run "curl -fL https://get.rke2.io -o /tmp/rke2-install.sh 2>&1", auto_die => FALSE;
+    my $dl_check = run "test -s /tmp/rke2-install.sh && echo OK || echo FAIL", auto_die => FALSE;
+    chomp $dl_check;
+    if ($dl_check ne 'OK') {
+        die "Failed to download RKE2 install script";
+    }
+
+    my $install_cmd = "";
     $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
-    $install_cmd .= "sh - 2>&1";
+    $install_cmd .= "sh /tmp/rke2-install.sh 2>&1";
 
     my $install_result = run $install_cmd, auto_die => FALSE;
     say $install_result if $install_result;
