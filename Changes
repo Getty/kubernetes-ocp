@@ -31,9 +31,11 @@ Revision history for OCP
       - detect_gpu still detects AMD but skips driver installation
     - RKE2 + K3s dual distribution support via Rex framework
     - Cilium CNI installation (kube-proxy replacement, eBPF)
-    - Robust GPU detection via PCI class codes + vendor IDs
-      - Uses lspci -nn with [0300]/[0302] class + [10de]/[1002] vendor
-      - No more false positives from NVIDIA audio/USB/bridge controllers
+    - Robust GPU detection with CUDA compute capability check
+      - PCI class codes [0300]/[0302] + vendor IDs [10de]/[1002]
+      - NVIDIA compute check: only installs for CUDA-capable GPUs
+      - Whitelisted: RTX, GTX 10xx+, Quadro, Tesla, datacenter (A/H/L/V/P)
+      - Skips: GeForce MX (laptop), GT/GTS/NVS (legacy), pre-Pascal
       - Virtual GPU detection (virtio/QEMU/VMware/VirtualBox)
     - Single-node mode (control plane untainting)
     - Rex-based server automation (share/Rexfile)

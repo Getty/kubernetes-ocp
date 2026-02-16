@@ -84,36 +84,95 @@ task "detect_gpu", sub {
     say $pci_display || "(none found)";
     say "=== End Display Controllers ===";
 
-    # Match only actual display controllers (VGA/3D) by vendor ID
-    my $nvidia_found = ($pci_display && $pci_display =~ /\[10de:[0-9a-f]{4}\]/i);
-    my $amd_found    = ($pci_display && $pci_display =~ /\[1002:[0-9a-f]{4}\]/i);
+    return unless $pci_display;
 
-    # Check for virtual GPU passthrough (skip these — no host driver needed)
-    my $is_virtual = 0;
-    if ($pci_display && $pci_display =~ /\[(1af4|1b36|15ad|80ee):[0-9a-f]{4}\]/i) {
-        # 1af4=virtio, 1b36=QEMU, 15ad=VMware, 80ee=VirtualBox
-        $is_virtual = 1;
-    }
-
-    say "GPU Detection:";
-    say "  NVIDIA display controller: " . ($nvidia_found ? "YES" : "no");
-    say "  AMD display controller: " . ($amd_found ? "YES" : "no");
-    say "  Virtual GPU: " . ($is_virtual ? "YES (skipping)" : "no");
-
-    if ($is_virtual) {
-        say "Virtual GPU detected — host driver installation skipped";
+    # Check for virtual GPU (skip — no host driver needed)
+    if ($pci_display =~ /\[(1af4|1b36|15ad|80ee):[0-9a-f]{4}\]/i) {
+        say "Virtual GPU detected (virtio/QEMU/VMware/VBox) — skipping";
         return;
     }
 
-    if ($nvidia_found) {
-        say "NVIDIA GPU detected, installing drivers...";
-        do_task "install_nvidia";
-    } elsif ($amd_found) {
-        say "AMD GPU detected, but AMD driver support not yet implemented — skipping";
-    } else {
-        say "No discrete GPU detected";
+    # --- NVIDIA: check if CUDA-compute-capable ---
+    my @nvidia_lines = grep { /\[10de:[0-9a-f]{4}\]/i } split /\n/, $pci_display;
+    if (@nvidia_lines) {
+        my $cuda_gpu = _check_nvidia_compute(@nvidia_lines);
+        if ($cuda_gpu) {
+            say "CUDA-capable NVIDIA GPU: $cuda_gpu";
+            do_task "install_nvidia";
+        }
+    }
+
+    # --- AMD: detected but not yet supported ---
+    my @amd_lines = grep { /\[1002:[0-9a-f]{4}\]/i } split /\n/, $pci_display;
+    if (@amd_lines && !@nvidia_lines) {
+        my ($name) = $amd_lines[0] =~ /:\s+(.+?)\s*\[1002:/;
+        say "AMD GPU detected ($name) — driver support not yet implemented";
+    }
+
+    unless (@nvidia_lines || @amd_lines) {
+        say "No discrete GPU found";
     }
 };
+
+# Check NVIDIA GPU lines for CUDA compute capability
+# Returns GPU name if compute-capable, undef if not
+sub _check_nvidia_compute {
+    my (@lines) = @_;
+
+    for my $line (@lines) {
+        # PCI class [0302] = 3D Controller — always a compute/datacenter GPU
+        # (Tesla, A100, H100, L40 etc. register as 3D Controller, not VGA)
+        if ($line =~ /\[0302\]/) {
+            my ($name) = $line =~ /:\s+NVIDIA\s+Corporation\s+(.+?)\s*\[10de:/;
+            $name //= 'Unknown 3D Controller';
+            say "  [ok] Datacenter/Compute GPU (PCI 3D Controller): $name";
+            return $name;
+        }
+
+        # PCI class [0300] = VGA Controller — need to check the specific model
+        my ($name) = $line =~ /:\s+NVIDIA\s+Corporation\s+(.+?)\s*\[10de:/;
+        $name //= '';
+
+        # CUDA-capable families for AI/compute workloads:
+        #   RTX (any)        — GeForce RTX 2060+ / RTX A-series, CUDA, 6-24GB
+        #   GTX 16xx         — Turing, CUDA 7.5, 4-6GB (borderline but works)
+        #   GTX 10xx         — Pascal, CUDA 6.1, 3-11GB (1060 6GB+)
+        #   TITAN            — always beefy
+        #   Quadro           — workstation, CUDA
+        #   Tesla/A/H/L/V/P  — datacenter (usually [0302] but just in case)
+        if ($name =~ /\b(RTX|TITAN|Quadro)\b/i) {
+            say "  [ok] Compute GPU: $name";
+            return $name;
+        }
+        if ($name =~ /\bGTX\s*(1[0-9]\d{2}|16\d{2})\b/i) {
+            say "  [ok] Compute GPU: $name (Pascal/Turing)";
+            return $name;
+        }
+        if ($name =~ /\b(Tesla|[AHLVP]\d{1,3}[GSi]?)\b/) {
+            say "  [ok] Datacenter GPU: $name";
+            return $name;
+        }
+
+        # Non-compute NVIDIA GPUs — skip with explanation
+        if ($name =~ /\bMX\s*\d/i) {
+            say "  [skip] $name — laptop GPU, not CUDA-compute-capable for AI workloads";
+            next;
+        }
+        if ($name =~ /\b(GT\s*\d|GTS\s*\d|NVS\s*\d)/i) {
+            say "  [skip] $name — display/legacy GPU, not suitable for compute";
+            next;
+        }
+        if ($name =~ /\bGTX\s*[2-9]\d{2}\b/i) {
+            say "  [skip] $name — pre-Pascal GPU, CUDA compute capability too low";
+            next;
+        }
+
+        # Unknown NVIDIA GPU — log and skip (safe default)
+        say "  [skip] Unknown NVIDIA GPU: $name — not in known compute-capable list";
+    }
+
+    return undef;
+}
 
 desc "Install NVIDIA GPU drivers and container toolkit";
 task "install_nvidia", sub {
