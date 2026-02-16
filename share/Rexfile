@@ -609,7 +609,9 @@ task "install_cilium", sub {
         say "Installing Cilium CLI $cli_version for $os-$arch...";
         my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
         run "curl -fL $cli_url -o /tmp/cilium-cli.tar.gz 2>&1", auto_die => FALSE, timeout => 120;
-        run "tar xz -C /usr/local/bin -f /tmp/cilium-cli.tar.gz && chmod +x /usr/local/bin/cilium", auto_die => FALSE;
+        # Extract to /tmp first, then mv (atomic, avoids "Text file busy")
+        run "tar xz -C /tmp -f /tmp/cilium-cli.tar.gz && mv -f /tmp/cilium /usr/local/bin/cilium && chmod +x /usr/local/bin/cilium", auto_die => FALSE;
+        sleep 1;  # Let filesystem settle
         my $cli_installed = run "cilium version --client 2>&1 | head -1", auto_die => FALSE;
         say "Cilium CLI installed: $cli_installed";
     }

@@ -276,7 +276,7 @@ sub execute {
     print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
     print "  [ok] Kubeconfig written to .kube/config (for kubectl)\n";
 
-    # Wait for Cilium to be ready (node must become Ready first)
+    # Wait for node to be Ready (Cilium CNI must be running)
     # Nothing can be scheduled until the node is Ready!
     print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
     {
@@ -285,18 +285,52 @@ sub execute {
         print $kc_fh $result->{kubeconfig};
         close $kc_fh;
         my $kc_path = $kc_fh->filename;
+
+        # Quick connectivity check first
+        my $api_check = `kubectl --kubeconfig=$kc_path cluster-info 2>&1`;
+        chomp $api_check;
+        if ($api_check =~ /running|is running/) {
+            print "      API server reachable\n";
+        } else {
+            print "      WARNING: API server may not be reachable:\n";
+            print "      $api_check\n";
+        }
+
         my $node_ready = 0;
         for my $i (1..60) {
+            my $output = `kubectl --kubeconfig=$kc_path get nodes 2>&1`;
             my $status = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.conditions[?(\@.type=="Ready")].status}' 2>/dev/null`;
-            if ($status eq 'True') {
+            chomp $status;
+            # Also check via simple grep as fallback
+            my $is_ready = ($status eq 'True') || ($output =~ /\bReady\b/ && $output !~ /NotReady/);
+            if ($is_ready) {
                 print "  [ok] Node is Ready after ~${\ ($i * 10)}s\n";
                 $node_ready = 1;
                 last;
             }
-            print "      ... waiting (${i}/60)\n" if $i % 6 == 0;
+            if ($i == 1 || $i % 6 == 0) {
+                print "      ... waiting (${i}/60) status='$status'\n";
+                chomp $output;
+                print "      $output\n" if $output;
+            }
             sleep 10;
         }
-        print "  [WARN] Node not Ready after 600s, continuing anyway...\n" unless $node_ready;
+        unless ($node_ready) {
+            # Last resort: check via SSH directly on the node
+            print "  [WARN] Node not Ready after 600s via kubectl, checking via SSH...\n";
+            my $ssh_check = $ssh->run("/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1");
+            my $ssh_output = $ssh_check->{stdout} || '';
+            print "      SSH node status: $ssh_output\n";
+            if ($ssh_output =~ /\bReady\b/ && $ssh_output !~ /NotReady/) {
+                print "  [ok] Node is Ready (confirmed via SSH)\n";
+                $node_ready = 1;
+            } else {
+                # Also check Cilium status via SSH
+                my $cilium_check = $ssh->run("cilium status --kubeconfig /etc/rancher/rke2/rke2.yaml 2>&1");
+                print "      Cilium status: " . ($cilium_check->{stdout} || 'unknown') . "\n";
+                print "  [WARN] Node genuinely not Ready, continuing anyway...\n";
+            }
+        }
     }
 
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
