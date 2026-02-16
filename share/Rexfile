@@ -598,17 +598,21 @@ task "install_cilium", sub {
                $arch_raw eq 'aarch64' ? 'arm64' :
                $arch_raw eq 'arm64'   ? 'arm64' : $arch_raw;
 
-    # Install Cilium CLI
-    say "Installing Cilium CLI " . CILIUM_CLI_VERSION . " for $os-$arch...";
+    # Install Cilium CLI (skip if already installed with correct version)
     my $cli_version = CILIUM_CLI_VERSION;
-    my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
+    my $existing_cli = run "cilium version --client 2>/dev/null | head -1", auto_die => FALSE;
+    chomp $existing_cli;
 
-    run "curl -sfL $cli_url | tar xz -C /usr/local/bin";
-    run "chmod +x /usr/local/bin/cilium";
-
-    # Verify CLI version
-    my $cli_installed = run "cilium version --client 2>&1 | head -1", auto_die => FALSE;
-    say "Cilium CLI installed: $cli_installed";
+    if ($existing_cli =~ /\Q$cli_version\E/) {
+        say "Cilium CLI $cli_version already installed";
+    } else {
+        say "Installing Cilium CLI $cli_version for $os-$arch...";
+        my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
+        run "curl -fL $cli_url -o /tmp/cilium-cli.tar.gz 2>&1", auto_die => FALSE, timeout => 120;
+        run "tar xz -C /usr/local/bin -f /tmp/cilium-cli.tar.gz && chmod +x /usr/local/bin/cilium", auto_die => FALSE;
+        my $cli_installed = run "cilium version --client 2>&1 | head -1", auto_die => FALSE;
+        say "Cilium CLI installed: $cli_installed";
+    }
 
     # Install Gateway API CRDs BEFORE Cilium (required!)
     say "Installing Gateway API CRDs v1.1.0...";
@@ -620,20 +624,36 @@ task "install_cilium", sub {
         env => { KUBECONFIG => $kubeconfig },
         auto_die => FALSE;
 
-    # Install Cilium with Gateway API + LoadBalancer support
-    say "Installing Cilium " . CILIUM_VERSION . " with Gateway API...";
-    run 'cilium install --version ' . CILIUM_VERSION . ' ' .
-        '--set kubeProxyReplacement=true ' .
-        '--set k8sServiceHost=localhost ' .
-        '--set k8sServicePort=6443 ' .
-        '--set gatewayAPI.enabled=true',
-        env => { KUBECONFIG => $kubeconfig };
+    # Install Cilium with Gateway API + LoadBalancer support (skip if already running with correct version)
+    my $cilium_version_target = CILIUM_VERSION;
+    my $cilium_status = run "cilium status 2>&1 | head -5",
+        env => { KUBECONFIG => $kubeconfig },
+        auto_die => FALSE;
+
+    my $cilium_running = ($cilium_status =~ /Cilium.*OK/);
+    my $cilium_version_ok = ($cilium_status =~ /\Q$cilium_version_target\E/);
+
+    if ($cilium_running && $cilium_version_ok) {
+        say "Cilium $cilium_version_target already running, skipping install";
+    } elsif ($cilium_running && !$cilium_version_ok) {
+        say "Cilium running but different version, upgrading to $cilium_version_target...";
+        run 'cilium upgrade --version ' . CILIUM_VERSION,
+            env => { KUBECONFIG => $kubeconfig };
+    } else {
+        say "Installing Cilium " . CILIUM_VERSION . " with Gateway API...";
+        run 'cilium install --version ' . CILIUM_VERSION . ' ' .
+            '--set kubeProxyReplacement=true ' .
+            '--set k8sServiceHost=localhost ' .
+            '--set k8sServicePort=6443 ' .
+            '--set gatewayAPI.enabled=true',
+            env => { KUBECONFIG => $kubeconfig };
+    }
 
     # Wait for Cilium to be ready
     say "Waiting for Cilium to be ready...";
-    run 'cilium status --wait --wait-duration=5m',
+    run 'cilium status --wait --wait-duration=10m',
         env => { KUBECONFIG => $kubeconfig },
-        timeout => 360;
+        timeout => 660;
 
     say "Cilium installed successfully";
 };
