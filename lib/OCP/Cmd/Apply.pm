@@ -5,6 +5,7 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use Path::Tiny qw(path);
+use JSON::PP ();
 
 use OCP::Config;
 use OCP::Secrets;
@@ -12,6 +13,8 @@ use OCP::SSH;
 use OCP::Rex;
 use OCP::Versions;
 use WWW::Hetzner::Cloud;
+
+with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
@@ -25,11 +28,6 @@ option only => (
     is     => 'ro',
     format => 's',
     doc    => 'Only apply: control-planes, workers, or node name',
-);
-
-has ocp => (
-    is      => 'lazy',
-    default => sub { OCP->instance },
 );
 
 sub execute {
@@ -682,8 +680,8 @@ sub _setup_lb_ipam {
             metadata   => { name => 'default-l2' },
             spec       => {
                 interfaces      => ['^eth[0-9]+', '^en[a-z0-9]+'],
-                externalIPs     => \1,
-                loadBalancerIPs => \1,
+                externalIPs     => JSON::PP::true,
+                loadBalancerIPs => JSON::PP::true,
             },
         },
     );
@@ -793,7 +791,7 @@ sub _generate_registry_manifest {
             proxy   => { remoteurl => 'https://registry-1.docker.io' },
             storage => {
                 filesystem => { rootdirectory => '/var/lib/registry' },
-                delete     => { enabled => \1 },
+                delete     => { enabled => JSON::PP::true },
             },
             http => { addr => ':5000' },
         });
@@ -991,7 +989,7 @@ sub _generate_gpu_manifest {
                             image           => 'nvcr.io/nvidia/k8s-device-plugin:v0.17.0',
                             env             => [{ name => 'FAIL_ON_INIT_ERROR', value => 'false' }],
                             securityContext => {
-                                allowPrivilegeEscalation => \0,
+                                allowPrivilegeEscalation => JSON::PP::false,
                                 capabilities             => { drop => ['ALL'] },
                             },
                             volumeMounts => [{

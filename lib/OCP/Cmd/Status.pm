@@ -8,15 +8,18 @@ use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use File::Temp;
 
+use OCP;
 use OCP::Config;
 use OCP::Secrets;
+
+with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    my $file = $chain->[0]->config;
+    my $file = $self->ocp->config;
 
     unless (-f $file) {
         die "Config file '$file' not found. Run 'ocp init' first.\n";

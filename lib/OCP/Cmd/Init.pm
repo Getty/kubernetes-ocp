@@ -7,8 +7,11 @@ use MooX::Options;
 use Path::Tiny qw(path);
 use File::Copy qw(copy move);
 
+use OCP;
 use OCP::Config;
 use OCP::Secrets;
+
+with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
@@ -78,7 +81,7 @@ sub execute {
     my ($self, $args, $chain) = @_;
 
     my $project_dir = path('.');
-    my $config_file = $chain->[0]->config;
+    my $config_file = $self->ocp->config;
 
     print "Initializing OCP project...\n\n";
 

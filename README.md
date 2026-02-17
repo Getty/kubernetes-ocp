@@ -297,9 +297,13 @@ OCP deploys a registry stack on every cluster:
 
 RKE2's `registries.yaml` is auto-configured on all nodes to use the cache. containerd tries `localhost:30500` first and falls back to Docker Hub if the cache isn't running yet.
 
+Images can be referenced as `ocp.internal/myapp:latest` — containerd resolves this to the local registry via the mirror config.
+
 ```yaml
-# Disable registry (not recommended)
-noregistry: true
+# Optional: use an external registry cache instead of ocp-cache
+registry:
+  cache: https://my-proxy.example.com/   # replaces ocp-cache
+  name: my.registry                       # default: ocp.internal
 ```
 
 ## SSL & Ingress

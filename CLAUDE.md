@@ -214,7 +214,7 @@ systemctl enable --now rke2-agent
 
 ```yaml
 # Fixer SSH Node
-apiVersion: ocp.io/v1
+apiVersion: ocp.internal/v1
 kind: Node
 metadata:
   name: avatar
@@ -228,7 +228,7 @@ status:
 
 ---
 # Dynamischer Hetzner Pool
-apiVersion: ocp.io/v1
+apiVersion: ocp.internal/v1
 kind: NodePool
 metadata:
   name: hetzner-workers
@@ -241,7 +241,7 @@ spec:
 
 ---
 # On-Demand GPU (vast.ai)
-apiVersion: ocp.io/v1
+apiVersion: ocp.internal/v1
 kind: NodePool
 metadata:
   name: vast-gpus
@@ -459,7 +459,7 @@ Workers werden via CRDs im Cluster gemanaged (robocop).
 **OCPNodeProvider** - Konfiguration für Infrastructure Provider:
 
 ```yaml
-apiVersion: ocp.io/v1
+apiVersion: ocp.internal/v1
 kind: OCPNodeProvider
 metadata:
   name: hetzner-fsn1
@@ -477,7 +477,7 @@ spec:
 **OCPNode** - Einzelner Node (CP oder Worker):
 
 ```yaml
-apiVersion: ocp.io/v1
+apiVersion: ocp.internal/v1
 kind: OCPNode
 metadata:
   name: worker-1

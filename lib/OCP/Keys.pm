@@ -326,7 +326,7 @@ sub _single_encrypt {
 
     my $recipient = $self->_get_age_recipient;
     my $age_encrypted = Crypt::Age->encrypt(
-        $plaintext,
+        plaintext  => $plaintext,
         recipients => [$recipient],
     );
 
@@ -340,7 +340,7 @@ sub _single_decrypt {
     chomp $identity;
 
     my $plaintext = Crypt::Age->decrypt(
-        $encrypted,
+        ciphertext => $encrypted,
         identities => [$identity],
     );
 
@@ -366,7 +366,7 @@ sub _double_encrypt {
     # Layer 2: Age encryption (using age.key from project)
     my $recipient = $self->_get_age_recipient;
     my $age_encrypted = Crypt::Age->encrypt(
-        $pw_layer,
+        plaintext  => $pw_layer,
         recipients => [$recipient],
     );
 
@@ -381,7 +381,7 @@ sub _double_decrypt {
     chomp $identity;
 
     my $pw_layer = Crypt::Age->decrypt(
-        $encrypted,
+        ciphertext => $encrypted,
         identities => [$identity],
     );
 
@@ -403,27 +403,31 @@ sub _double_decrypt {
 sub _aes_encrypt {
     my ($plaintext, $key) = @_;
 
-    # Use CryptX for AES-256-GCM
-    require Crypt::Mode::GCM;
-    my $gcm = Crypt::Mode::GCM->new('AES');
+    require Crypt::AuthEnc::GCM;
 
     my $nonce = _random_bytes(12);  # 96-bit nonce
-    my $ciphertext = $gcm->encrypt($plaintext, $key, $nonce, '');
+    my $ae = Crypt::AuthEnc::GCM->new('AES', $key, $nonce);
+    my $ciphertext = $ae->encrypt_add($plaintext);
+    my $tag = $ae->encrypt_done;
 
-    # Return nonce + ciphertext + tag
-    return $nonce . $ciphertext;
+    # Return nonce + ciphertext + tag (16 bytes)
+    return $nonce . $ciphertext . $tag;
 }
 
 sub _aes_decrypt {
     my ($encrypted, $key) = @_;
 
-    require Crypt::Mode::GCM;
-    my $gcm = Crypt::Mode::GCM->new('AES');
+    require Crypt::AuthEnc::GCM;
 
-    my $nonce = substr($encrypted, 0, 12);
-    my $ciphertext = substr($encrypted, 12);
+    my $nonce      = substr($encrypted, 0, 12);
+    my $tag        = substr($encrypted, -16);
+    my $ciphertext = substr($encrypted, 12, length($encrypted) - 28);
 
-    my $plaintext = $gcm->decrypt($ciphertext, $key, $nonce, '');
+    my $ae = Crypt::AuthEnc::GCM->new('AES', $key, $nonce);
+    my $plaintext = $ae->decrypt_add($ciphertext);
+    my $ok = $ae->decrypt_done($tag);
+
+    die "AES-GCM authentication failed\n" unless $ok;
 
     return $plaintext;
 }

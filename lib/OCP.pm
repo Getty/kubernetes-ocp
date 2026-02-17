@@ -6,6 +6,10 @@ with 'MooX::Singleton';
 use MooX::Cmd;
 use MooX::Options;
 use YAML::XS ();
+use JSON::PP ();
+
+# Enable proper YAML boolean serialization (JSON::PP::true/false → true/false)
+$YAML::XS::Boolean = 'JSON::PP';
 
 our $VERSION = '0.1.0';
 

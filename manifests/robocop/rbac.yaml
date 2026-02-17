@@ -17,7 +17,7 @@ metadata:
 rules:
 # OCP CRDs
 - apiGroups:
-  - ocp.io
+  - ocp.internal
   resources:
   - ocpnodes
   - ocpnodeproviders
@@ -31,7 +31,7 @@ rules:
   - delete
 
 - apiGroups:
-  - ocp.io
+  - ocp.internal
   resources:
   - ocpnodes/status
   - ocpnodeproviders/status

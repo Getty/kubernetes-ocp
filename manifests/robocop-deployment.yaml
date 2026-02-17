@@ -21,11 +21,11 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
   # Watch OCP CRDs
-  - apiGroups: ["ocp.io"]
+  - apiGroups: ["ocp.internal"]
     resources: ["nodes", "nodepools"]
     verbs: ["get", "list", "watch", "update", "patch"]
 
-  - apiGroups: ["ocp.io"]
+  - apiGroups: ["ocp.internal"]
     resources: ["nodes/status", "nodepools/status"]
     verbs: ["update", "patch"]
 

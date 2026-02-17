@@ -5,8 +5,11 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 
+use OCP;
 use OCP::Config;
 use OCP::DevRegistry;
+
+with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
@@ -31,8 +34,8 @@ option update => (
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    my $file = $chain->[0]->config;
-    my $verbose = $chain->[0]->verbose;
+    my $file = $self->ocp->config;
+    my $verbose = $self->ocp->verbose;
 
     unless (-f $file) {
         die "Config file '$file' not found. Run 'ocp init' first.\n";

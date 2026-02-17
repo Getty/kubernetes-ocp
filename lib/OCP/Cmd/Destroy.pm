@@ -5,9 +5,12 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 
+use OCP;
 use OCP::Config;
 use OCP::Secrets;
 use WWW::Hetzner::Cloud;
+
+with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
@@ -25,7 +28,7 @@ option keep_status => (
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    my $file = $chain->[0]->config;
+    my $file = $self->ocp->config;
 
     unless (-f $file) {
         die "Config file '$file' not found.\n";

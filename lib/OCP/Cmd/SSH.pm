@@ -4,8 +4,11 @@ package OCP::Cmd::SSH;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use OCP;
 use Path::Tiny qw(path);
 use File::Temp;
+
+with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
@@ -18,7 +21,7 @@ option node => (
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    my $config_file = $chain->[0]->config;
+    my $config_file = $self->ocp->config;
     my $config = OCP::Config->new(file => $config_file);
 
     unless ($config->cluster_exists) {

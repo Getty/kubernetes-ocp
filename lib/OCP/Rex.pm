@@ -127,13 +127,20 @@ sub install_server {
     my $tls_san = $opts{tls_san} || $self->host;
     my $node_name = $opts{node_name} || '';
 
+    my $registry_cache    = $opts{registry_cache}    || '';
+    my $registry_upstream = $opts{registry_upstream}  || '';
+    my $registry_name     = $opts{registry_name}      || '';
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
-        token     => $token,
-        version   => $version,
-        tls_san   => $tls_san,
-        node_name => $node_name,
+        token             => $token,
+        version           => $version,
+        tls_san           => $tls_san,
+        node_name         => $node_name,
+        registry_cache    => $registry_cache,
+        registry_upstream => $registry_upstream,
+        registry_name     => $registry_name,
     );
 
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
@@ -195,13 +202,20 @@ sub install_agent {
     my $version = $opts{version} || '';
     my $node_name = $opts{node_name} || '';
 
+    my $registry_cache    = $opts{registry_cache}    || '';
+    my $registry_upstream = $opts{registry_upstream}  || '';
+    my $registry_name     = $opts{registry_name}      || '';
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
     $self->run_task($task,
-        server    => $server,
-        token     => $token,
-        version   => $version,
-        node_name => $node_name,
+        server            => $server,
+        token             => $token,
+        version           => $version,
+        node_name         => $node_name,
+        registry_cache    => $registry_cache,
+        registry_upstream => $registry_upstream,
+        registry_name     => $registry_name,
     );
 
     return 1;
