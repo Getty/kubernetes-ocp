@@ -253,9 +253,9 @@ Robocop watches for these CRDs:
 
 =over 4
 
-=item * B<Node> - Fixed nodes (SSH provider, GPU servers)
+=item * B<OCPNode> - Individual nodes (SSH provider, Hetzner, GPU servers)
 
-=item * B<NodePool> - Dynamic pools (Hetzner, vast.ai auto-scaling)
+=item * B<OCPNodeProvider> - Infrastructure provider configuration (Hetzner, SSH)
 
 =back
 

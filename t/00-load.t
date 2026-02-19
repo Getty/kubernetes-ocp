@@ -29,5 +29,15 @@ use_ok('OCP::Cmd::Dev');
 use_ok('OCP::Cmd::Hetzner');
 use_ok('OCP::Cmd::Version');
 use_ok('OCP::Cmd::Update');
+use_ok('OCP::Cmd::Edit');
+
+# UI
+use_ok('OCP::UI');
+use_ok('OCP::UI::Form');
+use_ok('OCP::UI::Field');
+use_ok('OCP::UI::Wizard');
+
+# Hetzner
+use_ok('OCP::Hetzner');
 
 done_testing;

@@ -117,7 +117,7 @@ OCP - Omni Control Plane - Kubernetes Cluster Management
 =head1 DESCRIPTION
 
 OCP (Omni Control Plane) is a Kubernetes cluster management tool that deploys
-k3s clusters using a single configuration file. It supports multiple providers:
+RKE2/K3s clusters using a single configuration file. It supports multiple providers:
 
 =over 4
 
@@ -206,15 +206,19 @@ Status is stored separately in C<.ocp/status.yaml> (gitignored).
 
 =item C<ocp.yaml> - Cluster specification (version controlled)
 
-=item C<secrets.yaml> - Encrypted secrets (version controlled)
+=item C<secrets.yaml> - Encrypted secrets (SOPS, version controlled)
+
+=item C<keys.yaml> - SSH keys: admin-ssh + robo-ssh (SOPS encrypted, version controlled)
+
+=item C<age.key.enc> - PIN1-protected age key (version controlled)
+
+=item C<kubeconfig.yaml> - Cluster access (SOPS encrypted, version controlled)
 
 =item C<.ocp/> - Local state directory (gitignored)
 
 =item C<.ocp/status.yaml> - Runtime status
 
-=item C<.ocp/age.key> - Age private key for secrets
-
-=item C<.ocp/id_ed25519> - SSH private key
+=item C<.ocp/age.key> - Age private key (decrypted cache)
 
 =back
 
@@ -228,7 +232,7 @@ Status is stored separately in C<.ocp/status.yaml> (gitignored).
 
 =head1 SEE ALSO
 
-L<OCP::Config>, L<OCP::Secrets>, L<OCP::SSH>, L<OCP::K3s>
+L<OCP::Config>, L<OCP::Secrets>, L<OCP::Keys>, L<OCP::SSH>, L<OCP::Rex>, L<OCP::K3s>
 
 L<Crypt::Age>, L<File::SOPS>, L<WWW::Hetzner>
 

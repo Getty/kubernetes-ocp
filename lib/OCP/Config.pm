@@ -49,7 +49,6 @@ sub _default_spec {
             version => '',      # latest if empty
         },
         cps => {
-            nodes      => 'cp',
             provider   => 'hetzner',
             serverType => 'cpx21',
             location   => 'fsn1',
@@ -77,19 +76,29 @@ sub kubernetes {
 
 sub control_planes {
     my $self = shift;
-    # Support both 'controlPlanes' and 'cps'
-    return $self->spec->{controlPlanes} // $self->spec->{cps} // {};
+    my $raw = $self->spec->{controlPlanes} // $self->spec->{cps};
+
+    # New format: Array
+    return $raw if ref $raw eq 'ARRAY';
+
+    # Old format: Hash -> convert to Array
+    if (ref $raw eq 'HASH') {
+        my %cp = %$raw;
+        my $count = delete $cp{nodes} // 1;
+        $count = 1 if $count eq 'cp';  # Legacy
+        return [(%cp ? \%cp : {}) x $count];
+    }
+
+    return [{}];  # Default: 1 empty CP
 }
 
 sub workers { shift->spec->{workers} // [] }
 sub ssh_config { shift->spec->{ssh} // {} }
 sub single_node {
     my $self = shift;
-    # Explicit flag or inferred (1 CP, 0 workers)
-    return $self->spec->{single} if exists $self->spec->{single};
-    my $cp = $self->control_planes;
+    my $cps = $self->control_planes;
     my $workers = $self->workers;
-    return (scalar(@$workers) == 0 && ($cp->{nodes} // $cp->{count} // 1) == 1);
+    return (scalar(@$cps) <= 1 && scalar(@$workers) == 0);
 }
 
 sub distribution {
@@ -169,8 +178,6 @@ sub _resolve_path {
 sub write_spec {
     my ($class, $file, %opts) = @_;
 
-    my $provider = $opts{provider} // 'hetzner';
-
     my $spec = {
         name => $opts{name} // 'mycluster',
         k8s => {
@@ -192,46 +199,62 @@ sub write_spec {
         $spec->{workers} = $opts{workers};
     }
 
-    # Control plane config - provider specific
-    if ($provider eq 'hetzner') {
-        $spec->{cps} = {
-            provider   => 'hetzner',
-            nodes      => $opts{cp_nodes} // 'cp',
-            serverType => $opts{server_type} // 'cpx21',
-            location   => $opts{location} // 'fsn1',
-            image      => $opts{image} // 'debian-13',
-        };
-    } elsif ($provider eq 'ssh') {
-        $spec->{cps} = {
-            provider => 'ssh',
-        };
-        # Host is required for SSH provider
-        if ($opts{host}) {
-            $spec->{cps}{host} = $opts{host};
-        } else {
-            # If nodes specified without host, use that
-            $spec->{cps}{nodes} = $opts{cp_nodes} // 'cp';
-        }
-    } elsif ($provider eq 'local') {
-        $spec->{cps} = {
-            provider => 'local',
-            nodes    => $opts{cp_nodes} // 'cp',
-        };
-        # Only set service if not 'none' (default)
-        if ($opts{service} && $opts{service} ne 'none') {
-            $spec->{cps}{service} = $opts{service};
-        }
-        if ($opts{network_interface}) {
-            $spec->{cps}{networkInterface} = $opts{network_interface};
-        }
-    }
+    # Control planes: compact where possible
+    # 1 CP → Hash, N identical CPs → Hash + nodes, mixed → Array
+    if ($opts{cps} && ref $opts{cps} eq 'ARRAY') {
+        $spec->{cps} = _compact_cps($opts{cps});
+    } else {
+        # Legacy: build from individual opts
+        my $provider = $opts{provider} // 'hetzner';
 
-    # Single node setup
-    if ($opts{single_node}) {
-        $spec->{single} = 1;  # YAML will render as boolean true
+        if ($provider eq 'hetzner') {
+            $spec->{cps} = {
+                provider   => 'hetzner',
+                serverType => $opts{server_type} // 'cpx21',
+                location   => $opts{location} // 'fsn1',
+                image      => $opts{image} // 'debian-13',
+            };
+        } elsif ($provider eq 'ssh') {
+            my $cp = { provider => 'ssh' };
+            $cp->{host} = $opts{host} if $opts{host};
+            $spec->{cps} = $cp;
+        } elsif ($provider eq 'local') {
+            my $cp = { provider => 'local' };
+            if ($opts{service} && $opts{service} ne 'none') {
+                $cp->{service} = $opts{service};
+            }
+            if ($opts{network_interface}) {
+                $cp->{networkInterface} = $opts{network_interface};
+            }
+            $spec->{cps} = $cp;
+        }
     }
 
     OCP->instance->dump_file($file, $spec);
+}
+
+sub _compact_cps {
+    my ($cps) = @_;
+    return $cps->[0] if @$cps == 1;
+
+    # Check if all entries are identical → Hash + nodes
+    require JSON::PP;
+    my $first = JSON::PP->new->canonical->encode($cps->[0]);
+    my $all_same = 1;
+    for my $i (1 .. $#$cps) {
+        if (JSON::PP->new->canonical->encode($cps->[$i]) ne $first) {
+            $all_same = 0;
+            last;
+        }
+    }
+
+    if ($all_same) {
+        my %cp = %{$cps->[0]};
+        $cp{nodes} = scalar @$cps;
+        return \%cp;
+    }
+
+    return $cps;
 }
 
 1;

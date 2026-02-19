@@ -80,6 +80,38 @@ option ssh_key => (
 sub execute {
     my ($self, $args, $chain) = @_;
 
+    # Detect "no flags given" -> launch TUI wizard
+    unless ($self->name || $self->provider || $self->hetzner
+            || $self->dist || $self->single || $self->host
+            || $self->nopassword || $self->ssh_key || $self->nogit
+            || $self->force || @{$args || []}) {
+        my $result = $self->_run_init_wizard;
+        return unless $result;  # Cancel
+
+        # Clean screen after Tickit UI
+        print "\033[2J\033[H";
+
+        # Feed wizard results into accessor slots
+        $self->{name}     = $result->{name};
+        $self->{dist}     = $result->{dist};
+        $self->{provider} = $result->{cps}[0]{provider};
+        $self->{_wizard_cps}     = $result->{cps};
+        $self->{_wizard_workers} = $result->{workers};
+        $self->{_wizard_token}   = $result->{hetzner_token};
+        $self->{nopassword} = 1 if $result->{nopassword};
+        $self->{_wizard_ssh_mode} = $result->{ssh_key_mode};
+        $self->{_wizard_ssh_path} = $result->{ssh_key_path};
+        # "copy" mode acts like --ssh_key flag
+        if (($result->{ssh_key_mode} // '') eq 'copy' && $result->{ssh_key_path}) {
+            $self->{ssh_key} = $result->{ssh_key_path};
+        }
+        # "reference" mode: store path directly, skip key generation
+        if (($result->{ssh_key_mode} // '') eq 'reference' && $result->{ssh_key_path}) {
+            $self->{_wizard_ssh_ref_path} = $result->{ssh_key_path};
+        }
+        # Fall through to normal execute logic
+    }
+
     my $project_dir = path('.');
     my $config_file = $self->ocp->config;
 
@@ -198,6 +230,17 @@ sub execute {
     #
     # Step 5: SSH keys (Two-Tier: robocop + admin)
     #
+    if ($self->{_wizard_ssh_ref_path}) {
+        # Reference mode: use external key path as-is, no generation/copying
+        my $ref_path = $self->{_wizard_ssh_ref_path};
+        $ref_path =~ s/^~/$ENV{HOME}/;
+        unless (-f $ref_path) {
+            die "Referenced SSH key not found: $ref_path\n";
+        }
+        print "[ok] Using referenced SSH key: $self->{_wizard_ssh_ref_path}\n";
+    }
+    else {
+
     require OCP::Keys;
     my $keys_mgr = OCP::Keys->new(project_dir => $project_dir);
 
@@ -295,10 +338,16 @@ sub execute {
         }
     }
 
+    } # end else (not reference mode)
+
     #
-    # Step 6: Hetzner token (if --hetzner)
+    # Step 6: Hetzner token
     #
-    if ($self->hetzner) {
+    if ($self->{_wizard_token}) {
+        # Token from wizard - save now that age key exists
+        $secrets->set_hetzner_token($self->{_wizard_token});
+        print "[ok] Hetzner token saved (encrypted)\n";
+    } elsif ($self->hetzner) {
         my $token = $secrets->hetzner_token;
         if ($token) {
             print "[ok] Hetzner token configured\n";
@@ -314,7 +363,7 @@ sub execute {
                 $secrets->set_hetzner_token($input);
                 print "[ok] Hetzner token saved (encrypted)\n";
             } else {
-                print "[!!] No token provided. Set HETZNER_API_TOKEN or run 'ocp init --hetzner' again.\n";
+                print "[!!] No token provided. Run 'ocp init --hetzner' again.\n";
             }
         }
     }
@@ -327,31 +376,44 @@ sub execute {
     } else {
         print "[..] Creating $config_file\n";
 
-        # Determine provider (default based on flags)
-        my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
         my $dist = $self->dist // 'rke2';
-
-        # Validate: SSH provider requires --host
-        if ($provider eq 'ssh' && !$self->host) {
-            die "ERROR: SSH provider requires --host parameter.\n\n" .
-                "Did you mean:\n" .
-                "  ocp init --provider ssh --host yourserver.com\n" .
-                "  ocp init --provider local (for localhost)\n";
-        }
-
-        # Local provider is always single-node
-        my $single_node = $self->single || ($provider eq 'local');
 
         my %opts = (
             name             => $name,
             dist             => $dist,
-            provider         => $provider,
-            single_node      => $single_node,
-            host             => $self->host,
-            service          => $self->service,
-            ssh_private_key  => '.ocp/id_ed25519',
-            ssh_public_key   => '.ocp/id_ed25519.pub',
         );
+
+        # SSH key paths: reference mode uses external path, others use .ocp/
+        if ($self->{_wizard_ssh_ref_path}) {
+            my $ref = $self->{_wizard_ssh_ref_path};  # keep original (with ~ if any)
+            $opts{ssh_private_key} = $ref;
+            $opts{ssh_public_key}  = "$ref.pub";
+        } else {
+            $opts{ssh_private_key} = '.ocp/id_ed25519';
+            $opts{ssh_public_key}  = '.ocp/id_ed25519.pub';
+        }
+
+        # Wizard-generated cps/workers take priority
+        if ($self->{_wizard_cps}) {
+            $opts{cps} = $self->{_wizard_cps};
+            $opts{workers} = $self->{_wizard_workers}
+                if $self->{_wizard_workers} && @{$self->{_wizard_workers}};
+        } else {
+            # CLI flags path
+            my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
+
+            # Validate: SSH provider requires --host
+            if ($provider eq 'ssh' && !$self->host) {
+                die "ERROR: SSH provider requires --host parameter.\n\n" .
+                    "Did you mean:\n" .
+                    "  ocp init --provider ssh --host yourserver.com\n" .
+                    "  ocp init --provider local (for localhost)\n";
+            }
+
+            $opts{provider} = $provider;
+            $opts{host}     = $self->host;
+            $opts{service}  = $self->service;
+        }
 
         OCP::Config->write_spec($config_file, %opts);
         print "[ok] Created $config_file\n";
@@ -406,7 +468,12 @@ sub execute {
 
     # SSH provider instructions (only if new key was generated)
     my $init_provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
-    if ($init_provider eq 'ssh' && !$self->ssh_key) {
+    if ($self->{_wizard_ssh_ref_path}) {
+        # Reference mode: key already exists externally
+        print "\n";
+        print "[ok] SSH key referenced: $self->{_wizard_ssh_ref_path}\n";
+        print "     Ensure this key is authorized on your servers.\n";
+    } elsif ($init_provider eq 'ssh' && !$self->ssh_key) {
         # Only show instructions if we generated a NEW key
         my $pubkey_path = path('.ocp/id_ed25519.pub');
         if (-f $pubkey_path) {
@@ -470,6 +537,431 @@ GITIGNORE
 sub _datestamp {
     my @t = gmtime;
     return sprintf('%04d%02d%02d', $t[5]+1900, $t[4]+1, $t[3]);
+}
+
+sub _run_init_wizard {
+    my ($self) = @_;
+
+    require OCP::UI;
+    my $project_dir = path('.');
+    my $secrets = OCP::Secrets->new(project_dir => $project_dir);
+
+    # Page 1: Basics
+    my $basics = OCP::UI->new(
+        title  => 'OCP Init',
+        fields => [
+            { name => 'name', type => 'text', label => 'Cluster Name',
+              default => path('.')->absolute->basename },
+            { name => 'dist', type => 'choice', label => 'Distribution',
+              options => [
+                  { label => 'RKE2 (recommended)', value => 'rke2' },
+                  { label => 'K3s (lightweight)',   value => 'k3s' },
+              ], default => 'rke2' },
+        ],
+    )->run;
+    return undef unless $basics;
+
+    # CP loop: jeder CP einzeln, verschiedene Provider mischbar
+    my @cps;
+    my $hetzner_token;
+    my $hz;  # OCP::Hetzner instance, cached
+
+    # Build context from basics for sub-pages
+    my @base_ctx = (
+        { label => 'Cluster Name', value => $basics->{name} },
+        { label => 'Distribution', value => $basics->{dist} },
+    );
+
+    while (1) {
+        my $cp = eval {
+            $self->_wizard_add_cp($secrets, \$hetzner_token, \$hz, scalar @cps, \@base_ctx)
+        };
+        if ($@) {
+            print "\nError: $@\n";
+            return undef;
+        }
+        last unless $cp;  # Cancel
+        # _wizard_add_cp returns HashRef (single) or ArrayRef (batch)
+        if (ref $cp eq 'ARRAY') {
+            push @cps, @$cp;
+        } else {
+            push @cps, $cp;
+        }
+
+        # Noch einen?
+        my $more = OCP::UI->new(
+            title   => sprintf('OCP Init - %d CP(s) configured', scalar @cps),
+            context => \@base_ctx,
+            fields  => [
+                { name => 'add_more', type => 'choice', label => 'Add another CP?',
+                  options => [
+                      { label => 'No, done',  value => 'no' },
+                      { label => 'Yes, add',  value => 'yes' },
+                  ], default => 'no' },
+            ],
+        )->run;
+        last unless $more && $more->{add_more} eq 'yes';
+    }
+
+    return undef unless @cps;
+
+    # Summary: show configured CPs
+    my @cp_summary;
+    for my $i (0 .. $#cps) {
+        my $cp = $cps[$i];
+        my $desc = $cp->{provider};
+        $desc .= " ($cp->{host})" if $cp->{host};
+        $desc .= " ($cp->{serverType} @ $cp->{location})" if $cp->{serverType};
+        push @cp_summary, { label => sprintf('CP %d', $i + 1), value => $desc };
+    }
+
+    # Worker providers?
+    my @workers;
+    my $worker_ask = OCP::UI->new(
+        title   => 'OCP Init - Summary',
+        context => [@base_ctx, @cp_summary],
+        fields  => [
+            { name => 'add_workers', type => 'choice', label => 'Add worker node providers?',
+              options => [
+                  { label => 'No (single-node / robocop later)', value => 'no' },
+                  { label => 'Yes, configure workers',           value => 'yes' },
+              ], default => 'no' },
+        ],
+    )->run;
+    return undef unless $worker_ask;
+
+    if ($worker_ask->{add_workers} eq 'yes') {
+        my @w_ctx = (@base_ctx, @cp_summary);
+        while (1) {
+            my $w = eval {
+                $self->_wizard_add_worker($secrets, \$hetzner_token, \$hz,
+                    scalar @workers, \@w_ctx)
+            };
+            if ($@) {
+                print "\nError: $@\n";
+                return undef;
+            }
+            last unless $w;
+            push @workers, $w;
+
+            my $more = OCP::UI->new(
+                title   => sprintf('OCP Init - %d worker pool(s)', scalar @workers),
+                context => \@w_ctx,
+                fields  => [
+                    { name => 'add_more', type => 'choice', label => 'Add another worker pool?',
+                      options => [
+                          { label => 'No, done',  value => 'no' },
+                          { label => 'Yes, add',  value => 'yes' },
+                      ], default => 'no' },
+                ],
+            )->run;
+            last unless $more && $more->{add_more} eq 'yes';
+        }
+    }
+
+    # Determine cluster endpoint
+    my $first_cp = $cps[0];
+    my $endpoint;
+    if ($first_cp->{host}) {
+        $endpoint = $first_cp->{host};
+    } elsif ($first_cp->{provider} eq 'hetzner') {
+        $endpoint = '(assigned after deploy)';
+    } elsif ($first_cp->{provider} eq 'local') {
+        $endpoint = 'localhost';
+    } else {
+        $endpoint = '(unknown)';
+    }
+
+    # Build full summary context
+    my @worker_summary;
+    for my $i (0 .. $#workers) {
+        my $w = $workers[$i];
+        my $desc = "$w->{provider}";
+        $desc .= " ($w->{host})" if $w->{host};
+        $desc .= " ($w->{serverType} @ $w->{location})" if $w->{serverType};
+        $desc .= " x$w->{nodes}" if ($w->{nodes} // 1) > 1;
+        push @worker_summary, { label => "Worker ${\($i+1)}", value => $desc };
+    }
+
+    my @full_ctx = (
+        @base_ctx, @cp_summary,
+        @worker_summary,
+        { label => 'API Endpoint', value => $endpoint },
+    );
+
+    # Security mode?
+    my $sec = OCP::UI->new(
+        title   => 'OCP Init - Security',
+        context => \@full_ctx,
+        fields  => [
+            { name => 'security', type => 'choice', label => 'Security Mode',
+              options => [
+                  { label => 'Secure (PIN1 + PIN2)', value => 'secure' },
+                  { label => 'No password (dev)',    value => 'nopassword' },
+              ], default => 'secure' },
+        ],
+    )->run;
+    return undef unless $sec;
+
+    my $nopassword = $sec->{security} eq 'nopassword';
+    push @full_ctx, { label => 'Security', value => $nopassword ? 'no password' : 'PIN1 + PIN2' };
+
+    # SSH key handling (only for remote providers)
+    my $has_remote = grep { $_->{provider} ne 'local' } @cps;
+    my $ssh_key_mode = 'generate';
+    my $ssh_key_path;
+
+    if ($has_remote) {
+        my $ssh_q = OCP::UI->new(
+            title   => 'OCP Init - SSH Key',
+            context => \@full_ctx,
+            fields  => [
+                { name => 'ssh_mode', type => 'choice', label => 'SSH Key',
+                  options => [
+                      { label => 'Generate new',     value => 'generate' },
+                      { label => 'Copy existing',    value => 'copy' },
+                      { label => 'Reference by path', value => 'reference' },
+                  ], default => 'generate' },
+            ],
+        )->run;
+        return undef unless $ssh_q;
+
+        $ssh_key_mode = $ssh_q->{ssh_mode};
+
+        if ($ssh_key_mode eq 'copy' || $ssh_key_mode eq 'reference') {
+            my $path_q = OCP::UI->new(
+                title   => 'OCP Init - SSH Key Path',
+                context => [@full_ctx, { label => 'SSH Key', value => $ssh_key_mode }],
+                fields  => [
+                    { name => 'path', type => 'text', label => 'Private key path',
+                      default => '~/.ssh/id_ed25519' },
+                ],
+            )->run;
+            return undef unless $path_q;
+            $ssh_key_path = $path_q->{path};
+        }
+
+        my $key_desc = $ssh_key_mode;
+        $key_desc .= " ($ssh_key_path)" if $ssh_key_path;
+        push @full_ctx, { label => 'SSH Key', value => $key_desc };
+    }
+
+    # Final confirmation
+    my $confirm = OCP::UI->new(
+        title   => 'OCP Init - Confirm',
+        context => \@full_ctx,
+        fields  => [
+            { name => 'confirm', type => 'choice', label => 'Start initialization?',
+              options => [
+                  { label => 'Yes, create project', value => 'yes' },
+                  { label => 'Cancel',              value => 'no' },
+              ], default => 'yes' },
+        ],
+    )->run;
+    return undef unless $confirm && $confirm->{confirm} eq 'yes';
+
+    return {
+        name           => $basics->{name},
+        dist           => $basics->{dist},
+        cps            => \@cps,
+        workers        => \@workers,
+        hetzner_token  => $hetzner_token,
+        nopassword     => $nopassword,
+        ssh_key_mode   => $ssh_key_mode,
+        ssh_key_path   => $ssh_key_path,
+    };
+}
+
+sub _wizard_add_cp {
+    my ($self, $secrets, $token_ref, $hz_ref, $cp_num, $base_ctx) = @_;
+
+    require OCP::UI;
+    my @ctx = @{$base_ctx // []};
+
+    # Provider Auswahl
+    my $prov = OCP::UI->new(
+        title   => sprintf('OCP Init - Control Plane %d', $cp_num + 1),
+        context => \@ctx,
+        fields  => [
+            { name => 'provider', type => 'choice', label => 'CP Provider',
+              options => [
+                  { label => 'Hetzner Cloud', value => 'hetzner' },
+                  { label => 'SSH (existing)', value => 'ssh' },
+                  { label => 'Local',          value => 'local' },
+              ], default => 'hetzner' },
+        ],
+    )->run;
+    return undef unless $prov;
+
+    my $provider = $prov->{provider};
+    my @cp_ctx = (@ctx, { label => 'CP Provider', value => $provider });
+
+    if ($provider eq 'hetzner') {
+        # Token holen/testen (einmalig)
+        $$token_ref //= $secrets->hetzner_token;
+        unless ($$token_ref) {
+            my $tok = OCP::UI->new(
+                title   => 'OCP Init - Hetzner Token',
+                context => \@cp_ctx,
+                fields  => [
+                    { name => 'token', type => 'text', label => 'API Token' },
+                ],
+            )->run;
+            return undef unless $tok;
+            $$token_ref = $tok->{token};
+            die "No Hetzner API token provided.\n" unless $$token_ref;
+        }
+
+        unless ($$hz_ref) {
+            print "Testing Hetzner API connection... ";
+            require OCP::Hetzner;
+            $$hz_ref = OCP::Hetzner->new(token => $$token_ref);
+            $$hz_ref->location_options;  # Test: dies if token invalid
+            print "OK\n\n";
+        }
+
+        my $details = OCP::UI->new(
+            title   => sprintf('OCP Init - Hetzner CP %d+', $cp_num + 1),
+            context => \@cp_ctx,
+            fields  => [
+                { name => 'count', type => 'choice', label => 'How many?',
+                  options => [
+                      { label => '1 (single)',  value => '1' },
+                      { label => '3 (HA)',      value => '3' },
+                  ], default => '1' },
+                { name => 'location', type => 'choice', label => 'Location',
+                  options => $$hz_ref->location_options,
+                  default => 'fsn1' },
+                { name => 'server_type', type => 'choice', label => 'Server Type',
+                  options => $$hz_ref->server_type_options,
+                  default => 'cpx21' },
+            ],
+        )->run;
+        return undef unless $details;
+
+        my $cp = {
+            provider   => 'hetzner',
+            serverType => $details->{server_type},
+            location   => $details->{location},
+            image      => 'debian-13',
+        };
+        my $count = $details->{count} // 1;
+        # Return ArrayRef for batch (compacted later by write_spec)
+        return [($cp) x $count];
+    }
+    elsif ($provider eq 'ssh') {
+        my $ssh = OCP::UI->new(
+            title   => sprintf('OCP Init - SSH CP %d', $cp_num + 1),
+            context => \@cp_ctx,
+            fields  => [
+                { name => 'host', type => 'text', label => 'SSH Host' },
+            ],
+        )->run;
+        return undef unless $ssh;
+
+        return { provider => 'ssh', host => $ssh->{host} };
+    }
+    elsif ($provider eq 'local') {
+        return { provider => 'local' };
+    }
+
+    return undef;
+}
+
+sub _wizard_add_worker {
+    my ($self, $secrets, $token_ref, $hz_ref, $pool_num, $base_ctx) = @_;
+
+    require OCP::UI;
+    my @ctx = @{$base_ctx // []};
+
+    my $prov = OCP::UI->new(
+        title   => sprintf('OCP Init - Worker Pool %d', $pool_num + 1),
+        context => \@ctx,
+        fields  => [
+            { name => 'name', type => 'text', label => 'Pool Name',
+              default => sprintf('pool%d', $pool_num + 1) },
+            { name => 'provider', type => 'choice', label => 'Provider',
+              options => [
+                  { label => 'Hetzner Cloud', value => 'hetzner' },
+                  { label => 'SSH (existing)', value => 'ssh' },
+              ], default => 'hetzner' },
+        ],
+    )->run;
+    return undef unless $prov;
+
+    my $provider = $prov->{provider};
+    my @w_ctx = (@ctx, { label => 'Worker Provider', value => $provider });
+
+    if ($provider eq 'hetzner') {
+        $$token_ref //= $secrets->hetzner_token;
+        unless ($$token_ref) {
+            my $tok = OCP::UI->new(
+                title   => 'OCP Init - Hetzner Token',
+                context => \@w_ctx,
+                fields  => [
+                    { name => 'token', type => 'text', label => 'API Token' },
+                ],
+            )->run;
+            return undef unless $tok;
+            $$token_ref = $tok->{token};
+            die "No Hetzner API token provided.\n" unless $$token_ref;
+        }
+
+        unless ($$hz_ref) {
+            print "Testing Hetzner API connection... ";
+            require OCP::Hetzner;
+            $$hz_ref = OCP::Hetzner->new(token => $$token_ref);
+            $$hz_ref->location_options;
+            print "OK\n\n";
+        }
+
+        my $details = OCP::UI->new(
+            title   => sprintf('OCP Init - Hetzner Workers %d', $pool_num + 1),
+            context => \@w_ctx,
+            fields  => [
+                { name => 'nodes', type => 'choice', label => 'Nodes',
+                  options => [
+                      { label => '1', value => '1' },
+                      { label => '2', value => '2' },
+                      { label => '3', value => '3' },
+                  ], default => '1' },
+                { name => 'location', type => 'choice', label => 'Location',
+                  options => $$hz_ref->location_options,
+                  default => 'fsn1' },
+                { name => 'server_type', type => 'choice', label => 'Server Type',
+                  options => $$hz_ref->server_type_options,
+                  default => 'cpx21' },
+            ],
+        )->run;
+        return undef unless $details;
+
+        return {
+            name       => $prov->{name},
+            provider   => 'hetzner',
+            serverType => $details->{server_type},
+            location   => $details->{location},
+            image      => 'debian-13',
+            nodes      => $details->{nodes},
+        };
+    }
+    elsif ($provider eq 'ssh') {
+        my $ssh = OCP::UI->new(
+            title   => sprintf('OCP Init - SSH Worker %d', $pool_num + 1),
+            context => \@w_ctx,
+            fields  => [
+                { name => 'host', type => 'text', label => 'SSH Host' },
+            ],
+        )->run;
+        return undef unless $ssh;
+
+        return {
+            name     => $prov->{name},
+            provider => 'ssh',
+            host     => $ssh->{host},
+        };
+    }
+
+    return undef;
 }
 
 1;

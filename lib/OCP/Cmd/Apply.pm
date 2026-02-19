@@ -128,10 +128,11 @@ sub execute {
     # Get provider configuration
     my $hetzner_token = $secrets->hetzner_token;
 
-    # Get control plane spec
-    my $cp_spec = $config->control_planes;
-    my $provider = $cp_spec->{provider};
-    my $num_control_planes = $cp_spec->{nodes} || 1;
+    # Get control plane spec (now an ArrayRef)
+    my $cps = $config->control_planes;
+    my $first_cp = $cps->[0] // {};
+    my $provider = $first_cp->{provider} // 'hetzner';
+    my $num_control_planes = scalar @$cps;
 
     # Initialize cloud provider if needed
     my $cloud;
@@ -172,9 +173,9 @@ sub execute {
         # Create server
         my $server = $cloud->servers->create(
             name        => $config->name . "-" . $cp_name,
-            server_type => $cp_spec->{serverType} // 'cx32',
-            image       => $cp_spec->{image} // 'debian-13',
-            location    => $cp_spec->{location} // 'fsn1',
+            server_type => $first_cp->{serverType} // 'cx32',
+            image       => $first_cp->{image} // 'debian-13',
+            location    => $first_cp->{location} // 'fsn1',
             ssh_keys    => [$key_name],
             labels      => {
                 'ocp-cluster' => $config->name,
@@ -194,7 +195,7 @@ sub execute {
 
     } elsif ($provider eq 'ssh') {
         # SSH provider - use existing host
-        $cp_host = $cp_spec->{host} or die "SSH provider requires 'host' in controlPlanes spec\n";
+        $cp_host = $first_cp->{host} or die "SSH provider requires 'host' in controlPlanes spec\n";
         $cp_ip = $cp_host;
         print "  [ok] Using existing host: $cp_host\n";
 

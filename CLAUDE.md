@@ -2,31 +2,15 @@
 
 ## Projektstatus
 
-OCP ist ein Perl-basiertes CLI-Tool zur Verwaltung von Kubernetes-Clustern (RKE2). Das Projekt wird als CPAN-Distribution entwickelt mit Docker als primärer Installationsmethode.
+OCP ist ein Perl-basiertes CLI-Tool zur Verwaltung von Kubernetes-Clustern (RKE2/K3s). Das Projekt wird als CPAN-Distribution entwickelt mit Docker als primärer Installationsmethode.
 
 ## Stack Entscheidungen
 
 ```
-RKE2        → Die Basis (statt k3s)
+RKE2/K3s    → Kubernetes-Distribution (beides unterstützt)
 Cilium      → Macht fast alles (CNI, Service Mesh, Ingress, Observability)
-Vector      → Ein DaemonSet für alles (Logs + Metriken)
-VictoriaMetrics → Metriken Storage (Prometheus-kompatibel, 10x effizienter)
-Loki        → Log Storage
-Perl DSL    → Orchestrierung und Abstraktion
 
-Kein: Helm, Istio, Prometheus, ArgoCD, Node Exporter, Promtail, Canal
-```
-
-### Warum RKE2 statt k3s
-
-```
-├── FIPS 140-2 ready (Government/Enterprise)
-├── CIS Hardening by default
-├── SELinux Support
-├── Secrets Encryption at Rest
-├── Audit Logging
-├── Kein Helm Controller → Wir wollen eh kein Helm
-└── Perl DSL hat volle Kontrolle
+Kein: Helm, Istio, Canal
 ```
 
 ### Warum Cilium
@@ -53,8 +37,7 @@ Kein Helm als Default.
 Stattdessen:
 ├── Kustomize (in kubectl eingebaut)
 ├── Plain Manifests (von GitHub Releases)
-├── helm template zum Rendern (Build-Zeit, nicht Runtime)
-└── Perl DSL generiert/orchestriert alles
+└── helm template zum Rendern (Build-Zeit, nicht Runtime)
 
 Helm nicht verboten - nur nicht der Default-Weg.
 ```
@@ -64,70 +47,19 @@ Helm nicht verboten - nur nicht der Default-Weg.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                 │
-│  Management Node (CX32, ~8GB RAM)                               │
-│  ├── RKE2 Control Plane (etcd, apiserver, etc.)                │
-│  ├── Perl Management Daemon (robocop)                          │
-│  ├── VictoriaMetrics                                            │
-│  ├── Loki                                                       │
-│  ├── Grafana                                                    │
-│  ├── kube-state-metrics                                         │
-│  ├── Headlamp                                                   │
+│  Control Plane Node                                             │
+│  ├── RKE2/K3s Control Plane (etcd, apiserver, etc.)            │
+│  ├── robocop (Kubernetes Controller)                           │
 │  ├── Cilium Operator                                            │
-│  └── Vector                                                     │
+│  ├── cert-manager                                               │
+│  └── Registry (pull-through cache + local)                      │
 │                                                                 │
-│  Worker Nodes (Bare Metal, viel RAM)                            │
-│  ├── RKE2 Agent (~250MB)                                        │
-│  ├── Cilium Agent (~300MB)                                      │
-│  ├── Vector (~50MB)                                             │
-│  └── Workloads (der ganze Rest)                                 │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Monitoring Stack
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│  DaemonSet (1x pro Node):                                       │
-│  └── Vector                                                     │
-│      ├── Sammelt Logs (/var/log/containers)                    │
-│      ├── Sammelt Host Metriken                                  │
-│      └── Schickt alles zentral                                  │
-│                                                                 │
-│  Zentral (auf Control Plane):                                   │
-│  ├── VictoriaMetrics (statt Prometheus, 10x effizienter)       │
-│  ├── Loki (Log Storage)                                         │
-│  ├── kube-state-metrics (K8s Object Metriken)                  │
-│  └── Grafana (Dashboards)                                       │
-│                                                                 │
-│  Schon da durch Cilium:                                         │
-│  └── Hubble (Network Flows, Service Map)                       │
+│  Worker Nodes                                                   │
+│  ├── RKE2/K3s Agent                                             │
+│  ├── Cilium Agent                                               │
+│  └── Workloads                                                  │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
-```
-
-## Visualisierung
-
-```
-├── Grafana       → Metriken/Logs Dashboards
-├── Hubble UI     → Network Flows (durch Cilium)
-├── Headlamp      → Cluster Resource Browser (wie ArgoCD UI ohne GitOps)
-└── k9s           → Terminal UI für Dev/Debugging
-```
-
-## Was wir NICHT brauchen
-
-```
-❌ Helm (Kustomize + Plain Manifests)
-❌ Istio (Cilium macht Service Mesh)
-❌ Prometheus (VictoriaMetrics effizienter)
-❌ Node Exporter (Vector sammelt Host Metriken)
-❌ Promtail (Vector macht Logs)
-❌ Canal/Flannel (Cilium)
-❌ Nginx Ingress (Cilium Gateway API)
-❌ ArgoCD (Perl DSL orchestriert)
-❌ Externer etcd für Dev (Single Node reicht)
 ```
 
 ## Architektur-Vision (v2)
@@ -140,7 +72,7 @@ Helm nicht verboten - nur nicht der Default-Weg.
 │  ─────────────────                                              │
 │  • Bootstrap Control Plane(s) - EINMALIG                        │
 │  • Läuft EXTERN (Laptop, CI/CD)                                 │
-│  • Installiert RKE2, Cilium, Basis-Stack                       │
+│  • Installiert RKE2/K3s, Cilium, Basis-Stack                   │
 │  • Deployt robocop in den Cluster                              │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -153,7 +85,7 @@ Helm nicht verboten - nur nicht der Default-Weg.
 │  │  • Läuft IM Cluster als Deployment                        │ │
 │  │  • Managed ALLE Worker-Nodes via CRDs                     │ │
 │  │  • Reconciliation Loop: Watch → Diff → Act → Status       │ │
-│  │  • Basiert auf: Kubernetes::Controller (IO::Async)        │ │
+│  │  • Basiert auf: Net::Async::Kubernetes (IO::Async)        │ │
 │  │  • Kann auch Deployments orchestrieren (kein ArgoCD)      │ │
 │  └───────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
@@ -183,8 +115,8 @@ EOF
 
 systemctl enable --now rke2-server
 
-# 2. Manifests via Kustomize (Perl DSL macht das)
-kubectl apply -k /opt/ocp/manifests/
+# 2. Manifests via Kustomize
+kubectl apply -k manifests/robocop/
 
 # 3. Worker joinen
 curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -
@@ -192,63 +124,20 @@ curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="agent" sh -
 systemctl enable --now rke2-agent
 ```
 
-## Perl DSL Verantwortlichkeiten
+## OCP Verantwortlichkeiten
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                                                                 │
-│  Perl DSL / Management Daemon:                                  │
-│  ├── Generiert Kustomize Strukturen                            │
+│  OCP CLI + robocop Controller:                                  │
 │  ├── kubectl apply -k ausführen                                │
 │  ├── Reihenfolge orchestrieren (Cilium vor Workloads)         │
 │  ├── Health Checks / Readiness warten                          │
 │  ├── Node Management (join/leave)                               │
 │  ├── Config Management                                          │
-│  ├── CRDs für Cilium Policies generieren                       │
 │  └── Abstraction über K8s Komplexität                          │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
-```
-
-## CRDs für robocop
-
-```yaml
-# Fixer SSH Node
-apiVersion: ocp.internal/v1
-kind: Node
-metadata:
-  name: avatar
-spec:
-  provider: ssh
-  host: avatar.conflict.industries
-  gpu: true
-status:
-  phase: Ready
-  joinedAt: 2026-01-12T...
-
----
-# Dynamischer Hetzner Pool
-apiVersion: ocp.internal/v1
-kind: NodePool
-metadata:
-  name: hetzner-workers
-spec:
-  provider: hetzner
-  serverType: cx23
-  location: fsn1
-  min: 0
-  max: 10
-
----
-# On-Demand GPU (vast.ai)
-apiVersion: ocp.internal/v1
-kind: NodePool
-metadata:
-  name: vast-gpus
-spec:
-  provider: vastai
-  gpuType: rtx4090
-  maxCostPerHour: 1.50
 ```
 
 ## Projekt-Struktur
@@ -256,17 +145,19 @@ spec:
 ```
 kubernetes-ocp/
   ├── bin/ocp                    # CLI Tool (Bootstrap)
+  ├── bin/robocop                # Controller Entry Point
   ├── lib/OCP/                   # CLI Module
-  ├── lib/OCP/RKE2.pm            # RKE2 Installation und Management
+  ├── lib/OCP/K3s.pm             # K3s Installation und Management
+  ├── lib/OCP/Rex.pm             # Rex Task Executor (RKE2/K3s via Rexfile)
+  ├── lib/OCP/SSH.pm             # SSH Operations
+  ├── lib/OCP/Local.pm           # Lokale Installation (ohne SSH)
   ├── lib/OCP/Robocop/           # Controller Module (im Cluster)
-  ├── manifests/                 # Kustomize Basis-Manifeste
-  │   ├── cilium/
-  │   ├── monitoring/            # Vector, VictoriaMetrics, Loki
-  │   └── base/
-  └── deploy/robocop.yaml        # Kubernetes Deployment
-
-p5-kubernetes-controller/        # Separates CPAN Modul
-  └── lib/Kubernetes/Controller.pm  # IO::Async basiertes Framework
+  ├── lib/OCP/UI/                # Terminal UI (Tickit-basiert)
+  ├── manifests/
+  │   ├── robocop/               # CRDs, RBAC, Deployment
+  │   ├── dev-registry.yaml
+  │   └── Rexfile                # Rex Tasks für Server-Provisioning
+  └── share/                     # Manifest Templates (cert-manager, etc.)
 ```
 
 ## Datei-Struktur (Projekt)
@@ -274,12 +165,13 @@ p5-kubernetes-controller/        # Separates CPAN Modul
 ```
 ocp.yaml              # Cluster-Spezifikation (git-versioniert)
 secrets.yaml          # SOPS/age verschlüsselte Secrets (git-versioniert)
+keys.yaml             # admin-ssh + robo-ssh Keys (SOPS encrypted, git-versioniert)
+age.key.enc           # PIN1-protected age key (git-versioniert)
+kubeconfig.yaml       # Cluster access (SOPS encrypted, git-versioniert)
 .ocp/                 # Lokaler State (gitignored)
   status.yaml         # Runtime-Status (transient)
-  age.key             # Age Private Key
+  age.key             # Age Private Key (decrypted cache)
   age.pub             # Age Public Key
-  id_ed25519          # SSH Private Key
-  id_ed25519.pub      # SSH Public Key
 ```
 
 ## Spec vs Status Trennung
@@ -301,12 +193,11 @@ controlPlanes:
   provider: hetzner
   serverType: cx32
   publicIp: 1.2.3.4      # <- computed, jetzt gepinnt
-  floatingIp: 5.6.7.8    # <- falls Floating IP erstellt wurde
 ```
 
 **.ocp/status.yaml (Status)** enthält nur transiente Runtime-Daten:
 - Provider-interne IDs (Hetzner Server ID)
-- Join Tokens (RKE2)
+- Join Tokens (RKE2/K3s)
 - Kubeconfig
 - Phase / Timestamps
 - Dinge die der User NICHT setzen könnte
@@ -325,21 +216,41 @@ WARNING: Drift detected!
   - `--hetzner` - Interaktives Hetzner Token Setup
   - `--no-git` - Git-Initialisierung überspringen
   - `--name` - Cluster-Name setzen
+  - `--provider` - Provider wählen (hetzner/ssh/local)
+  - `--nopassword` - Dev-Modus ohne Verschlüsselung
 - `ocp apply` - Cluster deployen/aktualisieren
 - `ocp status` - Cluster-Status anzeigen
 - `ocp destroy` - Cluster löschen
 - `ocp kubeconfig` - Kubeconfig exportieren
+- `ocp edit` - Config via TUI bearbeiten
+- `ocp version` - Versionen anzeigen
+- `ocp update` - Cluster-Komponenten aktualisieren
+- `ocp ssh` - SSH auf Cluster-Nodes (mit admin-key)
+- `ocp deploy-robocop` - Robocop Controller deployen
+- `ocp inject-key` - Robo-Key in Robocop injizieren
+- `ocp dev` - Development Tools (Registry, Image Build)
 - `ocp hetzner` - Hetzner Cloud Debugging (Server auflisten)
 
 ### Module
 - **OCP::Config** - Spec/Status Trennung (ocp.yaml vs .ocp/status.yaml)
 - **OCP::Secrets** - SOPS/age Wrapper für verschlüsselte Secrets
-- **OCP::SSH** - SSH-Verbindungen und Remote-Befehle
-- **OCP::RKE2** - RKE2 Installation und Management
+- **OCP::Keys** - Two-Tier SSH Key Management (admin-key + robo-key)
+- **OCP::Password** - Passwort-Prompting und AES-256-GCM Verschlüsselung
+- **OCP::SSH** - SSH-Verbindungen und Remote-Befehle (IPC::Open3)
+- **OCP::Rex** - Rex Task Executor (RKE2/K3s Installation)
+- **OCP::K3s** - K3s Installation und Management (direkt)
+- **OCP::Local** - Lokale Installation (ohne SSH, braucht root)
+- **OCP::Hetzner** - Hetzner Cloud API Helper
+- **OCP::Versions** - Version Manifest und Komponentenversionen
+- **OCP::DevRegistry** - Development Registry Manager
+- **OCP::UI** - Terminal UI für Formulare (Tickit-basiert)
+- **OCP::Robocop** - Kubernetes Controller (im Cluster)
+- **OCP::Robocop::Controller** - Reconciliation Logic
 
 ### Provider
 - **Hetzner Cloud** - Via WWW::Hetzner::Cloud (CPAN)
 - **SSH** - Bestehende Server als Worker einbinden
+- **Local** - Lokale Installation (Docker Mode oder Native)
 
 ## Dependencies (cpanfile)
 
@@ -353,6 +264,10 @@ requires 'namespace::clean';
 requires 'WWW::Hetzner';
 requires 'Crypt::Age';
 requires 'File::SOPS';
+requires 'Rex';
+requires 'IO::Async';
+requires 'Net::Async::Kubernetes';
+requires 'IO::K8s';
 ```
 
 ## Externe Tools (im Docker Image)
@@ -373,20 +288,14 @@ make build      # Build Docker image
 make clean      # Clean artifacts
 ```
 
-## Offene Punkte
-
-- [ ] OCP::RKE2 Modul implementieren (ersetzt OCP::K3s)
-- [ ] Cilium Manifeste im Repo
-- [ ] Monitoring Stack Manifeste (Vector, VictoriaMetrics, Loki, Grafana)
-- [ ] Headlamp Manifest
-- [ ] Kubernetes::Controller Framework
-- [ ] robocop Implementation
-
 ## Verwandte Projekte
 
 - `~/dev/perl/p5-www-hetzner` - WWW::Hetzner (auf CPAN)
-- `~/dev/perl/p5-crypt-age` - Crypt::Age Skeleton
-- `~/dev/perl/p5-file-sops` - File::SOPS Skeleton
+- `~/dev/perl/p5-crypt-age` - Crypt::Age
+- `~/dev/perl/p5-file-sops` - File::SOPS
+- `~/dev/perl/p5-net-async-kubernetes` - Net::Async::Kubernetes
+- `~/dev/perl/io-k8s-p5` - IO::K8s
+- `~/dev/perl/kubernetes-rest` - Kubernetes::REST
 
 ## Workflow
 
@@ -398,7 +307,7 @@ ocp init --hetzner
 # Config bearbeiten
 vim ocp.yaml
 
-# Cluster deployen (RKE2 + Cilium + Monitoring Stack)
+# Cluster deployen
 ocp apply
 
 # Status prüfen
@@ -434,7 +343,7 @@ Workers werden via CRDs im Cluster gemanaged (robocop).
 ┌─────────────────────────────────────────────────────────────────┐
 │  ocp CLI (extern)                                               │
 │  ────────────────                                               │
-│  • Bootstrap RKE2 auf erstem Control Plane                      │
+│  • Bootstrap RKE2/K3s auf erstem Control Plane                  │
 │  • Installiert Cilium                                           │
 │  • Deployt robocop CRDs + Controller                           │
 │  • Läuft auf Laptop/CI/CD                                      │
@@ -524,12 +433,6 @@ Deploy via:
 ```bash
 kubectl apply -k manifests/robocop/
 ```
-
-### Examples
-
-Siehe `examples/` für vollständige Beispiele:
-- `ssh-provider.yaml` - Existing bare metal GPU server
-- `hetzner-provider.yaml` - Hetzner Cloud workers
 
 ### Dependencies
 

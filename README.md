@@ -369,14 +369,15 @@ nocert: true     # Don't install cert-manager (manual certificates)
 ```
 myproject/
 ├── ocp.yaml           # Cluster spec (git versioned)
-├── secrets.yaml       # Encrypted secrets (git versioned)
+├── secrets.yaml       # Encrypted secrets (SOPS, git versioned)
+├── keys.yaml          # SSH keys: admin-ssh + robo-ssh (SOPS encrypted, git versioned)
+├── age.key.enc        # PIN1-protected age key (git versioned)
+├── kubeconfig.yaml    # Cluster access (SOPS encrypted, git versioned)
 ├── .gitignore
 └── .ocp/              # Local state (gitignored)
     ├── status.yaml    # Runtime status
-    ├── age.key        # Age private key
-    ├── age.pub        # Age public key
-    ├── id_ed25519     # SSH private key
-    └── id_ed25519.pub # SSH public key
+    ├── age.key        # Age private key (decrypted cache)
+    └── age.pub        # Age public key
 ```
 
 ## Security Model (Defense in Depth)

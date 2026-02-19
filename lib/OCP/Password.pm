@@ -42,8 +42,7 @@ sub encrypt_age_key {
     croak "password required" unless $password;
 
     # Use AES-256-GCM via CryptX
-    require Crypt::Mode::GCM;
-    my $gcm = Crypt::Mode::GCM->new('AES');
+    require Crypt::AuthEnc::GCM;
 
     # Derive key from password (PBKDF2)
     my $salt = _random_bytes(16);
@@ -51,10 +50,14 @@ sub encrypt_age_key {
 
     # Encrypt with random nonce
     my $nonce = _random_bytes(12);
-    my $ciphertext = $gcm->encrypt($age_key_content, $key, $nonce, '');
+    my $gcm = Crypt::AuthEnc::GCM->new('AES', $key);
+    $gcm->iv_add($nonce);
+    $gcm->adata_add('');
+    my $ciphertext = $gcm->encrypt_add($age_key_content);
+    my $tag = $gcm->encrypt_done;
 
-    # Return base64(salt + nonce + ciphertext)
-    my $encrypted = $salt . $nonce . $ciphertext;
+    # Return base64(salt + nonce + tag + ciphertext)
+    my $encrypted = $salt . $nonce . $tag . $ciphertext;
     return encode_base64($encrypted, '');
 }
 
@@ -71,23 +74,28 @@ sub decrypt_age_key {
     # Decode base64
     my $encrypted = decode_base64($encrypted_b64);
 
-    # Extract components
+    # Extract components: salt(16) + nonce(12) + tag(16) + ciphertext
     my $salt = substr($encrypted, 0, 16);
     my $nonce = substr($encrypted, 16, 12);
-    my $ciphertext = substr($encrypted, 28);
+    my $tag = substr($encrypted, 28, 16);
+    my $ciphertext = substr($encrypted, 44);
 
     # Derive key
     my $key = _derive_key($password, $salt);
 
     # Decrypt
-    require Crypt::Mode::GCM;
-    my $gcm = Crypt::Mode::GCM->new('AES');
+    require Crypt::AuthEnc::GCM;
 
     my $plaintext = eval {
-        $gcm->decrypt($ciphertext, $key, $nonce, '');
+        my $gcm = Crypt::AuthEnc::GCM->new('AES', $key);
+        $gcm->iv_add($nonce);
+        $gcm->adata_add('');
+        my $pt = $gcm->decrypt_add($ciphertext);
+        my $ok = $gcm->decrypt_done($tag);
+        $ok ? $pt : undef;
     };
 
-    if ($@ || !$plaintext) {
+    if ($@ || !defined $plaintext) {
         croak "Decryption failed. Wrong password?";
     }
 
