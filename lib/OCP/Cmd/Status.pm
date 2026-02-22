@@ -32,19 +32,16 @@ sub execute {
     print "\n";
 
     # Spec summary
-    my $cp = $config->control_planes;
+    my $cps = $config->control_planes;
     my @workers = @{$config->workers};
 
     print "=== Spec ===\n";
-    my $k8s = $config->kubernetes;
-    my $dist = $k8s->{dist} || $k8s->{distribution} || 'rke2';
-    my $version = $k8s->{version} || 'latest';
-    print "Distribution: $dist $version\n";
+    print "Distribution: ", $config->distribution, " ", ($config->version || 'latest'), "\n";
 
-    my $cp_nodes = $cp->{nodes} // $cp->{count} // 1;
-    my $cp_provider = $cp->{provider} || 'hetzner';
-    my $cp_type = $cp->{serverType} || 'ssh';
-    print "Control Planes: $cp_nodes ($cp_type, $cp_provider)\n";
+    my $cp_count = scalar @$cps;
+    my $cp_provider = $cps->[0]{provider} || 'hetzner';
+    my $cp_type = $cps->[0]{serverType} || 'ssh';
+    print "Control Planes: $cp_count ($cp_type, $cp_provider)\n";
 
     for my $pool (@workers) {
         my $nodes = ref($pool->{nodes}) eq 'ARRAY' ? scalar(@{$pool->{nodes}}) : ($pool->{nodes} // $pool->{count} // 0);
