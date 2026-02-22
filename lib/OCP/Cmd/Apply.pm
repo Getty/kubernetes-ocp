@@ -339,6 +339,29 @@ sub execute {
         }
     }
 
+    # Install client CA as ConfigMap in kube-system (for mTLS consumers like Beekeeper)
+    if ($result->{client_ca}) {
+        print "  [..] Installing client CA to kube-system...\n";
+        eval {
+            require File::Temp;
+            my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+            print $kc_fh $result->{kubeconfig};
+            close $kc_fh;
+            my $kc_path = $kc_fh->filename;
+
+            open my $fh, '|-', "kubectl --kubeconfig=$kc_path -n kube-system create configmap client-ca --from-file=ca.crt=/dev/stdin --dry-run=client -o yaml | kubectl --kubeconfig=$kc_path apply -f -"
+                or die "Failed to run kubectl: $!";
+            print $fh $result->{client_ca};
+            close $fh;
+            die "kubectl apply failed\n" if $?;
+        };
+        if ($@) {
+            print "  [WARN] Client CA installation failed: $@\n";
+        } else {
+            print "  [ok] Client CA installed (kube-system/configmap/client-ca)\n";
+        }
+    }
+
     # Deploy registry (pull-through cache + local) FIRST after node Ready
     # Registry is always deployed — required infrastructure for robocop image delivery
     print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
