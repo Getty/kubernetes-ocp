@@ -14,7 +14,7 @@ ARG OCP_GID=1000
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
   curl ca-certificates git openssh-client \
-  libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential \
+  libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential pkg-config \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl =============================================================
