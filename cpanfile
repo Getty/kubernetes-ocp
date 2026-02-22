@@ -6,7 +6,7 @@ requires 'Path::Tiny';
 requires 'namespace::clean';
 requires 'WWW::Hetzner';
 requires 'Crypt::Age';
-requires 'File::SOPS';
+requires 'File::SOPS', '0.002';
 requires 'Rex';
 requires 'Net::SSH2';
 requires 'IPC::Run';
