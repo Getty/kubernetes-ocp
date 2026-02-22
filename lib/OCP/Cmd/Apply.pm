@@ -6,6 +6,7 @@ use MooX::Cmd;
 use MooX::Options;
 use Path::Tiny qw(path);
 use JSON::PP ();
+use FindBin;
 
 use OCP::Config;
 use OCP::Secrets;
@@ -350,13 +351,24 @@ sub execute {
         print "  [ok] OCP registry ready\n";
     }
 
-    # Deploy GPU support (RuntimeClass + Device Plugin) if node has NVIDIA
-    print "  [..] Checking GPU support...\n";
+    # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically
+    print "  [..] Setting up Node Feature Discovery (NFD)...\n";
     eval {
-        $self->_setup_gpu_support($result->{kubeconfig}, $config);
+        $self->_setup_nfd($result->{kubeconfig}, $config);
     };
     if ($@) {
-        print "  [WARN] GPU setup failed: $@\n";
+        print "  [WARN] NFD setup failed: $@\n";
+    } else {
+        print "  [ok] NFD ready\n";
+    }
+
+    # Deploy GPU Operator if NFD detects NVIDIA GPU (pci-10de label)
+    print "  [..] Checking GPU Operator...\n";
+    eval {
+        $self->_setup_gpu_operator($result->{kubeconfig}, $config);
+    };
+    if ($@) {
+        print "  [WARN] GPU Operator setup failed: $@\n";
     }
 
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
@@ -891,10 +903,315 @@ sub _nodeport_service {
 }
 
 #
-# GPU Support (RuntimeClass + NVIDIA Device Plugin)
+# NFD (Node Feature Discovery)
 #
 
-sub _setup_gpu_support {
+sub _setup_nfd {
+    my ($self, $kubeconfig, $config) = @_;
+
+    die "No kubeconfig available\n" unless $kubeconfig;
+
+    # Apply CRDs first (before any NFD components)
+    my $share_dir = $self->_find_share_dir;
+    my $crd_file = $share_dir->child('nfd', 'crds', 'nodefeature-crd.yaml');
+    die "NFD CRD file not found: $crd_file\n" unless -f $crd_file;
+
+    my $manifest = $self->_generate_nfd_manifest;
+
+    require Digest::MD5;
+    my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
+    my $deployed = $self->_load_deployed_hashes($config);
+
+    if (($deployed->{nfd} // '') eq $hash) {
+        print "      NFD already deployed (up to date)\n";
+        return;
+    }
+
+    require File::Temp;
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $kc_fh $kubeconfig;
+    close $kc_fh;
+    my $kc_path = $kc_fh->filename;
+
+    # Apply CRDs
+    print "      Applying NFD CRDs...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $crd_file->stringify) == 0
+        or die "Failed to apply NFD CRDs\n";
+
+    # Apply NFD components
+    print "      Deploying NFD master + worker...\n";
+    my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print $manifest_fh $manifest;
+    close $manifest_fh;
+
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
+        or die "Failed to apply NFD manifests\n";
+
+    # Wait for nfd-master
+    print "      Waiting for nfd-master...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
+           "--timeout=120s", "deployment/nfd-master", "-n", "node-feature-discovery") == 0
+        or warn "nfd-master not ready within 120s\n";
+
+    # Wait for nfd-worker DaemonSet
+    print "      Waiting for nfd-worker...\n";
+    for my $i (1..12) {
+        my $ready = `kubectl --kubeconfig=$kc_path get ds -n node-feature-discovery nfd-worker -o jsonpath='{.status.numberReady}' 2>/dev/null`;
+        chomp $ready;
+        if ($ready && $ready > 0) {
+            print "      NFD worker running on $ready node(s)\n";
+            last;
+        }
+        sleep 10;
+    }
+
+    $self->_save_deployed_hash($config, 'nfd', $hash);
+}
+
+sub _generate_nfd_manifest {
+    my ($self) = @_;
+
+    my $nfd_image = 'registry.k8s.io/nfd/node-feature-discovery:v0.17.0';
+
+    my @resources = (
+        # Namespace
+        {
+            apiVersion => 'v1',
+            kind       => 'Namespace',
+            metadata   => { name => 'node-feature-discovery' },
+        },
+
+        # ServiceAccount
+        {
+            apiVersion => 'v1',
+            kind       => 'ServiceAccount',
+            metadata   => {
+                name      => 'nfd-master',
+                namespace => 'node-feature-discovery',
+            },
+        },
+        {
+            apiVersion => 'v1',
+            kind       => 'ServiceAccount',
+            metadata   => {
+                name      => 'nfd-worker',
+                namespace => 'node-feature-discovery',
+            },
+        },
+
+        # ClusterRole for nfd-master
+        {
+            apiVersion => 'rbac.authorization.k8s.io/v1',
+            kind       => 'ClusterRole',
+            metadata   => { name => 'nfd-master' },
+            rules      => [
+                {
+                    apiGroups => [''],
+                    resources => ['nodes', 'nodes/status'],
+                    verbs     => ['get', 'list', 'watch', 'patch', 'update'],
+                },
+                {
+                    apiGroups => ['nfd.k8s-sigs.io'],
+                    resources => ['nodefeatures', 'nodefeaturerules'],
+                    verbs     => ['get', 'list', 'watch'],
+                },
+                {
+                    apiGroups => ['coordination.k8s.io'],
+                    resources => ['leases'],
+                    verbs     => ['create', 'delete', 'get', 'list', 'update', 'watch'],
+                },
+            ],
+        },
+
+        # ClusterRoleBinding for nfd-master
+        {
+            apiVersion => 'rbac.authorization.k8s.io/v1',
+            kind       => 'ClusterRoleBinding',
+            metadata   => { name => 'nfd-master' },
+            roleRef    => {
+                apiGroup => 'rbac.authorization.k8s.io',
+                kind     => 'ClusterRole',
+                name     => 'nfd-master',
+            },
+            subjects => [{
+                kind      => 'ServiceAccount',
+                name      => 'nfd-master',
+                namespace => 'node-feature-discovery',
+            }],
+        },
+
+        # ClusterRole for nfd-worker
+        {
+            apiVersion => 'rbac.authorization.k8s.io/v1',
+            kind       => 'ClusterRole',
+            metadata   => { name => 'nfd-worker' },
+            rules      => [
+                {
+                    apiGroups => ['nfd.k8s-sigs.io'],
+                    resources => ['nodefeatures'],
+                    verbs     => ['create', 'get', 'update'],
+                },
+            ],
+        },
+
+        # ClusterRoleBinding for nfd-worker
+        {
+            apiVersion => 'rbac.authorization.k8s.io/v1',
+            kind       => 'ClusterRoleBinding',
+            metadata   => { name => 'nfd-worker' },
+            roleRef    => {
+                apiGroup => 'rbac.authorization.k8s.io',
+                kind     => 'ClusterRole',
+                name     => 'nfd-worker',
+            },
+            subjects => [{
+                kind      => 'ServiceAccount',
+                name      => 'nfd-worker',
+                namespace => 'node-feature-discovery',
+            }],
+        },
+
+        # nfd-master Deployment (Controller)
+        {
+            apiVersion => 'apps/v1',
+            kind       => 'Deployment',
+            metadata   => {
+                name      => 'nfd-master',
+                namespace => 'node-feature-discovery',
+                labels    => { app => 'nfd-master' },
+            },
+            spec => {
+                replicas => 1,
+                selector => { matchLabels => { app => 'nfd-master' } },
+                template => {
+                    metadata => { labels => { app => 'nfd-master' } },
+                    spec     => {
+                        serviceAccountName => 'nfd-master',
+                        tolerations        => [{
+                            key      => 'node-role.kubernetes.io/master',
+                            operator => 'Exists',
+                            effect   => 'NoSchedule',
+                        }, {
+                            key      => 'node-role.kubernetes.io/control-plane',
+                            operator => 'Exists',
+                            effect   => 'NoSchedule',
+                        }],
+                        affinity => {
+                            nodeAffinity => {
+                                preferredDuringSchedulingIgnoredDuringExecution => [{
+                                    weight     => 1,
+                                    preference => {
+                                        matchExpressions => [{
+                                            key      => 'node-role.kubernetes.io/control-plane',
+                                            operator => 'Exists',
+                                        }],
+                                    },
+                                }],
+                            },
+                        },
+                        containers => [{
+                            name            => 'nfd-master',
+                            image           => $nfd_image,
+                            command         => ['nfd-master'],
+                            args            => ['-crd-controller=true'],
+                            ports           => [{ containerPort => 8080, name => 'grpc' }],
+                            env             => [{ name => 'NODE_NAME', valueFrom => { fieldRef => { fieldPath => 'spec.nodeName' } } }],
+                            securityContext => {
+                                allowPrivilegeEscalation => JSON::PP::false,
+                                capabilities             => { drop => ['ALL'] },
+                                readOnlyRootFilesystem   => JSON::PP::true,
+                                runAsNonRoot             => JSON::PP::true,
+                            },
+                            resources => {
+                                requests => { cpu => '50m',  memory => '64Mi' },
+                                limits   => { cpu => '200m', memory => '128Mi' },
+                            },
+                        }],
+                    },
+                },
+            },
+        },
+
+        # nfd-worker DaemonSet
+        {
+            apiVersion => 'apps/v1',
+            kind       => 'DaemonSet',
+            metadata   => {
+                name      => 'nfd-worker',
+                namespace => 'node-feature-discovery',
+                labels    => { app => 'nfd-worker' },
+            },
+            spec => {
+                selector => { matchLabels => { app => 'nfd-worker' } },
+                template => {
+                    metadata => { labels => { app => 'nfd-worker' } },
+                    spec     => {
+                        serviceAccountName => 'nfd-worker',
+                        dnsPolicy          => 'ClusterFirstWithHostNet',
+                        tolerations        => [{
+                            operator => 'Exists',
+                            effect   => 'NoSchedule',
+                        }],
+                        containers => [{
+                            name            => 'nfd-worker',
+                            image           => $nfd_image,
+                            command         => ['nfd-worker'],
+                            args            => ['-server=nfd-master.node-feature-discovery.svc.cluster.local:8080'],
+                            env             => [{ name => 'NODE_NAME', valueFrom => { fieldRef => { fieldPath => 'spec.nodeName' } } }],
+                            securityContext => {
+                                allowPrivilegeEscalation => JSON::PP::false,
+                                capabilities             => { drop => ['ALL'] },
+                                readOnlyRootFilesystem   => JSON::PP::true,
+                                runAsNonRoot             => JSON::PP::true,
+                            },
+                            resources => {
+                                requests => { cpu => '50m',  memory => '64Mi' },
+                                limits   => { cpu => '200m', memory => '128Mi' },
+                            },
+                            volumeMounts => [
+                                { name => 'host-boot',     mountPath => '/host-boot',     readOnly => JSON::PP::true },
+                                { name => 'host-os-release', mountPath => '/host-etc/os-release', readOnly => JSON::PP::true },
+                                { name => 'host-sys',      mountPath => '/host-sys',      readOnly => JSON::PP::true },
+                                { name => 'host-usr-lib',  mountPath => '/host-usr/lib',   readOnly => JSON::PP::true },
+                                { name => 'host-lib',      mountPath => '/host-lib',       readOnly => JSON::PP::true },
+                            ],
+                        }],
+                        volumes => [
+                            { name => 'host-boot',       hostPath => { path => '/boot' } },
+                            { name => 'host-os-release', hostPath => { path => '/etc/os-release' } },
+                            { name => 'host-sys',        hostPath => { path => '/sys' } },
+                            { name => 'host-usr-lib',    hostPath => { path => '/usr/lib' } },
+                            { name => 'host-lib',        hostPath => { path => '/lib' } },
+                        ],
+                    },
+                },
+            },
+        },
+
+        # Service for nfd-master gRPC
+        {
+            apiVersion => 'v1',
+            kind       => 'Service',
+            metadata   => {
+                name      => 'nfd-master',
+                namespace => 'node-feature-discovery',
+            },
+            spec => {
+                selector => { app => 'nfd-master' },
+                ports    => [{ port => 8080, targetPort => 8080, protocol => 'TCP', name => 'grpc' }],
+                type     => 'ClusterIP',
+            },
+        },
+    );
+
+    return $self->ocp->dump(@resources);
+}
+
+#
+# GPU Operator (NVIDIA)
+#
+
+sub _setup_gpu_operator {
     my ($self, $kubeconfig, $config) = @_;
 
     die "No kubeconfig available\n" unless $kubeconfig;
@@ -905,110 +1222,289 @@ sub _setup_gpu_support {
     close $kc_fh;
     my $kc_path = $kc_fh->filename;
 
-    # Check if node has nvidia.com/gpu capacity (device plugin already running)
-    # or if nvidia runtime is configured in containerd
-    my $has_gpu = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.capacity.nvidia\\.com/gpu}' 2>/dev/null`;
-    my $has_runtime = `kubectl --kubeconfig=$kc_path get runtimeclass nvidia -o name 2>/dev/null`;
+    # Check if any node has NVIDIA GPU via NFD labels
+    my $gpu_nodes = `kubectl --kubeconfig=$kc_path get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o name 2>/dev/null`;
+    chomp $gpu_nodes;
 
-    # Also check: does the node have nvidia containerd runtime?
-    # The Rexfile creates /etc/containerd/conf.d/99-nvidia.toml if GPU was detected.
-    # We detect this by looking at node labels or just trying to deploy.
-    # If no GPU, device plugin is harmless (reports 0 GPUs).
-
-    my $manifest = $self->_generate_gpu_manifest;
-
-    require Digest::MD5;
-    my $hash = Digest::MD5::md5_hex($manifest);
-    my $deployed = $self->_load_deployed_hashes($config);
-
-    if (($deployed->{gpu} // '') eq $hash) {
-        print "      GPU support already deployed (up to date)\n";
+    unless ($gpu_nodes) {
+        print "      No GPU nodes detected (no NFD label feature.node.kubernetes.io/pci-10de.present)\n";
+        print "  [ok] GPU Operator skipped (no GPU hardware)\n";
         return;
     }
 
-    print "      Deploying NVIDIA RuntimeClass + Device Plugin...\n";
+    print "      GPU node(s) detected: ", join(', ', split(/\n/, $gpu_nodes)), "\n";
 
+    # Apply CRDs first
+    my $share_dir = $self->_find_share_dir;
+    my $crd_file = $share_dir->child('gpu-operator', 'crds', 'clusterpolicy-crd.yaml');
+    die "GPU Operator CRD file not found: $crd_file\n" unless -f $crd_file;
+
+    my $manifest = $self->_generate_gpu_operator_manifest;
+
+    require Digest::MD5;
+    my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
+    my $deployed = $self->_load_deployed_hashes($config);
+
+    if (($deployed->{'gpu-operator'} // '') eq $hash) {
+        print "      GPU Operator already deployed (up to date)\n";
+        return;
+    }
+
+    # Apply CRDs
+    print "      Applying GPU Operator CRDs...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $crd_file->stringify) == 0
+        or die "Failed to apply GPU Operator CRDs\n";
+
+    # Wait briefly for CRD to be established
+    sleep 2;
+
+    # Apply operator + ClusterPolicy
+    print "      Deploying GPU Operator...\n";
     my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
     print $manifest_fh $manifest;
     close $manifest_fh;
 
     system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
-        or die "Failed to apply GPU manifests\n";
+        or die "Failed to apply GPU Operator manifests\n";
 
-    # Wait for device plugin (short timeout, it's a DaemonSet)
-    print "      Waiting for NVIDIA device plugin...\n";
+    # Wait for operator deployment
+    print "      Waiting for gpu-operator...\n";
+    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
+           "--timeout=120s", "deployment/gpu-operator", "-n", "gpu-operator") == 0
+        or warn "gpu-operator not ready within 120s\n";
+
+    # Check ClusterPolicy status
     for my $i (1..12) {
-        my $ready = `kubectl --kubeconfig=$kc_path get ds -n kube-system nvidia-device-plugin-daemonset -o jsonpath='{.status.numberReady}' 2>/dev/null`;
-        chomp $ready;
-        if ($ready && $ready > 0) {
-            # Check if GPU is now visible
-            sleep 5;  # Give kubelet time to update capacity
-            my $gpu_count = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.capacity.nvidia\\.com/gpu}' 2>/dev/null`;
-            chomp $gpu_count;
-            if ($gpu_count && $gpu_count > 0) {
-                print "  [ok] GPU support ready ($gpu_count GPU(s) available)\n";
-            } else {
-                print "  [ok] Device plugin running (GPU may not be present on this node)\n";
-            }
+        my $state = `kubectl --kubeconfig=$kc_path get clusterpolicy gpu-cluster-policy -o jsonpath='{.status.state}' 2>/dev/null`;
+        chomp $state;
+        if ($state eq 'ready') {
+            print "  [ok] GPU Operator ready (ClusterPolicy state: ready)\n";
             last;
+        }
+        if ($i == 12) {
+            print "      ClusterPolicy state: $state (may still be reconciling)\n";
         }
         sleep 10;
     }
 
-    $self->_save_deployed_hash($config, 'gpu', $hash);
+    $self->_save_deployed_hash($config, 'gpu-operator', $hash);
 }
 
-sub _generate_gpu_manifest {
+sub _generate_gpu_operator_manifest {
     my ($self) = @_;
 
+    my $operator_image = 'nvcr.io/nvidia/gpu-operator:v24.9.2';
+
     my @resources = (
+        # Namespace
         {
-            apiVersion => 'node.k8s.io/v1',
-            kind       => 'RuntimeClass',
-            metadata   => { name => 'nvidia' },
-            handler    => 'nvidia',
+            apiVersion => 'v1',
+            kind       => 'Namespace',
+            metadata   => { name => 'gpu-operator' },
         },
+
+        # ServiceAccount
+        {
+            apiVersion => 'v1',
+            kind       => 'ServiceAccount',
+            metadata   => {
+                name      => 'gpu-operator',
+                namespace => 'gpu-operator',
+            },
+        },
+
+        # ClusterRole
+        {
+            apiVersion => 'rbac.authorization.k8s.io/v1',
+            kind       => 'ClusterRole',
+            metadata   => { name => 'gpu-operator' },
+            rules      => [
+                {
+                    apiGroups => [''],
+                    resources => ['nodes', 'nodes/status', 'pods', 'pods/eviction', 'configmaps', 'events',
+                                  'secrets', 'serviceaccounts', 'services', 'namespaces',
+                                  'endpoints', 'persistentvolumeclaims'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['apps'],
+                    resources => ['deployments', 'daemonsets', 'replicasets', 'statefulsets'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['rbac.authorization.k8s.io'],
+                    resources => ['clusterroles', 'clusterrolebindings', 'roles', 'rolebindings'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['nvidia.com'],
+                    resources => ['clusterpolicies', 'clusterpolicies/status', 'clusterpolicies/finalizers'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['security.openshift.io'],
+                    resources => ['securitycontextconstraints'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['scheduling.k8s.io'],
+                    resources => ['priorityclasses'],
+                    verbs     => ['get', 'list', 'watch', 'create', 'update'],
+                },
+                {
+                    apiGroups => ['coordination.k8s.io'],
+                    resources => ['leases'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['node.k8s.io'],
+                    resources => ['runtimeclasses'],
+                    verbs     => ['*'],
+                },
+                {
+                    apiGroups => ['apiextensions.k8s.io'],
+                    resources => ['customresourcedefinitions'],
+                    verbs     => ['get', 'list', 'watch'],
+                },
+            ],
+        },
+
+        # ClusterRoleBinding
+        {
+            apiVersion => 'rbac.authorization.k8s.io/v1',
+            kind       => 'ClusterRoleBinding',
+            metadata   => { name => 'gpu-operator' },
+            roleRef    => {
+                apiGroup => 'rbac.authorization.k8s.io',
+                kind     => 'ClusterRole',
+                name     => 'gpu-operator',
+            },
+            subjects => [{
+                kind      => 'ServiceAccount',
+                name      => 'gpu-operator',
+                namespace => 'gpu-operator',
+            }],
+        },
+
+        # GPU Operator Deployment
         {
             apiVersion => 'apps/v1',
-            kind       => 'DaemonSet',
-            metadata   => { name => 'nvidia-device-plugin-daemonset', namespace => 'kube-system' },
-            spec       => {
-                selector       => { matchLabels => { app => 'nvidia-device-plugin-daemonset' } },
-                updateStrategy => { type => 'RollingUpdate' },
-                template       => {
-                    metadata => { labels => { app => 'nvidia-device-plugin-daemonset' } },
+            kind       => 'Deployment',
+            metadata   => {
+                name      => 'gpu-operator',
+                namespace => 'gpu-operator',
+                labels    => { app => 'gpu-operator' },
+            },
+            spec => {
+                replicas => 1,
+                selector => { matchLabels => { app => 'gpu-operator' } },
+                template => {
+                    metadata => { labels => { app => 'gpu-operator' } },
                     spec     => {
-                        runtimeClassName   => 'nvidia',
+                        serviceAccountName => 'gpu-operator',
                         tolerations        => [{
-                            key      => 'nvidia.com/gpu',
+                            key      => 'node-role.kubernetes.io/control-plane',
                             operator => 'Exists',
                             effect   => 'NoSchedule',
                         }],
-                        priorityClassName  => 'system-node-critical',
-                        containers         => [{
-                            name            => 'nvidia-device-plugin-ctr',
-                            image           => 'nvcr.io/nvidia/k8s-device-plugin:v0.17.0',
-                            env             => [{ name => 'FAIL_ON_INIT_ERROR', value => 'false' }],
+                        containers => [{
+                            name            => 'gpu-operator',
+                            image           => $operator_image,
+                            command         => ['gpu-operator'],
+                            env             => [
+                                { name => 'WATCH_NAMESPACE', value => '' },
+                                { name => 'OPERATOR_NAMESPACE', value => 'gpu-operator' },
+                                { name => 'POD_NAME', valueFrom => { fieldRef => { fieldPath => 'metadata.name' } } },
+                            ],
                             securityContext => {
                                 allowPrivilegeEscalation => JSON::PP::false,
                                 capabilities             => { drop => ['ALL'] },
                             },
-                            volumeMounts => [{
-                                name      => 'device-plugin',
-                                mountPath => '/var/lib/kubelet/device-plugins',
-                            }],
-                        }],
-                        volumes => [{
-                            name     => 'device-plugin',
-                            hostPath => { path => '/var/lib/kubelet/device-plugins' },
+                            resources => {
+                                requests => { cpu => '100m',  memory => '128Mi' },
+                                limits   => { cpu => '500m',  memory => '256Mi' },
+                            },
+                            ports => [{ containerPort => 8080, name => 'metrics' }],
                         }],
                     },
+                },
+            },
+        },
+
+        # ClusterPolicy CR (GPU Operator configuration)
+        # driver.enabled: false — Rex installs host-level NVIDIA drivers
+        # nfd.enabled: false — we deploy NFD ourselves
+        # gfd.enabled: false — NFD handles GPU feature discovery
+        {
+            apiVersion => 'nvidia.com/v1',
+            kind       => 'ClusterPolicy',
+            metadata   => { name => 'gpu-cluster-policy' },
+            spec       => {
+                operator => {
+                    defaultRuntime => 'containerd',
+                },
+                driver => {
+                    enabled => JSON::PP::false,  # Rex installs drivers on the host
+                },
+                toolkit => {
+                    enabled => JSON::PP::true,
+                    version => 'v1.17.1-ubuntu22.04',
+                },
+                devicePlugin => {
+                    enabled => JSON::PP::true,
+                    version => 'v0.17.0',
+                },
+                dcgmExporter => {
+                    enabled => JSON::PP::true,
+                    version => '3.3.9-3.6.1-ubuntu22.04',
+                },
+                dcgm => {
+                    enabled => JSON::PP::true,
+                },
+                gfd => {
+                    enabled => JSON::PP::false,  # NFD handles feature discovery
+                },
+                nfd => {
+                    enabled => JSON::PP::false,  # We deploy NFD ourselves
+                },
+                migManager => {
+                    enabled => JSON::PP::false,
+                },
+                validator => {
+                    enabled => JSON::PP::true,
+                },
+                nodeStatusExporter => {
+                    enabled => JSON::PP::false,
                 },
             },
         },
     );
 
     return $self->ocp->dump(@resources);
+}
+
+#
+# Share directory (static CRDs, etc.)
+#
+
+sub _find_share_dir {
+    my ($self) = @_;
+
+    my @locations = (
+        '/opt/ocp/src/share',                            # Docker
+        path($FindBin::Bin)->parent->child('share'),     # Dev
+    );
+
+    eval {
+        require File::ShareDir;
+        push @locations, path(File::ShareDir::dist_dir('OCP'));
+    };
+
+    for my $dir (@locations) {
+        return path($dir) if -d $dir;
+    }
+
+    die "OCP share directory not found. Tried:\n" . join("\n", map { "  - $_" } @locations) . "\n";
 }
 
 #
@@ -1086,32 +1582,65 @@ sub _reconcile_components {
         }
     }
 
-    # GPU support
+    # NFD (Node Feature Discovery) — always deployed
     {
         $checked++;
-        print "  [..] Checking GPU support...\n";
+        print "  [..] Checking NFD...\n";
         eval {
             my $deployed = $self->_load_deployed_hashes($config);
-            my $manifest = $self->_generate_gpu_manifest;
-            require Digest::MD5;
-            my $current_hash = Digest::MD5::md5_hex($manifest);
-            my $was_missing = !exists $deployed->{gpu};
-            my $was_different = ($deployed->{gpu} // '') ne $current_hash;
 
-            $self->_setup_gpu_support($kubeconfig, $config);
+            my $share_dir = $self->_find_share_dir;
+            my $crd_file = $share_dir->child('nfd', 'crds', 'nodefeature-crd.yaml');
+            my $manifest = $self->_generate_nfd_manifest;
+            require Digest::MD5;
+            my $current_hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
+            my $was_missing = !exists $deployed->{nfd};
+            my $was_different = ($deployed->{nfd} // '') ne $current_hash;
+
+            $self->_setup_nfd($kubeconfig, $config);
 
             if ($was_missing) {
-                print "  [ok] GPU support deployed (was missing)\n";
+                print "  [ok] NFD deployed (was missing)\n";
                 $updated++;
             } elsif ($was_different) {
-                print "  [ok] GPU support updated (manifest changed)\n";
+                print "  [ok] NFD updated (manifest changed)\n";
                 $updated++;
             } else {
-                print "  [ok] GPU support up to date\n";
+                print "  [ok] NFD up to date\n";
             }
         };
         if ($@) {
-            print "  [WARN] GPU setup failed: $@\n";
+            print "  [WARN] NFD setup failed: $@\n";
+        }
+    }
+
+    # GPU Operator (only if NFD detects NVIDIA GPU)
+    {
+        $checked++;
+        print "  [..] Checking GPU Operator...\n";
+        eval {
+            my $deployed = $self->_load_deployed_hashes($config);
+
+            # GPU Operator reconciliation: _setup_gpu_operator handles
+            # the NFD label check internally and skips if no GPU
+            my $was_missing = !exists $deployed->{'gpu-operator'};
+
+            $self->_setup_gpu_operator($kubeconfig, $config);
+
+            my $deployed_after = $self->_load_deployed_hashes($config);
+            if ($deployed_after->{'gpu-operator'} && $was_missing) {
+                print "  [ok] GPU Operator deployed (was missing)\n";
+                $updated++;
+            } elsif ($deployed_after->{'gpu-operator'} && ($deployed->{'gpu-operator'} // '') ne ($deployed_after->{'gpu-operator'} // '')) {
+                print "  [ok] GPU Operator updated (manifest changed)\n";
+                $updated++;
+            } elsif ($deployed_after->{'gpu-operator'}) {
+                print "  [ok] GPU Operator up to date\n";
+            }
+            # If no gpu-operator key after setup, it was skipped (no GPU) — already printed
+        };
+        if ($@) {
+            print "  [WARN] GPU Operator setup failed: $@\n";
         }
     }
 
