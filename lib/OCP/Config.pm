@@ -132,6 +132,28 @@ sub ssl_config { shift->spec->{ssl} // {} }
 sub ssl_email { shift->spec->{ssl}{email} // '' }
 
 #
+# Status file (.ocp/status.yaml)
+#
+
+sub status_file {
+    my ($self) = @_;
+    return $self->project_dir->child('.ocp', 'status.yaml')->stringify;
+}
+
+sub _load_status {
+    my ($self) = @_;
+    my $file = $self->status_file;
+    return {} unless -f $file;
+    return $self->ocp->load_file($file) // {};
+}
+
+sub nodes_status {
+    my ($self) = @_;
+    my $status = $self->_load_status;
+    return $status->{nodes} // [];
+}
+
+#
 # Cluster existence check (BITSOW!)
 #
 
