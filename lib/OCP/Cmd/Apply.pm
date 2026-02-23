@@ -1656,6 +1656,44 @@ sub _save_deployed_hash {
     $self->ocp->dump_file($path->stringify, $hashes);
 }
 
+sub _setup_ssh_key {
+    my ($self, $config) = @_;
+
+    my $keys_file = $config->project_dir->child('keys.yaml');
+    my $no_password_mode = !-f $keys_file;
+
+    if ($no_password_mode) {
+        $self->_ssh_key_path($config->ssh_private_key_path);
+    } else {
+        require OCP::Keys;
+        require OCP::Password;
+        require File::Temp;
+
+        my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+        $secrets->ensure_age_key();
+
+        my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+        my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key for SSH): ");
+        my $admin_key = $keys->get_admin_key($pin2);
+        unless ($admin_key) {
+            die "ERROR: Wrong PIN2 or no admin-key found!\n";
+        }
+
+        my $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 0);
+        print $temp_key_file $admin_key->{private};
+        close $temp_key_file;
+        chmod 0600, $temp_key_file->filename;
+
+        my $pub_path = $temp_key_file->filename . '.pub';
+        path($pub_path)->spew($admin_key->{public});
+        chmod 0644, $pub_path;
+
+        $self->_ssh_key_path($temp_key_file->filename);
+        # Keep ref so temp file lives as long as $self
+        $self->{_temp_ssh_key} = $temp_key_file;
+    }
+}
+
 #
 # Reconciliation for existing clusters
 #
@@ -1671,6 +1709,11 @@ sub _reconcile_components {
         return;
     }
     my $kubeconfig = path($kube_config_path)->slurp;
+
+    # Ensure SSH key is available (needed by NFD image push, etc.)
+    unless ($self->_ssh_key_path) {
+        $self->_setup_ssh_key($config);
+    }
 
     my $updated = 0;
     my $checked = 0;
