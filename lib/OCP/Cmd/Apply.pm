@@ -19,6 +19,8 @@ with 'OCP::Role::Cmd';
 
 our $VERSION = '0.1.0';
 
+has _ssh_key_path => (is => 'rw');
+
 option dry_run => (
     is    => 'ro',
     short => 'n',
@@ -231,6 +233,8 @@ sub execute {
         path($pub_path)->spew($admin_key->{public});
         chmod 0644, $pub_path;
     }
+
+    $self->_ssh_key_path($ssh_key_path);
 
     my $ssh = OCP::SSH->new(
         host     => $cp_host,
@@ -1007,18 +1011,24 @@ sub _ensure_nfd_image {
 
     die "Cannot determine control plane host for NFD image build\n" unless $cp_host;
 
+    # SSH options with admin key
+    my $key = $self->_ssh_key_path;
+    my @ssh_opts = ("-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5");
+    push @ssh_opts, "-i", $key if $key;
+    my $ssh_cmd = "ssh " . join(' ', map { quotemeta($_) } @ssh_opts) . " root\@$cp_host";
+
     # Verify SSH connectivity
-    system("ssh", "-o", "ConnectTimeout=5", "root\@$cp_host", "true") == 0
+    system("ssh", @ssh_opts, "root\@$cp_host", "true") == 0
         or die "Cannot SSH to control plane at $cp_host\n";
 
     # Verify ocp-registry is accessible (internally via SSH)
-    my $registry_check = `ssh root\@$cp_host "curl -sf http://localhost:30501/v2/ 2>&1"`;
+    my $registry_check = `$ssh_cmd "curl -sf http://localhost:30501/v2/ 2>&1"`;
     unless ($registry_check && $registry_check =~ /\{/) {
         die "ocp-registry not accessible on $cp_host:30501 — run 'ocp apply' to deploy it first\n";
     }
 
     # Check if NFD image already exists in ocp-registry
-    my $tags_check = `ssh root\@$cp_host "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
+    my $tags_check = `$ssh_cmd "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
     if ($tags_check && $tags_check =~ /"master"/) {
         print "      NFD image already in ocp-registry\n";
         return;
@@ -1052,21 +1062,21 @@ sub _ensure_nfd_image {
     my $ctr = '/var/lib/rancher/rke2/bin/ctr --address /run/k3s/containerd/containerd.sock -n k8s.io';
 
     # Verify ctr is available on node
-    system("ssh", "root\@$cp_host", "test -x /var/lib/rancher/rke2/bin/ctr") == 0
+    system("ssh", @ssh_opts, "root\@$cp_host", "test -x /var/lib/rancher/rke2/bin/ctr") == 0
         or die "containerd CLI (ctr) not found on $cp_host — is RKE2 installed?\n";
 
     print "      Sending image to cluster node...\n";
-    system("docker save nfd:master | ssh root\@$cp_host '$ctr images import -'") == 0
+    system("docker save nfd:master | $ssh_cmd '$ctr images import -'") == 0
         or die "Failed to import NFD image into node's containerd\n";
 
     print "      Pushing to ocp-registry (internal)...\n";
-    system("ssh", "root\@$cp_host",
+    system("ssh", @ssh_opts, "root\@$cp_host",
            "$ctr images tag docker.io/library/nfd:master localhost:30501/nfd:master 2>/dev/null;"
          . "$ctr images push --plain-http localhost:30501/nfd:master") == 0
         or die "Failed to push NFD image to ocp-registry\n";
 
     # Verify image is now in registry
-    my $verify = `ssh root\@$cp_host "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
+    my $verify = `$ssh_cmd "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
     unless ($verify && $verify =~ /"master"/) {
         die "NFD image push appeared to succeed but image not found in registry\n";
     }
