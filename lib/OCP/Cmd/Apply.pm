@@ -883,8 +883,8 @@ sub _registry_deployment {
         ports        => [{ containerPort => 5000, name => 'http' }],
         volumeMounts => \@volume_mounts,
         resources    => {
-            requests => { memory => '32Mi', cpu => '50m' },
-            limits   => { memory => '128Mi' },
+            requests => { memory => '64Mi', cpu => '50m' },
+            limits   => { memory => '512Mi' },
         },
     };
 
@@ -934,6 +934,10 @@ sub _setup_nfd {
 
     die "No kubeconfig available\n" unless $kubeconfig;
 
+    # Ensure NFD image is built and pushed to ocp-registry
+    # (required because released NFD versions crash on K8s 1.34+)
+    $self->_ensure_nfd_image($config);
+
     # Apply CRDs first (before any NFD components)
     my $share_dir = $self->_find_share_dir;
     my $crd_file = $share_dir->child('nfd', 'crds', 'nodefeature-crd.yaml');
@@ -945,15 +949,21 @@ sub _setup_nfd {
     my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
-    if (($deployed->{nfd} // '') eq $hash) {
-        print "      NFD already deployed (up to date)\n";
-        return;
-    }
-
     require File::Temp;
     my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
     print $kc_fh $kubeconfig;
     close $kc_fh;
+
+    # Check if NFD is actually running (not just hash match)
+    my $ns_exists = system("kubectl", "--kubeconfig=".$kc_fh->filename,
+        "get", "ns", "node-feature-discovery", "-o", "name") == 0;
+    my $nfd_running = $ns_exists && system("kubectl", "--kubeconfig=".$kc_fh->filename,
+        "get", "deployment", "nfd-master", "-n", "node-feature-discovery", "-o", "name") == 0;
+
+    if (($deployed->{nfd} // '') eq $hash && $nfd_running) {
+        print "      NFD already deployed (up to date)\n";
+        return;
+    }
     my $kc_path = $kc_fh->filename;
 
     # Apply CRDs
@@ -988,13 +998,109 @@ sub _setup_nfd {
         sleep 10;
     }
 
+    # Wait for NFD to label nodes (needs a few seconds after worker starts)
+    print "      Waiting for NFD labels...\n";
+    for my $i (1..12) {
+        my $labels = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].metadata.labels}' 2>/dev/null`;
+        if ($labels =~ /feature\.node\.kubernetes\.io/) {
+            print "      NFD labels detected on nodes\n";
+            last;
+        }
+        if ($i == 12) {
+            warn "NFD labels not detected after 120s\n";
+        }
+        sleep 10;
+    }
+
     $self->_save_deployed_hash($config, 'nfd', $hash);
+}
+
+sub _ensure_nfd_image {
+    my ($self, $config) = @_;
+
+    # Get control plane host for SSH access
+    my $cps = $config->control_planes;
+    my $first_cp = $cps->[0] // {};
+    my $cp_host = $first_cp->{host}
+        // do {
+            my $nodes = $config->nodes_status;
+            my ($cp) = grep { ($_->{role} // '') eq 'control-plane' } @$nodes;
+            $cp ? $cp->{publicIp} : undef;
+        };
+
+    die "Cannot determine control plane host for NFD image build\n" unless $cp_host;
+
+    # Verify SSH connectivity
+    system("ssh", "-o", "ConnectTimeout=5", "root\@$cp_host", "true") == 0
+        or die "Cannot SSH to control plane at $cp_host\n";
+
+    # Verify ocp-registry is accessible (internally via SSH)
+    my $registry_check = `ssh root\@$cp_host "curl -sf http://localhost:30501/v2/ 2>&1"`;
+    unless ($registry_check && $registry_check =~ /\{/) {
+        die "ocp-registry not accessible on $cp_host:30501 — run 'ocp apply' to deploy it first\n";
+    }
+
+    # Check if NFD image already exists in ocp-registry
+    my $tags_check = `ssh root\@$cp_host "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
+    if ($tags_check && $tags_check =~ /"master"/) {
+        print "      NFD image already in ocp-registry\n";
+        return;
+    }
+
+    # Verify Docker is available locally (needed for build)
+    system("docker", "info", "--format", "{{.ID}}") == 0
+        or die "Docker not available locally — needed to build NFD image\n";
+
+    print "      Building NFD from master (K8s 1.34+ compatibility)...\n";
+
+    require File::Temp;
+    my $build_dir = File::Temp->newdir(CLEANUP => 1);
+    my $dir = $build_dir->dirname;
+
+    # Clone NFD master branch (shallow)
+    print "      Cloning NFD master...\n";
+    system("git", "clone", "--depth=1", "--branch=master",
+           "https://github.com/kubernetes-sigs/node-feature-discovery.git",
+           $dir) == 0
+        or die "Failed to clone NFD repository — check network connectivity\n";
+
+    # Build the image locally (multi-stage, full target)
+    print "      Building Docker image (this may take a few minutes)...\n";
+    system("docker", "build", "--target=full", "-t", "nfd:master", $dir) == 0
+        or die "Failed to build NFD Docker image\n";
+
+    # Push to ocp-registry via SSH (entirely internal, no insecure-registry config needed):
+    # 1. docker save | ssh ctr import — sends image to node's containerd
+    # 2. ctr tag + ctr push --plain-http — pushes to ocp-registry at localhost:30501
+    my $ctr = '/var/lib/rancher/rke2/bin/ctr --address /run/k3s/containerd/containerd.sock -n k8s.io';
+
+    # Verify ctr is available on node
+    system("ssh", "root\@$cp_host", "test -x /var/lib/rancher/rke2/bin/ctr") == 0
+        or die "containerd CLI (ctr) not found on $cp_host — is RKE2 installed?\n";
+
+    print "      Sending image to cluster node...\n";
+    system("docker save nfd:master | ssh root\@$cp_host '$ctr images import -'") == 0
+        or die "Failed to import NFD image into node's containerd\n";
+
+    print "      Pushing to ocp-registry (internal)...\n";
+    system("ssh", "root\@$cp_host",
+           "$ctr images tag docker.io/library/nfd:master localhost:30501/nfd:master 2>/dev/null;"
+         . "$ctr images push --plain-http localhost:30501/nfd:master") == 0
+        or die "Failed to push NFD image to ocp-registry\n";
+
+    # Verify image is now in registry
+    my $verify = `ssh root\@$cp_host "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
+    unless ($verify && $verify =~ /"master"/) {
+        die "NFD image push appeared to succeed but image not found in registry\n";
+    }
+
+    print "      NFD image available in ocp-registry\n";
 }
 
 sub _generate_nfd_manifest {
     my ($self) = @_;
 
-    my $nfd_image = 'registry.k8s.io/nfd/node-feature-discovery:v0.17.0';
+    my $nfd_image = 'localhost:30501/nfd:master';
 
     my @resources = (
         # Namespace
@@ -1135,8 +1241,8 @@ sub _generate_nfd_manifest {
                         containers => [{
                             name            => 'nfd-master',
                             image           => $nfd_image,
+                            imagePullPolicy => 'IfNotPresent',
                             command         => ['nfd-master'],
-                            args            => ['-crd-controller=true'],
                             ports           => [{ containerPort => 8080, name => 'grpc' }],
                             env             => [{ name => 'NODE_NAME', valueFrom => { fieldRef => { fieldPath => 'spec.nodeName' } } }],
                             securityContext => {
@@ -1178,8 +1284,8 @@ sub _generate_nfd_manifest {
                         containers => [{
                             name            => 'nfd-worker',
                             image           => $nfd_image,
+                            imagePullPolicy => 'IfNotPresent',
                             command         => ['nfd-worker'],
-                            args            => ['-server=nfd-master.node-feature-discovery.svc.cluster.local:8080'],
                             env             => [{ name => 'NODE_NAME', valueFrom => { fieldRef => { fieldPath => 'spec.nodeName' } } }],
                             securityContext => {
                                 allowPrivilegeEscalation => JSON::PP::false,
@@ -1268,7 +1374,13 @@ sub _setup_gpu_operator {
     my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
-    if (($deployed->{'gpu-operator'} // '') eq $hash) {
+    # Check if GPU Operator is actually running (not just hash match)
+    my $gpu_ns_exists = system("kubectl", "--kubeconfig=$kc_path",
+        "get", "ns", "gpu-operator", "-o", "name") == 0;
+    my $gpu_running = $gpu_ns_exists && system("kubectl", "--kubeconfig=$kc_path",
+        "get", "deployment", "gpu-operator", "-n", "gpu-operator", "-o", "name") == 0;
+
+    if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running) {
         print "      GPU Operator already deployed (up to date)\n";
         return;
     }

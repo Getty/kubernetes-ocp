@@ -865,7 +865,7 @@ Kein automatisches Rollback - stattdessen:
 ## Next Steps
 
 1. **Repository Setup**
-   - Go Module initialisieren
+   - Perl Distribution initialisieren
    - Directory Structure anlegen
    - CI Pipeline (GitHub Actions)
 

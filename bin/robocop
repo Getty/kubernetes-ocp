@@ -4,7 +4,8 @@
 
 use strict;
 use warnings;
-use lib::relative '../lib';
+use FindBin;
+use lib "$FindBin::Bin/../lib";
 use OCP::Robocop;
 
 # Run robocop controller
