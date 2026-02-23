@@ -149,13 +149,9 @@ sub install_server {
     # Install Cilium (CNI) - required for nodes to become Ready
     $self->run_task('install_cilium');
 
-    # Fetch client CA (for mTLS — separate from server CA in RKE2/K3s)
-    my $client_ca = $self->fetch_client_ca_ssh($distribution);
-
     return {
         token      => $token,
         kubeconfig => $kubeconfig,
-        client_ca  => $client_ca,
     };
 }
 
@@ -195,32 +191,6 @@ sub fetch_kubeconfig_ssh {
     $kubeconfig =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
 
     return $kubeconfig;
-}
-
-sub fetch_client_ca_ssh {
-    my ($self, $distribution) = @_;
-
-    $distribution ||= 'rke2';
-
-    my $path = $distribution eq 'k3s'
-        ? '/var/lib/rancher/k3s/server/tls/client-ca.crt'
-        : '/var/lib/rancher/rke2/server/tls/client-ca.crt';
-
-    require OCP::SSH;
-    my $ssh = OCP::SSH->new(
-        host     => $self->host,
-        user     => $self->user,
-        key_file => $self->key_file,
-    );
-
-    my $result = $ssh->run("cat $path");
-
-    if ($result->{exit}) {
-        warn "Could not fetch client CA from $path: $result->{stderr}\n";
-        return undef;
-    }
-
-    return $result->{stdout};
 }
 
 sub install_agent {

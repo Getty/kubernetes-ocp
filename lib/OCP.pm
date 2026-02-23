@@ -73,8 +73,6 @@ Commands:
   status      Show cluster status
   destroy     Destroy cluster
   kubeconfig  Export kubeconfig
-  browsercert Extract client cert for browser (mTLS)
-
   hetzner     Hetzner Cloud debugging
 
 Options:
