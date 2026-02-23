@@ -26,7 +26,8 @@ requires 'Tickit::Widgets';
 
 # Robocop controller
 requires 'IO::Async';
-requires 'IO::K8s';
+requires 'IO::K8s', '1.002';
+requires 'Kubernetes::REST', '1.002';
 requires 'Net::Async::Kubernetes';
 
 on test => sub {
