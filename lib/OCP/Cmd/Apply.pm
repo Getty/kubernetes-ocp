@@ -1035,8 +1035,11 @@ sub _ensure_nfd_image {
     }
 
     # Verify Docker is available locally (needed for build)
-    system("docker", "info", "--format", "{{.ID}}") == 0
-        or die "Docker not available locally — needed to build NFD image\n";
+    my $has_docker = `which docker 2>/dev/null`;
+    chomp $has_docker;
+    die "NFD image not in registry and Docker not available to build it.\n"
+      . "      Build on a host with Docker first, or skip NFD.\n"
+        unless $has_docker;
 
     print "      Building NFD from master (K8s 1.34+ compatibility)...\n";
 
