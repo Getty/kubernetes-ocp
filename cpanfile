@@ -1,6 +1,7 @@
 requires 'Moo';
 requires 'MooX::Cmd';
 requires 'MooX::Options';
+requires 'MooX::Singleton';
 requires 'YAML::XS';
 requires 'Path::Tiny';
 requires 'namespace::clean';

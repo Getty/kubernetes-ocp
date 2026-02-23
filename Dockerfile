@@ -14,8 +14,8 @@ ARG OCP_GID=1000
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
   curl ca-certificates git openssh-client \
-  libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential pkg-config \
-  libtickit-dev libtermkey-dev libunibilium-dev \
+  libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential pkg-config libtool libtool-bin \
+  libpkgconf-dev libtickit-dev libtermkey-dev libunibilium-dev \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install kubectl =============================================================
@@ -68,9 +68,10 @@ ENV PERL_CARTON_PATH="$OCP_ROOT/install/perl5"
 
 # Copy cpanfile first for layer caching
 COPY --chown=ocp:ocp ./cpanfile $OCP_ROOT/src
+COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 
 # Install all dependencies from CPAN
-RUN cpm install --cpanfile=./cpanfile \
+RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \
   --show-build-log-on-failure && rm -rf ~/.perl-cpm/ /tmp/*
 
