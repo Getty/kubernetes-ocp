@@ -58,18 +58,18 @@ docker pull raudssus/ocp:latest
 
 # Initialize new project
 docker run --rm -it \
-  -v $(pwd):/project \
+  -v $(pwd):/ocp \
   raudssus/ocp init --hetzner
 
 # Deploy cluster
 docker run --rm -it \
-  -v $(pwd):/project \
+  -v $(pwd):/ocp \
   -v ~/.ssh:/home/ocp/.ssh:ro \
   raudssus/ocp apply
 
 # Get kubeconfig (exported to .kube/config in project dir)
 docker run --rm -it \
-  -v $(pwd):/project \
+  -v $(pwd):/ocp \
   raudssus/ocp kubeconfig -e
 
 # Copy to ~/.kube/config
@@ -77,15 +77,15 @@ cp .kube/config ~/.kube/config
 
 # Or direct to stdout
 docker run --rm -it \
-  -v $(pwd):/project \
+  -v $(pwd):/ocp \
   raudssus/ocp kubeconfig > ~/.kube/config
 
 # Alternative: Use alias for convenience
 # Linux (use host network to access localhost)
-alias ocp='docker run --rm -it --net=host -v $(pwd):/project raudssus/ocp'
+alias ocp='docker run --rm -it --net=host -v $(pwd):/ocp -e TZ=${TZ:-$(cat /etc/timezone 2>/dev/null || echo UTC)} -e LANG raudssus/ocp'
 
 # Mac/Windows (host.docker.internal works automatically)
-alias ocp='docker run --rm -it -v $(pwd):/project raudssus/ocp'
+alias ocp='docker run --rm -it -v $(pwd):/ocp raudssus/ocp'
 
 # Then use it:
 ocp status
@@ -129,19 +129,19 @@ kubectl get nodes
 **Linux:**
 ```bash
 # Use --net=host so container can access host's localhost
-docker run --rm --net=host -v $(pwd):/project raudssus/ocp init --provider local
+docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp init --provider local
 cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
-docker run --rm --net=host -v $(pwd):/project raudssus/ocp apply
-docker run --rm --net=host -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
+docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp apply
+docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/config
 ```
 
 **Mac/Windows:**
 ```bash
 # host.docker.internal works automatically
-docker run --rm -v $(pwd):/project raudssus/ocp init --provider local
+docker run --rm -v $(pwd):/ocp raudssus/ocp init --provider local
 cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
-docker run --rm -v $(pwd):/project raudssus/ocp apply
-docker run --rm -v $(pwd):/project raudssus/ocp kubeconfig > ~/.kube/config
+docker run --rm -v $(pwd):/ocp raudssus/ocp apply
+docker run --rm -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/config
 ```
 
 **Important:** On Linux, use `--net=host` to allow Docker to access your host's localhost (127.0.0.1). On Mac/Windows, `host.docker.internal` is available automatically.

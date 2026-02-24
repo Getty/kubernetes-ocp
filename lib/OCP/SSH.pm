@@ -33,19 +33,41 @@ has connect_timeout => (
     default => 10,
 );
 
+# Central SSH options - ignore user config, use only our key
+sub _ssh_opts {
+    my ($self) = @_;
+    return (
+        '-F', '/dev/null',
+        '-o', 'StrictHostKeyChecking=no',
+        '-o', 'UserKnownHostsFile=/dev/null',
+        '-o', 'IdentitiesOnly=yes',
+        '-o', "ConnectTimeout=${\$self->connect_timeout}",
+    );
+}
+
 sub _build_ssh_cmd {
     my ($self, @extra) = @_;
 
     my @cmd = ('ssh');
-    push @cmd, '-o', 'StrictHostKeyChecking=no';
-    push @cmd, '-o', 'UserKnownHostsFile=/dev/null';
+    push @cmd, $self->_ssh_opts;
     push @cmd, '-o', 'LogLevel=ERROR';
     push @cmd, '-o', 'BatchMode=yes';
-    push @cmd, '-o', "ConnectTimeout=${\$self->connect_timeout}";
     push @cmd, '-p', $self->port if $self->port != 22;
     push @cmd, '-i', $self->key_file if $self->key_file;
     push @cmd, $self->user . '@' . $self->host;
     push @cmd, @extra;
+
+    return @cmd;
+}
+
+sub _build_scp_cmd {
+    my ($self) = @_;
+
+    my @cmd = ('scp');
+    push @cmd, $self->_ssh_opts;
+    push @cmd, '-o', 'LogLevel=ERROR';
+    push @cmd, '-P', $self->port if $self->port != 22;
+    push @cmd, '-i', $self->key_file if $self->key_file;
 
     return @cmd;
 }
@@ -105,15 +127,23 @@ sub run_script {
     };
 }
 
+# Interactive SSH session (replaces current process via exec)
+sub interactive {
+    my ($self) = @_;
+
+    my @cmd = ('ssh');
+    push @cmd, $self->_ssh_opts;
+    push @cmd, '-p', $self->port if $self->port != 22;
+    push @cmd, '-i', $self->key_file if $self->key_file;
+    push @cmd, $self->user . '@' . $self->host;
+
+    exec(@cmd);
+}
+
 sub scp_to {
     my ($self, $local_path, $remote_path) = @_;
 
-    my @cmd = ('scp');
-    push @cmd, '-o', 'StrictHostKeyChecking=no';
-    push @cmd, '-o', 'UserKnownHostsFile=/dev/null';
-    push @cmd, '-o', 'LogLevel=ERROR';
-    push @cmd, '-P', $self->port if $self->port != 22;
-    push @cmd, '-i', $self->key_file if $self->key_file;
+    my @cmd = $self->_build_scp_cmd;
     push @cmd, $local_path;
     push @cmd, $self->user . '@' . $self->host . ':' . $remote_path;
 
@@ -124,12 +154,7 @@ sub scp_to {
 sub scp_from {
     my ($self, $remote_path, $local_path) = @_;
 
-    my @cmd = ('scp');
-    push @cmd, '-o', 'StrictHostKeyChecking=no';
-    push @cmd, '-o', 'UserKnownHostsFile=/dev/null';
-    push @cmd, '-o', 'LogLevel=ERROR';
-    push @cmd, '-P', $self->port if $self->port != 22;
-    push @cmd, '-i', $self->key_file if $self->key_file;
+    my @cmd = $self->_build_scp_cmd;
     push @cmd, $self->user . '@' . $self->host . ':' . $remote_path;
     push @cmd, $local_path;
 
@@ -182,7 +207,7 @@ OCP::SSH - SSH operations for OCP using IPC::Open3
     my $ssh = OCP::SSH->new(
         host     => '192.168.1.100',
         user     => 'root',
-        key_file => '~/.ssh/id_rsa',
+        key_file => '.ocp/id_ed25519',
     );
 
     # Wait for SSH to be available
@@ -203,5 +228,14 @@ OCP::SSH - SSH operations for OCP using IPC::Open3
     # Copy files
     $ssh->scp_to('/local/file', '/remote/path');
     $ssh->scp_from('/remote/file', '/local/path');
+
+    # Interactive session (replaces process)
+    $ssh->interactive;
+
+=head1 DESCRIPTION
+
+Central SSH module for OCP. All SSH connections go through this module
+to ensure consistent options: ignores user F<~/.ssh/config> (via C<-F /dev/null>),
+disables host key checking, and uses only the explicitly provided key.
 
 =cut

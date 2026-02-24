@@ -7,6 +7,7 @@ use IPC::Run qw(run);
 use Path::Tiny qw(path);
 use FindBin;
 use File::ShareDir qw(dist_dir);
+use OCP::SSH;
 
 our $VERSION = '0.1.0';
 
@@ -131,6 +132,12 @@ sub install_server {
     my $registry_upstream = $opts{registry_upstream}  || '';
     my $registry_name     = $opts{registry_name}      || '';
 
+    my $hostname = $opts{hostname} || '';
+    my $domain   = $opts{domain}   || '';
+    my $timezone = $opts{timezone} || 'UTC';
+    my $locale   = $opts{locale}   || 'en_US.UTF-8';
+    my $ntp      = $opts{ntp}      // 1;
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
@@ -141,6 +148,11 @@ sub install_server {
         registry_cache    => $registry_cache,
         registry_upstream => $registry_upstream,
         registry_name     => $registry_name,
+        hostname          => $hostname,
+        domain            => $domain,
+        timezone          => $timezone,
+        locale            => $locale,
+        ntp               => $ntp,
     );
 
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
@@ -162,8 +174,6 @@ sub fetch_kubeconfig_ssh {
 
     my $path = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 
-    # Use OCP::SSH to fetch kubeconfig
-    require OCP::SSH;
     my $ssh = OCP::SSH->new(
         host     => $self->host,
         user     => $self->user,
@@ -206,6 +216,12 @@ sub install_agent {
     my $registry_upstream = $opts{registry_upstream}  || '';
     my $registry_name     = $opts{registry_name}      || '';
 
+    my $hostname = $opts{hostname} || '';
+    my $domain   = $opts{domain}   || '';
+    my $timezone = $opts{timezone} || 'UTC';
+    my $locale   = $opts{locale}   || 'en_US.UTF-8';
+    my $ntp      = $opts{ntp}      // 1;
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
     $self->run_task($task,
@@ -216,6 +232,11 @@ sub install_agent {
         registry_cache    => $registry_cache,
         registry_upstream => $registry_upstream,
         registry_name     => $registry_name,
+        hostname          => $hostname,
+        domain            => $domain,
+        timezone          => $timezone,
+        locale            => $locale,
+        ntp               => $ntp,
     );
 
     return 1;

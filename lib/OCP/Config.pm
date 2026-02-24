@@ -131,6 +131,12 @@ sub has_external_upstream { shift->registry_upstream ne '' }
 sub ssl_config { shift->spec->{ssl} // {} }
 sub ssl_email { shift->spec->{ssl}{email} // '' }
 
+# System configuration (hostname, timezone, locale, NTP)
+sub system_config { shift->spec->{system} // {} }
+sub timezone      { shift->system_config->{timezone} // 'UTC' }
+sub locale        { shift->system_config->{locale} // 'en_US.UTF-8' }
+sub ntp_enabled   { shift->system_config->{ntp} // 1 }
+
 #
 # Status file (.ocp/status.yaml)
 #
@@ -219,6 +225,11 @@ sub write_spec {
     # Only add workers if specified
     if ($opts{workers} && @{$opts{workers}}) {
         $spec->{workers} = $opts{workers};
+    }
+
+    # System config (timezone, locale, ntp)
+    if ($opts{system} && ref $opts{system} eq 'HASH' && %{$opts{system}}) {
+        $spec->{system} = $opts{system};
     }
 
     # Control planes: compact where possible

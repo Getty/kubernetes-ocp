@@ -222,13 +222,18 @@ sub has_ssh_key {
 }
 
 sub generate_ssh_key {
-    my ($self) = @_;
+    my ($self, %opts) = @_;
 
-    my $key_path = $self->project_dir->child('.ocp', 'id_ed25519');
-    my $pub_path = $self->project_dir->child('.ocp', 'id_ed25519.pub');
+    my $name = $opts{name} // 'id_ed25519';
+    my $key_path = $self->project_dir->child('.ocp', $name);
+    my $pub_path = $self->project_dir->child('.ocp', "$name.pub");
 
     # Ensure .ocp directory exists
     $key_path->parent->mkpath;
+
+    # Remove existing file to avoid ssh-keygen "Overwrite?" prompt
+    unlink $key_path->stringify if -f $key_path;
+    unlink $pub_path->stringify if -f $pub_path;
 
     # Generate ED25519 key
     my $cmd = "ssh-keygen -t ed25519 -N '' -f '$key_path' -C 'ocp-cluster-key'";

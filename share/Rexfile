@@ -5,6 +5,7 @@ use Rex::Commands::Fs;
 use Rex::Commands::File;
 use Rex::Commands::Service;
 use Rex::Commands::Pkg;
+use Rex::Commands::Host;
 
 # Authentication - use Net::OpenSSH (real ssh command, not libssh2)
 # Net::SSH2 (libssh2) ignores OpenSSH config options and has no way to
@@ -17,9 +18,24 @@ parallelism 1;
 # "set openssh_opt => {...}" goes through generic set() which stores
 # in $set_param, but get_openssh_opt() reads from a separate %openssh_opt
 # variable. There is no SET_HANDLER registered to bridge them. Rex bug.
+# Ignore user ~/.ssh/config entirely (-F /dev/null) to prevent parse errors
+# from incompatible options (e.g. '+ssh-dss') crashing the connection.
+# Since initialize_options{master_opts} overrides Rex's auto-generated
+# master_opts, we must include all -o options here explicitly.
 Rex::Config->set_openssh_opt(
     StrictHostKeyChecking => 'no',
     UserKnownHostsFile    => '/dev/null',
+    IdentitiesOnly        => 'yes',
+    initialize_options    => {
+        master_opts => [
+            '-F', '/dev/null',
+            '-o', 'StrictHostKeyChecking=no',
+            '-o', 'UserKnownHostsFile=/dev/null',
+            '-o', 'IdentitiesOnly=yes',
+            '-o', 'LogLevel=QUIET',
+            '-o', 'ConnectTimeout=20',
+        ],
+    },
 );
 
 # SSH config from environment
@@ -48,10 +64,61 @@ sub check_os {
 
 desc "Prepare node for Kubernetes";
 task "prepare_node", sub {
+    my $params = shift // {};
+    my $hostname = $params->{hostname} || '';
+    my $domain   = $params->{domain}   || '';
+    my $timezone = $params->{timezone} || 'UTC';
+    my $locale   = $params->{locale}   || 'en_US.UTF-8';
+    my $ntp      = $params->{ntp}      // 1;
+
     check_os();
 
     # Ensure required packages are installed
     pkg ["curl", "ca-certificates"], ensure => "present";
+
+    # === Hostname ===
+    if ($hostname) {
+        say "Configuring hostname: $hostname" . ($domain ? ".$domain" : "");
+        my $fqdn = $domain ? "$hostname.$domain" : $hostname;
+
+        # hostnamectl (systemd) - fallback to /etc/hostname
+        my $hc_out = run "which hostnamectl >/dev/null 2>&1 && hostnamectl set-hostname $hostname 2>&1", auto_die => FALSE;
+        if ($? != 0) {
+            file "/etc/hostname", content => "$hostname\n";
+            run "hostname $hostname", auto_die => FALSE;
+        }
+
+        # /etc/hosts entry
+        host_entry $fqdn,
+            ensure  => "present",
+            ip      => "127.0.1.1",
+            aliases => [$hostname];
+    }
+
+    # === Timezone ===
+    say "Configuring timezone: $timezone";
+    my $tz_out = run "which timedatectl >/dev/null 2>&1 && timedatectl set-timezone $timezone 2>&1", auto_die => FALSE;
+    if ($? != 0) {
+        run "ln -sf /usr/share/zoneinfo/$timezone /etc/localtime", auto_die => FALSE;
+        file "/etc/timezone", content => "$timezone\n";
+    }
+
+    # === Locale ===
+    say "Configuring locale: $locale";
+    run "which localectl >/dev/null 2>&1 && localectl set-locale LANG=$locale 2>&1", auto_die => FALSE;
+    if ($? != 0) {
+        file "/etc/default/locale", content => "LANG=$locale\n";
+    }
+    run "locale-gen $locale >/dev/null 2>&1", auto_die => FALSE;
+
+    # === NTP (chrony) ===
+    if ($ntp) {
+        say "Ensuring NTP (chrony)...";
+        pkg ["chrony"], ensure => "present";
+        run "systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null", auto_die => FALSE;
+    }
+
+    # === Kubernetes preparation ===
 
     # Disable swap
     run "swapoff -a", auto_die => FALSE;
@@ -292,7 +359,13 @@ task "install_rke2_server", sub {
     my $tls_san = $params->{tls_san} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node";
+    do_task "prepare_node", params => {
+        hostname => $params->{hostname} || '',
+        domain   => $params->{domain}   || '',
+        timezone => $params->{timezone} || 'UTC',
+        locale   => $params->{locale}   || 'en_US.UTF-8',
+        ntp      => $params->{ntp}      // 1,
+    };
     do_task "detect_gpu";
 
     # Create RKE2 config
@@ -495,7 +568,13 @@ task "install_rke2_agent", sub {
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node";
+    do_task "prepare_node", params => {
+        hostname => $params->{hostname} || '',
+        domain   => $params->{domain}   || '',
+        timezone => $params->{timezone} || 'UTC',
+        locale   => $params->{locale}   || 'en_US.UTF-8',
+        ntp      => $params->{ntp}      // 1,
+    };
     do_task "detect_gpu";
 
     # Create RKE2 agent config
@@ -554,7 +633,13 @@ task "install_k3s_server", sub {
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node";
+    do_task "prepare_node", params => {
+        hostname => $params->{hostname} || '',
+        domain   => $params->{domain}   || '',
+        timezone => $params->{timezone} || 'UTC',
+        locale   => $params->{locale}   || 'en_US.UTF-8',
+        ntp      => $params->{ntp}      // 1,
+    };
     do_task "detect_gpu";
 
     # Install K3s
@@ -581,7 +666,13 @@ task "install_k3s_agent", sub {
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node";
+    do_task "prepare_node", params => {
+        hostname => $params->{hostname} || '',
+        domain   => $params->{domain}   || '',
+        timezone => $params->{timezone} || 'UTC',
+        locale   => $params->{locale}   || 'en_US.UTF-8',
+        ntp      => $params->{ntp}      // 1,
+    };
     do_task "detect_gpu";
 
     # Install K3s agent

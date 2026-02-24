@@ -80,37 +80,8 @@ option ssh_key => (
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    # Detect "no flags given" -> launch TUI wizard
-    unless ($self->name || $self->provider || $self->hetzner
-            || $self->dist || $self->single || $self->host
-            || $self->nopassword || $self->ssh_key || $self->nogit
-            || $self->force || @{$args || []}) {
-        my $result = $self->_run_init_wizard;
-        return unless $result;  # Cancel
-
-        # Clean screen after Tickit UI
-        print "\033[2J\033[H";
-
-        # Feed wizard results into accessor slots
-        $self->{name}     = $result->{name};
-        $self->{dist}     = $result->{dist};
-        $self->{provider} = $result->{cps}[0]{provider};
-        $self->{_wizard_cps}     = $result->{cps};
-        $self->{_wizard_workers} = $result->{workers};
-        $self->{_wizard_token}   = $result->{hetzner_token};
-        $self->{nopassword} = 1 if $result->{nopassword};
-        $self->{_wizard_ssh_mode} = $result->{ssh_key_mode};
-        $self->{_wizard_ssh_path} = $result->{ssh_key_path};
-        # "copy" mode acts like --ssh_key flag
-        if (($result->{ssh_key_mode} // '') eq 'copy' && $result->{ssh_key_path}) {
-            $self->{ssh_key} = $result->{ssh_key_path};
-        }
-        # "reference" mode: store path directly, skip key generation
-        if (($result->{ssh_key_mode} // '') eq 'reference' && $result->{ssh_key_path}) {
-            $self->{_wizard_ssh_ref_path} = $result->{ssh_key_path};
-        }
-        # Fall through to normal execute logic
-    }
+    # No flags given -> just use defaults (directory name, rke2, hetzner)
+    # TUI wizard disabled for now
 
     my $project_dir = path('.');
     my $config_file = $self->ocp->config;
@@ -245,24 +216,22 @@ sub execute {
     my $keys_mgr = OCP::Keys->new(project_dir => $project_dir);
 
     if ($self->nopassword) {
-        # Dev mode: No encryption, use existing or generate simple key
-        if ($self->ssh_key) {
-            my $key_path = $self->ssh_key;
-            $key_path =~ s/^~/$ENV{HOME}/;
+        # Dev mode: No encryption
+        my $key_path = $self->ssh_key // '.ocp/id_ed25519';
+        $key_path =~ s/^~/$ENV{HOME}/;
 
-            unless (-f $key_path) {
-                die "SSH key not found: $key_path\n";
+        if (-f $key_path) {
+            # Key exists - copy to .ocp/ if it's an external path
+            if ($key_path ne '.ocp/id_ed25519') {
+                copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!\n";
+                copy("$key_path.pub", '.ocp/id_ed25519.pub') if -f "$key_path.pub";
+                chmod 0600, '.ocp/id_ed25519';
+                print "[ok] Copied SSH key from $key_path\n";
+            } else {
+                print "[ok] SSH key exists (.ocp/id_ed25519)\n";
             }
-
-            use File::Copy qw(copy);
-            copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!\n";
-            if (-f "$key_path.pub") {
-                copy("$key_path.pub", '.ocp/id_ed25519.pub');
-            }
-            chmod 0600, '.ocp/id_ed25519';
-
-            print "[ok] Using existing SSH key (no encryption): $key_path\n";
         } else {
+            die "SSH key not found: $key_path\n" if $self->ssh_key;
             print "[..] Generating SSH key (no encryption)\n";
             my $ssh_keys = $secrets->generate_ssh_key;
             print "[ok] Generated SSH key: $ssh_keys->{public_key}\n";
@@ -279,21 +248,19 @@ sub execute {
             my $datestamp = _datestamp();
 
             # Generate robo-ssh key (automation, age only)
-            my $robo_keys = $secrets->generate_ssh_key;
-            move('.ocp/id_ed25519', ".ocp/robo-ssh-$datestamp") or die $!;
-            move('.ocp/id_ed25519.pub', ".ocp/robo-ssh-$datestamp.pub") or die $!;
+            my $robo_name = "robo-ssh-$datestamp";
+            $secrets->generate_ssh_key(name => $robo_name);
 
-            my $robo_private = path(".ocp/robo-ssh-$datestamp")->slurp;
-            my $robo_public = path(".ocp/robo-ssh-$datestamp.pub")->slurp;
+            my $robo_private = path(".ocp/$robo_name")->slurp;
+            my $robo_public = path(".ocp/$robo_name.pub")->slurp;
             chomp $robo_public;
 
             # Generate admin-ssh key (requires PIN2)
-            my $admin_keys = $secrets->generate_ssh_key;
-            move('.ocp/id_ed25519', ".ocp/admin-ssh-$datestamp") or die $!;
-            move('.ocp/id_ed25519.pub', ".ocp/admin-ssh-$datestamp.pub") or die $!;
+            my $admin_name = "admin-ssh-$datestamp";
+            $secrets->generate_ssh_key(name => $admin_name);
 
-            my $admin_private = path(".ocp/admin-ssh-$datestamp")->slurp;
-            my $admin_public = path(".ocp/admin-ssh-$datestamp.pub")->slurp;
+            my $admin_private = path(".ocp/$admin_name")->slurp;
+            my $admin_public = path(".ocp/$admin_name.pub")->slurp;
             chomp $admin_public;
 
             # Prompt for PIN2 (admin SSH access)
@@ -373,6 +340,12 @@ sub execute {
     #
     if ($has_config && !$self->force) {
         print "[ok] $config_file exists\n";
+
+        # Augment: add missing sections to existing config
+        my $augmented = $self->_augment_existing_config($config_file);
+        if ($augmented) {
+            print "     Added missing config: $augmented\n";
+        }
     } else {
         print "[..] Creating $config_file\n";
 
@@ -382,6 +355,10 @@ sub execute {
             name             => $name,
             dist             => $dist,
         );
+
+        # Detect system settings (timezone, locale) from current machine
+        my $system = _detect_system_settings();
+        $opts{system} = $system if $system && %$system;
 
         # SSH key paths: reference mode uses external path, others use .ocp/
         if ($self->{_wizard_ssh_ref_path}) {
@@ -417,6 +394,12 @@ sub execute {
 
         OCP::Config->write_spec($config_file, %opts);
         print "[ok] Created $config_file\n";
+        if ($system && %$system) {
+            my @parts;
+            push @parts, "timezone: $system->{timezone}" if $system->{timezone};
+            push @parts, "locale: $system->{locale}" if $system->{locale};
+            print "     System: ", join(', ', @parts), " (detected from host)\n" if @parts;
+        }
     }
 
     #
@@ -537,6 +520,104 @@ GITIGNORE
 sub _datestamp {
     my @t = gmtime;
     return sprintf('%04d%02d%02d', $t[5]+1900, $t[4]+1, $t[3]);
+}
+
+sub _augment_existing_config {
+    my ($self, $config_file) = @_;
+
+    my $ocp = OCP->instance;
+    my $spec = $ocp->load_file($config_file);
+    return unless $spec && ref $spec eq 'HASH';
+
+    my @added;
+
+    # system section: detect and add if missing
+    unless (exists $spec->{system}) {
+        my $system = _detect_system_settings();
+        if ($system && %$system) {
+            $spec->{system} = $system;
+            my @parts;
+            push @parts, "timezone=$system->{timezone}" if $system->{timezone};
+            push @parts, "locale=$system->{locale}" if $system->{locale};
+            push @added, "system (" . join(', ', @parts) . ")" if @parts;
+        }
+    }
+
+    # Future: add more missing sections here
+    # e.g. unless (exists $spec->{registry}) { ... }
+
+    if (@added) {
+        $ocp->dump_file($config_file, $spec);
+        return join(', ', @added);
+    }
+
+    return;
+}
+
+sub _detect_system_settings {
+    my %system;
+
+    # Detect timezone
+    my $tz = _detect_timezone();
+    $system{timezone} = $tz if $tz && $tz ne 'UTC';
+
+    # Detect locale
+    my $locale = _detect_locale();
+    $system{locale} = $locale if $locale && $locale ne 'en_US.UTF-8';
+
+    # NTP defaults to true, only write if different
+    # (always enabled by default, no need to detect)
+
+    return \%system;
+}
+
+sub _detect_timezone {
+    # Method 0: TZ environment variable (Docker pass-through)
+    my $tz = $ENV{TZ} // '';
+    return $tz if $tz =~ m{/};
+
+    # Method 1: timedatectl (systemd)
+    $tz = `timedatectl show -p Timezone --value 2>/dev/null`;
+    chomp $tz if defined $tz;
+    return $tz if $tz && $tz =~ m{/};
+
+    # Method 2: /etc/timezone (Debian/Ubuntu)
+    if (-f '/etc/timezone') {
+        $tz = path('/etc/timezone')->slurp;
+        chomp $tz;
+        return $tz if $tz && $tz =~ m{/};
+    }
+
+    # Method 3: readlink /etc/localtime
+    if (-l '/etc/localtime') {
+        my $link = readlink('/etc/localtime') // '';
+        if ($link =~ m{/zoneinfo/(.+)$}) {
+            return $1;
+        }
+    }
+
+    return 'UTC';
+}
+
+sub _detect_locale {
+    # Method 1: localectl (systemd)
+    my $locale = `localectl show-locale 2>/dev/null | grep '^LANG=' | sed 's/LANG=//'`;
+    chomp $locale if defined $locale;
+    return $locale if $locale && $locale =~ /\./;
+
+    # Method 2: environment variable
+    $locale = $ENV{LANG} // '';
+    return $locale if $locale && $locale =~ /\./;
+
+    # Method 3: /etc/default/locale
+    if (-f '/etc/default/locale') {
+        my $content = path('/etc/default/locale')->slurp;
+        if ($content =~ /^LANG=["']?([^"'\s]+)/m) {
+            return $1;
+        }
+    }
+
+    return 'en_US.UTF-8';
 }
 
 sub _run_init_wizard {

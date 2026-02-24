@@ -1,6 +1,6 @@
 # OCP - Omni Control Plane Docker Image
 # Build: docker build -t ocp .
-# Use:   docker run -v $(pwd):/project ocp status
+# Use:   docker run -v $(pwd):/ocp ocp status
 
 FROM debian:trixie AS ocp-base
 ARG VERSION="develop"
@@ -13,10 +13,13 @@ ARG OCP_GID=1000
 # Install Base Packages ======================================================
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
-  curl ca-certificates git openssh-client \
+  curl ca-certificates git openssh-client locales \
   libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential pkg-config libtool libtool-bin \
   libpkgconf-dev libtickit-dev libtermkey-dev libunibilium-dev \
+  && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENV LANG=en_US.UTF-8
 
 # Install kubectl =============================================================
 
@@ -91,9 +94,9 @@ COPY --chown=ocp:ocp ./share $OCP_ROOT/src/share
 # Add bin to PATH
 ENV PATH="$OCP_ROOT/src/bin:${PATH}"
 
-# Project mount point
-VOLUME /project
-WORKDIR /project
+# Cluster mount point
+VOLUME /ocp
+WORKDIR /ocp
 
 ENTRYPOINT ["ocp"]
 CMD ["--help"]

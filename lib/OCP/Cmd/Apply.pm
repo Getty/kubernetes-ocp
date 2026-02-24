@@ -8,6 +8,8 @@ use Path::Tiny qw(path);
 use JSON::PP ();
 use FindBin;
 
+use YAML::XS ();
+
 use OCP::Config;
 use OCP::Secrets;
 use OCP::SSH;
@@ -157,8 +159,25 @@ sub execute {
         return;
     }
 
-    # Deploy first control plane (RKE2 server)
-    my $cp_name = 'police1';  # RoboCop naming!
+    # Deploy first control plane
+    # SSH: derive node name from host (avatar.conflict.industries -> avatar)
+    # Hetzner: use RoboCop naming (police1)
+    my $cp_name;
+    my ($cp_hostname, $cp_domain);
+    if ($provider eq 'ssh' && $first_cp->{host}) {
+        my $host = $first_cp->{host};
+        if ($host =~ /\./) {
+            ($cp_hostname, $cp_domain) = split(/\./, $host, 2);
+        } else {
+            $cp_hostname = $host;
+            $cp_domain = '';
+        }
+        $cp_name = $cp_hostname;
+    } else {
+        $cp_name = 'police1';  # RoboCop naming!
+        $cp_hostname = $config->name . "-" . $cp_name;
+        $cp_domain = '';
+    }
 
     print "Deploying control plane: $cp_name\n";
 
@@ -214,11 +233,13 @@ sub execute {
     my $temp_key_file;
     my $temp_pub_file;
 
-    if ($no_password_mode) {
-        # Dev mode: Use actual key file path directly (has .pub!)
+    if ($no_password_mode || $provider eq 'ssh') {
+        # Dev mode or SSH provider: Use bootstrap key (.ocp/id_ed25519)
+        # SSH provider servers already have this key in authorized_keys.
+        # For Hetzner, admin-key is uploaded via API before server creation.
         $ssh_key_path = $config->ssh_private_key_path;
     } else {
-        # Secure mode: Write BOTH private and public key to temp files
+        # Secure mode + Hetzner: Use admin-key (uploaded via Hetzner API)
         require File::Temp;
 
         # Private key
@@ -268,6 +289,11 @@ sub execute {
         registry_cache    => $config->registry_cache,
         registry_upstream => $config->registry_upstream,
         registry_name     => $config->registry_name,
+        hostname          => $cp_hostname // '',
+        domain            => $cp_domain // '',
+        timezone          => $config->timezone,
+        locale            => $config->locale,
+        ntp               => $config->ntp_enabled,
     );
 
     print "  [ok] RKE2 server installed\n";
@@ -286,48 +312,52 @@ sub execute {
     print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
     print "  [ok] Kubeconfig written to .kube/config (for kubectl)\n";
 
+    # Initialize K8s API for all subsequent component deployments
+    my $api = $self->_k8s_api($result->{kubeconfig});
+
     # Wait for node to be Ready (Cilium CNI must be running)
     # Nothing can be scheduled until the node is Ready!
     print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
     {
-        require File::Temp;
-        my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-        print $kc_fh $result->{kubeconfig};
-        close $kc_fh;
-        my $kc_path = $kc_fh->filename;
-
         # Quick connectivity check first
-        my $api_check = `kubectl --kubeconfig=$kc_path cluster-info 2>&1`;
-        chomp $api_check;
-        if ($api_check =~ /running|is running/) {
+        my $api_ok = eval { $api->_request('GET', '/api/v1/namespaces/kube-system'); 1 };
+        if ($api_ok) {
             print "      API server reachable\n";
         } else {
-            print "      WARNING: API server may not be reachable:\n";
-            print "      $api_check\n";
+            print "      WARNING: API server may not be reachable: $@\n";
         }
 
         my $node_ready = 0;
         for my $i (1..60) {
-            my $output = `kubectl --kubeconfig=$kc_path get nodes 2>&1`;
-            my $status = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.conditions[?(\@.type=="Ready")].status}' 2>/dev/null`;
-            chomp $status;
-            # Also check via simple grep as fallback
-            my $is_ready = ($status eq 'True') || ($output =~ /\bReady\b/ && $output !~ /NotReady/);
+            my $nodes = eval { $api->list('Node') };
+            my $is_ready = 0;
+            if ($nodes && $nodes->items && @{ $nodes->items }) {
+                for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
+                    if ($cond->type eq 'Ready' && $cond->status eq 'True') {
+                        $is_ready = 1;
+                        last;
+                    }
+                }
+            }
             if ($is_ready) {
                 print "  [ok] Node is Ready after ~${\ ($i * 10)}s\n";
                 $node_ready = 1;
                 last;
             }
             if ($i == 1 || $i % 6 == 0) {
+                my $status = 'unknown';
+                if ($nodes && $nodes->items && @{ $nodes->items }) {
+                    for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
+                        $status = $cond->status if $cond->type eq 'Ready';
+                    }
+                }
                 print "      ... waiting (${i}/60) status='$status'\n";
-                chomp $output;
-                print "      $output\n" if $output;
             }
             sleep 10;
         }
         unless ($node_ready) {
             # Last resort: check via SSH directly on the node
-            print "  [WARN] Node not Ready after 600s via kubectl, checking via SSH...\n";
+            print "  [WARN] Node not Ready after 600s via API, checking via SSH...\n";
             my $ssh_check = $ssh->run("/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1");
             my $ssh_output = $ssh_check->{stdout} || '';
             print "      SSH node status: $ssh_output\n";
@@ -335,7 +365,6 @@ sub execute {
                 print "  [ok] Node is Ready (confirmed via SSH)\n";
                 $node_ready = 1;
             } else {
-                # Also check Cilium status via SSH
                 my $cilium_check = $ssh->run("cilium status --kubeconfig /etc/rancher/rke2/rke2.yaml 2>&1");
                 print "      Cilium status: " . ($cilium_check->{stdout} || 'unknown') . "\n";
                 print "  [WARN] Node genuinely not Ready, continuing anyway...\n";
@@ -347,7 +376,7 @@ sub execute {
     # Registry is always deployed — required infrastructure for robocop image delivery
     print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
     eval {
-        $self->_setup_registry($result->{kubeconfig}, $config);
+        $self->_setup_registry($config);
     };
     if ($@) {
         print "  [WARN] Registry setup failed: $@\n";
@@ -358,7 +387,7 @@ sub execute {
     # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically
     print "  [..] Setting up Node Feature Discovery (NFD)...\n";
     eval {
-        $self->_setup_nfd($result->{kubeconfig}, $config);
+        $self->_setup_nfd($config);
     };
     if ($@) {
         print "  [WARN] NFD setup failed: $@\n";
@@ -369,7 +398,7 @@ sub execute {
     # Deploy GPU Operator if NFD detects NVIDIA GPU (pci-10de label)
     print "  [..] Checking GPU Operator...\n";
     eval {
-        $self->_setup_gpu_operator($result->{kubeconfig}, $config);
+        $self->_setup_gpu_operator($config);
     };
     if ($@) {
         print "  [WARN] GPU Operator setup failed: $@\n";
@@ -380,7 +409,7 @@ sub execute {
     unless ($config->no_cert) {
         print "  [..] Applying cert-manager manifests...\n";
         eval {
-            $self->_apply_cert_manager($result->{kubeconfig});
+            $self->_apply_cert_manager();
             $cert_manager_applied = 1;
             $self->_save_deployed_hash($config, 'certmanager', 'v1.14.0');
         };
@@ -394,7 +423,7 @@ sub execute {
     # Setup Cilium Gateway API (while cert-manager starts up)
     print "  [..] Setting up Cilium Gateway API...\n";
     eval {
-        $self->_setup_cilium_gateway($config, $result->{kubeconfig});
+        $self->_setup_cilium_gateway($config);
     };
     if ($@) {
         print "  [WARN] Cilium Gateway setup failed: $@\n";
@@ -406,7 +435,7 @@ sub execute {
     unless ($config->no_lbipam) {
         print "  [..] Setting up LB-IPAM...\n";
         eval {
-            $self->_setup_lb_ipam($cp_ip, $result->{kubeconfig});
+            $self->_setup_lb_ipam($cp_ip);
         };
         if ($@) {
             print "  [WARN] LB-IPAM setup failed: $@\n";
@@ -419,7 +448,7 @@ sub execute {
     if ($cert_manager_applied) {
         print "  [..] Waiting for cert-manager to be ready...\n";
         eval {
-            $self->_wait_cert_manager_and_create_issuers($config, $result->{kubeconfig});
+            $self->_wait_cert_manager_and_create_issuers($config);
         };
         if ($@) {
             print "  [WARN] cert-manager setup failed: $@\n";
@@ -448,44 +477,41 @@ sub execute {
 }
 
 sub _apply_cert_manager {
-    my ($self, $kubeconfig) = @_;
+    my ($self) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
-
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-    my $kc_path = $kc_fh->filename;
+    my $api = $self->_k8s_api;
 
     my $version = 'v1.14.0';
     my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
 
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $url) == 0
-        or die "Failed to apply cert-manager manifests\n";
+    # Download manifest via HTTP
+    require HTTP::Tiny;
+    my $http = HTTP::Tiny->new(timeout => 60);
+    my $response = $http->get($url);
+    die "Failed to download cert-manager manifest: $response->{status} $response->{reason}\n"
+        unless $response->{success};
+
+    # Parse multi-document YAML and server-side apply each resource
+    $self->_apply_yaml_string($api, $response->{content});
 }
 
 sub _wait_cert_manager_and_create_issuers {
-    my ($self, $config, $kubeconfig) = @_;
+    my ($self, $config) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
+    my $api = $self->_k8s_api;
 
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-    my $kc_path = $kc_fh->filename;
+    # Poll for cert-manager deployment to become available (up to 600s)
+    unless ($self->_poll_deployment_ready($api, 'cert-manager', 'cert-manager', 600)) {
+        die "cert-manager deployment not ready\n";
+    }
 
-    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=Available",
-           "--timeout=600s", "deployment/cert-manager", "-n", "cert-manager") == 0
-        or die "cert-manager deployment not ready\n";
-
-    $self->_create_cert_issuers($config, $kc_path);
+    $self->_create_cert_issuers($config);
 }
 
 sub _create_cert_issuers {
-    my ($self, $config, $kc_path) = @_;
+    my ($self, $config) = @_;
 
+    my $api = $self->_k8s_api;
     my $email = $config->ssl_email;
 
     # Wait a bit for webhook to be fully ready (timing issue)
@@ -503,19 +529,14 @@ sub _create_cert_issuers {
             'https://acme-staging-v02.api.letsencrypt.org/directory', $email);
     }
 
-    # Apply each issuer (retry for webhook readiness)
+    # Server-side apply each issuer (retry for webhook readiness)
     for my $issuer (@issuers) {
         my $name = $issuer->{metadata}{name};
-        my $yaml = $self->ocp->dump($issuer);
-
-        my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-        print $fh $yaml;
-        close $fh;
 
         my $retries = 3;
         my $success = 0;
         for my $attempt (1..$retries) {
-            if (system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0) {
+            if (eval { $self->_server_side_apply($api, $issuer); 1 }) {
                 $success = 1;
                 last;
             }
@@ -571,20 +592,13 @@ sub _acme_issuer {
 }
 
 sub _setup_cilium_gateway {
-    my ($self, $config, $kubeconfig) = @_;
+    my ($self, $config) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
-
-    # Write kubeconfig to temp file
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-    my $kc_path = $kc_fh->filename;
+    my $api = $self->_k8s_api;
 
     # Gateway API CRDs are already installed by Rexfile (before Cilium)
 
-    # Create Cilium Gateway
+    # Create Cilium Gateway via server-side apply
     print "      Creating Cilium Gateway...\n";
 
     my $gateway = {
@@ -618,20 +632,19 @@ sub _setup_cilium_gateway {
         },
     };
 
-    my $gw_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $gw_fh $self->ocp->dump($gateway);
-    close $gw_fh;
+    $self->_server_side_apply($api, $gateway);
 
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $gw_fh->filename) == 0
-        or die "Failed to create Cilium Gateway\n";
-
-    # Wait for Gateway to be ready
+    # Wait for Gateway to be ready (typed via IO::K8s::GatewayAPI)
     print "      Waiting for Gateway to be ready...\n";
     for my $i (1..30) {
-        my $status = `kubectl --kubeconfig=$kc_path get gateway cilium-gateway -n kube-system -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null`;
-        if ($status eq 'True') {
-            print "      Gateway is ready!\n";
-            return;
+        my $gw = eval { $api->get('Gateway', 'cilium-gateway', namespace => 'kube-system') };
+        if ($gw && $gw->status) {
+            for my $cond (@{ $gw->status->{conditions} || [] }) {
+                if ($cond->{type} eq 'Programmed' && $cond->{status} eq 'True') {
+                    print "      Gateway is ready!\n";
+                    return;
+                }
+            }
         }
         sleep 2;
     }
@@ -639,9 +652,9 @@ sub _setup_cilium_gateway {
 }
 
 sub _setup_lb_ipam {
-    my ($self, $node_ip, $kubeconfig) = @_;
+    my ($self, $node_ip) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
+    my $api = $self->_k8s_api;
 
     # Resolve hostname to IP if needed
     require Socket;
@@ -651,20 +664,19 @@ sub _setup_lb_ipam {
         $node_ip = Socket::inet_ntoa($packed);
     }
 
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-    my $kc_path = $kc_fh->filename;
-
     # If IP is localhost/loopback, get the real node IP from Kubernetes
     if ($node_ip =~ /^127\./) {
-        my $real_ip = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].status.addresses[?\@.type=="InternalIP"].address}' 2>/dev/null`;
-        chomp $real_ip;
-        if ($real_ip && $real_ip !~ /^127\./) {
-            print "      Using node IP $real_ip (instead of $node_ip)\n";
-            $node_ip = $real_ip;
-        } else {
+        my $nodes = eval { $api->list('Node') };
+        if ($nodes && $nodes->items && @{ $nodes->items }) {
+            for my $addr (@{ $nodes->items->[0]->status->addresses || [] }) {
+                if ($addr->type eq 'InternalIP' && $addr->address !~ /^127\./) {
+                    print "      Using node IP " . $addr->address . " (instead of $node_ip)\n";
+                    $node_ip = $addr->address;
+                    last;
+                }
+            }
+        }
+        if ($node_ip =~ /^127\./) {
             print "      WARNING: Only loopback IP available, LB-IPAM may not work externally\n";
         }
     }
@@ -674,8 +686,8 @@ sub _setup_lb_ipam {
     print "      Waiting for CiliumLoadBalancerIPPool CRD...\n";
     my $crd_ready = 0;
     for my $i (1..30) {
-        my $check = `kubectl --kubeconfig=$kc_path get crd ciliumloadbalancerippools.cilium.io 2>/dev/null`;
-        if ($check =~ /ciliumloadbalancerippools/) {
+        if ($self->_resource_exists($api, 'CustomResourceDefinition',
+                'ciliumloadbalancerippools.cilium.io')) {
             $crd_ready = 1;
             last;
         }
@@ -703,20 +715,13 @@ sub _setup_lb_ipam {
         },
     );
 
-    my $manifest = $self->ocp->dump(@resources);
+    $self->_server_side_apply_all($api, @resources);
 
-    my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $fh $manifest;
-    close $fh;
-
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $fh->filename) == 0
-        or die "Failed to create LB-IPAM resources\n";
-
-    # Verify Gateway got an IP
+    # Verify Gateway got an IP (typed via IO::K8s::GatewayAPI)
     sleep 2;
-    my $gw_ip = `kubectl --kubeconfig=$kc_path get gateway cilium-gateway -n kube-system -o jsonpath='{.status.addresses[0].value}' 2>/dev/null`;
-    if ($gw_ip) {
-        print "      Gateway external IP: $gw_ip\n";
+    my $gw = eval { $api->get('Gateway', 'cilium-gateway', namespace => 'kube-system') };
+    if ($gw && $gw->status && $gw->status->{addresses} && @{ $gw->status->{addresses} }) {
+        print "      Gateway external IP: $gw->status->{addresses}[0]{value}\n";
     }
 }
 
@@ -725,9 +730,9 @@ sub _setup_lb_ipam {
 #
 
 sub _setup_registry {
-    my ($self, $kubeconfig, $config) = @_;
+    my ($self, $config) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
+    my $api = $self->_k8s_api;
 
     my $manifest = $self->_generate_registry_manifest($config);
 
@@ -753,32 +758,19 @@ sub _setup_registry {
         print "      ", $config->registry_name, ": ocp-registry (built-in)\n";
     }
 
-    # Apply manifest
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-    my $kc_path = $kc_fh->filename;
-
-    my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $manifest_fh $manifest;
-    close $manifest_fh;
-
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
-        or die "Failed to apply registry manifests\n";
+    # Server-side apply all registry resources
+    $self->_apply_yaml_string($api, $manifest);
 
     # Wait for deployed components
     unless ($config->has_external_cache) {
         print "      Waiting for ocp-cache...\n";
-        system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
-               "--timeout=120s", "deployment/ocp-cache", "-n", "ocp-system") == 0
+        $self->_poll_deployment_ready($api, 'ocp-cache', 'ocp-system', 120)
             or warn "ocp-cache not ready within 120s\n";
     }
 
     unless ($config->has_external_upstream) {
         print "      Waiting for ocp-registry...\n";
-        system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
-               "--timeout=120s", "deployment/ocp-registry", "-n", "ocp-system") == 0
+        $self->_poll_deployment_ready($api, 'ocp-registry', 'ocp-system', 120)
             or warn "ocp-registry not ready within 120s\n";
     }
 
@@ -911,9 +903,9 @@ sub _nodeport_service {
 #
 
 sub _setup_nfd {
-    my ($self, $kubeconfig, $config) = @_;
+    my ($self, $config) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
+    my $api = $self->_k8s_api;
 
     # Ensure NFD image is built and pushed to ocp-registry
     # (required because released NFD versions crash on K8s 1.34+)
@@ -930,50 +922,35 @@ sub _setup_nfd {
     my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-
     # Check if NFD is actually running (not just hash match)
-    my $ns_exists = system("kubectl", "--kubeconfig=".$kc_fh->filename,
-        "get", "ns", "node-feature-discovery", "-o", "name") == 0;
-    my $nfd_running = $ns_exists && system("kubectl", "--kubeconfig=".$kc_fh->filename,
-        "get", "deployment", "nfd-master", "-n", "node-feature-discovery", "-o", "name") == 0;
+    my $ns_exists = $self->_resource_exists($api, 'Namespace', 'node-feature-discovery');
+    my $nfd_running = $ns_exists &&
+        $self->_resource_exists($api, 'Deployment', 'nfd-master', namespace => 'node-feature-discovery');
 
     if (($deployed->{nfd} // '') eq $hash && $nfd_running) {
         print "      NFD already deployed (up to date)\n";
         return;
     }
-    my $kc_path = $kc_fh->filename;
 
     # Apply CRDs
     print "      Applying NFD CRDs...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $crd_file->stringify) == 0
-        or die "Failed to apply NFD CRDs\n";
+    $self->_apply_yaml_file($api, $crd_file->stringify);
 
     # Apply NFD components
     print "      Deploying NFD master + worker...\n";
-    my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $manifest_fh $manifest;
-    close $manifest_fh;
-
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
-        or die "Failed to apply NFD manifests\n";
+    $self->_apply_yaml_string($api, $manifest);
 
     # Wait for nfd-master
     print "      Waiting for nfd-master...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
-           "--timeout=120s", "deployment/nfd-master", "-n", "node-feature-discovery") == 0
+    $self->_poll_deployment_ready($api, 'nfd-master', 'node-feature-discovery', 120)
         or warn "nfd-master not ready within 120s\n";
 
     # Wait for nfd-worker DaemonSet
     print "      Waiting for nfd-worker...\n";
     for my $i (1..12) {
-        my $ready = `kubectl --kubeconfig=$kc_path get ds -n node-feature-discovery nfd-worker -o jsonpath='{.status.numberReady}' 2>/dev/null`;
-        chomp $ready;
-        if ($ready && $ready > 0) {
-            print "      NFD worker running on $ready node(s)\n";
+        my $ds = eval { $api->get('DaemonSet', 'nfd-worker', namespace => 'node-feature-discovery') };
+        if ($ds && $ds->status && ($ds->status->numberReady // 0) > 0) {
+            print "      NFD worker running on " . $ds->status->numberReady . " node(s)\n";
             last;
         }
         sleep 10;
@@ -982,10 +959,13 @@ sub _setup_nfd {
     # Wait for NFD to label nodes (needs a few seconds after worker starts)
     print "      Waiting for NFD labels...\n";
     for my $i (1..12) {
-        my $labels = `kubectl --kubeconfig=$kc_path get nodes -o jsonpath='{.items[0].metadata.labels}' 2>/dev/null`;
-        if ($labels =~ /feature\.node\.kubernetes\.io/) {
-            print "      NFD labels detected on nodes\n";
-            last;
+        my $nodes = eval { $api->list('Node') };
+        if ($nodes && $nodes->items && @{ $nodes->items }) {
+            my $labels = $nodes->items->[0]->metadata->labels;
+            if ($labels && grep { /^feature\.node\.kubernetes\.io/ } keys %$labels) {
+                print "      NFD labels detected on nodes\n";
+                last;
+            }
         }
         if ($i == 12) {
             warn "NFD labels not detected after 120s\n";
@@ -999,90 +979,87 @@ sub _setup_nfd {
 sub _ensure_nfd_image {
     my ($self, $config) = @_;
 
-    # Get control plane host for SSH access
-    my $cps = $config->control_planes;
-    my $first_cp = $cps->[0] // {};
-    my $cp_host = $first_cp->{host}
-        // do {
-            my $nodes = $config->nodes_status;
-            my ($cp) = grep { ($_->{role} // '') eq 'control-plane' } @$nodes;
-            $cp ? $cp->{publicIp} : undef;
-        };
+    my $api = $self->_k8s_api;
 
-    die "Cannot determine control plane host for NFD image build\n" unless $cp_host;
-
-    # SSH options with admin key
-    my $key = $self->_ssh_key_path;
-    my @ssh_opts = ("-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5");
-    push @ssh_opts, "-i", $key if $key;
-    my $ssh_cmd = "ssh " . join(' ', map { quotemeta($_) } @ssh_opts) . " root\@$cp_host";
-
-    # Verify SSH connectivity
-    system("ssh", @ssh_opts, "root\@$cp_host", "true") == 0
-        or die "Cannot SSH to control plane at $cp_host\n";
-
-    # Verify ocp-registry is accessible (internally via SSH)
-    my $registry_check = `$ssh_cmd "curl -sf http://localhost:30501/v2/ 2>&1"`;
-    unless ($registry_check && $registry_check =~ /\{/) {
-        die "ocp-registry not accessible on $cp_host:30501 — run 'ocp apply' to deploy it first\n";
-    }
-
-    # Check if NFD image already exists in ocp-registry
-    my $tags_check = `$ssh_cmd "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
-    if ($tags_check && $tags_check =~ /"master"/) {
+    # Check if NFD image exists via K8s service proxy (API server proxies to ocp-registry)
+    my $proxy_path = '/api/v1/namespaces/ocp-system/services/ocp-registry:http/proxy/v2/nfd/tags/list';
+    my $response = eval { $api->_request('GET', $proxy_path) };
+    if ($response && $response->status < 400 && ($response->content // '') =~ /"master"/) {
         print "      NFD image already in ocp-registry\n";
         return;
     }
 
-    # Verify Docker is available locally (needed for build)
-    my $has_docker = `which docker 2>/dev/null`;
-    chomp $has_docker;
-    die "NFD image not in registry and Docker not available to build it.\n"
-      . "      Build on a host with Docker first, or skip NFD.\n"
-        unless $has_docker;
+    # Build NFD using Kaniko Job in the cluster (no Docker required!)
+    print "      Building NFD from master via Kaniko (in-cluster build)...\n";
 
-    print "      Building NFD from master (K8s 1.34+ compatibility)...\n";
+    # Clean up any previous build job
+    eval { $api->delete('Job', 'nfd-build', namespace => 'ocp-system') };
 
-    require File::Temp;
-    my $build_dir = File::Temp->newdir(CLEANUP => 1);
-    my $dir = $build_dir->dirname;
+    my $job = $api->new_object('Job',
+        metadata => {
+            name      => 'nfd-build',
+            namespace => 'ocp-system',
+        },
+        spec => {
+            backoffLimit            => 1,
+            ttlSecondsAfterFinished => 300,
+            template => {
+                spec => {
+                    containers => [{
+                        name  => 'kaniko',
+                        image => 'gcr.io/kaniko-project/executor:latest',
+                        args  => [
+                            '--context=git://github.com/kubernetes-sigs/node-feature-discovery.git#refs/heads/master',
+                            '--destination=ocp-registry.ocp-system.svc:5000/nfd:master',
+                            '--target=full',
+                            '--insecure',
+                            '--cache=false',
+                        ],
+                        resources => {
+                            requests => { cpu => '500m',  memory => '1Gi' },
+                            limits   => { memory => '4Gi' },
+                        },
+                    }],
+                    restartPolicy => 'Never',
+                },
+            },
+        },
+    );
 
-    # Clone NFD master branch (shallow)
-    print "      Cloning NFD master...\n";
-    system("git", "clone", "--depth=1", "--branch=master",
-           "https://github.com/kubernetes-sigs/node-feature-discovery.git",
-           $dir) == 0
-        or die "Failed to clone NFD repository — check network connectivity\n";
+    $api->create($job);
 
-    # Build the image locally (multi-stage, full target)
-    print "      Building Docker image (this may take a few minutes)...\n";
-    system("docker", "build", "--target=full", "-t", "nfd:master", $dir) == 0
-        or die "Failed to build NFD Docker image\n";
+    # Poll for completion
+    print "      Waiting for Kaniko build (this may take a few minutes)...\n";
 
-    # Push to ocp-registry via SSH (entirely internal, no insecure-registry config needed):
-    # 1. docker save | ssh ctr import — sends image to node's containerd
-    # 2. ctr tag + ctr push --plain-http — pushes to ocp-registry at localhost:30501
-    my $ctr = '/var/lib/rancher/rke2/bin/ctr --address /run/k3s/containerd/containerd.sock -n k8s.io';
+    for my $i (1..60) {
+        my $current = $api->get('Job', 'nfd-build', namespace => 'ocp-system');
+        my $status = $current->status;
 
-    # Verify ctr is available on node
-    system("ssh", @ssh_opts, "root\@$cp_host", "test -x /var/lib/rancher/rke2/bin/ctr") == 0
-        or die "containerd CLI (ctr) not found on $cp_host — is RKE2 installed?\n";
-
-    print "      Sending image to cluster node...\n";
-    system("docker save nfd:master | $ssh_cmd '$ctr images import -'") == 0
-        or die "Failed to import NFD image into node's containerd\n";
-
-    print "      Pushing to ocp-registry (internal)...\n";
-    system("ssh", @ssh_opts, "root\@$cp_host",
-           "$ctr images tag docker.io/library/nfd:master localhost:30501/nfd:master 2>/dev/null;"
-         . "$ctr images push --plain-http localhost:30501/nfd:master") == 0
-        or die "Failed to push NFD image to ocp-registry\n";
-
-    # Verify image is now in registry
-    my $verify = `$ssh_cmd "curl -sf http://localhost:30501/v2/nfd/tags/list" 2>/dev/null`;
-    unless ($verify && $verify =~ /"master"/) {
-        die "NFD image push appeared to succeed but image not found in registry\n";
+        if ($status && $status->succeeded && $status->succeeded > 0) {
+            print "      Kaniko build completed\n";
+            last;
+        }
+        if ($status && $status->failed && $status->failed > 0) {
+            die "NFD Kaniko build failed (check pod logs in ocp-system namespace)\n";
+        }
+        if ($i % 6 == 0) {
+            my $active = ($status && $status->active) ? $status->active : 0;
+            print "      ... building (${\ ($i * 10)}s elapsed, active pods: $active)\n";
+        }
+        if ($i == 60) {
+            die "NFD build timed out after 600s\n";
+        }
+        sleep 10;
     }
+
+    # Verify image is in registry via service proxy
+    $response = eval { $api->_request('GET', $proxy_path) };
+    unless ($response && $response->status < 400 && ($response->content // '') =~ /"master"/) {
+        die "NFD build completed but image not found in registry\n";
+    }
+
+    # Clean up build job
+    eval { $api->delete('Job', 'nfd-build', namespace => 'ocp-system') };
 
     print "      NFD image available in ocp-registry\n";
 }
@@ -1331,27 +1308,24 @@ sub _generate_nfd_manifest {
 #
 
 sub _setup_gpu_operator {
-    my ($self, $kubeconfig, $config) = @_;
+    my ($self, $config) = @_;
 
-    die "No kubeconfig available\n" unless $kubeconfig;
-
-    require File::Temp;
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_fh $kubeconfig;
-    close $kc_fh;
-    my $kc_path = $kc_fh->filename;
+    my $api = $self->_k8s_api;
 
     # Check if any node has NVIDIA GPU via NFD labels
-    my $gpu_nodes = `kubectl --kubeconfig=$kc_path get nodes -l feature.node.kubernetes.io/pci-10de.present=true -o name 2>/dev/null`;
-    chomp $gpu_nodes;
+    my $gpu_node_list = eval {
+        $api->list('Node', labelSelector => 'feature.node.kubernetes.io/pci-10de.present=true')
+    };
+    my @gpu_nodes = ($gpu_node_list && $gpu_node_list->items) ? @{ $gpu_node_list->items } : ();
 
-    unless ($gpu_nodes) {
+    unless (@gpu_nodes) {
         print "      No GPU nodes detected (no NFD label feature.node.kubernetes.io/pci-10de.present)\n";
         print "  [ok] GPU Operator skipped (no GPU hardware)\n";
         return;
     }
 
-    print "      GPU node(s) detected: ", join(', ', split(/\n/, $gpu_nodes)), "\n";
+    my @gpu_names = map { $_->metadata->name } @gpu_nodes;
+    print "      GPU node(s) detected: ", join(', ', @gpu_names), "\n";
 
     # Apply CRDs first
     my $share_dir = $self->_find_share_dir;
@@ -1365,10 +1339,9 @@ sub _setup_gpu_operator {
     my $deployed = $self->_load_deployed_hashes($config);
 
     # Check if GPU Operator is actually running (not just hash match)
-    my $gpu_ns_exists = system("kubectl", "--kubeconfig=$kc_path",
-        "get", "ns", "gpu-operator", "-o", "name") == 0;
-    my $gpu_running = $gpu_ns_exists && system("kubectl", "--kubeconfig=$kc_path",
-        "get", "deployment", "gpu-operator", "-n", "gpu-operator", "-o", "name") == 0;
+    my $gpu_ns_exists = $self->_resource_exists($api, 'Namespace', 'gpu-operator');
+    my $gpu_running = $gpu_ns_exists &&
+        $self->_resource_exists($api, 'Deployment', 'gpu-operator', namespace => 'gpu-operator');
 
     if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running) {
         print "      GPU Operator already deployed (up to date)\n";
@@ -1377,36 +1350,30 @@ sub _setup_gpu_operator {
 
     # Apply CRDs
     print "      Applying GPU Operator CRDs...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $crd_file->stringify) == 0
-        or die "Failed to apply GPU Operator CRDs\n";
+    $self->_apply_yaml_file($api, $crd_file->stringify);
 
     # Wait briefly for CRD to be established
     sleep 2;
 
     # Apply operator + ClusterPolicy
     print "      Deploying GPU Operator...\n";
-    my $manifest_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $manifest_fh $manifest;
-    close $manifest_fh;
-
-    system("kubectl", "--kubeconfig=$kc_path", "apply", "-f", $manifest_fh->filename) == 0
-        or die "Failed to apply GPU Operator manifests\n";
+    $self->_apply_yaml_string($api, $manifest);
 
     # Wait for operator deployment
     print "      Waiting for gpu-operator...\n";
-    system("kubectl", "--kubeconfig=$kc_path", "wait", "--for=condition=available",
-           "--timeout=120s", "deployment/gpu-operator", "-n", "gpu-operator") == 0
+    $self->_poll_deployment_ready($api, 'gpu-operator', 'gpu-operator', 120)
         or warn "gpu-operator not ready within 120s\n";
 
-    # Check ClusterPolicy status
+    # Check ClusterPolicy status via raw API (CRD, no IO::K8s class)
+    my $cp_path = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';
     for my $i (1..12) {
-        my $state = `kubectl --kubeconfig=$kc_path get clusterpolicy gpu-cluster-policy -o jsonpath='{.status.state}' 2>/dev/null`;
-        chomp $state;
-        if ($state eq 'ready') {
+        my $cp = $self->_crd_get($api, $cp_path);
+        if ($cp && $cp->{status} && ($cp->{status}{state} // '') eq 'ready') {
             print "  [ok] GPU Operator ready (ClusterPolicy state: ready)\n";
             last;
         }
         if ($i == 12) {
+            my $state = ($cp && $cp->{status}) ? ($cp->{status}{state} // 'unknown') : 'unknown';
             print "      ClusterPolicy state: $state (may still be reconciling)\n";
         }
         sleep 10;
@@ -1659,13 +1626,171 @@ sub _save_deployed_hash {
     $self->ocp->dump_file($path->stringify, $hashes);
 }
 
+sub _k8s_api {
+    my ($self, $kubeconfig) = @_;
+
+    # Return cached API if available and no new kubeconfig given
+    return $self->{_k8s_api} if $self->{_k8s_api} && !$kubeconfig;
+
+    if ($kubeconfig) {
+        require File::Temp;
+        require Kubernetes::REST::Kubeconfig;
+
+        my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print $kc_fh $kubeconfig;
+        close $kc_fh;
+
+        # Keep temp file alive on $self so it doesn't get cleaned up
+        $self->{_kc_temp} = $kc_fh;
+
+        $self->{_k8s_api} = Kubernetes::REST::Kubeconfig->new(
+            kubeconfig_path => $kc_fh->filename,
+        )->api;
+
+        # Register CRD providers for typed access
+        $self->{_k8s_api}->k8s->add(
+            'IO::K8s::Cilium',
+            'IO::K8s::CertManager',
+            'IO::K8s::GatewayAPI',
+        );
+
+        return $self->{_k8s_api};
+    }
+
+    die "No kubeconfig available and no cached API\n";
+}
+
+#
+# Kubernetes API helpers
+#
+
+sub _pluralize_kind {
+    my ($self, $kind) = @_;
+    my $plural = lc($kind);
+
+    # Standard pluralization rules (matches Kubernetes conventions)
+    if ($plural =~ /(?:s|x|z|sh|ch)$/) {
+        return "${plural}es";
+    } elsif ($plural =~ /[^aeiou]y$/) {
+        $plural =~ s/y$/ies/;
+        return $plural;
+    } else {
+        return "${plural}s";
+    }
+}
+
+sub _build_resource_path {
+    my ($self, $resource) = @_;
+
+    my $api_version = $resource->{apiVersion};
+    my $kind = $resource->{kind};
+    my $name = $resource->{metadata}{name};
+    my $ns = $resource->{metadata}{namespace};
+
+    my $plural = $self->_pluralize_kind($kind);
+
+    my $base;
+    if ($api_version =~ m{/}) {
+        $base = "/apis/$api_version";
+    } else {
+        $base = "/api/$api_version";
+    }
+
+    if ($ns) {
+        return "$base/namespaces/$ns/$plural/$name";
+    } else {
+        return "$base/$plural/$name";
+    }
+}
+
+sub _server_side_apply {
+    my ($self, $api, $resource) = @_;
+
+    my $kind = $resource->{kind};
+    my $name = $resource->{metadata}{name};
+    my $ns   = $resource->{metadata}{namespace};
+
+    # Use API's path building when the kind is registered (correct resource_plural)
+    my $class = eval { $api->expand_class($kind) };
+    my $path;
+    if ($class) {
+        # May fail if class lacks api_version() (e.g. auto-generated CRD classes)
+        $path = eval { $api->_build_path($class, name => $name, ($ns ? (namespace => $ns) : ())) };
+    }
+    if (!$path) {
+        # Fallback: build path from resource hash (works for all resources)
+        $path = $self->_build_resource_path($resource);
+    }
+
+    $api->_request('PATCH', $path, $resource,
+        content_type => 'application/apply-patch+yaml',
+        parameters   => { fieldManager => 'ocp', force => 'true' },
+    );
+}
+
+sub _server_side_apply_all {
+    my ($self, $api, @resources) = @_;
+
+    for my $resource (@resources) {
+        $self->_server_side_apply($api, $resource);
+    }
+}
+
+sub _apply_yaml_string {
+    my ($self, $api, $yaml_string) = @_;
+
+    my @resources = grep { $_ && ref $_ eq 'HASH' && $_->{kind} }
+        YAML::XS::Load($yaml_string);
+
+    for my $resource (@resources) {
+        $self->_server_side_apply($api, $resource);
+    }
+}
+
+sub _apply_yaml_file {
+    my ($self, $api, $file_path) = @_;
+    $self->_apply_yaml_string($api, path($file_path)->slurp_utf8);
+}
+
+sub _poll_deployment_ready {
+    my ($self, $api, $name, $namespace, $timeout) = @_;
+    $timeout //= 120;
+
+    my $polls = int($timeout / 5) || 1;
+    for my $i (1..$polls) {
+        my $deploy = eval { $api->get('Deployment', $name, namespace => $namespace) };
+        if ($deploy && $deploy->status && ($deploy->status->availableReplicas // 0) > 0) {
+            return 1;
+        }
+        sleep 5;
+    }
+    return 0;
+}
+
+sub _resource_exists {
+    my ($self, $api, $kind, $name, %opts) = @_;
+    my $obj = eval { $api->get($kind, $name, %opts) };
+    return defined $obj;
+}
+
+sub _crd_get {
+    my ($self, $api, $resource_path) = @_;
+    my $response = eval { $api->_request('GET', $resource_path) };
+    return undef unless $response && $response->status < 400;
+    return eval { JSON::PP::decode_json($response->content) };
+}
+
 sub _setup_ssh_key {
     my ($self, $config) = @_;
 
     my $keys_file = $config->project_dir->child('keys.yaml');
     my $no_password_mode = !-f $keys_file;
 
-    if ($no_password_mode) {
+    # SSH provider: always use bootstrap key (.ocp/id_ed25519)
+    my $cps = $config->control_planes;
+    my $provider = ($cps->[0] // {})->{provider} // 'hetzner';
+
+    if ($no_password_mode || $provider eq 'ssh') {
         $self->_ssh_key_path($config->ssh_private_key_path);
     } else {
         require OCP::Keys;
@@ -1713,10 +1838,8 @@ sub _reconcile_components {
     }
     my $kubeconfig = path($kube_config_path)->slurp;
 
-    # Ensure SSH key is available (needed by NFD image push, etc.)
-    unless ($self->_ssh_key_path) {
-        $self->_setup_ssh_key($config);
-    }
+    # Initialize K8s API for reconciliation
+    $self->_k8s_api($kubeconfig);
 
     my $updated = 0;
     my $checked = 0;
@@ -1733,7 +1856,7 @@ sub _reconcile_components {
             my $was_missing = !exists $deployed->{registry};
             my $was_different = ($deployed->{registry} // '') ne $current_hash;
 
-            $self->_setup_registry($kubeconfig, $config);
+            $self->_setup_registry($config);
 
             if ($was_missing) {
                 print "  [ok] Registry deployed (was missing)\n";
@@ -1765,7 +1888,7 @@ sub _reconcile_components {
             my $was_missing = !exists $deployed->{nfd};
             my $was_different = ($deployed->{nfd} // '') ne $current_hash;
 
-            $self->_setup_nfd($kubeconfig, $config);
+            $self->_setup_nfd($config);
 
             if ($was_missing) {
                 print "  [ok] NFD deployed (was missing)\n";
@@ -1793,7 +1916,7 @@ sub _reconcile_components {
             # the NFD label check internally and skips if no GPU
             my $was_missing = !exists $deployed->{'gpu-operator'};
 
-            $self->_setup_gpu_operator($kubeconfig, $config);
+            $self->_setup_gpu_operator($config);
 
             my $deployed_after = $self->_load_deployed_hashes($config);
             if ($deployed_after->{'gpu-operator'} && $was_missing) {
@@ -1815,11 +1938,29 @@ sub _reconcile_components {
     # cert-manager
     unless ($config->no_cert) {
         $checked++;
-        my $deployed = $self->_load_deployed_hashes($config);
-        if ($deployed->{certmanager}) {
-            print "  [ok] cert-manager already deployed\n";
-        } else {
-            print "  [..] cert-manager not tracked yet, skipping (deploy with fresh 'ocp apply')\n";
+        print "  [..] Checking cert-manager...\n";
+        eval {
+            my $deployed = $self->_load_deployed_hashes($config);
+            my $api = $self->_k8s_api;
+
+            # Check if cert-manager is actually running
+            my $cm_running = $self->_resource_exists($api, 'Deployment', 'cert-manager',
+                namespace => 'cert-manager');
+
+            if ($cm_running && $deployed->{certmanager}) {
+                print "  [ok] cert-manager up to date\n";
+            } else {
+                my $was_missing = !$cm_running;
+                print "  [..] " . ($was_missing ? "Installing" : "Updating") . " cert-manager...\n";
+                $self->_apply_cert_manager();
+                $self->_wait_cert_manager_and_create_issuers($config);
+                $self->_save_deployed_hash($config, 'certmanager', 'v1.14.0');
+                print "  [ok] cert-manager " . ($was_missing ? "deployed" : "updated") . "\n";
+                $updated++;
+            }
+        };
+        if ($@) {
+            print "  [WARN] cert-manager setup failed: $@\n";
         }
     }
 

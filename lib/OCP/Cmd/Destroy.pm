@@ -8,6 +8,7 @@ use MooX::Options;
 use OCP;
 use OCP::Config;
 use OCP::Secrets;
+use OCP::SSH;
 use WWW::Hetzner::Cloud;
 
 with 'OCP::Role::Cmd';
@@ -123,13 +124,14 @@ sub execute {
             print "  Uninstalling RKE2 on $node->{publicIp}...\n";
             my $ssh_key = $config->ssh_private_key_path;
             my $host = $node->{publicIp};
-            my $rc = system('ssh', '-i', $ssh_key,
-                '-o', 'StrictHostKeyChecking=no',
-                '-o', 'ConnectTimeout=10',
-                "root\@$host",
+            my $ssh = OCP::SSH->new(
+                host     => $host,
+                key_file => $ssh_key,
+            );
+            my $result = $ssh->run(
                 'rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true',
             );
-            if ($rc == 0) {
+            if ($result->{exit} == 0) {
                 print "  RKE2/K3s uninstalled on $host.\n";
             } else {
                 print "  Warning: Could not connect to $host (may already be down).\n";

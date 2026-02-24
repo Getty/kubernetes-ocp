@@ -5,6 +5,12 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use OCP;
+use OCP::Config;
+use OCP::Keys;
+use OCP::Password;
+use OCP::Secrets;
+use OCP::SSH;
+use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use File::Temp;
 
@@ -39,10 +45,6 @@ sub execute {
     print "╚═══════════════════════════════════════════════════════════════╝\n\n";
 
     # Admin authentication
-    require OCP::Keys;
-    require OCP::Password;
-    require OCP::Secrets;
-
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
     $secrets->ensure_age_key();
 
@@ -90,8 +92,12 @@ sub execute {
     close $key_file;
     chmod 0600, $key_file->filename;
 
-    # SSH!
-    exec('ssh', '-i', $key_file->filename, '-o', 'StrictHostKeyChecking=no', "root\@$target_host");
+    # SSH via OCP::SSH
+    my $ssh = OCP::SSH->new(
+        host     => $target_host,
+        key_file => $key_file->filename,
+    );
+    $ssh->interactive;
 }
 
 sub _get_node_ip_from_kubectl {
@@ -101,7 +107,6 @@ sub _get_node_ip_from_kubectl {
     my $json = `kubectl get nodes -o json 2>/dev/null`;
     return undef unless $json;
 
-    require JSON::MaybeXS;
     my $data = JSON::MaybeXS->new->decode($json);
 
     for my $node (@{$data->{items} // []}) {
