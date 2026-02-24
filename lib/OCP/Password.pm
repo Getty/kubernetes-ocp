@@ -6,6 +6,8 @@ use warnings;
 use Exporter 'import';
 use Term::ReadKey;
 use Carp qw(croak);
+use Crypt::AuthEnc::GCM;
+use Crypt::PBKDF2;
 use Path::Tiny qw(path);
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Digest::SHA qw(sha256);
@@ -42,7 +44,7 @@ sub encrypt_age_key {
     croak "password required" unless $password;
 
     # Use AES-256-GCM via CryptX
-    require Crypt::AuthEnc::GCM;
+
 
     # Derive key from password (PBKDF2)
     my $salt = _random_bytes(16);
@@ -84,7 +86,7 @@ sub decrypt_age_key {
     my $key = _derive_key($password, $salt);
 
     # Decrypt
-    require Crypt::AuthEnc::GCM;
+
 
     my $plaintext = eval {
         my $gcm = Crypt::AuthEnc::GCM->new('AES', $key);
@@ -109,7 +111,7 @@ sub decrypt_age_key {
 sub _derive_key {
     my ($password, $salt) = @_;
 
-    require Crypt::PBKDF2;
+
     my $pbkdf2 = Crypt::PBKDF2->new(
         hash_class => 'HMACSHA2',
         hash_args  => { sha_size => 256 },

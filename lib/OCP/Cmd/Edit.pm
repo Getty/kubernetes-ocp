@@ -8,7 +8,9 @@ use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Config;
+use OCP::Hetzner;
 use OCP::Secrets;
+use OCP::UI;
 
 with 'OCP::Role::Cmd';
 
@@ -26,7 +28,7 @@ sub execute {
     my $k8s = $config->kubernetes;
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
-    require OCP::UI;
+
 
     # Page 1: Basics
     my $basics = OCP::UI->new(
@@ -120,7 +122,7 @@ sub execute {
 sub _edit_cp {
     my ($self, $secrets, $token_ref, $hz_ref, $cp_num, $existing, $base_ctx) = @_;
 
-    require OCP::UI;
+
     my @ctx = @{$base_ctx // []};
     my $default_provider = $existing ? $existing->{provider} : 'hetzner';
 
@@ -159,7 +161,7 @@ sub _edit_cp {
 
         unless ($$hz_ref) {
             print "Testing Hetzner API connection... ";
-            require OCP::Hetzner;
+
             $$hz_ref = OCP::Hetzner->new(token => $$token_ref);
             $$hz_ref->location_options;
             print "OK\n\n";

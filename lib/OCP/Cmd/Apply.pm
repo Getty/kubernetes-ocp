@@ -10,7 +10,16 @@ use FindBin;
 
 use YAML::XS ();
 
+use Digest::MD5;
+use File::ShareDir;
+use File::Temp;
+use HTTP::Tiny;
+use Kubernetes::REST::Kubeconfig;
+use Socket;
+
 use OCP::Config;
+use OCP::Keys;
+use OCP::Password;
 use OCP::Secrets;
 use OCP::SSH;
 use OCP::Rex;
@@ -113,8 +122,8 @@ sub execute {
         print "Step 2: Admin authentication (PIN2 required)\n";
         print "        Control plane deployment requires admin-key.\n\n";
 
-        require OCP::Keys;
-        require OCP::Password;
+
+
 
         my $keys = OCP::Keys->new(project_dir => $config->project_dir);
         my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key): ");
@@ -240,7 +249,7 @@ sub execute {
         $ssh_key_path = $config->ssh_private_key_path;
     } else {
         # Secure mode + Hetzner: Use admin-key (uploaded via Hetzner API)
-        require File::Temp;
+
 
         # Private key
         $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
@@ -485,7 +494,7 @@ sub _apply_cert_manager {
     my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
 
     # Download manifest via HTTP
-    require HTTP::Tiny;
+
     my $http = HTTP::Tiny->new(timeout => 60);
     my $response = $http->get($url);
     die "Failed to download cert-manager manifest: $response->{status} $response->{reason}\n"
@@ -657,7 +666,7 @@ sub _setup_lb_ipam {
     my $api = $self->_k8s_api;
 
     # Resolve hostname to IP if needed
-    require Socket;
+
     if ($node_ip !~ /^\d+\.\d+\.\d+\.\d+$/) {
         my $packed = Socket::inet_aton($node_ip);
         die "Cannot resolve $node_ip\n" unless $packed;
@@ -737,7 +746,7 @@ sub _setup_registry {
     my $manifest = $self->_generate_registry_manifest($config);
 
     # Check if already deployed with same manifest
-    require Digest::MD5;
+
     my $hash = Digest::MD5::md5_hex($manifest);
     my $deployed = $self->_load_deployed_hashes($config);
 
@@ -918,7 +927,7 @@ sub _setup_nfd {
 
     my $manifest = $self->_generate_nfd_manifest;
 
-    require Digest::MD5;
+
     my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
@@ -1334,7 +1343,7 @@ sub _setup_gpu_operator {
 
     my $manifest = $self->_generate_gpu_operator_manifest;
 
-    require Digest::MD5;
+
     my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
@@ -1588,7 +1597,7 @@ sub _find_share_dir {
     );
 
     eval {
-        require File::ShareDir;
+
         push @locations, path(File::ShareDir::dist_dir('OCP'));
     };
 
@@ -1633,8 +1642,8 @@ sub _k8s_api {
     return $self->{_k8s_api} if $self->{_k8s_api} && !$kubeconfig;
 
     if ($kubeconfig) {
-        require File::Temp;
-        require Kubernetes::REST::Kubeconfig;
+
+
 
         my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
         print $kc_fh $kubeconfig;
@@ -1793,9 +1802,9 @@ sub _setup_ssh_key {
     if ($no_password_mode || $provider eq 'ssh') {
         $self->_ssh_key_path($config->ssh_private_key_path);
     } else {
-        require OCP::Keys;
-        require OCP::Password;
-        require File::Temp;
+
+
+
 
         my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
         $secrets->ensure_age_key();
@@ -1851,7 +1860,7 @@ sub _reconcile_components {
         eval {
             my $deployed = $self->_load_deployed_hashes($config);
             my $manifest = $self->_generate_registry_manifest($config);
-            require Digest::MD5;
+        
             my $current_hash = Digest::MD5::md5_hex($manifest);
             my $was_missing = !exists $deployed->{registry};
             my $was_different = ($deployed->{registry} // '') ne $current_hash;
@@ -1883,7 +1892,7 @@ sub _reconcile_components {
             my $share_dir = $self->_find_share_dir;
             my $crd_file = $share_dir->child('nfd', 'crds', 'nodefeature-crd.yaml');
             my $manifest = $self->_generate_nfd_manifest;
-            require Digest::MD5;
+        
             my $current_hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
             my $was_missing = !exists $deployed->{nfd};
             my $was_different = ($deployed->{nfd} // '') ne $current_hash;

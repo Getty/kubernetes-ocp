@@ -4,6 +4,8 @@ package OCP::Rex;
 use Moo;
 use Carp qw(croak);
 use IPC::Run qw(run);
+use JSON::MaybeXS;
+use MIME::Base64;
 use Path::Tiny qw(path);
 use FindBin;
 use File::ShareDir qw(dist_dir);
@@ -58,8 +60,8 @@ sub run_task {
     # Pass parameters as environment variables
     # Rex can't easily take params via CLI, so we encode as JSON env var
     if (%params) {
-        require JSON::MaybeXS;
-        my $json = JSON::MaybeXS->new->utf8->canonical;
+
+        my $json = JSON::MaybeXS->new(utf8 => 1, canonical => 1, convert_blessed => 1);
         $ENV{REX_TASK_PARAMS} = $json->encode(\%params);
     }
 
@@ -281,7 +283,7 @@ sub get_token {
 sub _generate_token {
     my ($self) = @_;
 
-    require MIME::Base64;
+
     my $bytes = '';
     open my $fh, '<', '/dev/urandom' or croak "Can't open /dev/urandom: $!";
     read $fh, $bytes, 48;

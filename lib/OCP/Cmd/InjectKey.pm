@@ -5,6 +5,9 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use OCP;
+use OCP::Keys;
+use OCP::Password;
+use OCP::Secrets;
 use Path::Tiny qw(path);
 use IO::Socket::INET;
 
@@ -30,9 +33,9 @@ sub execute {
     print "The key will only exist in RAM, never on persistent disk!\n\n";
 
     # Admin authentication required!
-    require OCP::Keys;
-    require OCP::Password;
-    require OCP::Secrets;
+
+
+
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
     $secrets->ensure_age_key();

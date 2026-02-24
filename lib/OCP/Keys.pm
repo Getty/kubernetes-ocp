@@ -6,6 +6,8 @@ use OCP;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 use Crypt::Age;
+use Crypt::AuthEnc::GCM;
+use Crypt::PBKDF2;
 use File::SOPS;
 use Digest::SHA qw(sha256_hex);
 use MIME::Base64 qw(encode_base64 decode_base64);
@@ -403,7 +405,7 @@ sub _double_decrypt {
 sub _aes_encrypt {
     my ($plaintext, $key) = @_;
 
-    require Crypt::AuthEnc::GCM;
+
 
     my $nonce = _random_bytes(12);  # 96-bit nonce
     my $ae = Crypt::AuthEnc::GCM->new('AES', $key, $nonce);
@@ -417,7 +419,7 @@ sub _aes_encrypt {
 sub _aes_decrypt {
     my ($encrypted, $key) = @_;
 
-    require Crypt::AuthEnc::GCM;
+
 
     my $nonce      = substr($encrypted, 0, 12);
     my $tag        = substr($encrypted, -16);
@@ -439,7 +441,7 @@ sub _aes_decrypt {
 sub _derive_key {
     my ($password, $salt) = @_;
 
-    require Crypt::PBKDF2;
+
     my $pbkdf2 = Crypt::PBKDF2->new(
         hash_class => 'HMACSHA2',
         hash_args  => { sha_size => 256 },

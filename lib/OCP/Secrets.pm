@@ -3,6 +3,7 @@ package OCP::Secrets;
 
 use Moo;
 use OCP;
+use OCP::Password;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 use Crypt::Age;
@@ -102,7 +103,7 @@ sub encrypt_age_key_with_password {
         croak "No age.key found. Run generate_age_key first.";
     }
 
-    require OCP::Password;
+
     my $age_key = $self->age_key_file->slurp;
     my $encrypted = OCP::Password::encrypt_age_key($age_key, $password);
 
@@ -117,7 +118,7 @@ sub decrypt_age_key_with_password {
         croak "No age.key.enc found.";
     }
 
-    require OCP::Password;
+
     my $encrypted = $self->age_key_enc_file->slurp;
     chomp $encrypted;
 
@@ -139,7 +140,7 @@ sub ensure_age_key {
     # Try to decrypt from age.key.enc
     if ($self->has_age_key_enc) {
         unless ($password) {
-            require OCP::Password;
+        
             $password = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
         }
         $self->decrypt_age_key_with_password($password);

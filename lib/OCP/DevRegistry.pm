@@ -2,6 +2,8 @@ package OCP::DevRegistry;
 # ABSTRACT: Development registry manager for local image builds
 
 use Moo;
+use File::Temp;
+use IPC::Run;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 use File::ShareDir::ProjectDistDir qw(dist_dir);
@@ -183,7 +185,7 @@ sub _prepare_dev_kustomization {
     $content =~ s/REGISTRY_HOST_PLACEHOLDER/$registry/g;
 
     # Write to temp file
-    require File::Temp;
+
     my $temp_dir = File::Temp->newdir(CLEANUP => 1);
     my $temp_file = path($temp_dir)->child('kustomization.yaml');
     $temp_file->spew_utf8($content);
@@ -236,7 +238,7 @@ sub _kubectl_apply {
 sub _run {
     my ($self, @cmd) = @_;
 
-    require IPC::Run;
+
 
     my ($out, $err);
     my $success = IPC::Run::run(\@cmd, \undef, \$out, \$err);

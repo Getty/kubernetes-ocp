@@ -3,6 +3,7 @@ package OCP::Local;
 
 use Moo;
 use IPC::Run qw(run);
+use Path::Tiny qw(path);
 
 our $VERSION = '0.1.0';
 
@@ -190,7 +191,7 @@ sub _run {
 sub _write_file {
     my ($self, $path, $content) = @_;
 
-    require Path::Tiny;
+
     my $file = Path::Tiny::path($path);
     $file->parent->mkpath;
     $file->spew_utf8($content);
@@ -199,7 +200,7 @@ sub _write_file {
 sub _read_file {
     my ($self, $path) = @_;
 
-    require Path::Tiny;
+
     return Path::Tiny::path($path)->slurp_utf8;
 }
 

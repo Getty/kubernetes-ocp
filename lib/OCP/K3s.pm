@@ -3,6 +3,7 @@ package OCP::K3s;
 
 use Moo;
 use Carp qw(croak);
+use MIME::Base64;
 
 our $VERSION = '0.1.0';
 
@@ -233,7 +234,7 @@ sub _generate_token {
     return $result->{stdout} if $result->{exit} == 0;
 
     # Fallback to local generation
-    require MIME::Base64;
+
     my $bytes = '';
     open my $fh, '<', '/dev/urandom' or croak "Can't open /dev/urandom: $!";
     read $fh, $bytes, 48;

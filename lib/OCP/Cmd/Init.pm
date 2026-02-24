@@ -9,7 +9,11 @@ use File::Copy qw(copy move);
 
 use OCP;
 use OCP::Config;
+use OCP::Hetzner;
+use OCP::Keys;
+use OCP::Password;
 use OCP::Secrets;
+use OCP::UI;
 
 with 'OCP::Role::Cmd';
 
@@ -183,7 +187,7 @@ sub execute {
             print "Share PINs securely with team (NOT in git!)\n";
             print "═" x 60, "\n\n";
 
-            require OCP::Password;
+
             my $pin1 = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
             my $pin1_confirm = OCP::Password::prompt_password("Confirm PIN1: ");
 
@@ -212,7 +216,7 @@ sub execute {
     }
     else {
 
-    require OCP::Keys;
+
     my $keys_mgr = OCP::Keys->new(project_dir => $project_dir);
 
     if ($self->nopassword) {
@@ -264,7 +268,7 @@ sub execute {
             chomp $admin_public;
 
             # Prompt for PIN2 (admin SSH access)
-            require OCP::Password;
+
             my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin SSH access): ");
             my $pin2_confirm = OCP::Password::prompt_password("Confirm PIN2: ");
 
@@ -623,7 +627,7 @@ sub _detect_locale {
 sub _run_init_wizard {
     my ($self) = @_;
 
-    require OCP::UI;
+
     my $project_dir = path('.');
     my $secrets = OCP::Secrets->new(project_dir => $project_dir);
 
@@ -856,7 +860,7 @@ sub _run_init_wizard {
 sub _wizard_add_cp {
     my ($self, $secrets, $token_ref, $hz_ref, $cp_num, $base_ctx) = @_;
 
-    require OCP::UI;
+
     my @ctx = @{$base_ctx // []};
 
     # Provider Auswahl
@@ -895,7 +899,7 @@ sub _wizard_add_cp {
 
         unless ($$hz_ref) {
             print "Testing Hetzner API connection... ";
-            require OCP::Hetzner;
+
             $$hz_ref = OCP::Hetzner->new(token => $$token_ref);
             $$hz_ref->location_options;  # Test: dies if token invalid
             print "OK\n\n";
@@ -952,7 +956,7 @@ sub _wizard_add_cp {
 sub _wizard_add_worker {
     my ($self, $secrets, $token_ref, $hz_ref, $pool_num, $base_ctx) = @_;
 
-    require OCP::UI;
+
     my @ctx = @{$base_ctx // []};
 
     my $prov = OCP::UI->new(
@@ -990,7 +994,7 @@ sub _wizard_add_worker {
 
         unless ($$hz_ref) {
             print "Testing Hetzner API connection... ";
-            require OCP::Hetzner;
+
             $$hz_ref = OCP::Hetzner->new(token => $$token_ref);
             $$hz_ref->location_options;
             print "OK\n\n";

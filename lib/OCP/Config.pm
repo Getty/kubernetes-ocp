@@ -3,6 +3,7 @@ package OCP::Config;
 
 use Moo;
 use OCP;
+use JSON::PP;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 
@@ -271,7 +272,7 @@ sub _compact_cps {
     return $cps->[0] if @$cps == 1;
 
     # Check if all entries are identical → Hash + nodes
-    require JSON::PP;
+
     my $first = JSON::PP->new->canonical->encode($cps->[0]);
     my $all_same = 1;
     for my $i (1 .. $#$cps) {
