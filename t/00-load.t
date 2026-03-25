@@ -40,4 +40,13 @@ use_ok('OCP::UI::Wizard');
 # Hetzner
 use_ok('OCP::Hetzner');
 
+# Provider
+use_ok('OCP::Provider');
+use_ok('OCP::Provider::Hetzner');
+use_ok('OCP::Provider::SSH');
+use_ok('OCP::Provider::Local');
+
+# Kubernetes helpers
+use_ok('OCP::Kubernetes');
+
 done_testing;

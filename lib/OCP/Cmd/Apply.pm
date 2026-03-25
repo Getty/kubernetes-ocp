@@ -20,11 +20,11 @@ use Socket;
 use OCP::Config;
 use OCP::Keys;
 use OCP::Password;
+use OCP::Provider;
 use OCP::Secrets;
 use OCP::SSH;
 use OCP::Rex;
 use OCP::Versions;
-use WWW::Hetzner::Cloud;
 
 with 'OCP::Role::Cmd';
 
@@ -148,15 +148,13 @@ sub execute {
     my $provider = $first_cp->{provider} // 'hetzner';
     my $num_control_planes = scalar @$cps;
 
-    # Initialize cloud provider if needed
-    my $cloud;
-    if ($provider eq 'hetzner') {
-        unless ($hetzner_token) {
-            die "Hetzner API token required.\n" .
-                "Set HETZNER_API_TOKEN or run 'ocp init --hetzner' to configure.\n";
-        }
-        $cloud = WWW::Hetzner::Cloud->new(token => $hetzner_token);
-    }
+    # Initialize provider
+    my $prov = OCP::Provider->for_spec($first_cp,
+        token        => $hetzner_token,
+        cluster_name => $config->name,
+        ssh_key_path => $config->ssh_private_key_path,
+        verbose      => $verbose,
+    );
 
     my $deploy_step = $no_password_mode ? 2 : 3;
     print "Step $deploy_step: Deploy control plane(s)\n";
@@ -190,49 +188,40 @@ sub execute {
 
     print "Deploying control plane: $cp_name\n";
 
-    # Create server (Hetzner/SSH)
+    # Create server via provider
     my $cp_host;
     my $cp_ip;
 
-    if ($provider eq 'hetzner') {
-        print "  [..] Creating Hetzner server...\n";
+    print "  [..] Provisioning server ($provider)...\n";
 
-        # Ensure SSH key in Hetzner Cloud
-        my $key_name = "ocp-" . $config->name . "-admin";
-        $cloud->ssh_keys->ensure($key_name, $admin_key->{public});
+    # Upload SSH key (Hetzner uploads to cloud, SSH/Local is no-op)
+    my $key_name = "ocp-" . $config->name . "-admin";
+    $prov->upload_ssh_key($key_name, $admin_key->{public});
 
-        # Create server
-        my $server = $cloud->servers->create(
-            name        => $config->name . "-" . $cp_name,
-            server_type => $first_cp->{serverType} // 'cx32',
-            image       => $first_cp->{image} // 'debian-13',
-            location    => $first_cp->{location} // 'fsn1',
-            ssh_keys    => [$key_name],
-            labels      => {
-                'ocp-cluster' => $config->name,
-                'ocp-role'    => 'control-plane',
-                'ocp-node'    => $cp_name,
-            },
-        );
+    # Create server (idempotent for Hetzner — checks labels first)
+    my $server_info = $prov->create_server(
+        name        => $cp_hostname,
+        cluster     => $config->name,
+        node        => $cp_name,
+        role        => 'control-plane',
+        server_type => $first_cp->{serverType} // 'cx32',
+        image       => $first_cp->{image} // 'debian-13',
+        location    => $first_cp->{location} // 'fsn1',
+        ssh_keys    => [$key_name],
+        host        => $first_cp->{host},
+    );
 
-        print "  [ok] Server created: " . $server->id . "\n";
+    if ($server_info->{newly_created}) {
+        print "  [ok] Server created: " . ($server_info->{id} // 'n/a') . "\n";
         print "  [..] Waiting for server to be running...\n";
-
-        $server = $cloud->servers->wait_for_status($server->id, 'running', 120);
-        $cp_ip = $server->ipv4;
-        $cp_host = $cp_ip;
-
-        print "  [ok] Server running: $cp_ip\n";
-
-    } elsif ($provider eq 'ssh') {
-        # SSH provider - use existing host
-        $cp_host = $first_cp->{host} or die "SSH provider requires 'host' in controlPlanes spec\n";
-        $cp_ip = $cp_host;
-        print "  [ok] Using existing host: $cp_host\n";
-
+        $prov->wait_for_running($server_info, 120);
+        print "  [ok] Server running: $server_info->{ip}\n";
     } else {
-        die "Unsupported provider: $provider\n";
+        print "  [ok] Using existing server: $server_info->{ip}\n";
     }
+
+    $cp_ip = $server_info->{ip};
+    $cp_host = $cp_ip;
 
     # Wait for SSH
     print "  [..] Waiting for SSH to be ready...\n";
@@ -278,7 +267,7 @@ sub execute {
     }
     print "  [ok] SSH ready\n";
 
-    # Install RKE2 server
+    # Install RKE2 server (wrapped for failure cleanup)
     print "  [..] Installing RKE2 server...\n";
 
     my $rex = OCP::Rex->new(
@@ -291,19 +280,30 @@ sub execute {
     my $distribution = $config->distribution || 'rke2';
     my $version = $config->version || '';
 
-    my $result = $rex->install_server(
-        distribution      => $distribution,
-        version           => $version,
-        node_name         => $cp_name,
-        registry_cache    => $config->registry_cache,
-        registry_upstream => $config->registry_upstream,
-        registry_name     => $config->registry_name,
-        hostname          => $cp_hostname // '',
-        domain            => $cp_domain // '',
-        timezone          => $config->timezone,
-        locale            => $config->locale,
-        ntp               => $config->ntp_enabled,
-    );
+    my $result;
+    eval {
+        $result = $rex->install_server(
+            distribution      => $distribution,
+            version           => $version,
+            node_name         => $cp_name,
+            registry_cache    => $config->registry_cache,
+            registry_upstream => $config->registry_upstream,
+            registry_name     => $config->registry_name,
+            hostname          => $cp_hostname // '',
+            domain            => $cp_domain // '',
+            timezone          => $config->timezone,
+            locale            => $config->locale,
+            ntp               => $config->ntp_enabled,
+        );
+    };
+    if ($@) {
+        my $err = $@;
+        if ($server_info->{newly_created}) {
+            print "  [!!] Installation failed, cleaning up server...\n";
+            $prov->cleanup_on_failure($server_info->{id});
+        }
+        die $err;
+    }
 
     print "  [ok] RKE2 server installed\n";
 
@@ -393,6 +393,14 @@ sub execute {
         print "  [ok] OCP registry ready\n";
     }
 
+    # Configure CoreDNS for registry.local
+    eval {
+        $self->_configure_registry_dns($cp_ip);
+    };
+    if ($@) {
+        print "  [WARN] registry.local DNS setup failed: $@\n";
+    }
+
     # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically
     print "  [..] Setting up Node Feature Discovery (NFD)...\n";
     eval {
@@ -420,7 +428,7 @@ sub execute {
         eval {
             $self->_apply_cert_manager();
             $cert_manager_applied = 1;
-            $self->_save_deployed_hash($config, 'certmanager', 'v1.14.0');
+            $self->_save_deployed_hash($config, 'certmanager', OCP::Versions->get_component_version('cert_manager'));
         };
         if ($@) {
             print "  [WARN] cert-manager apply failed: $@\n";
@@ -466,6 +474,19 @@ sub execute {
         }
     }
 
+    # Deploy workers (if configured)
+    my $workers = $config->workers;
+    if (@$workers && (!$self->only || $self->only eq 'workers')) {
+        print "\n";
+        print "Step " . ($deploy_step + 1) . ": Deploy workers\n";
+        eval {
+            $self->_deploy_workers($config, $workers, $ssh_key_path, $cp_ip, $secrets);
+        };
+        if ($@) {
+            print "  [WARN] Worker deployment failed: $@\n";
+        }
+    }
+
     # Done!
     print "\n";
     print "╔═══════════════════════════════════════════════════════════════╗\n";
@@ -490,7 +511,7 @@ sub _apply_cert_manager {
 
     my $api = $self->_k8s_api;
 
-    my $version = 'v1.14.0';
+    my $version = OCP::Versions->get_component_version('cert_manager');
     my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
 
     # Download manifest via HTTP
@@ -908,6 +929,54 @@ sub _nodeport_service {
 }
 
 #
+# CoreDNS registry.local
+#
+
+sub _configure_registry_dns {
+    my ($self, $node_ip) = @_;
+
+    my $api = $self->_k8s_api;
+
+    # Resolve to IP if hostname
+    if ($node_ip !~ /^\d+\.\d+\.\d+\.\d+$/) {
+        my $packed = Socket::inet_aton($node_ip);
+        die "Cannot resolve $node_ip\n" unless $packed;
+        $node_ip = Socket::inet_ntoa($packed);
+    }
+
+    # Get current CoreDNS ConfigMap
+    my $cm = eval { $api->get('ConfigMap', 'coredns', namespace => 'kube-system') };
+    return unless $cm;
+
+    my $corefile = $cm->data->{Corefile} // '';
+
+    # Check if already configured
+    return if $corefile =~ /registry\.local/;
+
+    # Add hosts block before the first "ready" or "kubernetes" directive
+    my $hosts_block = "    hosts {\n        $node_ip registry.local\n        fallthrough\n    }\n";
+
+    if ($corefile =~ s/(^\s*ready\b)/  $hosts_block$1/m) {
+        # Inserted before 'ready'
+    } elsif ($corefile =~ s/(^\s*kubernetes\b)/$hosts_block$1/m) {
+        # Inserted before 'kubernetes'
+    } else {
+        # Fallback: append inside the main server block
+        $corefile =~ s/(\n\s*\})/$hosts_block$1/;
+    }
+
+    # Patch the ConfigMap via server-side apply
+    $self->_server_side_apply($api, {
+        apiVersion => 'v1',
+        kind       => 'ConfigMap',
+        metadata   => { name => 'coredns', namespace => 'kube-system' },
+        data       => { Corefile => $corefile },
+    });
+
+    print "  [ok] CoreDNS configured for registry.local -> $node_ip\n";
+}
+
+#
 # NFD (Node Feature Discovery)
 #
 
@@ -988,95 +1057,19 @@ sub _setup_nfd {
 sub _ensure_nfd_image {
     my ($self, $config) = @_;
 
-    my $api = $self->_k8s_api;
+    # Use pinned release image from registry.k8s.io (no Kaniko build needed)
+    my $nfd_version = OCP::Versions->get_component_version('nfd');
+    print "      Using NFD release image: registry.k8s.io/nfd/node-feature-discovery:$nfd_version\n";
 
-    # Check if NFD image exists via K8s service proxy (API server proxies to ocp-registry)
-    my $proxy_path = '/api/v1/namespaces/ocp-system/services/ocp-registry:http/proxy/v2/nfd/tags/list';
-    my $response = eval { $api->_request('GET', $proxy_path) };
-    if ($response && $response->status < 400 && ($response->content // '') =~ /"master"/) {
-        print "      NFD image already in ocp-registry\n";
-        return;
-    }
-
-    # Build NFD using Kaniko Job in the cluster (no Docker required!)
-    print "      Building NFD from master via Kaniko (in-cluster build)...\n";
-
-    # Clean up any previous build job
-    eval { $api->delete('Job', 'nfd-build', namespace => 'ocp-system') };
-
-    my $job = $api->new_object('Job',
-        metadata => {
-            name      => 'nfd-build',
-            namespace => 'ocp-system',
-        },
-        spec => {
-            backoffLimit            => 1,
-            ttlSecondsAfterFinished => 300,
-            template => {
-                spec => {
-                    containers => [{
-                        name  => 'kaniko',
-                        image => 'gcr.io/kaniko-project/executor:latest',
-                        args  => [
-                            '--context=git://github.com/kubernetes-sigs/node-feature-discovery.git#refs/heads/master',
-                            '--destination=ocp-registry.ocp-system.svc:5000/nfd:master',
-                            '--target=full',
-                            '--insecure',
-                            '--cache=false',
-                        ],
-                        resources => {
-                            requests => { cpu => '500m',  memory => '1Gi' },
-                            limits   => { memory => '4Gi' },
-                        },
-                    }],
-                    restartPolicy => 'Never',
-                },
-            },
-        },
-    );
-
-    $api->create($job);
-
-    # Poll for completion
-    print "      Waiting for Kaniko build (this may take a few minutes)...\n";
-
-    for my $i (1..60) {
-        my $current = $api->get('Job', 'nfd-build', namespace => 'ocp-system');
-        my $status = $current->status;
-
-        if ($status && $status->succeeded && $status->succeeded > 0) {
-            print "      Kaniko build completed\n";
-            last;
-        }
-        if ($status && $status->failed && $status->failed > 0) {
-            die "NFD Kaniko build failed (check pod logs in ocp-system namespace)\n";
-        }
-        if ($i % 6 == 0) {
-            my $active = ($status && $status->active) ? $status->active : 0;
-            print "      ... building (${\ ($i * 10)}s elapsed, active pods: $active)\n";
-        }
-        if ($i == 60) {
-            die "NFD build timed out after 600s\n";
-        }
-        sleep 10;
-    }
-
-    # Verify image is in registry via service proxy
-    $response = eval { $api->_request('GET', $proxy_path) };
-    unless ($response && $response->status < 400 && ($response->content // '') =~ /"master"/) {
-        die "NFD build completed but image not found in registry\n";
-    }
-
-    # Clean up build job
-    eval { $api->delete('Job', 'nfd-build', namespace => 'ocp-system') };
-
-    print "      NFD image available in ocp-registry\n";
+    # No build needed — the manifest references the upstream image directly
+    return;
 }
 
 sub _generate_nfd_manifest {
     my ($self) = @_;
 
-    my $nfd_image = 'localhost:30501/nfd:master';
+    my $nfd_version = OCP::Versions->get_component_version('nfd');
+    my $nfd_image = "registry.k8s.io/nfd/node-feature-discovery:$nfd_version";
 
     my @resources = (
         # Namespace
@@ -1394,7 +1387,8 @@ sub _setup_gpu_operator {
 sub _generate_gpu_operator_manifest {
     my ($self) = @_;
 
-    my $operator_image = 'nvcr.io/nvidia/gpu-operator:v24.9.2';
+    my $gpu_version = OCP::Versions->get_component_version('gpu_operator');
+    my $operator_image = "nvcr.io/nvidia/gpu-operator:$gpu_version";
 
     my @resources = (
         # Namespace
@@ -1549,15 +1543,15 @@ sub _generate_gpu_operator_manifest {
                 },
                 toolkit => {
                     enabled => JSON::PP::true,
-                    version => 'v1.17.1-ubuntu22.04',
+                    version => OCP::Versions->get_component_version('nvidia_toolkit'),
                 },
                 devicePlugin => {
                     enabled => JSON::PP::true,
-                    version => 'v0.17.0',
+                    version => OCP::Versions->get_component_version('nvidia_device_plugin'),
                 },
                 dcgmExporter => {
                     enabled => JSON::PP::true,
-                    version => '3.3.9-3.6.1-ubuntu22.04',
+                    version => OCP::Versions->get_component_version('dcgm_exporter'),
                 },
                 dcgm => {
                     enabled => JSON::PP::true,
@@ -1832,6 +1826,152 @@ sub _setup_ssh_key {
 }
 
 #
+# Worker deployment
+#
+
+sub _deploy_workers {
+    my ($self, $config, $workers, $ssh_key_path, $cp_ip, $secrets) = @_;
+
+    my $hetzner_token = $secrets->hetzner_token;
+    my $distribution = $config->distribution || 'rke2';
+    my $version = $config->version || '';
+    my $verbose = $self->ocp->verbose;
+
+    # Get join token from control plane
+    my $cp_ssh = OCP::SSH->new(
+        host     => $cp_ip,
+        key_file => $ssh_key_path,
+        user     => 'root',
+    );
+
+    my $token_path = $distribution eq 'k3s'
+        ? '/var/lib/rancher/k3s/server/node-token'
+        : '/var/lib/rancher/rke2/server/node-token';
+    my $token_result = $cp_ssh->run("cat $token_path");
+    my $join_token = $token_result->{stdout};
+    chomp $join_token;
+
+    die "Could not retrieve join token from control plane\n" unless $join_token;
+
+    my $server_url = "https://$cp_ip:9345";
+    my $worker_idx = 0;
+
+    for my $pool (@$workers) {
+        my $pool_name = $pool->{name} // 'pool' . ++$worker_idx;
+        my $pool_provider = $pool->{provider} // 'hetzner';
+        my $pool_nodes = $pool->{nodes} // 1;
+
+        # Normalize: SSH pool with host list
+        my @hosts;
+        if ($pool_provider eq 'ssh') {
+            if (ref $pool->{nodes} eq 'ARRAY') {
+                @hosts = map { ref $_ ? $_->{host} : $_ } @{$pool->{nodes}};
+            } elsif ($pool->{host}) {
+                @hosts = ($pool->{host});
+            }
+            $pool_nodes = scalar @hosts || 1;
+        }
+
+        print "  Pool '$pool_name': $pool_nodes x $pool_provider\n";
+
+        my $w_prov = OCP::Provider->for_spec($pool,
+            token        => $hetzner_token,
+            cluster_name => $config->name,
+            ssh_key_path => $ssh_key_path,
+            verbose      => $verbose,
+        );
+
+        for my $i (1 .. $pool_nodes) {
+            my $w_name = "$pool_name-$i";
+            my $w_hostname = $config->name . "-$w_name";
+            my $w_host;
+
+            if ($pool_provider eq 'ssh') {
+                $w_host = $hosts[$i - 1] // next;
+                ($w_hostname) = split(/\./, $w_host, 2);
+                $w_name = $w_hostname;
+            }
+
+            print "  [..] Deploying worker: $w_name\n";
+
+            my $server_info = $w_prov->create_server(
+                name        => $w_hostname,
+                cluster     => $config->name,
+                node        => $w_name,
+                role        => 'worker',
+                server_type => $pool->{serverType} // 'cx21',
+                image       => $pool->{image} // 'debian-13',
+                location    => $pool->{location} // 'fsn1',
+                ssh_keys    => ["ocp-" . $config->name . "-admin"],
+                host        => $w_host,
+            );
+
+            if ($server_info->{newly_created}) {
+                $w_prov->wait_for_running($server_info, 120);
+            }
+
+            $w_host //= $server_info->{ip};
+
+            # Wait for SSH
+            my $w_ssh = OCP::SSH->new(
+                host     => $w_host,
+                key_file => $ssh_key_path,
+                user     => 'root',
+            );
+            eval { $w_ssh->wait_for_ssh(120) };
+            if ($@) {
+                print "  [WARN] SSH not ready for $w_name: $@\n";
+                next;
+            }
+
+            # Install agent via Rex
+            my $rex = OCP::Rex->new(
+                host     => $w_host,
+                key_file => $ssh_key_path,
+                user     => 'root',
+                verbose  => $verbose,
+            );
+
+            eval {
+                $rex->install_agent(
+                    distribution      => $distribution,
+                    version           => $version,
+                    server            => $server_url,
+                    token             => $join_token,
+                    node_name         => $w_name,
+                    registry_cache    => $config->registry_cache,
+                    registry_upstream => $config->registry_upstream,
+                    registry_name     => $config->registry_name,
+                    hostname          => $w_hostname,
+                    timezone          => $config->timezone,
+                    locale            => $config->locale,
+                    ntp               => $config->ntp_enabled,
+                );
+            };
+            if ($@) {
+                print "  [WARN] Worker $w_name install failed: $@\n";
+                if ($server_info->{newly_created}) {
+                    $w_prov->cleanup_on_failure($server_info->{id});
+                }
+                next;
+            }
+
+            # Save node status
+            $config->save_node_status({
+                name       => $w_name,
+                role       => 'worker',
+                pool       => $pool_name,
+                provider   => $pool_provider,
+                providerId => $server_info->{id},
+                publicIp   => $w_host,
+            });
+
+            print "  [ok] Worker $w_name deployed ($w_host)\n";
+        }
+    }
+}
+
+#
 # Reconciliation for existing clusters
 #
 
@@ -1963,7 +2103,7 @@ sub _reconcile_components {
                 print "  [..] " . ($was_missing ? "Installing" : "Updating") . " cert-manager...\n";
                 $self->_apply_cert_manager();
                 $self->_wait_cert_manager_and_create_issuers($config);
-                $self->_save_deployed_hash($config, 'certmanager', 'v1.14.0');
+                $self->_save_deployed_hash($config, 'certmanager', OCP::Versions->get_component_version('cert_manager'));
                 print "  [ok] cert-manager " . ($was_missing ? "deployed" : "updated") . "\n";
                 $updated++;
             }

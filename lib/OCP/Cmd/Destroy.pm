@@ -7,9 +7,8 @@ use MooX::Options;
 
 use OCP;
 use OCP::Config;
+use OCP::Provider;
 use OCP::Secrets;
-use OCP::SSH;
-use WWW::Hetzner::Cloud;
 
 with 'OCP::Role::Cmd';
 
@@ -39,16 +38,20 @@ sub execute {
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
     my $nodes = $config->nodes_status;
 
-    # Get Hetzner client if token available
-    my $cloud;
+    # Initialize Hetzner provider if token available
     my $hetzner_token = $secrets->hetzner_token;
+    my $hetzner_prov;
     if ($hetzner_token) {
-        $cloud = WWW::Hetzner::Cloud->new(token => $hetzner_token);
+        $hetzner_prov = OCP::Provider->for_spec(
+            { provider => 'hetzner' },
+            token        => $hetzner_token,
+            cluster_name => $config->name,
+        );
     }
 
     # If no nodes in status, check Hetzner directly for orphaned servers
-    if (!@$nodes && $cloud) {
-        my $servers = $cloud->servers->list_by_label("ocp-cluster=" . $config->name);
+    if (!@$nodes && $hetzner_prov) {
+        my $servers = $hetzner_prov->list_servers_by_cluster($config->name);
         if (@$servers) {
             print "Found orphaned servers at Hetzner (not in status):\n";
             for my $s (@$servers) {
@@ -114,27 +117,23 @@ sub execute {
     for my $node (@$nodes) {
         print "Deleting $node->{name}...\n";
 
-        if ($node->{provider} eq 'hetzner' && $node->{providerId} && $cloud) {
-            eval { $cloud->servers->delete($node->{providerId}) };
+        if ($node->{provider} eq 'hetzner' && $node->{providerId} && $hetzner_prov) {
+            eval { $hetzner_prov->delete_server($node->{providerId}) };
             if ($@) {
                 print "  Warning: $@\n";
             }
         }
         elsif ($node->{provider} eq 'ssh' && $node->{publicIp} && $node->{publicIp} ne '-') {
             print "  Uninstalling RKE2 on $node->{publicIp}...\n";
-            my $ssh_key = $config->ssh_private_key_path;
-            my $host = $node->{publicIp};
-            my $ssh = OCP::SSH->new(
-                host     => $host,
-                key_file => $ssh_key,
+            my $ssh_prov = OCP::Provider->for_spec(
+                { provider => 'ssh' },
+                ssh_key_path => $config->ssh_private_key_path,
             );
-            my $result = $ssh->run(
-                'rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true',
-            );
-            if ($result->{exit} == 0) {
-                print "  RKE2/K3s uninstalled on $host.\n";
+            eval { $ssh_prov->delete_server(undef, host => $node->{publicIp}) };
+            if ($@) {
+                print "  Warning: Could not connect to $node->{publicIp} (may already be down).\n";
             } else {
-                print "  Warning: Could not connect to $host (may already be down).\n";
+                print "  RKE2/K3s uninstalled on $node->{publicIp}.\n";
             }
         }
     }

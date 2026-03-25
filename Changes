@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Add shared OCP::Kubernetes typed helper for cluster access
+      - centralizes Kubernetes::REST::Kubeconfig setup for OCP commands
+      - provides reusable node summary helpers for typed Node objects
+      - keeps optional IO::K8s provider registration in one place
+    - Refactor ocp status to use typed Kubernetes API access
+      - removes kubectl as the primary status data path
+      - formats node summaries via shared Perl helpers
+      - improves groundwork for moving more commands off shell-driven K8s access
     - Core Registry: Pull-through cache (docker.io) + local registry
       - ocp-cache (NodePort 30500) caches all Docker Hub pulls
       - ocp-registry (NodePort 30501) for user images

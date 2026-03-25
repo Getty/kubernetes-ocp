@@ -757,6 +757,9 @@ mirrors:
   docker.io:
     endpoint:
       - $cache_endpoint
+  registry.local:
+    endpoint:
+      - $upstream_endpoint
   $registry_name:
     endpoint:
       - $upstream_endpoint

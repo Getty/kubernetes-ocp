@@ -381,7 +381,7 @@ sub execute {
                 if $self->{_wizard_workers} && @{$self->{_wizard_workers}};
         } else {
             # CLI flags path
-            my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
+            my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'ssh');
 
             # Validate: SSH provider requires --host
             if ($provider eq 'ssh' && !$self->host) {
@@ -454,7 +454,7 @@ sub execute {
     }
 
     # SSH provider instructions (only if new key was generated)
-    my $init_provider = $self->provider // ($self->hetzner ? 'hetzner' : 'hetzner');
+    my $init_provider = $self->provider // ($self->hetzner ? 'hetzner' : 'ssh');
     if ($self->{_wizard_ssh_ref_path}) {
         # Reference mode: key already exists externally
         print "\n";

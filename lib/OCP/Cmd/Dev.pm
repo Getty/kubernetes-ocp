@@ -47,9 +47,10 @@ sub execute {
         verbose => $verbose,
     );
 
-    # Just deploy registry
+    # Just deploy registry (no-op: registry is deployed by ocp apply)
     if ($self->deploy_registry) {
-        $registry->deploy;
+        print "Registry is now deployed automatically by 'ocp apply' in ocp-system namespace.\n";
+        print "NodePorts: 30500 (docker.io cache), 30501 (local registry)\n";
         return;
     }
 

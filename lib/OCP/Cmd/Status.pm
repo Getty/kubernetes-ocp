@@ -4,12 +4,10 @@ package OCP::Cmd::Status;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use JSON::MaybeXS;
-use Path::Tiny qw(path);
-use File::Temp;
 
 use OCP;
 use OCP::Config;
+use OCP::Kubernetes;
 use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
@@ -70,31 +68,17 @@ sub execute {
         return 1;
     }
 
-    # Write to temp file
-    my $kc_file = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print $kc_file $kc_content;
-    close $kc_file;
-    my $kc_path = $kc_file->filename;
+    my $k8s = OCP::Kubernetes->new(kubeconfig => $kc_content);
 
-    # Get nodes via kubectl (LIVE!)
-    my $nodes_json = `kubectl --kubeconfig=$kc_path get nodes -o json 2>&1`;
-
-    if ($? != 0) {
-        print "WARNING: Cannot connect to cluster\n";
-        print "Error: $nodes_json\n";
+    my $nodes = eval { $k8s->list_nodes };
+    if (!$nodes || $@) {
+        my $error = $@ || 'Unknown Kubernetes API error';
+        print "WARNING: Cannot connect to cluster API\n";
+        print "Error: $error\n";
         print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
-
-    my $json = JSON::MaybeXS->new;
-    my $data = eval { $json->decode($nodes_json) };
-
-    if ($@ || !$data->{items}) {
-        print "ERROR parsing kubectl output\n";
-        return 1;
-    }
-
-    my @nodes = @{$data->{items}};
+    my @nodes = @$nodes;
 
     unless (@nodes) {
         print "No nodes found in cluster.\n";
@@ -107,41 +91,29 @@ sub execute {
     print "-" x 80, "\n";
 
     for my $node (@nodes) {
-        my $name = $node->{metadata}{name};
-        my $version = $node->{status}{nodeInfo}{kubeletVersion};
-
-        # Status
-        my $ready = 'NotReady';
-        for my $cond (@{$node->{status}{conditions} // []}) {
-            if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
-                $ready = 'Ready';
-                last;
-            }
-        }
-
-        # Roles
-        my $labels = $node->{metadata}{labels} // {};
-        my @roles;
-        push @roles, 'control-plane' if $labels->{'node-role.kubernetes.io/control-plane'};
-        push @roles, 'master' if $labels->{'node-role.kubernetes.io/master'};
-        my $roles = @roles ? join(',', @roles) : '<none>';
-
-        # Internal IP
-        my $internal_ip = '';
-        for my $addr (@{$node->{status}{addresses} // []}) {
-            if ($addr->{type} eq 'InternalIP') {
-                $internal_ip = $addr->{address};
-                last;
-            }
-        }
+        my $name = $k8s->node_name($node);
+        my $version = $k8s->node_version($node);
+        my $ready = $k8s->node_ready($node) ? 'Ready' : 'NotReady';
+        my $roles = $k8s->node_roles($node);
+        my $internal_ip = $k8s->node_internal_ip($node);
 
         printf "%-20s %-10s %-15s %-12s %s\n",
             $name, $ready, $roles, $version, $internal_ip;
     }
 
+    # GPU Status
+    my $gpu_nodes = $k8s->gpu_nodes;
+    if (@$gpu_nodes) {
+        print "\n=== GPU Status ===\n";
+        for my $gnode (@$gpu_nodes) {
+            my $gname = $k8s->node_name($gnode);
+            my $gcount = $k8s->node_gpu_count($gnode);
+            printf "  %s: %dx NVIDIA GPU\n", $gname, $gcount;
+        }
+    }
+
     print "\n";
     print "Kubeconfig: ocp kubeconfig -e\n";
-    print "kubectl: kubectl --kubeconfig=.kube/config get pods -A\n";
 
     return 0;
 }

@@ -151,6 +151,12 @@ kubernetes-ocp/
   ├── lib/OCP/Rex.pm             # Rex Task Executor (RKE2/K3s via Rexfile)
   ├── lib/OCP/SSH.pm             # SSH Operations
   ├── lib/OCP/Local.pm           # Lokale Installation (ohne SSH)
+  ├── lib/OCP/Provider.pm        # Infrastructure Provider Factory
+  ├── lib/OCP/Provider/          # Provider Implementations
+  │   ├── Hetzner.pm             # Hetzner Cloud (idempotent, Labels)
+  │   ├── SSH.pm                 # Bestehende Server
+  │   └── Local.pm               # Localhost
+  ├── lib/OCP/Kubernetes.pm      # Typed K8s Helpers (Nodes, GPU)
   ├── lib/OCP/Robocop/           # Controller Module (im Cluster)
   ├── lib/OCP/UI/                # Terminal UI (Tickit-basiert)
   ├── manifests/
@@ -232,7 +238,7 @@ WARNING: Drift detected!
 - `ocp hetzner` - Hetzner Cloud Debugging (Server auflisten)
 
 ### Module
-- **OCP::Config** - Spec/Status Trennung (ocp.yaml vs .ocp/status.yaml)
+- **OCP::Config** - Spec/Status Trennung (ocp.yaml vs .ocp/status.yaml), Validation, GPU Config
 - **OCP::Secrets** - SOPS/age Wrapper für verschlüsselte Secrets
 - **OCP::Keys** - Two-Tier SSH Key Management (admin-key + robo-key)
 - **OCP::Password** - Passwort-Prompting und AES-256-GCM Verschlüsselung
@@ -240,9 +246,14 @@ WARNING: Drift detected!
 - **OCP::Rex** - Rex Task Executor (RKE2/K3s Installation)
 - **OCP::K3s** - K3s Installation und Management (direkt)
 - **OCP::Local** - Lokale Installation (ohne SSH, braucht root)
-- **OCP::Hetzner** - Hetzner Cloud API Helper
-- **OCP::Versions** - Version Manifest und Komponentenversionen
-- **OCP::DevRegistry** - Development Registry Manager
+- **OCP::Hetzner** - Hetzner Cloud API Helper (Wizard UI)
+- **OCP::Provider** - Factory für Infrastructure Provider
+- **OCP::Provider::Hetzner** - Hetzner Server-Lifecycle (idempotent, Label-basiert)
+- **OCP::Provider::SSH** - SSH-Provider (bestehende Server)
+- **OCP::Provider::Local** - Lokaler Provider (localhost)
+- **OCP::Kubernetes** - Typed K8s Helpers (Node Status, GPU Detection)
+- **OCP::Versions** - Version Manifest und Komponentenversionen (inkl. GPU Stack)
+- **OCP::DevRegistry** - Development Registry Manager (deprecated, nutzt ocp-system)
 - **OCP::UI** - Terminal UI für Formulare (Tickit-basiert)
 - **OCP::Robocop** - Kubernetes Controller (im Cluster)
 - **OCP::Robocop::Controller** - Reconciliation Logic

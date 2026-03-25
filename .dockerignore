@@ -1,37 +1,58 @@
-# Git
+# Git / local tooling
 .git
 .gitignore
+.dockerignore
+.github/
+.claude/
+AGENTS.md
+CLAUDE.md
 
-# Editor
-.vscode
-.idea
+# Editor / local environment
+.vscode/
+.idea/
+.direnv/
+.env
+.env.*
 *.swp
 *.swo
 *~
+.DS_Store
 
-# Build artifacts
+# Perl / Dist::Zilla build artifacts
+.build/
+.dzil/
+_build/
+blib/
+blibdirs
+pm_to_blib
+MYMETA.json
+MYMETA.yml
+Makefile.old
+cover_db/
+nytprof*
 *.tar.gz
 *.zip
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+tmp/
 
-# Test files
+# Tests / examples / docs
 t/
-
-# Examples
+eg/
 examples/
-
-# Documentation
+docs/
 *.md
-!README.md
-PLANNING.md
+Changes
+dist.ini
+Makefile
 
-# CI/CD
-.github/
-
-# Dist::Zilla
-.build/
-
-# Local test dirs
-/tmp/
+# Project files not needed in the image build context
+manifests/
+.ocp/
+local/
 
 # Node modules (if any)
 node_modules/

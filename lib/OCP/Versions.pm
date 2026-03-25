@@ -22,8 +22,15 @@ our $VERSIONS = {
             # Ingress and SSL
             traefik      => 'v3.2.0',
             cert_manager => 'v1.14.0',
+
+            # GPU stack
+            gpu_operator         => 'v24.9.2',
+            nvidia_toolkit       => 'v1.17.1-ubuntu22.04',
+            nvidia_device_plugin => 'v0.17.0',
+            dcgm_exporter        => '3.3.9-3.6.1-ubuntu22.04',
+            nfd                  => 'v0.17.0',
         },
-        notes => 'Initial release with RKE2/K3s, Cilium CNI, Traefik ingress, cert-manager',
+        notes => 'Initial release with RKE2/K3s, Cilium CNI, Traefik ingress, cert-manager, GPU stack',
     },
 };
 

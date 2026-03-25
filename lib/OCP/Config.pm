@@ -6,6 +6,7 @@ use OCP;
 use JSON::PP;
 use Path::Tiny qw(path);
 use Carp qw(croak);
+use YAML::XS ();
 
 our $VERSION = '0.1.0';
 
@@ -71,12 +72,19 @@ sub name { shift->spec->{name} // 'mycluster' }
 
 sub kubernetes {
     my $self = shift;
-    # Support both 'kubernetes' and 'k8s'
+    if (exists $self->spec->{k8s} && !exists $self->spec->{kubernetes}) {
+        warn "OCP::Config: 'k8s' is deprecated, use 'kubernetes' instead\n"
+            unless $self->{_warned_k8s}++;
+    }
     return $self->spec->{kubernetes} // $self->spec->{k8s} // {};
 }
 
 sub control_planes {
     my $self = shift;
+    if (exists $self->spec->{cps} && !exists $self->spec->{controlPlanes}) {
+        warn "OCP::Config: 'cps' is deprecated, use 'controlPlanes' instead\n"
+            unless $self->{_warned_cps}++;
+    }
     my $raw = $self->spec->{controlPlanes} // $self->spec->{cps};
 
     # New format: Array
@@ -138,6 +146,11 @@ sub timezone      { shift->system_config->{timezone} // 'UTC' }
 sub locale        { shift->system_config->{locale} // 'en_US.UTF-8' }
 sub ntp_enabled   { shift->system_config->{ntp} // 1 }
 
+# GPU configuration
+sub gpu_config    { shift->spec->{gpu} // {} }
+sub gpu_enabled   { shift->gpu_config->{enabled} // 1 }
+sub gpu_driver    { shift->gpu_config->{driver} // 'host' }
+
 #
 # Status file (.ocp/status.yaml)
 #
@@ -198,6 +211,80 @@ sub _resolve_path {
     # Relative paths are relative to project dir
     return $p if $p =~ m{^/};
     return $self->project_dir->child($p)->stringify;
+}
+
+#
+# Validation
+#
+
+sub validate {
+    my ($self) = @_;
+    my @errors;
+
+    push @errors, "name is required" unless $self->name && $self->name =~ /\S/;
+
+    my $cps = $self->control_planes;
+    for my $i (0 .. $#$cps) {
+        my $cp = $cps->[$i];
+        my $idx = $i + 1;
+        my $prov = $cp->{provider} // 'hetzner';
+
+        unless ($prov =~ /^(hetzner|ssh|local)$/) {
+            push @errors, "controlPlanes[$idx]: invalid provider '$prov' (must be hetzner, ssh, or local)";
+        }
+
+        if ($prov eq 'hetzner') {
+            push @errors, "controlPlanes[$idx]: serverType required for hetzner"
+                unless $cp->{serverType};
+            push @errors, "controlPlanes[$idx]: location required for hetzner"
+                unless $cp->{location};
+        }
+
+        if ($prov eq 'ssh') {
+            push @errors, "controlPlanes[$idx]: host required for ssh"
+                unless $cp->{host};
+        }
+    }
+
+    for my $w (@{$self->workers}) {
+        push @errors, "worker pool: name required" unless $w->{name};
+        my $wprov = $w->{provider} // '';
+        push @errors, "worker pool '$w->{name}': provider required"
+            unless $wprov =~ /^(hetzner|ssh)$/;
+    }
+
+    return @errors;
+}
+
+#
+# Status write methods
+#
+
+sub save_node_status {
+    my ($self, $node) = @_;
+
+    my $status = $self->_load_status;
+    $status->{nodes} //= [];
+
+    # Upsert by name
+    my $found = 0;
+    for my $existing (@{$status->{nodes}}) {
+        if ($existing->{name} eq $node->{name}) {
+            %$existing = %$node;
+            $found = 1;
+            last;
+        }
+    }
+    push @{$status->{nodes}}, $node unless $found;
+
+    $self->_save_status($status);
+}
+
+sub _save_status {
+    my ($self, $status) = @_;
+    my $file = path($self->status_file);
+    $file->parent->mkpath unless -d $file->parent;
+    $self->ocp->dump_file($file->stringify, $status);
 }
 
 #

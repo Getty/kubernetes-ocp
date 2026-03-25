@@ -58,17 +58,31 @@ use OCP::Versions;
 }
 
 #
+# Test: GPU component versions
+#
+
+{
+    is(OCP::Versions->get_component_version('gpu_operator'), 'v24.9.2', 'gpu_operator version');
+    is(OCP::Versions->get_component_version('nvidia_toolkit'), 'v1.17.1-ubuntu22.04', 'nvidia_toolkit version');
+    is(OCP::Versions->get_component_version('nvidia_device_plugin'), 'v0.17.0', 'nvidia_device_plugin version');
+    is(OCP::Versions->get_component_version('dcgm_exporter'), '3.3.9-3.6.1-ubuntu22.04', 'dcgm_exporter version');
+    is(OCP::Versions->get_component_version('nfd'), 'v0.17.0', 'nfd version');
+}
+
+#
 # Test: list_components
 #
 
 {
     my @components = sort OCP::Versions->list_components();
-    ok(scalar @components >= 6, 'at least 6 components');
+    ok(scalar @components >= 11, 'at least 11 components (incl. GPU)');
     ok((grep { $_ eq 'cilium' } @components), 'cilium in components list');
     ok((grep { $_ eq 'rke2' } @components), 'rke2 in components list');
     ok((grep { $_ eq 'k3s' } @components), 'k3s in components list');
     ok((grep { $_ eq 'traefik' } @components), 'traefik in components list');
     ok((grep { $_ eq 'cert_manager' } @components), 'cert_manager in components list');
+    ok((grep { $_ eq 'gpu_operator' } @components), 'gpu_operator in components list');
+    ok((grep { $_ eq 'nfd' } @components), 'nfd in components list');
 }
 
 #

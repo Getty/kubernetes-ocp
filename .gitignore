@@ -1,1 +1,70 @@
+#
+# Perl / Dist::Zilla / ExtUtils::MakeMaker
+#
+.build/
+.dzil/
+_build/
+blib/
+blibdirs
+pm_to_blib
+MYMETA.json
+MYMETA.yml
+Makefile.old
+
+#
+# Test / coverage / profiling
+#
+.prove
+cover_db/
+nytprof*
+
+#
+# Local build and temp files
+#
+*.tar.gz
+*.zip
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+.DS_Store
+
+#
+# Local environments
+#
+.env
+.env.*
+.direnv/
+.vscode/
+.idea/
+local/
+.ocp/
+tmp/
+
+#
+# Project-specific generated files
+#
 share/Rexfile.lock
+
+# Claude Code — commit: skills/, agents/, hooks/, settings.json
+# Ignore: local overrides, credentials, session data
+.claude/*
+!.claude/settings.json
+!.claude/agents/
+!.claude/agents/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/hooks/
+!.claude/hooks/**
+.claude/*.local.*
+.claude/local/
+.claude/.credentials.json
+.claude/statsig/
+.claude/todos/
+.claude/projects/
+
+AGENTS.md
