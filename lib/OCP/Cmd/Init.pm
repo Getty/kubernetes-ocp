@@ -92,8 +92,11 @@ sub execute {
 
     print "Initializing OCP project...\n\n";
 
-    # Determine cluster name
-    my $name = $self->name // $args->[0] // $project_dir->basename;
+    # Determine cluster name.
+    # MooX::Cmd passes ALL raw args to execute() including already-parsed
+    # flags like --nopassword. Filter those out to get real positional args.
+    my @positional = grep { !/^--/ } @$args;
+    my $name = $self->name // $positional[0] // $project_dir->basename;
 
     # Check what already exists
     my $has_git       = -d '.git';

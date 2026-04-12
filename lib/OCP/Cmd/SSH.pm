@@ -34,7 +34,8 @@ sub execute {
         die "No cluster deployed yet. Run 'ocp apply' first.\n";
     }
 
-    my $node_arg = $self->node // $args->[0];
+    my @positional = grep { !/^--/ } @$args;
+    my $node_arg = $self->node // $positional[0];
     unless ($node_arg) {
         die "Usage: ocp ssh --node <name|ip>\n" .
             "       ocp ssh <name|ip>\n";
