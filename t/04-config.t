@@ -155,13 +155,13 @@ my $tmpdir = tempdir(CLEANUP => 1);
     $ocp->dump_file($f->stringify, {
         name      => 'flags',
         nocert    => 1,
-        nolbipam  => 1,
+        lbipam    => 1,
         norobocop => 0,
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
 
     ok($c->no_cert, 'nocert flag');
-    ok($c->no_lbipam, 'nolbipam flag');
+    ok($c->lbipam, 'lbipam opt-in flag');
     ok(!$c->no_robocop, 'norobocop false');
     ok(!$c->no_traefik, 'notraefik defaults to false');
 }

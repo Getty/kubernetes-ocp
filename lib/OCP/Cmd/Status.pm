@@ -48,7 +48,7 @@ sub execute {
     }
     print "\n";
 
-    # Live status via kubectl (BITSOW!)
+    # Live status via the Kubernetes API (typed client)
     unless ($config->cluster_exists) {
         print "=== Status ===\n";
         print "No cluster deployed yet. Run 'ocp apply' to deploy.\n";

@@ -25,7 +25,6 @@ use_ok('OCP::Cmd::Kubeconfig');
 use_ok('OCP::Cmd::SSH');
 use_ok('OCP::Cmd::InjectKey');
 use_ok('OCP::Cmd::DeployRobocop');
-use_ok('OCP::Cmd::Dev');
 use_ok('OCP::Cmd::Hetzner');
 use_ok('OCP::Cmd::Version');
 use_ok('OCP::Cmd::Update');

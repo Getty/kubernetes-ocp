@@ -491,14 +491,14 @@ sub execute {
     unless ($self->nopassword) {
         print "  1. Review and edit ocp.yaml\n";
         print "  2. Deploy control plane: ocp apply (requires PIN2)\n";
-        print "  3. Deploy robocop (optional): ocp deploy robocop\n";
-        print "  4. Inject robocop key: ocp inject-key (requires PIN2)\n";
-        print "  5. Add workers via CRDs (robocop automates this)\n";
+        print "  3. Inspect cluster: ocp status\n";
+        print "  4. Export kubeconfig: ocp kubeconfig -e\n";
     } else {
         # Dev mode
         print "  1. Review and edit ocp.yaml\n";
         print "  2. Deploy cluster: ocp apply\n";
-        print "  3. Test with: kubectl get nodes\n";
+        print "  3. Inspect cluster: ocp status\n";
+        print "  4. Export kubeconfig: ocp kubeconfig -e\n";
     }
     print "\n";
 }

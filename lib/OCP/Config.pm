@@ -125,8 +125,14 @@ sub version {
 # Add-on flags (default: enabled, set to true to disable)
 sub no_traefik { shift->spec->{notraefik} // 0 }
 sub no_cert { shift->spec->{nocert} // 0 }
-sub no_lbipam { shift->spec->{nolbipam} // 0 }
 sub no_robocop { shift->spec->{norobocop} // 0 }
+
+# Opt-in flags (default: disabled, set to true to enable)
+# lbipam is opt-in because its default behaviour (pool = host public IP
+# + L2 announcement) makes Cilium hijack ARP for the host IP, which breaks
+# host-bound ports like sshd and kube-apiserver. Enable only when you have
+# a proper design for exposing LoadBalancer services.
+sub lbipam { shift->spec->{lbipam} // 0 }
 
 # Registry configuration
 sub registry_config      { shift->spec->{registry} // {} }

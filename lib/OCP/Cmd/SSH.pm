@@ -7,10 +7,10 @@ use MooX::Options;
 use OCP;
 use OCP::Config;
 use OCP::Keys;
+use OCP::Kubernetes;
 use OCP::Password;
 use OCP::Secrets;
 use OCP::SSH;
-use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use File::Temp;
 
@@ -70,9 +70,9 @@ sub execute {
         if ($cp_spec->{provider} eq 'ssh') {
             $target_host = $cp_spec->{host};
         } elsif ($cp_spec->{provider} eq 'hetzner') {
-            # Need to get IP from Hetzner or kubectl
-            print "[..] Looking up control plane IP via kubectl...\n";
-            $target_host = $self->_get_node_ip_from_kubectl($node_arg);
+            # Look up the node's IP via the Kubernetes API
+            print "[..] Looking up control plane IP via Kubernetes API...\n";
+            $target_host = $self->_lookup_node_ip($secrets, $node_arg);
         }
     } else {
         # Assume it's an IP or hostname
@@ -100,32 +100,25 @@ sub execute {
     $ssh->interactive;
 }
 
-sub _get_node_ip_from_kubectl {
-    my ($self, $node_name) = @_;
+sub _lookup_node_ip {
+    my ($self, $secrets, $node_name) = @_;
 
-    # Get nodes from kubectl
-    my $json = `kubectl get nodes -o json 2>/dev/null`;
-    return undef unless $json;
+    return undef unless $secrets->has_kubeconfig;
 
-    my $data = JSON::MaybeXS->new->decode($json);
+    my $kubeconfig = $secrets->read_kubeconfig
+        or return undef;
 
-    for my $node (@{$data->{items} // []}) {
-        my $name = $node->{metadata}{name};
-        next unless $name =~ /$node_name/i;
+    my $k8s = OCP::Kubernetes->new(kubeconfig => $kubeconfig);
 
-        # Get external IP
-        for my $addr (@{$node->{status}{addresses} // []}) {
-            if ($addr->{type} eq 'ExternalIP') {
-                return $addr->{address};
-            }
-        }
+    for my $node (@{ $k8s->list_nodes }) {
+        my $name = $k8s->node_name($node);
+        next unless $name =~ /\Q$node_name\E/i;
 
-        # Fallback to internal IP
-        for my $addr (@{$node->{status}{addresses} // []}) {
-            if ($addr->{type} eq 'InternalIP') {
-                return $addr->{address};
-            }
-        }
+        my $ip = $k8s->node_external_ip($node);
+        return $ip if $ip;
+
+        $ip = $k8s->node_internal_ip($node);
+        return $ip if $ip;
     }
 
     return undef;

@@ -7,38 +7,14 @@ use Rex::Commands::Service;
 use Rex::Commands::Pkg;
 use Rex::Commands::Host;
 
-# Authentication - use Net::OpenSSH (real ssh command, not libssh2)
-# Net::SSH2 (libssh2) ignores OpenSSH config options and has no way to
-# disable host key checking, causing "Couldn't authenticate" on unknown hosts.
-set connection => 'OpenSSH';
+# Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
+# Pure libssh in-process: no ssh client subprocess, no SFTP subsystem,
+# no ControlMaster sockets, no parsing of ~/.ssh/config. Host key checking
+# is disabled inside the connection module itself.
+set connection => 'LibSSH';
 parallelism 1;
 
-# SSH options - disable strict host key checking for new servers
-# NOTE: Must use Rex::Config->set_openssh_opt() directly!
-# "set openssh_opt => {...}" goes through generic set() which stores
-# in $set_param, but get_openssh_opt() reads from a separate %openssh_opt
-# variable. There is no SET_HANDLER registered to bridge them. Rex bug.
-# Ignore user ~/.ssh/config entirely (-F /dev/null) to prevent parse errors
-# from incompatible options (e.g. '+ssh-dss') crashing the connection.
-# Since initialize_options{master_opts} overrides Rex's auto-generated
-# master_opts, we must include all -o options here explicitly.
-Rex::Config->set_openssh_opt(
-    StrictHostKeyChecking => 'no',
-    UserKnownHostsFile    => '/dev/null',
-    IdentitiesOnly        => 'yes',
-    initialize_options    => {
-        master_opts => [
-            '-F', '/dev/null',
-            '-o', 'StrictHostKeyChecking=no',
-            '-o', 'UserKnownHostsFile=/dev/null',
-            '-o', 'IdentitiesOnly=yes',
-            '-o', 'LogLevel=QUIET',
-            '-o', 'ConnectTimeout=20',
-        ],
-    },
-);
-
-# SSH config from environment
+# SSH key from environment
 if ($ENV{REX_PRIVATE_KEY}) {
     private_key $ENV{REX_PRIVATE_KEY};
     public_key $ENV{REX_PUBLIC_KEY} if $ENV{REX_PUBLIC_KEY};
@@ -72,6 +48,13 @@ task "prepare_node", sub {
     my $ntp      = $params->{ntp}      // 1;
 
     check_os();
+
+    # Refresh apt cache before any package install — on fresh Debian images
+    # the cache is often stale, and the first real `apt-get install` will
+    # silently fail. (curl/ca-certificates are already present so they
+    # wouldn't trigger this, but chrony might.)
+    say "Refreshing package database...";
+    eval { update_package_db; 1 } or say "  update_package_db warning: $@";
 
     # Ensure required packages are installed
     pkg ["curl", "ca-certificates"], ensure => "present";
@@ -111,11 +94,34 @@ task "prepare_node", sub {
     }
     run "locale-gen $locale >/dev/null 2>&1", auto_die => FALSE;
 
-    # === NTP (chrony) ===
+    # === NTP ===
+    # etcd/kube-apiserver need clock sync. Prefer what's already running:
+    #   1. If timedatectl says "System clock synchronized: yes" → done
+    #   2. Otherwise try chrony (best-effort, don't die — systemd-timesyncd
+    #      may be active even if not yet "synchronized" from timedatectl's POV)
     if ($ntp) {
-        say "Ensuring NTP (chrony)...";
-        pkg ["chrony"], ensure => "present";
-        run "systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null", auto_die => FALSE;
+        my $tdc = run "timedatectl show --property=NTPSynchronized --value 2>/dev/null", auto_die => FALSE;
+        chomp $tdc if defined $tdc;
+        if (defined $tdc && $tdc eq 'yes') {
+            say "NTP already synchronized (skipping chrony install)";
+        } else {
+            say "Ensuring NTP (chrony)...";
+            eval { pkg ["chrony"], ensure => "present"; 1 };
+            if (my $err = $@) {
+                say "  chrony install failed: $err";
+                say "  Checking systemd-timesyncd as fallback...";
+                my $ts_active = run "systemctl is-active systemd-timesyncd 2>/dev/null", auto_die => FALSE;
+                chomp $ts_active if defined $ts_active;
+                if (defined $ts_active && $ts_active eq 'active') {
+                    say "  [ok] systemd-timesyncd is active — using that";
+                } else {
+                    run "systemctl enable --now systemd-timesyncd 2>&1", auto_die => FALSE;
+                    say "  (best-effort: started systemd-timesyncd)";
+                }
+            } else {
+                run "systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null", auto_die => FALSE;
+            }
+        }
     }
 
     # === Kubernetes preparation ===
@@ -359,7 +365,7 @@ task "install_rke2_server", sub {
     my $tls_san = $params->{tls_san} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node", params => {
+    do_task "prepare_node", {
         hostname => $params->{hostname} || '',
         domain   => $params->{domain}   || '',
         timezone => $params->{timezone} || 'UTC',
@@ -551,13 +557,6 @@ task "install_rke2_server", sub {
     run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
 
     say "RKE2 cluster ready";
-
-    # Return kubeconfig and token for OCP to store
-    my $kubeconfig = run "cat /etc/rancher/rke2/rke2.yaml";
-    say "KUBECONFIG_START";
-    say $kubeconfig;
-    say "KUBECONFIG_END";
-    say "TOKEN: $token";
 };
 
 desc "Install RKE2 agent (worker)";
@@ -568,7 +567,7 @@ task "install_rke2_agent", sub {
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node", params => {
+    do_task "prepare_node", {
         hostname => $params->{hostname} || '',
         domain   => $params->{domain}   || '',
         timezone => $params->{timezone} || 'UTC',
@@ -633,7 +632,7 @@ task "install_k3s_server", sub {
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node", params => {
+    do_task "prepare_node", {
         hostname => $params->{hostname} || '',
         domain   => $params->{domain}   || '',
         timezone => $params->{timezone} || 'UTC',
@@ -666,7 +665,7 @@ task "install_k3s_agent", sub {
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
-    do_task "prepare_node", params => {
+    do_task "prepare_node", {
         hostname => $params->{hostname} || '',
         domain   => $params->{domain}   || '',
         timezone => $params->{timezone} || 'UTC',
@@ -802,8 +801,8 @@ TOML
 #
 
 # Cilium versions (keep in sync!)
-use constant CILIUM_VERSION     => '1.17.0';
-use constant CILIUM_CLI_VERSION => 'v0.16.23';
+use constant CILIUM_VERSION     => '1.19.2';
+use constant CILIUM_CLI_VERSION => 'v0.18.5';
 
 desc "Install Cilium CNI";
 task "install_cilium", sub {
@@ -847,18 +846,35 @@ task "install_cilium", sub {
     }
 
     # Install Gateway API CRDs BEFORE Cilium (required!)
-    say "Installing Gateway API CRDs v1.1.0...";
-    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml",
+    say "Installing Gateway API CRDs v1.2.0...";
+    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml",
         env => { KUBECONFIG => $kubeconfig };
 
     # Also install experimental CRDs (TCPRoute, UDPRoute, TLSRoute)
-    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/experimental-install.yaml",
+    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/experimental-install.yaml",
         env => { KUBECONFIG => $kubeconfig },
         auto_die => FALSE;
 
+    # Bounce cilium-operator if already running so it picks up the new CRD
+    # schema (controller-runtime caches CRD schemas at startup; updating
+    # Gateway API CRDs from v1.1 → v1.2 requires a restart for the
+    # supportedFeatures object/string schema change to take effect).
+    my $op_running = run "$kubectl -n kube-system get deployment cilium-operator -o name 2>/dev/null",
+        env => { KUBECONFIG => $kubeconfig },
+        auto_die => FALSE;
+    if ($op_running && $op_running =~ /cilium-operator/) {
+        say "Restarting cilium-operator to pick up updated CRD schema...";
+        run "$kubectl -n kube-system rollout restart deployment cilium-operator",
+            env => { KUBECONFIG => $kubeconfig },
+            auto_die => FALSE;
+    }
+
     # Install Cilium with Gateway API + LoadBalancer support (skip if already running with correct version)
+    # NOTE: do NOT pipe to "head" — the version line ("Helm chart version: ...")
+    # comes well below the status header. With head -5 the version check would
+    # always be false on a healthy cluster, falsely triggering an upgrade run.
     my $cilium_version_target = CILIUM_VERSION;
-    my $cilium_status = run "cilium status 2>&1 | head -5",
+    my $cilium_status = run "cilium status 2>&1",
         env => { KUBECONFIG => $kubeconfig },
         auto_die => FALSE;
 
@@ -872,6 +888,18 @@ task "install_cilium", sub {
         run 'cilium upgrade --version ' . CILIUM_VERSION,
             env => { KUBECONFIG => $kubeconfig };
     } else {
+        # cilium_running is false: either nothing installed OR a half-broken
+        # state from a previous failed run. Clean any stale Helm release
+        # record first, otherwise `cilium install` will silently exit 0
+        # without doing anything because the CLI thinks the release exists.
+        say "Cleaning any stale Cilium release before fresh install...";
+        run "cilium uninstall --wait=false 2>&1",
+            env => { KUBECONFIG => $kubeconfig },
+            auto_die => FALSE;
+        run "$kubectl -n kube-system delete secret -l name=cilium 2>&1",
+            env => { KUBECONFIG => $kubeconfig },
+            auto_die => FALSE;
+
         say "Installing Cilium " . CILIUM_VERSION . " with Gateway API...";
         run 'cilium install --version ' . CILIUM_VERSION . ' ' .
             '--set kubeProxyReplacement=true ' .
@@ -879,6 +907,20 @@ task "install_cilium", sub {
             '--set k8sServicePort=6443 ' .
             '--set gatewayAPI.enabled=true',
             env => { KUBECONFIG => $kubeconfig };
+
+        # The cilium CLI is known to silently exit 0 in some failure modes
+        # (e.g. stale Helm release records, version mismatches). Verify the
+        # DaemonSet was actually created instead of trusting the exit code.
+        say "Verifying Cilium DaemonSet was created...";
+        my $ds_check = run "$kubectl -n kube-system get daemonset cilium -o name 2>&1",
+            env => { KUBECONFIG => $kubeconfig },
+            auto_die => FALSE;
+        unless ($ds_check && $ds_check =~ m{daemonset\.apps/cilium}) {
+            die "cilium install reported success but DaemonSet was not created.\n" .
+                "kubectl output: " . ($ds_check // '(empty)') . "\n" .
+                "Run 'cilium status' on the node to investigate.\n";
+        }
+        say "Cilium DaemonSet present: $ds_check";
     }
 
     # Wait for Cilium to be ready

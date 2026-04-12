@@ -108,6 +108,15 @@ sub node_internal_ip {
     return '';
 }
 
+sub node_external_ip {
+    my ($self, $node) = @_;
+    for my $addr (@{ $self->_array($self->_dig($node, qw(status addresses))) }) {
+        next unless ($self->_dig($addr, 'type') // '') eq 'ExternalIP';
+        return $self->_dig($addr, 'address') // '';
+    }
+    return '';
+}
+
 sub node_gpu_count {
     my ($self, $node) = @_;
     my $capacity = $self->_dig($node, qw(status capacity)) || {};

@@ -14,18 +14,12 @@ ARG OCP_GID=1000
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
   curl ca-certificates git openssh-client locales \
-  libexpat1-dev zlib1g-dev libssl-dev libssh2-1-dev build-essential pkg-config libtool libtool-bin \
+  libexpat1-dev zlib1g-dev libssl-dev libssh-dev build-essential pkg-config libtool libtool-bin \
   libpkgconf-dev libtickit-dev libtermkey-dev libunibilium-dev \
   && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV LANG=en_US.UTF-8
-
-# Install kubectl =============================================================
-
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
-  && chmod +x kubectl \
-  && mv kubectl /usr/local/bin/
 
 # Install Perl ================================================================
 
@@ -77,6 +71,13 @@ COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \
   --show-build-log-on-failure && rm -rf ~/.perl-cpm/ /tmp/*
+
+# Apply local patches over installed CPAN modules.
+# TODO: drop this once Rex::Interface::Connection::LibSSH 0.004 is released
+# and pinned in cpanfile + snapshot. Until then this overlays our local fix
+# for the env-handling bug in Rex::Interface::Exec::LibSSH (3-arg signature
+# + shell-based env wrapping) directly into the installed module path.
+COPY --chown=ocp:ocp ./share/patches/ $PERL_LOCAL_LIB_ROOT/lib/perl5/
 
 # Generate VERSION ------------------------------------------------------------
 

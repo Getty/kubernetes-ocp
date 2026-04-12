@@ -16,8 +16,8 @@ our $VERSIONS = {
             k3s  => 'v1.31.3+k3s1',
 
             # CNI and networking
-            cilium     => '1.17.0',
-            cilium_cli => 'v0.16.23',
+            cilium     => '1.19.2',
+            cilium_cli => 'v0.18.5',
 
             # Ingress and SSL
             traefik      => 'v3.2.0',

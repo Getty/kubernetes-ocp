@@ -83,9 +83,14 @@ sub execute {
         print "Step 1: Dev mode (--no_password)\n";
         print "        Using SSH key from .ocp/id_ed25519 (no encryption)\n";
 
-        # Still need age.key for secrets.yaml (but no PIN1 prompt in dev mode)
-        if ($secrets->has_age_key || $secrets->has_age_key_enc) {
-            eval { $secrets->ensure_age_key() };
+        # We need an age key for encrypting the kubeconfig later. In dev mode
+        # we never prompt for a PIN: if a plain age.key already exists, use
+        # it; otherwise generate a fresh one. We deliberately do NOT touch
+        # age.key.enc here — that would imply secure mode and a PIN prompt.
+        if (!$secrets->has_age_key) {
+            print "[..] Generating age key for kubeconfig encryption (dev mode)\n";
+            my $keys = $secrets->generate_age_key;
+            print "[ok] Generated age key: $keys->{public_key}\n";
         }
         print "\n";
 
@@ -381,17 +386,11 @@ sub execute {
         }
     }
 
-    # Deploy registry (pull-through cache + local) FIRST after node Ready
-    # Registry is always deployed — required infrastructure for robocop image delivery
+    # Deploy registry (pull-through cache + local) FIRST after node Ready.
+    # MUST succeed: all image pulls go through this.
     print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
-    eval {
-        $self->_setup_registry($config);
-    };
-    if ($@) {
-        print "  [WARN] Registry setup failed: $@\n";
-    } else {
-        print "  [ok] OCP registry ready\n";
-    }
+    $self->_setup_registry($config);
+    print "  [ok] OCP registry ready\n";
 
     # Configure CoreDNS for registry.local
     eval {
@@ -401,16 +400,12 @@ sub execute {
         print "  [WARN] registry.local DNS setup failed: $@\n";
     }
 
-    # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically
+    # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically.
+    # This MUST succeed: GPU Operator gating depends on NFD labels, and a silent
+    # NFD failure produces a "successful" cluster that has no GPU workloads.
     print "  [..] Setting up Node Feature Discovery (NFD)...\n";
-    eval {
-        $self->_setup_nfd($config);
-    };
-    if ($@) {
-        print "  [WARN] NFD setup failed: $@\n";
-    } else {
-        print "  [ok] NFD ready\n";
-    }
+    $self->_setup_nfd($config);
+    print "  [ok] NFD ready\n";
 
     # Deploy GPU Operator if NFD detects NVIDIA GPU (pci-10de label)
     print "  [..] Checking GPU Operator...\n";
@@ -422,35 +417,31 @@ sub execute {
     }
 
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
+    # Apply cert-manager — MUST succeed: TLS certificates depend on it.
     my $cert_manager_applied = 0;
     unless ($config->no_cert) {
         print "  [..] Applying cert-manager manifests...\n";
-        eval {
-            $self->_apply_cert_manager();
-            $cert_manager_applied = 1;
-            $self->_save_deployed_hash($config, 'certmanager', OCP::Versions->get_component_version('cert_manager'));
-        };
-        if ($@) {
-            print "  [WARN] cert-manager apply failed: $@\n";
-        } else {
-            print "  [ok] cert-manager applied (starting in background)\n";
-        }
+        $self->_apply_cert_manager();
+        $cert_manager_applied = 1;
+        $self->_save_deployed_hash($config, 'certmanager', OCP::Versions->get_component_version('cert_manager'));
+        print "  [ok] cert-manager applied (starting in background)\n";
     }
 
-    # Setup Cilium Gateway API (while cert-manager starts up)
+    # Setup Cilium Gateway API (while cert-manager starts up).
+    # MUST succeed: the Gateway is the entry point for all HTTP(S) traffic.
     print "  [..] Setting up Cilium Gateway API...\n";
-    eval {
-        $self->_setup_cilium_gateway($config);
-    };
-    if ($@) {
-        print "  [WARN] Cilium Gateway setup failed: $@\n";
-    } else {
-        print "  [ok] Cilium Gateway ready\n";
-    }
+    $self->_setup_cilium_gateway($config);
+    print "  [ok] Cilium Gateway ready\n";
 
-    # Setup LB-IPAM for bare-metal LoadBalancer support (unless nolbipam: true)
-    unless ($config->no_lbipam) {
-        print "  [..] Setting up LB-IPAM...\n";
+    # Setup LB-IPAM for bare-metal LoadBalancer support.
+    # OPT-IN: set 'lbipam: true' in ocp.yaml to enable. Disabled by default
+    # because the host-public-IP-as-pool + L2 announcement combo makes Cilium
+    # hijack ARP for the host IP and drop all host-bound traffic (sshd,
+    # kube-apiserver) that isn't a registered Service. If you need external
+    # web access, enable this manually and be prepared for the tradeoffs —
+    # see https://docs.cilium.io/en/stable/network/lb-ipam/
+    if ($config->lbipam) {
+        print "  [..] Setting up LB-IPAM (opt-in)...\n";
         eval {
             $self->_setup_lb_ipam($cp_ip);
         };
@@ -459,19 +450,15 @@ sub execute {
         } else {
             print "  [ok] LB-IPAM ready\n";
         }
+    } else {
+        print "  [ok] LB-IPAM skipped (opt-in — set 'lbipam: true' in ocp.yaml if needed)\n";
     }
 
     # Now wait for cert-manager and create issuers (had time to start during Gateway + LB-IPAM setup)
     if ($cert_manager_applied) {
         print "  [..] Waiting for cert-manager to be ready...\n";
-        eval {
-            $self->_wait_cert_manager_and_create_issuers($config);
-        };
-        if ($@) {
-            print "  [WARN] cert-manager setup failed: $@\n";
-        } else {
-            print "  [ok] cert-manager ready\n";
-        }
+        $self->_wait_cert_manager_and_create_issuers($config);
+        print "  [ok] cert-manager ready\n";
     }
 
     # Deploy workers (if configured)
@@ -479,12 +466,7 @@ sub execute {
     if (@$workers && (!$self->only || $self->only eq 'workers')) {
         print "\n";
         print "Step " . ($deploy_step + 1) . ": Deploy workers\n";
-        eval {
-            $self->_deploy_workers($config, $workers, $ssh_key_path, $cp_ip, $secrets);
-        };
-        if ($@) {
-            print "  [WARN] Worker deployment failed: $@\n";
-        }
+        $self->_deploy_workers($config, $workers, $ssh_key_path, $cp_ip, $secrets);
     }
 
     # Done!
@@ -498,12 +480,10 @@ sub execute {
     print "API Endpoint: https://$cp_ip:9345\n\n";
 
     print "Next steps:\n";
-    print "  1. Test cluster access:\n";
-    print "     kubectl get nodes\n\n";
-    print "  2. Deploy robocop for automated worker management:\n";
-    print "     ocp deploy robocop\n\n";
-    print "  3. Or manually add workers:\n";
-    print "     kubectl apply -f workers.yaml\n\n";
+    print "  1. Inspect the cluster:\n";
+    print "     ocp status\n\n";
+    print "  2. Export the kubeconfig for your local kubectl:\n";
+    print "     ocp kubeconfig -e\n\n";
 }
 
 sub _apply_cert_manager {
@@ -664,21 +644,30 @@ sub _setup_cilium_gateway {
 
     $self->_server_side_apply($api, $gateway);
 
-    # Wait for Gateway to be ready (typed via IO::K8s::GatewayAPI)
-    print "      Waiting for Gateway to be ready...\n";
+    # Wait for the Gateway resource to be *Accepted* by the Cilium gateway
+    # controller. We deliberately do NOT wait for Programmed=True: the HTTPS
+    # listener references a cert-manager Secret that won't exist yet at this
+    # point, so Programmed stays False until cert-manager finishes its work
+    # later. Accepted is the "controller has claimed this Gateway" signal and
+    # is enough for our setup ordering.
+    print "      Waiting for Gateway to be Accepted by Cilium...\n";
+    # Gateway is a CRD (gateway.networking.k8s.io), not a core resource —
+    # $api->get('Gateway', ...) fails silently because Kubernetes::REST has
+    # no IO::K8s class for it. Use raw API path instead.
+    my $gw_path = '/apis/gateway.networking.k8s.io/v1/namespaces/kube-system/gateways/cilium-gateway';
     for my $i (1..30) {
-        my $gw = eval { $api->get('Gateway', 'cilium-gateway', namespace => 'kube-system') };
-        if ($gw && $gw->status) {
-            for my $cond (@{ $gw->status->{conditions} || [] }) {
-                if ($cond->{type} eq 'Programmed' && $cond->{status} eq 'True') {
-                    print "      Gateway is ready!\n";
+        my $gw = $self->_crd_get($api, $gw_path);
+        if ($gw && $gw->{status} && $gw->{status}{conditions}) {
+            for my $cond (@{ $gw->{status}{conditions} }) {
+                if ($cond->{type} eq 'Accepted' && $cond->{status} eq 'True') {
+                    print "      Gateway is accepted (Programmed will follow once cert-manager provides the Secret)\n";
                     return;
                 }
             }
         }
         sleep 2;
     }
-    warn "Gateway may not be fully ready yet\n";
+    die "Gateway 'cilium-gateway' did not become Accepted within 60s\n";
 }
 
 sub _setup_lb_ipam {
@@ -712,23 +701,29 @@ sub _setup_lb_ipam {
     }
     print "      LB-IPAM pool: $node_ip/32\n";
 
-    # Wait for Cilium operator to register LB-IPAM CRDs
-    print "      Waiting for CiliumLoadBalancerIPPool CRD...\n";
+    # Wait for Cilium to serve the LB-IPAM API. In Cilium 1.19+ both
+    # CiliumLoadBalancerIPPool and most BGP resources are served under v2;
+    # CiliumL2AnnouncementPolicy is still v2alpha1. This matches the typed
+    # classes in IO::K8s::Cilium 1.100.
+    print "      Waiting for CiliumLoadBalancerIPPool API...\n";
     my $crd_ready = 0;
     for my $i (1..30) {
-        if ($self->_resource_exists($api, 'CustomResourceDefinition',
-                'ciliumloadbalancerippools.cilium.io')) {
+        my $resp = eval {
+            $api->_request('GET', '/apis/cilium.io/v2/ciliumloadbalancerippools');
+        };
+        if ($resp && $resp->status < 400) {
             $crd_ready = 1;
             last;
         }
         print "      ... waiting for Cilium operator (${i}/30)\n" if $i % 5 == 0;
         sleep 10;
     }
-    die "CiliumLoadBalancerIPPool CRD not available after 300s\n" unless $crd_ready;
+    die "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s\n"
+        unless $crd_ready;
 
     my @resources = (
         {
-            apiVersion => 'cilium.io/v2alpha1',
+            apiVersion => 'cilium.io/v2',
             kind       => 'CiliumLoadBalancerIPPool',
             metadata   => { name => 'default-pool' },
             spec       => { blocks => [{ cidr => "$node_ip/32" }] },
@@ -747,11 +742,12 @@ sub _setup_lb_ipam {
 
     $self->_server_side_apply_all($api, @resources);
 
-    # Verify Gateway got an IP (typed via IO::K8s::GatewayAPI)
+    # Verify Gateway got an IP (raw CRD get — Gateway has no IO::K8s class)
     sleep 2;
-    my $gw = eval { $api->get('Gateway', 'cilium-gateway', namespace => 'kube-system') };
-    if ($gw && $gw->status && $gw->status->{addresses} && @{ $gw->status->{addresses} }) {
-        print "      Gateway external IP: $gw->status->{addresses}[0]{value}\n";
+    my $gw_path = '/apis/gateway.networking.k8s.io/v1/namespaces/kube-system/gateways/cilium-gateway';
+    my $gw = $self->_crd_get($api, $gw_path);
+    if ($gw && $gw->{status} && $gw->{status}{addresses} && @{ $gw->{status}{addresses} }) {
+        print "      Gateway external IP: $gw->{status}{addresses}[0]{value}\n";
     }
 }
 
@@ -795,13 +791,13 @@ sub _setup_registry {
     unless ($config->has_external_cache) {
         print "      Waiting for ocp-cache...\n";
         $self->_poll_deployment_ready($api, 'ocp-cache', 'ocp-system', 120)
-            or warn "ocp-cache not ready within 120s\n";
+            or die "ocp-cache not ready within 120s\n";
     }
 
     unless ($config->has_external_upstream) {
         print "      Waiting for ocp-registry...\n";
         $self->_poll_deployment_ready($api, 'ocp-registry', 'ocp-system', 120)
-            or warn "ocp-registry not ready within 120s\n";
+            or die "ocp-registry not ready within 120s\n";
     }
 
     # Save hash so we skip next time if unchanged
@@ -991,7 +987,10 @@ sub _setup_nfd {
 
     # Apply CRDs first (before any NFD components)
     my $share_dir = $self->_find_share_dir;
-    my $crd_file = $share_dir->child('nfd', 'crds', 'nodefeature-crd.yaml');
+    # Full upstream CRD bundle: NodeFeature + NodeFeatureGroup + NodeFeatureRule.
+    # All three are required — nfd-master v0.17 watches NodeFeatureGroup and
+    # gets stuck in an error loop if the CRD is missing, never processing labels.
+    my $crd_file = $share_dir->child('nfd', 'crds', 'nfd-api-crds.yaml');
     die "NFD CRD file not found: $crd_file\n" unless -f $crd_file;
 
     my $manifest = $self->_generate_nfd_manifest;
@@ -1021,7 +1020,7 @@ sub _setup_nfd {
     # Wait for nfd-master
     print "      Waiting for nfd-master...\n";
     $self->_poll_deployment_ready($api, 'nfd-master', 'node-feature-discovery', 120)
-        or warn "nfd-master not ready within 120s\n";
+        or die "nfd-master not ready within 120s\n";
 
     # Wait for nfd-worker DaemonSet
     print "      Waiting for nfd-worker...\n";
@@ -1046,7 +1045,7 @@ sub _setup_nfd {
             }
         }
         if ($i == 12) {
-            warn "NFD labels not detected after 120s\n";
+            die "NFD labels not detected on any node after 120s\n";
         }
         sleep 10;
     }
@@ -1097,7 +1096,12 @@ sub _generate_nfd_manifest {
             },
         },
 
-        # ClusterRole for nfd-master
+        # ClusterRole for nfd-master — mirrors upstream NFD v0.17 RBAC.
+        # Every rule here is required: missing any single one makes nfd-master
+        # start cleanly but silently stop processing NodeFeatures somewhere
+        # along the pipeline, with the symptom of "no labels appearing".
+        # In particular, 'namespaces: watch, list' is needed for NodeFeature
+        # discovery, and 'nodefeaturegroups' was introduced in v0.16.
         {
             apiVersion => 'rbac.authorization.k8s.io/v1',
             kind       => 'ClusterRole',
@@ -1105,13 +1109,23 @@ sub _generate_nfd_manifest {
             rules      => [
                 {
                     apiGroups => [''],
+                    resources => ['namespaces'],
+                    verbs     => ['list', 'watch'],
+                },
+                {
+                    apiGroups => [''],
                     resources => ['nodes', 'nodes/status'],
                     verbs     => ['get', 'list', 'watch', 'patch', 'update'],
                 },
                 {
                     apiGroups => ['nfd.k8s-sigs.io'],
-                    resources => ['nodefeatures', 'nodefeaturerules'],
+                    resources => ['nodefeatures', 'nodefeaturerules', 'nodefeaturegroups'],
                     verbs     => ['get', 'list', 'watch'],
+                },
+                {
+                    apiGroups => ['nfd.k8s-sigs.io'],
+                    resources => ['nodefeaturegroups/status'],
+                    verbs     => ['patch', 'update'],
                 },
                 {
                     apiGroups => ['coordination.k8s.io'],
@@ -1138,7 +1152,10 @@ sub _generate_nfd_manifest {
             }],
         },
 
-        # ClusterRole for nfd-worker
+        # ClusterRole for nfd-worker — upstream NFD v0.17 uses a namespaced
+        # Role, but ClusterRole is a valid superset here and matches our
+        # pattern elsewhere. The 'pods: get' rule is required because the
+        # worker reads its own pod spec for some feature sources.
         {
             apiVersion => 'rbac.authorization.k8s.io/v1',
             kind       => 'ClusterRole',
@@ -1148,6 +1165,11 @@ sub _generate_nfd_manifest {
                     apiGroups => ['nfd.k8s-sigs.io'],
                     resources => ['nodefeatures'],
                     verbs     => ['create', 'get', 'update'],
+                },
+                {
+                    apiGroups => [''],
+                    resources => ['pods'],
+                    verbs     => ['get'],
                 },
             ],
         },
@@ -1212,6 +1234,21 @@ sub _generate_nfd_manifest {
                             image           => $nfd_image,
                             imagePullPolicy => 'IfNotPresent',
                             command         => ['nfd-master'],
+                            # Mirror upstream v0.17 helm template defaults.
+                            # Without explicit args, v0.17 master starts but
+                            # doesn't enable the featurerules controller or
+                            # leader election, and never writes node labels.
+                            # NFD v0.17 CLI flags — no -featurerules-controller
+                            # (that's a config-file option, not a CLI flag; passing
+                            # it causes a flag-parse panic). The featurerules
+                            # controller is enabled by default in v0.17+.
+                            args => [
+                                '-enable-leader-election',
+                                '-enable-taints',
+                                '-resync-period=1h',
+                                '-metrics=8081',
+                                '-grpc-health=8082',
+                            ],
                             ports           => [{ containerPort => 8080, name => 'grpc' }],
                             env             => [{ name => 'NODE_NAME', valueFrom => { fieldRef => { fieldPath => 'spec.nodeName' } } }],
                             securityContext => {
@@ -1314,14 +1351,25 @@ sub _setup_gpu_operator {
 
     my $api = $self->_k8s_api;
 
-    # Check if any node has NVIDIA GPU via NFD labels
-    my $gpu_node_list = eval {
-        $api->list('Node', labelSelector => 'feature.node.kubernetes.io/pci-10de.present=true')
-    };
-    my @gpu_nodes = ($gpu_node_list && $gpu_node_list->items) ? @{ $gpu_node_list->items } : ();
+    # Check if any node has NVIDIA GPU via NFD labels.
+    # NFD v0.17 labels use the format pci-{CLASS}_{VENDOR}.present:
+    #   0300 = VGA controller (consumer/workstation GPUs: RTX, GTX, Quadro)
+    #   0302 = 3D controller  (datacenter GPUs: Tesla, A100, H100, L40)
+    my @gpu_nodes;
+    for my $pci_class (qw(0300_10de 0302_10de)) {
+        my $list = eval {
+            $api->list('Node', labelSelector => "feature.node.kubernetes.io/pci-${pci_class}.present=true")
+        };
+        if ($list && $list->items) {
+            push @gpu_nodes, @{ $list->items };
+        }
+    }
+    # Deduplicate (a node could theoretically have both classes)
+    my %seen;
+    @gpu_nodes = grep { !$seen{$_->metadata->name}++ } @gpu_nodes;
 
     unless (@gpu_nodes) {
-        print "      No GPU nodes detected (no NFD label feature.node.kubernetes.io/pci-10de.present)\n";
+        print "      No GPU nodes detected (no NFD pci-0300_10de or pci-0302_10de label)\n";
         print "  [ok] GPU Operator skipped (no GPU hardware)\n";
         return;
     }
@@ -1364,7 +1412,7 @@ sub _setup_gpu_operator {
     # Wait for operator deployment
     print "      Waiting for gpu-operator...\n";
     $self->_poll_deployment_ready($api, 'gpu-operator', 'gpu-operator', 120)
-        or warn "gpu-operator not ready within 120s\n";
+        or die "gpu-operator not ready within 120s\n";
 
     # Check ClusterPolicy status via raw API (CRD, no IO::K8s class)
     my $cp_path = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';
@@ -1992,6 +2040,34 @@ sub _reconcile_components {
 
     my $updated = 0;
     my $checked = 0;
+
+    # Cilium version drift check.
+    # The reconcile path can only do API-driven things, not SSH/Rex, so we
+    # can't upgrade Cilium here. But we can detect the drift and refuse to
+    # pretend everything is fine, giving the user a clear recovery path.
+    {
+        $checked++;
+        print "  [..] Checking Cilium version...\n";
+        my $target = OCP::Versions->get_component_version('cilium');
+        my $api    = $self->_k8s_api;
+        my $op     = eval {
+            $api->get('Deployment', 'cilium-operator', namespace => 'kube-system');
+        };
+        if (!$op) {
+            die "Cilium operator not found in kube-system. Run a full deploy:\n" .
+                "  rm kubeconfig.yaml .ocp/deployed.yaml && ocp apply\n";
+        }
+        my $image  = eval { $op->spec->template->spec->containers->[0]->image } || '';
+        my ($running) = $image =~ /:v?([^\@]+?)(?:\@|$)/;
+        $running //= 'unknown';
+        if ($running eq $target) {
+            print "  [ok] Cilium $target running\n";
+        } else {
+            die "Cilium version drift: running '$running', target '$target'.\n" .
+                "The reconcile path cannot upgrade Cilium — trigger a full deploy:\n" .
+                "  rm kubeconfig.yaml .ocp/deployed.yaml && ocp apply\n";
+        }
+    }
 
     # Registry (always deployed — required infrastructure)
     {
