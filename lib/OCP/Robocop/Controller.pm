@@ -5,6 +5,7 @@ use Moo;
 use IO::Async::Loop;
 use Net::Async::Kubernetes;
 use IO::K8s::APIObject;
+use JSON::PP ();
 use Try::Tiny;
 use Types::Standard qw(Str Int Bool HashRef);
 
@@ -15,9 +16,9 @@ has loop => (
     builder => sub { IO::Async::Loop->new },
 );
 
-has k8s => (
+has kube => (
     is      => 'lazy',
-    builder => '_build_k8s',
+    builder => '_build_kube',
 );
 
 has namespace => (
@@ -30,7 +31,7 @@ has verbose => (
     default => 0,
 );
 
-sub _build_k8s {
+sub _build_kube {
     my ($self) = @_;
 
     # Use in-cluster config
@@ -49,7 +50,7 @@ sub run {
     $self->log("Robocop controller starting...");
 
     # Watch OCPNode resources
-    my $node_watcher = $self->k8s->watch_resource(
+    my $node_watcher = $self->kube->watch_resource(
         resource    => 'OCPNode',
         on_added    => sub { $self->handle_node_added(@_) },
         on_modified => sub { $self->handle_node_modified(@_) },
@@ -57,7 +58,7 @@ sub run {
     );
 
     # Watch OCPNodeProvider resources
-    my $provider_watcher = $self->k8s->watch_resource(
+    my $provider_watcher = $self->kube->watch_resource(
         resource    => 'OCPNodeProvider',
         on_added    => sub { $self->handle_provider_added(@_) },
         on_modified => sub { $self->handle_provider_modified(@_) },
@@ -152,7 +153,7 @@ sub handle_provider_deleted {
     $self->log("OCPNodeProvider deleted: $name");
 
     # Check if any nodes are still using this provider
-    my $nodes = $self->k8s->list_resource('OCPNode')->get;
+    my $nodes = $self->kube->list_resource('OCPNode')->get;
     my @using_provider = grep { $_->spec->{providerRef} eq $name } @{$nodes->items};
 
     if (@using_provider) {
@@ -200,7 +201,7 @@ sub provision_node {
     $self->log("Provisioning node $name...");
 
     # Get provider
-    my $provider = $self->k8s->get_resource(
+    my $provider = $self->kube->get_resource(
         resource => 'OCPNodeProvider',
         name     => $provider_ref,
     )->get;
@@ -309,7 +310,7 @@ sub delete_node_infrastructure {
     return unless $provider_id;
 
     # Get provider
-    my $provider = $self->k8s->get_resource(
+    my $provider = $self->kube->get_resource(
         resource => 'OCPNodeProvider',
         name     => $provider_ref,
     )->get;
@@ -359,7 +360,7 @@ sub validate_provider {
     }
 
     # Update provider status
-    $self->k8s->patch_resource(
+    $self->kube->patch_resource(
         resource => 'OCPNodeProvider',
         name     => $name,
         patch    => {
@@ -377,7 +378,7 @@ sub update_node_status {
 
     my $name = $node->metadata->name;
 
-    $self->k8s->patch_resource(
+    $self->kube->patch_resource(
         resource => 'OCPNode',
         name     => $name,
         patch    => {
