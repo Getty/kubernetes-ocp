@@ -147,10 +147,8 @@ kubernetes-ocp/
   ├── bin/ocp                    # CLI Tool (Bootstrap)
   ├── bin/robocop                # Controller Entry Point
   ├── lib/OCP/                   # CLI Module
-  ├── lib/OCP/K3s.pm             # K3s Installation und Management
   ├── lib/OCP/Rex.pm             # Rex Task Executor (RKE2/K3s via Rexfile)
   ├── lib/OCP/SSH.pm             # SSH Operations
-  ├── lib/OCP/Local.pm           # Lokale Installation (ohne SSH)
   ├── lib/OCP/Provider.pm        # Infrastructure Provider Factory
   ├── lib/OCP/Provider/          # Provider Implementations
   │   ├── Hetzner.pm             # Hetzner Cloud (idempotent, Labels)
@@ -158,12 +156,9 @@ kubernetes-ocp/
   │   └── Local.pm               # Localhost
   ├── lib/OCP/Kubernetes.pm      # Typed K8s Helpers (Nodes, GPU)
   ├── lib/OCP/Robocop/           # Controller Module (im Cluster)
-  ├── lib/OCP/UI/                # Terminal UI (Tickit-basiert)
   ├── manifests/
-  │   ├── robocop/               # CRDs, RBAC, Deployment
-  │   ├── dev-registry.yaml
-  │   └── Rexfile                # Rex Tasks für Server-Provisioning
-  └── share/                     # Manifest Templates (cert-manager, etc.)
+  │   └── robocop/               # CRDs, RBAC, Deployment
+  └── share/                     # Manifest Templates, Rexfile, CRDs
 ```
 
 ## Datei-Struktur (Projekt)
@@ -220,21 +215,22 @@ WARNING: Drift detected!
 ### Commands
 - `ocp init` - Projekt initialisieren (git, keys, config)
   - `--hetzner` - Interaktives Hetzner Token Setup
-  - `--no-git` - Git-Initialisierung überspringen
+  - `--nogit` - Git-Initialisierung überspringen
   - `--name` - Cluster-Name setzen
   - `--provider` - Provider wählen (hetzner/ssh/local)
+  - `--host` - SSH Host (für --provider=ssh)
   - `--nopassword` - Dev-Modus ohne Verschlüsselung
+  - `--dist` - Kubernetes Distribution (rke2/k3s)
+  - `--single` - Single-Node Cluster
 - `ocp apply` - Cluster deployen/aktualisieren
 - `ocp status` - Cluster-Status anzeigen
 - `ocp destroy` - Cluster löschen
 - `ocp kubeconfig` - Kubeconfig exportieren
-- `ocp edit` - Config via TUI bearbeiten
 - `ocp version` - Versionen anzeigen
 - `ocp update` - Cluster-Komponenten aktualisieren
-- `ocp ssh` - SSH auf Cluster-Nodes (mit admin-key)
-- `ocp deploy-robocop` - Robocop Controller deployen
-- `ocp inject-key` - Robo-Key in Robocop injizieren
-- `ocp dev` - Development Tools (Registry, Image Build)
+- `ocp ssh --node <name|ip>` - SSH auf Cluster-Nodes (mit admin-key)
+- `ocp deploy-robocop` - Robocop Controller deployen (Stub)
+- `ocp inject-key` - Robo-Key in Robocop injizieren (Stub)
 - `ocp hetzner` - Hetzner Cloud Debugging (Server auflisten)
 
 ### Module
@@ -242,19 +238,15 @@ WARNING: Drift detected!
 - **OCP::Secrets** - SOPS/age Wrapper für verschlüsselte Secrets
 - **OCP::Keys** - Two-Tier SSH Key Management (admin-key + robo-key)
 - **OCP::Password** - Passwort-Prompting und AES-256-GCM Verschlüsselung
-- **OCP::SSH** - SSH-Verbindungen und Remote-Befehle (IPC::Open3)
+- **OCP::SSH** - SSH-Verbindungen und Remote-Befehle (LibSSH)
 - **OCP::Rex** - Rex Task Executor (RKE2/K3s Installation)
-- **OCP::K3s** - K3s Installation und Management (direkt)
-- **OCP::Local** - Lokale Installation (ohne SSH, braucht root)
-- **OCP::Hetzner** - Hetzner Cloud API Helper (Wizard UI)
+- **OCP::Hetzner** - Hetzner Cloud API Helper
 - **OCP::Provider** - Factory für Infrastructure Provider
 - **OCP::Provider::Hetzner** - Hetzner Server-Lifecycle (idempotent, Label-basiert)
 - **OCP::Provider::SSH** - SSH-Provider (bestehende Server)
 - **OCP::Provider::Local** - Lokaler Provider (localhost)
 - **OCP::Kubernetes** - Typed K8s Helpers (Node Status, GPU Detection)
 - **OCP::Versions** - Version Manifest und Komponentenversionen (inkl. GPU Stack)
-- **OCP::DevRegistry** - Development Registry Manager (deprecated, nutzt ocp-system)
-- **OCP::UI** - Terminal UI für Formulare (Tickit-basiert)
 - **OCP::Robocop** - Kubernetes Controller (im Cluster)
 - **OCP::Robocop::Controller** - Reconciliation Logic
 
@@ -276,19 +268,22 @@ requires 'WWW::Hetzner';
 requires 'Crypt::Age';
 requires 'File::SOPS';
 requires 'Rex';
+requires 'Rex::Interface::Connection::LibSSH';
 requires 'IO::Async';
 requires 'Net::Async::Kubernetes';
 requires 'IO::K8s';
+requires 'Kubernetes::REST';
 ```
 
 ## Externe Tools (im Docker Image)
 
-- `kubectl` - Kubernetes CLI
-- `ssh` / `ssh-keygen` - SSH Operations
+- `ssh-keygen` - SSH Key Generation
 
 **Nicht mehr benötigt** (durch reine Perl-Implementierung ersetzt):
 - ~~`sops`~~ - ersetzt durch File::SOPS
 - ~~`age`~~ - ersetzt durch Crypt::Age
+- ~~`kubectl`~~ - ersetzt durch IO::K8s / Kubernetes::REST
+- ~~`ssh`~~ - ersetzt durch Rex + LibSSH
 
 ## Build & Test
 

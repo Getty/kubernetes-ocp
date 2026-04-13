@@ -1381,11 +1381,12 @@ sub _setup_gpu_operator {
     my $share_dir = $self->_find_share_dir;
     my $crd_file = $share_dir->child('gpu-operator', 'crds', 'clusterpolicy-crd.yaml');
     die "GPU Operator CRD file not found: $crd_file\n" unless -f $crd_file;
+    my $driver_crd_file = $share_dir->child('gpu-operator', 'crds', 'nvidiadriver-crd.yaml');
+    die "NVIDIADriver CRD file not found: $driver_crd_file\n" unless -f $driver_crd_file;
 
-    my $manifest = $self->_generate_gpu_operator_manifest;
+    my $manifest = $self->_generate_gpu_operator_manifest($config);
 
-
-    my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
+    my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp . path($driver_crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
     # Check if GPU Operator is actually running (not just hash match)
@@ -1398,12 +1399,13 @@ sub _setup_gpu_operator {
         return;
     }
 
-    # Apply CRDs
+    # Apply CRDs (ClusterPolicy + NVIDIADriver)
     print "      Applying GPU Operator CRDs...\n";
     $self->_apply_yaml_file($api, $crd_file->stringify);
+    $self->_apply_yaml_file($api, $driver_crd_file->stringify);
 
-    # Wait briefly for CRD to be established
-    sleep 2;
+    # Wait briefly for CRDs to be established
+    sleep 3;
 
     # Apply operator + ClusterPolicy
     print "      Deploying GPU Operator...\n";
@@ -1433,10 +1435,21 @@ sub _setup_gpu_operator {
 }
 
 sub _generate_gpu_operator_manifest {
-    my ($self) = @_;
+    my ($self, $config) = @_;
 
     my $gpu_version = OCP::Versions->get_component_version('gpu_operator');
     my $operator_image = "nvcr.io/nvidia/gpu-operator:$gpu_version";
+    my $distribution = $config->distribution || 'rke2';
+
+    # Containerd socket path differs between RKE2 and K3s
+    my $containerd_socket = $distribution eq 'k3s'
+        ? '/run/k3s/containerd/containerd.sock'
+        : '/var/lib/rancher/rke2/agent/containerd/containerd.sock';
+    my $containerd_config = $distribution eq 'k3s'
+        ? '/var/lib/rancher/k3s/agent/etc/containerd/config.toml'
+        : '/var/lib/rancher/rke2/agent/etc/containerd/config.toml';
+    my $containerd_set_as_default = '1';
+    my $containerd_runtime_class = 'nvidia';
 
     my @resources = (
         # Namespace
@@ -1485,9 +1498,14 @@ sub _generate_gpu_operator_manifest {
                     verbs     => ['*'],
                 },
                 {
-                    apiGroups => ['security.openshift.io'],
-                    resources => ['securitycontextconstraints'],
-                    verbs     => ['*'],
+                    # GPU Operator probes config.openshift.io to detect OpenShift.
+                    # On non-OpenShift clusters the API group doesn't exist, so this
+                    # returns 404 ("not OpenShift") — but only if RBAC allows the
+                    # request.  Without this rule the SA gets 403 Forbidden, which
+                    # the operator treats as a fatal error.
+                    apiGroups => ['config.openshift.io'],
+                    resources => ['clusterversions'],
+                    verbs     => ['get', 'list', 'watch'],
                 },
                 {
                     apiGroups => ['scheduling.k8s.io'],
@@ -1557,6 +1575,8 @@ sub _generate_gpu_operator_manifest {
                             env             => [
                                 { name => 'WATCH_NAMESPACE', value => '' },
                                 { name => 'OPERATOR_NAMESPACE', value => 'gpu-operator' },
+                                { name => 'USE_OSHIFT_DRIVER_TOOLKIT', value => 'false' },
+                                { name => 'CLUSTER_PLATFORM', value => 'container' },
                                 { name => 'POD_NAME', valueFrom => { fieldRef => { fieldPath => 'metadata.name' } } },
                             ],
                             securityContext => {
@@ -1592,6 +1612,12 @@ sub _generate_gpu_operator_manifest {
                 toolkit => {
                     enabled => JSON::PP::true,
                     version => OCP::Versions->get_component_version('nvidia_toolkit'),
+                    env => [
+                        { name => 'CONTAINERD_SOCKET', value => $containerd_socket },
+                        { name => 'CONTAINERD_CONFIG', value => $containerd_config },
+                        { name => 'CONTAINERD_SET_AS_DEFAULT', value => $containerd_set_as_default },
+                        { name => 'CONTAINERD_RUNTIME_CLASS', value => $containerd_runtime_class },
+                    ],
                 },
                 devicePlugin => {
                     enabled => JSON::PP::true,
@@ -2106,7 +2132,7 @@ sub _reconcile_components {
             my $deployed = $self->_load_deployed_hashes($config);
 
             my $share_dir = $self->_find_share_dir;
-            my $crd_file = $share_dir->child('nfd', 'crds', 'nodefeature-crd.yaml');
+            my $crd_file = $share_dir->child('nfd', 'crds', 'nfd-api-crds.yaml');
             my $manifest = $self->_generate_nfd_manifest;
         
             my $current_hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);

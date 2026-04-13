@@ -21,10 +21,6 @@ requires 'Term::ReadKey';
 requires 'CryptX';
 requires 'Crypt::PBKDF2';
 
-# TUI
-requires 'Tickit';
-requires 'Tickit::Widgets';
-
 # Robocop controller
 requires 'IO::Async';
 requires 'IO::K8s', '1.100';

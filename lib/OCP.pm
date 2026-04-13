@@ -231,7 +231,7 @@ Status is stored separately in C<.ocp/status.yaml> (gitignored).
 
 =head1 SEE ALSO
 
-L<OCP::Config>, L<OCP::Secrets>, L<OCP::Keys>, L<OCP::SSH>, L<OCP::Rex>, L<OCP::K3s>
+L<OCP::Config>, L<OCP::Secrets>, L<OCP::Keys>, L<OCP::SSH>, L<OCP::Rex>
 
 L<Crypt::Age>, L<File::SOPS>, L<WWW::Hetzner>
 

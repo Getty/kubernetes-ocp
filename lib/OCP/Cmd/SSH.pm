@@ -34,11 +34,9 @@ sub execute {
         die "No cluster deployed yet. Run 'ocp apply' first.\n";
     }
 
-    my @positional = grep { !/^--/ } @$args;
-    my $node_arg = $self->node // $positional[0];
+    my $node_arg = $self->node;
     unless ($node_arg) {
-        die "Usage: ocp ssh --node <name|ip>\n" .
-            "       ocp ssh <name|ip>\n";
+        die "Usage: ocp ssh --node <name|ip>\n";
     }
 
     print "╔═══════════════════════════════════════════════════════════════╗\n";
@@ -136,12 +134,12 @@ OCP::Cmd::SSH - SSH into cluster nodes with admin-key
 =head1 SYNOPSIS
 
     # SSH into control plane
-    ocp ssh police1
+    ocp ssh --node police1
 
     # SSH into node by IP
-    ocp ssh 1.2.3.4
+    ocp ssh --node 1.2.3.4
 
-    # SSH with --node flag
+    # SSH into worker
     ocp ssh --node worker-1
 
 =head1 DESCRIPTION

@@ -9,7 +9,6 @@ use_ok('OCP::Config');
 use_ok('OCP::Secrets');
 use_ok('OCP::Keys');
 use_ok('OCP::SSH');
-use_ok('OCP::K3s');
 use_ok('OCP::Versions');
 use_ok('OCP::Password');
 
@@ -28,13 +27,6 @@ use_ok('OCP::Cmd::DeployRobocop');
 use_ok('OCP::Cmd::Hetzner');
 use_ok('OCP::Cmd::Version');
 use_ok('OCP::Cmd::Update');
-use_ok('OCP::Cmd::Edit');
-
-# UI
-use_ok('OCP::UI');
-use_ok('OCP::UI::Form');
-use_ok('OCP::UI::Field');
-use_ok('OCP::UI::Wizard');
 
 # Hetzner
 use_ok('OCP::Hetzner');
@@ -47,5 +39,9 @@ use_ok('OCP::Provider::Local');
 
 # Kubernetes helpers
 use_ok('OCP::Kubernetes');
+
+# Robocop controller
+use_ok('OCP::Robocop');
+use_ok('OCP::Robocop::Controller');
 
 done_testing;
