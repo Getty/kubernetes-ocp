@@ -1494,7 +1494,10 @@ sub _generate_gpu_operator_manifest {
                 },
                 {
                     apiGroups => ['nvidia.com'],
-                    resources => ['clusterpolicies', 'clusterpolicies/status', 'clusterpolicies/finalizers'],
+                    resources => [
+                        'clusterpolicies', 'clusterpolicies/status', 'clusterpolicies/finalizers',
+                        'nvidiadrivers', 'nvidiadrivers/status', 'nvidiadrivers/finalizers',
+                    ],
                     verbs     => ['*'],
                 },
                 {
