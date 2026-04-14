@@ -1,0 +1,94 @@
+#!/usr/bin/env perl
+# PODNAME: robocop-test-join
+# ABSTRACT: Test harness — run Robocop install_kubernetes directly on a host
+
+use strict;
+use warnings;
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+use Getopt::Long;
+use Path::Tiny qw(path);
+use OCP::Robocop::Controller;
+
+my %opt = (
+    name       => 'worker-1',
+    role       => 'worker',
+    dist       => 'rke2',
+);
+
+GetOptions(\%opt,
+    'host=s',         # target host IP
+    'server=s',       # RKE2 server URL
+    'token=s',        # RKE2 join token (or token-file)
+    'token-file=s',
+    'ssh-key=s',      # SSH private key file
+    'name=s',
+    'role=s',
+    'dist=s',
+    'verbose|v',
+) or die "bad options\n";
+
+$opt{host}    or die "Usage: --host IP\n";
+$opt{server}  or die "Usage: --server https://HOST:9345\n";
+$opt{ssh_key} = delete $opt{'ssh-key'} or die "Usage: --ssh-key FILE\n";
+
+if ($opt{'token-file'}) {
+    $opt{token} = path($opt{'token-file'})->slurp;
+    chomp $opt{token};
+}
+$opt{token} or die "Usage: --token TOKEN or --token-file FILE\n";
+
+my $ssh_key_content = path($opt{ssh_key})->slurp;
+
+my $c = OCP::Robocop::Controller->new(
+    kubeconfig   => undef,                    # local-only test
+    ssh_key      => $ssh_key_content,
+    server_url   => $opt{server},
+    join_token   => $opt{token},
+    distribution => $opt{dist},
+    verbose      => $opt{verbose},
+);
+
+# Fake OCPNode object — bypasses K8s, exercises the core reconcile logic
+my $fake_node = {
+    metadata => { name => $opt{name}, namespace => 'ocp-system' },
+    spec     => {
+        role        => $opt{role},
+        providerRef => 'ssh-local',
+        host        => $opt{host},
+    },
+    status => { phase => 'Pending' },
+};
+
+# Override update_node_status for fake node: just print, don't hit K8s
+{
+    no warnings 'redefine';
+    *OCP::Robocop::Controller::update_node_status = sub {
+        my ($self, $node, %patch) = @_;
+        my $new_status = { %{ $node->{status} // {} }, %patch };
+        $node->{status} = $new_status;
+        $self->log("[$node->{metadata}{name}] status: phase=$patch{phase}"
+                 . ($patch{message} ? " — $patch{message}" : ""));
+    };
+}
+
+# Drive the state machine
+print "\n=== Robocop test: joining $opt{name} ($opt{host}) to $opt{server} ===\n\n";
+
+for my $step (1..5) {
+    my $phase = $fake_node->{status}{phase};
+    print "\n--- Step $step (phase=$phase) ---\n";
+
+    $c->reconcile_node($fake_node);
+
+    last if $phase eq $fake_node->{status}{phase};  # no progress
+    last if $fake_node->{status}{phase} eq 'Ready';
+    last if $fake_node->{status}{phase} eq 'Failed';
+}
+
+print "\n=== Final status ===\n";
+print "Phase: $fake_node->{status}{phase}\n";
+print "Message: " . ($fake_node->{status}{message} // '-') . "\n";
+
+exit($fake_node->{status}{phase} eq 'Ready' || $fake_node->{status}{phase} eq 'Joining' ? 0 : 1);
