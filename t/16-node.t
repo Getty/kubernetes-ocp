@@ -1,6 +1,25 @@
 use strict;
 use warnings;
 use Test::More;
+
+package FakeK8s {
+    sub new { my ($c, %a) = @_; bless { calls => [], %a }, $c }
+    sub get    { my ($s, @a) = @_; push @{$s->{calls}}, [get    => \@a]; $s->{cr_cb}    ? $s->{cr_cb}->(@a)    : $s->{cr} }
+    sub update { my ($s, $o) = @_; push @{$s->{calls}}, [update => $o];  $s->{update_cb} ? $s->{update_cb}->($o) : $o }
+    sub patch  { my ($s, @a) = @_; push @{$s->{calls}}, [patch  => \@a]; $s->{patch_cb}  ? $s->{patch_cb}->(@a)  : {} }
+    sub ensure { my ($s, $o) = @_; push @{$s->{calls}}, [ensure => $o];  $o }
+    sub delete { my ($s, @a) = @_; push @{$s->{calls}}, [delete => \@a]; {} }
+    sub list   { my ($s, @a) = @_; push @{$s->{calls}}, [list   => \@a]; $s->{list} // { items => [] } }
+}
+
+package FakeProvider {
+    sub new { my ($c, %a) = @_; bless { %a }, $c }
+    sub create_server { my ($s, %a) = @_; $s->{create_cb} ? $s->{create_cb}->(%a) : { id => 'SRV1', ip => '1.2.3.4' } }
+    sub delete_server { my ($s, @a) = @_; $s->{delete_cb} ? $s->{delete_cb}->(@a) : 1 }
+}
+
+package main;
+
 use OCP::Node;
 
 my $cr = {
@@ -11,8 +30,8 @@ my $cr = {
     status     => { phase => 'Pending' },
 };
 
-my $fake_k8s  = bless {}, 'FakeK8s';
-my $fake_prov = bless {}, 'FakeProvider';
+my $fake_k8s  = FakeK8s->new;
+my $fake_prov = FakeProvider->new;
 
 subtest 'from_cr constructs with deps' => sub {
     my $node = OCP::Node->from_cr(
@@ -40,6 +59,126 @@ subtest 'phase defaults to Pending when status missing' => sub {
     my $cr2 = { %$cr, status => {} };
     my $node = OCP::Node->from_cr($cr2, k8s => $fake_k8s);
     is $node->phase, 'Pending', 'missing status.phase defaults to Pending';
+};
+
+subtest 'lease acquisition stamps annotation and calls update with resourceVersion' => sub {
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+        metadata   => { name => 'w1', namespace => 'ocp-system', resourceVersion => '100' },
+        spec       => { role => 'worker', providerRef => 'p' },
+        status     => { phase => 'Pending' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    $node->_acquire_lease;
+
+    my ($update) = grep { $_->[0] eq 'update' } @{$k->{calls}};
+    ok $update, 'update was called';
+    like $update->[1]{metadata}{annotations}{'ocp.internal/reconciler-lease'},
+         qr/^cli\@.+\@300$/, 'lease annotation written with cli holder and 300s ttl';
+    is $update->[1]{metadata}{resourceVersion}, '100', 'resourceVersion preserved on PUT';
+};
+
+subtest 'lease held by another reconciler dies' => sub {
+    my $now = OCP::Node::_rfc3339_now();
+    my $cr = {
+        metadata => {
+            name => 'w2', namespace => 'ocp-system',
+            annotations => { 'ocp.internal/reconciler-lease' => "robocop\@$now\@300" },
+        },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Pending' },
+    };
+    my $node = OCP::Node->from_cr($cr, k8s => FakeK8s->new(cr => $cr),
+        provider => FakeProvider->new, ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    eval { $node->_acquire_lease };
+    like $@, qr/lease held/i, 'refuses to steal live lease held by another';
+};
+
+subtest 'lease expired is stealable' => sub {
+    my $old = '2000-01-01T00:00:00Z';
+    my $cr = {
+        metadata => {
+            name => 'w3', namespace => 'ocp-system',
+            annotations => { 'ocp.internal/reconciler-lease' => "robocop\@$old\@300" },
+        },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Pending' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    eval { $node->_acquire_lease };
+    is $@, '', 'expired lease is stealable';
+    my ($update) = grep { $_->[0] eq 'update' } @{$k->{calls}};
+    like $update->[1]{metadata}{annotations}{'ocp.internal/reconciler-lease'},
+         qr/^cli\@/, 'new lease owned by cli';
+};
+
+subtest '_provision calls provider->create_server with node-name and transitions to Installing' => sub {
+    my $create_args;
+    my $prov = FakeProvider->new(create_cb => sub {
+        $create_args = { @_ };
+        return { id => 'SRV42', ip => '5.6.7.8' };
+    });
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+        metadata   => { name => 'w4', namespace => 'ocp-system', resourceVersion => '1' },
+        spec       => { role => 'worker', providerRef => 'hetzner-a' },
+        status     => { phase => 'Pending' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    $node->_provision;
+
+    ok $create_args, 'provider->create_server was called';
+    is $create_args->{name}, 'w4', 'node name passed to create_server';
+    is $create_args->{node}, 'w4', 'node param passed for label-based idempotency';
+    my ($patch) = grep { $_->[0] eq 'patch' } @{$k->{calls}};
+    ok $patch, 'status patched';
+};
+
+subtest '_release_lease removes the lease annotation' => sub {
+    my $now = OCP::Node::_rfc3339_now();
+    my $cr = {
+        metadata => {
+            name => 'w5', namespace => 'ocp-system',
+            annotations => { 'ocp.internal/reconciler-lease' => "cli\@$now\@300" },
+        },
+        spec   => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Installing' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    $node->_release_lease;
+    my ($update) = grep { $_->[0] eq 'update' } @{$k->{calls}};
+    ok $update, 'update called to release';
+    ok !exists $update->[1]{metadata}{annotations}{'ocp.internal/reconciler-lease'},
+        'lease annotation removed';
+};
+
+subtest '_provision failure keeps lease (for TTL-based retry)' => sub {
+    my $prov = FakeProvider->new(create_cb => sub { die "hetzner 5xx\n" });
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+        metadata   => { name => 'w6', namespace => 'ocp-system', resourceVersion => '1' },
+        spec       => { role => 'worker', providerRef => 'p' },
+        status     => { phase => 'Pending' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    eval { $node->_provision };
+    ok $@, 'provision failure propagates';
+    my @updates = grep { $_->[0] eq 'update' } @{$k->{calls}};
+    is scalar @updates, 1, 'only the lease acquire update — no release-on-failure';
 };
 
 done_testing;
