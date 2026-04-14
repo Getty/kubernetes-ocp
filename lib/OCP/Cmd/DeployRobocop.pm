@@ -3,7 +3,17 @@ package OCP::Cmd::DeployRobocop;
 
 use Moo;
 use MooX::Cmd;
+use MooX::Options;
+use FindBin;
+use File::ShareDir ();
+use Path::Tiny qw(path);
+use YAML::XS ();
+use File::Temp ();
+use Kubernetes::REST::Kubeconfig;
+
 use OCP;
+use OCP::Config;
+use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
@@ -12,14 +22,64 @@ our $VERSION = '0.001';
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    die <<'MSG';
-ERROR: 'ocp deploy-robocop' is currently disabled.
+    my $file = $self->ocp->config;
+    die "Config file '$file' not found. Run 'ocp init' first.\n" unless -f $file;
 
-Robocop deployment was previously implemented by shelling out to kubectl.
-That dependency has been removed; reimplementation against
-Kubernetes::REST is pending until robocop itself is in active use.
+    my $config  = OCP::Config->new(file => $file);
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
-MSG
+    my $kc_content = $secrets->read_kubeconfig;
+    die "ERROR: Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n"
+        unless $kc_content;
+
+    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+    print {$kc_fh} $kc_content;
+    close $kc_fh;
+
+    my $api = Kubernetes::REST::Kubeconfig->new(
+        kubeconfig_path => $kc_fh->filename,
+    )->api;
+
+    my $share_dir = $self->_find_share_dir;
+    my $robocop_dir = $share_dir->child('robocop');
+    die "Robocop manifests not found under $robocop_dir\n" unless -d $robocop_dir;
+
+    my @crd_files   = sort $robocop_dir->child('crds')->children(qr/\.ya?ml$/);
+    my @other_files = grep { $_->basename ne 'kustomization.yaml' }
+                           $robocop_dir->children(qr/\.ya?ml$/);
+
+    for my $file_path (@crd_files, @other_files) {
+        my @docs = YAML::XS::LoadFile($file_path->stringify);
+        for my $doc (@docs) {
+            next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
+            my $kind = $doc->{kind};
+            my $name = $doc->{metadata}{name};
+            $api->ensure($doc);
+            print "  [ok] ensured $kind/$name\n";
+        }
+    }
+
+    print "Robocop deployed.\n";
+    return 0;
+}
+
+sub _find_share_dir {
+    my ($self) = @_;
+
+    my @locations = (
+        '/opt/ocp/src/share',
+        path($FindBin::Bin)->parent->child('share'),
+    );
+
+    eval {
+        push @locations, path(File::ShareDir::dist_dir('OCP'));
+    };
+
+    for my $dir (@locations) {
+        return path($dir) if -d $dir;
+    }
+
+    die "OCP share directory not found. Tried:\n" . join("\n", map { "  - $_" } @locations) . "\n";
 }
 
 1;
@@ -30,15 +90,13 @@ __END__
 
 OCP::Cmd::DeployRobocop - Deploy robocop controller to the cluster
 
-=head1 STATUS
-
-Currently disabled. Robocop is not in active use yet; the previous
-kubectl-based implementation was removed together with the kubectl
-dependency from the OCP image. Will be reimplemented via
-L<Kubernetes::REST> when robocop comes online.
-
 =head1 SYNOPSIS
 
-    ocp deploy-robocop  # currently dies with a TODO message
+    ocp deploy-robocop
+
+Reads manifests from the OCP share directory (C<share/robocop/>), applies CRDs
+first and then remaining resources (skipping C<kustomization.yaml>) via
+L<Kubernetes::REST/ensure> against the encrypted kubeconfig for the current
+project.
 
 =cut
