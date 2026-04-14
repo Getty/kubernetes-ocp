@@ -10,7 +10,7 @@ use OCP::Rex;
 use OCP;
 use Term::ANSIColor qw(colored);
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 option dry_run => (
     is      => 'ro',

@@ -4,7 +4,7 @@ package OCP::Provider::SSH;
 use Moo;
 use OCP::SSH;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has ssh_key_path => (is => 'ro');
 

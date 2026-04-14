@@ -9,7 +9,7 @@ use Carp qw(croak);
 use Crypt::Age;
 use File::SOPS;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has ocp => (
     is      => 'lazy',

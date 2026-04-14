@@ -2,28 +2,60 @@ package OCP::Robocop::Controller;
 # ABSTRACT: Kubernetes controller for OCP nodes
 
 use Moo;
-use IO::Async::Loop;
-use Net::Async::Kubernetes;
-use IO::K8s::APIObject;
+use Carp qw(croak);
+use Path::Tiny qw(path);
+use File::Temp ();
 use JSON::PP ();
 use Try::Tiny;
 use Types::Standard qw(Str Int Bool HashRef);
 
-our $VERSION = '0.1.0';
+use Kubernetes::REST;
+use OCP::SSH;
+use OCP::Rex;
+use OCP::Versions;
 
-has loop => (
-    is      => 'lazy',
-    builder => sub { IO::Async::Loop->new },
-);
+our $VERSION = '0.001';
 
-has kube => (
-    is      => 'lazy',
-    builder => '_build_kube',
-);
+#
+# Configuration
+#
 
 has namespace => (
     is      => 'ro',
     default => 'ocp-system',
+);
+
+has kubeconfig => (
+    is  => 'ro',
+    doc => 'Kubeconfig content or file path (for out-of-cluster testing)',
+);
+
+has ssh_key => (
+    is       => 'ro',
+    required => 1,
+    doc      => 'SSH private key content (robo-key)',
+);
+
+has server_url => (
+    is       => 'ro',
+    required => 1,
+    doc      => 'RKE2 server URL, e.g. https://192.168.122.1:9345',
+);
+
+has join_token => (
+    is       => 'ro',
+    required => 1,
+    doc      => 'RKE2 node join token',
+);
+
+has distribution => (
+    is      => 'ro',
+    default => 'rke2',
+);
+
+has poll_interval => (
+    is      => 'ro',
+    default => 10,   # seconds
 );
 
 has verbose => (
@@ -31,369 +63,296 @@ has verbose => (
     default => 0,
 );
 
+#
+# Lazy-built Kubernetes client
+#
+
+has kube => (
+    is      => 'lazy',
+    builder => '_build_kube',
+);
+
 sub _build_kube {
     my ($self) = @_;
 
-    # Use in-cluster config
-    my $k8s = Net::Async::Kubernetes->new(
-        namespace => $self->namespace,
-    );
+    my %opts;
+    if ($self->kubeconfig) {
+        # File path or YAML content
+        if (-f $self->kubeconfig) {
+            $opts{kubeconfig} = path($self->kubeconfig)->slurp;
+        } else {
+            $opts{kubeconfig} = $self->kubeconfig;
+        }
+    }
+    # else: Kubernetes::REST uses in-cluster config automatically
 
-    $self->loop->add($k8s);
-
-    return $k8s;
+    return Kubernetes::REST->new(%opts);
 }
+
+#
+# Lazy-built temp SSH key file (chmod 600)
+#
+
+has _ssh_key_file => (
+    is      => 'lazy',
+    builder => '_build_ssh_key_file',
+);
+
+sub _build_ssh_key_file {
+    my ($self) = @_;
+
+    my $tmp = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
+    print $tmp $self->ssh_key;
+    close $tmp;
+    chmod 0600, $tmp->filename;
+    return $tmp;   # keep object alive for auto-cleanup
+}
+
+#
+# Main loop: poll and reconcile
+#
 
 sub run {
     my ($self) = @_;
 
-    $self->log("Robocop controller starting...");
+    $self->log("Robocop controller starting (namespace=" . $self->namespace . ")");
+    $self->log("Server URL:   " . $self->server_url);
+    $self->log("Distribution: " . $self->distribution);
 
-    # Watch OCPNode resources
-    my $node_watcher = $self->kube->watch_resource(
-        resource    => 'OCPNode',
-        on_added    => sub { $self->handle_node_added(@_) },
-        on_modified => sub { $self->handle_node_modified(@_) },
-        on_deleted  => sub { $self->handle_node_deleted(@_) },
-    );
+    while (1) {
+        my $nodes = eval { $self->list_ocp_nodes };
+        if ($@) {
+            $self->log("ERROR listing OCPNodes: $@");
+        } else {
+            for my $node (@$nodes) {
+                try {
+                    $self->reconcile_node($node);
+                } catch {
+                    my $name = $node->{metadata}{name} // '?';
+                    $self->log("ERROR reconciling $name: $_");
+                };
+            }
+        }
 
-    # Watch OCPNodeProvider resources
-    my $provider_watcher = $self->kube->watch_resource(
-        resource    => 'OCPNodeProvider',
-        on_added    => sub { $self->handle_provider_added(@_) },
-        on_modified => sub { $self->handle_provider_modified(@_) },
-        on_deleted  => sub { $self->handle_provider_deleted(@_) },
-    );
-
-    $self->log("Watching OCPNode and OCPNodeProvider resources");
-
-    # Run event loop
-    $self->loop->run;
-}
-
-#
-# OCPNode handlers
-#
-
-sub handle_node_added {
-    my ($self, $node) = @_;
-
-    my $name = $node->metadata->name;
-    my $role = $node->spec->{role} // 'worker';
-    my $provider_ref = $node->spec->{providerRef};
-
-    $self->log("OCPNode added: $name (role=$role, provider=$provider_ref)");
-
-    # Check if node already exists (status.phase = Ready)
-    if ($node->status && $node->status->{phase} eq 'Ready') {
-        $self->log("  Node $name already Ready, skipping");
-        return;
-    }
-
-    # Reconcile node
-    $self->reconcile_node($node);
-}
-
-sub handle_node_modified {
-    my ($self, $node) = @_;
-
-    my $name = $node->metadata->name;
-    my $phase = $node->status->{phase} // 'Unknown';
-
-    $self->log("OCPNode modified: $name (phase=$phase)");
-
-    # Reconcile node
-    $self->reconcile_node($node);
-}
-
-sub handle_node_deleted {
-    my ($self, $node) = @_;
-
-    my $name = $node->metadata->name;
-    $self->log("OCPNode deleted: $name");
-
-    # Delete infrastructure if needed
-    try {
-        $self->delete_node_infrastructure($node);
-    } catch {
-        $self->log("ERROR deleting node infrastructure: $_");
-    };
-}
-
-#
-# OCPNodeProvider handlers
-#
-
-sub handle_provider_added {
-    my ($self, $provider) = @_;
-
-    my $name = $provider->metadata->name;
-    my $type = $provider->spec->{type};
-
-    $self->log("OCPNodeProvider added: $name (type=$type)");
-
-    # Validate provider configuration
-    $self->validate_provider($provider);
-}
-
-sub handle_provider_modified {
-    my ($self, $provider) = @_;
-
-    my $name = $provider->metadata->name;
-    $self->log("OCPNodeProvider modified: $name");
-
-    # Validate provider configuration
-    $self->validate_provider($provider);
-}
-
-sub handle_provider_deleted {
-    my ($self, $provider) = @_;
-
-    my $name = $provider->metadata->name;
-    $self->log("OCPNodeProvider deleted: $name");
-
-    # Check if any nodes are still using this provider
-    my $nodes = $self->kube->list_resource('OCPNode')->get;
-    my @using_provider = grep { $_->spec->{providerRef} eq $name } @{$nodes->items};
-
-    if (@using_provider) {
-        my $names = join(', ', map { $_->metadata->name } @using_provider);
-        $self->log("WARNING: Provider $name deleted but still used by: $names");
+        sleep $self->poll_interval;
     }
 }
 
 #
-# Reconciliation logic
+# Reconciliation state machine
 #
 
 sub reconcile_node {
     my ($self, $node) = @_;
 
-    my $name = $node->metadata->name;
-    my $phase = $node->status->{phase} // 'Pending';
+    my $name  = $node->{metadata}{name};
+    my $phase = $node->{status}{phase} // 'Pending';
 
-    # Reconciliation state machine
-    if ($phase eq 'Pending') {
-        $self->provision_node($node);
-    }
-    elsif ($phase eq 'Provisioning') {
-        $self->install_kubernetes($node);
-    }
-    elsif ($phase eq 'Installing') {
-        $self->wait_for_ready($node);
-    }
-    elsif ($phase eq 'Ready') {
-        $self->verify_node($node);
-    }
-    elsif ($phase eq 'Failed') {
-        # Check if we should retry
-        # TODO: Implement exponential backoff
-        $self->log("Node $name in Failed state");
-    }
+    $self->log("Reconcile $name (phase=$phase)") if $self->verbose;
+
+    if    ($phase eq 'Pending')      { $self->provision_node($node) }
+    elsif ($phase eq 'Provisioning') { $self->install_kubernetes($node) }
+    elsif ($phase eq 'Installing')   { $self->wait_for_ready($node) }
+    elsif ($phase eq 'Joining')      { $self->wait_for_ready($node) }
+    elsif ($phase eq 'Ready')        { $self->verify_node($node) }
+    elsif ($phase eq 'Failed')       { $self->log("  $name in Failed state") }
 }
 
 sub provision_node {
     my ($self, $node) = @_;
 
-    my $name = $node->metadata->name;
-    my $provider_ref = $node->spec->{providerRef};
+    my $name     = $node->{metadata}{name};
+    my $role     = $node->{spec}{role};
+    my $host     = $node->{spec}{host};
+    my $provider = $node->{spec}{providerRef};
 
-    $self->log("Provisioning node $name...");
-
-    # Get provider
-    my $provider = $self->kube->get_resource(
-        resource => 'OCPNodeProvider',
-        name     => $provider_ref,
-    )->get;
-
-    unless ($provider) {
-        $self->update_node_status($node, {
-            phase   => 'Failed',
-            message => "Provider '$provider_ref' not found",
-        });
+    if ($role eq 'control-plane') {
+        $self->log("  $name: control-plane provisioning not supported via Robocop (use 'ocp apply')");
+        $self->update_node_status($node, phase => 'Failed',
+            message => 'control-plane must be bootstrapped externally');
         return;
     }
 
-    my $type = $provider->spec->{type};
+    $self->log("[$name] Provisioning (provider=$provider)...");
 
-    try {
-        if ($type eq 'hetzner') {
-            $self->provision_hetzner_node($node, $provider);
-        }
-        elsif ($type eq 'ssh') {
-            $self->provision_ssh_node($node, $provider);
-        }
-        else {
-            die "Unknown provider type: $type\n";
-        }
-    } catch {
-        $self->log("ERROR provisioning node: $_");
-        $self->update_node_status($node, {
-            phase   => 'Failed',
-            message => "Provisioning failed: $_",
-        });
-    };
-}
-
-sub provision_hetzner_node {
-    my ($self, $node, $provider) = @_;
-
-    # TODO: Implement Hetzner provisioning
-    # - Get Hetzner token from secret
-    # - Create server via WWW::Hetzner::Cloud
-    # - Update node status with providerId, publicIP
-    # - Set phase to Provisioning
-
-    $self->log("Hetzner provisioning not implemented yet");
-}
-
-sub provision_ssh_node {
-    my ($self, $node, $provider) = @_;
-
-    my $name = $node->metadata->name;
-    my $host = $node->spec->{host};
-
-    unless ($host) {
-        die "SSH node requires 'host' in spec\n";
+    if (!$host) {
+        # TODO: resolve via OCPNodeProvider for hetzner
+        $self->update_node_status($node, phase => 'Failed',
+            message => "No host specified (only SSH provider with .spec.host supported for now)");
+        return;
     }
 
-    # SSH nodes are pre-existing, just mark as provisioned
-    $self->update_node_status($node, {
+    # SSH provider: pre-existing host, just mark as ready for install
+    $self->update_node_status($node,
         phase    => 'Provisioning',
         publicIP => $host,
-        message  => 'SSH node pre-existing, ready for Kubernetes install',
-    });
+        message  => 'Host reachable, ready for Kubernetes install',
+    );
 }
 
 sub install_kubernetes {
     my ($self, $node) = @_;
 
-    # TODO: Implement Kubernetes installation
-    # - SSH to node via OCP::SSH
-    # - Run Rex tasks via OCP::Rex
-    # - Install RKE2/K3s
-    # - Update status to Installing
+    my $name = $node->{metadata}{name};
+    my $host = $node->{status}{publicIP} || $node->{spec}{host};
+    my $role = $node->{spec}{role};
+    my $gpu  = $node->{spec}{gpu} ? 1 : 0;
 
-    my $name = $node->metadata->name;
-    $self->log("Kubernetes installation for $name not implemented yet");
+    unless ($host) {
+        $self->update_node_status($node, phase => 'Failed',
+            message => 'No host IP in status or spec');
+        return;
+    }
+
+    $self->log("[$name] Installing $role on $host...");
+
+    # 1. Wait for SSH
+    my $ssh = OCP::SSH->new(
+        host     => $host,
+        key_file => $self->_ssh_key_file->filename,
+        user     => 'root',
+    );
+    eval { $ssh->wait_for_ssh(60) };
+    if ($@) {
+        $self->update_node_status($node, phase => 'Failed',
+            message => "SSH not reachable: $@");
+        return;
+    }
+
+    # 2. Run Rex task install_rke2_agent
+    my $rex = OCP::Rex->new(
+        host     => $host,
+        key_file => $self->_ssh_key_file->filename,
+        user     => 'root',
+        verbose  => $self->verbose,
+    );
+
+    my $rke2_version = OCP::Versions->get_component_version('rke2');
+
+    $self->update_node_status($node, phase => 'Installing',
+        message => "Running RKE2 agent install");
+
+    my $task = $self->distribution eq 'k3s'
+        ? 'install_k3s_agent'
+        : 'install_rke2_agent';
+
+    my %params = (
+        server    => $self->server_url,
+        token     => $self->join_token,
+        version   => $rke2_version,
+        node_name => $name,
+        hostname  => $name,
+        ntp       => 1,
+    );
+
+    my $ok = eval { $rex->run_task($task, %params) };
+    if (!$ok || $@) {
+        $self->update_node_status($node, phase => 'Failed',
+            message => "Rex task failed: " . ($@ // 'unknown'));
+        return;
+    }
+
+    $self->update_node_status($node, phase => 'Joining',
+        message => 'RKE2 agent installed, waiting for node registration');
 }
 
 sub wait_for_ready {
     my ($self, $node) = @_;
 
-    # TODO: Wait for node to join cluster
-    # - Check Kubernetes Node object
-    # - Verify node conditions
-    # - Update status to Ready
+    my $name        = $node->{metadata}{name};
+    my $k8s_name    = $node->{status}{kubernetesNodeName} // $name;
 
-    my $name = $node->metadata->name;
-    $self->log("Readiness check for $name not implemented yet");
+    # Query the cluster for this node
+    my $k8s_node = eval {
+        $self->kube->get(
+            path => "/api/v1/nodes/$k8s_name",
+        );
+    };
+
+    unless ($k8s_node) {
+        $self->log("[$name] Not yet registered in cluster");
+        return;
+    }
+
+    # Check Ready condition
+    my $ready = 0;
+    for my $cond (@{ $k8s_node->{status}{conditions} // [] }) {
+        if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
+            $ready = 1;
+            last;
+        }
+    }
+
+    if ($ready) {
+        $self->log("[$name] Ready in cluster!");
+        $self->update_node_status($node,
+            phase              => 'Ready',
+            kubernetesNodeName => $k8s_name,
+            joinedAt           => _timestamp(),
+            message            => 'Node joined and Ready',
+        );
+    } else {
+        $self->log("[$name] Registered but not Ready yet");
+    }
 }
 
 sub verify_node {
     my ($self, $node) = @_;
-
-    # TODO: Periodic health check
-    # - Verify Kubernetes Node still exists
-    # - Check node conditions
-    # - Update lastChecked timestamp
-
-    # For now, do nothing
+    # Periodic health check - for now just a no-op
 }
 
-sub delete_node_infrastructure {
-    my ($self, $node) = @_;
+#
+# Kubernetes API helpers (Kubernetes::REST based)
+#
 
-    my $provider_id = $node->status->{providerId};
-    my $provider_ref = $node->spec->{providerRef};
+sub list_ocp_nodes {
+    my ($self) = @_;
 
-    return unless $provider_id;
+    my $resp = $self->kube->get(
+        path => "/apis/ocp.internal/v1/namespaces/" . $self->namespace . "/ocpnodes",
+    );
 
-    # Get provider
-    my $provider = $self->kube->get_resource(
-        resource => 'OCPNodeProvider',
-        name     => $provider_ref,
-    )->get;
+    return $resp->{items} // [];
+}
 
-    return unless $provider;
+sub update_node_status {
+    my ($self, $node, %patch) = @_;
 
-    my $type = $provider->spec->{type};
+    my $name = $node->{metadata}{name};
+    my $ns   = $node->{metadata}{namespace} // $self->namespace;
 
-    if ($type eq 'hetzner') {
-        # TODO: Delete Hetzner server
-        $self->log("Would delete Hetzner server $provider_id");
+    # Merge patch into existing status
+    my $new_status = { %{ $node->{status} // {} }, %patch };
+
+    my $body = { status => $new_status };
+
+    eval {
+        $self->kube->patch(
+            path        => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodes/$name/status",
+            body        => $body,
+            contentType => 'application/merge-patch+json',
+        );
+    };
+    if ($@) {
+        $self->log("  WARNING: failed to update status for $name: $@");
+        return;
     }
-    elsif ($type eq 'ssh') {
-        # SSH nodes are not owned by us, nothing to delete
-        $self->log("SSH node, no infrastructure to delete");
-    }
+
+    # Also update the in-memory copy so chained calls see the new phase
+    $node->{status} = $new_status;
+
+    $self->log("[$name] status: phase=" . ($patch{phase} // '(unchanged)')
+             . ($patch{message} ? " ($patch{message})" : ""));
 }
 
 #
 # Helpers
 #
 
-sub validate_provider {
-    my ($self, $provider) = @_;
-
-    my $name = $provider->metadata->name;
-    my $type = $provider->spec->{type};
-
-    my $ready = 1;
-    my $message = "Provider configured";
-
-    if ($type eq 'hetzner') {
-        # Check if token secret exists
-        my $secret_ref = $provider->spec->{hetzner}{tokenSecretRef};
-        unless ($secret_ref && $secret_ref->{name}) {
-            $ready = 0;
-            $message = "Hetzner tokenSecretRef not configured";
-        }
-    }
-    elsif ($type eq 'ssh') {
-        # SSH provider always ready (credentials in secrets)
-        $ready = 1;
-    }
-    else {
-        $ready = 0;
-        $message = "Unknown provider type: $type";
-    }
-
-    # Update provider status
-    $self->kube->patch_resource(
-        resource => 'OCPNodeProvider',
-        name     => $name,
-        patch    => {
-            status => {
-                ready       => $ready ? JSON::PP::true : JSON::PP::false,
-                message     => $message,
-                lastChecked => _timestamp(),
-            },
-        },
-    );
-}
-
-sub update_node_status {
-    my ($self, $node, $updates) = @_;
-
-    my $name = $node->metadata->name;
-
-    $self->kube->patch_resource(
-        resource => 'OCPNode',
-        name     => $name,
-        patch    => {
-            status => $updates,
-        },
-    )->get;
-
-    $self->log("Updated node $name status: " . ($updates->{phase} // 'no phase'));
-}
-
 sub log {
     my ($self, $msg) = @_;
-
-    my $timestamp = scalar localtime;
-    print "[$timestamp] $msg\n";
+    my $ts = scalar localtime;
+    print "[$ts] $msg\n";
 }
 
 sub _timestamp {
@@ -415,53 +374,26 @@ OCP::Robocop::Controller - Kubernetes controller for OCP nodes
     use OCP::Robocop::Controller;
 
     my $controller = OCP::Robocop::Controller->new(
-        namespace => 'ocp-system',
-        verbose   => 1,
+        namespace    => 'ocp-system',
+        kubeconfig   => '/path/to/kubeconfig.yaml',  # or undef for in-cluster
+        ssh_key      => $robo_key_content,
+        server_url   => 'https://192.168.122.1:9345',
+        join_token   => $token,
+        distribution => 'rke2',
     );
 
-    $controller->run;
+    $controller->run;  # blocks, polls OCPNodes, reconciles
 
 =head1 DESCRIPTION
 
-Robocop is the Kubernetes controller component of OCP. It watches OCPNode and
-OCPNodeProvider CRDs and reconciles the desired cluster state:
+Watches OCPNode custom resources and reconciles them towards the desired state.
+Currently supports the SSH provider (pre-existing reachable hosts). Handles
+worker nodes only — control planes must be bootstrapped externally via
+C<ocp apply>.
 
-- Provisions infrastructure (Hetzner Cloud, SSH hosts)
-- Installs Kubernetes (RKE2/K3s) on nodes
-- Manages node lifecycle (join, ready, delete)
-- Updates status in CRD objects
+=head2 Reconciliation state machine
 
-Built on L<Net::Async::Kubernetes> for async event handling and L<IO::K8s>
-for typed Kubernetes API objects.
-
-=head1 METHODS
-
-=head2 run
-
-Start the controller and watch for CRD changes. Blocks forever.
-
-=head2 reconcile_node
-
-Main reconciliation loop for OCPNode. State machine:
-
-  Pending -> Provisioning -> Installing -> Ready
-                  |
-                  v
-              Failed (retry later)
-
-=head2 provision_node
-
-Provision infrastructure based on OCPNodeProvider type:
-
-- B<hetzner>: Create server via Hetzner Cloud API
-- B<ssh>: Use existing host (mark as provisioned)
-
-=head2 install_kubernetes
-
-Install RKE2/K3s on provisioned node via Rex tasks.
-
-=head2 validate_provider
-
-Check OCPNodeProvider configuration and update status.
+    Pending → Provisioning → Installing → Joining → Ready
+                     └──────────────┴──────────→ Failed
 
 =cut

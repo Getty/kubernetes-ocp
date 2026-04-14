@@ -28,7 +28,7 @@ use OCP::Versions;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has _ssh_key_path => (is => 'rw');
 

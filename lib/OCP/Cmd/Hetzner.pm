@@ -9,7 +9,7 @@ use Path::Tiny qw(path);
 use OCP::Secrets;
 use WWW::Hetzner::Cloud;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 option list => (
     is      => 'ro',

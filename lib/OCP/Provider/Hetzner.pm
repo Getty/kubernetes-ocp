@@ -4,7 +4,7 @@ package OCP::Provider::Hetzner;
 use Moo;
 use WWW::Hetzner::Cloud;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has token => (is => 'ro', required => 1);
 has cluster_name => (is => 'ro', default => '');

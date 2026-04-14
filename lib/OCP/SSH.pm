@@ -6,7 +6,7 @@ use Carp qw(croak);
 use IPC::Open3 qw(open3);
 use Symbol qw(gensym);
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has host => (
     is       => 'ro',

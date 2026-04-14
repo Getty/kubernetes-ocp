@@ -3,7 +3,7 @@ package OCP::Provider::Local;
 
 use Moo;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has verbose => (is => 'ro', default => 0);
 

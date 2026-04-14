@@ -6,7 +6,7 @@ use Carp qw(croak);
 use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has kubeconfig => (
     is => 'ro',

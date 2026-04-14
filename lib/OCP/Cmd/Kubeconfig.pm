@@ -12,7 +12,7 @@ use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 option export => (
     is    => 'ro',

@@ -10,8 +10,8 @@ use OCP::Versions;
 #
 
 {
-    my $v = OCP::Versions->get_versions('0.1.0');
-    ok($v, 'get_versions returns data for 0.1.0');
+    my $v = OCP::Versions->get_versions('0.001');
+    ok($v, 'get_versions returns data for 0.001');
     ok($v->{components}, 'manifest has components');
     ok($v->{notes}, 'manifest has notes');
 }
@@ -32,7 +32,7 @@ use OCP::Versions;
 {
     my $v = OCP::Versions->get_versions();
     ok($v, 'get_versions defaults to current version');
-    is_deeply($v, OCP::Versions->get_versions('0.1.0'), 'default matches 0.1.0');
+    is_deeply($v, OCP::Versions->get_versions('0.001'), 'default matches 0.001');
 }
 
 #
@@ -63,7 +63,7 @@ use OCP::Versions;
 
 {
     is(OCP::Versions->get_component_version('gpu_operator'), 'v24.9.2', 'gpu_operator version');
-    is(OCP::Versions->get_component_version('nvidia_toolkit'), 'v1.17.1-ubuntu22.04', 'nvidia_toolkit version');
+    is(OCP::Versions->get_component_version('nvidia_toolkit'), 'v1.17.1-ubuntu20.04', 'nvidia_toolkit version');
     is(OCP::Versions->get_component_version('nvidia_device_plugin'), 'v0.17.0', 'nvidia_device_plugin version');
     is(OCP::Versions->get_component_version('dcgm_exporter'), '3.3.9-3.6.1-ubuntu22.04', 'dcgm_exporter version');
     is(OCP::Versions->get_component_version('nfd'), 'v0.17.0', 'nfd version');
@@ -95,11 +95,11 @@ use OCP::Versions;
 }
 
 #
-# Test: has_breaking_changes (0.1.0 has none)
+# Test: has_breaking_changes (0.001 has none)
 #
 
 {
-    ok(!OCP::Versions->has_breaking_changes('0.0.1', '0.1.0'), 'no breaking changes in 0.1.0');
+    ok(!OCP::Versions->has_breaking_changes('0.0.1', '0.001'), 'no breaking changes in 0.001');
 }
 
 #
@@ -107,7 +107,7 @@ use OCP::Versions;
 #
 
 {
-    my $changes = OCP::Versions->get_breaking_changes('0.0.1', '0.1.0');
+    my $changes = OCP::Versions->get_breaking_changes('0.0.1', '0.001');
     is_deeply($changes, [], 'no breaking changes');
 }
 
@@ -116,7 +116,7 @@ use OCP::Versions;
 #
 
 {
-    my $steps = OCP::Versions->get_manual_steps('0.0.1', '0.1.0');
+    my $steps = OCP::Versions->get_manual_steps('0.0.1', '0.001');
     is_deeply($steps, [], 'no manual steps');
 }
 
@@ -125,8 +125,8 @@ use OCP::Versions;
 #
 
 {
-    is(OCP::Versions->get_breaking_changes('0.1.0', '99.99.99'), undef, 'breaking changes for unknown returns undef');
-    is(OCP::Versions->get_manual_steps('0.1.0', '99.99.99'), undef, 'manual steps for unknown returns undef');
+    is(OCP::Versions->get_breaking_changes('0.001', '99.99.99'), undef, 'breaking changes for unknown returns undef');
+    is(OCP::Versions->get_manual_steps('0.001', '99.99.99'), undef, 'manual steps for unknown returns undef');
 }
 
 done_testing;

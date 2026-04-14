@@ -4,7 +4,7 @@ package OCP::Provider;
 use strict;
 use warnings;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 sub for_spec {
     my ($class, $spec, %opts) = @_;

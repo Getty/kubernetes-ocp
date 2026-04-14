@@ -8,7 +8,7 @@ use Path::Tiny qw(path);
 use Carp qw(croak);
 use YAML::XS ();
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has ocp => (
     is      => 'lazy',

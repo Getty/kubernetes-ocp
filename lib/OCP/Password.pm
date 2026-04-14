@@ -12,7 +12,7 @@ use Path::Tiny qw(path);
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Digest::SHA qw(sha256);
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 our @EXPORT_OK = qw(prompt_password encrypt_age_key decrypt_age_key);
 
 #

@@ -11,7 +11,7 @@ use FindBin;
 use File::ShareDir qw(dist_dir);
 use OCP::SSH;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has host => (
     is       => 'ro',

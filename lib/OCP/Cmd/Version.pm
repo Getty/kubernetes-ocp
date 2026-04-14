@@ -7,7 +7,7 @@ use OCP::Config;
 use OCP::Versions;
 use OCP;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 sub execute {
     my ($self, $args_ref, $chain_ref) = @_;

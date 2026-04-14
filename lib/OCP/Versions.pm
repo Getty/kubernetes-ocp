@@ -4,12 +4,12 @@ package OCP::Versions;
 use strict;
 use warnings;
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 # Version manifest: OCP version -> component versions
 # Add new components here, standard updates = just bump version numbers
 our $VERSIONS = {
-    '0.1.0' => {
+    '0.001' => {
         components => {
             # Kubernetes distributions
             rke2 => 'v1.31.3+rke2r1',
@@ -98,18 +98,18 @@ OCP::Versions - OCP version manifest and component versions
     use OCP::Versions;
 
     # Get current OCP version's component versions
-    my $versions = OCP::Versions->get_versions('0.1.0');
+    my $versions = OCP::Versions->get_versions('0.001');
     my $cilium_version = $versions->{components}{cilium};
 
     # Get specific component version
-    my $traefik = OCP::Versions->get_component_version('traefik', '0.1.0');
+    my $traefik = OCP::Versions->get_component_version('traefik', '0.001');
 
     # List all components
-    my @components = OCP::Versions->list_components('0.1.0');
+    my @components = OCP::Versions->list_components('0.001');
 
     # Check for breaking changes
-    if (OCP::Versions->has_breaking_changes('0.1.0', '0.2.0')) {
-        my $changes = OCP::Versions->get_breaking_changes('0.1.0', '0.2.0');
+    if (OCP::Versions->has_breaking_changes('0.001', '0.2.0')) {
+        my $changes = OCP::Versions->get_breaking_changes('0.001', '0.2.0');
     }
 
 =head1 DESCRIPTION
@@ -161,37 +161,37 @@ For updates with breaking changes, add documentation:
 
 =head2 get_versions
 
-    my $versions = OCP::Versions->get_versions('0.1.0');
+    my $versions = OCP::Versions->get_versions('0.001');
 
 Returns the complete version manifest for a specific OCP version.
 
 =head2 get_component_version
 
-    my $version = OCP::Versions->get_component_version('cilium', '0.1.0');
+    my $version = OCP::Versions->get_component_version('cilium', '0.001');
 
 Returns the version string for a specific component.
 
 =head2 list_components
 
-    my @components = OCP::Versions->list_components('0.1.0');
+    my @components = OCP::Versions->list_components('0.001');
 
 Returns list of all components for a specific OCP version.
 
 =head2 has_breaking_changes
 
-    if (OCP::Versions->has_breaking_changes('0.1.0', '0.2.0')) { ... }
+    if (OCP::Versions->has_breaking_changes('0.001', '0.2.0')) { ... }
 
 Returns true if upgrading from one version to another has breaking changes.
 
 =head2 get_breaking_changes
 
-    my $changes = OCP::Versions->get_breaking_changes('0.1.0', '0.2.0');
+    my $changes = OCP::Versions->get_breaking_changes('0.001', '0.2.0');
 
 Returns arrayref of breaking changes.
 
 =head2 get_manual_steps
 
-    my $steps = OCP::Versions->get_manual_steps('0.1.0', '0.2.0');
+    my $steps = OCP::Versions->get_manual_steps('0.001', '0.2.0');
 
 Returns arrayref of manual steps required for upgrade.
 

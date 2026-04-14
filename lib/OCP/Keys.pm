@@ -12,7 +12,7 @@ use File::SOPS;
 use Digest::SHA qw(sha256_hex);
 use MIME::Base64 qw(encode_base64 decode_base64);
 
-our $VERSION = '0.1.0';
+our $VERSION = '0.001';
 
 has ocp => (
     is      => 'lazy',
