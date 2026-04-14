@@ -2,7 +2,9 @@ package OCP::Node;
 # ABSTRACT: Trigger-neutral node reconcile state machine
 
 use Moo;
+use File::Temp ();
 use Time::Piece ();
+use OCP::Versions;
 use namespace::clean;
 
 our $VERSION = '0.001';
@@ -17,6 +19,19 @@ has distribution  => (is => 'ro', default => sub { 'rke2' });
 has registry_cfg  => (is => 'ro');
 has verbose       => (is => 'ro', default => 0);
 has reconciler_id => (is => 'ro', default => sub { 'cli' });
+has ssh_class     => (is => 'ro', default => sub { 'OCP::SSH' });
+has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
+
+has _ssh_key_file => (is => 'lazy', builder => '_build_ssh_key_file');
+
+sub _build_ssh_key_file {
+    my ($self) = @_;
+    my $tmp = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
+    print $tmp $self->ssh_key;
+    close $tmp;
+    chmod 0600, $tmp->filename;
+    return $tmp;
+}
 
 sub name      { $_[0]->cr->{metadata}{name} }
 sub role      { $_[0]->cr->{spec}{role} }
@@ -125,6 +140,115 @@ sub _provision {
     $self->_release_lease;
 
     return $result;
+}
+
+sub _install_kubernetes {
+    my $self = shift;
+
+    my $name = $self->name;
+    my $host = $self->cr->{status}{publicIP} || $self->cr->{spec}{host};
+    my $role = $self->role;
+
+    unless ($host) {
+        $self->_patch_status(phase => 'Failed', message => 'No host IP in status or spec');
+        return;
+    }
+
+    my $ssh = $self->ssh_class->new(
+        host     => $host,
+        key_file => $self->_ssh_key_file->filename,
+        user     => 'root',
+    );
+    eval { $ssh->wait_for_ssh(60) };
+    if ($@) {
+        $self->_patch_status(phase => 'Failed', message => "SSH not reachable: $@");
+        return;
+    }
+
+    my $rex = $self->rex_class->new(
+        host     => $host,
+        key_file => $self->_ssh_key_file->filename,
+        user     => 'root',
+        verbose  => $self->verbose,
+    );
+
+    my $rke2_version = OCP::Versions->get_component_version('rke2');
+
+    my $task = $self->distribution eq 'k3s'
+        ? 'install_k3s_agent'
+        : 'install_rke2_agent';
+
+    my %params = (
+        server    => $self->server_url,
+        token     => $self->join_token,
+        version   => $rke2_version,
+        node_name => $name,
+        hostname  => $name,
+        ntp       => 1,
+    );
+
+    my $ok = eval { $rex->run_task($task, %params) };
+    if (!$ok || $@) {
+        $self->_patch_status(phase => 'Failed',
+            message => "Rex task failed: " . ($@ // 'unknown'));
+        return;
+    }
+
+    $self->_patch_status(phase => 'Joining',
+        message => 'RKE2 agent installed, waiting for node registration');
+}
+
+sub _wait_ready {
+    my $self = shift;
+
+    my $name     = $self->name;
+    my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $name;
+
+    my $k8s_node = eval {
+        $self->k8s->get(path => "/api/v1/nodes/$k8s_name");
+    };
+
+    return 0 unless $k8s_node;
+
+    my $ready = 0;
+    for my $cond (@{ $k8s_node->{status}{conditions} // [] }) {
+        if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
+            $ready = 1;
+            last;
+        }
+    }
+
+    if ($ready) {
+        $self->_patch_status(
+            phase              => 'Ready',
+            kubernetesNodeName => $k8s_name,
+            joinedAt           => _rfc3339_now(),
+            message            => 'Node joined and Ready',
+        );
+    }
+
+    return $ready;
+}
+
+sub _verify {
+    my $self = shift;
+
+    my $name     = $self->name;
+    my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $name;
+
+    my $k8s_node = eval {
+        $self->k8s->get(path => "/api/v1/nodes/$k8s_name");
+    };
+
+    return 0 unless $k8s_node;
+
+    for my $cond (@{ $k8s_node->{status}{conditions} // [] }) {
+        if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 1;

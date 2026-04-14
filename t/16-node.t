@@ -18,6 +18,20 @@ package FakeProvider {
     sub delete_server { my ($s, @a) = @_; $s->{delete_cb} ? $s->{delete_cb}->(@a) : 1 }
 }
 
+package FakeSSH {
+    sub new { my ($c, %a) = @_; bless { %a }, $c }
+    sub wait_for_ssh { my ($s, $n) = @_; $s->{ssh_cb} ? $s->{ssh_cb}->($n) : 1 }
+}
+
+package FakeRex {
+    our @_instances;
+    sub new { my ($c, %a) = @_; my $s = bless { %a, calls => [] }, $c; push @_instances, $s; $s }
+    sub run_task { my ($s, $task, %p) = @_;
+        push @{$s->{calls}}, [$task, \%p];
+        $s->{run_cb} ? $s->{run_cb}->($task, %p) : 1;
+    }
+}
+
 package main;
 
 use OCP::Node;
@@ -179,6 +193,119 @@ subtest '_provision failure keeps lease (for TTL-based retry)' => sub {
     ok $@, 'provision failure propagates';
     my @updates = grep { $_->[0] eq 'update' } @{$k->{calls}};
     is scalar @updates, 1, 'only the lease acquire update — no release-on-failure';
+};
+
+subtest '_install_kubernetes calls Rex with install_rke2_agent for workers' => sub {
+    @FakeRex::_instances = ();
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+        metadata   => { name => 'w1', namespace => 'ocp-system' },
+        spec       => { role => 'worker', providerRef => 'p' },
+        status     => { phase => 'Installing', publicIP => '1.2.3.4' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'KEY', server_url => 'https://cp:9345', join_token => 'TOKEN',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex',
+    );
+
+    $node->_install_kubernetes;
+
+    my $r = $FakeRex::_instances[0];
+    ok $r, 'FakeRex instantiated';
+    is $r->{host}, '1.2.3.4', 'rex constructed with publicIP';
+    my ($call) = @{ $r->{calls} };
+    is $call->[0], 'install_rke2_agent', 'rke2 task for worker';
+    is $call->[1]{server}, 'https://cp:9345', 'server URL threaded';
+    is $call->[1]{token},  'TOKEN',            'join token threaded';
+    is $call->[1]{node_name}, 'w1',            'node_name set';
+
+    my ($patch) = grep { $_->[0] eq 'patch' } @{$k->{calls}};
+    ok $patch, 'status patched to Joining';
+};
+
+subtest '_install_kubernetes uses k3s task when distribution=k3s' => sub {
+    @FakeRex::_instances = ();
+    my $cr = {
+        metadata => { name => 'w2', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Installing', publicIP => '1.2.3.4' },
+    };
+    my $node = OCP::Node->from_cr($cr, k8s => FakeK8s->new(cr => $cr),
+        provider => FakeProvider->new, ssh_key => 'K',
+        server_url => 'U', join_token => 'T',
+        distribution => 'k3s',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex',
+    );
+    $node->_install_kubernetes;
+    my ($call) = @{ $FakeRex::_instances[0]{calls} };
+    is $call->[0], 'install_k3s_agent', 'k3s task when distribution=k3s';
+};
+
+subtest '_wait_ready returns true when k8s Node is Ready' => sub {
+    my $cr = {
+        metadata => { name => 'w3', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Joining', kubernetesNodeName => 'w3' },
+    };
+    my $k = FakeK8s->new(
+        cr_cb => sub {
+            return { status => { conditions => [{ type => 'Ready', status => 'True' }] } };
+        },
+    );
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    ok $node->_wait_ready, 'returns true on Ready';
+    my ($patch) = grep { $_->[0] eq 'patch' } @{$k->{calls}};
+    ok $patch, 'status patched on Ready';
+};
+
+subtest '_wait_ready returns false when Node not yet Ready' => sub {
+    my $cr = {
+        metadata => { name => 'w4', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Joining', kubernetesNodeName => 'w4' },
+    };
+    my $k = FakeK8s->new(
+        cr_cb => sub {
+            return { status => { conditions => [{ type => 'Ready', status => 'False' }] } };
+        },
+    );
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    ok !$node->_wait_ready, 'returns false when not Ready';
+};
+
+subtest '_verify returns true when k8s Node is Ready' => sub {
+    my $cr = {
+        metadata => { name => 'w5', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Ready', kubernetesNodeName => 'w5' },
+    };
+    my $k = FakeK8s->new(
+        cr_cb => sub {
+            return { status => { conditions => [{ type => 'Ready', status => 'True' }] } };
+        },
+    );
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    ok $node->_verify, '_verify returns true when Ready';
+};
+
+subtest '_verify returns false when k8s Node not Ready' => sub {
+    my $cr = {
+        metadata => { name => 'w6', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Ready', kubernetesNodeName => 'w6' },
+    };
+    my $k = FakeK8s->new(
+        cr_cb => sub {
+            return { status => { conditions => [{ type => 'Ready', status => 'False' }] } };
+        },
+    );
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    ok !$node->_verify, '_verify returns false when not Ready';
 };
 
 done_testing;
