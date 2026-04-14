@@ -127,6 +127,25 @@ sub no_traefik { shift->spec->{notraefik} // 0 }
 sub no_cert { shift->spec->{nocert} // 0 }
 sub no_robocop { shift->spec->{norobocop} // 0 }
 
+sub robocop_enabled {
+    my $self = shift;
+    my $val = $self->spec->{robocop};
+    return $val ? 1 : 0 if defined $val;
+    return 1 if $self->_any_hetzner_provider;
+    return 0;
+}
+
+sub _any_hetzner_provider {
+    my $self = shift;
+    for my $cp (@{$self->control_planes}) {
+        return 1 if ($cp->{provider} // '') eq 'hetzner';
+    }
+    for my $pool (@{$self->workers}) {
+        return 1 if ($pool->{provider} // '') eq 'hetzner';
+    }
+    return 0;
+}
+
 # Opt-in flags (default: disabled, set to true to enable)
 # lbipam is opt-in because its default behaviour (pool = host public IP
 # + L2 announcement) makes Cilium hijack ARP for the host IP, which breaks
