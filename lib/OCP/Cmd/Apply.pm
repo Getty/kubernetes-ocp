@@ -1571,6 +1571,12 @@ sub _generate_gpu_operator_manifest {
                             operator => 'Exists',
                             effect   => 'NoSchedule',
                         }],
+                        # Operator needs host's /etc/os-release to detect OS for
+                        # templating DaemonSets like dcgm-exporter.
+                        volumes => [{
+                            name     => 'host-os-release',
+                            hostPath => { path => '/etc/os-release' },
+                        }],
                         containers => [{
                             name            => 'gpu-operator',
                             image           => $operator_image,
@@ -1582,6 +1588,11 @@ sub _generate_gpu_operator_manifest {
                                 { name => 'CLUSTER_PLATFORM', value => 'container' },
                                 { name => 'POD_NAME', valueFrom => { fieldRef => { fieldPath => 'metadata.name' } } },
                             ],
+                            volumeMounts => [{
+                                name      => 'host-os-release',
+                                mountPath => '/host-etc/os-release',
+                                readOnly  => JSON::PP::true,
+                            }],
                             securityContext => {
                                 allowPrivilegeEscalation => JSON::PP::false,
                                 capabilities             => { drop => ['ALL'] },
@@ -1613,8 +1624,11 @@ sub _generate_gpu_operator_manifest {
                     enabled => JSON::PP::false,  # Rex installs drivers on the host
                 },
                 toolkit => {
-                    enabled => JSON::PP::true,
-                    version => OCP::Versions->get_component_version('nvidia_toolkit'),
+                    enabled         => JSON::PP::true,
+                    repository      => 'nvcr.io/nvidia/k8s',
+                    image           => 'container-toolkit',
+                    version         => OCP::Versions->get_component_version('nvidia_toolkit'),
+                    imagePullPolicy => 'IfNotPresent',
                     env => [
                         { name => 'CONTAINERD_SOCKET', value => $containerd_socket },
                         { name => 'CONTAINERD_CONFIG', value => $containerd_config },
@@ -1623,15 +1637,25 @@ sub _generate_gpu_operator_manifest {
                     ],
                 },
                 devicePlugin => {
-                    enabled => JSON::PP::true,
-                    version => OCP::Versions->get_component_version('nvidia_device_plugin'),
+                    enabled         => JSON::PP::true,
+                    repository      => 'nvcr.io/nvidia',
+                    image           => 'k8s-device-plugin',
+                    version         => OCP::Versions->get_component_version('nvidia_device_plugin'),
+                    imagePullPolicy => 'IfNotPresent',
                 },
                 dcgmExporter => {
-                    enabled => JSON::PP::true,
-                    version => OCP::Versions->get_component_version('dcgm_exporter'),
+                    enabled         => JSON::PP::true,
+                    repository      => 'nvcr.io/nvidia/k8s',
+                    image           => 'dcgm-exporter',
+                    version         => OCP::Versions->get_component_version('dcgm_exporter'),
+                    imagePullPolicy => 'IfNotPresent',
                 },
                 dcgm => {
-                    enabled => JSON::PP::true,
+                    enabled         => JSON::PP::true,
+                    repository      => 'nvcr.io/nvidia/cloud-native',
+                    image           => 'dcgm',
+                    version         => OCP::Versions->get_component_version('nvidia_dcgm'),
+                    imagePullPolicy => 'IfNotPresent',
                 },
                 gfd => {
                     enabled => JSON::PP::false,  # NFD handles feature discovery
@@ -1643,7 +1667,11 @@ sub _generate_gpu_operator_manifest {
                     enabled => JSON::PP::false,
                 },
                 validator => {
-                    enabled => JSON::PP::true,
+                    enabled         => JSON::PP::true,
+                    repository      => 'nvcr.io/nvidia/cloud-native',
+                    image           => 'gpu-operator-validator',
+                    version         => OCP::Versions->get_component_version('nvidia_validator'),
+                    imagePullPolicy => 'IfNotPresent',
                 },
                 nodeStatusExporter => {
                     enabled => JSON::PP::false,

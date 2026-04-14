@@ -25,9 +25,11 @@ our $VERSIONS = {
 
             # GPU stack
             gpu_operator         => 'v24.9.2',
-            nvidia_toolkit       => 'v1.17.1-ubuntu22.04',
+            nvidia_toolkit       => 'v1.17.1-ubuntu20.04',
             nvidia_device_plugin => 'v0.17.0',
             dcgm_exporter        => '3.3.9-3.6.1-ubuntu22.04',
+            nvidia_dcgm          => '3.3.9-1-ubuntu22.04',
+            nvidia_validator     => 'v24.9.2',
             nfd                  => 'v0.17.0',
         },
         notes => 'Initial release with RKE2/K3s, Cilium CNI, Traefik ingress, cert-manager, GPU stack',
