@@ -163,6 +163,18 @@ spec:
                 type: string
                 description: "Human-readable status message"
 
+              lastReconcileTime:
+                type: string
+                format: date-time
+                description: "Timestamp of last reconcile action"
+
+              reconciler:
+                type: string
+                enum:
+                - cli
+                - robocop
+                description: "Which reconciler last acted on this node"
+
     additionalPrinterColumns:
     - name: Role
       type: string
@@ -176,6 +188,9 @@ spec:
     - name: Provider
       type: string
       jsonPath: .spec.providerRef
+    - name: Reconciler
+      type: string
+      jsonPath: .status.reconciler
     - name: Age
       type: date
       jsonPath: .metadata.creationTimestamp
