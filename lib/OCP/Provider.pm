@@ -30,7 +30,10 @@ sub from_cr {
             name      => $secret_name,
             namespace => $ns,
         );
-        my $encoded = $secret->{data}{$secret_key}
+        my $secret_hash = ref($secret) eq 'HASH'
+            ? $secret
+            : $k8s->k8s->object_to_struct($secret);
+        my $encoded = $secret_hash->{data}{$secret_key}
             or die "from_cr: Secret '$secret_name' has no key '$secret_key'\n";
         my $token = MIME::Base64::decode_base64($encoded);
 

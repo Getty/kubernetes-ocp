@@ -212,8 +212,12 @@ sub _wait_ready {
 
     return 0 unless $k8s_node;
 
+    my $node_hash = ref($k8s_node) eq 'HASH'
+        ? $k8s_node
+        : $self->k8s->k8s->object_to_struct($k8s_node);
+
     my $ready = 0;
-    for my $cond (@{ $k8s_node->{status}{conditions} // [] }) {
+    for my $cond (@{ $node_hash->{status}{conditions} // [] }) {
         if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
             $ready = 1;
             last;
@@ -317,7 +321,11 @@ sub _verify {
 
     return 0 unless $k8s_node;
 
-    for my $cond (@{ $k8s_node->{status}{conditions} // [] }) {
+    my $node_hash = ref($k8s_node) eq 'HASH'
+        ? $k8s_node
+        : $self->k8s->k8s->object_to_struct($k8s_node);
+
+    for my $cond (@{ $node_hash->{status}{conditions} // [] }) {
         if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
             return 1;
         }
