@@ -6,6 +6,8 @@ use Test::More;
 use lib 'lib';
 
 use OCP::Cmd::Provider::Ls;
+use OCP::Cmd::Provider::Add;
+use Path::Tiny;
 
 sub capture_stdout (&) {
     my ($code) = @_;
@@ -39,6 +41,36 @@ sub capture_stdout (&) {
         return { items => [] };
     }
 }
+
+{
+    package FakeK8sP;
+
+    sub new {
+        my ($class, %args) = @_;
+        return bless {
+            providers => $args{providers} // [],
+            nodes     => $args{nodes}     // [],
+            calls     => [],
+        }, $class;
+    }
+
+    sub get {
+        my ($self, %args) = @_;
+        my $path = $args{path} // '';
+        if ($path =~ /ocpnodeproviders$/) {
+            return { items => $self->{providers} };
+        }
+        if ($path =~ /ocpnodes$/) {
+            return { items => $self->{nodes} };
+        }
+        return { items => [] };
+    }
+
+    sub ensure { push @{$_[0]->{calls}}, ['ensure', $_[1]]; $_[1] }
+    sub patch   { push @{$_[0]->{calls}}, ['patch',  { @_[1..$#_] }]; { } }
+}
+
+# --- Ls tests ---
 
 my $fake = FakeK8s->new(
     providers => [
@@ -79,5 +111,103 @@ like $stdout, qr/^NAME/m, 'header present';
 like $stdout, qr/hetzner-a\s+hetzner\s+fsn1\s+\*\s+3/, 'hetzner-a row: type, location, default, count';
 like $stdout, qr/hetzner-b\s+hetzner\s+nbg1\s+\s*0/, 'hetzner-b row: no default, 0 nodes';
 like $stdout, qr/ssh-local\s+ssh\s+\S*\s+\S*\s*1/,   'ssh-local row: 1 node';
+
+# --- Add tests ---
+
+subtest 'add hetzner provider writes Secret + CR' => sub {
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("hetzner-token-123\n");
+
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s         => $k8s,
+        name        => 'hetzner-a',
+        type        => 'hetzner',
+        token_file  => "$tfile",
+        location    => 'fsn1',
+        server_type => 'cx32',
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    is scalar @ensures, 2, 'two ensure calls (Secret + CR)';
+    is $ensures[0][1]{kind}, 'Secret',          'first is Secret';
+    is $ensures[1][1]{kind}, 'OCPNodeProvider',  'second is OCPNodeProvider';
+    is $ensures[1][1]{spec}{hetzner}{location}, 'fsn1', 'location passed through';
+    like $ensures[0][1]{data}{token}, qr/\S+/, 'token base64-encoded';
+    is $ensures[1][1]{spec}{hetzner}{serverType}, 'cx32', 'server_type passed through';
+};
+
+subtest 'add with --default annotates CR' => sub {
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s        => $k8s,
+        name       => 'hetzner-b',
+        type       => 'hetzner',
+        token_file => "$tfile",
+        default    => 1,
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    is scalar @ensures, 2, 'two ensure calls';
+    is $ensures[1][1]{metadata}{annotations}{'ocp.internal/default'}, 'true',
+        'default annotation set on CR';
+};
+
+subtest 'add with --default strips default from other providers' => sub {
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+
+    my $existing = {
+        metadata => {
+            name        => 'old-default',
+            annotations => { 'ocp.internal/default' => 'true' },
+        },
+        spec => { type => 'hetzner', hetzner => { tokenSecretRef => { name => 'x' } } },
+    };
+
+    my $k8s = FakeK8sP->new(providers => [$existing], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s        => $k8s,
+        name       => 'new-default',
+        type       => 'hetzner',
+        token_file => "$tfile",
+        default    => 1,
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @patches = grep { $_->[0] eq 'patch' } @{$k8s->{calls}};
+    is scalar @patches, 1, 'one patch call to strip old default';
+    my $patched_ann = $patches[0][1]{body}{metadata}{annotations};
+    ok !exists $patched_ann->{'ocp.internal/default'},
+        'old default annotation removed';
+};
+
+subtest 'rejects --location for ssh type' => sub {
+    eval {
+        OCP::Cmd::Provider::Add->new(
+            k8s      => FakeK8sP->new,
+            name     => 'x',
+            type     => 'ssh',
+            location => 'fsn1',
+        )->execute([], []);
+    };
+    like $@, qr/--location.*only.*hetzner/i, 'ssh rejects --location';
+};
+
+subtest 'requires --token-file for hetzner' => sub {
+    eval {
+        OCP::Cmd::Provider::Add->new(
+            k8s  => FakeK8sP->new,
+            name => 'x',
+            type => 'hetzner',
+        )->execute([], []);
+    };
+    like $@, qr/token-file.*required/i, 'hetzner requires --token-file';
+};
 
 done_testing;
