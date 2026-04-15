@@ -232,3 +232,29 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Provider::Add - Add an OCPNodeProvider CR
+
+=head1 SYNOPSIS
+
+    ocp provider add --name hetzner-a --type hetzner \
+                     --token-file token.txt --default
+    ocp provider add --name local-a   --type local
+
+=head1 DESCRIPTION
+
+Creates an OCPNodeProvider CR in the C<ocp-system> namespace.  For
+Hetzner providers it also creates an C<Opaque> Secret containing the API
+token (base64-encoded).  The C<--default> flag sets the
+C<ocp.internal/default> annotation and removes it from any previous
+default provider.
+
+=head1 SEE ALSO
+
+L<OCP::Cmd::Provider::Rm>, L<OCP::Cmd::Provider::Ls>, L<OCP::Provider>
+
+=cut

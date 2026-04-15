@@ -15,3 +15,26 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Node - Manage OCPNode CRs
+
+=head1 SYNOPSIS
+
+    ocp node add NAME --role worker
+    ocp node rm  NAME
+    ocp node ls
+
+=head1 DESCRIPTION
+
+Entry point for the C<ocp node> subcommand group.  Dispatches to
+L<OCP::Cmd::Node::Add>, L<OCP::Cmd::Node::Rm>, and L<OCP::Cmd::Node::Ls>.
+
+=head1 SEE ALSO
+
+L<OCP::Cmd::Node::Add>, L<OCP::Cmd::Node::Rm>, L<OCP::Cmd::Node::Ls>
+
+=cut

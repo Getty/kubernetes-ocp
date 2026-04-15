@@ -335,3 +335,83 @@ sub _verify {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Node - Trigger-neutral node reconcile state machine
+
+=head1 SYNOPSIS
+
+    use OCP::Node;
+
+    my $node = OCP::Node->from_cr($cr,
+        k8s           => $api,
+        provider      => $provider,
+        ssh_key       => $key,
+        server_url    => "https://cp-1:9345",
+        join_token    => $token,
+        reconciler_id => 'cli',
+    );
+
+    # Single step (called by Robocop watch-loop)
+    $node->reconcile;
+
+    # Block until Ready or Failed (called by ocp node add)
+    $node->reconcile_until_ready(timeout => 600);
+
+    # Drain + delete provider server + delete CRs
+    $node->teardown;
+
+=head1 DESCRIPTION
+
+OCP::Node drives a single OCPNode CR through its lifecycle:
+
+    Pending -> Provisioning -> Installing -> Joining -> Ready
+
+Each call to C<reconcile> advances the node by one phase based on the
+current C<status.phase> stored in the CR.  The method is idempotent and
+trigger-neutral: the same code runs whether called from the CLI one-shot
+path (C<ocp node add>) or from Robocop's in-cluster watch-loop.
+
+=head2 Lease Mechanics
+
+Before provisioning infrastructure, C<OCP::Node> writes a
+C<ocp.internal/reconciler-lease> annotation to the OCPNode CR.  The
+annotation encodes the holder id, timestamp, and TTL (300 s).  A second
+reconciler will refuse to proceed while a live lease is held by a
+different C<reconciler_id>.  The lease is released after the phase
+transition is written to status.
+
+=head2 Key Attributes
+
+=over 4
+
+=item cr
+
+The OCPNode CR as a plain hash.  Updated in place via C<_set_cr> after
+every K8s write.
+
+=item k8s
+
+A L<Kubernetes::REST> API instance, pre-registered with
+C<OCP::K8s->register>.
+
+=item provider
+
+An C<OCP::Provider::*> instance used for server create/delete.  Optional
+when the node already has a public IP in status.
+
+=item reconciler_id
+
+String identifying the reconciler holding the lease.  Defaults to
+C<'cli'>.  Robocop sets this to a pod-scoped identifier.
+
+=back
+
+=head1 SEE ALSO
+
+L<OCP::Provider>, L<OCP::K8s>, L<OCP::Cmd::Node::Add>
+
+=cut

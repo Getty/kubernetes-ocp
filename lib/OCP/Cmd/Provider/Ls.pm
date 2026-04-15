@@ -73,3 +73,25 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Provider::Ls - List OCPNodeProvider CRs
+
+=head1 SYNOPSIS
+
+    ocp provider ls
+
+=head1 DESCRIPTION
+
+Lists all OCPNodeProvider CRs in the C<ocp-system> namespace.  Columns:
+NAME, TYPE, LOCATION, DEFAULT (C<*> if annotated as default), NODES (count
+of OCPNode CRs referencing this provider).
+
+=head1 SEE ALSO
+
+L<OCP::Cmd::Provider::Add>, L<OCP::Cmd::Provider::Rm>
+
+=cut

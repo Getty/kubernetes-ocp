@@ -86,3 +86,25 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Provider::Rm - Remove an OCPNodeProvider CR (and its Secret)
+
+=head1 SYNOPSIS
+
+    ocp provider rm hetzner-a
+
+=head1 DESCRIPTION
+
+Deletes the named OCPNodeProvider CR and its associated token Secret (if
+any).  Refuses to delete if any OCPNode CRs reference the provider; lists
+the blocking nodes and suggests the removal command.
+
+=head1 SEE ALSO
+
+L<OCP::Cmd::Provider::Add>, L<OCP::Cmd::Provider::Ls>
+
+=cut

@@ -242,6 +242,26 @@ ocp apply
 | `ocp kubeconfig -e` | Export to ~/.kube/config |
 | `ocp dev --build --update` | Build robocop from source and deploy |
 
+## Imperative Node/Provider Management
+
+After `ocp apply`, you can add nodes and providers without editing `ocp.yaml`:
+
+```bash
+# Register a provider (token from a file)
+ocp provider add --name hetzner-a --type hetzner \
+                 --token-file token.txt --default
+
+# Add a worker
+ocp node add worker-1 --role worker
+
+# See what you've got
+ocp node ls
+ocp provider ls
+
+# Remove a node (drain + provider delete + CR cleanup)
+ocp node rm worker-1
+```
+
 ## Configuration
 
 OCP uses `ocp.yaml` for cluster specification:

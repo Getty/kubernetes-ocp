@@ -232,6 +232,12 @@ WARNING: Drift detected!
 - `ocp deploy-robocop` - Robocop Controller deployen (Stub)
 - `ocp inject-key` - Robo-Key in Robocop injizieren (Stub)
 - `ocp hetzner` - Hetzner Cloud Debugging (Server auflisten)
+- `ocp node add NAME --role ROLE [--provider NAME] [--host HOST] [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--no-wait]` — Add a worker node via OCPNode CR
+- `ocp node rm NAME` — Drain + remove an OCPNode (calls OCP::Node->teardown)
+- `ocp node ls` — List OCPNode CRs (name, role, phase, provider, IP, age)
+- `ocp provider add --name NAME --type hetzner --token-file FILE [--location LOC] [--server-type TYPE] [--image IMG] [--default]` — Register a provider as OCPNodeProvider CR + Secret
+- `ocp provider rm NAME` — Remove provider (blocks if any OCPNode references it)
+- `ocp provider ls` — List OCPNodeProviders with reference counts
 
 ### Module
 - **OCP::Config** - Spec/Status Trennung (ocp.yaml vs .ocp/status.yaml), Validation, GPU Config
@@ -249,6 +255,10 @@ WARNING: Drift detected!
 - **OCP::Versions** - Version Manifest und Komponentenversionen (inkl. GPU Stack)
 - **OCP::Robocop** - Kubernetes Controller (im Cluster)
 - **OCP::Robocop::Controller** - Reconciliation Logic
+- **OCP::Node** — Trigger-neutral node reconcile state machine (Pending→Provisioning→Installing→Joining→Ready). Used by both ocp apply (CLI one-shot) and Robocop (in-cluster watch-loop). Owns lease mechanics for mutual exclusion.
+- **OCP::K8s** — Registers OCPNode/OCPNodeProvider as IO::K8s typed classes on a Kubernetes::REST api instance.
+- **OCP::K8s::OCPNode** / **OCP::K8s::OCPNodeProvider** — IO::K8s class definitions for the CRDs.
+- **OCP::Provider->from_cr** — Factory that builds an OCP::Provider::* instance from an OCPNodeProvider CR (resolves Secret refs).
 
 ### Provider
 - **Hetzner Cloud** - Via WWW::Hetzner::Cloud (CPAN)
@@ -335,6 +345,7 @@ controlPlanes:
   location: fsn1
   serverType: cx32
   nodes: 1  # → police1
+robocop: true   # optional; default false, auto-true when any hetzner provider is configured
 ```
 
 Workers werden via CRDs im Cluster gemanaged (robocop).

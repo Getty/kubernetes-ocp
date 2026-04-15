@@ -79,3 +79,24 @@ sub _age {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Node::Ls - List OCPNode CRs
+
+=head1 SYNOPSIS
+
+    ocp node ls
+
+=head1 DESCRIPTION
+
+Lists all OCPNode CRs in the C<ocp-system> namespace.  Columns: NAME, ROLE,
+PHASE, PROVIDER, IP, AGE.
+
+=head1 SEE ALSO
+
+L<OCP::Cmd::Node::Add>, L<OCP::Cmd::Node::Rm>
+
+=cut

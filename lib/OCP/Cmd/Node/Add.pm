@@ -336,3 +336,31 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Node::Add - Add an OCPNode CR and optionally reconcile it
+
+=head1 SYNOPSIS
+
+    ocp node add worker-1 --role worker
+    ocp node add gpu-1    --role worker --provider hetzner-a --gpu
+    ocp node add ssh-1    --role worker --provider ssh-a --host 10.0.0.5
+    ocp node add worker-2 --role worker --no-wait
+
+=head1 DESCRIPTION
+
+Creates an OCPNode CR in the C<ocp-system> namespace, then waits for the
+node to reach C<Ready> status.  If Robocop is running in the cluster, the
+command polls the CR status and lets Robocop do the work.  Otherwise it
+drives reconciliation directly via L<OCP::Node>.
+
+Pass C<--no-wait> to write the CR and return immediately.
+
+=head1 SEE ALSO
+
+L<OCP::Node>, L<OCP::Cmd::Node::Rm>, L<OCP::Cmd::Node::Ls>
+
+=cut

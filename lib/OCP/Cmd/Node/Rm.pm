@@ -90,3 +90,26 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Node::Rm - Remove an OCPNode (drain, teardown, delete)
+
+=head1 SYNOPSIS
+
+    ocp node rm worker-1
+
+=head1 DESCRIPTION
+
+Looks up the named OCPNode CR, resolves its provider, and calls
+L<OCP::Node/teardown>.  Teardown marks the node C<Terminating>, cordons it
+in Kubernetes, deletes the provider server, removes the Kubernetes node
+object, and deletes the CR.
+
+=head1 SEE ALSO
+
+L<OCP::Node>, L<OCP::Cmd::Node::Add>, L<OCP::Cmd::Node::Ls>
+
+=cut
