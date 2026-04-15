@@ -478,6 +478,7 @@ sub execute {
     print "Step " . ($deploy_step + 1) . ": Ensure CRDs and provider CRs\n";
     $self->_ensure_crds($api);
     $self->_ensure_providers($api, $config, $secrets);
+    $self->_migrate_legacy_nodes($api);
     $self->_ensure_cp_ocpnode($api, {
         name     => $cp_name,
         provider => $provider,
@@ -2097,6 +2098,81 @@ sub _ensure_cp_ocpnode {
         },
     });
     print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
+}
+
+# For each k8s Node not yet tracked by an OCPNode CR, synthesize an
+# observational OCPNode CR with phase=Ready and providerRef=legacy.
+# Safe to run on every apply — already-synthesized CRs are no-ops via ensure.
+sub _migrate_legacy_nodes {
+    my ($self, $api) = @_;
+
+    my $cr_list = eval { $api->list('OCPNode', namespace => 'ocp-system') };
+    return unless $cr_list;
+
+    my %tracked = map {
+        my $n = $api->k8s->object_to_struct($_);
+        ($n->{metadata}{name} => 1);
+    } @{ $cr_list->items // [] };
+
+    my $node_list = eval { $api->list('Node') };
+    return unless $node_list;
+
+    my @untracked;
+    for my $obj (@{ $node_list->items // [] }) {
+        my $n    = $api->k8s->object_to_struct($obj);
+        my $name = $n->{metadata}{name};
+        next if $tracked{$name};
+        push @untracked, $n;
+    }
+
+    return unless @untracked;
+
+    $api->ensure({
+        apiVersion => 'ocp.internal/v1',
+        kind       => 'OCPNodeProvider',
+        metadata   => {
+            name        => 'legacy',
+            namespace   => 'ocp-system',
+            annotations => { 'ocp.internal/synthetic' => 'true' },
+        },
+        spec => { type => 'ssh' },
+    });
+
+    for my $n (@untracked) {
+        my $name  = $n->{metadata}{name};
+        my $is_cp = exists $n->{metadata}{labels}{'node-role.kubernetes.io/control-plane'};
+        my $public_ip;
+        for my $addr (@{ $n->{status}{addresses} // [] }) {
+            $public_ip = $addr->{address}, last if $addr->{type} eq 'ExternalIP';
+        }
+        unless ($public_ip) {
+            for my $addr (@{ $n->{status}{addresses} // [] }) {
+                $public_ip = $addr->{address}, last if $addr->{type} eq 'InternalIP';
+            }
+        }
+
+        my $cr = {
+            apiVersion => 'ocp.internal/v1',
+            kind       => 'OCPNode',
+            metadata   => {
+                name        => $name,
+                namespace   => 'ocp-system',
+                annotations => { 'ocp.internal/synthetic' => 'true' },
+            },
+            spec => {
+                role        => $is_cp ? 'control-plane' : 'worker',
+                providerRef => 'legacy',
+            },
+            status => {
+                phase              => 'Ready',
+                kubernetesNodeName => $name,
+                ($public_ip ? (publicIP => $public_ip) : ()),
+            },
+        };
+        $api->ensure($cr);
+        printf "  [migrated] %s (%s, %s)\n", $name,
+               $cr->{spec}{role}, $public_ip // 'no-ip';
+    }
 }
 
 # Write one Pending OCPNode CR per worker entry. If role/provider/etc. on

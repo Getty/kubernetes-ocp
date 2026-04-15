@@ -16,14 +16,25 @@ use YAML::XS ();
 # expected order.
 
 {
+    package FakeList;
+    sub new {
+        my ($class, @items) = @_;
+        return bless { items => \@items }, $class;
+    }
+    sub items { $_[0]->{items} }
+}
+
+{
     package FakeApi;
     sub new {
         my ($class, %args) = @_;
         return bless {
-            calls       => [],
-            deployments => $args{deployments} // {},
-            nodes       => $args{nodes}       // {},
-            providers   => $args{providers}   // {},
+            calls        => [],
+            deployments  => $args{deployments}  // {},
+            nodes        => $args{nodes}         // {},
+            providers    => $args{providers}     // {},
+            k8s_nodes    => $args{k8s_nodes}     // [],
+            ocpnode_list => $args{ocpnode_list}  // [],
         }, $class;
     }
     sub ensure {
@@ -44,6 +55,17 @@ use YAML::XS ();
             return $self->{providers}{$name};
         }
         return undef;
+    }
+    sub list {
+        my ($self, $kind, %args) = @_;
+        push @{$self->{calls}}, ['list', $kind, \%args];
+        if ($kind eq 'Node') {
+            return FakeList->new(@{ $self->{k8s_nodes} });
+        }
+        if ($kind eq 'OCPNode') {
+            return FakeList->new(@{ $self->{ocpnode_list} });
+        }
+        return FakeList->new();
     }
     sub k8s { FakeK8s->new }
 }
@@ -250,6 +272,81 @@ subtest 'helper ordering: CRDs, then Providers, then CP CR, then Workers' => sub
     my @ocpnode_names = map { $_->[2] } grep { $_->[1] eq 'OCPNode' } @ensures;
     is $ocpnode_names[0], 'police1', 'CP OCPNode written first';
     ok scalar(grep { $_ eq 'pool-a-1' } @ocpnode_names), 'worker CR after';
+};
+
+subtest 'migration synthesizes legacy provider when needed' => sub {
+    my $api = FakeApi->new(
+        ocpnode_list => [],
+        k8s_nodes    => [
+            { metadata => { name => 'worker-1', labels => {} },
+              status   => { addresses => [{ type => 'ExternalIP', address => '1.2.3.4' }] } },
+            { metadata => { name => 'worker-2', labels => {} },
+              status   => { addresses => [{ type => 'InternalIP', address => '10.0.0.2' }] } },
+        ],
+    );
+    $apply->_migrate_legacy_nodes($api);
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$api->{calls}};
+    my @rows = map { "$_->[1]/$_->[2]" } @ensures;
+
+    ok scalar(grep { $_ eq 'OCPNodeProvider/legacy' } @rows),
+        'legacy OCPNodeProvider ensured';
+    ok scalar(grep { $_ eq 'OCPNode/worker-1' } @rows), 'OCPNode/worker-1 synthesized';
+    ok scalar(grep { $_ eq 'OCPNode/worker-2' } @rows), 'OCPNode/worker-2 synthesized';
+
+    my ($w1) = grep { $_->[1] eq 'OCPNode' && $_->[2] eq 'worker-1' } @ensures;
+    is $w1->[3]{status}{phase},     'Ready',   'worker-1 phase=Ready';
+    is $w1->[3]{status}{publicIP},  '1.2.3.4', 'worker-1 ExternalIP used';
+    is $w1->[3]{spec}{providerRef}, 'legacy',  'worker-1 providerRef=legacy';
+    is $w1->[3]{spec}{role},        'worker',  'worker-1 role=worker';
+    is $w1->[3]{metadata}{annotations}{'ocp.internal/synthetic'}, 'true',
+        'synthetic annotation set';
+
+    my ($w2) = grep { $_->[1] eq 'OCPNode' && $_->[2] eq 'worker-2' } @ensures;
+    is $w2->[3]{status}{publicIP}, '10.0.0.2', 'worker-2 falls back to InternalIP';
+
+    my ($prov) = grep { $_->[1] eq 'OCPNodeProvider' } @ensures;
+    is $prov->[3]{metadata}{annotations}{'ocp.internal/synthetic'}, 'true',
+        'legacy provider has synthetic annotation';
+    is $prov->[3]{spec}{type}, 'ssh', 'legacy provider type=ssh';
+};
+
+subtest 'migration skips already-tracked nodes' => sub {
+    my $api = FakeApi->new(
+        ocpnode_list => [
+            { metadata => { name => 'worker-1' } },
+        ],
+        k8s_nodes => [
+            { metadata => { name => 'worker-1', labels => {} },
+              status   => { addresses => [] } },
+            { metadata => { name => 'worker-2', labels => {} },
+              status   => { addresses => [{ type => 'InternalIP', address => '10.0.0.2' }] } },
+        ],
+    );
+    $apply->_migrate_legacy_nodes($api);
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$api->{calls}};
+    my @names   = map { $_->[2] } grep { $_->[1] eq 'OCPNode' } @ensures;
+
+    ok !scalar(grep { $_ eq 'worker-1' } @names), 'worker-1 not re-synthesized';
+    ok  scalar(grep { $_ eq 'worker-2' } @names), 'worker-2 synthesized';
+};
+
+subtest 'migration detects control-plane label' => sub {
+    my $api = FakeApi->new(
+        ocpnode_list => [],
+        k8s_nodes    => [
+            {
+                metadata => {
+                    name   => 'police1',
+                    labels => { 'node-role.kubernetes.io/control-plane' => '' },
+                },
+                status => { addresses => [] },
+            },
+        ],
+    );
+    $apply->_migrate_legacy_nodes($api);
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$api->{calls}};
+    my ($cp) = grep { $_->[1] eq 'OCPNode' && $_->[2] eq 'police1' } @ensures;
+    is $cp->[3]{spec}{role}, 'control-plane', 'CP label → role=control-plane';
 };
 
 done_testing;
