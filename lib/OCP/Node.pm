@@ -234,14 +234,14 @@ sub reconcile {
     my $self = shift;
     my $p = $self->phase;
 
+    return 0 if $p eq 'Failed' || $p eq 'Terminating';
+
     eval {
         if    ($p eq 'Pending')      { $self->_provision }
         elsif ($p eq 'Provisioning') { $self->_install_kubernetes }
         elsif ($p eq 'Installing')   { $self->_wait_ready }
         elsif ($p eq 'Joining')      { $self->_wait_ready }
         elsif ($p eq 'Ready')        { $self->_verify }
-        elsif ($p eq 'Failed')       { return 0 }
-        elsif ($p eq 'Terminating')  { return 0 }
         else                         { die "unknown phase: $p\n" }
     };
     if ($@) {

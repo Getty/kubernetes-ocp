@@ -399,4 +399,18 @@ subtest 'teardown patches Terminating and calls provider->delete_server + delete
     ok scalar(@deletes) >= 1, 'k8s delete called at least once';
 };
 
+subtest 'reconcile returns 0 on Failed phase (terminal)' => sub {
+    my $cr = { metadata => {name=>'f1',namespace=>'ocp-system'}, spec => {role=>'worker',providerRef=>'p'}, status => {phase => 'Failed'} };
+    my $node = OCP::Node->from_cr($cr, k8s => FakeK8s->new(cr => $cr),
+        provider => FakeProvider->new, ssh_key => 'K', server_url => 'U', join_token => 'T');
+    is $node->reconcile, 0, 'Failed terminal: reconcile returns 0';
+};
+
+subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
+    my $cr = { metadata => {name=>'tt1',namespace=>'ocp-system'}, spec => {role=>'worker',providerRef=>'p'}, status => {phase => 'Terminating'} };
+    my $node = OCP::Node->from_cr($cr, k8s => FakeK8s->new(cr => $cr),
+        provider => FakeProvider->new, ssh_key => 'K', server_url => 'U', join_token => 'T');
+    is $node->reconcile, 0, 'Terminating terminal: reconcile returns 0';
+};
+
 done_testing;
