@@ -18,13 +18,16 @@ use Kubernetes::REST::Kubeconfig;
 use Socket;
 
 use OCP::Config;
+use OCP::K8s;
 use OCP::Keys;
+use OCP::Node;
 use OCP::Password;
 use OCP::Provider;
 use OCP::Secrets;
 use OCP::SSH;
 use OCP::Rex;
 use OCP::Versions;
+use MIME::Base64 ();
 
 with 'OCP::Role::Cmd';
 
@@ -461,12 +464,55 @@ sub execute {
         print "  [ok] cert-manager ready\n";
     }
 
-    # Deploy workers (if configured)
+    # CR-first worker flow:
+    #   1. Ensure CRDs always (regardless of robocop_enabled) so observational
+    #      CP CR + any future node tooling can work.
+    #   2. Ensure OCPNodeProvider + Secret CRs for every provider referenced.
+    #   3. Write CP OCPNode CR (phase=Ready, observational).
+    #   4. Write Pending OCPNode CR for each worker pool entry.
+    #   5. If robocop_enabled: deploy robocop, wait briefly, let it drive.
+    #   6. Else (or robocop didn't come up): drive worker reconcile from CLI
+    #      via OCP::Node.
     my $workers = $config->workers;
+    print "\n";
+    print "Step " . ($deploy_step + 1) . ": Ensure CRDs and provider CRs\n";
+    $self->_ensure_crds($api);
+    $self->_ensure_providers($api, $config, $secrets);
+    $self->_ensure_cp_ocpnode($api, {
+        name     => $cp_name,
+        provider => $provider,
+        host     => $cp_ip,
+    });
+
     if (@$workers && (!$self->only || $self->only eq 'workers')) {
         print "\n";
-        print "Step " . ($deploy_step + 1) . ": Deploy workers\n";
-        $self->_deploy_workers($config, $workers, $ssh_key_path, $cp_ip, $secrets);
+        print "Step " . ($deploy_step + 2) . ": Deploy workers (CR-driven)\n";
+        $self->_ensure_worker_ocpnodes($api, $config);
+
+        my $robocop_ready = 0;
+        if ($config->robocop_enabled) {
+            print "  [..] Deploying robocop controller...\n";
+            eval { $self->_ensure_robocop($api) };
+            if ($@) {
+                print "  [WARN] robocop deploy failed: $@\n";
+            } else {
+                $robocop_ready = $self->_wait_robocop_ready($api, 60);
+                if ($robocop_ready) {
+                    print "  [ok] robocop ready — grace period (5s)\n";
+                    sleep 5;
+                } else {
+                    print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
+                }
+            }
+        }
+
+        my @results = $self->_drive_workers($api, $config, {
+            robocop_ready => $robocop_ready,
+            ssh_key_path  => $ssh_key_path,
+            cp_ip         => $cp_ip,
+            secrets       => $secrets,
+        });
+        $self->_print_worker_status(\@results);
     }
 
     # Done!
@@ -1762,6 +1808,9 @@ sub _k8s_api {
             'IO::K8s::GatewayAPI',
         );
 
+        # Register OCP's own CRD classes (OCPNode, OCPNodeProvider).
+        OCP::K8s->register($self->{_k8s_api});
+
         return $self->{_k8s_api};
     }
 
@@ -1931,148 +1980,390 @@ sub _setup_ssh_key {
 }
 
 #
-# Worker deployment
+# Worker deployment is CR-driven. The previous _deploy_workers method (a
+# ~150-line imperative Hetzner/Rex-only loop) has been replaced with a
+# handful of small helpers below: _ensure_crds, _ensure_providers,
+# _ensure_cp_ocpnode, _ensure_worker_ocpnodes, _ensure_robocop,
+# _wait_robocop_ready, _drive_workers, _print_worker_status. Actual
+# provisioning runs through OCP::Node->reconcile_until_ready (CLI path)
+# or via Robocop once the controller is live.
 #
 
-sub _deploy_workers {
-    my ($self, $config, $workers, $ssh_key_path, $cp_ip, $secrets) = @_;
+# Ensure the OCPNode/OCPNodeProvider CRDs exist. Always — independent of
+# whether Robocop itself is deployed — because the CP CR and any future
+# node-tooling need the schemas to be registered.
+sub _ensure_crds {
+    my ($self, $api) = @_;
+    my $share_dir = $self->_find_share_dir;
+    my $crd_dir   = $share_dir->child('robocop', 'crds');
+    return unless -d $crd_dir;
 
-    my $hetzner_token = $secrets->hetzner_token;
-    my $distribution = $config->distribution || 'rke2';
-    my $version = $config->version || '';
-    my $verbose = $self->ocp->verbose;
+    for my $file_path (sort $crd_dir->children(qr/\.ya?ml$/)) {
+        my @docs = YAML::XS::LoadFile($file_path->stringify);
+        for my $doc (@docs) {
+            next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
+            $api->ensure($doc);
+            print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
+        }
+    }
+}
 
-    # Get join token from control plane
-    my $cp_ssh = OCP::SSH->new(
-        host     => $cp_ip,
-        key_file => $ssh_key_path,
-        user     => 'root',
-    );
+# Ensure Namespace + one OCPNodeProvider CR per unique provider referenced
+# in ocp.yaml (and its backing Secret for hetzner). The ocp.yaml schema
+# uses inline `provider: hetzner|ssh|local` — we normalise each unique
+# provider type to a deterministic CR name (e.g. "hetzner-default",
+# "ssh-default", "local-default").
+sub _ensure_providers {
+    my ($self, $api, $config, $secrets) = @_;
+    my $ns = 'ocp-system';
 
-    my $token_path = $distribution eq 'k3s'
-        ? '/var/lib/rancher/k3s/server/node-token'
-        : '/var/lib/rancher/rke2/server/node-token';
-    my $token_result = $cp_ssh->run("cat $token_path");
-    my $join_token = $token_result->{stdout};
-    chomp $join_token;
+    # Ensure ocp-system namespace exists (idempotent via ensure).
+    $api->ensure({
+        apiVersion => 'v1',
+        kind       => 'Namespace',
+        metadata   => { name => $ns },
+    });
 
-    die "Could not retrieve join token from control plane\n" unless $join_token;
+    my %seen;
+    for my $entry (@{$config->control_planes}, @{$config->workers}) {
+        my $type = $entry->{provider} // 'hetzner';
+        next if $seen{$type}++;
+        $self->_ensure_provider_cr($api, $type, $ns, $config, $secrets);
+    }
+}
 
-    my $server_url = "https://$cp_ip:9345";
-    my $worker_idx = 0;
+sub _ensure_provider_cr {
+    my ($self, $api, $type, $ns, $config, $secrets) = @_;
 
-    for my $pool (@$workers) {
-        my $pool_name = $pool->{name} // 'pool' . ++$worker_idx;
-        my $pool_provider = $pool->{provider} // 'hetzner';
-        my $pool_nodes = $pool->{nodes} // 1;
+    my $name = "$type-default";
 
-        # Normalize: SSH pool with host list
+    my $spec = { type => $type };
+    if ($type eq 'hetzner') {
+        my $secret_name = "hetzner-api-token-$type";
+        my $token = eval { $secrets->hetzner_token };
+        if ($token) {
+            $api->ensure({
+                apiVersion => 'v1',
+                kind       => 'Secret',
+                type       => 'Opaque',
+                metadata   => {
+                    name      => $secret_name,
+                    namespace => $ns,
+                },
+                data => {
+                    token => MIME::Base64::encode_base64($token, ''),
+                },
+            });
+            print "  [ok] ensured Secret/$secret_name\n";
+        }
+        $spec->{hetzner} = {
+            tokenSecretRef => { name => $secret_name, key => 'token' },
+        };
+    } elsif ($type eq 'ssh') {
+        $spec->{ssh} = { user => 'root' };
+    }
+
+    $api->ensure({
+        apiVersion => 'ocp.internal/v1',
+        kind       => 'OCPNodeProvider',
+        metadata   => { name => $name, namespace => $ns },
+        spec       => $spec,
+    });
+    print "  [ok] ensured OCPNodeProvider/$name\n";
+}
+
+# Write an observational OCPNode CR for the just-bootstrapped control
+# plane with phase=Ready. CP reconcile is not in scope; this CR makes
+# `ocp node ls` show CP + workers uniformly.
+sub _ensure_cp_ocpnode {
+    my ($self, $api, $cp_info) = @_;
+    my $ns   = 'ocp-system';
+    my $name = $cp_info->{name};
+    my $type = $cp_info->{provider} // 'hetzner';
+
+    $api->ensure({
+        apiVersion => 'ocp.internal/v1',
+        kind       => 'OCPNode',
+        metadata   => { name => $name, namespace => $ns },
+        spec       => {
+            role        => 'control-plane',
+            providerRef => "$type-default",
+        },
+        status => {
+            phase              => 'Ready',
+            publicIP           => $cp_info->{host},
+            kubernetesNodeName => $name,
+            reconciler         => 'cli',
+        },
+    });
+    print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
+}
+
+# Write one Pending OCPNode CR per worker entry. If role/provider/etc. on
+# the CR already differs in the cluster, the ensure preserves status
+# (patch semantics are owned by the controller/CLI later).
+sub _ensure_worker_ocpnodes {
+    my ($self, $api, $config) = @_;
+    my $ns = 'ocp-system';
+    my @crs;
+
+    my $pool_idx = 0;
+    for my $pool (@{$config->workers}) {
+        my $pool_name = $pool->{name} // 'pool' . ++$pool_idx;
+        my $type      = $pool->{provider} // 'hetzner';
+        my $count     = $pool->{nodes} // 1;
+
         my @hosts;
-        if ($pool_provider eq 'ssh') {
+        if ($type eq 'ssh') {
             if (ref $pool->{nodes} eq 'ARRAY') {
                 @hosts = map { ref $_ ? $_->{host} : $_ } @{$pool->{nodes}};
             } elsif ($pool->{host}) {
                 @hosts = ($pool->{host});
             }
-            $pool_nodes = scalar @hosts || 1;
+            $count = scalar @hosts || 1;
         }
 
-        print "  Pool '$pool_name': $pool_nodes x $pool_provider\n";
+        for my $i (1 .. $count) {
+            my $w_name = "$pool_name-$i";
+            my $host;
+            if ($type eq 'ssh') {
+                $host = $hosts[$i - 1] // next;
+                ($w_name) = split(/\./, $host, 2);
+            }
 
-        my $w_prov = OCP::Provider->for_spec($pool,
-            token        => $hetzner_token,
-            cluster_name => $config->name,
-            ssh_key_path => $ssh_key_path,
-            verbose      => $verbose,
+            my $spec = {
+                role        => 'worker',
+                providerRef => "$type-default",
+            };
+            $spec->{host}       = $host                     if $host;
+            $spec->{serverType} = $pool->{serverType}       if $pool->{serverType};
+            $spec->{image}      = $pool->{image}            if $pool->{image};
+            $spec->{location}   = $pool->{location}         if $pool->{location};
+
+            my $cr = {
+                apiVersion => 'ocp.internal/v1',
+                kind       => 'OCPNode',
+                metadata   => { name => $w_name, namespace => $ns },
+                spec       => $spec,
+            };
+            $api->ensure($cr);
+            print "  [ok] ensured OCPNode/$w_name (worker, Pending)\n";
+            push @crs, $cr;
+        }
+    }
+    return @crs;
+}
+
+# Apply RBAC + Deployment for robocop. CRDs were already applied in
+# _ensure_crds. Mirrors OCP::Cmd::DeployRobocop's loop but scoped to the
+# non-CRD files under share/robocop/.
+sub _ensure_robocop {
+    my ($self, $api) = @_;
+    my $share_dir   = $self->_find_share_dir;
+    my $robocop_dir = $share_dir->child('robocop');
+
+    my @other_files = grep { $_->basename ne 'kustomization.yaml' }
+                           $robocop_dir->children(qr/\.ya?ml$/);
+
+    for my $file_path (sort @other_files) {
+        my @docs = YAML::XS::LoadFile($file_path->stringify);
+        for my $doc (@docs) {
+            next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
+            $api->ensure($doc);
+            print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
+        }
+    }
+}
+
+sub _wait_robocop_ready {
+    my ($self, $api, $timeout) = @_;
+    $timeout //= 60;
+
+    my $deadline = time + $timeout;
+    while (time < $deadline) {
+        my $dep = eval { $api->get('Deployment', 'robocop', namespace => 'ocp-system') };
+        if ($dep) {
+            my $ready = eval { $dep->status->readyReplicas } // 0;
+            return 1 if $ready && $ready >= 1;
+        }
+        sleep 5;
+    }
+    return 0;
+}
+
+# Drive worker reconcile. Either poll CR phases (if robocop is running)
+# or run the CLI reconcile path (via OCP::Node) in-process. Returns a
+# list of { name, phase, message } results.
+sub _drive_workers {
+    my ($self, $api, $config, $deps) = @_;
+
+    my $ns      = 'ocp-system';
+    my $workers = $config->workers;
+    my @names;
+
+    my $pool_idx = 0;
+    for my $pool (@$workers) {
+        my $pool_name = $pool->{name} // 'pool' . ++$pool_idx;
+        my $type      = $pool->{provider} // 'hetzner';
+        my $count     = $pool->{nodes} // 1;
+
+        my @hosts;
+        if ($type eq 'ssh') {
+            if (ref $pool->{nodes} eq 'ARRAY') {
+                @hosts = map { ref $_ ? $_->{host} : $_ } @{$pool->{nodes}};
+            } elsif ($pool->{host}) {
+                @hosts = ($pool->{host});
+            }
+            $count = scalar @hosts || 1;
+        }
+
+        for my $i (1 .. $count) {
+            my $w_name = "$pool_name-$i";
+            if ($type eq 'ssh') {
+                my $host = $hosts[$i - 1] // next;
+                ($w_name) = split(/\./, $host, 2);
+            }
+            push @names, $w_name;
+        }
+    }
+
+    if ($deps->{robocop_ready}) {
+        return $self->_poll_nodes_until_terminal($api, \@names, 600);
+    }
+
+    # CLI fallback: drive each OCPNode via OCP::Node.
+    return $self->_cli_reconcile_workers($api, $config, \@names, $deps);
+}
+
+sub _poll_nodes_until_terminal {
+    my ($self, $api, $names, $timeout) = @_;
+    $timeout //= 600;
+    my $ns = 'ocp-system';
+
+    my $deadline = time + $timeout;
+    my %terminal;
+
+    while (time < $deadline && scalar(keys %terminal) < scalar(@$names)) {
+        for my $name (@$names) {
+            next if $terminal{$name};
+            my $cr = eval { $api->get('OCPNode', $name, namespace => $ns) };
+            my $hash = $cr
+                ? (ref($cr) eq 'HASH' ? $cr : $api->k8s->object_to_struct($cr))
+                : undef;
+            my $phase = $hash && $hash->{status} && $hash->{status}{phase} || 'Pending';
+            my $msg   = $hash && $hash->{status} && $hash->{status}{message} || '';
+            if ($phase eq 'Ready' || $phase eq 'Failed') {
+                $terminal{$name} = { name => $name, phase => $phase, message => $msg };
+            }
+        }
+        last if scalar(keys %terminal) == scalar(@$names);
+        sleep 10;
+    }
+
+    my @results;
+    for my $name (@$names) {
+        push @results, $terminal{$name} // {
+            name    => $name,
+            phase   => 'Unknown',
+            message => "timed out waiting for phase (after ${timeout}s)",
+        };
+    }
+    return @results;
+}
+
+sub _cli_reconcile_workers {
+    my ($self, $api, $config, $names, $deps) = @_;
+    my $ns = 'ocp-system';
+
+    my $ssh_key_path = $deps->{ssh_key_path};
+    my $cp_ip        = $deps->{cp_ip};
+    my $secrets      = $deps->{secrets};
+    my $distribution = $config->distribution || 'rke2';
+
+    # Retrieve join token from the CP once, reused for every worker.
+    my $join_token = '';
+    my $server_url = "https://$cp_ip:9345";
+    my $ssh_key    = eval { path($ssh_key_path)->slurp } // '';
+
+    eval {
+        my $cp_ssh = OCP::SSH->new(
+            host     => $cp_ip,
+            key_file => $ssh_key_path,
+            user     => 'root',
+        );
+        my $token_path = $distribution eq 'k3s'
+            ? '/var/lib/rancher/k3s/server/node-token'
+            : '/var/lib/rancher/rke2/server/node-token';
+        my $res = $cp_ssh->run("cat $token_path");
+        $join_token = $res->{stdout} // '';
+        chomp $join_token;
+    };
+    if ($@ || !$join_token) {
+        my @results = map { {
+            name    => $_,
+            phase   => 'Failed',
+            message => "Could not read join token from CP: " . ($@ // 'empty'),
+        } } @$names;
+        return @results;
+    }
+
+    my @results;
+    for my $name (@$names) {
+        my $cr = eval { $api->get('OCPNode', $name, namespace => $ns) };
+        my $hash = $cr
+            ? (ref($cr) eq 'HASH' ? $cr : $api->k8s->object_to_struct($cr))
+            : undef;
+        unless ($hash) {
+            push @results, { name => $name, phase => 'Failed',
+                             message => 'CR not found after ensure' };
+            next;
+        }
+
+        my $provider = eval {
+            OCP::Provider->from_cr(
+                $api->get('OCPNodeProvider',
+                    $hash->{spec}{providerRef}, namespace => $ns),
+                k8s => $api,
+            );
+        };
+        if ($@ || !$provider) {
+            push @results, { name => $name, phase => 'Failed',
+                             message => "Provider resolve failed: " . ($@ // 'unknown') };
+            next;
+        }
+
+        my $node = OCP::Node->from_cr($hash,
+            k8s          => $api,
+            provider     => $provider,
+            ssh_key      => $ssh_key,
+            server_url   => $server_url,
+            join_token   => $join_token,
+            distribution => $distribution,
+            verbose      => $self->ocp->verbose,
         );
 
-        for my $i (1 .. $pool_nodes) {
-            my $w_name = "$pool_name-$i";
-            my $w_hostname = $config->name . "-$w_name";
-            my $w_host;
+        my $ok = eval { $node->reconcile_until_ready(timeout => 600, interval => 10) };
+        my $phase = $ok ? 'Ready' : ($node->phase || 'Failed');
+        push @results, {
+            name    => $name,
+            phase   => $phase,
+            message => $hash->{status}{message} // '',
+        };
+    }
+    return @results;
+}
 
-            if ($pool_provider eq 'ssh') {
-                $w_host = $hosts[$i - 1] // next;
-                ($w_hostname) = split(/\./, $w_host, 2);
-                $w_name = $w_hostname;
-            }
-
-            print "  [..] Deploying worker: $w_name\n";
-
-            my $server_info = $w_prov->create_server(
-                name        => $w_hostname,
-                cluster     => $config->name,
-                node        => $w_name,
-                role        => 'worker',
-                server_type => $pool->{serverType} // 'cx21',
-                image       => $pool->{image} // 'debian-13',
-                location    => $pool->{location} // 'fsn1',
-                ssh_keys    => ["ocp-" . $config->name . "-admin"],
-                host        => $w_host,
-            );
-
-            if ($server_info->{newly_created}) {
-                $w_prov->wait_for_running($server_info, 120);
-            }
-
-            $w_host //= $server_info->{ip};
-
-            # Wait for SSH
-            my $w_ssh = OCP::SSH->new(
-                host     => $w_host,
-                key_file => $ssh_key_path,
-                user     => 'root',
-            );
-            eval { $w_ssh->wait_for_ssh(120) };
-            if ($@) {
-                print "  [WARN] SSH not ready for $w_name: $@\n";
-                next;
-            }
-
-            # Install agent via Rex
-            my $rex = OCP::Rex->new(
-                host     => $w_host,
-                key_file => $ssh_key_path,
-                user     => 'root',
-                verbose  => $verbose,
-            );
-
-            eval {
-                $rex->install_agent(
-                    distribution      => $distribution,
-                    version           => $version,
-                    server            => $server_url,
-                    token             => $join_token,
-                    node_name         => $w_name,
-                    registry_cache    => $config->registry_cache,
-                    registry_upstream => $config->registry_upstream,
-                    registry_name     => $config->registry_name,
-                    hostname          => $w_hostname,
-                    timezone          => $config->timezone,
-                    locale            => $config->locale,
-                    ntp               => $config->ntp_enabled,
-                );
-            };
-            if ($@) {
-                print "  [WARN] Worker $w_name install failed: $@\n";
-                if ($server_info->{newly_created}) {
-                    $w_prov->cleanup_on_failure($server_info->{id});
-                }
-                next;
-            }
-
-            # Save node status
-            $config->save_node_status({
-                name       => $w_name,
-                role       => 'worker',
-                pool       => $pool_name,
-                provider   => $pool_provider,
-                providerId => $server_info->{id},
-                publicIp   => $w_host,
-            });
-
-            print "  [ok] Worker $w_name deployed ($w_host)\n";
-        }
+sub _print_worker_status {
+    my ($self, $results) = @_;
+    return unless $results && @$results;
+    print "\n";
+    print "  Worker status:\n";
+    for my $r (@$results) {
+        my $tag = $r->{phase} eq 'Ready'  ? '[ok]'
+                : $r->{phase} eq 'Failed' ? '[!!]'
+                :                           '[..]';
+        print "    $tag $r->{name} — $r->{phase}" .
+              ($r->{message} ? " ($r->{message})" : "") . "\n";
     }
 }
 
@@ -2274,5 +2565,19 @@ Deploys the control plane using the admin-ssh key (requires PIN2).
 
 B<Security:> Control planes are SACRED\! Only admin-key can deploy them.
 Workers are managed by robocop controller using robo-key.
+
+=method execute
+
+Bootstraps the first control plane imperatively, then switches to a CR-first
+flow: ensures the C<OCPNode>/C<OCPNodeProvider> CRDs, writes one
+C<OCPNodeProvider> (and backing Secret for Hetzner) per unique provider
+referenced in C<ocp.yaml>, writes an observational C<OCPNode> for the CP with
+C<phase: Ready>, and writes a C<Pending> C<OCPNode> per worker-pool entry.
+
+If C<robocop> is enabled (see L<OCP::Config/robocop_enabled>) the robocop
+Deployment is applied and given 60s to become ready; on success the CLI simply
+polls worker C<OCPNode> phases until terminal (Ready/Failed/timeout). If
+robocop is disabled or fails to come up, the CLI drives each worker directly
+through L<OCP::Node/reconcile_until_ready>.
 
 =cut
