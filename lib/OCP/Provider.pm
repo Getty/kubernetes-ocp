@@ -6,6 +6,50 @@ use warnings;
 
 our $VERSION = '0.001';
 
+sub from_cr {
+    my ($class, $cr, %opts) = @_;
+
+    my $k8s  = $opts{k8s};
+    my $type = $cr->{spec}{type} // 'hetzner';
+    my $name = $cr->{metadata}{name};
+    my $ns   = $cr->{metadata}{namespace} // 'ocp-system';
+
+    if ($type eq 'hetzner') {
+        require OCP::Provider::Hetzner;
+        require MIME::Base64;
+
+        my $hspec  = $cr->{spec}{hetzner} // {};
+        my $ref    = $hspec->{tokenSecretRef} // {};
+        my $secret_name = $ref->{name} or die "from_cr: spec.hetzner.tokenSecretRef.name missing\n";
+        my $secret_key  = $ref->{key} // 'token';
+
+        die "from_cr: k8s client required for hetzner provider\n" unless $k8s;
+
+        my $secret = $k8s->get(
+            path => "/api/v1/namespaces/$ns/secrets/$secret_name",
+        );
+        my $encoded = $secret->{data}{$secret_key}
+            or die "from_cr: Secret '$secret_name' has no key '$secret_key'\n";
+        my $token = MIME::Base64::decode_base64($encoded);
+
+        return OCP::Provider::Hetzner->new(
+            token        => $token,
+            cluster_name => $name,
+        );
+    } elsif ($type eq 'ssh') {
+        require OCP::Provider::SSH;
+        my $ssh_key_path = $cr->{spec}{ssh}{keyPath} // '';
+        return OCP::Provider::SSH->new(
+            ($ssh_key_path ? (ssh_key_path => $ssh_key_path) : ()),
+        );
+    } elsif ($type eq 'local') {
+        require OCP::Provider::Local;
+        return OCP::Provider::Local->new();
+    } else {
+        die "Unsupported provider type: $type\n";
+    }
+}
+
 sub for_spec {
     my ($class, $spec, %opts) = @_;
     my $type = $spec->{provider} // 'hetzner';

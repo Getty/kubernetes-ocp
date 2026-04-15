@@ -140,4 +140,82 @@ use OCP::Provider::Local;
     like($@, qr/public key is empty/, 'upload_ssh_key requires defined pubkey');
 }
 
+use MIME::Base64 qw(encode_base64);
+
+#
+# Test: from_cr dispatches hetzner with token from Secret
+#
+
+subtest 'from_cr dispatches hetzner with token from Secret' => sub {
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
+        metadata   => { name => 'hetzner-a', namespace => 'ocp-system' },
+        spec       => {
+            type => 'hetzner',
+            hetzner => {
+                tokenSecretRef => { name => 'ocp-provider-hetzner-a-token', key => 'token' },
+                location   => 'fsn1',
+                serverType => 'cx32',
+            },
+        },
+    };
+
+    my $mock_k8s = bless {
+        secret => {
+            data => {
+                token => encode_base64('secret-token-xyz', ''),
+            },
+        },
+    }, 'FakeK8sForProvider';
+
+    sub FakeK8sForProvider::get {
+        my ($self, %args) = @_;
+        return $self->{secret};
+    }
+
+    my $prov = OCP::Provider->from_cr($cr, k8s => $mock_k8s);
+    isa_ok $prov, 'OCP::Provider::Hetzner';
+    is $prov->token, 'secret-token-xyz', 'token decoded from Secret data';
+    is $prov->cluster_name, 'hetzner-a', 'cluster_name derived from CR metadata.name';
+};
+
+#
+# Test: from_cr dispatches ssh
+#
+
+subtest 'from_cr dispatches ssh' => sub {
+    my $cr = {
+        metadata => { name => 'ssh-a', namespace => 'ocp-system' },
+        spec     => { type => 'ssh' },
+    };
+    my $prov = OCP::Provider->from_cr($cr, k8s => undef);
+    isa_ok $prov, 'OCP::Provider::SSH';
+};
+
+#
+# Test: from_cr dispatches local
+#
+
+subtest 'from_cr dispatches local' => sub {
+    my $cr = {
+        metadata => { name => 'local-a', namespace => 'ocp-system' },
+        spec     => { type => 'local' },
+    };
+    my $prov = OCP::Provider->from_cr($cr, k8s => undef);
+    isa_ok $prov, 'OCP::Provider::Local';
+};
+
+#
+# Test: from_cr dies on unknown type
+#
+
+subtest 'from_cr dies on unknown type' => sub {
+    my $cr = {
+        metadata => { name => 'x', namespace => 'ocp-system' },
+        spec     => { type => 'unknown_garbage' },
+    };
+    eval { OCP::Provider->from_cr($cr, k8s => undef) };
+    like $@, qr/Unsupported provider type/, 'dies on unknown';
+};
+
 done_testing;
