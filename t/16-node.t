@@ -308,4 +308,95 @@ subtest '_verify returns false when k8s Node not Ready' => sub {
     ok !$node->_verify, '_verify returns false when not Ready';
 };
 
+subtest 'reconcile dispatches to _provision on Pending phase' => sub {
+    local *FakeRex::_instances = *FakeRex::_instances;
+    @FakeRex::_instances = ();
+    local *FakeRex::new = sub { my ($c, %a) = @_; my $s = bless { %a, calls => [] }, $c;
+                                push @FakeRex::_instances, $s; $s };
+
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+        metadata => { name => 'r1', namespace => 'ocp-system', resourceVersion => '1' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Pending' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $prov = FakeProvider->new(create_cb => sub { { id => 'S1', ip => '1.1.1.1' } });
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+    ok $node->reconcile, 'reconcile returns truthy';
+};
+
+subtest 'reconcile catches exception and patches Failed' => sub {
+    my $cr = {
+        metadata => { name => 'r2', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Pending' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $prov = FakeProvider->new(create_cb => sub { die "boom\n" });
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    is $node->reconcile, 0, 'reconcile returns 0 on failure';
+    my ($failed_patch) = grep {
+        if ($_->[0] eq 'patch') {
+            my %args = @{$_->[1]};
+            ($args{body}{status}{phase} // '') eq 'Failed';
+        }
+    } @{$k->{calls}};
+    ok $failed_patch, 'status patched to Failed';
+};
+
+subtest 'reconcile_until_ready returns 1 on Ready CR' => sub {
+    my $cr = {
+        metadata => { name => 'r3', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Ready' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    is $node->reconcile_until_ready(timeout => 1, interval => 0), 1, 'Ready short-circuits';
+};
+
+subtest 'reconcile_until_ready returns 0 on Failed CR' => sub {
+    my $cr = {
+        metadata => { name => 'r4', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Failed' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    is $node->reconcile_until_ready(timeout => 1, interval => 0), 0, 'Failed short-circuits';
+};
+
+subtest 'teardown patches Terminating and calls provider->delete_server + delete on k8s' => sub {
+    my $delete_called;
+    my $prov = FakeProvider->new(delete_cb => sub { $delete_called = { @_[1..$#_] }; 1 });
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+        metadata => { name => 't1', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Ready', kubernetesNodeName => 't1', publicIP => '1.2.3.4' },
+    };
+    my $k = FakeK8s->new(cr => $cr);
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    $node->teardown;
+
+    my ($terminating) = grep {
+        if ($_->[0] eq 'patch') {
+            my %args = @{$_->[1]};
+            ($args{body}{status}{phase} // '') eq 'Terminating';
+        }
+    } @{$k->{calls}};
+    ok $terminating, 'status patched to Terminating';
+    ok $delete_called, 'provider->delete_server called';
+    my @deletes = grep { $_->[0] eq 'delete' } @{$k->{calls}};
+    ok scalar(@deletes) >= 1, 'k8s delete called at least once';
+};
+
 done_testing;

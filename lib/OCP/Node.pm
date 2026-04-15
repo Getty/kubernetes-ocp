@@ -230,6 +230,79 @@ sub _wait_ready {
     return $ready;
 }
 
+sub reconcile {
+    my $self = shift;
+    my $p = $self->phase;
+
+    eval {
+        if    ($p eq 'Pending')      { $self->_provision }
+        elsif ($p eq 'Provisioning') { $self->_install_kubernetes }
+        elsif ($p eq 'Installing')   { $self->_wait_ready }
+        elsif ($p eq 'Joining')      { $self->_wait_ready }
+        elsif ($p eq 'Ready')        { $self->_verify }
+        elsif ($p eq 'Failed')       { return 0 }
+        elsif ($p eq 'Terminating')  { return 0 }
+        else                         { die "unknown phase: $p\n" }
+    };
+    if ($@) {
+        $self->_patch_status(phase => 'Failed', message => "$@");
+        return 0;
+    }
+    return 1;
+}
+
+sub _refresh {
+    my $self = shift;
+    my $fresh = $self->k8s->get($self->_api_version, $self->_kind, $self->name,
+                                namespace => $self->namespace);
+    $self->_set_cr($fresh) if $fresh;
+}
+
+sub reconcile_until_ready {
+    my ($self, %opt) = @_;
+    my $timeout  = $opt{timeout}  // 600;
+    my $interval = $opt{interval} // 5;
+    my $deadline = time + $timeout;
+
+    while (time < $deadline) {
+        $self->_refresh;
+        return 1 if $self->phase eq 'Ready';
+        return 0 if $self->phase eq 'Failed';
+        $self->reconcile;
+        sleep $interval;
+    }
+    return 0;
+}
+
+sub teardown {
+    my $self = shift;
+    $self->_patch_status(phase => 'Terminating', message => 'Teardown initiated');
+
+    my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $self->name;
+    eval {
+        $self->k8s->patch(
+            path        => "/api/v1/nodes/$k8s_name",
+            body        => { spec => { unschedulable => \1 } },
+            contentType => 'application/strategic-merge-patch+json',
+        );
+    };
+
+    if ($self->provider) {
+        eval { $self->provider->delete_server(name => $self->name) };
+    }
+
+    eval {
+        $self->k8s->delete('v1', 'Node', $k8s_name);
+    };
+
+    eval {
+        $self->k8s->delete($self->_api_version, $self->_kind, $self->name,
+                           namespace => $self->namespace);
+    };
+
+    return 1;
+}
+
 sub _verify {
     my $self = shift;
 
