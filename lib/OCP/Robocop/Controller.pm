@@ -7,6 +7,7 @@ use Path::Tiny qw(path);
 use Try::Tiny;
 
 use Kubernetes::REST;
+use OCP::K8s;
 use OCP::Node;
 use OCP::Provider;
 
@@ -81,7 +82,9 @@ sub _build_kube {
     }
     # else: Kubernetes::REST uses in-cluster config automatically
 
-    return Kubernetes::REST->new(%opts);
+    my $api = Kubernetes::REST->new(%opts);
+    OCP::K8s->register($api);
+    return $api;
 }
 
 #
@@ -129,15 +132,14 @@ sub _on_node_event {
 
     my $ns = $cr->{metadata}{namespace} // $self->namespace;
 
-    my $provider_cr = eval {
-        $self->kube->get(
-            path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodeproviders/$provider_name",
-        );
+    my $provider_cr_obj = eval {
+        $self->kube->get('OCPNodeProvider', name => $provider_name, namespace => $ns);
     };
-    if ($@ || !$provider_cr) {
+    if ($@ || !$provider_cr_obj) {
         $self->log("Failed to load provider CR $provider_name: " . ($@ // 'not found'));
         return;
     }
+    my $provider_cr = $self->kube->k8s->object_to_struct($provider_cr_obj);
 
     my $provider = OCP::Provider->from_cr($provider_cr, k8s => $self->kube);
 
@@ -163,11 +165,10 @@ sub _on_node_event {
 sub list_ocp_nodes {
     my ($self) = @_;
 
-    my $resp = $self->kube->get(
-        path => "/apis/ocp.internal/v1/namespaces/" . $self->namespace . "/ocpnodes",
-    );
-
-    return $resp->{items} // [];
+    my $list = $self->kube->list('OCPNode', namespace => $self->namespace);
+    return [
+        map { $self->kube->k8s->object_to_struct($_) } @{ $list->items // [] }
+    ];
 }
 
 #

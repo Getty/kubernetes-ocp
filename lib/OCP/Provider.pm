@@ -26,7 +26,9 @@ sub from_cr {
         die "from_cr: k8s client required for hetzner provider\n" unless $k8s;
 
         my $secret = $k8s->get(
-            path => "/api/v1/namespaces/$ns/secrets/$secret_name",
+            'Secret',
+            name      => $secret_name,
+            namespace => $ns,
         );
         my $encoded = $secret->{data}{$secret_key}
             or die "from_cr: Secret '$secret_name' has no key '$secret_key'\n";

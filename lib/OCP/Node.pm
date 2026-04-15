@@ -109,9 +109,11 @@ sub _patch_status {
     my $ns   = $self->namespace;
 
     return $self->k8s->patch(
-        path        => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodes/$name/status",
-        body        => { status => \%updates },
-        contentType => 'application/merge-patch+json',
+        'OCPNode',
+        name      => $name,
+        namespace => $ns,
+        patch     => { status => \%updates },
+        type      => 'merge',
     );
 }
 
@@ -205,7 +207,7 @@ sub _wait_ready {
     my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $name;
 
     my $k8s_node = eval {
-        $self->k8s->get(path => "/api/v1/nodes/$k8s_name");
+        $self->k8s->get('Node', name => $k8s_name);
     };
 
     return 0 unless $k8s_node;
@@ -281,9 +283,9 @@ sub teardown {
     my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $self->name;
     eval {
         $self->k8s->patch(
-            path        => "/api/v1/nodes/$k8s_name",
-            body        => { spec => { unschedulable => \1 } },
-            contentType => 'application/strategic-merge-patch+json',
+            'Node',
+            name  => $k8s_name,
+            patch => { spec => { unschedulable => \1 } },
         );
     };
 
@@ -310,7 +312,7 @@ sub _verify {
     my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $name;
 
     my $k8s_node = eval {
-        $self->k8s->get(path => "/api/v1/nodes/$k8s_name");
+        $self->k8s->get('Node', name => $k8s_name);
     };
 
     return 0 unless $k8s_node;

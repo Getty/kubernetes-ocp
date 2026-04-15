@@ -9,6 +9,7 @@ use MIME::Base64 qw(encode_base64);
 use Kubernetes::REST::Kubeconfig;
 use OCP::Config;
 use OCP::Secrets;
+use OCP::K8s;
 
 with 'OCP::Role::Cmd';
 
@@ -82,6 +83,7 @@ sub _k8s {
         kubeconfig_path => $kc_fh->filename,
     )->api;
 
+    OCP::K8s->register($api);
     $self->k8s($api);
     return $api;
 }
@@ -113,12 +115,11 @@ sub _validate_flags {
 sub _strip_default_annotation {
     my ($self, $api) = @_;
 
-    my $ns = 'ocp-system';
-    my $providers = $api->get(
-        path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodeproviders",
-    );
+    my $ns   = 'ocp-system';
+    my $list = $api->list('OCPNodeProvider', namespace => $ns);
 
-    for my $p (@{ $providers->{items} // [] }) {
+    for my $obj (@{ $list->items // [] }) {
+        my $p   = $api->k8s->object_to_struct($obj);
         my $ann = $p->{metadata}{annotations} // {};
         next unless ($ann->{'ocp.internal/default'} // '') eq 'true';
         next if $p->{metadata}{name} eq $self->name;
@@ -127,10 +128,10 @@ sub _strip_default_annotation {
         delete $new_ann{'ocp.internal/default'};
 
         $api->patch(
-            path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodeproviders/" . $p->{metadata}{name},
-            body => {
-                metadata => { annotations => \%new_ann },
-            },
+            'OCPNodeProvider',
+            name      => $p->{metadata}{name},
+            namespace => $ns,
+            patch     => { metadata => { annotations => \%new_ann } },
         );
     }
 }

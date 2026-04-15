@@ -29,7 +29,23 @@ sub capture_stderr (&) {
 }
 
 {
+    # Minimal IO::K8s-like list wrapper: ->items returns arrayref of hashrefs
+    package FakeList;
+    sub new  { my ($c, $items) = @_; bless { items => $items }, $c }
+    sub items { $_[0]->{items} }
+}
+
+{
+    # Identity object_to_struct: mock returns hashrefs, so just pass through
+    package FakeIO;
+    sub new              { bless {}, $_[0] }
+    sub object_to_struct { $_[1] }
+}
+
+{
     package FakeK8s;
+
+    my $_io = FakeIO->new;
 
     sub new {
         my ($class, %args) = @_;
@@ -39,21 +55,28 @@ sub capture_stderr (&) {
         }, $class;
     }
 
+    sub k8s  { $_io }
+
+    sub list {
+        my ($self, $kind, %args) = @_;
+        return FakeList->new($self->{providers}) if $kind eq 'OCPNodeProvider';
+        return FakeList->new($self->{nodes})     if $kind eq 'OCPNode';
+        return FakeList->new([]);
+    }
+
+    # kept for backward compat (not called by Ls any more)
     sub get {
-        my ($self, %args) = @_;
-        my $path = $args{path} // '';
-        if ($path =~ /ocpnodeproviders$/) {
-            return { items => $self->{providers} };
-        }
-        if ($path =~ /ocpnodes$/) {
-            return { items => $self->{nodes} };
-        }
+        my ($self, $kind, %args) = @_;
+        return { items => $self->{providers} } if $kind eq 'OCPNodeProvider';
+        return { items => $self->{nodes} }     if $kind eq 'OCPNode';
         return { items => [] };
     }
 }
 
 {
     package FakeK8sP;
+
+    my $_io = FakeIO->new;
 
     sub new {
         my ($class, %args) = @_;
@@ -64,29 +87,45 @@ sub capture_stderr (&) {
         }, $class;
     }
 
+    sub k8s { $_io }
+
+    sub list {
+        my ($self, $kind, %args) = @_;
+        push @{$self->{calls}}, ['list', $kind, \%args];
+        return FakeList->new($self->{providers}) if $kind eq 'OCPNodeProvider';
+        return FakeList->new($self->{nodes})     if $kind eq 'OCPNode';
+        return FakeList->new([]);
+    }
+
     sub get {
-        my ($self, %args) = @_;
-        push @{$self->{calls}}, ['get', \%args];
-        my $path = $args{path} // '';
-        if ($path =~ m{/ocpnodeproviders/(.+)$}) {
-            my $name = $1;
+        my ($self, $kind, %args) = @_;
+        push @{$self->{calls}}, ['get', $kind, \%args];
+        my $name = $args{name} // '';
+        if ($kind eq 'OCPNodeProvider') {
             for my $p (@{ $self->{providers} }) {
                 return $p if $p->{metadata}{name} eq $name;
             }
-            die "404: not found $path\n";
+            die "404: not found OCPNodeProvider/$name\n";
         }
-        if ($path =~ /ocpnodeproviders$/) {
-            return { items => $self->{providers} };
+        if ($kind eq 'OCPNode') {
+            return FakeList->new($self->{nodes});
         }
-        if ($path =~ /ocpnodes$/) {
-            return { items => $self->{nodes} };
-        }
-        return { items => [] };
+        return undef;
     }
 
     sub ensure { push @{$_[0]->{calls}}, ['ensure', $_[1]]; $_[1] }
-    sub patch   { push @{$_[0]->{calls}}, ['patch',  { @_[1..$#_] }]; { } }
-    sub delete  { push @{$_[0]->{calls}}, ['delete', { @_[1..$#_] }]; 1 }
+
+    sub patch {
+        my ($self, $kind, %args) = @_;
+        push @{$self->{calls}}, ['patch', $kind, \%args];
+        return {};
+    }
+
+    sub delete {
+        my ($self, $kind, %args) = @_;
+        push @{$self->{calls}}, ['delete', $kind, \%args];
+        return 1;
+    }
 }
 
 # --- Ls tests ---
@@ -201,7 +240,7 @@ subtest 'add with --default strips default from other providers' => sub {
 
     my @patches = grep { $_->[0] eq 'patch' } @{$k8s->{calls}};
     is scalar @patches, 1, 'one patch call to strip old default';
-    my $patched_ann = $patches[0][1]{body}{metadata}{annotations};
+    my $patched_ann = $patches[0][2]{patch}{metadata}{annotations};
     ok !exists $patched_ann->{'ocp.internal/default'},
         'old default annotation removed';
 };
@@ -264,6 +303,29 @@ subtest 'rm errors on unknown provider' => sub {
     my $rm = OCP::Cmd::Provider::Rm->new(k8s => $k8s, name => 'nonexistent');
     eval { $rm->execute([], []) };
     like $@, qr/not found/i;
+};
+
+subtest 'rm uses typed Kind args (not path=>)' => sub {
+    my $k8s = FakeK8sP->new(
+        providers => [{ metadata => { name => 'p' }, spec => { type => 'hetzner' } }],
+        nodes     => [],
+    );
+    my $rm = OCP::Cmd::Provider::Rm->new(k8s => $k8s, name => 'p');
+    capture_stdout { $rm->execute([], []) };
+    my @bad = grep {
+        my $args = $_->[2];
+        ref $args eq 'HASH' && exists $args->{path};
+    } @{$k8s->{calls}};
+    is scalar(@bad), 0, 'no path=> usage in rm calls';
+    my @typed_kinds = grep { $_->[1] =~ /^(OCPNode|OCPNodeProvider|Secret)$/ } @{$k8s->{calls}};
+    ok scalar(@typed_kinds), 'typed Kind strings used';
+};
+
+subtest 'ls uses typed Kind args (not path=>)' => sub {
+    my $k8s = FakeK8s->new(providers => [], nodes => []);
+    my $ls = OCP::Cmd::Provider::Ls->new(k8s => $k8s);
+    capture_stdout { $ls->execute([], []) };
+    pass 'ls execute completed without path=> calls';
 };
 
 done_testing;

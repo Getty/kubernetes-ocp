@@ -341,8 +341,8 @@ subtest 'reconcile catches exception and patches Failed' => sub {
     is $node->reconcile, 0, 'reconcile returns 0 on failure';
     my ($failed_patch) = grep {
         if ($_->[0] eq 'patch') {
-            my %args = @{$_->[1]};
-            ($args{body}{status}{phase} // '') eq 'Failed';
+            my (undef, %args) = @{$_->[1]};
+            ($args{patch}{status}{phase} // '') eq 'Failed';
         }
     } @{$k->{calls}};
     ok $failed_patch, 'status patched to Failed';
@@ -389,8 +389,8 @@ subtest 'teardown patches Terminating and calls provider->delete_server + delete
 
     my ($terminating) = grep {
         if ($_->[0] eq 'patch') {
-            my %args = @{$_->[1]};
-            ($args{body}{status}{phase} // '') eq 'Terminating';
+            my (undef, %args) = @{$_->[1]};
+            ($args{patch}{status}{phase} // '') eq 'Terminating';
         }
     } @{$k->{calls}};
     ok $terminating, 'status patched to Terminating';
@@ -411,6 +411,33 @@ subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
     my $node = OCP::Node->from_cr($cr, k8s => FakeK8s->new(cr => $cr),
         provider => FakeProvider->new, ssh_key => 'K', server_url => 'U', join_token => 'T');
     is $node->reconcile, 0, 'Terminating terminal: reconcile returns 0';
+};
+
+subtest 'no path=> in any k8s call (regression)' => sub {
+    my $cr = {
+        metadata => { name => 'chk', namespace => 'ocp-system' },
+        spec => { role => 'worker', providerRef => 'p' },
+        status => { phase => 'Joining', kubernetesNodeName => 'chk' },
+    };
+    my $k = FakeK8s->new(
+        cr_cb => sub { { status => { conditions => [{ type => 'Ready', status => 'True' }] } } },
+    );
+    my $node = OCP::Node->from_cr($cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    $node->_wait_ready;
+    my @bad = grep {
+        my $args = $_->[1];
+        ref $args eq 'ARRAY' && grep { $_ eq 'path' } @$args;
+    } @{$k->{calls}};
+    is scalar(@bad), 0, 'no path=> usage in k8s calls';
+    # get/patch/delete calls: first element of args array is the Kind string
+    my @typed = grep {
+        $_->[0] =~ /^(get|patch|delete)$/
+        && ref $_->[1] eq 'ARRAY'
+        && defined $_->[1][0]
+        && !ref $_->[1][0];
+    } @{$k->{calls}};
+    ok scalar(@typed), 'at least one typed-Kind call made';
 };
 
 done_testing;

@@ -8,6 +8,7 @@ use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
 use OCP::Config;
 use OCP::Secrets;
+use OCP::K8s;
 
 with 'OCP::Role::Cmd';
 
@@ -39,6 +40,7 @@ sub _k8s {
         kubeconfig_path => $kc_fh->filename,
     )->api;
 
+    OCP::K8s->register($api);
     $self->k8s($api);
     return $api;
 }
@@ -51,14 +53,15 @@ sub execute {
     my $name = $self->name // ($args && $args->[0]);
     die "Usage: ocp provider rm NAME\n" unless $name;
 
-    my $cr = eval {
-        $api->get(path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodeproviders/$name")
+    my $cr_obj = eval {
+        $api->get('OCPNodeProvider', name => $name, namespace => $ns)
     };
-    die "Provider '$name' not found\n" if $@ || !$cr;
+    die "Provider '$name' not found\n" if $@ || !$cr_obj;
+    my $cr = $api->k8s->object_to_struct($cr_obj);
 
-    my $nodes = $api->get(path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodes");
-    my @refs  = grep { ($_->{spec}{providerRef} // '') eq $name }
-                @{ $nodes->{items} // [] };
+    my $nodes_list = $api->list('OCPNode', namespace => $ns);
+    my @nodes = map { $api->k8s->object_to_struct($_) } @{ $nodes_list->items // [] };
+    my @refs  = grep { ($_->{spec}{providerRef} // '') eq $name } @nodes;
 
     if (@refs) {
         printf STDERR "Error: provider '%s' has %d referencing nodes:\n", $name, scalar @refs;
@@ -73,10 +76,10 @@ sub execute {
     }
 
     eval {
-        $api->delete(path => "/api/v1/namespaces/$ns/secrets/ocp-provider-$name-token");
+        $api->delete('Secret', name => "ocp-provider-$name-token", namespace => $ns);
     };
 
-    $api->delete(path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodeproviders/$name");
+    $api->delete('OCPNodeProvider', name => $name, namespace => $ns);
 
     print "Provider '$name' removed.\n";
     return 1;

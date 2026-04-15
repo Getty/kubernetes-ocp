@@ -169,7 +169,7 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
     }, 'FakeK8sForProvider';
 
     sub FakeK8sForProvider::get {
-        my ($self, %args) = @_;
+        my ($self, $kind, %args) = @_;
         return $self->{secret};
     }
 
@@ -216,6 +216,31 @@ subtest 'from_cr dies on unknown type' => sub {
     };
     eval { OCP::Provider->from_cr($cr, k8s => undef) };
     like $@, qr/Unsupported provider type/, 'dies on unknown';
+};
+
+subtest 'from_cr hetzner uses typed Kind args (not path=>)' => sub {
+    use MIME::Base64 qw(encode_base64);
+    my $cr = {
+        apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
+        metadata   => { name => 'hz', namespace => 'ocp-system' },
+        spec       => {
+            type    => 'hetzner',
+            hetzner => { tokenSecretRef => { name => 'mysecret', key => 'token' } },
+        },
+    };
+    my $mock_k8s = bless {
+        secret => { data => { token => encode_base64('tok', '') } },
+        calls  => [],
+    }, 'FakeK8sForProviderTyped';
+    sub FakeK8sForProviderTyped::get {
+        my ($self, $kind, %args) = @_;
+        push @{ $self->{calls} }, [$kind, \%args];
+        return $self->{secret};
+    }
+    OCP::Provider->from_cr($cr, k8s => $mock_k8s);
+    my @bad = grep { exists $_->[1]{path} } @{ $mock_k8s->{calls} };
+    is scalar(@bad), 0, 'no path=> in from_cr k8s call';
+    is $mock_k8s->{calls}[0][0], 'Secret', 'typed Kind "Secret" used';
 };
 
 done_testing;

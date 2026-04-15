@@ -8,6 +8,7 @@ use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
 use OCP::Config;
 use OCP::Secrets;
+use OCP::K8s;
 
 with 'OCP::Role::Cmd';
 
@@ -37,6 +38,7 @@ sub _k8s {
         kubeconfig_path => $kc_fh->filename,
     )->api;
 
+    OCP::K8s->register($api);
     $self->k8s($api);
     return $api;
 }
@@ -47,21 +49,20 @@ sub execute {
     my $api = $self->_k8s;
     my $ns  = 'ocp-system';
 
-    my $providers = $api->get(
-        path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodeproviders",
-    );
-    my $nodes = $api->get(
-        path => "/apis/ocp.internal/v1/namespaces/$ns/ocpnodes",
-    );
+    my $providers_list = $api->list('OCPNodeProvider', namespace => $ns);
+    my $nodes_list     = $api->list('OCPNode',         namespace => $ns);
+
+    my @providers = map { $api->k8s->object_to_struct($_) } @{ $providers_list->items // [] };
+    my @nodes     = map { $api->k8s->object_to_struct($_) } @{ $nodes_list->items     // [] };
 
     my %refs;
-    for my $n (@{ $nodes->{items} // [] }) {
+    for my $n (@nodes) {
         my $ref = $n->{spec}{providerRef} or next;
         $refs{$ref}++;
     }
 
     printf "%-14s %-9s %-10s %-8s %s\n", qw(NAME TYPE LOCATION DEFAULT NODES);
-    for my $p (@{ $providers->{items} // [] }) {
+    for my $p (@providers) {
         my $name = $p->{metadata}{name};
         my $type = $p->{spec}{type} // '';
         my $loc  = $type eq 'hetzner' ? ($p->{spec}{hetzner}{location} // '') : '';
