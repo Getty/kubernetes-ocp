@@ -1,6 +1,6 @@
 #!/usr/bin/env perl
 # PODNAME: robocop-test-join
-# ABSTRACT: Test harness — run Robocop install_kubernetes directly on a host
+# ABSTRACT: Test harness — drive OCP::Node install path against a host, no K8s required
 
 use strict;
 use warnings;
@@ -9,29 +9,29 @@ use lib "$FindBin::Bin/../lib";
 
 use Getopt::Long;
 use Path::Tiny qw(path);
-use OCP::Robocop::Controller;
+use OCP::Node;
 
 my %opt = (
-    name       => 'worker-1',
-    role       => 'worker',
-    dist       => 'rke2',
+    name => 'worker-1',
+    role => 'worker',
+    dist => 'rke2',
 );
 
 GetOptions(\%opt,
-    'host=s',         # target host IP
-    'server=s',       # RKE2 server URL
-    'token=s',        # RKE2 join token (or token-file)
+    'host=s',       # target host IP
+    'server=s',     # RKE2/K3s server URL
+    'token=s',      # join token (or --token-file)
     'token-file=s',
-    'ssh-key=s',      # SSH private key file
+    'ssh-key=s',    # SSH private key file
     'name=s',
     'role=s',
     'dist=s',
     'verbose|v',
 ) or die "bad options\n";
 
-$opt{host}    or die "Usage: --host IP\n";
-$opt{server}  or die "Usage: --server https://HOST:9345\n";
-$opt{ssh_key} = delete $opt{'ssh-key'} or die "Usage: --ssh-key FILE\n";
+$opt{host}   or die "Usage: --host IP\n";
+$opt{server} or die "Usage: --server https://HOST:9345\n";
+$opt{'ssh-key'} or die "Usage: --ssh-key FILE\n";
 
 if ($opt{'token-file'}) {
     $opt{token} = path($opt{'token-file'})->slurp;
@@ -39,56 +39,101 @@ if ($opt{'token-file'}) {
 }
 $opt{token} or die "Usage: --token TOKEN or --token-file FILE\n";
 
-my $ssh_key_content = path($opt{ssh_key})->slurp;
+my $ssh_key_content = path($opt{'ssh-key'})->slurp;
 
-my $c = OCP::Robocop::Controller->new(
-    kubeconfig   => undef,                    # local-only test
-    ssh_key      => $ssh_key_content,
-    server_url   => $opt{server},
-    join_token   => $opt{token},
-    distribution => $opt{dist},
-    verbose      => $opt{verbose},
-);
-
-# Fake OCPNode object — bypasses K8s, exercises the core reconcile logic
-my $fake_node = {
-    metadata => { name => $opt{name}, namespace => 'ocp-system' },
-    spec     => {
-        role        => $opt{role},
-        providerRef => 'ssh-local',
-        host        => $opt{host},
+# CR starts at Provisioning so that reconcile() dispatches to _install_kubernetes.
+# Provisioning phase assumes the server already exists (IP in status.publicIP), which
+# is exactly the SSH-harness case: we have a real host, just no Hetzner provider.
+my $cr = {
+    apiVersion => 'ocp.internal/v1',
+    kind       => 'OCPNode',
+    metadata   => {
+        name             => $opt{name},
+        namespace        => 'ocp-system',
+        resourceVersion  => '1',
+        annotations      => {},
     },
-    status => { phase => 'Pending' },
+    spec   => { role => $opt{role}, providerRef => 'local-ssh', host => $opt{host} },
+    status => { phase => 'Provisioning', publicIP => $opt{host} },
 };
 
-# Override update_node_status for fake node: just print, don't hit K8s
-{
-    no warnings 'redefine';
-    *OCP::Robocop::Controller::update_node_status = sub {
-        my ($self, $node, %patch) = @_;
-        my $new_status = { %{ $node->{status} // {} }, %patch };
-        $node->{status} = $new_status;
-        $self->log("[$node->{metadata}{name}] status: phase=$patch{phase}"
-                 . ($patch{message} ? " — $patch{message}" : ""));
-    };
+# ---------------------------------------------------------------------------
+# Minimal in-process K8s stub — no real API calls.
+#
+# Supports the call shapes OCP::Node uses:
+#   get($apiVer, $kind, $name, namespace => $ns)  — CR lookup / lease
+#   get(path => "/api/v1/nodes/...")              — k8s Node readiness check
+#   update($cr)                                   — lease write-back
+#   patch(path => ..., body => ..., contentType => ...) — status patches
+# ---------------------------------------------------------------------------
+package LocalK8s {
+    sub new { bless { cr => $_[1] }, $_[0] }
+
+    sub get {
+        my ($self, @args) = @_;
+        # Keyword form: get(path => "/api/v1/nodes/...")  → no real node exists
+        if (@args == 2 && $args[0] eq 'path') {
+            return undef;
+        }
+        # Positional form: get($apiVer, $kind, $name, namespace => $ns) → our local CR
+        return $self->{cr};
+    }
+
+    sub update {
+        my ($self, $cr) = @_;
+        $self->{cr} = $cr;
+        return $cr;
+    }
+
+    sub patch {
+        my ($self, %args) = @_;
+        my $body = $args{body} // {};
+        if (my $st = $body->{status}) {
+            $self->{cr}{status}{$_} = $st->{$_} for keys %$st;
+            my $phase = $st->{phase} // '(unchanged)';
+            my $msg   = $st->{message} ? " — $st->{message}" : '';
+            print "[status] phase=$phase$msg\n";
+        }
+        return $self->{cr};
+    }
+
+    sub delete { return 1 }
 }
 
-# Drive the state machine
-print "\n=== Robocop test: joining $opt{name} ($opt{host}) to $opt{server} ===\n\n";
+my $k8s = LocalK8s->new($cr);
 
+my $node = OCP::Node->from_cr(
+    $cr,
+    k8s           => $k8s,
+    provider      => undef,   # not needed from Provisioning onwards
+    ssh_key       => $ssh_key_content,
+    server_url    => $opt{server},
+    join_token    => $opt{token},
+    distribution  => $opt{dist},
+    verbose       => $opt{verbose},
+    reconciler_id => 'cli-test',
+);
+
+print "\n=== robocop-test-join: $opt{name} ($opt{host}) → $opt{server} ===\n\n";
+
+# Drive the state machine.
+# Step 1 (Provisioning): calls _install_kubernetes → SSH + Rex → patches to Joining.
+# Step 2 (Joining):      calls _wait_ready → k8s->get(path=>) returns undef → no-op.
+# We stop after that; a real cluster check would need a live kubeconfig.
 for my $step (1..5) {
-    my $phase = $fake_node->{status}{phase};
-    print "\n--- Step $step (phase=$phase) ---\n";
+    my $phase_before = $node->phase;
+    printf "--- step %d (phase=%s) ---\n", $step, $phase_before;
 
-    $c->reconcile_node($fake_node);
+    $node->reconcile;
 
-    last if $phase eq $fake_node->{status}{phase};  # no progress
-    last if $fake_node->{status}{phase} eq 'Ready';
-    last if $fake_node->{status}{phase} eq 'Failed';
+    my $phase_after = $node->phase;
+    last if $phase_after eq 'Failed';
+    last if $phase_after eq 'Ready';
+    last if $phase_after eq $phase_before;   # no progress
 }
 
-print "\n=== Final status ===\n";
-print "Phase: $fake_node->{status}{phase}\n";
-print "Message: " . ($fake_node->{status}{message} // '-') . "\n";
+my $final = $node->phase;
+print "\n=== done. Final phase: $final ===\n";
+print "Message: " . ($node->cr->{status}{message} // '-') . "\n";
 
-exit($fake_node->{status}{phase} eq 'Ready' || $fake_node->{status}{phase} eq 'Joining' ? 0 : 1);
+exit($final eq 'Ready' || $final eq 'Joining' ? 0 : 1);
