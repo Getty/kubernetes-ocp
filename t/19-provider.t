@@ -7,6 +7,7 @@ use lib 'lib';
 
 use OCP::Cmd::Provider::Ls;
 use OCP::Cmd::Provider::Add;
+use OCP::Cmd::Provider::Rm;
 use Path::Tiny;
 
 sub capture_stdout (&) {
@@ -16,6 +17,15 @@ sub capture_stdout (&) {
     local *STDOUT = $fh;
     $code->();
     return $out;
+}
+
+sub capture_stderr (&) {
+    my ($code) = @_;
+    my $err = '';
+    open my $fh, '>', \$err or die "open stderr capture: $!";
+    local *STDERR = $fh;
+    $code->();
+    return $err;
 }
 
 {
@@ -56,7 +66,15 @@ sub capture_stdout (&) {
 
     sub get {
         my ($self, %args) = @_;
+        push @{$self->{calls}}, ['get', \%args];
         my $path = $args{path} // '';
+        if ($path =~ m{/ocpnodeproviders/(.+)$}) {
+            my $name = $1;
+            for my $p (@{ $self->{providers} }) {
+                return $p if $p->{metadata}{name} eq $name;
+            }
+            die "404: not found $path\n";
+        }
         if ($path =~ /ocpnodeproviders$/) {
             return { items => $self->{providers} };
         }
@@ -68,6 +86,7 @@ sub capture_stdout (&) {
 
     sub ensure { push @{$_[0]->{calls}}, ['ensure', $_[1]]; $_[1] }
     sub patch   { push @{$_[0]->{calls}}, ['patch',  { @_[1..$#_] }]; { } }
+    sub delete  { push @{$_[0]->{calls}}, ['delete', { @_[1..$#_] }]; 1 }
 }
 
 # --- Ls tests ---
@@ -208,6 +227,43 @@ subtest 'requires --token-file for hetzner' => sub {
         )->execute([], []);
     };
     like $@, qr/token-file.*required/i, 'hetzner requires --token-file';
+};
+
+subtest 'rm blocks when nodes reference provider' => sub {
+    my $k8s = FakeK8sP->new(
+        providers => [{ metadata => { name => 'hetzner-a' }, spec => { type => 'hetzner' } }],
+        nodes => [
+            { metadata => { name => 'worker-1' }, spec => { providerRef => 'hetzner-a' }, status => { phase => 'Ready' } },
+            { metadata => { name => 'worker-2' }, spec => { providerRef => 'hetzner-a' }, status => { phase => 'Provisioning' } },
+        ],
+    );
+    my $rm = OCP::Cmd::Provider::Rm->new(k8s => $k8s, name => 'hetzner-a');
+    my $stderr = capture_stderr {
+        eval { $rm->execute([], []) };
+    };
+    like $stderr, qr/hetzner-a.*2 referencing nodes/;
+    like $stderr, qr/worker-1 \(Ready\)/;
+    like $stderr, qr/worker-2 \(Provisioning\)/;
+    my @deletes = grep { $_->[0] eq 'delete' } @{$k8s->{calls}};
+    is scalar @deletes, 0, 'no delete when references exist';
+};
+
+subtest 'rm deletes Secret + CR when no references' => sub {
+    my $k8s = FakeK8sP->new(
+        providers => [{ metadata => { name => 'hetzner-b' }, spec => { type => 'hetzner' } }],
+        nodes => [],
+    );
+    my $rm = OCP::Cmd::Provider::Rm->new(k8s => $k8s, name => 'hetzner-b');
+    capture_stdout { $rm->execute([], []) };
+    my @deletes = grep { $_->[0] eq 'delete' } @{$k8s->{calls}};
+    is scalar @deletes, 2, 'two deletes (Secret + CR)';
+};
+
+subtest 'rm errors on unknown provider' => sub {
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $rm = OCP::Cmd::Provider::Rm->new(k8s => $k8s, name => 'nonexistent');
+    eval { $rm->execute([], []) };
+    like $@, qr/not found/i;
 };
 
 done_testing;
