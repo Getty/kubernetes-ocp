@@ -11,7 +11,7 @@ our $VERSION = '0.001';
 
 sub execute {
     my ($self, $args, $chain) = @_;
-    die "subcommand required: ocp node [ls]\n";
+    die "subcommand required: ocp node [add|rm|ls]\n";
 }
 
 1;
