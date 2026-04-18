@@ -1,3 +1,28 @@
+# Claude Code — commit: skills/, agents/, hooks/, settings.json
+# Ignore: local overrides, credentials, session data
+
+# Tracked: shared config & extensibility
+!/.claude/
+.claude/*
+!.claude/settings.json
+!.claude/settings.local.json
+!.claude/agents/
+!.claude/agents/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/hooks/
+!.claude/hooks/**
+
+# Local overrides (machine-specific)
+.claude/*.local.*
+.claude/local/
+
+# Credentials & session state (never track)
+.claude/.credentials.json
+.claude/statsig/
+.claude/todos/
+.claude/projects/
+
 #
 # Perl / Dist::Zilla / ExtUtils::MakeMaker
 #
@@ -10,14 +35,12 @@ pm_to_blib
 MYMETA.json
 MYMETA.yml
 Makefile.old
-
 #
 # Test / coverage / profiling
 #
 .prove
 cover_db/
 nytprof*
-
 #
 # Local build and temp files
 #
@@ -32,7 +55,6 @@ nytprof*
 *.swo
 *~
 .DS_Store
-
 #
 # Local environments
 #
@@ -44,27 +66,7 @@ nytprof*
 local/
 .ocp/
 tmp/
-
 #
 # Project-specific generated files
 #
 share/Rexfile.lock
-
-# Claude Code — commit: skills/, agents/, hooks/, settings.json
-# Ignore: local overrides, credentials, session data
-.claude/*
-!.claude/settings.json
-!.claude/agents/
-!.claude/agents/**
-!.claude/skills/
-!.claude/skills/**
-!.claude/hooks/
-!.claude/hooks/**
-.claude/*.local.*
-.claude/local/
-.claude/.credentials.json
-.claude/statsig/
-.claude/todos/
-.claude/projects/
-
-AGENTS.md
