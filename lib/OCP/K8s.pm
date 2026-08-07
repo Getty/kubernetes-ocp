@@ -3,8 +3,12 @@ package OCP::K8s;
 
 use strict;
 use warnings;
-use OCP::K8s::OCPNode;
-use OCP::K8s::OCPNodeProvider;
+# Load without import: IO::K8s <= 1.002 makes APIObject classes inherit from
+# IO::K8s::Resource, so they also inherit its import(), which would inject the
+# k8s DSL into every package that says "use OCP::K8s;" and collide with a local
+# "has k8s".
+use OCP::K8s::OCPNode ();
+use OCP::K8s::OCPNodeProvider ();
 
 our $VERSION = '0.001';
 

@@ -374,7 +374,7 @@ subtest 'reconcile_until_ready returns 0 on Failed CR' => sub {
 
 subtest 'teardown patches Terminating and calls provider->delete_server + delete on k8s' => sub {
     my $delete_called;
-    my $prov = FakeProvider->new(delete_cb => sub { $delete_called = { @_[1..$#_] }; 1 });
+    my $prov = FakeProvider->new(delete_cb => sub { $delete_called = { @_ }; 1 });
     my $cr = {
         apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
         metadata => { name => 't1', namespace => 'ocp-system' },
