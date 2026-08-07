@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "caveman@caveman": true,
+    "superpowers@claude-plugins-official": true
+  }
+}

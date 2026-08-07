@@ -70,3 +70,6 @@ tmp/
 # Project-specific generated files
 #
 share/Rexfile.lock
+
+# our-codex generates AGENTS.md, we ignore
+AGENTS.md
