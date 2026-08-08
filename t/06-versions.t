@@ -40,12 +40,12 @@ use OCP::Versions;
 #
 
 {
-    is(OCP::Versions->get_component_version('cilium'), '1.19.2', 'cilium version');
-    is(OCP::Versions->get_component_version('rke2'), 'v1.31.3+rke2r1', 'rke2 version');
-    is(OCP::Versions->get_component_version('k3s'), 'v1.31.3+k3s1', 'k3s version');
-    is(OCP::Versions->get_component_version('cilium_cli'), 'v0.18.5', 'cilium_cli version');
-    is(OCP::Versions->get_component_version('traefik'), 'v3.2.0', 'traefik version');
-    is(OCP::Versions->get_component_version('cert_manager'), 'v1.14.0', 'cert_manager version');
+    is(OCP::Versions->get_component_version('cilium'), '1.20.0', 'cilium version');
+    is(OCP::Versions->get_component_version('rke2'), 'v1.36.3+rke2r1', 'rke2 version');
+    is(OCP::Versions->get_component_version('k3s'), 'v1.36.3+k3s1', 'k3s version');
+    is(OCP::Versions->get_component_version('cilium_cli'), 'v0.19.7', 'cilium_cli version');
+    is(OCP::Versions->get_component_version('cert_manager'), 'v1.21.1', 'cert_manager version');
+    is(OCP::Versions->get_component_version('traefik'), undef, 'traefik gone (replaced by Cilium Gateway API)');
 }
 
 #
@@ -62,11 +62,11 @@ use OCP::Versions;
 #
 
 {
-    is(OCP::Versions->get_component_version('gpu_operator'), 'v24.9.2', 'gpu_operator version');
-    is(OCP::Versions->get_component_version('nvidia_toolkit'), 'v1.17.1-ubuntu20.04', 'nvidia_toolkit version');
-    is(OCP::Versions->get_component_version('nvidia_device_plugin'), 'v0.17.0', 'nvidia_device_plugin version');
-    is(OCP::Versions->get_component_version('dcgm_exporter'), '3.3.9-3.6.1-ubuntu22.04', 'dcgm_exporter version');
-    is(OCP::Versions->get_component_version('nfd'), 'v0.17.0', 'nfd version');
+    is(OCP::Versions->get_component_version('gpu_operator'), 'v26.3.3', 'gpu_operator version');
+    is(OCP::Versions->get_component_version('nvidia_toolkit'), 'v1.19.1', 'nvidia_toolkit version');
+    is(OCP::Versions->get_component_version('nvidia_device_plugin'), 'v0.19.3', 'nvidia_device_plugin version');
+    is(OCP::Versions->get_component_version('dcgm_exporter'), '4.5.3-4.8.2-distroless', 'dcgm_exporter version');
+    is(OCP::Versions->get_component_version('nfd'), 'v0.18.3', 'nfd version');
 }
 
 #
@@ -79,8 +79,8 @@ use OCP::Versions;
     ok((grep { $_ eq 'cilium' } @components), 'cilium in components list');
     ok((grep { $_ eq 'rke2' } @components), 'rke2 in components list');
     ok((grep { $_ eq 'k3s' } @components), 'k3s in components list');
-    ok((grep { $_ eq 'traefik' } @components), 'traefik in components list');
     ok((grep { $_ eq 'cert_manager' } @components), 'cert_manager in components list');
+    ok(!(grep { $_ eq 'traefik' } @components), 'traefik not in components list');
     ok((grep { $_ eq 'gpu_operator' } @components), 'gpu_operator in components list');
     ok((grep { $_ eq 'nfd' } @components), 'nfd in components list');
 }

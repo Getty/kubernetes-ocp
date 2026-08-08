@@ -2,7 +2,9 @@ package OCP::Cmd::Node;
 # ABSTRACT: Manage OCPNode CRs
 
 use Moo;
-use MooX::Cmd;
+# Subcommands live directly under OCP::Cmd::Node, not the default
+# OCP::Cmd::Node::Cmd.
+use MooX::Cmd base => 'OCP::Cmd::Node';
 use MooX::Options;
 
 with 'OCP::Role::Cmd';

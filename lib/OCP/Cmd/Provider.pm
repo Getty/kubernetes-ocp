@@ -2,7 +2,9 @@ package OCP::Cmd::Provider;
 # ABSTRACT: Manage OCPNodeProvider CRs
 
 use Moo;
-use MooX::Cmd;
+# Subcommands live directly under OCP::Cmd::Provider, not the default
+# OCP::Cmd::Provider::Cmd.
+use MooX::Cmd base => 'OCP::Cmd::Provider';
 use MooX::Options;
 
 with 'OCP::Role::Cmd';

@@ -243,4 +243,91 @@ subtest 'from_cr hetzner uses typed Kind args (not path=>)' => sub {
     is $mock_k8s->{calls}[0][0], 'Secret', 'typed Kind "Secret" used';
 };
 
+#
+# Test: shared ExistingHost behaviour
+#
+# Exercised through a stand-in so no test ever runs an uninstall script.
+#
+
+package FakeExistingHost {
+    use Moo;
+    with 'OCP::Role::Provider::ExistingHost';
+
+    has commands  => (is => 'ro', default => sub { [] });
+    has reachable => (is => 'rw', default => 1);
+
+    sub resolve_host {
+        my ($self, %opts) = @_;
+        my $host = $opts{host};
+        die "host required\n" unless defined $host && length $host;
+        return $host;
+    }
+    sub host_reachable { $_[0]->reachable }
+    sub run_command {
+        my ($self, $host, $command) = @_;
+        push @{ $self->commands }, [$host, $command];
+        return { stdout => '', stderr => '', exit => 0 };
+    }
+}
+
+{
+    my $p = FakeExistingHost->new;
+
+    $p->delete_server('ignored-id', host => '10.0.0.9');
+    is(scalar @{$p->commands}, 1, 'delete_server ran one command');
+    is($p->commands->[0][0], '10.0.0.9', 'command went to the resolved host');
+    like($p->commands->[0][1], qr/rke2-uninstall\.sh/, 'uninstall script invoked');
+    like($p->commands->[0][1], qr/k3s-uninstall\.sh/, 'covers both distributions');
+}
+
+{
+    my $p = FakeExistingHost->new;
+    $p->delete_server(undef);
+    is(scalar @{$p->commands}, 0, 'delete_server without a host does nothing');
+}
+
+{
+    my $p = FakeExistingHost->new(reachable => 0);
+    is($p->server_exists('n', host => '10.0.0.9'), undef, 'unreachable host reports missing');
+
+    my $up = FakeExistingHost->new;
+    is_deeply($up->server_exists('n', host => '10.0.0.9'), { ip => '10.0.0.9' },
+        'reachable host reports its IP');
+    is($up->server_exists('n'), undef, 'no host means no server');
+}
+
+{
+    my $p = FakeExistingHost->new;
+    my $info = { ip => '10.0.0.9' };
+    is($p->wait_for_running($info, 120), $info, 'wait_for_running is a passthrough');
+}
+
+#
+# Test: Local runs commands without SSH
+#
+
+{
+    my $local = OCP::Provider::Local->new;
+
+    my $result = $local->run_command('127.0.0.1', 'echo hello-from-local');
+    is($result->{exit}, 0, 'local command exits 0');
+    like($result->{stdout}, qr/hello-from-local/, 'local command output captured');
+
+    my $failed = $local->run_command('127.0.0.1', 'exit 3');
+    is($failed->{exit}, 3, 'exit code passed through');
+
+    ok($local->host_reachable('127.0.0.1'), 'localhost is always reachable');
+    is($local->resolve_host(host => '10.0.0.1'), '127.0.0.1', 'local provider stays local');
+}
+
+#
+# Test: Hetzner ignores a missing server id instead of calling the API
+#
+
+{
+    my $hz = OCP::Provider::Hetzner->new(token => 'fake', cluster_name => 'c');
+    my $ok = eval { $hz->delete_server(undef); 1 };
+    ok($ok, 'delete_server without id is a no-op (no API call)');
+}
+
 done_testing;

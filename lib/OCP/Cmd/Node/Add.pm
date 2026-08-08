@@ -17,10 +17,9 @@ with 'OCP::Role::Cmd';
 our $VERSION = '0.001';
 
 option name => (
-    is       => 'ro',
-    format   => 's',
-    required => 1,
-    doc      => 'Node name',
+    is     => 'rw',
+    format => 's',
+    doc    => 'Node name (may also be given as the first argument)',
 );
 
 option role => (
@@ -289,6 +288,10 @@ sub _cli_reconcile {
 
 sub execute {
     my ($self, $args, $chain) = @_;
+
+    $self->name($self->name // ($args && $args->[0]));
+    die "Usage: ocp node add NAME [--role worker|control-plane]\n"
+        unless defined $self->name && length $self->name;
 
     my $api           = $self->_k8s;
     my $provider_hash = $self->_resolve_provider($api);

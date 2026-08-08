@@ -374,12 +374,17 @@ subtest 'reconcile_until_ready returns 0 on Failed CR' => sub {
 
 subtest 'teardown patches Terminating and calls provider->delete_server + delete on k8s' => sub {
     my $delete_called;
-    my $prov = FakeProvider->new(delete_cb => sub { $delete_called = { @_ }; 1 });
+    my $prov = FakeProvider->new(delete_cb => sub {
+        my ($server_id, %opts) = @_;
+        $delete_called = { id => $server_id, %opts };
+        1;
+    });
     my $cr = {
         apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
         metadata => { name => 't1', namespace => 'ocp-system' },
         spec => { role => 'worker', providerRef => 'p' },
-        status => { phase => 'Ready', kubernetesNodeName => 't1', publicIP => '1.2.3.4' },
+        status => { phase => 'Ready', kubernetesNodeName => 't1', publicIP => '1.2.3.4',
+                    providerId => 'SRV1' },
     };
     my $k = FakeK8s->new(cr => $cr);
     my $node = OCP::Node->from_cr($cr, k8s => $k, provider => $prov,
@@ -395,6 +400,9 @@ subtest 'teardown patches Terminating and calls provider->delete_server + delete
     } @{$k->{calls}};
     ok $terminating, 'status patched to Terminating';
     ok $delete_called, 'provider->delete_server called';
+    is $delete_called->{id}, 'SRV1', 'provider id from status passed as first argument';
+    is $delete_called->{host}, '1.2.3.4', 'host passed for host-based providers';
+    is $delete_called->{name}, 't1', 'node name passed';
     my @deletes = grep { $_->[0] eq 'delete' } @{$k->{calls}};
     ok scalar(@deletes) >= 1, 'k8s delete called at least once';
 };

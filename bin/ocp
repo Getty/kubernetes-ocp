@@ -9,7 +9,7 @@ use lib "$FindBin::Bin/../lib";
 
 use OCP;
 
-OCP->new_with_cmd;
+exit OCP->run_cli;
 
 __END__
 
@@ -19,39 +19,45 @@ ocp - Omni Control Plane CLI
 
 =head1 SYNOPSIS
 
-    # Hetzner Cloud server management
-    ocp hetzner list
-    ocp hetzner create --name=cp-1 --type=cpx21 --ssh-key=my-key
-    ocp hetzner delete --name=cp-1
+    # Project and cluster
+    ocp init --hetzner                    # initialize project (keys, config, git)
+    ocp apply                             # deploy / reconcile, fix drift
+    ocp status                            # cluster status and drift
+    ocp destroy                           # tear the cluster down
 
-    # SSH key management
-    ocp hetzner ssh-keys --list
-    ocp hetzner ssh-keys --add=my-key --key-file=~/.ssh/id_rsa.pub
+    # Cluster access
+    ocp kubeconfig                        # print kubeconfig
+    ocp kubeconfig -e                     # merge into ~/.kube/config
+    ocp ssh --node police1                # SSH into a node (admin key)
 
-    # Node management
-    ocp node add <host> --server=<url> --token=<token>
-    ocp node list
-    ocp node remove <name>
+    # Nodes and providers (OCPNode / OCPNodeProvider CRs)
+    ocp node ls
+    ocp node add worker-1 --role worker
+    ocp node rm worker-1
+    ocp provider ls
+    ocp provider add --name hetzner-fsn1 --type hetzner --token-file token.txt
 
-    # Cluster operations
-    ocp cluster init --provider=hetzner
-    ocp cluster status
-    ocp cluster destroy
+    # Versions and components
+    ocp version                           # OCP and component versions
+    ocp update --dry-run                  # what would be updated
+    ocp update                            # update components
+
+    # Controller
+    ocp deploy-robocop                    # deploy robocop and its CRDs
 
 =head1 DESCRIPTION
 
 OCP (Omni Control Plane) is a self-contained Kubernetes cluster management
-tool. It manages the complete lifecycle of k3s clusters across multiple
-providers (Hetzner Cloud, SSH-accessible servers, etc.).
+tool. It manages the complete lifecycle of RKE2/K3s clusters across multiple
+providers (Hetzner Cloud, SSH-accessible servers, localhost).
 
 B<Note:> The recommended way to use OCP is via Docker:
 
     docker run --rm -it \
-      -v ~/.ssh:/root/.ssh:ro \
-      -v $(pwd):/workspace \
-      -w /workspace \
+      -v $(pwd):/ocp \
+      -v ~/.ssh:/home/ocp/.ssh:ro \
       -e HETZNER_API_TOKEN \
-      getty/ocp apply
+      raudssus/ocp apply
 
 The Docker image includes all dependencies and is the primary supported method.
 CPAN installation is provided for users who prefer native Perl installations.
@@ -62,12 +68,22 @@ CPAN installation is provided for users who prefer native Perl installations.
 
 =item HETZNER_API_TOKEN
 
-Hetzner Cloud API token
+Hetzner Cloud API token. Alternatively kept encrypted in F<secrets.yaml>.
 
 =item OCP_SSH_KEY
 
-Default SSH private key path
+Default SSH private key path.
+
+=item KUBECONFIG
+
+Where C<ocp kubeconfig --export> merges the cluster credentials. Only the
+first path is used. Defaults to F<~/.kube/config>.
 
 =back
+
+=head1 EXIT STATUS
+
+0 on success, 1 on error. Errors are reported as a single line; run with
+C<--verbose> to get the full Perl error including the source location.
 
 =cut

@@ -123,9 +123,7 @@ sub version {
 }
 
 # Add-on flags (default: enabled, set to true to disable)
-sub no_traefik { shift->spec->{notraefik} // 0 }
 sub no_cert { shift->spec->{nocert} // 0 }
-sub no_robocop { shift->spec->{norobocop} // 0 }
 
 sub robocop_enabled {
     my $self = shift;
@@ -185,6 +183,13 @@ sub status_file {
     return $self->project_dir->child('.ocp', 'status.yaml')->stringify;
 }
 
+# Runtime status (.ocp/status.yaml). Loaded once and kept, so callers can
+# mutate it and persist with save_status.
+has status => (
+    is      => 'lazy',
+    builder => '_load_status',
+);
+
 sub _load_status {
     my ($self) = @_;
     my $file = $self->status_file;
@@ -194,8 +199,36 @@ sub _load_status {
 
 sub nodes_status {
     my ($self) = @_;
-    my $status = $self->_load_status;
-    return $status->{nodes} // [];
+    return $self->status->{nodes} //= [];
+}
+
+# The control plane we can reach: the recorded node status if we have one,
+# otherwise whatever the spec pins.
+sub cluster_status {
+    my ($self) = @_;
+
+    for my $node (@{ $self->nodes_status }) {
+        next if ($node->{role} // 'control-plane') =~ /worker/;
+        my $ip = $node->{publicIp} // $node->{publicIP};
+        return $node if defined $ip && length $ip && $ip ne '-';
+    }
+
+    my $cp = $self->control_planes->[0] // {};
+    my $ip = $cp->{publicIp} // $cp->{publicIP} // $cp->{host};
+
+    return {} unless defined $ip && length $ip;
+    return { name => $cp->{name} // 'cp-1', publicIp => $ip };
+}
+
+sub set_status {
+    my ($self, $key, $value) = @_;
+    $self->status->{$key} = $value;
+    return $value;
+}
+
+sub save_status {
+    my ($self) = @_;
+    return $self->_save_status($self->status);
 }
 
 #
@@ -288,21 +321,20 @@ sub validate {
 sub save_node_status {
     my ($self, $node) = @_;
 
-    my $status = $self->_load_status;
-    $status->{nodes} //= [];
+    my $nodes = $self->nodes_status;
 
     # Upsert by name
     my $found = 0;
-    for my $existing (@{$status->{nodes}}) {
+    for my $existing (@$nodes) {
         if ($existing->{name} eq $node->{name}) {
             %$existing = %$node;
             $found = 1;
             last;
         }
     }
-    push @{$status->{nodes}}, $node unless $found;
+    push @$nodes, $node unless $found;
 
-    $self->_save_status($status);
+    $self->save_status;
 }
 
 sub _save_status {

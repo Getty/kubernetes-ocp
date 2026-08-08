@@ -349,4 +349,73 @@ subtest 'migration detects control-plane label' => sub {
     is $cp->[3]{spec}{role}, 'control-plane', 'CP label → role=control-plane';
 };
 
+#
+# _run_remedy: the step apply runs for a drift entry
+#
+
+sub remedy_config {
+    my (%args) = @_;
+    my $dir = tempdir(CLEANUP => 1);
+    path($dir)->child('ocp.yaml')->spew_utf8(<<"YAML");
+name: t
+controlPlanes:
+  provider: ssh
+  host: @{[ $args{host} // '1.2.3.4' ]}
+ssh:
+  privateKey: key
+YAML
+    path($dir)->child('key')->spew_utf8('PRIVATE') if $args{with_key};
+    return OCP::Config->new(file => path($dir)->child('ocp.yaml')->stringify);
+}
+
+# _run_remedy asks the root command for --verbose, so this instance needs a
+# command chain rather than just an 'ocp' constructor argument.
+my $remedy_apply = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
+
+my $CILIUM_DRIFT = {
+    component => 'cilium',
+    label     => 'Cilium',
+    expected  => '1.19.2',
+    remedy    => { type => 'rex', task => 'upgrade_cilium', params => { version => '1.19.2' } },
+};
+
+subtest '_run_remedy runs the Rex task with the target version' => sub {
+    my @calls;
+    no warnings 'redefine';
+    local *OCP::Rex::new = sub { my ($class, %args) = @_; bless {%args}, $class };
+    local *OCP::Rex::run_task = sub {
+        my ($self, $task, %params) = @_;
+        push @calls, { host => $self->{host}, key => $self->{key_file}, task => $task, %params };
+        return 1;
+    };
+
+    my $config = remedy_config(with_key => 1);
+    my $ran = $remedy_apply->_run_remedy($config, $CILIUM_DRIFT);
+
+    ok $ran, 'reports that it ran';
+    is scalar(@calls), 1, 'one Rex task';
+    is $calls[0]{task}, 'upgrade_cilium', 'the task named by the remedy';
+    is $calls[0]{version}, '1.19.2', 'with the target version';
+    is $calls[0]{host}, '1.2.3.4', 'against the control plane';
+};
+
+subtest '_run_remedy declines without an SSH key instead of dying' => sub {
+    my @calls;
+    no warnings 'redefine';
+    local *OCP::Rex::new = sub { push @calls, 1; bless {}, shift };
+
+    my $config = remedy_config();   # no key file written
+    my $ran = eval { $remedy_apply->_run_remedy($config, $CILIUM_DRIFT) };
+
+    ok defined $ran, 'no exception';
+    ok !$ran, 'reports that it did not run';
+    is scalar(@calls), 0, 'Rex never invoked';
+};
+
+subtest '_run_remedy ignores entries without a remedy' => sub {
+    my $config = remedy_config(with_key => 1);
+    ok !$remedy_apply->_run_remedy($config, { component => 'rke2', remedy => undef }),
+        'nothing to do';
+};
+
 done_testing;

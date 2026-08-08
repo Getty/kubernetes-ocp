@@ -2,46 +2,41 @@ package OCP::Provider::Local;
 # ABSTRACT: Local infrastructure provider (localhost)
 
 use Moo;
+use IPC::Open3 qw(open3);
+use Symbol qw(gensym);
+
+with 'OCP::Role::Provider::ExistingHost';
 
 our $VERSION = '0.001';
 
-has verbose => (is => 'ro', default => 0);
+# The machine OCP itself runs on. Kept as an IP rather than 'localhost' so
+# the value can be handed to SSH-based code paths unchanged.
+sub resolve_host { return '127.0.0.1' }
 
-sub upload_ssh_key {
-    # No-op for local provider
-    return;
-}
+# We are already here.
+sub host_reachable { return 1 }
 
-sub server_exists {
-    # Local is always "existing"
-    return { ip => '127.0.0.1' };
-}
+# Same contract as OCP::SSH::run, minus the SSH.
+sub run_command {
+    my ($self, $host, $command) = @_;
 
-sub create_server {
-    my ($self, %opts) = @_;
+    my $err = gensym;
+    my $pid = open3(my $in, my $out, $err, 'sh', '-c', $command);
+    close $in;
+
+    my $stdout = do { local $/; <$out> };
+    my $stderr = do { local $/; <$err> };
+
+    close $out;
+    close $err;
+
+    waitpid($pid, 0);
+
     return {
-        id            => undef,
-        ip            => '127.0.0.1',
-        newly_created => 0,
+        stdout => $stdout // '',
+        stderr => $stderr // '',
+        exit   => $? >> 8,
     };
-}
-
-sub wait_for_running {
-    my ($self, $server_info, $timeout) = @_;
-    return $server_info;
-}
-
-sub delete_server {
-    # Local uninstall handled by OCP::Local
-    return;
-}
-
-sub cleanup_on_failure {
-    return;
-}
-
-sub list_servers_by_cluster {
-    return [];
 }
 
 1;
@@ -54,7 +49,30 @@ OCP::Provider::Local - Local provider for localhost installations
 
 =head1 DESCRIPTION
 
-Provider for local installations that run directly on the current machine.
-All server lifecycle methods are no-ops since there is no remote infrastructure.
+Does what L<OCP::Provider::SSH> does, without the SSH: commands run directly
+on this machine. Shared provider behaviour lives in
+L<OCP::Role::Provider::ExistingHost>.
+
+Note that this covers the I<provider> side only — reporting the host and
+uninstalling the distribution. Installing Kubernetes still goes through
+L<OCP::Rex>, which connects to 127.0.0.1 over SSH, so the local host needs
+the OCP public key in its F<authorized_keys>.
+
+=head1 METHODS
+
+=head2 resolve_host
+
+Always C<127.0.0.1>.
+
+=head2 host_reachable
+
+Always true.
+
+=head2 run_command
+
+    my $result = $provider->run_command($host, 'uptime');
+
+Runs the command through C<sh -c> on the local machine. Returns a hashref
+with C<stdout>, C<stderr> and C<exit>, matching L<OCP::SSH/run>.
 
 =cut

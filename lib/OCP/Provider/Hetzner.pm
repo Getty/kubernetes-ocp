@@ -96,7 +96,8 @@ sub get_server_ip {
 }
 
 sub delete_server {
-    my ($self, $server_id) = @_;
+    my ($self, $server_id, %opts) = @_;
+    return unless defined $server_id && length $server_id;
     $self->cloud->servers->delete($server_id);
 }
 

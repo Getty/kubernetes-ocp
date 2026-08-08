@@ -7,6 +7,8 @@ use OCP::Config;
 use OCP::Versions;
 use OCP;
 
+with 'OCP::Role::Cmd';
+
 our $VERSION = '0.001';
 
 sub execute {
@@ -15,7 +17,7 @@ sub execute {
     print "OCP CLI Version: $OCP::VERSION\n\n";
 
     # Try to load config and status
-    my $config_file = -f 'ocp.yaml' ? 'ocp.yaml' : undef;
+    my $config_file = -f $self->ocp->config ? $self->ocp->config : undef;
 
     unless ($config_file) {
         print "No ocp.yaml found. Run 'ocp init' to create a cluster.\n";

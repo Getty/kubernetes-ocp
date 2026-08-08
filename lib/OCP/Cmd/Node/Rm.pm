@@ -17,10 +17,9 @@ with 'OCP::Role::Cmd';
 our $VERSION = '0.001';
 
 option name => (
-    is       => 'ro',
-    format   => 's',
-    required => 1,
-    doc      => 'Node name',
+    is     => 'ro',
+    format => 's',
+    doc    => 'Node name (may also be given as the first argument)',
 );
 
 has k8s => (is => 'rw');
@@ -55,8 +54,10 @@ sub _k8s {
 sub execute {
     my ($self, $args, $chain) = @_;
 
+    my $name = $self->name // ($args && $args->[0]);
+    die "Usage: ocp node rm NAME\n" unless defined $name && length $name;
+
     my $api  = $self->_k8s;
-    my $name = $self->name;
     my $ns   = 'ocp-system';
 
     my $cr_obj = eval {

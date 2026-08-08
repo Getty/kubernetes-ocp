@@ -8,6 +8,7 @@ use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Config;
+use OCP::Kubeconfig;
 use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
@@ -17,7 +18,7 @@ our $VERSION = '0.001';
 option export => (
     is    => 'ro',
     short => 'e',
-    doc   => 'Export to ~/.kube/config',
+    doc   => 'Merge into $KUBECONFIG or ~/.kube/config',
 );
 
 option output => (
@@ -48,11 +49,10 @@ sub execute {
     my $kubeconfig;
 
     if ($self->refresh) {
-        # Fetch fresh kubeconfig from server (BITSOW - need to find CP IP!)
-        # TODO: Implement refresh via Hetzner API or kubectl
-        die "--refresh not yet implemented in v0. Use kubeconfig.yaml.\n";
+        # Would mean fetching /etc/rancher/*/….yaml off the control plane
+        # again via Rex. Only useful once the stored one can go stale.
+        die "--refresh is not implemented. The stored kubeconfig.yaml is authoritative.\n";
     } else {
-        # Decrypt kubeconfig.yaml (BITSOW!)
         unless ($config->cluster_exists) {
             die "No cluster deployed. Run 'ocp apply' first.\n";
         }
@@ -72,17 +72,28 @@ sub execute {
         path($out_file)->chmod(0600);
         print "Kubeconfig written to $out_file\n";
     } elsif ($self->export) {
-        # Export to .kube/config (local project dir)
-        my $kube_dir = $config->project_dir->child('.kube');
-        $kube_dir->mkpath unless -d $kube_dir;
-        my $kube_file = $kube_dir->child('config');
+        # Merge into the user's kubeconfig, keeping other clusters intact
+        my $result = OCP::Kubeconfig->export(
+            kubeconfig => $kubeconfig,
+            name       => $config->name,
+        );
 
-        $kube_file->spew($kubeconfig);
-        $kube_file->chmod(0600);
+        print "  [ok] backup: ", _tilde($result->{backup}), "\n" if $result->{backup};
+        print "  [ok] context '$result->{context}' merged into ",
+              _tilde($result->{target}), "\n";
+        print "  [ok] current-context: $result->{context}\n";
 
-        print "Kubeconfig exported to $kube_file\n";
-        print "Use: export KUBECONFIG=.kube/config\n";
-        print "Or:  kubectl --kubeconfig=.kube/config get nodes\n";
+        if (OCP::Kubeconfig->in_container) {
+            print <<"MSG";
+
+WARNING: This is running in a container, so ${\ _tilde($result->{target}) } is
+         inside the container and gone when it exits (unless your home
+         directory is mounted). To get the kubeconfig onto your machine:
+
+           ocp kubeconfig > ~/.kube/config
+           ocp kubeconfig -o /ocp/kubeconfig
+MSG
+        }
     } else {
         # Print to stdout
         print $kubeconfig;
@@ -91,4 +102,57 @@ sub execute {
     return 0;
 }
 
+# Shorten $HOME to ~ for output
+sub _tilde {
+    my ($path) = @_;
+    return $path unless defined $path;
+
+    my $home = $ENV{HOME} // '';
+    return $path unless length $home;
+
+    (my $short = $path) =~ s/\A\Q$home\E(?=\/|\z)/~/;
+    return $short;
+}
+
 1;
+
+__END__
+
+=head1 NAME
+
+OCP::Cmd::Kubeconfig - Output or install the cluster kubeconfig
+
+=head1 SYNOPSIS
+
+    ocp kubeconfig                 # print to stdout
+    ocp kubeconfig -e              # merge into $KUBECONFIG or ~/.kube/config
+    ocp kubeconfig -o /path/file   # write to a specific file
+
+=head1 DESCRIPTION
+
+Decrypts F<kubeconfig.yaml> and hands it out. Without options it goes to
+stdout, so it can be redirected anywhere.
+
+C<--export> merges it into your existing kubeconfig instead of overwriting
+it: cluster, user and context are renamed from the distribution's C<default>
+to the OCP cluster name, entries of other clusters stay untouched, and the
+previous file is kept as F<< <target>.ocp-bak >>. See L<OCP::Kubeconfig>.
+
+Inside a container the merge target is the container's home directory, so
+C<--export> warns and points at stdout or C<--output> instead.
+
+=head1 OPTIONS
+
+=head2 --export, -e
+
+Merge into C<$KUBECONFIG> (first entry) or F<~/.kube/config>.
+
+=head2 --output FILE, -o FILE
+
+Write the kubeconfig to FILE (mode 0600). No merging.
+
+=head2 --refresh, -r
+
+Not implemented. The stored F<kubeconfig.yaml> is authoritative.
+
+=cut

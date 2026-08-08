@@ -15,11 +15,20 @@ ARG OCP_GID=1000
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
   curl ca-certificates git openssh-client locales \
   libexpat1-dev zlib1g-dev libssl-dev libssh-dev build-essential pkg-config libtool libtool-bin \
-  libpkgconf-dev libtickit-dev libtermkey-dev libunibilium-dev \
+  libpkgconf-dev \
   && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ENV LANG=en_US.UTF-8
+
+# Install kubectl =============================================================
+# Debug tool only. OCP itself never shells out to kubectl — all Kubernetes
+# access goes through Kubernetes::REST / IO::K8s. This is here so you can
+# poke at the cluster from inside the image.
+
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+  && chmod +x kubectl \
+  && mv kubectl /usr/local/bin/
 
 # Install Perl ================================================================
 

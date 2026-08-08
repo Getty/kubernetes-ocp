@@ -203,12 +203,21 @@ controlPlanes:
 - Phase / Timestamps
 - Dinge die der User NICHT setzen könnte
 
-**Drift Detection**: Weil setzbare Werte in der Spec stehen, kann OCP erkennen wenn die Realität abweicht:
+**Drift Detection** (`OCP::Drift`): Weil setzbare Werte in der Spec stehen, erkennt OCP
+wenn die Realität abweicht — sowohl bei gepinnten Spec-Werten als auch bei
+Komponentenversionen im Cluster:
 ```
 $ ocp status
-WARNING: Drift detected!
-  cp-1: spec.publicIp=1.2.3.4, actual=2.3.4.5
+=== Drift ===
+  [drift] Cilium runs v1.17.0, expected 1.19.2
+  [drift] cp-1: ocp.yaml pins publicIp 1.2.3.4, recorded state says 2.3.4.5
+
+1 of 2 can be reconciled automatically: run 'ocp apply'.
 ```
+
+`ocp apply` führt für jeden Drift-Eintrag mit `remedy` den zugehörigen Rex-Task aus
+(Cilium/cert-manager Upgrade). Distributions-Upgrades und verschobene IPs werden nur
+gemeldet — die entscheidet der Mensch.
 
 ## Implementierte Features
 
@@ -225,12 +234,13 @@ WARNING: Drift detected!
 - `ocp apply` - Cluster deployen/aktualisieren
 - `ocp status` - Cluster-Status anzeigen
 - `ocp destroy` - Cluster löschen
-- `ocp kubeconfig` - Kubeconfig exportieren
+- `ocp kubeconfig` - Kubeconfig auf stdout; `-e` merged in `$KUBECONFIG`/`~/.kube/config`
+  (mit Backup, andere Cluster bleiben erhalten), `-o FILE` schreibt in eine Datei
 - `ocp version` - Versionen anzeigen
 - `ocp update` - Cluster-Komponenten aktualisieren
 - `ocp ssh --node <name|ip>` - SSH auf Cluster-Nodes (mit admin-key)
-- `ocp deploy-robocop` - Robocop Controller deployen (Stub)
-- `ocp inject-key` - Robo-Key in Robocop injizieren (Stub)
+- `ocp deploy-robocop` - Robocop Controller + CRDs deployen
+- `ocp inject-key` - Robo-Key injizieren (aktuell deaktiviert, braucht port_forward)
 - `ocp hetzner` - Hetzner Cloud Debugging (Server auflisten)
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST] [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--no-wait]` — Add a worker node via OCPNode CR
 - `ocp node rm NAME` — Drain + remove an OCPNode (calls OCP::Node->teardown)
@@ -249,9 +259,14 @@ WARNING: Drift detected!
 - **OCP::Hetzner** - Hetzner Cloud API Helper
 - **OCP::Provider** - Factory für Infrastructure Provider
 - **OCP::Provider::Hetzner** - Hetzner Server-Lifecycle (idempotent, Label-basiert)
-- **OCP::Provider::SSH** - SSH-Provider (bestehende Server)
-- **OCP::Provider::Local** - Lokaler Provider (localhost)
+- **OCP::Role::Provider::ExistingHost** - Gemeinsames Verhalten aller Provider, die
+  keine Infrastruktur erzeugen. Konsumenten liefern nur `resolve_host`,
+  `host_reachable`, `run_command`.
+- **OCP::Provider::SSH** - ExistingHost über SSH (bestehende Server)
+- **OCP::Provider::Local** - ExistingHost ohne SSH (localhost, lokale Ausführung)
 - **OCP::Kubernetes** - Typed K8s Helpers (Node Status, GPU Detection)
+- **OCP::Kubeconfig** - Kubeconfig umbenennen/mergen (`ocp kubeconfig -e`)
+- **OCP::Drift** - Vergleich Spec/Versions-Manifest gegen laufenden Cluster
 - **OCP::Versions** - Version Manifest und Komponentenversionen (inkl. GPU Stack)
 - **OCP::Robocop** - Kubernetes Controller (im Cluster)
 - **OCP::Robocop::Controller** - Reconciliation Logic
@@ -263,36 +278,33 @@ WARNING: Drift detected!
 ### Provider
 - **Hetzner Cloud** - Via WWW::Hetzner::Cloud (CPAN)
 - **SSH** - Bestehende Server als Worker einbinden
-- **Local** - Lokale Installation (Docker Mode oder Native)
+- **Local** - localhost; Provider-Operationen laufen lokal, die Installation selbst
+  weiterhin über Rex/SSH auf 127.0.0.1
 
 ## Dependencies (cpanfile)
 
-```perl
-requires 'Moo';
-requires 'MooX::Cmd';
-requires 'MooX::Options';
-requires 'YAML::XS';
-requires 'Path::Tiny';
-requires 'namespace::clean';
-requires 'WWW::Hetzner';
-requires 'Crypt::Age';
-requires 'File::SOPS';
-requires 'Rex';
-requires 'Rex::Interface::Connection::LibSSH';
-requires 'IO::Async';
-requires 'Net::Async::Kubernetes';
-requires 'IO::K8s';
-requires 'Kubernetes::REST';
-```
+Das `cpanfile` ist die Wahrheitsquelle. Kernpunkte:
+
+- CLI: `Moo`, `MooX::Cmd`, `MooX::Options`, `MooX::Singleton`
+- Config/Krypto: `YAML::XS`, `Path::Tiny`, `Crypt::Age`, `File::SOPS`, `CryptX`, `Crypt::PBKDF2`
+- Provisionierung: `Rex`, `Rex::Interface::Connection::LibSSH`, `IPC::Run`, `WWW::Hetzner`
+- Kubernetes: `Kubernetes::REST`, `IO::K8s`
+- Robocop: `IO::Async`, `Net::Async::Kubernetes`
+
+`Net::Async::Kubernetes` ist aktuell **nicht in Benutzung** — Robocop pollt in einer
+Schleife statt zu watchen, und `ocp inject-key` (das `port_forward` bräuchte) ist
+deaktiviert. Entweder einlösen oder aus dem cpanfile werfen.
 
 ## Externe Tools (im Docker Image)
 
 - `ssh-keygen` - SSH Key Generation
+- `kubectl` - **nur zum Debuggen im Container**. OCP selbst ruft es nie auf,
+  jeder K8s-Zugriff läuft über Kubernetes::REST / IO::K8s. Kein Code-Pfad darf
+  kubectl shellen.
 
 **Nicht mehr benötigt** (durch reine Perl-Implementierung ersetzt):
 - ~~`sops`~~ - ersetzt durch File::SOPS
 - ~~`age`~~ - ersetzt durch Crypt::Age
-- ~~`kubectl`~~ - ersetzt durch IO::K8s / Kubernetes::REST
 - ~~`ssh`~~ - ersetzt durch Rex + LibSSH
 
 ## Build & Test

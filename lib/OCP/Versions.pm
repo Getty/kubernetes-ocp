@@ -12,27 +12,26 @@ our $VERSIONS = {
     '0.001' => {
         components => {
             # Kubernetes distributions
-            rke2 => 'v1.31.3+rke2r1',
-            k3s  => 'v1.31.3+k3s1',
+            rke2 => 'v1.36.3+rke2r1',
+            k3s  => 'v1.36.3+k3s1',
 
             # CNI and networking
-            cilium     => '1.19.2',
-            cilium_cli => 'v0.18.5',
+            cilium     => '1.20.0',
+            cilium_cli => 'v0.19.7',
 
-            # Ingress and SSL
-            traefik      => 'v3.2.0',
-            cert_manager => 'v1.14.0',
+            # Ingress and SSL (ingress is Cilium Gateway API, versioned with cilium)
+            cert_manager => 'v1.21.1',
 
-            # GPU stack
-            gpu_operator         => 'v24.9.2',
-            nvidia_toolkit       => 'v1.17.1-ubuntu20.04',
-            nvidia_device_plugin => 'v0.17.0',
-            dcgm_exporter        => '3.3.9-3.6.1-ubuntu22.04',
-            nvidia_dcgm          => '3.3.9-1-ubuntu22.04',
-            nvidia_validator     => 'v24.9.2',
-            nfd                  => 'v0.17.0',
+            # GPU stack (versions kept in sync with gpu-operator's bundled values.yaml)
+            gpu_operator         => 'v26.3.3',
+            nvidia_toolkit       => 'v1.19.1',
+            nvidia_device_plugin => 'v0.19.3',
+            dcgm_exporter        => '4.5.3-4.8.2-distroless',
+            nvidia_dcgm          => '4.5.2-1-ubuntu22.04',
+            nvidia_validator     => 'v26.3.3',
+            nfd                  => 'v0.18.3',
         },
-        notes => 'Initial release with RKE2/K3s, Cilium CNI, Traefik ingress, cert-manager, GPU stack',
+        notes => 'Initial release with RKE2/K3s, Cilium CNI + Gateway API, cert-manager, GPU stack',
     },
 };
 
@@ -102,7 +101,7 @@ OCP::Versions - OCP version manifest and component versions
     my $cilium_version = $versions->{components}{cilium};
 
     # Get specific component version
-    my $traefik = OCP::Versions->get_component_version('traefik', '0.001');
+    my $cert_manager = OCP::Versions->get_component_version('cert_manager', '0.001');
 
     # List all components
     my @components = OCP::Versions->list_components('0.001');

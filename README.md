@@ -18,17 +18,13 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 
 - **Hetzner Cloud** - Automated server provisioning with API integration
 - **SSH** - Use existing bare-metal or VMs as workers
-- **Local** - Install on localhost with intelligent mode detection:
-  - **Docker Mode**: When running `docker run raudssus/ocp`, automatically uses SSH to localhost (127.0.0.1) with clear user messaging
-  - **Native Mode**: When installed via CPAN, installs directly without SSH (requires sudo)
-  - Auto-detects environment and guides user through setup
+- **Local** - Treat this machine as the cluster node. Same behaviour as the SSH provider, minus the SSH: provider operations run directly on localhost. Installation itself still goes through Rex over SSH to 127.0.0.1, so the OCP public key has to be in the host's `authorized_keys`.
 
 ### Automation
 
 - **CRD-Based Management** - Robocop controller manages nodes via OCPNode/OCPNodeProvider CRDs
 - **Rex Framework** - Server provisioning and configuration management (share/Rexfile)
-- **Drift Detection** - Spec/Status separation with automatic reconciliation
-- **Development Mode** - Built-in registry and image building from source
+- **Drift Detection** - `ocp status` compares the running cluster against the version manifest and `ocp.yaml`; `ocp apply` runs the upgrade step for whatever can be fixed automatically
 
 ### Security (Defense in Depth)
 
@@ -38,7 +34,7 @@ Kubernetes cluster management with CRDs and in-cluster automation. Deploy RKE2/K
 - **PIN-Based Protection** - Two-factor defense:
   - **PIN1** - Encrypts age.key (cluster access)
   - **PIN2** - Encrypts admin-ssh key (control plane deployment)
-- **Memory-Only Secrets** - robo-ssh key stored in RAM only (CRIU checkpoints in tmpfs)
+- **Memory-Only Secrets** - robo-ssh key stored in RAM only (CRIU checkpoints in tmpfs). The controller side is implemented; the `ocp inject-key` half is currently disabled
 - **Control Plane Isolation** - Robocop controller CANNOT access control planes
 - **Pure Perl Encryption** - No external tools required via [Crypt::Age](https://metacpan.org/pod/Crypt::Age) and [File::SOPS](https://metacpan.org/pod/File::SOPS)
 - **Git-Safe Secrets** - All secrets encrypted in repo, recoverable with PIN1+PIN2
@@ -67,18 +63,14 @@ docker run --rm -it \
   -v ~/.ssh:/home/ocp/.ssh:ro \
   raudssus/ocp apply
 
-# Get kubeconfig (exported to .kube/config in project dir)
-docker run --rm -it \
-  -v $(pwd):/ocp \
-  raudssus/ocp kubeconfig -e
-
-# Copy to ~/.kube/config
-cp .kube/config ~/.kube/config
-
-# Or direct to stdout
+# Get kubeconfig. In a container ~/.kube/config is the container's home, so
+# redirect to your own file instead:
 docker run --rm -it \
   -v $(pwd):/ocp \
   raudssus/ocp kubeconfig > ~/.kube/config
+
+# Installed natively, -e merges it into your existing kubeconfig:
+ocp kubeconfig -e
 
 # Alternative: Use alias for convenience
 # Linux (use host network to access localhost)
@@ -146,23 +138,7 @@ docker run --rm -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/config
 
 **Important:** On Linux, use `--net=host` to allow Docker to access your host's localhost (127.0.0.1). On Mac/Windows, `host.docker.internal` is available automatically.
 
-**What happens in Docker mode:**
-
-OCP automatically detects it's running in a container and displays:
-
-```
-╔═══════════════════════════════════════════════════════════════╗
-║  DOCKER MODE: Using SSH to localhost (127.0.0.1)             ║
-║                                                               ║
-║  OCP is running in Docker and needs SSH access to install     ║
-║  Kubernetes on your host system.                             ║
-║                                                               ║
-║  Make sure you added the SSH key to your host:               ║
-║    cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys         ║
-╚═══════════════════════════════════════════════════════════════╝
-```
-
-Clear, transparent communication about what's happening!
+**How the local provider works:** it does what the SSH provider does, without the SSH — provider operations (checking the host, uninstalling) run directly on the machine. The Kubernetes installation itself still goes through Rex over SSH to 127.0.0.1, which is why the public key has to be in `~/.ssh/authorized_keys` even for a local cluster.
 
 **Testing SSH connection:**
 
@@ -178,7 +154,7 @@ If SSH doesn't work, make sure the public key is in `~/.ssh/authorized_keys` on 
 
 #### Using CPAN (System-Wide Installation)
 
-**Option 1: System-wide OCP + Direct Local Install**
+**Option 1: System-wide OCP**
 
 ```bash
 # Install OCP system-wide (as root)
@@ -191,7 +167,7 @@ ocp init --provider local
 sudo ocp apply
 
 # Get kubeconfig (as user)
-ocp kubeconfig > ~/.kube/config
+ocp kubeconfig -e
 kubectl get nodes
 ```
 
@@ -212,7 +188,7 @@ ocp apply
 ocp kubeconfig > ~/.kube/config
 ```
 
-**Note:** Local provider requires root access to install Kubernetes. Either install OCP system-wide (Option 1) or use SSH to localhost (Option 2) to avoid sudo/environment issues.
+**Note:** Both options need root on the target machine to install Kubernetes, and both reach it over SSH to 127.0.0.1. Option 2 keeps OCP itself in your user environment.
 
 ### SSH (Existing Server)
 ```bash
@@ -235,12 +211,25 @@ ocp apply
 | `ocp init --hetzner` | Interactive Hetzner token setup |
 | `ocp init --provider=ssh --host=HOST` | SSH-only cluster (no cloud) |
 | `ocp init --provider=local` | Local single-node cluster (localhost) |
-| `ocp apply` | Reconcile cluster to match config |
-| `ocp status` | Show cluster status |
+| `ocp apply` | Reconcile cluster to match config, fix drift |
+| `ocp status` | Show cluster status and drift |
 | `ocp destroy` | Destroy cluster |
-| `ocp kubeconfig` | Output kubeconfig |
-| `ocp kubeconfig -e` | Export to ~/.kube/config |
-| `ocp dev --build --update` | Build robocop from source and deploy |
+| `ocp kubeconfig` | Print kubeconfig to stdout |
+| `ocp kubeconfig -e` | Merge into `$KUBECONFIG` or `~/.kube/config` |
+| `ocp kubeconfig -o FILE` | Write kubeconfig to FILE |
+| `ocp version` | Show OCP and component versions |
+| `ocp update` | Update cluster components to the bundled versions |
+| `ocp update --dry-run` | Show what would be updated |
+| `ocp ssh --node NAME\|IP` | SSH into a cluster node (admin key) |
+| `ocp node ls` | List OCPNode CRs |
+| `ocp node add NAME --role worker` | Add a node via OCPNode CR |
+| `ocp node rm NAME` | Drain and remove a node |
+| `ocp provider ls` | List OCPNodeProviders |
+| `ocp provider add --name N --type hetzner --token-file F` | Register a provider |
+| `ocp provider rm NAME` | Remove a provider |
+| `ocp deploy-robocop` | Deploy the robocop controller and its CRDs |
+| `ocp inject-key` | Inject the robo-ssh key (currently disabled) |
+| `ocp hetzner` | List Hetzner servers (debugging) |
 
 ## Imperative Node/Provider Management
 
@@ -303,8 +292,26 @@ ssh:
 ssl:
   email: admin@example.com  # Required for Let's Encrypt, optional for self-signed
 
-# Optional: Disable components (default: all enabled)
-# notraefik: true  # Disable Traefik ingress controller
+# Optional: host system settings, detected from your machine on `ocp init`
+system:
+  timezone: Europe/Berlin
+  locale: en_US.UTF-8
+  ntp: true
+
+# Optional: GPU stack (enabled by default when a GPU is detected)
+gpu:
+  enabled: true
+  driver: host        # host | operator
+
+# Optional: robocop controller. Defaults to on when a hetzner provider is
+# configured, off otherwise.
+robocop: true
+
+# Optional: Cilium LB-IPAM. Off by default — its default pool takes over the
+# host IP via ARP, which breaks sshd and the API server.
+lbipam: false
+
+# Optional: disable components (default: enabled)
 # nocert: true     # Disable cert-manager
 ```
 
@@ -320,10 +327,10 @@ RKE2's `registries.yaml` is auto-configured on all nodes to use the cache. conta
 Images can be referenced as `ocp.internal/myapp:latest` — containerd resolves this to the local registry via the mirror config.
 
 ```yaml
-# Optional: use an external registry cache instead of ocp-cache
 registry:
-  cache: https://my-proxy.example.com/   # replaces ocp-cache
-  name: my.registry                       # default: ocp.internal
+  cache: https://my-proxy.example.com/   # use this instead of deploying ocp-cache
+  upstream: https://mirror.example.com/  # what ocp-cache pulls from (default: Docker Hub)
+  name: my.registry                      # local registry hostname (default: ocp.internal)
 ```
 
 ## SSL & Ingress
@@ -492,13 +499,14 @@ ocp init --hetzner
 ocp apply
 
 # 3. Deploy robocop controller (no PIN needed yet)
-ocp deploy robocop
+ocp deploy-robocop
 
 # 4. Inject robo-key (requires PIN2 - admin approval!)
+#    Currently disabled - see the note under Security above.
 ocp inject-key
 
-# 5. Add workers via CRDs (robocop automates this)
-kubectl apply -f worker-pool.yaml
+# 5. Add workers as CRs (robocop reconciles them, or the CLI does it directly)
+ocp node add worker-1 --role worker
 ```
 
 ### Dev Mode (--nopassword)
@@ -555,11 +563,45 @@ workers:
 
 Each `ocp apply` is idempotent - running it multiple times converges to the desired state.
 
+### Drift
+
+OCP pins component versions in the version manifest (`ocp version` prints it)
+and writes computed values back into `ocp.yaml`. Reality can move away from
+both — someone upgrades Cilium by hand, a server comes back with a new
+address, a deploy half-finishes. Both commands look for that:
+
+```bash
+$ ocp status
+...
+=== Drift ===
+  [drift] Cilium runs v1.17.0, expected 1.19.2
+  [drift] police1 runs v1.30.0+rke2r1, expected v1.31.3+rke2r1
+
+1 of 2 can be reconciled automatically: run 'ocp apply'.
+```
+
+What is compared:
+
+| Source of truth | Compared against | Fixed by `ocp apply` |
+|-----------------|------------------|----------------------|
+| Version manifest | Image tag of the running cilium-operator | yes, runs the Cilium upgrade |
+| Version manifest | Image tag of the running cert-manager | yes, runs the cert-manager upgrade |
+| Version manifest | Component missing from the cluster | yes, deploys it |
+| `kubernetes.version` | kubelet version per node | no — distribution upgrades are manual |
+| `controlPlanes[].publicIp` | recorded node status | no — decide which one is right yourself |
+
+Automatic remediation needs SSH access to the control plane. When the admin
+key is not available, `ocp apply` reports the drift and points at
+`ocp update --component NAME` instead of failing.
+
 ## Dependencies
 
 - [WWW::Hetzner](https://metacpan.org/pod/WWW::Hetzner) - Hetzner Cloud API
 - [Crypt::Age](https://metacpan.org/pod/Crypt::Age) - Age encryption (pure Perl)
 - [File::SOPS](https://metacpan.org/pod/File::SOPS) - SOPS format (pure Perl)
+- [Kubernetes::REST](https://metacpan.org/pod/Kubernetes::REST) - Kubernetes API client
+- [IO::K8s](https://metacpan.org/pod/IO::K8s) - Typed Kubernetes objects
+- [Rex](https://metacpan.org/pod/Rex) - Remote execution for provisioning
 - [Moo](https://metacpan.org/pod/Moo) - OOP framework
 - [MooX::Cmd](https://metacpan.org/pod/MooX::Cmd) - CLI framework
 - [YAML::XS](https://metacpan.org/pod/YAML::XS) - Config parsing
@@ -569,8 +611,11 @@ Each `ocp apply` is idempotent - running it multiple times converges to the desi
 The Docker image includes:
 
 - Perl 5.42
-- kubectl (latest stable)
 - All OCP dependencies
+- kubectl (latest stable) — for poking at the cluster by hand; OCP itself
+  never shells out to it, all Kubernetes access goes through
+  [Kubernetes::REST](https://metacpan.org/pod/Kubernetes::REST) and
+  [IO::K8s](https://metacpan.org/pod/IO::K8s)
 - No external crypto tools needed (pure Perl)
 
 ```bash

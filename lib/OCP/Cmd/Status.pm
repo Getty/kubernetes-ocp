@@ -7,6 +7,7 @@ use MooX::Options;
 
 use OCP;
 use OCP::Config;
+use OCP::Drift;
 use OCP::Kubernetes;
 use OCP::Secrets;
 
@@ -110,6 +111,20 @@ sub execute {
             my $gcount = $k8s->node_gpu_count($gnode);
             printf "  %s: %dx NVIDIA GPU\n", $gname, $gcount;
         }
+    }
+
+    # Drift between what ocp.yaml/the version manifest say and what runs
+    my $drift = eval {
+        OCP::Drift->new(config => $config, api => $k8s->api)->detect;
+    } // [];
+
+    if (@$drift) {
+        print "\n=== Drift ===\n";
+        print "$_\n" for OCP::Drift->format_lines($drift);
+
+        my $fixable = grep { $_->{remedy} } @$drift;
+        print "\n$fixable of ", scalar(@$drift),
+              " can be reconciled automatically: run 'ocp apply'.\n" if $fixable;
     }
 
     print "\n";

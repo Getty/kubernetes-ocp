@@ -4,69 +4,36 @@ package OCP::Provider::SSH;
 use Moo;
 use OCP::SSH;
 
+with 'OCP::Role::Provider::ExistingHost';
+
 our $VERSION = '0.001';
 
 has ssh_key_path => (is => 'ro');
 
-sub upload_ssh_key {
-    # No-op for SSH provider — keys are pre-deployed
-    return;
-}
-
-sub server_exists {
-    my ($self, $node_name, %opts) = @_;
-    my $host = $opts{host} or return;
-
-    # Check SSH reachability
-    my $ssh = OCP::SSH->new(
-        host     => $host,
-        key_file => $self->ssh_key_path,
-        user     => 'root',
-    );
-
-    my $reachable = eval { $ssh->wait_for_ssh(10); 1 };
-    return $reachable ? { ip => $host } : undef;
-}
-
-sub create_server {
+sub resolve_host {
     my ($self, %opts) = @_;
-
-    my $host = $opts{host} or die "SSH provider requires 'host'\n";
-
-    return {
-        id            => undef,
-        ip            => $host,
-        newly_created => 0,
-    };
+    my $host = $opts{host};
+    die "SSH provider requires 'host'\n" unless defined $host && length $host;
+    return $host;
 }
 
-sub wait_for_running {
-    my ($self, $server_info, $timeout) = @_;
-    # SSH servers are already running
-    return $server_info;
+sub host_reachable {
+    my ($self, $host, $timeout) = @_;
+    return eval { $self->_ssh($host)->wait_for_ssh($timeout // 10); 1 } ? 1 : 0;
 }
 
-sub delete_server {
-    my ($self, $server_id, %opts) = @_;
-    my $host = $opts{host} or return;
+sub run_command {
+    my ($self, $host, $command) = @_;
+    return $self->_ssh($host)->run($command);
+}
 
-    my $ssh = OCP::SSH->new(
+sub _ssh {
+    my ($self, $host) = @_;
+    return OCP::SSH->new(
         host     => $host,
         key_file => $self->ssh_key_path,
         user     => 'root',
     );
-
-    $ssh->run('rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true');
-}
-
-sub cleanup_on_failure {
-    # No-op — we don't delete SSH servers on failure
-    return;
-}
-
-sub list_servers_by_cluster {
-    # SSH provider has no API to list servers
-    return [];
 }
 
 1;
@@ -79,8 +46,35 @@ OCP::Provider::SSH - SSH provider for existing servers
 
 =head1 DESCRIPTION
 
-Wraps existing SSH-accessible servers as an OCP provider.
-Server creation is a no-op (returns the host). Destruction
-runs the RKE2/K3s uninstall script.
+Wraps existing SSH-accessible servers as an OCP provider. Server creation is
+a no-op that reports the host back, destruction runs the RKE2/K3s uninstall
+script over SSH. The shared behaviour lives in
+L<OCP::Role::Provider::ExistingHost>.
+
+=head1 ATTRIBUTES
+
+=head2 ssh_key_path
+
+Private key used to reach the hosts. Root login is assumed.
+
+=head1 METHODS
+
+=head2 resolve_host
+
+    my $host = $provider->resolve_host(host => '10.0.0.5');
+
+Returns the C<host> option, dies without it.
+
+=head2 host_reachable
+
+    my $bool = $provider->host_reachable($host, $timeout);
+
+True when SSH answers within C<$timeout> seconds.
+
+=head2 run_command
+
+    my $output = $provider->run_command($host, 'uptime');
+
+Runs the command over SSH as root.
 
 =cut

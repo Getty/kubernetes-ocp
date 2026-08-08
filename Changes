@@ -1,6 +1,31 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Drift detection (OCP::Drift)
+      - compares running component versions against the version manifest
+      - compares kubelet versions against the configured distribution
+      - compares publicIp pinned in ocp.yaml against the recorded status
+      - ocp status reports drift, ocp apply runs the upgrade step for what
+        can be fixed automatically instead of dying
+    - ocp kubeconfig -e merges into $KUBECONFIG or ~/.kube/config
+      - renames cluster/user/context from 'default' to the cluster name
+      - keeps entries of other clusters, backs up the previous file
+      - apply no longer writes a plaintext .kube/config into the project
+    - Clean error messages: no Perl stacktraces, --verbose for the raw error
+    - Fix ocp version and ocp update: OCP::Config was missing status,
+      cluster_status, set_status and save_status
+    - Fix ocp node/provider subcommands: MooX::Cmd looked for them under
+      ::Cmd, so 'ocp node ls' never dispatched
+    - Fix ocp update option specs (format => '' is not valid)
+    - Accept 'ocp deploy-robocop' and 'ocp inject-key' spellings
+    - Accept a positional NAME for ocp node add/rm
+    - Fix OCP::Node->teardown passing the node name where the provider id
+      belongs, which left Hetzner servers running after ocp node rm
+    - Share provider behaviour via OCP::Role::Provider::ExistingHost; the
+      local provider now runs its commands without SSH
+    - Remove Traefik leftovers (replaced by Cilium Gateway API)
+    - Remove Tickit/TUI leftovers from Dockerfile and cpanfile
+    - kubectl is back in the Docker image as a debugging tool
     - Add shared OCP::Kubernetes typed helper for cluster access
       - centralizes Kubernetes::REST::Kubeconfig setup for OCP commands
       - provides reusable node summary helpers for typed Node objects

@@ -162,8 +162,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
 
     ok($c->no_cert, 'nocert flag');
     ok($c->lbipam, 'lbipam opt-in flag');
-    ok(!$c->no_robocop, 'norobocop false');
-    ok(!$c->no_traefik, 'notraefik defaults to false');
+    ok(!$c->robocop_enabled, 'robocop off without hetzner provider');
 }
 
 #
@@ -302,7 +301,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     ok($config->single_node, 'write_spec local: single_node (inferred)');
 }
 
-# Test: write_spec with cps ArrayRef directly (wizard path)
+# Test: write_spec with cps ArrayRef directly (multi-CP path)
 {
     my $f = path($tmpdir)->child('written-array.yaml')->stringify;
     OCP::Config->write_spec($f,

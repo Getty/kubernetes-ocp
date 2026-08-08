@@ -294,7 +294,17 @@ sub teardown {
     };
 
     if ($self->provider) {
-        eval { $self->provider->delete_server(name => $self->name) };
+        # Providers take the id they handed out at creation time; the
+        # host-based ones need the address instead. Pass both.
+        my $status = $self->cr->{status} // {};
+        eval {
+            $self->provider->delete_server(
+                $status->{providerId},
+                name => $self->name,
+                host => $status->{publicIP} // $self->cr->{spec}{host},
+            );
+            1;
+        } or warn "[node] provider delete failed for @{[ $self->name ]}: $@";
     }
 
     eval {

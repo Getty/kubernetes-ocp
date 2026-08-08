@@ -18,6 +18,7 @@ use Kubernetes::REST::Kubeconfig;
 use Socket;
 
 use OCP::Config;
+use OCP::Drift;
 use OCP::K8s;
 use OCP::Keys;
 use OCP::Node;
@@ -319,15 +320,8 @@ sub execute {
     print "  [..] Saving kubeconfig...\n";
     $secrets->save_kubeconfig($result->{kubeconfig});
 
-    # Also write decrypted to .kube/config for kubectl
-    my $kube_dir = $config->project_dir->child('.kube');
-    $kube_dir->mkpath unless -d $kube_dir;
-    my $kube_config = $kube_dir->child('config');
-    $kube_config->spew($result->{kubeconfig});
-    $kube_config->chmod(0600);
-
     print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
-    print "  [ok] Kubeconfig written to .kube/config (for kubectl)\n";
+    print "       Install it with: ocp kubeconfig -e\n";
 
     # Initialize K8s API for all subsequent component deployments
     my $api = $self->_k8s_api($result->{kubeconfig});
@@ -2450,14 +2444,15 @@ sub _print_worker_status {
 sub _reconcile_components {
     my ($self, $config) = @_;
 
-    # Read kubeconfig from .kube/config
-    my $kube_config_path = $config->project_dir->child('.kube', 'config');
-    unless (-f $kube_config_path) {
-        print "  No .kube/config found, cannot reconcile components.\n";
-        print "  Run 'ocp kubeconfig' first.\n";
+    # Read the kubeconfig from the encrypted store — never from a plaintext
+    # copy lying around in the project directory.
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    my $kubeconfig = $secrets->read_kubeconfig;
+    unless ($kubeconfig) {
+        print "  Cannot decrypt kubeconfig.yaml, skipping component reconcile.\n";
+        print "  Make sure .ocp/age.key exists.\n";
         return;
     }
-    my $kubeconfig = path($kube_config_path)->slurp;
 
     # Initialize K8s API for reconciliation
     $self->_k8s_api($kubeconfig);
@@ -2465,31 +2460,40 @@ sub _reconcile_components {
     my $updated = 0;
     my $checked = 0;
 
-    # Cilium version drift check.
-    # The reconcile path can only do API-driven things, not SSH/Rex, so we
-    # can't upgrade Cilium here. But we can detect the drift and refuse to
-    # pretend everything is fine, giving the user a clear recovery path.
+    # Drift: compare the running cluster against the version manifest and
+    # ocp.yaml, then run whatever step brings it back.
     {
         $checked++;
-        print "  [..] Checking Cilium version...\n";
-        my $target = OCP::Versions->get_component_version('cilium');
-        my $api    = $self->_k8s_api;
-        my $op     = eval {
-            $api->get('Deployment', 'cilium-operator', namespace => 'kube-system');
-        };
-        if (!$op) {
-            die "Cilium operator not found in kube-system. Run a full deploy:\n" .
-                "  rm kubeconfig.yaml .ocp/deployed.yaml && ocp apply\n";
+        print "  [..] Checking for drift...\n";
+
+        my $drift = OCP::Drift->new(
+            config => $config,
+            api    => $self->_k8s_api,
+        )->detect;
+
+        if (!@$drift) {
+            print "  [ok] No drift detected\n";
         }
-        my $image  = eval { $op->spec->template->spec->containers->[0]->image } || '';
-        my ($running) = $image =~ /:v?([^\@]+?)(?:\@|$)/;
-        $running //= 'unknown';
-        if ($running eq $target) {
-            print "  [ok] Cilium $target running\n";
-        } else {
-            die "Cilium version drift: running '$running', target '$target'.\n" .
-                "The reconcile path cannot upgrade Cilium — trigger a full deploy:\n" .
-                "  rm kubeconfig.yaml .ocp/deployed.yaml && ocp apply\n";
+
+        for my $entry (@$drift) {
+            print "  [drift] $entry->{message}\n";
+
+            unless ($entry->{remedy}) {
+                # Missing components are deployed by the checks below; the
+                # rest (distribution upgrades, moved IPs) needs a human.
+                print "        No automatic step for this — see 'ocp update'\n"
+                    if $entry->{kind} ne 'missing';
+                next;
+            }
+
+            print "  [..] Running $entry->{remedy}{task}...\n";
+            my $done = eval { $self->_run_remedy($config, $entry) };
+            if ($@) {
+                print "  [WARN] $entry->{remedy}{task} failed: $@";
+            } elsif ($done) {
+                print "  [ok] $entry->{label} updated to $entry->{expected}\n";
+                $updated++;
+            }
         }
     }
 
@@ -2620,6 +2624,36 @@ sub _reconcile_components {
     } else {
         print "  All $checked component(s) up to date.\n";
     }
+}
+
+# Run the step a drift entry asks for. Returns true when it ran, false when
+# it could not (and says why). Dies only if the step itself fails.
+sub _run_remedy {
+    my ($self, $config, $entry) = @_;
+
+    my $remedy = $entry->{remedy} or return 0;
+    return 0 unless ($remedy->{type} // '') eq 'rex';
+
+    my $key = $config->ssh_private_key_path;
+    unless (-f $key) {
+        print "  [!!] Needs SSH access to the control plane, but $key is missing.\n";
+        print "       Run 'ocp update --component $entry->{component}' instead.\n";
+        return 0;
+    }
+
+    my $host = $config->cluster_status->{publicIp};
+    unless ($host) {
+        print "  [!!] No control plane address known, cannot run $remedy->{task}.\n";
+        return 0;
+    }
+
+    OCP::Rex->new(
+        host     => $host,
+        key_file => $key,
+        verbose  => $self->ocp->verbose,
+    )->run_task($remedy->{task}, %{ $remedy->{params} // {} });
+
+    return 1;
 }
 
 1;

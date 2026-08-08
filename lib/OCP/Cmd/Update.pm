@@ -10,11 +10,12 @@ use OCP::Rex;
 use OCP;
 use Term::ANSIColor qw(colored);
 
+with 'OCP::Role::Cmd';
+
 our $VERSION = '0.001';
 
 option dry_run => (
     is      => 'ro',
-    format  => '',
     short   => 'n',
     doc     => 'Show what would be updated without making changes',
 );
@@ -23,12 +24,11 @@ option component => (
     is      => 'ro',
     format  => 's',
     short   => 'c',
-    doc     => 'Update only specific component (e.g. cilium, traefik)',
+    doc     => 'Update only specific component (e.g. cilium, cert_manager)',
 );
 
 option force => (
     is      => 'ro',
-    format  => '',
     short   => 'f',
     doc     => 'Force update even if versions match',
 );
@@ -36,11 +36,12 @@ option force => (
 sub execute {
     my ($self, $args_ref, $chain_ref) = @_;
 
-    unless (-f 'ocp.yaml') {
-        die "No ocp.yaml found. Run 'ocp init' first.\n";
+    my $file = $self->ocp->config;
+    unless (-f $file) {
+        die "Config file '$file' not found. Run 'ocp init' first.\n";
     }
 
-    my $config = OCP::Config->new(file => 'ocp.yaml');
+    my $config = OCP::Config->new(file => $file);
 
     # Check if cluster is deployed
     unless ($config->status->{ocpVersion}) {
@@ -178,7 +179,7 @@ sub _update_component {
 
     # Map component to update method
     my $method = "_update_$comp";
-    $method =~ s/-/_/g;  # traefik-foo -> _update_traefik_foo
+    $method =~ s/-/_/g;  # cert-manager -> _update_cert_manager
 
     if ($self->can($method)) {
         $self->$method($config, $version);
@@ -233,11 +234,6 @@ sub _update_cilium {
     );
 }
 
-sub _update_traefik {
-    my ($self, $config, $version) = @_;
-    $self->_update_via_rex($config, 'traefik', $version, 'upgrade_traefik');
-}
-
 sub _update_cert_manager {
     my ($self, $config, $version) = @_;
     $self->_update_via_rex($config, 'cert_manager', $version, 'upgrade_cert_manager');
@@ -282,7 +278,7 @@ OCP::Cmd::Update - Update cluster components to current OCP version
 
 =head1 DESCRIPTION
 
-Updates cluster components (Cilium, Traefik, cert-manager) to the versions
+Updates cluster components (Cilium, cert-manager) to the versions
 bundled with the current OCP CLI version.
 
 The update process:
@@ -300,7 +296,7 @@ Show what would be updated without making changes.
 
 =head2 --component COMPONENT, -c COMPONENT
 
-Update only a specific component (e.g. cilium, traefik, cert_manager).
+Update only a specific component (e.g. cilium, cert_manager).
 
 =head2 --force, -f
 
@@ -325,8 +321,6 @@ Some components require special handling:
 =over 4
 
 =item * B<Cilium> - Updates both CLI and cluster installation
-
-=item * B<Traefik> - Updates Helm release
 
 =item * B<cert-manager> - Updates manifests
 

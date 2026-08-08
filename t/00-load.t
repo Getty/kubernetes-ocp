@@ -11,9 +11,12 @@ use_ok('OCP::Keys');
 use_ok('OCP::SSH');
 use_ok('OCP::Versions');
 use_ok('OCP::Password');
+use_ok('OCP::Kubeconfig');
+use_ok('OCP::Drift');
 
 # Roles
 use_ok('OCP::Role::Cmd');
+use_ok('OCP::Role::Provider::ExistingHost');
 
 # Cmd modules (loaded via MooX::Cmd but also standalone)
 use_ok('OCP::Cmd::Apply');
