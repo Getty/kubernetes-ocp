@@ -3,6 +3,8 @@ package OCP::Role::Cmd;
 
 use Moo::Role;
 
+our $VERSION = '0.001';
+
 sub ocp { $_[0]->command_chain->[0] }
 
 1;

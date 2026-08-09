@@ -10,6 +10,7 @@ use OCP::Config;
 use OCP::Drift;
 use OCP::Kubernetes;
 use OCP::Secrets;
+use OCP::Versions;
 
 with 'OCP::Role::Cmd';
 
@@ -35,7 +36,13 @@ sub execute {
     my @workers = @{$config->workers};
 
     print "=== Spec ===\n";
-    print "Distribution: ", $config->distribution, " ", ($config->version || 'latest'), "\n";
+    # Show what would actually be installed, not the word 'latest' — an unpinned
+    # version means the manifest decides, and that is a concrete number.
+    my $dist = $config->distribution;
+    my $dist_version = $config->version
+        || OCP::Versions->get_component_version($dist)
+        || 'latest';
+    print "Distribution: $dist $dist_version\n";
 
     my $cp_count = scalar @$cps;
     my $cp_provider = $cps->[0]{provider} || 'hetzner';

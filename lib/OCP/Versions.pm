@@ -18,6 +18,10 @@ our $VERSIONS = {
             # CNI and networking
             cilium     => '1.20.0',
             cilium_cli => 'v0.19.7',
+            # Version-locked to cilium — bump both together. Cilium refuses to
+            # start its Gateway controller unless the CRD bundle matches what
+            # its docs name for that release.
+            gateway_api => 'v1.6.1',
 
             # Ingress and SSL (ingress is Cilium Gateway API, versioned with cilium)
             cert_manager => 'v1.21.1',

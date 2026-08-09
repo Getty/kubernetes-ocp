@@ -70,6 +70,8 @@ sub execute {
         my $cnt  = $refs{$name} // 0;
         printf "%-14s %-9s %-10s %-8s %d\n", $name, $type, $loc, $def, $cnt;
     }
+
+    return 0;
 }
 
 1;

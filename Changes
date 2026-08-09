@@ -1,6 +1,51 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Fix Rex task parameters never reaching the Rexfile
+      - OCP::Rex encoded them as JSON into REX_TASK_PARAMS, but no task ever
+        read that variable, so every parameter silently vanished and
+        upgrade_cilium died with "version parameter required"
+      - tasks now read them through task_params() in the Rexfile; Rex's own
+        --key=value form still wins, for running a task by hand
+      - keeps the join token out of the process command line, where ps
+        exposes it to every local user
+    - Resolve the distribution version from OCP::Versions when ocp.yaml does
+      not pin one
+      - ocp apply fell back to '', which made the Rex task install the
+        distribution's stable channel, while OCP::Drift and OCP::Node both
+        answered from the version manifest
+      - a fresh cluster was therefore reported as drifted against OCP's own
+        manifest, and workers joined one minor ahead of the apiserver
+    - Pass the Cilium, Cilium CLI and Gateway API versions to install_cilium
+      - the Rexfile constants had drifted behind the version manifest, so a
+        bootstrap installed Cilium 1.19.2 where 1.20.0 was pinned
+      - Gateway API is version-locked to Cilium and is now pinned alongside
+        it; 1.20 requires the v1.6.1 CRDs and refuses to start its Gateway
+        controller against older bundles
+    - Disable rke2-traefik and rke2-traefik-crd
+      - RKE2 v1.36 added Traefik, whose helm-install job CrashLoopBackOffs on
+        a Cilium-owned cluster
+    - Fix ocp apply and ocp destroy exiting 1 on success
+      - run_cli uses execute()'s return value as the exit code, and a
+        trailing print() evaluates to 1
+    - Check the HTTP status of every server-side apply
+      - _request is the raw transport and never inspects the response, so
+        failed applies were silent: a 404 looked exactly like success
+      - this also broke the cert-manager issuer retry, which treated the
+        first attempt as successful and never retried
+    - Report the cert-manager issuers that were actually created
+      - the planned list was printed unconditionally while failures went to
+        stderr, so a run that created nothing still looked clean
+    - Apply CRDs as raw manifests instead of through the typed ensure()
+      - a CRD schema is full of union-typed fields that IO::K8s cannot
+        inflate, which killed ocp apply on a clean bootstrap
+    - ocp destroy removes what OCP installed on top of the distribution
+      - the vendor uninstallers leave the Cilium CLI, /opt/cni and /run/k3s
+        behind, and a stale CLI was adopted by the next bootstrap
+    - ocp status shows the distribution version that would be installed
+      instead of the word 'latest'
+    - Give every file under lib/ and bin/ its own $VERSION
+    - Use JSON::MaybeXS for JSON encoding and decoding
     - Drift detection (OCP::Drift)
       - compares running component versions against the version manifest
       - compares kubelet versions against the configured distribution

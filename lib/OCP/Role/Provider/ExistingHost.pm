@@ -6,8 +6,24 @@ use Moo::Role;
 our $VERSION = '0.001';
 
 # Uninstall both distributions — we don't track which one is on the host.
-our $UNINSTALL_CMD =
-    'rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true';
+#
+# The vendor uninstallers stop at their own footprint and leave behind what OCP
+# put there on top: the Cilium CLI (installed by the install_cilium task), the
+# CNI plugin directory, and the k3s runtime dir. Leaving those is not cosmetic —
+# a later bootstrap finds the stale `cilium` binary and, if its version happens
+# to match what is wanted, keeps it instead of installing the pinned one.
+#
+# So this cleans up after itself by default rather than behind a flag: every
+# path below is something OCP or its distribution installed, never user data.
+our @LEFTOVER_PATHS = qw(
+    /usr/local/bin/cilium
+    /opt/cni
+    /run/k3s
+);
+
+our $UNINSTALL_CMD = join ' ; ',
+    'rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true',
+    'rm -rf ' . join(' ', @LEFTOVER_PATHS) . ' 2>/dev/null || true';
 
 # A consumer only has to say which host it talks to, how to check that the
 # host is there, and how to run a command on it. Everything else is the same

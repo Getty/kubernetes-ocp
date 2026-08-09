@@ -5,6 +5,7 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use Path::Tiny qw(path);
+use JSON::MaybeXS qw( decode_json );
 use JSON::PP ();
 use FindBin;
 
@@ -287,7 +288,16 @@ sub execute {
     );
 
     my $distribution = $config->distribution || 'rke2';
-    my $version = $config->version || '';
+
+    # Fall back to the version manifest, not to '' — an empty version makes the
+    # Rex task resolve the distribution's *stable* channel, while OCP::Drift and
+    # OCP::Node both answer this same question from OCP::Versions. Leaving it
+    # empty installed a control plane that OCP then reported as drifted against
+    # its own manifest, and joined workers (OCP::Node) one minor ahead of the
+    # apiserver, which the Kubernetes version skew policy forbids.
+    my $version = $config->version
+        || OCP::Versions->get_component_version($distribution)
+        || '';
 
     my $result;
     eval {
@@ -525,6 +535,8 @@ sub execute {
     print "     ocp status\n\n";
     print "  2. Export the kubeconfig for your local kubectl:\n";
     print "     ocp kubeconfig -e\n\n";
+
+    return 0;
 }
 
 sub _apply_cert_manager {
@@ -581,26 +593,42 @@ sub _create_cert_issuers {
     }
 
     # Server-side apply each issuer (retry for webhook readiness)
+    my (@created, @failed);
     for my $issuer (@issuers) {
         my $name = $issuer->{metadata}{name};
 
         my $retries = 3;
-        my $success = 0;
+        my $error;
         for my $attempt (1..$retries) {
             if (eval { $self->_server_side_apply($api, $issuer); 1 }) {
-                $success = 1;
+                push @created, $name;
+                undef $error;
                 last;
             }
+            $error = $@;
             if ($attempt < $retries) {
                 print "      Webhook not ready, retrying in 5s...\n";
                 sleep 5;
             }
         }
-        warn "Failed to create $name after $retries attempts\n" unless $success;
+        push @failed, [$name, $error] if defined $error;
     }
 
-    my $names = join(', ', map { $_->{metadata}{name} } @issuers);
-    print "      ClusterIssuers created: $names\n";
+    # Report what actually exists, not what we intended to create. This used to
+    # print the planned list unconditionally, with failures going to a warn() on
+    # stderr — so a run where no issuer was created at all still announced
+    # "ClusterIssuers created: selfsigned-issuer" and looked clean in the log.
+    print "      ClusterIssuers created: " . join(', ', @created) . "\n" if @created;
+
+    if (@failed) {
+        for my $f (@failed) {
+            my ($name, $error) = @$f;
+            chomp(my $msg = $error // 'unknown error');
+            print "      [FAILED] ClusterIssuer $name: $msg\n";
+        }
+        die "cert-manager issuers not created: "
+            . join(', ', map { $_->[0] } @failed) . "\n";
+    }
 
     unless ($email) {
         print "      (Add 'ssl: { email: your\@email.com }' to ocp.yaml for Let's Encrypt)\n";
@@ -1275,22 +1303,28 @@ sub _generate_nfd_manifest {
                             image           => $nfd_image,
                             imagePullPolicy => 'IfNotPresent',
                             command         => ['nfd-master'],
-                            # Mirror upstream v0.17 helm template defaults.
-                            # Without explicit args, v0.17 master starts but
-                            # doesn't enable the featurerules controller or
+                            # Mirror the upstream helm template defaults. Without
+                            # explicit args the master starts but doesn't enable
                             # leader election, and never writes node labels.
-                            # NFD v0.17 CLI flags — no -featurerules-controller
-                            # (that's a config-file option, not a CLI flag; passing
-                            # it causes a flag-parse panic). The featurerules
-                            # controller is enabled by default in v0.17+.
+                            #
+                            # Keep this list minimal: nfd-master rejects any flag
+                            # it doesn't know, and its usage dump then trips a Go
+                            # bug (`panic calling String method on zero
+                            # featuregate.featureGate`) that buries the real cause.
+                            # Two flags that look plausible but do NOT exist:
+                            #   -featurerules-controller — config-file option only;
+                            #     the controller is on by default since v0.17.
+                            #   -metrics / -grpc-health   — folded into the single
+                            #     -port flag (default 8080) as of v0.18.
                             args => [
                                 '-enable-leader-election',
                                 '-enable-taints',
                                 '-resync-period=1h',
-                                '-metrics=8081',
-                                '-grpc-health=8082',
                             ],
-                            ports           => [{ containerPort => 8080, name => 'grpc' }],
+                            # -port serves metrics and healthz. Not gRPC: the
+                            # gRPC transport is gone since v0.17, workers report
+                            # through the NodeFeature API instead.
+                            ports           => [{ containerPort => 8080, name => 'metrics' }],
                             env             => [{ name => 'NODE_NAME', valueFrom => { fieldRef => { fieldPath => 'spec.nodeName' } } }],
                             securityContext => {
                                 allowPrivilegeEscalation => JSON::PP::false,
@@ -1364,7 +1398,7 @@ sub _generate_nfd_manifest {
             },
         },
 
-        # Service for nfd-master gRPC
+        # Service for nfd-master metrics/healthz
         {
             apiVersion => 'v1',
             kind       => 'Service',
@@ -1374,7 +1408,7 @@ sub _generate_nfd_manifest {
             },
             spec => {
                 selector => { app => 'nfd-master' },
-                ports    => [{ port => 8080, targetPort => 8080, protocol => 'TCP', name => 'grpc' }],
+                ports    => [{ port => 8080, targetPort => 8080, protocol => 'TCP', name => 'metrics' }],
                 type     => 'ClusterIP',
             },
         },
@@ -1874,10 +1908,25 @@ sub _server_side_apply {
         $path = $self->_build_resource_path($resource);
     }
 
-    $api->_request('PATCH', $path, $resource,
+    my $response = $api->_request('PATCH', $path, $resource,
         content_type => 'application/apply-patch+yaml',
         parameters   => { fieldManager => 'ocp', force => 'true' },
     );
+
+    # _request is the raw transport: it returns whatever the API answered and
+    # never inspects the status (only the typed methods run _check_response).
+    # Without this check every failed apply was silent — a 404 for a CRD the
+    # API server had not registered yet looked exactly like success, and the
+    # run reported resources it had not created.
+    my $status = eval { $response->status };
+    if (defined $status && $status >= 400) {
+        my $body = eval { $response->content } // '';
+        $body =~ s/\s+/ /g;
+        $body = substr($body, 0, 400);
+        die "apply $kind/$name failed: HTTP $status $body\n";
+    }
+
+    return $response;
 }
 
 sub _server_side_apply_all {
@@ -1929,7 +1978,7 @@ sub _crd_get {
     my ($self, $api, $resource_path) = @_;
     my $response = eval { $api->_request('GET', $resource_path) };
     return undef unless $response && $response->status < 400;
-    return eval { JSON::PP::decode_json($response->content) };
+    return eval { decode_json($response->content) };
 }
 
 sub _setup_ssh_key {
@@ -1993,11 +2042,23 @@ sub _ensure_crds {
     my $crd_dir   = $share_dir->child('robocop', 'crds');
     return unless -d $crd_dir;
 
+    # Server-side apply the CRDs as raw manifests instead of ensure().
+    #
+    # ensure() inflates the hashref into a typed CustomResourceDefinition, and a
+    # CRD schema is full of union-typed fields — `default: false`, `enum:`,
+    # `items:`, `additionalProperties:`. IO::K8s ships no classes for those
+    # unions (JSON, JSONSchemaPropsOr{Array,Bool,StringArray}), so the inflate
+    # dies outright. Even once those classes exist, a union arm that is a bare
+    # scalar has nowhere to go in an attribute-based inflate, and the CRD would
+    # be written back missing its defaults — silent damage instead of a crash.
+    #
+    # Nothing here needs a typed round-trip; the NFD and GPU CRDs already go the
+    # same way via _apply_yaml_file.
     for my $file_path (sort $crd_dir->children(qr/\.ya?ml$/)) {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
-            $api->ensure($doc);
+            $self->_server_side_apply($api, $doc);
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
     }

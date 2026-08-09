@@ -10,6 +10,7 @@ use Path::Tiny qw(path);
 use FindBin;
 use File::ShareDir qw(dist_dir);
 use OCP::SSH;
+use OCP::Versions;
 
 our $VERSION = '0.001';
 
@@ -57,10 +58,12 @@ sub run_task {
         $ENV{REX_PUBLIC_KEY} = $self->key_file . '.pub';
     }
 
-    # Pass parameters as environment variables
-    # Rex can't easily take params via CLI, so we encode as JSON env var
+    # Parameters travel as one JSON blob in the environment, picked up by
+    # task_params() in the Rexfile. Not as trailing key=value CLI arguments:
+    # those put the RKE2/K3s join token into the command line, where `ps`
+    # hands it to every local user, and they flatten nested structures.
+    delete $ENV{REX_TASK_PARAMS};
     if (%params) {
-
         my $json = JSON::MaybeXS->new(utf8 => 1, canonical => 1, convert_blessed => 1);
         $ENV{REX_TASK_PARAMS} = $json->encode(\%params);
     }
@@ -160,8 +163,20 @@ sub install_server {
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
     my $kubeconfig = $self->fetch_kubeconfig_ssh($distribution);
 
-    # Install Cilium (CNI) - required for nodes to become Ready
-    $self->run_task('install_cilium');
+    # Install Cilium (CNI) - required for nodes to become Ready.
+    # Pass the versions explicitly: the Rexfile carries its own constants as a
+    # fallback for hand-runs, and those drifted behind OCP::Versions — a fresh
+    # cluster came up on the older Cilium and OCP::Drift immediately reported it
+    # against its own manifest.
+    $self->run_task('install_cilium',
+        distribution => $distribution,
+        version      => $opts{cilium_version}
+            || OCP::Versions->get_component_version('cilium') || '',
+        cli_version  => $opts{cilium_cli_version}
+            || OCP::Versions->get_component_version('cilium_cli') || '',
+        gateway_api_version => $opts{gateway_api_version}
+            || OCP::Versions->get_component_version('gateway_api') || '',
+    );
 
     return {
         token      => $token,

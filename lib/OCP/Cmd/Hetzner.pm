@@ -65,6 +65,8 @@ sub execute {
             $server->server_type->{name},
             $labels || '-';
     }
+
+    return 0;
 }
 
 1;

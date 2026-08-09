@@ -3,7 +3,7 @@ package OCP::Config;
 
 use Moo;
 use OCP;
-use JSON::PP;
+use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 use YAML::XS ();
@@ -416,11 +416,14 @@ sub _compact_cps {
     return $cps->[0] if @$cps == 1;
 
     # Check if all entries are identical → Hash + nodes
+    # canonical sorts keys, so two hashes with the same content compare equal
+    # regardless of insertion order.
+    my $json = JSON::MaybeXS->new(canonical => 1, convert_blessed => 1);
 
-    my $first = JSON::PP->new->canonical->encode($cps->[0]);
+    my $first = $json->encode($cps->[0]);
     my $all_same = 1;
     for my $i (1 .. $#$cps) {
-        if (JSON::PP->new->canonical->encode($cps->[$i]) ne $first) {
+        if ($json->encode($cps->[$i]) ne $first) {
             $all_same = 0;
             last;
         }

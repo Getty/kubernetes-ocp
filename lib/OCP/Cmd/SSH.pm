@@ -97,6 +97,8 @@ sub execute {
         key_file => $key_file->filename,
     );
     $ssh->interactive;
+
+    return 0;
 }
 
 sub _lookup_node_ip {

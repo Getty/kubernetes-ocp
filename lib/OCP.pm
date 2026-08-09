@@ -9,6 +9,11 @@ use YAML::XS ();
 use JSON::PP ();
 
 # Enable proper YAML boolean serialization (JSON::PP::true/false → true/false)
+#
+# Keep the explicit `use JSON::PP ()`: JSON::MaybeXS does NOT pull JSON::PP in
+# when Cpanel::JSON::XS is installed, and JSON::PP::true written as a bareword
+# has to resolve at compile time. 'JSON::PP' below is also a fixed YAML::XS
+# mode name, not a module choice.
 $YAML::XS::Boolean = 'JSON::PP';
 
 our $VERSION = '0.001';

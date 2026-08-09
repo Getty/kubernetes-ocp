@@ -22,6 +22,8 @@ against Kubernetes::REST's port_forward (via Net::Async::Kubernetes) is
 pending until robocop itself is in active use.
 
 MSG
+
+    return 0;
 }
 
 1;

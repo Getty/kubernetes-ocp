@@ -64,6 +64,8 @@ sub execute {
             $n->{status}{publicIP}        // '',
             _age($n->{metadata}{creationTimestamp});
     }
+
+    return 0;
 }
 
 sub _age {

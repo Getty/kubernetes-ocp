@@ -42,6 +42,14 @@ use YAML::XS ();
         push @{$self->{calls}}, ['ensure', $doc->{kind}, $doc->{metadata}{name}, $doc];
         return $doc;
     }
+    # _server_side_apply falls back to a hand-built path when the kind is not
+    # a registered class, then PATCHes the raw manifest.
+    sub _request {
+        my ($self, $method, $path, $body, %opts) = @_;
+        push @{$self->{calls}},
+            [lc($method), $body->{kind}, $body->{metadata}{name}, $body, \%opts];
+        return $body;
+    }
     sub get {
         my ($self, $kind, $name, %args) = @_;
         push @{$self->{calls}}, ['get', $kind, $name, \%args];
@@ -142,8 +150,14 @@ my $apply = OCP::Cmd::Apply->new(ocp => FakeOcp->new);
 subtest '_ensure_crds writes CRDs from share/robocop/crds/' => sub {
     my $api = FakeApi->new;
     $apply->_ensure_crds($api);
-    my @ensured = grep { $_->[0] eq 'ensure' } @{$api->{calls}};
-    ok scalar(@ensured) >= 2, 'at least 2 CRDs ensured (OCPNode + OCPNodeProvider)';
+    # CRDs go out as raw manifests, never through ensure(): a CRD schema is
+    # full of union-typed fields (default/enum/items/additionalProperties) that
+    # IO::K8s cannot inflate, and a partial inflate would write the CRD back
+    # without its defaults.
+    my @ensured = grep { $_->[0] eq 'patch' } @{$api->{calls}};
+    ok scalar(@ensured) >= 2, 'at least 2 CRDs applied (OCPNode + OCPNodeProvider)';
+    is scalar(grep { $_->[0] eq 'ensure' } @{$api->{calls}}), 0,
+        'no CRD is round-tripped through the typed ensure() path';
     my @kinds = map { $_->[1] } @ensured;
     is_deeply [sort @kinds], [sort ('CustomResourceDefinition', 'CustomResourceDefinition')],
         'both resources are CRDs';
@@ -255,12 +269,15 @@ subtest 'helper ordering: CRDs, then Providers, then CP CR, then Workers' => sub
     });
     $apply->_ensure_worker_ocpnodes($api, $config);
 
-    my @ensures = grep { $_->[0] eq 'ensure' } @{$api->{calls}};
+    # Every write, in order — CRDs go out as raw PATCHes (server-side apply),
+    # everything else through the typed ensure(). Ordering is what matters here,
+    # not which of the two paths a given kind takes.
+    my @ensures = grep { $_->[0] eq 'ensure' || $_->[0] eq 'patch' } @{$api->{calls}};
     my @kinds = map { $_->[1] } @ensures;
 
-    # First two ensures should be CRDs.
-    is $kinds[0], 'CustomResourceDefinition', 'first ensure is a CRD';
-    is $kinds[1], 'CustomResourceDefinition', 'second ensure is a CRD';
+    # First two writes should be CRDs.
+    is $kinds[0], 'CustomResourceDefinition', 'first write is a CRD';
+    is $kinds[1], 'CustomResourceDefinition', 'second write is a CRD';
 
     # After CRDs, Namespace/ocp-system precedes any OCPNodeProvider.
     my $first_ns  = (grep { $kinds[$_] eq 'Namespace' }       0..$#kinds)[0];

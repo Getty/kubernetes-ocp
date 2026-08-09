@@ -459,6 +459,8 @@ sub execute {
         print "  4. Export kubeconfig: ocp kubeconfig -e\n";
     }
     print "\n";
+
+    return 0;
 }
 
 sub _gitignore_content {

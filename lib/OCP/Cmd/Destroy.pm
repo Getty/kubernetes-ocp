@@ -154,6 +154,8 @@ sub execute {
     }
 
     print "\nCluster destroyed.\n";
+
+    return 0;
 }
 
 1;

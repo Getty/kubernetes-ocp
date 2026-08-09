@@ -21,8 +21,8 @@ requires 'Crypt::PBKDF2';
 
 # Robocop controller
 requires 'IO::Async';
-requires 'IO::K8s', '1.100';
-requires 'Kubernetes::REST', '1.104';
+requires 'IO::K8s', '1.105';
+requires 'Kubernetes::REST', '1.106';
 requires 'Net::Async::Kubernetes', '0.007';
 
 on test => sub {
