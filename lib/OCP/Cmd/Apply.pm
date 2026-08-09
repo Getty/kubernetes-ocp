@@ -597,7 +597,12 @@ sub _create_cert_issuers {
     for my $issuer (@issuers) {
         my $name = $issuer->{metadata}{name};
 
-        my $retries = 3;
+        # cert-manager's webhook can take ~30s after the Deployment reports
+        # Ready — endpoints, then admissionregistration. 15s of retries was
+        # not enough on a fresh install: the first three attempts all hit
+        # "no endpoints available for service cert-manager-webhook" and the
+        # whole run failed. 90s with backoff is enough in practice.
+        my $retries = 12;
         my $error;
         for my $attempt (1..$retries) {
             if (eval { $self->_server_side_apply($api, $issuer); 1 }) {
@@ -607,8 +612,9 @@ sub _create_cert_issuers {
             }
             $error = $@;
             if ($attempt < $retries) {
-                print "      Webhook not ready, retrying in 5s...\n";
-                sleep 5;
+                my $delay = $attempt < 4 ? 5 : 10;
+                print "      Webhook not ready (attempt $attempt/$retries), retrying in ${delay}s...\n";
+                sleep $delay;
             }
         }
         push @failed, [$name, $error] if defined $error;

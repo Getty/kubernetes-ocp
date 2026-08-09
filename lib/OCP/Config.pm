@@ -353,7 +353,7 @@ sub write_spec {
 
     my $spec = {
         name => $opts{name} // 'mycluster',
-        k8s => {
+        kubernetes => {
             dist => $opts{dist} // 'rke2',
         },
         ssh => {
@@ -364,7 +364,7 @@ sub write_spec {
 
     # Only add version if specified
     if ($opts{version}) {
-        $spec->{k8s}{version} = $opts{version};
+        $spec->{kubernetes}{version} = $opts{version};
     }
 
     # Only add workers if specified
@@ -380,13 +380,13 @@ sub write_spec {
     # Control planes: compact where possible
     # 1 CP → Hash, N identical CPs → Hash + nodes, mixed → Array
     if ($opts{cps} && ref $opts{cps} eq 'ARRAY') {
-        $spec->{cps} = _compact_cps($opts{cps});
+        $spec->{controlPlanes} = _compact_cps($opts{cps});
     } else {
         # Legacy: build from individual opts
         my $provider = $opts{provider} // 'hetzner';
 
         if ($provider eq 'hetzner') {
-            $spec->{cps} = {
+            $spec->{controlPlanes} = {
                 provider   => 'hetzner',
                 serverType => $opts{server_type} // 'cpx21',
                 location   => $opts{location} // 'fsn1',
@@ -395,7 +395,7 @@ sub write_spec {
         } elsif ($provider eq 'ssh') {
             my $cp = { provider => 'ssh' };
             $cp->{host} = $opts{host} if $opts{host};
-            $spec->{cps} = $cp;
+            $spec->{controlPlanes} = $cp;
         } elsif ($provider eq 'local') {
             my $cp = { provider => 'local' };
             if ($opts{service} && $opts{service} ne 'none') {
@@ -404,7 +404,7 @@ sub write_spec {
             if ($opts{network_interface}) {
                 $cp->{networkInterface} = $opts{network_interface};
             }
-            $spec->{cps} = $cp;
+            $spec->{controlPlanes} = $cp;
         }
     }
 

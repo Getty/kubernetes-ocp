@@ -73,3 +73,5 @@ share/Rexfile.lock
 
 # our-codex generates AGENTS.md, we ignore
 AGENTS.md
+ocp.yaml
+kubeconfig.yaml
