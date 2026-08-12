@@ -89,7 +89,7 @@ sub execute {
     print "Initializing OCP project...\n\n";
 
     # Determine cluster name (--name flag or directory basename)
-    my $name = $self->name // $project_dir->basename;
+    my $name = $self->name // $project_dir->realpath->basename;
 
     # Check what already exists
     my $has_git       = -d '.git';

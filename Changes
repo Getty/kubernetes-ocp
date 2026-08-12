@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Fix the cluster name defaulting to "." instead of the directory name
+      - ocp init took it from Path::Tiny's path('.')->basename, which is
+        literally "."; the name landed in ocp.yaml and from there in node
+        labels and the Hetzner cluster tag
+      - under Docker the project is mounted at /ocp, so the directory name
+        is always "ocp" there: pass --name for anything else
     - Rename the ocp.yaml keys to snake_case and drop the legacy aliases
       - controlPlanes/cps -> control_planes, serverType -> server_type,
         k8s -> kubernetes, ssh.privateKey/publicKey -> ssh.private_key and
