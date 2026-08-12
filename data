@@ -1,0 +1,49 @@
+---
+class: standard
+completed: 2026-08-12T18:58:01Z
+created: 2026-08-12T03:56:20Z
+id: 4
+priority: low
+started: 2026-08-12T18:47:40Z
+status: done
+tags:
+- docs
+- adr
+title: docs/adr/ backfillen (ocp-adr-auditor)
+updated: 2026-08-12T19:01:43Z
+---
+
+Kein docs/adr/ vorhanden. Kandidaten-Seed-Liste steht im Agenten ocp-adr-auditor. Ab 0001 nummerieren.
+Backfill done: docs/adr/ angelegt, 21 ADRs (0001-0021) plus README.md als Index.
+
+Format: Nygard (Title-Satz, Date/Status, Context/Decision/Consequences), gewaehlt weil der Wert hier Prosa ist und nicht die Optionsmatrix von MADR - die meisten Entscheidungen wurden von einem konkreten Weltzustand erzwungen (totes CoreDNS, 404 auf einen Image-Tag, Whitelist die ihre eigene Hardware nicht matchen konnte), nicht aus gleichwertigen Kandidaten gewaehlt. Verworfene Alternativen sind Pflicht und stehen als Unterabschnitt unter Decision, jede mit ihrem Grund. Begruendung steht im Index.
+
+Die 21: 0001 CLI/robocop-Split und robocop opt-in. 0002 Nodes und Provider als CRDs. 0003 trigger-neutrale Zustandsmaschine mit Lease. 0004 Spec in git, Status draussen. 0005 verschluesselte Dateien werden committet. 0006 Zwei-Stufen-SSH-Keys. 0007 kein kubectl im Code-Pfad. 0008 Server-Side Apply plus Hash-Konvergenz. 0009 Status nur ueber /status, mit Reconciler-Stempel. 0010 Cilium ist die ganze Netzwerkschicht. 0011 kein Helm im Runtime-Pfad. 0012 RKE2 und k3s gleichwertig. 0013 Docker-first-Toolchain. 0014 jeder Pin genau einmal. 0015 GPU-Entscheidungen aus der Maschine statt aus einem Modell. 0016 Distributions-generierte Config gehoert der Distribution. 0017 Erfolgs-Banner ist eine Aussage ueber den Cluster. 0018 Aufnahmekriterium fuer den Reconcile-Pfad. 0019 Tests gegen den ausgelieferten Client. 0020 arm64 erstklassig. 0021 robocop pollt, Watch-Dependency als datierte Schuld.
+
+Nur rekonstruiert (inline markiert): 0010 (Ablehnung von Istio/Canal steht nur als Behauptung in der Projekt-Doku, in keinem Commit und keinem Ticket) und 0011 (die Helm-Kollisionen sind belegt, die urspruengliche Entscheidung nicht). Alles andere ist auf Commit, Ticket oder Code rueckfuehrbar.
+
+Bewusst NICHT festgeschrieben: #28 (robocop-K8s-Client) und #19 (upgrade-feste registry.local). 0016 nennt das offene Fenster nach einem Distro-Upgrade ausdruecklich als ungeloest und legt keinen Mechanismus fest; kein ADR haengt an #28.
+
+Bewusst NICHT als ADR aufgenommen: init-Default-Provider hetzner (#5), --single-Entfernung (#6), .kube/-Altlast (#7), Multi-CP (#8, nicht implementiert = keine Entscheidung), toolkit.env-Drift (#30, offener Bug), sowie CoreDNS-Merge und Health-Gate als eigene ADRs - beide sind in 0016 bzw 0017 als Erzwingungsfall aufgegangen statt zweimal beschrieben zu werden.
+
+Nichts ausserhalb von docs/adr/ angefasst. Nebenbefund: .claude/skills/ocp-usage/SKILL.md ist an drei Stellen veraltet (init-Default-Provider ssh, --single, .kube/) - Lane des doc-writers.
+Ergebnis: 21 ADRs in docs/adr/, Nygard-Format, mit Index und begruendeter Formatwahl.
+
+Zwei ADRs tragen ihr Warum ausdruecklich als rekonstruiert: 0010 (Cilium — die Zuege sind in git belegbar, die Ablehnung von Istio und Canal existiert nur als Behauptung in der Projektdoku) und 0011 (kein Helm — die Kollisionen sind dokumentiert, die urspruengliche Entscheidung nirgends argumentiert).
+
+Bewusst ausgelassen: #5/#6/#7 (zu klein), #30 (offener Bug, keine Entscheidung), #8 (nicht implementiert ist keine Entscheidung). Zusammengefasst statt dupliziert: CoreDNS-Inline-Merge als erzwingender Fall in 0016, GPU-Erkennung und Treiberpaket-Wahl als ein ADR (0015), weil beide auf demselben Prinzip ruhen.
+
+Sperre eingehalten: kein ADR haengt an #28, und 0016 benennt das Post-Upgrade-Fenster fuer registry.local als ungeloest — inzwischen durch #19 entschieden (Drift-Probe), das ADR ist entsprechend nachzuziehen.
+Nachtrag nach der Entscheidung zu #19: docs/adr/ hat jetzt 22 ADRs.
+
+Neu: 0022 "Report the gap instead of building a second mechanism to close it". Eigenes ADR statt Fussnote in 0016, weil die Haltung inhaltlich eigenstaendig ist: messen, ob eine Luecke wehtut, und sie melden, statt einen zweiten Mechanismus zu bauen, den man pflegen muss. Traegt die drei gemessenen Befunde einzeln (k3s-Hebel existiert und braucht entgegen der Annahme keinen CoreDNS-Neustart, weil 1.14.6 nach der Import-Expansion hasht; rke2 hat kein configBlock, also keinen symmetrischen Weg ausser einer Chart-Corefile-Kopie pro Version; nebeneinander ueberschattet der spezifischere registry.local:53-Block den Inline-Eintrag messbar vollstaendig) plus den Punkt, der die Dringlichkeit traegt: kein OCP-Bestandteil loest den Namen ueber DNS auf, Pulls gehen ueber den containerd-Mirror.
+
+Ausdruecklich als Konsequenz vermerkt, dass genau diese Messung veralten kann: sobald ein Bestandteil den Namen doch per DNS aufloest, kippt die Rechnung und das ADR muss neu bewertet werden. Ebenso, dass die rke2-Haelfte aus dem Chart-Template hergeleitet und nicht an einem rke2-Cluster gemessen ist, und dass OCP jetzt eine Kategorie meldet, die es ausserhalb von apply bewusst nicht repariert.
+
+0016 nachgezogen: die Stelle, die das Post-Upgrade-Fenster als ungeloest auswies, verweist jetzt auf 0022. Die Konsequenz zu den geteilten ConfigMap-Namen ist um resolve_address erweitert - ein Fakt, eine Herleitung, von Writer und Reader benutzt.
+
+0019 um zwei Konsequenzen erweitert, mit dem resolve_address-Fehlalarm als Beleg. Genau die Grenze, die das ADR selbst nicht ueberschreitet: ein echter Client unter dem Test macht die Fixtures nicht echt. Acht gruene Subtests, waehrend ocp status auf einem korrekten Cluster dauerhaft Drift meldete, weil in jeder Fixture der Host zufaellig seine eigene IP war - gefunden erst vom Lauf gegen die echte Maschine. Dazu die beiden Details aus der Reparatur, die verallgemeinerbar sind: der Test ueberschreibt die GEMEINSAME Herleitung, sodass er faellt sobald eine Seite ihre eigene wieder an sich reisst, und der Fixture-Hostname loest bewusst nirgends auf, weil der echte Name von der Entwicklermaschine aufloest und die Gegenprobe sonst maschinenabhaengig gruen geblieben waere.
+
+Index und Provenance-Abschnitt nachgezogen: 0022 ist das erste ADR, das neben seiner Entscheidung entsteht statt danach. Im Index steht jetzt ausserdem ausdruecklich, dass zu robocops Konstruktion und Credential-Beschaffung im Cluster nichts festgeschrieben ist, solange #33 offen ist.
+
+Nichts ausserhalb von docs/adr/ angefasst, .claude/skills/ocp-usage/SKILL.md nicht beruehrt.
