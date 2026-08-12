@@ -1,0 +1,101 @@
+---
+class: standard
+completed: 2026-08-12T18:57:15Z
+created: 2026-08-12T14:41:00Z
+id: 19
+priority: low
+started: 2026-08-12T18:36:20Z
+status: done
+tags:
+- dns
+- registry
+- k3s
+- rke2
+title: registry.local im Corefile ueberlebt kein Distro-Upgrade
+updated: 2026-08-12T18:57:15Z
+---
+
+Gefunden beim Fix von #15 (ocp-infra-worker).
+
+OCP patcht die CoreDNS-ConfigMap direkt. Beide Distributionen besitzen die aber selbst:
+- k3s: annotations objectset.rio.cattle.io/* , owner-gvk k3s.cattle.io/v1 Kind=Addon (live auf cortex geprueft). Der Deploy-Controller applied /var/lib/rancher/k3s/server/manifests/coredns.yaml neu, sobald sich dessen Checksumme aendert — also bei einem k3s-Upgrade. Der registry.local-Eintrag ist dann weg.
+- rke2: die ConfigMap gehoert dem rke2-coredns HelmChart; ein helm upgrade setzt sie ebenfalls zurueck (SUSE-KB empfiehlt HelmChartConfig statt Direkt-Patch).
+
+Folge: nach einem Distro-Upgrade loest registry.local nicht mehr auf, bis das naechste ocp apply laeuft. Kein Ausfall (die containerd-Mirrors zeigen auf localhost:30500/30501 und brauchen kein DNS), aber stiller Drift.
+
+Optionen, falls das stoert:
+- k3s: ConfigMap coredns-custom (Mount ist im k3s-CoreDNS-Deployment schon da, optional=true) mit einem *.server-Snippet, das einen eigenen Server Block 'registry.local:53 { hosts { IP registry.local } }' aufmacht — im *.override waere ein zweites hosts wieder verboten, ein eigener Block ist es nicht. Ueberlebt Upgrades.
+- rke2: HelmChartConfig fuer rke2-coredns (valuesContent), statt die ConfigMap zu patchen.
+- Beides sind distro-spezifische Pfade — deshalb bewusst NICHT im Fix von #15, der einen gemeinsamen Pfad haelt.
+- Alternativ: als Drift-Probe in OCP::Drift aufnehmen, damit ocp status es meldet.
+BESTAETIGT UND AKUT: k3s hat das Corefile tatsaechlich zurueckgesetzt. Nach dem Re-Deploy steht im Corefile auf cortex kein registry.local-Eintrag mehr — k3s Addon-Manager hat den Default wiederhergestellt.
+
+Die Selbstheilungs-Annahme dieses Tickets ("self-healing on the next ocp apply") traegt aktuell NICHT: der Reconcile-Pfad ruft _configure_registry_dns nie auf (#22). Solange #22 offen ist, bleibt ein von k3s zurueckgesetzter Cluster dauerhaft ohne registry.local, egal wie oft man apply faehrt. #22 ist damit Voraussetzung fuer dieses Ticket.
+Selbstheilungs-Annahme traegt jetzt: #22 ist gefixt, der Reconcile-Pfad ruft _configure_registry_dns auf (idempotent, ein GET, Apply nur bei echter Abweichung).
+
+Gegen den aktuellen Corefile von cortex verifiziert — der, den k3s zurueckgesetzt hat: _corefile_with_host setzt den Eintrag inline in den bestehenden hosts-Block (kein zweites hosts-Plugin), zweiter Lauf ist stabil, geaenderte IP wird nachgezogen.
+
+Damit ist der Drift nach einem Distro-Upgrade selbstheilend beim naechsten . Was dieses Ticket weiter offen laesst, ist das Fenster DAZWISCHEN: zwischen k3s-Upgrade und naechstem apply loest registry.local nicht auf. Die upgrade-festen Optionen (coredns-custom *.server bei k3s, HelmChartConfig bei rke2) bleiben die eigentliche Loesung; Prioritaet dafuer ist jetzt aber niedriger, weil der Zustand nicht mehr dauerhaft ist.
+Korrektur zum vorigen Eintrag: dort ist ein Satz verstuemmelt worden ("beim naechsten ."). Gemeint war: beim naechsten "ocp apply".
+Entscheidung: KEINE upgrade-feste Zweitmechanik. Der Inline-Eintrag aus #15 bleibt der einzige Schreiber, dazu kommt eine OCP::Drift-Probe, die das Fenster meldet.
+
+Drei gemessene Fakten, die das tragen:
+
+1. k3s haette den Hebel wirklich. coredns-custom ist im CoreDNS-Deployment auf cortex gemountet (/etc/coredns/custom, optional=true, ConfigMap-Name coredns-custom, existiert dort noch nicht) und der Stock-Corefile importiert *.server ausserhalb des Root-Blocks. Neu gemessen und entgegen meiner Erwartung: CoreDNS 1.14.6 zieht ein neues Snippet LIVE nach, das reload-Plugin hasht den Corefile NACH der Import-Expansion. Kein Pod-Restart noetig, Aufloesung war nach 2 Sekunden da.
+
+2. RKE2 hat den Hebel nicht. Das configmap.yaml-Template des rke2-coredns-Charts rendert extraConfig als Name plus parameters und sonst nichts, es gibt kein configBlock - ein hosts { ... } laesst sich darueber nicht ausdruecken. extraConfig kann nur Einzeiler wie import. Bleibt allein, die ganze servers-Liste per HelmChartConfig zu ersetzen (Listen mergen nicht, siehe rancher/rke2#4940), also eine Kopie des Chart-Corefiles in OCP tragen und pro Chart-Version nachziehen. Damit gibt es keinen symmetrischen Weg.
+
+3. Nebeneinander ist schlechter als jede Einzelloesung. Gemessen: der spezifischere Block registry.local:53 ueberschattet den Inline-Eintrag vollstaendig (Inline 10.9.9.9 + Snippet 10.230.30.155 -> geantwortet wird 10.230.30.155). Ein veraltetes Snippet gewinnt also still gegen den Eintrag, den OCP korrekt haelt, und ocp apply meldet eine Adresse, die der Cluster nicht antwortet.
+
+Dazu der Wert des Fensters: kein OCP-Bestandteil loest registry.local per DNS auf. Image-Pulls gehen ueber den containerd-Mirror auf localhost:30501, und kein einziges Pod-Image auf cortex referenziert registry.local (alles Upstream-Refs). Das Fenster ist still, nicht schaedlich - genau der Fall, fuer den eine Probe die ehrliche Antwort ist.
+
+Gebaut:
+- OCP::Drift::registry_dns_drift - GET auf die CoreDNS-ConfigMap, kind missing, remedy undef (der Reconcile-Pfad repariert es im selben Lauf, deshalb darf die Ausgabe nicht auf ocp update verweisen). Meldet auch eine veraltete Adresse.
+- OCP::Drift::corefile_host_address - liest die Adresse, auf die ein Corefile einen Namen mappt, egal in welchem Block die Zeile steht. Ein handgebauter eigener Server-Block zaehlt damit als geloest und wird nicht als Drift gemeldet.
+- Die ConfigMap-Namensliste liegt jetzt in OCP::Drift, OCP::Cmd::Apply bezieht sie von dort. Schreiber und Leser koennen nie an verschiedenen Stellen suchen.
+
+Offline verifiziert mit rancher/mirrored-coredns-coredns:1.14.6 gegen den echten cortex-Corefile:
+- pristine (so wie k3s ihn zurueckgesetzt hat) -> Probe undef, CoreDNS NXDOMAIN
+- gepatcht (so wie ocp apply ihn schreibt) -> Probe 10.230.30.155, CoreDNS A 10.230.30.155
+- pristine plus coredns-custom-Snippet -> Probe 10.230.30.155, CoreDNS A 10.230.30.155
+Die Probe sagt in allen drei Faellen genau das, was CoreDNS tatsaechlich antwortet.
+
+Migration eines Bestandsclusters: keine noetig. Es kommt kein zweiter Schreiber dazu, der Inline-Eintrag bleibt wie er ist.
+
+t/39-coredns-registry-host.t um 8 Subtests erweitert (Probe liest zurueck was der Patch schrieb, Plugin-Zeilen sind keine Records, Reset-Fall, veraltete Adresse, eigener Server-Block, Schweigefaelle, detect-Verdrahtung). Fixtures unveraendert.
+
+Unverifiziert bleibt: der RKE2-Teil ist aus dem Chart-Template hergeleitet, nicht an einem RKE2-Cluster gemessen. Und die Probe selbst lief bisher nur gegen Fixtures plus Offline-CoreDNS, noch nicht gegen einen echten Cluster - ocp status auf cortex muss jetzt sauber sein, weil der Eintrag dort drin ist.
+Nachtrag: der gemeldete Dauer-Falschalarm ist gefixt. Mein Fehler war genau der, den die Notiz oben zu vermeiden vorgibt - ich habe die ConfigMap-Namen geteilt, die Adresse aber parallel hergeleitet.
+
+Befund: der Writer loest auf, der Reader nicht. Bestaetigt am echten Projekt unter deploy/work: status.yaml hat nodes: [], also faellt OCP::Config::cluster_status auf die Spec zurueck und liefert public_ip = cortex.ai.citilan.de, den Host-Namen. Der Reconcile-Pfad reicht genau diesen Wert an _configure_registry_dns, und das loest ihn per Socket::inet_aton zu 10.230.30.155 auf, bevor es schreibt. Meine Probe hat den unaufgeloesten Namen mit der geschriebenen Adresse verglichen - ein Name gegen eine IP, also auf jedem korrekt konfigurierten Cluster Drift, dauerhaft.
+
+Fix: OCP::Drift::resolve_address ist jetzt die eine Herleitung. Die Probe geht durch sie, und _configure_registry_dns in OCP::Cmd::Apply auch - die inline-Aufloesung dort ist durch den Aufruf ersetzt, das die-Verhalten bei unaufloesbarem Namen bleibt. Gleiche Disziplin wie bei den ConfigMap-Namen, diesmal fuer die Adresse.
+
+Regressionstest, und zwar in beide Richtungen rot geprueft, nicht nur gruen behauptet:
+- Neues Fixture config_named: ssh-Control-Plane per DNS-Name plus nodes: [], also cortex verbatim. Dazu written_corefile, das _configure_registry_dns wirklich laufen laesst (Fake-API), statt den Schreibvorgang nachzubauen. Damit steht auf beiden Seiten dieselbe Herleitung unter Test.
+- Der gemeinsame Resolver wird im Test ueberschrieben. Das ist der Kern des Tests: reisst eine Seite ihre eigene Aufloesung wieder an sich, folgt nur noch eine Seite dem Override und der Test faellt.
+- Gegenprobe 1, alte Probe-Herleitung wieder eingesetzt: rot mit exakt der gemeldeten Meldung (got cortex.ai.citilan.de, expected 10.230.30.155).
+- Gegenprobe 2, inline-Aufloesung im Writer wieder eingesetzt: rot (Cannot resolve).
+- Der Fixture-Hostname ist bewusst cortex.ocp.invalid, ein Name der nirgends aufloest. cortex.ai.citilan.de loest von meinem Host tatsaechlich auf 10.230.30.155 auf - mit dem echten Namen waere Gegenprobe 2 auf dieser Maschine gruen geblieben und der Test damit maschinenabhaengig.
+- Dazu ein direkter Test von resolve_address: Adresse geht unveraendert durch, localhost wird 127.0.0.1 (aus /etc/hosts, netzwerkfrei), undef und leer geben undef.
+
+Die Offline-Tabelle ist um den Adress-Vergleich erweitert, nicht ersetzt. Vier Corefile-Zustaende, jeweils Probe-Urteil gegen das, was echtes CoreDNS 1.14.6 antwortet, und diesmal mit einer Config, die die Control Plane per DNS-Namen benennt (echte Aufloesung durch resolve_address):
+- pristine  -> DRIFT, registry.local fehlt (erwartet 10.230.30.155) | CoreDNS: NXDOMAIN
+- patched   -> clean                                                | CoreDNS: 10.230.30.155
+- stale     -> DRIFT, resolves to 192.168.1.10, expected 10.230.30.155 | CoreDNS: 192.168.1.10
+- custom    -> clean                                                | CoreDNS: 10.230.30.155
+Die Zeile patched ist der gemeldete Falschalarm, jetzt clean. Die Zeile stale zeigt, dass echter Drift weiterhin gemeldet wird und beide Seiten als Adressen dastehen.
+
+Noch offen und bewusst nicht angefasst, weil ausserhalb meiner Lane: OCP::Cmd::Apply::_setup_lb_ipam traegt dieselbe inline-Aufloesung ein zweites Mal (Apply.pm etwa Zeile 846), zusaetzlich mit einem Loopback-Fallback ueber das Node-Objekt. Das ist derselbe Kandidat fuer resolve_address, gehoert aber zum LB-IPAM-Pfad, nicht zu diesem Ticket.
+
+t/39-coredns-registry-host.t jetzt 18 Subtests, Fixtures weiterhin unveraendert.
+VERIFIZIERT auf cortex. Vor dem Fix meldete ocp status auf einem korrekten Cluster dauerhaft:
+  [drift] registry.local resolves to 10.230.30.155, expected cortex.ai.citilan.de
+
+Ursache: status.yaml hat nodes: [], also faellt cluster_status auf die Spec zurueck und liefert den DNS-Namen. Der Writer schickte ihn durch inet_aton, die Probe verglich ihn roh — Name gegen Adresse.
+
+Nach dem Fix (OCP::Drift::resolve_address als einzige Herleitung, vom Writer mitbenutzt): ocp status zeigt keinen Drift-Abschnitt mehr. Test-Suite 45 Dateien / 751 Tests gruen.
+
+Entscheidung des Tickets: weder ersetzen noch danebenstellen, sondern Drift-Probe. Begruendung am Ticket — rke2 hat keinen configBlock, side-by-side ueberschattet messbar den korrekten Eintrag, und kein OCP-Bestandteil loest registry.local ueber DNS auf (Pulls laufen ueber den containerd-Mirror auf localhost:30501).
+
+Folgeticket #36: _setup_lb_ipam traegt dieselbe Inline-Aufloesung ein zweites Mal.
