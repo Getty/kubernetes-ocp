@@ -1,0 +1,79 @@
+---
+class: standard
+completed: 2026-08-12T16:23:38Z
+created: 2026-08-12T14:04:17Z
+id: 13
+priority: medium
+started: 2026-08-12T16:11:10Z
+status: done
+tags:
+- gpu
+- config
+- deadcode
+title: gpu_enabled / gpu_driver are dead config — nothing reads them
+updated: 2026-08-12T16:23:38Z
+---
+
+Side-finding from the #9 arch audit, confirmed by grep across lib/ bin/ share/ manifests/.
+
+lib/OCP/Config.pm:179-180 defines
+  sub gpu_enabled { shift->gpu_config->{enabled} // 1 }
+  sub gpu_driver  { shift->gpu_config->{driver}  // "host" }
+The only readers anywhere are t/15-config-validation.t:182-194. No production code path calls either. The tests pass, so the dead code looks alive.
+
+Consequence today: share/Rexfile runs `do_task "detect_gpu"` unconditionally from all four install tasks (install_rke2_server/agent, install_k3s_server/agent). A user who sets gpu.enabled: false in ocp.yaml still gets GPU detection and, on a machine with a CUDA-capable card and no driver, a driver install. There is no way to turn it off.
+
+gpu_driver looks like it was meant to select who installs the driver: "host" (Rex, todays behaviour) vs "operator" (GPU Operator). Apply.pm:1759 hardcodes the host answer: ClusterPolicy driver => { enabled => false } with the comment "Rex installs drivers on the host".
+
+Two decisions, please, they are not the same size:
+1. gpu_enabled — small and obvious to wire: pass gpu => $config->gpu_enabled through OCP::Rex install_server/install_agent (both already forward timezone/locale/ntp the same way) and guard the do_task in the Rexfile. Deliberately left out of #9 to keep that change to arch only.
+2. gpu_driver — bigger: it has to flip ClusterPolicy.driver.enabled AND suppress the Rex-side install, and the operator-driver path has never been exercised. Either implement it properly or delete the attribute and its test rather than leave a config key that silently does nothing.
+Umgesetzt (ocp-infra-worker). Teil 1 verdrahtet, Teil 2 entschieden: implementiert.
+
+Teil 1 - gpu_enabled:
+- OCP::Rex install_server/install_agent reichen gpu und gpu_driver durch, genau
+  wie timezone/locale/ntp.
+- Apply.pm uebergibt $config->gpu_enabled / $config->gpu_driver.
+- Rexfile: neue Sub _maybe_detect_gpu ersetzt do_task "detect_gpu" in allen vier
+  Install-Tasks. Fehlende Parameter heissen weiter "ja" - robocop ruft dieselben
+  Tasks ohne diese Keys auf, und ein Worker ohne Treiber waere schlimmer als ein
+  ignorierter Schalter.
+- Apply.pm _setup_gpu_operator steigt bei gpu.enabled: false sofort aus. Ein
+  Schalter, der den Host verschont aber den Operator trotzdem deployed, waere
+  halb.
+
+Teil 2 - gpu_driver: implementiert statt geloescht, Begruendung:
+- ClusterPolicy.driver.enabled folgt jetzt gpu.driver. host = Rex installiert,
+  Operator-DaemonSet aus; operator = umgekehrt, und _maybe_detect_gpu haelt Rex
+  in dem Fall komplett vom Host fern (der Operator bringt mit dem Treiber auch
+  das Toolkit).
+- Die beiden Haelften koennen konstruktionsbedingt nie gleichzeitig an sein.
+- Notwendige Beigabe: OCP::Versions bekommt nvidia_driver => 580.126.20, den
+  Wert aus values.yaml des gepinnten Operators v26.3.3. Ohne Pin waere
+  driver.enabled: true genau der #11-Fehler - OCPs handgebaute
+  Operator-Deployment setzt keine *_IMAGE-Env, ein aktivierter Component ohne
+  Image-Pfad ist ein DaemonSet, das nie startet.
+- OCP::Config->gpu_driver croaked jetzt bei unbekanntem Wert statt still auf
+  host zurueckzufallen. Ein Tippfehler haette sonst auf einem
+  Operator-konfigurierten Cluster gar keinen Treiber ergeben.
+- gpu_enabled/gpu_toolkit normalisieren auf 0/1: YAML::XS liefert
+  JSON::PP::Boolean, und das soll weder der JSON-Payload noch die ClusterPolicy
+  kennen muessen.
+
+Verifikation: t/40-gpu-clusterpolicy.t um drei Subtests erweitert (driver folgt
+der Config inklusive vollstaendigem Image-Pfad, toolkit schaltbar, nie beide
+Treiber-Seiten aktiv). t/15-config-validation.t prueft Default, 0/1-Normalisierung
+und den croak. t/27-rex-params.t prueft, dass gpu und gpu_driver wirklich in
+REX_TASK_PARAMS ankommen. t/44-gpu-detect.t fuehrt _maybe_detect_gpu aus.
+make test gruen: 44 Dateien, 729 Tests.
+
+Ungetestet: der Pfad gpu.driver: operator ist nie gegen einen echten Cluster
+gelaufen. Der Pin 580.126.20 stammt aus der Chart-values.yaml von v26.3.3, ist
+aber nicht gegen nvcr.io verifiziert.
+
+Offen, gehoert nicht in diese Lane: OCP::Node ruft run_task ohne gpu-Parameter
+auf, robocop-gejointe Worker ignorieren gpu.enabled also weiterhin. Fuer
+ocp-robocop-worker.
+Verifikationslauf gegen cortex: apply idempotent, "All 8 component(s) up to date", Health-Gate gruen, GPU-Pods unveraendert Running. Die neuen Schalter erzeugen bei Default-Werten dieselbe ClusterPolicy wie vorher — kein Drift.
+
+OFFEN: gpu.driver: operator ist nie gegen ein Cluster gelaufen, der nvidia_driver-Pin (580.126.20) nicht gegen nvcr.io verifiziert.
