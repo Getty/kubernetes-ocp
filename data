@@ -1,0 +1,57 @@
+---
+class: standard
+completed: 2026-08-12T15:13:19Z
+created: 2026-08-12T14:03:39Z
+id: 11
+priority: high
+started: 2026-08-12T15:13:19Z
+status: done
+tags:
+- gpu
+- versions
+title: gpu-operator-validator pin v26.3.3 does not exist on any architecture
+updated: 2026-08-12T15:13:19Z
+---
+
+Found during the #9 arch audit (not an arch bug — it fails identically on amd64).
+
+lib/OCP/Versions.pm pins nvidia_validator => v26.3.3, and lib/OCP/Cmd/Apply.pm:1805-1810 puts that into the ClusterPolicy as
+  validator: { repository: nvcr.io/nvidia/cloud-native, image: gpu-operator-validator, version: <pin> }
+
+nvcr.io/nvidia/cloud-native/gpu-operator-validator:v26.3.3 returns 404. Verified twice, independently, with an anonymous NGC bearer token:
+  validator v26.3.3  -> 404
+  validator v25.10.0 -> 404
+  validator v25.3.4  -> 200
+The repo itself is fine (tags/list -> 200), and it is the only validator repo that exists: nvidia/gpu-operator-validator and nvidia/k8s/gpu-operator-validator both 401 (NGC for "no such repo"). The validator tag line stops at v25.3.4 while nvcr.io/nvidia/gpu-operator kept moving (v26.3.3 exists and is multi-arch).
+
+So the validator DaemonSet would ImagePullBackOff on every GPU cluster.
+
+Hypothesis worth checking first: gpu-operator 26.x may set its own validator image, and OCP overriding validator.version is what breaks it. Try dropping the explicit repository/image/version and letting the operator default. Do NOT just pin v25.3.4 against operator v26.3.3 without checking that combination is supported.
+
+Arch note: for the record, validator v25.3.4 and v25.3.3 are both linux/amd64 + linux/arm64, so whatever version is chosen, arm64 is available.
+FIXED (ocp-infra-worker). Hypothese 'Operator setzt seinen Default selbst, Override entfernen' ist WIDERLEGT — der Override muss bleiben, nur auf das richtige Image zeigen.
+
+1. imagePath() in api/nvidia/v1/clusterpolicy_types.go (v26.3.3): ohne repository/version im CR faellt der Operator auf ENV VALIDATOR_IMAGE zurueck und errored sonst ('empty image path provided through both ClusterPolicy CR and ENV VALIDATOR_IMAGE'). OCPs handgeschriebenes gpu-operator Deployment setzt genau 5 ENV-Variablen (live geprueft: WATCH_NAMESPACE, OPERATOR_NAMESPACE, USE_OSHIFT_DRIVER_TOOLKIT, CLUSTER_PLATFORM, POD_NAME) — kein *_IMAGE. Weglassen haette den Operator zum Fehler gebracht statt zum Default.
+2. Upstream values.yaml v25.10.1 und v26.3.3: validator.repository=nvcr.io/nvidia, validator.image=gpu-operator, version auskommentiert (= chart appVersion). Das Validator-Image IST seit v25.10 das Operator-Image.
+3. docker/Dockerfile v26.3.3 belegt es: COPY --from=builder /workspace/nvidia-validator /usr/bin/ plus /opt/validator/manifests und vectorAdd — alles im Operator-Image.
+4. NGC: cloud-native/gpu-operator-validator endet bei v25.3.4, nvidia/gpu-operator laeuft bis v26.3.3 weiter.
+
+Aenderung: ClusterPolicy validator -> repository nvcr.io/nvidia, image gpu-operator, version = Pin gpu_operator. nvidia_validator ist aus OCP::Versions RAUS — ein zweiter Pin, der per Definition dem Operator-Pin entsprechen muss, ist genau die Drift-Falle, die diesen Bug erzeugt hat. Drift ist nicht betroffen (component_drift probed nur cilium/cert_manager).
+
+Nebenbei verifiziert: alle GPU-Pins existieren auf nvcr.io und sind linux/amd64 + linux/arm64 — gpu-operator v26.3.3, container-toolkit v1.19.1, k8s-device-plugin v0.19.3, dcgm-exporter 4.5.3-4.8.2-distroless, dcgm 4.5.2-1-ubuntu22.04.
+
+Verifikation: t/40-gpu-clusterpolicy.t (Validator-Image, kein gpu-operator-validator mehr im Manifest, jede enabled Komponente hat repository+image+version, Pins kommen aus OCP::Versions). Auf dem Cluster NICHT verifiziert — steht noch mit 5 Pods in Init:ImagePullBackOff bis zum Re-Deploy.
+VERIFIZIERT AM ECHTEN CLUSTER (cortex, k3s arm64, 2026-08-12).
+
+Nach dem Fix zieht die ClusterPolicy nvcr.io/nvidia/gpu-operator:v26.3.3 als Validator. Alle fuenf DaemonSets kamen aus Init:ImagePullBackOff hoch:
+
+  nvidia-container-toolkit-daemonset   Running
+  nvidia-device-plugin-daemonset       Running
+  nvidia-operator-validator            Running
+  nvidia-dcgm                          Running   "Started host engine version 4.5.2 using port number: 5555"
+  nvidia-dcgm-exporter                 Running   (4 Restarts, Startup-Race gegen nvidia-dcgm, selbstheilend)
+  nvidia-cuda-validator                Completed "cuda workload validation is successful"
+
+  nvidia.com/gpu: 1  in der Node-Capacity
+
+Damit ist auch bewiesen, dass die Annahme "Operator setzt sein Validator-Image selbst" falsch war — der Override ist noetig und funktioniert mit dem Operator-Image.
