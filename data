@@ -1,0 +1,17 @@
+---
+class: standard
+completed: 2026-08-12T04:27:25Z
+created: 2026-08-12T03:56:16Z
+id: 3
+priority: medium
+started: 2026-08-12T04:27:25Z
+status: done
+tags:
+- docs
+- skills
+title: 'ocp-usage Skill: Config-Beispiel gegen v2-Spec abgleichen'
+updated: 2026-08-12T04:27:30Z
+---
+
+ocp-usage zeigt workers:-Liste in ocp.yaml und inject-key im Standard-Workflow; CLAUDE.md/ocp-core v2 sagt: Workers via CRDs, inject-key deaktiviert. Mensch entscheidet, welche Config-Form aktuell ist; dann Skill konsolidieren.
+ocp-usage komplett gegen Code verifiziert und neu geschrieben (snake_case-Schema, CR-first workers, Drift-Sektion, init-Defaults, Dev-Mode-Details). Folge-Befunde als eigene Tickets.
