@@ -1,0 +1,114 @@
+---
+class: standard
+completed: 2026-08-12T23:55:53Z
+created: 2026-08-12T21:36:50Z
+id: 42
+priority: high
+started: 2026-08-12T23:25:51Z
+status: done
+tags:
+- bug
+- testing
+- smoke
+- rexfile
+title: Testlaeufe gegen /src benutzen den Rexfile aus dem Image, nicht aus dem Arbeitsbaum
+updated: 2026-08-12T23:55:53Z
+---
+
+GEFUNDEN BEIM RKE2-ARM64-TEST auf cortex — und es hat die Verifikation der gesamten Rexfile-Arbeit unterlaufen.
+
+lib/OCP/Rex.pm:109-113, _find_rexfile prueft in dieser Reihenfolge:
+  1. /opt/ocp/src/share/Rexfile      <- Pfad IM Docker-Image
+  2. $FindBin::Bin/../share/Rexfile  <- Arbeitsbaum
+  3. File::ShareDir dist_dir(OCP)
+
+Das uebliche Muster "Image liefert Dependencies, /src liefert den Arbeitsbaum"
+
+  docker run -v $REPO:/src:ro --entrypoint perl IMAGE -I/src/lib /src/bin/ocp ...
+
+ueberschreibt via -I nur lib/. share/ kommt weiter aus dem Image, und Position 1
+gewinnt immer. Der Arbeitsbaum-Rexfile wird nie geladen.
+
+BELEG: apply mit dist=rke2 gegen cortex (aarch64). Auf dem Host landeten
+  /tmp/rke2-artifacts/rke2.linux-amd64.tar.gz
+  /tmp/rke2-artifacts/sha256sum-amd64.txt
+waehrend das Install-Script korrekt sha256sum-arm64.txt erwartete -> Abbruch.
+Der gefixte Rexfile gibt "Node architecture: arm64" aus; diese Zeile fehlt im
+Log vollstaendig. Es lief also der Februar-Rexfile aus dem Image.
+
+BETRIFFT xt/smoke.sh DIREKT. Dessen Kopfkommentar verspricht woertlich:
+  "Runs the working tree, not the built image: the image supplies the
+   dependencies, /src supplies lib/ and bin/."
+Fuer lib/ und bin/ stimmt das. share/ ist nicht erwaehnt und faellt still
+durch — der Smoke-Test testet also den Rexfile der letzten gebauten Image-
+Version, nicht den, den man gerade geaendert hat. Bei einer Distribution,
+deren Bootstrap-Logik fast vollstaendig im Rexfile liegt, ist das die
+wichtigste Datei ueberhaupt.
+
+FIX (verifiziert): zusaetzlich das share-Verzeichnis ueber den Image-Pfad
+mounten, dann gewinnt Position 1 mit dem Arbeitsbaum-Inhalt:
+  -v $REPO/share:/opt/ocp/src/share:ro
+
+Zu klaeren, weil ein Mount die Symptome kuriert und nicht die Ursache:
+ - Soll _find_rexfile den Arbeitsbaum VOR dem Image pruefen? Fuer den
+   Container ist die Image-Position richtig, fuer Entwicklung falsch. Eine
+   Env-Variable (OCP_REXFILE / OCP_SHARE_DIR) waere explizit statt Reihenfolge-
+   abhaengig.
+ - _find_share_dir in Apply.pm (CRDs, Manifeste) hat vermutlich dasselbe
+   Problem — pruefen. Dann waeren auch gpu-operator- und NFD-CRDs aus dem
+   Image gekommen.
+ - xt/smoke.sh und den Kopfkommentar entsprechend korrigieren.
+GELOEST (ocp-worker).
+
+ENTSCHEIDUNG 1 — Arbeitsbaum VOR Image, plus explizites Override.
+Neues Modul lib/OCP/Share.pm ist der einzige Resolver. Reihenfolge:
+  1. OCP_SHARE_DIR (autoritativ, faellt NIE durch — falscher Wert stirbt laut)
+  2. share/ neben dem laufenden Skript (FindBin::RealBin/../share)
+  3. /opt/ocp/src/share (Image)
+  4. File::ShareDir dist_dir
+Begruendung fuer Position 2 statt der Image-Konstante: im Image sind bin/ und
+share/ Geschwister unter /opt/ocp/src, Position 2 loest dort auf denselben
+Pfad auf wie vorher — der Container-Fall aendert sich nicht. Mit
+-I/src/lib /src/bin/ocp loest sie auf /src/share auf, also auf den Baum, den
+die Invocation gemeint hat. Eine Reihenfolge kann doch beides, wenn sie
+relativ zum Code ist statt absolut. Ein Kandidat muss den Rexfile tragen
+(Marker), sonst schattet ein leeres share/ das echte.
+
+ENTSCHEIDUNG 2 — _find_share_dir in Apply.pm hatte dasselbe Problem, ebenso
+DeployRobocop.pm (dritte Kopie, im Ticket nicht erwaehnt). Beide delegieren
+jetzt an OCP::Share; NFD- und GPU-CRDs kamen tatsaechlich aus dem Image.
+
+ENTSCHEIDUNG 3 — die ro-Mount-Falle ist in OCP::Rex geloest, nicht im Wrapper.
+Rex schreibt Rexfile.lock neben den Rexfile (Rex::CLI::handle_lock_file,
+unbedingt — auch -F ueberspringt nur den Stale-Check). run_task kopiert den
+Rexfile jetzt einmal pro Objekt in ein File::Temp-Verzeichnis und faehrt von
+dort. Der Rexfile ist Input, das Lockfile ist Laufzeitzustand; sie haben in
+einem Verzeichnis nichts zu suchen. Deckt auch ein root-owned dist_dir ab und
+haelt Rex-Artefakte aus dem Arbeitsbaum. Die mktemp-Kopie im cortex-Wrapper
+wird damit ueberfluessig.
+
+xt/smoke.sh: -e OCP_SHARE_DIR=/src/share, Kopfkommentar korrigiert (lib/, bin/
+UND share/), und ein neuer erster Schritt "provenance" prueft VOR dem Wipe,
+dass der Container share/ auf /src/share aufloest.
+
+REGRESSIONSTEST t/46-share-dir.t (7 Subtests) nagelt fest: Arbeitsbaum vor
+Image inkl. Kandidaten-Reihenfolge; Image gewinnt weiter, wenn nichts
+gemountet ist; leeres share/ schattet nicht; OCP_SHARE_DIR schlaegt alles und
+stirbt bei falschem Wert; kein Modul sucht mehr selbst (kein hardcodierter
+Image-Pfad, kein File::ShareDir, kein FindBin in Rex/Apply/DeployRobocop);
+Rex laeuft aus einer schreibbaren Kopie und deren Verzeichnis nimmt das
+Lockfile; smoke.sh setzt OCP_SHARE_DIR. Rot-Probe gemacht: mit umgedrehter
+Reihenfolge faellt Subtest 1.
+
+UNVERIFIZIERT: kein Lauf im Container und keiner gegen cortex — die Aufloesung
+ist nur auf dem Host und ueber Unit-Tests geprueft. Der provenance-Schritt in
+smoke.sh ist ungelaufen (make smoke ist tabu).
+VERIFIZIERT im Greenfield-Lauf auf cortex. Der Wrapper ~/dev/ocp-cortex/ocp setzt jetzt nur noch -e OCP_SHARE_DIR=/src/share; der mktemp-Kopier-Workaround ist ersatzlos entfallen, weil OCP::Rex::run_task aus einer eigenen File::Temp-Kopie laeuft und Rex nicht mehr neben den Arbeitsbaum-Rexfile schreibt.
+
+Beleg, dass der Arbeitsbaum-Rexfile wirklich gilt:
+  Node architecture: arm64
+  Tarball size: 36693999 bytes
+Beides Ausgaben, die es im Image-Rexfile nicht gibt. Ein :ro-Mount reicht jetzt,
+frueher starb Rex daran mit "Read-only file system".
+
+Vollstaendiger rke2/arm64-Aufbau von null, Exit 0, all pods healthy.
