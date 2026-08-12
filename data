@@ -1,0 +1,93 @@
+---
+class: standard
+completed: 2026-08-12T16:23:49Z
+created: 2026-08-12T14:45:53Z
+id: 24
+priority: medium
+started: 2026-08-12T16:11:39Z
+status: done
+tags:
+- gpu
+- dgx
+- clusterpolicy
+title: 'GPU-Operator auf Hosts mit vorinstalliertem Stack: toolkit/dcgm sollten abschaltbar
+  sein'
+updated: 2026-08-12T16:23:49Z
+---
+
+Apply.pm ClusterPolicy setzt hart:
+  toolkit.enabled      = true   (Zeile ~1946)
+  dcgm.enabled         = true
+  dcgmExporter.enabled = true
+  driver.enabled       = false  <- korrekt, Rex installiert Host-Treiber
+
+Auf einer DGX Spark (und generell DGX OS) sind Treiber UND Container-Toolkit ab Werk installiert. Auf cortex verifiziert: /usr/bin/nvidia-container-runtime und /usr/bin/nvidia-ctk sind da, ohne dass OCP sie installiert haette.
+
+Die NVIDIA-Guidance fuer DGX-Hosts ist einheitlich driver.enabled=false UND toolkit.enabled=false:
+  - NVIDIA/gpu-operator#1794 (miharothl, Dez 2025): "--set driver.enabled=false --set toolkit.enabled=false --set devicePlugin.version=v0.17.4 ... We had these disabled because the Spark runs the host-installed driver."
+  - collabnix DGX-Spark-Guide (Jun 2026): "DGX OS ships the driver and container toolkit. Install with driver.enabled=false and toolkit.enabled=false."
+
+Risiko bei toolkit.enabled=true: das Toolkit-DaemonSet installiert das Toolkit erneut und schreibt mit CONTAINERD_SET_AS_DEFAULT die containerd-Config um — auf einem Host, dessen Konfiguration bereits funktioniert. Auf cortex hat es das nicht getan, weil es am kaputten Validator-Pin haengen blieb; nach dessen Fix wird es laufen.
+
+Zweitens DCGM: DGX OS betreibt nv-hostengine auf dem Host. Der collabnix-Guide zeigt deshalb den DCGM-Exporter, der auf die Host-Engine zeigt, statt eine eigene zu starten. OCPs dcgm + dcgmExporter starten ihre eigene — Portkonflikt bzw. doppelte Engine moeglich.
+
+Vorschlag: die drei Schalter aus ocp.yaml steuerbar machen und beim Bootstrap den Ist-Zustand des Hosts erkennen (nvidia-ctk vorhanden -> toolkit aus, nv-hostengine laeuft -> dcgm aus). Haengt an #13 (gpu_enabled/gpu_driver sind heute tote Config).
+TEILWEISE ENTSCHAERFT durch den Live-Lauf: der DCGM-Konflikt tritt auf cortex NICHT auf. Der Operator startet seine eigene nv-hostengine im nvidia-dcgm-Container (Port 5555) und der Exporter verbindet sich dorthin, nicht zur Host-Engine. Nach 4 Restarts (Race gegen den noch startenden nvidia-dcgm) laeuft der Exporter stabil.
+
+Offen bleibt der Toolkit-Punkt: nvidia-container-toolkit-daemonset laeuft jetzt und hat die containerd-Konfiguration eines Hosts angefasst, auf dem Toolkit und Runtime bereits vom DGX OS installiert waren. Kein Schaden beobachtet — der Cluster laeuft — aber die NVIDIA-Guidance bleibt toolkit.enabled=false fuer DGX-Hosts.
+
+Prioritaet damit eher niedrig: kein akuter Fehler, sondern Haerten gegen einen Fall, der hier gutgegangen ist.
+Teilweise umgesetzt (ocp-infra-worker) - der Toolkit-Punkt, wie im Ticket
+priorisiert.
+
+Aenderung: neuer Config-Key gpu.toolkit (Default true), steuert
+ClusterPolicy.toolkit.enabled. Zusammen mit gpu.driver aus #13 sind die drei
+Schalter jetzt:
+
+  gpu:
+    enabled: true
+    driver: host      # oder operator
+    toolkit: true     # false auf DGX-artigen Hosts
+
+Damit ist die NVIDIA-Guidance fuer DGX-Hosts (driver.enabled=false UND
+toolkit.enabled=false, docs.nvidia.com gpu-operator "Pre-Installed NVIDIA GPU
+Drivers and NVIDIA Container Toolkit") in ocp.yaml ausdrueckbar.
+
+Bewusst NICHT gebaut: die im Ticket vorgeschlagene Auto-Erkennung des
+Ist-Zustands (nvidia-ctk vorhanden -> toolkit aus). Apply.pm redet mit der
+API, nicht mit dem Host; es gaebe heute keinen Kanal von Rex zurueck in die
+ClusterPolicy, und einen zu erfinden waere deutlich mehr als dieses Ticket.
+Wenn das gewuenscht ist, ist es ein eigenes Ticket (Kandidat: Rex schreibt den
+Befund in .ocp/status.yaml, Apply liest ihn).
+
+DCGM bleibt an, wie im Live-Befund entschieden - der Operator faehrt seine
+eigene hostengine im Container, kein Konflikt.
+
+Verifikation: t/40-gpu-clusterpolicy.t prueft toolkit.enabled an und aus.
+make test gruen.
+
+Ungetestet: toolkit.enabled=false ist nie gegen einen Cluster gelaufen. Auf
+cortex laeuft weiterhin die Default-Konfiguration mit toolkit an - der
+Schalter aendert dort nichts, solange niemand ihn setzt.
+Nachtrag (ocp-infra-worker): zweiter Haerte-Punkt auf der Host-Seite.
+
+Mit der reparierten Erkennung aus #17 laeuft install_nvidia auf cortex jetzt
+tatsaechlich durch - vorher hat detect_gpu vorher abgebrochen. Der
+Treiber-Guard _nvidia_driver_present greift, aber Schritt 2 haette danach
+weitergemacht und NVIDIAs apt-Source plus Keyring auf einen Host geschrieben,
+der Toolkit und Runtime schon vom DGX OS hat.
+
+Neu: _nvidia_toolkit_present (can_run nvidia-container-runtime UND nvidia-ctk,
+dieselbe Logik wie beim Treiber - frag nach dem Binary, das die CRI ausfuehrt,
+nicht nach dem Paketnamen). Ist beides da, wird weder Repo noch Keyring noch
+Paket angefasst; _verify_nvidia laeuft trotzdem.
+
+Rex pkg ensure => present haette das vorhandene Paket zwar nicht aktualisiert,
+aber die apt-Source waere geblieben und haette bestimmt, woher der Host kuenftig
+zieht.
+
+Verifikation: t/44-gpu-detect.t prueft, dass der Guard existiert und dass auf
+dem geschuetzten Pfad nichts nach sources.list.d schreibt.
+gpu.toolkit-Schalter im Verifikationslauf ohne Drift (Default true = bisheriges Verhalten). NVIDIAs DGX-Guidance ist damit ausdrueckbar.
+
+Host-State-Autodetection bewusst NICHT gebaut: Apply.pm spricht mit der API, nicht mit dem Host, und einen Rex-nach-Apply-Kanal gibt es heute nicht. Waere ein eigenes Ticket.
