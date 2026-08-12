@@ -1,0 +1,57 @@
+---
+class: standard
+completed: 2026-08-12T15:33:48Z
+created: 2026-08-12T14:42:31Z
+id: 22
+priority: low
+started: 2026-08-12T15:24:01Z
+status: done
+tags:
+- apply
+- verification
+title: apply --reconcile-Pfad (bestehender Cluster) hat kein Health-Gate
+updated: 2026-08-12T15:33:48Z
+---
+
+Der Health-Check aus #18 sitzt im Frisch-Deploy-Pfad von OCP::Cmd::Apply::execute, kurz vor dem Erfolgs-Banner.
+
+Laeuft `ocp apply` gegen einen bereits existierenden Cluster (Apply.pm:72-78,
+cluster_exists -> _reconcile_components), kehrt execute vorher zurueck und
+sieht den Check nie. Ein Reconcile ueber einem toten CoreDNS meldet also
+weiterhin nichts.
+
+Der Pfad hat kein Banner, deswegen ist es leiser als #18 — aber der Exit-Code
+ist dieselbe Luege. _check_cluster_health/_print_health/_health_is_fatal sind
+schon so geschnitten, dass der Pfad sie ohne Umbau benutzen kann.
+Erledigt, und groesser als der Titel sagt.
+
+Struktureller Fix: beide Pfade enden jetzt in _finish_apply — ein Health-Verdikt, ein Banner, ein Exit-Code. Der Fehlermodus war ja, dass ein Pfad still daran vorbeilaeuft; deswegen ist _check_cluster_health jetzt an genau EINER Stelle aufgerufen, und t/38-reconcile-path.t haelt das fest.
+
+Neu im Reconcile-Pfad (Kriterium: driftfaehig + idempotent + billig):
+- _configure_registry_dns — der Grund fuer #19s Selbstheilungs-Annahme
+- Cilium Gateway, LB-IPAM (weiter opt-in)
+- CR-Schicht: _ensure_crds, _ensure_providers, _migrate_legacy_nodes, _ensure_cp_ocpnode — damit Bestandscluster nicht dauerhaft Pending zeigen
+Kosten: reine API-Calls, keine Warteschleifen.
+
+Bewusst draussen: Worker-Provisioning und CP-Bootstrap (einmalige Bootstrap-Schritte, legen kostende Server an, 600s Timeout) -> #26. cert-manager-Issuer-Wait bleibt konditional wie bisher.
+
+Nebenbei: _cp_identity extrahiert, damit beide Pfade dieselbe CP-Namensregel benutzen — sonst haette Reconcile den Status eines Nodes geschrieben, den es falsch benannt hat.
+
+Verifiziert gegen den echten Corefile von cortex (registry.local war tatsaechlich weg): _corefile_with_host repariert ihn, setzt den Eintrag INLINE in den bestehenden hosts-Block (kein zweites hosts-Plugin), ist beim zweiten Lauf stabil und zieht eine geaenderte IP nach.
+
+Verhaltensaenderung am Rand: wenn die kubeconfig nicht entschluesselbar ist, wird jetzt auch kein ocpVersion mehr gestempelt — vorher schon. Absichtlich.
+VERIFIZIERT auf cortex. Der Reconcile-Pfad laeuft jetzt durch DNS-Setup, Node-CRs und Health-Gate:
+
+  [..] Checking registry.local DNS...
+  [ok] CoreDNS configured for registry.local -> 10.230.30.155
+  [..] Checking Cilium Gateway...
+  [ok] Cilium Gateway up to date
+  [..] Checking node CRs...
+  [ok] ensured OCPNode/cortex (control-plane, Ready)
+
+  1 component(s) updated, 8 checked.
+
+  Verifying cluster health
+    [ok] all pods healthy
+
+Vorher: 5 geprueft, kein DNS, keine Node-CRs, kein Health-Gate. Damit traegt auch #19s Selbstheilungs-Annahme — der von k3s zurueckgesetzte registry.local-Eintrag wurde in diesem Lauf tatsaechlich wiederhergestellt.
