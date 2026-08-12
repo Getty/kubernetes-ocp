@@ -1,0 +1,105 @@
+---
+class: standard
+completed: 2026-08-12T18:57:49Z
+created: 2026-08-12T16:12:07Z
+id: 28
+priority: high
+started: 2026-08-12T18:37:39Z
+status: done
+tags:
+- bug
+- robocop
+- k8s
+title: OCP::Robocop::Controller kann seinen Kubernetes-Client nicht bauen - beide
+  Zweige sterben
+updated: 2026-08-12T18:57:49Z
+---
+
+_build_kube (Robocop/Controller.pm:72-88) ruft Kubernetes::REST->new(%opts).
+Kubernetes::REST 1.106 kennt aber kein kubeconfig-Argument und keinen
+In-Cluster-Automatismus; server und credentials sind required.
+
+Im Image verifiziert (raudssus/ocp:latest, Kubernetes::REST 1.106):
+
+    Kubernetes::REST->new()                  -> Missing required arguments: credentials, server
+    Kubernetes::REST->new(kubeconfig => ...) -> Missing required arguments: credentials, server
+
+Beide Zweige von _build_kube sterben also. robocop faellt um, sobald es kube
+anfasst - das ist der erste list_ocp_nodes in run(). Der Kommentar
+"else: Kubernetes::REST uses in-cluster config automatically" beschreibt
+Verhalten, das es in dieser Version nicht gibt.
+
+Richtiger Weg ist Kubernetes::REST::Kubeconfig->new(kubeconfig_path => ...)->api;
+dessen api() faellt ohne Kubeconfig selbst auf In-Cluster zurueck
+(_in_cluster_api). Die CLI macht genau das schon, ueber OCP::Kubernetes.
+
+Achtung bei der Umsetzung: OCP::Kubernetes croakt, wenn weder kubeconfig noch
+kubeconfig_path gesetzt ist, taugt also nicht unveraendert fuer den
+In-Cluster-Fall. Entweder OCP::Kubernetes um den In-Cluster-Zweig erweitern
+oder im Controller direkt Kubernetes::REST::Kubeconfig verwenden. Diese
+Entscheidung gehoert an das Ticket.
+
+Kein Test deckt _build_kube ab - t/00-load.t laedt das Modul nur.
+
+Gefunden bei #21 (Worker-Pfad-Audit). Bewusst nicht mitgefixt: andere Ursache
+als die Signaturfehler in OCP::Node, eigener Change, und der
+In-Cluster/Out-of-Cluster-Zweig braucht eine Entscheidung.
+Entscheidung: OCP::Kubernetes bekommt den In-Cluster-Zweig, der Controller baut
+seinen Client darueber. CLI und robocop teilen sich damit einen Zugangspfad.
+
+Begruendung: OCP hat genau eine Mechanik, um an einen Client zu kommen -
+Kubernetes::REST::Kubeconfig->new(...)->api. Ein dritter Weg im Controller waere
+noch eine Stelle, die nachgezogen werden muss, wenn sich der Client aendert - und
+genau daran ist _build_kube gestorben: es kodierte eine API, die der Client nie
+hatte, und weil sonst niemand diesen Code teilte, ist es niemandem aufgefallen.
+Die Frage "woher kommen die Credentials" ist ausserdem nicht controller-
+spezifisch. Dazu loeste OCP::Kubernetes das Teilproblem schon richtig, das
+_build_kube schlecht offen kodierte (Kubeconfig als Inhalt -> Tempfile).
+
+Der In-Cluster-Zweig ist opt-in (in_cluster => 1), nicht "kein Kubeconfig heisst
+in-cluster": ein CLI-Aufrufer, der seinen Kubeconfig verloren hat, muss weiter
+mit der Meldung scheitern, die das sagt, statt sich still als etwas anderes zu
+authentifizieren. Das bestehende croak bleibt damit unveraendert.
+
+Umsetzungsdetail, das eine Zeile Kommentar wert war: der In-Cluster-Fallback von
+Kubernetes::REST::Kubeconfig greift genau dann, wenn kubeconfig_path keine
+lesbare Datei benennt. Wir uebergeben deshalb einen Pfad, der nicht existieren
+kann (unterhalb von /dev/null), statt kubeconfig_path wegzulassen - dessen
+Default ist KUBECONFIG aus der Umgebung, sonst ~/.kube/config, und ein
+herumliegender Kubeconfig im Image wuerde den Service-Account still schlagen.
+Der Test legt beide Fallen aus und prueft, dass keine zieht.
+
+Reichweite, gemessen statt vermutet: die anderen K8s-Aufrufe im Controller sind
+in Ordnung. list("OCPNode", namespace => ...) und get("OCPNodeProvider",
+name => ..., namespace => ...) treffen die richtigen Pfade, IO::K8s::List->items
+ist ein Arrayref, und der Roundtrip durch object_to_struct erhaelt verschachtelte
+spec-Felder (taints, labels, tokenSecretRef) und die resourceVersion. Gegen
+cortex lesend verifiziert: der reparierte Controller listet die OCPNode cortex
+(control-plane, Ready) als plain hash.
+
+Was der Fix NICHT loest, siehe die neuen Tickets: #33 (nichts konstruiert den
+Controller ueberhaupt - bin/robocop ignoriert das Argument controller und endet
+im Key-Injection-Stub; ausserdem gibt es im Deployment keine Quelle fuer
+ssh_key/server_url/join_token), #34 (SA-Token wird einmal gelesen, 401 nach der
+Rotation), #35 (RBAC ohne delete auf nodes, falsches Image-Repo).
+
+Test: t/45-robocop-kube.t, 9 Subtests. Gegen den alten _build_kube rot mit genau
+der Produktionsmeldung "Missing required arguments: credentials, server", gegen
+den neuen gruen - auch im Image gegen die installierte Kubernetes::REST 1.106.
+make test: 45 Dateien, 748 Tests, gruen.
+
+Unverifiziert bleibt der echte In-Cluster-Lauf: auf cortex laeuft kein robocop,
+es gibt nur die eine OCPNode (cortex, control-plane) und keinen Worker. Der
+In-Cluster-Zweig ist im Test bis in den Fallback der Bibliothek hinein gefahren
+(die Blattfunktion _in_cluster_api ist gestubbt, weil ihre Pfade file-scoped
+Lexicals der Dependency sind), plus ein ungestubbter Lauf, der mit "not running
+in-cluster" scheitert - aber ein Pod hat das nie ausgefuehrt.
+Entscheidung: OCP::Kubernetes bekommt den In-Cluster-Zweig, der Controller baut seinen Client darueber. CLI und robocop teilen einen Zugangspfad — genau das Fehlen dieser Teilung hat _build_kube verrotten lassen.
+
+In-Cluster ist opt-in (in_cluster => 1), nicht "keine Kubeconfig heisst in-cluster": ein CLI-Aufruf ohne Kubeconfig muss weiter mit genau dieser Meldung scheitern statt sich still anders zu authentifizieren.
+
+Test t/45-robocop-kube.t, 9 Subtests, clusterfrei: out-of-cluster laeuft durch den echten Client, nur der HTTP-Transport ist gefakt, geprueft wird die Request-URL und das Bearer-Token. In-Cluster wird mit KUBECONFIG und ~/.kube/config als Koeder getestet — beide duerfen den Service-Account nicht ueberstimmen. Rot gegen den alten Builder mit der echten Produktionsmeldung.
+
+Test-Suite 45 Dateien / 751 Tests gruen.
+
+OFFEN und wichtiger als dieses Ticket: #33 — nichts konstruiert den Controller ueberhaupt. bin/robocop liest @ARGV nie, blockiert auf Key-Injection an Port 9999, und start_reconciliation_loop ist ein Stub. Dazu #34 (SA-Token wird gecacht, rotiert aber) und #35 (RBAC ohne delete auf nodes, Deployment zieht ghcr.io/getty/ocp).
