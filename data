@@ -1,0 +1,123 @@
+---
+class: standard
+completed: 2026-08-12T23:56:03Z
+created: 2026-08-12T22:36:21Z
+id: 43
+priority: high
+started: 2026-08-12T23:27:15Z
+status: done
+tags:
+- bug
+- destroy
+- reconcile
+- drift
+title: destroy raeumt .ocp/deployed.yaml nicht auf - naechster apply ueberspringt
+  fehlende Komponenten
+updated: 2026-08-12T23:56:03Z
+---
+
+LIVE GEFUNDEN auf cortex beim Wechsel k3s -> rke2 (destroy, dann apply).
+
+apply meldete auf einem FRISCH gebauten Cluster:
+  [..] Setting up OCP registry (pull-through cache + local)...
+      Registry already deployed (up to date)
+  [ok] OCP registry ready
+  [ok] CoreDNS configured for registry.local -> 10.230.30.155
+
+Tatsaechlich ist der Namespace ocp-system leer — keine Registry, kein
+Pull-Through-Cache. Und CoreDNS zeigt jetzt auf eine Registry, die es nicht
+gibt.
+
+URSACHE: .ocp/deployed.yaml (Apply.pm:2133-2138) haelt die Manifest-Hashes der
+zuletzt ausgerollten Komponenten. ocp destroy entfernt status.yaml und die
+verschluesselte kubeconfig, aber NICHT deployed.yaml. Der naechste apply
+vergleicht gegen Hashes eines Clusters, den es nicht mehr gibt, findet
+Gleichstand und ueberspringt das Deployment.
+
+Warum nur die Registry fehlte und nicht alles: cert-manager, NFD und
+gpu-operator tragen distributionsabhaengige Werte in ihren Manifesten (z.B.
+CONTAINERD_SOCKET), deren Hash sich beim Wechsel k3s -> rke2 aenderte, also
+wurden sie neu ausgerollt. Das Registry-Manifest ist dist-unabhaengig, gleicher
+Hash, uebersprungen. Bei einem destroy+apply auf DERSELBEN Distribution waere
+demnach ALLES uebersprungen worden.
+
+Der Health-Check (#18) faengt das nicht: eine fehlende Registry erzeugt keine
+CrashLoop-Pods, es gibt schlicht keine. Der Check sucht kaputte Pods, nicht
+fehlende Deployments.
+
+FIX-RICHTUNG, zu entscheiden:
+ - destroy loescht deployed.yaml mit (minimal, behebt genau diesen Fall).
+ - Besser: Hash-Vergleich gegen den CLUSTER statt gegen eine lokale Datei —
+   die Hashes koennten als Annotation am Objekt liegen, dann ist die
+   Wahrheitsquelle dort, wo auch das Objekt ist. Deckt auch den Fall ab, dass
+   jemand ein Deployment von Hand loescht.
+ - Mindestens: existiert die Ressource ueberhaupt, bevor "up to date" gemeldet
+   wird.
+
+Passt zur ADR-Linie 0004 (Spec in git, Status nicht) und 0008 (Konvergenz ueber
+Manifest-Hash) — deployed.yaml ist lokal gehaltener Cluster-Status und damit
+genau die Sorte Wahrheit, die laut 0004 nicht neben dem Cluster liegen soll.
+GELOEST (ocp-worker). Beide Richtungen umgesetzt, die dritte bewusst nicht.
+
+ENTSCHEIDUNG 1 (minimal) — destroy raeumt deployed.yaml mit.
+Der Pfad hat jetzt EINE Definition: OCP::Config->deployed_file, neben
+status_file. Dass Apply und Destroy ihn getrennt buchstabiert haetten, ist
+genau die Krankheit des Tickets. Destroy loescht status.yaml und
+deployed.yaml in derselben Schleife unter derselben Bedingung; --keep-status
+behaelt beide (eine Option, eine Bedeutung). Bestaetigt ADR 0004: beides ist
+lokal gehaltener Cluster-Status und stirbt mit dem Cluster.
+
+ENTSCHEIDUNG 2 (mindestens) — kein "up to date" ohne Existenzpruefung.
+_setup_registry fragt jetzt _registry_running: Namespace ocp-system plus
+genau die Deployments, die diese Konfiguration ueberhaupt ausrollt (bei
+externem Cache/Upstream deployt OCP nichts davon und darf es nicht erwarten,
+sonst redeployt es ewig). Damit folgt die Registry dem Muster, das NFD, GPU-
+Operator und cert-manager schon hatten — die Registry war die einzige ohne.
+Die Verifikation im Ticket (Datei weg, apply erneut) ist damit nicht mehr
+noetig, um den Zustand zu reparieren.
+
+ENTSCHEIDUNG 3 (Hash als Annotation) — NICHT umgesetzt, mit Begruendung.
+Der Wert einer Annotation kommt daher, dass sie mit dem Objekt stirbt. Sie
+stirbt aber nur mit DEM Objekt, an dem sie haengt: ein Hash am Namespace
+ueberlebt das Loeschen eines Deployments genauso wie die lokale Datei. Um
+"jemand hat das Deployment von Hand geloescht" zu bemerken, braucht es so
+oder so die Existenzpruefung — die Annotation waere Existenzpruefung PLUS
+API-Schreibzugriff auf jedes Objekt. Also die Pruefung genommen, das
+Schreiben gelassen. ADR 0008 bleibt gueltig (Konvergenz ueber Manifest-Hash),
+seine Konsequenz "eine von Hand geloeschte Ressource faellt erst auf, wenn
+sich das Manifest aendert" stimmt fuer die vier gepruefte Komponenten
+allerdings nicht mehr — dafuer eigenes Ticket, siehe unten.
+
+NEBENBEFUND, mitgeloest: der Reconcile-Pfad bildete sich sein Urteil ein
+ZWEITES Mal, aus derselben Datei — er berechnete den Hash noch einmal selbst
+und meldete "Registry up to date", obwohl _setup_registry gerade neu
+ausgerollt hatte. Die Setup-Schritte geben jetzt zurueck, was sie getan haben
+(unchanged/deployed/restored/updated), _report_component formuliert es; die
+Doppelberechnung ist weg. "restored" ist der Fall aus diesem Ticket und
+bekommt eine eigene Zeile: neu ausgerollt, war vom Cluster verschwunden.
+
+ZU #18: der Health-Check faengt das weiterhin nicht, und das ist richtig so —
+er sucht kaputte Pods, eine nie ausgerollte Komponente hat keine. Die Konse-
+quenz ist nicht "Health-Check erweitern", sondern "keine Komponente meldet
+Gleichstand ohne Cluster-Frage", und die ist jetzt als Invariante getestet.
+
+REGRESSIONSTEST t/47-deployed-state.t (10 Subtests) nagelt fest: leerer
+Cluster wird deployt; Record plus vorhandene Ressourcen bleiben unberuehrt;
+DER FALL — passender Hash ueber leerem Cluster sagt weder "already deployed"
+noch "up to date", sondern rollt aus und meldet restored; ein von Hand
+geloeschtes einzelnes Deployment ebenso; bei externem Cache/Upstream wird
+nichts erwartet, was nie ausgerollt wird; die Ausgabe-Vokabeln und ihre
+Zaehlung; die INVARIANTE, dass jede Sub, die _load_deployed_hashes liest,
+auch den Cluster fragt (faengt die naechste Komponente ab, die es vergisst);
+eine Definition des Pfads; destroy loescht status.yaml UND deployed.yaml;
+--keep-status behaelt beide. Rot-Probe fuer beide Haelften gemacht.
+
+UNVERIFIZIERT: nichts davon lief gegen einen echten Cluster. Die Frage an den
+Cluster ist gegen ein FakeApi geprueft, nicht gegen Kubernetes::REST — dass
+ein 404 dort als Ausnahme kommt (was _resource_exists annimmt), ist aus dem
+bestehenden Code uebernommen, nicht neu belegt.
+TEILVERIFIZIERT. Der Greenfield-Lauf konnte den Bug selbst nicht ausloesen, weil deployed.yaml vor dem Aufbau entfernt wurde — es gab nichts zu ueberspringen. Alle Komponenten wurden ausgerollt, Exit 0, all pods healthy.
+
+Der Beweis liegt in der Gegenprobe von vorher: mit zurueckgebliebener deployed.yaml meldete apply "Registry already deployed (up to date)" ueber einem leeren ocp-system; nach Entfernen der Datei kam "Registry deployed (was missing)" samt NFD und GPU-Operator.
+
+Was der Fix jetzt zusaetzlich absichert und im Lauf nicht sichtbar wurde: destroy loescht die Datei mit, und _setup_registry fragt den Cluster, bevor es Gleichstand meldet. Der eigentliche Endbeweis waere ein destroy+apply auf derselben Distribution mit dem gefixten Code — dann muessten alle vier Komponenten trotz passender Hashes ausgerollt werden. Der Testfall dafuer liegt gesichert im Scratchpad (deployed.yaml.post-destroy).
