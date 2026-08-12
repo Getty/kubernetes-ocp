@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-08-12T16:25:00Z
+created: 2026-08-12T04:27:05Z
+id: 5
+priority: medium
+started: 2026-08-12T15:54:49Z
+status: done
+tags:
+- cli
+- bug
+title: 'ocp init: Default-Provider ssh widerspricht Option-Doku (hetzner)'
+updated: 2026-08-12T16:25:00Z
+---
+
+Init.pm:49-53: provider // (hetzner ? 'hetzner' : 'ssh') => Default ssh, stirbt ohne --host. Die Option-Hilfe behauptet 'hetzner (default)'. Entweder Doku fixen oder Default ändern — Mensch entscheidet.
+Decided: hetzner becomes the real default; the option help was already right, the code was wrong.
+
+Reasoning. An absent provider already means hetzner in three places in OCP::Config (_default_spec, write_spec, validate). Init was the only module that read it as ssh, so this was Init drifting from the spec model, not a documentation gap. Conformance over taste. Second, ocp init is a scaffolding command: its job is to write an ocp.yaml the user then edits. A default that exits 1 with no flags fails at that job, and the CLAUDE.md entry point (ocp init --hetzner) advertises hetzner anyway.
+
+The credentials objection is real but does not bite: --hetzner is a separate step that prompts for and encrypts the token, so a bare init stays offline. It now prints a HETZNER PROVIDER - API Token Required block naming ocp init --hetzner and the two ways to point at a machine you already have, instead of letting ocp apply be the one to find out.
+
+Both call sites (config write, post-init instructions) computed the default independently and could drift again; they now share one lazy attribute _provider. The --provider ssh path still requires --host and its error additionally names the hetzner default as a third way out.
+
+Files: lib/OCP/Cmd/Init.pm. Tests: t/41-init-scaffold.t (default provider, bare init exits 0 and warns, ssh-without-host names every way out). Changes bullet added. README init flag table already said 'hetzner (default)' and is now true.
