@@ -1,0 +1,123 @@
+---
+class: standard
+completed: 2026-08-12T23:55:23Z
+created: 2026-08-12T22:36:47Z
+id: 44
+priority: high
+started: 2026-08-12T23:21:01Z
+status: done
+tags:
+- bug
+- gpu
+- rke2
+- containerd
+title: CONTAINERD_SOCKET fuer rke2 zeigt auf einen Pfad, den es nicht gibt
+updated: 2026-08-12T23:55:23Z
+---
+
+LIVE GEFUNDEN auf cortex (rke2 v1.36.3+rke2r1, aarch64).
+
+nvidia-container-toolkit-daemonset geht in Error (3 Restarts):
+  Flushing config to /runtime/config-dir.d/99-nvidia.toml
+  Sending SIGHUP signal to containerd
+  Error signaling containerd, attempt 1/6: unable to dial:
+    dial unix /runtime/sock-dir/containerd.sock: connect: no such file or directory
+
+Apply.pm:1839-1843 setzt fuer rke2:
+  CONTAINERD_SOCKET = /var/lib/rancher/rke2/agent/containerd/containerd.sock
+  CONTAINERD_CONFIG = /var/lib/rancher/rke2/agent/etc/containerd/config.toml
+
+Auf dem Host existiert dieser Socket nicht. Tatsaechlich vorhanden:
+  /run/k3s/containerd/containerd.sock
+  /var/run/k3s/containerd/containerd.sock
+
+RKE2 benutzt die k3s-Pfade fuer containerd, nicht rke2-eigene. Der k3s-Zweig
+derselben Bedingung ist also fuer BEIDE Distributionen richtig; nur der
+rke2-Zweig ist falsch.
+
+Zu pruefen beim Fix: der CONTAINERD_CONFIG-Pfad steht unter derselben
+Annahme und ist vermutlich ebenfalls falsch. Und ob der k3s-Zweig
+/run/k3s/... oder /var/run/k3s/... nennt — beide existieren, /var/run ist auf
+modernen Systemen ein Symlink auf /run.
+
+FOLGENLOSIGKEIT IM KONKRETEN FALL, aber nicht allgemein: der GPU-Stack laeuft
+auf cortex trotzdem (nvidia.com/gpu: 1, cuda-validator Completed), weil RKE2
+die nvidia-Runtime selbst gefunden hat — ueber die PATH-Zeile in
+/etc/default/rke2-server aus #23. Das Toolkit-DaemonSet ist auf diesem Host
+gar nicht noetig, weil DGX OS das Toolkit mitbringt. Auf einem nackten
+rke2-GPU-Node OHNE vorinstalliertes Toolkit waere der Bug ein harter Blocker.
+
+Verwandt: #24 (gpu.toolkit-Schalter, mit dem man das DaemonSet auf solchen
+Hosts ganz abschalten kann) und #30 (toolkit.env ist ohnehin das archivierte
+v22.9-Rezept; aktuelle Operator-Versionen dokumentieren
+RUNTIME_CONFIG_SOURCE/RUNTIME_DROP_IN_CONFIG). Ein Fix sollte beide mitdenken,
+statt nur den Pfad zu tauschen.
+Fixed (ocp-infra-worker). Minimal path fix, measured on the live host before
+the cluster was torn down.
+
+GEMESSEN auf cortex, RKE2 v1.36.3+rke2r1, aarch64, DGX OS. Quelle ist die
+Prozess-Kommandozeile von rke2s containerd, nicht die Doku:
+
+  containerd -c /var/lib/rancher/rke2/agent/etc/containerd/config.toml
+             -a /run/k3s/containerd/containerd.sock
+             --state /run/k3s/containerd
+             --root  /var/lib/rancher/rke2/agent/containerd
+
+Damit sind die drei Fragen aus dem Ticket beantwortet:
+
+1. CONTAINERD_SOCKET war falsch, wie berichtet. Der alte Wert
+   /var/lib/rancher/rke2/agent/containerd/containerd.sock ist --root mit einem
+   Socket-Namen drangehaengt. Das Verzeichnis EXISTIERT (es ist der
+   containerd-Datenspeicher), deshalb ist der hostPath-Mount sauber
+   durchgelaufen und der Fehler kam erst spaeter beim SIGHUP. Neu:
+   /run/k3s/containerd/containerd.sock, unbedingt, fuer beide Distributionen.
+
+2. CONTAINERD_CONFIG ist NICHT falsch. Die Vermutung im Ticket ist durch die
+   Messung widerlegt: /var/lib/rancher/rke2/agent/etc/containerd/config.toml
+   ist exakt das -c Argument. Der Pfad bleibt.
+
+3. /run, nicht /var/run. containerd bindet /run, /var/run ist auf diesem Host
+   ein Symlink darauf (verifiziert mit ls -ld). Der Symlink loest zum selben
+   Socket auf, existiert aber nur solange ihn jemand anlegt, und bringt nichts.
+
+Zur Fallunterscheidung: fuer den Socket weg, fuer die Config bleibt sie noetig
+- k3s und rke2 legen ihren Agent-State jeweils unter dem eigenen Namen ab. Um
+die Form nicht zweimal hinzuschreiben variiert jetzt nur noch der Name:
+rancher_dir ist k3s oder rke2, der Pfad wird einmal gebaut. Unbekannte
+dist-Werte fallen weiter auf rke2 zurueck statt in den Pfad interpoliert zu
+werden - kubernetes.dist wird in OCP::Config::validate nirgends geprueft.
+
+WARUM rke2 den k3s-Pfad benutzt, als Merksatz fuer das naechste Mal: rke2
+faehrt den Agent-Code von k3s und erbt dessen containerd-Aufruf mit. Dieselbe
+Wurzel wie der Befund in #23 zur Runtime-Autodetection.
+
+LIVE-BELEG fuer die Wirkungskette, aus dem DaemonSet auf cortex: der Operator
+mountet dirname der beiden Werte als hostPath -
+  containerd-config -> /var/lib/rancher/rke2/agent/etc/containerd  (richtig)
+  containerd-socket -> /var/lib/rancher/rke2/agent/containerd      (falsch)
+und setzt daraus im Container RUNTIME_SOCKET=/runtime/sock-dir/containerd.sock.
+Genau der Pfad aus der Fehlermeldung. Die env-Variablen sind also weiterhin der
+Eingang, der Operator normalisiert sie nur um.
+
+Verifikation: t/40-gpu-clusterpolicy.t, zwei neue Subtests. Rot gegen den alten
+Wert gegengeprueft (rke2-Assertion und die --root-Assertion schlagen fehl), dann
+gruen. prove -l t/ komplett: 45 Dateien, 753 Tests, PASS.
+
+NICHT VERIFIZIERT: die Messung gilt fuer v1.36.3+rke2r1. Aeltere oder neuere
+RKE2-Staende koennen den Socket anderswo binden - dann ist die Quelle wieder
+die containerd-Kommandozeile, nicht die Doku. k3s selbst wurde in diesem Lauf
+nicht nachgemessen, der k3s-Zweig war schon vorher /run/k3s und ist unveraendert.
+
+#30 bleibt offen, Begruendung dort als Notiz.
+VERIFIZIERT im Greenfield-Lauf auf cortex (rke2 v1.36.3+rke2r1, aarch64).
+
+Vorher: nvidia-container-toolkit-daemonset Error, 3 Restarts,
+  dial unix /runtime/sock-dir/containerd.sock: no such file or directory
+
+Nachher: nvidia-container-toolkit-daemonset Running, 0 Restarts.
+Kompletter GPU-Stack sauber: operator, device-plugin, dcgm, operator-validator
+alle Running, cuda-validator Completed, nvidia.com/gpu: 1.
+
+Der Lauf endete erstmals mit "all pods healthy" und DEPLOYED SUCCESSFULLY statt
+WITH WARNINGS — der Toolkit-Fehler war der einzige verbliebene Grund fuer die
+Warnung.
