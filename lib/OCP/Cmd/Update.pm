@@ -45,7 +45,11 @@ sub execute {
 
     # Check if cluster is deployed
     unless ($config->status->{ocpVersion}) {
-        die "Cluster not yet deployed. Run 'ocp apply' first.\n";
+        die "Cluster not yet deployed. Run 'ocp apply' first.\n"
+            unless $config->cluster_exists;
+
+        die "This cluster was deployed by an OCP that did not record its "
+          . "version.\nRun 'ocp apply' once to stamp it, then 'ocp update'.\n";
     }
 
     my $current_version = $config->status->{ocpVersion};

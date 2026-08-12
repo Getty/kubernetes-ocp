@@ -73,6 +73,7 @@ sub execute {
         print "[ok] Cluster already exists (kubeconfig.yaml found)\n";
         print "     Checking components...\n\n";
         $self->_reconcile_components($config);
+        $self->_stamp_ocp_version($config);
         return;
     }
 
@@ -536,6 +537,8 @@ sub execute {
     print "  2. Export the kubeconfig for your local kubectl:\n";
     print "     ocp kubeconfig -e\n\n";
 
+    $self->_stamp_ocp_version($config);
+
     return 0;
 }
 
@@ -935,6 +938,17 @@ sub _generate_registry_manifest {
     }
 
     return $self->ocp->dump(@resources);
+}
+
+# `ocp update` and `ocp version` both read status.ocpVersion — update refuses
+# to run without it, version cannot name what is deployed. Nothing ever wrote
+# it except update itself, so on a cluster this very CLI had just bootstrapped
+# `ocp update` answered "Cluster not yet deployed. Run 'ocp apply' first."
+sub _stamp_ocp_version {
+    my ($self, $config) = @_;
+    $config->set_status('ocpVersion', $OCP::VERSION);
+    $config->save_status;
+    return;
 }
 
 sub _registry_deployment {

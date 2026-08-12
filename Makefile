@@ -4,7 +4,7 @@
 IMAGE ?= raudssus/ocp
 TAG ?= latest
 
-.PHONY: all build test test-v clean docker-test docker-push docker-release snapshot
+.PHONY: all build test test-v clean docker-test docker-push docker-release snapshot smoke
 
 all: build
 
@@ -38,6 +38,12 @@ snapshot:
 docker-test: build
 	docker run --rm $(IMAGE):$(TAG) --help
 	@echo "Docker image works!"
+
+# Full bootstrap against a real machine. Wipes the cluster on SMOKE_HOST,
+# which is why there is no default:
+#   make smoke SMOKE_HOST=reuben.cihq [SMOKE_DIST=k3s] [SMOKE_KEEP=1]
+smoke:
+	@xt/smoke.sh
 
 # Push to Docker Hub
 docker-push: build

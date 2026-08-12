@@ -1,6 +1,21 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Record the OCP version at the end of `ocp apply`
+      - `ocp update` refuses to run without status.ocpVersion and `ocp
+        version` cannot name what is deployed without it, but the only
+        writer was update itself, at the end of a run it never reached
+      - on a cluster this CLI had just bootstrapped, `ocp update` answered
+        "Cluster not yet deployed" while `ocp status` listed a Ready node
+      - update also tells the two situations apart now instead of sending
+        every caller to `ocp apply first`
+    - Add `make smoke` — a full bootstrap against a real machine
+      - init, apply, status, kubeconfig, node ls, update --dry-run, destroy,
+        asserting on each; runs the working tree inside the image
+      - nothing in t/ can execute OCP, which is why a k3s join on the wrong
+        port, a cluster named "." and a crash-looping registry all shipped
+        green
+      - needs SMOKE_HOST and wipes the cluster there, so there is no default
     - Stop ocp-cache from crash-looping its way to readiness
       - registry:2 in pull-through mode resolves its upstream once, while
         starting, and panics when DNS does not answer; on a fresh cluster
