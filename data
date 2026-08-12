@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-08-12T16:25:05Z
+created: 2026-08-12T04:27:10Z
+id: 6
+priority: low
+started: 2026-08-12T15:55:12Z
+status: done
+tags:
+- cli
+- cleanup
+title: ocp init --single ist toter Code
+updated: 2026-08-12T16:25:05Z
+---
+
+Init.pm:55 einziger Treffer, Option deklariert aber nie referenziert. Umsetzen oder entfernen.
+Decided: removed, not implemented.
+
+Reasoning. --single had no meaning left to implement. OCP::Config::single_node is derived, not stored: it is true when there is at most one control plane and no worker pools. A fresh ocp init writes exactly that shape, so every new project is already single-node and the flag had nothing to switch. The other candidate meaning, control plane hosts workloads, is the default behaviour of both RKE2 and k3s (neither taints the server node unless told to) and is not something the spec models, so there was nothing to set there either.
+
+xt/smoke.sh passed --single and had to come along; MooX::Options rejects unknown options, so leaving it would have broken the smoke run at step one. Only that one token was removed, the rest of the script is untouched.
+
+Files: lib/OCP/Cmd/Init.pm, xt/smoke.sh, README.md (flag table row dropped). Tests: t/41-init-scaffold.t asserts the option is gone from _options_data and that xt/smoke.sh no longer passes it, so the coupling cannot silently come back.
+
+Side note, not acted on: OCP::Config::single_node itself now has no callers anywhere outside t/04-config.t. It is a legitimate spec accessor rather than dead code, and Config.pm was outside this lane, so it was left alone.
