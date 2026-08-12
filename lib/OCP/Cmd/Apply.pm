@@ -896,9 +896,11 @@ sub _generate_registry_manifest {
 
     # ocp-cache: pull-through cache for docker.io (unless external cache)
     unless ($has_external_cache) {
+        my $upstream_host = 'registry-1.docker.io';
+
         my $cache_config_yml = $self->ocp->dump({
             version => '0.1',
-            proxy   => { remoteurl => 'https://registry-1.docker.io' },
+            proxy   => { remoteurl => "https://$upstream_host" },
             storage => {
                 filesystem => { rootdirectory => '/var/lib/registry' },
                 delete     => { enabled => JSON::PP::true },
@@ -914,8 +916,9 @@ sub _generate_registry_manifest {
         };
 
         push @resources, _registry_deployment('ocp-cache', {
-            config_map => 'ocp-cache-config',
-            host_path  => '/var/lib/ocp/cache',
+            config_map    => 'ocp-cache-config',
+            host_path     => '/var/lib/ocp/cache',
+            wait_for_host => $upstream_host,
         });
 
         push @resources, _nodeport_service('ocp-cache', 30500);
@@ -937,6 +940,8 @@ sub _generate_registry_manifest {
 sub _registry_deployment {
     my ($name, $opts) = @_;
 
+    my $image = 'registry:2';
+
     my @volume_mounts;
     my @volumes;
 
@@ -953,9 +958,17 @@ sub _registry_deployment {
 
     my $container = {
         name         => 'registry',
-        image        => 'registry:2',
+        image        => $image,
         ports        => [{ containerPort => 5000, name => 'http' }],
         volumeMounts => \@volume_mounts,
+        # /v2/ answers 200 as soon as the registry serves, in proxy mode too.
+        # Without a probe the deployment counts as ready the moment the
+        # container starts, which is what _poll_deployment_ready then believes.
+        readinessProbe => {
+            httpGet             => { path => '/v2/', port => 5000 },
+            initialDelaySeconds => 2,
+            periodSeconds       => 5,
+        },
         resources    => {
             requests => { memory => '64Mi', cpu => '50m' },
             limits   => { memory => '512Mi' },
@@ -963,6 +976,30 @@ sub _registry_deployment {
     };
 
     $container->{env} = $opts->{env} if $opts->{env};
+
+    # A proxying registry resolves its upstream once, while starting, and
+    # panics if DNS does not answer yet. On a fresh cluster CoreDNS is
+    # regularly a few seconds behind, so the cache crash-looped its way to
+    # readiness. Wait for the name to resolve before the registry looks it up.
+    my @init_containers;
+    if (my $host = $opts->{wait_for_host}) {
+        push @init_containers, {
+            name    => 'wait-for-dns',
+            image   => $image,
+            command => ['/bin/sh', '-c'],
+            args    => [
+                join(' ',
+                    'i=0;',
+                    'while [ $i -lt 60 ]; do',
+                    "nslookup $host >/dev/null 2>&1 && exit 0;",
+                    'i=$((i+1)); sleep 2;',
+                    'done;',
+                    "echo 'DNS never resolved $host' >&2; exit 1",
+                ),
+            ],
+            resources => { requests => { memory => '16Mi', cpu => '10m' } },
+        };
+    }
 
     return {
         apiVersion => 'apps/v1',
@@ -973,7 +1010,11 @@ sub _registry_deployment {
             selector => { matchLabels => { app => $name } },
             template => {
                 metadata => { labels => { app => $name } },
-                spec     => { containers => [$container], volumes => \@volumes },
+                spec     => {
+                    (@init_containers ? (initContainers => \@init_containers) : ()),
+                    containers => [$container],
+                    volumes    => \@volumes,
+                },
             },
         },
     };
