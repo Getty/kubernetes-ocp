@@ -1,0 +1,88 @@
+---
+class: standard
+completed: 2026-08-12T16:24:20Z
+created: 2026-08-12T14:45:35Z
+id: 23
+priority: high
+started: 2026-08-12T16:10:35Z
+status: done
+tags:
+- bug
+- gpu
+- k3s
+- containerd
+title: 'k3s: nvidia-Runtime wird nie konfiguriert — _configure_nvidia_containerd schreibt
+  RKE2-Pfade'
+updated: 2026-08-12T16:24:20Z
+---
+
+share/Rexfile:884 _configure_nvidia_containerd schreibt fest nach:
+  /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl
+Der k3s-Pfad waere /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl. Der say() sagt sogar woertlich "Configuring RKE2 containerd for NVIDIA GPU". Aufgerufen wird die Funktion aus Rexfile:501 und :711.
+
+Live auf cortex (k3s, DGX Spark) verifiziert:
+  $ ls /var/lib/rancher/k3s/agent/etc/containerd/
+  config.toml                 <- kein .tmpl, OCP hat nichts geschrieben
+  $ ls /var/lib/rancher/rke2
+  (existiert nicht)           <- Funktion lief gar nicht durch
+  $ grep -c nvidia /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+  3                           <- Runtime ist trotzdem registriert
+
+GERETTET HAT UNS K3S SELBST: k3s scannt beim Start den PATH nach nvidia-container-runtime und traegt gefundene Runtimes automatisch in seine containerd-Config ein (docs.k3s.io/advanced). Auf cortex lag /usr/bin/nvidia-container-runtime vom DGX OS, also hat k3s es erledigt.
+
+Damit ist der OCP-Code auf k3s im besten Fall wirkungslos und im schlechtesten Fall irrefuehrend. Zu klaeren:
+  a) k3s: braucht OCP hier ueberhaupt etwas? k3s Auto-Detection deckt den Fall ab, SOLANGE die Runtime vor dem k3s-Start installiert ist. Reihenfolge pruefen — installiert OCP das Toolkit erst nach k3s, muss k3s neu gestartet werden.
+  b) k3s macht die nvidia-Runtime NICHT zum Default (k3s-io/k3s#9231). Wer default braucht, braucht ein config.toml.tmpl. Klaeren ob OCP das will — RuntimeClass nvidia ist die Alternative.
+  c) RKE2: pruefen ob dort dieselbe Auto-Detection existiert; wenn ja, ist die Funktion ganz entbehrlich.
+
+Bei containerd 2.0 heisst das Template config-v3.toml.tmpl, nicht config.toml.tmpl — beim Fix mitpruefen.
+Umgesetzt (ocp-infra-worker): _configure_nvidia_containerd ersatzlos geloescht.
+
+Antworten auf die drei Fragen:
+a) k3s braucht von OCP nichts. k3s und RKE2 teilen denselben Agent-Code: beim
+   Start wird PATH nach nvidia-container-runtime durchsucht (mit
+   /usr/local/nvidia/toolkit und /opt/kwasm/bin fest vorangestellt - genau dort
+   installiert das Toolkit-DaemonSet), und die gefundenen Runtimes landen in
+   der eigenen containerd-Config. Auf cortex live bestaetigt: RuntimeClasses
+   crun/wasmtime/nvidia-experimental tragen das k3s-Label
+   objectset.rio.cattle.io/hash, sind also von k3s deployed. Der Scan laeuft nur
+   beim Service-Start - Reihenfolge stimmt, OCP installiert das Toolkit in
+   detect_gpu vor der Distributions-Installation.
+b) Default-Runtime: nein. Weder k3s noch RKE2 machen nvidia zum Default, und OCP
+   soll das auch nicht ueber die Hintertuer tun. Der dokumentierte Weg ist
+   RuntimeClass nvidia; k3s liefert das Objekt seit Dez 2023 selbst mit, auf
+   cortex hat es der GPU-Operator zusaetzlich adoptiert (ownerRef ClusterPolicy).
+   Wer wirklich Default braucht, nimmt --default-runtime nvidia - das schlaegt
+   beim Start fehl, wenn die Runtime fehlt, statt still nichts zu tun.
+c) RKE2 hat dieselbe Auto-Detection, aber rke2-server.service setzt gar kein
+   Environment= und damit kein PATH (Unit-Datei geprueft). Deshalb bleibt genau
+   eine Zeile uebrig: _configure_nvidia_runtime_path schreibt ein PATH= in
+   /etc/default/rke2-server bzw -agent, so wie docs.rke2.io/add-ons/gpu_operators
+   es vorgibt. Fuer k3s wird es nicht aufgerufen.
+
+Zusatzbefund, staerkeres Argument als der Pfad-Bug: das alte Template hatte kein
+{{ template "base" . }}. k3s und RKE2 rendern ein Template ANSTELLE ihrer
+generierten Config - auf einem RKE2-GPU-Node haette das Registry-Mirrors,
+Sandbox-Image und CNI-Settings mitgenommen. Zur containerd-2.0-Frage: der alte
+Name config.toml.tmpl wird weiterhin als Fallback gelesen (config-v3.toml.tmpl
+gewinnt, wenn vorhanden), die Datei waere also nicht ignoriert worden sondern
+aktiv gewesen. cortex faehrt containerd 2.3.2-k3s2.
+
+Verifikation: t/44-gpu-detect.t asserted, dass config.toml.tmpl,
+/etc/containerd/conf.d und der alte Helper aus dem Code verschwunden sind und
+dass die PATH-Sub nur fuer rke2-server/rke2-agent aufgerufen wird.
+append_if_no_such_line mit regexp ueberschreibt eine vorhandene PATH-Zeile
+nicht (Rex-Quelle geprueft). make test gruen.
+
+Ungetestet: der RKE2-Zweig komplett - es gab keinen RKE2-GPU-Host. Ob die
+PATH-Zeile ueberhaupt noetig ist, ist offen: systemd setzt ohne Environment=
+seinen kompilierten Default-PATH, der /usr/bin enthaelt. Sie ist additiv und
+kann containerd nicht kaputtmachen.
+
+Folgeticket-Kandidat: OCPs toolkit.env in der ClusterPolicy ist noch das
+archivierte v22.9-Rezept (CONTAINERD_CONFIG/SET_AS_DEFAULT/RUNTIME_CLASS).
+Aktuelle Operator-Versionen dokumentieren RUNTIME_CONFIG_SOURCE /
+RUNTIME_DROP_IN_CONFIG und cdi.enabled=true. Laeuft auf cortex, ist aber Drift.
+k3s-Seite auf cortex verifiziert: k3s registriert die nvidia-Runtime selbst (RuntimeClasses tragen k3s objectset-Hash), OCP muss dort nichts tun. Funktion geloescht.
+
+OFFEN: der neue RKE2-Zweig (_configure_nvidia_runtime_path, PATH-Zeile in /etc/default/rke2-*) ist ungetestet — kein RKE2-Cluster verfuegbar. Additiv und containerd-fern, aber unbewiesen.
