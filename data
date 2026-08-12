@@ -1,0 +1,114 @@
+---
+class: standard
+completed: 2026-08-12T16:24:55Z
+created: 2026-08-12T14:42:11Z
+id: 21
+priority: high
+started: 2026-08-12T16:14:09Z
+status: done
+tags:
+- bug
+- node
+- k8s
+title: OCP::Node ruft get/delete mit api_version-first Signatur auf, die es nicht
+  gibt
+updated: 2026-08-12T16:24:55Z
+---
+
+_acquire_lease (Node.pm:75), _refresh (Node.pm:268) und teardown (Node.pm:321) rufen
+
+    $self->k8s->get($self->_api_version, $self->_kind, $self->name, namespace => ...)
+    $self->k8s->delete($self->_api_version, $self->_kind, $self->name, ...)
+
+Kubernetes::REST kennt diese Form nicht. Seine Signatur ist get(Kind, name, namespace => ...).
+Der erste Parameter landet in expand_class(), und das stirbt:
+
+    expand_class(OCPNode)         => OCP::K8s::OCPNode
+    expand_class(ocp.internal/v1) => DIED
+
+(verifiziert im Image gegen IO::K8s mit registrierter OCPNode-Klasse)
+
+Beide Konstruktionsstellen uebergeben ein echtes Kubernetes::REST als k8s
+(Apply.pm:2527 _cli_reconcile_workers, Robocop/Controller.pm:146), also trifft das
+die Realitaet, nicht nur die Fakes.
+
+Folge: _provision ruft _acquire_lease als erstes (Node.pm:132) -> stirbt -> reconcile
+faengt es in seinem eval -> Node geht sofort auf phase=Failed. Worker-Provisioning
+duerfte auf einem echten Cluster nie funktioniert haben.
+
+Nicht aufgefallen, weil t/16-node.t ein FakeK8s benutzt, das jede Signatur
+schluckt, und xt/smoke.sh nur einen Single-Node-CP ohne Worker faehrt.
+
+Gefunden waehrend #16. Bewusst nicht mitgefixt: andere Ursache als der
+Status-Subresource-Bug, eigener Change.
+Behoben. Der Defekt reichte weiter als die drei gemeldeten Stellen: sechs kaputte
+K8s-Aufrufe plus ein toter Zweig in der Zustandsmaschine. Alles im Image gegen
+Kubernetes::REST 1.106 mit Mock-Transport verifiziert, nicht gegen die Fakes.
+
+Gefunden und behoben in OCP::Node:
+  :75  _acquire_lease  get(api_version, Kind, ...)  -> stirbt in expand_class
+  :85  _acquire_lease  update(plain hashref)        -> stirbt, update ruft ->metadata  (NEU)
+  :96  _release_lease  update(plain hashref)        -> dito                            (NEU)
+  :268 _refresh        get(api_version, ...)        -> stirbt
+  :317 teardown        delete(v1, Node, name)       -> stirbt                          (NEU)
+  :321 teardown        delete(api_version, ...)     -> stirbt
+  :254 reconcile       Phase Installing ging auf _wait_ready                           (NEU)
+
+Der letzte ist der folgenreichste: _provision schreibt genau Installing, und
+Provisioning schreibt niemand. _install_kubernetes war damit unerreichbar -
+selbst mit heilem Lease waere nie ein RKE2-Agent installiert worden, der Node
+haette auf eine Registrierung gewartet, die nicht kommen kann. Beide
+teardown-deletes stehen in eval, also meldete teardown Erfolg und liess
+Node-Objekt und OCPNode-CR im Cluster stehen.
+
+Fix: ein einziger Seam (_get_cr / _put_cr / _struct). Kind-first, update bekommt
+ein typisiertes IO::K8s-Objekt via struct_to_object, resourceVersion bleibt
+erhalten - genau das laesst zwei Reconciler am Lease per 409 kollidieren statt
+sich still zu ueberschreiben. _api_version ist entfernt, es gibt nichts mehr,
+was man versehentlich als Arg 0 uebergeben koennte.
+
+Drei Dinge, die beim Durchgehen des Pfads noch auffielen und mitgefixt sind:
+- _release_lease liest neu, weil der /status-Patch dazwischen die
+  resourceVersion hochzaehlt; sonst 409 und das Lease haengt bis zum TTL
+- Lesefehler != 404 gilt nicht mehr als "CR nicht da"; das Lease wird nicht
+  auf einen CR genommen, den niemand lesen konnte
+- das Freigeben des Lease ist best-effort: eine bereitgestellte Maschine darf
+  nicht auf Failed (terminal) laufen, weil der Release-Call scheiterte
+
+Ausserdem im Worker-Pfad: Apply.pm _cli_reconcile_workers uebergab das
+typisierte OCPNodeProvider-Objekt direkt an OCP::Provider->from_cr, das es als
+Hash liest. Das ging nur gut, weil IO::K8s-Objekte zufaellig blessed Hashes
+sind; jetzt konvertiert wie ueberall sonst.
+
+Zu den Fakes - der wertvollere Teil: t/16-node.t hatte ein Double, das jede
+Signatur schluckte und immer denselben CR zurueckgab. Die alte Regression
+"no path=> in any k8s call" lief gruen, weil sie nur prueft, ob Arg 0 ein String
+ohne Ref ist - und ocp.internal/v1 ist einer. Ein Double, das Fragen
+beantwortet, die der echte Client verweigern wuerde, wird durch schaerferes
+Nachmessen der aufgezeichneten Calls nicht strenger. Es ist deshalb weg: die
+Datei faehrt jetzt ein echtes Kubernetes::REST mit Mock-Transport.
+Argument-Parsing, expand_class, Pfadbau und /status-Adressierung macht der
+ausgelieferte Client, gefaked ist nur der HTTP-Call. Asserts laufen gegen Verb
+und Pfad.
+
+Belegt, nicht behauptet: gegen den alten Node.pm-Stand geht die Datei rot, mit
+exakt dem Produktionsfehler (argument is not a module name). Jede der sieben
+Stellen einzeln per Mutation geprueft - jede faellt in einem eigenen, benannten
+Subtest.
+
+Neu: t/43-k8s-call-contract.t haelt den Vertrag fest (api-version-first stirbt,
+Kind-first trifft die richtigen Pfade, update lehnt Hashes ab) und scannt lib/
+repo-weit auf api-version-first-Aufrufe. Alle anderen Call-Sites im Repo waren
+bereits korrekt - der Defekt war auf OCP::Node begrenzt.
+
+make test gruen: 44 Dateien, 730 Tests. Auch im Image gegengeprueft.
+
+Zwei Tickets aus dem Audit: #28 (robocop kann seinen K8s-Client ueberhaupt nicht
+bauen - beide Zweige sterben, im Image verifiziert) und #29 (Worker-Pfad
+end-to-end unverifiziert; am Cluster nachgesehen: es hat dort nie einen Worker
+gegeben).
+Aus 3 genannten Aufrufstellen wurden 7, plus ein toter Dispatch: _provision schreibt phase=Installing, Installing dispatchte auf _wait_ready, und _install_kubernetes war nur aus Provisioning erreichbar — einem Zustand, den nirgends jemand schreibt. Der RKE2-Agent waere also nie installiert worden. Beide teardown-deletes standen in eval, teardown meldete Erfolg und liess Node-Objekt und CR stehen.
+
+Testseite: das alte Double schluckte jede Signatur; sein eigener Regressionstest prueft nur, ob Argument 0 ein String ohne Referenz ist — was "ocp.internal/v1" ist. Ersetzt durch echtes Kubernetes::REST mit aufzeichnendem Mock-Transport. Gegen den alten Node.pm geht t/16-node.t mit dem echten Produktionsfehler rot, alle 7 Stellen einzeln mutationsgetestet.
+
+OFFEN (#29): kein echter Worker existiert, also unverifiziert ob der Agent hochkommt, ob der Node sich registriert, ob teardown die Maschine wirklich entfernt und ob zwei Reconciler sich via 409 aussperren.
