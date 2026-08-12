@@ -1,0 +1,119 @@
+---
+class: standard
+completed: 2026-08-12T16:23:16Z
+created: 2026-08-12T14:08:24Z
+id: 17
+priority: medium
+started: 2026-08-12T16:09:22Z
+status: done
+tags:
+- gpu
+- hardware
+title: 'GPU-Erkennung: GB10 (10de:2e12) nicht in compute-capable Liste'
+updated: 2026-08-12T16:23:16Z
+---
+
+Auf cortex (NVIDIA DGX Spark, GB10 Blackwell):
+
+  === Display Controllers ===
+  000f:01:00.0 VGA compatible controller [0300]: NVIDIA Corporation Device [10de:2e12] (rev a1)
+  [skip] Unknown NVIDIA GPU: Device — not in known compute-capable list
+
+detect_gpu nutzt eine Whitelist bekannter GPUs. Der GB10 faellt durch, und lspci kennt die ID nicht einmal namentlich ("Device"), weil die pci.ids veraltet sind.
+
+Ironie: genau dieser Fehlschlag hat die DGX geschuetzt — install_nvidia lief deshalb nicht und hat den Hersteller-Treiber nicht mit nvidia-driver-535 ueberbuegelt (das ist jetzt separat durch die _nvidia_driver_present-Guard abgesichert).
+
+Aber die Erkennung ist trotzdem falsch: NFD hat den Node sehr wohl als GPU-Node gelabelt und der GPU-Operator wurde deployed. Zwei Erkennungswege, zwei verschiedene Antworten.
+
+Fix-Richtung: Whitelist gegen Heuristik tauschen (NVIDIA Vendor-ID 10de + Device-Class 0300/0302 reicht als Signal), oder ganz auf NFD-Labels stuetzen statt eigener lspci-Logik.
+BEFUND aus dem Live-Cluster: NFD erkennt dieselbe GPU korrekt, mit dem Faktor den OCP nicht nutzt.
+
+  feature.node.kubernetes.io/pci-0300_10de.present: "true"
+  nvidia.com/gpu.present: "true"
+
+PCI-Class 0300 + Vendor 10de. Keine Modell-Liste.
+
+Die Whitelist (_check_nvidia_compute, share/Rexfile:241-290) ist nicht zu retten, weil ihr EINGABEWERT falsch ist, nicht ihr Inhalt: sie matcht Marketing-Namen (RTX/GTX 16xx/Tesla/Quadro) aus lspci-Text, und der Name stammt aus der pci.ids-DB des Hosts. Bei neuer Hardware fehlt der Eintrag und lspci druckt "Device [10de:2e12]". Ein Whitelist-Eintrag fuer GB10 haette auf cortex nicht geholfen.
+
+Zweiter Fehler: sie fragt "ist die GPU compute-faehig?", benutzt die Antwort aber nur fuer do_task "install_nvidia" (Rexfile:223). Fuer einen Treiber-Install ist die richtige Frage "NVIDIA-Hardware da und Treiber fehlt?".
+
+VORSCHLAG — drei Stufen, jede mit passendem Signal:
+  1. Hardware da?      sysfs /sys/bus/pci/devices/*/vendor == 0x10de + class 0300|0302
+                       (kein pciutils, keine pci.ids, keine Namen — das ist was NFD tut)
+  2. Treiber da?       nvidia-smi -L + libcuda.so im Linker-Cache
+                       (bereits als _nvidia_driver_present eingebaut)
+  3. Cluster-nutzbar?  nvidia.com/gpu in Node-Capacity — autoritativ, kommt vom device-plugin
+                       (OCP::Kubernetes::node_gpu_count liest das schon)
+
+Virtual-GPU-Blacklist (Rexfile:212, virtio/QEMU/VMware/VBox) BLEIBT — kurze Liste von "definitiv nicht" ist stabil, endlose Whitelist von "vielleicht" nicht.
+
+Offene Entscheidung: Whitelist skippt heute schwache Display-GPUs (MX 150, GT 710). Faellt sie weg, kriegen die einen Treiber — nutzlos aber harmlos. Wenn die Unterscheidung bleiben soll, gehoert sie HINTER den Install: nvidia-smi --query-gpu=compute_cap liefert die echte Zahl statt Namensraterei.
+
+Nebenbefund: nvidia.com/gpu fehlt aktuell in cortex Capacity, weil das device-plugin am kaputten Validator-Pin (#11) haengt. Stufe 3 ist also erst nach #11 verifizierbar.
+FINALE EMPFEHLUNG nach Netz-Recherche — die Whitelist faellt ersatzlos weg.
+
+Der GPU-Operator selbst benutzt NFD als Erkennungsmechanismus; OCP deployed NFD bereits. Auf cortex hat NFD den GB10 korrekt gelabelt, waehrend OCPs lspci-Whitelist versagte. Es gibt keinen Grund, eine dritte, schlechtere Erkennung danebenzustellen.
+
+Aufteilung nach Zeitpunkt — das ist der Kern:
+
+  VOR dem Cluster (Rex, Bootstrap) — einzige Frage: "Treiber installieren?"
+    Hardware da?  sysfs: /sys/bus/pci/devices/*/vendor == 0x10de, class 0300|0302
+                  (kein pciutils, keine pci.ids, keine Modellnamen)
+    Treiber da?   nvidia-smi -L + libcuda.so im Linker-Cache (_nvidia_driver_present)
+    -> Compute-Faehigkeit ist hier IRRELEVANT. Fuer die Frage "Treiber ja/nein" muss
+       niemand wissen, ob die Karte gut ist.
+
+  NACH dem Cluster — Frage: "ist die GPU nutzbar?"
+    NFD-Label       feature.node.kubernetes.io/pci-0300_10de.present
+    Autoritativ     nvidia.com/gpu in Node-Capacity (device-plugin)
+    -> OCP::Kubernetes::node_gpu_count liest das bereits.
+
+Die offene Frage aus der Ticket-Beschreibung (schwache Display-GPUs wie MX 150 / GT 710
+vom Treiber-Install ausnehmen) ist damit erledigt: sie stellt sich nicht. Ein Treiber auf
+einer schwachen Karte ist nutzlos, nicht schaedlich, und ob die Karte fuer Workloads
+taugt, entscheidet das device-plugin — nicht OCP durch Namensraterei. Wer die Zahl
+wirklich braucht: nvidia-smi --query-gpu=compute_cap, nach dem Install.
+
+Virtual-GPU-Blacklist (Rexfile:212) bleibt: kurze Liste von "definitiv nicht" ist stabil.
+
+WICHTIGER ALS DIE ERKENNUNG: die Verifikation. Ob der GPU-Stack laeuft, beweist genau
+ein Signal — nvidia.com/gpu in der Node-Capacity, plus optional ein CUDA-Smoke-Pod.
+Solange apply das nicht prueft, ist jede Erkennungsverbesserung nur eine bessere
+Vorhersage statt eines Beweises. Gehoert zu #18 (apply meldet Erfolg ueber kaputtem
+Cluster) und ist der eigentliche Hebel.
+Umgesetzt (ocp-infra-worker). Whitelist ersatzlos entfernt.
+
+Ursache: _check_nvidia_compute matchte Marketing-Namen aus lspci-Text; der Name
+stammt aus der pci.ids-DB des Hosts und fehlt bei neuer Hardware (GB10 druckt
+"Device [10de:2e12]"). Falscher Eingabewert, nicht falscher Listeninhalt.
+
+Aenderung in share/Rexfile:
+- _check_nvidia_compute geloescht, ebenso der pciutils-Install und jeder
+  lspci-Aufruf.
+- Neu _pci_display_devices: liest /sys/bus/pci/devices/*/{vendor,device,class},
+  filtert Klasse 0x0300xx/0x0302xx. Keine Datenbank, keine Namen - dasselbe
+  Signal, das NFD als pci-0300_10de.present setzt.
+- Neu _gpu_action: gibt nvidia/virtual/amd/none zurueck. NVIDIA gewinnt jetzt
+  VOR der Virtual-Blacklist - eine VM mit durchgereichter Karte hat beides, und
+  dort ist der Treiber noetig. Das ist die einzige Verhaltensaenderung ueber das
+  Ticket hinaus, bewusst und kommentiert.
+- Virtual-Blacklist (1af4/1b36/15ad/80ee) bleibt, Schwach-GPU-Unterscheidung
+  faellt wie entschieden weg.
+
+Verifikation: t/44-gpu-detect.t fuehrt _pci_display_devices und _gpu_action
+gegen gestubbtes sysfs aus, inklusive der GB10-Zeile 10de:2e12 class 0x030000,
+H100 als 3D-Controller, GPU-Audio-Funktion (0x0403) und Host-Bridge werden
+aussortiert, kaputte Zeilen ohne Vendor/Class ueberspringt es. Plus
+Source-Asserts, dass lspci/pciutils/Modellnamen nicht zurueckkommen.
+make test gruen: 44 Dateien, 729 Tests.
+
+Ungetestet: der sysfs-Shell-Einzeiler ist nie auf einem echten Host gelaufen
+(SSH auf cortex war blockiert). Format 0x10de / 0x030000 lokal gegen /sys
+geprueft, die Parser-Seite ist testabgedeckt, die Shell-Seite nicht.
+VERIFIZIERT AM ECHTEN GB10. Das exakte sysfs-Kommando aus _pci_display_devices auf cortex ausgefuehrt:
+
+  /sys/bus/pci/devices/000f:01:00.0|0x10de|0x2e12|0x030000
+
+vendor 0x10de -> 10de, class 0x030000 -> 0300, device 0x2e12. Beide Regexe matchen, _gpu_action liefert nvidia. Damit ist der Punkt geschlossen, den der Agent als ungetestet markiert hatte (Parser gegen gestubbtes sysfs geprueft, Shell-Seite nicht).
+
+Dieselbe Karte, an der die alte Whitelist mit "[skip] Unknown NVIDIA GPU: Device" scheiterte.
