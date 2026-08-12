@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-08-12T16:25:16Z
+created: 2026-08-12T14:04:31Z
+id: 14
+priority: low
+started: 2026-08-12T15:55:57Z
+status: done
+tags:
+- arch
+- hetzner
+- deadcode
+title: Hetzner server type picker is hardcoded to x86 (latent)
+updated: 2026-08-12T16:25:16Z
+---
+
+Side-finding from the #9 arch audit.
+
+lib/OCP/Hetzner.pm:36
+  my $arch = $filter{architecture} // "x86";
+filters WWW::Hetzner::Cloud server types to x86 only, so Hetzners ARM line (CAX*, architecture "arm") would never appear in the picker.
+
+Latent, not an active bug: server_type_options has no callers at all right now (grep over lib/ bin/ finds only its own definition), so nothing is being filtered today. When it does get wired into `ocp init`, the default must not silently hide arm64 machines — either offer the architecture as a choice or default to showing both.
+
+Same file, same shape: location_options is fine.
+Done: both architectures are shown by default, and the architecture stays available as a deliberate filter.
+
+The default is gone rather than flipped: architecture is undef unless the caller passes it, so the grep only narrows when asked. Passing architecture => arm or x86 still works for a caller that knows what it wants. Deprecated types are still filtered out.
+
+Two supporting changes so a mixed list is usable. The label now names the architecture, cax11 (arm, 2 CPU, 4GB, 40GB shared), otherwise a picker showing both lines gives no way to tell CAX from CPX. And the sort gained a name tiebreak after cores and memory: with one architecture the pairs never collided, with both they do, and Perl sort is not stable, so equally sized machines could swap places between calls.
+
+location_options untouched, it was already the right shape.
+
+Still latent by design: neither picker has a caller yet. Filed as a follow-up rather than done here, since wiring it means touching ocp init prompting, which is a different change.
+
+Files: lib/OCP/Hetzner.pm. Tests: t/42-hetzner-options.t against inline fake server types, covering both-by-default, arm-only and x86-only filters, the architecture in the label, and deterministic ordering. Changes bullet added.
