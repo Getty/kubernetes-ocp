@@ -109,15 +109,15 @@ $tmp->child('.ocp')->mkpath;
 my $ocp_yaml = $tmp->child('ocp.yaml');
 $ocp_yaml->spew(<<'YAML');
 name: mycluster
-controlPlanes:
+control_planes:
   - provider: hetzner
     location: fsn1
-    serverType: cx32
+    server_type: cx32
 workers:
   - name: pool-a
     provider: hetzner
     nodes: 2
-    serverType: cx21
+    server_type: cx21
   - name: ssh-pool
     provider: ssh
     nodes:
@@ -375,11 +375,11 @@ sub remedy_config {
     my $dir = tempdir(CLEANUP => 1);
     path($dir)->child('ocp.yaml')->spew_utf8(<<"YAML");
 name: t
-controlPlanes:
+control_planes:
   provider: ssh
   host: @{[ $args{host} // '1.2.3.4' ]}
 ssh:
-  privateKey: key
+  private_key: key
 YAML
     path($dir)->child('key')->spew_utf8('PRIVATE') if $args{with_key};
     return OCP::Config->new(file => path($dir)->child('ocp.yaml')->stringify);

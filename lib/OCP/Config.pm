@@ -46,20 +46,20 @@ sub _load_spec {
 sub _default_spec {
     return {
         name => 'mycluster',
-        k8s => {
+        kubernetes => {
             dist    => 'rke2',  # or 'k3s'
             version => '',      # latest if empty
         },
-        cps => {
-            provider   => 'hetzner',
-            serverType => 'cpx21',
-            location   => 'fsn1',
-            image      => 'debian-13',
+        control_planes => {
+            provider    => 'hetzner',
+            server_type => 'cpx21',
+            location    => 'fsn1',
+            image       => 'debian-13',
         },
         workers => [],
         ssh => {
-            privateKey => '.ocp/id_ed25519',
-            publicKey  => '.ocp/id_ed25519.pub',
+            private_key => '.ocp/id_ed25519',
+            public_key  => '.ocp/id_ed25519.pub',
         },
     };
 }
@@ -71,30 +71,21 @@ sub _default_spec {
 sub name { shift->spec->{name} // 'mycluster' }
 
 sub kubernetes {
-    my $self = shift;
-    if (exists $self->spec->{k8s} && !exists $self->spec->{kubernetes}) {
-        warn "OCP::Config: 'k8s' is deprecated, use 'kubernetes' instead\n"
-            unless $self->{_warned_k8s}++;
-    }
-    return $self->spec->{kubernetes} // $self->spec->{k8s} // {};
+    my ($self) = @_;
+    return $self->spec->{kubernetes} // {};
 }
 
 sub control_planes {
-    my $self = shift;
-    if (exists $self->spec->{cps} && !exists $self->spec->{controlPlanes}) {
-        warn "OCP::Config: 'cps' is deprecated, use 'controlPlanes' instead\n"
-            unless $self->{_warned_cps}++;
-    }
-    my $raw = $self->spec->{controlPlanes} // $self->spec->{cps};
+    my ($self) = @_;
+    my $raw = $self->spec->{control_planes};
 
-    # New format: Array
+    # Array form: one entry per control plane
     return $raw if ref $raw eq 'ARRAY';
 
-    # Old format: Hash -> convert to Array
+    # Hash form: single CP, or `nodes: N` for N identical CPs
     if (ref $raw eq 'HASH') {
         my %cp = %$raw;
         my $count = delete $cp{nodes} // 1;
-        $count = 1 if $count eq 'cp';  # Legacy
         return [(%cp ? \%cp : {}) x $count];
     }
 
@@ -111,9 +102,8 @@ sub single_node {
 }
 
 sub distribution {
-    my $self = shift;
-    my $k8s = $self->kubernetes;
-    return $k8s->{dist} // $k8s->{distribution} // 'rke2';
+    my ($self) = @_;
+    return $self->kubernetes->{dist} // 'rke2';
 }
 
 sub version {
@@ -209,15 +199,15 @@ sub cluster_status {
 
     for my $node (@{ $self->nodes_status }) {
         next if ($node->{role} // 'control-plane') =~ /worker/;
-        my $ip = $node->{publicIp} // $node->{publicIP};
+        my $ip = $node->{public_ip};
         return $node if defined $ip && length $ip && $ip ne '-';
     }
 
     my $cp = $self->control_planes->[0] // {};
-    my $ip = $cp->{publicIp} // $cp->{publicIP} // $cp->{host};
+    my $ip = $cp->{public_ip} // $cp->{host};
 
     return {} unless defined $ip && length $ip;
-    return { name => $cp->{name} // 'cp-1', publicIp => $ip };
+    return { name => $cp->{name} // 'cp-1', public_ip => $ip };
 }
 
 sub set_status {
@@ -246,13 +236,13 @@ sub cluster_exists {
 
 sub ssh_private_key_path {
     my ($self) = @_;
-    my $key_path = $self->ssh_config->{privateKey} // '.ocp/id_ed25519';
+    my $key_path = $self->ssh_config->{private_key} // '.ocp/id_ed25519';
     return $self->_resolve_path($key_path);
 }
 
 sub ssh_public_key_path {
     my ($self) = @_;
-    my $key_path = $self->ssh_config->{publicKey} // '.ocp/id_ed25519.pub';
+    my $key_path = $self->ssh_config->{public_key} // '.ocp/id_ed25519.pub';
     return $self->_resolve_path($key_path);
 }
 
@@ -288,18 +278,18 @@ sub validate {
         my $prov = $cp->{provider} // 'hetzner';
 
         unless ($prov =~ /^(hetzner|ssh|local)$/) {
-            push @errors, "controlPlanes[$idx]: invalid provider '$prov' (must be hetzner, ssh, or local)";
+            push @errors, "control_planes[$idx]: invalid provider '$prov' (must be hetzner, ssh, or local)";
         }
 
         if ($prov eq 'hetzner') {
-            push @errors, "controlPlanes[$idx]: serverType required for hetzner"
-                unless $cp->{serverType};
-            push @errors, "controlPlanes[$idx]: location required for hetzner"
+            push @errors, "control_planes[$idx]: server_type required for hetzner"
+                unless $cp->{server_type};
+            push @errors, "control_planes[$idx]: location required for hetzner"
                 unless $cp->{location};
         }
 
         if ($prov eq 'ssh') {
-            push @errors, "controlPlanes[$idx]: host required for ssh"
+            push @errors, "control_planes[$idx]: host required for ssh"
                 unless $cp->{host};
         }
     }
@@ -357,8 +347,8 @@ sub write_spec {
             dist => $opts{dist} // 'rke2',
         },
         ssh => {
-            privateKey => $opts{ssh_private_key} // '.ocp/id_ed25519',
-            publicKey  => $opts{ssh_public_key} // '.ocp/id_ed25519.pub',
+            private_key => $opts{ssh_private_key} // '.ocp/id_ed25519',
+            public_key  => $opts{ssh_public_key} // '.ocp/id_ed25519.pub',
         },
     };
 
@@ -379,63 +369,62 @@ sub write_spec {
 
     # Control planes: compact where possible
     # 1 CP → Hash, N identical CPs → Hash + nodes, mixed → Array
-    if ($opts{cps} && ref $opts{cps} eq 'ARRAY') {
-        $spec->{controlPlanes} = _compact_cps($opts{cps});
+    if ($opts{control_planes} && ref $opts{control_planes} eq 'ARRAY') {
+        $spec->{control_planes} = _compact_control_planes($opts{control_planes});
     } else {
-        # Legacy: build from individual opts
         my $provider = $opts{provider} // 'hetzner';
 
         if ($provider eq 'hetzner') {
-            $spec->{controlPlanes} = {
-                provider   => 'hetzner',
-                serverType => $opts{server_type} // 'cpx21',
-                location   => $opts{location} // 'fsn1',
-                image      => $opts{image} // 'debian-13',
+            $spec->{control_planes} = {
+                provider    => 'hetzner',
+                server_type => $opts{server_type} // 'cpx21',
+                location    => $opts{location} // 'fsn1',
+                image       => $opts{image} // 'debian-13',
             };
         } elsif ($provider eq 'ssh') {
             my $cp = { provider => 'ssh' };
             $cp->{host} = $opts{host} if $opts{host};
-            $spec->{controlPlanes} = $cp;
+            $spec->{control_planes} = $cp;
         } elsif ($provider eq 'local') {
             my $cp = { provider => 'local' };
             if ($opts{service} && $opts{service} ne 'none') {
                 $cp->{service} = $opts{service};
             }
             if ($opts{network_interface}) {
-                $cp->{networkInterface} = $opts{network_interface};
+                $cp->{network_interface} = $opts{network_interface};
             }
-            $spec->{controlPlanes} = $cp;
+            $spec->{control_planes} = $cp;
         }
     }
 
     OCP->instance->dump_file($file, $spec);
 }
 
-sub _compact_cps {
-    my ($cps) = @_;
-    return $cps->[0] if @$cps == 1;
+sub _compact_control_planes {
+    my ($control_planes) = @_;
+    return $control_planes->[0] if @$control_planes == 1;
 
     # Check if all entries are identical → Hash + nodes
     # canonical sorts keys, so two hashes with the same content compare equal
     # regardless of insertion order.
     my $json = JSON::MaybeXS->new(canonical => 1, convert_blessed => 1);
 
-    my $first = $json->encode($cps->[0]);
+    my $first = $json->encode($control_planes->[0]);
     my $all_same = 1;
-    for my $i (1 .. $#$cps) {
-        if ($json->encode($cps->[$i]) ne $first) {
+    for my $i (1 .. $#$control_planes) {
+        if ($json->encode($control_planes->[$i]) ne $first) {
             $all_same = 0;
             last;
         }
     }
 
     if ($all_same) {
-        my %cp = %{$cps->[0]};
-        $cp{nodes} = scalar @$cps;
+        my %cp = %{$control_planes->[0]};
+        $cp{nodes} = scalar @$control_planes;
         return \%cp;
     }
 
-    return $cps;
+    return $control_planes;
 }
 
 1;

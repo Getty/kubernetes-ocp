@@ -155,7 +155,7 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
             hetzner => {
                 tokenSecretRef => { name => 'ocp-provider-hetzner-a-token', key => 'token' },
                 location   => 'fsn1',
-                serverType => 'cx32',
+                server_type => 'cx32',
             },
         },
     };

@@ -54,8 +54,8 @@ sub capture_stdout (&) {
     $project->mkpath;
     my $config_file = $project->child('ocp.yaml');
     $ocp->dump_file($config_file->stringify, {
-        name => 'nocluster',
-        cps  => [{ provider => 'ssh', host => '127.0.0.1' }],
+        name         => 'nocluster',
+        control_planes => [{ provider => 'ssh', host => '127.0.0.1' }],
     });
 
     my $cmd = OCP::Cmd::Status->new(
@@ -73,8 +73,8 @@ sub capture_stdout (&) {
     my $kubeconfig_file = $project->child('kubeconfig.yaml');
 
     $ocp->dump_file($config_file->stringify, {
-        name => 'withcluster',
-        cps  => [{ provider => 'hetzner', serverType => 'cx32' }],
+        name         => 'withcluster',
+        control_planes => [{ provider => 'hetzner', server_type => 'cx32' }],
     });
     $kubeconfig_file->spew("encrypted-placeholder\n");
 

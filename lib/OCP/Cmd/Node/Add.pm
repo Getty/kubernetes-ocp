@@ -238,7 +238,7 @@ sub _cli_reconcile {
 
     my $cp_ip = do {
         my $cps = $config->control_planes;
-        ($cps && @$cps) ? ($cps->[0]{publicIp} // $cps->[0]{host}) : undef;
+        ($cps && @$cps) ? ($cps->[0]{public_ip} // $cps->[0]{host}) : undef;
     };
 
     my ($ssh_key, $server_url, $join_token);

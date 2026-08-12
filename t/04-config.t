@@ -22,10 +22,10 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $config_file = path($tmpdir)->child('basic.yaml');
     $ocp->dump_file($config_file->stringify, {
         name => 'testcluster',
-        k8s  => { dist => 'rke2', version => 'v1.31.3' },
-        cps  => {
+        kubernetes => { dist => 'rke2', version => 'v1.31.3' },
+        control_planes => {
             provider   => 'hetzner',
-            serverType => 'cx32',
+            server_type => 'cx32',
             location   => 'fsn1',
             nodes      => 1,
         },
@@ -42,34 +42,36 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $cps = $config->control_planes;
     is(ref $cps, 'ARRAY', 'control_planes returns ArrayRef');
     is($cps->[0]{provider}, 'hetzner', 'control_planes provider');
-    is($cps->[0]{serverType}, 'cx32', 'control_planes serverType');
+    is($cps->[0]{server_type}, 'cx32', 'control_planes server_type');
     is($cps->[0]{location}, 'fsn1', 'control_planes location');
 
     is_deeply($config->workers, [], 'empty workers');
 }
 
 #
-# Test: Alternative key names (kubernetes vs k8s, controlPlanes vs cps)
+# Test: control_planes array form (multiple CPs)
 #
 
 {
-    my $config_file = path($tmpdir)->child('altkeys.yaml');
+    my $config_file = path($tmpdir)->child('multicp.yaml');
     $ocp->dump_file($config_file->stringify, {
-        name       => 'altcluster',
-        kubernetes => { dist => 'k3s' },
-        controlPlanes => {
-            provider => 'ssh',
-            host     => '10.0.0.1',
-        },
+        name         => 'altcluster',
+        kubernetes   => { dist => 'k3s' },
+        control_planes => [
+            { provider => 'ssh', host => '10.0.0.1' },
+            { provider => 'ssh', host => '10.0.0.2' },
+        ],
     });
 
     my $config = OCP::Config->new(file => $config_file->stringify, ocp => $ocp);
 
-    is($config->distribution, 'k3s', 'kubernetes key works (vs k8s)');
+    is($config->distribution, 'k3s', 'kubernetes.dist');
 
     my $cps = $config->control_planes;
-    is($cps->[0]{provider}, 'ssh', 'controlPlanes key works (vs cps)');
-    is($cps->[0]{host}, '10.0.0.1', 'SSH host from controlPlanes');
+    is(scalar @$cps, 2, 'control_planes array form: 2 CPs');
+    is($cps->[0]{provider}, 'ssh', 'control_planes[0] provider');
+    is($cps->[0]{host}, '10.0.0.1', 'control_planes[0] host');
+    is($cps->[1]{host}, '10.0.0.2', 'control_planes[1] host');
 }
 
 #
@@ -103,31 +105,31 @@ my $tmpdir = tempdir(CLEANUP => 1);
 #
 
 {
-    # Single: 1 CP, 0 workers (new array format)
+    # Single: 1 CP, 0 workers (array format)
     my $f1 = path($tmpdir)->child('single1.yaml');
     $ocp->dump_file($f1->stringify, {
         name => 'single',
-        cps  => [{ provider => 'local' }],
+        control_planes => [{ provider => 'local' }],
     });
     my $c1 = OCP::Config->new(file => $f1->stringify, ocp => $ocp);
     ok($c1->single_node, 'single node: 1 CP, 0 workers');
 
-    # Inferred: 1 CP from old hash format, 0 workers
+    # Inferred: 1 CP from hash format with nodes: 1, 0 workers
     my $f2 = path($tmpdir)->child('single2.yaml');
     $ocp->dump_file($f2->stringify, {
-        name    => 'inferred-single',
-        cps     => { provider => 'hetzner', nodes => 1 },
-        workers => [],
+        name         => 'inferred-single',
+        control_planes => { provider => 'hetzner', nodes => 1 },
+        workers      => [],
     });
     my $c2 = OCP::Config->new(file => $f2->stringify, ocp => $ocp);
-    ok($c2->single_node, 'inferred single node (old hash format, 1 CP)');
+    ok($c2->single_node, 'inferred single node (hash format, 1 CP)');
 
     # Not single: has workers
     my $f3 = path($tmpdir)->child('multi.yaml');
     $ocp->dump_file($f3->stringify, {
-        name    => 'multi',
-        cps     => [{ provider => 'hetzner' }],
-        workers => [{ name => 'pool1', provider => 'hetzner', nodes => 2 }],
+        name         => 'multi',
+        control_planes => [{ provider => 'hetzner' }],
+        workers      => [{ name => 'pool1', provider => 'hetzner', nodes => 2 }],
     });
     my $c3 = OCP::Config->new(file => $f3->stringify, ocp => $ocp);
     ok(!$c3->single_node, 'not single when workers exist');
@@ -135,8 +137,8 @@ my $tmpdir = tempdir(CLEANUP => 1);
     # Not single: 3 CPs
     my $f4 = path($tmpdir)->child('ha.yaml');
     $ocp->dump_file($f4->stringify, {
-        name => 'ha',
-        cps  => [
+        name         => 'ha',
+        control_planes => [
             { provider => 'hetzner' },
             { provider => 'hetzner' },
             { provider => 'hetzner' },
@@ -225,8 +227,8 @@ my $tmpdir = tempdir(CLEANUP => 1);
     $ocp->dump_file($f->stringify, {
         name => 'sshtest',
         ssh  => {
-            privateKey => '.ocp/id_ed25519',
-            publicKey  => '.ocp/id_ed25519.pub',
+            private_key => '.ocp/id_ed25519',
+            public_key  => '.ocp/id_ed25519.pub',
         },
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
@@ -272,7 +274,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $cps = $config->control_planes;
     is(ref $cps, 'ARRAY', 'write_spec: returns array');
     is($cps->[0]{provider}, 'hetzner', 'write_spec: hetzner provider');
-    is($cps->[0]{serverType}, 'cpx21', 'write_spec: default serverType');
+    is($cps->[0]{server_type}, 'cpx21', 'write_spec: default server_type');
 }
 
 {
@@ -301,16 +303,16 @@ my $tmpdir = tempdir(CLEANUP => 1);
     ok($config->single_node, 'write_spec local: single_node (inferred)');
 }
 
-# Test: write_spec with cps ArrayRef directly (multi-CP path)
+# Test: write_spec with control_planes ArrayRef directly (multi-CP path)
 {
     my $f = path($tmpdir)->child('written-array.yaml')->stringify;
     OCP::Config->write_spec($f,
         name => 'hacluster',
         dist => 'rke2',
-        cps  => [
-            { provider => 'hetzner', serverType => 'cx32', location => 'fsn1', image => 'debian-13' },
-            { provider => 'hetzner', serverType => 'cx32', location => 'fsn1', image => 'debian-13' },
-            { provider => 'hetzner', serverType => 'cx32', location => 'fsn1', image => 'debian-13' },
+        control_planes => [
+            { provider => 'hetzner', server_type => 'cx32', location => 'fsn1', image => 'debian-13' },
+            { provider => 'hetzner', server_type => 'cx32', location => 'fsn1', image => 'debian-13' },
+            { provider => 'hetzner', server_type => 'cx32', location => 'fsn1', image => 'debian-13' },
         ],
     );
 
@@ -318,7 +320,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $cps = $config->control_planes;
     is(scalar @$cps, 3, 'write_spec array: 3 CPs');
     is($cps->[0]{provider}, 'hetzner', 'write_spec array: provider');
-    is($cps->[2]{serverType}, 'cx32', 'write_spec array: serverType on 3rd CP');
+    is($cps->[2]{server_type}, 'cx32', 'write_spec array: server_type on 3rd CP');
     ok(!$config->single_node, 'write_spec array: not single with 3 CPs');
 }
 

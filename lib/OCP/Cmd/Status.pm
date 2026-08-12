@@ -46,7 +46,7 @@ sub execute {
 
     my $cp_count = scalar @$cps;
     my $cp_provider = $cps->[0]{provider} || 'hetzner';
-    my $cp_type = $cps->[0]{serverType} || 'ssh';
+    my $cp_type = $cps->[0]{server_type} || 'ssh';
     print "Control Planes: $cp_count ($cp_type, $cp_provider)\n";
 
     for my $pool (@workers) {

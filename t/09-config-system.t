@@ -113,8 +113,8 @@ my $tmpdir = tempdir(CLEANUP => 1);
     $projdir->mkpath;
     my $f = $projdir->child('ocp.yaml');
     $ocp->dump_file($f->stringify, {
-        name => 'sshdefault',
-        cps  => { provider => 'ssh', host => 'test.example.com' },
+        name         => 'sshdefault',
+        control_planes => { provider => 'ssh', host => 'test.example.com' },
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
 
@@ -129,8 +129,8 @@ my $tmpdir = tempdir(CLEANUP => 1);
 {
     my $f = path($tmpdir)->child('hostname.yaml');
     $ocp->dump_file($f->stringify, {
-        name => 'avatar',
-        cps  => {
+        name         => 'avatar',
+        control_planes => {
             provider => 'ssh',
             host     => 'avatar.conflict.industries',
         },

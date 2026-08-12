@@ -201,7 +201,7 @@ sub _update_via_rex {
     my ($self, $config, $component, $version, $task) = @_;
 
     my $cp_status = $config->cluster_status;
-    my $host = $cp_status->{publicIp} or die "No control plane IP found\n";
+    my $host = $cp_status->{public_ip} or die "No control plane IP found\n";
 
     my $rex = OCP::Rex->new(
         host     => $host,
@@ -221,7 +221,7 @@ sub _update_cilium {
 
     # Cilium updates need special handling (CLI + cluster upgrade)
     my $cp_status = $config->cluster_status;
-    my $host = $cp_status->{publicIp} or die "No control plane IP found\n";
+    my $host = $cp_status->{public_ip} or die "No control plane IP found\n";
 
     my $rex = OCP::Rex->new(
         host     => $host,

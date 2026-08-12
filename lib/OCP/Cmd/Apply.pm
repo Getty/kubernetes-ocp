@@ -214,7 +214,7 @@ sub execute {
         cluster     => $config->name,
         node        => $cp_name,
         role        => 'control-plane',
-        server_type => $first_cp->{serverType} // 'cx32',
+        server_type => $first_cp->{server_type} // 'cx32',
         image       => $first_cp->{image} // 'debian-13',
         location    => $first_cp->{location} // 'fsn1',
         ssh_keys    => [$key_name],
@@ -2273,7 +2273,7 @@ sub _ensure_worker_ocpnodes {
                 providerRef => "$type-default",
             };
             $spec->{host}       = $host                     if $host;
-            $spec->{serverType} = $pool->{serverType}       if $pool->{serverType};
+            $spec->{serverType} = $pool->{server_type}      if $pool->{server_type};
             $spec->{image}      = $pool->{image}            if $pool->{image};
             $spec->{location}   = $pool->{location}         if $pool->{location};
 
@@ -2708,7 +2708,7 @@ sub _run_remedy {
         return 0;
     }
 
-    my $host = $config->cluster_status->{publicIp};
+    my $host = $config->cluster_status->{public_ip};
     unless ($host) {
         print "  [!!] No control plane address known, cannot run $remedy->{task}.\n";
         return 0;

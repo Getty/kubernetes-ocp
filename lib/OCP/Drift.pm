@@ -58,7 +58,7 @@ sub spec_drift {
     for my $cp (@cps) {
         $index++;
 
-        my $pinned = $cp->{publicIp} // $cp->{publicIP};
+        my $pinned = $cp->{public_ip};
         next unless defined $pinned && length $pinned;
 
         # Match by name when the spec names the node. A single unnamed
@@ -69,7 +69,7 @@ sub spec_drift {
             : (@cps == 1 ? grep { ($_->{role} // 'control-plane') !~ /worker/ } @status : ());
         next unless $node;
 
-        my $actual = $node->{publicIp} // $node->{publicIP};
+        my $actual = $node->{public_ip};
         next unless defined $actual && length $actual && $actual ne '-';
         next if $actual eq $pinned;
 
@@ -81,7 +81,7 @@ sub spec_drift {
             label     => $label,
             expected  => $pinned,
             actual    => $actual,
-            message   => "$label: ocp.yaml pins publicIp $pinned, recorded state says $actual",
+            message   => "$label: ocp.yaml pins public_ip $pinned, recorded state says $actual",
             remedy    => undef,
         };
     }

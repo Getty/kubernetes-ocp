@@ -20,8 +20,8 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('valid.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'mycluster',
-        controlPlanes => [
-            { provider => 'hetzner', serverType => 'cx32', location => 'fsn1' },
+        control_planes => [
+            { provider => 'hetzner', server_type => 'cx32', location => 'fsn1' },
         ],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
@@ -38,7 +38,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('noname.yaml');
     $ocp->dump_file($f->stringify, {
         name          => '',
-        controlPlanes => [{ provider => 'ssh', host => '10.0.0.1' }],
+        control_planes => [{ provider => 'ssh', host => '10.0.0.1' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     my @errors = $c->validate;
@@ -53,7 +53,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('badprov.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'bad',
-        controlPlanes => [{ provider => 'aws' }],
+        control_planes => [{ provider => 'aws' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     my @errors = $c->validate;
@@ -61,18 +61,18 @@ my $tmpdir = tempdir(CLEANUP => 1);
 }
 
 #
-# Test: Hetzner requires serverType and location
+# Test: Hetzner requires server_type and location
 #
 
 {
     my $f = path($tmpdir)->child('hz-missing.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'hz',
-        controlPlanes => [{ provider => 'hetzner' }],
+        control_planes => [{ provider => 'hetzner' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     my @errors = $c->validate;
-    ok((grep { /serverType required/ } @errors), 'hetzner serverType required');
+    ok((grep { /server_type required/ } @errors), 'hetzner server_type required');
     ok((grep { /location required/ } @errors), 'hetzner location required');
 }
 
@@ -84,7 +84,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('ssh-nohost.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'ssh',
-        controlPlanes => [{ provider => 'ssh' }],
+        control_planes => [{ provider => 'ssh' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     my @errors = $c->validate;
@@ -99,7 +99,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('ssh-ok.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'sshcluster',
-        controlPlanes => [{ provider => 'ssh', host => '10.0.0.5' }],
+        control_planes => [{ provider => 'ssh', host => '10.0.0.5' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     my @errors = $c->validate;
@@ -114,7 +114,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('local.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'local',
-        controlPlanes => [{ provider => 'local' }],
+        control_planes => [{ provider => 'local' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     my @errors = $c->validate;
@@ -129,7 +129,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('workers.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'wtest',
-        controlPlanes => [{ provider => 'local' }],
+        control_planes => [{ provider => 'local' }],
         workers       => [
             { provider => 'hetzner' },  # missing name
         ],
@@ -140,13 +140,16 @@ my $tmpdir = tempdir(CLEANUP => 1);
 }
 
 #
-# Test: Deprecation warnings (cps -> controlPlanes)
+# Test: only canonical schema keys are read
 #
 
 {
-    my $f = path($tmpdir)->child('deprecated.yaml');
+    # Non-canonical keys (cps/k8s) must be ignored — no deprecation path.
+    # Unknown keys fall through, so control_planes()/kubernetes() return
+    # defaults, not anything from cps/k8s.
+    my $f = path($tmpdir)->child('unknown-keys.yaml');
     $ocp->dump_file($f->stringify, {
-        name => 'dep',
+        name => 'unknown',
         cps  => [{ provider => 'local' }],
         k8s  => { dist => 'rke2' },
     });
@@ -155,18 +158,13 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my @warnings;
     local $SIG{__WARN__} = sub { push @warnings, $_[0] };
 
-    $c->control_planes;
-    ok((grep { /cps.*deprecated/ } @warnings), 'cps deprecation warning');
+    my $cps = $c->control_planes;
+    is_deeply($cps, [{}], 'unknown cps key ignored: control_planes returns default');
 
-    @warnings = ();
-    $c->kubernetes;
-    ok((grep { /k8s.*deprecated/ } @warnings), 'k8s deprecation warning');
+    my $k8s = $c->kubernetes;
+    is_deeply($k8s, {}, 'unknown k8s key ignored: kubernetes returns empty');
 
-    # Second call should NOT warn again
-    @warnings = ();
-    $c->control_planes;
-    $c->kubernetes;
-    is(scalar @warnings, 0, 'deprecation warns only once');
+    is(scalar @warnings, 0, 'no warnings for unknown keys');
 }
 
 #
@@ -177,7 +175,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('gpu.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'gpu',
-        controlPlanes => [{ provider => 'local' }],
+        control_planes => [{ provider => 'local' }],
         gpu           => { enabled => 0, driver => 'operator' },
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
@@ -189,7 +187,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = path($tmpdir)->child('nogpu.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'nogpu',
-        controlPlanes => [{ provider => 'local' }],
+        control_planes => [{ provider => 'local' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     ok($c->gpu_enabled, 'gpu_enabled default true');
@@ -206,7 +204,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $f = $projdir->child('ocp.yaml');
     $ocp->dump_file($f->stringify, {
         name          => 'stest',
-        controlPlanes => [{ provider => 'local' }],
+        control_planes => [{ provider => 'local' }],
     });
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
 
@@ -215,7 +213,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
         name     => 'police1',
         role     => 'control-plane',
         provider => 'hetzner',
-        publicIp => '1.2.3.4',
+        public_ip => '1.2.3.4',
     });
 
     my $nodes = $c->nodes_status;
@@ -227,21 +225,21 @@ my $tmpdir = tempdir(CLEANUP => 1);
         name     => 'police1',
         role     => 'control-plane',
         provider => 'hetzner',
-        publicIp => '5.6.7.8',
+        public_ip => '5.6.7.8',
     });
 
     # Re-read fresh
     my $c2 = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     $nodes = $c2->nodes_status;
     is(scalar @$nodes, 1, 'still one node after upsert');
-    is($nodes->[0]{publicIp}, '5.6.7.8', 'node IP updated');
+    is($nodes->[0]{public_ip}, '5.6.7.8', 'node IP updated');
 
     # Add second node
     $c2->save_node_status({
         name     => 'worker-1',
         role     => 'worker',
         provider => 'ssh',
-        publicIp => '10.0.0.20',
+        public_ip => '10.0.0.20',
     });
 
     my $c3 = OCP::Config->new(file => $f->stringify, ocp => $ocp);

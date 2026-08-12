@@ -52,9 +52,9 @@ name: testcluster
 kubernetes:
   distribution: rke2
   version: v1.31.3+rke2r1
-controlPlanes:
+control_planes:
   provider: hetzner
-  serverType: cx32
+  server_type: cx32
 YAML
 
 #
@@ -207,15 +207,15 @@ YAML
     my $config = write_config(
         spec => <<'YAML',
 name: testcluster
-controlPlanes:
+control_planes:
   provider: hetzner
-  publicIp: 1.2.3.4
+  public_ip: 1.2.3.4
 YAML
         status => <<'YAML',
 nodes:
   - name: police1
     role: control-plane
-    publicIp: 9.9.9.9
+    public_ip: 9.9.9.9
 YAML
     );
 
@@ -230,15 +230,15 @@ YAML
     my $config = write_config(
         spec => <<'YAML',
 name: testcluster
-controlPlanes:
+control_planes:
   provider: hetzner
-  publicIp: 1.2.3.4
+  public_ip: 1.2.3.4
 YAML
         status => <<'YAML',
 nodes:
   - name: police1
     role: control-plane
-    publicIp: 1.2.3.4
+    public_ip: 1.2.3.4
 YAML
     );
 
@@ -247,7 +247,7 @@ YAML
 
 {
     # No status recorded yet: nothing to compare against
-    my $config = write_config(spec => "name: t\ncontrolPlanes:\n  publicIp: 1.2.3.4\n");
+    my $config = write_config(spec => "name: t\ncontrol_planes:\n  public_ip: 1.2.3.4\n");
     is_deeply([OCP::Drift->new(config => $config)->spec_drift], [], 'no status means no drift');
 }
 

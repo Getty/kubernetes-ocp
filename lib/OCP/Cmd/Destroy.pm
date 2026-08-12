@@ -59,7 +59,7 @@ sub execute {
                     name       => $s->name,
                     provider   => 'hetzner',
                     providerId => $s->id,
-                    publicIp   => $s->ipv4 // '-',
+                    public_ip => $s->ipv4 // '-',
                 };
             }
         }
@@ -74,7 +74,7 @@ sub execute {
             push @$nodes, {
                 name     => $cp->{host} // ($config->name . "-cp-$idx"),
                 provider => $cp->{provider} // 'ssh',
-                publicIp => $cp->{host} // $cp->{publicIp} // '-',
+                public_ip => $cp->{host} // $cp->{public_ip} // '-',
             };
         }
         for my $w (@{$config->workers}) {
@@ -84,7 +84,7 @@ sub execute {
                     push @$nodes, {
                         name     => $host,
                         provider => 'ssh',
-                        publicIp => $host,
+                        public_ip => $host,
                     };
                 }
             }
@@ -99,7 +99,7 @@ sub execute {
     print "Cluster: ", $config->name, "\n";
     print "Nodes to destroy:\n";
     for my $node (@$nodes) {
-        print "  - $node->{name} ($node->{provider}, $node->{publicIp})\n";
+        print "  - $node->{name} ($node->{provider}, $node->{public_ip})\n";
     }
     print "\n";
 
@@ -123,17 +123,17 @@ sub execute {
                 print "  Warning: $@\n";
             }
         }
-        elsif ($node->{provider} eq 'ssh' && $node->{publicIp} && $node->{publicIp} ne '-') {
-            print "  Uninstalling RKE2 on $node->{publicIp}...\n";
+        elsif ($node->{provider} eq 'ssh' && $node->{public_ip} && $node->{public_ip} ne '-') {
+            print "  Uninstalling RKE2 on $node->{public_ip}...\n";
             my $ssh_prov = OCP::Provider->for_spec(
                 { provider => 'ssh' },
                 ssh_key_path => $config->ssh_private_key_path,
             );
-            eval { $ssh_prov->delete_server(undef, host => $node->{publicIp}) };
+            eval { $ssh_prov->delete_server(undef, host => $node->{public_ip}) };
             if ($@) {
-                print "  Warning: Could not connect to $node->{publicIp} (may already be down).\n";
+                print "  Warning: Could not connect to $node->{public_ip} (may already be down).\n";
             } else {
-                print "  RKE2/K3s uninstalled on $node->{publicIp}.\n";
+                print "  RKE2/K3s uninstalled on $node->{public_ip}.\n";
             }
         }
     }

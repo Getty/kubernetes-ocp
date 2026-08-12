@@ -62,7 +62,7 @@ sub execute {
 
     # Try to find node in spec
     my $spec = $config->spec;
-    my $cp_spec = $spec->{controlPlanes};
+    my $cp_spec = $spec->{control_planes};
 
     # Check if it's a control plane node
     if ($node_arg eq 'police1' || $node_arg =~ /^police\d+$/ || $node_arg =~ /^cp/) {

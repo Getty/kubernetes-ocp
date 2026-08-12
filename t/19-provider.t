@@ -193,7 +193,7 @@ subtest 'add hetzner provider writes Secret + CR' => sub {
     is $ensures[1][1]{kind}, 'OCPNodeProvider',  'second is OCPNodeProvider';
     is $ensures[1][1]{spec}{hetzner}{location}, 'fsn1', 'location passed through';
     like $ensures[0][1]{data}{token}, qr/\S+/, 'token base64-encoded';
-    is $ensures[1][1]{spec}{hetzner}{serverType}, 'cx32', 'server_type passed through';
+    is $ensures[1][1]{spec}{hetzner}{serverType}, 'cx32', 'serverType passed through';
 };
 
 subtest 'add with --default annotates CR' => sub {
