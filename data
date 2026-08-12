@@ -1,0 +1,74 @@
+---
+class: standard
+completed: 2026-08-12T22:40:58Z
+created: 2026-08-12T13:46:14Z
+id: 9
+priority: high
+started: 2026-08-12T22:40:58Z
+status: done
+tags:
+- arch
+- infra
+- rexfile
+title: 'Multi-arch support: arm64/aarch64 across all components'
+updated: 2026-08-12T22:40:58Z
+---
+
+RKE2-Install ist amd64-hardcoded (share/Rexfile:487-500): rke2.linux-amd64.tar.gz + sha256sum-amd64.txt fest verdrahtet, laeuft auf aarch64 in 404.
+
+Gefunden beim Test gegen cortex.ai.citilan.de (NVIDIA DGX Spark, GB10, aarch64, Ubuntu 24.04).
+
+Cilium-Tasks (Rexfile:864, :998) machen arch-Detection bereits korrekt — das Muster ist da, RKE2 nutzt es nicht.
+
+Auch verdaechtig: linux-headers-amd64 in der NVIDIA-Driver-Paketliste (Rexfile:288, Debian-Zweig).
+
+Ziel: jede Binary-Download-URL, jede Paketliste und jedes Container-Image im Repo arch-aware oder nachweislich multi-arch. Nicht nur RKE2 flicken — vollstaendiger Audit.
+Audit done, fix landed in the working tree (share/Rexfile, Dockerfile, t/35-multi-arch.t). make test green: 35 files, 647 tests.
+
+Fixed:
+- share/Rexfile: new _node_arch() helper (uname -m -> GOARCH, unmapped machines pass through so the failing URL names them). install_rke2_server now builds rke2.linux-$arch.tar.gz + sha256sum-$arch.txt, downloads to those names and size-checks the file it actually wrote; verified against get.rke2.io, which looks for exactly ${ARTIFACT_PATH}/rke2.${SUFFIX}.tar.gz and sha256sum-${ARCH}.txt. Confirmed rancher/rke2 publishes both arm64 assets.
+- share/Rexfile: the two inlined Cilium ternary chains now call the helper (pattern exists once, not four times).
+- share/Rexfile install_nvidia: linux-headers-amd64 -> dpkg --print-architecture; and the whole driver install is now skipped when _nvidia_driver_present() (nvidia-smi enumerates GPUs AND libcuda.so present). That is the DGX Spark protection — before this, Ubuntu hosts got nvidia-driver-535 pulled over the vendor driver.
+- Dockerfile: kubectl download used bin/linux/amd64; now dpkg --print-architecture.
+
+Verified clean, no change needed: k3s (install script self-detects, OCP passes only VERSION/TOKEN/NODE_NAME/URL), rke2 agent (piped install script, self-detects), NVIDIA container-toolkit apt source (uses aptbs own $(ARCH) substitution; arm64 dir exists upstream), registries.yaml + containerd nvidia config + RKE2/k3s config generation (arch-neutral), no arch nodeSelectors anywhere, OCP::Versions holds no arch-bound artifact names.
+
+Container images: all third-party pins verified multi-arch with a real linux/arm64 entry under the same tag (NFD, gpu-operator, container-toolkit, k8s-device-plugin, dcgm-exporter, dcgm, cilium, operator-generic, registry:2, cert-manager, debian:trixie, perl:5.40-slim). No sbsa/aarch64 tag switching needed.
+
+Split off: #10 (CI publishes amd64-only — the robocop blocker), #11 (gpu-operator-validator v26.3.3 does not exist at all), #12 (no arm64 path for a bare NVIDIA driver install), #13 (gpu_enabled/gpu_driver dead config), #14 (Hetzner x86 filter, latent).
+TEILVERIFIZIERT auf cortex (NVIDIA DGX Spark, GB10, aarch64, Ubuntu 24.04 / Kernel 6.17.0-1029-nvidia).
+
+Bewiesen: OCP deployed einen vollstaendigen k3s-Cluster auf arm64. k3s v1.36.3+k3s1, Node Ready, Cilium 1.20.0 (CLI hat linux-arm64 korrekt aufgeloest), Registry, NFD, cert-manager, Cilium Gateway, GPU-Stack mit nvidia.com/gpu: 1 und "cuda workload validation is successful".
+
+NICHT verifiziert: der eigentliche RKE2-arm64-Fix (Rexfile:487ff, arch-aware Tarball-Namen). Der Lauf ging ueber k3s, dessen Install-Script sich selbst detektiert. Der RKE2-Server-Pfad — der Grund, warum dieses Ticket existiert — ist weiterhin nur statisch geprueft.
+
+Ebenfalls offen: #10 (publizierte Images sind amd64-only, robocop auf arm64 nicht deploybar) und #12 (kein arm64-Treiberpfad fuer einen nackten arm64-Host ohne Treiber).
+VOLLSTAENDIG VERIFIZIERT auf cortex (NVIDIA DGX Spark, GB10, aarch64).
+
+RKE2 auf arm64 laeuft — der Pfad, um dessentwillen dieses Ticket existierte:
+
+  Node architecture: arm64
+  Tarball size: 36693999 bytes
+  [ok] RKE2 server installed
+
+  $ ocp status
+  Distribution: rke2 v1.36.3+rke2r1
+  cortex  Ready  control-plane  v1.36.3+rke2r1  10.230.30.155
+  GPU: cortex: 1x NVIDIA GPU
+
+Vollstaendiger Stack unter rke2/arm64: Cilium, Registry + Pull-Through-Cache,
+NFD, cert-manager, GPU-Operator mit nvidia.com/gpu: 1 und cuda-validator
+Completed. registry.local loest aus einem Pod auf.
+
+WICHTIG FUER DIE BEWERTUNG FRUEHERER LAEUFE: die ersten Versuche schlugen fehl,
+weil OCP::Rex::_find_rexfile den Rexfile aus dem Docker-Image laedt und nicht
+aus dem Arbeitsbaum (#42). Alle Rexfile-Fixes waren in den Laeufen davor nie
+aktiv — sie sind erst mit dem korrigierten Mount getestet worden. Der Beleg
+war eindeutig: auf dem Host lag rke2.linux-amd64.tar.gz, waehrend das
+Install-Script sha256sum-arm64.txt erwartete.
+
+Nebenbefund GitHub 503: bei hoher Download-Frequenz drosselt GitHub. Der neue
+Connectivity-Check meldet das sauber, statt mit 0 Bytes weiterzulaufen.
+
+Beim selben Lauf neu gefunden: #43 (destroy raeumt deployed.yaml nicht auf) und
+#44 (CONTAINERD_SOCKET fuer rke2 falsch).
