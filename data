@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-08-12T15:33:37Z
+created: 2026-08-12T14:08:30Z
+id: 18
+priority: medium
+started: 2026-08-12T14:44:30Z
+status: done
+tags:
+- bug
+- apply
+- verification
+title: apply meldet DEPLOYED SUCCESSFULLY trotz CrashLoopBackOff-Pods
+updated: 2026-08-12T15:33:37Z
+---
+
+Auf cortex meldete ocp apply Erfolg, waehrend coredns in CrashLoopBackOff war und fuenf gpu-operator-Pods in ImagePullBackOff.
+
+xt/smoke.sh prueft genau das (grep CrashLoopBackOff|Error ueber kubectl get pods -A) — ocp apply selbst nicht. Der Erfolgs-Banner sollte einen Cluster-Health-Check hinter sich haben, sonst ist "DEPLOYED SUCCESSFULLY" eine Behauptung ueber den Deploy-Ablauf, nicht ueber den Cluster.
+
+Kosmetik-Beifang fuer denselben Durchgang: bei dist=k3s druckt Apply "Installing RKE2 server..." und "[ok] RKE2 server installed", waehrend install_k3s_server laeuft. Hardcodierter String.
+Health-Gate vor dem Erfolgs-Banner gebaut, ueber Kubernetes::REST (list Pod, kein kubectl).
+
+Nicht-Flakiness: apply wartet erst, bis nichts mehr im Hochlauf ist (oder Timeout, default 120s/5s), und urteilt dann nur ueber den letzten Scan und nur ueber Gruende, die durch Warten nicht heilen (CrashLoopBackOff, ImagePullBackOff, ErrImagePull, InvalidImageName, CreateContainer*Error, RunContainerError). ContainerCreating/PodInitializing/Readiness-Probe-noch-nicht-gruen sind nie ein Fehler. CrashLoopBackOff zaehlt zusaetzlich erst ab restartCount >= 2 — ein einzelner Startup-Crash ist kein Urteil.
+
+Wichtiges Detail: die fuenf gpu-operator-Pods hingen in Init:ImagePullBackOff, der Grund steht also in initContainerStatuses. Ein Check nur ueber containerStatuses haette alle fuenf uebersehen.
+
+Design-Entscheidung — differenziert:
+- kube-system hart, Exit 1. Dieses Namespace IST der Cluster (DNS, CNI, Core-Controller); ein gruener Deploy ueber totem DNS ist genau der Fehlermodus, gegen den xt/smoke.sh existiert.
+- alles andere warnt laut, Exit bleibt 0. Der GPU-Stack ist opt-in und sein ImagePullBackOff war ein arm64-Image-Problem auf einem funktionierenden Cluster. Ein Gate, das den ganzen Apply wegen eines optionalen Add-ons rot macht, erzieht dazu, den Exit-Code zu ignorieren — das kostet mehr als es bringt.
+
+Banner heisst jetzt je nach Befund SUCCESSFULLY! / — WITH WARNINGS / — CLUSTER IS NOT HEALTHY. Ein kaputter Health-Check selbst faellt auf WARN zurueck und killt keinen sonst gelungenen Deploy.
+
+Kosmetik erledigt: _dist_label, 'Installing K3s server...' statt hardcodiert RKE2.
+
+Tests: t/37-cluster-health.t. Reconcile-Pfad (bestehender Cluster) bleibt offen -> #22.
+VERIFIZIERT auf cortex. Der Lauf endet jetzt mit:
+
+  Verifying cluster health
+    [ok] all pods healthy
+
+  CONTROL PLANE DEPLOYED SUCCESSFULLY!
+
+Der Banner steht damit erstmals hinter einer Aussage ueber den Cluster statt ueber den Ablauf. Auch der k3s-Label-Beifang ist drin.
