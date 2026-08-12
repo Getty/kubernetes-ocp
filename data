@@ -1,0 +1,75 @@
+---
+class: standard
+completed: 2026-08-12T16:24:31Z
+created: 2026-08-12T14:03:57Z
+id: 12
+priority: medium
+started: 2026-08-12T16:09:56Z
+status: done
+tags:
+- arch
+- gpu
+- rexfile
+title: NVIDIA driver install has no arm64 path (nvidia-driver-535 hardcoded)
+updated: 2026-08-12T16:24:31Z
+---
+
+Follow-up from the #9 arch audit. #9 made the DGX-Spark case safe; this is the remaining hole.
+
+share/Rexfile install_nvidia now skips the host driver install when a working driver is already present (_nvidia_driver_present: nvidia-smi enumerates GPUs AND libcuda.so is in the linker cache). That covers vendor appliances like the DGX Spark, where installing over the vendor driver would have broken the machine.
+
+Not covered: a BARE arm64 host with an NVIDIA GPU and no driver yet. The Ubuntu branch still asks apt for
+  nvidia-driver-535   # hardcoded, and old even on amd64
+  linux-headers-generic
+On Ubuntu arm64 (SBSA) there is generally no nvidia-driver-535 in the archive, so pkg ensure => present dies. And on a vendor kernel like the DGX 6.17.0-1029-nvidia, linux-headers-generic pulls headers for a completely different kernel.
+
+Deliberately not guessed in #9: picking the right arm64/SBSA package name (NVIDIAs own repo, an -open branch, ubuntu-drivers autoinstall) needs verification against a real arm64 Ubuntu host, and a wrong guess here breaks machines. The Debian branch was fixed (linux-headers-amd64 -> dpkg --print-architecture).
+
+Also worth revisiting while in there: nvidia-driver-535 is stale for amd64 too.
+Umgesetzt (ocp-infra-worker), aber bewusst ohne festen Paketnamen.
+
+Recherche (Quellen im Bericht): nvidia-driver-535 ist auf Ubuntu 24.04 arm64
+zwar vorhanden, in noble-updates aber nur noch ein Transitional-Package, das
+580 zieht - der Pin pinnte also nie etwas, auch auf amd64 nicht. R535 EOL
+Juni 2026. linux-headers-generic ist auf einem Vendor-Kernel (6.17.0-1029-nvidia)
+das falsche Paket: es verfolgt den generic-Flavour, nicht den laufenden.
+
+Kein einzelner Paketname ist ueber Arch UND GPU-Generation korrekt: Grace
+Hopper und Blackwell laufen ausschliesslich mit den offenen Kernelmodulen
+(NVIDIA-Blog "Transitions Fully Towards Open-Source GPU Kernel Modules"),
+Maxwell/Pascal/Volta ausschliesslich mit den proprietaeren - und open/proprietary
+steckt im Paketnamen. Deshalb wird nicht geraten.
+
+Aenderung in share/Rexfile, neue Sub _install_nvidia_driver_ubuntu:
+- linux-headers-$(uname -r) und sonst nichts (so dokumentiert es NVIDIA);
+  linux-headers-generic ist raus.
+- Paketwahl an ubuntu-drivers install delegiert. Das Tool loest Branch,
+  Flavour und Architektur ueber die PCI-modalias der Karte auf - dieselbe
+  Evidenz, die NFD nutzt - und kann strukturell kein Paket waehlen, das die
+  Karte nicht beansprucht.
+- Schlaegt es fehl, stirbt der Task mit erklaerender Meldung statt auf einen
+  Ersatznamen auszuweichen.
+- Debian-Zweig unveraendert (war in #9 bereits korrigiert).
+
+Verifikation: t/44-gpu-detect.t asserted, dass nvidia-driver-<zahl> und
+linux-headers-generic im Code nicht mehr vorkommen, dass die Ubuntu-Sub
+linux-headers-$running_kernel installiert, ueber ubuntu-drivers geht und ein
+die enthaelt. make test gruen.
+
+UNGETESTET, und das bleibt so: kein bare arm64-Ubuntu-Host mit NVIDIA-GPU und
+ohne Treiber stand zur Verfuegung. cortex hat einen funktionierenden
+Hersteller-Treiber, der Pfad ist dort durch _nvidia_driver_present gar nicht
+erreichbar. Ungeprueft sind konkret: ob ubuntu-drivers install auf arm64/SBSA
+tut was es soll (Canonical dokumentiert arm64-Support weder zu noch ab; das
+Paket existiert fuer arm64/ports, die Quelle ist arch-agnostisch), und ob es
+auf Blackwell den -open-Zweig waehlt.
+
+Nebenbefund fuer ein Folgeticket: fuer NVIDIAs eigenes Repo (sbsa) waeren
+nvidia-open bzw cuda-drivers die branch-stabilen Namen; ab Branch 590 faellt
+die Branch-Nummer aus allen Ubuntu-Paketnamen. Wer spaeter doch pinnen will,
+findet dort die einzigen langlebigen Namen.
+UNGETESTET UND BLEIBT ES VORERST: es gab keinen nackten arm64-Ubuntu-Host ohne Treiber. cortex hat einen funktionierenden Hersteller-Treiber, den anzutasten ausgeschlossen war.
+
+Konkret unverifiziert: ob ubuntu-drivers install auf arm64/SBSA funktioniert (Canonical dokumentiert arm64 weder so noch so) und ob es auf Blackwell den -open-Zweig waehlt. Bei Fehlschlag stirbt die Task mit Erklaerung statt zu raten — das ist der Schutz.
+
+Der Guard _nvidia_driver_present wurde am echten DGX indirekt bestaetigt: nvidia-smi -L liefert "GPU 0: NVIDIA GB10", libcuda ist vorhanden (cuda-validator hat eine CUDA-Workload validiert), nvidia-container-runtime und nvidia-ctk liegen unter /usr/bin. Beide Skip-Pfade greifen dort.
