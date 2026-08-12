@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-08-12T16:25:11Z
+created: 2026-08-12T04:27:15Z
+id: 7
+priority: low
+started: 2026-08-12T15:55:34Z
+status: done
+tags:
+- cli
+- cleanup
+title: .kube/-Eintrag in init-generierter .gitignore ist Altlast
+updated: 2026-08-12T16:25:11Z
+---
+
+Kein Code-Pfad schreibt projektlokales .kube/ mehr; kubeconfig -e merged in $KUBECONFIG/~/.kube/config (Kubeconfig.pm:106-119). _gitignore_content in Init.pm bereinigen.
+Done. .kube/ dropped from both places that wrote it: _gitignore_content for a fresh project, and the append branch that tops up an existing .gitignore (it used to add .kube/ there too).
+
+Audit of the rest of the generated file, per the encrypted-files-are-committed rule: clean. The remaining entries are .ocp/, the editor patterns and the OS patterns; none of them match keys.yaml, secrets.yaml, age.key.enc or kubeconfig.yaml, which all live in the project root while every decrypted artefact (age.key, age.pub, id_ed25519, keys/, status.yaml, deployed.yaml) lives under .ocp/. So the split is exactly right and nothing needed adding, only removing.
+
+Rather than assert on the text, the test asserts on git: it runs ocp init in a temp dir and then runs git check-ignore over the four encrypted names, requiring empty output, plus .ocp/age.key, requiring a match. That catches an over-broad pattern of any shape, which a regex over the file would not. A second subtest covers the existing-.gitignore path.
+
+Both the generated file and _gitignore_content now carry a comment saying why only .ocp/ belongs there, since the failure mode is invisible until someone clones the project.
+
+Files: lib/OCP/Cmd/Init.pm, README.md (the project layout tree still drew a .kube/ under gitignored). Tests: t/41-init-scaffold.t. Changes bullet added.
