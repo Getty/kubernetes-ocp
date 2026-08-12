@@ -319,15 +319,15 @@ OCP uses C<ocp.yaml> for cluster specification:
 
     name: mycluster
 
-    controlPlanes:
+    control_planes:
       provider: hetzner
-      serverType: cpx21
+      server_type: cpx21
       location: fsn1
 
     workers:
       - name: cloud-workers
         provider: hetzner
-        serverType: cpx31
+        server_type: cpx31
         nodes: 2
 
       - name: bare-metal

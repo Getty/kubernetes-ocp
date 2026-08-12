@@ -211,6 +211,22 @@ ocp apply
 | `ocp init --hetzner` | Interactive Hetzner token setup |
 | `ocp init --provider=ssh --host=HOST` | SSH-only cluster (no cloud) |
 | `ocp init --provider=local` | Local single-node cluster (localhost) |
+
+`ocp init` flags:
+
+| Flag | Purpose |
+|------|---------|
+| `--name NAME` | Cluster name (default: current directory basename) |
+| `--provider NAME` | `hetzner` (default), `ssh`, `local` |
+| `--host HOST` | SSH host for `--provider=ssh` |
+| `--dist NAME` | Kubernetes distribution: `rke2` (default) or `k3s` |
+| `--single` | Single-node cluster (control plane hosts workloads) |
+| `--hetzner` | Shorthand for `--provider=hetzner` + interactive token prompt |
+| `--nopassword` | Disable encryption (dev/test only) |
+| `--nogit` | Skip git initialization |
+| `--force`, `-f` | Overwrite existing files |
+| `--service NAME` | Service manager: `systemd` or `none` (default: `none` for local, `systemd` for others) |
+| `--ssh-key PATH` | Use existing SSH private key instead of generating one |
 | `ocp apply` | Reconcile cluster to match config, fix drift |
 | `ocp status` | Show cluster status and drift |
 | `ocp destroy` | Destroy cluster |
@@ -259,20 +275,20 @@ OCP uses `ocp.yaml` for cluster specification:
 name: mycluster
 
 kubernetes:
-  distribution: k3s
-  version: v1.31.3+k3s1
+  dist: rke2              # or k3s
+  version: v1.31.3+rke2r1 # empty = latest
 
-controlPlanes:
+control_planes:
   provider: hetzner
-  serverType: cpx21
+  server_type: cpx21
   location: fsn1
   image: debian-13
-  nodes: cp
+  nodes: 1                # 1 CP, or N identical CPs
 
-workers:
+workers:                  # consumed once by `ocp apply`, translated to OCPNode/OCPNodeProvider CRs
   - name: hetzner-workers
     provider: hetzner
-    serverType: cpx31
+    server_type: cpx31
     location: fsn1
     nodes: 2
 
@@ -285,8 +301,8 @@ workers:
         host: 192.168.1.101
 
 ssh:
-  privateKey: .ocp/id_ed25519
-  publicKey: .ocp/id_ed25519.pub
+  private_key: .ocp/id_ed25519
+  public_key: .ocp/id_ed25519.pub
 
 # Optional: SSL configuration for Let's Encrypt
 ssl:
@@ -314,6 +330,15 @@ lbipam: false
 # Optional: disable components (default: enabled)
 # nocert: true     # Disable cert-manager
 ```
+
+### Spec vs CR workflow
+
+`workers:` in `ocp.yaml` is **input, not state**. On `ocp apply`, OCP
+translates each worker pool into `OCPNodeProvider` / `OCPNode` CRs in the
+cluster and never reads `ocp.yaml:workers` again. After the first apply,
+all node and provider management goes through the CLI subcommands
+(`ocp node add/rm`, `ocp provider add/rm`) or directly via `kubectl edit`
+on the CRs — the robocop controller reconciles the rest.
 
 ## Core Registry
 
@@ -530,9 +555,9 @@ ocp apply
 Creates and manages cloud servers via Hetzner Cloud API.
 
 ```yaml
-controlPlanes:
+control_planes:
   provider: hetzner
-  serverType: cpx21      # cx22, cpx21, cpx31, etc.
+  server_type: cpx21      # cx22, cpx21, cpx31, etc.
   location: fsn1         # fsn1, nbg1, hel1, ash, hil
   image: debian-13
 ```
@@ -588,23 +613,11 @@ What is compared:
 | Version manifest | Image tag of the running cert-manager | yes, runs the cert-manager upgrade |
 | Version manifest | Component missing from the cluster | yes, deploys it |
 | `kubernetes.version` | kubelet version per node | no — distribution upgrades are manual |
-| `controlPlanes[].publicIp` | recorded node status | no — decide which one is right yourself |
+| `control_planes[].public_ip` | recorded node status | no — decide which one is right yourself |
 
 Automatic remediation needs SSH access to the control plane. When the admin
 key is not available, `ocp apply` reports the drift and points at
 `ocp update --component NAME` instead of failing.
-
-## Dependencies
-
-- [WWW::Hetzner](https://metacpan.org/pod/WWW::Hetzner) - Hetzner Cloud API
-- [Crypt::Age](https://metacpan.org/pod/Crypt::Age) - Age encryption (pure Perl)
-- [File::SOPS](https://metacpan.org/pod/File::SOPS) - SOPS format (pure Perl)
-- [Kubernetes::REST](https://metacpan.org/pod/Kubernetes::REST) - Kubernetes API client
-- [IO::K8s](https://metacpan.org/pod/IO::K8s) - Typed Kubernetes objects
-- [Rex](https://metacpan.org/pod/Rex) - Remote execution for provisioning
-- [Moo](https://metacpan.org/pod/Moo) - OOP framework
-- [MooX::Cmd](https://metacpan.org/pod/MooX::Cmd) - CLI framework
-- [YAML::XS](https://metacpan.org/pod/YAML::XS) - Config parsing
 
 ## Docker Image
 
