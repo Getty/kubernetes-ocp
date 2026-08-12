@@ -46,8 +46,9 @@ sub execute {
 
     my $cp_count = scalar @$cps;
     my $cp_provider = $cps->[0]{provider} || 'hetzner';
-    my $cp_type = $cps->[0]{server_type} || 'ssh';
-    print "Control Planes: $cp_count ($cp_type, $cp_provider)\n";
+    my $cp_type     = $cps->[0]{server_type};
+    print "Control Planes: $cp_count (",
+          join(', ', ($cp_type ? $cp_type : ()), $cp_provider), ")\n";
 
     for my $pool (@workers) {
         my $nodes = ref($pool->{nodes}) eq 'ARRAY' ? scalar(@{$pool->{nodes}}) : ($pool->{nodes} // $pool->{count} // 0);
@@ -94,7 +95,7 @@ sub execute {
     }
 
     # Show nodes
-    printf "%-20s %-10s %-15s %-12s %s\n",
+    printf "%-20s %-10s %-20s %-16s %s\n",
         'NAME', 'STATUS', 'ROLES', 'VERSION', 'INTERNAL-IP';
     print "-" x 80, "\n";
 
@@ -105,7 +106,7 @@ sub execute {
         my $roles = $k8s->node_roles($node);
         my $internal_ip = $k8s->node_internal_ip($node);
 
-        printf "%-20s %-10s %-15s %-12s %s\n",
+        printf "%-20s %-10s %-20s %-16s %s\n",
             $name, $ready, $roles, $version, $internal_ip;
     }
 

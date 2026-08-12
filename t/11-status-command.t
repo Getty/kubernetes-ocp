@@ -64,6 +64,8 @@ sub capture_stdout (&) {
 
     my $output = capture_stdout { $cmd->execute([], []) };
     like($output, qr/No cluster deployed yet/, 'status reports missing cluster');
+    like($output, qr/^Control Planes: 1 \(ssh\)$/m,
+        'a provider without a server type is named once, not twice');
 }
 
 {
@@ -102,6 +104,8 @@ sub capture_stdout (&) {
 
     is($helper_called, 1, 'status uses OCP::Kubernetes helper when cluster exists');
     like($output, qr/police1/, 'status prints node row');
+    like($output, qr/^Control Planes: 1 \(cx32, hetzner\)$/m,
+        'server type and provider both shown for a cloud provider');
     unlike($output, qr/kubectl --kubeconfig/, 'status no longer prints kubectl command hint');
 }
 

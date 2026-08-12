@@ -112,6 +112,21 @@ sub version {
     return $k8s->{version} // '';
 }
 
+# RKE2 keeps its registration endpoint on a supervisor port of its own,
+# next to the apiserver on 6443. k3s serves both from 6443. An agent that
+# is pointed at the wrong one never joins.
+sub supervisor_port { shift->distribution eq 'k3s' ? 6443 : 9345 }
+
+sub join_url {
+    my ($self, $host) = @_;
+    return sprintf 'https://%s:%d', $host, $self->supervisor_port;
+}
+
+sub api_url {
+    my ($self, $host) = @_;
+    return "https://$host:6443";
+}
+
 # Add-on flags (default: enabled, set to true to disable)
 sub no_cert { shift->spec->{nocert} // 0 }
 

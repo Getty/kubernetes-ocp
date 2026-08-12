@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Take the agent registration port from the distribution
+      - both join sites built "https://$cp_ip:9345", the RKE2 supervisor
+        port; k3s serves joins from 6443, so a k3s worker was pointed at a
+        port nothing listens on
+      - OCP::Config->join_url and ->supervisor_port answer this in one place
+    - Stop advertising the join port as the API endpoint
+      - the closing banner of `ocp apply` printed :9345, while the
+        kubeconfig it had just written pointed at :6443
+    - Fix `ocp status` naming a provider twice
+      - "Control Planes: 1 (ssh, ssh)": the server type fell back to 'ssh'
+        when a provider has none, and was printed next to the provider
+      - the node table also cut into the version and roles columns, which
+        no longer fit a name like v1.36.3+rke2r1 or control-plane,etcd
     - Fix the cluster name defaulting to "." instead of the directory name
       - ocp init took it from Path::Tiny's path('.')->basename, which is
         literally "."; the name landed in ocp.yaml and from there in node

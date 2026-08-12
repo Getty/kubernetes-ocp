@@ -123,4 +123,50 @@ subtest 'the manifest actually carries a version per distribution' => sub {
     }
 };
 
+#
+# The port an agent registers on is not the apiserver port. RKE2 listens for
+# joins on 9345, k3s serves joins and API from 6443. Both call sites hardcoded
+# 9345, so a k3s worker was always pointed at a port nothing listens on, and
+# the closing banner of `ocp apply` advertised the join port as the API
+# endpoint.
+#
+
+subtest 'the join URL follows the distribution' => sub {
+    require File::Temp;
+    require OCP;
+    require OCP::Config;
+
+    my $tmpdir = File::Temp::tempdir(CLEANUP => 1);
+    my $ocp    = OCP->new;
+
+    my %port = (rke2 => 9345, k3s => 6443);
+
+    for my $dist (qw( rke2 k3s )) {
+        my $file = path($tmpdir)->child("$dist.yaml");
+        $ocp->dump_file($file->stringify, {
+            name       => 't',
+            kubernetes => { dist => $dist },
+        });
+
+        my $config = OCP::Config->new(file => $file->stringify, ocp => $ocp);
+
+        is $config->supervisor_port, $port{$dist},
+            "$dist agents register on $port{$dist}";
+        is $config->join_url('cp-1'), "https://cp-1:$port{$dist}",
+            "$dist join URL";
+        is $config->api_url('cp-1'), 'https://cp-1:6443',
+            "$dist apiserver is on 6443 either way";
+    }
+};
+
+subtest 'no call site hardcodes the join port any more' => sub {
+    my $root = path(__FILE__)->parent->parent;
+
+    for my $file (qw( lib/OCP/Cmd/Apply.pm lib/OCP/Cmd/Node/Add.pm )) {
+        my $src = $root->child($file)->slurp_utf8;
+        unlike $src, qr{"https://\$cp_ip:9345"},
+            "$file asks OCP::Config for the join URL";
+    }
+};
+
 done_testing;

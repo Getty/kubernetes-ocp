@@ -528,7 +528,7 @@ sub execute {
 
     print "Cluster: ", $config->name, "\n";
     print "Control Plane: $cp_name ($cp_ip)\n";
-    print "API Endpoint: https://$cp_ip:9345\n\n";
+    print "API Endpoint: ", $config->api_url($cp_ip), "\n\n";
 
     print "Next steps:\n";
     print "  1. Inspect the cluster:\n";
@@ -2419,7 +2419,7 @@ sub _cli_reconcile_workers {
 
     # Retrieve join token from the CP once, reused for every worker.
     my $join_token = '';
-    my $server_url = "https://$cp_ip:9345";
+    my $server_url = $config->join_url($cp_ip);
     my $ssh_key    = eval { path($ssh_key_path)->slurp } // '';
 
     eval {

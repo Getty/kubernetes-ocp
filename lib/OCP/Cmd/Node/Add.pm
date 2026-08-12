@@ -254,7 +254,7 @@ sub _cli_reconcile {
             $k;
         };
 
-        $server_url = "https://$cp_ip:9345";
+        $server_url = $config->join_url($cp_ip);
 
         my $dist = $config->distribution || 'rke2';
         my $token_path = $dist eq 'k3s'
