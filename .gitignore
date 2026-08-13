@@ -1,15 +1,16 @@
-# Claude Code — commit: skills/, agents/, hooks/, settings.json
+# Claude Code — commit: skills/, agents/, rules/, hooks/, settings.json
 # Ignore: local overrides, credentials, session data
 
 # Tracked: shared config & extensibility
 !/.claude/
 .claude/*
 !.claude/settings.json
-!.claude/settings.local.json
 !.claude/agents/
 !.claude/agents/**
 !.claude/skills/
 !.claude/skills/**
+!.claude/rules/
+!.claude/rules/**
 !.claude/hooks/
 !.claude/hooks/**
 
@@ -23,9 +24,21 @@
 .claude/todos/
 .claude/projects/
 
-#
-# Perl / Dist::Zilla / ExtUtils::MakeMaker
-#
+# AGENTS.md ignored - our-codex
+AGENTS.md
+
+# karr materialized task view -- never commit
+tasks/
+config.yml
+# karr-foundation per-repo state files — local machine only, never commit
+.karr
+.karr.state
+.karr.lock
+.karr.log
+
+# Build artifacts
+OCP-*/
+OCP-*.tar.gz
 .build/
 .dzil/
 _build/
@@ -35,15 +48,19 @@ pm_to_blib
 MYMETA.json
 MYMETA.yml
 Makefile.old
-#
-# Test / coverage / profiling
-#
+
+# Carton / local libs
+# NOTE: cpanfile.snapshot is TRACKED here (Docker-first: the image build needs
+# a reproducible snapshot; regenerate via `make snapshot`, never on the host)
+local/
+dzil-local/
+
+# Test coverage
 .prove
 cover_db/
 nytprof*
-#
-# Local build and temp files
-#
+
+# Editor backups & temp files
 *.tar.gz
 *.zip
 *.tmp
@@ -55,23 +72,17 @@ nytprof*
 *.swo
 *~
 .DS_Store
-#
+
 # Local environments
-#
 .env
 .env.*
 .direnv/
 .vscode/
 .idea/
-local/
+
+# OCP project-local state & test data (a real cluster spec lives elsewhere)
 .ocp/
 tmp/
-#
-# Project-specific generated files
-#
-share/Rexfile.lock
-
-# our-codex generates AGENTS.md, we ignore
-AGENTS.md
 ocp.yaml
 kubeconfig.yaml
+share/Rexfile.lock
