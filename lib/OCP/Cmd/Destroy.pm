@@ -4,6 +4,7 @@ package OCP::Cmd::Destroy;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Config;
@@ -22,7 +23,7 @@ option force => (
 
 option keep_status => (
     is  => 'ro',
-    doc => 'Keep status file after destroy',
+    doc => 'Keep the local cluster state (.ocp/status.yaml, .ocp/deployed.yaml)',
 );
 
 sub execute {
@@ -139,11 +140,19 @@ sub execute {
     }
 
     # Clear status + kubeconfig
+    #
+    # deployed.yaml goes with status.yaml, and for the same reason: both
+    # describe the cluster that was just deleted (ADR 0004). Leaving the
+    # manifest hashes behind made the next `ocp apply` compare a brand new
+    # cluster against the components of the old one — it announced "Registry
+    # already deployed (up to date)" on an empty ocp-system and then pointed
+    # CoreDNS at a registry that was never rolled out. Nothing on the way to
+    # that was an error, so nothing reported one.
     unless ($self->keep_status) {
-        my $status_file = $config->status_file;
-        if (-f $status_file) {
-            unlink $status_file;
-            print "Status file removed.\n";
+        for my $file ($config->status_file, $config->deployed_file) {
+            next unless -f $file;
+            unlink $file;
+            print "Removed ", path($file)->basename, ".\n";
         }
     }
 

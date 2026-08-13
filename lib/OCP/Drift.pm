@@ -2,6 +2,7 @@ package OCP::Drift;
 # ABSTRACT: Detect drift between the OCP spec and the running cluster
 
 use Moo;
+use Socket;
 use OCP::Versions;
 
 our $VERSION = '0.001';
@@ -33,11 +34,25 @@ our @COMPONENT_PROBES = (
     },
 );
 
+# CoreDNS ships under a different name per distribution: k3s (like stock
+# Kubernetes) calls the ConfigMap "coredns", RKE2 installs CoreDNS from a Helm
+# chart and ends up with "rke2-coredns-rke2-coredns". The list lives here
+# because both the writer (OCP::Cmd::Apply) and this reader need it, and Apply
+# already loads this module — one list means the two can never end up looking
+# in different places.
+our @COREDNS_CONFIGMAPS = ('coredns', 'rke2-coredns-rke2-coredns');
+
+# The name `ocp apply` points at the node that serves the registry NodePorts.
+our $REGISTRY_HOSTNAME = 'registry.local';
+
 sub detect {
     my ($self) = @_;
 
     my @drift = $self->spec_drift;
-    push @drift, $self->component_drift if $self->api;
+    if ($self->api) {
+        push @drift, $self->component_drift;
+        push @drift, $self->registry_dns_drift;
+    }
 
     return \@drift;
 }
@@ -189,8 +204,139 @@ sub distribution_drift {
 }
 
 #
+# registry.local in CoreDNS
+#
+# Neither distribution lets OCP own this record. On k3s the ConfigMap belongs
+# to the coredns addon (owner-gvk k3s.cattle.io/v1, Kind=Addon); the deploy
+# controller restores its own Corefile whenever it re-applies that addon — a
+# k3s upgrade, a server restart — and takes the registry.local entry with it.
+# On RKE2 the ConfigMap belongs to the rke2-coredns Helm release and a chart
+# upgrade resets it the same way. Observed on cortex: the entry was gone.
+#
+# `ocp apply` writes it back on every run, so the cluster heals itself the next
+# time someone applies. What it did not do is say that the record was missing
+# in the meantime, and the gap is quiet: image pulls for registry.local go
+# through the containerd mirror to localhost:30501 and never ask DNS, so
+# nothing breaks loudly. This probe is what makes the window visible.
+#
+# Why a probe and not an upgrade-proof record:
+#
+#   * k3s has a hook for it — the coredns-custom ConfigMap, mounted at
+#     /etc/coredns/custom with optional=true (verified on the live k3s CoreDNS
+#     deployment), imported by the stock Corefile as `*.server` outside the
+#     root block. A `registry.local:53 { hosts { IP registry.local } }` snippet
+#     there survives every addon re-apply, and CoreDNS 1.14.6 picks it up
+#     live: its reload plugin hashes the Corefile *after* import expansion, so
+#     a new snippet takes effect within one reload interval, no restart.
+#   * RKE2 has no such hook. Its chart renders extraConfig as name plus
+#     parameters and nothing else, so no `hosts { ... }` block can be
+#     expressed through it; the only other lever is replacing the whole
+#     `servers:` list in a HelmChartConfig, which means carrying a copy of the
+#     chart's default Corefile in OCP and keeping it in sync per chart version.
+#   * Running both at once is worse than either: measured, the more specific
+#     `registry.local:53` block shadows the inline record completely, so a
+#     stale snippet would silently win over the entry OCP keeps correct and
+#     `ocp apply` would report an address the cluster does not answer with.
+#
+# So an upgrade-proof record would replace one verified common path with one
+# verified path, one brittle path, and a migration to strip the inline entry
+# from every existing cluster — for a name no OCP component resolves. Report
+# the window instead; fix it when something is actually shown to fall into it.
+#
+sub registry_dns_drift {
+    my ($self) = @_;
+
+    # The same value the writer is handed (OCP::Cmd::Apply's reconcile path
+    # passes cluster_status->{public_ip} straight into _configure_registry_dns)
+    # and, crucially, put through the same resolution — see resolve_address.
+    my $cp = $self->config->cluster_status->{public_ip};
+    return unless defined $cp && length $cp && $cp ne '-';
+
+    my $expected = resolve_address($cp);
+    return unless defined $expected;
+
+    my $corefile;
+    for my $name (@COREDNS_CONFIGMAPS) {
+        my $cm = eval {
+            $self->api->get('ConfigMap', name => $name, namespace => 'kube-system');
+        } or next;
+        $corefile = _dig($cm, qw(data Corefile));
+        last if defined $corefile;
+    }
+
+    # No CoreDNS ConfigMap under a name we know: not this probe's business.
+    return unless defined $corefile;
+
+    my $actual = corefile_host_address($corefile, $REGISTRY_HOSTNAME);
+    return if defined $actual && $actual eq $expected;
+
+    my $what = defined $actual
+        ? "$REGISTRY_HOSTNAME resolves to $actual, expected $expected"
+        : "$REGISTRY_HOSTNAME is missing from the CoreDNS Corefile (expected $expected)";
+
+    # 'missing', not 'spec': `ocp apply` puts the record back as part of a
+    # normal run, so the reconcile path must not tell the user to go looking
+    # for a manual step. The message says so as a statement rather than as an
+    # instruction, because the reconcile path prints it in the middle of the
+    # very apply that is about to fix it.
+    return {
+        kind      => 'missing',
+        component => 'registry_dns',
+        label     => "$REGISTRY_HOSTNAME DNS",
+        expected  => $expected,
+        actual    => $actual,
+        message   => "$what; ocp apply restores it",
+        remedy    => undef,
+    };
+}
+
+#
 # Helpers
 #
+
+# A control plane's address as a dotted quad, or undef when it does not
+# resolve to one.
+#
+# `control_planes: host:` is routinely a DNS name — cortex is reached as
+# cortex.ai.citilan.de and answers on 10.230.30.155 — and with no node status
+# recorded yet OCP::Config's cluster_status hands that name back as the
+# public_ip. A Corefile can only carry an address, so the writer resolves
+# before it writes. A reader that skips that step compares a name against an
+# address and calls every correctly configured cluster drifted, which is what
+# the first version of registry_dns_drift did. Both sides go through here.
+sub resolve_address {
+    my ($value) = @_;
+    return undef unless defined $value && length $value;
+    return $value if $value =~ /^\d+\.\d+\.\d+\.\d+$/;
+
+    my $packed = Socket::inet_aton($value) or return undef;
+    return Socket::inet_ntoa($packed);
+}
+
+# The address a Corefile maps a name to, or undef when it maps none.
+#
+# A hosts-plugin record is a line whose first token is an address and whose
+# remaining tokens are names, wherever in the file that line sits. OCP writes
+# it into the block the distribution already runs, but a server block someone
+# added by hand answers for the name just as well — and a probe that only
+# looked where OCP writes would call a working cluster drifted.
+sub corefile_host_address {
+    my ($corefile, $hostname) = @_;
+    return undef unless defined $corefile && defined $hostname;
+
+    for my $line (split /\n/, $corefile) {
+        my @token = split ' ', $line;
+        next unless @token >= 2;
+
+        # An address, not a plugin name: hex digits, dots and colons only,
+        # and at least one separator (`cache 30` is not a record).
+        next unless $token[0] =~ /^[0-9a-fA-F.:]+$/ && $token[0] =~ /[.:]/;
+
+        return $token[0] if grep { $_ eq $hostname } @token[1 .. $#token];
+    }
+
+    return undef;
+}
 
 # Tag of a container image reference, digest and registry port aware.
 sub image_version {
@@ -324,6 +470,30 @@ components that should be deployed but are missing.
 Nodes whose kubelet version differs from the configured distribution version.
 Never carries a remedy — distribution upgrades are a manual, node-by-node
 operation.
+
+=head2 registry_dns_drift
+
+The C<registry.local> record in the CoreDNS Corefile: missing, or pointing at
+an address that is not the control plane's. Both distributions own that
+ConfigMap themselves and reset it on an upgrade or a restart, taking the record
+with them; C<ocp apply> writes it back, so the entry reports the window in
+between rather than a permanent fault, and carries no remedy of its own.
+
+=head2 resolve_address
+
+    my $ip = OCP::Drift::resolve_address('cortex.ai.citilan.de');
+
+A control plane's address as a dotted quad, or C<undef> when it does not
+resolve to one. Addresses pass through untouched. Both the writer of the
+C<registry.local> record and L</registry_dns_drift> derive the address they
+expect through this function, so a control plane named by DNS cannot read as
+drifted.
+
+=head2 corefile_host_address
+
+    my $ip = OCP::Drift::corefile_host_address($corefile, 'registry.local');
+
+The address a Corefile maps a name to, or C<undef> when it maps none.
 
 =head2 image_version
 

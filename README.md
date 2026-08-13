@@ -220,8 +220,7 @@ ocp apply
 | `--provider NAME` | `hetzner` (default), `ssh`, `local` |
 | `--host HOST` | SSH host for `--provider=ssh` |
 | `--dist NAME` | Kubernetes distribution: `rke2` (default) or `k3s` |
-| `--single` | Single-node cluster (control plane hosts workloads) |
-| `--hetzner` | Shorthand for `--provider=hetzner` + interactive token prompt |
+| `--hetzner` | Prompt for a Hetzner Cloud API token and store it encrypted |
 | `--nopassword` | Disable encryption (dev/test only) |
 | `--nogit` | Skip git initialization |
 | `--force`, `-f` | Overwrite existing files |
@@ -491,12 +490,14 @@ git-tracked (encrypted):
 └── kubeconfig.yaml    # Cluster access (SOPS encrypted)
 
 gitignored:
-├── .ocp/
-│   ├── age.key        # Decrypted (cached)
-│   └── age.pub        # Public key
-└── .kube/
-    └── config         # Decrypted kubeconfig (for kubectl)
+└── .ocp/
+    ├── age.key        # Decrypted (cached)
+    ├── age.pub        # Public key
+    └── status.yaml    # What the cluster actually looks like
 ```
+
+`ocp kubeconfig -e` merges into `$KUBECONFIG` or `~/.kube/config`; nothing
+writes a project-local `.kube/`.
 
 ### Encryption Stack
 

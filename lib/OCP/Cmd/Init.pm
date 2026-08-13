@@ -20,7 +20,7 @@ our $VERSION = '0.001';
 
 option hetzner => (
     is    => 'ro',
-    doc   => 'Initialize with Hetzner Cloud provider (interactive setup)',
+    doc   => 'Prompt for a Hetzner Cloud API token and store it encrypted',
 );
 
 option force => (
@@ -52,11 +52,6 @@ option provider => (
     doc    => 'Infrastructure provider: hetzner (default), ssh, or local',
 );
 
-option single => (
-    is    => 'ro',
-    doc   => 'Single-node cluster (control plane hosts workloads)',
-);
-
 option nopassword => (
     is    => 'ro',
     doc   => 'Disable encryption (local dev only)',
@@ -78,6 +73,17 @@ option ssh_key => (
     is     => 'ro',
     format => 's',
     doc    => 'Use existing SSH private key (e.g. ~/.ssh/id_ed25519)',
+);
+
+# The provider that lands in ocp.yaml. Hetzner is the default because that is
+# what the spec means everywhere else: OCP::Config's _default_spec, write_spec
+# and validation all read an absent provider as hetzner. It is also the only
+# default under which a bare `ocp init` can do its job — scaffolding a project
+# it cannot know the answers for yet — instead of dying on a missing --host.
+# The token is a separate, later step (--hetzner), so init stays offline.
+has _provider => (
+    is      => 'lazy',
+    builder => sub { $_[0]->provider // 'hetzner' },
 );
 
 sub execute {
@@ -118,27 +124,15 @@ sub execute {
     if ($self->nogit) {
         # Skip gitignore when git is disabled
     } elsif ($has_gitignore) {
-        # Check if .ocp/ and .kube/ are already in gitignore
+        # .ocp/ is the only thing OCP needs ignored — see _gitignore_content.
         my $content = path('.gitignore')->slurp;
-        my $needs_update = 0;
-        my $append = "\n# OCP\n";
 
-        unless ($content =~ /\.ocp\//) {
-            $append .= ".ocp/\n";
-            $needs_update = 1;
-        }
-
-        unless ($content =~ /\.kube\//) {
-            $append .= ".kube/\n";
-            $needs_update = 1;
-        }
-
-        if ($needs_update) {
-            print "[..] Updating .gitignore\n";
-            path('.gitignore')->append($append);
-            print "[ok] Updated .gitignore\n";
+        if ($content =~ /\.ocp\//) {
+            print "[ok] .gitignore exists (has .ocp/)\n";
         } else {
-            print "[ok] .gitignore exists (has .ocp/ and .kube/)\n";
+            print "[..] Updating .gitignore\n";
+            path('.gitignore')->append("\n# OCP\n.ocp/\n");
+            print "[ok] Updated .gitignore\n";
         }
     } else {
         print "[..] Creating .gitignore\n";
@@ -345,14 +339,15 @@ sub execute {
         $opts{ssh_private_key} = '.ocp/id_ed25519';
         $opts{ssh_public_key}  = '.ocp/id_ed25519.pub';
 
-        my $provider = $self->provider // ($self->hetzner ? 'hetzner' : 'ssh');
+        my $provider = $self->_provider;
 
         # Validate: SSH provider requires --host
         if ($provider eq 'ssh' && !$self->host) {
             die "ERROR: SSH provider requires --host parameter.\n\n" .
                 "Did you mean:\n" .
                 "  ocp init --provider ssh --host yourserver.com\n" .
-                "  ocp init --provider local (for localhost)\n";
+                "  ocp init --provider local (for localhost)\n" .
+                "  ocp init (for Hetzner Cloud, the default provider)\n";
         }
 
         $opts{provider} = $provider;
@@ -417,7 +412,7 @@ sub execute {
     }
 
     # SSH provider instructions (only if new key was generated)
-    my $init_provider = $self->provider // ($self->hetzner ? 'hetzner' : 'ssh');
+    my $init_provider = $self->_provider;
     if ($init_provider eq 'ssh' && !$self->ssh_key) {
         # Only show instructions if we generated a NEW key
         my $pubkey_path = path('.ocp/id_ed25519.pub');
@@ -444,6 +439,22 @@ sub execute {
         print "[ok] Using existing SSH key - no manual setup needed\n";
     }
 
+    # Hetzner is the default provider, so a bare `ocp init` can land here
+    # without the user ever having been asked for a token. Say so now rather
+    # than letting `ocp apply` be the one to find out.
+    if ($init_provider eq 'hetzner' && !$secrets->hetzner_token) {
+        print "\n";
+        print "!" x 50, "\n";
+        print "HETZNER PROVIDER - API Token Required\n";
+        print "!" x 50, "\n\n";
+        print "ocp.yaml uses the Hetzner provider (the default).\n";
+        print "Store a token before deploying:\n\n";
+        print "  ocp init --hetzner\n\n";
+        print "Or switch to a machine you already have:\n";
+        print "  ocp init --force --provider ssh --host yourserver.com\n";
+        print "  ocp init --force --provider local\n";
+    }
+
     print "\n";
     print "Next steps:\n";
     unless ($self->nopassword) {
@@ -463,11 +474,16 @@ sub execute {
     return 0;
 }
 
+# Only .ocp/ belongs here. Everything OCP writes outside it — keys.yaml,
+# secrets.yaml, age.key.enc, kubeconfig.yaml — is encrypted and MUST stay
+# committable; an entry that swallows one of those only shows up when a
+# colleague clones the project and finds the cluster unreachable.
 sub _gitignore_content {
     return <<'GITIGNORE';
 # OCP - Omni Control Plane
+# Decrypted state and cache. The encrypted files (keys.yaml, secrets.yaml,
+# age.key.enc, kubeconfig.yaml) belong in git — do not ignore them.
 .ocp/
-.kube/
 
 # Editor
 *~
@@ -595,7 +611,7 @@ OCP::Cmd::Init - Initialize OCP project
 
 =head1 SYNOPSIS
 
-    # Basic init
+    # Basic init (Hetzner Cloud, the default provider)
     ocp init
 
     # With name
@@ -603,6 +619,10 @@ OCP::Cmd::Init - Initialize OCP project
 
     # Full Hetzner setup (interactive)
     ocp init --hetzner
+
+    # A machine you already have
+    ocp init --provider ssh --host yourserver.com
+    ocp init --provider local
 
     # Without git initialization
     ocp init --nogit
@@ -612,9 +632,17 @@ OCP::Cmd::Init - Initialize OCP project
 Initializes an OCP project with intelligent defaults. Checks what already
 exists and only creates what's missing.
 
+The provider defaults to C<hetzner>, which is what an absent provider means
+everywhere else in the spec (see L<OCP::Config>). C<--provider ssh> needs
+C<--host>; C<--provider local> targets the machine C<ocp> runs on.
+
 With --hetzner, prompts for Hetzner API token and stores it encrypted
-using SOPS/age.
+using SOPS/age. Without it, init stays offline and only warns that a token
+is still missing.
 
 With --nogit, skips git repository initialization and .gitignore creation.
+The generated F<.gitignore> ignores F<.ocp/> only: the encrypted files
+(F<keys.yaml>, F<secrets.yaml>, F<age.key.enc>, F<kubeconfig.yaml>) are
+meant to be committed.
 
 =cut

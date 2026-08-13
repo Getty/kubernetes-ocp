@@ -16,10 +16,29 @@ has kubeconfig_path => (
     is => 'ro',
 );
 
+# Run off the pod's service account instead of a kubeconfig. Opt-in rather
+# than "no kubeconfig means in-cluster": a caller that lost its kubeconfig by
+# accident must keep failing with the message that says so, instead of quietly
+# authenticating as something else.
+has in_cluster => (
+    is      => 'ro',
+    default => 0,
+);
+
 has api => (
     is      => 'lazy',
     builder => '_build_api',
 );
+
+# Kubernetes::REST::Kubeconfig->api falls back to the pod's service account
+# (its _in_cluster_api) in exactly one case: when its kubeconfig_path does not
+# name a readable file. Asking for that fallback therefore means handing it a
+# path that cannot exist -- not leaving kubeconfig_path unset, because the
+# attribute's own default is $ENV{KUBECONFIG} // ~/.kube/config, and a stray
+# kubeconfig anywhere in the image would then silently outrank the service
+# account the controller is supposed to run as. /dev/null is not a directory,
+# so nothing can ever appear underneath it.
+my $IN_CLUSTER_ONLY = '/dev/null/ocp-in-cluster';
 
 sub _build_api {
     my ($self) = @_;
@@ -33,8 +52,10 @@ sub _build_api {
         close $fh;
         $self->{_temp_kubeconfig} = $fh;
         $args{kubeconfig_path} = $fh->filename;
+    } elsif ($self->in_cluster) {
+        $args{kubeconfig_path} = $IN_CLUSTER_ONLY;
     } else {
-        croak "kubeconfig or kubeconfig_path required";
+        croak "kubeconfig, kubeconfig_path or in_cluster required";
     }
 
     my $api = Kubernetes::REST::Kubeconfig->new(%args)->api;

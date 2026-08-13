@@ -58,6 +58,31 @@ sub check_os {
     }
 }
 
+# Helper: Go/Kubernetes architecture name of the target node
+#
+# Every upstream release artifact OCP downloads by hand — the RKE2 tarball,
+# its checksum file, the Cilium CLI — is named after Go's GOARCH, not after
+# `uname -m`. The mapping used to be inlined at the two Cilium call sites and
+# was missing entirely at the RKE2 one, which hardcoded amd64 and therefore
+# 404'd on every aarch64 node.
+#
+# Unknown machines fall through unmapped on purpose: a wrong-but-plausible
+# guess would produce a 404 far from here, the raw name at least names itself
+# in the failing URL.
+sub _node_arch {
+    my $raw = run "uname -m";
+    chomp $raw if defined $raw;
+
+    my %goarch = (
+        x86_64  => 'amd64',
+        amd64   => 'amd64',
+        aarch64 => 'arm64',
+        arm64   => 'arm64',
+    );
+
+    return $goarch{$raw} // $raw;
+}
+
 #
 # Common Tasks
 #
@@ -168,107 +193,134 @@ task "prepare_node", sub {
     run "sysctl --system > /dev/null 2>&1";
 };
 
-desc "Detect GPU and install drivers";
-task "detect_gpu", sub {
-    # Ensure lspci is available
-    pkg ["pciutils"], ensure => "present" unless is_installed("pciutils");
+# Should this node get the host-side GPU treatment at all?
+#
+# Two spec keys, one question. `gpu.enabled: false` switches OCP's GPU handling
+# off for the whole cluster, and `gpu.driver: operator` hands the driver *and*
+# the container toolkit to the GPU Operator's DaemonSets — in both cases Rex
+# has to keep its hands off the host.
+#
+# Missing parameters mean yes. robocop joins workers through the same tasks
+# without passing either key, and a worker that quietly came up without its
+# driver would be a worse failure than an ignored switch.
+sub _maybe_detect_gpu {
+    my ($params) = @_;
 
-    # Use lspci -nn for reliable detection via PCI class codes + vendor IDs
-    # Class [0300] = VGA controller, [0302] = 3D controller
-    # Vendor [10de] = NVIDIA, [1002] = AMD/ATI
-    my $pci_display = run "lspci -nn 2>&1 | grep -E '\\[03(00|02)\\]'", auto_die => FALSE;
-    say "=== Display Controllers ===";
-    say $pci_display || "(none found)";
-    say "=== End Display Controllers ===";
-
-    return unless $pci_display;
-
-    # Check for virtual GPU (skip — no host driver needed)
-    if ($pci_display =~ /\[(1af4|1b36|15ad|80ee):[0-9a-f]{4}\]/i) {
-        say "Virtual GPU detected (virtio/QEMU/VMware/VBox) — skipping";
+    unless ($params->{gpu} // 1) {
+        say "GPU handling disabled (gpu.enabled: false) — skipping detection";
         return;
     }
 
-    # --- NVIDIA: check if CUDA-compute-capable ---
-    my @nvidia_lines = grep { /\[10de:[0-9a-f]{4}\]/i } split /\n/, $pci_display;
-    if (@nvidia_lines) {
-        my $cuda_gpu = _check_nvidia_compute(@nvidia_lines);
-        if ($cuda_gpu) {
-            say "CUDA-capable NVIDIA GPU: $cuda_gpu";
-            do_task "install_nvidia";
-        }
+    my $driver = $params->{gpu_driver} || 'host';
+    unless ($driver eq 'host') {
+        say "GPU driver mode '$driver' — the GPU Operator installs driver and toolkit, skipping host install";
+        return;
     }
 
-    # --- AMD: detected but not yet supported ---
-    my @amd_lines = grep { /\[1002:[0-9a-f]{4}\]/i } split /\n/, $pci_display;
-    if (@amd_lines && !@nvidia_lines) {
-        my ($name) = $amd_lines[0] =~ /:\s+(.+?)\s*\[1002:/;
-        say "AMD GPU detected ($name) — driver support not yet implemented";
-    }
+    do_task "detect_gpu";
+}
 
-    unless (@nvidia_lines || @amd_lines) {
-        say "No discrete GPU found";
+desc "Detect NVIDIA GPU hardware and install drivers";
+task "detect_gpu", sub {
+    my @display = _pci_display_devices();
+
+    say "=== Display Controllers ===";
+    if (@display) {
+        say "  $_->{slot}  $_->{vendor}:$_->{device}  class $_->{class}" for @display;
+    } else {
+        say "  (none found)";
+    }
+    say "=== End Display Controllers ===";
+
+    my $action = _gpu_action(@display);
+
+    if ($action eq 'nvidia') {
+        my @nvidia = grep { $_->{vendor} eq '10de' } @display;
+        say "NVIDIA GPU present: " . join(', ', map { "$_->{vendor}:$_->{device}" } @nvidia);
+        do_task "install_nvidia";
+    }
+    elsif ($action eq 'virtual') {
+        say "Virtual GPU only (virtio/QEMU/VMware/VBox) — no host driver needed";
+    }
+    elsif ($action eq 'amd') {
+        say "AMD GPU detected — driver support not yet implemented";
+    }
+    else {
+        say "No NVIDIA GPU found";
     }
 };
 
-# Check NVIDIA GPU lines for CUDA compute capability
-# Returns GPU name if compute-capable, undef if not
-sub _check_nvidia_compute {
-    my (@lines) = @_;
+# What should the bootstrap do about the display hardware it found?
+# 'nvidia' (install the driver), 'virtual', 'amd' or 'none'.
+#
+# Before the cluster exists there is exactly one question worth asking: does
+# this host need an NVIDIA driver? That is "NVIDIA hardware present" plus "no
+# working driver yet", and install_nvidia answers the second half. Whether the
+# card is worth scheduling on is decided later and elsewhere, by the device
+# plugin publishing nvidia.com/gpu — not here by guessing at a model name.
+sub _gpu_action {
+    my (@display) = @_;
 
-    for my $line (@lines) {
-        # PCI class [0302] = 3D Controller — always a compute/datacenter GPU
-        # (Tesla, A100, H100, L40 etc. register as 3D Controller, not VGA)
-        if ($line =~ /\[0302\]/) {
-            my ($name) = $line =~ /:\s+NVIDIA\s+Corporation\s+(.+?)\s*\[10de:/;
-            $name //= 'Unknown 3D Controller';
-            say "  [ok] Datacenter/Compute GPU (PCI 3D Controller): $name";
-            return $name;
-        }
+    # NVIDIA hardware settles it, and it is checked first on purpose: a VM with
+    # a passed-through GPU has a virtio display adapter *and* the card, and
+    # there the card wins. The virtual list only answers "nothing here needs a
+    # host driver", which is only true when nothing else is here.
+    return 'nvidia' if grep { $_->{vendor} eq '10de' } @display;
 
-        # PCI class [0300] = VGA Controller — need to check the specific model
-        my ($name) = $line =~ /:\s+NVIDIA\s+Corporation\s+(.+?)\s*\[10de:/;
-        $name //= '';
+    # A short list of "definitely not" stays true as hardware moves on, which
+    # is why this blacklist survives while the model whitelist did not.
+    return 'virtual' if grep { $_->{vendor} =~ /^(?:1af4|1b36|15ad|80ee)$/ } @display;
 
-        # CUDA-capable families for AI/compute workloads:
-        #   RTX (any)        — GeForce RTX 2060+ / RTX A-series, CUDA, 6-24GB
-        #   GTX 16xx         — Turing, CUDA 7.5, 4-6GB (borderline but works)
-        #   GTX 10xx         — Pascal, CUDA 6.1, 3-11GB (1060 6GB+)
-        #   TITAN            — always beefy
-        #   Quadro           — workstation, CUDA
-        #   Tesla/A/H/L/V/P  — datacenter (usually [0302] but just in case)
-        if ($name =~ /\b(RTX|TITAN|Quadro)\b/i) {
-            say "  [ok] Compute GPU: $name";
-            return $name;
-        }
-        if ($name =~ /\bGTX\s*(1[0-9]\d{2}|16\d{2})\b/i) {
-            say "  [ok] Compute GPU: $name (Pascal/Turing)";
-            return $name;
-        }
-        if ($name =~ /\b(Tesla|[AHLVP]\d{1,3}[GSi]?)\b/) {
-            say "  [ok] Datacenter GPU: $name";
-            return $name;
-        }
+    return 'amd' if grep { $_->{vendor} eq '1002' } @display;
 
-        # Non-compute NVIDIA GPUs — skip with explanation
-        if ($name =~ /\bMX\s*\d/i) {
-            say "  [skip] $name — laptop GPU, not CUDA-compute-capable for AI workloads";
-            next;
-        }
-        if ($name =~ /\b(GT\s*\d|GTS\s*\d|NVS\s*\d)/i) {
-            say "  [skip] $name — display/legacy GPU, not suitable for compute";
-            next;
-        }
-        if ($name =~ /\bGTX\s*[2-9]\d{2}\b/i) {
-            say "  [skip] $name — pre-Pascal GPU, CUDA compute capability too low";
-            next;
-        }
+    return 'none';
+}
 
-        # Unknown NVIDIA GPU — log and skip (safe default)
-        say "  [skip] Unknown NVIDIA GPU: $name — not in known compute-capable list";
+# Display and 3D controllers as the kernel reports them:
+# { slot, vendor, device, class }, all lowercase hex without the 0x prefix.
+#
+# sysfs, not `lspci`. lspci prints the *name* it finds for a PCI ID in the
+# host's pci.ids database, and that database is always older than the newest
+# card — a DGX Spark prints `Device [10de:2e12]` for its GB10, which no list of
+# marketing names can ever match. Vendor and class come from the hardware
+# itself, need neither a database nor pciutils, and are precisely the pair NFD
+# labels the node with in-cluster (feature.node.kubernetes.io/pci-0300_10de).
+sub _pci_display_devices {
+    my $raw = run
+          q{for d in /sys/bus/pci/devices/*/; do }
+        . q{test -r "$d/class" || continue; }
+        . q{printf '%s|%s|%s|%s\n' "${d%/}" }
+        . q{"$(cat "$d/vendor" 2>/dev/null)" }
+        . q{"$(cat "$d/device" 2>/dev/null)" }
+        . q{"$(cat "$d/class" 2>/dev/null)"; }
+        . q{done},
+        auto_die => FALSE;
+
+    return () unless defined $raw;
+
+    my @devices;
+    for my $line (split /\n/, $raw) {
+        my ($path, $vendor, $device, $class) = split /\|/, $line, 4;
+        next unless defined $class;
+
+        # 0x0300xx = VGA controller, 0x0302xx = 3D controller. The last byte is
+        # the programming interface and is not part of the class we match on.
+        my ($class_id)  = $class  =~ /^0x(0300|0302)[0-9a-f]{2}$/i or next;
+        my ($vendor_id) = $vendor =~ /^0x([0-9a-f]{4})$/i          or next;
+        my ($device_id) = $device =~ /^0x([0-9a-f]{4})$/i;
+
+        my $slot = $path;
+        $slot =~ s{.*/}{};
+
+        push @devices, {
+            slot   => $slot,
+            vendor => lc $vendor_id,
+            device => lc($device_id // '????'),
+            class  => lc $class_id,
+        };
     }
 
-    return undef;
+    return @devices;
 }
 
 desc "Install NVIDIA GPU drivers and container toolkit";
@@ -281,45 +333,70 @@ task "install_nvidia", sub {
     say "  OS: $os, Kernel: $running_kernel";
 
     # 1. Install kernel headers + driver packages
-    my @driver_packages;
-    if ($os eq 'Debian') {
-        @driver_packages = (
+    #
+    # …unless the host already has a working one. Vendor appliances (NVIDIA
+    # DGX and friends) ship with a driver matched to their kernel and their
+    # silicon, often newer than anything in the distribution archive. Letting
+    # apt pull some other branch over that downgrades a working machine into
+    # a broken one, and on a fresh GPU generation there is no going back
+    # without the vendor's image. A driver that answers `nvidia-smi` and
+    # provides libcuda is the driver we want; OCP only needs the container
+    # toolkit on top of it.
+    if (_nvidia_driver_present()) {
+        say "  Host driver already present and working — skipping driver install";
+        say "  (OCP only adds the container toolkit on top of it)";
+    } elsif ($os eq 'Debian') {
+        # The kernel meta-package is named after the *Debian* architecture
+        # (linux-headers-amd64, linux-headers-arm64, …), so ask dpkg rather
+        # than assuming. GOARCH happens to agree for these two, but this is
+        # dpkg's namespace, not Go's.
+        my $deb_arch = run "dpkg --print-architecture";
+        chomp $deb_arch if defined $deb_arch;
+        $deb_arch ||= _node_arch();
+
+        my @driver_packages = (
             "linux-headers-$running_kernel",  # DKMS builds for running kernel
-            "linux-headers-amd64",            # Meta for latest kernel
+            "linux-headers-$deb_arch",        # Meta for latest kernel
             "nvidia-driver",                  # Driver meta-package (pulls dkms)
             "nvidia-smi",                     # nvidia-smi tool
             "libcuda1",                       # CUDA driver library (needed by container runtime!)
         );
+
+        say "  Installing driver packages...";
+        update_package_db;
+        pkg \@driver_packages, ensure => "present";
     } elsif ($os eq 'Ubuntu') {
-        @driver_packages = (
-            "linux-headers-$running_kernel",
-            "linux-headers-generic",
-            "nvidia-driver-535",              # Includes nvidia-smi + libcuda on Ubuntu
-        );
+        _install_nvidia_driver_ubuntu($running_kernel);
     } else {
         die "Unsupported OS for NVIDIA: $os\n";
     }
 
-    say "  Installing driver packages...";
-    update_package_db;
-    pkg \@driver_packages, ensure => "present";
-
     # 2. Add NVIDIA container toolkit repo and install
-    say "  Adding NVIDIA container toolkit repository...";
-    pkg ["curl", "gnupg"], ensure => "present";
+    #
+    # Same argument as the driver, one layer up: a vendor image already has the
+    # toolkit — on a DGX Spark, /usr/bin/nvidia-container-runtime and nvidia-ctk
+    # are there before OCP is. Adding NVIDIA's apt source to such a host changes
+    # where its packages come from for everything that follows, for no gain, so
+    # the presence of a working runtime ends this step too.
+    if (_nvidia_toolkit_present()) {
+        say "  Container toolkit already present — leaving the host's apt sources alone";
+    } else {
+        say "  Adding NVIDIA container toolkit repository...";
+        pkg ["curl", "gnupg"], ensure => "present";
 
-    # Download and dearmor GPG key (modern signed-by approach, not deprecated apt-key)
-    run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null",
-        auto_die => FALSE;
+        # Download and dearmor GPG key (modern signed-by approach, not deprecated apt-key)
+        run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null",
+            auto_die => FALSE;
 
-    # Write sources.list directly (not curl|sed pipeline)
-    file "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
-        content => "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /\n";
+        # Write sources.list directly (not curl|sed pipeline)
+        file "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
+            content => "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /\n";
 
-    update_package_db;
+        update_package_db;
 
-    say "  Installing nvidia-container-toolkit...";
-    pkg ["nvidia-container-toolkit"], ensure => "present";
+        say "  Installing nvidia-container-toolkit...";
+        pkg ["nvidia-container-toolkit"], ensure => "present";
+    }
 
     # 3. Load nvidia kernel module
     run "modprobe nvidia", auto_die => FALSE;
@@ -329,6 +406,98 @@ task "install_nvidia", sub {
 
     say "NVIDIA GPU installation complete";
 };
+
+# Ubuntu: let `ubuntu-drivers` choose the driver package.
+#
+# Three questions decide which package is correct here, and OCP can answer none
+# of them from the outside:
+#
+#   branch   `nvidia-driver-535` used to be hardcoded. R535 reached end of life
+#            in June 2026, and on Ubuntu 24.04 the name now survives only as a
+#            transitional package that pulls 580 — so the pin pinned nothing,
+#            on amd64 just as much as on arm64.
+#   flavour  Grace Hopper and Blackwell run *only* the open kernel modules; the
+#            proprietary driver is unsupported on them (NVIDIA, "NVIDIA
+#            Transitions Fully Towards Open-Source GPU Kernel Modules"). Maxwell,
+#            Pascal and Volta are the other way round. `-open` is part of the
+#            package name, so this is a naming decision, not a flag.
+#   arch     amd64 and arm64 do not carry the same names, and on arm64 the
+#            packages come from the ports archive.
+#
+# `ubuntu-drivers` answers all three from the card's PCI modalias — the same
+# evidence NFD labels the node from — and it is what Ubuntu documents as the
+# recommended installation path. It structurally cannot select a package that
+# does not claim this card, which is the guarantee a literal package name never
+# gives. A guessed name is how a working machine becomes a broken one, so OCP
+# does not guess: if the tool is missing or fails, this dies and says so.
+sub _install_nvidia_driver_ubuntu {
+    my ($running_kernel) = @_;
+
+    update_package_db;
+
+    # Headers for the *running* kernel, and only those. `linux-headers-generic`
+    # used to be in this list; it tracks the generic flavour, which on a vendor
+    # kernel (a DGX Spark runs 6.17.0-1029-nvidia) is a different kernel
+    # altogether — DKMS would build against headers the machine does not run.
+    say "  Installing kernel headers for $running_kernel...";
+    pkg ["linux-headers-$running_kernel"], ensure => "present";
+
+    pkg ["ubuntu-drivers-common"], ensure => "present";
+
+    my $listed = run "ubuntu-drivers list 2>&1", auto_die => FALSE;
+    say "  ubuntu-drivers list:";
+    say "    $_" for grep { length } split /\n/, ($listed // '(no output)');
+
+    say "  Installing the recommended driver...";
+    my $out = run "ubuntu-drivers install 2>&1", auto_die => FALSE;
+    my $rc  = $?;
+    say "    $_" for grep { length } split /\n/, ($out // '');
+
+    if ($rc != 0) {
+        die "ubuntu-drivers could not install a driver on this host.\n"
+          . "OCP does not fall back to a guessed package name — the wrong branch\n"
+          . "or the wrong kernel-module flavour breaks the machine. Install the\n"
+          . "driver NVIDIA documents for this GPU and this kernel by hand, then\n"
+          . "re-run: OCP skips the driver install once nvidia-smi answers.\n";
+    }
+}
+
+# Is a working NVIDIA driver already installed on this host?
+#
+# "Working" is deliberately defined by what the container stack consumes, not
+# by package state: nvidia-smi enumerates GPUs, and libcuda.so is in the
+# linker cache. Package state would be the wrong question — vendor appliances
+# install their driver outside the distribution's package namespace, so apt
+# happily reports "not installed" for a machine that is running one.
+sub _nvidia_driver_present {
+    my $smi = run "nvidia-smi -L 2>&1", auto_die => FALSE;
+    return 0 unless defined $smi && $smi =~ /GPU \d+:/;
+
+    my $libcuda = run "ldconfig -p | grep 'libcuda.so '", auto_die => FALSE;
+    unless (defined $libcuda && length $libcuda) {
+        say "  nvidia-smi answers but libcuda.so is missing — driver is incomplete";
+        return 0;
+    }
+
+    my $ver = run "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1",
+        auto_die => FALSE;
+    chomp $ver if defined $ver;
+    say "  Existing NVIDIA driver detected" . (($ver) ? " (version $ver)" : '');
+
+    return 1;
+}
+
+# Is a usable NVIDIA container runtime already on this host?
+#
+# Same reasoning as _nvidia_driver_present: ask for the binaries the CRI
+# actually execs, not for a package name. A DGX image installs both, and k3s
+# and RKE2 find nvidia-container-runtime on PATH by themselves.
+sub _nvidia_toolkit_present {
+    return 0 unless can_run("nvidia-container-runtime");
+    return 0 unless can_run("nvidia-ctk");
+    say "  Existing NVIDIA container toolkit detected";
+    return 1;
+}
 
 sub _verify_nvidia {
     say "  Verifying NVIDIA installation...";
@@ -396,7 +565,7 @@ task "install_rke2_server", sub {
         locale   => $params->{locale}   || 'en_US.UTF-8',
         ntp      => $params->{ntp}      // 1,
     };
-    do_task "detect_gpu";
+    _maybe_detect_gpu($params);
 
     # Create RKE2 config
     my $config = "cni: none\ndisable-kube-proxy: true\n";
@@ -425,8 +594,10 @@ task "install_rke2_server", sub {
     );
     file "/etc/rancher/rke2/registries.yaml", content => $registries;
 
-    # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
-    _configure_nvidia_containerd();
+    # RKE2 looks for alternative container runtimes on the service PATH, and
+    # its unit sets none. Must happen before the service starts: the scan runs
+    # at startup only.
+    _configure_nvidia_runtime_path('rke2-server');
 
     # Install RKE2
     say "[1/5] Installing RKE2...";
@@ -484,24 +655,35 @@ task "install_rke2_server", sub {
 
     my $version_url = $rke2_version;
     $version_url =~ s/\+/%2B/g;
-    my $tarball_url = "https://github.com/rancher/rke2/releases/download/$version_url/rke2.linux-amd64.tar.gz";
-    my $checksum_url = "https://github.com/rancher/rke2/releases/download/$version_url/sha256sum-amd64.txt";
+
+    # The install script names its artifacts by GOARCH and refuses anything
+    # else in INSTALL_RKE2_ARTIFACT_PATH — the tarball and the checksum file
+    # must carry the node's own architecture, not the build host's.
+    my $arch = _node_arch();
+    say "      Node architecture: $arch";
+
+    my $tarball_name  = "rke2.linux-$arch.tar.gz";
+    my $checksum_name = "sha256sum-$arch.txt";
+    my $tarball_url = "https://github.com/rancher/rke2/releases/download/$version_url/$tarball_name";
+    my $checksum_url = "https://github.com/rancher/rke2/releases/download/$version_url/$checksum_name";
 
     say "      Downloading RKE2 tarball (~60MB, this takes a moment)...";
     run "mkdir -p /tmp/rke2-artifacts", auto_die => FALSE;
 
     # Download with progress-bar so Rex sees output and doesn't kill the channel
-    run "curl -fL --progress-bar -o /tmp/rke2-artifacts/rke2.linux-amd64.tar.gz '$tarball_url' 2>&1",
+    run "curl -fL --progress-bar -o /tmp/rke2-artifacts/$tarball_name '$tarball_url' 2>&1",
         auto_die => FALSE, timeout => 600;
-    run "curl -fsSL -o /tmp/rke2-artifacts/sha256sum-amd64.txt '$checksum_url' 2>&1",
+    run "curl -fsSL -o /tmp/rke2-artifacts/$checksum_name '$checksum_url' 2>&1",
         auto_die => FALSE;
 
     # Verify download
-    my $tarball_size = run "wc -c < /tmp/rke2-artifacts/rke2.linux-amd64.tar.gz 2>/dev/null || echo 0", auto_die => FALSE;
+    my $tarball_size = run "wc -c < /tmp/rke2-artifacts/$tarball_name 2>/dev/null || echo 0", auto_die => FALSE;
     chomp $tarball_size;
     say "      Tarball size: $tarball_size bytes";
     if ($tarball_size < 1000000) {
-        die "RKE2 tarball too small ($tarball_size bytes) - download failed";
+        die "RKE2 tarball too small ($tarball_size bytes) - download failed.\n" .
+            "URL was: $tarball_url\n" .
+            "If that 404s, RKE2 $rke2_version publishes no build for '$arch'.\n";
     }
 
     # Run install script pointing to our pre-downloaded artifacts
@@ -607,7 +789,7 @@ task "install_rke2_agent", sub {
         locale   => $params->{locale}   || 'en_US.UTF-8',
         ntp      => $params->{ntp}      // 1,
     };
-    do_task "detect_gpu";
+    _maybe_detect_gpu($params);
 
     # Create RKE2 agent config
     my $config = "server: $server\ntoken: $token\n";
@@ -624,8 +806,9 @@ task "install_rke2_agent", sub {
     );
     file "/etc/rancher/rke2/registries.yaml", content => $registries;
 
-    # Configure containerd for NVIDIA GPU (if toolkit was installed by detect_gpu)
-    _configure_nvidia_containerd();
+    # See install_rke2_server: the runtime scan happens at service startup, so
+    # the PATH has to be in place before the agent is installed.
+    _configure_nvidia_runtime_path('rke2-agent');
 
     # Install RKE2 agent
     my $install_cmd = "curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent ";
@@ -672,7 +855,7 @@ task "install_k3s_server", sub {
         locale   => $params->{locale}   || 'en_US.UTF-8',
         ntp      => $params->{ntp}      // 1,
     };
-    do_task "detect_gpu";
+    _maybe_detect_gpu($params);
 
     # Install K3s
     my $install_cmd = "curl -sfL https://get.k3s.io | ";
@@ -705,7 +888,7 @@ task "install_k3s_agent", sub {
         locale   => $params->{locale}   || 'en_US.UTF-8',
         ntp      => $params->{ntp}      // 1,
     };
-    do_task "detect_gpu";
+    _maybe_detect_gpu($params);
 
     # Install K3s agent
     my $install_cmd = "curl -sfL https://get.k3s.io | ";
@@ -798,35 +981,43 @@ mirrors:
 YAML
 }
 
-sub _configure_nvidia_containerd {
+# Let RKE2 find the NVIDIA container runtime.
+#
+# OCP writes no containerd configuration for the GPU any more, and nothing
+# calls this for k3s. Both distributions run the same agent code: at startup it
+# scans PATH for `nvidia-container-runtime` (with /usr/local/nvidia/toolkit and
+# /opt/kwasm/bin prepended unconditionally, which is where the GPU Operator's
+# toolkit DaemonSet installs), writes every runtime it finds into its own
+# containerd config, and k3s additionally ships the matching RuntimeClass
+# objects. Verified on a DGX Spark running k3s: the runtime and the `nvidia`
+# RuntimeClass were both there with no help from OCP.
+#
+# What RKE2 does not do is give its unit a PATH — rke2-server.service carries
+# no Environment= line at all — so the RKE2 docs (docs.rke2.io/add-ons/
+# gpu_operators) tell you to put one in the EnvironmentFile. That is the only
+# thing left for OCP to write, and it touches nothing but that one variable.
+#
+# It replaces a containerd config *template*: that one wrote RKE2 paths
+# unconditionally, so under k3s it silently did nothing, and its content was
+# `imports = [...]` plus `version = 2` with no `{{ template "base" . }}`.
+# k3s/RKE2 render such a template *instead of* their generated config, so on an
+# RKE2 GPU node it would have thrown away the registry mirrors, the sandbox
+# image and the CNI settings along with everything else.
+sub _configure_nvidia_runtime_path {
+    my ($unit) = @_;
     return unless can_run("nvidia-container-runtime");
 
-    say "Configuring RKE2 containerd for NVIDIA GPU...";
+    my $env_file = "/etc/default/$unit";
+    say "Making the NVIDIA container runtime visible to $unit...";
 
-    # Create RKE2 containerd config template with import for nvidia config
-    file "/var/lib/rancher/rke2/agent/etc/containerd", ensure => 'directory';
-    file "/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl",
-        content => "imports = [\"/etc/containerd/conf.d/*.toml\"]\nversion = 2\n";
+    # A fixed list, not the SSH session's PATH: this becomes the environment of
+    # a service running as root. These are systemd's own default directories.
+    file $env_file, content => '' unless is_file($env_file);
+    append_if_no_such_line $env_file,
+        line   => 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        regexp => qr{^PATH=};
 
-    # Create nvidia containerd runtime config
-    file "/etc/containerd/conf.d", ensure => 'directory';
-    file "/etc/containerd/conf.d/99-nvidia.toml", content => <<'TOML';
-version = 2
-
-[plugins]
-  [plugins."io.containerd.grpc.v1.cri"]
-    [plugins."io.containerd.grpc.v1.cri".containerd]
-      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
-        [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
-          privileged_without_host_devices = false
-          runtime_engine = ""
-          runtime_root = ""
-          runtime_type = "io.containerd.runc.v2"
-          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
-            BinaryName = "/usr/bin/nvidia-container-runtime"
-TOML
-
-    say "  [ok] containerd configured with nvidia runtime";
+    say "  [ok] $env_file carries a PATH for the runtime lookup";
 }
 
 #
@@ -861,12 +1052,7 @@ task "install_cilium", sub {
     chomp $os_raw;
     my $os = lc($os_raw);  # linux, darwin
 
-    my $arch_raw = run "uname -m";
-    chomp $arch_raw;
-    # Map architecture names
-    my $arch = $arch_raw eq 'x86_64'  ? 'amd64' :
-               $arch_raw eq 'aarch64' ? 'arm64' :
-               $arch_raw eq 'arm64'   ? 'arm64' : $arch_raw;
+    my $arch = _node_arch();
 
     # Install Cilium CLI (skip if already installed with correct version)
     my $cli_version = $params->{cli_version} || CILIUM_CLI_VERSION;
@@ -995,11 +1181,7 @@ task "upgrade_cilium", sub {
     chomp $os_raw;
     my $os = lc($os_raw);
 
-    my $arch_raw = run "uname -m";
-    chomp $arch_raw;
-    my $arch = $arch_raw eq 'x86_64'  ? 'amd64' :
-               $arch_raw eq 'aarch64' ? 'arm64' :
-               $arch_raw eq 'arm64'   ? 'arm64' : $arch_raw;
+    my $arch = _node_arch();
 
     my $cli_version = $params->{cli_version} || CILIUM_CLI_VERSION;
     my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";

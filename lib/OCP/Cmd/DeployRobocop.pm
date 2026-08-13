@@ -4,8 +4,6 @@ package OCP::Cmd::DeployRobocop;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use FindBin;
-use File::ShareDir ();
 use Path::Tiny qw(path);
 use YAML::XS ();
 use File::Temp ();
@@ -14,6 +12,7 @@ use Kubernetes::REST::Kubeconfig;
 use OCP;
 use OCP::Config;
 use OCP::Secrets;
+use OCP::Share;
 
 with 'OCP::Role::Cmd';
 
@@ -65,21 +64,7 @@ sub execute {
 
 sub _find_share_dir {
     my ($self) = @_;
-
-    my @locations = (
-        '/opt/ocp/src/share',
-        path($FindBin::Bin)->parent->child('share'),
-    );
-
-    eval {
-        push @locations, path(File::ShareDir::dist_dir('OCP'));
-    };
-
-    for my $dir (@locations) {
-        return path($dir) if -d $dir;
-    }
-
-    die "OCP share directory not found. Tried:\n" . join("\n", map { "  - $_" } @locations) . "\n";
+    return OCP::Share->dir;
 }
 
 1;

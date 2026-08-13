@@ -111,6 +111,31 @@ subtest 'the environment is restored afterwards' => sub {
 # saw empty parameters. So assert the far end of the handover too.
 #
 
+#
+# gpu.enabled and gpu.driver were config keys nothing read: OCP::Rex forwarded
+# timezone/locale/ntp but not these, so the Rexfile ran GPU detection on every
+# node and `gpu.enabled: false` in ocp.yaml changed nothing.
+#
+
+subtest 'the GPU switches reach the install task' => sub {
+    my $decode = sub {
+        @captured = ();
+        OCP::Rex->new(host => 'psyduck.example', key_file => $key->stringify)
+            ->install_agent(server => 'https://cp:9345', token => 'tok', @_);
+        return JSON::MaybeXS->new(utf8 => 1)->decode($captured[0]{params});
+    };
+
+    my $default = $decode->();
+    is $default->{gpu}, 1, 'a caller that says nothing gets GPU handling';
+    is $default->{gpu_driver}, 'host', 'with the host driver, which is what Rex installs';
+
+    my $off = $decode->(gpu => 0);
+    is $off->{gpu}, 0, 'gpu.enabled: false travels all the way to the task';
+
+    my $operator = $decode->(gpu_driver => 'operator');
+    is $operator->{gpu_driver}, 'operator', 'so does the driver mode';
+};
+
 subtest 'the Rexfile picks the parameters back up' => sub {
     my $shipped = path(__FILE__)->parent->parent->child('share', 'Rexfile');
     plan skip_all => "share/Rexfile not found at $shipped" unless -f $shipped;

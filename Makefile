@@ -4,13 +4,36 @@
 IMAGE ?= raudssus/ocp
 TAG ?= latest
 
-.PHONY: all build test test-v clean docker-test docker-push docker-release snapshot smoke
+# Architectures published by .github/workflows/docker-publish.yml. Kept here so
+# a local check covers exactly what CI ships.
+PLATFORMS ?= linux/amd64,linux/arm64
+
+.PHONY: all build test test-v clean docker-test docker-push docker-release snapshot smoke \
+        buildx-setup build-multiarch
 
 all: build
 
 # Build Docker image
 build:
 	docker build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
+
+# One-time host prep for cross-architecture builds: register the qemu binfmt
+# handlers and create a docker-container builder (the default "docker" driver
+# cannot build for a foreign architecture).
+buildx-setup:
+	docker run --privileged --rm tonistiigi/binfmt --install arm64
+	docker buildx create --name ocp-multiarch --driver docker-container --use || \
+	  docker buildx use ocp-multiarch
+
+# Verify the image builds for every published architecture. BUILD ONLY — the
+# result is discarded, nothing is pushed. Publishing is CI's job, and
+# docker-push/docker-release need the maintainer's explicit go-ahead.
+#
+# On an amd64 host the arm64 leg runs under qemu emulation and is roughly an
+# order of magnitude slower than native; CI does not pay this, it builds each
+# architecture on its own native runner.
+build-multiarch: buildx-setup
+	docker buildx build --builder ocp-multiarch --platform $(PLATFORMS) .
 
 # Run tests locally (uses CPAN modules)
 test:

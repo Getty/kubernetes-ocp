@@ -4,6 +4,7 @@ package OCP::Node;
 use Moo;
 use File::Temp ();
 use Time::Piece ();
+use OCP::K8s;
 use OCP::Versions;
 use namespace::clean;
 
@@ -66,14 +67,65 @@ sub _lease_mine {
     return $l->{holder} eq $id;
 }
 
-sub _api_version { 'ocp.internal/v1' }
-sub _kind        { 'OCPNode' }
+sub _kind { 'OCPNode' }
+
+# --- Kubernetes::REST seam -------------------------------------------------
+#
+# Kubernetes::REST addresses resources by their registered Kind, never by
+# api-version: get('OCPNode', $name, namespace => $ns). The first argument is
+# fed to expand_class(), so passing an api-version there ('ocp.internal/v1')
+# does not mis-address the request, it dies outright -- "argument is not a
+# module name". Every call below therefore goes through these three helpers,
+# and OCP::Node no longer knows an api-version at all: the CR hash carries
+# apiVersion, and there is nothing left to accidentally pass as arg 0.
+#
+# The other half of the seam is typing. get() and update() return typed
+# IO::K8s objects, while everything else in this class treats `cr` as a plain
+# hash. Convert in exactly one place so a typed object can never leak into the
+# state machine.
+
+sub _struct {
+    my ($self, $obj) = @_;
+    return undef unless defined $obj;
+    return $obj if ref($obj) eq 'HASH';
+    return $self->k8s->k8s->object_to_struct($obj);
+}
+
+# get() croaks on 404 rather than returning undef. A CR that is not stored yet
+# is not fatal -- callers fall back to the copy they were constructed with.
+# Anything else (auth, 5xx, TLS) is fatal and must not be mistaken for
+# "absent": treating a failed read as an empty one would take the lease on the
+# strength of a CR nobody managed to read. Kubernetes::REST::ensure draws the
+# same 404-vs-rest line the same way.
+sub _get_cr {
+    my $self = shift;
+    my $obj = eval {
+        $self->k8s->get($self->_kind, $self->name, namespace => $self->namespace);
+    };
+    if (my $err = $@) {
+        die $err unless $err =~ /\b404\b/;
+        return undef;
+    }
+    return $self->_struct($obj);
+}
+
+# update() takes a blessed IO::K8s object and calls ->metadata on it; handing
+# it a plain hash dies with "Can't call method metadata on unblessed
+# reference". Build the typed object from the struct we just read, which keeps
+# its resourceVersion -- that is what makes two reconcilers racing for the
+# lease collide with a 409 instead of silently overwriting each other.
+sub _put_cr {
+    my ($self, $struct) = @_;
+    my $api   = $self->k8s;
+    my $class = $api->k8s->expand_class($self->_kind);
+    my $updated = $self->_struct($api->update($api->k8s->struct_to_object($class, $struct)));
+    $self->_set_cr($updated) if $updated;
+    return $updated;
+}
 
 sub _acquire_lease {
     my $self = shift;
-    my $cr = $self->k8s->get($self->_api_version, $self->_kind, $self->name,
-                             namespace => $self->namespace);
-    $cr ||= $self->cr;
+    my $cr = $self->_get_cr // $self->cr;
     my $ann = $cr->{metadata}{annotations} //= {};
     my $existing = $ann->{'ocp.internal/reconciler-lease'};
     if ($existing && _lease_live($existing) && !_lease_mine($existing, $self->reconciler_id)) {
@@ -81,20 +133,20 @@ sub _acquire_lease {
     }
     $ann->{'ocp.internal/reconciler-lease'} = sprintf "%s@%s@%d",
         $self->reconciler_id, _rfc3339_now(), 300;
-    my $updated = $self->k8s->update($cr);
-    $self->_set_cr($updated) if $updated;
-    return $updated;
+    return $self->_put_cr($cr);
 }
 
 sub _release_lease {
     my $self = shift;
-    my $cr = $self->cr;
+    # Re-read before writing. Between acquire and release the caller patched
+    # /status, and a status write bumps the object's resourceVersion -- PUTting
+    # the copy held in memory would send a stale one and 409, leaving the lease
+    # stuck until its TTL expired.
+    my $cr = $self->_get_cr // $self->cr;
     my $ann = $cr->{metadata}{annotations} // {};
     return unless exists $ann->{'ocp.internal/reconciler-lease'};
     delete $ann->{'ocp.internal/reconciler-lease'};
-    my $updated = $self->k8s->update($cr);
-    $self->_set_cr($updated) if $updated;
-    return $updated;
+    return $self->_put_cr($cr);
 }
 
 sub _patch_status {
@@ -108,12 +160,17 @@ sub _patch_status {
     my $name = $self->name;
     my $ns   = $self->namespace;
 
-    return $self->k8s->patch(
-        'OCPNode',
+    # Must go to /status: the OCPNode CRD enables the status subresource, so a patch
+    # against the main endpoint returns 2xx and drops the status silently —
+    # every phase transition would live only in this process's memory and no
+    # other reader (ocp node ls, the Apply poll loop, a restarted robocop)
+    # would ever see it. See OCP::K8s::patch_status.
+    return OCP::K8s->patch_status(
+        $self->k8s,
+        kind      => 'OCPNode',
         name      => $name,
         namespace => $ns,
-        patch     => { status => \%updates },
-        type      => 'merge',
+        status    => \%updates,
     );
 }
 
@@ -139,7 +196,13 @@ sub _provision {
         message    => 'Server provisioned, installing Kubernetes',
     );
 
-    $self->_release_lease;
+    # Best-effort. The server exists and the phase is written; a failed release
+    # only leaves the lease standing until its 300s TTL, and this same holder
+    # re-acquires it on the next pass. Letting that failure out would send
+    # reconcile down its catch-all and mark a machine that was provisioned
+    # perfectly well as Failed -- which is terminal, so the node would never be
+    # picked up again while the server kept running.
+    eval { $self->_release_lease };
 
     return $result;
 }
@@ -243,9 +306,15 @@ sub reconcile {
     return 0 if $p eq 'Failed' || $p eq 'Terminating';
 
     eval {
+        # 'Installing' means "the server exists, Kubernetes is going on it" --
+        # it is what _provision writes, and the only phase from which the Rex
+        # install can start. It used to dispatch to _wait_ready, which left
+        # _install_kubernetes reachable only from 'Provisioning', a phase
+        # nothing in OCP ever writes: the agent was never installed and the
+        # node sat waiting for a registration that could not happen.
         if    ($p eq 'Pending')      { $self->_provision }
         elsif ($p eq 'Provisioning') { $self->_install_kubernetes }
-        elsif ($p eq 'Installing')   { $self->_wait_ready }
+        elsif ($p eq 'Installing')   { $self->_install_kubernetes }
         elsif ($p eq 'Joining')      { $self->_wait_ready }
         elsif ($p eq 'Ready')        { $self->_verify }
         else                         { die "unknown phase: $p\n" }
@@ -259,8 +328,10 @@ sub reconcile {
 
 sub _refresh {
     my $self = shift;
-    my $fresh = $self->k8s->get($self->_api_version, $self->_kind, $self->name,
-                                namespace => $self->namespace);
+    # This one runs inside a poll loop, so a failed read is not terminal: keep
+    # the phase we already have and look again on the next tick, rather than
+    # failing a worker over one API blip.
+    my $fresh = eval { $self->_get_cr };
     $self->_set_cr($fresh) if $fresh;
 }
 
@@ -307,13 +378,16 @@ sub teardown {
         } or warn "[node] provider delete failed for @{[ $self->name ]}: $@";
     }
 
+    # Both deletes are Kind-first. They used to lead with an api-version
+    # ('v1' / 'ocp.internal/v1'), which dies in expand_class -- and since both
+    # are wrapped in eval, teardown reported success while the k8s Node object
+    # and the OCPNode CR were both left behind.
     eval {
-        $self->k8s->delete('v1', 'Node', $k8s_name);
+        $self->k8s->delete('Node', $k8s_name);
     };
 
     eval {
-        $self->k8s->delete($self->_api_version, $self->_kind, $self->name,
-                           namespace => $self->namespace);
+        $self->k8s->delete($self->_kind, $self->name, namespace => $self->namespace);
     };
 
     return 1;
@@ -378,12 +452,25 @@ OCP::Node - Trigger-neutral node reconcile state machine
 
 OCP::Node drives a single OCPNode CR through its lifecycle:
 
-    Pending -> Provisioning -> Installing -> Joining -> Ready
+    Pending -> Installing -> Joining -> Ready
 
 Each call to C<reconcile> advances the node by one phase based on the
 current C<status.phase> stored in the CR.  The method is idempotent and
 trigger-neutral: the same code runs whether called from the CLI one-shot
 path (C<ocp node add>) or from Robocop's in-cluster watch-loop.
+
+C<Provisioning> is also accepted and behaves exactly like C<Installing>,
+but nothing in OCP writes it: C<_provision> creates the server and moves
+straight to C<Installing>.  The CRD keeps it in its enum, so a CR that
+arrived there some other way still reconciles instead of dying on an
+unknown phase.
+
+All Kubernetes access goes through C<_get_cr> / C<_put_cr> / C<_struct>.
+L<Kubernetes::REST> takes the B<Kind> in its first argument and resolves it
+through C<expand_class>, so an api-version passed there is fatal rather than
+merely wrong; and C<update> requires a blessed L<IO::K8s> object while this
+class handles C<cr> as a plain hash.  Both rules are honoured in those three
+methods and nowhere else.
 
 =head2 Lease Mechanics
 

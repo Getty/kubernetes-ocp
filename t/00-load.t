@@ -8,6 +8,7 @@ use_ok('OCP');
 use_ok('OCP::Config');
 use_ok('OCP::Secrets');
 use_ok('OCP::Keys');
+use_ok('OCP::Share');
 use_ok('OCP::SSH');
 use_ok('OCP::Versions');
 use_ok('OCP::Password');

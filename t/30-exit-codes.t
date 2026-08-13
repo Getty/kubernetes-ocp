@@ -36,7 +36,17 @@ for my $file (@commands) {
 
     # Strip comments and blank lines, then look at the final statement.
     my @lines = grep { /\S/ && !m{^\s*#} } split /\n/, $body;
-    my $last  = $lines[-1] // '';
+
+    # A statement can span several lines. Walk back to the line that STARTS
+    # the last one — at the body's base indentation, and not a line that is
+    # only a closing bracket — then join it back together. Otherwise a
+    # `return $self->_foo(\n    ...,\n);` reads as if execute() ended in an
+    # argument or in punctuation rather than in a return.
+    my $i = $#lines;
+    $i-- while $i > 0
+        && ($lines[$i] !~ /^\s{0,4}\S/ || $lines[$i] =~ /^\s*[)\],;]+\s*$/);
+    my $last = join ' ', @lines[$i .. $#lines];
+    $last =~ s/\s+/ /g;
     $last =~ s/^\s+|\s+$//g;
 
     # Ending in die() is a deliberate failure path (e.g. "subcommand required").

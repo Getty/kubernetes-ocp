@@ -26,7 +26,13 @@ ENV LANG=en_US.UTF-8
 # access goes through Kubernetes::REST / IO::K8s. This is here so you can
 # poke at the cluster from inside the image.
 
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+#
+# The architecture comes from dpkg rather than from an ARG: it is whatever the
+# image is actually being built for, with no dependency on buildx passing
+# TARGETARCH. Hardcoding amd64 here put an unrunnable binary into every arm64
+# image.
+RUN ARCH="$(dpkg --print-architecture)" \
+  && curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" \
   && chmod +x kubectl \
   && mv kubectl /usr/local/bin/
 

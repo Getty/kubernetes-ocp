@@ -7,8 +7,8 @@ use IPC::Run qw(run);
 use JSON::MaybeXS;
 use MIME::Base64;
 use Path::Tiny qw(path);
-use FindBin;
-use File::ShareDir qw(dist_dir);
+use File::Temp ();
+use OCP::Share;
 use OCP::SSH;
 use OCP::Versions;
 
@@ -37,8 +37,8 @@ has verbose => (
 sub run_task {
     my ($self, $task, %params) = @_;
 
-    # Find Rexfile in project root
-    my $rexfile = $self->_find_rexfile;
+    # A private, writable copy of the shipped Rexfile — see _runtime_rexfile.
+    my $rexfile = $self->_runtime_rexfile;
 
     my @cmd = (
         'rex',
@@ -100,28 +100,35 @@ sub run_task {
 
 sub _find_rexfile {
     my ($self) = @_;
+    return OCP::Share->rexfile->stringify;
+}
 
-    # Try multiple locations:
-    # 1. Docker: /opt/ocp/src/share/Rexfile
-    # 2. Development: $FindBin::Bin/../share/Rexfile
-    # 3. Installed: File::ShareDir dist_dir
+# Rex writes its lock file next to the Rexfile (Rex::CLI::handle_lock_file,
+# unconditionally — even -F only skips the staleness check), so the directory
+# holding the Rexfile has to be writable. share/ regularly is not: mounted
+# :ro into the container, or installed root-owned through File::ShareDir. Rex
+# then dies with "Read-only file system" before running a single task.
+#
+# The Rexfile is input, the lock file is runtime state; they have no business
+# sharing a directory. Run from a private copy instead. That also keeps
+# Rexfile.lock out of the working tree, and the copy is self-contained — the
+# Rexfile reads no sibling files, its parameters arrive through the
+# environment.
+sub _rex_workdir {
+    my ($self) = @_;
+    return $self->{_rex_workdir} ||= File::Temp->newdir(TEMPLATE => 'ocp-rex-XXXXXX', TMPDIR => 1);
+}
 
-    my @locations = (
-        '/opt/ocp/src/share/Rexfile',                           # Docker
-        path($FindBin::Bin)->parent->child('share/Rexfile'),    # Dev
-    );
+sub _runtime_rexfile {
+    my ($self) = @_;
+    return $self->{_runtime_rexfile} if $self->{_runtime_rexfile};
 
-    # Try installed location
-    eval {
-        my $dist_dir = dist_dir('OCP');
-        push @locations, path($dist_dir)->child('Rexfile');
-    };
+    my $workdir = $self->_rex_workdir;   # File::Temp::Dir, lives as long as $self
+    my $source  = path($self->_find_rexfile);
+    my $target  = path("$workdir")->child('Rexfile');
+    $source->copy($target);
 
-    for my $rexfile (@locations) {
-        return "$rexfile" if -f $rexfile;
-    }
-
-    die "Rexfile not found. Tried:\n" . join("\n", map { "  - $_" } @locations) . "\n";
+    return $self->{_runtime_rexfile} = "$target";
 }
 
 sub install_server {
@@ -143,6 +150,10 @@ sub install_server {
     my $locale   = $opts{locale}   || 'en_US.UTF-8';
     my $ntp      = $opts{ntp}      // 1;
 
+    # Defaults match the Rexfile's own: absent means "do the GPU work".
+    my $gpu        = $opts{gpu}        // 1;
+    my $gpu_driver = $opts{gpu_driver} || 'host';
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
@@ -158,6 +169,8 @@ sub install_server {
         timezone          => $timezone,
         locale            => $locale,
         ntp               => $ntp,
+        gpu               => $gpu ? 1 : 0,
+        gpu_driver        => $gpu_driver,
     );
 
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
@@ -239,6 +252,9 @@ sub install_agent {
     my $locale   = $opts{locale}   || 'en_US.UTF-8';
     my $ntp      = $opts{ntp}      // 1;
 
+    my $gpu        = $opts{gpu}        // 1;
+    my $gpu_driver = $opts{gpu_driver} || 'host';
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
     $self->run_task($task,
@@ -254,6 +270,8 @@ sub install_agent {
         timezone          => $timezone,
         locale            => $locale,
         ntp               => $ntp,
+        gpu               => $gpu ? 1 : 0,
+        gpu_driver        => $gpu_driver,
     );
 
     return 1;
@@ -360,9 +378,13 @@ Execute a Rex task with parameters.
         distribution => 'rke2',  # or 'k3s'
         version      => '',      # empty = latest
         token        => '...',   # auto-generated if not provided
+        gpu          => 1,       # 0 skips GPU detection entirely
+        gpu_driver   => 'host',  # 'operator' leaves the host driver alone
     );
 
-Install Kubernetes control plane. Detects GPU and installs drivers automatically.
+Install Kubernetes control plane. Detects NVIDIA hardware and installs the
+driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
+C<operator>.
 
 Returns hashref with C<token> and C<kubeconfig>.
 

@@ -42,6 +42,16 @@ use YAML::XS ();
         push @{$self->{calls}}, ['ensure', $doc->{kind}, $doc->{metadata}{name}, $doc];
         return $doc;
     }
+    # OCP::K8s::patch_status prefers a native writer when the api provides one,
+    # so stubbing it here records the /status write without having to emulate
+    # _build_path and the raw transport. The raw path has its own coverage in
+    # t/36-ocpnode-status.t.
+    sub patch_status {
+        my ($self, %args) = @_;
+        push @{$self->{calls}},
+            ['patch_status', $args{kind}, $args{name}, $args{status}];
+        return 1;
+    }
     # _server_side_apply falls back to a hand-built path when the kind is not
     # a registered class, then PATCHes the raw manifest.
     sub _request {
@@ -61,6 +71,9 @@ use YAML::XS ();
         }
         if ($kind eq 'OCPNodeProvider') {
             return $self->{providers}{$name};
+        }
+        if ($kind eq 'Node') {
+            return $self->{plain_nodes}{$name};
         }
         return undef;
     }
@@ -201,8 +214,46 @@ subtest '_ensure_cp_ocpnode writes CP CR with phase=Ready' => sub {
     is $call->[2], 'police1', 'name=police1';
     is $call->[3]{spec}{role}, 'control-plane', 'role=control-plane';
     is $call->[3]{spec}{providerRef}, 'hetzner-default', 'providerRef=hetzner-default';
-    is $call->[3]{status}{phase}, 'Ready', 'phase=Ready';
-    is $call->[3]{status}{publicIP}, '1.2.3.4', 'publicIP stamped';
+
+    # The ensure must NOT carry status: OCPNode enables the status subresource,
+    # so the API server drops it there and answers 2xx anyway. Status has to be
+    # a separate /status write or it never lands.
+    ok !exists $call->[3]{status}, 'ensure payload carries no status';
+
+    my ($status) = grep { $_->[0] eq 'patch_status' } @{$api->{calls}};
+    ok $status, 'status written through the /status subresource';
+    is $status->[1], 'OCPNode', 'status patch targets OCPNode';
+    is $status->[2], 'police1', 'status patch targets police1';
+    is $status->[3]{phase}, 'Ready', 'phase=Ready';
+    is $status->[3]{publicIP}, '1.2.3.4', 'publicIP stamped';
+    is $status->[3]{reconciler}, 'cli', 'stamped reconciler=cli';
+};
+
+subtest '_ensure_cp_ocpnode prefers the Node address over the configured host' => sub {
+    # The configured control_planes.host is regularly a DNS name, which would
+    # put "cortex.example.com" in the IP column while `ocp status` shows the
+    # real address. Read it off the Node object instead.
+    my $api = FakeApi->new(
+        k8s_nodes => [],
+        nodes     => {},
+    );
+    $api->{plain_nodes} = {
+        cortex => {
+            metadata => { name => 'cortex' },
+            status   => { addresses => [
+                { type => 'InternalIP', address => '10.230.30.155' },
+            ] },
+        },
+    };
+    $apply->_ensure_cp_ocpnode($api, {
+        name     => 'cortex',
+        provider => 'ssh',
+        host     => 'cortex.example.com',
+    });
+
+    my ($status) = grep { $_->[0] eq 'patch_status' } @{$api->{calls}};
+    is $status->[3]{publicIP}, '10.230.30.155',
+        'IP comes from the Node object, not from the configured host';
 };
 
 subtest '_ensure_worker_ocpnodes writes one Pending CR per worker entry' => sub {
@@ -311,15 +362,18 @@ subtest 'migration synthesizes legacy provider when needed' => sub {
     ok scalar(grep { $_ eq 'OCPNode/worker-2' } @rows), 'OCPNode/worker-2 synthesized';
 
     my ($w1) = grep { $_->[1] eq 'OCPNode' && $_->[2] eq 'worker-1' } @ensures;
-    is $w1->[3]{status}{phase},     'Ready',   'worker-1 phase=Ready';
-    is $w1->[3]{status}{publicIP},  '1.2.3.4', 'worker-1 ExternalIP used';
     is $w1->[3]{spec}{providerRef}, 'legacy',  'worker-1 providerRef=legacy';
     is $w1->[3]{spec}{role},        'worker',  'worker-1 role=worker';
     is $w1->[3]{metadata}{annotations}{'ocp.internal/synthetic'}, 'true',
         'synthetic annotation set';
 
-    my ($w2) = grep { $_->[1] eq 'OCPNode' && $_->[2] eq 'worker-2' } @ensures;
-    is $w2->[3]{status}{publicIP}, '10.0.0.2', 'worker-2 falls back to InternalIP';
+    # Status again travels via /status, not via the ensure payload.
+    my %status = map { $_->[2] => $_->[3] }
+                 grep { $_->[0] eq 'patch_status' } @{$api->{calls}};
+    is $status{'worker-1'}{phase},    'Ready',   'worker-1 phase=Ready';
+    is $status{'worker-1'}{publicIP}, '1.2.3.4', 'worker-1 ExternalIP used';
+    is $status{'worker-2'}{publicIP}, '10.0.0.2',
+        'worker-2 falls back to InternalIP';
 
     my ($prov) = grep { $_->[1] eq 'OCPNodeProvider' } @ensures;
     is $prov->[3]{metadata}{annotations}{'ocp.internal/synthetic'}, 'true',

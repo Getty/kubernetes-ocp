@@ -11,7 +11,14 @@
 # would have caught them.
 #
 # Runs the working tree, not the built image: the image supplies the
-# dependencies, /src supplies lib/ and bin/.
+# dependencies, /src supplies lib/, bin/ AND share/.
+#
+# share/ is the half that used to be missing, and it is the half that matters
+# most: -I only redirects lib/, so share/ kept coming out of the image and
+# every smoke run tested the Rexfile of the last build instead of the one just
+# edited — with nearly all of the bootstrap logic living in that file. It is
+# passed explicitly via OCP_SHARE_DIR rather than left to the search order, so
+# this script says which tree it is testing instead of hoping.
 #
 #   make smoke SMOKE_HOST=reuben.cihq
 #   make smoke SMOKE_HOST=reuben.cihq SMOKE_DIST=k3s
@@ -48,6 +55,7 @@ ocp() {
         -v "$REPO":/src:ro \
         -v "$SSH_KEY":/home/ocp/.ssh/id_ed25519:ro \
         -v "$SSH_KEY.pub":/home/ocp/.ssh/id_ed25519.pub:ro \
+        -e OCP_SHARE_DIR=/src/share \
         -w /ocp --entrypoint perl "$IMAGE" -I/src/lib /src/bin/ocp "$@"
 }
 
@@ -62,8 +70,19 @@ printf 'smoke: %s on %s\n' "$DIST" "$HOST"
 printf '       working tree: %s\n' "$REPO"
 printf '       any Kubernetes on %s will be wiped\n' "$HOST"
 
+# Before wiping a machine, check that the run is about to execute the tree it
+# says it is. This is the assertion whose absence let a whole week of Rexfile
+# work go untested: the modules came from /src, the Rexfile came from the
+# image, and nothing in the output distinguished the two.
+step "provenance"
+share_dir="$(docker run --rm -v "$REPO":/src:ro -e OCP_SHARE_DIR=/src/share \
+    --entrypoint perl "$IMAGE" -I/src/lib -MOCP::Share -e 'print OCP::Share->dir')"
+[ "$share_dir" = "/src/share" ] \
+    && pass "share/ resolves to the mounted working tree" \
+    || fail "share/ resolved to '$share_dir', not the working tree at /src/share"
+
 step "init"
-ocp init --provider=ssh --host="$HOST" --single --nopassword \
+ocp init --provider=ssh --host="$HOST" --nopassword \
     --dist="$DIST" --name="smoke-$DIST" \
     --ssh-key=/home/ocp/.ssh/id_ed25519 --nogit >/dev/null
 [ -f "$WORK/ocp.yaml" ] || fail "init wrote no ocp.yaml"
@@ -103,7 +122,20 @@ pass "no pod in CrashLoopBackOff or Error"
 step "node ls"
 nodels_out="$(ocp node ls 2>&1)" || fail "node ls exited non-zero"
 printf '%s\n' "$nodels_out"
-expect "$nodels_out" "smoke-$DIST|control-plane" "the control plane is registered as an OCPNode"
+# Columns are NAME ROLE PHASE PROVIDER IP AGE.
+#
+# The old assertion was "smoke-$DIST|control-plane", which in an ERE is an
+# alternation: any line containing "control-plane" satisfied it. It therefore
+# passed on a cluster where the OCPNode CR had no status at all — the control
+# plane showed up as Pending with an empty IP while `ocp status` said Ready.
+# Assert the phase and the IP, which is what actually distinguishes a written
+# status from a missing one.
+cp_row="$(printf '%s\n' "$nodels_out" | grep -E "^smoke-$DIST[[:space:]]" || true)"
+[ -n "$cp_row" ] || fail "node ls has no row for smoke-$DIST"
+expect "$cp_row" '^[^[:space:]]+[[:space:]]+control-plane[[:space:]]+Ready[[:space:]]' \
+    "node ls reports the control plane as Ready"
+expect "$cp_row" '[[:space:]]([0-9]{1,3}\.){3}[0-9]{1,3}[[:space:]]' \
+    "node ls reports an IP for the control plane"
 
 step "update --dry-run"
 update_out="$(ocp update --dry-run 2>&1)" || fail "update --dry-run exited non-zero"

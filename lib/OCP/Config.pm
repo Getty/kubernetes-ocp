@@ -175,9 +175,40 @@ sub locale        { shift->system_config->{locale} // 'en_US.UTF-8' }
 sub ntp_enabled   { shift->system_config->{ntp} // 1 }
 
 # GPU configuration
-sub gpu_config    { shift->spec->{gpu} // {} }
-sub gpu_enabled   { shift->gpu_config->{enabled} // 1 }
-sub gpu_driver    { shift->gpu_config->{driver} // 'host' }
+#
+# Three independent facts, each one switch:
+#
+#   enabled  Whether OCP touches the GPU at all. Off means Rex skips hardware
+#            detection on every node and no GPU Operator is deployed.
+#   driver   Who installs the kernel driver. 'host' lets Rex do it and pins
+#            the operator's driver DaemonSet off; 'operator' is the reverse —
+#            Rex leaves the host alone entirely, because the operator that
+#            brings the driver brings the container toolkit with it.
+#   toolkit  Whether the operator installs the NVIDIA container toolkit. Vendor
+#            images ship it: on a DGX the runtime is in /usr/bin before OCP
+#            arrives, and NVIDIA's guidance for those hosts is
+#            toolkit.enabled=false alongside driver.enabled=false, so that the
+#            toolkit DaemonSet does not rewrite a containerd config that
+#            already works.
+sub gpu_config  { shift->spec->{gpu} // {} }
+
+# Normalised to 0/1: these travel to the Rexfile as JSON and into a
+# ClusterPolicy as a YAML boolean, and YAML::XS hands back JSON::PP::Boolean
+# objects that neither destination should have to know about.
+sub gpu_enabled { my $v = shift->gpu_config->{enabled}; return 1 unless defined $v; return $v ? 1 : 0 }
+sub gpu_toolkit { my $v = shift->gpu_config->{toolkit}; return 1 unless defined $v; return $v ? 1 : 0 }
+
+sub gpu_driver {
+    my ($self) = @_;
+    my $driver = $self->gpu_config->{driver} // 'host';
+
+    # A typo here would silently fall back to 'host' and leave the operator's
+    # driver DaemonSet disabled on a cluster that was configured for it.
+    croak "gpu.driver must be 'host' or 'operator', not '$driver'"
+        unless $driver eq 'host' || $driver eq 'operator';
+
+    return $driver;
+}
 
 #
 # Status file (.ocp/status.yaml)
@@ -186,6 +217,18 @@ sub gpu_driver    { shift->gpu_config->{driver} // 'host' }
 sub status_file {
     my ($self) = @_;
     return $self->project_dir->child('.ocp', 'status.yaml')->stringify;
+}
+
+# Manifest hashes of the components last rolled out (.ocp/deployed.yaml).
+# Cluster state, kept locally: it describes THIS cluster and nothing else, so
+# it dies with the cluster (ADR 0004). The path lives here because two
+# commands need it — apply writes it, destroy removes it — and a second
+# spelling of it is how it survived a destroy in the first place: the next
+# apply then compared against the state of a cluster that no longer existed
+# and skipped components that were gone.
+sub deployed_file {
+    my ($self) = @_;
+    return $self->project_dir->child('.ocp', 'deployed.yaml')->stringify;
 }
 
 # Runtime status (.ocp/status.yaml). Loaded once and kept, so callers can

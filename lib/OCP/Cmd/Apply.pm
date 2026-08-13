@@ -7,12 +7,10 @@ use MooX::Options;
 use Path::Tiny qw(path);
 use JSON::MaybeXS qw( decode_json );
 use JSON::PP ();
-use FindBin;
 
 use YAML::XS ();
 
 use Digest::MD5;
-use File::ShareDir;
 use File::Temp;
 use HTTP::Tiny;
 use Kubernetes::REST::Kubeconfig;
@@ -26,6 +24,7 @@ use OCP::Node;
 use OCP::Password;
 use OCP::Provider;
 use OCP::Secrets;
+use OCP::Share;
 use OCP::SSH;
 use OCP::Rex;
 use OCP::Versions;
@@ -36,6 +35,49 @@ with 'OCP::Role::Cmd';
 our $VERSION = '0.001';
 
 has _ssh_key_path => (is => 'rw');
+
+# Control-plane identity, as both apply paths have to agree on it: an SSH
+# cluster is named after the first label of its host, a Hetzner one uses
+# RoboCop naming. The reconcile path needs the same answer as the deploy path
+# to address the OCPNode CR of a cluster it did not bootstrap itself.
+sub _cp_identity {
+    my ($self, $config) = @_;
+
+    my $first_cp = $config->control_planes->[0] // {};
+    my $provider = $first_cp->{provider} // 'hetzner';
+
+    my ($name, $hostname, $domain);
+    if ($provider eq 'ssh' && $first_cp->{host}) {
+        my $host = $first_cp->{host};
+        if ($host =~ /\./) {
+            ($hostname, $domain) = split(/\./, $host, 2);
+        } else {
+            ($hostname, $domain) = ($host, '');
+        }
+        $name = $hostname;
+    } else {
+        $name     = 'police1';  # RoboCop naming!
+        $hostname = $config->name . "-" . $name;
+        $domain   = '';
+    }
+
+    return {
+        name     => $name,
+        provider => $provider,
+        hostname => $hostname,
+        domain   => $domain,
+        host     => $first_cp->{host},
+    };
+}
+
+# Display name for a distribution id. Apply hardcoded "RKE2" in its progress
+# lines, so a `dist: k3s` cluster was announced as "Installing RKE2 server..."
+# while install_k3s_server was the task actually running.
+sub _dist_label {
+    my ($dist) = @_;
+    $dist //= '';
+    return { rke2 => 'RKE2', k3s => 'K3s' }->{ lc $dist } // uc $dist;
+}
 
 option dry_run => (
     is    => 'ro',
@@ -72,9 +114,20 @@ sub execute {
     if ($config->cluster_exists) {
         print "[ok] Cluster already exists (kubeconfig.yaml found)\n";
         print "     Checking components...\n\n";
-        $self->_reconcile_components($config);
-        $self->_stamp_ocp_version($config);
-        return;
+        my $reconciled = $self->_reconcile_components($config);
+
+        # No kubeconfig we can decrypt means nothing was reconciled and nothing
+        # was looked at. Return without a verdict and without stamping a
+        # version — claiming this OCP manages a cluster it could not reach is
+        # the same class of lie as the success banner over a dead CoreDNS.
+        # _reconcile_components has already said why.
+        return 0 unless $reconciled;
+        return $self->_finish_apply(
+            config  => $config,
+            api     => $self->_k8s_api,
+            cp_name => $reconciled->{cp_name},
+            cp_ip   => $reconciled->{cp_ip},
+        );
     }
 
     # Check if we're in no-password mode (no keys.yaml)
@@ -180,22 +233,10 @@ sub execute {
     # Deploy first control plane
     # SSH: derive node name from host (avatar.conflict.industries -> avatar)
     # Hetzner: use RoboCop naming (police1)
-    my $cp_name;
-    my ($cp_hostname, $cp_domain);
-    if ($provider eq 'ssh' && $first_cp->{host}) {
-        my $host = $first_cp->{host};
-        if ($host =~ /\./) {
-            ($cp_hostname, $cp_domain) = split(/\./, $host, 2);
-        } else {
-            $cp_hostname = $host;
-            $cp_domain = '';
-        }
-        $cp_name = $cp_hostname;
-    } else {
-        $cp_name = 'police1';  # RoboCop naming!
-        $cp_hostname = $config->name . "-" . $cp_name;
-        $cp_domain = '';
-    }
+    my $cp_id = $self->_cp_identity($config);
+    my $cp_name     = $cp_id->{name};
+    my $cp_hostname = $cp_id->{hostname};
+    my $cp_domain   = $cp_id->{domain};
 
     print "Deploying control plane: $cp_name\n";
 
@@ -278,8 +319,11 @@ sub execute {
     }
     print "  [ok] SSH ready\n";
 
-    # Install RKE2 server (wrapped for failure cleanup)
-    print "  [..] Installing RKE2 server...\n";
+    my $distribution = $config->distribution || 'rke2';
+    my $dist_label   = _dist_label($distribution);
+
+    # Install the server (wrapped for failure cleanup)
+    print "  [..] Installing $dist_label server...\n";
 
     my $rex = OCP::Rex->new(
         host     => $cp_host,
@@ -287,8 +331,6 @@ sub execute {
         user     => 'root',
         verbose  => $verbose,
     );
-
-    my $distribution = $config->distribution || 'rke2';
 
     # Fall back to the version manifest, not to '' — an empty version makes the
     # Rex task resolve the distribution's *stable* channel, while OCP::Drift and
@@ -314,6 +356,8 @@ sub execute {
             timezone          => $config->timezone,
             locale            => $config->locale,
             ntp               => $config->ntp_enabled,
+            gpu               => $config->gpu_enabled,
+            gpu_driver        => $config->gpu_driver,
         );
     };
     if ($@) {
@@ -325,7 +369,7 @@ sub execute {
         die $err;
     }
 
-    print "  [ok] RKE2 server installed\n";
+    print "  [ok] $dist_label server installed\n";
 
     # Save kubeconfig (encrypted)
     print "  [..] Saving kubeconfig...\n";
@@ -490,7 +534,8 @@ sub execute {
         host     => $cp_ip,
     });
 
-    if (@$workers && (!$self->only || $self->only eq 'workers')) {
+    my $worker_step = @$workers && (!$self->only || $self->only eq 'workers');
+    if ($worker_step) {
         print "\n";
         print "Step " . ($deploy_step + 2) . ": Deploy workers (CR-driven)\n";
         $self->_ensure_worker_ocpnodes($api, $config);
@@ -521,25 +566,68 @@ sub execute {
         $self->_print_worker_status(\@results);
     }
 
-    # Done!
+    return $self->_finish_apply(
+        config  => $config,
+        api     => $api,
+        step    => $deploy_step + 2 + ($worker_step ? 1 : 0),
+        cp_name => $cp_name,
+        cp_ip   => $cp_ip,
+    );
+}
+
+#
+# The single exit of `ocp apply`.
+#
+# Both paths end here on purpose. The fresh-deploy path grew a health gate
+# while the reconcile path returned before it, so `ocp apply` over an existing
+# cluster still printed component results and exited 0 without having looked at
+# the cluster at all. A shared finisher is the structural fix: a path that
+# wants to return has to come through the same evaluation, the same banner and
+# the same exit code.
+#
+sub _finish_apply {
+    my ($self, %args) = @_;
+
+    my $config = $args{config};
+    my $api    = $args{api};
+
     print "\n";
-    print "╔═══════════════════════════════════════════════════════════════╗\n";
-    print "║  CONTROL PLANE DEPLOYED SUCCESSFULLY!                        ║\n";
-    print "╚═══════════════════════════════════════════════════════════════╝\n\n";
+    print(defined $args{step} ? "Step $args{step}: Verify cluster health\n"
+                              : "Verifying cluster health\n");
+
+    my $health = eval { $self->_check_cluster_health($api) };
+    unless ($health) {
+        # A malfunctioning health check must not be the thing that fails a
+        # deploy that otherwise went fine.
+        print "  [WARN] could not verify cluster health: $@";
+        $health = { critical => [], warnings => [], starting => [] };
+    }
+    $self->_print_health($health);
+
+    print "\n";
+    my $unhealthy = $self->_health_is_fatal($health);
+    $self->_banner($self->_health_banner_text($health));
 
     print "Cluster: ", $config->name, "\n";
-    print "Control Plane: $cp_name ($cp_ip)\n";
-    print "API Endpoint: ", $config->api_url($cp_ip), "\n\n";
+    print "Control Plane: $args{cp_name} ($args{cp_ip})\n" if $args{cp_name};
+    print "API Endpoint: ", $config->api_url($args{cp_ip}), "\n" if $args{cp_ip};
+    print "\n";
 
-    print "Next steps:\n";
-    print "  1. Inspect the cluster:\n";
-    print "     ocp status\n\n";
-    print "  2. Export the kubeconfig for your local kubectl:\n";
-    print "     ocp kubeconfig -e\n\n";
+    if ($unhealthy) {
+        print "Core cluster components are unhealthy — the cluster is up but\n";
+        print "not functional. Inspect them before using it:\n";
+        print "  ocp status\n\n";
+    } else {
+        print "Next steps:\n";
+        print "  1. Inspect the cluster:\n";
+        print "     ocp status\n\n";
+        print "  2. Export the kubeconfig for your local kubectl:\n";
+        print "     ocp kubeconfig -e\n\n";
+    }
 
     $self->_stamp_ocp_version($config);
 
-    return 0;
+    return $unhealthy ? 1 : 0;
 }
 
 sub _apply_cert_manager {
@@ -840,15 +928,28 @@ sub _setup_registry {
 
     my $manifest = $self->_generate_registry_manifest($config);
 
-    # Check if already deployed with same manifest
-
+    # "Up to date" is a statement about the cluster (ADR 0017), so the local
+    # hash alone may never make it. `ocp destroy` left .ocp/deployed.yaml
+    # behind, and the next apply — against a cluster built from scratch —
+    # announced "Registry already deployed", skipped it, and pointed CoreDNS
+    # at a registry that did not exist. NFD, the GPU operator and cert-manager
+    # already ask the cluster first; the registry was the one that did not.
     my $hash = Digest::MD5::md5_hex($manifest);
     my $deployed = $self->_load_deployed_hashes($config);
 
-    if (($deployed->{registry} // '') eq $hash) {
+    my $recorded = exists $deployed->{registry};
+    my $running  = $self->_registry_running($config);
+
+    if ($running && ($deployed->{registry} // '') eq $hash) {
         print "      Registry already deployed (up to date)\n";
-        return;
+        return 'unchanged';
     }
+
+    # What the caller gets told afterwards. "restored" is the case this check
+    # exists for: OCP had a record, the cluster had nothing.
+    my $outcome = !$recorded ? 'deployed'
+                : !$running  ? 'restored'
+                :              'updated';
 
     # Log registry mode
     if ($config->has_external_cache) {
@@ -880,6 +981,32 @@ sub _setup_registry {
 
     # Save hash so we skip next time if unchanged
     $self->_save_deployed_hash($config, 'registry', $hash);
+
+    return $outcome;
+}
+
+# The registry as the cluster has it: the namespace, plus whichever of the two
+# deployments this configuration actually rolls out. Mirrors
+# _generate_registry_manifest — an external cache or upstream means OCP
+# deploys nothing for that half and must not expect it to be there.
+sub _registry_running {
+    my ($self, $config) = @_;
+
+    my $api = $self->_k8s_api;
+
+    return 0 unless $self->_resource_exists($api, 'Namespace', 'ocp-system');
+
+    unless ($config->has_external_cache) {
+        return 0 unless $self->_resource_exists($api, 'Deployment', 'ocp-cache',
+            namespace => 'ocp-system');
+    }
+
+    unless ($config->has_external_upstream) {
+        return 0 unless $self->_resource_exists($api, 'Deployment', 'ocp-registry',
+            namespace => 'ocp-system');
+    }
+
+    return 1;
 }
 
 sub _generate_registry_manifest {
@@ -1058,48 +1185,208 @@ sub _nodeport_service {
 # CoreDNS registry.local
 #
 
+# CoreDNS ships under a different name per distribution: k3s (like stock
+# Kubernetes) calls the ConfigMap "coredns", RKE2 installs CoreDNS from a Helm
+# chart and ends up with "rke2-coredns-rke2-coredns". OCP::Drift holds the
+# list because `ocp status` reads the same ConfigMap to report the
+# registry.local record missing; sharing it keeps writer and reader from ever
+# looking in different places.
+our @COREDNS_CONFIGMAPS = @OCP::Drift::COREDNS_CONFIGMAPS;
+
 sub _configure_registry_dns {
     my ($self, $node_ip) = @_;
 
     my $api = $self->_k8s_api;
 
-    # Resolve to IP if hostname
-    if ($node_ip !~ /^\d+\.\d+\.\d+\.\d+$/) {
-        my $packed = Socket::inet_aton($node_ip);
-        die "Cannot resolve $node_ip\n" unless $packed;
-        $node_ip = Socket::inet_ntoa($packed);
-    }
+    # Resolve to IP if hostname. Through OCP::Drift, because `ocp status`
+    # reports on this record and has to arrive at the same address from the
+    # same starting value — a project whose control plane is a DNS name
+    # (control_planes: host:) otherwise reads as permanently drifted.
+    $node_ip = OCP::Drift::resolve_address($node_ip)
+        // die "Cannot resolve $node_ip\n";
 
     # Get current CoreDNS ConfigMap
-    my $cm = eval { $api->get('ConfigMap', 'coredns', namespace => 'kube-system') };
-    return unless $cm;
+    my ($cm_name, $cm);
+    for my $candidate (@COREDNS_CONFIGMAPS) {
+        $cm = eval { $api->get('ConfigMap', $candidate, namespace => 'kube-system') };
+        next unless $cm;
+        $cm_name = $candidate;
+        last;
+    }
+    return 0 unless $cm;
 
     my $corefile = $cm->data->{Corefile} // '';
+    my $patched  = _corefile_with_host($corefile, $node_ip, 'registry.local');
 
-    # Check if already configured
-    return if $corefile =~ /registry\.local/;
-
-    # Add hosts block before the first "ready" or "kubernetes" directive
-    my $hosts_block = "    hosts {\n        $node_ip registry.local\n        fallthrough\n    }\n";
-
-    if ($corefile =~ s/(^\s*ready\b)/  $hosts_block$1/m) {
-        # Inserted before 'ready'
-    } elsif ($corefile =~ s/(^\s*kubernetes\b)/$hosts_block$1/m) {
-        # Inserted before 'kubernetes'
-    } else {
-        # Fallback: append inside the main server block
-        $corefile =~ s/(\n\s*\})/$hosts_block$1/;
-    }
+    # Already resolves to this node
+    return 0 if $patched eq $corefile;
 
     # Patch the ConfigMap via server-side apply
     $self->_server_side_apply($api, {
         apiVersion => 'v1',
         kind       => 'ConfigMap',
-        metadata   => { name => 'coredns', namespace => 'kube-system' },
-        data       => { Corefile => $corefile },
+        metadata   => { name => $cm_name, namespace => 'kube-system' },
+        data       => { Corefile => $patched },
     });
 
     print "  [ok] CoreDNS configured for registry.local -> $node_ip\n";
+    return 1;
+}
+
+#
+# Point a name at an address in a Corefile.
+#
+# CoreDNS allows the hosts plugin only once per server block — a second one
+# and it refuses to start with "plugin/hosts: this plugin can only be used
+# once per Server Block", taking cluster DNS down with it. k3s ships a
+# Corefile whose root block already runs hosts for /etc/coredns/NodeHosts (a
+# file k3s' own controller owns and rewrites), RKE2's has no hosts plugin at
+# all. So the record goes *into* an existing hosts block as an inline entry,
+# and only a Corefile without one gets a block of its own.
+#
+sub _corefile_with_host {
+    my ($corefile, $ip, $hostname) = @_;
+
+    # A cluster bootstrapped by an older OCP carries the block that broke it.
+    # Take that back out first: the record inside it would otherwise read as
+    # "already configured" and re-running apply would leave CoreDNS down.
+    $corefile = _corefile_drop_added_hosts($corefile, $hostname);
+
+    my @lines = split /\n/, $corefile, -1;
+
+    # Brace depth at the start of each line: 0 on a server block header,
+    # 1 on the plugin lines inside it, 2 inside a plugin's config block.
+    my @depth;
+    my $level = 0;
+    for my $i (0 .. $#lines) {
+        $depth[$i] = $level;
+        my $opens  = () = $lines[$i] =~ /\{/g;
+        my $closes = () = $lines[$i] =~ /\}/g;
+        $level += $opens - $closes;
+    }
+
+    my ($from, $to) = _corefile_root_block(\@lines, \@depth);
+    return $corefile unless defined $from;
+
+    # Already listed somewhere in the block: only the address may need fixing
+    for my $i ($from + 1 .. $to) {
+        my ($indent, $rest) = $lines[$i] =~ /^(\s*)(\S.*?)\s*$/ or next;
+        my @token = split /\s+/, $rest;
+        next unless @token >= 2 && $token[0] =~ /^[0-9a-fA-F.:]+$/;
+        next unless grep { $_ eq $hostname } @token[1 .. $#token];
+        return $corefile if $token[0] eq $ip;
+        $token[0] = $ip;
+        $lines[$i] = $indent . join ' ', @token;
+        return join "\n", @lines;
+    }
+
+    # One indentation step, as this Corefile writes it
+    my $indent = '    ';
+    for my $i ($from + 1 .. $to - 1) {
+        next unless $depth[$i] == 1 && $lines[$i] =~ /^(\s+)\S/;
+        $indent = $1;
+        last;
+    }
+
+    # Merge into the hosts plugin the distribution already runs
+    for my $i ($from + 1 .. $to) {
+        next unless $depth[$i] == 1;
+        my ($args, $open) = $lines[$i] =~ /^\s*hosts\b([^{]*?)\s*(\{?)\s*$/;
+        next unless defined $args;
+
+        if ($open) {
+            my $inner = ($i < $#lines && $lines[$i + 1] =~ /^(\s+)\S/) ? $1 : "$indent$indent";
+            splice @lines, $i + 1, 0, "$inner$ip $hostname";
+        }
+        else {
+            # "hosts FILE" without a config block — wrap it around the entry,
+            # adding no option that would change what the plugin already does
+            splice @lines, $i, 1,
+                "${indent}hosts$args {",
+                "$indent$indent$ip $hostname",
+                "$indent}";
+        }
+        return join "\n", @lines;
+    }
+
+    # No hosts plugin in this block: add one, in front of the first plugin
+    # that has an opinion about names, or last if there is none
+    my $at = $to;
+    for my $i ($from + 1 .. $to - 1) {
+        next unless $depth[$i] == 1 && $lines[$i] =~ /^\s*(?:ready|kubernetes)\b/;
+        $at = $i;
+        last;
+    }
+
+    splice @lines, $at, 0,
+        "${indent}hosts {",
+        "$indent$indent$ip $hostname",
+        "$indent${indent}fallthrough",
+        "$indent}";
+
+    return join "\n", @lines;
+}
+
+#
+# Undo the block an older OCP added: a hosts plugin that names no file and
+# lists the record OCP itself writes. Only ever when the block is a duplicate,
+# so a Corefile CoreDNS is happy with is never touched — and never the last
+# hosts plugin standing, which is the distribution's own.
+#
+sub _corefile_drop_added_hosts {
+    my ($corefile, $hostname) = @_;
+
+    my @lines = split /\n/, $corefile, -1;
+
+    my @depth;
+    my $level = 0;
+    for my $i (0 .. $#lines) {
+        $depth[$i] = $level;
+        my $opens  = () = $lines[$i] =~ /\{/g;
+        my $closes = () = $lines[$i] =~ /\}/g;
+        $level += $opens - $closes;
+    }
+
+    my ($from, $to) = _corefile_root_block(\@lines, \@depth);
+    return $corefile unless defined $from;
+
+    my @hosts = grep { $depth[$_] == 1 && $lines[$_] =~ /^\s*hosts\b/ } ($from + 1 .. $to);
+    return $corefile if @hosts < 2;
+
+    my $left = scalar @hosts;
+    for my $i (reverse @hosts) {
+        last if $left < 2;
+        next unless $lines[$i] =~ /^\s*hosts\s*\{\s*$/;
+
+        my $end = $i;
+        $end++ while $end < $to && $depth[$end + 1] > $depth[$i];
+        next unless grep { /\b\Q$hostname\E\b/ } @lines[$i + 1 .. $end];
+
+        splice @lines, $i, $end - $i + 1;
+        $left--;
+    }
+
+    return join "\n", @lines;
+}
+
+# First server block serving the root zone (".", ".:53", "dns://.:53"),
+# as ($header_line, $closing_brace_line).
+sub _corefile_root_block {
+    my ($lines, $depth) = @_;
+
+    my $from;
+    for my $i (0 .. $#$lines) {
+        if (!defined $from) {
+            next unless $depth->[$i] == 0 && $lines->[$i] =~ /^(.*?)\{\s*$/;
+            my $zones = $1;
+            next unless grep { m{^(?:[a-z]+://)?\.(?::\d+)?$} } split ' ', $zones;
+            $from = $i;
+            next;
+        }
+        return ($from, $i) if $depth->[$i] == 1 && $lines->[$i] =~ /^\s*\}\s*$/;
+    }
+
+    return;
 }
 
 #
@@ -1134,10 +1421,16 @@ sub _setup_nfd {
     my $nfd_running = $ns_exists &&
         $self->_resource_exists($api, 'Deployment', 'nfd-master', namespace => 'node-feature-discovery');
 
+    my $recorded = exists $deployed->{nfd};
+
     if (($deployed->{nfd} // '') eq $hash && $nfd_running) {
         print "      NFD already deployed (up to date)\n";
-        return;
+        return 'unchanged';
     }
+
+    my $outcome = !$recorded    ? 'deployed'
+                : !$nfd_running ? 'restored'
+                :                 'updated';
 
     # Apply CRDs
     print "      Applying NFD CRDs...\n";
@@ -1181,6 +1474,8 @@ sub _setup_nfd {
     }
 
     $self->_save_deployed_hash($config, 'nfd', $hash);
+
+    return $outcome;
 }
 
 sub _ensure_nfd_image {
@@ -1485,6 +1780,15 @@ sub _generate_nfd_manifest {
 sub _setup_gpu_operator {
     my ($self, $config) = @_;
 
+    # `gpu.enabled: false` is one switch for the whole GPU story: Rex skips the
+    # host driver, and nothing gets deployed in-cluster either. Deploying the
+    # operator anyway would put the stack back on a node the spec asked to keep
+    # GPU-free.
+    unless ($config->gpu_enabled) {
+        print "  [ok] GPU Operator skipped (gpu.enabled: false)\n";
+        return;
+    }
+
     my $api = $self->_k8s_api;
 
     # Check if any node has NVIDIA GPU via NFD labels.
@@ -1577,15 +1881,64 @@ sub _generate_gpu_operator_manifest {
     my $operator_image = "nvcr.io/nvidia/gpu-operator:$gpu_version";
     my $distribution = $config->distribution || 'rke2';
 
-    # Containerd socket path differs between RKE2 and K3s
-    my $containerd_socket = $distribution eq 'k3s'
-        ? '/run/k3s/containerd/containerd.sock'
-        : '/var/lib/rancher/rke2/agent/containerd/containerd.sock';
-    my $containerd_config = $distribution eq 'k3s'
-        ? '/var/lib/rancher/k3s/agent/etc/containerd/config.toml'
-        : '/var/lib/rancher/rke2/agent/etc/containerd/config.toml';
+    # Where the operator finds containerd. Both values are paths on the *node*:
+    # the operator mounts the directory of each into the toolkit DaemonSet, as
+    # /runtime/sock-dir and /runtime/config-dir. A directory that merely exists
+    # is therefore not good enough — what has to be in it is the socket.
+    #
+    # The socket does NOT differ between the distributions. RKE2 runs k3s' agent
+    # code and inherits its containerd invocation along with it; measured on an
+    # RKE2 node (v1.36.3+rke2r1, aarch64), the process is:
+    #
+    #   containerd -c /var/lib/rancher/rke2/agent/etc/containerd/config.toml
+    #              -a /run/k3s/containerd/containerd.sock
+    #              --state /run/k3s/containerd
+    #              --root  /var/lib/rancher/rke2/agent/containerd
+    #
+    # The value here used to be .../rke2/agent/containerd/containerd.sock for
+    # RKE2, which is --root with a socket name pinned on: the directory exists,
+    # so the hostPath mounted without complaint and the DaemonSet only fell over
+    # much later, when it tried to SIGHUP containerd through a socket that had
+    # never been there ("unable to dial: connect: no such file or directory",
+    # CrashLoopBackOff). Same reason the RKE2 GPU docs name /run/k3s/... too.
+    #
+    # /run, not /var/run: /run is the path containerd binds and the one in the
+    # command line above. /var/run is a compatibility symlink onto it, so it
+    # resolves to the same socket — but only as long as the symlink exists, and
+    # it buys nothing.
+    my $containerd_socket = '/run/k3s/containerd/containerd.sock';
+
+    # The config path DOES differ, because each distribution keeps its agent
+    # state under its own name. Only that name varies, so vary only the name:
+    # two full paths side by side is what let the socket drift in the first
+    # place. Unknown values fall back to RKE2 rather than interpolating into
+    # the path — kubernetes.dist is not validated anywhere.
+    my $rancher_dir = $distribution eq 'k3s' ? 'k3s' : 'rke2';
+    my $containerd_config = "/var/lib/rancher/$rancher_dir/agent/etc/containerd/config.toml";
+
+    # CONTAINERD_SET_AS_DEFAULT / CONTAINERD_RUNTIME_CLASS are the archived
+    # 22.9 recipe and measured inert at the pinned operator (see karr #30): the
+    # operator derives NVIDIA_RUNTIME_SET_AS_DEFAULT from cdi.enabled and hands
+    # the toolkit that instead, so the node keeps runc as its default runtime
+    # no matter what stands here. Left in place deliberately — removing them is
+    # #30's job, not a bug fix's.
     my $containerd_set_as_default = '1';
     my $containerd_runtime_class = 'nvidia';
+
+    # Who installs the driver, and does the toolkit need installing at all?
+    #
+    # driver: the two halves must never both be on — a driver container on top
+    # of a host driver is two drivers for one card. 'host' is the default and
+    # what Rex does; 'operator' flips both sides at once (OCP::Rex stops the
+    # Rex-side install with the same config value).
+    #
+    # toolkit: on by default, because a plain host has no NVIDIA runtime. A
+    # vendor image does: on a DGX, /usr/bin/nvidia-container-runtime and
+    # nvidia-ctk are there before OCP is, and NVIDIA's guidance for those hosts
+    # is toolkit.enabled=false next to driver.enabled=false, so the toolkit
+    # DaemonSet does not rewrite a containerd configuration that already works.
+    my $driver_by_operator = $config->gpu_driver eq 'operator';
+    my $toolkit_enabled    = $config->gpu_toolkit;
 
     my @resources = (
         # Namespace
@@ -1745,7 +2098,7 @@ sub _generate_gpu_operator_manifest {
         },
 
         # ClusterPolicy CR (GPU Operator configuration)
-        # driver.enabled: false — Rex installs host-level NVIDIA drivers
+        # driver.enabled follows gpu.driver — see above
         # nfd.enabled: false — we deploy NFD ourselves
         # gfd.enabled: false — NFD handles GPU feature discovery
         {
@@ -1756,11 +2109,17 @@ sub _generate_gpu_operator_manifest {
                 operator => {
                     defaultRuntime => 'containerd',
                 },
-                driver => {
-                    enabled => JSON::PP::false,  # Rex installs drivers on the host
-                },
+                driver => $driver_by_operator
+                    ? {
+                        enabled         => JSON::PP::true,
+                        repository      => 'nvcr.io/nvidia',
+                        image           => 'driver',
+                        version         => OCP::Versions->get_component_version('nvidia_driver'),
+                        imagePullPolicy => 'IfNotPresent',
+                    }
+                    : { enabled => JSON::PP::false },
                 toolkit => {
-                    enabled         => JSON::PP::true,
+                    enabled         => $toolkit_enabled ? JSON::PP::true : JSON::PP::false,
                     repository      => 'nvcr.io/nvidia/k8s',
                     image           => 'container-toolkit',
                     version         => OCP::Versions->get_component_version('nvidia_toolkit'),
@@ -1802,11 +2161,18 @@ sub _generate_gpu_operator_manifest {
                 migManager => {
                     enabled => JSON::PP::false,
                 },
+                # The standalone gpu-operator-validator image stops at v25.3.4:
+                # from v25.10 on the operator image carries the validator
+                # itself (/usr/bin/nvidia-validator), which is why upstream's
+                # values.yaml points validator at nvcr.io/nvidia/gpu-operator
+                # with the chart's own appVersion. Anything else 404s and every
+                # GPU DaemonSet stays in Init:ImagePullBackOff — its init
+                # container is the validator.
                 validator => {
                     enabled         => JSON::PP::true,
-                    repository      => 'nvcr.io/nvidia/cloud-native',
-                    image           => 'gpu-operator-validator',
-                    version         => OCP::Versions->get_component_version('nvidia_validator'),
+                    repository      => 'nvcr.io/nvidia',
+                    image           => 'gpu-operator',
+                    version         => $gpu_version,
                     imagePullPolicy => 'IfNotPresent',
                 },
                 nodeStatusExporter => {
@@ -1825,31 +2191,23 @@ sub _generate_gpu_operator_manifest {
 
 sub _find_share_dir {
     my ($self) = @_;
-
-    my @locations = (
-        '/opt/ocp/src/share',                            # Docker
-        path($FindBin::Bin)->parent->child('share'),     # Dev
-    );
-
-    eval {
-
-        push @locations, path(File::ShareDir::dist_dir('OCP'));
-    };
-
-    for my $dir (@locations) {
-        return path($dir) if -d $dir;
-    }
-
-    die "OCP share directory not found. Tried:\n" . join("\n", map { "  - $_" } @locations) . "\n";
+    return OCP::Share->dir;
 }
 
 #
 # Deploy hash tracking (.ocp/deployed.yaml)
 #
+# The hashes say what OCP last rolled out, not what the cluster has. They are
+# an optimisation over re-applying everything (ADR 0008) and never evidence on
+# their own: every component that consults them also asks the cluster whether
+# the thing is actually there before it claims to be up to date. A record
+# without that question survived `ocp destroy` and told a freshly built
+# cluster its registry was already deployed.
+#
 
 sub _deployed_hashes_path {
     my ($self, $config) = @_;
-    return $config->project_dir->child('.ocp', 'deployed.yaml');
+    return path($config->deployed_file);
 }
 
 sub _load_deployed_hashes {
@@ -1868,6 +2226,27 @@ sub _save_deployed_hash {
     $path->parent->mkpath unless -d $path->parent;
 
     $self->ocp->dump_file($path->stringify, $hashes);
+}
+
+# One vocabulary for what a hash-gated setup step did. The step itself is the
+# only place that knows — it holds both the record and the answer from the
+# cluster — so reconcile reports its verdict instead of forming a second one
+# from the file. Returns whether anything changed, which is what the reconcile
+# summary counts.
+sub _report_component {
+    my ($self, $label, $outcome) = @_;
+    $outcome //= 'unchanged';
+
+    my %line = (
+        unchanged => "$label up to date",
+        deployed  => "$label deployed (was missing)",
+        restored  => "$label redeployed (was gone from the cluster)",
+        updated   => "$label updated (manifest changed)",
+    );
+
+    print "  [ok] " . ($line{$outcome} // "$label $outcome") . "\n";
+
+    return $outcome eq 'unchanged' ? 0 : 1;
 }
 
 sub _k8s_api {
@@ -2189,9 +2568,34 @@ sub _ensure_provider_cr {
     print "  [ok] ensured OCPNodeProvider/$name\n";
 }
 
+# Address of a Kubernetes Node object: ExternalIP wins, InternalIP is the
+# fallback. Returns undef when the Node is not (yet) registered.
+sub _k8s_node_ip {
+    my ($self, $api, $name) = @_;
+
+    my $node = eval { $api->get('Node', $name) } or return undef;
+    my $hash = ref($node) eq 'HASH' ? $node : $api->k8s->object_to_struct($node);
+
+    for my $want (qw(ExternalIP InternalIP)) {
+        for my $addr (@{ $hash->{status}{addresses} // [] }) {
+            return $addr->{address} if $addr->{type} eq $want && $addr->{address};
+        }
+    }
+    return undef;
+}
+
 # Write an observational OCPNode CR for the just-bootstrapped control
 # plane with phase=Ready. CP reconcile is not in scope; this CR makes
 # `ocp node ls` show CP + workers uniformly.
+#
+# Ownership: robocop only ever reconciles workers, and on a CLI-only cluster it
+# is not running at all — so nobody but `ocp apply` can report the state of the
+# control plane it just bootstrapped. Hence status is written here, stamped
+# reconciler=cli, and stays observational: no reconcile loop reads it back.
+#
+# Spec and status are two writes on purpose. The CRD enables the status
+# subresource, so the API server drops status from the ensure (see
+# OCP::K8s::patch_status) — it has to go to /status separately.
 sub _ensure_cp_ocpnode {
     my ($self, $api, $cp_info) = @_;
     my $ns   = 'ocp-system';
@@ -2206,14 +2610,33 @@ sub _ensure_cp_ocpnode {
             role        => 'control-plane',
             providerRef => "$type-default",
         },
-        status => {
-            phase              => 'Ready',
-            publicIP           => $cp_info->{host},
-            kubernetesNodeName => $name,
-            reconciler         => 'cli',
-        },
     });
-    print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
+
+    # Prefer the address the Node object reports, so `ocp node ls` and
+    # `ocp status` agree. cp_info->{host} is whatever the user configured and
+    # is frequently a DNS name rather than an IP.
+    my $ip = $self->_k8s_node_ip($api, $name) // $cp_info->{host};
+
+    my $ok = eval {
+        OCP::K8s->patch_status($api,
+            kind      => 'OCPNode',
+            name      => $name,
+            namespace => $ns,
+            status    => {
+                phase              => 'Ready',
+                ($ip ? (publicIP => $ip) : ()),
+                kubernetesNodeName => $name,
+                reconciler         => 'cli',
+            },
+        );
+        1;
+    };
+
+    if ($ok) {
+        print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
+    } else {
+        print "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: $@";
+    }
 }
 
 # For each k8s Node not yet tracked by an OCPNode CR, synthesize an
@@ -2279,13 +2702,25 @@ sub _migrate_legacy_nodes {
                 role        => $is_cp ? 'control-plane' : 'worker',
                 providerRef => 'legacy',
             },
-            status => {
-                phase              => 'Ready',
-                kubernetesNodeName => $name,
-                ($public_ip ? (publicIP => $public_ip) : ()),
-            },
         };
         $api->ensure($cr);
+
+        # Separate write: the ensure above cannot carry status past the
+        # status subresource (see OCP::K8s::patch_status).
+        eval {
+            OCP::K8s->patch_status($api,
+                kind      => 'OCPNode',
+                name      => $name,
+                namespace => 'ocp-system',
+                status    => {
+                    phase              => 'Ready',
+                    kubernetesNodeName => $name,
+                    ($public_ip ? (publicIP => $public_ip) : ()),
+                },
+            );
+            1;
+        } or print "  [WARN] status for migrated OCPNode/$name stayed unwritten: $@";
+
         printf "  [migrated] %s (%s, %s)\n", $name,
                $cr->{spec}{role}, $public_ip // 'no-ip';
     }
@@ -2511,10 +2946,15 @@ sub _cli_reconcile_workers {
             next;
         }
 
+        # from_cr reads its argument as a plain hash ($cr->{spec}{hetzner}...).
+        # get() returns a typed IO::K8s object, which only answers that because
+        # IO::K8s objects happen to be blessed hashes -- convert it, the way
+        # the OCPNode above and OCP::Robocop::Controller already do.
         my $provider = eval {
+            my $prov_cr = $api->get('OCPNodeProvider',
+                $hash->{spec}{providerRef}, namespace => $ns);
             OCP::Provider->from_cr(
-                $api->get('OCPNodeProvider',
-                    $hash->{spec}{providerRef}, namespace => $ns),
+                ref($prov_cr) eq 'HASH' ? $prov_cr : $api->k8s->object_to_struct($prov_cr),
                 k8s => $api,
             );
         };
@@ -2560,6 +3000,179 @@ sub _print_worker_status {
 }
 
 #
+# Post-deploy cluster health gate
+#
+# `ocp apply` printed DEPLOYED SUCCESSFULLY and exited 0 whenever the deploy
+# steps had run to the end. On cortex it did exactly that while CoreDNS sat in
+# CrashLoopBackOff — cluster DNS entirely dead — and five gpu-operator pods
+# hung in ImagePullBackOff. The banner was a statement about the script, not
+# about the cluster. xt/smoke.sh already checked this from the outside; the
+# check belongs in apply.
+#
+# Two properties decide whether such a gate is worth anything.
+#
+# It must not be flaky. Straight after a deploy pods are legitimately still
+# coming up: ContainerCreating, PodInitializing, or a readiness probe that has
+# not passed yet are all normal. So apply first waits for the cluster to settle
+# — until nothing is in a starting state, or the timeout — and only judges what
+# is still broken on the final scan, and only on reasons that do not heal by
+# waiting. CrashLoopBackOff additionally requires the kubelet to have actually
+# looped; one crash during startup is not a verdict.
+#
+# And it must not cry wolf. A gate that fails the whole apply because an opt-in
+# add-on could not pull an image teaches people to ignore the exit code, which
+# costs more than the check buys — the gpu-operator failure above was an arm64
+# image availability problem on a working cluster. Hence the severity split
+# below.
+#
+
+# Waiting reasons that do not resolve themselves by waiting longer.
+my %DURABLE_WAIT = map { $_ => 1 } qw(
+    CrashLoopBackOff
+    ImagePullBackOff
+    ErrImagePull
+    InvalidImageName
+    CreateContainerConfigError
+    CreateContainerError
+    RunContainerError
+);
+
+# Namespaces whose health IS the cluster: CNI, DNS, core controllers. A durable
+# fault in one of these means the deploy did not produce a working cluster, so
+# it is fatal. Everything else OCP installs is either opt-in (gpu-operator,
+# node-feature-discovery) or already has its own readiness wait earlier in
+# apply, so it warns and leaves the exit code alone.
+my %CRITICAL_NS = map { $_ => 1 } qw(kube-system);
+
+my $CRASHLOOP_MIN_RESTARTS = 2;
+
+# healthy | starting | failing (+reason)
+sub _classify_pod {
+    my ($self, $pod) = @_;
+
+    my $phase = $pod->{status}{phase} // '';
+    return ('healthy') if $phase eq 'Succeeded';
+
+    # Init containers carry their own waiting reasons — that is where
+    # "Init:ImagePullBackOff" lives, which is how all five gpu-operator pods
+    # failed. Scanning only containerStatuses would have missed every one.
+    my @waiting_scan = (
+        @{ $pod->{status}{initContainerStatuses} // [] },
+        @{ $pod->{status}{containerStatuses}     // [] },
+    );
+
+    my %reasons;
+    for my $cs (@waiting_scan) {
+        my $reason = $cs->{state}{waiting}{reason} // '';
+        next unless $reason && $DURABLE_WAIT{$reason};
+        next if $reason eq 'CrashLoopBackOff'
+            && ($cs->{restartCount} // 0) < $CRASHLOOP_MIN_RESTARTS;
+        $reasons{$reason} = 1;
+    }
+    return ('failing', join(', ', sort keys %reasons)) if %reasons;
+    return ('failing', 'Failed') if $phase eq 'Failed';
+
+    # Readiness is judged on the regular containers only: a completed init
+    # container's `ready` flag is not a reliable signal across versions.
+    my @regular = @{ $pod->{status}{containerStatuses} // [] };
+    return ('starting') unless $phase eq 'Running' && @regular;
+    for my $cs (@regular) {
+        return ('starting') unless $cs->{ready};
+    }
+    return ('healthy');
+}
+
+sub _scan_pods {
+    my ($self, $api) = @_;
+
+    my $list = $api->list('Pod');
+    my @pods = map { ref($_) eq 'HASH' ? $_ : $api->k8s->object_to_struct($_) }
+               @{ ($list && $list->items) || [] };
+
+    my %out = (failing => [], starting => []);
+    for my $pod (@pods) {
+        my ($state, $reason) = $self->_classify_pod($pod);
+        next if $state eq 'healthy';
+        push @{ $out{$state} }, {
+            namespace => $pod->{metadata}{namespace} // '',
+            name      => $pod->{metadata}{name}      // '',
+            reason    => $reason                     // '',
+        };
+    }
+    return \%out;
+}
+
+sub _check_cluster_health {
+    my ($self, $api, %opts) = @_;
+    my $timeout  = $opts{timeout}  // 120;
+    my $interval = $opts{interval} // 5;
+
+    my $deadline = time + $timeout;
+    my $scan;
+    while (1) {
+        $scan = $self->_scan_pods($api);
+        last unless @{ $scan->{starting} };
+        last if time >= $deadline;
+        sleep $interval;
+    }
+
+    my (@critical, @warnings);
+    for my $pod (@{ $scan->{failing} }) {
+        push @{ $CRITICAL_NS{ $pod->{namespace} } ? \@critical : \@warnings }, $pod;
+    }
+
+    return {
+        critical => \@critical,
+        warnings => \@warnings,
+        starting => $scan->{starting},
+    };
+}
+
+sub _print_health {
+    my ($self, $health) = @_;
+
+    for my $p (@{ $health->{critical} }) {
+        printf "  [!!] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
+    }
+    for my $p (@{ $health->{warnings} }) {
+        printf "  [WARN] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
+    }
+    for my $p (@{ $health->{starting} }) {
+        printf "  [..] %s/%s — still starting\n", $p->{namespace}, $p->{name};
+    }
+    print "  [ok] all pods healthy\n"
+        unless @{ $health->{critical} }
+            || @{ $health->{warnings} }
+            || @{ $health->{starting} };
+    return;
+}
+
+# Only a critical (core-namespace) finding is fatal. Warnings are loud but
+# leave the exit code alone — see the severity split above.
+sub _health_is_fatal {
+    my ($self, $health) = @_;
+    return scalar @{ $health->{critical} };
+}
+
+sub _health_banner_text {
+    my ($self, $health) = @_;
+    return 'CONTROL PLANE DEPLOYED — CLUSTER IS NOT HEALTHY'
+        if $self->_health_is_fatal($health);
+    return 'CONTROL PLANE DEPLOYED — WITH WARNINGS'
+        if @{ $health->{warnings} };
+    return 'CONTROL PLANE DEPLOYED SUCCESSFULLY!';
+}
+
+sub _banner {
+    my ($self, $text) = @_;
+    my $width = 63;
+    print "╔" . ("═" x $width) . "╗\n";
+    printf "║  %-*s║\n", $width - 2, $text;
+    print "╚" . ("═" x $width) . "╝\n\n";
+    return;
+}
+
+#
 # Reconciliation for existing clusters
 #
 
@@ -2578,6 +3191,10 @@ sub _reconcile_components {
 
     # Initialize K8s API for reconciliation
     $self->_k8s_api($kubeconfig);
+
+    my $cp_id   = $self->_cp_identity($config);
+    my $cp_name = $cp_id->{name};
+    my $cp_ip   = $config->cluster_status->{public_ip} // $cp_id->{host};
 
     my $updated = 0;
     my $checked = 0;
@@ -2624,28 +3241,42 @@ sub _reconcile_components {
         $checked++;
         print "  [..] Checking registry...\n";
         eval {
-            my $deployed = $self->_load_deployed_hashes($config);
-            my $manifest = $self->_generate_registry_manifest($config);
-        
-            my $current_hash = Digest::MD5::md5_hex($manifest);
-            my $was_missing = !exists $deployed->{registry};
-            my $was_different = ($deployed->{registry} // '') ne $current_hash;
-
-            $self->_setup_registry($config);
-
-            if ($was_missing) {
-                print "  [ok] Registry deployed (was missing)\n";
-                $updated++;
-            } elsif ($was_different) {
-                print "  [ok] Registry updated (manifest changed)\n";
-                $updated++;
-            } else {
-                print "  [ok] Registry up to date\n";
-            }
+            # What happened is decided where the deploy happens. Recomputing
+            # the hash out here made this the second place that judged the
+            # same fact, and it judged it from the local file only: it printed
+            # "up to date" for a registry _setup_registry had just had to put
+            # back on the cluster.
+            $updated += $self->_report_component('Registry', $self->_setup_registry($config));
         };
         if ($@) {
             print "  [WARN] Registry setup failed: $@\n";
         }
+    }
+
+    # registry.local in CoreDNS.
+    #
+    # This is the step whose absence made "self-healing on the next ocp apply"
+    # untrue: k3s' addon manager restores its own default Corefile whenever it
+    # decides the ConfigMap drifted, which silently takes the registry.local
+    # record with it. The record is spec, the Corefile is cluster state, and
+    # nothing else puts it back — so a cluster whose DNS entry k3s removed
+    # stayed broken no matter how often apply ran.
+    #
+    # Cheap enough for the frequently-run path: one GET, and an apply only when
+    # the Corefile actually differs. _corefile_with_host is pure and repairs an
+    # already-broken file, so re-running it is free.
+    if ($cp_ip) {
+        $checked++;
+        print "  [..] Checking registry.local DNS...\n";
+        eval {
+            my $patched = $self->_configure_registry_dns($cp_ip);
+            if ($patched) {
+                $updated++;
+            } else {
+                print "  [ok] registry.local DNS up to date\n";
+            }
+            1;
+        } or print "  [WARN] registry.local DNS setup failed: $@";
     }
 
     # NFD (Node Feature Discovery) — always deployed
@@ -2653,27 +3284,7 @@ sub _reconcile_components {
         $checked++;
         print "  [..] Checking NFD...\n";
         eval {
-            my $deployed = $self->_load_deployed_hashes($config);
-
-            my $share_dir = $self->_find_share_dir;
-            my $crd_file = $share_dir->child('nfd', 'crds', 'nfd-api-crds.yaml');
-            my $manifest = $self->_generate_nfd_manifest;
-        
-            my $current_hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
-            my $was_missing = !exists $deployed->{nfd};
-            my $was_different = ($deployed->{nfd} // '') ne $current_hash;
-
-            $self->_setup_nfd($config);
-
-            if ($was_missing) {
-                print "  [ok] NFD deployed (was missing)\n";
-                $updated++;
-            } elsif ($was_different) {
-                print "  [ok] NFD updated (manifest changed)\n";
-                $updated++;
-            } else {
-                print "  [ok] NFD up to date\n";
-            }
+            $updated += $self->_report_component('NFD', $self->_setup_nfd($config));
         };
         if ($@) {
             print "  [WARN] NFD setup failed: $@\n";
@@ -2739,6 +3350,50 @@ sub _reconcile_components {
         }
     }
 
+    # Cilium Gateway — a plain server-side apply of one Gateway CR, and the
+    # entry point for all HTTP(S) traffic. Deleting it is exactly the kind of
+    # divergence from spec that reconcile exists to undo.
+    {
+        $checked++;
+        print "  [..] Checking Cilium Gateway...\n";
+        eval { $self->_setup_cilium_gateway($config); 1 }
+            ? print "  [ok] Cilium Gateway up to date\n"
+            : print "  [WARN] Cilium Gateway setup failed: $@";
+    }
+
+    # LB-IPAM stays behind the same opt-in as in the deploy path.
+    if ($config->lbipam && $cp_ip) {
+        $checked++;
+        print "  [..] Checking LB-IPAM (opt-in)...\n";
+        eval { $self->_setup_lb_ipam($cp_ip); 1 }
+            ? print "  [ok] LB-IPAM up to date\n"
+            : print "  [WARN] LB-IPAM setup failed: $@";
+    }
+
+    # The CR layer: CRDs, provider CRs and the observational control-plane
+    # OCPNode. All idempotent ensures, a handful of API calls, no waiting.
+    #
+    # Without this, a cluster bootstrapped by an older OCP kept an OCPNode with
+    # no status forever — `ocp node ls` showed its control plane as Pending
+    # with no IP and no amount of `ocp apply` fixed it, because only the
+    # fresh-deploy path ever wrote the CR.
+    {
+        $checked++;
+        print "  [..] Checking node CRs...\n";
+        eval {
+            my $api = $self->_k8s_api;
+            $self->_ensure_crds($api);
+            $self->_ensure_providers($api, $config, $secrets);
+            $self->_migrate_legacy_nodes($api);
+            $self->_ensure_cp_ocpnode($api, {
+                name     => $cp_name,
+                provider => $cp_id->{provider},
+                host     => $cp_ip,
+            });
+            1;
+        } or print "  [WARN] node CR reconcile failed: $@";
+    }
+
     # Summary
     print "\n";
     if ($updated) {
@@ -2746,6 +3401,8 @@ sub _reconcile_components {
     } else {
         print "  All $checked component(s) up to date.\n";
     }
+
+    return { cp_name => $cp_name, cp_ip => $cp_ip };
 }
 
 # Run the step a drift entry asks for. Returns true when it ran, false when

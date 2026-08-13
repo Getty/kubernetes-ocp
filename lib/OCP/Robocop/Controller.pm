@@ -3,11 +3,10 @@ package OCP::Robocop::Controller;
 
 use Moo;
 use Carp qw(croak);
-use Path::Tiny qw(path);
 use Try::Tiny;
 
-use Kubernetes::REST;
 use OCP::K8s;
+use OCP::Kubernetes;
 use OCP::Node;
 use OCP::Provider;
 
@@ -69,22 +68,44 @@ has kube => (
     builder => '_build_kube',
 );
 
+# Both branches of this builder used to die.
+#
+#     Kubernetes::REST->new(kubeconfig => $yaml)  # and ->new() bare
+#
+# Kubernetes::REST 1.106 has no `kubeconfig` argument and no in-cluster
+# automatism at all: `server` and `credentials` are required, so either call
+# dies with "Missing required arguments: credentials, server" before a single
+# request is built. The comment claiming the client picks up in-cluster config
+# by itself described a feature it never had. `kube` is the first thing run()
+# touches (list_ocp_nodes), so the controller could not survive its own first
+# iteration.
+#
+# Client construction belongs to OCP::Kubernetes, which is how the CLI already
+# reaches a cluster: Kubernetes::REST::Kubeconfig->new(...)->api. The
+# controller adds only the CRD registration, without which OCPNode and
+# OCPNodeProvider are not addressable.
 sub _build_kube {
     my ($self) = @_;
 
-    my %opts;
-    if ($self->kubeconfig) {
-        if (-f $self->kubeconfig) {
-            $opts{kubeconfig} = path($self->kubeconfig)->slurp;
-        } else {
-            $opts{kubeconfig} = $self->kubeconfig;
-        }
-    }
-    # else: Kubernetes::REST uses in-cluster config automatically
-
-    my $api = Kubernetes::REST->new(%opts);
+    my $api = OCP::Kubernetes->new($self->_kube_source)->api;
     OCP::K8s->register($api);
     return $api;
+}
+
+# Where the credentials come from, as a plain decision with no I/O of its own.
+#
+# `kubeconfig` is the out-of-cluster testing hatch and takes either a file path
+# or the kubeconfig itself; unset means "we are the pod, use the service
+# account". The file test is guarded by the newline check because -f on a whole
+# kubeconfig document warns ("Unsuccessful stat on filename containing
+# newline") before answering false.
+sub _kube_source {
+    my ($self) = @_;
+
+    my $kc = $self->kubeconfig;
+    return (in_cluster => 1) unless defined $kc && $kc =~ /\S/;
+    return (kubeconfig_path => $kc) if $kc !~ /\n/ && -f $kc;
+    return (kubeconfig => $kc);
 }
 
 #

@@ -1,6 +1,171 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Take share/ from the tree the code came from, not from the image
+      - OCP::Rex and both share-dir lookups in the command modules searched
+        /opt/ocp/src/share first, so inside a container the image always won
+        — including over a working tree mounted next to it. The usual
+        `-v $REPO:/src -I/src/lib /src/bin/ocp` run therefore executed the
+        modules from the tree and the Rexfile from the last built image; an
+        arm64 bootstrap pulled the amd64 tarball because the fix for that was
+        in the tree only
+      - one resolver (OCP::Share), one order: the share directory next to the
+        running script, then the image path, then File::ShareDir. In the image
+        that is the same directory as before. OCP_SHARE_DIR overrides all of
+        it and fails loudly rather than falling through
+      - Rex now runs from a private copy of the Rexfile, because it writes its
+        lock file next to it and a read-only share/ (a :ro mount, a root-owned
+        install) killed the run before the first task
+      - xt/smoke.sh passes the working tree's share/ explicitly, which is what
+        its header comment always claimed it did
+    - Let `ocp destroy` take .ocp/deployed.yaml with it
+      - the file records the manifest hashes of the components last rolled
+        out; surviving a destroy, it made the next apply skip components on a
+        cluster built from scratch — "Registry already deployed (up to date)"
+        over an empty ocp-system, with CoreDNS pointed at a registry that did
+        not exist
+      - the registry setup now asks the cluster before claiming to be up to
+        date, as NFD, the GPU operator and cert-manager already did, and
+        reconcile reports what actually happened instead of deciding a second
+        time from the file
+    - Fix worker provisioning, which could never have worked against a real
+      cluster
+      - OCP::Node addressed the Kubernetes API with an api-version in the
+        first argument — `get('ocp.internal/v1', 'OCPNode', ...)`,
+        `delete('v1', 'Node', ...)` — a form Kubernetes::REST does not have:
+        argument 0 is the Kind and is resolved through expand_class(), so
+        those calls died rather than being merely misrouted
+      - `update()` was handed the CR as a plain hash, which dies on
+        `->metadata`; both lease writes went through it
+      - since _acquire_lease is the first thing _provision does, every worker
+        went straight to phase=Failed; both teardown deletes sit inside eval
+        blocks, so teardown reported success while leaving the Kubernetes Node
+        object and the OCPNode CR behind
+      - the reconcile dispatch sent phase=Installing (what _provision writes)
+        to _wait_ready, leaving the agent install reachable only from
+        phase=Provisioning, which nothing in OCP ever writes: the RKE2 agent
+        was never installed and the node waited for a registration that could
+        not happen
+      - _release_lease now re-reads before writing, so the resourceVersion
+        bumped by the intervening /status patch cannot 409 the release and
+        strand the lease until its TTL expired
+      - a read that fails for any reason other than 404 no longer counts as
+        "no CR here": the lease is not taken on the strength of a CR nobody
+        could read, while a blip during the poll loop stays survivable
+      - releasing the lease is best-effort, so a provisioned machine is not
+        marked Failed — which is terminal — because the release call failed;
+        the lease then simply stands until its TTL and the same holder takes
+        it again
+      - the CLI worker path converts the OCPNodeProvider CR before handing it
+        to OCP::Provider->from_cr, which reads it as a plain hash; it had been
+        passing the typed object and relying on IO::K8s objects happening to
+        be blessed hashes
+    - Give robocop a Kubernetes client it can actually build
+      - OCP::Robocop::Controller built its client with
+        `Kubernetes::REST->new(kubeconfig => ...)`, or with nothing at all on
+        the assumption that the client picks up in-cluster config by itself;
+        Kubernetes::REST has neither a `kubeconfig` argument nor an in-cluster
+        automatism, so both branches died with "Missing required arguments:
+        credentials, server" — and since `kube` is what the first line of the
+        reconcile loop touches, the controller could not survive its own first
+        iteration
+      - the client now comes from OCP::Kubernetes, which is how the CLI
+        already reaches a cluster, extended with an explicit `in_cluster` mode
+        for the pod service account; it is opt-in, so a caller that lost its
+        kubeconfig still fails with the message that says so instead of
+        quietly authenticating as something else
+      - a kubeconfig handed over as content is no longer fed to `-f`, which
+        warned about a filename containing newlines on its way to answering
+        false
+    - Drive the OCPNode tests through a real Kubernetes::REST
+      - t/16-node.t used a hand-written double that accepted every signature
+        and returned the same canned CR, which is why all of the above stayed
+        green; it now runs the shipped client over a mock transport, so a
+        wrong call dies in the test for the same reason it dies in production,
+        and t/43-k8s-call-contract.t pins the contract the double relies on
+    - Let a bare `ocp init` scaffold a project
+      - the provider defaulted to ssh while `--help` advertised hetzner, so
+        `ocp init` with no flags died on a missing --host instead of writing
+        an ocp.yaml — hetzner is now the default here too, matching what an
+        absent provider already means everywhere in OCP::Config
+      - init stays offline: it warns that a Hetzner token is still missing
+        rather than prompting, `ocp init --hetzner` remains the way to store
+        one, and `--provider ssh` without --host now also names the default
+    - Drop `ocp init --single`
+      - the option was declared and read nowhere; a fresh init already writes
+        one control plane and no workers, which is exactly what
+        OCP::Config::single_node derives, so there was nothing to switch
+    - Stop putting .kube/ in the generated .gitignore
+      - no code path writes a project-local kubeconfig any more —
+        `ocp kubeconfig -e` merges into $KUBECONFIG or ~/.kube/config
+      - .ocp/ is now the only entry OCP adds; the encrypted files
+        (keys.yaml, secrets.yaml, age.key.enc, kubeconfig.yaml) are meant to
+        be committed, and the tests now assert git would not swallow them
+    - Show Hetzner's ARM server types
+      - OCP::Hetzner::server_type_options filtered the catalogue to x86, so
+        the CAX line could never be offered; both architectures are listed
+        now, each label names its own, and `architecture` remains available
+        as a deliberate filter
+    - Stop taking cluster DNS down on k3s
+      - CoreDNS allows the hosts plugin once per server block; k3s already
+        runs it for /etc/coredns/NodeHosts, so the block `ocp apply` spliced
+        in for registry.local was a second one and CoreDNS crash-looped with
+        "plugin/hosts: this plugin can only be used once per Server Block"
+      - the record now joins the hosts plugin the distribution already has
+        and only gets a block of its own where there is none (RKE2), and a
+        control plane that moved updates the address instead of being skipped
+      - the ConfigMap is also looked up under the name RKE2 gives it
+        (rke2-coredns-rke2-coredns), where the whole step used to be a
+        silent no-op
+    - Pull the GPU validator from an image that exists
+      - the standalone gpu-operator-validator repository stops at v25.3.4,
+        so the pinned v26.3.3 404ed and every GPU DaemonSet sat in
+        Init:ImagePullBackOff — the validator is their init container
+      - since v25.10 the operator image ships the validator itself, which is
+        what the ClusterPolicy now names; the separate pin is gone, it can
+        only drift away from the operator version
+    - Write OCPNode status where Kubernetes actually keeps it
+      - the OCPNode CRD enables the status subresource, and the API server
+        silently drops the status of every write to the main endpoint —
+        answering 2xx, so nothing looked wrong
+      - `ocp apply` therefore stored control-plane CRs with no status at
+        all: `ocp node ls` showed a Ready control plane as Pending with an
+        empty IP while `ocp status` showed it Ready with its address
+      - the same applied to every worker phase transition, so a node's
+        phase never outlived the process that set it
+      - status now goes through /status, and apply no longer prints
+        "(control-plane, Ready)" when the write did not land
+      - the control plane's IP is read off the Node object instead of the
+        configured host, which is frequently a DNS name
+    - Make `ocp apply` reconcile an existing cluster, not just report on it
+      - applying to a cluster that already had a kubeconfig took a second
+        path that returned before the health gate, so it printed component
+        results and exited 0 without ever looking at the cluster
+      - both paths now end in one shared finisher: one health verdict, one
+        banner, one exit code
+      - that path also never ran the steps that repair state OCP does not
+        own. k3s' addon manager restores its own Corefile and drops the
+        registry.local record with it, and nothing put it back — a cluster
+        whose DNS entry k3s removed stayed broken however often apply ran
+      - it now reconciles registry.local DNS, the Cilium Gateway, LB-IPAM
+        (when enabled), the CRDs, the provider CRs and the control-plane
+        OCPNode, so clusters bootstrapped by an older OCP stop showing
+        their control plane as Pending
+      - provisioning stays out: creating servers and waiting on them is a
+        bootstrap step, and this is the path people run often
+    - Check the cluster before `ocp apply` claims success
+      - apply reported CONTROL PLANE DEPLOYED SUCCESSFULLY! and exited 0
+        while CoreDNS was in CrashLoopBackOff and five gpu-operator pods
+        hung in ImagePullBackOff — a statement about the deploy, not the
+        cluster
+      - apply now waits for pods to settle and then reports what is still
+        durably broken; pods that are merely starting are never a fault
+      - a fault in kube-system fails the deploy, because DNS or CNI down
+        means there is no working cluster; opt-in add-ons warn loudly and
+        leave the exit code alone
+    - Name the distribution being installed
+      - a `dist: k3s` cluster announced "Installing RKE2 server..." while
+        install_k3s_server was the task running
     - Record the OCP version at the end of `ocp apply`
       - `ocp update` refuses to run without status.ocpVersion and `ocp
         version` cannot name what is deployed without it, but the only

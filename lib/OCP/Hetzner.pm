@@ -31,22 +31,30 @@ sub location_options {
     ];
 }
 
+# Every non-deprecated server type, both architectures. Hetzner's ARM line
+# (CAX*) is a first-class target — OCP runs on aarch64 — so a picker that
+# defaults to x86 would silently hide half the catalogue. Pass
+# architecture => 'arm' | 'x86' to narrow it deliberately; the label names
+# the architecture either way, so equally-sized CAX and CPX sit side by side.
 sub server_type_options {
     my ($self, %filter) = @_;
-    my $arch = $filter{architecture} // 'x86';
+    my $arch = $filter{architecture};
 
     my @types = grep {
         !$_->deprecated
-        && $_->architecture eq $arch
+        && (!defined $arch || $_->architecture eq $arch)
     } @{$self->_server_types};
 
     return [
         map {{
-            label => sprintf('%s (%d CPU, %dGB, %dGB %s)',
-                $_->name, $_->cores, $_->memory, $_->disk, $_->cpu_type),
+            label => sprintf('%s (%s, %d CPU, %dGB, %dGB %s)',
+                $_->name, $_->architecture, $_->cores, $_->memory,
+                $_->disk, $_->cpu_type),
             value => $_->name,
         }}
-        sort { $a->cores <=> $b->cores || $a->memory <=> $b->memory }
+        sort { $a->cores <=> $b->cores
+            || $a->memory <=> $b->memory
+            || $a->name cmp $b->name }
         @types
     ];
 }

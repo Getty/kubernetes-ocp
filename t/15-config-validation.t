@@ -192,6 +192,48 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
     ok($c->gpu_enabled, 'gpu_enabled default true');
     is($c->gpu_driver, 'host', 'gpu_driver default host');
+    is($c->gpu_toolkit, 1, 'gpu_toolkit default on — a plain host has no NVIDIA runtime');
+}
+
+#
+# The switches travel into a Rex JSON payload and into a ClusterPolicy boolean,
+# and YAML::XS hands `false` back as a JSON::PP::Boolean. Neither destination
+# should have to know that, so the accessors normalise to 0/1.
+#
+
+{
+    my $f = path($tmpdir)->child('gpu-booleans.yaml');
+    path($f)->spew(<<'YAML');
+name: gpu-booleans
+control_planes:
+  - provider: local
+gpu:
+  enabled: false
+  toolkit: false
+YAML
+    my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
+    is($c->gpu_enabled, 0, 'a YAML false comes back as a plain 0, not a boolean object');
+    is($c->gpu_toolkit, 0, 'same for gpu.toolkit');
+}
+
+#
+# A typo used to fall back to 'host' in silence, which on a cluster configured
+# for the operator-managed driver means no driver at all: Rex skips the host
+# install for 'operator' and the ClusterPolicy would have kept the operator's
+# driver DaemonSet off.
+#
+
+{
+    my $f = path($tmpdir)->child('gpu-bad-driver.yaml');
+    $ocp->dump_file($f->stringify, {
+        name           => 'gpu-bad-driver',
+        control_planes => [{ provider => 'local' }],
+        gpu            => { driver => 'oprator' },
+    });
+    my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
+    my $err = do { local $@; eval { $c->gpu_driver }; $@ };
+    like($err, qr/gpu\.driver must be 'host' or 'operator'/,
+        'an unknown gpu.driver is rejected instead of silently meaning host');
 }
 
 #

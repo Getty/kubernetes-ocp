@@ -26,13 +26,22 @@ our $VERSIONS = {
             # Ingress and SSL (ingress is Cilium Gateway API, versioned with cilium)
             cert_manager => 'v1.21.1',
 
-            # GPU stack (versions kept in sync with gpu-operator's bundled values.yaml)
+            # GPU stack (versions kept in sync with gpu-operator's bundled
+            # values.yaml). No validator pin: the standalone
+            # gpu-operator-validator image was retired after v25.3.4, the
+            # operator image ships the validator since v25.10 and upstream
+            # tags it with the operator's own version.
             gpu_operator         => 'v26.3.3',
             nvidia_toolkit       => 'v1.19.1',
+            # Only used when gpu.driver is 'operator'. The default is 'host',
+            # where Rex installs the driver and the operator's driver DaemonSet
+            # stays off — but an enabled component without a pin is an
+            # ImagePullBackOff, because OCP's hand-rolled operator Deployment
+            # carries none of the *_IMAGE env the Helm chart sets.
+            nvidia_driver        => '580.126.20',
             nvidia_device_plugin => 'v0.19.3',
             dcgm_exporter        => '4.5.3-4.8.2-distroless',
             nvidia_dcgm          => '4.5.2-1-ubuntu22.04',
-            nvidia_validator     => 'v26.3.3',
             nfd                  => 'v0.18.3',
         },
         notes => 'Initial release with RKE2/K3s, Cilium CNI + Gateway API, cert-manager, GPU stack',

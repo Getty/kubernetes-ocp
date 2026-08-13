@@ -1,5 +1,23 @@
-# Build and publish OCP Docker image to Docker Hub
-# Forgejo-compatible workflow using native Docker commands
+# Build and publish the OCP Docker image, multi-arch (amd64 + arm64).
+#
+# Uses native docker commands rather than docker/build-push-action so the
+# workflow stays Forgejo-compatible; the only GitHub-specific pieces are the
+# runner labels and the GITHUB_TOKEN login.
+#
+# Strategy: split matrix, one NATIVE runner per architecture, then a manifest
+# merge. No QEMU. The main Dockerfile compiles Perl from source, which is the
+# worst possible workload to emulate -- see docs on ticket #10. GitHub's
+# ubuntu-24.04-arm runners are GA and free on public repositories, so the arm64
+# leg costs nothing and runs at native speed.
+#
+# Two registries are served from the same build:
+#   ghcr.io/getty/ocp  -- pulled by the cluster (manifests/, share/robocop/),
+#                         authenticates with the built-in GITHUB_TOKEN.
+#   raudssus/ocp       -- the CLI channel documented in README.md. Needs the
+#                         DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets; every
+#                         step touching it is skipped when they are absent, so
+#                         a missing secret degrades to "GHCR only" instead of
+#                         failing the whole run.
 name: Docker Publish
 
 on:
@@ -15,11 +33,38 @@ on:
       - master
 
 env:
+  GHCR_REPO: ghcr.io/getty/ocp
   DOCKERHUB_REPO: raudssus/ocp
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # One job per architecture, each on its own native runner.
+  #
+  # Each leg pushes a throwaway per-arch tag (tmp-<sha>-<arch>) to every
+  # registry it has credentials for. The merge job below turns those into the
+  # real multi-arch tags and they can then be ignored; they exist only because
+  # a manifest list has to reference something already in the registry.
+  # ---------------------------------------------------------------------------
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.runner }}
+
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
 
     steps:
       - name: Checkout
@@ -30,58 +75,146 @@ jobs:
           docker buildx create --use --name ocp-builder --driver docker-container
           docker buildx inspect --bootstrap
 
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         if: github.event_name != 'pull_request'
         run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Determine Docker tags
-        id: tags
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request' && env.DOCKERHUB_USERNAME != ''
         run: |
-          TAGS=""
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
+            | docker login -u "${{ env.DOCKERHUB_USERNAME }}" --password-stdin
 
-          # For tagged releases (v1.2.3)
-          if [[ "${{ github.ref }}" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
-            MAJOR="${BASH_REMATCH[1]}"
-            MINOR="${BASH_REMATCH[2]}"
-            TAGS="${DOCKERHUB_REPO}:${VERSION},${DOCKERHUB_REPO}:${MAJOR}.${MINOR},${DOCKERHUB_REPO}:${MAJOR},${DOCKERHUB_REPO}:latest"
-          # For main/master branch
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
-            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-            TAGS="${DOCKERHUB_REPO}:${BRANCH_NAME},${DOCKERHUB_REPO}:latest"
-          # For PRs
-          elif [[ "${{ github.ref }}" =~ ^refs/pull/([0-9]+)/merge$ ]]; then
-            PR_NUM="${BASH_REMATCH[1]}"
-            TAGS="${DOCKERHUB_REPO}:pr-${PR_NUM}"
-          # For other branches
+      - name: Build ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+
+          # Per-arch cache refs. A shared ref would have the two legs
+          # overwrite each other's cache on every run, leaving one
+          # architecture with a permanent cold build.
+          CACHE_REF="${GHCR_REPO}:buildcache-${{ matrix.arch }}"
+
+          ARGS=(
+            --platform "${{ matrix.platform }}"
+            --cache-from "type=registry,ref=${CACHE_REF}"
+          )
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # PRs build both architectures but publish nothing. cache-from
+            # above still applies; a cold or unreadable cache is only a
+            # warning, never a failure.
+            ARGS+=( -t "${GHCR_REPO}:pr-test-${{ matrix.arch }}" )
           else
-            BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-            TAGS="${DOCKERHUB_REPO}:${BRANCH_NAME}"
+            TMP_TAG="tmp-${GITHUB_SHA}-${{ matrix.arch }}"
+            ARGS+=(
+              --cache-to "type=registry,ref=${CACHE_REF},mode=max"
+              --push
+              -t "${GHCR_REPO}:${TMP_TAG}"
+            )
+            if [[ -n "${DOCKERHUB_USERNAME:-}" ]]; then
+              ARGS+=( -t "${DOCKERHUB_REPO}:${TMP_TAG}" )
+            fi
           fi
 
-          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
-          echo "Docker tags: ${TAGS}"
+          docker buildx build "${ARGS[@]}" .
 
-      - name: Build and push
+  # ---------------------------------------------------------------------------
+  # Combine the per-arch images into one multi-arch manifest list per registry.
+  # Skipped for pull requests, which never push anything to merge.
+  # ---------------------------------------------------------------------------
+  merge:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
+    steps:
+      - name: Set up Docker Buildx
+        run: docker buildx version
+
+      - name: Login to GHCR
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            # PR: build only, don't push
-            docker buildx build \
-              --platform linux/amd64 \
-              -t ${{ env.DOCKERHUB_REPO }}:pr-test \
-              .
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Login to Docker Hub
+        if: env.DOCKERHUB_USERNAME != ''
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" \
+            | docker login -u "${{ env.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Determine tag suffixes
+        id: tags
+        run: |
+          set -euo pipefail
+          SUFFIXES=""
+
+          # Tagged release (v1.2.3) -> 1.2.3, 1.2, 1, latest
+          if [[ "${{ github.ref }}" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            SUFFIXES="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]} ${BASH_REMATCH[1]}.${BASH_REMATCH[2]} ${BASH_REMATCH[1]} latest"
+          # main/master -> <branch>, latest
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.ref }}" == "refs/heads/master" ]]; then
+            SUFFIXES="${GITHUB_REF#refs/heads/} latest"
+          # Anything else (pre-release tags like v1.2.3-rc1, other branches).
+          # Strip the ref prefix and replace characters a docker tag may not
+          # contain, so a slashed branch name cannot produce an invalid tag.
           else
-            # Push to Docker Hub
-            IFS=',' read -ra TAG_ARRAY <<< "${{ steps.tags.outputs.tags }}"
-            TAG_ARGS=""
-            for tag in "${TAG_ARRAY[@]}"; do
-              TAG_ARGS="${TAG_ARGS} -t ${tag}"
+            REF="${GITHUB_REF#refs/heads/}"
+            REF="${REF#refs/tags/}"
+            SUFFIXES="$(printf '%s' "${REF}" | tr -c 'A-Za-z0-9_.-' '-')"
+          fi
+
+          echo "suffixes=${SUFFIXES}" >> $GITHUB_OUTPUT
+          echo "Tag suffixes: ${SUFFIXES}"
+
+      - name: Create multi-arch manifests
+        run: |
+          set -euo pipefail
+
+          TMP_TAG="tmp-${GITHUB_SHA}"
+
+          REPOS=( "${GHCR_REPO}" )
+          if [[ -n "${DOCKERHUB_USERNAME:-}" ]]; then
+            REPOS+=( "${DOCKERHUB_REPO}" )
+          fi
+
+          for repo in "${REPOS[@]}"; do
+            TAG_ARGS=()
+            FIRST_TAG=""
+            for suffix in ${{ steps.tags.outputs.suffixes }}; do
+              TAG_ARGS+=( -t "${repo}:${suffix}" )
+              # Plain if, not `[[ ]] && ...`: under `set -e` a false test as
+              # the last statement of the loop body aborts the step.
+              if [[ -z "${FIRST_TAG}" ]]; then
+                FIRST_TAG="${repo}:${suffix}"
+              fi
             done
 
-            docker buildx build \
-              --platform linux/amd64 \
-              --push \
-              ${TAG_ARGS} \
-              .
+            echo "==> ${repo}"
+            docker buildx imagetools create "${TAG_ARGS[@]}" \
+              "${repo}:${TMP_TAG}-amd64" \
+              "${repo}:${TMP_TAG}-arm64"
+
+            # Fail loudly if the merged list is not actually multi-arch, so a
+            # silently single-arch publish cannot reach a cluster.
+            INSPECT="$(docker buildx imagetools inspect "${FIRST_TAG}")"
+            echo "${INSPECT}"
+            for want in linux/amd64 linux/arm64; do
+              grep -q "${want}" <<<"${INSPECT}" \
+                || { echo "ERROR: ${FIRST_TAG} is missing ${want}"; exit 1; }
+            done
+          done
+
+      - name: Summary
+        run: |
+          echo "Published multi-arch (linux/amd64, linux/arm64):" >> $GITHUB_STEP_SUMMARY
+          echo "- ${GHCR_REPO}" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+            echo "- ${DOCKERHUB_REPO}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ${DOCKERHUB_REPO} SKIPPED (DOCKERHUB_USERNAME secret not set)" >> $GITHUB_STEP_SUMMARY
           fi
