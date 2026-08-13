@@ -1,0 +1,70 @@
+---
+class: standard
+completed: 2026-08-12T15:30:27Z
+created: 2026-08-12T14:07:42Z
+id: 15
+priority: high
+started: 2026-08-12T15:30:27Z
+status: done
+tags:
+- bug
+- dns
+- k3s
+- registry
+title: 'CoreDNS crasht auf k3s: zweites hosts-Plugin im selben Server Block'
+updated: 2026-08-13T00:15:02Z
+---
+
+Live gefunden auf cortex (k3s v1.36.3+k3s1, arm64). Cluster-DNS ist nach ocp apply TOT.
+
+CoreDNS-Log:
+  plugin/hosts: this plugin can only be used once per Server Block
+
+Ursache: k3s liefert ein Corefile, das bereits ein hosts-Plugin enthaelt (hosts /etc/coredns/NodeHosts { ttl 60; reload 15s; fallthrough }). Der OCP-Schritt "CoreDNS configured for registry.local -> IP" fuegt einen ZWEITEN hosts-Block ein. CoreDNS lehnt das ab und geht in CrashLoopBackOff.
+
+Resultierendes Corefile (kaputt):
+    errors
+    health
+      hosts {
+        10.230.30.155 registry.local
+        fallthrough
+    }
+    ready
+    ...
+    hosts /etc/coredns/NodeHosts {
+      ttl 60
+      reload 15s
+      fallthrough
+    }
+
+Fix-Richtung: den registry.local-Eintrag NICHT als zweites Plugin einfuegen, sondern in den bestehenden hosts-Block mergen — oder ueber den k3s-Weg (NodeHosts / coredns-custom ConfigMap) statt Corefile-Patch. Beachten: das Corefile importiert bereits /etc/coredns/custom/*.override und *.server, das ist der von k3s vorgesehene Erweiterungspunkt.
+
+Warum nie aufgefallen: der Smoke-Test lief gegen rke2; dessen Corefile bringt kein NodeHosts-hosts-Plugin mit. Auf k3s ist es reproduzierbar.
+
+Nebenbefund: ocp apply meldet DEPLOYED SUCCESSFULLY, obwohl coredns in CrashLoopBackOff ist. Der Apply prueft am Ende nicht auf CrashLoop — siehe eigenes Ticket.
+FIXED (ocp-infra-worker). Ursache verifiziert und lokal reproduziert mit exakt der CoreDNS-Version des Clusters (rancher/mirrored-coredns-coredns:1.14.6, Corefile 1:1 vom Cluster): 'plugin/hosts: this plugin can only be used once per Server Block'.
+
+Fix: _configure_registry_dns baut den Corefile nicht mehr per Blind-Insert, sondern ueber die reine Funktion _corefile_with_host(corefile, ip, hostname) in lib/OCP/Cmd/Apply.pm. Die haengt den Eintrag als Inline-Zeile IN den vorhandenen hosts-Block (k3s: hosts /etc/coredns/NodeHosts) und legt nur dann einen eigenen Block an, wenn es keinen gibt (rke2). Idempotent; eine geaenderte Control-Plane-IP wird in-place korrigiert statt uebersprungen.
+
+Warum nicht coredns-custom (*.override/*.server): das *.override wird IN den Server Block importiert, ein zweites hosts scheitert dort an genau derselben Regel; es bliebe template/rewrite mit Regex statt eines A-Records. Und der Extension Point existiert auf rke2 gar nicht (rke2-coredns Chart: extraConfig: {}), also waeren es zwei Mechanismen. NodeHosts scheidet aus: die ConfigMap-Key gehoert k3s-supervisor (managedFields), der schreibt sie neu.
+
+Nebenbefund, mitgefixt: die ConfigMap heisst auf rke2 rke2-coredns-rke2-coredns (Helm-Chart-Fullname), nicht coredns — der Schritt war auf rke2 also nie aktiv, sondern ein stiller No-op. Es wird jetzt unter beiden Namen gesucht.
+
+Verifikation: t/39-coredns-registry-host.t (k3s- und rke2-Fixture); beide generierten Corefiles von echtem CoreDNS 1.14.6 geparst (nur noch der erwartete Out-of-Cluster-Fehler des kubernetes-Plugins); lokal laufender CoreDNS mit dem gemergten Block antwortet registry.local -> 10.230.30.155, cortex (aus NodeHosts) weiterhin -> 10.230.30.155, example.com weiterhin via forward. Auf dem Cluster selbst NICHT verifiziert: das Patchen der ConfigMap wurde vom Sandbox-Classifier blockiert, CoreDNS steht dort weiter im CrashLoop bis zum Re-Deploy.
+Nachtrag: der Fix heilt auch bereits kaputte Cluster. Ein re-apply auf einem Cluster, der die alte Version gesehen hat (wie cortex jetzt), fand sonst seinen eigenen registry.local-Eintrag im kaputten Block, haette 'schon konfiguriert' angenommen und CoreDNS im CrashLoop gelassen. _corefile_drop_added_hosts entfernt den von OCP hinzugefuegten Block (hosts ohne File-Argument, enthaelt registry.local) — aber nur solange es mehr als einen hosts-Block gibt und nie den letzten. Gegen den echten kaputten Corefile von cortex geprueft: das Ergebnis ist byte-identisch mit dem, was ein nie kaputter Cluster bekommt. Fixture dafuer in t/39-coredns-registry-host.t.
+VERIFIZIERT auf cortex (k3s arm64, 2026-08-12). Ausgangslage: registry.local war aus dem Corefile verschwunden (k3s Addon-Manager hatte den Default wiederhergestellt), 0 Treffer im Corefile.
+
+Nach ocp apply:
+  hosts /etc/coredns/NodeHosts {
+    10.230.30.155 registry.local
+    ttl 60
+    reload 15s
+    fallthrough
+  }
+
+Der Eintrag steht INLINE im bestehenden hosts-Block — kein zweites hosts-Plugin. CoreDNS-Pod Running, 0 Restarts, kein "can only be used once per Server Block" mehr.
+
+Funktionstest aus einem laufenden Pod:
+  $ kubectl -n ocp-system exec deploy/ocp-registry -- getent hosts registry.local
+  10.230.30.155     registry.local  registry.local
+MIGRATIONSBELEG auf reuben.cihq (rke2, Bestandscluster von vor dem Fix): apply setzte erstmals den Eintrag und aus einem Pod loest registry.local auf 10.5.10.37 auf. Bestaetigt die These aus dem Fix: unter RKE2 hat der Schritt nie etwas getan, weil die ConfigMap rke2-coredns-rke2-coredns heisst und der alte Lookup am falschen Namen still fehlschlug.
