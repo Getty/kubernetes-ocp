@@ -16,7 +16,10 @@ requires 'File::ShareDir';
 requires 'Try::Tiny';
 requires 'Term::ANSIColor';
 requires 'Term::ReadKey';
-requires 'CryptX';
+# 0.088 fixed CVE-2026-41564 and 0.089 carried hardening fixes across the
+# Digest/Mac/AuthEnc/PK/PRNG surface; 0.091 fixes non-NUL-terminated PVs
+# (CryptX #125). The snapshot sat on 0.087, below all of them.
+requires 'CryptX', '0.091';
 requires 'Crypt::PBKDF2';
 
 # Robocop controller
