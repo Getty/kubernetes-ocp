@@ -1,0 +1,43 @@
+---
+class: standard
+completed: 2026-08-13T22:18:21Z
+created: 2026-08-12T19:28:39Z
+id: 40
+priority: medium
+started: 2026-08-13T22:18:21Z
+status: done
+tags:
+- registry
+- manifests
+title: ghcr.io fehlt in registries.yaml - Robocop-Image geht am Pull-Through-Cache
+  vorbei
+updated: 2026-08-13T22:18:21Z
+---
+
+Beim Registry-Fix (#10) aufgefallen, nicht mitgefixt weil share/Rexfile in
+dem Ticket ausserhalb der Lane lag.
+
+_generate_registries_yaml in share/Rexfile schreibt Mirrors fuer genau drei
+Hosts: docker.io auf den Pull-Through-Cache, registry.local und den
+konfigurierten registry_name auf die interne Registry. ghcr.io steht nicht
+drin.
+
+Nach #10 wird das Robocop-Image als ghcr.io/getty/ocp:latest publiziert, und
+share/robocop/deployment.yaml hat imagePullPolicy: Always. Jeder Node zieht
+also bei jedem Pod-Start direkt von GitHub, ohne Cache, ohne die Ersparnis die
+der Cache fuer docker.io bringt. Auf einem Cluster ohne Egress oder mit
+langsamer Anbindung ist das der Unterschied zwischen einem lokalen Layer-Hit
+und einem Internet-Roundtrip pro Node.
+
+Zwei Optionen:
+1. ghcr.io in die Mirror-Liste aufnehmen, analog zu docker.io. Der
+   Registry-Cache muesste dafuer mehrere Upstreams koennen - bitte pruefen, die
+   aktuelle Konfiguration in OCP::Cmd::Apply setzt registry-1.docker.io als
+   einzigen Upstream (ocp-cache).
+2. Das Cluster-Image auf docker.io/raudssus/ocp zeigen lassen, dann greift der
+   bestehende Cache ohne Aenderung. Setzt aber voraus, dass die Docker-Hub-
+   Secrets im Repo gesetzt sind - waren sie zum Zeitpunkt von #10 nicht.
+
+Zusammenhaengend: das Deployment hat keine imagePullSecrets. Das GHCR-Package
+muss deshalb public sein, sonst scheitert der Pull mit 401.
+Erledigt durch Registry-Konsolidierung (Maintainer-Entscheidung, 2026-08-14, siehe #10-Nachtrag): der Maintainer hat sich fuer Option 2 aus diesem Ticket entschieden - das Cluster-Image zeigt jetzt auf docker.io/raudssus/ocp statt ghcr.io/getty/ocp. ghcr.io wurde vollstaendig aus docker-publish.yml und allen Manifesten entfernt (manifests/robocop/deployment.yaml, share/robocop/deployment.yaml, beide overlays/dev/kustomization.yaml, manifests/robocop-deployment.yaml). Der bestehende Pull-Through-Cache (registry-1.docker.io in OCP::Cmd::Apply, ocp-cache) greift damit ohne jede Aenderung an share/Rexfile/registries.yaml. Kein Multi-Upstream-Support im Cache noetig, kein ghcr.io-Mirror-Eintrag noetig. Damit erledigt.
