@@ -2,7 +2,23 @@
 # Build: docker build -t ocp .
 # Use:   docker run -v $(pwd):/ocp ocp status
 
-FROM debian:trixie AS ocp-base
+# The base is the official Perl image rather than a Perl built from source in
+# this Dockerfile. Why that swap is safe: this perl is non-threaded and
+# 64-bit-all — the two settings that decide XS ABI compatibility — exactly like
+# the `Configure -des` build it replaces, and every XS module in the image is
+# compiled against it right here, so no binary crosses an ABI boundary. It
+# differs only in useshrplib (shared libperl, what every distro perl does) and
+# in being a newer maintenance release of the same 5.42.
+#
+# It is pinned to an exact patch version, which nails the artifact down as
+# precisely as the tarball's sha256 used to (ADR 0014), and the tag is
+# multi-arch (ADR 0020).
+#
+# It also closes a gap: `make snapshot` already resolves cpanfile.snapshot in
+# `perl:5.42` — same 5.42.3, same non-threaded shared-libperl build. The
+# source-built 5.42.0 was the odd perl out, so the snapshot described a world
+# the shipped image did not run in, which is exactly what ADR 0013 forbids.
+FROM perl:5.42.3-slim-trixie AS ocp-base
 ARG VERSION="develop"
 
 ENV DEBIAN_FRONTEND="noninteractive"
@@ -36,23 +52,19 @@ RUN ARCH="$(dpkg --print-architecture)" \
   && chmod +x kubectl \
   && mv kubectl /usr/local/bin/
 
-# Install Perl ================================================================
+# Perl toolchain ==============================================================
+# The base image already carries perl, cpanm, cpm and a working
+# Net::SSLeay/IO::Socket::SSL, so the bootstrap is down to the single module cpm
+# needs in order to read a cpanfile.snapshot at all.
+#
+# Nothing else goes into the system perl. What OCP actually runs is declared in
+# cpanfile and installed into the contained local-lib below, where the snapshot
+# describes it — LWP::Protocol::https included. That one used to be cpanm'd in
+# here, behind the snapshot's back and with the full test suite of every
+# dependency, which made it the slowest layer in the build.
 
-ENV PERL_VERSION="5.42.0"
-ENV PERL_SHA256="e093ef184d7f9a1b9797e2465296f55510adb6dab8842b0c3ed53329663096dc"
-
-RUN mkdir -p /usr/src/perl && cd /usr/src/perl \
-  && curl -sfSLO https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz \
-  && echo -n "${PERL_SHA256}  perl-${PERL_VERSION}.tar.gz" | sha256sum -cw - \
-  && echo "-j$(nproc)" >~/.proverc \
-  && tar --strip-components=1 -xzf perl-${PERL_VERSION}.tar.gz -C /usr/src/perl \
-  && rm perl-${PERL_VERSION}.tar.gz \
-  && ./Configure -des \
-  && make -j$(nproc) install
-
-RUN PERL_MM_USE_DEFAULT=1 cpan -i App::cpanminus App::cpm \
-  && cpanm --n Net::SSLeay && cpanm LWP::Protocol::https \
-  && cd ~ && rm -rf ~/.cpan /usr/src/perl /tmp/*
+RUN cpm install --global --no-test --show-build-log-on-failure Carton::Snapshot \
+  && rm -rf ~/.perl-cpm /tmp/*
 
 # Install ocp user and environment ============================================
 

@@ -5,10 +5,10 @@
 # runner labels and the GITHUB_TOKEN login.
 #
 # Strategy: split matrix, one NATIVE runner per architecture, then a manifest
-# merge. No QEMU. The main Dockerfile compiles Perl from source, which is the
-# worst possible workload to emulate -- see docs on ticket #10. GitHub's
-# ubuntu-24.04-arm runners are GA and free on public repositories, so the arm64
-# leg costs nothing and runs at native speed.
+# merge. No QEMU: the build compiles every XS module in cpanfile.snapshot from
+# source, which is a bad workload to emulate -- see docs on ticket #10.
+# GitHub's ubuntu-24.04-arm runners are GA and free on public repositories, so
+# the arm64 leg costs nothing and runs at native speed.
 #
 # Two registries are served from the same build:
 #   ghcr.io/getty/ocp  -- pulled by the cluster (manifests/, share/robocop/),

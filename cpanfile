@@ -6,6 +6,12 @@ requires 'YAML::XS';
 requires 'Path::Tiny';
 requires 'namespace::clean';
 requires 'WWW::Hetzner', '0.100';
+# WWW::Hetzner reaches api.hetzner.cloud through LWP::UserAgent, and LWP only
+# speaks https once this protocol handler is installed. It used to be cpanm'd
+# into the system perl by the Dockerfile, which made the one module standing
+# between OCP and every Hetzner API call the one module the snapshot did not
+# describe.
+requires 'LWP::Protocol::https';
 requires 'Crypt::Age', '0.001';
 requires 'File::SOPS', '0.002';
 requires 'Rex';
