@@ -1,0 +1,54 @@
+---
+class: standard
+completed: 2026-08-12T15:33:13Z
+created: 2026-08-12T14:08:19Z
+id: 16
+priority: medium
+started: 2026-08-12T14:44:00Z
+status: done
+tags:
+- bug
+- cli
+- status
+title: ocp node ls zeigt Pending + leere IP fuer einen Ready control-plane
+updated: 2026-08-13T00:14:56Z
+---
+
+Live auf cortex: ocp status sagt "cortex Ready control-plane v1.36.3+k3s1 10.230.30.155", ocp apply meldet "ensured OCPNode/cortex (control-plane, Ready)" — aber:
+
+  $ ocp node ls
+  NAME     ROLE          PHASE     PROVIDER      IP    AGE
+  cortex   control-plane Pending   ssh-default         49s
+
+PHASE=Pending und IP leer, obwohl der Node Ready ist und eine IP hat. Entweder schreibt Apply den OCPNode-Status nie in die CR, oder node ls liest das falsche Feld.
+
+Der Smoke-Test faengt das nicht: xt/smoke.sh prueft nur, dass die Zeile "smoke-$DIST|control-plane" matcht, nicht die Phase. Regression-Test sollte die Phase pruefen.
+Ursache verifiziert an der echten CR auf cortex: die gespeicherte OCPNode hat NUR spec, gar kein status. node ls liest korrekt (status.phase // Pending, status.publicIP) und sagt die Wahrheit ueber eine kaputte CR.
+
+Grund: die CRD hat subresources.status, und der API-Server verwirft status bei jedem Write auf den Haupt-Endpoint — antwortet aber 2xx. Per server-side dry-run bewiesen: apply -> Antwort ohne status; patch --subresource=status -> alle Felder da.
+
+Zustaendigkeit geklaert: robocop reconciled nur Worker und lief hier gar nicht. Fuer den CP, den der CLI selbst bootstrapped, schreibt Apply den Status — reconciler=cli, rein observational.
+
+Fix: OCP::K8s->patch_status (einziger Ort mit dem _request-Escape, siehe kubernetes-rest #3), _ensure_cp_ocpnode + _migrate_legacy_nodes ensuren spec und patchen status separat, IP kommt jetzt vom Node-Objekt statt vom konfigurierten Host (war eine DNS-Name). Apply behauptet Ready nicht mehr, wenn der Write fehlschlaegt.
+
+Gleiche Ursache mitgefixt: OCP::Node::_patch_status patchte ebenfalls den Haupt-Endpoint, d.h. keine Worker-Phase wurde je persistiert.
+
+Tests: t/36-ocpnode-status.t. xt/smoke.sh verschaerft — die alte Assertion 'smoke-$DIST|control-plane' war eine ERE-Alternation und matchte auf jede Zeile mit 'control-plane'; jetzt Phase + IP.
+VERIFIZIERT auf cortex. Vorher: OCPNode-CR hatte gar keinen status-Key, node ls zeigte Pending mit leerer IP.
+
+Nach ocp apply:
+  status: kubernetesNodeName=cortex, phase=Ready, publicIP=10.230.30.155, reconciler=cli
+
+  $ ocp node ls
+  NAME     ROLE          PHASE   PROVIDER      IP              AGE
+  cortex   control-plane Ready   ssh-default   10.230.30.155   1h
+
+Phase Ready, echte Node-IP statt des DNS-Namens. Alle drei Sichten (apply, status, node ls) stimmen jetzt ueberein.
+MIGRATIONSBELEG auf reuben.cihq (x86_64, rke2 v1.36.3+rke2r1, Cluster 23h alt und vor den Fixes deployed):
+
+  vorher:   ocp-system/reuben  control-plane  PHASE leer, IP leer
+  nach apply: reuben  control-plane  Ready  10.5.10.37  AGE 23h
+
+Derselbe Cluster, nicht neu gebaut. Der Status-Subresource-Fix heilt also nicht
+nur frische Deployments, sondern repariert Bestandscluster beim naechsten
+ocp apply.
