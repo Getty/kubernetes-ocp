@@ -1,0 +1,203 @@
+---
+class: standard
+completed: 2026-08-13T02:51:11Z
+created: 2026-08-13T01:28:03Z
+id: 48
+priority: medium
+started: 2026-08-13T02:43:54Z
+status: done
+tags:
+- docker
+- ci
+- performance
+title: 'Docker-Build: Toolchain-Bootstrap dauert laenger als der Perl-Build'
+updated: 2026-08-13T02:51:11Z
+---
+
+GEMESSEN an einem Build mit kaltem Cache (amd64, nativ):
+
+  Schicht 9  253s   Perl 5.42 aus Source kompilieren
+  Schicht 10 321s+  cpan -i App::cpanminus App::cpm
+                    && cpanm --n Net::SSLeay
+                    && cpanm LWP::Protocol::https
+                    (bei 321s noch nicht fertig, Abbruch durch mein Zeitlimit)
+
+Schicht 10 ist reiner Toolchain-Bootstrap — sie laeuft, BEVOR eine einzige
+OCP-Abhaengigkeit installiert wird, und dauert laenger als der Perl-Build.
+
+DREI URSACHEN, alle behebbar:
+
+1. cpan -i App::cpanminus App::cpm
+   Der alte CPAN-Client baut hier zwei Toolchain-Module von Hand. cpm ist ein
+   fatpacked Einzelscript und braucht keine Installation:
+     curl -fsSL https://raw.githubusercontent.com/skaji/cpm/main/cpm \
+       > /usr/local/bin/cpm && chmod +x /usr/local/bin/cpm
+   Ob cpanminus ueberhaupt noch gebraucht wird, ist zu pruefen — cpm deckt den
+   Rest ab.
+
+2. cpanm LWP::Protocol::https laeuft OHNE -n
+   Damit laufen die Testsuiten aller Abhaengigkeiten. Der Build hing zuletzt in
+   "Building and testing HTTP-Daemon-6.17" — Tests eines HTTP-Servers, den OCP
+   nie benutzt. Bei Net::SSLeay steht --n bereits, bei den beiden anderen nicht.
+
+3. Perl wird aus Source gebaut (253s)
+   Dockerfile.robocop benutzt bereits FROM perl:5.40-slim. Das offizielle Image
+   ist multi-arch und vorgebaut. Zu klaeren, ob es einen Grund fuer den
+   Eigenbau gibt (Build-Flags, Threads, exakte Version) — wenn nicht, sind die
+   253s geschenkt. Der SHA256-Pin des Tarballs waere dann durch einen Image-Tag
+   zu ersetzen.
+
+WARUM DAS JETZT ZAEHLT: lokal cached Docker die Perl-Schicht, eine reine
+cpanfile-Aenderung baut nur cpm install neu — ertraeglich. In CI ist der Cache
+immer kalt, und seit #10 laeuft jeder Push ZWEI Architekturen. Die
+Bootstrap-Zeit faellt dort doppelt an, ohne je etwas Projektspezifisches zu tun.
+
+Messvorschlag fuer den Fix: Build mit --no-cache vorher/nachher, Zahlen ans
+Ticket. Nicht nach Gefuehl entscheiden.
+GEMESSEN, amd64 nativ, docker build --no-cache, 4 Kerne, geteilte und wechselnd belastete Maschine.
+
+VORHER, zwei Laeufe des alten Dockerfile:
+  Lauf 1: Perl aus Source 169.5s, Toolchain-Bootstrap 366.0s, cpm install 117.5s, TOTAL 718s
+  Lauf 2 als Kontrolle bei derselben Last wie der Nachher-Lauf:
+          Perl 124.2s, Bootstrap 358.0s, cpm install 85.8s, TOTAL 629s
+
+NACHHER: Perl-Schicht faellt weg, Bootstrap 6.4s, cpm install 82.7s, TOTAL 139s.
+Image schrumpft von 973MB auf 636MB.
+
+Fairer Vergleich Kontrolle gegen Nachher: 629s auf 139s, minus 490s, Faktor 4.5.
+Strukturell belastbar: die beiden Zielschichten kosteten je nach Lauf 482s bis
+536s und kosten jetzt 6.4s. Der Bootstrap war ueber beide Vorher-Laeufe stabil
+bei 358 bis 366s, das ist die verlaesslichste Zahl im Ticket.
+cpm install blieb mit 85.8s gegen 82.7s unveraendert, obwohl ein Modul dazukam.
+DIE DREI HEBEL EINZELN.
+
+Hebel 3 zuerst, weil er die anderen zwei mitnimmt: Basis ist jetzt
+perl:5.42.3-slim-trixie statt debian:trixie plus Perl aus Source. Das offizielle
+Image bringt perl, cpanm, cpm UND Net::SSLeay 1.96 plus IO::Socket::SSL schon
+mit. Damit faellt der Perl-Build ganz weg und von Hebel 1 bleibt nichts uebrig:
+cpan -i App::cpanminus App::cpm ist ersatzlos gestrichen, ein curl auf das
+fatpacked cpm war gar nicht noetig. Einziger Rest ist cpm install --global
+Carton::Snapshot mit 6.4s, weil cpm ohne dieses Modul keine cpanfile.snapshot
+lesen kann. cpanm bleibt im Image, kostet nichts und ist zum Debuggen da.
+
+Hebel 2 war NICHT nur langsam, sondern laufzeitkritisch. WWW::Hetzner spricht
+ueber LWP::UserAgent mit api.hetzner.cloud, und LWP kann ohne
+LWP::Protocol::https kein https. Das Modul steckte im System-Perl und stand in
+keinem Snapshot: das eine Modul zwischen OCP und jedem Hetzner-API-Call war das
+eine Modul, das der Snapshot nicht beschrieb. Ein blosses Loeschen der Zeile
+haette jeden Provider-Aufruf im Image kaputtgemacht, ohne dass ein Test es
+merkt. Jetzt steht es in cpanfile und ist im Snapshot auf 6.17 gepinnt; die
+Eintragung wurde mit carton in einem Container erzeugt, nicht von Hand geraten.
+Kosten im cpm-Lauf nicht messbar, weil IO::Socket::SSL, Net::SSLeay und
+libwww-perl ohnehin schon im Snapshot standen. Das fehlende -n an der alten
+cpanm-Zeile war die eigentliche Bremse: dadurch lief die Testsuite jeder
+Abhaengigkeit, daher der Haenger in IO-Socket-SSL.
+PERL-FLAGS GEPRUEFT, nicht auf Verdacht umgestellt.
+
+  alt, Configure -des: 5.42.0, usethreads undef, useshrplib false, use64bitall define
+  neu, offizielles Image: 5.42.3, usethreads undef, useshrplib true, use64bitall define
+
+Threads und 64bitall stimmen ueberein, und das sind die Flags, die ueber
+XS-ABI-Kompatibilitaet entscheiden. Einziger Unterschied ist shared libperl, was
+jedes Distro-Perl so macht, und OCP bettet kein Perl ein. Dazu wird jedes
+XS-Modul im Image gegen genau dieses Perl neu kompiliert, es ueberquert also gar
+keine Binaerdatei eine ABI-Grenze.
+
+Die Git-History gibt keinen Grund fuer den Eigenbau her: die Zeilen kamen im
+ersten Docker-Commit ohne Begruendung mit, es gibt keinen Kommentar und keine
+ADR dazu.
+
+Nebenbefund, der fuer die Umstellung spricht statt dagegen: make snapshot loest
+cpanfile.snapshot schon immer in perl:5.42 auf, und das ist 5.42.3 mit exakt
+derselben Konfiguration. Das selbstgebaute 5.42.0 war das abweichende Perl. Der
+Snapshot beschrieb also eine Welt, in der das ausgelieferte Image nicht lief,
+was ADR 0013 genau verbietet. Die Umstellung schliesst diese Luecke.
+Der SHA256-Pin des Tarballs ist durch einen exakten Patch-Tag ersetzt, nicht
+durch einen wandernden Tag, damit ADR 0014 gewahrt bleibt.
+WARM GEGEN KALT, und eine Korrektur an der Ticket-Praemisse.
+
+Lokal warm: eine reine cpanfile-Aenderung baut nur ab der COPY-Schicht neu, also
+cpm install plus Anhang. Vorher rund 86s, nachher rund 83s. Der Fix bringt im
+warmen Fall NICHTS, das war im Ticket richtig vorhergesagt.
+
+Kalt: 629s auf 139s pro Architektur.
+
+CI ist aber nicht immer kalt. Der Workflow benutzt cache-from und cache-to mit
+mode=max auf einer Registry-Ref pro Architektur. Bei einem Cache-Treffer waren
+die Bootstrap-Schichten auch vorher schon gratis. Der Gewinn faellt bei jedem
+Cache-Miss an: der erste Lauf nach dieser Aenderung, jede Aenderung am
+Dockerfile oder an der apt-Zeile, Cache-Eviction, und Laeufe bei denen die
+Registry-Cache-Ref nicht lesbar ist, was der Workflow bewusst nur als Warnung
+behandelt. Das ist regelmaessig, aber nicht jeder Push.
+
+Was erst ein echter CI-Lauf zeigen kann: die arm64-Zahl. Alles hier ist amd64
+nativ. Der arm64-Leg sollte proportional mehr gewinnen, weil der Perl-Build dort
+teurer war, aber gemessen ist das nicht. Ebenso ungeprueft: ob das arm64-Manifest
+von perl:5.42.3-slim-trixie sich baut wie erwartet. Die Multi-Arch-Verfuegbarkeit
+des Tags ist bestaetigt, amd64, arm64, arm, ppc64le, riscv64, s390x. Gebaut wurde
+arm64 nicht, buildx mit qemu haette hier nur eine Fantasiezahl geliefert.
+VERIFIKATION, gegen das NEUE Image.
+
+prove -l t/ IM neuen Image: 48 Dateien, 773 Tests, PASS. Vorher waren es 47 und
+771; die Differenz ist t/48-image-toolchain.t, neu dazugekommen.
+Der neue Test haelt zwei Dinge fest: dass der Bootstrap nicht nachwaechst, und
+dass LWP::Protocol::https in cpanfile und Snapshot bleibt. Gegen den alten Stand
+gegengeprueft, alle sechs Einzelassertions schlagen dort fehl, der Test kann also
+wirklich failen.
+
+CryptX 0.091 im fertigen Image bestaetigt, und zwar jetzt aus
+/opt/ocp/install/perl5, also aus dem vom Snapshot beschriebenen local-lib statt
+aus dem System-Perl.
+TLS end-to-end geprueft: LWP gegen api.hetzner.cloud liefert HTTP 401, der
+Handshake steht also, und der Handler ist LWP::Protocol::https.
+Weiter geprueft: OCP::Share loest auf /opt/ocp/src/share auf, das
+share/patches-Overlay fuer Rex::Interface::Exec::LibSSH liegt im local-lib,
+kubectl ist x86-64, ocp --help laeuft.
+
+raudssus/ocp:latest zeigt jetzt auf das neue, verifizierte Image, 636MB.
+Rollback liegt als raudssus/ocp:pre-48-safety bereit, das ist das vorherige
+latest mit CryptX 0.091.
+NICHT gepublished: kein docker-push, kein docker-release, kein buildx --push.
+
+NICHT ANGEFASST: Dockerfile.robocop bleibt auf perl:5.40-slim, das gehoert zu
+#39 und wurde bewusst nicht nebenbei mitgeloest. Der Makefile-Target snapshot
+bleibt auf perl:5.42, weil das schon dasselbe 5.42.3 mit identischer
+Konfiguration ist, eine Aenderung waere reine Kosmetik gewesen.
+ERLEDIGT. Gemessen mit --no-cache, amd64 nativ, Kontrolllauf unter gleicher Last:
+
+  gesamt                629s -> 139s   (4.5x)
+  Perl aus Source   124-170s -> entfaellt
+  Toolchain-Bootstrap 358-366s -> 6.4s
+  cpm install        86-118s -> 83s
+  Image                973MB -> 636MB
+
+perl:5.42.3-slim-trixie ersetzt den Eigenbau und bringt cpanm, cpm und
+Net::SSLeay mit. ABI-entscheidende Flags identisch (usethreads=undef,
+use64bitall=define); einziger Unterschied useshrplib, was jedes Distro-Perl so
+macht, und XS wird im Image ohnehin neu uebersetzt.
+
+WICHTIGSTER NEBENBEFUND: make snapshot lief bereits in perl:5.42 (= 5.42.3).
+Der handgebaute 5.42.0 war das Ausreisser-Perl — der Snapshot beschrieb eine
+Welt, in der das ausgelieferte Image nicht lief. Genau was ADR 0013 verhindern
+soll.
+
+FALLE VERMIEDEN: die Vermutung im Ticket, cpanm LWP::Protocol::https koenne
+ersatzlos entfallen, war falsch. Das Modul ist tragend — WWW::Hetzner erreicht
+api.hetzner.cloud ueber LWP::UserAgent, und LWP spricht ohne diesen Handler
+kein https. Es lag im System-Perl und stand in keinem Snapshot: das eine Modul
+zwischen OCP und jedem Provider-Call war das eine, das der Snapshot nicht
+beschrieb, und kein Test in t/ haette den Verlust bemerkt. Jetzt im cpanfile
+deklariert und auf 6.17 gepinnt.
+
+VERIFIZIERT im fertigen Image: 48 Dateien, 773 Tests; CryptX 0.091 aus der
+snapshot-beschriebenen local-lib statt aus dem System-Perl; LWP gegen
+api.hetzner.cloud antwortet 401, der TLS-Handshake steht also. Beide laufenden
+Cluster (cortex, reuben) antworten ueber das neue Image, was den SOPS/age-Pfad
+mit abdeckt.
+
+OFFEN: die arm64-Zahl ist ungemessen (alles amd64 nativ, ein qemu-Build haette
+eine Phantasiezahl geliefert). Und CI ist nicht immer kalt — der Workflow
+cached pro Architektur, der Gewinn faellt auf Cache-Misses an, nicht auf jeden
+Push.
+
+Rollback-Tag: raudssus/ocp:pre-48-safety  Commit: 6778f4e
