@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-08-14T18:49:54Z
+claimed_by: ocp-infra-worker
+class: standard
+completed: 2026-08-14T18:49:54Z
+created: 2026-08-14T18:37:59Z
+id: 58
+priority: medium
+started: 2026-08-14T18:49:25Z
+status: done
+tags:
+- cleanup
+- docker
+- image
+title: Dockerfile.robocop löschen — ein Image reicht
+updated: 2026-08-14T18:49:54Z
+---
+
+Dockerfile.robocop wird von keinem Workflow und keinem Makefile-Target gebaut (karr #39). Drifts vom Haupt-Dockerfile: perl:5.40-slim vs. Hauptimage 5.42.3-slim-trixie, kein Snapshot-Pinning, kein Patch-Overlay für share/patches/, keine VERSION-Datei. Bricht im Build wegen fehlendem libexpat1-dev.
+
+Haupt-Dockerfile baut schon alles Nötige: COPY ./bin enthält bin/robocop, COPY ./share bringt Rexfile mit, $OCP_ROOT/src/bin ist im PATH, User uid 1000 matcht das runAsUser im share/robocop/deployment.yaml.
+
+Lösung: Dockerfile.robocop löschen. Makefile prüfen — kein Target referenziert die Datei, also nur clean-up des Files.
+
+Verify: rm Dockerfile.robocop; grep -r Dockerfile.robocop . sollte leer sein (außer ggf. in .git/); make build grün.
