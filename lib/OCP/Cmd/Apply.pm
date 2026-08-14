@@ -30,6 +30,8 @@ use OCP::Rex;
 use OCP::Versions;
 use MIME::Base64 ();
 
+use OCP::Cmd::Apply::DeployedHash;
+
 with 'OCP::Role::Cmd';
 
 our $VERSION = '0.001';
@@ -2195,58 +2197,29 @@ sub _find_share_dir {
 }
 
 #
-# Deploy hash tracking (.ocp/deployed.yaml)
-#
-# The hashes say what OCP last rolled out, not what the cluster has. They are
-# an optimisation over re-applying everything (ADR 0008) and never evidence on
-# their own: every component that consults them also asks the cluster whether
-# the thing is actually there before it claims to be up to date. A record
-# without that question survived `ocp destroy` and told a freshly built
-# cluster its registry was already deployed.
+# Deploy hash tracking (.ocp/deployed.yaml) — see OCP::Cmd::Apply::DeployedHash.
+# Forwarders exist so the test surface and the callers inside this file keep
+# the same names.
 #
 
 sub _deployed_hashes_path {
     my ($self, $config) = @_;
-    return path($config->deployed_file);
+    return OCP::Cmd::Apply::DeployedHash::hashes_path($self, $config);
 }
 
 sub _load_deployed_hashes {
     my ($self, $config) = @_;
-    my $path = $self->_deployed_hashes_path($config);
-    return {} unless -f $path;
-
-    return $self->ocp->load_file($path->stringify) || {};
+    return OCP::Cmd::Apply::DeployedHash::load($self, $config);
 }
 
 sub _save_deployed_hash {
     my ($self, $config, $component, $hash) = @_;
-    my $hashes = $self->_load_deployed_hashes($config);
-    $hashes->{$component} = $hash;
-    my $path = $self->_deployed_hashes_path($config);
-    $path->parent->mkpath unless -d $path->parent;
-
-    $self->ocp->dump_file($path->stringify, $hashes);
+    return OCP::Cmd::Apply::DeployedHash::save($self, $config, $component, $hash);
 }
 
-# One vocabulary for what a hash-gated setup step did. The step itself is the
-# only place that knows — it holds both the record and the answer from the
-# cluster — so reconcile reports its verdict instead of forming a second one
-# from the file. Returns whether anything changed, which is what the reconcile
-# summary counts.
 sub _report_component {
     my ($self, $label, $outcome) = @_;
-    $outcome //= 'unchanged';
-
-    my %line = (
-        unchanged => "$label up to date",
-        deployed  => "$label deployed (was missing)",
-        restored  => "$label redeployed (was gone from the cluster)",
-        updated   => "$label updated (manifest changed)",
-    );
-
-    print "  [ok] " . ($line{$outcome} // "$label $outcome") . "\n";
-
-    return $outcome eq 'unchanged' ? 0 : 1;
+    return OCP::Cmd::Apply::DeployedHash::report_component($self, $label, $outcome);
 }
 
 sub _k8s_api {
