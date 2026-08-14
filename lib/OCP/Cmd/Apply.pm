@@ -31,6 +31,7 @@ use OCP::Versions;
 use MIME::Base64 ();
 
 use OCP::Cmd::Apply::DeployedHash;
+use OCP::Cmd::Apply::Health;
 use OCP::Cmd::Apply::K8s;
 
 with 'OCP::Role::Cmd';
@@ -2858,176 +2859,44 @@ sub _print_worker_status {
 }
 
 #
-# Post-deploy cluster health gate
-#
-# `ocp apply` printed DEPLOYED SUCCESSFULLY and exited 0 whenever the deploy
-# steps had run to the end. On cortex it did exactly that while CoreDNS sat in
-# CrashLoopBackOff — cluster DNS entirely dead — and five gpu-operator pods
-# hung in ImagePullBackOff. The banner was a statement about the script, not
-# about the cluster. xt/smoke.sh already checked this from the outside; the
-# check belongs in apply.
-#
-# Two properties decide whether such a gate is worth anything.
-#
-# It must not be flaky. Straight after a deploy pods are legitimately still
-# coming up: ContainerCreating, PodInitializing, or a readiness probe that has
-# not passed yet are all normal. So apply first waits for the cluster to settle
-# — until nothing is in a starting state, or the timeout — and only judges what
-# is still broken on the final scan, and only on reasons that do not heal by
-# waiting. CrashLoopBackOff additionally requires the kubelet to have actually
-# looped; one crash during startup is not a verdict.
-#
-# And it must not cry wolf. A gate that fails the whole apply because an opt-in
-# add-on could not pull an image teaches people to ignore the exit code, which
-# costs more than the check buys — the gpu-operator failure above was an arm64
-# image availability problem on a working cluster. Hence the severity split
-# below.
+# Post-deploy cluster health gate — see OCP::Cmd::Apply::Health.
+# Forwarders exist so the test surface and the callers inside this file keep
+# the same names.
 #
 
-# Waiting reasons that do not resolve themselves by waiting longer.
-my %DURABLE_WAIT = map { $_ => 1 } qw(
-    CrashLoopBackOff
-    ImagePullBackOff
-    ErrImagePull
-    InvalidImageName
-    CreateContainerConfigError
-    CreateContainerError
-    RunContainerError
-);
-
-# Namespaces whose health IS the cluster: CNI, DNS, core controllers. A durable
-# fault in one of these means the deploy did not produce a working cluster, so
-# it is fatal. Everything else OCP installs is either opt-in (gpu-operator,
-# node-feature-discovery) or already has its own readiness wait earlier in
-# apply, so it warns and leaves the exit code alone.
-my %CRITICAL_NS = map { $_ => 1 } qw(kube-system);
-
-my $CRASHLOOP_MIN_RESTARTS = 2;
-
-# healthy | starting | failing (+reason)
 sub _classify_pod {
     my ($self, $pod) = @_;
-
-    my $phase = $pod->{status}{phase} // '';
-    return ('healthy') if $phase eq 'Succeeded';
-
-    # Init containers carry their own waiting reasons — that is where
-    # "Init:ImagePullBackOff" lives, which is how all five gpu-operator pods
-    # failed. Scanning only containerStatuses would have missed every one.
-    my @waiting_scan = (
-        @{ $pod->{status}{initContainerStatuses} // [] },
-        @{ $pod->{status}{containerStatuses}     // [] },
-    );
-
-    my %reasons;
-    for my $cs (@waiting_scan) {
-        my $reason = $cs->{state}{waiting}{reason} // '';
-        next unless $reason && $DURABLE_WAIT{$reason};
-        next if $reason eq 'CrashLoopBackOff'
-            && ($cs->{restartCount} // 0) < $CRASHLOOP_MIN_RESTARTS;
-        $reasons{$reason} = 1;
-    }
-    return ('failing', join(', ', sort keys %reasons)) if %reasons;
-    return ('failing', 'Failed') if $phase eq 'Failed';
-
-    # Readiness is judged on the regular containers only: a completed init
-    # container's `ready` flag is not a reliable signal across versions.
-    my @regular = @{ $pod->{status}{containerStatuses} // [] };
-    return ('starting') unless $phase eq 'Running' && @regular;
-    for my $cs (@regular) {
-        return ('starting') unless $cs->{ready};
-    }
-    return ('healthy');
+    return OCP::Cmd::Apply::Health::classify_pod($self, $pod);
 }
 
 sub _scan_pods {
     my ($self, $api) = @_;
-
-    my $list = $api->list('Pod');
-    my @pods = map { ref($_) eq 'HASH' ? $_ : $api->k8s->object_to_struct($_) }
-               @{ ($list && $list->items) || [] };
-
-    my %out = (failing => [], starting => []);
-    for my $pod (@pods) {
-        my ($state, $reason) = $self->_classify_pod($pod);
-        next if $state eq 'healthy';
-        push @{ $out{$state} }, {
-            namespace => $pod->{metadata}{namespace} // '',
-            name      => $pod->{metadata}{name}      // '',
-            reason    => $reason                     // '',
-        };
-    }
-    return \%out;
+    return OCP::Cmd::Apply::Health::scan_pods($self, $api);
 }
 
 sub _check_cluster_health {
     my ($self, $api, %opts) = @_;
-    my $timeout  = $opts{timeout}  // 120;
-    my $interval = $opts{interval} // 5;
-
-    my $deadline = time + $timeout;
-    my $scan;
-    while (1) {
-        $scan = $self->_scan_pods($api);
-        last unless @{ $scan->{starting} };
-        last if time >= $deadline;
-        sleep $interval;
-    }
-
-    my (@critical, @warnings);
-    for my $pod (@{ $scan->{failing} }) {
-        push @{ $CRITICAL_NS{ $pod->{namespace} } ? \@critical : \@warnings }, $pod;
-    }
-
-    return {
-        critical => \@critical,
-        warnings => \@warnings,
-        starting => $scan->{starting},
-    };
+    return OCP::Cmd::Apply::Health::check($self, $api, %opts);
 }
 
 sub _print_health {
     my ($self, $health) = @_;
-
-    for my $p (@{ $health->{critical} }) {
-        printf "  [!!] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
-    }
-    for my $p (@{ $health->{warnings} }) {
-        printf "  [WARN] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
-    }
-    for my $p (@{ $health->{starting} }) {
-        printf "  [..] %s/%s — still starting\n", $p->{namespace}, $p->{name};
-    }
-    print "  [ok] all pods healthy\n"
-        unless @{ $health->{critical} }
-            || @{ $health->{warnings} }
-            || @{ $health->{starting} };
-    return;
+    return OCP::Cmd::Apply::Health::print($self, $health);
 }
 
-# Only a critical (core-namespace) finding is fatal. Warnings are loud but
-# leave the exit code alone — see the severity split above.
 sub _health_is_fatal {
     my ($self, $health) = @_;
-    return scalar @{ $health->{critical} };
+    return OCP::Cmd::Apply::Health::is_fatal($self, $health);
 }
 
 sub _health_banner_text {
     my ($self, $health) = @_;
-    return 'CONTROL PLANE DEPLOYED — CLUSTER IS NOT HEALTHY'
-        if $self->_health_is_fatal($health);
-    return 'CONTROL PLANE DEPLOYED — WITH WARNINGS'
-        if @{ $health->{warnings} };
-    return 'CONTROL PLANE DEPLOYED SUCCESSFULLY!';
+    return OCP::Cmd::Apply::Health::banner_text($self, $health);
 }
 
 sub _banner {
     my ($self, $text) = @_;
-    my $width = 63;
-    print "╔" . ("═" x $width) . "╗\n";
-    printf "║  %-*s║\n", $width - 2, $text;
-    print "╚" . ("═" x $width) . "╝\n\n";
-    return;
+    return OCP::Cmd::Apply::Health::banner($self, $text);
 }
 
 #
