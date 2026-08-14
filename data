@@ -1,0 +1,37 @@
+---
+claimed_at: 2026-08-14T18:54:10Z
+claimed_by: adr-auditor
+class: standard
+completed: 2026-08-14T18:54:10Z
+created: 2026-08-14T18:38:55Z
+id: 63
+priority: low
+started: 2026-08-14T18:48:11Z
+status: done
+tags:
+- adr
+- docs
+- decisions
+title: Fehlende ADRs für getroffene Entscheidungen
+updated: 2026-08-14T18:54:10Z
+---
+
+Mehrere architektur-relevante Entscheidungen sind im Code aber ohne ADR:
+
+(a) OCP_SHARE_DIR-Auflösung (lib/OCP/Share.pm): "working tree wins, env var fail-loud, fallback über File::ShareDir". t/46-share-dir.t testet es, aber die Entscheidung ist nirgendwo dokumentiert. Wer das ändert, ändert ohne Begründungskette.
+
+(b) IO::K8s-Resource-Provider optionales Laden (lib/OCP/Kubernetes.pm:67-82): require IO::K8s::Cilium, IO::K8s::CertManager, IO::K8s::GatewayAPI mit eval { require ...; 1 } or next. Fehlschlag wird stillschweigend geschluckt. ADR 0010 sagt Cilium ist das ganze Network-Layer — warum ist der dann optional?
+
+(c) Perl-Baseline 5.42: Dockerfile:21 pinnt 5.42.3-slim-trixie, Makefile:54 läuft carton install in perl:5.42, cpanfile hat keinen expliziten perl-Versions-Floor. Wenn ein CPAN-Release perl 5.44 verlangt, bricht der Snapshot. ADR 0013 verbindet Snapshot und Image, aber pinnt keine Perl-Version nach unten.
+
+(d) CRIU/TCP-9999-Key-Injection in OCP::Robocop: ist deployed-Stub, läuft nicht, der echte Controller (OCP::Robocop::Controller) ist tot. Das ist eine Entscheidung die nirgends dokumentiert ist, entweder das Design wählen oder den alten Weg formal beerdigen.
+
+Vier neue ADRs oder Notizen in docs/adr/README.md. Format wie die existierenden 0001-0022.
+Erledigt in commit df45eb5 (Backfill four ADRs that were missing documentation).
+Vier neue ADRs:
+- (a) 0023 — Resolve the share directory next to the running code, and reject overrides that do not point at a directory. Dokumentiert OCP::Share-Auflösung, OCP_SHARE_DIR-die-loud, Rexfile-marker.
+- (b) 0024 — Register IO::K8s resource providers defensively, and live with raw YAML where they are absent. Dokumentiert die Asymmetrie zwischen ADR 0010 ('Cilium mandatory') und der stillen Fallback-Logik in lib/OCP/Kubernetes.pm:67-82.
+- (c) 0025 — Pin the same Perl patch release in image, snapshot and runtime. Dokumentiert die Kopplung Dockerfile (perl:5.42.3-slim-trixie) / Makefile:snapshot (perl:5.42) / cpanfile (kein Floor) und warum ein fehlender Floor laut bricht statt stillschweigend.
+- (d) 0026 — Robocop is a CRIU / TCP-9999 key-injection stub pending ticket #1. Status: snapshot (kein Decision), benennt explizit dass das echte Design in ticket #1 lebt und die Stub jetzt eingefroren ist.
+ADR-Index in docs/adr/README.md hat die vier neuen Einträge. Provenance-Block dokumentiert dass 0023-0025 Backfills sind (getrieben von #63) und 0026 ein snapshot ist (nicht decision), mit karr #1 als dem architectural move der es ersetzt.
+Commit df45eb5 - Vier ADRs als Sammel-Commit. ADR 0023-0025 sind Decisions (accepted), 0026 ist snapshot mit Status: snapshot benennt ticket #1 als superseded.
