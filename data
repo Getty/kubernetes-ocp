@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-08-14T20:47:09Z
+claimed_by: ocp-worker
+class: standard
+completed: 2026-08-14T20:46:43Z
+created: 2026-08-14T18:37:09Z
+id: 55
+priority: high
+started: 2026-08-14T19:18:02Z
+status: done
+tags:
+- refactor
+- apply
+- reconcile
+title: OCP::Cmd::Apply zerlegen — Reconcile in eigene Module
+updated: 2026-08-14T20:47:09Z
+---
+
+lib/OCP/Cmd/Apply.pm ist 3472 Zeilen, god-module. Eine execute-Sub hält health gate, CRD ensure, provider CR ensure, komponenten-reconcile, ad-hoc Hetzner-Ops, SSH-key-bootstrap, sudoers-layout, package-install, sshd-hardening, k8s-bootstrap, alle error-branches.
+
+Ziel: ein OCP::Reconcile-Orchestrator, der existierende Anker in eigene Module zieht:
+- OCP::Bootstrap::Provider (Hetzner/SSH/Local setup)
+- OCP::Bootstrap::K8s (install_rke2/install_k3s dispatch + wait_ready)
+- OCP::Bootstrap::Network (Cilium + cert-manager)
+- OCP::Bootstrap::GPU (operator + driver + toolkit)
+- OCP::Bootstrap::Hardening (sudoers/sshd)
+- OCP::HealthGate (single-call-site testbar — t/38 ablösen)
+
+Jedes Modul testbar in Isolation. Apply.pm ruft die nur noch auf. Provider-Seam sollte vorher stehen (siehe eigenes Ticket), sonst muss Apply.pm zweimal angefasst werden.
+
+Migration schrittweise: erst Reconcile::*-Subroutinen extrahieren (kein API-Bruch), dann execute umstellen, dann aufräumen. Tests grün halten nach jedem Schritt. Endpoint-to-end-test sollte am Ende die echte execute-Pfad abdecken, nicht nur Health-Gate.
