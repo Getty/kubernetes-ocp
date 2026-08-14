@@ -1,0 +1,36 @@
+---
+claimed_at: 2026-08-14T18:54:01Z
+claimed_by: adr-auditor
+class: standard
+completed: 2026-08-14T18:54:01Z
+created: 2026-08-14T18:38:49Z
+id: 62
+priority: low
+started: 2026-08-14T18:48:05Z
+status: done
+tags:
+- adr
+- docs
+- arm64
+title: ADR 0020 Wortlaut an Realität anpassen
+updated: 2026-08-14T18:54:01Z
+---
+
+ADR 0020 (docs/adr/0020-arm64-is-a-first-class-target.md) sagt "arm64 is a first-class target". Tatsächlich:
+- RKE2 arm64 nur statisch geprüft (kein CI-Lauf der das beweist)
+- Veröffentlichte Images amd64-only (war karr #10, ist in review)
+- _node_arch lebt nur in share/Rexfile
+- Dockerfile.robocop ist amd64 (soll wegfallen)
+
+Lösung: ADR-Text enger fassen. Konsequenzen-Section klar trennen:
+- WAS first-class ist: Component-Downloads (Rexfile _node_arch), kubectl-Image (dpkg --print-architecture), Hetzner-Picker (CAX* sichtbar), Dockerfile-Base-Image (multi-arch tag).
+- WAS NICHT first-class ist: robocop-on-arm64 story bis karr #10 gemerged + Dockerfile.robocop weg ist, Cross-arch-CI für voll-reconcile, end-to-end smoke auf aarch64.
+
+Nach karr #10-Merge + Dockerfile.robocop-Löschung: ADR-Wortlaut nochmal prüfen, dann "first-class" ggf. wieder zulassen.
+
+Andere ADRs die mit dem Arm-Thema verbunden sind und gegengelesen werden müssen: 0008 (SSA), 0009 (status subresource), 0013 (docker-first) — die sind alle arm64-clean, kein Drift.
+Erledigt in commit 8a02ea8 (Tighten ADR 0020 wording).
+- Consequences-Section jetzt in 'Where arm64 IS first-class today' (Component-Downloads, kubectl-Dockerfile, Hetzner-Picker, multi-arch Base-Image, externe Image-Pins, k3s/RKE2-agent self-detect) und 'Where arm64 is NOT yet first-class' (amd64-only published images, Dockerfile.robocop amd64-only, kein Cross-Arch CI, kein aarch64 xt/smoke.sh) aufgeteilt.
+- Cross-references zu karr #10 und #58 sind drin. Die Kern-Aussage 'first-class wo OCP generiert, lapsed wo OCP shipped' steht jetzt explizit.
+- 0008/0009/0013 gegengelesen — keine arm64-Aussagen die driften, die Lücken in 0020 sind auch ihre Lücken.
+Commit 8a02ea8 - Where first-class / Where not yet split, karr #10 und #58 referenziert. Status: in-progress, bereit zum Review vom Maintainer.
