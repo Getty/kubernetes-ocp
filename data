@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-08-14T18:49:19Z
+claimed_by: ocp-infra-worker
+class: standard
+completed: 2026-08-14T18:49:19Z
+created: 2026-08-14T18:37:53Z
+id: 57
+priority: medium
+started: 2026-08-14T18:48:40Z
+status: done
+tags:
+- cleanup
+- manifests
+- share
+title: manifests/ löschen — share/ ist die einzige Wahrheit
+updated: 2026-08-14T18:49:19Z
+---
+
+manifests/ ist toter Zwilling von share/. Sieben Dateien dupliziert, nichts im Code-Pfad liest manifests/ (karr #38).
+
+Lösung: manifests/ komplett löschen. share/ bleibt alleinige Quelle. Suchen ob doch irgendwo gelesen (grep -rn OCP_SHARE_DIR, MANIFESTS, ./manifests/ in lib/ bin/ xt/), wenn nicht: rm -rf manifests/.
+
+Nebenwirkung: manifests/robocop-deployment.yaml ist eine Scaffolding-Fassung mit falscher Registry-Referenz (ghcr.io/getty/ocp-robocop, in die niemand schreibt) — das Verschwinden ist gewollt.
+
+Verify: make test grün nach Löschen.
