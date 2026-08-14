@@ -60,6 +60,23 @@ Revision history for OCP
         t/28's "three places answer which distribution version" was
         updated: the installer entry is now Bootstrap.pm instead of
         Apply.pm (the regex pattern is unchanged)
+      - OCP::Cmd::Apply::Deploy owns the post-bootstrap half of the
+        fresh-deploy path: registry + CoreDNS/registry.local, NFD +
+        GPU operator, cert-manager apply + wait + issuers, Cilium
+        Gateway, LB-IPAM, the CR layer (CRDs/providers/CP OCPNode),
+        worker OCPNodes + robocop rollout + CLI reconcile fallback.
+        execute() now reads as a dispatcher: config load → reconcile
+        or auth → bootstrap_control_plane → deploy → finish_apply.
+        _finish_apply moved to OCP::Cmd::Apply::Health::finish (still
+        re-exported as a thin forwarder for the test surface)
+      - t/52-apply-dispatcher.t: the dispatcher test. Locks in the
+        seam that keeps execute() a dispatcher — execute must
+        delegate to the four phase modules (Drift, Bootstrap, Deploy,
+        Health), the forwarders must actually delegate (not inline
+        the implementation), execute must not own any component setup
+        call, and the body size must stay under the budget. The
+        budget will trip the next time someone tries to grow the
+        dispatcher instead of growing a phase module
     - Make the OCP::Provider seam real
       - OCP::Provider had two parallel dispatch paths (`for_spec` and
         `from_cr`), each maintaining its own `if $type eq ...` ladder and

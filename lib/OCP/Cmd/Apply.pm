@@ -34,6 +34,7 @@ use MIME::Base64 ();
 use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::DeployedHash;
+use OCP::Cmd::Apply::Deploy;
 use OCP::Cmd::Apply::Drift;
 use OCP::Cmd::Apply::Health;
 use OCP::Cmd::Apply::K8s;
@@ -217,201 +218,39 @@ sub execute {
         no_password_mode => $no_password_mode,
     );
 
-    my $api          = $b->{api};
-    my $cp_name      = $b->{cp_name};
-    my $cp_ip        = $b->{cp_ip};
-    my $ssh_key_path = $b->{ssh_key_path};
-
-    # Deploy registry (pull-through cache + local) FIRST after node Ready.
-    # MUST succeed: all image pulls go through this.
-    print "  [..] Setting up OCP registry (pull-through cache + local)...\n";
-    $self->_setup_registry($config);
-    print "  [ok] OCP registry ready\n";
-
-    # Configure CoreDNS for registry.local
-    eval {
-        $self->_configure_registry_dns($cp_ip);
-    };
-    if ($@) {
-        print "  [WARN] registry.local DNS setup failed: $@\n";
-    }
-
-    # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically.
-    # This MUST succeed: GPU Operator gating depends on NFD labels, and a silent
-    # NFD failure produces a "successful" cluster that has no GPU workloads.
-    print "  [..] Setting up Node Feature Discovery (NFD)...\n";
-    $self->_setup_nfd($config);
-    print "  [ok] NFD ready\n";
-
-    # Deploy GPU Operator if NFD detects NVIDIA GPU (pci-10de label)
-    print "  [..] Checking GPU Operator...\n";
-    eval {
-        $self->_setup_gpu_operator($config);
-    };
-    if ($@) {
-        print "  [WARN] GPU Operator setup failed: $@\n";
-    }
-
-    # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
-    # Apply cert-manager — MUST succeed: TLS certificates depend on it.
-    my $cert_manager_applied = 0;
-    unless ($config->no_cert) {
-        print "  [..] Applying cert-manager manifests...\n";
-        $self->_apply_cert_manager();
-        $cert_manager_applied = 1;
-        $self->_save_deployed_hash($config, 'certmanager', OCP::Versions->get_component_version('cert_manager'));
-        print "  [ok] cert-manager applied (starting in background)\n";
-    }
-
-    # Setup Cilium Gateway API (while cert-manager starts up).
-    # MUST succeed: the Gateway is the entry point for all HTTP(S) traffic.
-    print "  [..] Setting up Cilium Gateway API...\n";
-    $self->_setup_cilium_gateway($config);
-    print "  [ok] Cilium Gateway ready\n";
-
-    # Setup LB-IPAM for bare-metal LoadBalancer support.
-    # OPT-IN: set 'lbipam: true' in ocp.yaml to enable. Disabled by default
-    # because the host-public-IP-as-pool + L2 announcement combo makes Cilium
-    # hijack ARP for the host IP and drop all host-bound traffic (sshd,
-    # kube-apiserver) that isn't a registered Service. If you need external
-    # web access, enable this manually and be prepared for the tradeoffs —
-    # see https://docs.cilium.io/en/stable/network/lb-ipam/
-    if ($config->lbipam) {
-        print "  [..] Setting up LB-IPAM (opt-in)...\n";
-        eval {
-            $self->_setup_lb_ipam($cp_ip);
-        };
-        if ($@) {
-            print "  [WARN] LB-IPAM setup failed: $@\n";
-        } else {
-            print "  [ok] LB-IPAM ready\n";
-        }
-    } else {
-        print "  [ok] LB-IPAM skipped (opt-in — set 'lbipam: true' in ocp.yaml if needed)\n";
-    }
-
-    # Now wait for cert-manager and create issuers (had time to start during Gateway + LB-IPAM setup)
-    if ($cert_manager_applied) {
-        print "  [..] Waiting for cert-manager to be ready...\n";
-        $self->_wait_cert_manager_and_create_issuers($config);
-        print "  [ok] cert-manager ready\n";
-    }
-
-    # CR-first worker flow:
-    #   1. Ensure CRDs always (regardless of robocop_enabled) so observational
-    #      CP CR + any future node tooling can work.
-    #   2. Ensure OCPNodeProvider + Secret CRs for every provider referenced.
-    #   3. Write CP OCPNode CR (phase=Ready, observational).
-    #   4. Write Pending OCPNode CR for each worker pool entry.
-    #   5. If robocop_enabled: deploy robocop, wait briefly, let it drive.
-    #   6. Else (or robocop didn't come up): drive worker reconcile from CLI
-    #      via OCP::Node.
-    my $workers = $config->workers;
-    print "\n";
-    print "Step " . ($deploy_step + 1) . ": Ensure CRDs and provider CRs\n";
-    $self->_ensure_crds($api);
-    $self->_ensure_providers($api, $config, $secrets);
-    $self->_migrate_legacy_nodes($api);
-    $self->_ensure_cp_ocpnode($api, {
-        name     => $cp_name,
-        provider => $provider,
-        host     => $cp_ip,
+    # Now that the cluster is up, put the stack on it — registry, NFD, GPU
+    # operator, cert-manager, Cilium Gateway, LB-IPAM, CR layer, workers.
+    # Returns the final step counter so the health gate prints the right
+    # "Step N: Verify cluster health" line. See OCP::Cmd::Apply::Deploy.
+    my $step = OCP::Cmd::Apply::Deploy::deploy($self, {
+        config       => $config,
+        secrets      => $secrets,
+        api          => $b->{api},
+        cp_name      => $b->{cp_name},
+        cp_ip        => $b->{cp_ip},
+        provider     => $provider,
+        ssh_key_path => $b->{ssh_key_path},
+        deploy_step  => $deploy_step,
     });
-
-    my $worker_step = @$workers && (!$self->only || $self->only eq 'workers');
-    if ($worker_step) {
-        print "\n";
-        print "Step " . ($deploy_step + 2) . ": Deploy workers (CR-driven)\n";
-        $self->_ensure_worker_ocpnodes($api, $config);
-
-        my $robocop_ready = 0;
-        if ($config->robocop_enabled) {
-            print "  [..] Deploying robocop controller...\n";
-            eval { $self->_ensure_robocop($api) };
-            if ($@) {
-                print "  [WARN] robocop deploy failed: $@\n";
-            } else {
-                $robocop_ready = $self->_wait_robocop_ready($api, 60);
-                if ($robocop_ready) {
-                    print "  [ok] robocop ready — grace period (5s)\n";
-                    sleep 5;
-                } else {
-                    print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
-                }
-            }
-        }
-
-        my @results = $self->_drive_workers($api, $config, {
-            robocop_ready => $robocop_ready,
-            ssh_key_path  => $ssh_key_path,
-            cp_ip         => $cp_ip,
-            secrets       => $secrets,
-        });
-        $self->_print_worker_status(\@results);
-    }
 
     return $self->_finish_apply(
         config  => $config,
-        api     => $api,
-        step    => $deploy_step + 2 + ($worker_step ? 1 : 0),
-        cp_name => $cp_name,
-        cp_ip   => $cp_ip,
+        api     => $b->{api},
+        step    => $step,
+        cp_name => $b->{cp_name},
+        cp_ip   => $b->{cp_ip},
     );
 }
 
 #
-# The single exit of `ocp apply`.
 #
-# Both paths end here on purpose. The fresh-deploy path grew a health gate
-# while the reconcile path returned before it, so `ocp apply` over an existing
-# cluster still printed component results and exited 0 without having looked at
-# the cluster at all. A shared finisher is the structural fix: a path that
-# wants to return has to come through the same evaluation, the same banner and
-# the same exit code.
+# The single exit of `ocp apply` lives in OCP::Cmd::Apply::Health::finish.
+# This forwarder keeps the existing call sites and the test surface (t/37)
+# working without changes.
 #
+
 sub _finish_apply {
-    my ($self, %args) = @_;
-
-    my $config = $args{config};
-    my $api    = $args{api};
-
-    print "\n";
-    print(defined $args{step} ? "Step $args{step}: Verify cluster health\n"
-                              : "Verifying cluster health\n");
-
-    my $health = eval { $self->_check_cluster_health($api) };
-    unless ($health) {
-        # A malfunctioning health check must not be the thing that fails a
-        # deploy that otherwise went fine.
-        print "  [WARN] could not verify cluster health: $@";
-        $health = { critical => [], warnings => [], starting => [] };
-    }
-    $self->_print_health($health);
-
-    print "\n";
-    my $unhealthy = $self->_health_is_fatal($health);
-    $self->_banner($self->_health_banner_text($health));
-
-    print "Cluster: ", $config->name, "\n";
-    print "Control Plane: $args{cp_name} ($args{cp_ip})\n" if $args{cp_name};
-    print "API Endpoint: ", $config->api_url($args{cp_ip}), "\n" if $args{cp_ip};
-    print "\n";
-
-    if ($unhealthy) {
-        print "Core cluster components are unhealthy — the cluster is up but\n";
-        print "not functional. Inspect them before using it:\n";
-        print "  ocp status\n\n";
-    } else {
-        print "Next steps:\n";
-        print "  1. Inspect the cluster:\n";
-        print "     ocp status\n\n";
-        print "  2. Export the kubeconfig for your local kubectl:\n";
-        print "     ocp kubeconfig -e\n\n";
-    }
-
-    $self->_stamp_ocp_version($config);
-
-    return $unhealthy ? 1 : 0;
+    return OCP::Cmd::Apply::Health::finish(@_);
 }
 #
 # Cluster ingress (cert-manager + Cilium Gateway + LB-IPAM + CoreDNS) —

@@ -35,20 +35,23 @@ use OCP::Cmd::Apply;
 
 my $src = path('lib/OCP/Cmd/Apply.pm')->slurp_utf8;
 my $drift_src = path('lib/OCP/Cmd/Apply/Drift.pm')->slurp_utf8;
+my $health_src = path('lib/OCP/Cmd/Apply/Health.pm')->slurp_utf8;
 
 subtest 'the health gate has exactly one call site' => sub {
     # If _check_cluster_health is called from more than one place, the paths
     # can drift apart again — which is precisely how this bug happened.
-    my @calls = $src =~ /\$self->(_check_cluster_health)\b/g;
+    # The call site moved to OCP::Cmd::Apply::Health::finish during the
+    # Phase 10 dispatcher extraction, so we grep both files.
+    my @calls = ($src . $health_src) =~ /\$self->(_check_cluster_health)\b/g;
     is scalar @calls, 1,
         '_check_cluster_health is invoked from a single place';
 
-    my ($finish) = $src =~ /^sub _finish_apply \{\n(.*?)\n\}$/ms;
-    ok defined $finish, '_finish_apply exists';
+    my ($finish) = $health_src =~ /^sub finish \{\n(.*?)\n\}$/ms;
+    ok defined $finish, 'finish exists in Health.pm';
     like $finish, qr/_check_cluster_health/,
-        'and that place is _finish_apply';
-    like $finish, qr/_health_is_fatal/, '_finish_apply decides the exit code';
-    like $finish, qr/_banner/,          '_finish_apply prints the banner';
+        'and that place is finish';
+    like $finish, qr/_health_is_fatal/, 'finish decides the exit code';
+    like $finish, qr/_banner/,          'finish prints the banner';
 };
 
 subtest 'both apply paths return through the shared finisher' => sub {

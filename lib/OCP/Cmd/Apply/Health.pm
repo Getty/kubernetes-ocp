@@ -188,6 +188,59 @@ sub banner {
     return;
 }
 
+# The single exit of `ocp apply`.
+#
+# Both paths end here on purpose. The fresh-deploy path grew a health gate
+# while the reconcile path returned before it, so `ocp apply` over an existing
+# cluster still printed component results and exited 0 without having looked at
+# the cluster at all. A shared finisher is the structural fix: a path that
+# wants to return has to come through the same evaluation, the same banner and
+# the same exit code.
+sub finish {
+    my ($self, %args) = @_;
+
+    my $config = $args{config};
+    my $api    = $args{api};
+
+    print "\n";
+    print(defined $args{step} ? "Step $args{step}: Verify cluster health\n"
+                              : "Verifying cluster health\n");
+
+    my $health = eval { $self->_check_cluster_health($api) };
+    unless ($health) {
+        # A malfunctioning health check must not be the thing that fails a
+        # deploy that otherwise went fine.
+        print "  [WARN] could not verify cluster health: $@";
+        $health = { critical => [], warnings => [], starting => [] };
+    }
+    $self->_print_health($health);
+
+    print "\n";
+    my $unhealthy = $self->_health_is_fatal($health);
+    $self->_banner($self->_health_banner_text($health));
+
+    print "Cluster: ", $config->name, "\n";
+    print "Control Plane: $args{cp_name} ($args{cp_ip})\n" if $args{cp_name};
+    print "API Endpoint: ", $config->api_url($args{cp_ip}), "\n" if $args{cp_ip};
+    print "\n";
+
+    if ($unhealthy) {
+        print "Core cluster components are unhealthy — the cluster is up but\n";
+        print "not functional. Inspect them before using it:\n";
+        print "  ocp status\n\n";
+    } else {
+        print "Next steps:\n";
+        print "  1. Inspect the cluster:\n";
+        print "     ocp status\n\n";
+        print "  2. Export the kubeconfig for your local kubectl:\n";
+        print "     ocp kubeconfig -e\n\n";
+    }
+
+    $self->_stamp_ocp_version($config);
+
+    return $unhealthy ? 1 : 0;
+}
+
 1;
 
 __END__
