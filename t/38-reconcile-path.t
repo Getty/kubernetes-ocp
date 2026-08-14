@@ -34,6 +34,7 @@ use OCP::Cmd::Apply;
 #
 
 my $src = path('lib/OCP/Cmd/Apply.pm')->slurp_utf8;
+my $drift_src = path('lib/OCP/Cmd/Apply/Drift.pm')->slurp_utf8;
 
 subtest 'the health gate has exactly one call site' => sub {
     # If _check_cluster_health is called from more than one place, the paths
@@ -69,8 +70,8 @@ subtest 'both apply paths return through the shared finisher' => sub {
 };
 
 subtest 'the banner is not printed anywhere but the finisher' => sub {
-    my ($reconcile) = $src =~ /^sub _reconcile_components \{\n(.*?)\n\}$/ms;
-    ok defined $reconcile, '_reconcile_components found';
+    my ($reconcile) = $drift_src =~ /^sub reconcile_components \{\n(.*?)\n\}$/ms;
+    ok defined $reconcile, 'reconcile_components found in Drift.pm';
     unlike $reconcile, qr/DEPLOYED|_banner/,
         'reconcile does not claim success on its own';
 };
@@ -80,7 +81,7 @@ subtest 'the banner is not printed anywhere but the finisher' => sub {
 #
 
 subtest 'reconcile repairs the things it does not own' => sub {
-    my ($reconcile) = $src =~ /^sub _reconcile_components \{\n(.*?)\n\}$/ms;
+    my ($reconcile) = $drift_src =~ /^sub reconcile_components \{\n(.*?)\n\}$/ms;
 
     # #19 assumes this heals on the next apply; that is only true if the
     # reconcile path runs it.
@@ -97,7 +98,7 @@ subtest 'reconcile repairs the things it does not own' => sub {
 };
 
 subtest 'reconcile stays out of bootstrap and provisioning' => sub {
-    my ($reconcile) = $src =~ /^sub _reconcile_components \{\n(.*?)\n\}$/ms;
+    my ($reconcile) = $drift_src =~ /^sub reconcile_components \{\n(.*?)\n\}$/ms;
 
     # Reconcile is the cheap, frequently-run path. Creating servers and
     # waiting on them is a one-time bootstrap step, not convergence.

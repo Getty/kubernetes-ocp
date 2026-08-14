@@ -35,6 +35,18 @@ Revision history for OCP
         consistency check still works. All eleven helpers
         re-exported from Apply.pm as thin forwarders so t/31 and t/39
         keep working without changes
+      - OCP::Cmd::Apply::Drift owns the "cluster already exists"
+        reconcile path (the existing-cluster branch of execute):
+        OCP::Drift run + remedy dispatch, and the per-component
+        convergence loop (registry, CoreDNS/registry.local, NFD,
+        GPU operator, cert-manager, Cilium Gateway, LB-IPAM, and
+        the CR layer — CRDs, provider CRs, CP OCPNode). Both
+        _reconcile_components and _run_remedy re-exported from
+        Apply.pm as thin forwarders so t/20 and t/38 keep working.
+        t/38's regex-on-source now reads Drift.pm for the body of
+        reconcile_components; t/47's hash-reader scan concatenates
+        Apply.pm + Drift.pm so the invariant "whoever reads the
+        hashes also asks the cluster" still spans the two files
     - Make the OCP::Provider seam real
       - OCP::Provider had two parallel dispatch paths (`for_spec` and
         `from_cr`), each maintaining its own `if $type eq ...` ladder and

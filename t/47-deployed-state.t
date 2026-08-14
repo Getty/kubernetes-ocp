@@ -236,7 +236,10 @@ subtest 'reconcile reports what happened, not what the file suggested' => sub {
 #
 
 subtest 'no component trusts the hash file on its own' => sub {
-    my $src = path('lib/OCP/Cmd/Apply.pm')->slurp_utf8;
+    # reconcile_components moved to OCP::Cmd::Apply::Drift during the Phase 8
+    # extraction; the invariant still spans the two files, so we read both.
+    my $src = path('lib/OCP/Cmd/Apply.pm')->slurp_utf8
+        . "\n" . path('lib/OCP/Cmd/Apply/Drift.pm')->slurp_utf8;
 
     my @subs = $src =~ /^sub (\w+) \{\n(.*?)\n\}$/msg;
     my %body;
