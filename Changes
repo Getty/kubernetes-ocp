@@ -20,6 +20,11 @@ Revision history for OCP
         ocpVersion status stamp). Helpers re-exported from Apply.pm
         including deployment/nodeport_service which t/33 calls as bare
         package subs
+      - OCP::Cmd::Apply::Workloads owns the opt-in cluster workloads
+        (NFD setup + manifest + GPU operator setup + ClusterPolicy
+        manifest). All five helpers re-exported from Apply.pm as thin
+        forwarders so the test surface (t/40-gpu-clusterpolicy.t)
+        keeps working without changes
     - Make the OCP::Provider seam real
       - OCP::Provider had two parallel dispatch paths (`for_spec` and
         `from_cr`), each maintaining its own `if $type eq ...` ladder and
