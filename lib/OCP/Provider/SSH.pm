@@ -10,9 +10,16 @@ our $VERSION = '0.001';
 
 has ssh_key_path => (is => 'ro');
 
+# Callers reach this two ways. Some pass the host directly; OCP::Node::_provision
+# hands over the whole CR instead, as spec => $cr->{spec}, and the host sits in
+# there. Reading only $opts{host} made every ssh worker die in provisioning
+# before a single command ran, while the control plane stayed unaffected because
+# it never goes through _provision. Accept both shapes; a direct host wins.
 sub resolve_host {
     my ($self, %opts) = @_;
     my $host = $opts{host};
+    $host = $opts{spec}{host}
+        if !(defined $host && length $host) && ref $opts{spec} eq 'HASH';
     die "SSH provider requires 'host'\n" unless defined $host && length $host;
     return $host;
 }

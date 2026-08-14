@@ -90,6 +90,48 @@ use OCP::Provider::Local;
 }
 
 #
+# Test: SSH provider finds the host inside spec
+#
+# OCP::Node::_provision never passes host => directly. It hands over the whole
+# CR spec instead:
+#
+#     $self->provider->create_server(
+#         name => ..., node => ..., role => ..., spec => $self->cr->{spec},
+#     );
+#
+# A resolve_host that only reads $opts{host} dies there, so every ssh worker
+# fails in provisioning before a single command runs. The host-only tests
+# above cannot catch that: the bug lives in the gap between _provision's call
+# shape and resolve_host's expectation, not in either one alone.
+#
+
+{
+    my $ssh = OCP::Provider::SSH->new(ssh_key_path => '/tmp/fake.key');
+
+    my $server = eval {
+        $ssh->create_server(
+            name => 'brain',
+            node => 'brain',
+            role => 'worker',
+            spec => { host => 'brain.example.org', providerRef => 'ssh-default' },
+        );
+    };
+    is($@, '', 'create_server survives the call shape _provision uses');
+    is($server->{ip}, 'brain.example.org', 'host is read from spec when not passed directly');
+
+    # An explicit host still wins, so callers that do pass one are unaffected.
+    my $direct = $ssh->create_server(
+        host => '10.0.0.9',
+        spec => { host => 'ignored.example.org' },
+    );
+    is($direct->{ip}, '10.0.0.9', 'explicit host takes precedence over spec.host');
+
+    # A spec without a host is still an error, not a silent undef.
+    eval { $ssh->create_server(spec => { role => 'worker' }) };
+    like($@, qr/host/, 'dies when neither host nor spec.host is present');
+}
+
+#
 # Test: Local provider
 #
 
