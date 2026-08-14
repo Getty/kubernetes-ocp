@@ -142,3 +142,41 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=synopsis
+
+    ocp status
+
+=description
+
+C<ocp status> is the read-only inspection command for a project.  It prints
+the spec summary (cluster name, distribution + pinned version, control planes,
+worker pools) from C<ocp.yaml> and, when the cluster has been deployed, the
+live state from the Kubernetes API: node name, Ready/NotReady, role labels,
+kubelet version, InternalIP, GPU capacity and any L<OCP::Drift> entries that
+the spec or version manifest disagree with.
+
+If C<ocp.yaml> is missing the command dies with a hint to run C<ocp init>.
+If the cluster has never been deployed the spec section is printed and the
+status section says so.  The kubeconfig is read through L<OCP::Secrets>, so
+the C<.ocp/age.key> must be present for the live-status section to render.
+
+The command never modifies cluster state.  Drift entries that carry a
+C<remedy> are listed together with the count that C<ocp apply> would resolve.
+
+=method execute
+
+    $cmd->execute($args, $chain)
+
+Prints the spec summary, then — when the cluster is deployed — the live
+node table, GPU nodes and drift entries.  Returns 0 on success, 1 when the
+kubeconfig could not be decrypted or the API could not be reached.
+
+=seealso
+
+L<OCP::Cmd::Apply>, L<OCP::Cmd::Destroy>, L<OCP::Config>,
+L<OCP::Drift>, L<OCP::Kubernetes>, L<OCP::Secrets>, L<OCP::Versions>
+
+=cut

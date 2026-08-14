@@ -168,3 +168,76 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=synopsis
+
+    ocp destroy            # prompts for confirmation
+    ocp destroy --force    # skip prompt
+    ocp destroy --keep_status   # leave .ocp/status.yaml and .ocp/deployed.yaml behind
+
+=description
+
+C<ocp destroy> tears down every node recorded for the current cluster,
+across both providers:
+
+=over 4
+
+=item *
+
+Hetzner — each node carrying a C<providerId> is deleted via
+L<OCP::Provider::Hetzner/delete_server>; the encrypted SSH key the
+project uploaded is left in place and may be re-used by a later C<ocp apply>.
+
+=item *
+
+SSH — the RKE2/K3s uninstaller is run on the host.  Failures here are
+best-effort: a host that is already gone is logged as a warning and the
+tear-down continues.
+
+=back
+
+Sources for the node list, in order: C<.ocp/status.yaml>, the Hetzner
+project (orphans that C<status.yaml> did not record, picked up via
+L<OCP::Provider::Hetzner/list_servers_by_cluster>), and finally the
+C<control_planes> and C<workers> sections of C<ocp.yaml> as a last resort.
+
+After the nodes are gone, both C<.ocp/status.yaml> and
+C<.ocp/deployed.yaml> are removed (unless C<--keep_status> is set) and the
+encrypted C<kubeconfig.yaml> is deleted.  Leaving C<deployed.yaml> behind
+was the bug behind C<ADR 0004>: a fresh C<ocp apply> compared a brand-new
+cluster against the hash file of the previous one and announced every
+component as "up to date" against a registry that was never rolled out.
+
+=opt force
+
+    --force, -f
+
+Skip the C<Are you sure?> prompt.  Otherwise the command reads from
+C<STDIN> and aborts unless the answer starts with C<y> or C<yes>
+(case-insensitive).
+
+=opt keep_status
+
+    --keep-status
+
+Keep C<.ocp/status.yaml> and C<.ocp/deployed.yaml> in place after
+teardown.  Useful when the next step is C<ocp apply> against the same
+spec and you want the reconcile path to start from a known-good hash set.
+
+=method execute
+
+    $cmd->execute($args, $chain)
+
+Lists the candidate nodes, prompts for confirmation (unless C<--force>),
+deletes each via its provider, removes the encrypted kubeconfig, and
+returns 0.  Prints a warning and continues when a single Hetzner or SSH
+delete fails.
+
+=seealso
+
+L<OCP::Cmd::Apply>, L<OCP::Cmd::Status>, L<OCP::Provider::Hetzner>,
+L<OCP::Config>, L<OCP::Secrets>
+
+=cut

@@ -175,3 +175,151 @@ sub _dig {
 }
 
 1;
+
+__END__
+
+=synopsis
+
+    use OCP::Kubernetes;
+
+    # From a decrypted kubeconfig string (the common path for ocp status)
+    my $k8s = OCP::Kubernetes->new(kubeconfig => $kc_yaml);
+    my $nodes = $k8s->list_nodes;
+    for my $node (@$nodes) {
+        printf "%-20s %s\n", $k8s->node_name($node), $k8s->node_internal_ip($node);
+    }
+
+    # From robocop, running in-cluster as the pod's service account
+    my $k8s = OCP::Kubernetes->new(in_cluster => 1);
+
+=description
+
+C<OCP::Kubernetes> wraps L<Kubernetes::REST::Kubeconfig> with two helpers
+the CLI and the controller both need: a typed-resource bootstrap
+(C<register_resource_providers>) and the node-extraction methods that
+L<OCP::Cmd::Status>, L<OCP::Drift> and L<OCP::Cmd::Node::Ls> all reach
+for.
+
+Three ways to authenticate, picked by which attribute is set:
+
+=over 4
+
+=item C<kubeconfig>
+
+A kubeconfig document as a string.  Written to a C<File::Temp> so
+L<Kubernetes::REST::Kubeconfig> can take a path; the temp file is
+auto-unlinked.
+
+=item C<kubeconfig_path>
+
+A path to a kubeconfig file.  Useful in tests and on the host where
+the decrypted file already lives on disk.
+
+=item C<in_cluster>
+
+Boolean.  Off by default — a caller that lost its kubeconfig by accident
+must keep failing with the message that says so, instead of quietly
+authenticating as the pod's service account.  When on, the path
+C</dev/null/ocp-in-cluster> is handed to L<Kubernetes::REST::Kubeconfig>;
+that path cannot exist, so its in-cluster fallback is the only way the
+resulting API can authenticate.
+
+=back
+
+Without any of the three, the constructor croaks.
+
+=attr kubeconfig
+
+Kubeconfig document as a string.  Mutually exclusive with
+C<kubeconfig_path> and C<in_cluster>.
+
+=attr kubeconfig_path
+
+Path to a kubeconfig file on disk.
+
+=attr in_cluster
+
+Boolean.  When true, the API authenticates via the pod's service account.
+Defaults to false.
+
+=attr api
+
+Lazy-built L<Kubernetes::REST> client.  Built once on first access; do
+not construct it directly — it relies on C<register_resource_providers>
+being run.
+
+=method register_resource_providers
+
+    $k8s->register_resource_providers($api);
+
+Adds the typed IO::K8s classes OCP relies on (C<IO::K8s::Cilium>,
+C<IO::K8s::CertManager>, C<IO::K8s::GatewayAPI>) to C<$api->k8s>.  Safe to
+call on an API that has no C<k8s> method — silently returns.  Called
+automatically from the C<api> builder; exposed for callers that already
+hold an API object.
+
+=method list_nodes
+
+    my $nodes = $k8s->list_nodes;
+
+Returns an arrayref of C<Node> resources, or an empty arrayref on any
+error.  Accepts the loose shapes C<Kubernetes::REST> sometimes returns
+(arrayref, an object with C<items>, or undef).
+
+=method node_name
+
+    my $name = $k8s->node_name($node);
+
+Extracts C<metadata.name>.  Empty string when absent.
+
+=method node_ready
+
+    my $bool = $k8s->node_name($node);
+
+Walks C<status.conditions> and returns 1 when a C<Ready=True> condition
+is present, 0 otherwise.
+
+=method node_roles
+
+    my $csv = $k8s->node_roles($node);
+
+Returns a comma-joined list of C<control-plane>/C<master> for the
+C<node-role.kubernetes.io/> labels that are present, or C<< <none> >>.
+
+=method node_version
+
+    my $v = $k8s->node_version($node);
+
+Returns C<status.nodeInfo.kubeletVersion>.
+
+=method node_internal_ip
+
+    my $ip = $k8s->node_internal_ip($node);
+
+First C<InternalIP> entry from C<status.addresses>, or the empty string.
+
+=method node_external_ip
+
+    my $ip = $k8s->node_external_ip($node);
+
+First C<ExternalIP> entry from C<status.addresses>, or the empty string.
+
+=method node_gpu_count
+
+    my $n = $k8s->node_gpu_count($node);
+
+Reads C<status.capacity.nvidia.com/gpu>; 0 when absent.
+
+=method gpu_nodes
+
+    my $gpu_nodes = $k8s->gpu_nodes;
+
+Returns the subset of C<list_nodes> whose C<node_gpu_count> is greater
+than zero.
+
+=seealso
+
+L<Kubernetes::REST>, L<OCP::Drift>, L<OCP::Cmd::Status>,
+L<OCP::Cmd::Node::Ls>
+
+=cut

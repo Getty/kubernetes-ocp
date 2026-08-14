@@ -60,3 +60,59 @@ sub server_type_options {
 }
 
 1;
+
+__END__
+
+=synopsis
+
+    use OCP::Hetzner;
+
+    my $hz = OCP::Hetzner->new(token => $ENV{HETZNER_API_TOKEN});
+
+    my $locations = $hz->location_options;
+    # [ { label => 'Falkenstein (Falkenstein, DE)', value => 'fsn1' }, ... ]
+
+    # aarch64-first cluster: pin to ARM server types only
+    my $arm_types = $hz->server_type_options(architecture => 'arm');
+
+=description
+
+C<OCP::Hetzner> is the read-only catalogue wrapper around the Hetzner
+Cloud API.  It exists to feed the pickers in C<ocp init> (location and
+server type) — it does not create or delete servers; for that, see
+L<OCP::Provider::Hetzner>.
+
+Both lazy builders (C<_locations>, C<_server_types>) fetch once from
+L<WWW::Hetzner::Cloud> and cache on the instance.  Pickers therefore cost
+one round trip per process.
+
+=attr token
+
+    my $hz = OCP::Hetzner->new(token => $token);
+
+Hetzner Cloud API token.  Required.
+
+=method location_options
+
+    my $list = $hz->location_options;
+
+Returns an arrayref of C<{ label, value }> pairs for every location
+Hetzner advertises, formatted as C<"Name (City, COUNTRY)">.
+
+=method server_type_options
+
+    my $list = $hz->server_type_options;
+    my $arm = $hz->server_type_options(architecture => 'arm');
+    my $x86 = $hz->server_type_options(architecture => 'x86');
+
+Returns an arrayref of C<{ label, value }> pairs for every non-deprecated
+server type.  Labels include the architecture name on purpose — OCP runs
+on aarch64, so a picker that defaulted to x86 would silently hide half of
+the catalogue.  Pass C<architecture> to narrow the list to one target
+arch; the default returns both.  Sorted by cores, then memory, then name.
+
+=seealso
+
+L<OCP::Provider::Hetzner>, L<OCP::Cmd::Init>, L<WWW::Hetzner::Cloud>
+
+=cut

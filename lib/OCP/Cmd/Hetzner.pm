@@ -70,3 +70,58 @@ sub execute {
 }
 
 1;
+
+__END__
+
+=synopsis
+
+    # List every server the Hetzner project can see
+    ocp hetzner
+
+    # Filter by OCP cluster label
+    ocp hetzner --label ocp-cluster=prod
+
+=description
+
+C<ocp hetzner> is a debug-only listing command that talks straight to the
+Hetzner Cloud API via L<WWW::Hetzner::Cloud>.  It is not an adapter for
+cluster provisioning — for that, see L<OCP::Provider::Hetzner>, which is
+what C<ocp apply> actually uses.
+
+The command exists to answer the question "what does this token see?" when
+reconciling a cluster by hand: servers whose C<ocp-cluster=> label does not
+match the current C<ocp.yaml>, leftover orphans after a partial
+C<ocp destroy>, or machines the API key has access to but the project
+directory does not name.
+
+The token is read from C<$HETZNER_API_TOKEN> or the encrypted secrets store
+(set up by C<ocp init --hetzner>); without it the command dies with a hint
+to run C<ocp init --hetzner>.
+
+=opt list
+
+    --list, -l
+
+List servers (default behaviour).  Always on; present so MooX::Options
+keeps the flag exposed.
+
+=opt label
+
+    --label ocp-cluster=prod[,key=value,...]
+
+Filter the listing to servers carrying every label key/value pair given.
+Passes through to L<WWW::Hetzner::Cloud/servers/list_by_label>.
+
+=method execute
+
+    $cmd->execute($args, $chain)
+
+Prints a tabular listing (ID, name, status, IPv4, server type, labels).
+Returns 0 on success, or dies when no token is configured.
+
+=seealso
+
+L<OCP::Provider::Hetzner>, L<OCP::Hetzner>, L<OCP::Secrets>,
+L<WWW::Hetzner::Cloud>
+
+=cut
