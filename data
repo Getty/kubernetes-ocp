@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-08-14T18:52:34Z
+claimed_by: ocp-worker
+class: standard
+completed: 2026-08-14T18:52:34Z
+created: 2026-08-14T18:38:38Z
+id: 60
+priority: low
+started: 2026-08-14T18:40:45Z
+status: done
+tags:
+- cleanup
+- naming
+- hetzner
+title: Drei Hetzner-Module — Klarheit schaffen
+updated: 2026-08-14T18:52:34Z
+---
+
+Drei Hetzner-Module überlappen ohne gemeinsamen Anker:
+- lib/OCP/Hetzner.pm (62 Zeilen): Helper, wird von Cmd/Init.pm benutzt
+- lib/OCP/Cmd/Hetzner.pm (72 Zeilen): debug listing command
+- lib/OCP/Provider/Hetzner.pm (131 Zeilen): echter Cloud-Adapter
+
+Lösung: 
+1) OCP::Hetzner (Helper) — Inhalt prüfen. Wenn nur Re-Exports, dann entweder Inhalt nach Provider::Hetzner ziehen und OCP::Hetzner löschen, oder zu OCP::Hetzner::Picker (oder ähnlich) umbenennen, klar als nicht-Adapter.
+2) OCP::Cmd::Hetzner — umbenennen zu OCP::Cmd::Hetzner::List oder einen klareren Namen, der signalisiert: debug tool, nicht Adapter-Aufruf.
+
+Begründung warum: wer nach Hetzner sucht, findet heute drei Namespaces ohne klares Signal welcher was tut.
+
+Tests: bestehende t/42-hetzner-options.t umbenennen falls nötig, oder neuen Test für Klarheit der Modul-Verantwortlichkeiten.
