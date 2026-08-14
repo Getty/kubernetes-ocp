@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-08-14T18:45:38Z
+claimed_by: ocp-worker
+class: standard
+completed: 2026-08-14T18:45:38Z
+created: 2026-08-14T18:38:05Z
+id: 59
+priority: medium
+started: 2026-08-14T18:40:39Z
+status: done
+tags:
+- cleanup
+- dead-code
+- stomach-ache
+title: OCP::Cmd::InjectKey und andere tote Commands entfernen
+updated: 2026-08-14T18:45:38Z
+---
+
+OCP::Cmd::InjectKey (lib/OCP/Cmd/InjectKey.pm, 49 Zeilen) ist tot: sub execute stirbt nur mit TODO-Message. karr #2 will ihn reaktivieren via port_forward — dann NEU schreiben, nicht den Toten pflegen.
+
+Weitere Bauchschmerzen-Code-Stellen, die bei der Inspektion aufgefallen sind:
+- tote POD-Beispiele mit falschen Versionen (Drift.pm:500 nennt v1.19.2, ist Cilium 1.20.0)
+- Rexfile-Duplikat-Cilium-Versionen (eigenes Ticket)
+- share/robocop/ Manifeste mit falscher Image-Registry (durch #10 schon gefixt — verifizieren dass kein Rest ist)
+
+Bei diesem Ticket Fokus: InjectKey löschen und andere offensichtlich tote Stellen die der Reviewer noch findet (each mit Begründung im Commit).
+
+Verify: grep -r InjectKey lib/ bin/ t/ nach Löschen — wenn noch refs, dann entweder begründet oder mitlöschen.
