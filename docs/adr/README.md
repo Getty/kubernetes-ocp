@@ -59,6 +59,10 @@ ADR here.
 | [0020](0020-arm64-is-a-first-class-target.md) | Treat arm64 as a first-class target |
 | [0021](0021-robocop-polls-instead-of-watching.md) | Keep robocop polling, and hold the watch dependency as dated debt |
 | [0022](0022-report-the-gap-instead-of-a-second-mechanism.md) | Report the gap instead of building a second mechanism to close it |
+| [0023](0023-resolve-share-directory-next-to-running-code.md) | Resolve the share directory next to the running code, and reject overrides that do not point at a directory |
+| [0024](0024-register-io-k8s-resource-providers-defensively.md) | Register IO::K8s resource providers defensively, and live with raw YAML where they are absent |
+| [0025](0025-pin-perl-baseline-across-image-and-snapshot.md) | Pin the same Perl patch release in image, snapshot and runtime |
+| [0026](0026-robocop-is-a-criu-and-tcp-9999-stub-pending-ticket-1.md) | Robocop is a CRIU / TCP-9999 key-injection stub pending ticket #1 |
 
 ## Provenance
 
@@ -67,6 +71,14 @@ directory did not. The rationale in each was confirmed from the code itself, fro
 git history, and from the karr board — the tickets carry the verified *why*,
 including the alternatives that were tested and refuted. 0022 is the first ADR
 written alongside its decision rather than after it.
+
+0023–0025 are also backfills — decisions in the code or the toolchain that
+were not yet written down — driven by karr #63. 0026 is a snapshot, not a
+decision: it records what `OCP::Robocop` currently ships (CRIU checkpoint,
+TCP-9999 key injection, `sleep(60)` in place of reconciliation) and names
+karr #1 / ticket #1 as the work that supersedes it. 0020 was tightened against
+reality in the same pass — the "Where first-class" / "Where not yet" split is
+the kind of precision karr #62 demanded (karr #10 and #58).
 
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
@@ -78,8 +90,11 @@ commit, a ticket, or the code.
 Where a decision is only partly verified — the RKE2 arm64 path, the
 `gpu.driver: operator` path, the worker path end to end, the lease's 409
 collision, the RKE2 half of 0022 — the ADR says so rather than implying a green
-test suite proves it.
+test suite proves it. 0020 splits this explicitly into "where first-class
+today" and "where not yet", so the verification obligation and the artifact
+claim do not get averaged into a smooth-sounding "support".
 
 One area is deliberately absent: how robocop is constructed and reaches its
-credentials in-cluster. That is an open design question (karr #33), and nothing
-about it is written down here until it is decided.
+credentials in-cluster. 0026 names the ticket (karr #1, "ticket #1" in
+upstream language) that will redesign that surface; until it lands, the stub
+is the snapshot and the snapshot is not the goal.
