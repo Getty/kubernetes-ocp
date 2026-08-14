@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Decompose OCP::Cmd::Apply into focused phase modules
+      - OCP::Cmd::Apply::DeployedHash owns the .ocp/deployed.yaml
+        tracking (load/save/report_component)
+      - OCP::Cmd::Apply::K8s owns the in-cluster K8s helpers
+        (api/server_side_apply/apply_yaml_string/poll_deployment_ready/...)
+      - OCP::Cmd::Apply::Health owns the post-deploy cluster health
+        gate (classify_pod/scan_pods/check/print/is_fatal/banner)
+      - OCP::Cmd::Apply::CR owns the OCPNode/OCPNodeProvider layer:
+        CRD apply, provider CRs, CP+worker CRs, legacy migration,
+        robocop deployment, robocop-ready wait, and the worker
+        reconcile loop (CLI fallback + robocop poll). All twelve
+        helpers re-exported from Apply.pm as thin forwarders so the
+        test surface (t/20, t/36, t/38) keeps working
     - Make the OCP::Provider seam real
       - OCP::Provider had two parallel dispatch paths (`for_spec` and
         `from_cr`), each maintaining its own `if $type eq ...` ladder and
