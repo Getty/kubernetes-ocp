@@ -1,0 +1,33 @@
+---
+claimed_at: 2026-08-14T22:46:09Z
+claimed_by: ocp-infra-worker
+class: standard
+completed: 2026-08-14T22:45:44Z
+created: 2026-08-14T22:22:19Z
+id: 64
+priority: high
+started: 2026-08-14T22:22:36Z
+status: done
+tags:
+- infra
+- build
+- ci
+title: 'ocp-build-image: share/bin Script + Makefile-Target für raudssus/ocp'
+updated: 2026-08-14T22:46:09Z
+---
+
+Bestehendes Dockerfile baut multi-arch-fähig, aber kein dediziertes Script das nach raudssus/ocp pusht. Makefile-Targets docker-push/docker-release sind eng am Repo und brauchen Maintainer-Go für jeden Push.
+
+Bedarf:
+- share/bin/ocp-build-image (Shell, bash, keine Abhängigkeit auf bashism außer shebang): idempotent, CI-tauglich, nicht-interaktiv
+- Multi-arch via buildx: PLATFORMS=linux/amd64,linux/arm64 (übernommen aus Makefile)
+- Image-Tags: latest + $VERSION (aus VERSION-File oder --tag=Arg) + git-sha (kurz, 7 chars)
+- Push-Ziel: raudssus/ocp (konfigurierbar via --repo= bzw. OCP_IMAGE_REPO env)
+- Verifiziert docker login vor push; fail-loud wenn nicht eingeloggt
+- Makefile-Target `make build-image` ruft das Script mit den richtigen Defaults auf
+- Tests in t/: mind. ein Test der prüft dass das Script die richtigen Tags baut (kann mit --dry-run arbeiten, der die docker-Befehle nur printet statt ausführt)
+
+Out of scope:
+- Anderes Repo als raudssus/ocp (Default hartcodiert)
+- Auto-Push auf PR oder Tag (CI-Coupling, separates Ticket)
+- Dockerfile.robocop-Revival (eigenes Ticket, falls überhaupt gewollt)
