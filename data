@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-08-14T19:11:38Z
+claimed_by: ocp-worker
+class: standard
+completed: 2026-08-14T19:11:09Z
+created: 2026-08-14T18:37:47Z
+id: 56
+priority: high
+started: 2026-08-14T18:55:25Z
+status: done
+tags:
+- refactor
+- provider
+- seam
+title: OCP::Provider-Seam echt machen
+updated: 2026-08-14T19:11:38Z
+---
+
+OCP::Provider-Factory (lib/OCP/Provider.pm:109) hat zwei Entry-Points for_spec() und from_cr(). Konsumenten: Apply.pm, Destroy.pm, Cmd/Node/Add.pm, Cmd/Node/Rm.pm, Robocop/Controller.pm (5 Stellen, nicht nur Apply).
+
+Friction: Hetzner-Adapter (Provider/Hetzner.pm) konsumiert Role/Provider/ExistingHost NICHT. Eigene upload_ssh_key / list_servers_by_cluster / server_type_options, kein geteiltes Interface. SSH/Local sind über die Role abgedeckt.
+
+Ziel: zwei Rollen, nicht eine:
+- OCP::Role::Provider::ExistingHost (bleibt, SSH + Local)
+- OCP::Role::Provider::Cloud (NEU, Hetzner-konsumierend; create_server/upload_ssh_key/list_servers_by_cluster/wait_for_running/get_server_ip/cleanup_on_failure/server_exists-Surface)
+
+Factory kriegt OCP::Provider->adapter_for($type), beide Entry-Points delegieren dahin. Apply/Destroy/Node-Konsumenten rufen die Factory durchgängig (statt teils direkt new()). Tests: t/12-provider.t um Cloud-Role-Surface erweitern, Provider-Switch-Test (Hetzner → SSH Mid-Lifecycle).
+
+Vorbedingung: Hetzner-Code minimal anfassen, nur damit er die Role konsumiert. Bestehende Methoden bleiben, werden in der Role als requires deklariert.
