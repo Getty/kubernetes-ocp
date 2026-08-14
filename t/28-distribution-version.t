@@ -59,18 +59,26 @@ subtest 'install_cilium is handed the versions from the manifest' => sub {
         'the distribution is passed too — it decides the kubectl path for k3s';
 };
 
-subtest 'the Rexfile treats its Cilium constants as fallbacks' => sub {
+subtest 'the Rexfile reads Cilium versions from task_params, not from constants' => sub {
     my $rexfile = path(__FILE__)->parent->parent->child('share/Rexfile');
     plan skip_all => 'share/Rexfile not found' unless -f $rexfile;
 
     my $src = $rexfile->slurp_utf8;
 
-    like $src, qr/my \$cilium_version_target = \$params->\{version\} \|\| CILIUM_VERSION;/,
-        'install_cilium prefers the passed version';
-    like $src, qr/my \$cli_version = \$params->\{cli_version\} \|\| CILIUM_CLI_VERSION;/,
-        'install_cilium prefers the passed CLI version';
+    # ADR 0014: every pin lives in OCP::Versions exactly once. The Rexfile
+    # used to carry CILIUM_VERSION / CILIUM_CLI_VERSION / GATEWAY_API_VERSION
+    # constants as a hand-run fallback, and they drifted behind the manifest.
+    my @cst = $src =~ /^\s*use constant \s+ (CILIUM|CILIUM_CLI|GATEWAY_API)_VERSION \b/gmx;
+    is_deeply \@cst, [],
+        'no Cilium version constants remain in the Rexfile (every pin lives in OCP::Versions)'
+        or diag "Constants still present: @cst";
+
+    like $src, qr/my \$cilium_version_target = \$params->\{version\} \/\/ \$ENV\{OCP_CILIUM_VERSION\}/,
+        'install_cilium takes Cilium from task_params, with an ENV fallback for hand-runs';
+    like $src, qr/my \$cli_version = \$params->\{cli_version\} \/\/ \$ENV\{OCP_CILIUM_CLI_VERSION\}/,
+        'the Cilium CLI version has the same shape';
     unlike $src, qr/run 'cilium install --version ' \. CILIUM_VERSION/,
-        'the install command no longer hardcodes the constant';
+        'the install command no longer hardcodes any constant';
 };
 
 #

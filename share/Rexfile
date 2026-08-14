@@ -1024,17 +1024,20 @@ sub _configure_nvidia_runtime_path {
 # Cilium Tasks
 #
 
-# Cilium versions — fallback only. OCP::Versions is the source of truth and
-# passes the real values in as task parameters; these apply when the Rexfile
-# is run by hand.
-use constant CILIUM_VERSION     => '1.19.2';
+# Every Cilium version flows in from OCP::Versions via the task parameter
+# JSON (REX_TASK_PARAMS, set by OCP::Rex::install_server) or, for hand-runs,
+# from an explicit OCP_*_VERSION environment variable. There are no
+# constants in this file because every pin lives exactly once, in
+# OCP::Versions (ADR 0014): duplicating the pin here is how the install
+# ran against an older Cilium and OCP::Drift reported drift against the
+# distribution's own manifest on the next status call.
+#
 # Gateway API is version-locked to Cilium: 1.20 requires the CRDs from
 # v1.6.1, because it demands tlsroutes/referencegrants/backendtlspolicies
 # at gateway.networking.k8s.io/v1. Older bundles serve those as v1alpha2
 # or v1beta1, and the operator then refuses to start its Gateway
 # controller at all — Gateway and GatewayClass sit at Accepted=Unknown.
-use constant GATEWAY_API_VERSION => 'v1.6.1';
-use constant CILIUM_CLI_VERSION => 'v0.18.5';
+# Bumping the pin means bumping both together.
 
 desc "Install Cilium CNI";
 task "install_cilium", sub {
@@ -1055,7 +1058,8 @@ task "install_cilium", sub {
     my $arch = _node_arch();
 
     # Install Cilium CLI (skip if already installed with correct version)
-    my $cli_version = $params->{cli_version} || CILIUM_CLI_VERSION;
+    my $cli_version = $params->{cli_version} // $ENV{OCP_CILIUM_CLI_VERSION}
+        or die "OCP_CILIUM_CLI_VERSION (or task_params cli_version=...) is required\n";
     my $existing_cli = run "cilium version --client 2>/dev/null | head -1", auto_die => FALSE;
     chomp $existing_cli if defined $existing_cli;
 
@@ -1075,7 +1079,8 @@ task "install_cilium", sub {
     # Install Gateway API CRDs BEFORE Cilium (required!)
     # The experimental channel is required, not optional: TLSRoute lives
     # only there, and Cilium lists it among the required resources.
-    my $gateway_api_version = $params->{gateway_api_version} || GATEWAY_API_VERSION;
+    my $gateway_api_version = $params->{gateway_api_version} // $ENV{OCP_GATEWAY_API_VERSION}
+        or die "OCP_GATEWAY_API_VERSION (or task_params gateway_api_version=...) is required\n";
     say "Installing Gateway API CRDs $gateway_api_version...";
     run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$gateway_api_version/standard-install.yaml",
         env => { KUBECONFIG => $kubeconfig };
@@ -1103,7 +1108,8 @@ task "install_cilium", sub {
     # NOTE: do NOT pipe to "head" — the version line ("Helm chart version: ...")
     # comes well below the status header. With head -5 the version check would
     # always be false on a healthy cluster, falsely triggering an upgrade run.
-    my $cilium_version_target = $params->{version} || CILIUM_VERSION;
+    my $cilium_version_target = $params->{version} // $ENV{OCP_CILIUM_VERSION}
+        or die "OCP_CILIUM_VERSION (or task_params version=...) is required\n";
     my $cilium_status = run "cilium status 2>&1",
         env => { KUBECONFIG => $kubeconfig },
         auto_die => FALSE;
@@ -1183,7 +1189,8 @@ task "upgrade_cilium", sub {
 
     my $arch = _node_arch();
 
-    my $cli_version = $params->{cli_version} || CILIUM_CLI_VERSION;
+    my $cli_version = $params->{cli_version} // $ENV{OCP_CILIUM_CLI_VERSION}
+        or die "OCP_CILIUM_CLI_VERSION (or task_params cli_version=...) is required\n";
     my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
 
     say "Updating Cilium CLI to $cli_version...";

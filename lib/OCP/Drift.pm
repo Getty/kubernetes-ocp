@@ -497,7 +497,7 @@ The address a Corefile maps a name to, or C<undef> when it maps none.
 
 =head2 image_version
 
-    my $tag = OCP::Drift::image_version('quay.io/cilium/operator-generic:v1.19.2');
+    my $tag = OCP::Drift::image_version('quay.io/cilium/operator-generic:v1.20.0');
 
 The tag of a container image reference. Handles digests and registry ports.
 
