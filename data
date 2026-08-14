@@ -1,0 +1,42 @@
+---
+claimed_at: 2026-08-14T23:12:24Z
+claimed_by: ocp-robocop-worker
+class: standard
+completed: 2026-08-14T23:11:54Z
+created: 2026-08-14T23:04:40Z
+id: 66
+priority: low
+started: 2026-08-14T23:05:04Z
+status: done
+tags:
+- cli
+- robocop
+title: deploy-image --image Shorthand + Digest-Support
+updated: 2026-08-14T23:12:24Z
+---
+
+#65 baute ocp deploy-image mit --repo + --tag. Für den Alltagsgebrauch
+fehlt ein Shorthand: --image registry/repo:tag parsed beides in einem
+String. Zusätzlich Digest-Support für content-addressable Rollouts.
+
+Spec:
+- --image <REF> parst <REGISTRY>/<REPO>:<TAG> oder <REPO>:<TAG> oder
+  <REPO>@sha256:<DIGEST>
+- --image und --repo/--tag schließen sich gegenseitig aus (fail-loud wenn beide)
+- Parsing-Helper als eigene sub _parse_image_ref() damit t/54-deploy-image.t
+  den direkt testen kann
+- Edge cases: kein Tag → fail-loud ('latest' nicht implizieren, das ist
+  Docker-Kludge), Digest-only OK, Repo ohne Registry-Teil OK (default
+  docker hub implizit), Tag mit Slashes (ghcr.io/foo/bar:1.2.3) OK
+
+Tests:
+- 6-8 Subtests für _parse_image_ref (jede Variante + Edge cases)
+- 1 Subtest für mutual exclusion
+- 1 Subtest für Digest-Patch (image: foo/bar@sha256:abc → kein Tag-Teil)
+
+Out of scope:
+- Registry-Login (Voraussetzung)
+- Multi-Image-Patch (mehrere Container im selben Deployment)
+- Image-Pull-Secret-Generierung
+
+Lane: ocp-robocop-worker (Erweiterung von #65).
