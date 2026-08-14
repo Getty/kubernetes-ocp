@@ -8,7 +8,7 @@ TAG ?= latest
 PLATFORMS ?= linux/amd64,linux/arm64
 
 .PHONY: all build test test-v clean docker-test docker-push docker-release snapshot smoke \
-        buildx-setup build-multiarch
+        buildx-setup build-multiarch build-image
 
 all: build
 
@@ -79,3 +79,11 @@ docker-release: buildx-setup
 	docker buildx build --builder ocp-multiarch --platform $(PLATFORMS) \
 	  -t $(IMAGE):$(TAG) -t $(IMAGE):latest --push .
 	@echo "Released $(IMAGE):$(TAG)"
+# Build and push the OCP image using share/bin/ocp-build-image. The script
+# runs standalone (CI does not need `make`), accepts overrides via --repo,
+# --platforms, --tag, and prints rather than executes under --dry-run. This
+# target does NOT need maintainer go-ahead — the script pushes by default,
+# so `--push` here is explicit (call the script directly with `--no-push`
+# for a local-only build).
+build-image:
+	share/bin/ocp-build-image --push

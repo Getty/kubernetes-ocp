@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# ocp-build-image — Build and (optionally) push the OCP Docker image to a
+# registry. Multi-arch by default (linux/amd64,linux/arm64), idempotent,
+# CI-friendly. Standalone — works without `make` or any Perl.
+#
+# Tags written (in order):
+#   latest
+#   $VERSION            — from ./VERSION file, --tag=…, or `git describe`
+#   <git-sha-short-7>   — from `git rev-parse --short=7 HEAD`
+#
+# Push target: raudssus/ocp by default; override via --repo= or $OCP_IMAGE_REPO.
+#
+# Build cache: pulled from $REPO:cache so incremental builds reuse layers
+# (push from CI; local-only builds still benefit if the cache tag exists).
+#
+set -euo pipefail
+
+# ---- Defaults ---------------------------------------------------------------
+REPO="${OCP_IMAGE_REPO:-raudssus/ocp}"
+PLATFORMS="${OCP_IMAGE_PLATFORMS:-linux/amd64,linux/arm64}"
+BUILDER_NAME="${OCP_BUILDER_NAME:-ocp-builder}"
+PUSH=1
+DRY_RUN=0
+TAG_OVERRIDE=""
+
+# ---- Usage ------------------------------------------------------------------
+usage() {
+    cat <<'EOF'
+ocp-build-image — Build and (optionally) push the OCP Docker image
+
+Usage:
+  ocp-build-image [options]
+
+Options:
+  --repo=NAME         Image repo (default: raudssus/ocp, or $OCP_IMAGE_REPO)
+  --platforms=LIST    Comma-separated platforms
+                      (default: linux/amd64,linux/arm64, or $OCP_IMAGE_PLATFORMS)
+  --tag=VERSION       Override VERSION (otherwise from ./VERSION or git describe)
+  --builder=NAME      docker buildx builder name (default: ocp-builder)
+  --push              Push to registry (default)
+  --no-push           Build only, do not push
+  --dry-run           Print docker commands instead of running them
+  -h, --help          Show this help
+
+Environment:
+  OCP_IMAGE_REPO        Default --repo value
+  OCP_IMAGE_PLATFORMS   Default --platforms value
+  OCP_BUILDER_NAME      Default --builder value
+
+Exit codes:
+  0  success
+  1  build failed
+  2  push failed
+  3  not logged in to a docker registry
+EOF
+}
+
+# ---- Argument parsing --------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo=*)      REPO="${1#*=}" ;;
+        --platforms=*) PLATFORMS="${1#*=}" ;;
+        --tag=*)       TAG_OVERRIDE="${1#*=}" ;;
+        --builder=*)   BUILDER_NAME="${1#*=}" ;;
+        --push)        PUSH=1 ;;
+        --no-push)     PUSH=0 ;;
+        --dry-run)     DRY_RUN=1 ;;
+        -h|--help)     usage; exit 0 ;;
+        --)            shift; break ;;
+        -*)
+            echo "ocp-build-image: unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            echo "ocp-build-image: unexpected argument: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+    esac
+    shift
+done
+
+# ---- Helpers -----------------------------------------------------------------
+
+log()  { printf '[ocp-build-image] %s\n' "$*"; }
+errl() { printf '[ocp-build-image] %s\n' "$*" >&2; }
+
+# Resolve VERSION: --tag override > ./VERSION file > git describe > develop.
+# The git fallback never crashes the script — `git describe` returns non-zero
+# outside a git repo or with no tags, and the `||` catches both.
+get_version() {
+    if [[ -n "$TAG_OVERRIDE" ]]; then
+        printf '%s' "$TAG_OVERRIDE"
+    elif [[ -f ./VERSION ]]; then
+        cat ./VERSION
+    elif git describe --tags --always >/dev/null 2>&1; then
+        git describe --tags --always
+    else
+        printf 'develop'
+    fi
+}
+
+# Verify docker login. `docker info` reports "Username: …" when authenticated
+# against Docker Hub; for other registries we look at ~/.docker/config.json.
+# Skipped entirely in --dry-run mode (the test sandbox has no docker login).
+check_login() {
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        return 0
+    fi
+    if docker info 2>/dev/null | grep -q '^Username:'; then
+        return 0
+    fi
+    local cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+    if [[ -f "$cfg" ]] \
+        && grep -q '"auths"' "$cfg" 2>/dev/null \
+        && [[ -s "$cfg" ]]; then
+        return 0
+    fi
+    errl "not logged in to a docker registry"
+    errl "  hint: docker login  (or docker login ghcr.io / registry.gitlab.com)"
+    return 3
+}
+
+# Make sure the buildx builder exists; create it on first run.
+# Idempotent: inspect first, create only if missing.
+ensure_builder() {
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        # Print the same conditional the real path runs, so a dry-run output
+        # reads as a faithful trace of what the script would do.
+        printf '[dry-run] docker buildx inspect %s >/dev/null 2>&1 ' "$BUILDER_NAME"
+        printf '|| docker buildx create --name %s --use --driver docker-container --bootstrap\n' \
+            "$BUILDER_NAME"
+        printf '[dry-run] docker buildx use %s\n' "$BUILDER_NAME"
+        return 0
+    fi
+    if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+        docker buildx use "$BUILDER_NAME" >/dev/null
+    else
+        docker buildx create --name "$BUILDER_NAME" --use \
+            --driver docker-container --bootstrap >/dev/null
+    fi
+}
+
+# Print one docker command line for --dry-run. Uses single-quote escaping for
+# user-supplied values, which keeps commas (--platform, --cache-from) intact
+# rather than escaping them the way `%q` does.
+shq() {
+    # Single-quote-escape a value: ' → '\''
+    local v="${1-}"
+    v="${v//\'/\'\\\'\'}"
+    printf "'%s'" "$v"
+}
+dry_run_line() {
+    printf '[dry-run] docker buildx build'
+    printf ' --builder %s' "$(shq "$BUILDER_NAME")"
+    printf ' --platform %s' "$(shq "$PLATFORMS")"
+    for tag in "${TAGS[@]}"; do
+        printf ' -t %s' "$(shq "$REPO:$tag")"
+    done
+    printf ' --cache-from %s' "$(shq "type=registry,ref=$REPO:cache")"
+    if [[ "$PUSH" -eq 1 ]]; then
+        printf ' --push'
+    fi
+    printf ' .\n'
+}
+
+# Execute the real docker buildx build. Captures stderr to distinguish push
+# failures from build failures (buildx runs both in one process).
+run_build() {
+    local tmp_err
+    tmp_err="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '$tmp_err'" EXIT
+
+    local -a cmd=(
+        docker buildx build
+        --builder "$BUILDER_NAME"
+        --platform "$PLATFORMS"
+    )
+    for tag in "${TAGS[@]}"; do
+        cmd+=( -t "$REPO:$tag" )
+    done
+    cmd+=( --cache-from "type=registry,ref=$REPO:cache" )
+    if [[ "$PUSH" -eq 1 ]]; then
+        cmd+=( --push )
+    fi
+    cmd+=( . )
+
+    if ! "${cmd[@]}" 2>"$tmp_err"; then
+        if grep -qiE '(denied|unauthorized|forbidden|requested access|push.*refus|push.*fail)' "$tmp_err"; then
+            errl "push failed:"
+            sed 's/^/  /' "$tmp_err" >&2
+            return 2
+        fi
+        errl "build failed:"
+        sed 's/^/  /' "$tmp_err" >&2
+        return 1
+    fi
+}
+
+# ---- Resolve tags ------------------------------------------------------------
+VERSION="$(get_version)"
+if git rev-parse --short=7 HEAD >/dev/null 2>&1; then
+    GIT_SHA="$(git rev-parse --short=7 HEAD)"
+else
+    GIT_SHA="unknown"
+fi
+
+# Tag order is part of the contract: the script's docs and the test suite
+# rely on this exact triple.
+TAGS=( "latest" "$VERSION" "$GIT_SHA" )
+
+# ---- Main --------------------------------------------------------------------
+main() {
+    log "repo=$REPO platforms=$PLATFORMS builder=$BUILDER_NAME push=$PUSH"
+    log "tags=${TAGS[*]}"
+
+    if [[ "$PUSH" -eq 1 ]]; then
+        if ! check_login; then
+            exit 3
+        fi
+    fi
+
+    ensure_builder
+
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        dry_run_line
+    else
+        run_build
+    fi
+
+    log "done"
+    log "tags:"
+    for tag in "${TAGS[@]}"; do
+        printf '  %s:%s\n' "$REPO" "$tag"
+    done
+}
+
+main "$@"
