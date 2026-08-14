@@ -239,10 +239,10 @@ B<Security Model:>
 =head1 WORKFLOW
 
     # 1. Deploy robocop (no key)
-    ocp deploy robocop
+    ocp deploy-robocop
 
     # 2. Inject robo-key (requires PIN2)
-    ocp inject-key
+    #    — currently disabled; see karr #2 for the reactivation plan
 
     # 3. Robocop creates CRIU checkpoint
     # 4. Robocop provisions workers via CRDs

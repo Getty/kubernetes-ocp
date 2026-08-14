@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Drop OCP::Cmd::InjectKey
+      - sub execute died with a TODO message instead of doing anything;
+        reimplementation is tracked on the board (karr #2) and will land as
+        a fresh command, not a resurrection of the dead one
+      - the 'inject-key' alias and the corresponding entry in bin/ocp's help
+        and the OCP.pm POD list went with it; the WORKFLOW section in
+        OCP::Robocop now points at karr #2 instead
     - Take share/ from the tree the code came from, not from the image
       - OCP::Rex and both share-dir lookups in the command modules searched
         /opt/ocp/src/share first, so inside a container the image always won

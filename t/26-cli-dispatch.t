@@ -26,7 +26,7 @@ sub ocp {
 
 my @COMMANDS = qw(
     init apply status destroy kubeconfig version update ssh
-    node provider hetzner deployrobocop injectkey
+    node provider hetzner deployrobocop
 );
 
 for my $cmd (@COMMANDS) {
@@ -62,9 +62,6 @@ for my $cmd (@COMMANDS) {
 {
     my ($out) = ocp('deploy-robocop');
     unlike($out, qr/Usage: ocp <command>/, "'ocp deploy-robocop' is accepted");
-
-    my ($inject) = ocp('inject-key');
-    like($inject, qr/disabled/, "'ocp inject-key' reaches the command");
 }
 
 # A node name may be positional

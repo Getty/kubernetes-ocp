@@ -71,7 +71,6 @@ option verbose => (
 # is 'deployrobocop'. Accept the readable spelling too.
 our %COMMAND_ALIASES = (
     'deploy-robocop' => 'deployrobocop',
-    'inject-key'     => 'injectkey',
 );
 
 sub run_cli {
@@ -164,7 +163,6 @@ Commands:
   version         Show OCP and component versions
   update          Update components to the bundled versions
   deploy-robocop  Deploy the robocop controller
-  inject-key      Inject the robo-ssh key (currently disabled)
   hetzner         Hetzner Cloud debugging
 
 Options:
@@ -291,11 +289,6 @@ would change, C<--component NAME> limits it to one component.
 =item B<deploy-robocop>
 
 Deploy the robocop controller and its CRDs into the cluster.
-
-=item B<inject-key>
-
-Inject the robo-ssh key into robocop's memory. Currently disabled, see
-L<OCP::Cmd::InjectKey>.
 
 =item B<hetzner>
 
