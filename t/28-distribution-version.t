@@ -19,7 +19,7 @@ use OCP::Versions;
 #
 
 my %source = (
-    'lib/OCP/Cmd/Apply.pm' => qr/\$config->version\s*\n?\s*\|\|\s*OCP::Versions->get_component_version/,
+    'lib/OCP/Cmd/Apply/Bootstrap.pm' => qr/\$config->version\s*\n?\s*\|\|\s*OCP::Versions->get_component_version/,
     'lib/OCP/Drift.pm'     => qr/\$config->version\s*\|\|\s*OCP::Versions->get_component_version/,
     'lib/OCP/Node.pm'      => qr/OCP::Versions->get_component_version\(/,
 );

@@ -47,6 +47,19 @@ Revision history for OCP
         reconcile_components; t/47's hash-reader scan concatenates
         Apply.pm + Drift.pm so the invariant "whoever reads the
         hashes also asks the cluster" still spans the two files
+      - OCP::Cmd::Apply::Bootstrap owns the first-deploy server-side
+        sequence (server provision + SSH wait, Rex install_server,
+        encrypted kubeconfig save, wait-for-Ready / Cilium CNI) plus
+        the spec-shaped identity helpers (cp_identity, dist_label)
+        and the PIN2-driven SSH key prep (setup_ssh_key). The whole
+        sequence is one call from execute(): bootstrap_control_plane
+        returns a hashref with the api handle, cp_name, cp_ip,
+        provider and ssh_key_path. _cp_identity, _dist_label and
+        _setup_ssh_key re-exported from Apply.pm as thin forwarders
+        so t/37 (dist_label) and t/38 (cp_identity) keep working.
+        t/28's "three places answer which distribution version" was
+        updated: the installer entry is now Bootstrap.pm instead of
+        Apply.pm (the regex pattern is unchanged)
     - Make the OCP::Provider seam real
       - OCP::Provider had two parallel dispatch paths (`for_spec` and
         `from_cr`), each maintaining its own `if $type eq ...` ladder and

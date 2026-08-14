@@ -31,6 +31,7 @@ use OCP::Versions;
 use MIME::Base64 ();
 
 
+use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::DeployedHash;
 use OCP::Cmd::Apply::Drift;
@@ -50,43 +51,16 @@ has _ssh_key_path => (is => 'rw');
 # cluster is named after the first label of its host, a Hetzner one uses
 # RoboCop naming. The reconcile path needs the same answer as the deploy path
 # to address the OCPNode CR of a cluster it did not bootstrap itself.
+# See OCP::Cmd::Apply::Bootstrap.
+
 sub _cp_identity {
     my ($self, $config) = @_;
-
-    my $first_cp = $config->control_planes->[0] // {};
-    my $provider = $first_cp->{provider} // 'hetzner';
-
-    my ($name, $hostname, $domain);
-    if ($provider eq 'ssh' && $first_cp->{host}) {
-        my $host = $first_cp->{host};
-        if ($host =~ /\./) {
-            ($hostname, $domain) = split(/\./, $host, 2);
-        } else {
-            ($hostname, $domain) = ($host, '');
-        }
-        $name = $hostname;
-    } else {
-        $name     = 'police1';  # RoboCop naming!
-        $hostname = $config->name . "-" . $name;
-        $domain   = '';
-    }
-
-    return {
-        name     => $name,
-        provider => $provider,
-        hostname => $hostname,
-        domain   => $domain,
-        host     => $first_cp->{host},
-    };
+    return OCP::Cmd::Apply::Bootstrap::cp_identity($config);
 }
 
-# Display name for a distribution id. Apply hardcoded "RKE2" in its progress
-# lines, so a `dist: k3s` cluster was announced as "Installing RKE2 server..."
-# while install_k3s_server was the task actually running.
 sub _dist_label {
     my ($dist) = @_;
-    $dist //= '';
-    return { rke2 => 'RKE2', k3s => 'K3s' }->{ lc $dist } // uc $dist;
+    return OCP::Cmd::Apply::Bootstrap::dist_label($dist);
 }
 
 option dry_run => (
@@ -213,22 +187,12 @@ sub execute {
         $ssh_public_key = $admin_key->{public};
     }
 
-    # Get provider configuration
-    my $hetzner_token = $secrets->hetzner_token;
-
-    # Get control plane spec (now an ArrayRef)
+    # Get provider configuration for the step banner — actual provisioning
+    # lives in OCP::Cmd::Apply::Bootstrap::bootstrap_control_plane.
     my $cps = $config->control_planes;
     my $first_cp = $cps->[0] // {};
     my $provider = $first_cp->{provider} // 'hetzner';
     my $num_control_planes = scalar @$cps;
-
-    # Initialize provider
-    my $prov = OCP::Provider->for_spec($first_cp,
-        token        => $hetzner_token,
-        cluster_name => $config->name,
-        ssh_key_path => $config->ssh_private_key_path,
-        verbose      => $verbose,
-    );
 
     my $deploy_step = $no_password_mode ? 2 : 3;
     print "Step $deploy_step: Deploy control plane(s)\n";
@@ -240,213 +204,23 @@ sub execute {
         return;
     }
 
-    # Deploy first control plane
-    # SSH: derive node name from host (avatar.conflict.industries -> avatar)
-    # Hetzner: use RoboCop naming (police1)
-    my $cp_id = $self->_cp_identity($config);
-    my $cp_name     = $cp_id->{name};
-    my $cp_hostname = $cp_id->{hostname};
-    my $cp_domain   = $cp_id->{domain};
-
-    print "Deploying control plane: $cp_name\n";
-
-    # Create server via provider
-    my $cp_host;
-    my $cp_ip;
-
-    print "  [..] Provisioning server ($provider)...\n";
-
-    # Upload SSH key (Hetzner uploads to cloud, SSH/Local is no-op)
-    my $key_name = "ocp-" . $config->name . "-admin";
-    $prov->upload_ssh_key($key_name, $admin_key->{public});
-
-    # Create server (idempotent for Hetzner — checks labels first)
-    my $server_info = $prov->create_server(
-        name        => $cp_hostname,
-        cluster     => $config->name,
-        node        => $cp_name,
-        role        => 'control-plane',
-        server_type => $first_cp->{server_type} // 'cx32',
-        image       => $first_cp->{image} // 'debian-13',
-        location    => $first_cp->{location} // 'fsn1',
-        ssh_keys    => [$key_name],
-        host        => $first_cp->{host},
+    # Deploy first control plane — see OCP::Cmd::Apply::Bootstrap. The full
+    # provision/install/wait-Ready sequence lives there; this dispatcher
+    # hands it the admin key + ssh public key it just obtained, and gets
+    # back a working Kubernetes API handle plus the identity the CR layer
+    # below needs to write the control-plane OCPNode.
+    my $b = OCP::Cmd::Apply::Bootstrap::bootstrap_control_plane(
+        $self, $config, $secrets,
+        admin_key        => $admin_key,
+        ssh_public_key   => $ssh_public_key,
+        verbose          => $verbose,
+        no_password_mode => $no_password_mode,
     );
 
-    if ($server_info->{newly_created}) {
-        print "  [ok] Server created: " . ($server_info->{id} // 'n/a') . "\n";
-        print "  [..] Waiting for server to be running...\n";
-        $prov->wait_for_running($server_info, 120);
-        print "  [ok] Server running: $server_info->{ip}\n";
-    } else {
-        print "  [ok] Using existing server: $server_info->{ip}\n";
-    }
-
-    $cp_ip = $server_info->{ip};
-    $cp_host = $cp_ip;
-
-    # Wait for SSH
-    print "  [..] Waiting for SSH to be ready...\n";
-
-    # Prepare SSH key file (Rex needs both private + .pub!)
-    my $ssh_key_path;
-    my $temp_key_file;
-    my $temp_pub_file;
-
-    if ($no_password_mode || $provider eq 'ssh') {
-        # Dev mode or SSH provider: Use bootstrap key (.ocp/id_ed25519)
-        # SSH provider servers already have this key in authorized_keys.
-        # For Hetzner, admin-key is uploaded via API before server creation.
-        $ssh_key_path = $config->ssh_private_key_path;
-    } else {
-        # Secure mode + Hetzner: Use admin-key (uploaded via Hetzner API)
-
-
-        # Private key
-        $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
-        print $temp_key_file $admin_key->{private};
-        close $temp_key_file;
-        chmod 0600, $temp_key_file->filename;
-        $ssh_key_path = $temp_key_file->filename;
-
-        # Public key (Rex expects key_file.pub!)
-        my $pub_path = $temp_key_file->filename . '.pub';
-        path($pub_path)->spew($admin_key->{public});
-        chmod 0644, $pub_path;
-    }
-
-    $self->_ssh_key_path($ssh_key_path);
-
-    my $ssh = OCP::SSH->new(
-        host     => $cp_host,
-        key_file => $ssh_key_path,
-        user     => 'root',
-    );
-
-    eval { $ssh->wait_for_ssh(120) };
-    if ($@) {
-        die "  [FAIL] SSH not ready: $@\n";
-    }
-    print "  [ok] SSH ready\n";
-
-    my $distribution = $config->distribution || 'rke2';
-    my $dist_label   = _dist_label($distribution);
-
-    # Install the server (wrapped for failure cleanup)
-    print "  [..] Installing $dist_label server...\n";
-
-    my $rex = OCP::Rex->new(
-        host     => $cp_host,
-        key_file => $ssh_key_path,
-        user     => 'root',
-        verbose  => $verbose,
-    );
-
-    # Fall back to the version manifest, not to '' — an empty version makes the
-    # Rex task resolve the distribution's *stable* channel, while OCP::Drift and
-    # OCP::Node both answer this same question from OCP::Versions. Leaving it
-    # empty installed a control plane that OCP then reported as drifted against
-    # its own manifest, and joined workers (OCP::Node) one minor ahead of the
-    # apiserver, which the Kubernetes version skew policy forbids.
-    my $version = $config->version
-        || OCP::Versions->get_component_version($distribution)
-        || '';
-
-    my $result;
-    eval {
-        $result = $rex->install_server(
-            distribution      => $distribution,
-            version           => $version,
-            node_name         => $cp_name,
-            registry_cache    => $config->registry_cache,
-            registry_upstream => $config->registry_upstream,
-            registry_name     => $config->registry_name,
-            hostname          => $cp_hostname // '',
-            domain            => $cp_domain // '',
-            timezone          => $config->timezone,
-            locale            => $config->locale,
-            ntp               => $config->ntp_enabled,
-            gpu               => $config->gpu_enabled,
-            gpu_driver        => $config->gpu_driver,
-        );
-    };
-    if ($@) {
-        my $err = $@;
-        if ($server_info->{newly_created}) {
-            print "  [!!] Installation failed, cleaning up server...\n";
-            $prov->cleanup_on_failure($server_info->{id});
-        }
-        die $err;
-    }
-
-    print "  [ok] $dist_label server installed\n";
-
-    # Save kubeconfig (encrypted)
-    print "  [..] Saving kubeconfig...\n";
-    $secrets->save_kubeconfig($result->{kubeconfig});
-
-    print "  [ok] Kubeconfig saved (encrypted to kubeconfig.yaml)\n";
-    print "       Install it with: ocp kubeconfig -e\n";
-
-    # Initialize K8s API for all subsequent component deployments
-    my $api = $self->_k8s_api($result->{kubeconfig});
-
-    # Wait for node to be Ready (Cilium CNI must be running)
-    # Nothing can be scheduled until the node is Ready!
-    print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
-    {
-        # Quick connectivity check first
-        my $api_ok = eval { $api->_request('GET', '/api/v1/namespaces/kube-system'); 1 };
-        if ($api_ok) {
-            print "      API server reachable\n";
-        } else {
-            print "      WARNING: API server may not be reachable: $@\n";
-        }
-
-        my $node_ready = 0;
-        for my $i (1..60) {
-            my $nodes = eval { $api->list('Node') };
-            my $is_ready = 0;
-            if ($nodes && $nodes->items && @{ $nodes->items }) {
-                for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
-                    if ($cond->type eq 'Ready' && $cond->status eq 'True') {
-                        $is_ready = 1;
-                        last;
-                    }
-                }
-            }
-            if ($is_ready) {
-                print "  [ok] Node is Ready after ~${\ ($i * 10)}s\n";
-                $node_ready = 1;
-                last;
-            }
-            if ($i == 1 || $i % 6 == 0) {
-                my $status = 'unknown';
-                if ($nodes && $nodes->items && @{ $nodes->items }) {
-                    for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
-                        $status = $cond->status if $cond->type eq 'Ready';
-                    }
-                }
-                print "      ... waiting (${i}/60) status='$status'\n";
-            }
-            sleep 10;
-        }
-        unless ($node_ready) {
-            # Last resort: check via SSH directly on the node
-            print "  [WARN] Node not Ready after 600s via API, checking via SSH...\n";
-            my $ssh_check = $ssh->run("/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1");
-            my $ssh_output = $ssh_check->{stdout} || '';
-            print "      SSH node status: $ssh_output\n";
-            if ($ssh_output =~ /\bReady\b/ && $ssh_output !~ /NotReady/) {
-                print "  [ok] Node is Ready (confirmed via SSH)\n";
-                $node_ready = 1;
-            } else {
-                my $cilium_check = $ssh->run("cilium status --kubeconfig /etc/rancher/rke2/rke2.yaml 2>&1");
-                print "      Cilium status: " . ($cilium_check->{stdout} || 'unknown') . "\n";
-                print "  [WARN] Node genuinely not Ready, continuing anyway...\n";
-            }
-        }
-    }
+    my $api          = $b->{api};
+    my $cp_name      = $b->{cp_name};
+    my $cp_ip        = $b->{cp_ip};
+    my $ssh_key_path = $b->{ssh_key_path};
 
     # Deploy registry (pull-through cache + local) FIRST after node Ready.
     # MUST succeed: all image pulls go through this.
@@ -844,45 +618,7 @@ sub _crd_get {
 }
 
 sub _setup_ssh_key {
-    my ($self, $config) = @_;
-
-    my $keys_file = $config->project_dir->child('keys.yaml');
-    my $no_password_mode = !-f $keys_file;
-
-    # SSH provider: always use bootstrap key (.ocp/id_ed25519)
-    my $cps = $config->control_planes;
-    my $provider = ($cps->[0] // {})->{provider} // 'hetzner';
-
-    if ($no_password_mode || $provider eq 'ssh') {
-        $self->_ssh_key_path($config->ssh_private_key_path);
-    } else {
-
-
-
-
-        my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-        $secrets->ensure_age_key();
-
-        my $keys = OCP::Keys->new(project_dir => $config->project_dir);
-        my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key for SSH): ");
-        my $admin_key = $keys->get_admin_key($pin2);
-        unless ($admin_key) {
-            die "ERROR: Wrong PIN2 or no admin-key found!\n";
-        }
-
-        my $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 0);
-        print $temp_key_file $admin_key->{private};
-        close $temp_key_file;
-        chmod 0600, $temp_key_file->filename;
-
-        my $pub_path = $temp_key_file->filename . '.pub';
-        path($pub_path)->spew($admin_key->{public});
-        chmod 0644, $pub_path;
-
-        $self->_ssh_key_path($temp_key_file->filename);
-        # Keep ref so temp file lives as long as $self
-        $self->{_temp_ssh_key} = $temp_key_file;
-    }
+    return OCP::Cmd::Apply::Bootstrap::setup_ssh_key(@_);
 }
 
 #
