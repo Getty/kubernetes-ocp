@@ -75,7 +75,7 @@ spec:
 
       containers:
         - name: robocop
-          image: ghcr.io/getty/ocp-robocop:latest
+          image: raudssus/ocp:latest
           imagePullPolicy: Always
 
           # CRIU requires these capabilities

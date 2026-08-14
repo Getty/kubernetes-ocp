@@ -4,8 +4,7 @@
 IMAGE ?= raudssus/ocp
 TAG ?= latest
 
-# Architectures published by .github/workflows/docker-publish.yml. Kept here so
-# a local check covers exactly what CI ships.
+# Architectures published by the docker-push/docker-release targets below.
 PLATFORMS ?= linux/amd64,linux/arm64
 
 .PHONY: all build test test-v clean docker-test docker-push docker-release snapshot smoke \
@@ -26,12 +25,13 @@ buildx-setup:
 	  docker buildx use ocp-multiarch
 
 # Verify the image builds for every published architecture. BUILD ONLY — the
-# result is discarded, nothing is pushed. Publishing is CI's job, and
-# docker-push/docker-release need the maintainer's explicit go-ahead.
+# result is discarded, nothing is pushed. Run this before docker-push/
+# docker-release to sanity-check both architectures compile without actually
+# pushing; docker-push/docker-release themselves need the maintainer's
+# explicit go-ahead.
 #
 # On an amd64 host the arm64 leg runs under qemu emulation and is roughly an
-# order of magnitude slower than native; CI does not pay this, it builds each
-# architecture on its own native runner.
+# order of magnitude slower than native.
 build-multiarch: buildx-setup
 	docker buildx build --builder ocp-multiarch --platform $(PLATFORMS) .
 
@@ -68,14 +68,14 @@ docker-test: build
 smoke:
 	@xt/smoke.sh
 
-# Push to Docker Hub
-docker-push: build
-	docker push $(IMAGE):$(TAG)
-	docker push $(IMAGE):latest
+# Build and push to Docker Hub, multi-arch, in one buildx run.
+docker-push: buildx-setup
+	docker buildx build --builder ocp-multiarch --platform $(PLATFORMS) \
+	  -t $(IMAGE):$(TAG) -t $(IMAGE):latest --push .
 
-# Build and push release with version tag
-docker-release: build
+# Build and push release with version tag, multi-arch, in one buildx run.
+docker-release: buildx-setup
 	@echo "Building release version $(TAG)"
-	docker push $(IMAGE):$(TAG)
-	docker push $(IMAGE):latest
+	docker buildx build --builder ocp-multiarch --platform $(PLATFORMS) \
+	  -t $(IMAGE):$(TAG) -t $(IMAGE):latest --push .
 	@echo "Released $(IMAGE):$(TAG)"

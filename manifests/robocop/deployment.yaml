@@ -21,7 +21,7 @@ spec:
       serviceAccountName: robocop
       containers:
       - name: controller
-        image: ghcr.io/getty/ocp:latest
+        image: raudssus/ocp:latest
         imagePullPolicy: Always
         command:
         - robocop
