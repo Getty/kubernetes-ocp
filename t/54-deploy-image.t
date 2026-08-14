@@ -110,10 +110,11 @@ sub run_cmd {
     # MooX::Options attributes are constructor params; _poll_interval keeps
     # the wait-loop instant in tests.
     my %ctor = (
-        tag            => $opts{tag} // 'v1.2.3',
         _poll_interval => 0,
         command_chain  => [$fake_ocp],
     );
+    $ctor{image}     = $opts{image}     if defined $opts{image};
+    $ctor{tag}       = $opts{tag}       if defined $opts{tag};
     $ctor{cluster}   = $opts{cluster}   if defined $opts{cluster};
     $ctor{namespace} = $opts{namespace} if defined $opts{namespace};
     $ctor{repo}      = $opts{repo}      if defined $opts{repo};
@@ -404,6 +405,104 @@ subtest 'missing ocp.yaml fails loud with init hint' => sub {
 
     ok($r->{error}, 'execute dies');
     like($r->{error}, qr/init/i, 'mentions ocp init');
+};
+
+# --- --image shorthand -----------------------------------------------------
+#
+# _parse_image_ref is a pure function -- we call it as a class method so we
+# don't need a full instance just to test the parser. The same sub feeds
+# execute() at runtime via $self->_parse_image_ref($self->image), so the
+# dispatch is symmetric and one definition covers both call sites.
+
+subtest '_parse_image_ref: registry/repo:tag (tag form)' => sub {
+    my $r = OCP::Cmd::DeployImage->_parse_image_ref('ghcr.io/foo/bar:v1.2.3');
+    is($r->{repo}, 'ghcr.io/foo/bar', 'repo contains the registry prefix');
+    is($r->{tag},  'v1.2.3',          'tag extracted exactly');
+    ok(!exists $r->{digest}, 'no digest in the result');
+};
+
+subtest '_parse_image_ref: foo/bar:tag (Docker Hub implicit)' => sub {
+    my $r = OCP::Cmd::DeployImage->_parse_image_ref('foo/bar:v1.2.3');
+    is($r->{repo}, 'foo/bar', 'repo is bare two-segment path');
+    is($r->{tag},  'v1.2.3',  'tag extracted');
+};
+
+subtest '_parse_image_ref: foo/bar@sha256:<64hex> (digest form)' => sub {
+    my $digest = 'sha256:' . ('a' x 64);
+    my $r      = OCP::Cmd::DeployImage->_parse_image_ref("foo/bar\@$digest");
+    is($r->{repo},   'foo/bar', 'repo extracted');
+    is($r->{digest}, $digest,   'digest preserved exactly');
+    ok(!exists $r->{tag}, 'no tag in the result');
+};
+
+subtest '_parse_image_ref: no tag and no digest -> fail (no implicit latest)' => sub {
+    eval { OCP::Cmd::DeployImage->_parse_image_ref('ghcr.io/foo/bar') };
+    ok($@, 'dies loud on bare repo');
+    like($@, qr/(?i)tag|latest/, 'message names the missing pin');
+};
+
+subtest '_parse_image_ref: empty digest after @ -> fail' => sub {
+    eval { OCP::Cmd::DeployImage->_parse_image_ref('foo/bar@') };
+    ok($@, 'dies loud on empty digest');
+    like($@, qr/digest|invalid/i, 'message names the digest format');
+};
+
+subtest '_parse_image_ref: sha256 with wrong hex length -> fail' => sub {
+    eval { OCP::Cmd::DeployImage->_parse_image_ref('foo/bar@sha256:abc') };
+    ok($@, 'dies loud on short hex');
+    like($@, qr/digest.*format/i, 'message names the digest format');
+};
+
+subtest '_parse_image_ref: empty string -> fail' => sub {
+    eval { OCP::Cmd::DeployImage->_parse_image_ref('') };
+    ok($@, 'dies loud on empty input');
+    like($@, qr/empty/i, 'message names the empty input');
+};
+
+subtest '_parse_image_ref: tag with slashes + no registry -> fail with hint' => sub {
+    eval { OCP::Cmd::DeployImage->_parse_image_ref('foo/bar:baz/qux') };
+    ok($@, 'dies loud on tag-with-slashes + bare repo');
+    like($@, qr/(?i)ambig|registry/, 'message hints at the registry prefix');
+};
+
+subtest '--image and --tag are mutually exclusive (fail loud)' => sub {
+    my $r = run_cmd(
+        image => 'ghcr.io/foo/bar:v1.2.3',
+        tag   => 'v9.9.9',
+    );
+    ok($r->{error}, 'execute dies when both --image and --tag are given');
+    like($r->{error}, qr/--image.*--tag/i, 'names both flags in the conflict');
+    like($r->{error}, qr/mutually exclusive/i, 'explains the constraint');
+};
+
+subtest '--image and --repo are mutually exclusive (fail loud)' => sub {
+    my $r = run_cmd(
+        image => 'ghcr.io/foo/bar:v1.2.3',
+        repo  => 'my-registry.example/ocp',
+    );
+    ok($r->{error}, 'execute dies when both --image and --repo are given');
+    like($r->{error}, qr/--image.*--repo/i, 'names both flags in the conflict');
+};
+
+subtest '--image ghcr.io/foo/bar:v1.2.3 patches that exact string' => sub {
+    my $r = run_cmd(
+        image => 'ghcr.io/foo/bar:v1.2.3',
+        respond => sub {
+            my ($m, $p) = @_;
+            return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
+            return (200, {}) if $m eq 'PATCH';
+            return (404, { message => "unexpected $m $p" });
+        },
+    );
+
+    is($r->{error}, '', 'execute did not die');
+    is($r->{result}, 0, 'returns 0 on success');
+
+    my @bodies = map { $_->{body} } grep { $_->{method} eq 'PATCH' } @{ $r->{transport}->requests };
+    ok((grep { /"image"\s*:\s*"ghcr\.io\/foo\/bar:v1\.2\.3"/ } @bodies),
+       'image field set to the full reference');
+    ok((grep { /"image"\s*:\s*"raudssus\/ocp:v1\.2\.3"/ } @bodies) == 0,
+       'default repo is NOT used when --image is given');
 };
 
 done_testing;

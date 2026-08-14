@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp deploy-image` now accepts a single `--image REF` shorthand in
+      addition to the existing `--repo` + `--tag` pair (karr #66). The
+      shorthand parses either `REPO:TAG` (e.g. `ghcr.io/foo/bar:v1.2.3`,
+      with implicit Docker Hub for the bare `foo/bar:v1.2.3` form) or the
+      digest form `REPO@sha256:<64hex>` for content-addressable rollouts.
+      `--image` is mutually exclusive with both `--repo` and `--tag`; all
+      three fail loud when combined so the caller can't end up with two
+      conflicting values. A bare `REPO` without a tag or digest still
+      rejects loudly — there is no implicit `latest`, because pinned
+      deploys want a name and a number, not a moving target. The parser
+      is exposed as `_parse_image_ref` (callable as a class method) and
+      is covered by `t/54-deploy-image.t` (parser + mutual exclusion +
+      patch integration subtests).
     - New `ocp deploy-image` subcommand to roll out a new robocop image
       into the running cluster without `kubectl` (ADR 0007). Patches the
       robocop Deployment's controller container by name (strategic merge)

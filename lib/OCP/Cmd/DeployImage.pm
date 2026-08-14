@@ -37,20 +37,38 @@ our $DEFAULT_REPO      = 'raudssus/ocp';
 
 # --- Options ---------------------------------------------------------------
 
+=opt image
+
+    --image REF
+
+Shorthand for the full image reference. Accepts the tag form
+C<< <repo>:<tag> >> (e.g. C<ghcr.io/foo/bar:v1.2.3>, or C<foo/bar:v1.2.3> with
+implicit Docker Hub) and the digest form C<< <repo>@sha256:<64hex> >> for
+content-addressable rollouts. Mutually exclusive with both C<--repo> and
+C<--tag>.
+
+=cut
+
+option image => (
+    is     => 'ro',
+    format => 's',
+    doc    => 'Full image reference: REPO:TAG or REPO@sha256:DIGEST (mutually exclusive with --repo/--tag)',
+);
+
 =opt tag
 
     --tag TAG
 
 Image tag (e.g. C<v1.2.3>, C<latest>). Combined with the repository as
-C<< <repo>:<tag> >>. Required.
+C<< <repo>:<tag> >>. Mutually exclusive with C<--image>; together with
+C<--repo> it forms the legacy two-flag form.
 
 =cut
 
 option tag => (
-    is       => 'ro',
-    format   => 's',
-    required => 1,
-    doc      => 'Image tag, e.g. v1.2.3 (combined with --repo as REPO:TAG)',
+    is     => 'ro',
+    format => 's',
+    doc    => 'Image tag, e.g. v1.2.3 (combined with --repo as REPO:TAG; mutually exclusive with --image)',
 );
 
 =opt repo
@@ -58,13 +76,14 @@ option tag => (
     --repo REPO
 
 Image repository (default: C<raudssus/ocp>, or C<OCP_IMAGE_REPO>).
+Mutually exclusive with C<--image>.
 
 =cut
 
 option repo => (
     is     => 'ro',
     format => 's',
-    doc    => 'Image repository (default: raudssus/ocp or OCP_IMAGE_REPO)',
+    doc    => 'Image repository (default: raudssus/ocp or OCP_IMAGE_REPO; mutually exclusive with --image)',
 );
 
 =opt cluster
@@ -183,10 +202,43 @@ sub execute {
         die "--timeout is only valid with --wait\n";
     }
 
+    # Mutual exclusion + at-least-one guard. We do this once at the top so
+    # every downstream branch can assume either (--image) xor (--repo + --tag)
+    # and never the awkward middle of "both filled in partially".
+    if ($self->image) {
+        if (defined $self->tag) {
+            die "--image and --tag are mutually exclusive -- pass them as one ref, e.g. --image ghcr.io/foo/bar:\${tag}\n";
+        }
+        if (defined $self->repo) {
+            die "--image and --repo are mutually exclusive -- the repo part of --image already names the registry\n";
+        }
+    }
+    elsif (!defined $self->tag) {
+        die "either --image or --tag is required\n";
+    }
+
+    # Resolve (repo, tag, optional digest) from whichever flag path the
+    # caller chose. --image takes precedence and is parsed here; the
+    # --repo + --tag path stays backwards-compatible.
+    my ($repo, $tag, $digest);
+    if ($self->image) {
+        my $parsed     = $self->_parse_image_ref($self->image);
+        $repo   = $parsed->{repo};
+        $tag    = $parsed->{tag};
+        $digest = $parsed->{digest};
+    }
+    else {
+        $repo = $self->repo // $ENV{OCP_IMAGE_REPO} // $DEFAULT_REPO;
+        $tag  = $self->tag;
+    }
+
+    # Docker accepts both "repo:tag" and "repo@digest" -- keep the separator
+    # the user gave us, since the cluster's pull resolver treats them
+    # differently (digest is content-addressable, tag is mutable).
+    my $image = defined $digest ? "$repo\@$digest" : "$repo:$tag";
+
     my $cluster = $self->_resolve_cluster($config);
     my $ns      = $self->namespace // $DEFAULT_NAMESPACE;
-    my $repo    = $self->repo // $ENV{OCP_IMAGE_REPO} // $DEFAULT_REPO;
-    my $image   = $repo . ':' . $self->tag;
 
     print "Cluster:  $cluster\n";
     print "Namespace: $ns\n";
@@ -221,6 +273,96 @@ sub execute {
 }
 
 # --- Internals -------------------------------------------------------------
+
+=method _parse_image_ref
+
+    my $parts = $cmd->_parse_image_ref('ghcr.io/foo/bar:v1.2.3');
+    # $parts->{repo} = 'ghcr.io/foo/bar'
+    # $parts->{tag}  = 'v1.2.3'
+
+    my $digest = $cmd->_parse_image_ref('foo/bar@sha256:<64hex>');
+    # $digest->{repo}   = 'foo/bar'
+    # $digest->{digest} = 'sha256:<64hex>'
+
+Splits an image reference into its parts. Pure function -- no instance
+state is read, so it is also exposed for direct testing:
+
+    OCP::Cmd::DeployImage->_parse_image_ref('ghcr.io/foo/bar:v1.2.3');
+
+Recognises both the tag form C<< <repo>:<tag> >> and the digest form
+C<< <repo>@sha256:<64-hex> >>. Dies loud on every malformed input. The
+deliberate non-feature is the rejection of a bare C<REPO> without tag or
+digest: there is no implicit C<latest>, because content-addressable
+deploys want a name and a number, not a moving target.
+
+=cut
+
+# Pure parsing helper: takes a string like "ghcr.io/foo/bar:v1.2.3" or
+# "foo/bar@sha256:<64hex>" and returns {repo => ..., tag => ...} or
+# {repo => ..., digest => ...}. We accept this as a class-method-shaped sub
+# (no $self state needed) so t/54-deploy-image.t can call it directly without
+# going through execute(). Failloud with a precise message on every malformed
+# input -- we deliberately do NOT default to 'latest' because content-
+# addressable deploys need explicit pins.
+sub _parse_image_ref {
+    my ($class_or_self, $ref) = @_;
+
+    # First arg is the class or instance; we don't read its state. Keeping
+    # the signature as a method lets both call sites share the same code:
+    #   $self->_parse_image_ref($self->image)        # runtime
+    #   OCP::Cmd::DeployImage->_parse_image_ref(...) # tests
+    $ref = defined $ref ? "$ref" : '';
+
+    die "_parse_image_ref: empty image reference\n"
+        if $ref eq '';
+
+    die "_parse_image_ref: image reference cannot start with ':' or '@' (got '$ref')\n"
+        if $ref =~ /^[:@]/;
+
+    # Digest form: REPO@sha256:<64hex>. Reject anything that smells like
+    # a tag bolted onto a digest, and reject any digest whose hex part is
+    # the wrong length -- the lazy "@sha256:abc" shortcut has wasted enough
+    # mornings already.
+    if ($ref =~ /\@/) {
+        my ($repo_part, $after) = split /\@/, $ref, 2;
+        die "_parse_image_ref: empty repository in '$ref'\n"
+            unless defined $repo_part && $repo_part ne '';
+        die "_parse_image_ref: multiple '@' in '$ref'\n"
+            if $after =~ /\@/;
+        die "_parse_image_ref: digest ref must not carry a ':' / tag (got '$ref')\n"
+            if $repo_part =~ /:/;
+        die "_parse_image_ref: invalid digest format in '$ref' (expected sha256:<64 hex chars>)\n"
+            unless $after =~ /\Asha256:[a-f0-9]{64}\z/;
+        return { repo => $repo_part, digest => $after };
+    }
+
+    # Tag form: REPO:TAG. Split on the LAST ':' so registry:port survives
+    # intact (ghcr.io:5000/foo:bar -> repo=ghcr.io:5000/foo, tag=bar).
+    die "_parse_image_ref: missing tag or digest in '$ref' -- no implicit 'latest' here, pin the version you want\n"
+        unless $ref =~ /:/;
+
+    my $i    = rindex $ref, ':';
+    my $repo = substr($ref, 0, $i);
+    my $tag  = substr($ref, $i + 1);
+
+    die "_parse_image_ref: empty repository in '$ref'\n"
+        unless defined $repo && $repo ne '';
+    die "_parse_image_ref: empty tag in '$ref'\n"
+        unless defined $tag && $tag ne '';
+
+    # foo/bar:baz/qux is ambiguous -- the slash could belong to the repo path
+    # or to the tag. Force callers to disambiguate by writing the registry
+    # explicitly (ghcr.io/foo/bar:baz/qux parses cleanly because 'ghcr.io'
+    # anchors the repo side).
+    if ($tag =~ m{/}) {
+        my ($first) = split m{/}, $repo, 2;
+        unless ($first =~ /\./ || $first eq 'localhost') {
+            die "_parse_image_ref: ambiguous tag-with-slashes in '$ref' -- add an explicit registry prefix (e.g. registry.example/foo/bar:tag)\n";
+        }
+    }
+
+    return { repo => $repo, tag => $tag };
+}
 
 sub _resolve_cluster {
     my ($self, $config) = @_;
@@ -376,6 +518,8 @@ __END__
     ocp deploy-image --tag v1.2.3 --no_restart
     ocp deploy-image --tag v1.2.3 --wait --timeout 60
     ocp deploy-image --tag v1.2.3 --repo my-registry.example/ocp
+    ocp deploy-image --image ghcr.io/foo/bar:v1.2.3
+    ocp deploy-image --image ghcr.io/foo/bar@sha256:<64hex>
 
 =description
 
@@ -410,9 +554,19 @@ C<status.availableReplicas> reaches C<spec.replicas>, capped by C<--timeout>
 seconds (default C<300>). On success the exit status is C<0>; on timeout it
 is C<1>.
 
-The image repository is C<raudssus/ocp> by default; override via
-C<--repo REPO> on the command line or C<OCP_IMAGE_REPO> in the environment.
-The final image string is always C<< REPO:TAG >>.
+The image is specified either as the full reference via C<--image REF>
+(tag form C<REPO:TAG> or digest form C<REPO@sha256:<64hex>>) or as the
+two-flag pair C<--repo REPO --tag TAG>. Reach for C<--image> when you have
+the reference at hand; reach for C<--repo>/C<--tag> when only one half
+changes (e.g. promoting the same tag across registries without rewriting
+the tag value). C<--image> is mutually exclusive with both C<--repo> and
+C<--tag> -- a digest or tag cannot be combined with the pre-split flags.
+
+The image repository defaults to C<raudssus/ocp> when neither C<--image>
+nor C<--repo> is given; override via the environment with C<OCP_IMAGE_REPO>.
+A digest form pins the rollout to a content-addressable identifier
+(C<repo@sha256:<64hex>>); a tag form is mutable. Both produce a normal
+strategic-merge patch on the C<image> field.
 
 B<Pre-requisites:> the cluster must already be able to pull from the
 target repository (imagePullSecret, public registry, etc.) -- this command
