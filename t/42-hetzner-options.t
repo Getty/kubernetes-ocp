@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Test::More;
 
-use OCP::Hetzner;
+use OCP::Hetzner::Picker;
 
 # server_type_options used to hardcode architecture => 'x86', so Hetzner's
 # ARM line (CAX*) could never appear in a picker. OCP runs on aarch64 — a
@@ -34,7 +34,7 @@ sub types {
 }
 
 sub picker {
-    OCP::Hetzner->new(token => 'fake', _server_types => types());
+    OCP::Hetzner::Picker->new(token => 'fake', _server_types => types());
 }
 
 subtest 'both architectures show up by default' => sub {

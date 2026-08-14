@@ -9,7 +9,7 @@ use File::Copy qw(copy move);
 
 use OCP;
 use OCP::Config;
-use OCP::Hetzner;
+use OCP::Hetzner::Picker;
 use OCP::Keys;
 use OCP::Password;
 use OCP::Secrets;

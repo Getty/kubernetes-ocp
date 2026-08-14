@@ -163,7 +163,7 @@ Commands:
   version         Show OCP and component versions
   update          Update components to the bundled versions
   deploy-robocop  Deploy the robocop controller
-  hetzner         Hetzner Cloud debugging
+  hetzner         Hetzner Cloud debugging (list servers the token sees)
 
 Options:
   -c, --config=FILE   Config file (default: ocp.yaml)
@@ -292,7 +292,8 @@ Deploy the robocop controller and its CRDs into the cluster.
 
 =item B<hetzner>
 
-Debug command to list Hetzner servers.
+Debug commands against the Hetzner Cloud API. Currently just
+C<list>; the cluster adapter lives in L<OCP::Provider::Hetzner>.
 
 =back
 

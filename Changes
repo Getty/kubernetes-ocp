@@ -1,6 +1,26 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Name the Hetzner pickers for what they are
+      - OCP::Hetzner → OCP::Hetzner::Picker; the class wraps the read-only
+        catalogue (locations, server types) and has nothing to do with
+        creating or deleting servers, which is OCP::Provider::Hetzner's
+        job
+      - the `use` in OCP::Cmd::Init is updated; the picker tests under
+        t/42-hetzner-options.t exercise the new name
+      - who-shares-what is now obvious from the namespace: ::Picker for
+        the catalogue wrapper, ::Provider for the cluster adapter
+    - Make `ocp hetzner` a subcommand group, with `list` underneath
+      - the previous flat `OCP::Cmd::Hetzner` was the listing command
+        itself, which read as if `ocp hetzner` would talk to the
+        cluster adapter. It never did — it talks to the Hetzner Cloud
+        API directly via WWW::Hetzner::Cloud — but the name did not
+        say so
+      - OCP::Cmd::Hetzner is now a dispatch group (like `ocp node` and
+        `ocp provider`); OCP::Cmd::Hetzner::List owns the listing
+      - the no-op `--list` flag is gone — the verb IS the subcommand
+      - `ocp hetzner` now asks for a subcommand, `ocp hetzner list` is
+        the listing; t/26-cli-dispatch.t exercises both
     - Drop OCP::Cmd::InjectKey
       - sub execute died with a TODO message instead of doing anything;
         reimplementation is tracked on the board (karr #2) and will land as

@@ -1,5 +1,5 @@
-package OCP::Hetzner;
-# ABSTRACT: Hetzner Cloud API helper for OCP
+package OCP::Hetzner::Picker;
+# ABSTRACT: Hetzner Cloud catalogue wrapper (pickers, NOT a cluster adapter)
 
 use Moo;
 use WWW::Hetzner::Cloud;
@@ -65,9 +65,9 @@ __END__
 
 =synopsis
 
-    use OCP::Hetzner;
+    use OCP::Hetzner::Picker;
 
-    my $hz = OCP::Hetzner->new(token => $ENV{HETZNER_API_TOKEN});
+    my $hz = OCP::Hetzner::Picker->new(token => $ENV{HETZNER_API_TOKEN});
 
     my $locations = $hz->location_options;
     # [ { label => 'Falkenstein (Falkenstein, DE)', value => 'fsn1' }, ... ]
@@ -77,10 +77,11 @@ __END__
 
 =description
 
-C<OCP::Hetzner> is the read-only catalogue wrapper around the Hetzner
-Cloud API.  It exists to feed the pickers in C<ocp init> (location and
-server type) — it does not create or delete servers; for that, see
-L<OCP::Provider::Hetzner>.
+C<OCP::Hetzner::Picker> is the read-only catalogue wrapper around the
+Hetzner Cloud API.  It exists to feed the pickers in C<ocp init>
+(location and server type) — it does not create or delete servers; for
+that, see L<OCP::Provider::Hetzner>, which is what C<ocp apply> actually
+uses.
 
 Both lazy builders (C<_locations>, C<_server_types>) fetch once from
 L<WWW::Hetzner::Cloud> and cache on the instance.  Pickers therefore cost
@@ -88,7 +89,7 @@ one round trip per process.
 
 =attr token
 
-    my $hz = OCP::Hetzner->new(token => $token);
+    my $hz = OCP::Hetzner::Picker->new(token => $token);
 
 Hetzner Cloud API token.  Required.
 

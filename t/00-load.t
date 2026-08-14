@@ -28,11 +28,12 @@ use_ok('OCP::Cmd::Kubeconfig');
 use_ok('OCP::Cmd::SSH');
 use_ok('OCP::Cmd::DeployRobocop');
 use_ok('OCP::Cmd::Hetzner');
+use_ok('OCP::Cmd::Hetzner::List');
 use_ok('OCP::Cmd::Version');
 use_ok('OCP::Cmd::Update');
 
 # Hetzner
-use_ok('OCP::Hetzner');
+use_ok('OCP::Hetzner::Picker');
 
 # Provider
 use_ok('OCP::Provider');

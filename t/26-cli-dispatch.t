@@ -58,6 +58,15 @@ for my $cmd (@COMMANDS) {
     }
 }
 
+{
+    my ($out) = ocp('hetzner');
+    like($out, qr/subcommand required/, "'ocp hetzner' asks for a subcommand");
+
+    my ($sub_out) = ocp('hetzner', 'list');
+    unlike($sub_out, qr/subcommand required/,
+        "'ocp hetzner list' reaches the subcommand");
+}
+
 # Hyphenated spellings are aliases for the class-derived names
 {
     my ($out) = ocp('deploy-robocop');
