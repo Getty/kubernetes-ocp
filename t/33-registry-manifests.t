@@ -70,7 +70,7 @@ subtest 'both registries report readiness from /v2/' => sub {
 subtest 'apply waits for the cache it is about to point containerd at' => sub {
     my $src = do {
         local $/;
-        open my $fh, '<', 'lib/OCP/Cmd/Apply.pm' or die "open Apply.pm: $!";
+        open my $fh, '<', 'lib/OCP/Cmd/Apply/Registry.pm' or die "open Registry.pm: $!";
         <$fh>;
     };
 
