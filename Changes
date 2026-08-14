@@ -25,6 +25,16 @@ Revision history for OCP
         manifest). All five helpers re-exported from Apply.pm as thin
         forwarders so the test surface (t/40-gpu-clusterpolicy.t)
         keeps working without changes
+      - OCP::Cmd::Apply::Network owns the cluster ingress path:
+        cert-manager (downstream apply + the selfsigned/ACME issuer
+        CRs with their retry-around-webhook loop), the Cilium Gateway,
+        LB-IPAM (CiliumLoadBalancerIPPool + L2AnnouncementPolicy),
+        and the CoreDNS/registry.local machinery (the writers and the
+        pure-functional Corefile helpers). The @COREDNS_CONFIGMAPS
+        array re-exported from Apply.pm so t/39's writer/drift-probe
+        consistency check still works. All eleven helpers
+        re-exported from Apply.pm as thin forwarders so t/31 and t/39
+        keep working without changes
     - Make the OCP::Provider seam real
       - OCP::Provider had two parallel dispatch paths (`for_spec` and
         `from_cr`), each maintaining its own `if $type eq ...` ladder and
