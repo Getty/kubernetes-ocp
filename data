@@ -1,0 +1,38 @@
+---
+claimed_at: 2026-08-14T18:53:14Z
+claimed_by: ocp-doc-writer
+class: standard
+completed: 2026-08-14T18:53:14Z
+created: 2026-08-14T18:38:44Z
+id: 61
+priority: medium
+started: 2026-08-14T18:53:14Z
+status: done
+tags:
+- docs
+- pod
+- author-getty
+title: POD-Lücken schließen — Author::GETTY inline Konvention
+updated: 2026-08-14T18:53:14Z
+---
+
+Sechs Module ohne einzigen =head-Block:
+- lib/OCP/Cmd/Status.pm (0)
+- lib/OCP/Cmd/Hetzner.pm (0)  
+- lib/OCP/Cmd/Destroy.pm (0)
+- lib/OCP/Hetzner.pm (0)
+- lib/OCP/Kubernetes.pm (0)
+- lib/OCP/Role/Cmd.pm (0)
+
+Author::GETTY-Hauskonvention: inline =attr/=method/=opt direkt nach Code, =synopsis/=description/=seealso als Section-Commands, KEIN manuelles =head1 NAME/AUTHOR/SUPPORT/COPYRIGHT (auto-generiert).
+
+Jedes dieser Module kriegt:
+- # ABSTRACT: ... ganz oben
+- =synopsis ... =cut mit kurzem Beispiel
+- =description ... =cut mit Zweck im OCP-Kontext  
+- inline =method für jede öffentliche Methode (oder =attr für Attribute)
+- =seealso zu verwandten Modulen
+
+NICHT erfunden werden: kein neues Verhalten, keine Methoden hinzufügen die nicht da sind.
+
+Referenz: ein gut dokumentiertes Modul wie lib/OCP/Versions.pm oder lib/OCP/Node.pm als Vorbild. POD-Konventionen sind in der globalen Skill perl-release-author-getty detailliert.
