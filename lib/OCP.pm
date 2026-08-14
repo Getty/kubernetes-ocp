@@ -67,9 +67,11 @@ option verbose => (
 # or 1 when it died.
 #
 
-# MooX::Cmd derives command names from class names, so OCP::Cmd::DeployRobocop
-# is 'deployrobocop'. Accept the readable spelling too.
+# MooX::Cmd derives command names from class names, so OCP::Cmd::DeployImage
+# is 'deployimage' and OCP::Cmd::DeployRobocop is 'deployrobocop'. Accept the
+# readable spellings too.
 our %COMMAND_ALIASES = (
+    'deploy-image'   => 'deployimage',
     'deploy-robocop' => 'deployrobocop',
 );
 
@@ -163,6 +165,7 @@ Commands:
   version         Show OCP and component versions
   update          Update components to the bundled versions
   deploy-robocop  Deploy the robocop controller
+  deploy-image    Roll out a new robocop image (--tag)
   hetzner         Hetzner Cloud debugging (list servers the token sees)
 
 Options:
@@ -289,6 +292,13 @@ would change, C<--component NAME> limits it to one component.
 =item B<deploy-robocop>
 
 Deploy the robocop controller and its CRDs into the cluster.
+
+=item B<deploy-image>
+
+Roll out a new robocop image into the running cluster. Patches the
+Deployment in place via L<Kubernetes::REST> (no C<kubectl> per ADR 0007),
+optionally triggers a rollout restart, and optionally waits for all pods
+to be Ready. See L<OCP::Cmd::DeployImage>.
 
 =item B<hetzner>
 

@@ -1,6 +1,22 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - New `ocp deploy-image` subcommand to roll out a new robocop image
+      into the running cluster without `kubectl` (ADR 0007). Patches the
+      robocop Deployment's controller container by name (strategic merge)
+      and, by default, writes the `kubectl.kubernetes.io/restartedAt`
+      annotation that `kubectl rollout restart` writes on the wire.
+      Options: `--tag` (required, combined with `--repo` as REPO:TAG),
+      `--repo` / `OCP_IMAGE_REPO` env (default `raudssus/ocp`),
+      `--cluster` / `OCP_CLUSTER` env, `--namespace` (default
+      `ocp-system`), `--wait` with `--timeout` (default 300s, polls on
+      `availableReplicas` + `observedGeneration` vs `generation`),
+      `--no_restart` to update the image without rolling the pods.
+      Exits 0 on success, 1 on a wait timeout, fails loud on missing
+      project, missing kubeconfig, missing Deployment, or cluster
+      mismatch. `MooX::Cmd` derives the class name to `deployimage` and
+      a `deploy-image` alias is registered in `OCP.pm` for the readable
+      spelling. See `OCP::Cmd::DeployImage` POD and `t/54-deploy-image.t`.
     - Decompose OCP::Cmd::Apply into focused phase modules
       - OCP::Cmd::Apply::DeployedHash owns the .ocp/deployed.yaml
         tracking (load/save/report_component)
