@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-08-14T18:48:34Z
+claimed_by: ocp-infra-worker
+class: standard
+completed: 2026-08-14T18:48:34Z
+created: 2026-08-14T18:37:01Z
+id: 54
+priority: high
+started: 2026-08-14T18:42:49Z
+status: done
+tags:
+- cleanup
+- pinning
+- share
+title: 'Rexfile: stale Cilium constant block löschen, ENV-only Pins'
+updated: 2026-08-14T18:48:34Z
+---
+
+ADR 0014 verletzt: share/Rexfile:1030,1036,1037 hat use-constant-Block der Cilium-Pins dupliziert. CILIUM_VERSION=1.19.2 (Versions.pm: 1.20.0), CILIUM_CLI_VERSION=v0.18.5 (Versions.pm: v0.19.7) — schon weggedriftet. GATEWAY_API_VERSION matched noch, ist aber auch dupliziert.
+
+Fix: Konstantenblock im Rexfile weg. Rexfile-Tasks müssen Cilium-Variante aus ENV ziehen, die Rex.pm schon setzt (siehe lib/OCP/Rex.pm ENV-Setup). Wenn ENV fehlt, fail-loud (gleicher Trick wie bei nvidia_validator).
+
+Regressionstest in t/: assert dass Versions.pm::cilium == das was die Rex-Tasks tatsächlich verwenden (ENV-gestützt oder via Rex-Interface-Dry-Run). Parallele Aufgabe: Drift.pm:500 hat ein veraltetes Beispiel (v1.19.2) in POD — angleichen.
