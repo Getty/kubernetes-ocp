@@ -1,0 +1,38 @@
+---
+claimed_at: 2026-08-14T22:41:08Z
+claimed_by: ocp-robocop-worker
+class: standard
+completed: 2026-08-14T22:40:46Z
+created: 2026-08-14T22:22:26Z
+id: 65
+priority: high
+started: 2026-08-14T22:22:42Z
+status: done
+tags:
+- cli
+- robocop
+- k8s
+title: 'ocp deploy-image: Subcommand patcht robocop-Deployment im Cluster'
+updated: 2026-08-14T22:41:08Z
+---
+
+OCP braucht einen Weg, ein neues Image im laufenden Cluster auszurollen ohne kubectl (ADR 0007 verbietet kubectl im Code-Pfad). Aktuell: share/robocop/deployment.yaml hat ein festes image: und keine Out-of-Band-Aktualisierung.
+
+Bedarf:
+- Neues OCP-Subcommand: ocp deploy-image --tag <TAG> [--cluster <NAME>] [--namespace <NS>]
+- Default-Namespace: ocp-system (das ist der Namespace in dem OCPNode CRs leben — verifizieren welcher für robocop gilt; ggf. ocp-system/ocp-robocop)
+- Liest kubeconfig wie andere OCP-Subcommands (OCP::Config, OCP::Secrets)
+- Lädt robocop-Deployment via Kubernetes::REST (KEIN kubectl), patcht spec.template.spec.containers[*].image auf raudssus/ocp:<TAG>
+- Optional: rollout restart via Patch auf spec.template.metadata.annotations (kubectl-rollout-restart-Trick)
+- Optional: --wait bis alle Pods Ready sind (poll mit OCP::K8s)
+- Tests in t/ mit FakeK8s (siehe Hausstil): 
+  - erfolgreicher Patch mit korrektem Image
+  - fail-loud wenn Deployment nicht existiert
+  - --wait pollt und returnt Ready/Timeout
+- POD: Author::GETTY inline, =opt für --tag/--cluster/--namespace/--wait
+
+Out of scope:
+- Image-Registry-Login / Pull-Secret (Voraussetzung dass Cluster das Image pullen kann)
+- Helm-basierte Deployments (nicht OCP-Stil)
+- Multi-Cluster-Rollout (loop über alle Cluster im Spec)
+- ADR 0021 (bin/robocop Controller-Swap)
