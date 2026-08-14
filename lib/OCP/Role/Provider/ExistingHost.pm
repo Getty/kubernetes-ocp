@@ -32,12 +32,52 @@ requires 'resolve_host';     # (%opts)           -> host, or dies
 requires 'host_reachable';   # ($host, $timeout) -> bool
 requires 'run_command';      # ($host, $command) -> output
 
+=attr verbose
+
+    my $p = MyProvider->new(verbose => 1);
+
+Boolean verbosity flag, consumed by subclasses (e.g. L<OCP::Provider::Local>
+prints command output when set). Default C<0>.
+
+=cut
+
 has verbose => (is => 'ro', default => 0);
 
 # Nothing to create, so nothing to prepare or clean up.
-sub upload_ssh_key         { return }
-sub cleanup_on_failure     { return }
+sub upload_ssh_key          { return }
+sub cleanup_on_failure      { return }
 sub list_servers_by_cluster { return [] }
+
+=method server_exists
+
+    my $info = $p->server_exists($node_name, host => '10.0.0.5');
+
+Returns C<< { ip => $host } >> when the host resolves and answers; C<undef>
+when C<resolve_host> dies or the host is unreachable. Used by callers that
+want to know whether to provision or to skip.
+
+=method create_server
+
+    my $info = $p->create_server(host => '10.0.0.5', name => 'w1');
+
+Reports the host back as an existing, not newly created server.
+C<id> is C<undef>; C<newly_created> is C<0>. The caller treats both fields
+the same way as the cloud adapter would.
+
+=method wait_for_running
+
+    my $info = $p->wait_for_running($info, 120);
+
+No-op: the host was running before we got here. Returns its argument.
+
+=method delete_server
+
+    $p->delete_server(undef, host => '10.0.0.5');
+
+Runs the RKE2/K3s uninstall script on the host. C<$server_id> is ignored
+(the machine does not belong to OCP); C<host> is read through C<resolve_host>.
+
+=cut
 
 sub server_exists {
     my ($self, $node_name, %opts) = @_;
@@ -81,72 +121,75 @@ sub delete_server {
 
 __END__
 
-=head1 NAME
+=synopsis
 
-OCP::Role::Provider::ExistingHost - Provider behaviour for hosts OCP does not create
-
-=head1 SYNOPSIS
-
-    package OCP::Provider::SSH;
+    package My::Provider::New;
     use Moo;
     with 'OCP::Role::Provider::ExistingHost';
 
-    sub resolve_host   { $_[1] ... }
-    sub host_reachable { ... }
-    sub run_command    { ... }
+    sub resolve_host   { ... }   # where to talk
+    sub host_reachable { ... }   # how to check it
+    sub run_command    { ... }   # how to run things on it
 
-=head1 DESCRIPTION
+=description
 
-Some providers manage machines, others just use machines that are already
+Some providers manage machines; others just use machines that are already
 there. This role holds everything the second kind has in common: creation is
 a no-op that reports the host back, waiting is instant, there is no key to
 upload and no server list to query, and deletion means uninstalling the
 Kubernetes distribution instead of destroying hardware.
 
+B<Any adapter that wraps a host the user already controls MUST consume this
+role.> Adapter-specific overrides are for IP discovery or transport
+(SSH vs serial vs local execution), NOT for the lifecycle shape
+(create/delete/run_command). The lifecycle methods here are the seam:
+callers depend on them, and a host adapter that re-implements them in its
+own way will silently drift from the cloud adapter's contract.
+
 Consumers supply the three things that actually differ: which host to talk
-to, how to test it, and how to run a command on it. L<OCP::Provider::SSH>
-does that over SSH, L<OCP::Provider::Local> does it on the local machine.
+to, how to test it, and how to run a command on it.
+L<OCP::Provider::SSH> does that over SSH;
+L<OCP::Provider::Local> does it on the local machine.
 
-=head1 REQUIRED METHODS
+=method required
 
-=head2 resolve_host
+These methods B<must> be implemented by the consuming class. The role calls
+each in the methods below (C<server_exists>, C<create_server>,
+C<delete_server>), so an undefined body is a hard error at composition
+time — Moo::Role's C<requires> enforces it.
 
-    my $host = $provider->resolve_host(%opts);
+=over 4
 
-The host to act on. Dies when it cannot be determined.
+=item C<resolve_host(%opts) — str, dies on failure>
 
-=head2 host_reachable
+Returns the host to act on. Callers pass C<host => ...> when they have one;
+OCP::Node::_provision passes C<spec => $cr->{spec}> instead, so an
+adapter reading only C<$opts{host}> will die there. The SSH adapter shows
+the pattern: prefer an explicit C<host>, fall back to C<spec.host>.
 
-    my $bool = $provider->host_reachable($host, $timeout);
+=item C<host_reachable($host, $timeout) — bool>
 
-Whether the host answers.
+Whether the host answers within C<$timeout> seconds. Used by
+C<server_exists> to decide between C<< { ip => $host } >> and C<undef>.
 
-=head2 run_command
+=item C<run_command($host, $command) — output>
 
-    my $output = $provider->run_command($host, $command);
+Runs a shell command on the host and returns its output (shape matching
+L<OCP::SSH/run>). Used by C<delete_server> to uninstall the distribution.
 
-Runs a shell command on the host.
+=back
 
-=head1 METHODS
+=method upload_ssh_key, cleanup_on_failure, list_servers_by_cluster
 
-=head2 server_exists
+    $p->upload_ssh_key($name, $pubkey);   # no-op
+    $p->cleanup_on_failure($server_id);   # no-op
+    my $servers = $p->list_servers_by_cluster($cluster);  # []
 
-Returns C<< { ip => $host } >> when the host is reachable, undef otherwise.
+No-ops. There is no provider API behind these hosts, and callers know it.
 
-=head2 create_server
+=seealso
 
-Reports the host back as an existing, not newly created server.
-
-=head2 wait_for_running
-
-Returns its argument unchanged.
-
-=head2 delete_server
-
-Runs the RKE2/K3s uninstall script on the host.
-
-=head2 upload_ssh_key, cleanup_on_failure, list_servers_by_cluster
-
-No-ops. There is no provider API behind these hosts.
+L<OCP::Provider::SSH>, L<OCP::Provider::Local>, L<OCP::Provider::Hetzner>,
+L<OCP::Provider>
 
 =cut

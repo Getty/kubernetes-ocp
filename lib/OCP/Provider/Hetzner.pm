@@ -6,6 +6,24 @@ use WWW::Hetzner::Cloud;
 
 our $VERSION = '0.001';
 
+=attr token
+
+    my $hz = OCP::Provider::Hetzner->new(token => $ENV{HETZNER_API_TOKEN});
+
+Hetzner Cloud API token. Required, no default. Used to build the
+L<WWW::Hetzner::Cloud> client lazily on first call.
+
+=attr cluster_name
+
+    my $hz = OCP::Provider::Hetzner->new(cluster_name => 'mycluster');
+
+The OCP cluster this provider instance manages. Embedded as the
+C<ocp-cluster> label on every server created or looked up. Optional:
+servers can be created without a cluster scope, but C<server_exists>
+and C<list_servers_by_cluster> then have nothing to filter by.
+
+=cut
+
 has token => (is => 'ro', required => 1);
 has cluster_name => (is => 'ro', default => '');
 
@@ -13,6 +31,16 @@ has cloud => (
     is      => 'lazy',
     builder => sub { WWW::Hetzner::Cloud->new(token => shift->token) },
 );
+
+=method upload_ssh_key
+
+    $prov->upload_ssh_key('ocp-mycluster-admin', $pubkey);
+
+Idempotently uploads a public key to the Hetzner project so it can be
+referenced by C<server->ssh_keys> when a server is created. Dies when
+the key name is empty or the public key is missing.
+
+=cut
 
 sub upload_ssh_key {
     my ($self, $key_name, $pubkey) = @_;
@@ -22,6 +50,18 @@ sub upload_ssh_key {
 
     $self->cloud->ssh_keys->ensure($key_name, $pubkey);
 }
+
+=method server_exists
+
+    my $server = $prov->server_exists($node_name);
+
+Looks up an existing server by the C<ocp-cluster>/C<ocp-node> label pair.
+Returns the L<WWW::Hetzner::Cloud::Server> object when one matches;
+C<undef> otherwise. Used by C<create_server> to keep provisioning
+idempotent: a node that already has a labelled server is reported as
+"found", not "created".
+
+=cut
 
 sub server_exists {
     my ($self, $node_name) = @_;
@@ -36,6 +76,49 @@ sub server_exists {
     return $servers->[0] if @$servers;
     return;
 }
+
+=method create_server
+
+    my $info = $prov->create_server(
+        name        => 'police1',
+        node        => 'police1',
+        role        => 'control-plane',
+        server_type => 'cx32',
+        image       => 'debian-13',
+        location    => 'fsn1',
+        ssh_keys    => ['ocp-mycluster-admin'],
+    );
+
+Returns a hashref with the keys callers read:
+
+=over 4
+
+=item C<id>
+
+Hetzner server id (integer). C<undef> when the server came from
+C<server_exists> and therefore has no fresh handle (callers fall back to
+C<existing->id> in that case).
+
+=item C<ip>
+
+Public IPv4. C<undef> immediately after creation — the server is not
+running yet, and the IP is not allocated. Call C<wait_for_running> to fill
+it in.
+
+=item C<newly_created>
+
+Boolean. C<0> when the server was matched by label, C<1> after a fresh
+C<servers->create>. The control-plane flow uses it to decide whether to
+wait and whether to clean up on failure.
+
+=back
+
+Idempotency: when C<cluster_name> is set, C<server_exists> runs first.
+A label match is returned with C<newly_created = 0> and no IP set; this
+is the same shape the caller would have built from a fresh create, minus
+the wait.
+
+=cut
 
 sub create_server {
     my ($self, %opts) = @_;
@@ -77,6 +160,18 @@ sub create_server {
     };
 }
 
+=method wait_for_running
+
+    $prov->wait_for_running($info, 120);
+
+Blocks until the server reported in C<$info> is in C<running> state, then
+mutates C<$info> in place to set C<ip> to the public IPv4 and returns it.
+C<$timeout> defaults to 120 seconds. The control-plane path calls this
+right after C<create_server>; robocop never does (its node has the IP
+already).
+
+=cut
+
 sub wait_for_running {
     my ($self, $server_info, $timeout) = @_;
     $timeout //= 120;
@@ -89,11 +184,32 @@ sub wait_for_running {
     return $server_info;
 }
 
+=method get_server_ip
+
+    my $ip = $prov->get_server_ip($server_id);
+
+Reads the current IPv4 of a known server id. Used by callers that hold
+the id but not the C<$info> hashref.
+
+=cut
+
 sub get_server_ip {
     my ($self, $server_id) = @_;
     my $server = $self->cloud->servers->get($server_id);
     return $server->ipv4;
 }
+
+=method delete_server
+
+    $prov->delete_server($server_id, name => 'w1', host => '1.2.3.4');
+
+Deletes the Hetzner server with the given id. C<$server_id> is the only
+load-bearing argument; C<name> and C<host> are accepted because
+L<OCP::Node/teardown> passes them through but are not used here. A
+C<delete_server(undef)> is a no-op — empty ids never call the API, so a
+teardown on an already-gone node does not cost a round trip.
+
+=cut
 
 sub delete_server {
     my ($self, $server_id, %opts) = @_;
@@ -101,12 +217,32 @@ sub delete_server {
     $self->cloud->servers->delete($server_id);
 }
 
+=method cleanup_on_failure
+
+    eval { $prov->cleanup_on_failure($server_id) };
+
+Best-effort C<delete_server> for a server that just failed to provision.
+A failure here is downgraded to a warning so the original error is not
+masked.
+
+=cut
+
 sub cleanup_on_failure {
     my ($self, $server_id) = @_;
     return unless $server_id;
     eval { $self->delete_server($server_id) };
     warn "Cleanup failed for server $server_id: $@\n" if $@;
 }
+
+=method list_servers_by_cluster
+
+    my @servers = @{ $prov->list_servers_by_cluster('mycluster') };
+
+Returns every server carrying the C<ocp-cluster=$cluster> label. Used by
+C<ocp destroy> to find orphans that C<.ocp/status.yaml> did not record
+(servers that ran but never reported back).
+
+=cut
 
 sub list_servers_by_cluster {
     my ($self, $cluster_name) = @_;
@@ -118,14 +254,48 @@ sub list_servers_by_cluster {
 
 __END__
 
-=head1 NAME
+=synopsis
 
-OCP::Provider::Hetzner - Hetzner Cloud infrastructure provider
+    use OCP::Provider::Hetzner;
 
-=head1 DESCRIPTION
+    my $prov = OCP::Provider::Hetzner->new(
+        token        => $ENV{HETZNER_API_TOKEN},
+        cluster_name => 'mycluster',
+    );
 
-Manages server lifecycle on Hetzner Cloud with idempotent creation
-(checks labels before creating), failure cleanup, and cluster-scoped
-server listing.
+    $prov->upload_ssh_key('ocp-mycluster-admin', $pubkey);
+    my $info = $prov->create_server(
+        name     => 'police1',
+        node     => 'police1',
+        role     => 'control-plane',
+        location => 'fsn1',
+    );
+    $prov->wait_for_running($info, 120);
+    print "Server up at $info->{ip}\n";
+
+=description
+
+Manages server lifecycle on Hetzner Cloud. The methods on this class are
+the in-cluster adapter side of L<OCP::Provider>'s seam — C<ocp apply> and
+robocop reach them through L<OCP::Provider::Hetzner> only.
+
+Idempotency is built in: C<create_server> checks the
+C<ocp-cluster>/C<ocp-node> label pair before allocating anything, so a
+node whose server already exists is reported as C<newly_created = 0>
+with the same hash shape a fresh create would have produced. The control
+plane path therefore calls C<wait_for_running> only on the freshly
+created branch.
+
+=method cluster_name
+
+The OCP cluster this provider manages, embedded as the C<ocp-cluster>
+label. Set by the factory from C<OCP::Provider/for_spec>'s
+C<cluster_name> arg or C<OCP::Provider/from_cr>'s
+C<$cr-E<gt>{metadata}{name}>.
+
+=seealso
+
+L<OCP::Provider>, L<OCP::Role::Provider::ExistingHost>,
+L<WWW::Hetzner::Cloud>
 
 =cut

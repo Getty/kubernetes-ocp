@@ -1,6 +1,39 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Make the OCP::Provider seam real
+      - OCP::Provider had two parallel dispatch paths (`for_spec` and
+        `from_cr`), each maintaining its own `if $type eq ...` ladder and
+        its own error string. Adding a provider meant editing both. They
+        now share one `_build(\%args)` dispatcher; the two entry points
+        reduce to "gather credentials, then call _build". The previously
+        divergent "Unsupported provider type" / "Unsupported provider"
+        strings are unified into a single message; t/12-provider.t is
+        updated to match
+      - OCP::Role::Provider::ExistingHost had methods but no inline POD,
+        so the contract had to be inferred from the body. Each method,
+        the `verbose` attribute, and the three required hooks now carry
+        `=attr` / `=method` blocks; `=description` names the rule
+        ("Any adapter that wraps a host the user already controls MUST
+        consume this role") and the seam it protects
+      - OCP::Provider::Hetzner and the two host adapters (SSH, Local)
+        get the same treatment: every method documented inline, the
+        hash shapes they return called out (`{ id, ip, newly_created }`
+        for create, `{ stdout, stderr, exit }` for run), and the
+        idempotency contract on create_server spelled out so the next
+        adapter knows the rules without grepping the call sites
+    - Three new tests pin the seam down
+      - t/49-provider-factory.t: dispatch matrix for both entry points
+        (spec/cr × ssh/local/hetzner), unified error string, missing
+        tokenSecretRef handled, typed Kind args (no `path =>`)
+      - t/50-existing-host-role.t: composition requires the three
+        transport hooks, the no-op trio returns as documented, the
+        hash shapes match, delete_server actually runs the uninstall
+        command
+      - t/51-pod.t: every Provider*.pm and Role/Provider*.pm has
+        `# ABSTRACT`, `=synopsis`, `=description`, `=seealso`, and
+        inline `=method` for each public method — no manual `=head1`
+        NAME/AUTHOR/SUPPORT/COPYRIGHT (PodWeaver builds those)
     - Name the Hetzner pickers for what they are
       - OCP::Hetzner → OCP::Hetzner::Picker; the class wraps the read-only
         catalogue (locations, server types) and has nothing to do with

@@ -252,12 +252,14 @@ subtest 'from_cr dispatches local' => sub {
 #
 
 subtest 'from_cr dies on unknown type' => sub {
+    # Same message as for_spec: both entry points normalise through _build,
+    # so there is one dispatch and one error string.
     my $cr = {
         metadata => { name => 'x', namespace => 'ocp-system' },
         spec     => { type => 'unknown_garbage' },
     };
     eval { OCP::Provider->from_cr($cr, k8s => undef) };
-    like $@, qr/Unsupported provider type/, 'dies on unknown';
+    like $@, qr/Unsupported provider/, 'dies on unknown';
 };
 
 subtest 'from_cr hetzner uses typed Kind args (not path=>)' => sub {
