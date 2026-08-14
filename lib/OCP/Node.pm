@@ -5,6 +5,11 @@ use Moo;
 use File::Temp ();
 use Time::Piece ();
 use OCP::K8s;
+# ssh_class and rex_class default to these by name. Nothing else in the
+# reconcile path loads them, so without these two lines _install_kubernetes
+# dies on ->new the first time it runs against a real host.
+use OCP::Rex;
+use OCP::SSH;
 use OCP::Versions;
 use namespace::clean;
 

@@ -606,4 +606,23 @@ subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
     is $node->reconcile, 0, 'Terminating terminal: reconcile returns 0';
 };
 
+#
+# ssh_class and rex_class are plain strings in the attribute defaults, so
+# nothing in OCP::Node pulls those packages in. _install_kubernetes then calls
+# ->new on them by name and dies with "Can't locate object method new via
+# package OCP::Rex" — but only on a real reconcile against a real host, which
+# is exactly the path no test drives (karr #29).
+#
+# This has to run in its own interpreter. In-process the check would pass as
+# soon as any other module in the same run happens to load OCP::Rex, which is
+# how the gap stayed invisible in the first place.
+#
+subtest 'default ssh_class and rex_class are loaded by OCP::Node alone' => sub {
+    for my $class (qw(OCP::SSH OCP::Rex)) {
+        my $code = "use OCP::Node; print $class->can('new') ? 'yes' : 'no'";
+        my $out  = qx{$^X -Ilib -e "$code" 2>&1};
+        is $out, 'yes', "OCP::Node makes $class usable without help";
+    }
+};
+
 done_testing;
