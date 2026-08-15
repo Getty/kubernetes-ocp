@@ -1,0 +1,150 @@
+---
+class: standard
+completed: 2026-08-15T19:47:18Z
+created: 2026-08-15T19:20:07Z
+id: 85
+priority: high
+started: 2026-08-15T19:22:10Z
+status: done
+tags:
+- bug
+- secure-mode
+- ssh-provider
+title: 'provider:ssh + secure mode: .ocp/id_ed25519 wird nie erzeugt, apply/node-add
+  scheitern strukturell an ''SSH not reachable'''
+updated: 2026-08-15T19:47:18Z
+---
+
+Gefunden bei citiai#23 (Cluster citiai auf cp-lab), Task 2 Schritt 2 (ocp apply) des
+Plans docs/superpowers/plans/2026-08-15-cluster-citiai.md (Repo citiai).
+
+SYMPTOM: `ocp apply` (secure mode, control_planes.provider: ssh) scheitert nach dem
+korrekten PIN1/PIN2-Preflight mit:
+  [FAIL] SSH not ready: SSH not reachable on cp-lab.ai.citilan.de after 120s
+Manueller Gegentest (root auf cp-lab selbst, ssh root@cp-lab.ai.citilan.de) zeigt: TCP+
+SSH-Handshake funktionieren, es ist "Permission denied (publickey)" - kein Netzwerk-
+oder Erreichbarkeitsproblem, ein Auth-Problem.
+
+ROOT CAUSE, im Code belegt:
+
+lib/OCP/Cmd/Apply/Bootstrap.pm:129 (setup_ssh_key) und Zeile 245-249
+(bootstrap_control_plane) waehlen fuer `provider eq "ssh"` UNBEDINGT
+`$config->ssh_private_key_path` (Default `.ocp/id_ed25519`) - Kommentar Zeile 119-122:
+"SSH provider: always use bootstrap key (.ocp/id_ed25519)". Das gilt unabhaengig von
+secure/dev mode.
+
+lib/OCP/Cmd/Init.pm:213-236 (Step 5, SSH keys) erzeugt `.ocp/id_ed25519` aber NUR im
+`if ($self->nopassword)`-Zweig (Zeile 215). Im secure-mode-Zweig (Zeile 236 ff., unser
+Fall) wird ausschliesslich das Zwei-Tier-System in keys.yaml angelegt (robo-ssh-*,
+admin-ssh-*) - `.ocp/id_ed25519` entsteht dabei nie. Verifiziert auf cp-lab nach
+frischem `ocp init --provider ssh ...` (ohne --nopassword): `.ocp/` enthaelt nur
+`age.key` und `age.pub`, kein `id_ed25519`.
+
+Die `--ssh-key`-Option (Init.pm:73, "Use existing SSH private key") wird ebenfalls NUR
+im nopassword-Zweig ausgewertet (Zeile 217: `$self-&gt;ssh_key // ...`) - selbst wer sie
+im secure mode angibt, wird stillschweigend ignoriert.
+
+KONSEQUENZ: `provider: ssh` + secure mode (kein `--nopassword`) ist fuer den
+Control-Plane-Bootstrap strukturell kaputt. Es gibt in secure mode keinen Weg ueber
+die CLI, `.ocp/id_ed25519` zu erzeugen oder zu befuellen - der Code verlangt aber genau
+diese Datei. Der bereits vorhandene admin-ssh-Key aus keys.yaml (den `ocp ssh` fuer
+operator access nutzt) wird an dieser Stelle gar nicht angefragt.
+
+Betrifft wahrscheinlich auch `ocp node add --provider ssh` (Node/Add.pm:255 nutzt
+denselben `ssh_private_key_path`) sowie `ocp update`/`ocp destroy` fuer ssh-provider-
+Cluster (Update.pm:210+230, Destroy.pm:129) - nicht live getestet, aber dieselbe
+Quelle.
+
+WORKAROUND (angewendet auf cp-lab, nicht im OCP-Code geaendert): `.ocp/id_ed25519`
+manuell per ssh-keygen erzeugt, oeffentlichen Teil auf allen sechs Maschinen in
+authorized_keys eingetragen - genau das Muster, das der Code fuer provider:ssh
+sowieso voraussetzt. Kein PIN noetig (Datei liegt in `.ocp/`, gitignored, wie im
+dev-mode-Pfad auch unverschluesselt).
+
+VORSCHLAG FUER EINEN ECHTEN FIX: entweder (a) Init.pm Step 5 generiert
+`.ocp/id_ed25519` IMMER, auch im secure-mode-Zweig, zusaetzlich zum Zwei-Tier-System
+(am naechsten an der Kommentarabsicht in Bootstrap.pm), oder (b) Bootstrap.pm faellt
+fuer provider:ssh + secure mode auf den admin-key zurueck, wenn `.ocp/id_ed25519`
+fehlt. (a) ist vermutlich der kleinere Eingriff und passt zur bestehenden Doku-Erwartung
+(ocp-usage-Skill/Plan gingen ohnehin von einem einzigen distributierten Bootstrap-Key
+aus).
+
+Nicht angefasst - kubernetes-ocp ist Nachbarrepo von citiai, Aenderung gehoert auf
+dieses Board.
+ERLEDIGT 2026-08-15 (ocp-worker). Variante (a), aber die Begruendung ist eine
+andere als im Ticket.
+
+WARUM (a) UND NICHT (b): Das Ticket argumentierte mit "naeher an der
+Kommentarabsicht in Bootstrap.pm". Dieser Kommentar IST die fehlerhafte Annahme,
+er belegt also nichts. Das Argument, das traegt, ist die Eigentumsfrage:
+Hetzner-Server werden von OCP ERZEUGT, es laedt den admin-Public-Key vor der
+Existenz des Servers ueber die API hoch und kann sich darauf verlassen. Eine
+ssh-Provider-Maschine ist VORBESTEHEND - der einzige Schluessel, dem sie traut,
+ist der, den ein Mensch von Hand in authorized_keys gelegt hat. Das sind
+verschiedene Credentials, also ist es richtig, dass provider eq "ssh" den Modus
+ueberstimmt, und der Fix gehoert nach Init.
+(b) wurde ernsthaft geprueft und am Aufrufer-Inventar verworfen: Apply.pm hat den
+admin-Key vor bootstrap_control_plane ohnehin entschluesselt, dort waere (b) fast
+gratis. Update.pm:210/230, Destroy.pm:129, Node/Add.pm:255 und Drift.pm:330
+konsumieren den Schluessel aber als DATEIPFAD und haben weder admin-Key noch
+PIN2-Prompt. (b) haette vier Kommandos einen PIN2-Prompt aufgezwungen - weit
+jenseits des Ticket-Scopes. Das ist jetzt #87.
+
+UMSETZUNG in lib/OCP/Cmd/Init.pm:
+ - Step 5 aufgeteilt in 5a (Bootstrap-Key) und 5b (Zwei-Tier-Keys, secure only).
+ - Das Gate fuer 5a ist `$self->nopassword || $provider eq "ssh"` - WOERTLICH
+   dieselbe Bedingung, die Bootstrap.pm in setup_ssh_key und
+   bootstrap_control_plane benutzt. Erzeugt wird also genau dort, wo gelesen wird;
+   die beiden Haelften koennen nicht wieder auseinanderlaufen.
+   Die erste Fassung gatete nur auf provider eq "ssh" und haette den DEV-MODE
+   zerbrochen: Apply.pm:143 stirbt auf dem --nopassword-Pfad fuer JEDEN Provider,
+   wenn .ocp/id_ed25519 fehlt (Dev-Mode benutzt den Bootstrap-Key als
+   Ersatz-Admin-Key). `--nopassword --provider hetzner` waere von funktionierend
+   auf sterbend gewechselt. Regressionstest haelt das fest.
+ - IDEMPOTENZ steht VOR dem Provider-Gate: ein vorhandener Schluessel nimmt einen
+   provider-unabhaengigen Wartungspfad (behalten, oder mit --force ersetzen), nur
+   das ERZEUGEN ist gegatet. Ein Hetzner-Projekt, das aus eigenen Gruenden einen
+   Bootstrap-Key haelt, ist damit nicht vogelfrei. Das war die kritische Wache:
+   OCP::Secrets::generate_ssh_key unlinkt VOR dem Erzeugen, "nicht anfassen"
+   musste also auf Init-Ebene erzwungen werden, nicht angenommen.
+ - --ssh-key wird jetzt in BEIDEN Modi ausgewertet. Gegen einen VORHANDENEN
+   Schluessel wird es laut abgelehnt (unter Nennung von --force), statt eine
+   verteilte Credential zu ueberschreiben. Bei einem Nicht-ssh-Provider sagt es,
+   dass die Option dort nicht gilt, und erzeugt nichts - nicht toedlich, passend
+   dazu, wie init den fehlenden Hetzner-Token behandelt.
+ - Der Block "SSH PROVIDER - Manual Setup Required" war nur im Dev-Mode
+   erreichbar (er druckte eine Datei, die secure mode nie anlegte). Secure
+   `init --provider ssh` endete also, ohne UEBERHAUPT einen Schluessel zu nennen.
+   Wird jetzt immer gedruckt, mit Verweis auf `ocp keys show --purpose admin` fuer
+   den zweiten Schluessel, den diese Maschinen brauchen.
+ - _effective_provider ergaenzt: _provider war `$self->provider // "hetzner"` und
+   las ocp.yaml NIE. Ein blankes `ocp init` in einem bestehenden ssh-Projekt haette
+   also auf hetzner aufgeloest und den Schluessel uebersprungen - dieselbe
+   Fehlerklasse nochmal. Jetzt wird der Provider aus der VORHANDENEN ocp.yaml
+   gelesen, Rueckfall auf _provider nur, wenn Step 7 die Datei ohnehin schreibt.
+
+FOLGESTELLEN: Die Vermutung des Tickets war halb richtig. Node/Add.pm:255,
+Update.pm:210/230, Destroy.pm:129 (nur ssh-Zweig) und Drift.pm:330 haben dieselbe
+Quelle und sind fuer provider:ssh mit (a) geheilt. Fuer secure + HETZNER bleibt
+dort eine eigene Luecke - die vier greifen zu einem Schluessel, der auf
+Hetzner-Maschinen nie verteilt wurde. Das ist #87.
+
+VERIFIZIERT mit der echten CLI: secure+hetzner laesst .ocp/ mit nur age.key/age.pub
+zurueck und Drift.pms -f-Waechter meldet wieder ehrlich "Schluessel fehlt" statt in
+einen Auth-Timeout zu laufen; secure+ssh bekommt den Schluessel und authentisiert.
+
+FUER cp-lab: NICHTS ZU TUN. Der handgemachte .ocp/id_ed25519 ist genau das, was der
+reparierte Code erwartet - ein erneutes `ocp init` meldet "[ok] SSH bootstrap key
+exists" und laesst ihn in Ruhe. Aus dem Workaround wird der unterstuetzte Zustand.
+Eine Ergaenzung lohnt: `ocp keys show --purpose admin` und diesen Key ebenfalls auf
+die sechs Maschinen legen, sonst scheitert `ocp ssh` weiterhin - eine eigene Falle,
+nicht diese.
+
+Test: t/69-secure-ssh-keys.t (neu), netzwerk- und clusterfrei, faehrt die ECHTE
+secure-mode-Init - den Pfad, den jeder andere Init-Test mit --nopassword umgeht.
+Kern-Assertions: Bootstrap-Key existiert nach secure init und ist unverschluesselt;
+ein HANDGEMACHTER Schluessel ist danach BYTE-IDENTISCH (der cp-lab-Fall);
+Bootstrap::setup_ssh_key waehlt eine Datei, die jetzt existiert; hetzner-secure legt
+KEINEN an; dev+hetzner legt weiterhin einen an.
+
+Suite: Files=61, Tests=1025, PASS (Ausgang 60/1003).
