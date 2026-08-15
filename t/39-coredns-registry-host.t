@@ -512,6 +512,111 @@ subtest 'real drift still surfaces behind a DNS name' => sub {
     };
 };
 
+#
+# LB-IPAM derived the same address a second time.
+#
+# _setup_lb_ipam carried its own inet_aton copy of "configured host ->
+# address", which is the duplication #19 was about, in a second place. What it
+# also carries — and what a naive merge would have thrown away — is a fallback
+# that is NOT name resolution: a loopback address is useless as a
+# load-balancer pool, so it asks the cluster what else the node has. That
+# needs the API, answers a different question, and stays in the LB-IPAM path;
+# resolve_address keeps meaning exactly what the registry.local writer and
+# OCP::Drift's probe agree it means.
+#
+# Both halves are driven below, and the resolvable case runs under the same
+# override as the tests above: a re-inlined lookup does not see it, so the
+# name (RFC 2606, resolvable nowhere) makes the run die instead of pass.
+#
+
+package LbAddr {
+    sub new     { my ($c, $t, $a) = @_; bless { type => $t, address => $a }, $c }
+    sub type    { $_[0]{type} }
+    sub address { $_[0]{address} }
+}
+package LbStatus { sub new { my ($c, @a) = @_; bless { a => [@a] }, $c } sub addresses { $_[0]{a} } }
+package LbNode   { sub new { my ($c, $s) = @_; bless { s => $s }, $c }   sub status    { $_[0]{s} } }
+package LbList   { sub new { my ($c, @i) = @_; bless { i => [@i] }, $c } sub items     { $_[0]{i} } }
+package LbRes    { sub new { bless {}, shift } sub status { 200 } sub content { '{}' } }
+package LbApi {
+    sub new          { my ($c, %a) = @_; bless { %a }, $c }
+    sub list         { $_[0]{nodes} // LbList->new }
+    sub expand_class { undef }
+    sub _request     { LbRes->new }    # the CiliumLoadBalancerIPPool API is served
+}
+
+package main;
+
+# The pool CIDR _setup_lb_ipam would write, and the noise it printed getting
+# there. The run is stopped at that point on purpose: what follows is a 2s
+# settle and a Gateway status read, neither of which is what this measures.
+sub lb_ipam_pool {
+    my ($host, @node_addresses) = @_;
+
+    my $apply = bless {}, 'OCP::Cmd::Apply';
+    $apply->{_k8s_api} = LbApi->new(
+        nodes => LbList->new(LbNode->new(LbStatus->new(@node_addresses))),
+    );
+
+    my @applied;
+    my ($out, $err) = ('', '');
+    {
+        no warnings 'redefine';
+        local *OCP::Cmd::Apply::_server_side_apply_all = sub {
+            my (undef, undef, @resources) = @_;
+            push @applied, @resources;
+            die "stop\n";
+        };
+        open my $fh, '>', \$out or die $!;
+        local *STDOUT = $fh;
+        eval { $apply->_setup_lb_ipam($host); 1 } or $err = $@;
+    }
+
+    my ($pool) = grep { $_->{kind} eq 'CiliumLoadBalancerIPPool' } @applied;
+    return {
+        cidr => $pool ? $pool->{spec}{blocks}[0]{cidr} : undef,
+        out  => $out,
+        err  => $err,
+    };
+}
+
+subtest 'LB-IPAM resolves a named control plane through the shared derivation' => sub {
+    with_dns {
+        my $r = lb_ipam_pool('cortex.ocp.invalid');
+
+        is $r->{err}, "stop\n", 'the run got as far as applying the pool';
+        is $r->{cidr}, '10.230.30.155/32',
+            'the pool is the resolved address, not the name';
+    };
+};
+
+subtest 'the loopback fallback survives the merge' => sub {
+    my $r = lb_ipam_pool('127.0.0.1',
+        LbAddr->new(InternalIP => '10.230.30.155'),
+        LbAddr->new(Hostname   => 'cortex'),
+    );
+
+    is $r->{cidr}, '10.230.30.155/32',
+        'a loopback address is replaced by what the node actually answers on';
+    like $r->{out}, qr/Using node IP 10\.230\.30\.155/, 'and it says it did so';
+};
+
+subtest 'a node with nothing but loopback is warned about, not guessed at' => sub {
+    my $r = lb_ipam_pool('127.0.0.1', LbAddr->new(InternalIP => '127.0.0.1'));
+
+    is $r->{cidr}, '127.0.0.1/32', 'no address is invented';
+    like $r->{out}, qr/WARNING: Only loopback IP available/,
+        'the pool that will not work externally is called out';
+};
+
+subtest 'a name that resolves to nothing stops the step' => sub {
+    my $r = lb_ipam_pool('nowhere.ocp.invalid');
+
+    like $r->{err}, qr/Cannot resolve nowhere\.ocp\.invalid/,
+        'same refusal as the registry.local writer gives';
+    is $r->{cidr}, undef, 'and nothing was applied';
+};
+
 subtest 'resolve_address' => sub {
     is OCP::Drift::resolve_address('10.230.30.155'), '10.230.30.155',
         'an address passes through untouched';

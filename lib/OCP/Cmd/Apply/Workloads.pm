@@ -28,6 +28,13 @@ cluster whether the deployment is actually there, and only then decide
 lesson registry paid for the hard way — without it, an `ocp destroy` left
 a record of a workload the next apply happily skipped.
 
+That decision is the return value, and the caller reports it through
+L<OCP::Cmd::Apply::DeployedHash/report_component>: here is the only place
+that holds both the record and the cluster's answer, so anyone judging from
+the hash file afterwards is guessing. C<setup_gpu_operator> has a fifth
+answer, C<skipped> — no NVIDIA card, or C<gpu.enabled: false> — for the
+cluster where this component is not part of the spec at all.
+
 L<OCP::Cmd::Apply> re-exports these as thin forwarders so the test surface
 (t/40-gpu-clusterpolicy.t) keeps working.
 
@@ -421,8 +428,8 @@ sub setup_gpu_operator {
     # operator anyway would put the stack back on a node the spec asked to keep
     # GPU-free.
     unless ($config->gpu_enabled) {
-        print "  [ok] GPU Operator skipped (gpu.enabled: false)\n";
-        return;
+        print "      gpu.enabled is false — nothing to deploy\n";
+        return 'skipped';
     }
 
     my $api = $self->_k8s_api;
@@ -446,8 +453,7 @@ sub setup_gpu_operator {
 
     unless (@gpu_nodes) {
         print "      No GPU nodes detected (no NFD pci-0300_10de or pci-0302_10de label)\n";
-        print "  [ok] GPU Operator skipped (no GPU hardware)\n";
-        return;
+        return 'skipped';
     }
 
     my @gpu_names = map { $_->metadata->name } @gpu_nodes;
@@ -470,10 +476,22 @@ sub setup_gpu_operator {
     my $gpu_running = $gpu_ns_exists &&
         $self->_resource_exists($api, 'Deployment', 'gpu-operator', namespace => 'gpu-operator');
 
+    my $recorded = exists $deployed->{'gpu-operator'};
+
     if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running) {
         print "      GPU Operator already deployed (up to date)\n";
-        return;
+        return 'unchanged';
     }
+
+    # What the caller gets told afterwards, decided here because here is the
+    # only place that holds both the record and the cluster's answer. The
+    # reconcile path used to form this verdict itself, from _load_deployed_hashes
+    # before and after — which could not see 'restored' at all: an operator gone
+    # from the cluster with an unchanged manifest was rolled out again and
+    # reported as "up to date".
+    my $outcome = !$recorded    ? 'deployed'
+                : !$gpu_running ? 'restored'
+                :                 'updated';
 
     # Apply CRDs (ClusterPolicy + NVIDIADriver)
     print "      Applying GPU Operator CRDs...\n";
@@ -497,7 +515,7 @@ sub setup_gpu_operator {
     for my $i (1..12) {
         my $cp = $self->_crd_get($api, $cp_path);
         if ($cp && $cp->{status} && ($cp->{status}{state} // '') eq 'ready') {
-            print "  [ok] GPU Operator ready (ClusterPolicy state: ready)\n";
+            print "      ClusterPolicy state: ready\n";
             last;
         }
         if ($i == 12) {
@@ -508,6 +526,8 @@ sub setup_gpu_operator {
     }
 
     $self->_save_deployed_hash($config, 'gpu-operator', $hash);
+
+    return $outcome;
 }
 
 sub generate_gpu_operator_manifest {
@@ -552,14 +572,36 @@ sub generate_gpu_operator_manifest {
     my $rancher_dir = $distribution eq 'k3s' ? 'k3s' : 'rke2';
     my $containerd_config = "/var/lib/rancher/$rancher_dir/agent/etc/containerd/config.toml";
 
-    # CONTAINERD_SET_AS_DEFAULT / CONTAINERD_RUNTIME_CLASS are the archived
-    # 22.9 recipe and measured inert at the pinned operator (see karr #30): the
-    # operator derives NVIDIA_RUNTIME_SET_AS_DEFAULT from cdi.enabled and hands
-    # the toolkit that instead, so the node keeps runc as its default runtime
-    # no matter what stands here. Left in place deliberately — removing them is
-    # #30's job, not a bug fix's.
-    my $containerd_set_as_default = '1';
-    my $containerd_runtime_class = 'nvidia';
+    # Deliberately NOT set: CONTAINERD_SET_AS_DEFAULT and
+    # CONTAINERD_RUNTIME_CLASS, the other half of the archived 22.9 recipe
+    # (karr #30). The two above are the whole input the operator wants.
+    #
+    # CONTAINERD_RUNTIME_CLASS was only ever a restatement of the default:
+    # transformForRuntime() overwrites whatever the ClusterPolicy puts there
+    # with operator.runtimeClass, which is "nvidia" unless someone says
+    # otherwise. Removing it changes the rendered DaemonSet by nothing.
+    #
+    # CONTAINERD_SET_AS_DEFAULT is the one that matters, and it was never dead
+    # code — it is a back door that happens to stand behind a shut door. #23
+    # decided OCP does not make the nvidia runtime the node default, not even
+    # sideways: management pods get it through RuntimeClass, everything else
+    # keeps runc. Sending 1 here IS the sideways route. The toolkit still reads
+    # the variable at the pinned v1.19.1 — cmd/nvidia-ctk-installer/container/
+    # runtime/runtime.go lists NVIDIA_RUNTIME_SET_AS_DEFAULT, then
+    # CONTAINERD_SET_AS_DEFAULT, then DOCKER_SET_AS_DEFAULT as sources for
+    # --set-as-default, and the first one that is set wins. It loses today only
+    # because cdi.enabled defaults to true, which makes the operator hand the
+    # toolkit NVIDIA_RUNTIME_SET_AS_DEFAULT=false ahead of it; measured on
+    # cortex, where crictl reported defaultRuntimeName runc while we were
+    # sending 1. Meet an operator that stops setting that variable and the 1
+    # quietly becomes the default runtime for every container on the node — a
+    # decision reversed by a leftover.
+    #
+    # What this does NOT buy: with CDI off nothing here keeps runc the default,
+    # because the toolkit's own default for --set-as-default is true. CDI being
+    # on is what holds that line, and OCP leans on the CRD default for it rather
+    # than saying so in the spec. Removing the variable only stops OCP asking
+    # for the opposite of what it decided.
 
     # Who installs the driver, and does the toolkit need installing at all?
     #
@@ -763,8 +805,6 @@ sub generate_gpu_operator_manifest {
                     env => [
                         { name => 'CONTAINERD_SOCKET', value => $containerd_socket },
                         { name => 'CONTAINERD_CONFIG', value => $containerd_config },
-                        { name => 'CONTAINERD_SET_AS_DEFAULT', value => $containerd_set_as_default },
-                        { name => 'CONTAINERD_RUNTIME_CLASS', value => $containerd_runtime_class },
                     ],
                 },
                 devicePlugin => {

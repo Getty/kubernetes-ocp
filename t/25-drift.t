@@ -36,6 +36,18 @@ sub deployment {
     return { spec => { template => { spec => { containers => [ { image => $image } ] } } } };
 }
 
+# Every probed component, at the version the manifest pins. A fixture that
+# leaves one out is a cluster missing that component, not a matching one — so
+# this is what "no drift" has to be measured against.
+sub matching_cluster {
+    return (
+        'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.20.0'),
+        'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.1'),
+        'Deployment/node-feature-discovery/nfd-master'
+            => deployment('registry.k8s.io/nfd/node-feature-discovery:v0.18.3'),
+    );
+}
+
 sub write_config {
     my (%args) = @_;
     my $dir = tempdir(CLEANUP => 1);
@@ -81,10 +93,7 @@ YAML
 {
     my $config = write_config(spec => $BASE_SPEC);
     my $api = FakeApi->new(
-        objects => {
-            'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.20.0'),
-            'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.1'),
-        },
+        objects => { matching_cluster() },
         lists => {
             Node => { items => [
                 { metadata => { name => 'police1' },
@@ -105,8 +114,8 @@ YAML
     my $config = write_config(spec => $BASE_SPEC);
     my $api = FakeApi->new(
         objects => {
+            matching_cluster(),
             'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.17.0'),
-            'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.1'),
         },
         lists => {
             Node => { items => [
@@ -174,6 +183,93 @@ YAML
     my @drift = OCP::Drift->new(config => $config, api => $api)->component_drift;
     is_deeply([grep { $_->{component} eq 'cert_manager' } @drift], [],
         'cert-manager not checked when disabled');
+}
+
+#
+# Test: the GPU stack
+#
+# @COMPONENT_PROBES had two entries, cilium and cert_manager, while the whole
+# GPU stack sat in OCP::Versions unchecked — a version bump there never showed
+# up in `ocp status`. Reconciliation did redeploy on the manifest hash, so the
+# cluster converged; nothing said that it had to.
+#
+# Only what can be measured is probed. NFD and the GPU operator run from
+# Deployments OCP writes itself, so their image carries the pinned version.
+# The rest of the stack (toolkit, device plugin, DCGM, its exporter, the
+# driver) goes into the ClusterPolicy and comes back out as DaemonSets the
+# operator names and shapes — read off a guessed name, the "running version"
+# would be a version this module cannot stand behind, so it is left out.
+#
+
+{
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => {
+        matching_cluster(),
+        'Deployment/node-feature-discovery/nfd-master'
+            => deployment('registry.k8s.io/nfd/node-feature-discovery:v0.17.0'),
+    });
+
+    my ($drift) = grep { $_->{component} eq 'nfd' }
+                  OCP::Drift->new(config => $config, api => $api)->component_drift;
+
+    ok($drift, 'an NFD behind the pin is drift');
+    is($drift->{kind}, 'version', 'classified as version drift');
+    is($drift->{actual}, 'v0.17.0', 'the tag the cluster runs');
+    is($drift->{expected}, 'v0.18.3', 'the tag the manifest pins');
+    is($drift->{remedy}, undef, 'no Rex task upgrades NFD');
+    ok($drift->{self_healing}, 'ocp apply re-applies the manifest, and says so');
+}
+
+{
+    # NFD is on every cluster, so its absence is a finding like any other.
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => {
+        'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.20.0'),
+        'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.1'),
+    });
+
+    my ($drift) = grep { $_->{component} eq 'nfd' }
+                  OCP::Drift->new(config => $config, api => $api)->component_drift;
+
+    is($drift->{kind}, 'missing', 'an NFD that is not there is reported');
+    is($drift->{remedy}, undef, 'and still has no upgrade task');
+}
+
+{
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => {
+        matching_cluster(),
+        'Deployment/gpu-operator/gpu-operator' => deployment('nvcr.io/nvidia/gpu-operator:v26.0.0'),
+    });
+
+    my ($drift) = grep { $_->{component} eq 'gpu_operator' }
+                  OCP::Drift->new(config => $config, api => $api)->component_drift;
+
+    ok($drift, 'a GPU operator behind the pin is drift');
+    is($drift->{actual}, 'v26.0.0', 'the running version');
+    is($drift->{expected}, 'v26.3.3', 'the pinned one');
+    is($drift->{remedy}, undef, 'reported, not healed by a Rex task');
+    like($drift->{message}, qr/GPU Operator runs v26\.0\.0/, 'readable message');
+}
+
+{
+    # Most clusters have no NVIDIA card, and a permanent "GPU Operator is not
+    # deployed" on `ocp status` would be noise nothing should ever act on.
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => { matching_cluster() });
+
+    is_deeply([grep { $_->{component} eq 'gpu_operator' }
+               OCP::Drift->new(config => $config, api => $api)->component_drift],
+        [], 'a cluster without the GPU operator is not drifted for lacking it');
+}
+
+{
+    # What is deliberately absent, so a later reader does not take it for an
+    # oversight: these are pinned in OCP::Versions but not probed.
+    my %probed = map { $_->{component} => 1 } @OCP::Drift::COMPONENT_PROBES;
+
+    ok(!$probed{$_}, "$_ is left unprobed — its version lives in the ClusterPolicy")
+        for qw(nvidia_toolkit nvidia_device_plugin dcgm_exporter nvidia_dcgm nvidia_driver);
 }
 
 #

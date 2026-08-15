@@ -136,6 +136,31 @@ subtest 'expand_class resolves the registered CRDs but not an api-version' => su
 # form; only OCP::Node drifted. This keeps it that way, including in the
 # modules the node path depends on.
 #
+# The alternation below is deliberately not just the raw Kubernetes::REST
+# methods (get/delete/patch/list/ensure): _delete_object is OCP::Node's own
+# wrapper around ->k8s->delete($kind, $name, @args) (added alongside it in
+# #35, see t/55-robocop-rbac.t), and a literal Kind passed to *it* is just as
+# exposed to the api-version-first mistake as a literal passed straight to
+# ->delete. Checked repo-wide (grep for `->\w+\(\s*'[A-Z]` outside this
+# alternation, filtered to args shaped like a Kind) for other same-shape
+# wrappers -- i.e. something that takes a literal Kind and forwards it to a
+# raw k8s call -- and _delete_object is the only one; the other hits were
+# _report_component('Registry', ...) (a display label), ->new('AES', ...)
+# (a cipher name) and ->child('Rexfile', ...) (a path segment), none of which
+# go anywhere near Kubernetes::REST.
+#
+# This list still has to be maintained by hand when the next wrapper like
+# this appears -- that is the same brittleness #68 hit in the deployed-hash
+# scan, just not fixable the same way: #68's fix worked because "which files"
+# has a structural answer (a directory). "Which method names forward a
+# literal Kind to a raw k8s call" has no such anchor here without either
+# risking false positives (dropping the alternation and keying off the
+# Kind-shaped literal alone catches ->scp_to('/local/file'),
+# ->_parse_image_ref('ghcr.io/foo/bar:v1.2.3') and similar -- confirmed by
+# running that broadened form over lib/) or parsing call graphs, which is
+# more than a regex-based repo scan should take on. Fixing it for real is a
+# separate ticket, not a guess to bake in here.
+#
 subtest 'no call site in lib/ passes an api-version as argument 0' => sub {
     my @pm;
     path('lib')->visit(
@@ -149,7 +174,7 @@ subtest 'no call site in lib/ passes an api-version as argument 0' => sub {
         my @lines = split /\n/, $file->slurp_utf8;
         for my $i (0 .. $#lines) {
             next if $lines[$i] =~ /^\s*#/;
-            while ($lines[$i] =~ /->(get|delete|patch|list|ensure)\(\s*'([^']+)'/g) {
+            while ($lines[$i] =~ /->(get|delete|patch|list|ensure|_delete_object)\(\s*'([^']+)'/g) {
                 my ($method, $kind) = ($1, $2);
                 next unless $kind =~ m{/} || $kind =~ /^v\d+((alpha|beta)\d*)?$/;
                 push @bad, sprintf('%s:%d %s(%s)', $file, $i + 1, $method, $kind);

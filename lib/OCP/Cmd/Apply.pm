@@ -14,7 +14,6 @@ use Digest::MD5;
 use File::Temp;
 use HTTP::Tiny;
 use Kubernetes::REST::Kubeconfig;
-use Socket;
 
 use OCP::Config;
 use OCP::Drift;
@@ -99,11 +98,13 @@ sub execute {
         print "     Checking components...\n\n";
         my $reconciled = $self->_reconcile_components($config);
 
-        # No kubeconfig we can decrypt means nothing was reconciled and nothing
-        # was looked at. Return without a verdict and without stamping a
-        # version — claiming this OCP manages a cluster it could not reach is
+        # Falsy means nothing was reconciled, so there is nothing to pass a
+        # verdict on: either no kubeconfig we could decrypt, or --dry-run,
+        # which stops before the first write. Return without a verdict and
+        # without stamping a version — claiming this OCP manages a cluster it
+        # could not reach, or deployed one it deliberately did not touch, is
         # the same class of lie as the success banner over a dead CoreDNS.
-        # _reconcile_components has already said why.
+        # _reconcile_components has already said which of the two it was.
         return 0 unless $reconciled;
         return $self->_finish_apply(
             config  => $config,

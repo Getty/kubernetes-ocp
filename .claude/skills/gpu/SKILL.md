@@ -33,8 +33,17 @@ Constraints that outlive any single pin:
 - **`nvidia_driver` only matters when `gpu.driver: operator`.** Keep it equal to
   `driver.version` in the operator chart's bundled `values.yaml` for the pinned
   operator version.
-- GPU components have **no `OCP::Drift` probe** — only Cilium and cert-manager
-  do. A GPU version bump is not drift-detected today.
+- **`OCP::Drift` probes the GPU operator and NFD, and nothing else in the
+  stack.** Both read the image off a Deployment OCP writes itself, so the
+  version is honestly measurable; both are report-only (`remedy => undef`,
+  `self_healing`) because a plain `ocp apply` re-applies the manifest that
+  carries the version. The GPU operator probe is `optional` — absence is not
+  drift, since the operator only exists where a card and `gpu.enabled` are. The
+  rest (`nvidia_toolkit`, `nvidia_device_plugin`, `dcgm_exporter`,
+  `nvidia_dcgm`, `nvidia_driver`) is deliberately unprobed: OCP puts those
+  versions into the ClusterPolicy, and the operator turns them into DaemonSets
+  whose names and layouts it owns and changes between releases. Measuring them
+  honestly means reading the ClusterPolicy spec, not guessing a DaemonSet name.
 
 ## Detection Chain
 
@@ -146,11 +155,43 @@ DaemonSet would rewrite a containerd config that already works.
 | `validator` | on, operator image | see the pinning rules |
 | `nodeStatusExporter` | off | |
 
-The `toolkit.env` block still uses the archived v22.9-era recipe
-(`CONTAINERD_CONFIG`, `CONTAINERD_SET_AS_DEFAULT`, `CONTAINERD_RUNTIME_CLASS`).
-Current operator versions document `RUNTIME_CONFIG_SOURCE` /
-`RUNTIME_DROP_IN_CONFIG` and default `cdi.enabled` to true instead. It works —
-it is what runs on the DGX Spark — but it is drift, not a decision.
+### `toolkit.env` — two variables, and two that are left out on purpose
+
+OCP sets `CONTAINERD_SOCKET` and `CONTAINERD_CONFIG`, both node paths. The
+socket is `/run/k3s/containerd/containerd.sock` on **both** distributions (RKE2
+runs k3s' agent code and inherits its containerd invocation; the RKE2 GPU docs
+name that path explicitly). Only the config path follows the distribution:
+`/var/lib/rancher/{k3s,rke2}/agent/etc/containerd/config.toml`.
+
+They stay because they are the operator's **input**, not decoration: it reads
+both, derives `RUNTIME_SOCKET` / `RUNTIME_CONFIG` from them, and mounts the
+*directory* of each into the toolkit DaemonSet. Leave them out and it falls back
+to `/etc/containerd/...` and `/run/containerd/...`, right on neither
+distribution. Because it is the directory that gets mounted, a wrong path that
+happens to exist is the worst case: the hostPath mounts cleanly and the failure
+only surfaces when the toolkit tries to reach containerd through it.
+`RUNTIME_CONFIG_SOURCE` and `RUNTIME_DROP_IN_CONFIG` need no help — the operator
+sets those itself.
+
+`CONTAINERD_SET_AS_DEFAULT` and `CONTAINERD_RUNTIME_CLASS` are deliberately
+**not** set. The runtime class only ever restated the default: the operator
+overwrites whatever the ClusterPolicy says with `operator.runtimeClass`
+(`nvidia`). Set-as-default is the one with teeth. OCP does not make the nvidia
+runtime the node's default — management pods reach it through RuntimeClass,
+everything else keeps runc — and sending `1` here is exactly that decision taken
+sideways. It is not obsolete upstream either: the toolkit still accepts it as a
+source for `--set-as-default`, behind `NVIDIA_RUNTIME_SET_AS_DEFAULT` in the
+same first-set-wins chain. It loses today only because `cdi.enabled` defaults to
+true, which makes the operator hand the toolkit
+`NVIDIA_RUNTIME_SET_AS_DEFAULT=false` ahead of it — measured on the DGX Spark,
+where `crictl` reported `defaultRuntimeName runc` while OCP was still sending
+`1`. So the variable was never dead, only outvoted.
+
+Leaving it out is **not** a guard, though: the toolkit's own default for
+`--set-as-default` is true. What keeps runc the default is CDI being on, and OCP
+takes that from the CRD default without writing `cdi.enabled: true` into the
+spec. `t/40-gpu-clusterpolicy.t` asserts the absence of both variables, so
+neither can come back unnoticed.
 
 ## NFD (Node Feature Discovery)
 

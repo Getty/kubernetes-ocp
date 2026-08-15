@@ -383,17 +383,40 @@ sub teardown {
 
     # Both deletes are Kind-first. They used to lead with an api-version
     # ('v1' / 'ocp.internal/v1'), which dies in expand_class -- and since both
-    # are wrapped in eval, teardown reported success while the k8s Node object
-    # and the OCPNode CR were both left behind.
-    eval {
-        $self->k8s->delete('Node', $k8s_name);
-    };
-
-    eval {
-        $self->k8s->delete($self->_kind, $self->name, namespace => $self->namespace);
-    };
+    # were wrapped in a bare eval, teardown reported success while the k8s Node
+    # object and the OCPNode CR were both left behind.
+    #
+    # The eval is still there, because a node that is already gone is a normal
+    # outcome here, but it no longer swallows the answer: see _delete_object.
+    $self->_delete_object('Node', $k8s_name);
+    $self->_delete_object($self->_kind, $self->name, namespace => $self->namespace);
 
     return 1;
+}
+
+# Delete one object, best-effort but never silently.
+#
+# Teardown must not fail over a delete: by the time it runs the server is gone,
+# and a Node object that was never registered (or a CR someone already removed)
+# is a legitimate outcome, not an error. That is what 404 means, and it stays
+# quiet.
+#
+# Everything else is a real failure that used to disappear into a bare eval:
+# robocop's ClusterRole had no `delete` on core nodes, so the Node delete came
+# back 403 and teardown still returned 1 -- the OCPNode CR gone, the Node
+# object left behind as NotReady, nothing in the log (karr #35, same shape as
+# the api-version defect in karr #21). Warn the way the provider delete above
+# warns; the caller keeps going either way.
+sub _delete_object {
+    my ($self, $kind, $name, @args) = @_;
+
+    return 1 if eval { $self->k8s->delete($kind, $name, @args); 1 };
+
+    my $err = $@;
+    return 1 if $err =~ /\b404\b/;
+
+    warn "[node] delete of $kind/$name failed: $err";
+    return 0;
 }
 
 sub _verify {

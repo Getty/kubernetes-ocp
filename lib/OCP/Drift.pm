@@ -11,7 +11,27 @@ has config => (is => 'ro', required => 1);
 has api => (is => 'ro');
 
 # Components whose running version can be read off a workload image.
-# 'remedy' is the Rex task that brings the cluster back to the target.
+#
+#   remedy       the Rex task that brings the cluster back to the target, or
+#                undef when nothing upgrades this in place
+#   skip_if      config predicate: this cluster asked not to have the thing
+#   optional     absence is not drift — the component only exists on some
+#                clusters, so "not deployed" is a normal state and not a fault
+#   self_healing a plain `ocp apply` re-applies this component's manifest, so
+#                the run that reports the difference is also the run that
+#                closes it. Reconcile uses it to not send the user looking for
+#                a manual step, the same reason 'missing' entries stay quiet.
+#
+# What is NOT in here, and why: the rest of the GPU stack (nvidia_toolkit,
+# nvidia_device_plugin, dcgm_exporter, nvidia_dcgm, nvidia_driver) is pinned in
+# OCP::Versions but never appears in a workload OCP writes. OCP puts those
+# versions into the ClusterPolicy CR and the GPU operator turns them into
+# DaemonSets under names and container layouts it owns and changes between
+# releases. Reading an image off a guessed DaemonSet name would report a
+# version this module cannot stand behind; measuring them honestly means
+# reading the ClusterPolicy spec, which has no IO::K8s class and needs a raw
+# request plus a field path per component — a different mechanism than a probe
+# table, and not one to invent on the way past.
 our @COMPONENT_PROBES = (
     {
         component => 'cilium',
@@ -29,6 +49,33 @@ our @COMPONENT_PROBES = (
         namespace => 'cert-manager',
         remedy    => 'upgrade_cert_manager',
         skip_if   => 'no_cert',
+    },
+    # NFD is deployed on every cluster (the GPU operator's gating reads the
+    # labels it writes), from a manifest OCP generates, so both "not there"
+    # and "wrong version" are real findings. No Rex task upgrades it: the
+    # version is in the manifest, and apply re-applies the manifest.
+    {
+        component    => 'nfd',
+        label        => 'NFD',
+        kind         => 'Deployment',
+        name         => 'nfd-master',
+        namespace    => 'node-feature-discovery',
+        remedy       => undef,
+        self_healing => 1,
+    },
+    # The GPU operator only exists where there is an NVIDIA card and
+    # gpu.enabled — which is why absence is not drift here. A cluster that has
+    # one still gets told when the pinned version moved; that OCP writes this
+    # Deployment itself is what makes the image readable at all.
+    {
+        component    => 'gpu_operator',
+        label        => 'GPU Operator',
+        kind         => 'Deployment',
+        name         => 'gpu-operator',
+        namespace    => 'gpu-operator',
+        remedy       => undef,
+        optional     => 1,
+        self_healing => 1,
     },
 );
 
@@ -127,6 +174,11 @@ sub component_drift {
         };
 
         unless ($object) {
+            # Not every component belongs on every cluster. Reporting the GPU
+            # operator as missing on a machine with no NVIDIA card would put a
+            # permanent finding on `ocp status` that nothing should ever act on.
+            next if $probe->{optional};
+
             push @drift, {
                 kind      => 'missing',
                 component => $probe->{component},
@@ -135,6 +187,7 @@ sub component_drift {
                 actual    => undef,
                 message   => "$probe->{label} is not deployed (expected $expected)",
                 remedy    => undef,   # a full deploy handles this, not an upgrade
+                ($probe->{self_healing} ? (self_healing => 1) : ()),
             };
             next;
         }
@@ -153,11 +206,12 @@ sub component_drift {
             expected  => $expected,
             actual    => $actual,
             message   => "$probe->{label} runs $actual, expected $expected",
-            remedy    => {
+            remedy    => $probe->{remedy} ? {
                 type   => 'rex',
                 task   => $probe->{remedy},
                 params => { version => $expected },
-            },
+            } : undef,
+            ($probe->{self_healing} ? (self_healing => 1) : ()),
         };
     }
 
@@ -434,6 +488,10 @@ Each entry is a hashref:
 =item * B<remedy> - C<< { type => 'rex', task => ..., params => {...} } >>, or undef
 when no automatic fix exists
 
+=item * B<self_healing> - present and true when a plain C<ocp apply> re-applies
+this component and thereby closes the entry. The reconcile path uses it to not
+point the user at a manual step it is about to take itself.
+
 =back
 
 =head1 ATTRIBUTES
@@ -462,6 +520,17 @@ Values pinned in F<ocp.yaml> that no longer match F<.ocp/status.yaml>.
 
 Running component versions that differ from the version manifest, plus
 components that should be deployed but are missing.
+
+Probed are Cilium, cert-manager, NFD and the GPU operator: the four whose
+running version can be read off a workload OCP writes itself. The remaining
+GPU pins (toolkit, device plugin, DCGM, DCGM exporter, driver) go into the
+C<ClusterPolicy> the operator reconciles, not into a Deployment of OCP's, and
+are deliberately not guessed at — see the comment on C<@COMPONENT_PROBES>.
+
+Absence of the GPU operator is not reported: it only belongs on a cluster with
+an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
+upgrades them — their version lives in a generated manifest that C<ocp apply>
+re-applies, which is what C<self_healing> on those entries says.
 
 =head2 distribution_drift
 

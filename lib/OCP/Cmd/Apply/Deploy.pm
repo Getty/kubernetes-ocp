@@ -108,13 +108,16 @@ sub deploy {
     $self->_setup_nfd($config);
     print "  [ok] NFD ready\n";
 
-    # Deploy GPU Operator if NFD detects NVIDIA GPU (pci-10de label)
+    # Deploy GPU Operator if NFD detects NVIDIA GPU (pci-10de label).
+    # The step's verdict is its return value (including 'skipped' for a
+    # cluster with no NVIDIA card), so both apply paths close the block with
+    # the same line instead of the deploy path having none at all.
     print "  [..] Checking GPU Operator...\n";
-    eval {
-        $self->_setup_gpu_operator($config);
-    };
+    my $gpu_outcome = eval { $self->_setup_gpu_operator($config) };
     if ($@) {
         print "  [WARN] GPU Operator setup failed: $@\n";
+    } else {
+        $self->_report_component('GPU Operator', $gpu_outcome);
     }
 
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)

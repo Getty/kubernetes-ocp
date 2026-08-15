@@ -60,7 +60,12 @@ package FakeConfig {
     sub registry_cache       { 'cache.example:5000' }
     sub registry_upstream    { 'upstream.example:5000' }
     sub registry_name        { 'registry.local' }
+    sub gpu_enabled          { $_[0]{gpu_enabled} // 1 }
 }
+
+# A cluster NFD found no NVIDIA card on.
+package NoGpuList { sub new { bless {}, shift } sub items { [] } }
+package NoGpuApi  { sub new { bless {}, shift } sub list { NoGpuList->new } }
 
 # A cluster that has exactly the objects it was told it has. The real client
 # throws on a 404, which is what _resource_exists reads as "not there".
@@ -207,20 +212,27 @@ subtest 'nothing is expected that this configuration never deploys' => sub {
 subtest 'reconcile reports what happened, not what the file suggested' => sub {
     my $apply = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
 
+    # The whole vocabulary, and what each word costs the summary line.
+    # 'skipped' is the GPU operator's fifth answer: no NVIDIA card, or
+    # gpu.enabled: false. It is not a change — a cluster with no GPU that
+    # reported "1 component updated" on every single run would be the same
+    # kind of untruth as "up to date" over a component that was just put back.
     my %expected = (
-        unchanged => qr/up to date/,
-        deployed  => qr/was missing/,
-        restored  => qr/gone from the cluster/,
-        updated   => qr/manifest changed/,
+        unchanged => [qr/up to date/,             0],
+        deployed  => [qr/was missing/,            1],
+        restored  => [qr/gone from the cluster/,  1],
+        updated   => [qr/manifest changed/,       1],
+        skipped   => [qr/skipped/,                0],
     );
 
     for my $outcome (sort keys %expected) {
+        my ($re, $counts) = @{ $expected{$outcome} };
         my ($out, $counted) = capture_stdout {
             $apply->_report_component('Registry', $outcome);
         };
-        like $out, $expected{$outcome}, "$outcome is named in the output";
-        is $counted, ($outcome eq 'unchanged' ? 0 : 1),
-            "$outcome counts as " . ($outcome eq 'unchanged' ? 'no change' : 'a change');
+        like $out, $re, "$outcome is named in the output";
+        is $counted, $counts,
+            "$outcome counts as " . ($counts ? 'a change' : 'no change');
     }
 
     # A component put back on the cluster is a change, and the summary line at
@@ -236,26 +248,139 @@ subtest 'reconcile reports what happened, not what the file suggested' => sub {
 #
 
 subtest 'no component trusts the hash file on its own' => sub {
-    # reconcile_components moved to OCP::Cmd::Apply::Drift during the Phase 8
-    # extraction; the invariant still spans the two files, so we read both.
-    my $src = path('lib/OCP/Cmd/Apply.pm')->slurp_utf8
-        . "\n" . path('lib/OCP/Cmd/Apply/Drift.pm')->slurp_utf8;
+    # A directory scan, not a hardcoded pair of files: the Phase 8 extraction
+    # (#55) moved the Registry/NFD/GPU-operator hash readers out of Apply.pm
+    # into Apply/Registry.pm and Apply/Workloads.pm, and this subtest kept
+    # looking only at Apply.pm + Apply/Drift.pm -- it kept reporting a pass
+    # for coverage it no longer had (#68). Whatever module the next extraction
+    # lands a component in gets picked up here automatically.
+    my @files = (
+        path('lib/OCP/Cmd/Apply.pm'),
+        path('lib/OCP/Cmd/Apply')->children(qr/\.pm$/),
+    );
 
-    my @subs = $src =~ /^sub (\w+) \{\n(.*?)\n\}$/msg;
-    my %body;
-    while (my ($name, $body) = splice @subs, 0, 2) { $body{$name} = $body }
+    # DeployedHash.pm defines the hash mechanism itself (load/save/
+    # report_component) -- it has no cluster to ask, only the file it reads
+    # and writes; every real component reaches it through the
+    # $self->_load_deployed_hashes($config) accessor, never by calling load()
+    # directly. Named exception, not a silent filter: if this module ever
+    # grows a sub that forms an "up to date" verdict on its own, that sub
+    # needs the same _resource_exists scrutiny as everywhere else and this
+    # exclusion should go.
+    @files = grep { $_->basename ne 'DeployedHash.pm' } @files;
 
-    my @readers = grep {
-        $body{$_} =~ /_load_deployed_hashes/
-            && !/^_(?:load|save)_deployed_hash(?:es)?$/
-    } sort keys %body;
+    ok scalar(@files) > 2,
+        'scanning more than the two files #68 found the blind spot in';
+
+    # Per-file: name -> body, and per-file: which subs read the hash record.
+    # Kept scoped to one file at a time, not merged into one global map --
+    # Registry.pm's setup() delegates the cluster question to a sibling
+    # running() rather than asking directly, and that indirection is resolved
+    # by walking calls to *other subs in the same file*, not by hardcoding
+    # "running" as a magic name (that would be exactly the brittle, file-list
+    # style fix #68 is about). Resolving across files would let two unrelated
+    # modules' same-named helpers shadow each other.
+    my (@readers, %asks_cluster);
+
+    for my $file (@files) {
+        my $src = $file->slurp_utf8;
+        my @subs = $src =~ /^sub (\w+) \{\n(.*?)\n\}$/msg;
+        my %body;
+        while (my ($name, $sub_body) = splice @subs, 0, 2) { $body{$name} = $sub_body }
+
+        my @file_readers = grep {
+            $body{$_} =~ /_load_deployed_hashes/
+                && !/^_(?:load|save)_deployed_hash(?:es)?$/
+        } sort keys %body;
+
+        for my $name (@file_readers) {
+            my $key = "$file:$name";
+            push @readers, $key;
+
+            my (%seen, $found);
+            my @stack = ($name);
+            while (@stack && !$found) {
+                my $n = pop @stack;
+                next if $seen{$n}++;
+                next unless $body{$n};
+                if ($body{$n} =~ /_resource_exists|_registry_running/) {
+                    $found = 1;
+                    last;
+                }
+                push @stack, $body{$n} =~ /(?:->)?(\w+)\s*\(/g;
+            }
+            $asks_cluster{$key} = $found;
+        }
+    }
 
     ok scalar @readers, 'found the subs that consult the hash record'
         or diag 'nothing reads _load_deployed_hashes any more — check this test';
 
-    for my $name (@readers) {
-        like $body{$name}, qr/_resource_exists|_registry_running/,
-            "$name asks the cluster before believing the record";
+    for my $key (@readers) {
+        ok $asks_cluster{$key},
+            "$key asks the cluster before believing the record";
+    }
+};
+
+#
+# The GPU operator answers in the same vocabulary, including the word the
+# other components have no use for.
+#
+
+subtest 'a cluster the GPU operator has no business on says so' => sub {
+    my $dir = path(tempdir(CLEANUP => 1));
+
+    my $off = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
+    my ($out, $outcome) = capture_stdout {
+        $off->_setup_gpu_operator(FakeConfig->new(dir => $dir, gpu_enabled => 0));
+    };
+    is $outcome, 'skipped', 'gpu.enabled: false is a skip, not an unchanged';
+    like $out, qr/gpu\.enabled is false/, 'and the reason is on the record';
+    unlike $out, qr/\[ok\]/,
+        'the verdict line belongs to the reporter, so the step does not print one';
+
+    my $bare = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
+    $bare->{_k8s_api} = NoGpuApi->new;
+    my ($out2, $outcome2) = capture_stdout {
+        $bare->_setup_gpu_operator(FakeConfig->new(dir => $dir));
+    };
+    is $outcome2, 'skipped', 'no NVIDIA card is the same answer';
+    like $out2, qr/No GPU nodes detected/, 'with its own reason';
+
+    # What the reconcile block used to infer from "no gpu-operator key in the
+    # file afterwards" is now simply what the step said.
+    my ($reported, $counted) = capture_stdout {
+        $off->_report_component('GPU Operator', 'skipped');
+    };
+    like $reported, qr/\[ok\] GPU Operator skipped/, 'reported as a skip';
+    is $counted, 0, 'and counted as no change';
+};
+
+subtest 'reconcile forms no verdict of its own' => sub {
+    my $reconcile_src = path('lib/OCP/Cmd/Apply/Drift.pm')->slurp_utf8;
+    my ($reconcile) = $reconcile_src =~ /^sub reconcile_components \{\n(.*?)\n\}$/ms;
+    ok defined $reconcile, 'reconcile_components found';
+
+    # The GPU block used to read the hash file before and after the deploy
+    # step and diff the two. That is a second judge with strictly less
+    # evidence than the step itself: an operator gone from the cluster and
+    # rolled out again at an unchanged hash looked identical to one that was
+    # never touched, and got reported as "up to date".
+    my @reads = $reconcile =~ /(_load_deployed_hashes)/g;
+    is scalar @reads, 1,
+        'the hash file is read once in reconcile, by the cert-manager block';
+
+    unlike $reconcile, qr/deployed_after/,
+        'no before/after comparison of the record is left';
+
+    # cert-manager keeps its own $was_missing, and it is the harmless kind:
+    # derived from _resource_exists, i.e. from the cluster, not from the file.
+    like $reconcile, qr/my \$was_missing = !\$cm_running/,
+        'cert-managers verdict comes from what the cluster answered';
+
+    for my $label ('Registry', 'NFD', 'GPU Operator') {
+        like $reconcile, qr/_report_component\('\Q$label\E'/,
+            "$label is reported from what the deploy step returned";
     }
 };
 

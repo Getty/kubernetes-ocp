@@ -37,6 +37,12 @@ our $VERSIONS = {
             # ImagePullBackOff, because OCP's hand-rolled operator Deployment
             # carries none of the *_IMAGE env the Helm chart sets.
             nvidia_driver        => '580.126.20',
+            # Floor: v0.17.4. Below that, the device plugin treats GB10/DGX
+            # Spark's "Not Supported" nvmlDeviceGetMemoryInfo answer (no
+            # dedicated framebuffer, Unified Memory) as fatal, crashes, and
+            # the node silently reports 0 GPUs. Fixed upstream in v0.17.4
+            # (NVIDIA/gpu-operator#1794). Do not downgrade below it — see
+            # karr #25 and t/65-gpu-device-plugin-floor.t.
             nvidia_device_plugin => 'v0.19.3',
             dcgm_exporter        => '4.5.3-4.8.2-distroless',
             nvidia_dcgm          => '4.5.2-1-ubuntu22.04',

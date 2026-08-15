@@ -54,6 +54,12 @@ sub save {
 # cluster — so reconcile reports its verdict instead of forming a second one
 # from the file. Returns whether anything changed, which is what the reconcile
 # summary counts.
+#
+# 'skipped' is the odd one out: the component is not part of this cluster's
+# spec (no NVIDIA card, gpu.enabled: false), so there is nothing to be up to
+# date about. The step has already printed why on the line above; this one only
+# states the verdict, and it counts as no change — a cluster with no GPU must
+# not read as "1 component updated" on every run.
 sub report_component {
     my ($self, $label, $outcome) = @_;
     $outcome //= 'unchanged';
@@ -63,11 +69,12 @@ sub report_component {
         deployed  => "$label deployed (was missing)",
         restored  => "$label redeployed (was gone from the cluster)",
         updated   => "$label updated (manifest changed)",
+        skipped   => "$label skipped",
     );
 
     print "  [ok] " . ($line{$outcome} // "$label $outcome") . "\n";
 
-    return $outcome eq 'unchanged' ? 0 : 1;
+    return $outcome eq 'unchanged' || $outcome eq 'skipped' ? 0 : 1;
 }
 
 1;

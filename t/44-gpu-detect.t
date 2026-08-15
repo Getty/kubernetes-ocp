@@ -249,12 +249,30 @@ subtest 'a host that already has the toolkit keeps its apt sources' => sub {
 
 subtest 'OCP writes no containerd configuration for the GPU' => sub {
     unlike $code, qr/_configure_nvidia_containerd/, 'the old helper is gone';
-    unlike $code, qr/config\.toml\.tmpl/,
-        'no containerd config template is written at all';
-    unlike $code, qr{/etc/containerd/conf\.d},
-        'and no drop-in either — the GPU Operator owns that file';
     unlike $code, qr/Configuring RKE2 containerd/,
         'nothing claims to configure RKE2 while running under k3s';
+
+    # Both paths do appear in the Rexfile again, but only in
+    # cleanup_legacy_containerd_template, which REMOVES the template a pre-#23
+    # OCP left behind on hosts that are never destroyed (karr #45). The claim
+    # of this subtest is unchanged — OCP writes no containerd config — so it is
+    # asserted against everything except that task, which also pins the
+    # mentions to it: no future writer can hide behind the exception.
+    my $writers = $code;
+    $writers =~ s/^sub _legacy_containerd_template \{.*?^\}//ms;
+    $writers =~ s/^sub _is_legacy_containerd_template \{.*?^\}//ms;
+    $writers =~ s/^sub _legacy_containerd_template_paths \{.*?^\}//ms;
+    $writers =~ s/^task "cleanup_legacy_containerd_template", sub \{.*?^\};//ms;
+
+    unlike $writers, qr/config\.toml\.tmpl/,
+        'no containerd config template is written at all';
+    unlike $writers, qr{/etc/containerd/conf\.d},
+        'and no drop-in either — the GPU Operator owns that file';
+
+    my ($cleanup) = $code =~ /^task "cleanup_legacy_containerd_template", sub \{(.*?)^\};/ms;
+    ok $cleanup, 'the template code that is left is the cleanup task';
+    unlike $cleanup, qr/\bfile\s+["'\$]/, 'it writes nothing';
+    like $cleanup, qr/\bunlink\b/, 'it only removes';
 
     my ($path_helper) = $code =~ /^(sub _configure_nvidia_runtime_path \{.*?^\})/ms;
     ok $path_helper, 'what is left is the RKE2 runtime lookup';

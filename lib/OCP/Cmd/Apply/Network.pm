@@ -6,8 +6,10 @@ use warnings;
 
 use HTTP::Tiny;
 use JSON::PP ();
-use Socket;
 
+# No `use Socket` here on purpose: both places that turned a configured host
+# into an address now go through OCP::Drift::resolve_address, and an import
+# sitting here unused is how the second copy grows back.
 use OCP::Drift;
 use OCP::Versions;
 
@@ -258,15 +260,22 @@ sub setup_lb_ipam {
 
     my $api = $self->_k8s_api;
 
-    # Resolve hostname to IP if needed
+    # Name to address, through the one derivation there is. This used to be a
+    # second inline inet_aton copy, and a second copy of that step is what
+    # produced #19: writer and reader derived the same address separately, one
+    # resolved and the other did not, and `ocp status` reported drift on a
+    # correctly configured cluster forever.
+    $node_ip = OCP::Drift::resolve_address($node_ip)
+        // die "Cannot resolve $node_ip\n";
 
-    if ($node_ip !~ /^\d+\.\d+\.\d+\.\d+$/) {
-        my $packed = Socket::inet_aton($node_ip);
-        die "Cannot resolve $node_ip\n" unless $packed;
-        $node_ip = Socket::inet_ntoa($packed);
-    }
-
-    # If IP is localhost/loopback, get the real node IP from Kubernetes
+    # The loopback fallback stays here rather than moving into resolve_address,
+    # and deliberately so. It is not name resolution: it asks the cluster for a
+    # node's InternalIP, which needs the API and answers a different question —
+    # "this address is useless as a load-balancer pool, what else does this node
+    # have?". Folding it in would give resolve_address an API dependency, and it
+    # would change what the registry.local writer and OCP::Drift's probe agree
+    # on, which is the exact invariant #19 established. LB-IPAM-specific, so it
+    # runs where LB-IPAM is set up.
     if ($node_ip =~ /^127\./) {
         my $nodes = eval { $api->list('Node') };
         if ($nodes && $nodes->items && @{ $nodes->items }) {

@@ -80,7 +80,15 @@ package MockTransport {
 
         # Writes echo the object back, the way the API server does.
         return (200, $JSON->decode($body)) if $method eq 'PUT' || $method eq 'PATCH';
-        return (200, {}) if $method eq 'DELETE';
+
+        # `delete_fails` is an HTTP status to answer every DELETE with. 403 is
+        # the case that matters (a ClusterRole without the verb), 404 the one
+        # that must stay quiet.
+        if ($method eq 'DELETE') {
+            return ($api->delete_fails, { message => 'injected delete failure' })
+                if $api->delete_fails;
+            return (200, {});
+        }
 
         if ($api->read_fails && $api->reads_ok_first <= 0) {
             return ($api->read_fails, { message => 'injected read failure' });
@@ -109,6 +117,7 @@ package StrictK8s {
     has node       => (is => 'rw');
     has read_fails     => (is => 'rw', default => 0);  # HTTP status to inject on reads
     has reads_ok_first => (is => 'rw', default => 0);  # let this many reads through first
+    has delete_fails   => (is => 'rw', default => 0);  # HTTP status to inject on deletes
 
     sub build {
         my (%args) = @_;
@@ -588,6 +597,76 @@ subtest 'teardown drains, deletes the server, and deletes both objects' => sub {
         'the core/v1 Node object is actually deleted';
     ok scalar(grep { $_ eq '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/t1' } @deleted),
         'the OCPNode CR is actually deleted';
+};
+
+#
+# A delete that fails must not fail teardown -- but it must not be invisible
+# either. robocop's ClusterRole granted core `nodes` no `delete`, so the Node
+# delete came back 403 and the bare eval around it threw the answer away:
+# teardown returned 1, the OCPNode CR was gone, and the Node object stayed in
+# the cluster as NotReady with nothing in the log to say so (karr #35, the same
+# shape as the api-version defect in karr #21). The RBAC fix is in
+# share/robocop/rbac.yaml and asserted in t/55-robocop-rbac.t; this is the
+# other half -- the next time a delete is refused for some other reason, it
+# says so.
+#
+subtest 'a refused delete is reported, and teardown still completes' => sub {
+    my $k = StrictK8s::build(
+        cr => ocpnode(
+            metadata => { name => 't2', namespace => 'ocp-system' },
+            status   => { phase => 'Ready', kubernetesNodeName => 't2',
+                          providerId => 'SRV1' }),
+        node         => ready_node('t2', 'True'),
+        delete_fails => 403,
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    my @warnings;
+    my $ok = do {
+        local $SIG{__WARN__} = sub { push @warnings, $_[0] };
+        $node->teardown;
+    };
+
+    is $ok, 1,
+        'teardown still returns 1 -- visibility, not a new failure path';
+
+    my $said = join "\n", @warnings;
+    like $said, qr{delete of Node/t2 failed},
+        'the refused Node delete is warned about';
+    like $said, qr{\b403\b},
+        'and the warning carries the status that explains it (403 = missing RBAC verb)';
+    like $said, qr{delete of OCPNode/t2 failed},
+        'the CR delete is reported the same way';
+
+    # Both were still attempted: one failing delete does not stop the other.
+    my @deleted = map { $_->{path} } $k->reqs('DELETE');
+    ok scalar(grep { $_ eq '/api/v1/nodes/t2' } @deleted), 'the Node delete was attempted';
+    ok scalar(grep { $_ eq '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/t2' } @deleted),
+        'the CR delete was attempted';
+};
+
+subtest 'a delete that 404s stays quiet -- the object is already gone' => sub {
+    my $k = StrictK8s::build(
+        cr => ocpnode(
+            metadata => { name => 't3', namespace => 'ocp-system' },
+            status   => { phase => 'Ready', kubernetesNodeName => 't3' }),
+        delete_fails => 404,
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    my @warnings;
+    my $ok = do {
+        local $SIG{__WARN__} = sub { push @warnings, $_[0] };
+        $node->teardown;
+    };
+
+    is $ok, 1, 'teardown returns 1';
+    is_deeply \@warnings, [],
+        'nothing is warned: a node that never registered, or a CR someone '
+      . 'already removed, is the normal outcome here'
+        or diag "unexpected warnings:\n@warnings";
 };
 
 subtest 'reconcile returns 0 on Failed phase (terminal)' => sub {

@@ -222,4 +222,60 @@ subtest 'the containerd config follows the distribution' => sub {
         'an unrecognised dist falls back to rke2 instead of landing in the path';
 };
 
+#
+# The absence of CONTAINERD_SET_AS_DEFAULT is an assertion, not an accident
+# (karr #30). #23 decided that OCP does not make the nvidia runtime the node's
+# default runtime, not even sideways — management pods reach it through
+# RuntimeClass, every other container keeps runc. Setting the variable to 1 is
+# exactly that sideways route.
+#
+# It is not merely obsolete upstream: nvidia-container-toolkit v1.19.1 still
+# accepts it as a source for --set-as-default, behind NVIDIA_RUNTIME_SET_AS_DEFAULT
+# in the same lookup chain (first source that is set wins). The operator sets
+# that one to false as long as cdi.enabled is true, which is what made the value
+# inert on cortex — crictl reported defaultRuntimeName runc while OCP was
+# sending 1. So the variable is not dead, only outvoted, and what stands in the
+# ClusterPolicy is what OCP is asking for: put it back and OCP asks for the
+# opposite of the #23 decision, and gets it the day the operator stops shadowing
+# it. That is why the assertion names the variable instead of only listing what
+# is allowed.
+#
+# CONTAINERD_RUNTIME_CLASS goes with it for a duller reason: the operator
+# overwrites it with operator.runtimeClass ("nvidia") before the DaemonSet is
+# rendered, so it never said anything.
+#
+
+subtest 'the toolkit env is the operator input and nothing else' => sub {
+    for my $distribution (qw(k3s rke2)) {
+        my $env = toolkit_env_for($distribution);
+
+        ok exists $env->{CONTAINERD_SOCKET},
+            "$distribution: the socket stays — the operator derives RUNTIME_SOCKET "
+          . 'and the sock-dir hostPath mount from it';
+        ok exists $env->{CONTAINERD_CONFIG},
+            "$distribution: the config stays — same for RUNTIME_CONFIG and config-dir";
+
+        ok !exists $env->{CONTAINERD_SET_AS_DEFAULT},
+            "$distribution: nvidia is never made the node's default runtime through "
+          . 'the toolkit env (karr #30, decision from #23) — the toolkit still reads '
+          . 'this variable, it is only outvoted while cdi.enabled is true';
+        ok !exists $env->{CONTAINERD_RUNTIME_CLASS},
+            "$distribution: the operator sets the runtime class itself";
+
+        is_deeply [sort keys %$env], [qw(CONTAINERD_CONFIG CONTAINERD_SOCKET)],
+            "$distribution: nothing else rides along — a new variable here is a "
+          . 'decision about the node, so it has to be made in this test too';
+    }
+};
+
+subtest 'the retired half of the 22.9 recipe is gone from the whole manifest' => sub {
+    for my $distribution (qw(k3s rke2)) {
+        my (undef, $yaml) = cluster_policy_for($distribution);
+        unlike $yaml, qr/CONTAINERD_SET_AS_DEFAULT/,
+            "$distribution: not smuggled back in through another component's env";
+        unlike $yaml, qr/CONTAINERD_RUNTIME_CLASS/,
+            "$distribution: likewise the runtime class";
+    }
+};
+
 done_testing;

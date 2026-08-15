@@ -40,7 +40,16 @@ rules:
   - update
   - patch
 
-# Core Kubernetes Nodes (to label/taint)
+# Core Kubernetes Nodes.
+#
+# The verbs follow OCP::Node one for one: get (_wait_ready, _verify), patch
+# (teardown cordons the node with spec.unschedulable) and delete (teardown
+# removes the Node object once the server is gone).
+#
+# `delete` was missing, and the failure is silent by construction: the call
+# sits in an eval whose result teardown ignores, so a 403 left the OCPNode CR
+# deleted and the Node object behind as NotReady while teardown reported
+# success -- the same shape of bug as the api-version defect in karr #21.
 - apiGroups:
   - ""
   resources:
@@ -51,6 +60,7 @@ rules:
   - watch
   - patch
   - update
+  - delete
 
 # Secrets (for provider credentials, SSH keys)
 - apiGroups:

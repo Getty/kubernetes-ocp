@@ -2,11 +2,14 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Temp qw(tempdir);
 use Path::Tiny qw(path);
 
 use lib 'lib';
 
 use OCP::Cmd::Apply;
+use OCP::Config;
+use OCP::Secrets;
 
 #
 # `ocp apply` has two paths: a fresh deploy, and a reconcile for a cluster that
@@ -323,6 +326,230 @@ COREFILE
     };
     ok !$changed2, 'a Corefile that already has the record is left alone';
     is scalar @{$api2->{applied}}, 0, 'no apply issued on the second run';
+};
+
+#
+# --dry-run over a cluster that already exists.
+#
+# The flag was read in exactly one place, and that place sat in the bootstrap
+# path behind `if ($config->cluster_exists) { ... return }`. A reconcile never
+# reached it, so `ocp apply --dry-run` against cortex ran the whole convergence
+# — "Creating Cilium Gateway...", several "[ok] ensured ..." lines, the success
+# banner, no "[Dry run - no changes made]" anywhere. Nothing broke, but only
+# because those writes are idempotent; the flag had no part in it.
+#
+# What is asserted below is the flag doing the work, not the idempotence:
+# every mutating step the reconcile path owns is stubbed to record that it was
+# reached, and the fake API records every non-GET request. A dry run must reach
+# none of them and issue none. The same run with the flag off must reach them —
+# otherwise the first half would pass for the wrong reason.
+#
+# The list is the classification, arrived at by reading what each forwarder
+# calls: _run_remedy (a Rex task over SSH), _setup_registry, _setup_nfd,
+# _setup_gpu_operator, _apply_cert_manager + _wait_cert_manager_and_create_issuers
+# (server-side applies), _configure_registry_dns (GET first, then a ConfigMap
+# apply when it differs — the read half is what OCP::Drift does read-only
+# anyway), _setup_cilium_gateway, _setup_lb_ipam, _ensure_crds,
+# _ensure_providers (writes Secrets), _migrate_legacy_nodes, _ensure_cp_ocpnode,
+# and _save_deployed_hash, which writes .ocp/deployed.yaml on disk.
+#
+
+my @WRITERS = qw(
+    _run_remedy
+    _setup_registry
+    _configure_registry_dns
+    _setup_nfd
+    _setup_gpu_operator
+    _apply_cert_manager
+    _wait_cert_manager_and_create_issuers
+    _save_deployed_hash
+    _setup_cilium_gateway
+    _setup_lb_ipam
+    _ensure_crds
+    _ensure_providers
+    _migrate_legacy_nodes
+    _ensure_cp_ocpnode
+);
+
+# What each stub hands back so the reconcile path keeps running realistically:
+# the three hash-gated components report an outcome, the two "did you change
+# anything" calls report no.
+my %STUB_RETURN = (
+    _setup_registry         => 'unchanged',
+    _setup_nfd              => 'unchanged',
+    _setup_gpu_operator     => 'unchanged',
+    _configure_registry_dns => 0,
+    _run_remedy             => 0,
+);
+
+my @touched;
+
+package DryRunResponse {
+    sub new     { bless {}, shift }
+    sub status  { 200 }
+    sub content { '{}' }
+}
+package DryRunApi {
+    sub new { my ($c, %a) = @_; bless { writes => [], reads => [], objects => {}, %a }, $c }
+
+    # Two call shapes reach this: get($kind, $name, %opts) from
+    # _resource_exists, get($kind, name => ..., namespace => ...) from
+    # OCP::Drift. Both are reads either way.
+    sub get {
+        my ($self, $kind, @rest) = @_;
+        my $name = @rest % 2 ? shift @rest : undef;
+        my %opts = @rest;
+        $name //= $opts{name};
+        my $key = join '/', $kind, $opts{namespace} // '-', $name // '';
+        push @{ $self->{reads} }, "GET $key";
+        my $obj = $self->{objects}{$key} or die "404 $key\n";
+        return $obj;
+    }
+
+    sub list {
+        my ($self, $kind) = @_;
+        push @{ $self->{reads} }, "LIST $kind";
+        return { items => [] };
+    }
+
+    sub expand_class { undef }
+
+    sub _request {
+        my ($self, $method, $path) = @_;
+        push @{ $method eq 'GET' ? $self->{reads} : $self->{writes} }, "$method $path";
+        return DryRunResponse->new;
+    }
+}
+package ReconcileOcp {
+    sub new       { bless {}, shift }
+    sub verbose   { 0 }
+    sub load_file { return {} }
+    sub dump_file { return 1 }
+}
+
+package main;
+
+# Permanent for the rest of this file — everything above has already run.
+{
+    no strict 'refs';
+    no warnings 'redefine';
+    *OCP::Cmd::Apply::_k8s_api      = sub { $_[0]{_k8s_api} };
+    *OCP::Secrets::read_kubeconfig  = sub { "apiVersion: v1\nkind: Config\n" };
+    for my $name (@WRITERS) {
+        my $writer = $name;
+        *{"OCP::Cmd::Apply::$writer"} = sub {
+            push @touched, $writer;
+            return exists $STUB_RETURN{$writer} ? $STUB_RETURN{$writer} : 1;
+        };
+    }
+}
+
+sub reconcile {
+    my (%opt) = @_;
+
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML');
+name: cortex
+kubernetes:
+  dist: k3s
+control_planes:
+  provider: ssh
+  host: cortex.ocp.invalid
+lbipam: true
+YAML
+    $dir->child('.ocp')->mkpath;
+    $dir->child('.ocp', 'status.yaml')->spew(<<'YAML');
+nodes:
+  - name: cortex
+    role: control-plane
+    public_ip: 10.230.30.155
+YAML
+
+    my $config = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
+    my $apply  = OCP::Cmd::Apply->new(
+        command_chain => [ ReconcileOcp->new ],
+        dry_run       => $opt{dry_run} ? 1 : 0,
+    );
+    $apply->{_k8s_api} = DryRunApi->new(objects => $opt{objects} // {});
+
+    @touched = ();
+    my ($out, $result) = capture_stdout { $apply->_reconcile_components($config) };
+
+    return {
+        out     => $out,
+        result  => $result,
+        writes  => $apply->{_k8s_api}{writes},
+        reads   => $apply->{_k8s_api}{reads},
+        touched => [@touched],
+    };
+}
+
+subtest 'a dry run against an existing cluster writes nothing' => sub {
+    my $r = reconcile(dry_run => 1);
+
+    is_deeply $r->{touched}, [],
+        'not one mutating step of the reconcile path was reached';
+    is_deeply $r->{writes}, [],
+        'and nothing but GETs reached the API';
+
+    ok scalar @{ $r->{reads} },
+        'it did look at the cluster — reading is how it can say anything at all';
+
+    like $r->{out}, qr/\[Dry run - no changes made\]/,
+        'it ends the way the bootstrap path already ends a dry run';
+    ok !$r->{result},
+        'and returns falsy, so execute stops short of the health gate';
+};
+
+subtest 'the same run with the flag off does write' => sub {
+    my $r = reconcile(dry_run => 0);
+
+    ok scalar @{ $r->{touched} },
+        'the mutating steps are reachable — the dry run is not passing by accident';
+
+    for my $step (qw(_setup_registry _setup_nfd _setup_gpu_operator
+                     _setup_cilium_gateway _setup_lb_ipam _configure_registry_dns
+                     _ensure_crds _ensure_cp_ocpnode)) {
+        ok scalar(grep { $_ eq $step } @{ $r->{touched} }), "$step runs normally";
+    }
+
+    unlike $r->{out}, qr/\[Dry run/, 'and it does not claim to have been a dry run';
+};
+
+subtest 'a dry run reports what a real run would act on' => sub {
+    my $r = reconcile(dry_run => 1);
+
+    # The fake cluster has no cilium-operator and no cert-manager, which the
+    # detector reads as "not deployed".
+    like $r->{out}, qr/\[drift\] Cilium is not deployed/, 'names what differs';
+    like $r->{out}, qr/difference\(s\) a real run would act on/, 'and counts it';
+
+    # The blind spot, stated rather than implied: a manifest that changed
+    # without its version changing is only visible to the deploy step itself.
+    like $r->{out}, qr/manifest changed at an\s+unchanged version/,
+        'the caveat is printed, not left for the user to discover';
+};
+
+#
+# Drift with no Rex task behind it is not automatically drift a human has to
+# act on. The GPU-stack probes carry no remedy — nothing upgrades NFD or the
+# GPU operator in place — but their version sits in a manifest this very run
+# regenerates and re-applies. Telling the user to go and run `ocp update`
+# two lines before rolling the new version out would be advice against the
+# machine's own behaviour.
+#
+subtest 'a difference this run closes is not sent to ocp update' => sub {
+    my $r = reconcile(objects => {
+        'Deployment/node-feature-discovery/nfd-master' => {
+            spec => { template => { spec => { containers => [
+                { image => 'registry.k8s.io/nfd/node-feature-discovery:v0.17.0' },
+            ] } } },
+        },
+    });
+
+    like $r->{out}, qr/\[drift\] NFD runs v0\.17\.0/, 'the outdated NFD is reported';
+    unlike $r->{out}, qr/ocp update/,
+        'and not handed to a command that would not fix it';
 };
 
 done_testing;

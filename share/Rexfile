@@ -191,6 +191,13 @@ task "prepare_node", sub {
         content => "net.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nnet.ipv4.ip_forward = 1\n";
 
     run "sysctl --system > /dev/null 2>&1";
+
+    # Every install task comes through here, for both distributions and both
+    # roles, and it runs before the service is (re)started -- which is exactly
+    # when an inherited containerd template still has a chance to be thrown
+    # away instead of being rendered again. See the task itself for why this
+    # is a content check and not an unlink.
+    do_task "cleanup_legacy_containerd_template";
 };
 
 # Should this node get the host-side GPU treatment at all?
@@ -1019,6 +1026,71 @@ sub _configure_nvidia_runtime_path {
 
     say "  [ok] $env_file carries a PATH for the runtime lookup";
 }
+
+# The containerd config template OCP used to write, byte for byte.
+#
+# _configure_nvidia_containerd wrote exactly these two lines (56 bytes) to
+# /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl. karr #23 deleted
+# the code; nothing removes the file. RKE2 and k3s render config.toml from such
+# a template on every service start, *instead of* the config they generate
+# themselves, so a host bootstrapped before that fix keeps running containerd
+# off this two-liner forever -- no registry mirrors, no sandbox image, no CNI
+# settings -- and upgrading OCP does not help, because the damage is a file and
+# not code. Measured on cortex (karr #45).
+#
+# `ocp destroy` takes /var/lib/rancher with it, so the host this matters for is
+# the one that gets bootstrapped once and only ever upgraded afterwards.
+sub _legacy_containerd_template {
+    return qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n};
+}
+
+# Removal is decided by content, never by path. A template sitting there that
+# OCP did not write is somebody's deliberate configuration and has to survive
+# untouched -- that is the whole reason this is a content comparison and not an
+# `unlink`.
+#
+# Trailing whitespace is normalised on both sides so a stray or missing final
+# newline still counts as ours. Nothing else is tolerated: an extra directive, a
+# different import glob, or the `{{ template "base" . }}` line that a real
+# custom template needs all mean the file belongs to someone else.
+sub _is_legacy_containerd_template {
+    my ($content) = @_;
+    return 0 unless defined $content && length $content;
+
+    my $known = _legacy_containerd_template();
+    s/\s+\z// for $content, $known;
+
+    return $content eq $known ? 1 : 0;
+}
+
+# Both distributions. Only the RKE2 path was ever written by OCP (the deleted
+# code hardcoded it, which is why it silently did nothing under k3s), but k3s
+# renders a template it finds in exactly the same way, and the content check is
+# what makes looking there safe.
+sub _legacy_containerd_template_paths {
+    return (
+        '/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl',
+        '/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl',
+    );
+}
+
+desc "Remove the obsolete containerd config template OCP wrote before karr #23";
+task "cleanup_legacy_containerd_template", sub {
+    for my $path (_legacy_containerd_template_paths()) {
+        next unless is_file($path);
+
+        my $content = eval { cat $path };
+        unless (_is_legacy_containerd_template($content)) {
+            say "Keeping $path: content is not the template OCP used to write";
+            next;
+        }
+
+        unlink $path;
+        say "Removed obsolete containerd template $path -- it was OCP's pre-#23 "
+          . "two-liner and was overriding the generated containerd config; "
+          . "the next service start renders that config again";
+    }
+};
 
 #
 # Cilium Tasks

@@ -13,6 +13,7 @@ use OCP::Versions;
 
     my $result = OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);
     my $ran    = OCP::Cmd::Apply::Drift::run_remedy($apply, $config, $entry);
+    OCP::Cmd::Apply::Drift::dry_run_report($apply, $config);   # --dry-run
 
 =head1 DESCRIPTION
 
@@ -22,6 +23,11 @@ drift that has a remedy. Cluster-truth checks are unchanged from the deploy
 path; the only structural difference is which steps we tolerate leaving
 out (server provisioning, control-plane install, robocop rollout, long
 waits) — those are one-time, not convergence.
+
+Under C<--dry-run> the walk is replaced by C<dry_run_report>: the detector
+runs, its findings are printed, and not one write leaves the process.
+C<reconcile_components> then returns false, which is how the dispatcher
+knows to stop without stamping a version.
 
 The shape of reconcile is forced by t/38 in OCP::Cmd::Apply::Drift's
 source: it regex-extraps _reconcile_components and checks the body for
@@ -55,6 +61,10 @@ sub reconcile_components {
     my $cp_name = $cp_id->{name};
     my $cp_ip   = $config->cluster_status->{public_ip} // $cp_id->{host};
 
+    # --dry-run stops here. Everything below this line writes — see
+    # dry_run_report for why that is the whole list and what it costs.
+    return dry_run_report($self, $config) if $self->dry_run;
+
     my $updated = 0;
     my $checked = 0;
 
@@ -77,10 +87,14 @@ sub reconcile_components {
             print "  [drift] $entry->{message}\n";
 
             unless ($entry->{remedy}) {
-                # Missing components are deployed by the checks below; the
-                # rest (distribution upgrades, moved IPs) needs a human.
+                # Missing components are deployed by the checks below, and a
+                # self-healing entry is one whose manifest this very run
+                # re-applies — a GPU-stack version bump lands in the generated
+                # manifest, so the hash changes and the component rolls out
+                # two blocks further down. Only what neither covers
+                # (distribution upgrades, moved IPs) needs a human.
                 print "        No automatic step for this — see 'ocp update'\n"
-                    if $entry->{kind} ne 'missing';
+                    unless $entry->{kind} eq 'missing' || $entry->{self_healing};
                 next;
             }
 
@@ -155,25 +169,15 @@ sub reconcile_components {
         $checked++;
         print "  [..] Checking GPU Operator...\n";
         eval {
-            my $deployed = $self->_load_deployed_hashes($config);
-
-            # GPU Operator reconciliation: _setup_gpu_operator handles
-            # the NFD label check internally and skips if no GPU
-            my $was_missing = !exists $deployed->{'gpu-operator'};
-
-            $self->_setup_gpu_operator($config);
-
-            my $deployed_after = $self->_load_deployed_hashes($config);
-            if ($deployed_after->{'gpu-operator'} && $was_missing) {
-                print "  [ok] GPU Operator deployed (was missing)\n";
-                $updated++;
-            } elsif ($deployed_after->{'gpu-operator'} && ($deployed->{'gpu-operator'} // '') ne ($deployed_after->{'gpu-operator'} // '')) {
-                print "  [ok] GPU Operator updated (manifest changed)\n";
-                $updated++;
-            } elsif ($deployed_after->{'gpu-operator'}) {
-                print "  [ok] GPU Operator up to date\n";
-            }
-            # If no gpu-operator key after setup, it was skipped (no GPU) — already printed
+            # Same rule as registry and NFD above: the deploy step decides
+            # what happened, this only says it. Reading the hash file before
+            # and after and diffing the two was a second judge with less
+            # evidence — it never saw an operator that had gone missing from
+            # the cluster and was put back at an unchanged hash, and called
+            # that "up to date". 'skipped' is the fifth answer, for the
+            # cluster this component is not part of.
+            $updated += $self->_report_component('GPU Operator',
+                $self->_setup_gpu_operator($config));
         };
         if ($@) {
             print "  [WARN] GPU Operator setup failed: $@\n";
@@ -262,6 +266,57 @@ sub reconcile_components {
     }
 
     return { cp_name => $cp_name, cp_ip => $cp_ip };
+}
+
+# `ocp apply --dry-run` against a cluster that already exists.
+#
+# The flag used to be read in exactly one place — the bootstrap path, behind
+# the `cluster_exists` branch — so a reconcile ran every write a real run
+# runs. Measured on cortex, that is: the registry manifest, the CoreDNS
+# Corefile, the NFD bundle, the GPU operator, cert-manager plus its issuers,
+# the Cilium Gateway, the LB-IPAM pool and L2 policy, the CRDs, the provider
+# CRs and Secrets, the control-plane OCPNode — and, before all of them,
+# whatever Rex task a drift entry asked for, over SSH, on the control plane.
+# Nothing came of it, but only because those writes are idempotent. The flag
+# had no part in it, and `ocp apply --dry-run` is precisely the command a
+# user types when they are not sure that holds.
+#
+# What runs instead is read-only: OCP::Drift is a detector by contract (its
+# own POD says so — "Detection is read-only"), and nothing else is called.
+# That is also why a dry run returns short of OCP::Cmd::Apply::Health::finish:
+# the health gate only reads the cluster, but it stamps status.ocpVersion on
+# its way out, and a run that changed nothing must not claim a version.
+#
+# What this can see is what the detector can name: component versions, the
+# registry.local record, addresses that moved away from the spec. What it
+# cannot see is a manifest that changed while its version stayed put — the
+# only place that knows is the deploy step, and asking it means deploying.
+# Printed as a caveat rather than left for the user to find out.
+sub dry_run_report {
+    my ($self, $config) = @_;
+
+    print "  [..] Checking for drift (read-only)...\n";
+
+    my $drift = OCP::Drift->new(
+        config => $config,
+        api    => $self->_k8s_api,
+    )->detect;
+
+    print "  [ok] No drift detected\n" unless @$drift;
+
+    for my $entry (@$drift) {
+        print "  [drift] $entry->{message}\n";
+        print "          would run $entry->{remedy}{task}\n" if $entry->{remedy};
+    }
+
+    print "\n";
+    print '  ', scalar @$drift, " difference(s) a real run would act on.\n";
+    print "  It would also re-apply any component whose manifest changed at an\n";
+    print "  unchanged version — the one difference a read-only pass cannot see.\n";
+    print "\n";
+    print "[Dry run - no changes made]\n";
+
+    return;
 }
 
 # Run the step a drift entry asks for. Returns true when it ran, false when
