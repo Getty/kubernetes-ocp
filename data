@@ -1,0 +1,65 @@
+---
+class: standard
+completed: 2026-08-15T07:24:46Z
+created: 2026-08-12T19:28:17Z
+id: 39
+priority: medium
+started: 2026-08-15T07:24:46Z
+status: done
+tags:
+- docker
+- ci
+- cleanup
+title: Dockerfile.robocop wird von nichts gebaut und ist vom Hauptimage weggedriftet
+updated: 2026-08-15T07:24:46Z
+---
+
+Beim Multi-Arch-Fix (#10) aufgefallen.
+
+share/robocop/deployment.yaml zieht ghcr.io/getty/ocp:latest und setzt
+command: [robocop, controller]. Das Hauptimage enthaelt bin/robocop (das
+Dockerfile macht COPY ./bin) und hat $OCP_ROOT/src/bin im PATH, der ocp-User
+ist uid 1000 - passt also zu runAsUser: 1000 und readOnlyRootFilesystem im
+Deployment. Ein Image reicht fuer beide Rollen.
+
+Dockerfile.robocop baut ein zweites, das niemand deployed:
+- kein Workflow und kein Makefile-Target referenziert es (nur der Dateiname
+  existiert im Repo)
+- FROM perl:5.40-slim, das Hauptimage kompiliert Perl 5.42.0 aus Source
+- cpanm --installdeps ohne cpanfile.snapshot, also voellig ungepinnt, waehrend
+  das Hauptimage cpm mit Snapshot faehrt
+- kein Overlay von share/patches/, d.h. der lokale Fix fuer
+  Rex::Interface::Exec::LibSSH fehlt
+- keine VERSION-Datei, die OCP fuer den Version-Stamp erwartet
+
+Entweder loeschen (Empfehlung, ein Image genuegt) oder als bewusst schlankes
+Controller-Image mit Snapshot-Pinning und Patch-Overlay in den Publish-Workflow
+aufnehmen. So wie es dasteht ist es Wartungslast ohne Nutzen.
+
+Datenpunkt aus #10: docker buildx build --platform linux/arm64 gegen
+Dockerfile.robocop laeuft durch, die Abhaengigkeiten sind arm64-tauglich. Das
+ist aber kein Argument dafuer, es zu behalten.
+Messdaten aus dem Verifikationslauf in #10, sie machen den Fall deutlich staerker.
+
+Dockerfile.robocop baut auf KEINER Architektur durch. Der apt-Satz ist
+build-essential, libssl-dev, libssh-dev, curl - es fehlt libexpat1-dev, das
+XML::Parser braucht (Rex zieht es ueber XML::Simple und XML::SAX::Expat).
+Gegenprobe nativ auf amd64 im selben perl:5.40-slim mit genau diesem apt-Satz:
+XML::Parser scheitert mit Configure failed, danach faellt Rex mit "Installing
+the dependencies failed: Module XML::Parser is not installed" um. Nach
+apt-get install libexpat1-dev baut XML::Parser sofort durch. Das Haupt-
+Dockerfile installiert libexpat1-dev und zlib1g-dev und hat das Problem nicht.
+
+Das ist kein Arm-Thema, es ist seit jeher kaputt und faellt niemandem auf, weil
+kein Workflow und kein Makefile-Target diese Datei je gebaut hat.
+
+Nebenbefund aus demselben Lauf, gehoert zu #10 aber ist hier relevant: unter
+QEMU-Emulation scheiterten zusaetzlich IO::Tty und NetAddr::IP im Configure,
+beide bauen nativ auf amd64 anstandslos. Emulation erzeugt also nicht nur
+Laufzeit, sondern auch falsche Fehlschlaege - ein Grund mehr, arm64 nativ zu
+bauen statt zu emulieren.
+
+Falls die Entscheidung "behalten" lautet, muss mindestens libexpat1-dev und
+zlib1g-dev in den apt-Satz, plus cpanfile.snapshot-Pinning und das
+share/patches-Overlay. Falls "loeschen" - Empfehlung -, entfaellt alles.
+ERLEDIGT durch #58: Dockerfile.robocop ist geloescht, Commit a386f09 'Delete Dockerfile.robocop — main image already builds robocop'. Die Empfehlung des Tickets (loeschen, ein Image genuegt) wurde umgesetzt. Im Repo liegt nur noch das Haupt-Dockerfile, das bin/robocop mitbaut, den ocp-User auf uid 1000 setzt und damit zu runAsUser: 1000 im Deployment passt. Die Messdaten zum fehlenden libexpat1-dev sind damit gegenstandslos - sie bleiben im Ticket als Beleg stehen, dass die Datei auf keiner Architektur je gebaut haette.
