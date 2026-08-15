@@ -1,6 +1,93 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - An unknown subcommand now fails instead of quietly resolving to the
+      root (karr #67). `ocp quatschkommando --help` printed the root usage
+      and exited 0; MooX::Cmd looks for the first word it recognises
+      anywhere in the argument vector and lets the rest fall on the floor,
+      so a command a given build does not have was indistinguishable from
+      success. Every command word is now checked against its own level
+      before dispatch, the error names the commands that do exist, and the
+      exit code is non-zero. Three variants of the same hole closed with
+      it: `ocp typo apply` used to run apply, `ocp node typo --help`
+      returned 0, and an alias behind an option (`ocp -v deploy-image`)
+      was not resolved at all.
+    - `ocp node add --gpu` writes `spec.gpu` as a JSON boolean (karr #50).
+      The CRD declares it boolean and rejected the Perl integer with a
+      422, so the flag could not be used at all — the CR was never
+      written. Note that nothing reads the field yet (karr #70).
+    - `ocp node add --nowait` replaces `--no_wait`; the old spelling keeps
+      working as an alias (karr #37). `--no-wait` was never possible:
+      MooX::Options strips a literal `no-` as a negation marker before it
+      substitutes dashes for underscores, so it was read as "negate the
+      option `wait`", which does not exist. Negative flags in this CLI are
+      therefore spelled without the dash, like the existing `--nogit` and
+      `--nopassword`.
+    - `ocp deploy-image` accepts `--no-wait` and `--no-restart`. Both
+      flags were declared `is_bool => 1`, a key MooX::Options does not
+      know and silently ignores, so `--restart` (on by default) had no
+      working way to turn it off at all — despite the POD, the help text
+      and the runtime message all promising `--no_restart`. Defaults are
+      unchanged: do not wait, do restart.
+    - `ocp init --hetzner` now asks for the location and the server type
+      instead of silently writing the hardcoded cpx21/fsn1 defaults (karr
+      #27). The catalogue comes from the Hetzner API with the token that
+      was just entered, pressing Enter keeps the previous default, and a
+      run without a TTY, without a token or with an unreachable catalogue
+      stays on the defaults instead of blocking.
+    - The GPU Operator's ClusterPolicy no longer sets
+      `CONTAINERD_SET_AS_DEFAULT` or `CONTAINERD_RUNTIME_CLASS` (karr
+      #30). Both come from the archived 22.9-era recipe.
+      `CONTAINERD_RUNTIME_CLASS` is overwritten by the operator before it
+      reaches the DaemonSet, and `CONTAINERD_SET_AS_DEFAULT=1` asked for
+      the opposite of OCP's own decision not to make the NVIDIA runtime
+      the default handler for every container on the node — it stood
+      still only because CDI outvotes it. `CONTAINERD_CONFIG` and
+      `CONTAINERD_SOCKET` stay; they are the input the operator derives
+      its runtime paths and mounts from. This changes the manifest hash,
+      so the next `ocp apply` on a GPU cluster redeploys the GPU stack.
+    - robocop may delete Kubernetes Nodes (karr #35). `OCP::Node::teardown`
+      deletes the Node object, but the ClusterRole granted only get and
+      patch, so under robocop the call would have failed with a 403 inside
+      an eval that discarded the answer — the CR gone, the Node left
+      behind as NotReady, teardown reporting success. A failing delete now
+      warns and names the object; an already-absent object stays quiet.
+    - A new Rex task removes the obsolete containerd `config.toml.tmpl`
+      that OCP wrote before it stopped configuring containerd (karr #45).
+      RKE2 and k3s render their config from such a template instead of
+      their own generated one on every service start, so a host
+      bootstrapped by an older OCP kept running from a two-line stub
+      indefinitely. The file is removed only when its content is exactly
+      that stub — a template someone wrote themselves is left alone —
+      and the cleanup runs on bootstrap and on agent installs, not on the
+      reconcile path.
+    - `ocp apply --dry-run` no longer writes to a cluster that already
+      exists (karr #52). The flag was checked in exactly one place, and
+      that place sat behind the "cluster already exists" branch, so a
+      reconcile ran every server-side apply, every CRD ensure and every
+      Rex remedy a real run runs — harmless only because those writes
+      are idempotent. A dry run now stops before the first write, prints
+      the drift it found (with the remedy each entry would trigger) and
+      ends with the same `[Dry run - no changes made]` line the bootstrap
+      path already printed. It stamps no version and gives no health
+      verdict, because it changed nothing.
+    - `ocp status` now reports drift for NFD and the GPU Operator (karr
+      #32). Both are pinned in OCP::Versions and were never compared
+      against the cluster, so a version bump was rolled out silently and
+      never named. Neither carries a Rex remedy — their version lives in
+      a manifest `ocp apply` regenerates — so reconcile reports them
+      without pointing at `ocp update`. A missing GPU Operator is not
+      drift: it only belongs on a cluster with an NVIDIA card. The rest
+      of the GPU pins (toolkit, device plugin, DCGM and its exporter,
+      driver) stay unprobed on purpose; they live in the ClusterPolicy,
+      not in a workload OCP writes.
+    - The GPU Operator now reports what actually happened during
+      reconcile instead of guessing from `.ocp/deployed.yaml` (karr #46).
+      An operator that had gone missing from the cluster and was rolled
+      out again at an unchanged manifest hash used to be announced as
+      "up to date"; it now says "redeployed (was gone from the cluster)",
+      alongside the deployed/updated/unchanged wording registry and NFD
+      already used, plus "skipped" for a cluster with no GPU.
     - `ocp deploy-image` now accepts a single `--image REF` shorthand in
       addition to the existing `--repo` + `--tag` pair (karr #66). The
       shorthand parses either `REPO:TAG` (e.g. `ghcr.io/foo/bar:v1.2.3`,

@@ -25,6 +25,19 @@ was tried, what was ruled out, and what got worse as a result.
 `## Consequences` names the unpleasant ones too — what became harder, what is now
 forbidden, and what remains unverified.
 
+An ADR whose **decision** stops holding is superseded, not edited into shape: a
+new ADR, and `Status:` changed on the old one. An ADR whose decision still holds
+but whose account of its own consequences turned out to be wrong is **amended**
+— the file keeps its number, its `Date` and its status, and gains a
+`## Amendment YYYY-MM-DD` section at the end that quotes what it used to say,
+says why that was wrong, and names the karr ticket. Each corrected sentence
+carries an inline `*(amended YYYY-MM-DD, see below)*` marker, so the reader
+meets the correction where the claim is and not only at the bottom of the file.
+That boundary is the whole point: a wrong prediction about the consequences is
+an amendment, a decision that fell is a supersession, and neither is a silent
+rewrite. An ADR is a record — it never gets edited to read as though it had
+always said the right thing.
+
 ## What belongs here
 
 Decisions that constrain future work: the shape of the system, an invariant, a
@@ -79,6 +92,16 @@ TCP-9999 key injection, `sleep(60)` in place of reconciliation) and names
 karr #1 / ticket #1 as the work that supersedes it. 0020 was tightened against
 reality in the same pass — the "Where first-class" / "Where not yet" split is
 the kind of precision karr #62 demanded (karr #10 and #58).
+
+0004 and 0008 were amended on 2026-08-15 under karr #47 — the first use of the
+amendment form described above, and the reason it is written down. Neither
+decision moved. What moved was 0008's account of what the manifest hash proves:
+karr #43 found `ocp destroy` leaving `.ocp/deployed.yaml` behind, and the next
+apply announcing a registry it had never rolled out. The registry has since
+gained the existence check the other three components already had, which makes
+0008's old consequence false and shows that 0004 named `.ocp/status.yaml` but
+not `.ocp/deployed.yaml`, a file obeying the same rule. Both files carry an
+`## Amendment 2026-08-15` section quoting what they used to claim.
 
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
