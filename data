@@ -1,0 +1,155 @@
+---
+class: standard
+completed: 2026-08-15T07:58:39Z
+created: 2026-08-12T16:12:34Z
+id: 30
+priority: medium
+started: 2026-08-15T07:42:51Z
+status: done
+tags:
+- gpu
+- clusterpolicy
+- drift
+title: ClusterPolicy toolkit.env ist das archivierte v22.9-Rezept
+updated: 2026-08-15T07:58:39Z
+---
+
+Gefunden beim Fix von #23 (ocp-infra-worker).
+
+Apply.pm _generate_gpu_operator_manifest setzt im toolkit-Block:
+  CONTAINERD_CONFIG, CONTAINERD_SOCKET, CONTAINERD_SET_AS_DEFAULT,
+  CONTAINERD_RUNTIME_CLASS
+
+Das ist woertlich die Anleitung aus der archivierten gpu-operator-Doku 22.9.1
+("For using with RKE2 or K3s following settings needs to be set in
+ClusterPolicy"). In der aktuellen Doku zum gepinnten v26.3 gibt es diesen
+K3s-Abschnitt gar nicht mehr, und die beiden SET_AS_DEFAULT/RUNTIME_CLASS-Vars
+sind aus der Optionsliste verschwunden. Dokumentiert sind jetzt:
+  RUNTIME_CONFIG_SOURCE (default "command,file")
+  RUNTIME_DROP_IN_CONFIG (default /etc/containerd/conf.d/99-nvidia.toml)
+und cdi.enabled steht per Default auf true - "The Operator will no longer
+configure the nvidia runtime class as the default runtime handler."
+
+Die RKE2-Doku wiederum verlangt fuer den Operator nur CONTAINERD_SOCKET
+(/run/k3s/containerd/containerd.sock, auch auf RKE2).
+
+Es laeuft: auf cortex (k3s, DGX Spark) ist die CUDA-Validierung erfolgreich.
+Das ist also kein Bug, sondern Drift gegen die Version, die OCP pinnt - und
+CONTAINERD_SET_AS_DEFAULT=1 macht die nvidia-Runtime zum Default fuer JEDEN
+Container auf dem Node, was seit CDI niemand mehr braucht.
+
+Zu tun: gegen v26.3.3 pruefen, ob SET_AS_DEFAULT/RUNTIME_CLASS ueberhaupt noch
+gelesen werden, und den env-Block auf das reduzieren, was die aktuelle Doku
+nennt. Nicht blind aendern - der Cluster laeuft heute damit.
+Messung aus #44 (ocp-infra-worker), live auf cortex vor dem Teardown. Der
+Befund haerte das Ticket, aendert aber die Empfehlung nicht: nicht mit #44
+mitgeloest, absichtlich.
+
+WARUM #44 KEIN BELEG GEGEN DAS ALTE REZEPT IST. Der Fehler kam von einem
+falschen WERT, nicht von einer veralteten VARIABLE. CONTAINERD_SOCKET ist
+weiterhin genau das, was die RKE2-Doku fuer den Operator verlangt; nur unser
+rke2-Zweig hat den falschen Pfad hineingeschrieben. Die env-Liste auf das
+aktuelle Rezept zu heben haette #44 also nicht behoben.
+
+WAS DIE MESSUNG NEU HERGIBT - das DaemonSet auf cortex, Operator v26.3.3,
+Toolkit v1.19.1, gesetzt vom Operator selbst, ohne dass OCP das anfordert:
+  RUNTIME_CONFIG=/runtime/config-dir/config.toml
+  RUNTIME_SOCKET=/runtime/sock-dir/containerd.sock
+  RUNTIME_DROP_IN_CONFIG=/runtime/config-dir.d/99-nvidia.toml
+  RUNTIME_DROP_IN_CONFIG_HOST_PATH=/etc/containerd/conf.d/99-nvidia.toml
+  CDI_ENABLED=true
+  NVIDIA_CONTAINER_RUNTIME_MODE=cdi
+  NVIDIA_RUNTIME_SET_AS_DEFAULT=false
+Daneben unsere vier CONTAINERD_ Variablen unveraendert durchgereicht.
+
+Das dreht die Aufgabe um: das aktuelle Rezept bedeutet fuer OCP nicht, neue
+Variablen zu SETZEN, sondern alte zu ENTFERNEN. RUNTIME_CONFIG_SOURCE und
+RUNTIME_DROP_IN_CONFIG liefert der Operator ohnehin; CONTAINERD_SOCKET und
+CONTAINERD_CONFIG sind der Eingang, aus dem er RUNTIME_SOCKET/RUNTIME_CONFIG
+und die beiden hostPath-Mounts ableitet - die muessen bleiben.
+
+CONTAINERD_SET_AS_DEFAULT IST NACHWEISLICH TOT. Wir setzen 1, der Operator
+gibt dem Toolkit NVIDIA_RUNTIME_SET_AS_DEFAULT=false, und crictl info auf dem
+Node meldet defaultRuntimeName runc bei registrierten Runtimes nvidia und runc.
+Der Toolkit-Lauf war weit genug: die Config war geschrieben, die nvidia-Runtime
+eingetragen, CDI aktiv. Also nicht Zufall, sondern ueberstimmt.
+
+DAMIT WIRD #30 EIN WIDERSPRUCH, NICHT NUR DRIFT. In #23 steht als Entscheidung
+festgehalten, dass OCP die nvidia-Runtime NICHT zum Default machen soll, auch
+nicht durch die Hintertuer. CONTAINERD_SET_AS_DEFAULT=1 ist genau diese
+Hintertuer und steht heute nur deshalb still, weil der Operator sie ignoriert.
+Eine Version, die den Wert wieder liest, macht daraus stillschweigend die
+Default-Runtime fuer jeden Container auf dem Node.
+
+CONTAINERD_RUNTIME_CLASS=nvidia ist der Default des Toolkits, also folgenlos,
+aber Teil desselben Aufraeumens.
+
+VORSCHLAG, WENN #30 DRANKOMMT: die beiden Variablen ersatzlos streichen, die
+zwei Pfad-Variablen behalten. Das ist eine Aenderung an der ClusterPolicy und
+damit am deployed-Hash, also ein GPU-Stack-Redeploy - der Grund, warum es
+nicht in einen Bugfix mit hineingehoert, dessen Verifikationslauf sonst zwei
+Variablen auf einmal traegt.
+ERLEDIGT 2026-08-15 (ocp-infra-worker). Der Vorschlag aus dem Ticket ist
+umgesetzt - und die Verifikation hat das Argument VERSTAERKT, nicht relativiert.
+
+AN DEN GEPINNTEN QUELLEN GEPRUEFT, nicht an der Doku: Tags gpu-operator v26.3.3
+und nvidia-container-toolkit v1.19.1 gezogen und gelesen (beide decken sich mit
+OCP::Versions).
+
+  CONTAINERD_CONFIG        BEHALTEN - object_controls.go:2610 liest es als
+                           Node-Pfad; ohne es faellt der Operator auf
+                           /etc/containerd/config.toml zurueck und mountet DAS
+                           Verzeichnis.
+  CONTAINERD_SOCKET        BEHALTEN - :2649, Fallback
+                           /run/containerd/containerd.sock, auf k3s UND RKE2 falsch.
+  CONTAINERD_RUNTIME_CLASS ENTFERNT - transformForRuntime() ueberschreibt es bei
+                           :1382 bedingungslos mit getRuntimeClassName()
+                           (Default "nvidia"). Unser Wert erreicht das DaemonSet nie.
+  CONTAINERD_SET_AS_DEFAULT ENTFERNT - null Vorkommen im Nicht-Test-Code des
+                           Operators, er reicht es nur durch.
+
+KORREKTUR AM TICKET, zugunsten des Fixes: die Annahme, die beiden Variablen seien
+upstream verschwunden, stimmt fuer SET_AS_DEFAULT nicht - sie ist nur aus der DOKU
+verschwunden, nicht aus dem Code. runtime.go:117 fuehrt sie weiterhin als Quelle
+fuer --set-as-default, zweite Stelle hinter NVIDIA_RUNTIME_SET_AS_DEFAULT, und
+urfave/cli v3 loest so eine Kette first-set-wins auf. Der Operator setzt
+NVIDIA_RUNTIME_SET_AS_DEFAULT=false in transformToolkitCtrForCDI, aufgerufen nur
+`if config.CDI.IsEnabled()`, und CDI ist per kubebuilder:default=true an. Die
+Reihenfolge steht ebenfalls auf Seiten des Tickets: der CDI-Transform (:1315)
+laeuft VOR dem Anwenden von toolkit.env (:1358), und der Upstream-Kommentar bei
+:1261 nennt toolkit.env ausdruecklich als den dokumentierten Weg, das wieder auf
+true zu drehen.
+Die Variable ist also nicht TOT, sondern UEBERSTIMMT - und damit ist das
+Entfernen staerker begruendet als im Ticket angenommen: wir haben upstream aktiv
+nach dem Gegenteil unserer eigenen Entscheidung aus #23 gefragt und nur Glueck
+gehabt, dass CDI dazwischensteht.
+
+DATEI: die Sub liegt nicht mehr in Apply.pm - der parallele Refactor (#55) hat sie
+nach OCP::Cmd::Apply::Workloads::generate_gpu_operator_manifest verschoben,
+Apply.pm:363 ist nur noch ein Forwarder (unangetastet). Der Kommentar an der
+Stelle traegt jetzt das #23-Argument (Hintertuer, nicht Drift), die
+Toolkit-Quellenangabe und die cortex-Messung.
+
+WAS DER KOMMENTAR SAGT UND DAS TICKET NICHT: das Entfernen ist KEIN Schutz. Der
+Default des Toolkits fuer --set-as-default ist true; was runc als Default haelt,
+ist CDI. OCP schreibt cdi.enabled nicht selbst, sondern verlaesst sich auf den
+CRD-Default. Das Entfernen hoert auf, das Gegenteil der eigenen Entscheidung zu
+VERLANGEN - es baut keine Sicherung. Die ist jetzt #76.
+
+TEST: t/40-gpu-clusterpolicy.t, zwei Subtests (10 -> 12 Tests). Fuer beide
+Distributionen: die zwei Ueberlebenden muessen da sein, die zwei Entfernten nicht,
+dazu ein is_deeply auf die exakte Schluesselmenge - jede kuenftige Ergaenzung muss
+also im Test begruendet werden - und ein unlike ueber das gerenderte YAML, damit
+keiner der beiden Namen ueber eine andere Komponente zurueckkommt. Der
+Kommentarblock darueber sagt, warum die ABWESENHEIT eine Assertion ist, und nennt
+#30 und die Entscheidung aus #23. Rot-geprueft: SET_AS_DEFAULT wieder eingesetzt
+laesst Subtests 11 und 12 fallen.
+
+FOLGE, LAUT AUSGESPROCHEN: das aendert die ClusterPolicy, damit den
+Manifest-Hash, damit stimmt der gespeicherte gpu-operator-Hash nicht mehr. Der
+NAECHSTE `ocp apply` auf einem GPU-Cluster ROLLT DEN GPU-STACK NEU AUS -
+Operator-Rollout, Toolkit-DaemonSet-Neustart, kurze Luecke beim Device-Plugin.
+Erwartet, und genau der Grund, warum das aus dem #44-Bugfix herausgehalten wurde.
+
+Skill .claude/skills/gpu/SKILL.md wird im selben Durchgang nachgezogen - der
+Absatz dort nannte den toolkit.env-Block "drift, not a decision", was jetzt falsch ist.
