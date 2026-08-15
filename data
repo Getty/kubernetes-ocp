@@ -1,0 +1,145 @@
+---
+class: standard
+completed: 2026-08-15T20:24:14Z
+created: 2026-08-15T19:39:26Z
+id: 86
+priority: critical
+started: 2026-08-15T19:51:17Z
+status: done
+tags:
+- secure-mode
+- keys
+- dataloss
+- init
+title: ocp init auf einem frischen Clone entwertet den age-Key des Projekts
+updated: 2026-08-15T20:24:14Z
+---
+
+Gefunden 2026-08-15 beim Fix von #85 (ocp-worker), REPRODUZIERT, nicht vermutet.
+Voellig unabhaengig von #84/#85 und aelter als beide.
+
+SZENARIO: Ein zweiter Mensch klont das Projekt-Repo und faehrt `ocp init`.
+
+Was er im Klon hat: keys.yaml, secrets.yaml, age.key.enc — alles verschluesselt und
+absichtlich committed. Was er NICHT hat: .ocp/, denn das ist gitignored, also auch
+nicht .ocp/age.key.
+
+WAS PASSIERT: Schritt 4 von Init.pm prueft `has_age_key` (NICHT `ensure_age_key`),
+findet keinen, und erzeugt daraufhin einen FRISCHEN age-Schluessel. Dabei wird
+.ocp/age.pub ueberschrieben. keys.yaml ist danach an einen Empfaenger verschluesselt,
+den es nicht mehr gibt, und Schritt 5b stirbt mit
+
+  Could not decrypt data key with any of the provided identities
+
+WARUM DAS SCHWERER WIEGT ALS #84 UND #85: Die beiden waren "Kommando funktioniert
+nicht". Das hier ist Datenverlust am gemeinsamen Zustand — der neue Schluessel
+ueberschreibt die oeffentliche Haelfte, an der das committete keys.yaml haengt. Der
+Zweite hat danach ein Projekt, dessen Schluesseldatei niemand mehr aufmachen kann,
+und er hat es sich selbst zerstoert, indem er das dokumentierte Einstiegskommando
+ausgefuehrt hat.
+
+Der eigentliche Fehler ist die Vertauschung: `has_age_key` beantwortet "liegt hier
+einer?", die Frage an dieser Stelle waere aber "gehoert zu diesem Projekt schon
+einer, den ich nicht habe?". age.key.enc IM REPO ist genau die Antwort darauf und
+wird nicht angesehen.
+
+ZU TUN:
+ - Init muss erkennen, dass das Projekt bereits einen age-Schluessel HAT (age.key.enc
+   und/oder age.pub im Repo), auch wenn lokal keiner liegt. In dem Fall darf es
+   keinen neuen erzeugen, sondern muss den vorhandenen entsperren (PIN1) — oder,
+   wenn das nicht geht, laut abbrechen und sagen, was fehlt.
+ - .ocp/age.pub NIEMALS ueberschreiben, solange ein davon abweichender Empfaenger in
+   keys.yaml steht. Das ist die Sicherung, die den Schaden verhindert haette.
+ - Der Fall gehoert in die Tests: frisches Klon-Verzeichnis mit committeten
+   verschluesselten Dateien und ohne .ocp/, dann init — es darf NICHT den
+   vorhandenen Schluessel entwerten.
+
+Verwandt: #84, #85 (aus derselben Untersuchung, aber andere Ursache), ADR 0005/0006
+(Schluesselmodell), ADR 0004 (.ocp/ ist gitignored — genau die Regel, die diesen Fall
+ueberhaupt erst erzeugt).
+NACHTRAG 2026-08-15, beim Gegenlesen des #85-Fixes gefunden. Es macht den Fall
+staerker, nicht schwaecher.
+
+Der Dev-Mode-Zweig in lib/OCP/Cmd/Apply.pm (~Zeile 129-137) hat DASSELBE
+has_age_key-Muster - und dort ist es ausdruecklich durchdacht:
+
+    # We need an age key for encrypting the kubeconfig later. In dev mode
+    # we never prompt for a PIN: if a plain age.key already exists, use
+    # it; otherwise generate a fresh one. We deliberately do NOT touch
+    # age.key.enc here - that would imply secure mode and a PIN prompt.
+    if (!$secrets->has_age_key) { ... generate ... }
+
+Dort ist das Erzeugen also sicher, WEIL der Kommentar die Grenze zieht:
+age.key.enc wird bewusst nicht angefasst, es gibt im Dev-Mode kein committetes
+Schluesselmaterial, das entwertet werden koennte.
+
+Genau diese Grenze fehlt auf dem secure-Pfad in Init.pm. Dort gibt es sehr wohl
+ein age.key.enc im Repo, und es wird trotzdem nicht angesehen, bevor ein neuer
+Schluessel erzeugt wird.
+
+Damit ist das hier kein uebersehener Randfall, sondern eine Ueberlegung, die an
+einer Stelle angestellt und an der anderen nicht uebertragen wurde. Der
+Dev-Mode-Kommentar ist die Vorlage fuer den Fix: dieselbe Frage stellen, nur mit
+der Antwort, die fuer secure mode gilt.
+ERLEDIGT 2026-08-15 (ocp-worker), Commit 433a40f. Reproduziert, gefixt, und die
+Rettung ist gemessen statt geschlossen.
+
+DER FEHLENDE EINGANG LAG DIE GANZE ZEIT AUF DER PLATTE: SOPS schreibt seinen
+Empfaenger im KLARTEXT in die Datei (sops: age: - recipient:). Damit beantwortet
+OCP::Secrets::age_key_bindings die Frage "an welchen Schluessel ist dieses Projekt
+gebunden", OHNE irgendeinen Schluessel zu besitzen - gelesen wird aus keys.yaml,
+secrets.yaml und kubeconfig.yaml. Genau das konnte has_age_key nicht.
+Dazu project_age_recipients und project_has_age_key.
+
+DIE SICHERUNG SITZT IM MECHANISMUS, NICHT IM AUFRUFER: generate_age_key croakt
+jetzt, sobald irgendetwas gebunden ist. Begruendung: ein frisch erzeugtes Paar ist
+immer neu, kann also nie der Empfaenger sein, den diese Dateien nennen - .ocp/age.pub
+daraus zu schreiben ist deshalb IMMER der zerstoererische Zug. Im Mechanismus
+platziert erbt jeder spaetere Pfad zum Erzeugen die Sperre. Ein einzelnes age.pub
+ohne verschluesseltes Material blockiert NICHT (nichts zu verlieren, und Blockieren
+waere eine Sackgasse).
+
+restore_age_recipient baut .ocp/age.pub aus .ocp/age.key wieder auf
+(Crypt::Age::Keys->public_key_from_secret, bei X25519 ableitbar). Ohne das koennte
+ein entsperrter Klon alles ENTSCHLUESSELN und nichts VERSCHLUESSELN - create_secrets,
+save_kubeconfig und OCP::Keys::add_key lesen alle diese Datei.
+check_local_age_key / _assert_key_matches_project verweigern das Zwischenspeichern
+eines Schluessels, der nicht oeffnet, woran das Projekt gebunden ist, und nennen
+dabei BEIDE Empfaenger. Eingehaengt in decrypt_age_key_with_password VOR dem ersten
+Schreiben und in ensure_age_key - damit bekommen alle vier ensure_age_key-Aufrufer
+(Keys::Show, SSH, Apply::Bootstrap, ClusterKey) den Empfaenger gratis wiederhergestellt.
+
+Init Schritt 4 traegt jetzt die Ueberlegung, die der Dev-Mode-Zweig in Apply.pm
+schon hatte, mit der Antwort fuer secure mode: lokaler Schluessel -> pruefen, ob er
+das Projekt oeffnet; kein Projekt-Schluessel -> erzeugen wie bisher; Projekt-Schluessel
+vorhanden -> mit PIN1 entsperren (ein Prompt, ohne Bestaetigung - wir setzen keins).
+Drei laute Abbrueche, die nichts schreiben.
+
+ROT-BELEG: t/70-init-age-key-preserved.t gegen den alten Code, 5 Fehlschlaege, u.a.
+woertlich "keys.yaml is STILL decryptable after init on the clone" und der
+Empfaenger-Vergleich (frisch gepraegter statt Projekt-Empfaenger).
+
+IST SO EIN PROJEKT VERLOREN? NEIN - gemessen, nicht geschlossen. Hashes vor/nach
+einem simulierten Klon-Lauf mit dem ALTEN Code: age.key.enc, keys.yaml und ocp.yaml
+UNVERAENDERT. Init stirbt bei Schritt 5b, jeder OCP-Schreibpfad liest vor dem
+Schreiben, und SOPS-Lesefehler schlagen fehl statt zu ueberschreiben. Der Schaden
+bleibt vollstaendig im gitignorierten .ocp/ dessen, der es ausgefuehrt hat - in
+Dateien, die nie die des Projekts waren.
+  rm .ocp/age.key .ocp/age.pub
+  ocp init          # entsperrt den projekteigenen Schluessel aus age.key.enc, PIN1
+Das druckt init jetzt selbst, wenn es einen fremden lokalen Schluessel sieht.
+Wirklich verloren ist nur, wer PIN1 UND jede Kopie von .ocp/age.key verloren hat -
+dann war das Projekt schon vor diesem Bug weg.
+
+DAS FIESESTE AM ALTEN VERHALTEN WAR DIE STILLE DANACH: der gepraegte Schluessel
+machte has_age_key fuer immer wahr, also scheiterte jedes spaetere Kommando mit
+derselben undurchsichtigen SOPS-Zeile, und nichts zeigte auf init zurueck.
+check_local_age_key schliesst genau das.
+
+Nebenbefunde als eigene Tickets: #90 (Dev-Mode-apply hat dieselbe Falle, seit diesem
+Fix sicher, aber mit generischer Meldung und ohne eigenen Ausweg) und #91
+(_get_age_recipient reicht undef durch). Ausserdem korrigiert dieser Fix die
+Meldung in ensure_age_key - "Run 'ocp init' first" war vorher ein aktiv
+zerstoererischer Rat.
+
+Suite: Files=63, Tests=1061, PASS.
