@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-08-15T07:06:28Z
+created: 2026-08-12T19:27:55Z
+id: 38
+priority: medium
+started: 2026-08-15T07:06:28Z
+status: done
+tags:
+- manifests
+- cleanup
+title: manifests/ ist ein toter Zwilling von share/ - kein Code-Pfad liest ihn
+updated: 2026-08-15T07:06:28Z
+---
+
+Beim Registry-Fix (#10) aufgefallen.
+
+OCP::Cmd::DeployRobocop::_find_share_dir sucht ausschliesslich unter
+/opt/ocp/src/share, FindBin/../share und File::ShareDir::dist_dir. manifests/
+kommt in keinem Code-Pfad vor - weder in lib/ noch in bin/ noch in dist.ini.
+
+manifests/robocop/ ist Byte-fuer-Byte identisch mit share/robocop/ (crds/,
+rbac.yaml, deployment.yaml, kustomization.yaml, overlays/dev/), aber es sind
+getrennte Inodes, keine Hardlinks. Zwei Kopien, von denen nur eine gelesen
+wird, driften irgendwann - share/robocop/ entstand in 18fb0e9 (A3: reimplement
+deploy-robocop via Kubernetes::REST->ensure), manifests/robocop/ stammt aus
+392ddb1 und wurde zuletzt in 91c4170 angefasst.
+
+Dazu manifests/robocop-deployment.yaml: aelteste Scaffolding-Fassung aus
+908c3bb, vollstaendig ueberholt.
+- image: ghcr.io/getty/ocp-robocop:latest - wird von nichts gebaut und wird es
+  nach #10 auch nicht, dort ist ghcr.io/getty/ocp die Zielreferenz
+- kein command:-Override, wuerde also das CLI-ENTRYPOINT ocp starten statt
+  robocop controller
+- RBAC auf apiGroup ocp.internal, resources nodes und nodepools - die echten
+  CRDs heissen ocpnodes und ocpnodeproviders, die Rolle waere wirkungslos
+- CRIU-Capabilities (CHECKPOINT_RESTORE, SYS_PTRACE, SYS_ADMIN) und Port 9999
+  fuer ocp inject-key, das laut CLAUDE.md deaktiviert ist (#2)
+
+Vorschlag: manifests/ ersatzlos loeschen, share/ ist die Wahrheitsquelle.
+Ich konnte die Loeschung in #10 nicht ausfuehren - sowohl git rm als auch rm
+wurden vom Permission-Classifier blockiert. Braucht daher eine Maintainer-Hand
+oder eine Freigabe.
+Erledigt: manifests/ wurde bereits am 2026-08-14 in Commit 6df7f06 ("Delete manifests/ — share/robocop is the only source") ersatzlos geloescht, genau wie hier vorgeschlagen. share/robocop/ ist seither alleinige Quelle, kein Code-Pfad las manifests/ ohnehin. Verifiziert: Verzeichnis existiert nicht mehr im Arbeitsbaum. Schliesse das Ticket.
