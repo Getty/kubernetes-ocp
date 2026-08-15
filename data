@@ -1,0 +1,94 @@
+---
+class: standard
+completed: 2026-08-15T07:48:56Z
+created: 2026-08-12T18:36:58Z
+id: 35
+priority: medium
+started: 2026-08-15T07:21:14Z
+status: done
+tags:
+- robocop
+- manifests
+- rbac
+title: 'robocop-Manifeste stimmen nicht mit dem Code: kein delete auf Nodes, falsches
+  Image-Repo'
+updated: 2026-08-15T07:48:56Z
+---
+
+Zwei Befunde aus dem Durchgang durch den Controller-Pfad (#28). Beide in der
+Infra-Lane, deshalb nicht mitgefixt.
+
+1. RBAC deckt teardown nicht ab.
+   share/robocop/rbac.yaml gibt der ClusterRole auf core nodes nur get, list,
+   watch, patch, update. OCP::Node::teardown loescht aber den Kubernetes-Node
+   ($self->k8s->delete("Node", $k8s_name)), und dieser Aufruf steht in einem
+   eval ohne Auswertung. Unter robocop wuerde das 403 geben und still
+   scheitern: die OCPNode-CR ist weg, das Node-Objekt bleibt als NotReady
+   stehen. Genau das Fehlerbild, das #21 beim api-version-Bug hatte - der
+   Aufruf schlaegt fehl, teardown meldet Erfolg.
+   Fix: delete auf nodes ergaenzen. Danach lohnt ein Blick, ob der eval-Block
+   in teardown nicht wenigstens warnen sollte.
+
+2. Image-Repository stimmt nicht.
+   share/robocop/deployment.yaml zieht ghcr.io/getty/ocp:latest. Gebaut und
+   gepusht wird raudssus/ocp (Makefile: IMAGE ?= raudssus/ocp, docker-push,
+   docker-release). Ein Cluster zieht also entweder nichts oder ein fremdes
+   Image. manifests/robocop/ ist die gleiche Datei nochmal - beide Kopien
+   pruefen.
+
+Beim Sichten aufgefallen, nicht bewertet: das Deployment hat keinen
+readinessProbe, deshalb gilt der Pod als Ready sobald der Container laeuft. Das
+ist der Grund, warum ocp apply die Worker an einen robocop uebergibt, der
+nichts tut (#33) - ein Probe, der erst nach der ersten erfolgreichen
+Reconcile-Runde gruen wird, waere die eigentliche Absicherung.
+Punkt 2 (Image-Repository) ist mit #10 erledigt: der Publish-Workflow baut und pusht ab jetzt ghcr.io/getty/ocp, also genau die Referenz, die share/robocop/deployment.yaml und manifests/robocop/deployment.yaml schon tragen. Die Manifeste mussten dafuer nicht angefasst werden - sie waren nie falsch, es hat nur nie jemand in diese Registry geschrieben. Zusatz aus #10: das erste Publish legt das GHCR-Package private an, und das Deployment hat keine imagePullSecrets - das Package muss also einmalig auf public gestellt werden, sonst scheitert der Pull mit 401.
+
+Punkt 1 (RBAC delete auf core nodes) bleibt offen und ist mit #10 nicht angefasst worden - eigener Fix, eigener Regressionstest.
+
+Die Notiz zu manifests/robocop/ als Zweitkopie ist jetzt #38, das fehlende readinessProbe haengt an #33.
+NACHTRAG (2026-08-14): #10s Registry-Entscheidung wurde vom Maintainer revidiert - nicht mehr ghcr.io/getty/ocp, sondern raudssus/ocp (Docker Hub) ist jetzt die einzige Registry, ueberall konsistent (docker-publish.yml, share/robocop/deployment.yaml, manifests/robocop/deployment.yaml, beide overlays/dev/kustomization.yaml, manifests/robocop-deployment.yaml). Punkt 2 (Image-Repository) bleibt erledigt, nur die konkrete Registry in der vorigen Notiz ('ghcr.io/getty/ocp') ist jetzt veraltet - aktuelle Referenz ist raudssus/ocp:latest ueberall. Punkt 1 (RBAC delete auf core nodes) weiterhin offen und unangetastet.
+ERLEDIGT 2026-08-15 (ocp-infra-worker). Punkt 1 abgearbeitet; Punkt 2 war schon
+mit #10/#40 erledigt.
+
+a) share/robocop/rbac.yaml: `delete` auf core nodes ergaenzt, mit Kommentar, der
+   jedes Verb an seine Call-Site bindet.
+   VOLLSTAENDIGER AUDIT des robocop-Pfads (OCP::Robocop::Controller -> OCP::Node
+   -> OCP::Provider::from_cr) gegen die ClusterRole: `delete` auf nodes war die
+   EINZIGE Luecke. Alles andere, was der Code ruft, war gedeckt - ocpnodes
+   get/list/update/delete, ocpnodes/status patch (ueber OCP::K8s::patch_status),
+   ocpnodeproviders get, secrets get. Keine Verben auf Vorrat vergeben.
+   In der anderen Richtung wurde reichlich Ueberschuss gefunden und BEWUSST NICHT
+   gestrichen (Rechte von einem laufenden Controller wegzunehmen ist eine eigene
+   Entscheidung, #35 hatte Bugfix-Scope) - das ist jetzt #72.
+
+b) lib/OCP/Node.pm: beide teardown-Deletes gehen durch einen neuen _delete_object.
+   404 bleibt still - "schon weg" ist der legitime Fall, den das Ticket nennt
+   (Node hat sich nie registriert, CR von Hand entfernt); das ist dieselbe
+   404-gegen-Rest-Trennung, die _get_cr ein paar Zeilen weiter oben schon zieht.
+   Alles andere warnt im Stil der bestehenden Zeile. teardown gibt weiterhin
+   UNBEDINGT 1 zurueck und versucht weiterhin beide Deletes - es ging um
+   Sichtbarkeit, nicht um einen neuen Fehlerpfad.
+
+c) t/55-robocop-rbac.t (neu): parst rbac.yaml so, wie OCP::Cmd::DeployRobocop es
+   tut (YAML::XS::LoadFile, multi-doc). Wichtig an der Form: die noetigen
+   nodes-Verben werden aus lib/OCP/Node.pm ABGELEITET, nicht wiederholt - jeder
+   Aufruf mit 'Node' als Argument 0 wird auf sein Verb gemappt, eine unbekannte
+   Aufrufform laesst den Test laut scheitern statt sie zu ueberspringen. Dazu die
+   auditierte Call-Site-Tabelle fuer CRDs und Secrets und ein Wildcard-Guard.
+   Rot verifiziert: ohne `- delete` fallen zwei Assertions.
+   t/16-node.t: delete_fails-Injection im MockTransport, zwei Subtests - 403
+   warnt fuer beide Deletes unter Nennung von Node/t2 und OCPNode/t2 samt Status
+   und teardown liefert weiterhin 1; 404 warnt gar nicht. Rot verifiziert gegen
+   die alte Bare-eval-Fassung.
+
+EINORDNUNG, wichtig fuer die Erwartung: der 403 ist LATENT, nicht aktiv. teardown
+wird heute nur von `ocp node rm` gerufen (CLI, Admin-Kubeconfig), und bin/robocop
+erreicht OCP::Robocop::Controller ohnehin nie - das Deployment sagt
+command: [robocop, controller], bin/robocop liest ARGV nicht und landet im
+CRIU-Stub (#33). Der Fix ist korrekt IM VORAUS auf #33; er behebt keinen Ausfall,
+den es heute gibt.
+
+NEBENBEFUND, jetzt eigenes Ticket: t/43-k8s-call-contract.t scannt nach
+->(get|delete|patch|list|ensure)\('Kind' und sieht den literalen Kind-Aufruf
+hinter _delete_object nicht mehr. Ersatzdeckung steht in t/55, aber t/43
+behauptet einen repo-weiten Vertrag - wird im selben Durchgang mit #68 gefixt.
