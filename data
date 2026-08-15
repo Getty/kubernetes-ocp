@@ -1,0 +1,173 @@
+---
+claimed_at: 2026-08-14T01:35:24Z
+claimed_by: ocp-infra-worker
+class: standard
+completed: 2026-08-15T07:07:47Z
+created: 2026-08-12T14:02:59Z
+id: 10
+priority: high
+started: 2026-08-12T20:13:43Z
+status: done
+tags:
+- arch
+- ci
+- docker
+title: Published images are amd64-only — arm64 clusters cannot run robocop
+updated: 2026-08-15T07:07:47Z
+---
+
+Found during the #9 arch audit.
+
+.github/workflows/docker-publish.yml builds with `--platform linux/amd64` at both call sites (PR build line 71, push line 83). The OCP CLI runs outside the cluster so an amd64-only CLI image is survivable, but robocop runs IN the cluster, i.e. on the target architecture. On an arm64 cluster the robocop pod would fail to pull/exec.
+
+Both Dockerfiles are now arch-portable (Dockerfile kubectl download fixed in #9; Dockerfile.robocop had no arch assumptions and its base perl:5.40-slim is multi-arch), so the only remaining blocker is the publish step.
+
+Fix is one line -> `--platform linux/amd64,linux/arm64`, BUT it has a real cost that needs a maintainer decision: the Dockerfile compiles Perl 5.42 from source, and an arm64 leg on a QEMU-emulated amd64 runner will take a very long time. Options: native arm64 runner, or split the matrix into two native jobs plus a manifest merge.
+
+Second, separate inconsistency found in the same place: nothing builds or publishes the images the manifests actually reference.
+- manifests/robocop/deployment.yaml + share/robocop/deployment.yaml -> ghcr.io/getty/ocp:latest
+- manifests/robocop-deployment.yaml -> ghcr.io/getty/ocp-robocop:latest
+- manifests/robocop/overlays/dev/kustomization.yaml -> ghcr.io/getty/ocp
+The only workflow pushes raudssus/ocp to Docker Hub. Verified: ghcr.io/getty/ocp and ghcr.io/getty/ocp-robocop do not exist (registry token 403 DENIED, github package page 404). Decide on one registry and make the manifests and the workflow agree.
+ENTSCHEIDUNG DES MAINTAINERS (2026-08-12): arm64-Images werden gebaut. Kostenfrage ist damit beantwortet, Umsetzung laeuft.
+Umgesetzt. Zusammenfassung von Entscheidung, Messung und offenen Punkten.
+
+BUILD-STRATEGIE: Split-Matrix mit nativen Runnern, kein QEMU.
+Entscheidender Fakt: github.com/Getty/kubernetes-ocp ist ein OEFFENTLICHES
+Repo. Linux-arm64-Runner (ubuntu-24.04-arm) sind fuer public repos seit
+2025-08-07 GA und kostenlos bei 4 vCPU. Der arm64-Leg kostet also null, nicht
+nur weniger. Damit erledigt sich die Kostenfrage, die #9 offen liess: es gibt
+keinen Grund, Perl aus Source unter Emulation zu kompilieren.
+Preisvergleich nur der Vollstaendigkeit halber, fuer private repos seit
+2026-01-29 verfuegbar: arm64 0.005 USD/min gegen x64 0.006 USD/min, arm64 ist
+auch dort billiger.
+
+MESSUNG statt Gefuehl. Lokal auf 4 Kernen amd64 mit qemu-aarch64 gegen
+Dockerfile.robocop:
+- CryptX allein 1420 Sekunden, also 23,7 Minuten, nur fuer die gebuendelten
+  libtomcrypt- und libtommath-C-Quellen. qemu-aarch64 uebersetzt dabei jede
+  einzelne Datei einzeln.
+- Nach 60 Minuten waren 112 Distributionen installiert und der Lauf war noch
+  nicht fertig. Das ist das LEICHTE Image; das Haupt-Dockerfile kompiliert
+  zusaetzlich Perl 5.42.0 aus Source.
+Publizierte Vergleichswerte fuer compile-lastige Workloads unter
+setup-qemu-action liegen bei Faktor 10 und darueber (Bioconductor misst
+mindestens eine Groessenordnung fuer C/C++-Builds). Das deckt sich mit dem, was
+hier gemessen wurde.
+
+Wichtiger als die Laufzeit: Emulation erzeugt FALSCHE FEHLSCHLAEGE. IO::Tty und
+NetAddr::IP scheiterten unter QEMU im Configure und bauen nativ auf amd64
+anstandslos durch. Ein QEMU-Leg haette also nicht nur lange gedauert, sondern
+waere vermutlich rot geworden, ohne dass arm64 etwas dafuer kann.
+
+ZIELREGISTRY: ghcr.io/getty/ocp fuer den Cluster, raudssus/ocp bleibt der
+CLI-Kanal. Beide werden aus demselben Build bedient.
+Begruendung:
+- Die Manifeste waren nie falsch. share/robocop/deployment.yaml und
+  manifests/robocop/deployment.yaml zeigen auf ghcr.io/getty/ocp, und getty ist
+  der korrekte Owner-Namespace fuer dieses Repo. Es hat nur nie jemand in diese
+  Registry geschrieben. Deshalb wurde kein Manifest angefasst.
+- GHCR authentifiziert mit dem eingebauten GITHUB_TOKEN, ohne manuell gesetzte
+  Secrets. Genau daran scheiterte bisher alles, siehe naechster Absatz.
+- README.md bewirbt raudssus/ocp an zwoelf Stellen als Installationsweg. Eine
+  Registry, auf die die Doku zeigt, darf nicht sterben - also pusht der
+  Workflow beide.
+
+BEFUND, DER IM TICKET NOCH NICHT STAND: der Workflow hat noch NIE erfolgreich
+publiziert. Alle drei aufgezeichneten Laeufe (31425759723, 31237450048,
+31208279636) sind nach 12 bis 18 Sekunden am Docker-Hub-Login gestorben, mit
+"Must provide --username with --password-stdin" - die Secrets DOCKERHUB_USERNAME
+und DOCKERHUB_TOKEN sind im Repo nicht gesetzt. Das einzige existierende
+Artefakt, raudssus/ocp:latest, ist vom 2026-02-23, amd64-only und wurde von
+Hand gepusht. Der Docker-Hub-Push ist deshalb jetzt so verdrahtet, dass er bei
+fehlendem Secret uebersprungen wird statt den Lauf zu killen: ohne Secrets
+erscheint nur GHCR, mit Secrets beide.
+
+WAS GEAENDERT WURDE
+- .github/workflows/docker-publish.yml neu: Matrix ubuntu-24.04 fuer
+  linux/amd64 und ubuntu-24.04-arm fuer linux/arm64, jeder Leg pusht einen
+  Wegwerf-Tag tmp-SHA-ARCH, ein Merge-Job baut daraus per buildx imagetools
+  create die echten Tags je Registry. Weiter native docker-Kommandos, damit die
+  Forgejo-Kompatibilitaet erhalten bleibt, die der alte Header zusichert.
+- Layer-Cache pro Architektur: type=registry mit ref buildcache-amd64 bzw
+  buildcache-arm64. Ein gemeinsamer Scope waere ein Eigentor - die Legs wuerden
+  sich den Cache bei jedem Lauf gegenseitig ueberschreiben und eine
+  Architektur bliebe dauerhaft kalt. Auf PRs wird nur gelesen, nicht
+  geschrieben.
+- Der Merge-Job prueft nach dem Erzeugen, dass die Manifest-Liste wirklich
+  linux/amd64 UND linux/arm64 enthaelt, und bricht sonst ab. Ein still
+  einarchiges Publish soll keinen Cluster erreichen koennen.
+- Tag-Logik gehaertet: refs/tags/v1.2.3-rc1 erzeugte vorher einen Tag mit
+  Slashes und damit einen ungueltigen Docker-Tag.
+- permissions contents read und packages write ergaenzt, sonst kann GITHUB_TOKEN
+  nicht nach GHCR schreiben.
+- Makefile: neue Targets buildx-setup und build-multiarch fuer die lokale
+  Gegenprobe ueber beide Architekturen. Baut nur, pusht nichts.
+- make test bleibt gruen, 45 Dateien, 751 Tests.
+
+LOKALE VERIFIKATION
+- Die einzige architekturabhaengige Stelle des Haupt-Dockerfiles, der
+  kubectl-Download aus #9, wurde real auf arm64 gebaut: dpkg meldet arm64, die
+  Datei ist ein ELF-aarch64-Binary und kubectl version --client laeuft und
+  meldet v1.36.3. Der Fix aus #9 ist damit nicht nur gelesen, sondern
+  ausgefuehrt.
+- Dockerfile.robocop auf arm64: 112 Distributionen sauber installiert, dann vom
+  Harness nach 60 Minuten abgebrochen, nicht durch einen Buildfehler. Kein
+  einziger arm64-spezifischer Fehlschlag darunter, inklusive schwerer
+  XS-Module (CryptX, YAML::XS, Params::Validate, Package::Stash::XS,
+  HTML::Parser, Unicode::LineBreak, List::MoreUtils::XS, NetAddr::IP).
+- Die drei Fehlschlaege in diesem Lauf sind separat eingeordnet: XML::Parser
+  scheitert auch nativ auf amd64, weil Dockerfile.robocop kein libexpat1-dev
+  installiert - siehe #39. IO::Tty und NetAddr::IP sind QEMU-Artefakte.
+- Das Haupt-Dockerfile wurde bewusst NICHT lokal auf arm64 durchgezogen: bei
+  gemessenen 23,7 Minuten fuer CryptX allein waere der zusaetzliche
+  Perl-5.42-Source-Build unter Emulation Stunden gelaufen, fuer eine Aussage,
+  die der native CI-Lauf in Minuten und ohne QEMU-Artefakte liefert.
+
+WAS ERST EIN ECHTER CI-LAUF ZEIGEN KANN
+1. Ob das Haupt-Dockerfile auf nativem arm64 durchbaut. Die Abhaengigkeiten
+   sind dieselben wie im Robocop-Test, aber Perl 5.42 aus Source auf aarch64
+   ist lokal ungetestet.
+2. Ob ubuntu-24.04-arm fuer dieses Repo tatsaechlich zugeteilt wird.
+3. Ob die beiden IO::Tty- und NetAddr::IP-Fehlschlaege wirklich nur QEMU waren.
+   Nativ sollten sie verschwinden; falls nicht, sind es echte arm64-Bugs.
+4. Ob der Registry-Cache greift. Der erste Lauf ist kalt, erst der zweite
+   zeigt den Nutzen.
+
+HANDGRIFF FUER DEN MAINTAINER, SONST BLEIBT ES KAPUTT
+Das erste Publish legt das GHCR-Package PRIVATE an. share/robocop/deployment.yaml
+hat keine imagePullSecrets, und ghcr.io steht nicht in den registries.yaml-
+Mirrors (nur docker.io wird ueber den Pull-Through-Cache geleitet, siehe #40).
+Der Cluster zieht also anonym und direkt - das Package muss einmalig auf public
+gestellt werden, sonst scheitert der Pull mit 401. Optional danach die
+Docker-Hub-Secrets setzen, damit raudssus/ocp wieder automatisch bedient wird.
+
+NICHT AUSGEFUEHRT: manifests/robocop-deployment.yaml sollte weg (tote
+Scaffolding-Fassung mit ghcr.io/getty/ocp-robocop, einer Referenz auf eine
+Registry, in die niemand schreibt). Sowohl git rm als auch rm wurden vom
+Permission-Classifier blockiert. Das ist der einzige offene Handgriff aus
+diesem Ticket, Details und Begruendung in #38.
+
+Nichts gepusht. Kein docker-push, kein docker-release, kein buildx push. Das
+Ausloesen bleibt beim Maintainer.
+
+Folgetickets: #38 manifests-Zwilling, #39 Dockerfile.robocop, #40 ghcr.io im
+Pull-Through-Cache, #41 Test fuer die Kopplung Manifest/Workflow. #35 Punkt 2
+ist damit erledigt.
+NACHTRAG (Maintainer-Entscheidung, 2026-08-14): ghcr.io/getty/ocp wieder verworfen. Die Registry-Entscheidung aus diesem Ticket ('ZIELREGISTRY: ghcr.io/getty/ocp fuer den Cluster, raudssus/ocp bleibt der CLI-Kanal') ist ueberholt - der Maintainer will ausschliesslich raudssus/ocp, aus zwei Gruenden: (a) der Pull-Through-Cache in OCP::Cmd::Apply (ocp-cache) mirrort ausschliesslich registry-1.docker.io, ghcr.io haette #40 gebraucht, um ueberhaupt gecacht zu werden; (b) GHCR ist eine zweite Registry, die nirgends in README.md dokumentiert ist und nach jedem Publish manuell auf public gestellt werden muss (sonst 401 beim Cluster-Pull). Umsetzung (ocp-infra-worker): docker-publish.yml - GHCR-Login-Steps (build- UND merge-Job) und GHCR_REPO entfernt, Cache-Ref jetzt ${DOCKERHUB_REPO}:buildcache-<arch>, permissions.packages:write raus (nur noch contents:read). manifests/robocop/deployment.yaml, share/robocop/deployment.yaml, beide overlays/dev/kustomization.yaml und manifests/robocop-deployment.yaml zeigen jetzt einheitlich auf raudssus/ocp:latest. Die Multi-Arch-Struktur selbst (native Runner, kein QEMU, per-Arch-Cache, imagetools-Merge, Multi-Arch-Pruefung, gehaertete Tag-Suffix-Logik) blieb unangetastet. Damit entfaellt auch der 'Handgriff fuer den Maintainer' aus diesem Ticket (GHCR-Package auf public stellen) ersatzlos - es gibt kein GHCR-Package mehr. Die vier offenen 'WAS ERST EIN ECHTER CI-LAUF ZEIGEN KANN'-Punkte bleiben unveraendert offen, nur jetzt gegen raudssus/ocp statt ghcr.io. make test bleibt gruen (48 Dateien). Nachgezogene Notizen in #35 und #40 (dort auf done).
+Verifiziert (Hauptagent): make test lokal erneut laufen lassen nach dem Registry-Konsolidierungs-Diff -> 48 Dateien, 773 Tests, PASS. Diff manuell gegengelesen (Workflow-Logik, alle 5 Manifest-Referenzen) - konsistent. Zurueck auf review, wartet auf Maintainer-Merge + DOCKERHUB_USERNAME/DOCKERHUB_TOKEN Secrets.
+Kurskorrektur (Maintainer): kein CI/CD-Auto-Publish mehr gewuenscht, nicht mal manueller GH-Actions-Trigger. docker-publish.yml komplett entfernt. Publish ist jetzt ausschliesslich lokal via 'make docker-push'/'make docker-release' (buildx multi-arch amd64+arm64 in einem Lauf, ueber QEMU fuer die jeweils nicht-native Arch -- bewusst akzeptierter Kostenpunkt). raudssus/ocp als einzige Registry bleibt wie entschieden. make test: 48 Dateien/777 Tests PASS.
+NACHTRAG (Maintainer-Kurskorrektur, 2026-08-15): Multi-Arch-Image-Publishing ist nicht mehr NOETIG. Der Maintainer hat erkannt: robocop laeuft im Cluster, muss dafuer aber nicht frei auf jedem Node landen koennen - es reicht, wenn es auf dem CP-Server laeuft, und der ist bei diesem Projekt immer amd64. Worker koennen beliebige Arch haben (inkl. arm64-GPU-Boards wie GB10/DGX Spark, #25), das ist irrelevant, wenn robocop dort nie hinkommt. Statt weiter Multi-Arch-Images zu bauen, wird robocop jetzt fest an den Control-Plane-Node gepinnt (ocp-infra-worker).
+
+GEAENDERTE DATEI: share/robocop/deployment.yaml (share/robocop/overlays/dev/kustomization.yaml patcht nur imagePullPolicy, keine Aenderung noetig).
+
+manifests/robocop/deployment.yaml existiert NICHT MEHR - der in diesem Ticket erwaehnte Zwilling wurde bereits in 6df7f06 "Delete manifests/ - share/robocop is the only source" (2026-08-14) ersatzlos entfernt, share/robocop/ ist seither alleinige Quelle. Nebenbefund: karr #38 (der Zwilling-Ticket) steht noch auf backlog, obwohl die dort vorgeschlagene Loeschung bereits passiert ist - vermutlich vergessen abzuschliessen, nicht in diesem Ticket angefasst.
+
+PLATZIERUNG: spec.template.spec bekam tolerations (2x, je node-role.kubernetes.io/control-plane und node-role.kubernetes.io/master, operator: Exists, effect: NoSchedule) plus affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution mit matchExpressions auf node-role.kubernetes.io/control-plane (operator: Exists).
+
+BEGRUENDUNG fuer Label/Toleration-Wahl: kein Code in diesem Repo setzt selbst einen konkreten Label-WERT fuer die CP-Rolle - RKE2 vergibt node-role.kubernetes.io/control-plane und node-role.kubernetes.io/master nativ beim Server-Bootstrap, ausserhalb der OCP-eigenen Provisionierung. Verifiziert stattdessen ueber vorhandenen Projekt-Code: share/Rexfile hat einen (aktuell ungenutzten) Task untaint_control_plane, der genau diese zwei Taints per Key entfernt ("node-role.kubernetes.io/control-plane:NoSchedule-" und ".../master:NoSchedule-") - das bestaetigt, dass RKE2-CP-Nodes hier BEIDE Taints bekommen und dass single-node-CP-Cluster sie standardmaessig BEHALTEN, weil der Untaint-Task nirgends aufgerufen wird. OCP::Cmd::Apply::Workloads verwendet fuer nfd-master und gpu-operator bereits exakt dasselbe Muster (tolerations mit operator: Exists, keine value:-Angabe; nfd-master zusaetzlich eine PREFERRED nodeAffinity auf denselben Key). robocop uebernimmt dieses Muster 1:1, nur mit REQUIRED statt preferred, weil der Maintainer einen harten Pin wollte statt einer Praeferenz. Ein literales spec.nodeSelector mit einem geratenen Wert (z.B. "true") haette ich nicht verifizieren koennen und wurde bewusst vermieden.
+
+Multi-Arch-Buildx-Infrastruktur (PLATFORMS, buildx-setup, build-multiarch Makefile-Targets) bleibt unangetastet bestehen - schadet nicht, wird aber nicht mehr aktiv gebraucht. docker-publish.yml existiert laut vorherigem Verlauf ohnehin nicht mehr (CI-Auto-Publish wurde bereits verworfen), Publish bleibt manuell via make docker-push/docker-release.
+
+make test: lokal erneut gruen (prove -l t/, exit 0), u.a. t/33-registry-manifests.t, t/45-robocop-kube.t, t/46-share-dir.t.
+Erledigt (Maintainer-Kurskorrektur 2026-08-15): robocop ist jetzt fest an den Control-Plane-Node gepinnt (share/robocop/deployment.yaml, Commit 03dec2e), statt Multi-Arch-Images zu brauchen. Der CP-Server ist in diesem Projekt immer amd64, robocop kann nun strukturell nicht mehr auf einem arm64-Worker landen (#25) - das urspruengliche Problem (Published images are amd64-only - arm64 clusters cannot run robocop) ist damit gegenstandslos, nicht durch Multi-Arch-Publish geloest, sondern durch Wegfall der Notwendigkeit. Multi-Arch-Buildx-Infrastruktur (PLATFORMS, buildx-setup, build-multiarch, docker-push/docker-release in Makefile) bleibt bestehen, falls spaeter doch mal gebraucht, ist aber nicht mehr Voraussetzung. Schliesse das Ticket.
