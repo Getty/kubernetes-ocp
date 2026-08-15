@@ -1,0 +1,78 @@
+---
+class: standard
+completed: 2026-08-15T07:46:00Z
+created: 2026-08-14T00:30:08Z
+id: 52
+priority: medium
+started: 2026-08-15T07:20:49Z
+status: done
+tags:
+- apply
+- dry-run
+title: dry-run wird im Reconcile-Pfad von apply ignoriert
+updated: 2026-08-15T07:46:00Z
+---
+
+Gefunden 2026-08-14 am Cluster cortex.
+
+  ocp apply --only workers --dry-run
+
+gegen einen BESTEHENDEN Cluster laeuft komplett durch, meldet
+"Creating Cilium Gateway..." und mehrere "[ok] ensured ..."-Zeilen und endet
+mit dem Erfolgsbanner. Kein "[Dry run - no changes made]".
+
+Ursache: lib/OCP/Cmd/Apply.pm prueft dry_run genau einmal, in Zeile ~228 -
+und diese Zeile sitzt im Bootstrap-Pfad, hinter
+
+  if ($config->cluster_exists) { ... return $self->_finish_apply(...); }
+
+Ein bestehender Cluster geht nach _reconcile_components und erreicht die
+Pruefung nie. Weder _reconcile_components noch _finish_apply kennen dry_run.
+
+Dass faktisch nichts kaputtging, liegt allein an der Idempotenz von ensure(),
+nicht am Flag. Verifiziert: OCPNode/cortex und cilium-gateway waren nach dem
+Lauf unveraendert 24 h alt.
+
+Das ist die unangenehmere Sorte Bug: Wer --dry-run tippt, erwartet, dass nichts
+an die API geht. Hier gehen sehr wohl Schreibzugriffe raus, sie sind nur
+zufaellig folgenlos.
+
+Fix: dry_run in _reconcile_components respektieren (frueh aussteigen und
+auflisten, was sich aendern wuerde), oder das Flag im Reconcile-Modus
+ausdruecklich zurueckweisen statt es still zu ignorieren.
+ERLEDIGT 2026-08-15 (ocp-worker). --dry-run schreibt jetzt auch auf einem
+bestehenden Cluster nichts mehr.
+
+Der Guard sitzt in reconcile_components (lib/OCP/Cmd/Apply/Drift.pm), direkt
+hinter der API-Handle- und CP-Identitaets-Herleitung und VOR dem ersten Schreiben.
+Er gibt falsy zurueck, was execute ueber das vorhandene
+`return 0 unless $reconciled;` schon behandelt - es entsteht also kein neuer
+frueher Return im cluster_exists-Zweig, und die Invariante aus t/38 ("ein
+Health-Gate, kein Pfad kommt daran vorbei") bleibt heil.
+
+BEWUSST kurz VOR _finish_apply: das Health-Gate selbst liest nur, ruft aber
+_stamp_ocp_version - und ein Lauf, der nichts geaendert hat, darf keine Version
+stempeln.
+
+ALS SCHREIBEND EINGESTUFT (alle liegen hinter dem Guard): _run_remedy (Rex ueber
+SSH), _setup_registry, _configure_registry_dns, _setup_nfd, _setup_gpu_operator,
+_apply_cert_manager, _wait_cert_manager_and_create_issuers, _save_deployed_hash,
+_setup_cilium_gateway, _setup_lb_ipam, _ensure_crds, _ensure_providers,
+_migrate_legacy_nodes, _ensure_cp_ocpnode, _stamp_ocp_version.
+Als lesend und damit erlaubt: OCP::Secrets::read_kubeconfig, der Aufbau des
+API-Handles, OCP::Drift->detect (laut eigenem Vertrag lesend).
+_configure_registry_dns ist gemischt (GET, dann ConfigMap-Apply bei Abweichung) -
+als schreibend eingestuft. Seine Lese-Haelfte geht nicht verloren: genau diesen
+Befund meldet OCP::Drift::registry_dns_drift ohnehin lesend.
+
+BENANNTER BLINDER FLECK: ein Manifest, das sich bei unveraenderter Version
+geaendert hat, ist fuer einen rein lesenden Lauf unsichtbar - nur der Deploy-
+Schritt weiss davon. Der Report sagt das ausdruecklich, statt Vollstaendigkeit zu
+suggerieren. Hashes ausserhalb der Setup-Schritte neu zu berechnen haette genau
+das Zweit-Richter-Muster wiederhergestellt, das #46 im selben Durchgang entfernt.
+
+Test: t/38-reconcile-path.t, drei neue Subtests. Jeder mutierende Schritt ist
+gestubbt und protokolliert, ob er erreicht wurde; die Fake-API protokolliert jede
+Nicht-GET-Anfrage. Der Dry-Run erreicht keinen und stellt keine - und derselbe
+Lauf mit ausgeschaltetem Flag erreicht sie, damit die erste Haelfte nicht aus dem
+falschen Grund gruen sein kann.
