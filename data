@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-08-15T07:47:29Z
+created: 2026-08-12T18:56:22Z
+id: 36
+priority: low
+started: 2026-08-15T07:21:01Z
+status: done
+tags:
+- cleanup
+- drift
+title: resolve_address auch in _setup_lb_ipam nutzen
+updated: 2026-08-15T07:47:29Z
+---
+
+Beim Fix von #19 wurde OCP::Drift::resolve_address als einzige Herleitung fuer "Config-Host -> Adresse" eingefuehrt; _configure_registry_dns nutzt sie jetzt statt einer eigenen inet_aton-Kopie.
+
+_setup_lb_ipam (Apply.pm ~846) traegt dieselbe Inline-Aufloesung ein zweites Mal, plus einen Loopback-Fallback ueber das Node-Objekt. Gleicher Kandidat, gehoert aber zum LB-IPAM-Pfad und nicht zu #19 — deshalb dort bewusst nicht mitgeaendert.
+
+Warum das zaehlt: genau diese Doppelung war der Bug in #19. Writer und Reader leiteten dieselbe Adresse getrennt her, der eine loeste auf, der andere nicht, und ocp status meldete auf einem korrekten Cluster dauerhaft Drift. Eine zweite Kopie ist eine zweite Gelegenheit fuer denselben Fehler.
+
+Beim Zusammenfuehren den Loopback-Fallback nicht verlieren — der ist LB-IPAM-spezifisch und in resolve_address heute nicht abgebildet.
+ERLEDIGT 2026-08-15 (ocp-worker). Die zweite Inline-Aufloesung ist weg.
+
+lib/OCP/Cmd/Apply/Network.pm nutzt in _setup_lb_ipam jetzt
+OCP::Drift::resolve_address. Das nun tote `use Socket` ist dort UND in
+lib/OCP/Cmd/Apply.pm entfernt - das ist der Teil, der die Zusammenfuehrung haelt:
+ein ungenutzter Import ist der Weg, auf dem die zweite Kopie nachwaechst.
+
+ENTSCHEIDUNG ZUM LOOPBACK-FALLBACK: er bleibt im LB-IPAM-Pfad, wandert NICHT in
+resolve_address. Begruendung: er ist keine Namensaufloesung. Er fragt den Cluster
+nach der InternalIP eines Nodes, braucht also die API und beantwortet eine andere
+Frage ("diese Adresse taugt nicht als Pool, was hat der Node sonst?"). In
+resolve_address gezogen haette er einer reinen Funktion eine API-Abhaengigkeit
+gegeben UND veraendert, worauf sich der registry.local-Writer und die Drift-Probe
+einigen - genau die Invariante aus #19. Geteilt wird jetzt nur die Haelfte
+Name -> Adresse, und das ist die Haelfte, in der der Bug aus #19 sass.
+
+Test: vier Subtests in t/39-coredns-registry-host.t, im bestehenden Abschnitt
+"die Adresse hat eine Herleitung, nicht zwei", ueber dessen with_dns-Override.
+Damit hat der Test Zaehne: ein wieder eingebautes inet_aton sieht den Override
+nicht, und der aufloesbare Fall stirbt, statt still durchzugehen.
+Abgedeckt: aufloesbarer Host, Loopback-Fallback, Nur-Loopback-Warnung,
+nicht aufloesbarer Name.
