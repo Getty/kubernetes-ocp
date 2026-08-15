@@ -1,0 +1,55 @@
+---
+class: standard
+completed: 2026-08-15T07:51:38Z
+created: 2026-08-14T00:26:58Z
+id: 50
+priority: high
+started: 2026-08-15T07:20:30Z
+status: done
+tags:
+- node-add
+- crd
+- bug
+title: ocp node add --gpu schreibt spec.gpu als Integer, CRD verlangt Boolean
+updated: 2026-08-15T07:51:38Z
+---
+
+Gefunden 2026-08-14 beim Aufnehmen eines GPU-Workers in den Cluster cortex.
+
+  ocp node add brain --role worker --provider ssh-default \
+    --host brain.ai.citilan.de --gpu
+
+scheitert an der API:
+
+  422 OCPNode.ocp.internal "brain" is invalid: spec.gpu:
+  Invalid value: "integer": spec.gpu in body must be of type boolean: "integer"
+
+Das boolesche MooX::Options-Flag kommt als Perl-1 an und wird als JSON-Integer
+serialisiert. Das CRD deklariert spec.gpu als boolean. Damit ist --gpu bei
+ocp node add unbenutzbar - der CR wird nie geschrieben.
+
+Fix: beim Bauen des CR auf JSON::PP::true/false abbilden (wie sonst bei
+booleschen CR-Feldern), nicht das nackte Perl-Skalar durchreichen.
+
+Nebenbefund: Das Flag ist fuer den ssh-Pfad ohnehin folgenlos.
+OCP::Rex hat `my $gpu = $opts{gpu} // 1;` mit dem Kommentar, dass ein
+fehlender Wert "do the GPU work" bedeutet, und _ensure_worker_ocpnodes
+setzt gpu ueberhaupt nicht. Ohne --gpu passiert also dasselbe, nur ohne
+Typfehler. Entweder das Flag reparieren oder es entfernen - der jetzige
+Zustand laedt dazu ein, es zu setzen, und bestraft das mit einem 422.
+ERLEDIGT 2026-08-15 (ocp-worker).
+
+lib/OCP/Cmd/Node/Add.pm: _build_cr schreibt `gpu => JSON::PP::true`,
+`use JSON::PP ();` oben ergaenzt. Das ist exakt das Muster, das
+Apply/Workloads.pm, Apply/Registry.pm und Apply/Network.pm fuer boolesche
+CR-Felder schon benutzen - nichts neu erfunden.
+
+Test: t/18b-node-add.t, Subtest "spec.gpu goes out as a JSON boolean, not an
+integer": prueft isa_ok auf JSON::PP::Boolean UND den JSON-kodierten Body auf
+"gpu":true. Gegengeprueft - mit dem alten `gpu => 1` faellt genau dieser Subtest.
+
+NEBENBEFUND BESTAETIGT UND ALS #70 ABGESPALTEN: spec.gpu hat im ganzen Repo keinen
+Leser. Weder OCP::Node noch OCP::K8s::OCPNode noch robocop lesen es; OCP::Rex
+bekommt `gpu` nur aus dem ocp.yaml-Pfad. `--gpu` schreibt jetzt also ein
+korrektes Feld, das niemand auswertet. Das ist besser als der vorherige Zustand
+(422), aber nicht gut - Entscheidung "verdrahten oder entfernen" steht in #70.
