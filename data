@@ -1,0 +1,72 @@
+---
+class: standard
+completed: 2026-08-15T07:47:41Z
+created: 2026-08-12T16:13:09Z
+id: 32
+priority: low
+started: 2026-08-15T07:21:08Z
+status: done
+tags:
+- gpu
+- drift
+title: GPU-Komponenten haben keine OCP::Drift-Probe
+updated: 2026-08-15T07:47:41Z
+---
+
+Gefunden beim Fix von #13 (ocp-infra-worker).
+
+OCP::Drift @COMPONENT_PROBES enthaelt genau zwei Eintraege: cilium und
+cert_manager. Alles aus dem GPU-Stack - gpu_operator, nvidia_toolkit,
+nvidia_device_plugin, dcgm_exporter, nvidia_dcgm, nfd und jetzt auch
+nvidia_driver - steht in OCP::Versions, wird aber nie gegen den laufenden
+Cluster geprueft.
+
+Praktisch heisst das: ein GPU-Versionsbump in OCP::Versions taucht in
+ocp status nicht als Drift auf. Reconciliation deployt zwar neu, wenn sich der
+Manifest-Hash aendert, aber gemeldet wird nichts.
+
+Zu tun: entscheiden ob Probes sinnvoll sind. Das GPU-Deployment laeuft nicht
+ueber Rex-Upgrade-Tasks, ein remedy im Sinne von upgrade_cilium gibt es also
+nicht - vermutlich waeren es Probes mit remedy => undef, wie sie fuer
+kind => missing schon existieren.
+ERLEDIGT 2026-08-15 (ocp-worker). Zwei Probes ergaenzt, fuenf Komponenten bewusst
+ausgelassen - und die Auslassung ist selbst getestet.
+
+AUFGENOMMEN in @COMPONENT_PROBES (lib/OCP/Drift.pm), beide remedy => undef:
+  nfd          -> Deployment nfd-master / node-feature-discovery
+  gpu_operator -> Deployment gpu-operator / gpu-operator
+
+BEWUSST AUSGELASSEN: nvidia_toolkit, nvidia_device_plugin, dcgm_exporter,
+nvidia_dcgm, nvidia_driver. OCP schreibt diese Versionen in die ClusterPolicy-CR,
+nicht in eigene Workloads. Der Operator macht daraus DaemonSets unter Namen und
+Container-Layouts, die IHM gehoeren und die sich zwischen Releases aendern. Eine
+Image-Version von einem geratenen DaemonSet-Namen abzulesen wuerde eine Zahl
+melden, fuer die das Modul nicht geradestehen kann. Ehrlich messen hiesse die
+ClusterPolicy-Spec lesen - dafuer gibt es keine IO::K8s-Klasse, es waere ein rohes
+_request plus ein Feldpfad je Komponente, also eine andere Mechanik als die
+Probe-Tabelle. Ein Test haelt fest, dass diese fuenf ungeprobed BLEIBEN, damit die
+Auslassung als Entscheidung lesbar ist und nicht als Versehen.
+
+ZWEI NEUE TABELLEN-FLAGS, als Minimum gewaehlt, keine neue Mechanik:
+ - optional: Abwesenheit ist keine Drift. Sonst traegt ein Cluster ohne
+   NVIDIA-Karte dauerhaft einen Befund.
+ - self_healing: ein schlichtes `ocp apply` rollt diese Manifeste neu aus. Ohne
+   das Flag druckt der Reconcile-Pfad "No automatic step for this - see
+   'ocp update'" zwei Zeilen bevor er die neue Version selbst ausrollt. Das
+   verallgemeinert die vorhandene Ausnahme fuer kind eq 'missing', deren
+   Kommentar denselben Grund bereits nennt.
+
+NFD ist NICHT optional, und das ist Absicht: Deploy.pm deployt NFD unbedingt
+("always, detects hardware automatically"), der Reconcile-Pfad ebenso. Fehlendes
+NFD IST damit echte Drift auf jedem OCP-Cluster - ein Eintrag in `ocp status` ist
+dort genau das richtige Verhalten.
+
+Tests: t/25-drift.t - Versions-Drift und missing fuer NFD, Versions-Drift fuer den
+GPU-Operator, Abwesenheit-ist-keine-Drift fuer ihn, plus die Ungeprobed-Liste.
+t/38-reconcile-path.t deckt die Hinweis-Unterdrueckung verhaltensseitig ab.
+
+FIXTURE-AENDERUNG, die man kennen sollte: t/25s Fixtures "matching cluster reports
+no drift" und "one drift entry" enthielten keinen nfd-master. Mit geprobtem NFD
+beschreiben sie damit einen Cluster, dem NFD FEHLT - nicht einen passenden. Ueber
+einen matching_cluster()-Helfer erweitert: die Behauptung jedes Tests ist
+unveraendert, die Fixture passt jetzt zur Behauptung.
