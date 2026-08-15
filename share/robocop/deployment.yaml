@@ -19,6 +19,33 @@ spec:
         app: robocop
     spec:
       serviceAccountName: robocop
+      # Pin to the control-plane node: robocop only ever needs to run where
+      # the CP server lives (always amd64 in this project — see karr #10).
+      # Workers may be a different arch (e.g. arm64 GB10/DGX Spark, karr
+      # #25), which is irrelevant if robocop never lands there.
+      #
+      # RKE2 applies node-role.kubernetes.io/control-plane AND
+      # node-role.kubernetes.io/master (label + NoSchedule taint) to server
+      # nodes; match/tolerate by key presence only (operator: Exists, no
+      # value), same convention already used for nfd-master and
+      # gpu-operator in OCP::Cmd::Apply::Workloads. share/Rexfile's
+      # untaint_control_plane task removes both taints by key for the same
+      # reason and is unused by default, so the taints normally stay in
+      # place even on single-node clusters.
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
       containers:
       - name: controller
         image: raudssus/ocp:latest
