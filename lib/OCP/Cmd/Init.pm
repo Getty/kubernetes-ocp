@@ -169,13 +169,7 @@ sub execute {
     #
     # Step 4: Age key
     #
-    if ($secrets->has_age_key) {
-        print "[ok] Age encryption key exists\n";
-    } else {
-        print "[..] Generating age encryption key\n";
-        my $keys = $secrets->generate_age_key;
-        print "[ok] Generated age key: $keys->{public_key}\n";
-    }
+    $self->_ensure_age_key($secrets);
 
     #
     # Step 4.5: Password-protect age.key (DEFAULT unless --nopassword)
@@ -556,6 +550,111 @@ sub _effective_provider {
     return $cps->[0]{provider} // 'hetzner';
 }
 
+# Step 4, the age key — and the one place in init where asking the wrong
+# question destroys the project.
+#
+# `has_age_key` answers "is there a key on this machine". That is not the
+# question here. .ocp/ is gitignored (ADR 0004), while keys.yaml, secrets.yaml
+# and age.key.enc are committed on purpose, so the second person to clone the
+# repo has all the encrypted material and none of the key. Init used to ask
+# has_age_key, hear "no", and generate a fresh keypair over .ocp/age.pub — and
+# from that point keys.yaml was bound to a recipient whose private half no
+# longer existed anywhere. `ocp init`, the documented first command, was how
+# you lost the project (karr #86).
+#
+# The question is whether this PROJECT already has a key. age.key.enc and the
+# plaintext `sops: age: - recipient:` block of the committed files answer it
+# without holding any key at all, which is what project_has_age_key reads.
+#
+# OCP::Cmd::Apply's dev-mode branch runs the same has_age_key check and is
+# right to: it states that it deliberately does not touch age.key.enc, so in
+# that mode there is no committed key material a fresh key could devalue. This
+# is the same reasoning with the answer secure mode needs — the boundary that
+# was drawn there and not here.
+sub _ensure_age_key {
+    my ($self, $secrets) = @_;
+
+    if ($secrets->has_age_key) {
+        # Having a key is not the same as having THE key. A clone that ran an
+        # older `ocp init` is left holding a minted one, and its only symptom
+        # is a SOPS error from wherever the next run reaches first. Say it
+        # here, with the way out.
+        unless (eval { $secrets->check_local_age_key; 1 }) {
+            my $why = $@ || "unknown error\n";
+            $why =~ s/ at \S+ line \d+\.?\s*\z//;
+            chomp $why;
+            die "ERROR: The age key in .ocp/ does not open this project.\n\n"
+              . join('', map { "  $_\n" } split /\n/, $why) . "\n"
+              . "Nothing committed was changed. Remove .ocp/age.key and\n"
+              . ".ocp/age.pub and run 'ocp init' again — it will unlock the\n"
+              . "project's own key from age.key.enc with PIN1.\n";
+        }
+
+        print "[ok] Age encryption key exists\n";
+        # A checkout can hold the private key without the public one; the
+        # recipient file is what every encrypt path reads.
+        $secrets->restore_age_recipient;
+        return;
+    }
+
+    unless ($secrets->project_has_age_key) {
+        # Genuinely new project: nothing committed, nothing to devalue.
+        print "[..] Generating age encryption key\n";
+        my $keys = $secrets->generate_age_key;
+        print "[ok] Generated age key: $keys->{public_key}\n";
+        return;
+    }
+
+    # From here on the project has a key and this checkout does not. Generating
+    # is off the table; the only question is whether we can unlock it.
+    my $bindings = $secrets->age_key_bindings;
+    my $bound    = join ', ', map { $_->{file} } @$bindings;
+
+    # No age.key.enc: reaching here at all means a SOPS file named a recipient,
+    # so there is always something to name back.
+    unless ($secrets->has_age_key_enc) {
+        die "ERROR: This project is encrypted, and its age key is not in this\n"
+          . "       checkout.\n\n"
+          . "  Encrypted here: $bound\n"
+          . "  Missing:        .ocp/age.key — and there is no age.key.enc to\n"
+          . "                  unlock it with.\n\n"
+          . ".ocp/ is gitignored, so a clone never carries the key. Copy\n"
+          . ".ocp/age.key from whoever created the project.\n\n"
+          . "Not generating a new one: it would replace .ocp/age.pub and leave\n"
+          . "$bound unreadable for good.\n";
+    }
+
+    if ($self->nopassword) {
+        die "ERROR: --nopassword cannot be applied to a project that is already\n"
+          . "       set up in secure mode.\n\n"
+          . "  Found: age.key.enc" . ($bound ? " (and $bound)" : '') . "\n\n"
+          . "Unlocking that key needs PIN1, and --nopassword promises never to\n"
+          . "ask for a PIN. Re-run 'ocp init' without --nopassword.\n";
+    }
+
+    print "[..] This project already has an age key — unlocking it\n";
+    print "     .ocp/ is gitignored, so this checkout has no copy of it.\n";
+    print "     Bound to it: $bound\n" if $bound;
+
+    my $pin1 = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
+
+    unless (eval { $secrets->decrypt_age_key_with_password($pin1); 1 }) {
+        my $why = $@ || "unknown error\n";
+        $why =~ s/ at \S+ line \d+\.?\s*\z//;
+        chomp $why;
+        die "ERROR: Could not unlock this project's age key from age.key.enc.\n\n"
+          . join('', map { "  $_\n" } split /\n/, $why) . "\n"
+          . "Wrong PIN1, or age.key.enc does not belong to this project.\n"
+          . "Nothing was written — "
+          . ($bound ? "$bound is untouched and still opens for\nwhoever holds the key.\n"
+                    : "the project is untouched.\n");
+    }
+
+    printf "[ok] Age key unlocked: %s\n", $secrets->age_recipient // '(unknown)';
+
+    return;
+}
+
 # The bootstrap key: .ocp/id_ed25519, the credential OCP presents to a machine
 # whose authorized_keys OCP cannot write itself.
 #
@@ -860,6 +959,33 @@ produces the same F<ocp.yaml> as a non-interactive run. The step is skipped
 altogether when STDIN is not a terminal, when no token is available, or when
 the catalogue cannot be read — it never blocks a batch run and never fails
 an init.
+
+=head2 The project age key
+
+F<.ocp/> is gitignored; F<keys.yaml>, F<secrets.yaml> and F<age.key.enc> are
+committed. A clone therefore has everything the project encrypted and none of
+the key, and C<ocp init> is the command that clone is documented to run.
+
+So init does not ask whether there is an age key on this machine — it asks
+whether this B<project> has one, which F<age.key.enc> and the plaintext
+C<recipient> of the committed SOPS files answer without holding any key.
+
+=over 4
+
+=item * Nothing committed: a keypair is generated, as before.
+
+=item * F<age.key.enc> present: it is unlocked with PIN1, and F<.ocp/age.pub>
+is rebuilt from the private half so the checkout can encrypt again.
+
+=item * Encrypted material but no F<age.key.enc>, a wrong PIN1, or
+C<--nopassword> against a project already in secure mode: init aborts, names
+what is missing and where it comes from, and writes nothing.
+
+=back
+
+A new key is never generated over an existing recipient. The refusal lives in
+L<OCP::Secrets/generate_age_key> rather than here, so it covers any other
+route to generation too.
 
 =head2 SSH keys
 
