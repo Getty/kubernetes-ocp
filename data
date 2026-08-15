@@ -1,0 +1,68 @@
+---
+class: standard
+completed: 2026-08-15T07:35:43Z
+created: 2026-08-12T14:45:58Z
+id: 25
+priority: medium
+started: 2026-08-15T07:21:27Z
+status: done
+tags:
+- gpu
+- dgx
+- versions
+- regression
+title: 'GB10/DGX Spark: device-plugin muss >= v0.17.4 bleiben (UMA)'
+updated: 2026-08-15T07:35:43Z
+---
+
+DOKUMENTATIONS- UND SCHUTZ-TICKET. OCP ist aktuell korrekt gepinnt — das soll so bleiben.
+
+GB10 (Grace Blackwell, DGX Spark) hat Unified Memory Architecture: CPU und GPU teilen sich 128 GB LPDDR5x, es gibt keinen dedizierten Framebuffer. nvmlDeviceGetMemoryInfo antwortet deshalb "Not Supported". Device-Plugins vor v0.17.4 behandeln das als Fatal:
+
+  error building GPU device map: error visiting device: error getting info for GPU 0:
+  error getting memory info for device 0: Not Supported
+
+-> Pod crasht, Node meldet 0 GPUs, obwohl die GPU einwandfrei laeuft.
+
+Fix ist upstream in k8s-device-plugin v0.17.4: der Fehler wird geloggt und ignoriert, das Geraet wird registriert. Quelle: elezar (NVIDIA Member) in NVIDIA/gpu-operator#1794, 22.10.2025 — "Although not officially supported, we updated the implementation of the device plugin as of v0.17.4 to work on DGX Spark Nodes."
+
+OCP::Versions pinnt nvidia_device_plugin => v0.19.3 (= was gpu-operator v26.3.3 bundelt). Damit ist der Fall abgedeckt. Ein Downgrade unter v0.17.4 wuerde GB10-Nodes still auf 0 GPUs setzen.
+
+To do:
+ - Regressionstest, der nvidia_device_plugin >= 0.17.4 erzwingt, mit Verweis auf dieses Ticket.
+ - Kommentar an den Pin in OCP::Versions.
+
+Ausserdem NICHT nutzen: der DRA-Treiber (dra-driver-nvidia-gpu) hat denselben UMA-Bug und er ist dort noch offen (kubernetes-sigs/dra-driver-nvidia-gpu#1115, Mai 2026). OCP nutzt ihn nicht — dabei bleiben, bis das geloest ist.
+
+Weitere GB10-Eigenheiten fuer die Doku:
+ - nvidia-smi zeigt "Memory-Usage: Not Supported" — normal, kein Fehler.
+ - MIG existiert auf GB10 nicht. migManager ist in der ClusterPolicy bereits false. Mehrfachnutzung geht nur ueber Time-Slicing.
+VERIFIZIERT: device-plugin v0.19.3 laeuft auf der GB10 ohne UMA-Crash. nvidia-device-plugin-daemonset Running, 0 Restarts, nvidia.com/gpu: 1 in der Capacity. Der Pin ist korrekt und muss so bleiben.
+ERLEDIGT 2026-08-15 (ocp-test-writer). Schutz-Ticket, wie gedacht umgesetzt.
+
+t/65-gpu-device-plugin-floor.t (neu, 4 Subtests):
+ - Der Vergleich laeuft ueber version.pm, nicht ueber Strings. Der erste Subtest
+   ist der Beleg dafuer, dass die Falle nicht zuschlaegt: 0.9.0 kommt korrekt
+   NICHT als >= 0.17.4 heraus - ein nacktes Perl-gt auf den Strings haette das
+   verdreht ("9" gt "1").
+ - Der aktuelle Pin nvidia_device_plugin => v0.19.3 wird gegen die Untergrenze
+   v0.17.4 gehalten. Im Fehlerfall zitiert ein diag den GB10/UMA-Mechanismus und
+   verweist auf dieses Ticket.
+ - Zweiter Waechter: die Pruefung laeuft ueber JEDEN OCP-Release-Block in
+   %OCP::Versions::VERSIONS, der nvidia_device_plugin definiert - nicht nur ueber
+   den aktuellen Default. Ein spaeterer Block, der den Pin vergisst oder ein
+   aelteres gpu-operator-Bundle kopiert, faellt damit ebenfalls auf.
+ - DRA-Waechter aufgenommen: ein grep ueber lib/, share/ und t/ fand null Treffer
+   auf dra.?driver, der Waechter war also frei von Kollateralschaden. Der Subtest
+   behauptet, dass list_components() nichts enthaelt, das auf /dra.?driver/i
+   passt, mit Verweis auf kubernetes-sigs/dra-driver-nvidia-gpu#1115. Wer den
+   Treiber spaeter aufnimmt, sieht damit sofort, dass er dieselbe Untergrenzen-
+   Frage stellen muss, statt blind zu pinnen.
+
+lib/OCP/Versions.pm: Kommentar direkt ueber dem Pin, der die Untergrenze, den
+Mechanismus (kein dedizierter Framebuffer, nvmlDeviceGetMemoryInfo antwortet
+"Not Supported", Plugin vor v0.17.4 behandelt das als fatal -> Node meldet still
+0 GPUs) und die Quelle nennt, plus Verweis auf dieses Ticket und die Testdatei.
+
+Nicht angefasst: share/gpu-operator/ - dass die ClusterPolicy diesen Pin liest,
+deckt t/40-gpu-clusterpolicy.t bereits ab.
