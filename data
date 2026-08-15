@@ -1,0 +1,77 @@
+---
+class: standard
+completed: 2026-08-15T07:24:25Z
+created: 2026-08-14T01:40:35Z
+id: 53
+priority: critical
+started: 2026-08-15T07:24:25Z
+status: done
+tags:
+- node
+- bug
+title: OCP::Node laedt seine Default-Klassen OCP::Rex und OCP::SSH nicht
+updated: 2026-08-15T07:24:25Z
+---
+
+Gefunden 2026-08-14, unmittelbar hinter #51 auf demselben Pfad.
+
+Nachdem #51 gefixt war, kam der naechste ssh-Worker-Join bis _install_kubernetes
+und starb dort:
+
+  Can8t locate object method "new" via package "OCP::Rex"
+  (perhaps you forgot to load "OCP::Rex"?) at lib/OCP/Node.pm line 233
+
+## Ursache
+
+lib/OCP/Node.pm deklariert beide Klassen nur als String im Attribut-Default:
+
+  has ssh_class => (is => "ro", default => sub { "OCP::SSH" });
+  has rex_class => (is => "ro", default => sub { "OCP::Rex" });
+
+und ruft sie spaeter per Name auf:
+
+  Zeile 222: my $ssh = $self->ssh_class->new(...)
+  Zeile 233: my $rex = $self->rex_class->new(...)
+
+Die use-Liste am Kopf enthaelt nur OCP::K8s und OCP::Versions. Weder OCP::SSH
+noch OCP::Rex wird geladen. Die Injizierbarkeit ist richtig, aber die Defaults
+muessen verfuegbar sein.
+
+Verifiziert: BEIDE fehlen. Ein frischer Interpreter mit nur `use OCP::Node;`
+findet weder OCP::SSH->can("new") noch OCP::Rex->can("new").
+
+## Fix
+
+use OCP::Rex; und use OCP::SSH; in lib/OCP/Node.pm ergaenzt.
+Kein Zirkelbezug: OCP::Rex laedt Share/SSH/Versions, nichts davon OCP::Node.
+
+## Regressionstest
+
+t/16-node.t, subtest "default ssh_class and rex_class are loaded by OCP::Node
+alone". Er startet einen EIGENEN Interpreter pro Klasse:
+
+  qx{$^X -Ilib -e "use OCP::Node; print OCP::Rex->can(8new8) ? 8yes8 : 8no8"}
+
+In-Prozess waere der Test wertlos - er wuerde gruen, sobald irgendein anderes
+Modul im selben Lauf OCP::Rex zieht. Genau so blieb die Luecke unsichtbar.
+
+## Einordnung
+
+Zweiter Beleg fuer #29 (Worker-Pfad end-to-end unverifiziert). Zwei Bugs
+hintereinander auf demselben Pfad, beide trivial, beide nur deshalb
+unentdeckt, weil nie ein zweiter Node gejoint wurde. Ein Smoke, der genau
+das tut, waere die eigentliche Lehre.
+
+## GEFIXT 2026-08-14 (Arbeitsbaum, NICHT committed)
+use OCP::Rex; und use OCP::SSH; in lib/OCP/Node.pm.
+Regressionstest gruen. Volle Suite: Files=48, Tests=778, Result: PASS.
+
+VERIFIZIERT AM ECHTEN CLUSTER: Nach diesem Fix lief der Join durch.
+"Node 8brain8 is Ready." - brain ist als Worker im Cluster cortex,
+v1.36.3+rke2r1, Hostname von gx10-22c2 auf brain gesetzt.
+
+Nebenbefund, positiv: install_nvidia verhaelt sich auf einem DGX-Vendor-Image
+korrekt - es erkennt den vorhandenen Treiber (580.159.03) und das vorhandene
+Container-Toolkit und laesst beides in Ruhe ("leaving the host8s apt sources
+alone"). Die Sorge, OCP wuerde den DGX-Stack ueberschreiben, war unbegruendet.
+ERLEDIGT: Fix ist committed als f27eb0f 'OCP::Node pulls in OCP::Rex and OCP::SSH by default (karr #53)'. use OCP::Rex; und use OCP::SSH; stehen in lib/OCP/Node.pm mit erklaerendem Kommentar. Der Arbeitsbaum ist sauber - die Notiz 'NICHT committed' im Ticket war nur der Stand vom 2026-08-14.
