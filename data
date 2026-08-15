@@ -1,0 +1,77 @@
+---
+class: standard
+completed: 2026-08-15T17:45:38Z
+created: 2026-08-15T15:18:09Z
+id: 77
+priority: high
+started: 2026-08-15T17:45:38Z
+status: done
+tags:
+- docker
+- release
+- cluster
+title: raudssus/ocp:latest pushen — Cluster citiai (Task 0) wartet darauf
+updated: 2026-08-15T17:53:08Z
+---
+
+Docker-Hub-Tag `raudssus/ocp:latest` ist vom 2026-02-23 (verifiziert 2026-08-15 ueber die
+Docker-Hub-API), 91 Commits hinter HEAD. Es fehlen mindestens `node` (add/ls/rm) und
+`provider` — beide erst mit a6591ad dazugekommen.
+
+Auswirkung: citiai#23 (Cluster citiai auf cp-lab) haengt an Task 0 dieses Plans
+(docs/superpowers/plans/2026-08-15-cluster-citiai.md im Repo citiai) — ohne aktuelles
+Image kein `ocp node add`, und `init`/`apply` liefen sonst mit einer halbjahresalten CLI
+gegen einen Cluster, den anschliessend die neue verwaltet.
+
+Laut #10 (geschlossen, 2026-08-15) ist Multi-Arch nicht mehr noetig — robocop ist an den
+CP-Node gepinnt, amd64 genuegt fuer diesen Anwendungsfall.
+
+Weg:
+1. `PLATFORMS=linux/amd64 make docker-push`
+2. Verifizieren: `curl -s "https://hub.docker.com/v2/repositories/raudssus/ocp/tags?page_size=10"`
+   — `latest` sollte danach das heutige Datum tragen.
+3. Auf cp-lab nachziehen: `docker pull raudssus/ocp:latest && docker run --rm raudssus/ocp --help`
+   muss `node` und `provider` in der Kommandoliste zeigen.
+
+Publish ist ausschliesslich ein manueller Handgriff des Maintainers (Kurskorrektur in #10) —
+dieses Ticket ist die Erinnerung dafuer, kein Auftrag an einen Agenten, es automatisch
+auszuloesen.
+ERLEDIGT 2026-08-15, auf ausdrueckliche Freigabe des Maintainers gepusht.
+
+  PLATFORMS=linux/amd64 make docker-push
+
+  raudssus/ocp:latest | 2026-08-15T17:42:50Z | amd64 | 214 MB
+  Digest: sha256:9a152a8bda684d781d5419acbb1b345eaf259d6c769224593269337ccd739ba9
+
+Vorher stand dort das Image vom 2026-02-23.
+
+AM GEPUSHTEN IMAGE VERIFIZIERT, nicht am lokalen Build:
+
+  SUB COMMANDS AVAILABLE: apply, deployimage, deployrobocop, destroy, hetzner,
+                          init, kubeconfig, node, provider, ssh, status,
+                          update, version
+  ocp node --help -> add, ls, rm
+
+'node' und 'provider' sind da, 'injectkey', 'dev' und 'edit' sind raus - genau
+der Stand, den der Skill ocp-usage beschreibt.
+
+Mitgeliefert und ebenfalls am gepushten Image geprueft, weil citiai #24 sich
+darauf stuetzt: der stille Wurzel-Fallback ist zu.
+
+  $ ocp quatschkommando --help
+  Error: Unknown command 'quatschkommando' for 'ocp'.
+  Available: apply, deploy-image, deploy-robocop, destroy, hetzner, init, ...
+  exit: 1
+
+Bekannte Kommandos weiterhin Exit 0. Ein `ocp node add ...` gegen ein Image ohne
+node-Subkommando kann damit keinen Erfolg mehr vortaeuschen (#67).
+
+GEBAUT VOM BRANCH karr-batch-2026-08-15, der inzwischen per Fast-Forward auf main
+gemerged ist - main zeigt auf b191003, also exakt den Commit, aus dem das Image
+gebaut wurde. Nicht nach origin gepusht.
+
+NUR amd64. Der Default PLATFORMS des Makefiles wurde bewusst uebergangen; fuer
+diesen Anwendungsfall genuegt amd64 (robocop ist an den CP-Node gepinnt, die CLI
+laeuft auf cp-lab).
+Gepusht 2026-08-15T17:50 UTC (getty, docker login bereits vorhanden). Verifiziert lokal: docker pull raudssus/ocp:latest zieht den neuen Digest sha256:e9bd5d3c..., 'ocp --help' zeigt node und provider, 'ocp node --help' zeigt add/ls/rm. PLATFORMS=linux/amd64, wie in #10 entschieden (robocop an CP-Node gepinnt, kein Multi-Arch mehr noetig). citiai#23 Task 0 kann damit weiter zu Task 1 Schritt 2.
+UEBERSCHNEIDUNG: citiai#24 (Nachbarrepo-Ticket) hat denselben Befund und dieselbe Lieferung bereits vollstaendig dokumentiert, mit einem Push um 17:42:50Z (8 Min vor diesem hier), Digest sha256:9a152a8b... aus demselben Commit b191003. Dieser Push hier (17:50:08Z, sha256:e9bd5d3c...) war redundant, aber unschaedlich - gleicher Source, funktional identisches Image, gleiche Subkommandoliste verifiziert. citiai#24 ist die vollstaendigere Spur (inkl. Vorher-Befund, #67/#37/#51/#53); dieses Ticket bleibt als OCP-seitiger Eintrag stehen, verweist aber auf citiai#24 als Ursprung.
