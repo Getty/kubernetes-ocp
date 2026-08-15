@@ -122,7 +122,7 @@ kubectl get nodes
 ```bash
 # Use --net=host so container can access host's localhost
 docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp init --provider local
-cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
+ocp keys show --purpose admin >> ~/.ssh/authorized_keys
 docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp apply
 docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/config
 ```
@@ -131,7 +131,7 @@ docker run --rm --net=host -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/conf
 ```bash
 # host.docker.internal works automatically
 docker run --rm -v $(pwd):/ocp raudssus/ocp init --provider local
-cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
+ocp keys show --purpose admin >> ~/.ssh/authorized_keys
 docker run --rm -v $(pwd):/ocp raudssus/ocp apply
 docker run --rm -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/config
 ```
@@ -143,14 +143,15 @@ docker run --rm -v $(pwd):/ocp raudssus/ocp kubeconfig > ~/.kube/config
 **Testing SSH connection:**
 
 ```bash
-# Test if SSH key works (before running ocp apply)
-ssh -i .ocp/id_ed25519 root@127.0.0.1 'echo SSH works!'
+# Secure mode (the default): the private half lives in keys.yaml behind PIN2,
+# so test through OCP rather than with a key file
+ocp ssh --node 127.0.0.1
 
-# Or for remote hosts
-ssh -i .ocp/id_ed25519 root@yourserver.com 'echo SSH works!'
+# Dev mode (--nopassword) keeps its single key on disk
+ssh -i .ocp/id_ed25519 root@127.0.0.1 'echo SSH works!'
 ```
 
-If SSH doesn't work, make sure the public key is in `~/.ssh/authorized_keys` on the target host.
+If SSH doesn't work, make sure the right public key is in `~/.ssh/authorized_keys` on the target host: `ocp keys show --purpose admin` in secure mode, `.ocp/id_ed25519.pub` in dev mode.
 
 #### Using CPAN (System-Wide Installation)
 
@@ -179,7 +180,7 @@ cpanm OCP
 
 # Use SSH provider to localhost
 ocp init --provider ssh --host 127.0.0.1
-cat .ocp/id_ed25519.pub >> ~/.ssh/authorized_keys
+ocp keys show --purpose admin >> ~/.ssh/authorized_keys
 
 # Deploy via SSH (works with user's perl environment)
 ocp apply
@@ -195,13 +196,20 @@ ocp kubeconfig > ~/.kube/config
 # Initialize with SSH
 ocp init --provider=ssh --host=yourserver.com
 
-# Add public key to server
-cat .ocp/id_ed25519.pub
-# -> Copy to server's ~/.ssh/authorized_keys
+# Add the ADMIN public key to the server — that is the key every ocp
+# command uses, on every provider (in dev mode it is .ocp/id_ed25519.pub)
+ocp keys show --purpose admin
+# -> Copy to the server's /root/.ssh/authorized_keys
 
 # Deploy
 ocp apply
 ```
+
+> **Upgrading an existing `provider: ssh` cluster?** Its machines were set up
+> with `.ocp/id_ed25519.pub` and have never seen the admin key. Append
+> `ocp keys show --purpose admin` to `/root/.ssh/authorized_keys` on every
+> machine *before* running any further `ocp` command — OCP no longer offers
+> the bootstrap key and there is no fallback to it.
 
 ## Commands
 

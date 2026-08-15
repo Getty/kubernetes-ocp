@@ -22,31 +22,36 @@ use OCP::Secrets;
 our $INTERACTIVE;
 
 #
-# Who created the machine decides which key it trusts. That one sentence is
-# the whole module, and it is the sentence four call sites got wrong.
+# The MODE decides which key a machine trusts, not who created the machine.
+# That is the whole module, and it is a deliberate reversal of what this file
+# used to say.
 #
-#   * An ssh-provider machine is pre-existing. The only key on it is the one
-#     the operator put into authorized_keys by hand, which is the bootstrap
-#     key in .ocp/id_ed25519. Mode does not enter into it — a secure-mode
-#     project reaches for the same file, which is why `ocp init` creates it
-#     for provider ssh in both modes (karr #85).
+# Secure mode has two keys and only two (ADR 0006):
 #
-#   * A Hetzner machine is created by OCP, which uploads the admin public key
-#     through the API *before* the server exists. The bootstrap key was never
-#     distributed there and `ocp init` does not even create one. Reaching for
-#     it is reaching for a file that does not exist, and when it does exist
-#     (a leftover, a hand-made key) it is worse: the connection then fails as
-#     an SSH auth timeout instead of as "wrong key".
+#   robo   purpose: automation, age only, no PIN2 — unattended automation
+#   admin  purpose: admin, age + PIN2            — everything a human does
 #
-#   * --nopassword dev mode has no keys.yaml and therefore no admin key at
-#     all. .ocp/id_ed25519 stands in for it on every provider, and
-#     OCP::Cmd::Apply uploads its public half exactly where the admin key
-#     would have gone.
+# So in secure mode the answer is always the admin key, on every provider.
+# The providers differ only in who does the distributing: on Hetzner OCP
+# uploads the admin public key through the API before the server exists; on
+# the ssh provider a human pastes the same public key into authorized_keys,
+# which is what `ocp keys show --purpose admin` prints. Same key either way,
+# so the same key opens the machine either way.
 #
-# The admin key lives behind PIN2 (ADR 0006), so the Hetzner branch needs a
-# human at a prompt and a temp file for Rex/ssh to read. Getting that temp
-# file removed again is the other half of this module's job: it holds a
-# private key in /tmp, and both places that open-coded this dance before
+# The bootstrap key .ocp/id_ed25519 survives in exactly one place:
+# --nopassword dev mode, which has no keys.yaml and therefore no admin key at
+# all. There it stands in on every provider, and OCP::Cmd::Apply uploads its
+# public half exactly where the admin key would have gone.
+#
+# What this cost: an ssh-provider cluster built before this change carries the
+# BOOTSTRAP public key in authorized_keys, not the admin one, and nothing here
+# falls back to it — a silent fallback would reinstate the third tier through
+# the back door. migration_hint below turns that into a diagnosis instead.
+#
+# The admin key lives behind PIN2, so the secure branch needs a human at a
+# prompt and a temp file for Rex/ssh to read. Getting that temp file removed
+# again is the other half of this module's job: it holds a private key in
+# /tmp, and both places that open-coded this dance before
 # (OCP::Cmd::Apply::Bootstrap, OCP::Cmd::SSH) leaked at least the public half
 # and, in setup_ssh_key's case with UNLINK => 0, the private half too.
 #
@@ -79,27 +84,30 @@ our $INTERACTIVE;
 Answers one question: which private SSH key file should this process use to
 reach the machines of the cluster described by C<$config>?
 
-Three answers, in the order they are decided:
+Two answers, decided by the mode alone:
 
 =over 4
 
 =item *
 
+B<Secure mode> (F<keys.yaml> exists) — the admin key from F<keys.yaml>, on
+B<every> provider. That costs a PIN2 prompt (ADR 0006) and a pair of temp
+files, because Rex reads its key from disk and expects C<key_file.pub> beside
+it. The provider decides only who put that public key on the machine: the
+Hetzner API before the server existed, or a human with C<ocp keys show
+--purpose admin>.
+
+=item *
+
 B<Dev mode> (no F<keys.yaml>) — the bootstrap key F<.ocp/id_ed25519>, on
-every provider. Nothing is prompted, nothing is written.
-
-=item *
-
-B<Provider C<ssh>> — the bootstrap key, in both modes. A pre-existing
-machine trusts what the operator authorised on it by hand.
-
-=item *
-
-B<Secure mode, any other provider> — the admin key from F<keys.yaml>. That
-costs a PIN2 prompt (ADR 0006) and a pair of temp files, because Rex reads
-its key from disk and expects C<key_file.pub> beside it.
+every provider. Nothing is prompted, nothing is written. This is the only
+place the bootstrap key still lives.
 
 =back
+
+There is deliberately no fallback from the admin key to the bootstrap key.
+C<provider: ssh> machines built before the two-tier decision trust the
+bootstrap key; see C</migration_hint> for how that is reported.
 
 The returned object owns whatever it wrote. When it goes out of scope — a
 normal return or a C<die> unwinding the stack — both temp files are unlinked.
@@ -123,8 +131,10 @@ with a message naming what was missing.
 
 C<provider> overrides the provider read from C<control_planes[0]> — pass it
 when the machine being reached is not the control plane, as C<ocp destroy>
-does for an ssh worker in an otherwise Hetzner cluster. C<reason> is printed
-above the PIN2 prompt so the operator knows which command asked.
+does for an ssh worker in an otherwise Hetzner cluster. Since the mode alone
+picks the key, this now only changes which provider the messages name; it no
+longer changes the answer. C<reason> is printed above the PIN2 prompt so the
+operator knows which command asked.
 
 C<admin_key> takes an already-decrypted key hash (C<< { private =>, public
 =>, name => } >>) and skips both the age unlock and the PIN2 prompt. The
@@ -167,26 +177,25 @@ sub for_config {
         // 'hetzner';
 
     # Same detection as OCP::Cmd::Apply and OCP::Cmd::Apply::Bootstrap: dev
-    # mode is the absence of keys.yaml, not a flag anyone passes around.
+    # mode is the absence of keys.yaml, not a flag anyone passes around. It is
+    # now the ONLY thing this decision turns on; $provider survives purely as
+    # something to name in messages.
     my $dev_mode = !-f $config->project_dir->child('keys.yaml');
 
-    return $class->_bootstrap_key($config, $provider, $dev_mode)
-        if $dev_mode || $provider eq 'ssh';
+    return $class->_bootstrap_key($config, $provider) if $dev_mode;
 
     return $class->_admin_key($config, $provider, %opt);
 }
 
 # The unencrypted key on disk. Nothing to write, nothing to clean up.
 sub _bootstrap_key {
-    my ($class, $config, $provider, $dev_mode) = @_;
+    my ($class, $config, $provider) = @_;
 
     my $path = $config->ssh_private_key_path;
 
     unless (-f $path) {
-        my $why = $dev_mode
-            ? "dev mode (--nopassword) uses it on every provider"
-            : "provider '$provider' machines trust only this key";
-        die "ERROR: SSH key '$path' not found — $why.\n"
+        die "ERROR: SSH key '$path' not found — dev mode (--nopassword) uses "
+          . "it on every provider.\n"
           . "       Run 'ocp init' to create it.\n";
     }
 
@@ -229,6 +238,10 @@ sub _admin_key {
         provider    => $provider,
         name        => $admin_key->{name},
         temp        => $temp,
+        # Kept for migration_hint alone: a bootstrap key still on disk in a
+        # secure-mode project is the signature of a cluster authorised before
+        # the two-tier decision.
+        bootstrap_path => $config->ssh_private_key_path . '',
     }, $class;
 }
 
@@ -250,10 +263,10 @@ sub _unlock_admin_key {
                     : defined $INTERACTIVE     ? $INTERACTIVE
                     :                            -t STDIN;
     unless ($interactive || defined $opt{pin2}) {
-        die "ERROR: This cluster's machines trust the admin key (provider "
-          . "'$provider',\n"
-          . "       secure mode), which is behind PIN2 — and there is no "
-          . "terminal to ask on.\n"
+        die "ERROR: This cluster's machines trust the admin key (secure mode, "
+          . "provider '$provider'),\n"
+          . "       which is behind PIN2 — and there is no terminal to ask "
+          . "on.\n"
           . "       Re-run "
           . ($reason ? "$reason" : "this") . " from an interactive shell.\n";
     }
@@ -264,8 +277,9 @@ sub _unlock_admin_key {
     # Say what is being asked for before asking. A bare "Enter PIN2" in the
     # middle of `ocp update` reads as a bug in a command that never used to
     # want one; this names the reason the key model gives for it.
-    print "  This cluster's machines were created by OCP and trust the admin\n";
-    print "  key, not .ocp/id_ed25519 (provider '$provider', secure mode).\n";
+    print "  In secure mode every machine of this cluster is reached with the\n";
+    print "  admin key — they trust the admin public key and nothing else\n";
+    print "  (provider '$provider').\n";
     print "  " . ($reason ? "$reason needs" : "This step needs")
         . " it to reach them.\n";
 
@@ -340,6 +354,60 @@ True when this object wrote the file it points at and will remove it again.
 =cut
 
 sub is_temporary { defined $_[0]{temp} ? 1 : 0 }
+
+=method migration_hint
+
+    if (my $hint = $key->migration_hint) {
+        die "  [FAIL] SSH not ready: $err\n" . $hint;
+    }
+
+The explanation for one specific failure, and the empty string for every other
+situation: an SSH connection made with the B<admin> key was refused, while
+F<.ocp/id_ed25519> is still sitting in the project.
+
+That combination is almost always a cluster whose C<authorized_keys> were
+written before the bootstrap key left secure mode. Its machines carry the
+bootstrap public key; this OCP no longer offers it. The text names the two
+steps out — C<ocp keys show --purpose admin>, then append to
+F</root/.ssh/authorized_keys> on each machine.
+
+There is no automatic fallback to the bootstrap key behind this, on purpose: a
+fallback would quietly restore the third key tier that was removed. Callers
+append this to their own error message; a caller that cannot fail (C<ocp ssh>
+hands the terminal to C<ssh> itself) prints it as a warning.
+
+=cut
+
+sub migration_hint {
+    my ($self) = @_;
+
+    return '' unless ($self->{origin} // '') eq 'admin';
+
+    my $bootstrap = $self->{bootstrap_path};
+    return '' unless defined $bootstrap && -f $bootstrap;
+
+    return <<"HINT";
+
+  This project still has $bootstrap, and in secure mode nothing uses it
+  any more — every machine is reached with the admin key.
+
+  If this cluster was set up before that change, its machines have the
+  BOOTSTRAP public key in authorized_keys and have never seen the admin one.
+  That is exactly what a refused admin-key login looks like — and nothing
+  could have told you sooner: no step verifies in advance which key a machine
+  will accept, so this is found out at the connection, not before it.
+
+  To fix it, on each machine of this cluster:
+
+      ocp keys show --purpose admin        # prints the public key
+      # then, as root on the machine:
+      echo '<that key>' >> /root/.ssh/authorized_keys
+
+  Nothing here falls back to the bootstrap key: the two-tier decision means
+  robo (automation) and admin (human), and a third key that silently still
+  works would undo it.
+HINT
+}
 
 =method describe
 

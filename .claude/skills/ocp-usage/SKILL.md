@@ -157,16 +157,28 @@ gpu:
 ## Security Model (PIN1/PIN2)
 
 - **age.key** master key, encrypted with PIN1 → `age.key.enc`.
-- **keys.yaml** two-tier: **robo-ssh** (automation) age-only, no PIN2;
-  **admin-ssh** (control-plane access) age + PIN2 double-encrypted.
+- **keys.yaml** two tiers and only two: **robo-ssh** (automation) age-only, no
+  PIN2; **admin-ssh** (everything a human triggers) age + PIN2.
 - robo-key cannot reach control planes — by convention; currently it is never
   deployed at all (inject-key disabled).
-- **PIN2 prompts**: `ocp apply` (secure mode) and `ocp ssh`. PIN1 prompts
-  whenever only `age.key.enc` exists. destroy/update/node do not prompt.
+- **The admin key opens every machine, on every provider.** Hetzner gets it
+  through the API before the server exists; a `provider: ssh` machine gets it
+  from a human (`ocp keys show --purpose admin` → `authorized_keys`). The
+  provider decides who distributes it, not which key.
+- **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`, and
+  `ocp destroy` when the node list contains an ssh machine. PIN1 prompts
+  whenever only `age.key.enc` exists. Read-only paths (`ocp status`, drift
+  detection, `--dry-run`) never prompt — they open no SSH connection.
 - **Dev mode (`--nopassword`)**: single unencrypted key `.ocp/id_ed25519`, no
   PIN prompts — but a plain age.key is still generated and
   **kubeconfig.yaml stays encrypted even in dev mode**. Apply detects dev
-  mode by the absence of keys.yaml.
+  mode by the absence of keys.yaml. This is the ONLY mode with a bootstrap
+  key; secure mode has none, on any provider.
+- **Migration hazard**: an ssh-provider cluster built before the bootstrap key
+  was dropped has that key in `authorized_keys` and not the admin one. Add the
+  admin key there before running anything else. There is no fallback — OCP
+  diagnoses the lockout (`OCP::ClusterKey::migration_hint`) but never reaches
+  for the old key.
 
 ## Reconciliation & Drift
 

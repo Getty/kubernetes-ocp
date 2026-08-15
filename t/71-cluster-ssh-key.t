@@ -9,31 +9,39 @@ use OCP;
 use OCP::ClusterKey;
 use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::Drift;
+use OCP::Cmd::Destroy;
 use OCP::Cmd::Node::Add;
+use OCP::Cmd::SSH;
 use OCP::Cmd::Update;
 use OCP::Config;
 
 #
-# karr #87: which private key reaches this cluster's machines?
+# Which private key reaches this cluster's machines?
 #
-# Four places answered "$config->ssh_private_key_path" — .ocp/id_ed25519 —
-# without asking who created the machine:
+# THE ANSWER, since the two-tier decision: the MODE decides, not the provider.
+# Secure mode has robo (automation, no PIN2) and admin (age + PIN2) and
+# nothing else, so every machine — Hetzner or pre-existing ssh host — is
+# reached with the admin key. The bootstrap key .ocp/id_ed25519 belongs to
+# --nopassword dev mode alone.
+#
+# That reverses one half of karr #87 while keeping the other. #87 fixed four
+# places that answered "$config->ssh_private_key_path" for machines that had
+# never seen that key:
 #
 #   OCP::Cmd::Update            (two Rex call sites)
 #   OCP::Cmd::Node::Add         (join token off the CP, then the new worker)
 #   OCP::Cmd::Apply::Drift      (run_remedy, the reconcile path's Rex task)
-#   OCP::Cmd::Destroy           (the ssh branch — the one that was right)
+#   OCP::Cmd::Destroy           (the ssh branch — left alone at the time)
 #
-# On a Hetzner machine that key was never distributed. OCP uploads the ADMIN
-# public key through the provider API before the server exists, and since #85
-# `ocp init` does not even create a bootstrap key for secure + hetzner. So
-# every one of those paths reached for a file that is not there, on the one
-# provider/mode combination where it mattered.
+# Destroy is now in the same boat as the rest, and that is the delicate one:
+# its key lookup can prompt for PIN2 and can therefore FAIL, while the loop it
+# guards deletes paid Hetzner servers. The teardown tests below assert that a
+# failed lookup costs an uninstall script, never a server.
 #
 # What is asserted here is the choice itself, not the SSH that follows it:
-# the admin key is reached for, the bootstrap key is left alone where it is
-# still correct, the temp file holding a decrypted private key does not
-# survive the run, and nothing waits on a password prompt that no one can see.
+# which key is reached for, that the temp file holding a decrypted private key
+# does not survive the run, and that nothing waits on a password prompt that
+# no one can see.
 #
 # The key store is stubbed on purpose. t/69 already covers real key
 # generation end to end through `ocp init`; repeating it here would make a
@@ -80,6 +88,26 @@ YAML
     if ($bootstrap) {
         $dir->child('.ocp', 'id_ed25519')->spew_utf8($BOOTSTRAP_PRIVATE);
         $dir->child('.ocp', 'id_ed25519.pub')->spew_utf8("ssh-ed25519 AAAAboot boot\n");
+    }
+
+    # `nodes` writes .ocp/status.yaml, which is where `ocp destroy` reads its
+    # target list from. The default shape is the mixed cluster that makes the
+    # teardown ordering matter: one PAID Hetzner server plus one pre-existing
+    # ssh machine. 'hetzner-only' drops the second.
+    if (my $nodes = $args{nodes}) {
+        my $ssh_node = $nodes eq 'hetzner-only' ? '' : <<'YAML';
+  - name: worker-1
+    provider: ssh
+    public_ip: 5.6.7.8
+YAML
+        $dir->child('.ocp', 'status.yaml')->spew_utf8(<<"YAML");
+nodes:
+  - name: police1
+    provider: hetzner
+    providerId: 4711
+    public_ip: 1.2.3.4
+$ssh_node
+YAML
     }
 
     return OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
@@ -154,25 +182,47 @@ subtest 'the realistic post-#85 layout: no bootstrap key on disk at all' => sub 
     is $key->origin, 'admin', 'because that path does not want it';
 };
 
-subtest 'provider ssh keeps the bootstrap key, in secure mode too' => sub {
-    # #85 healed this path. #87 must not touch it: a pre-existing machine
-    # trusts what the operator put in authorized_keys, which is this file.
-    for my $secure (1, 0) {
-        my $label = $secure ? 'secure' : 'dev';
-        my $config = project(provider => 'ssh', secure => $secure);
+subtest 'secure mode + provider ssh reaches the admin key as well' => sub {
+    # The reversal. A pre-existing machine used to be described as trusting
+    # "what the operator put in authorized_keys", and that was read as "the
+    # bootstrap key". What the operator puts there is now the ADMIN public
+    # key — `ocp keys show --purpose admin` prints it, and `ocp init` prints
+    # it too (t/69). Same key as Hetzner gets through the API, so the same
+    # private key opens both.
+    #
+    # bootstrap_key defaults to on in project(), so this also asserts that a
+    # leftover .ocp/id_ed25519 does NOT win. No silent fallback: a machine
+    # that only has the old key must fail visibly, not quietly keep working
+    # on a tier that was removed.
+    my $config = project(provider => 'ssh');
+    ok -f $config->ssh_private_key_path, 'a bootstrap key is lying around';
 
-        my ($out, $err, $key) = capture(sub {
-            with_key_store(sub { OCP::ClusterKey->for_config($config) });
-        });
-        is $err, '', "$label + ssh: no error" or diag $out;
+    my ($out, $err, $key) = capture(sub {
+        with_key_store(sub { OCP::ClusterKey->for_config($config) });
+    });
+    is $err, '', 'secure + ssh: no error' or diag $out;
 
-        is $key->origin, 'bootstrap', "$label + ssh: the bootstrap key";
-        is $key->path, $config->ssh_private_key_path,
-            "$label + ssh: literally .ocp/id_ed25519";
-        is $PROMPTS, 0, "$label + ssh: and no PIN2 prompt";
-        ok !$key->is_temporary, "$label + ssh: nothing temporary to clean up";
-        is $out, '', "$label + ssh: nothing printed — this path is unchanged";
-    }
+    is $key->origin, 'admin', 'secure + ssh: the admin key, like every other provider';
+    isnt $key->path, $config->ssh_private_key_path,
+        'secure + ssh: not .ocp/id_ed25519, even though it is right there';
+    is $key->content, $ADMIN->{private}, 'secure + ssh: the admin private half';
+    is $PROMPTS, 1, 'secure + ssh: which costs one PIN2 prompt, as elsewhere';
+};
+
+subtest 'dev mode + provider ssh keeps the bootstrap key' => sub {
+    my $config = project(provider => 'ssh', secure => 0);
+
+    my ($out, $err, $key) = capture(sub {
+        with_key_store(sub { OCP::ClusterKey->for_config($config) });
+    });
+    is $err, '', 'dev + ssh: no error' or diag $out;
+
+    is $key->origin, 'bootstrap', 'dev + ssh: the bootstrap key';
+    is $key->path, $config->ssh_private_key_path,
+        'dev + ssh: literally .ocp/id_ed25519';
+    is $PROMPTS, 0, 'dev + ssh: and no PIN2 prompt';
+    ok !$key->is_temporary, 'dev + ssh: nothing temporary to clean up';
+    is $out, '', 'dev + ssh: nothing printed — this path is unchanged';
 };
 
 subtest 'dev mode uses the bootstrap key on every provider' => sub {
@@ -192,9 +242,13 @@ subtest 'dev mode uses the bootstrap key on every provider' => sub {
     }
 };
 
-subtest 'the provider can be overridden per machine, not per cluster' => sub {
-    # `ocp destroy` on a mixed cluster: the control plane is Hetzner, but an
-    # ssh worker is a pre-existing machine and trusts the bootstrap key.
+subtest 'the per-machine provider override no longer changes the key' => sub {
+    # `ocp destroy` on a mixed cluster passes provider => 'ssh' for an ssh
+    # worker under a Hetzner control plane. That used to switch the answer to
+    # the bootstrap key. It does not any more — one cluster, one key — and the
+    # override survives only to name the right provider in messages. Asserted
+    # because a caller reading the old behaviour into this argument would
+    # hand Rex a key the machine rejects.
     my $config = project(provider => 'hetzner');
 
     my ($out, $err, $key) = capture(sub {
@@ -203,12 +257,22 @@ subtest 'the provider can be overridden per machine, not per cluster' => sub {
         });
     });
     is $err, '', 'no error' or diag $out;
-    is $key->origin, 'bootstrap', 'the override decides, not control_planes[0]';
-    is $PROMPTS, 0, 'and it costs nothing';
+    is $key->origin, 'admin', 'still the admin key, override or not';
+    like $out, qr/provider 'ssh'/, 'the override only picks the name in the message';
+
+    # In dev mode the override is equally inert, from the other side.
+    my $dev = project(provider => 'hetzner', secure => 0);
+    my (undef, $dev_err, $dev_key) = capture(sub {
+        with_key_store(sub {
+            OCP::ClusterKey->for_config($dev, provider => 'ssh');
+        });
+    });
+    is $dev_err, '', 'dev mode: no error';
+    is $dev_key->origin, 'bootstrap', 'dev mode: the one key it has';
 };
 
 subtest 'a missing bootstrap key is named, not left to Rex to discover' => sub {
-    my $config = project(provider => 'ssh', bootstrap_key => 0);
+    my $config = project(provider => 'ssh', secure => 0, bootstrap_key => 0);
 
     my ($out, $err) = capture(sub {
         with_key_store(sub { OCP::ClusterKey->for_config($config) });
@@ -216,6 +280,54 @@ subtest 'a missing bootstrap key is named, not left to Rex to discover' => sub {
     like $err, qr/not found/, 'it dies';
     like $err, qr/id_ed25519/, 'naming the file it wanted';
     like $err, qr/ocp init/, 'and what creates it';
+};
+
+# ---------------------------------------------- the migration, as a diagnosis
+
+subtest 'a leftover bootstrap key in secure mode produces a migration hint' => sub {
+    # The cp-lab case: six machines whose authorized_keys carry the BOOTSTRAP
+    # public key, because that is what OCP told the operator to install at the
+    # time. After the decision, OCP offers only the admin key and those
+    # machines refuse it. Nothing can detect that in advance, so the one thing
+    # OCP owes the operator is a readable explanation at the point of failure.
+    my $config = project(provider => 'ssh');
+
+    my ($out, $err, $key) = capture(sub {
+        with_key_store(sub { OCP::ClusterKey->for_config($config) });
+    });
+    is $err, '', 'the key itself resolves fine' or diag $out;
+
+    my $hint = $key->migration_hint;
+    ok $hint, 'there is a hint to give';
+    like $hint, qr/\Q${\ $config->ssh_private_key_path }\E/,
+        'it names the leftover key it saw';
+    like $hint, qr/ocp keys show --purpose admin/, 'and the command to run';
+    like $hint, qr/authorized_keys/, 'and where the output goes';
+    like $hint, qr/not before it|advance|sooner/,
+        'and says plainly that nothing could have warned earlier';
+
+    # The refusal to paper over it, stated as a test: the hint has to say
+    # there is no fallback, because an operator staring at a locked-out
+    # cluster will look for one.
+    like $hint, qr/Nothing here falls back to the bootstrap key/,
+        'it rules a fallback out in as many words';
+};
+
+subtest 'no hint where there is nothing to migrate' => sub {
+    # A project with no bootstrap key on disk was never authorised with one.
+    my $clean = project(provider => 'hetzner', bootstrap_key => 0);
+    my (undef, undef, $key) = capture(sub {
+        with_key_store(sub { OCP::ClusterKey->for_config($clean) });
+    });
+    is $key->migration_hint, '', 'secure + no leftover: silent';
+
+    # And dev mode is not a migration at all: the bootstrap key is current
+    # there, not legacy.
+    my $dev = project(provider => 'ssh', secure => 0);
+    my (undef, undef, $dev_key) = capture(sub {
+        with_key_store(sub { OCP::ClusterKey->for_config($dev) });
+    });
+    is $dev_key->migration_hint, '', 'dev mode: silent';
 };
 
 subtest 'a wrong PIN2 is an error, not an empty key' => sub {
@@ -352,8 +464,32 @@ subtest 'an already-unlocked admin key skips the prompt entirely' => sub {
 
 {
     package FakeOcp;
-    sub new     { bless {}, shift }
+    sub new     { my ($class, %args) = @_; bless {%args}, $class }
     sub verbose { 0 }
+    # `ocp destroy` reads the ocp.yaml path off the root command object.
+    sub config  { $_[0]{config} }
+}
+
+# Stands in for both real providers. Records what was deleted and with which
+# key, and slurps the key material at CALL time: a temp admin key does not
+# outlive the command object that owns it, so reading it afterwards would
+# always find nothing.
+{
+    package FakeProvider;
+    sub new { my ($class, %args) = @_; bless {%args}, $class }
+    sub list_servers_by_cluster { [] }
+    sub delete_server {
+        my ($self, $id, %opts) = @_;
+        push @{ $self->{deleted} }, {
+            type     => $self->{type},
+            id       => $id,
+            host     => $opts{host},
+            key      => $self->{key},
+            material => ($self->{key} && -f $self->{key}
+                            ? Path::Tiny::path($self->{key})->slurp : undef),
+        };
+        return { stdout => '', stderr => '', exit => 0 };
+    }
 }
 
 # Run a coderef with OCP::Rex captured. Returns the recorded calls.
@@ -409,12 +545,25 @@ subtest 'ocp update on secure + hetzner drives Rex with the admin key' => sub {
     is $calls->[0]{host}, '1.2.3.4', 'against the control plane';
 };
 
-subtest 'ocp update on provider ssh and in dev mode is unchanged' => sub {
-    for my $case (
-        { provider => 'ssh',     secure => 1, label => 'secure + ssh' },
-        { provider => 'hetzner', secure => 0, label => 'dev + hetzner' },
-    ) {
-        my $config = project(provider => $case->{provider}, secure => $case->{secure});
+subtest 'ocp update on secure + ssh now takes the admin key too' => sub {
+    my $config = project(provider => 'ssh');
+    my $update = OCP::Cmd::Update->new(command_chain => [ FakeOcp->new ]);
+
+    my ($out, $err, $calls) = capture(sub {
+        with_key_store(sub {
+            with_rex(sub { $update->_update_cilium($config, '1.19.2') });
+        });
+    });
+    is $err, '', 'secure + ssh: ran' or diag $out;
+    isnt $calls->[0]{key}, $config->ssh_private_key_path,
+        'secure + ssh: not .ocp/id_ed25519 any more';
+    is $calls->[0]{material}, $ADMIN->{private}, 'secure + ssh: the admin key';
+    is $PROMPTS, 1, 'secure + ssh: which is why it now prompts once';
+};
+
+subtest 'ocp update in dev mode is unchanged' => sub {
+    for my $provider (qw(hetzner ssh)) {
+        my $config = project(provider => $provider, secure => 0);
         my $update = OCP::Cmd::Update->new(command_chain => [ FakeOcp->new ]);
 
         my ($out, $err, $calls) = capture(sub {
@@ -422,10 +571,10 @@ subtest 'ocp update on provider ssh and in dev mode is unchanged' => sub {
                 with_rex(sub { $update->_update_cilium($config, '1.19.2') });
             });
         });
-        is $err, '', "$case->{label}: ran" or diag $out;
+        is $err, '', "dev + $provider: ran" or diag $out;
         is $calls->[0]{key}, $config->ssh_private_key_path,
-            "$case->{label}: still .ocp/id_ed25519";
-        is $PROMPTS, 0, "$case->{label}: still no PIN2 prompt";
+            "dev + $provider: still .ocp/id_ed25519";
+        is $PROMPTS, 0, "dev + $provider: still no PIN2 prompt";
     }
 };
 
@@ -523,8 +672,20 @@ subtest 'ocp node add on secure + hetzner uses the admin key for both halves' =>
     is $PROMPTS, 1, 'one prompt for both uses';
 };
 
-subtest 'ocp node add on provider ssh is unchanged' => sub {
+subtest 'ocp node add on secure + ssh uses the admin key for both halves' => sub {
     my $config = project(provider => 'ssh');
+    my $r = node_add_key($config);
+    is $r->{err}, '', 'ran' or diag $r->{out};
+
+    isnt $r->{ssh_key_file}, $config->ssh_private_key_path,
+        'not the bootstrap key any more';
+    is $r->{ssh_key_material}, $ADMIN->{private}, 'the admin key reads the join token';
+    is $r->{node_ssh_key}, $ADMIN->{private}, 'and goes on to the new machine';
+    is $PROMPTS, 1, 'one prompt for both uses';
+};
+
+subtest 'ocp node add in dev mode is unchanged' => sub {
+    my $config = project(provider => 'ssh', secure => 0);
     my $r = node_add_key($config);
     is $r->{err}, '', 'ran' or diag $r->{out};
 
@@ -602,40 +763,210 @@ subtest 'a run with nothing to repair never asks for anything' => sub {
     is $out, '', 'silently, as before';
 };
 
+# ----------------------------------------------------------------- ocp ssh
+#
+# karr #94 was the mirror image of #87: `ocp ssh` demanded PIN2 and used the
+# admin key unconditionally, which was wrong for `provider: ssh` machines
+# because they trusted the bootstrap key. The two-tier decision dissolves the
+# ticket by making the premise false — those machines trust the admin key now
+# — but the command still has to go through OCP::ClusterKey rather than
+# hand-rolling the unlock, because the OTHER half of #94 was real: in a
+# --nopassword project there is no keys.yaml, so the PIN2 prompt could only
+# ever end in "Wrong PIN2 or no admin-key found".
+
+# Run OCP::Cmd::SSH::execute with the exec at the end stubbed out.
+sub run_ocp_ssh {
+    my ($config, %opt) = @_;
+
+    $config->project_dir->child('kubeconfig.yaml')->spew_utf8("apiVersion: v1\n");
+
+    my %seen;
+    my $cmd = OCP::Cmd::SSH->new(
+        command_chain => [ FakeOcp->new(config => $config->file) ],
+        node          => $opt{node} // '9.9.9.9',
+    );
+
+    my ($out, $err) = capture(sub {
+        with_key_store(sub {
+            no warnings 'redefine';
+            local *OCP::SSH::new = sub {
+                my ($class, %args) = @_;
+                $seen{host} = $args{host};
+                $seen{key}  = $args{key_file};
+                $seen{material} = (-f $args{key_file}
+                    ? path($args{key_file})->slurp : undef);
+                bless {}, $class;
+            };
+            local *OCP::SSH::is_reachable = sub { $opt{reachable} // 1 };
+            local *OCP::SSH::interactive  = sub { $seen{connected} = 1 };
+            $cmd->execute([], []);
+        }, %opt);
+    });
+
+    return { %seen, out => $out, err => $err };
+}
+
+subtest 'ocp ssh on a secure ssh-provider cluster uses the admin key' => sub {
+    # The #94 resolution: PIN2 here is no longer theatre, because the machine
+    # really does trust that key.
+    my $config = project(provider => 'ssh');
+
+    my $r = run_ocp_ssh($config);
+    is $r->{err}, '', 'it connected' or diag $r->{out};
+    ok $r->{connected}, 'the interactive session was handed over';
+
+    isnt $r->{key}, $config->ssh_private_key_path, 'not the bootstrap key';
+    is $r->{material}, $ADMIN->{private}, 'the admin key';
+    is $PROMPTS, 1, 'one PIN2 prompt, which is the point of this command';
+};
+
+subtest 'ocp ssh in dev mode connects without asking for a PIN2 it has no use for' => sub {
+    # This used to prompt for PIN2 in a project with no keys.yaml at all and
+    # then die on its own prompt.
+    my $config = project(provider => 'ssh', secure => 0);
+
+    my $r = run_ocp_ssh($config);
+    is $r->{err}, '', 'it connected' or diag $r->{out};
+    is $r->{key}, $config->ssh_private_key_path, 'with .ocp/id_ed25519';
+    is $PROMPTS, 0, 'and asked for nothing';
+};
+
+subtest 'ocp ssh diagnoses a refused admin key instead of just exec-ing' => sub {
+    # ->interactive execs, so nothing after it can report anything. Where a
+    # leftover bootstrap key makes a lockout plausible, the command probes
+    # first and explains — then hands over anyway rather than blocking.
+    my $config = project(provider => 'ssh');
+
+    my $r = run_ocp_ssh($config, reachable => 0);
+    is $r->{err}, '', 'it did not refuse to run' or diag $r->{out};
+    ok $r->{connected}, 'ssh still got the terminal';
+
+    like $r->{out}, qr/did not accept the admin key/, 'it says what happened';
+    like $r->{out}, qr/ocp keys show --purpose admin/, 'and what to do about it';
+};
+
 # ------------------------------------------------------------- ocp destroy
+#
+# The dangerous one. Destroy's ssh branch used to read the bootstrap key
+# straight off disk — a lookup that could not fail. It now needs the admin
+# key, which means PIN2, which means it CAN fail: wrong PIN, no terminal, no
+# keys.yaml. The loop it sits in deletes paid Hetzner servers.
+#
+# So the rule these tests hold: a key that cannot be obtained costs the
+# uninstall script on the ssh machines and NOTHING else. Every Hetzner server
+# still goes through the API, which needs no SSH at all.
 
-subtest 'ocp destroy still uses the bootstrap key, and only for ssh nodes' => sub {
-    # #87 listed Destroy.pm as a fourth site. It is not one: the branch that
-    # reads the key is guarded on the NODE's provider being ssh, and such a
-    # machine is pre-existing whatever the control plane runs on. A Hetzner
-    # node leaves through the API and never touches a key file.
-    # Comments stripped: the claim is about what the branches DO. The comment
-    # explaining why this file was left alone names ClusterKey, and matching
-    # it would be matching the explanation rather than the code.
-    my $source = join "\n",
-        grep { !/^\s*#/ }
-        split /\n/, path('lib/OCP/Cmd/Destroy.pm')->slurp;
+# Run OCP::Cmd::Destroy::execute against a project, with both providers
+# faked. Returns what was deleted, through which provider, with which key.
+sub run_destroy {
+    my ($config, %opt) = @_;
 
-    my $ssh_head     = quotemeta q{elsif ($node->{provider} eq 'ssh'};
-    my $hetzner_head = quotemeta q{if ($node->{provider} eq 'hetzner'};
+    my @deleted;
+    my $destroy = OCP::Cmd::Destroy->new(
+        command_chain => [ FakeOcp->new(config => $config->file) ],
+        force         => 1,       # no confirmation prompt in a test
+    );
 
-    my ($branch) = $source =~ /$ssh_head (.*?) ^\s{8}\}/msx;
-    ok $branch, 'found the ssh teardown branch';
-    like $branch, qr/ssh_private_key_path/,
-        'it still reaches for the bootstrap key';
-    unlike $branch, qr/cluster_ssh_key|ClusterKey/,
-        'and deliberately not for the cluster-wide answer';
+    my ($out, $err) = capture(sub {
+        with_key_store(sub {
+            no warnings 'redefine';
+            local *OCP::Secrets::hetzner_token = sub { 'test-token' };
+            local *OCP::Provider::for_spec = sub {
+                my ($class, $spec, %args) = @_;
+                return FakeProvider->new(
+                    type    => $spec->{provider},
+                    key     => $args{ssh_key_path},
+                    deleted => \@deleted,
+                );
+            };
+            $destroy->execute([], []);
+        }, %opt);
+    });
 
-    my ($hetzner) = $source =~ /$hetzner_head (.*?) \Qelsif\E/msx;
-    ok $hetzner, 'found the hetzner teardown branch';
-    unlike $hetzner, qr/ssh_private_key_path|key_file|ClusterKey/,
-        'which touches no SSH key at all — it deletes through the provider API';
+    return { out => $out, err => $err, deleted => \@deleted };
+}
 
-    # The other half of why it must not become fatal: each delete is guarded
-    # so a machine that is already gone does not abort the run and strand
-    # paid servers.
-    like $source, qr/eval \{ \$ssh_prov->delete_server/,
-        'the ssh delete is still best-effort';
+subtest 'destroy on secure + mixed cluster uses the admin key for ssh nodes' => sub {
+    my $config = project(provider => 'hetzner', nodes => 1);
+
+    my $r = run_destroy($config);
+    is $r->{err}, '', 'the teardown ran' or diag $r->{out};
+
+    my ($hetzner) = grep { $_->{type} eq 'hetzner' } @{ $r->{deleted} };
+    my ($ssh)     = grep { $_->{type} eq 'ssh' }     @{ $r->{deleted} };
+
+    ok $hetzner, 'the Hetzner server was deleted';
+    is $hetzner->{id}, 4711, 'by provider id, through the API';
+    is $hetzner->{key}, undef, 'with no SSH key involved at all';
+
+    ok $ssh, 'the ssh machine was uninstalled';
+    isnt $ssh->{key}, $config->ssh_private_key_path,
+        'not with .ocp/id_ed25519';
+    is $ssh->{material}, $ADMIN->{private},
+        'but with the admin key, like every other command';
+    is $PROMPTS, 1, 'one PIN2 prompt for the whole teardown';
+};
+
+subtest 'a key that cannot be obtained never costs a Hetzner server' => sub {
+    # The failure this whole arrangement exists for. no_admin makes the
+    # lookup die exactly where a wrong PIN2 would.
+    my $config = project(provider => 'hetzner', nodes => 1);
+
+    my $r = run_destroy($config, no_admin => 1);
+    is $r->{err}, '', 'the teardown did NOT abort' or diag $r->{out};
+
+    my ($hetzner) = grep { $_->{type} eq 'hetzner' } @{ $r->{deleted} };
+    ok $hetzner, 'the paid server was still deleted';
+    is $hetzner->{id}, 4711, 'the one recorded in status.yaml';
+
+    ok !(grep { $_->{type} eq 'ssh' } @{ $r->{deleted} }),
+        'the ssh uninstall was skipped, since there was no key to do it with';
+
+    like $r->{out}, qr/Could not obtain the SSH key/,
+        'the operator is told what failed';
+    like $r->{out}, qr/deleted through the provider API/,
+        'and that nothing chargeable was left behind';
+    like $r->{out}, qr/rke2-uninstall\.sh/,
+        'with the manual step named for the machines that kept their install';
+};
+
+subtest 'no terminal is the same story, not a hang and not an abort' => sub {
+    # `ocp destroy --force` from a script: PIN2 cannot be asked for at all.
+    my $config = project(provider => 'hetzner', nodes => 1);
+
+    my $r = run_destroy($config, interactive => 0);
+    is $r->{err}, '', 'still no abort' or diag $r->{out};
+    is $PROMPTS, 0, 'and nothing waited on an invisible password';
+
+    ok scalar(grep { $_->{type} eq 'hetzner' } @{ $r->{deleted} }),
+        'the server is gone';
+    ok !(grep { $_->{type} eq 'ssh' } @{ $r->{deleted} }),
+        'the uninstall is not';
+};
+
+subtest 'a Hetzner-only teardown asks for nothing' => sub {
+    # The cost of moving the lookup out of the loop would be a PIN2 prompt on
+    # every destroy. It is gated on there actually being an ssh node.
+    my $config = project(provider => 'hetzner', nodes => 'hetzner-only');
+
+    my $r = run_destroy($config);
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    is $PROMPTS, 0, 'no PIN2 prompt where no SSH connection is made';
+    unlike $r->{out}, qr/Could not obtain the SSH key/,
+        'and no warning about a key nobody wanted';
+    ok scalar(grep { $_->{type} eq 'hetzner' } @{ $r->{deleted} }), 'server deleted';
+};
+
+subtest 'destroy in dev mode is unchanged' => sub {
+    my $config = project(provider => 'hetzner', secure => 0, nodes => 1);
+
+    my $r = run_destroy($config);
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    is $PROMPTS, 0, 'no prompt';
+
+    my ($ssh) = grep { $_->{type} eq 'ssh' } @{ $r->{deleted} };
+    is $ssh->{key}, $config->ssh_private_key_path,
+        'the ssh machine is still reached with .ocp/id_ed25519';
 };
 
 # ------------------------------------------------- `ocp status` stays read-only

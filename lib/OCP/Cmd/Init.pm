@@ -204,7 +204,7 @@ sub execute {
     #
     # Step 5a: Bootstrap SSH key (.ocp/id_ed25519)
     #
-    $self->_ensure_bootstrap_key($secrets, $self->_effective_provider($has_config));
+    $self->_ensure_bootstrap_key($secrets);
 
     #
     # Step 5b: Two-Tier SSH keys (robocop + admin) — secure mode only
@@ -409,20 +409,29 @@ sub execute {
         print "    - Injected into robocop memory (never on disk!)\n";
         print "    - CANNOT access control planes!\n";
         print "\n";
+        # A bootstrap key in a secure-mode project is a leftover from before
+        # the two-tier decision. It is kept — machines may still have it in
+        # authorized_keys — but nothing in OCP reaches for it here any more,
+        # and saying so is the difference between a smooth migration and an
+        # operator wondering why their key stopped working.
         if (-f '.ocp/id_ed25519') {
-            print "  bootstrap-key (.ocp/id_ed25519):\n";
-            print "    - Reaches machines OCP did not create (provider: ssh)\n";
-            print "    - No PIN: 'ocp apply' must read it without a prompt\n";
-            print "    - Gitignored, so it is NOT shared with the team by git\n";
+            print "  bootstrap-key (.ocp/id_ed25519) — LEGACY:\n";
+            print "    - Secure mode no longer uses it: every machine, on every\n";
+            print "      provider, is reached with the admin key\n";
+            print "    - Kept, not deleted: machines set up earlier still have\n";
+            print "      its public half in authorized_keys\n";
+            print "    - Migrate by adding the admin key there as well:\n";
+            print "      ocp keys show --purpose admin\n";
             print "\n";
         }
         print "  Team sharing: Repo (git) + PIN1 + PIN2 (via 1Password/Signal)\n";
     } elsif (!$self->nopassword) {
         print "🔐 Security Notes:\n";
         print "  Two-tier SSH keys stored in keys.yaml (encrypted)\n";
-        print "  Admin key: Control planes + manual SSH\n";
-        print "  Robocop key: Workers only (automation)\n";
-        print "  Bootstrap key: .ocp/id_ed25519 (no PIN, for provider: ssh)\n"
+        print "  Admin key: every machine, every provider (PIN2)\n";
+        print "  Robocop key: workers only (automation, no PIN2)\n";
+        print "  .ocp/id_ed25519 is a LEGACY bootstrap key — unused in secure\n"
+            . "  mode; add the admin key to authorized_keys to migrate\n"
             if -f '.ocp/id_ed25519';
     } else {
         print "⚠️  Dev Mode (--nopassword):\n";
@@ -430,41 +439,92 @@ sub execute {
         print "  For development only! Use default mode for production.\n";
     }
 
-    # SSH provider instructions. This block used to be reachable only in dev
-    # mode, because .ocp/id_ed25519.pub was the only thing it printed and
-    # secure mode never created it — a secure-mode `ocp init --provider ssh`
-    # ended without naming a single key to distribute. The bootstrap key now
-    # exists in both modes, so the block always has something to say.
-    my $init_provider = $self->_provider;
+    # SSH provider instructions: which public key does a human have to put on
+    # the machine? Exactly one, and which one it is follows the mode.
+    #
+    #   secure  -> the ADMIN key. `ocp apply`, `ocp ssh`, `ocp update`,
+    #              `ocp node add` and `ocp destroy` all reach the machine with
+    #              it. It is the same key the Hetzner provider uploads through
+    #              the API; the only difference here is that a human carries it.
+    #   dev     -> the bootstrap key, the only key material a --nopassword
+    #              project has.
+    #
+    # Naming two keys (as this block did while the bootstrap key still existed
+    # in secure mode) is how an operator ends up authorising the wrong one.
+    # _effective_provider, not _provider: a bare `ocp init` re-run inside an
+    # existing ssh project passes no --provider, and that re-run is exactly
+    # how an operator asks "what do I have to do now?" during the migration.
+    my $init_provider = $self->_effective_provider($has_config);
     if ($init_provider eq 'ssh') {
         my $pubkey_path = path('.ocp/id_ed25519.pub');
-        if (-f $pubkey_path) {
-            my $pubkey = $pubkey_path->slurp;
-            chomp $pubkey;
+
+        # Print the key itself where we can — it is what gets pasted, and the
+        # public half needs no PIN2 (OCP::Keys, ENCRYPTION LAYERS). Falling
+        # back to naming `ocp keys show` keeps init from ever failing here.
+        my ($pubkey, $label);
+        if ($self->nopassword) {
+            if (-f $pubkey_path) {
+                $pubkey = $pubkey_path->slurp;
+                $label  = 'bootstrap';
+            }
+        }
+        else {
+            $pubkey = eval {
+                my ($admin) = grep { ($_->{purpose} // '') eq 'admin' && !$_->{deprecated} }
+                              @{ $keys_mgr->list_keys };
+                $admin && $admin->{public};
+            };
+            $label = 'admin';
+        }
+        chomp $pubkey if defined $pubkey;
+
+        if (!$self->nopassword || defined $pubkey) {
             print "\n";
             print "!" x 50, "\n";
             print "SSH PROVIDER - Manual Setup Required\n";
             print "!" x 50, "\n\n";
+
             print "You supplied this key with --ssh-key; skip if it is already\n"
-                . "deployed.\n\n" if $self->ssh_key;
-            print "Add this public key to your server:\n\n";
-            print "  $pubkey\n\n";
-            print "Commands to run on your server";
+                . "deployed.\n\n" if $self->ssh_key && $self->nopassword;
+
+            print "Add the $label public key to your server:\n\n";
+            if (defined $pubkey && length $pubkey) {
+                print "  $pubkey\n\n";
+            }
+            else {
+                print "  ocp keys show --purpose admin\n\n";
+            }
+
+            print "Commands to run as root on your server";
             print " (${\($self->host)})" if $self->host;
             print ":\n";
             print "  mkdir -p ~/.ssh\n";
-            print "  echo '$pubkey' >> ~/.ssh/authorized_keys\n";
+            print "  echo '"
+                . (defined $pubkey && length $pubkey ? $pubkey : '<the key above>')
+                . "' >> ~/.ssh/authorized_keys\n";
             print "  chmod 700 ~/.ssh\n";
             print "  chmod 600 ~/.ssh/authorized_keys\n";
 
-            # Secure mode reaches these machines with two different keys: the
-            # bootstrap key above for `ocp apply`, the admin key for `ocp ssh`.
-            # Naming only one of them is how an operator ends up with a
-            # working apply and an `ocp ssh` that fails for no visible reason.
             unless ($self->nopassword) {
                 print "\n";
-                print "The admin key needs the same treatment — 'ocp ssh' uses it:\n";
+                print "That one key is all of it: 'ocp apply', 'ocp ssh',\n";
+                print "'ocp update', 'ocp node add' and 'ocp destroy' all use it.\n";
+                print "Print it again any time with:\n";
                 print "  ocp keys show --purpose admin\n";
+                print "\n";
+                print "Nothing checks this in advance. The first command that\n";
+                print "opens an SSH connection is what finds out whether the key\n";
+                print "arrived.\n";
+
+                # The migration case, stated where the operator is already
+                # looking at authorized_keys.
+                if (-f $pubkey_path) {
+                    print "\n";
+                    print "NOTE: .ocp/id_ed25519 exists in this project. If your\n";
+                    print "      machines were set up with it, ADD the admin key\n";
+                    print "      above — do not replace anything yet. Secure mode\n";
+                    print "      does not use the bootstrap key any more.\n";
+                }
             }
         }
     }
@@ -655,29 +715,29 @@ sub _ensure_age_key {
     return;
 }
 
-# The bootstrap key: .ocp/id_ed25519, the credential OCP presents to a machine
-# whose authorized_keys OCP cannot write itself.
+# The bootstrap key: .ocp/id_ed25519, dev mode's single credential.
 #
-# It is created under exactly the condition that makes something read it.
-# OCP::Cmd::Apply::Bootstrap reaches for this file when
-# `$no_password_mode || $provider eq 'ssh'` — in setup_ssh_key and again in
-# bootstrap_control_plane — so that same expression is the gate here. The two
-# halves have to agree; when they did not, `ocp apply` died with "SSH not
-# reachable" on a secure-mode ssh project, a network message for what was
-# really "nothing to authenticate with".
+# It is created under exactly the condition that makes something read it, and
+# since the two-tier decision that condition is `--nopassword` and nothing
+# else. OCP::ClusterKey reaches for this file in dev mode only; secure mode
+# opens every machine on every provider with the admin key from keys.yaml.
 #
-# Why not simply always: a Hetzner control plane never sees this key. There the
-# admin public key is uploaded through the API before the server exists, so a
-# bootstrap key would be inert — and creating one anyway costs the four
-# lifecycle commands that read the path (OCP::Cmd::Update, ::Destroy,
-# ::Node::Add, ::Apply::Drift) their honest "the key is missing" failure,
-# replacing it with an SSH auth timeout. Dev mode is included because
-# OCP::Cmd::Apply's --nopassword path requires this file for every provider.
+# Why not for `provider: ssh` in secure mode any more: the difference between
+# the ssh provider and Hetzner was never which key the machine trusts, only
+# who puts it there — the Hetzner API before the server exists, or a human
+# with `ocp keys show --purpose admin`. Keeping a third, PIN-less key alive
+# for one provider bought nothing and cost the model its shape. A secure-mode
+# ssh project is told to distribute the ADMIN public key instead (see the
+# report block in execute).
 #
-# It is deliberately NOT behind PIN2: the bootstrap has to read it without a
-# prompt, so a second PIN here would just re-block what this fixes.
+# The idempotency guard below sits in FRONT of this gate and stays there: a
+# project that already has a bootstrap key has machines authorised with it,
+# and `ocp init` must never be the command that removes it. Migrating is
+# adding the admin key to authorized_keys, not deleting anything locally.
+#
+# It is deliberately NOT behind PIN2: dev mode promises never to prompt.
 sub _ensure_bootstrap_key {
-    my ($self, $secrets, $provider) = @_;
+    my ($self, $secrets) = @_;
 
     my $target = '.ocp/id_ed25519';
 
@@ -710,14 +770,15 @@ sub _ensure_bootstrap_key {
         # --force with an explicit --ssh-key: an operator asking for the
         # replacement by name. Fall through to the copy below.
     }
-    elsif (!($self->nopassword || $provider eq 'ssh')) {
-        # Nothing reads a bootstrap key in this configuration.
+    elsif (!$self->nopassword) {
+        # Nothing reads a bootstrap key in secure mode, on any provider.
         if (defined $self->ssh_key) {
-            print "[!!] --ssh-key is not used with provider '$provider'.\n";
-            print "     Only 'provider: ssh' authenticates with the bootstrap\n";
-            print "     key .ocp/id_ed25519. A $provider control plane gets the\n";
-            print "     admin key instead, which 'ocp apply' takes straight from\n";
-            print "     keys.yaml. No key was created from --ssh-key.\n";
+            print "[!!] --ssh-key is not used in secure mode.\n";
+            print "     Only a --nopassword project authenticates with the\n";
+            print "     bootstrap key .ocp/id_ed25519. Here every machine is\n";
+            print "     reached with the admin key from keys.yaml, whatever the\n";
+            print "     provider. No key was created from --ssh-key.\n";
+            print "     Distribute this instead: ocp keys show --purpose admin\n";
         }
         return;
     }
@@ -989,31 +1050,36 @@ route to generation too.
 
 =head2 SSH keys
 
-The B<bootstrap key> F<.ocp/id_ed25519> is the credential OCP presents to a
-machine whose F<authorized_keys> it cannot write itself. It is created exactly
-where L<OCP::Cmd::Apply::Bootstrap> reads it: under C<--nopassword> (which
-needs it for every provider), and for C<provider: ssh> in both modes. A
-Hetzner or local control plane in secure mode gets the admin key instead —
-uploaded via the API before the server exists — so no bootstrap key is
-written there, and the commands that read the path keep their honest "the key
-is missing" failure. It carries no PIN: the bootstrap has to read it without
-prompting. C<--ssh-key> supplies one instead of generating it, in both modes;
-against a provider that does not use a bootstrap key it is reported rather
-than silently dropped.
+Secure mode — the default — writes B<two> keys into F<keys.yaml> and no
+others: a robo key (C<purpose: automation>, age-encrypted, for robocop's
+unattended work) and an admin key (C<purpose: admin>, age + PIN2, for
+everything a human triggers: C<ocp apply>, C<ocp update>, C<ocp node add>,
+C<ocp destroy>, C<ocp ssh>). Print the admin public key with C<ocp keys show
+--purpose admin>.
 
-Re-running C<ocp init> after switching F<ocp.yaml> to C<provider: ssh> creates
-the key: the step reads the provider from the existing F<ocp.yaml>, not from
-the C<--provider> default.
+The admin key is what every machine of the cluster trusts, on every provider.
+On Hetzner OCP uploads it through the API before the server exists; with
+C<provider: ssh> the operator pastes it into F<authorized_keys>, and the
+report at the end of C<ocp init> prints it for exactly that. The provider
+decides who distributes the key, not which key gets distributed.
 
-An existing F<.ocp/id_ed25519> is never regenerated and never silently
-replaced — its public half is already in F<authorized_keys> on a running
-cluster's machines. C<--ssh-key> against an existing key is reported and
-ignored unless C<--force> is given.
+The B<bootstrap key> F<.ocp/id_ed25519> therefore exists only under
+C<--nopassword>, where there is no F<keys.yaml> and it is the single piece of
+key material the project has. It carries no PIN, because dev mode promises
+never to prompt. C<--ssh-key> supplies it instead of generating it; in secure
+mode the flag is reported as not applicable rather than silently dropped.
 
-Secure mode additionally writes the B<two-tier keys> into F<keys.yaml>: a
-robo key (C<purpose: automation>, age-encrypted, for robocop and workers) and
-an admin key (C<purpose: admin>, age + PIN2, for control planes and
-C<ocp ssh>). Print the admin public key with C<ocp keys show --purpose admin>.
+An existing F<.ocp/id_ed25519> is never regenerated, never silently replaced,
+and never deleted — its public half may still be in F<authorized_keys> on a
+running cluster's machines. That guard runs before the mode is even
+consulted. C<--ssh-key> against an existing key is reported and ignored
+unless C<--force> is given.
+
+B<Migrating an ssh-provider cluster built before this:> its machines carry
+the bootstrap public key and have never seen the admin one. Add the admin key
+to F</root/.ssh/authorized_keys> on every machine (C<ocp keys show --purpose
+admin>) B<before> running any other C<ocp> command against it. Init says so
+when it finds a bootstrap key in a secure-mode project.
 
 With --nogit, skips git repository initialization and .gitignore creation.
 The generated F<.gitignore> ignores F<.ocp/> only: the encrypted files

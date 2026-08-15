@@ -1,6 +1,46 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Secure mode has two SSH key tiers instead of three: robo
+      (`purpose: automation`, no PIN2) for unattended automation, and admin
+      (`purpose: admin`, age + PIN2) for everything a human triggers —
+      bootstrap, update, node add, destroy and `ocp ssh`. The bootstrap key
+      .ocp/id_ed25519 is gone from secure mode and lives on only in
+      --nopassword dev mode, where there is no keys.yaml and it is the sole
+      piece of key material. It was kept for `provider: ssh` on the theory
+      that a pre-existing machine can only trust a key a human put there by
+      hand; but the admin public key is printable with `ocp keys show
+      --purpose admin`, so a human distributes exactly the key the Hetzner
+      API uploads. The provider decides who distributes the key, never which
+      key. Consequently `ocp init` writes no bootstrap key in secure mode on
+      any provider, and its `provider: ssh` report now prints the ADMIN
+      public key as the one to put in authorized_keys; `ocp ssh` picks its
+      key the same way as every other command and no longer demands PIN2 in
+      a dev-mode project that has no admin key to unlock (karr #94 dissolves
+      with the premise); `--ssh-key` is reported as not applicable in secure
+      mode rather than silently honoured. An existing .ocp/id_ed25519 is
+      still never regenerated and never deleted — it is reported as legacy.
+    - MIGRATION, `provider: ssh` clusters only: machines set up before this
+      carry the BOOTSTRAP public key in authorized_keys and have never seen
+      the admin one. Add the admin key on every machine — `ocp keys show
+      --purpose admin`, appended to /root/.ssh/authorized_keys — BEFORE
+      running any other ocp command against the cluster. Nothing verifies
+      this in advance and there is deliberately no fallback to the old key;
+      what OCP does instead is diagnose it, so `ocp apply`, `ocp ssh`,
+      `ocp node add` and `ocp destroy` explain the lockout and name the two
+      steps out of it when a connection is refused and a bootstrap key is
+      still lying in the project. Hetzner clusters and dev-mode projects
+      need nothing.
+    - `ocp destroy` no longer strands paid servers when it cannot get an SSH
+      key. Its ssh-node branch needs the PIN2-protected admin key now, which
+      means a lookup that can fail — a wrong PIN, no terminal, no keys.yaml.
+      That lookup happens once, before the delete loop and in its own eval,
+      and only when the node list actually contains an ssh machine, so a
+      Hetzner-only teardown still asks for nothing. When it fails, the
+      RKE2/K3s uninstall steps are skipped with a visible warning and the
+      manual command named, while every Hetzner server is still deleted
+      through the API. An unreachable host during the uninstall is also
+      reported as a warning instead of being announced as a success.
     - `ocp update`, `ocp node add` and drift remediation work on a
       secure-mode Hetzner cluster (karr #87). All three reached for
       .ocp/id_ed25519 as the key to log in with, but a Hetzner machine was
@@ -11,10 +51,10 @@ Revision history for OCP
       and the reconcile path's Rex remedy declined every drift it found —
       on the one provider and mode combination where it mattered. The
       question "which key does this cluster's machines trust" now has one
-      answer, in the new OCP::ClusterKey: the bootstrap key for a
-      `provider: ssh` machine (pre-existing, trusts what the operator
-      authorised by hand) and for --nopassword dev mode, the PIN2-protected
-      admin key otherwise. `ocp update` and `ocp node add` therefore prompt
+      answer, in the new OCP::ClusterKey. (It answered "the bootstrap key
+      for a `provider: ssh` machine, the admin key otherwise" when this was
+      written; the two-tier change above narrowed that to the mode alone.)
+      `ocp update` and `ocp node add` therefore prompt
       for PIN2 once on a secure Hetzner project, where they previously
       failed; `ocp apply` against an existing cluster asks only if a drift
       repair actually has to run, so a clean reconcile stays as promptless
@@ -22,8 +62,8 @@ Revision history for OCP
       never ask because they never open an SSH connection at all. Without a
       terminal — a piped or scheduled run — the admin key is refused with a
       message naming what it wanted, instead of blocking on an invisible
-      password prompt. `ocp destroy` is unchanged: its SSH branch is
-      reached only for nodes that are themselves `provider: ssh`.
+      password prompt. `ocp destroy` was left alone by #87 and is covered by
+      the teardown entry above instead.
     - The decrypted admin key no longer outlives the command that needed
       it, and no longer disappears while it is still in use (karr #87). The
       temp file pair OCP wrote for it had no owner: one path created it with

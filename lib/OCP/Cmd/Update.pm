@@ -200,13 +200,12 @@ sub _update_component {
 }
 
 # Both Rex paths below reach the control plane over SSH, and both used to
-# hand Rex $config->ssh_private_key_path unconditionally. On a Hetzner
-# control plane that file is the wrong answer twice over: it was never
-# distributed to the machine (OCP uploads the ADMIN public key through the
-# API before the server exists), and in secure mode `ocp init` does not even
-# create it — so `ocp update` on a secure Hetzner cluster could not work at
-# all. OCP::ClusterKey answers the question properly; cluster_ssh_key caches
-# it so a multi-component update prompts for PIN2 once. karr #87.
+# hand Rex $config->ssh_private_key_path unconditionally. In secure mode that
+# file is the wrong answer twice over: the machines trust the ADMIN key, and
+# `ocp init` does not even create a bootstrap key there — so `ocp update` on a
+# secure cluster could not work at all. OCP::ClusterKey answers the question
+# properly; cluster_ssh_key caches it so a multi-component update prompts for
+# PIN2 once. karr #87.
 sub _update_via_rex {
     my ($self, $config, $component, $version, $task) = @_;
 
@@ -303,12 +302,11 @@ The update process:
 Updates run over SSH on the control plane, so C<ocp update> needs the key
 that machine trusts (see L<OCP::ClusterKey>).
 
-In a secure-mode project whose control plane OCP created itself — the
-Hetzner provider — that is the PIN2-protected admin key, and the first
-component to be updated prompts for PIN2 once.  A C<--dry-run>, an
-already-up-to-date cluster, and a C<provider: ssh> or C<--nopassword>
-project never prompt: the first two reach no Rex task, and the last two use
-the unencrypted bootstrap key in F<.ocp/id_ed25519>.
+In a secure-mode project that is the PIN2-protected admin key, whatever the
+provider, and the first component to be updated prompts for PIN2 once.  A
+C<--dry-run>, an already-up-to-date cluster and a C<--nopassword> project
+never prompt: the first two reach no Rex task, and the last uses the
+unencrypted bootstrap key in F<.ocp/id_ed25519>.
 
 =head1 OPTIONS
 

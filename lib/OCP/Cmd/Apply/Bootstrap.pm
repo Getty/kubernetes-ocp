@@ -119,17 +119,16 @@ sub dist_label {
 # command object so its temp files live exactly as long as the run that needs
 # them.
 #
-# Which key that is, and why, now lives in OCP::ClusterKey — the same
-# question is asked by `ocp update`, `ocp node add` and the reconcile path's
-# Rex remedy, and four separate answers to it is what karr #87 was. The short
-# version: who created the machine decides. Hetzner servers are created here,
-# so OCP uploads the admin public key through the API before the server
-# exists; an ssh-provider machine is pre-existing and trusts only what the
-# operator put into authorized_keys by hand, which is the bootstrap key. That
-# is why `provider eq 'ssh'` overrides the mode rather than following it.
+# Which key that is, and why, lives in OCP::ClusterKey — the same question is
+# asked by `ocp update`, `ocp node add` and the reconcile path's Rex remedy,
+# and four separate answers to it is what karr #87 was. The short version: the
+# MODE decides. Secure mode reaches every machine with the admin key, on every
+# provider — Hetzner uploads it through the API before the server exists, an
+# ssh-provider machine gets it from a human with `ocp keys show --purpose
+# admin`. The bootstrap key is dev mode's only key and nothing else's.
 #
 # OCP::Cmd::Init::_ensure_bootstrap_key is the other half of that contract:
-# it creates .ocp/id_ed25519 exactly where something reads it.
+# it creates .ocp/id_ed25519 only under --nopassword.
 #
 # The result is cached in the slot OCP::Role::Cmd::cluster_ssh_key uses, so a
 # later reconcile step on the same command object reuses this key instead of
@@ -179,11 +178,26 @@ sub bootstrap_control_plane {
     my $first_cp = $cps->[0] // {};
     my $provider = $first_cp->{provider} // 'hetzner';
 
+    # The SSH key first, because the provider needs it too. This used to be
+    # picked further down (see the block above the OCP::SSH call below) while
+    # the provider was handed $config->ssh_private_key_path unconditionally —
+    # .ocp/id_ed25519, which in secure mode is now a file that does not exist
+    # on any provider. OCP::Provider::SSH runs its reachability check and its
+    # uninstall over that path, so it has to be the same key everything else
+    # uses.
+    #
+    # admin_key is passed through because `ocp apply` already unlocked it with
+    # PIN2 further up: prompting again here would be a bug, not extra safety.
+    # setup_ssh_key parks the key on $self, so it lives as long as the command
+    # object and its temp files go away together with it.
+    my $key = setup_ssh_key($self, $config, admin_key => $admin_key);
+    my $ssh_key_path = $key->path;
+
     # Initialize provider
     my $prov = OCP::Provider->for_spec($first_cp,
         token        => $hetzner_token,
         cluster_name => $config->name,
-        ssh_key_path => $config->ssh_private_key_path,
+        ssh_key_path => $ssh_key_path,
         verbose      => $verbose,
     );
 
@@ -227,23 +241,16 @@ sub bootstrap_control_plane {
     # Wait for SSH
     print "  [..] Waiting for SSH to be ready...\n";
 
-    # Prepare the SSH key file (Rex needs both private + .pub!). This used to
-    # be a second, inline copy of setup_ssh_key with one fatal difference: it
-    # held the File::Temp object in a lexical of THIS sub and returned only
+    # The key was picked before the provider (Rex needs both private + .pub,
+    # and the provider needs the same file). It used to be picked here, in a
+    # second inline copy of setup_ssh_key with one fatal difference: it held
+    # the File::Temp object in a lexical of THIS sub and returned only
     # ssh_key_path. For secure mode + Hetzner that meant the admin key was
     # unlinked the moment bootstrap_control_plane returned, and the caller —
     # OCP::Cmd::Apply::Deploy, which slurps that path to hand OCP::Node an
     # ssh_key for every worker — got a path to a file that no longer existed.
     # Workers then failed as "Could not read join token from CP". The .pub
     # written next to it had no owner at all and stayed in /tmp forever.
-    #
-    # setup_ssh_key parks the key on $self, so it lives as long as the command
-    # object and both files go away together when it does. admin_key is passed
-    # through because `ocp apply` already unlocked it with PIN2 further up:
-    # prompting again here would be a bug, not extra safety.
-    my $key = setup_ssh_key($self, $config, admin_key => $admin_key);
-    my $ssh_key_path = $key->path;
-
     my $ssh = OCP::SSH->new(
         host     => $cp_host,
         key_file => $ssh_key_path,
@@ -252,7 +259,12 @@ sub bootstrap_control_plane {
 
     eval { $ssh->wait_for_ssh(120) };
     if ($@) {
-        die "  [FAIL] SSH not ready: $@\n";
+        # The one failure that is usually not a network problem: an existing
+        # ssh-provider machine that only ever had the bootstrap key
+        # authorised. migration_hint says so when the evidence is there and
+        # stays quiet otherwise — there is deliberately no fallback to that
+        # key (ADR: two tiers, robo and admin, nothing else).
+        die "  [FAIL] SSH not ready: $@" . $key->migration_hint . "\n";
     }
     print "  [ok] SSH ready\n";
 

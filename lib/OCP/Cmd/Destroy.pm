@@ -112,7 +112,61 @@ sub execute {
         }
     }
 
-    # Delete nodes
+    # The key for the ssh-provider nodes: fetched ONCE, BEFORE the loop, in an
+    # eval of its own. Three decisions in one block, and all three are about
+    # never letting a cleanup step cost someone money.
+    #
+    #   * Why it is needed at all now. Until the two-tier decision this branch
+    #     used the bootstrap key and could not fail: an unencrypted file, or
+    #     no teardown. In secure mode there is no bootstrap key any more — an
+    #     ssh machine trusts the admin key like every other machine — so the
+    #     lookup is behind PIN2 and CAN die: wrong PIN, no terminal, no
+    #     keys.yaml.
+    #
+    #   * Why before the loop. Each delete sits in its own eval so a host that
+    #     is already gone is a warning, not the end of the run. A dying lookup
+    #     inside the loop but outside those evals would abort the teardown
+    #     midway — on a mixed cluster that leaves PAID Hetzner servers running
+    #     because an ssh worker's key could not be unlocked. Hetzner deletes go
+    #     through the API and need no SSH at all, so they must never depend on
+    #     this.
+    #
+    #   * Why only when an ssh node is actually in the list. A pure Hetzner
+    #     teardown must not grow a PIN2 prompt it never had.
+    #
+    # A failure here therefore downgrades to "the uninstall script did not
+    # run on those machines", which is recoverable by hand, and says so.
+    my $needs_ssh_key = grep {
+        ($_->{provider} // '') eq 'ssh'
+            && $_->{public_ip} && $_->{public_ip} ne '-'
+    } @$nodes;
+
+    my $ssh_key;
+    if ($needs_ssh_key) {
+        $ssh_key = eval {
+            $self->cluster_ssh_key($config,
+                provider => 'ssh',
+                reason   => 'ocp destroy',
+            );
+        };
+        unless ($ssh_key) {
+            my $why = $@ || "unknown error\n";
+            chomp $why;
+            print "\n";
+            print "[!!] Could not obtain the SSH key for the ssh-provider nodes:\n";
+            print join('', map { "     $_\n" } split /\n/, $why);
+            print "     Their RKE2/K3s uninstall will be SKIPPED. Everything\n";
+            print "     that costs money is deleted through the provider API\n";
+            print "     and is unaffected.\n";
+            print "     To clean those machines up later, run on each of them:\n";
+            print "       rke2-uninstall.sh   # or k3s-uninstall.sh\n";
+            print "\n";
+        }
+    }
+
+    # Delete nodes. $hinted keeps the migration diagnosis to one appearance
+    # per run: six unreachable machines are six warnings, not six essays.
+    my $hinted = 0;
     for my $node (@$nodes) {
         print "Deleting $node->{name}...\n";
 
@@ -122,34 +176,32 @@ sub execute {
                 print "  Warning: $@\n";
             }
         }
-        # Deliberately the bootstrap key, and deliberately NOT routed through
-        # OCP::ClusterKey (karr #87 looked here and found nothing to fix).
-        # Two reasons, and both have to hold:
-        #
-        #   * This branch is guarded on the NODE's own provider being 'ssh',
-        #     so the machine reached here is always pre-existing. The
-        #     operator authorised .ocp/id_ed25519 on it by hand and that is
-        #     the only key it trusts — whatever provider the control plane
-        #     uses, whatever mode the project is in. A Hetzner node leaves
-        #     through the API branch above and never touches this key at all.
-        #     Prompting for PIN2 here would buy a key the machine does not
-        #     know.
-        #
-        #   * Teardown is best-effort per node: each delete sits in its own
-        #     eval so a host that is already gone is a warning, not the end
-        #     of the run. A key lookup that can die would sit OUTSIDE that
-        #     eval and abort the loop — on a mixed cluster that means paid
-        #     Hetzner servers left running because an ssh worker's key file
-        #     had been cleaned up. Nothing about this path may become fatal.
+        # An ssh-provider node: the machine survives, so what we can remove is
+        # what we installed on it. The key comes from above, already resolved
+        # or already known to be unavailable — nothing in this branch may die.
         elsif ($node->{provider} eq 'ssh' && $node->{public_ip} && $node->{public_ip} ne '-') {
+            unless ($ssh_key) {
+                print "  Skipped: no SSH key, $node->{public_ip} keeps its RKE2/K3s install.\n";
+                next;
+            }
+
             print "  Uninstalling RKE2 on $node->{public_ip}...\n";
             my $ssh_prov = OCP::Provider->for_spec(
                 { provider => 'ssh' },
-                ssh_key_path => $config->ssh_private_key_path,
+                ssh_key_path => $ssh_key->path,
             );
-            eval { $ssh_prov->delete_server(undef, host => $node->{public_ip}) };
-            if ($@) {
-                print "  Warning: Could not connect to $node->{public_ip} (may already be down).\n";
+            my $result = eval {
+                $ssh_prov->delete_server(undef, host => $node->{public_ip})
+            };
+            # OCP::SSH::run reports a failed connection as a non-zero exit
+            # rather than an exception, so an unreachable host used to be
+            # announced as a successful uninstall. Both shapes are a warning.
+            my $failed = $@ || !ref $result || ($result->{exit} // 0) != 0;
+            if ($failed) {
+                print "  Warning: Could not uninstall on $node->{public_ip} (may already be down).\n";
+                unless ($hinted++) {
+                    print $ssh_key->migration_hint;
+                }
             } else {
                 print "  RKE2/K3s uninstalled on $node->{public_ip}.\n";
             }
@@ -214,6 +266,14 @@ best-effort: a host that is already gone is logged as a warning and the
 tear-down continues.
 
 =back
+
+The key those SSH uninstalls use is resolved once, before the loop, and only
+when the node list actually contains an ssh-provider machine (see
+L<OCP::ClusterKey> — in secure mode that is the PIN2-protected admin key, so
+it can fail; a Hetzner-only teardown never asks).  B<A failure to obtain it
+does not stop the teardown.>  It is reported, the uninstall steps are skipped
+with a per-host line, and every Hetzner server is still deleted through the
+API — those cost money, an uninstall script does not.
 
 Sources for the node list, in order: C<.ocp/status.yaml>, the Hetzner
 project (orphans that C<status.yaml> did not record, picked up via

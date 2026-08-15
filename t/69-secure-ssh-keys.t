@@ -13,26 +13,38 @@ use OCP::Cmd::Apply::Bootstrap;
 use OCP::Config;
 use OCP::Keys;
 
-# Two holes in the same seam — secure mode + the ssh provider + the two-tier
-# key system — found while bringing up a real cluster:
+# What `ocp init` writes, and what it tells the operator to distribute.
 #
-#   karr #85: OCP::Cmd::Apply::Bootstrap picks .ocp/id_ed25519 unconditionally
-#   for `provider: ssh`, but `ocp init` created that file only under
-#   --nopassword. A secure-mode ssh project therefore had no key at all, and
-#   `ocp apply` reported "SSH not reachable" — a network message for what was
-#   really "nothing to authenticate with". --ssh-key was read on the same
-#   dead branch, so in secure mode it was accepted and silently dropped.
+# THE DECISION THIS FILE NOW ENCODES: secure mode has two key tiers and only
+# two — robo (automation, no PIN2) and admin (age + PIN2). The bootstrap key
+# .ocp/id_ed25519 is dev mode's single credential and exists nowhere else. It
+# used to be created for `provider: ssh` in both modes (karr #85), on the
+# theory that a pre-existing machine can only trust what a human put there by
+# hand. That theory was wrong about which key the human puts there: the admin
+# public key is printable (`ocp keys show --purpose admin`), so a human can
+# distribute exactly the key OCP uploads through the Hetzner API. The provider
+# decides who distributes, not what.
 #
-#   karr #84: the only code that could surface a public key was
-#   OCP::Keys::decrypt_all_to_disk, which had no caller and would have written
-#   every PRIVATE key to .ocp/keys/ in plaintext as a side effect. There was
-#   no way to answer "what do I put in authorized_keys?".
+# So the claims here are mirror images of what they were:
 #
-# The dangerous half of the fix is idempotency. A bootstrap key that already
-# exists is already distributed to running machines; regenerating it locks the
-# operator out of their own cluster. OCP::Secrets::generate_ssh_key unlinks
-# before it generates, so "don't touch an existing key" has to be asserted,
-# not assumed.
+#   * secure + ssh writes NO bootstrap key, and the report at the end names
+#     the ADMIN public key — prominently, as the thing to paste. A new
+#     secure-mode project that were told to distribute .ocp/id_ed25519.pub
+#     would be born locked out.
+#   * --ssh-key does not apply in secure mode and says so.
+#   * dev mode is untouched in every respect.
+#
+# Unchanged and load-bearing: an EXISTING bootstrap key is never regenerated
+# and never removed, in either mode. Machines out there have its public half
+# in authorized_keys; migrating means adding the admin key, never deleting
+# anything locally. OCP::Secrets::generate_ssh_key unlinks before it
+# generates, so "don't touch an existing key" has to be asserted, not assumed.
+#
+# The other half of the file is karr #84: `ocp keys show`, the command that
+# makes the admin public key printable at all. Before it, the only code that
+# could surface a public key was OCP::Keys::decrypt_all_to_disk, which had no
+# caller and would have written every PRIVATE key to .ocp/keys/ in plaintext
+# as a side effect.
 
 plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
 
@@ -82,65 +94,72 @@ sub run_init {
     };
 }
 
-# ---------------------------------------------------------------- karr #85
+# ------------------------------------------- secure mode has two tiers only
 
-subtest 'secure mode creates the bootstrap key the deploy path requires' => sub {
+subtest 'secure + ssh writes no bootstrap key and hands out the admin key' => sub {
     my $r = run_init(provider => 'ssh', host => 'cp.example.test');
     is $r->{err}, '', 'secure init completed' or diag $r->{out};
 
-    my $priv = $r->{dir}->child('.ocp', 'id_ed25519');
-    my $pub  = $r->{dir}->child('.ocp', 'id_ed25519.pub');
-
-    ok -f $priv, '.ocp/id_ed25519 exists after a secure-mode init'
+    ok !-f $r->{dir}->child('.ocp', 'id_ed25519'),
+        'no bootstrap key — secure mode does not have that tier'
         or diag $r->{out};
-    ok -f $pub,  '.ocp/id_ed25519.pub exists too — init prints it for authorized_keys';
-    like $pub->slurp, qr/\Assh-ed25519 /, 'and it really is an ed25519 public key';
+    ok !-f $r->{dir}->child('.ocp', 'id_ed25519.pub'),
+        'not even a public half lying around to be pasted by mistake';
 
-    # The two-tier system is additional, not replaced.
-    ok -f $r->{dir}->child('keys.yaml'), 'keys.yaml is still written';
+    ok -f $r->{dir}->child('keys.yaml'), 'keys.yaml is written';
     is $r->{prompts}, 4, 'PIN1 + PIN2, each confirmed — no extra prompt was added';
 
     my $keys = OCP::Keys->new(project_dir => $r->{dir});
     my %purpose = map { ($_->{purpose} // '') => 1 } @{ $keys->list_keys };
-    ok $purpose{admin},      'admin key still generated';
-    ok $purpose{automation}, 'robo key still generated';
+    ok $purpose{admin},      'admin key generated';
+    ok $purpose{automation}, 'robo key generated';
+
+    # The load-bearing part for a NEW project: what does init tell the
+    # operator to put in authorized_keys? If that is anything other than the
+    # admin key, the cluster is born locked out — OCP will only ever offer
+    # the admin key afterwards.
+    my ($admin) = grep { ($_->{purpose} // '') eq 'admin' } @{ $keys->list_keys };
+    like $r->{out}, qr/Add the admin public key to your server/,
+        'the report names the admin key as the one to distribute';
+    like $r->{out}, qr/\Q$admin->{public}\E/,
+        'and prints that exact key, ready to paste';
+    like $r->{out}, qr/ocp keys show --purpose admin/,
+        'plus the command that prints it again';
+
+    unlike $r->{out}, qr/id_ed25519/,
+        'the bootstrap key is not mentioned at all — it does not exist here';
 };
 
-subtest 'the bootstrap key is created only where something reads it' => sub {
-    # The gate is the same condition OCP::ClusterKey answers with, dev mode
-    # || ssh. A secure Hetzner control plane gets the admin key uploaded via
-    # the API and never sees this file, so creating one there would be inert.
-    #
-    # It would also be actively misleading now: since karr #87, Update,
-    # Node::Add and the reconcile path's Rex remedy all go through
-    # OCP::ClusterKey and take the admin key on this combination. A bootstrap
-    # key sitting here would be a file that looks like the answer and is not
-    # — t/71 asserts that even when one exists, the admin key still wins.
-    my $hetzner = run_init(provider => 'hetzner');
-    is $hetzner->{err}, '', 'secure hetzner init completed' or diag $hetzner->{out};
-    ok !-f $hetzner->{dir}->child('.ocp', 'id_ed25519'),
-        'no bootstrap key for secure + hetzner';
-    ok -f $hetzner->{dir}->child('keys.yaml'),
-        'the two-tier keys that path DOES use are there';
+subtest 'the bootstrap key is created only under --nopassword' => sub {
+    # The gate is now the mode alone, matching OCP::ClusterKey: dev mode
+    # reaches for this file on every provider, secure mode never does.
+    for my $provider (qw(hetzner ssh local)) {
+        my %addr = $provider eq 'ssh' ? (host => 'cp.example.test') : ();
 
-    my $ssh = run_init(provider => 'ssh', host => 'cp.example.test');
-    ok -f $ssh->{dir}->child('.ocp', 'id_ed25519'),
-        'but secure + ssh gets one';
+        my $secure = run_init(provider => $provider, %addr);
+        is $secure->{err}, '', "secure + $provider: init completed"
+            or diag $secure->{out};
+        ok !-f $secure->{dir}->child('.ocp', 'id_ed25519'),
+            "secure + $provider: no bootstrap key";
+        ok -f $secure->{dir}->child('keys.yaml'),
+            "secure + $provider: the two keys that ARE used are there";
 
-    # Dev mode needs it for EVERY provider: OCP::Cmd::Apply's --nopassword
-    # path dies outright when .ocp/id_ed25519 is missing, whatever the
-    # provider. Gating on ssh alone would have broken that.
-    my $dev = run_init(provider => 'hetzner', nopassword => 1);
-    is $dev->{err}, '', 'dev-mode hetzner init completed' or diag $dev->{out};
-    ok -f $dev->{dir}->child('.ocp', 'id_ed25519'),
-        '--nopassword still gets a key on hetzner — the dev path requires it';
+        # Dev mode needs it for EVERY provider: OCP::Cmd::Apply's
+        # --nopassword path dies outright when .ocp/id_ed25519 is missing.
+        my $dev = run_init(provider => $provider, %addr, nopassword => 1);
+        is $dev->{err}, '', "dev + $provider: init completed" or diag $dev->{out};
+        ok -f $dev->{dir}->child('.ocp', 'id_ed25519'),
+            "dev + $provider: --nopassword still gets its one key";
+    }
 };
 
-subtest 'switching ocp.yaml to provider ssh and re-running init picks it up' => sub {
+subtest 're-running init in an ssh project reports the admin key, not a new one' => sub {
     # _provider answers "what should a NEW ocp.yaml say" and defaults to
-    # hetzner, so a bare re-run must not be the thing that decides this.
+    # hetzner, so a bare re-run must not be the thing that decides this —
+    # _effective_provider reads the ocp.yaml that will survive the run. That
+    # used to matter because a key got created; it now matters because this
+    # re-run is how an operator asks "what do I have to do?" mid-migration.
     my $r = run_init(provider => 'hetzner');
-    ok !-f $r->{dir}->child('.ocp', 'id_ed25519'), 'no key yet';
 
     my $file = $r->{dir}->child('ocp.yaml');
     my $spec = $file->slurp;
@@ -150,27 +169,37 @@ subtest 'switching ocp.yaml to provider ssh and re-running init picks it up' => 
     # No --provider: exactly what someone re-running `ocp init` would type.
     my $again = run_init(dir => $r->{dir}->stringify);
     is $again->{err}, '', 're-run completed' or diag $again->{out};
-    ok -f $r->{dir}->child('.ocp', 'id_ed25519'),
-        'the key appears without having to repeat --provider ssh';
+
+    ok !-f $r->{dir}->child('.ocp', 'id_ed25519'),
+        'still no bootstrap key — nothing would read one';
+    like $again->{out}, qr/Add the admin public key to your server/,
+        'but the ssh setup instructions appear without repeating --provider ssh';
 };
 
-subtest 'the bootstrap key is NOT encrypted — apply must read it unprompted' => sub {
-    my $r = run_init(provider => 'ssh', host => 'cp.example.test');
+subtest 'the dev-mode key is NOT encrypted — apply must read it unprompted' => sub {
+    my $r = run_init(provider => 'ssh', host => 'cp.example.test', nopassword => 1);
     my $priv = $r->{dir}->child('.ocp', 'id_ed25519');
 
     like $priv->slurp, qr/-----BEGIN OPENSSH PRIVATE KEY-----/,
         'usable as-is: no age envelope, no PIN2 layer';
     unlike $priv->slurp, qr/BEGIN AGE ENCRYPTED FILE/,
         'specifically not age-encrypted — that would re-block the bootstrap';
+
+    like $r->{out}, qr/Add the bootstrap public key to your server/,
+        'and dev mode still names it as the key to distribute';
+
+    my $pub = $r->{dir}->child('.ocp', 'id_ed25519.pub')->slurp;
+    chomp $pub;
+    like $r->{out}, qr/\Q$pub\E/, 'printing the key itself, as before';
 };
 
-subtest 'an existing bootstrap key is never regenerated, whatever the provider' => sub {
-    # This is the cp-lab situation: a key made by hand, its public half
-    # already in authorized_keys on six machines. Re-running init must leave
-    # it exactly as it is. The idempotency guard sits in FRONT of the provider
-    # gate on purpose — a hetzner project that has a bootstrap key has it for
-    # a reason, and must not become fair game just because nothing would
-    # create one there today.
+subtest 'an existing bootstrap key is never regenerated and never removed' => sub {
+    # This is the cp-lab situation: a key whose public half is already in
+    # authorized_keys on six machines. Re-running init must leave it exactly
+    # as it is. The idempotency guard sits in FRONT of the mode gate on
+    # purpose — a secure-mode project that has a bootstrap key has it because
+    # its machines were set up before the tier was dropped, and taking it away
+    # is the one thing that could make the migration unrecoverable.
     for my $case (
         { provider => 'ssh', host => 'cp.example.test' },
         { provider => 'hetzner' },
@@ -197,21 +226,28 @@ subtest 'an existing bootstrap key is never regenerated, whatever the provider' 
             "$label: and so is its public half";
         like $r->{out}, qr/SSH bootstrap key exists/,
             "$label: init says it kept the key rather than staying silent";
+
+        # In secure mode the file is kept but unused, and an operator has to
+        # hear that — otherwise the key that used to open every machine goes
+        # quiet with no explanation anywhere.
+        next if $case->{nopassword};
+        like $r->{out}, qr/LEGACY/,
+            "$label: and reports it as legacy, not as a working credential";
+        like $r->{out}, qr/ocp keys show --purpose admin/,
+            "$label: naming what to distribute instead";
     }
 };
 
-subtest '--ssh-key is honoured in secure mode instead of being swallowed' => sub {
-    # Silently ignored options are a repeat offender in this repo (karr #67,
-    # #37). --ssh-key was declared, documented, and read only on the
-    # --nopassword branch.
+subtest '--ssh-key is honoured in dev mode, where the key it names is used' => sub {
     my $ext = path(tempdir(CLEANUP => 1));
     $ext->child('mykey')->spew("EXTERNAL PRIVATE KEY\n");
     $ext->child('mykey.pub')->spew("ssh-ed25519 AAAAexternal external\n");
 
     my $r = run_init(
-        provider => 'ssh',
-        host     => 'cp.example.test',
-        ssh_key  => $ext->child('mykey')->stringify,
+        provider   => 'ssh',
+        host       => 'cp.example.test',
+        nopassword => 1,
+        ssh_key    => $ext->child('mykey')->stringify,
     );
     is $r->{err}, '', 'init completed' or diag $r->{out};
 
@@ -222,24 +258,32 @@ subtest '--ssh-key is honoured in secure mode instead of being swallowed' => sub
         'its public half came along';
 };
 
-subtest '--ssh-key on a provider that has no bootstrap key is refused out loud' => sub {
-    # Same rule as everywhere else in this repo: evaluate the option or say
-    # it does not apply. Never accept it and do nothing.
-    my $ext = path(tempdir(CLEANUP => 1));
-    $ext->child('mykey')->spew("EXTERNAL PRIVATE KEY\n");
+subtest '--ssh-key in secure mode is refused out loud, on every provider' => sub {
+    # Silently ignored options are a repeat offender in this repo (karr #67,
+    # #37). The flag was once honoured for secure + ssh, because that
+    # combination had a bootstrap key; now nothing in secure mode reads one,
+    # so the rule is the other rule this repo keeps: evaluate the option or
+    # say it does not apply. Never accept it and do nothing.
+    for my $provider (qw(hetzner ssh)) {
+        my %addr = $provider eq 'ssh' ? (host => 'cp.example.test') : ();
 
-    my $r = run_init(
-        provider => 'hetzner',
-        ssh_key  => $ext->child('mykey')->stringify,
-    );
-    is $r->{err}, '', 'init still completes' or diag $r->{out};
+        my $ext = path(tempdir(CLEANUP => 1));
+        $ext->child('mykey')->spew("EXTERNAL PRIVATE KEY\n");
 
-    ok !-f $r->{dir}->child('.ocp', 'id_ed25519'),
-        'nothing was written where nothing would read it';
-    like $r->{out}, qr/--ssh-key is not used with provider 'hetzner'/,
-        'and the operator is told the flag did not apply';
-    like $r->{out}, qr/admin key/,
-        'with the key that provider actually uses named';
+        my $r = run_init(
+            provider => $provider,
+            %addr,
+            ssh_key  => $ext->child('mykey')->stringify,
+        );
+        is $r->{err}, '', "$provider: init still completes" or diag $r->{out};
+
+        ok !-f $r->{dir}->child('.ocp', 'id_ed25519'),
+            "$provider: nothing was written where nothing would read it";
+        like $r->{out}, qr/--ssh-key is not used in secure mode/,
+            "$provider: the operator is told the flag did not apply";
+        like $r->{out}, qr/ocp keys show --purpose admin/,
+            "$provider: with the key that IS used named, and how to print it";
+    }
 };
 
 subtest '--ssh-key against an existing key is refused loudly, not obeyed' => sub {
@@ -276,10 +320,12 @@ subtest '--ssh-key against an existing key is refused loudly, not obeyed' => sub
     diag $forced->{out} if $forced->{err};
 };
 
-subtest 'what init writes is what Bootstrap reaches for (provider: ssh)' => sub {
-    # The two halves of #85 in one assertion: Bootstrap::setup_ssh_key picks
-    # ssh_private_key_path for provider ssh regardless of mode, so that file
-    # has to exist after a secure init.
+subtest 'what init tells the operator to install is what Bootstrap presents' => sub {
+    # End to end over real key material: the public key `ocp init` prints for
+    # authorized_keys must be the public half of the private key
+    # Bootstrap::setup_ssh_key hands to Rex and ssh. If those two ever drift
+    # apart, `ocp apply` fails as "SSH not reachable" — a network message for
+    # what is really "the machine was given a different key".
     my $r = run_init(provider => 'ssh', host => 'cp.example.test');
     is $r->{err}, '', 'secure init with provider ssh completed' or diag $r->{out};
 
@@ -289,18 +335,31 @@ subtest 'what init writes is what Bootstrap reaches for (provider: ssh)' => sub 
     is $config->control_planes->[0]{provider}, 'ssh',
         'ocp.yaml really names the ssh provider';
 
+    my $keys = OCP::Keys->new(project_dir => $r->{dir});
+    my ($admin) = grep { ($_->{purpose} // '') eq 'admin' } @{ $keys->list_keys };
+
+    my $cwd = getcwd();
+    chdir $r->{dir} or die "chdir: $!";
     my $apply = FakeApply->new;
-    OCP::Cmd::Apply::Bootstrap::setup_ssh_key($apply, $config);
+    # pin2 in hand: no terminal under prove, and the prompt itself is t/71's
+    # subject. Everything else here is real — real keys.yaml, real age key.
+    my $key = eval {
+        OCP::Cmd::Apply::Bootstrap::setup_ssh_key($apply, $config, pin2 => $PIN)
+    };
+    my $err = $@;
+    chdir $cwd or die "chdir back: $!";
 
-    is $apply->_ssh_key_path, $config->ssh_private_key_path,
-        'Bootstrap picks the bootstrap key for provider ssh';
-    ok -f $apply->_ssh_key_path,
-        'and the file it picked exists — this is what "SSH not reachable" really was';
+    is $err, '', 'setup_ssh_key succeeded' or diag $err;
+    is $key->origin, 'admin',
+        'Bootstrap presents the admin key on provider ssh too';
+    isnt $apply->_ssh_key_path, $config->ssh_private_key_path,
+        'not .ocp/id_ed25519 — which this project does not even have';
+    ok -f $apply->_ssh_key_path, 'the file it picked exists';
 
-    like $r->{out}, qr/Add this public key to your server/,
-        'secure-mode init names a key to distribute (it used to print nothing)';
-    like $r->{out}, qr/ocp keys show --purpose admin/,
-        'and points at the admin key that ocp ssh will need';
+    is $key->content, $keys->decrypt_key($admin->{name}, $PIN)->{private},
+        'and holds the private half of the admin key';
+    like $r->{out}, qr/\Q$admin->{public}\E/,
+        'whose public half is exactly what init told the operator to install';
 };
 
 # ---------------------------------------------------------------- karr #84
