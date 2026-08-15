@@ -26,6 +26,8 @@ use_ok('OCP::Cmd::Status');
 use_ok('OCP::Cmd::Destroy');
 use_ok('OCP::Cmd::Kubeconfig');
 use_ok('OCP::Cmd::SSH');
+use_ok('OCP::Cmd::Keys');
+use_ok('OCP::Cmd::Keys::Show');
 use_ok('OCP::Cmd::DeployRobocop');
 use_ok('OCP::Cmd::DeployImage');
 use_ok('OCP::Cmd::Hetzner');

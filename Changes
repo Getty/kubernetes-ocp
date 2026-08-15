@@ -1,6 +1,46 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp init` creates the bootstrap key .ocp/id_ed25519 for
+      `provider: ssh` in secure mode, not only under --nopassword (karr #85).
+      OCP::Cmd::Apply::Bootstrap picks exactly that file when
+      `$no_password_mode || $provider eq 'ssh'`, so a secure-mode SSH project
+      had no key at all and `ocp apply` died with "SSH not reachable on HOST
+      after 120s" — a network message for what was really "nothing to
+      authenticate with". Init now creates it under that same condition, so
+      the two halves agree. A secure Hetzner or local control plane still
+      gets none: it is sent the admin key through the provider API and never
+      reads this path, and writing an inert key there would only cost
+      `ocp update`, `ocp destroy`, `ocp node add` and drift remediation their
+      honest "the key is missing" failure. The key carries no PIN by design —
+      the bootstrap has to read it without prompting. An existing key is
+      never regenerated and never silently replaced, whatever the provider,
+      since its public half is already in authorized_keys on a running
+      cluster's machines. Switching ocp.yaml to `provider: ssh` and re-running
+      `ocp init` picks the key up without repeating --provider. Secure-mode
+      `ocp init --provider ssh` also prints the public key to distribute,
+      which it previously left out entirely because the only file it knew how
+      to print did not exist.
+    - `ocp init --ssh-key` is evaluated in secure mode (karr #85). It was
+      declared, documented, and read only on the --nopassword branch, so in
+      secure mode it was accepted and silently dropped. Where it cannot be
+      honoured it now says so instead: against an existing bootstrap key
+      already in service it names --force rather than overwriting a key that
+      machines already trust, and against a provider that has no bootstrap
+      key it reports that the flag does not apply.
+    - New `ocp keys show [--purpose admin|--name NAME]` prints the public
+      half of a key in keys.yaml (karr #84). After `ocp init` there was no
+      way to see the admin public key, which is what `ocp node add` and
+      manual distribution both need. It asks for PIN1 at most: the public
+      field sits behind the age layer only, the PIN2 layer covers `private`.
+      Only the key goes to stdout, so it pipes into authorized_keys.
+    - OCP::Keys::decrypt_all_to_disk is removed (karr #84). It had no caller
+      anywhere in lib/ or bin/, but its POD promised a .ocp/keys/ layout
+      that documentation and deploy plans then assumed existed. As a way to
+      read a public key it was also the wrong shape — it wrote every
+      *private* key to disk in plaintext as a side effect. OCP::Keys' POD no
+      longer shows `public:` as plaintext in keys.yaml either (every leaf is
+      age-encrypted) and now states which field each layer actually covers.
     - Status writes work again against Kubernetes::REST 1.107, which is now
       the required version (together with IO::K8s 1.107). 1.107 is the first
       release with a native `patch_status`, and OCP preferred a native writer

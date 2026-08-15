@@ -26,7 +26,7 @@ sub ocp {
 
 my @COMMANDS = qw(
     init apply status destroy kubeconfig version update ssh
-    node provider hetzner deployrobocop
+    node provider hetzner deployrobocop keys
 );
 
 for my $cmd (@COMMANDS) {
@@ -56,6 +56,15 @@ for my $cmd (@COMMANDS) {
         unlike($sub_out, qr/subcommand required/,
             "'ocp provider $sub' reaches the subcommand");
     }
+}
+
+{
+    my ($out) = ocp('keys');
+    like($out, qr/subcommand required/, "'ocp keys' asks for a subcommand");
+
+    my ($sub_out) = ocp('keys', 'show');
+    unlike($sub_out, qr/subcommand required/,
+        "'ocp keys show' reaches the subcommand");
 }
 
 {

@@ -208,32 +208,16 @@ sub execute {
     }
 
     #
-    # Step 5: SSH keys (Two-Tier: robocop + admin)
+    # Step 5a: Bootstrap SSH key (.ocp/id_ed25519)
+    #
+    $self->_ensure_bootstrap_key($secrets, $self->_effective_provider($has_config));
+
+    #
+    # Step 5b: Two-Tier SSH keys (robocop + admin) — secure mode only
     #
     my $keys_mgr = OCP::Keys->new(project_dir => $project_dir);
 
-    if ($self->nopassword) {
-        # Dev mode: No encryption
-        my $key_path = $self->ssh_key // '.ocp/id_ed25519';
-        $key_path =~ s/^~/$ENV{HOME}/;
-
-        if (-f $key_path) {
-            # Key exists - copy to .ocp/ if it's an external path
-            if ($key_path ne '.ocp/id_ed25519') {
-                copy($key_path, '.ocp/id_ed25519') or die "Failed to copy private key: $!\n";
-                copy("$key_path.pub", '.ocp/id_ed25519.pub') if -f "$key_path.pub";
-                chmod 0600, '.ocp/id_ed25519';
-                print "[ok] Copied SSH key from $key_path\n";
-            } else {
-                print "[ok] SSH key exists (.ocp/id_ed25519)\n";
-            }
-        } else {
-            die "SSH key not found: $key_path\n" if $self->ssh_key;
-            print "[..] Generating SSH key (no encryption)\n";
-            my $ssh_keys = $secrets->generate_ssh_key;
-            print "[ok] Generated SSH key: $ssh_keys->{public_key}\n";
-        }
-    } else {
+    unless ($self->nopassword) {
         # Secure mode (default): Two-tier SSH keys in keys.yaml
         my $existing = $keys_mgr->list_keys;
 
@@ -431,22 +415,34 @@ sub execute {
         print "    - Injected into robocop memory (never on disk!)\n";
         print "    - CANNOT access control planes!\n";
         print "\n";
+        if (-f '.ocp/id_ed25519') {
+            print "  bootstrap-key (.ocp/id_ed25519):\n";
+            print "    - Reaches machines OCP did not create (provider: ssh)\n";
+            print "    - No PIN: 'ocp apply' must read it without a prompt\n";
+            print "    - Gitignored, so it is NOT shared with the team by git\n";
+            print "\n";
+        }
         print "  Team sharing: Repo (git) + PIN1 + PIN2 (via 1Password/Signal)\n";
     } elsif (!$self->nopassword) {
         print "🔐 Security Notes:\n";
         print "  Two-tier SSH keys stored in keys.yaml (encrypted)\n";
         print "  Admin key: Control planes + manual SSH\n";
         print "  Robocop key: Workers only (automation)\n";
+        print "  Bootstrap key: .ocp/id_ed25519 (no PIN, for provider: ssh)\n"
+            if -f '.ocp/id_ed25519';
     } else {
         print "⚠️  Dev Mode (--nopassword):\n";
         print "  Single SSH key in .ocp/id_ed25519 (NOT encrypted)\n";
         print "  For development only! Use default mode for production.\n";
     }
 
-    # SSH provider instructions (only if new key was generated)
+    # SSH provider instructions. This block used to be reachable only in dev
+    # mode, because .ocp/id_ed25519.pub was the only thing it printed and
+    # secure mode never created it — a secure-mode `ocp init --provider ssh`
+    # ended without naming a single key to distribute. The bootstrap key now
+    # exists in both modes, so the block always has something to say.
     my $init_provider = $self->_provider;
-    if ($init_provider eq 'ssh' && !$self->ssh_key) {
-        # Only show instructions if we generated a NEW key
+    if ($init_provider eq 'ssh') {
         my $pubkey_path = path('.ocp/id_ed25519.pub');
         if (-f $pubkey_path) {
             my $pubkey = $pubkey_path->slurp;
@@ -455,6 +451,8 @@ sub execute {
             print "!" x 50, "\n";
             print "SSH PROVIDER - Manual Setup Required\n";
             print "!" x 50, "\n\n";
+            print "You supplied this key with --ssh-key; skip if it is already\n"
+                . "deployed.\n\n" if $self->ssh_key;
             print "Add this public key to your server:\n\n";
             print "  $pubkey\n\n";
             print "Commands to run on your server";
@@ -464,11 +462,17 @@ sub execute {
             print "  echo '$pubkey' >> ~/.ssh/authorized_keys\n";
             print "  chmod 700 ~/.ssh\n";
             print "  chmod 600 ~/.ssh/authorized_keys\n";
+
+            # Secure mode reaches these machines with two different keys: the
+            # bootstrap key above for `ocp apply`, the admin key for `ocp ssh`.
+            # Naming only one of them is how an operator ends up with a
+            # working apply and an `ocp ssh` that fails for no visible reason.
+            unless ($self->nopassword) {
+                print "\n";
+                print "The admin key needs the same treatment — 'ocp ssh' uses it:\n";
+                print "  ocp keys show --purpose admin\n";
+            }
         }
-    } elsif ($init_provider eq 'ssh' && $self->ssh_key) {
-        # Using existing key - no setup needed
-        print "\n";
-        print "[ok] Using existing SSH key - no manual setup needed\n";
     }
 
     # Hetzner is the default provider, so a bare `ocp init` can land here
@@ -532,6 +536,111 @@ GITIGNORE
 sub _datestamp {
     my @t = gmtime;
     return sprintf('%04d%02d%02d', $t[5]+1900, $t[4]+1, $t[3]);
+}
+
+# Which provider this project actually deploys with. Deliberately not the same
+# question as _provider, which answers "what should a NEW ocp.yaml say" and
+# defaults to hetzner. A bare `ocp init` re-run inside an existing ssh project
+# passes no --provider, so _provider would report hetzner and Step 5a would
+# skip the bootstrap key — which is exactly the case of someone switching
+# ocp.yaml over to provider: ssh and re-running init to pick the key up.
+sub _effective_provider {
+    my ($self, $has_config) = @_;
+
+    # Step 7 is about to (over)write ocp.yaml, so the flags are the answer.
+    return $self->_provider if !$has_config || $self->force;
+
+    # Otherwise the file that will survive this run is the authority.
+    my $cps = eval { OCP::Config->new(file => $self->ocp->config)->control_planes };
+    return $self->_provider unless $cps && @$cps;
+    return $cps->[0]{provider} // 'hetzner';
+}
+
+# The bootstrap key: .ocp/id_ed25519, the credential OCP presents to a machine
+# whose authorized_keys OCP cannot write itself.
+#
+# It is created under exactly the condition that makes something read it.
+# OCP::Cmd::Apply::Bootstrap reaches for this file when
+# `$no_password_mode || $provider eq 'ssh'` — in setup_ssh_key and again in
+# bootstrap_control_plane — so that same expression is the gate here. The two
+# halves have to agree; when they did not, `ocp apply` died with "SSH not
+# reachable" on a secure-mode ssh project, a network message for what was
+# really "nothing to authenticate with".
+#
+# Why not simply always: a Hetzner control plane never sees this key. There the
+# admin public key is uploaded through the API before the server exists, so a
+# bootstrap key would be inert — and creating one anyway costs the four
+# lifecycle commands that read the path (OCP::Cmd::Update, ::Destroy,
+# ::Node::Add, ::Apply::Drift) their honest "the key is missing" failure,
+# replacing it with an SSH auth timeout. Dev mode is included because
+# OCP::Cmd::Apply's --nopassword path requires this file for every provider.
+#
+# It is deliberately NOT behind PIN2: the bootstrap has to read it without a
+# prompt, so a second PIN here would just re-block what this fixes.
+sub _ensure_bootstrap_key {
+    my ($self, $secrets, $provider) = @_;
+
+    my $target = '.ocp/id_ed25519';
+
+    # --ssh-key was previously read only on the dev-mode branch, so in secure
+    # mode it was accepted and then silently dropped. It is evaluated in both
+    # modes now, and wherever it cannot be honoured it says so out loud.
+    my $source = $self->ssh_key;
+    if (defined $source) {
+        $source =~ s/\A~/$ENV{HOME}/;
+        undef $source if $source eq $target;
+    }
+
+    # Maintaining a key that already exists is provider-agnostic on purpose.
+    # A project that has one has it for a reason, whatever its provider says
+    # today, and this branch is the whole guard between a key already in
+    # service and OCP::Secrets::generate_ssh_key, which unlinks before it
+    # generates. Regenerating it would lock the operator out of machines whose
+    # authorized_keys already carry its public half.
+    if (-f $target) {
+        unless ($source && $self->force) {
+            print "[ok] SSH bootstrap key exists ($target)\n";
+            if ($source) {
+                print "     Keeping it — --ssh-key $source was NOT used.\n";
+                print "     Your machines already trust the existing key;\n";
+                print "     replacing it would lock you out. Use --force to\n";
+                print "     replace it anyway.\n";
+            }
+            return;
+        }
+        # --force with an explicit --ssh-key: an operator asking for the
+        # replacement by name. Fall through to the copy below.
+    }
+    elsif (!($self->nopassword || $provider eq 'ssh')) {
+        # Nothing reads a bootstrap key in this configuration.
+        if (defined $self->ssh_key) {
+            print "[!!] --ssh-key is not used with provider '$provider'.\n";
+            print "     Only 'provider: ssh' authenticates with the bootstrap\n";
+            print "     key .ocp/id_ed25519. A $provider control plane gets the\n";
+            print "     admin key instead, which 'ocp apply' takes straight from\n";
+            print "     keys.yaml. No key was created from --ssh-key.\n";
+        }
+        return;
+    }
+
+    if ($source) {
+        die "SSH key not found: $source\n" unless -f $source;
+        copy($source, $target) or die "Failed to copy private key: $!\n";
+        copy("$source.pub", "$target.pub") if -f "$source.pub";
+        chmod 0600, $target;
+        print "[ok] Copied SSH bootstrap key from $source\n";
+        return;
+    }
+
+    # --ssh-key pointed at $target itself and $target does not exist: that is
+    # a typo worth reporting, not a reason to generate something else.
+    die "SSH key not found: " . $self->ssh_key . "\n" if defined $self->ssh_key;
+
+    print "[..] Generating SSH bootstrap key ($target)\n";
+    my $ssh_keys = $secrets->generate_ssh_key;
+    print "[ok] Generated SSH bootstrap key: $ssh_keys->{public_key}\n";
+
+    return;
 }
 
 # Ask which location and which server type the control plane should use.
@@ -751,6 +860,34 @@ produces the same F<ocp.yaml> as a non-interactive run. The step is skipped
 altogether when STDIN is not a terminal, when no token is available, or when
 the catalogue cannot be read — it never blocks a batch run and never fails
 an init.
+
+=head2 SSH keys
+
+The B<bootstrap key> F<.ocp/id_ed25519> is the credential OCP presents to a
+machine whose F<authorized_keys> it cannot write itself. It is created exactly
+where L<OCP::Cmd::Apply::Bootstrap> reads it: under C<--nopassword> (which
+needs it for every provider), and for C<provider: ssh> in both modes. A
+Hetzner or local control plane in secure mode gets the admin key instead —
+uploaded via the API before the server exists — so no bootstrap key is
+written there, and the commands that read the path keep their honest "the key
+is missing" failure. It carries no PIN: the bootstrap has to read it without
+prompting. C<--ssh-key> supplies one instead of generating it, in both modes;
+against a provider that does not use a bootstrap key it is reported rather
+than silently dropped.
+
+Re-running C<ocp init> after switching F<ocp.yaml> to C<provider: ssh> creates
+the key: the step reads the provider from the existing F<ocp.yaml>, not from
+the C<--provider> default.
+
+An existing F<.ocp/id_ed25519> is never regenerated and never silently
+replaced — its public half is already in F<authorized_keys> on a running
+cluster's machines. C<--ssh-key> against an existing key is reported and
+ignored unless C<--force> is given.
+
+Secure mode additionally writes the B<two-tier keys> into F<keys.yaml>: a
+robo key (C<purpose: automation>, age-encrypted, for robocop and workers) and
+an admin key (C<purpose: admin>, age + PIN2, for control planes and
+C<ocp ssh>). Print the admin public key with C<ocp keys show --purpose admin>.
 
 With --nogit, skips git repository initialization and .gitignore creation.
 The generated F<.gitignore> ignores F<.ocp/> only: the encrypted files

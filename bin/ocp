@@ -31,6 +31,7 @@ ocp - Omni Control Plane CLI
     ocp kubeconfig                        # print kubeconfig
     ocp kubeconfig -e                     # merge into ~/.kube/config
     ocp ssh --node police1                # SSH into a node (admin key)
+    ocp keys show                         # admin public key (for authorized_keys)
 
     # Nodes and providers (OCPNode / OCPNodeProvider CRs)
     ocp node ls

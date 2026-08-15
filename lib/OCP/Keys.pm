@@ -27,11 +27,6 @@ has keys_file => (
     builder => sub { shift->project_dir->child('keys.yaml') },
 );
 
-has keys_dir => (
-    is      => 'lazy',
-    builder => sub { shift->project_dir->child('.ocp', 'keys') },
-);
-
 has age_key_file => (
     is      => 'lazy',
     builder => sub { shift->project_dir->child('.ocp', 'age.key') },
@@ -273,49 +268,16 @@ sub get_admin_key {
     return undef;
 }
 
+# decrypt_all_to_disk used to live here: it wrote every decrypted key to
+# .ocp/keys/<name>[.pub]. It had no caller anywhere in lib/ or bin/, but its
+# POD promised the layout, so the docs and a deploy plan both assumed
+# .ocp/keys/ existed after `ocp init` — it never did. Worse than the missing
+# feature was the shape of it: the only way to see a public key was a method
+# that also spilled every private key onto the filesystem in plaintext.
 #
-# Decrypt all keys and write to .ocp/keys/
-#
-
-sub decrypt_all_to_disk {
-    my ($self, $pin2) = @_;
-
-    my $keys = $self->list_keys;
-    return unless @$keys;
-
-    # Ensure keys directory exists
-    $self->keys_dir->mkpath unless -d $self->keys_dir;
-
-    my @decrypted;
-
-    for my $key (@$keys) {
-        next if $key->{deprecated};  # Skip deprecated keys
-
-        my $decrypted = $self->decrypt_key($key->{name}, $pin2);
-        next unless $decrypted;
-
-        # Write private key
-        my $private_file = $self->keys_dir->child($key->{name});
-        $private_file->spew($decrypted->{private});
-        $private_file->chmod(0600);
-
-        # Write public key (if exists)
-        if ($key->{public}) {
-            my $public_file = $self->keys_dir->child("$key->{name}.pub");
-            $public_file->spew($key->{public});
-            $public_file->chmod(0644);
-        }
-
-        push @decrypted, {
-            name         => $key->{name},
-            type         => $key->{type},
-            private_file => $private_file->stringify,
-            public_file  => $key->{public} ? $self->keys_dir->child("$key->{name}.pub")->stringify : undef,
-        };
-    }
-
-    return \@decrypted;
-}
+# `ocp keys show` (OCP::Cmd::Keys::Show) answers the question that was
+# actually being asked — "what do I put in authorized_keys?" — and answers it
+# with the public half alone, on stdout, writing nothing.
 
 #
 # Single encryption: age only (for automation keys)
@@ -543,10 +505,9 @@ OCP::Keys - Secure key management with double encryption
     # Decrypt specific key
     my $key = $keys->decrypt_key('cluster-ssh-2024', 'secret-pin2');
 
-    # Decrypt all to disk
-    $keys->decrypt_all_to_disk('secret-pin2');
-    # → .ocp/keys/cluster-ssh-2024
-    # → .ocp/keys/cluster-ssh-2024.pub
+    # Public halves need no PIN2 — see ENCRYPTION LAYERS below
+    my ($admin) = grep { $_->{purpose} eq 'admin' } @{ $keys->list_keys };
+    print $admin->{public};
 
 =head1 DESCRIPTION
 
@@ -574,24 +535,66 @@ This provides defense-in-depth security:
 
 =head1 FILE FORMAT
 
-    # keys.yaml (double encrypted)
+F<keys.yaml> is a SOPS file: C<_write_keys_file_encrypted> encrypts B<every>
+leaf value to the project's age recipient, so nothing in it — not the name,
+not the public key — is readable without F<.ocp/age.key>.
+
+    # keys.yaml on disk
+    version: ENC[AES256_GCM,data:...]
+    keys:
+      - name: ENC[AES256_GCM,data:...]
+        type: ENC[AES256_GCM,data:...]
+        created: ENC[AES256_GCM,data:...]
+        private: ENC[AES256_GCM,data:...]
+        public: ENC[AES256_GCM,data:...]
+        deprecated: ENC[AES256_GCM,data:...]
+    sops:
+      age: [...]
+
+What the accessors here return is the file after that layer comes off:
+
+    # after _read_keys_file_encrypted
     version: 1
     keys:
-      - name: cluster-ssh-2024
+      - name: admin-ssh-20260815
         type: ssh_ed25519
-        created: 2024-02-15T12:00:00Z
-        private: |-
+        purpose: admin
+        created: 2026-08-15T12:00:00Z
+        private: |-                      # still encrypted, see below
           -----BEGIN AGE ENCRYPTED FILE-----
           ...
           -----END AGE ENCRYPTED FILE-----
-        public: ssh-ed25519 AAAA...
-        deprecated: false
+        public: ssh-ed25519 AAAA...      # plaintext from here on
+        deprecated: 0
+
+=head1 ENCRYPTION LAYERS
+
+The two layers do not apply uniformly, and the difference is the whole point:
+
+=over 4
+
+=item * B<public> is protected by the SOPS/age layer only. Once
+F<.ocp/age.key> is unlocked (PIN1), C<list_keys> hands it back in plaintext.
+No PIN2. This is what C<ocp keys show> prints.
+
+=item * B<private> carries a second, PIN2-derived layer on top for
+C<purpose: admin> keys (C<_double_encrypt>: PBKDF2 + AES-256-GCM, then age).
+C<purpose: automation> keys get the age layer only (C<_single_encrypt>), so
+robocop can use them unattended.
+
+=back
+
+So F<keys.yaml> alone is useless; F<keys.yaml> + F<age.key> yields the public
+keys and the automation private key; the admin private key additionally needs
+PIN2.
 
 =head1 METHODS
 
 =head2 list_keys
 
-Returns arrayref of all keys (metadata only, private keys still encrypted).
+Returns arrayref of all keys with the SOPS/age layer removed: names, types,
+purposes and B<public> keys in plaintext, C<private> still encrypted. Needs
+F<.ocp/age.key>, never PIN2.
 
 =head2 get_key($name)
 
@@ -605,11 +608,11 @@ Required params: name, type, private, pin2
 
 =head2 decrypt_key($name, $pin2)
 
-Decrypt specific key, returns hashref with decrypted private key.
+Decrypt specific key, returns hashref with decrypted private key. C<$pin2> is
+required unless the key's purpose is C<automation>.
 
-=head2 decrypt_all_to_disk($pin2)
-
-Decrypt all non-deprecated keys and write to .ocp/keys/
+To read only a public key, use C<list_keys>/C<get_key> and take the C<public>
+field — that path needs no PIN2. C<ocp keys show> is the CLI for it.
 
 =head2 deprecate_key($name)
 

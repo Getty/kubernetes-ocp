@@ -120,6 +120,18 @@ sub dist_label {
 # provider: the bootstrap key in .ocp/id_ed25519. Secure mode +
 # Hetzner: drop the admin-key into a temp file so Rex can read it; the
 # public half gets written alongside because Rex expects key_file.pub.
+#
+# The split follows who owns the machine. Hetzner servers are created
+# here, so OCP uploads the admin public key via the API before the
+# server exists and can rely on it being there. An ssh-provider machine
+# is pre-existing: the only key it trusts is the one the operator put
+# into authorized_keys by hand, which is the bootstrap key. That is why
+# `provider eq 'ssh'` overrides the mode rather than following it.
+#
+# OCP::Cmd::Init::_ensure_bootstrap_key is the other half of this
+# contract — it creates .ocp/id_ed25519 in BOTH modes. It used to create
+# it only under --nopassword, so this branch reached for a file that a
+# secure-mode project never had, and apply failed as "SSH not reachable".
 sub setup_ssh_key {
     my ($self, $config) = @_;
 
