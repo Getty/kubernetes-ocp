@@ -8,6 +8,16 @@ use Path::Tiny qw(path);
 use Carp qw(croak);
 use YAML::XS ();
 
+# The Hetzner control-plane defaults a fresh spec gets. Kept here because two
+# places need the same three values: write_spec falls back to them, and the
+# pickers in OCP::Cmd::Init preselect them so pressing Enter reproduces
+# exactly what a non-interactive init would have written.
+our %HETZNER_DEFAULTS = (
+    server_type => 'cpx21',
+    location    => 'fsn1',
+    image       => 'debian-13',
+);
+
 has ocp => (
     is      => 'lazy',
     default => sub { OCP->instance },
@@ -49,10 +59,8 @@ sub _default_spec {
             version => '',      # latest if empty
         },
         control_planes => {
-            provider    => 'hetzner',
-            server_type => 'cpx21',
-            location    => 'fsn1',
-            image       => 'debian-13',
+            provider => 'hetzner',
+            %HETZNER_DEFAULTS,
         },
         workers => [],
         ssh => {
@@ -433,9 +441,9 @@ sub write_spec {
         if ($provider eq 'hetzner') {
             $spec->{control_planes} = {
                 provider    => 'hetzner',
-                server_type => $opts{server_type} // 'cpx21',
-                location    => $opts{location} // 'fsn1',
-                image       => $opts{image} // 'debian-13',
+                server_type => $opts{server_type} // $HETZNER_DEFAULTS{server_type},
+                location    => $opts{location}    // $HETZNER_DEFAULTS{location},
+                image       => $opts{image}       // $HETZNER_DEFAULTS{image},
             };
         } elsif ($provider eq 'ssh') {
             my $cp = { provider => 'ssh' };

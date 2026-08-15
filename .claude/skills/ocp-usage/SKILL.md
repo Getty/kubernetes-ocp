@@ -34,12 +34,12 @@ Kubernetes::REST port_forward).
 against a declared option name, so `--dry-run` and `--dry_run` both work for the same
 option — `--help` only ever prints one spelling, which is not evidence the other is
 rejected. The docs below use the hyphenated form throughout, matching `xt/smoke.sh` and
-`README.md`. **One real exception**: `ocp node add --no_wait` must be underscored. A
-leading `--no-` is peeled off *before* the dash/underscore substitution, as a
-Getopt::Long-style negation marker (`^(\-+)(no\-)?(.*)$`) — so `--no-wait` is parsed as
-"negate a boolean option called `wait`", which doesn't exist, and dies with `Unknown
-option: wait`. `--no_wait` has no literal `no-` for that regex to match, so it goes
-straight through as the option name itself.
+`README.md`. **The one shape that never works is a leading `--no-`**: it is peeled off
+*before* the dash/underscore substitution, as a Getopt::Long-style negation marker
+(`^(\-+)(no\-)?(.*)$`), so `--no-foo` is read as "negate a boolean option called `foo`"
+and dies with `Unknown option: foo` unless such an option exists. Every negative flag in
+this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `--nowait`.
+`ocp node add` still accepts `--no_wait` as an alias for `--nowait`.
 
 - `ocp init` — project init (keys, config, git)
   - `--hetzner` — interactive Hetzner token setup (NOT the same as
@@ -72,8 +72,8 @@ straight through as the option name itself.
 - `ocp inject-key` — disabled (dies with explanation)
 - `ocp hetzner [--list] [--label KEY=VAL]` — Hetzner debugging
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
-  [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--no_wait]`
-  — create an OCPNode CR (note: `--no_wait`, underscore — see above)
+  [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--nowait]`
+  — create an OCPNode CR (`--no_wait` is kept as an alias, see above)
 - `ocp node rm NAME` — drain + remove (OCP::Node->teardown)
 - `ocp node ls` — list OCPNode CRs (name, role, phase, provider, IP, age)
 - `ocp provider add --name NAME --type hetzner --token-file FILE

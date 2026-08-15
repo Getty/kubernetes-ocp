@@ -5,6 +5,7 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use File::Temp ();
+use JSON::PP ();
 use Kubernetes::REST::Kubeconfig;
 use OCP::Config;
 use OCP::Secrets;
@@ -63,9 +64,15 @@ option gpu => (
     doc     => 'Enable GPU support',
 );
 
-option no_wait => (
+# Spelled without a dash on purpose, like --nogit and --nopassword in
+# `ocp init`. MooX::Options strips a literal "no-" as Getopt::Long's negation
+# marker before it turns dashes into underscores, so `--no-wait` asked to
+# negate a "wait" option that does not exist and died with "Unknown option:
+# wait". `--no_wait` stays as an alias for anything that already uses it.
+option nowait => (
     is      => 'ro',
     is_bool => 1,
+    short   => 'no_wait',
     doc     => 'Write CR and exit without waiting for Ready',
 );
 
@@ -165,6 +172,9 @@ sub _validate_flags {
 sub _build_cr {
     my ($self, $provider_name) = @_;
 
+    # spec.gpu is declared `type: boolean` in the OCPNode CRD. The bare Perl 1
+    # that MooX::Options hands over serializes as a JSON integer and the API
+    # rejects the CR with a 422, so it has to go out as a JSON boolean.
     my %spec = (
         role        => $self->role,
         providerRef => $provider_name,
@@ -172,7 +182,7 @@ sub _build_cr {
         ($self->server_type ? (serverType => $self->server_type) : ()),
         ($self->location    ? (location   => $self->location)    : ()),
         ($self->image       ? (image      => $self->image)       : ()),
-        ($self->gpu         ? (gpu        => 1)                  : ()),
+        ($self->gpu         ? (gpu        => JSON::PP::true)     : ()),
     );
 
     return {
@@ -302,7 +312,7 @@ sub execute {
     my $cr = $self->_build_cr($provider_name);
     $api->ensure($cr);
 
-    if ($self->no_wait) {
+    if ($self->nowait) {
         print $self->name . "\n";
         return 0;
     }
@@ -349,7 +359,7 @@ OCP::Cmd::Node::Add - Add an OCPNode CR and optionally reconcile it
     ocp node add worker-1 --role worker
     ocp node add gpu-1    --role worker --provider hetzner-a --gpu
     ocp node add ssh-1    --role worker --provider ssh-a --host 10.0.0.5
-    ocp node add worker-2 --role worker --no-wait
+    ocp node add worker-2 --role worker --nowait
 
 =head1 DESCRIPTION
 
@@ -358,7 +368,11 @@ node to reach C<Ready> status.  If Robocop is running in the cluster, the
 command polls the CR status and lets Robocop do the work.  Otherwise it
 drives reconciliation directly via L<OCP::Node>.
 
-Pass C<--no-wait> to write the CR and return immediately.
+Pass C<--nowait> to write the CR and return immediately.  The older
+C<--no_wait> spelling is kept as an alias.  There is deliberately no
+C<--no-wait>: L<MooX::Options> reads a literal C<no-> as Getopt::Long's
+negation marker before it maps dashes to underscores, so the dashed form
+would ask to negate a C<wait> option that does not exist.
 
 =head1 SEE ALSO
 

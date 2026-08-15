@@ -84,6 +84,23 @@ has _provider => (
     builder => sub { $_[0]->provider // 'hetzner' },
 );
 
+# Whether it is safe to ask the user anything. A pipe, a CI job or the test
+# suite has no one to answer, so every prompt below has to fall back to its
+# default rather than block. Kept as an attribute so tests can set it.
+has _interactive => (
+    is      => 'lazy',
+    builder => sub { -t STDIN ? 1 : 0 },
+);
+
+# Catalogue wrapper for the location/server-type pickers. Built from the
+# stored token when it is needed; injectable so tests stay network-free.
+has _picker => (is => 'rw');
+
+# What the pickers settled on. Undef means "never asked" — write_spec then
+# applies OCP::Config's defaults exactly as before.
+has _location    => (is => 'rw');
+has _server_type => (is => 'rw');
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -310,6 +327,18 @@ sub execute {
     }
 
     #
+    # Step 6.5: Hetzner location and server type
+    #
+    # The catalogue is only readable once the token is in hand, so the pickers
+    # sit directly behind the token step — and only on the path that asked for
+    # a token in the first place. Whatever is not answered stays at the
+    # defaults OCP::Config writes anyway, so a run without a terminal, without
+    # a token or with the API unreachable produces the same ocp.yaml as before.
+    if ($self->hetzner && $self->_provider eq 'hetzner' && (!$has_config || $self->force)) {
+        $self->_prompt_hetzner_control_plane($secrets);
+    }
+
+    #
     # Step 7: ocp.yaml
     #
     if ($has_config && !$self->force) {
@@ -351,6 +380,11 @@ sub execute {
         $opts{provider} = $provider;
         $opts{host}     = $self->host;
         $opts{service}  = $self->service;
+
+        # Only set when a picker actually ran; write_spec falls back to
+        # OCP::Config's defaults for anything left undef.
+        $opts{location}    = $self->_location    if $self->_location;
+        $opts{server_type} = $self->_server_type if $self->_server_type;
 
         OCP::Config->write_spec($config_file, %opts);
         print "[ok] Created $config_file\n";
@@ -500,6 +534,77 @@ sub _datestamp {
     return sprintf('%04d%02d%02d', $t[5]+1900, $t[4]+1, $t[3]);
 }
 
+# Ask which location and which server type the control plane should use.
+# Every exit before the prompts leaves _location/_server_type undef, which is
+# how "keep the defaults" is expressed — this must never be the step that
+# makes `ocp init` hang or fail.
+sub _prompt_hetzner_control_plane {
+    my ($self, $secrets) = @_;
+
+    return unless $self->_interactive;
+
+    my $picker = $self->_picker;
+    unless ($picker) {
+        my $token = $secrets && $secrets->hetzner_token
+            or return;
+        $picker = OCP::Hetzner::Picker->new(token => $token);
+    }
+
+    my $locations = eval { $picker->location_options };
+    my $types     = eval { $picker->server_type_options };
+
+    unless (($locations && @$locations) && ($types && @$types)) {
+        print "[!!] Could not read the Hetzner catalogue — keeping the defaults\n";
+        return;
+    }
+
+    print "\n";
+    print "Control plane placement (Enter keeps the default)\n";
+
+    $self->_location(
+        _pick('Location:', $locations, $OCP::Config::HETZNER_DEFAULTS{location}));
+    $self->_server_type(
+        _pick('Server type:', $types, $OCP::Config::HETZNER_DEFAULTS{server_type}));
+
+    printf "[ok] Control plane: %s in %s\n",
+        $self->_server_type, $self->_location;
+
+    return;
+}
+
+# Print a { label, value } list and read one choice from STDIN. Accepts the
+# number from the list or the value itself; anything else, including a bare
+# Enter or a closed STDIN, keeps $default.
+sub _pick {
+    my ($prompt, $options, $default) = @_;
+
+    print "\n$prompt\n";
+    my $n = 0;
+    for my $opt (@$options) {
+        $n++;
+        printf "  %2d) %s%s\n", $n, $opt->{label},
+            ($opt->{value} eq $default ? '  [default]' : '');
+    }
+    print "Choice [$default]: ";
+
+    my $input = <STDIN>;
+    return $default unless defined $input;
+    chomp $input;
+    $input =~ s/\A\s+//;
+    $input =~ s/\s+\z//;
+    return $default unless length $input;
+
+    return $options->[$input - 1]{value}
+        if $input =~ /\A[0-9]+\z/ && $input >= 1 && $input <= @$options;
+
+    for my $opt (@$options) {
+        return $opt->{value} if $opt->{value} eq $input;
+    }
+
+    print "  '$input' is not on the list — keeping $default\n";
+    return $default;
+}
+
 sub _augment_existing_config {
     my ($self, $config_file) = @_;
 
@@ -637,6 +742,15 @@ C<--host>; C<--provider local> targets the machine C<ocp> runs on.
 With --hetzner, prompts for Hetzner API token and stores it encrypted
 using SOPS/age. Without it, init stays offline and only warns that a token
 is still missing.
+
+Once the token is stored, C<--hetzner> also offers the live Hetzner
+catalogue (L<OCP::Hetzner::Picker>) as a numbered list and asks where the
+control plane should run and on which server type. Both lists preselect the
+values C<OCP::Config> would have written anyway, so pressing Enter twice
+produces the same F<ocp.yaml> as a non-interactive run. The step is skipped
+altogether when STDIN is not a terminal, when no token is available, or when
+the catalogue cannot be read — it never blocks a batch run and never fails
+an init.
 
 With --nogit, skips git repository initialization and .gitignore creation.
 The generated F<.gitignore> ignores F<.ocp/> only: the encrypted files

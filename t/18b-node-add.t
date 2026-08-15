@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use Test::More;
+use JSON::PP ();
 
 use lib 'lib';
 
@@ -198,7 +199,7 @@ subtest 'writes OCPNode CR via ensure' => sub {
         name     => 'worker-1',
         role     => 'worker',
         provider => 'hetzner-a',
-        no_wait  => 1,
+        nowait   => 1,
     );
 
     capture_stdout { $add->execute([], []) };
@@ -214,7 +215,7 @@ subtest 'writes OCPNode CR via ensure' => sub {
     is $cr->{spec}{providerRef},    'hetzner-a',    'providerRef set';
 };
 
-subtest 'with --no-wait, returns after CR write' => sub {
+subtest 'with --nowait, returns after CR write' => sub {
     my $k8s = FakeK8sA->new(
         providers   => [$hetzner_provider],
         deployments => {},
@@ -223,7 +224,7 @@ subtest 'with --no-wait, returns after CR write' => sub {
         k8s      => $k8s,
         name     => 'worker-nw',
         provider => 'hetzner-a',
-        no_wait  => 1,
+        nowait   => 1,
     );
 
     my $stdout = capture_stdout { $add->execute([], []) };
@@ -308,7 +309,7 @@ subtest 'cr spec includes optional fields when provided' => sub {
         image       => 'debian-12',
         gpu         => 1,
         provider    => 'hetzner-a',
-        no_wait     => 1,
+        nowait      => 1,
     );
 
     capture_stdout { $add->execute([], []) };
@@ -318,7 +319,34 @@ subtest 'cr spec includes optional fields when provided' => sub {
     is $spec->{serverType}, 'cx52',      'serverType in spec';
     is $spec->{location},   'nbg1',      'location in spec';
     is $spec->{image},      'debian-12', 'image in spec';
-    is $spec->{gpu},        1,           'gpu in spec';
+    ok $spec->{gpu},                     'gpu in spec';
+};
+
+subtest 'spec.gpu goes out as a JSON boolean, not an integer' => sub {
+    # The OCPNode CRD declares spec.gpu as `type: boolean`. Handing the bare
+    # Perl 1 from the MooX::Options flag straight to the API produced
+    #   422 ... spec.gpu: Invalid value: "integer": spec.gpu in body must be
+    #   of type boolean: "integer"
+    # so --gpu could never write a CR at all.
+    my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
+    my $add = OCP::Cmd::Node::Add->new(
+        k8s      => $k8s,
+        name     => 'gpu-worker',
+        provider => 'hetzner-a',
+        gpu      => 1,
+        nowait   => 1,
+    );
+
+    capture_stdout { $add->execute([], []) };
+
+    my ($ensure) = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    my $cr = $ensure->[1];
+
+    isa_ok $cr->{spec}{gpu}, 'JSON::PP::Boolean';
+
+    my $body = JSON::PP->new->canonical->encode($cr);
+    like   $body, qr/"gpu"\s*:\s*true/, 'request body carries gpu: true';
+    unlike $body, qr/"gpu"\s*:\s*1\b/,  'request body carries no integer gpu';
 };
 
 subtest 'cr spec omits optional fields when not provided' => sub {
@@ -327,7 +355,7 @@ subtest 'cr spec omits optional fields when not provided' => sub {
         k8s      => $k8s,
         name     => 'plain-worker',
         provider => 'hetzner-a',
-        no_wait  => 1,
+        nowait   => 1,
     );
 
     capture_stdout { $add->execute([], []) };

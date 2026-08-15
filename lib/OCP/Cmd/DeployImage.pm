@@ -116,16 +116,23 @@ option namespace => (
 =opt wait
 
     --wait
+    --no-wait
 
 Wait until every robocop pod is Ready before returning. Use C<--timeout> to
-cap the wait.
+cap the wait. Off by default; C<--no-wait> states that explicitly.
 
 =cut
 
+# `negatable` is what makes Getopt::Long accept the --no- form: it puts the
+# `!` in the option spec, and it is also the flag MooX::Options checks before
+# it hands a stripped `--no-` back as a negation rather than as part of the
+# name. Without it `--no-wait` died with "Unknown option: no_wait" — see
+# `nowait` in OCP::Cmd::Node::Add for the other half of that trap. The default
+# is unchanged: no waiting unless asked.
 option wait => (
-    is      => 'ro',
-    is_bool => 1,
-    doc     => 'Wait until all robocop pods are Ready before returning',
+    is        => 'ro',
+    negatable => 1,
+    doc       => 'Wait until all robocop pods are Ready before returning (default: off)',
 );
 
 =opt timeout
@@ -145,23 +152,25 @@ option timeout => (
 
 =opt restart
 
-    --restart / --no_restart
+    --restart / --no-restart
 
 Trigger a rollout restart by patching the
 C<kubectl.kubernetes.io/restartedAt> annotation (default: on). Pass
-C<--no_restart> to update the image without restarting.
+C<--no-restart> to update the image without restarting.
 
 =cut
 
-# `is_bool => 1` makes MooX::Options treat the flag as boolean; the leading
-# `--no-` is peeled off before dash/underscore substitution, so --no_restart
-# negates this attribute. The default keeps the legacy "patch and restart"
-# behaviour; pass --no_restart to leave the old pod running.
+# `negatable` is what turns the attribute into a real on/off pair. It used to
+# say `is_bool => 1`, which MooX::Options does not know at all — the key was
+# handed straight through to `has` and quietly ignored, so the documented
+# --no_restart had no spelling that worked and the flag could not be switched
+# off from the command line. The default keeps the "patch and restart"
+# behaviour; --no-restart leaves the old pod running.
 option restart => (
-    is      => 'ro',
-    is_bool => 1,
-    default => 1,
-    doc     => 'Trigger rollout restart via annotation (default: on; --no_restart to skip)',
+    is        => 'ro',
+    negatable => 1,
+    default   => 1,
+    doc       => 'Trigger rollout restart via annotation (default: on; --no-restart to skip)',
 );
 
 # Tests override the sleep interval to keep the suite fast; production uses
@@ -259,7 +268,7 @@ sub execute {
         $self->_patch_restart($api, $ns);
     }
     else {
-        print "[--] rollout restart skipped (--no_restart)\n";
+        print "[--] rollout restart skipped (--no-restart)\n";
     }
 
     if ($self->wait) {
@@ -513,7 +522,7 @@ __END__
 
     ocp deploy-image --tag v1.2.3
     ocp deploy-image --tag latest --wait
-    ocp deploy-image --tag v1.2.3 --no_restart
+    ocp deploy-image --tag v1.2.3 --no-restart
     ocp deploy-image --tag v1.2.3 --wait --timeout 60
     ocp deploy-image --tag v1.2.3 --repo my-registry.example/ocp
     ocp deploy-image --image ghcr.io/foo/bar:v1.2.3
@@ -541,7 +550,7 @@ pod template are left untouched.
 When C<--restart> is in effect (the default), a second strategic-merge patch
 writes C<spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"]>
 to the current UTC timestamp -- exactly what C<kubectl rollout restart
-deployment/robocop> does on the wire. Pass C<--no_restart> to update the
+deployment/robocop> does on the wire. Pass C<--no-restart> to update the
 image without rolling the pods.
 
 =back

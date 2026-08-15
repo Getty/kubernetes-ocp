@@ -505,4 +505,37 @@ subtest '--image ghcr.io/foo/bar:v1.2.3 patches that exact string' => sub {
        'default repo is NOT used when --image is given');
 };
 
+# Both booleans were declared `is_bool => 1`, which MooX::Options does not
+# know: the key went straight through to `has` and was ignored, so no `!`
+# reached the option spec. `--no-wait` died with "Unknown option: no_wait",
+# and --no_restart — the spelling the POD, the doc string and the runtime
+# message all advertised — had no working form at all, leaving --restart
+# with no way to be switched off from the command line. Every subtest above
+# sets restart/wait on the constructor, which is why none of them noticed.
+#
+# new_with_options runs the real MooX::Options parse over the real spec
+# without MooX::Cmd's execute, so this stays in-process and network-free.
+subtest 'the boolean flags parse from the command line, both ways' => sub {
+    my $parse = sub {
+        local @ARGV = @_;
+        return OCP::Cmd::DeployImage->new_with_options;
+    };
+
+    my $plain = $parse->(qw(--tag v1.2.3));
+    ok(!$plain->wait,   'waiting is still off unless asked');
+    is($plain->restart, 1, 'restarting is still on by default');
+
+    is($parse->(qw(--tag v1.2.3 --wait))->wait, 1, '--wait turns waiting on');
+    for my $spelling (qw(--no-wait --nowait)) {
+        my $cmd = $parse->('--tag', 'v1.2.3', $spelling);
+        is($cmd->wait, 0, "$spelling turns waiting off instead of dying");
+    }
+
+    is($parse->(qw(--tag v1.2.3 --restart))->restart, 1, '--restart keeps it on');
+    for my $spelling (qw(--no-restart --norestart)) {
+        my $cmd = $parse->('--tag', 'v1.2.3', $spelling);
+        is($cmd->restart, 0, "$spelling actually reaches the attribute");
+    }
+};
+
 done_testing;

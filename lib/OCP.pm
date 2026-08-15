@@ -75,20 +75,102 @@ our %COMMAND_ALIASES = (
     'deploy-robocop' => 'deployrobocop',
 );
 
+# MooX::Cmd resolves a word it does not recognise by quietly falling back to
+# the enclosing command: `ocp typo --help` printed the root usage and exited
+# 0, and `ocp typo apply` ran apply. A tool that bootstraps clusters must not
+# accept input it does not understand, so every command word is checked
+# against its own level before MooX::Cmd ever sees the argument vector.
+
+# The commands a class dispatches to, keyed by the name MooX::Cmd derives from
+# the class name. Empty for a leaf command.
+sub _command_map {
+    my ($cmd_class) = @_;
+
+    return {} unless $cmd_class->can('_build_command_commands');
+    return $cmd_class->_build_command_commands({});
+}
+
+# Index of the next command word in $argv at or after $from: the first
+# argument that is neither an option nor an option's value. Options declared
+# with a format consume the following argument, unless they were written in
+# the --option=value form. Returns -1 when there is no command word left.
+sub _command_word_index {
+    my ($cmd_class, $argv, $from) = @_;
+
+    my %takes_value;
+    if ($cmd_class->can('_options_data')) {
+        my %data = $cmd_class->_options_data;
+        for my $name (keys %data) {
+            next unless defined $data{$name}{format};
+            my $dashed = $name;
+            $dashed =~ tr/_/-/;
+            $takes_value{$name} = $takes_value{$dashed} = 1;
+            $takes_value{ $data{$name}{short} } = 1
+                if defined $data{$name}{short};
+        }
+    }
+
+    for (my $i = $from; $i <= $#$argv; $i++) {
+        my $arg = $argv->[$i];
+        return -1 if $arg eq '--';
+        return $i unless $arg =~ /\A-\S/;
+        next if $arg =~ /=/;
+        my ($name) = $arg =~ /\A--?(?:no-?)?(\S+)\z/;
+        $i++ if defined $name && $takes_value{$name};
+    }
+
+    return -1;
+}
+
+# Walk the command words in $argv level by level, rewriting the root-level
+# aliases in place. Dies naming the available commands as soon as one of them
+# does not resolve.
+sub _resolve_commands {
+    my ($class, $argv) = @_;
+
+    my %spelling = reverse %COMMAND_ALIASES;
+    my $current  = $class;
+    my $from     = 0;
+    my @path     = ('ocp');
+
+    while (1) {
+        my $known = _command_map($current);
+        last unless %$known;
+
+        my $i = _command_word_index($current, $argv, $from);
+        last if $i < 0;
+
+        my $word = $argv->[$i];
+        my $name = @path == 1 ? ($COMMAND_ALIASES{$word} // $word) : $word;
+
+        my $cmd_class = $known->{$name}
+            or die sprintf "Unknown command '%s' for '%s'.\nAvailable: %s\n",
+                $word, join(' ', @path),
+                join(', ', sort map { $spelling{$_} // $_ } keys %$known);
+
+        $argv->[$i] = $name;
+
+        my $file = $cmd_class;
+        $file =~ s{::}{/}g;
+        require "$file.pm";
+
+        push @path, $word;
+        $current = $cmd_class;
+        $from    = $i + 1;
+    }
+
+    return;
+}
+
 sub run_cli {
     my ($class) = @_;
 
     my $verbose = grep { $_ eq '-v' || $_ eq '--verbose' } @ARGV;
 
-    for my $i (0 .. $#ARGV) {
-        last if $ARGV[$i] =~ /\A-/;                 # options end command lookup
-        if (my $real = $COMMAND_ALIASES{$ARGV[$i]}) {
-            $ARGV[$i] = $real;
-            last;
-        }
-    }
-
-    my $root = eval { $class->new_with_cmd };
+    my $root = eval {
+        _resolve_commands($class, \@ARGV);
+        $class->new_with_cmd;
+    };
     if (my $err = $@) {
         return _report_error($err, $verbose);
     }
@@ -316,6 +398,11 @@ C<list>; the cluster adapter lives in L<OCP::Provider::Hetzner>.
 Entry point used by F<bin/ocp>. Runs the command chain, turns exceptions
 into a single-line error message (unless C<--verbose> is given) and returns
 the process exit code.
+
+Every command word is resolved against its own level first. A word that
+names no command is reported on STDERR together with the commands that do
+exist, and the process exits non-zero — L<MooX::Cmd> would otherwise fall
+back to the enclosing command and report success.
 
 =head1 CONFIGURATION
 
