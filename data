@@ -1,0 +1,92 @@
+---
+class: standard
+completed: 2026-08-15T07:34:32Z
+created: 2026-08-12T23:28:54Z
+id: 47
+priority: low
+started: 2026-08-15T07:25:03Z
+status: done
+tags:
+- adr
+- docs
+title: 'ADR 0008: Konsequenz zum Hash-Vergleich stimmt nicht mehr, ADR 0004 um deployed.yaml
+  ergaenzen'
+updated: 2026-08-15T07:34:32Z
+---
+
+Aufgefallen beim Fix von #43 (ocp-worker). Doku-Lane, deshalb Ticket statt Edit.
+
+ADR 0008 (Server-Side Apply und Konvergenz ueber Manifest-Hash) fuehrt unter
+Consequences: "Der Hash ist ueber das GENERIERTE Manifest gebildet, nicht ueber den
+Cluster. Eine von Hand geloeschte Ressource faellt erst auf, wenn sich das Manifest
+selbst aendert."
+
+Das stimmt so nicht mehr. NFD, GPU-Operator und cert-manager hatten schon eine
+Existenzpruefung, die Registry hat sie mit #43 bekommen, und t/47-deployed-state.t
+haelt es jetzt als Invariante fest: keine Komponente meldet Gleichstand, ohne den
+Cluster gefragt zu haben. Die Entscheidung selbst bleibt gueltig — der Hash bleibt
+die Optimierung, er ist nur kein Beleg mehr fuer sich allein. Zu formulieren waere
+das als Praezisierung der Decision (Hash UND Zeugen-Ressource) und eine korrigierte
+Consequence.
+
+ADR 0004 (Spec in git, Status nicht) nennt .ocp/status.yaml namentlich, aber nicht
+.ocp/deployed.yaml, obwohl die Datei genau derselben Regel gehorcht: lokal
+gehaltener Cluster-Status, gitignored, stirbt mit dem Cluster. Genau daraus war der
+Bug entstanden — destroy raeumte die eine Datei und die andere nicht. Nachtragen,
+dann steht die Regel dort, wo der naechste Leser sie sucht.
+
+Zur Einordnung, warum der Hash NICHT als Annotation ans Objekt gewandert ist (die
+groessere Variante aus #43): eine Annotation stirbt nur mit dem Objekt, an dem sie
+haengt — ein Hash am Namespace ueberlebt das Loeschen eines Deployments genau wie
+die lokale Datei. Die Existenzpruefung braucht es so oder so; die Annotation waere
+sie plus Schreibzugriff. Falls das in einem ADR festgehalten werden soll, gehoert
+es zu 0008 dazu.
+ERLEDIGT 2026-08-15 (ocp-adr-auditor). Reine Doku, drei Dateien unter docs/adr/.
+
+ADR 0008 (Server-Side Apply / Hash-Konvergenz):
+ - Decision praezisiert: der Hash ist nie der einzige Eingang. Der Hash sagt, ob
+   sich der SOLL-Zustand bewegt hat, die Zeugen-Ressource sagt, ob die Komponente
+   noch da ist; beide muessen zustimmen, sonst wird neu ausgerollt. Zeuge je
+   Komponente und das Vier-Wege-Vokabular (deployed/restored/updated/unchanged)
+   sind benannt.
+ - Verworfene Alternative ergaenzt: Hash als Annotation am Objekt (die groessere
+   Variante aus #43). Grund gegen sie: eine Annotation stirbt nur mit DEM Objekt,
+   an dem sie haengt - ein Hash am Namespace ueberlebt ein geloeschtes Deployment
+   genau wie die lokale Datei. Die Zeugen-Pruefung braucht es so oder so, die
+   Annotation waere sie PLUS Schreibzugriff auf jedes verfolgte Objekt.
+ - Die falsche Consequence ("faellt erst auf, wenn sich das Manifest aendert")
+   ersetzt, drei neue Consequences.
+
+ADR 0004 (Spec in git, Status nicht):
+ - .ocp/deployed.yaml nachgetragen, mit OCP::Config->deployed_file, der
+   gemeinsamen Aufraeum-Schleife in Destroy.pm und --keep_status.
+ - Neuer Absatz ".ocp/ selbst ist nicht die Regel": das Schluesselmaterial im
+   selben Verzeichnis (age.key, age.pub, keys/, dev-mode id_ed25519) gehorcht
+   einer ANDEREN Regel - es ist kein Cluster-Status, es muss den Cluster
+   UEBERLEBEN, und destroy laesst es zu Recht liegen. Genau die Verwechslung
+   ("liegt unter .ocp/") liess das Fehlen von deployed.yaml harmlos aussehen.
+
+AM CODE VERIFIZIERT (gegen HEAD, nicht gegen den mutierenden Arbeitsbaum): alle
+vier Komponenten gaten wirklich ueber _resource_exists - Registry
+(Namespace + Deployment ocp-cache/ocp-registry, mit Skip bei external cache/
+upstream), NFD, GPU-Operator, cert-manager. deployed_file hat genau eine
+Definition, Destroy.pm raeumt status_file und deployed_file in einer Schleife.
+
+KONVENTION: docs/adr/ hatte keine Form fuer nachtraegliche Praezisierungen. Neu in
+docs/adr/README.md: ein ADR, dessen ENTSCHEIDUNG faellt, wird superseded; ein ADR,
+dessen Entscheidung haelt, dessen Aussage ueber die eigenen Folgen aber falsch war,
+wird amended (Nummer/Datum/Status bleiben, "## Amendment YYYY-MM-DD" am Ende
+zitiert den alten Wortlaut, inline-Marker an der korrigierten Stelle). Beides ist
+kein stilles Umschreiben. Provenance-Zeile fuer diesen Durchgang ergaenzt.
+
+Zwei Nebenbefunde als eigene Tickets: #68 (t/47-Invarianz-Scan erreicht die
+extrahierten Apply-Module nicht mehr) und #69 (cert-manager-Gate prueft
+Vorhandensein statt Gleichheit).
+
+OFFEN, gehoert zu #46: ADR 0008 traegt jetzt eine Consequence, die den HEAD-Stand
+beschreibt ("der GPU-Operator leitet seinen Bericht weiter aus der Hash-Datei ab,
+das Gate stimmt, der Satz nicht"). Wenn #46 landet, stimmt dieser Satz nicht mehr.
+Das ist laut der neuen Konvention KEIN Amendment-Fall - die Aussage war beim
+Schreiben richtig und der Code hat sich darunter bewegt -, also gehoert die
+Bullet im Doku-Nachlauf von #46 bearbeitet oder gestrichen, nicht per zweitem
+Amendment ueberschrieben.
