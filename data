@@ -1,0 +1,87 @@
+---
+class: standard
+completed: 2026-08-15T07:51:50Z
+created: 2026-08-12T19:12:52Z
+id: 37
+priority: low
+started: 2026-08-15T07:20:36Z
+status: done
+tags:
+- cli
+- usability
+- options
+title: ocp node add --no-wait scheitert, nur --no_wait funktioniert
+updated: 2026-08-15T07:51:50Z
+---
+
+Gefunden beim Aktualisieren des ocp-usage-Skills, sauber belegt.
+
+  $ ocp node add ... --no-wait
+  Unknown option: wait
+
+  $ ocp node add ... --no_wait
+  (funktioniert)
+
+Ursache in MooX::Options::Role::_options_fix_argv (im Image unter
+/opt/ocp/install/perl5/lib/perl5/MooX/Options/Role.pm):
+
+  /^(\-+)(no\-)?(.*)$/
+
+strippt ein literales "no-" als Getopt::Long-Negationsmarker, BEVOR die
+Dash-nach-Underscore-Ersetzung (s/\-/_/gx) laeuft. Da es keine Option "wait"
+gibt, wird --no-wait als "negiere die nicht existierende Option wait" gelesen
+und stirbt. Bei --no_wait greift der no--Zweig des Regex nicht, der Name geht
+unveraendert durch.
+
+Unabhaengig gegengeprueft mit einem isolierten Getopt::Long::Descriptive-Script:
+GLD allein lehnt ALLE Bindestrich-Formen ab, die Dash/Underscore-Toleranz ist
+also MooX::Options eigene Zutat, und die Negations-Kollision sitzt obendrauf.
+
+Alle anderen geprueften Optionen (--ssh-key, --dry-run, --server-type,
+--token-file, --keep-status) akzeptieren beide Schreibweisen.
+
+Folge: --no-wait ist die natuerliche Schreibweise und die einzige, die nicht
+geht. Im Skill ist es jetzt als Ausnahme dokumentiert — besser waere, den
+Namen so zu waehlen, dass die Falle nicht existiert. Optionen: die Option in
+etwas ohne no-Praefix umbenennen (z.B. --nowait wie --nogit und --nopassword,
+die im selben CLI bereits so heissen und deshalb nicht betroffen sind), oder
+eine echte wait-Option mit Default true deklarieren, damit --no-wait als
+Negation korrekt aufgeloest wird.
+
+Konsistenz-Argument fuer die erste Variante: ocp init hat --nogit und
+--nopassword, beide ohne Bindestrich und beide unproblematisch. --no_wait ist
+der Ausreisser im eigenen CLI.
+ERLEDIGT 2026-08-15 (ocp-worker), Variante A wie im Ticket empfohlen.
+
+lib/OCP/Cmd/Node/Add.pm: die Option heisst jetzt `nowait`; `short => 'no_wait'`
+haelt die alte Schreibweise am Leben (MooX::Options baut daraus die GLD-Spec
+nowait|no_wait; der Alias taucht im --help nicht auf, was hier erwuenscht ist).
+$self->no_wait -> $self->nowait, POD nachgezogen.
+
+`--no-wait` bleibt konstruktionsbedingt unmoeglich und ist im POD als solches
+begruendet. Variante B des Tickets (echte wait-Option mit Default true) haette
+hier die Semantik des Flags umgedreht.
+
+Test: t/26-cli-dispatch.t - beide Schreibweisen kommen an der Option-Parsestufe
+vorbei bis in den Kommandokoerper. t/18b auf nowait umgestellt.
+
+SKILL NACHGEZOGEN: .claude/skills/ocp-usage/SKILL.md dokumentierte --no_wait als
+"die eine echte Ausnahme". Das stimmt nicht mehr. Umgeschrieben auf die
+allgemeine Regel: ein fuehrendes --no- geht NIE, alle Negativ-Flags heissen
+--nogit / --nopassword / --nowait. Die Datei ist hardlinked (Linkcount 2), per
+`cat > datei` in-place geschrieben, Inode und Linkcount vorher wie nachher gleich.
+
+NACHLAUF, GROESSERER FUND - `ocp deploy-image` hatte dieselbe Falle, aber aus
+anderer Ursache und mit groesserem Schaden. `is_bool => 1` ist KEIN
+MooX::Options-Attribut und wird still ignoriert (Details und die verbliebenen
+Fundstellen: #73). Folge: `--restart` (default => 1) hatte UEBERHAUPT KEINE
+funktionierende Ausschalt-Schreibweise - weder --no-restart noch --no_restart
+noch --norestart -, obwohl POD, doc-String und Laufzeitmeldung --no_restart
+versprachen. Unentdeckt, weil t/54 das Objekt direkt mit restart => 0 baut und an
+der Parsestufe vorbeigeht.
+Behoben in lib/OCP/Cmd/DeployImage.pm mit `negatable => 1` an beiden Flags,
+Defaults UNVERAENDERT (nicht warten, neu starten). Hier war Variante B richtig,
+weil `wait` bereits das positive Flag ist - ein eigenstaendiges --nowait waere ein
+No-op-Name fuer den Default gewesen. Verifiziert ueber echtes new_with_options
+mit lokalem @ARGV; Test in t/54-deploy-image.t prueft den WERT, nicht nur dass
+das Parsen ueberlebt.
