@@ -1,0 +1,83 @@
+---
+class: standard
+completed: 2026-08-15T07:51:26Z
+created: 2026-08-15T03:15:56Z
+id: 67
+priority: high
+started: 2026-08-15T07:20:24Z
+status: done
+tags:
+- cli
+- moox
+- safety
+title: Unbekanntes Subkommando loest still zur Wurzel auf, Exit 0 statt Fehler
+updated: 2026-08-15T07:51:26Z
+---
+
+Gemessen am 2026-08-15 gegen das frisch gebaute Image (raudssus/ocp:latest, ID ded022c9819c):
+
+    $ docker run --rm raudssus/ocp:latest quatschkommando --help
+    USAGE: ocp [-h] [long options ...]
+    ...
+    exit: 0
+
+Ein Subkommando, das es nicht gibt, fuehrt nicht zu einem Fehler. MooX::Cmd
+loest still zur Wurzel auf und fuehrt deren execute aus. Kein Exit-Code,
+keine Warnung, keine Meldung.
+
+WARUM DAS GEFAEHRLICH IST, nicht nur unschoen:
+
+Beim Aufbau des Clusters citiai (citiai-Repo, Plan
+docs/superpowers/plans/2026-08-15-cluster-citiai.md) lief cp-lab zunaechst mit
+dem alten Docker-Hub-Image von 2026-02-23, das noch kein "node"-Subkommando
+kannte. Ein "ocp node add otho-gpu --role worker --provider ssh --host ..."
+waere dort NICHT gescheitert. Es haette still das Wurzelkommando ausgefuehrt
+und Erfolg gemeldet. Der Bediener haette auf einen Node gewartet, der nie
+angelegt wurde -- ohne jeden Hinweis, dass das Kommando gar nicht existiert.
+
+Aufgefallen ist es nur, weil ein Agent die Kommandoliste aus "ocp --help"
+gegen den Plan gehalten hat. Ohne diesen Abgleich waere es ein stiller
+Fehlschlag mitten in einem Cluster-Aufbau gewesen.
+
+Dieselbe Falle steht als Warnung in der CLAUDE.md des citiai-Repos, dort fuer
+CitiAI::CLI: "MooX::Cmd sucht Kommandos unter <Klasse>::Cmd. CitiAI::CLI setzt
+deshalb use MooX::Cmd base => CitiAI::CLI; -- ohne das loest citiai check
+still zur Wurzel auf und fuehrt deren execute aus, ohne Fehler und ohne
+Warnung."
+
+ZU PRUEFEN
+- Ob OCP.pm / bin/ocp das "base =>" setzt, das CitiAI::CLI setzen musste.
+- Ob die Wurzel ein execute hat, das bei unbekanntem Argument sinnvoller mit
+  Hilfe + Exit != 0 antwortet, statt Erfolg zu melden.
+- Regressionstest: "ocp gibtsnicht" muss != 0 zurueckgeben.
+
+Verwandt: #37 (--no-wait vs --no_wait) ist dieselbe Familie -- die CLI nimmt
+Eingaben an, die sie nicht versteht, statt sie zurueckzuweisen.
+ERLEDIGT 2026-08-15 (ocp-worker).
+
+DIAGNOSE: Das `base =>` aus dem citiai-Fall war NICHT das Problem. OCP benutzt
+bereits korrekt den Default OCP::Cmd, und OCP::Cmd::{Node,Provider,Hetzner} setzen
+base ohnehin. Die Ursache sitzt in MooX::Cmd::Role::_initialize_from_cmd: es sucht
+per first_index das ERSTE bekannte Kommando irgendwo in @ARGV und laesst alles
+andere stumm als Argument der Wurzel liegen. --help wird von MooX::Options
+WAEHREND new_with_cmd behandelt und beendet mit 0, bevor irgendein execute den
+Tippfehler ueberhaupt sieht.
+
+FIX in lib/OCP.pm: die alte Alias-Schleife in run_cli ist durch _resolve_commands
+ersetzt, das die Kommandowoerter Ebene fuer Ebene gegen _build_command_commands
+prueft (mit _command_word_index, das Optionen samt Werten ueberspringt, aus
+_options_data). Root-Aliase wie deploy-image werden dort ebenfalls in-place
+aufgeloest.
+
+  Error: Unknown command 'quatschkommando' for 'ocp'.
+  Available: apply, deploy-image, deploy-robocop, destroy, hetzner, init, ...
+
+STDERR, Exit 1. `ocp`, `ocp --help` und alle bekannten Kommandos unveraendert.
+
+DREI WEITERE VARIANTEN DERSELBEN FAMILIE MITGEFIXT, absichtlich behalten:
+ - `ocp typo apply` fuehrte vorher stumm apply aus
+ - `ocp node typo --help` gab 0 zurueck
+ - `ocp -v deploy-image` loeste den Alias nicht auf (die alte Schleife brach bei
+   der ersten Option ab)
+
+Test: t/26-cli-dispatch.t, +20 Assertions ueber die Subprozess-Harness der Datei.
