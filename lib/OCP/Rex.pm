@@ -12,8 +12,6 @@ use OCP::Share;
 use OCP::SSH;
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 has host => (
     is       => 'ro',
     required => 1,

@@ -11,8 +11,6 @@ use Socket;
 use OCP::Drift;
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 # CoreDNS ConfigMap names per distribution. Stored here (and aliased into
 # OCP::Drift) so the writer and the drift probe read the same list — a writer
 # looking in "coredns" while the reader looks in "rke2-coredns-rke2-coredns"

@@ -12,8 +12,6 @@ use OCP::K8s;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 has k8s => (is => 'rw');
 
 sub _k8s {

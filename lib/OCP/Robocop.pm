@@ -8,8 +8,6 @@ use IO::Async::Stream;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 
-our $VERSION = '0.001';
-
 has checkpoint_dir => (
     is      => 'ro',
     default => sub { $ENV{CHECKPOINT_DIR} // '/dev/shm/robocop' },

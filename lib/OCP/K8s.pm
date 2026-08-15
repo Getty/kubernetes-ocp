@@ -11,8 +11,6 @@ use Carp qw(croak);
 use OCP::K8s::OCPNode ();
 use OCP::K8s::OCPNodeProvider ();
 
-our $VERSION = '0.001';
-
 sub register {
     my ($class, $api) = @_;
     $api->resource_map->{OCPNode}         = '+OCP::K8s::OCPNode';

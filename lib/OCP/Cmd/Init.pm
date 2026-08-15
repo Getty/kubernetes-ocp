@@ -16,8 +16,6 @@ use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 option hetzner => (
     is    => 'ro',
     doc   => 'Prompt for a Hetzner Cloud API token and store it encrypted',

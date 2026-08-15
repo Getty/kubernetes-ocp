@@ -3,8 +3,6 @@ package OCP::Role::Provider::ExistingHost;
 
 use Moo::Role;
 
-our $VERSION = '0.001';
-
 # Uninstall both distributions — we don't track which one is on the host.
 #
 # The vendor uninstallers stop at their own footprint and leave behind what OCP

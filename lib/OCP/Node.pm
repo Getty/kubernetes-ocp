@@ -13,8 +13,6 @@ use OCP::SSH;
 use OCP::Versions;
 use namespace::clean;
 
-our $VERSION = '0.001';
-
 has cr            => (is => 'ro', writer => '_set_cr', required => 1);
 has k8s           => (is => 'ro', required => 1);
 has provider      => (is => 'ro');

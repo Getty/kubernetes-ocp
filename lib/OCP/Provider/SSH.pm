@@ -6,8 +6,6 @@ use OCP::SSH;
 
 with 'OCP::Role::Provider::ExistingHost';
 
-our $VERSION = '0.001';
-
 =attr ssh_key_path
 
     my $p = OCP::Provider::SSH->new(ssh_key_path => '/path/to/id_ed25519');

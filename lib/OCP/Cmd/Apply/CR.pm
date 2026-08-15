@@ -13,8 +13,6 @@ use OCP::Node;
 use OCP::Provider;
 use OCP::SSH;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     OCP::Cmd::Apply::CR::ensure_crds($apply, $api);

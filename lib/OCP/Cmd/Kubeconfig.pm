@@ -13,8 +13,6 @@ use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 option export => (
     is    => 'ro',
     short => 'e',

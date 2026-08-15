@@ -10,8 +10,6 @@ use OCP::Kubernetes;
 use OCP::Node;
 use OCP::Provider;
 
-our $VERSION = '0.001';
-
 #
 # Configuration
 #

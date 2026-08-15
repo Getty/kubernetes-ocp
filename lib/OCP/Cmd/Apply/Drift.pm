@@ -9,8 +9,6 @@ use OCP::Rex;
 use OCP::Secrets;
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     my $result = OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);

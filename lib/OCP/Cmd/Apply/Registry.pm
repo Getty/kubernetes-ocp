@@ -9,8 +9,6 @@ use JSON::PP ();
 
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     my $outcome = OCP::Cmd::Apply::Registry::setup($apply, $config);

@@ -9,8 +9,6 @@ use OCP;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 sub execute {
     my ($self, $args_ref, $chain_ref) = @_;
 

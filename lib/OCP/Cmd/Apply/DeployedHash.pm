@@ -6,8 +6,6 @@ use warnings;
 
 use Path::Tiny qw(path);
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     my $deployed = $apply->ocp->load_file($path->stringify);

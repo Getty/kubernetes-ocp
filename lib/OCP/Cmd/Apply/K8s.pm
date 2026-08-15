@@ -12,8 +12,6 @@ use YAML::XS ();
 
 use OCP::K8s;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     my $api = OCP::Cmd::Apply::K8s::api($apply, $kubeconfig);

@@ -16,8 +16,6 @@ use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 # --- Defaults --------------------------------------------------------------
 #
 # Verified against share/robocop/deployment.yaml:

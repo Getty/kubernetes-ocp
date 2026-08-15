@@ -14,8 +14,6 @@ use OCP::Provider;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 option name => (
     is     => 'ro',
     format => 's',

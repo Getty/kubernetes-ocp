@@ -7,8 +7,6 @@ use Symbol qw(gensym);
 
 with 'OCP::Role::Provider::ExistingHost';
 
-our $VERSION = '0.001';
-
 # The machine OCP itself runs on. Kept as an IP rather than 'localhost' so
 # the value can be handed to SSH-based code paths unchanged.
 =method resolve_host

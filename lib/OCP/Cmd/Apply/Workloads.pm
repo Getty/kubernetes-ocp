@@ -10,8 +10,6 @@ use Path::Tiny qw(path);
 
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     OCP::Cmd::Apply::Workloads::setup_nfd($apply, $config);

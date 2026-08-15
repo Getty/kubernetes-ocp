@@ -7,8 +7,6 @@ use Path::Tiny qw(path);
 
 use OCP;
 
-our $VERSION = '0.001';
-
 # Named entry lists in a kubeconfig, and the key holding their payload.
 my %SECTIONS = (
     clusters => 'cluster',

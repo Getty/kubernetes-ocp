@@ -8,8 +8,6 @@ use FindBin;
 use File::ShareDir ();
 use Path::Tiny qw(path);
 
-our $VERSION = '0.001';
-
 # A directory is only OCP's share directory if it carries the Rexfile.
 # Deciding on -d alone adopts any stray share/ that happens to sit in the
 # right place — and an empty one would then shadow the real one.

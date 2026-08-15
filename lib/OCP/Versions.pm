@@ -4,8 +4,6 @@ package OCP::Versions;
 use strict;
 use warnings;
 
-our $VERSION = '0.001';
-
 # Version manifest: OCP version -> component versions
 # Add new components here, standard updates = just bump version numbers
 our $VERSIONS = {
@@ -48,17 +46,26 @@ our $VERSIONS = {
     },
 };
 
+# No local $VERSION here — OCP.pm is the single source of truth. Loaded
+# lazily (not via `use`) so this stays safe whether OCP.pm is already loaded
+# (bin/ocp loads it before any OCP::Cmd::* pulls this module in) or not
+# (t/06-versions.t and friends `use OCP::Versions;` standalone).
+sub _ocp_version {
+    require OCP;
+    return OCP->VERSION;
+}
+
 # Get component versions for a specific OCP version
 sub get_versions {
     my ($class, $version) = @_;
-    $version //= $VERSION;  # Default to current version
+    $version //= _ocp_version();  # Default to current version
     return $VERSIONS->{$version};
 }
 
 # Get component version
 sub get_component_version {
     my ($class, $component, $ocp_version) = @_;
-    $ocp_version //= $VERSION;
+    $ocp_version //= _ocp_version();
     my $versions = $class->get_versions($ocp_version);
     return unless $versions && $versions->{components};
     return $versions->{components}{$component};
@@ -67,7 +74,7 @@ sub get_component_version {
 # List all components
 sub list_components {
     my ($class, $ocp_version) = @_;
-    $ocp_version //= $VERSION;
+    $ocp_version //= _ocp_version();
     my $versions = $class->get_versions($ocp_version);
     return unless $versions && $versions->{components};
     return keys %{$versions->{components}};

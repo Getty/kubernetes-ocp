@@ -16,8 +16,6 @@ use OCP::Secrets;
 use OCP::SSH;
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     # One call: provision server, install K8s, wait for the node to be

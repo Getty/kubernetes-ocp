@@ -4,8 +4,6 @@ package OCP::Provider::Hetzner;
 use Moo;
 use WWW::Hetzner::Cloud;
 
-our $VERSION = '0.001';
-
 =attr token
 
     my $hz = OCP::Provider::Hetzner->new(token => $ENV{HETZNER_API_TOKEN});

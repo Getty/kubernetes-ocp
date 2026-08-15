@@ -5,8 +5,6 @@ use Moo;
 use Socket;
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 has config => (is => 'ro', required => 1);
 
 # Kubernetes::REST api. Without it only spec drift is detectable.

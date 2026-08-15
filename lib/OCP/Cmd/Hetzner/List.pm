@@ -9,8 +9,6 @@ use Path::Tiny qw(path);
 use OCP::Secrets;
 use WWW::Hetzner::Cloud;
 
-our $VERSION = '0.001';
-
 option label => (
     is     => 'ro',
     format => 's',

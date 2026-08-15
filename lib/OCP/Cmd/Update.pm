@@ -12,8 +12,6 @@ use Term::ANSIColor qw(colored);
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 option dry_run => (
     is      => 'ro',
     short   => 'n',

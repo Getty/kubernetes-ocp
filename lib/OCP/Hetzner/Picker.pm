@@ -4,8 +4,6 @@ package OCP::Hetzner::Picker;
 use Moo;
 use WWW::Hetzner::Cloud;
 
-our $VERSION = '0.001';
-
 has token => (is => 'ro', required => 1);
 
 has _cloud => (is => 'lazy', builder => sub {

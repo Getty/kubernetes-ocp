@@ -16,8 +16,6 @@ use File::Temp;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 option node => (
     is     => 'ro',
     format => 's',

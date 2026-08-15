@@ -13,8 +13,6 @@ use Time::Piece;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 has k8s => (is => 'rw');
 
 sub _k8s {

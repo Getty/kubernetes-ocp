@@ -9,8 +9,6 @@ use MooX::Options;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 sub execute {
     my ($self, $args, $chain) = @_;
     die "subcommand required: ocp node [add|rm|ls]\n";

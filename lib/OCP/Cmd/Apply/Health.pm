@@ -4,8 +4,6 @@ package OCP::Cmd::Apply::Health;
 use strict;
 use warnings;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     my $health = OCP::Cmd::Apply::Health::check($apply, $api);

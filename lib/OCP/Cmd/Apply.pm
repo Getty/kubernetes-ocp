@@ -44,8 +44,6 @@ use OCP::Cmd::Apply::Workloads;
 
 with 'OCP::Role::Cmd';
 
-our $VERSION = '0.001';
-
 has _ssh_key_path => (is => 'rw');
 
 # Control-plane identity, as both apply paths have to agree on it: an SSH

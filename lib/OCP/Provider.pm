@@ -4,8 +4,6 @@ package OCP::Provider;
 use strict;
 use warnings;
 
-our $VERSION = '0.001';
-
 # Two entry points, one dispatch.
 #
 # `for_spec` is the CLI/bootstrap path: the control plane spec is a plain hash

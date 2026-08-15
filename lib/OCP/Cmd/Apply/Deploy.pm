@@ -10,8 +10,6 @@ use OCP::Cmd::Apply::Registry;
 use OCP::Cmd::Apply::Workloads;
 use OCP::Versions;
 
-our $VERSION = '0.001';
-
 =head1 SYNOPSIS
 
     my $step = OCP::Cmd::Apply::Deploy::deploy($apply, {
