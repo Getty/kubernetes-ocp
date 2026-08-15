@@ -1,0 +1,141 @@
+---
+class: standard
+completed: 2026-08-15T07:49:08Z
+created: 2026-08-12T23:23:22Z
+id: 45
+priority: medium
+started: 2026-08-15T07:21:20Z
+status: done
+tags:
+- gpu
+- rke2
+- containerd
+- drift
+title: 'Legacy config.toml.tmpl von vor #23 bleibt auf gebootstrappten Hosts liegen'
+updated: 2026-08-15T07:49:08Z
+---
+
+Nebenbefund aus #44 (ocp-infra-worker), gemessen auf cortex vor dem Teardown.
+
+GEMESSEN. Auf dem RKE2-Node lag
+  /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl
+56 Bytes, mtime 21:33 UTC - also in der Rex-Phase, gut eine Stunde bevor rke2
+um 22:26 startete. Inhalt genau zwei Zeilen: eine imports-Zeile auf
+/etc/containerd/conf.d/*.toml und version = 2. Die daraus gerenderte
+config.toml war ebenfalls 56 Bytes.
+
+ZUORDNUNG (begruendet, nicht bewiesen). Pfad und Inhalt sind woertlich das,
+was #23 der geloeschten _configure_nvidia_containerd zuschreibt: RKE2-Pfad
+fest verdrahtet, imports plus version = 2, kein template base. Der Zeitpunkt
+liegt im Rex-Fenster. Ein anderer Schreiber ist auf dem Host nicht erkennbar.
+Beweisen liesse sich das nur mit einem frischen Bootstrap-Vergleich, und der
+Cluster wurde waehrend der Untersuchung weggeraeumt.
+
+WARUM DAS EIN EIGENES PROBLEM IST. #23 hat den CODE geloescht, der die Datei
+schreibt. Die DATEI raeumt niemand weg. k3s und RKE2 rendern config.toml bei
+jedem Service-Start aus dem Template, wenn eines existiert - und zwar ANSTELLE
+ihrer generierten Config. Ein Host, der von einem OCP-Stand vor dem #23-Fix
+gebootstrappt wurde, faehrt seine containerd-Config also dauerhaft aus diesem
+Zwei-Zeiler weiter, auch nach einem Upgrade auf den reparierten Stand. Genau
+der Schaden, den #23 als Hypothese beschrieben hat, nur eben schon eingetreten
+statt verhindert.
+
+Zu klaeren:
+  a) Soll Rex ein solches Alt-Template beim Bootstrap erkennen und entfernen?
+     Ein Template, das OCP nicht mehr schreibt, aber noch verantwortet, ist
+     ein Kandidat fuer eine gezielte Aufraeum-Task - kein pauschales Loeschen,
+     jemand koennte ein eigenes Template dort abgelegt haben. Vorschlag:
+     nur entfernen, wenn der Inhalt exakt der bekannte Zwei-Zeiler ist.
+  b) Gehoert der Befund als remedy in OCP::Drift, damit ocp status ihn meldet,
+     statt ihn erst beim naechsten Bootstrap zu heilen?
+
+OFFEN, NICHT GEMESSEN. Auf demselben Host hat das crashloopende
+Toolkit-DaemonSet die config.toml zwischen zwei Messungen erneut geschrieben
+(mtime 23:02 -> 23:07), waehrend der Drop-In /etc/containerd/conf.d/99-nvidia.toml
+einen vollstaendigen Config-Dump enthielt (version = 3, CRI-Plugin komplett).
+Das sieht danach aus, als reduziere das Toolkit die Haupt-Config selbst auf
+die imports-Zeile und schiebe den Rest in den Drop-In. Ob es das auch mit
+einer vollstaendigen, frisch von RKE2 generierten Config tut - also ob auf
+einem sauberen Node Registry-Mirrors und sandbox_image den Umzug ueberleben -
+liess sich hier nicht trennen, weil die Config schon vorher der Zwei-Zeiler
+war. Das ist die Frage, die ein sauberer RKE2-GPU-Bootstrap beantworten muss.
+MESSUNG NACH destroy auf cortex (rke2, aarch64), relevant fuer die Reichweite dieses Tickets:
+
+  /var/lib/rancher/            existiert nicht mehr  -> config.toml.tmpl ist mit weg
+  /etc/containerd/conf.d/99-nvidia.toml   4992 Bytes, bleibt liegen
+  /etc/default/rke2-server: PATH=...      bleibt liegen (der #23-Eintrag)
+
+Damit trifft das Szenario dieses Tickets NICHT den destroy-Fall — ocp destroy
+nimmt /var/lib/rancher mit und raeumt das Template mit ab. Es trifft den Fall,
+der im Ticket gemeint ist: einen Host, der vor dem #23-Fix gebootstrapped wurde
+und danach nur upgraded, nie zerstoert wird.
+
+Zwei weitere Reste, die niemand aufraeumt und die zum selben Thema gehoeren:
+
+1. /etc/containerd/conf.d/99-nvidia.toml — geschrieben vom gestrichenen
+   _configure_nvidia_containerd bzw. vom Toolkit-DaemonSet. Aktuell harmlos,
+   weil die Datei nur wirkt, wenn ein config.toml.tmpl sie per imports
+   einbindet, und genau das Template ist weg. Ein spaeterer Bootstrap, der
+   wieder ein Template anlegt, wuerde sie stillschweigend aktivieren.
+
+2. Die PATH-Zeile in /etc/default/rke2-server aus #23. Additiv und harmlos,
+   aber sie ueberlebt ein destroy und beschreibt einen Zustand (nvidia-Runtime
+   auf dem Host), der nach einem destroy nicht mehr garantiert ist.
+
+Gemeinsamer Nenner mit #43: OCP hinterlaesst Zustand ausserhalb dessen, was es
+selbst wieder aufraeumt — dort lokal in .ocp/deployed.yaml, hier auf dem Host.
+Ein destroy sollte definieren, was es zuruecklaesst, statt es dem Zufall der
+Uninstall-Skripte zu ueberlassen.
+ERLEDIGT 2026-08-15 (ocp-infra-worker) - Punkt a). Punkt b) ist jetzt #71.
+
+share/Rexfile: task cleanup_legacy_containerd_template plus drei Rex-freie Helfer,
+platziert neben _configure_nvidia_runtime_path, dessen Kommentar diese Geschichte
+schon dokumentiert. Geloescht wird INHALTSBASIERT, nie ueber den Pfad: die Datei
+wird gelesen und nur entfernt, wenn sie exakt dem bekannten Zwei-Zeiler entspricht
+(imports = ["/etc/containerd/conf.d/*.toml"] + version = 2; die Byte-genaue
+Zeichenkette wurde aus Commit 60aa766 rekonstruiert, 56 Bytes - deckt sich mit der
+Messung auf cortex). Nur trailing Whitespace wird normalisiert. Alles andere,
+auch ein echtes eigenes Template mit {{ template "base" . }}, bleibt liegen und
+sagt das. Beide Distributionen (rke2 UND k3s), beide Ausgaenge werden geloggt.
+Aufgerufen aus prepare_node, das alle vier install-Tasks als Erstes fahren, vor
+dem Service-Start.
+
+REICHWEITE - MUSS MAN WISSEN, sie ist kleiner als der Ticket-Titel vermuten laesst:
+prepare_node wird nur ueber die install-Tasks erreicht, und OCP::Rex::install_server
+laeuft nur aus lib/OCP/Cmd/Apply/Bootstrap.pm. reconcile_components ruft es
+ausdruecklich NICHT (t/38-reconcile-path.t haelt das fest). Auf einem BESTEHENDEN
+Cluster nimmt `ocp apply` also den Reconcile-Pfad, und die Aufraeum-Task feuert
+NICHT - ausgerechnet auf dem Host, um den es hier geht.
+Sie feuert bei: frischem Bootstrap (no-op), wiederholtem Bootstrap, und bei
+install_agent - das ist der interessante Fall fuer den ssh/existing-host-Provider,
+wenn eine vorbestehende Maschine als Worker dazukommt. Sonst von Hand:
+  rex -f share/Rexfile -H <host> -u root cleanup_legacy_containerd_template
+Das deckt sich mit dem Wortlaut des Tickets ("beim Bootstrap erkennen und
+entfernen"); die Begrenzung ist a) inhaerent und ist genau der Grund, warum b)
+vorgeschlagen war. b) ist jetzt #71.
+
+Test: t/68-rexfile-legacy-template.t (neu, 11 Tests, netzwerkfrei, Muster von
+t/64-rexfile-pins.t). Hebt die drei Helfer aus dem Rexfile-Quelltext und evalt sie
+freistehend - was nebenbei belegt, dass sie keine Rex-Abhaengigkeit tragen - und
+faehrt die Entscheidung gegen den exakten Zwei-Zeiler, denselben ohne
+Zeilenumbruch am Ende, und sieben Beinahe-Treffer, die ueberleben MUESSEN:
+Base-Template-Include, anderer Import-Glob, version = 3, Zusatzdirektive, nur die
+imports-Zeile, eine vollstaendige generierte Config, leer, undef. Dazu
+strukturell: der Content-Guard steht vor dem unlink, beide Ausgaenge werden
+geloggt, beide Distributionspfade sind abgedeckt, alle vier install-Tasks
+erreichen die Task ueber prepare_node. Rot verifiziert - ohne Guard fallen 2 von 11.
+
+KOLLATERAL, bewusst und begruendet: t/44-gpu-detect.t, Subtest "OCP writes no
+containerd configuration for the GPU", behauptete die ABWESENHEIT der Strings
+config.toml.tmpl und /etc/containerd/conf.d im ganzen Rexfile. Die neue Task muss
+beide zwangslaeufig nennen. Die BEHAUPTUNG des Tests ist unveraendert wahr - OCP
+schreibt keine containerd-Config -, nur ihr Proxy war zu grob: die beiden unlike
+laufen jetzt gegen das Rexfile OHNE die Cleanup-Task und ihre drei Helfer, und
+drei neue Assertions binden die zwei Strings AN diese Task (sie muss unlink
+enthalten und darf keinen file-Write enthalten). Damit kann sich kein spaeterer
+Schreiber hinter der Ausnahme verstecken. Verifiziert, dass das Strippen genau die
+4 gemeinten Bloecke entfernt (1162 Bytes) und prepare_node, install_cilium und
+_configure_nvidia_runtime_path im geprueften Text stehen bleiben.
+
+NICHT ANGEFASST, wie beauftragt: /etc/containerd/conf.d/99-nvidia.toml und die
+PATH-Zeile in /etc/default/rke2-server. Beide sind in #71 mit aufgenommen.
