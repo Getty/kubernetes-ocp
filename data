@@ -1,0 +1,101 @@
+---
+class: standard
+completed: 2026-08-15T19:48:04Z
+created: 2026-08-15T18:47:41Z
+id: 84
+priority: high
+started: 2026-08-15T19:22:16Z
+status: done
+tags:
+- cli
+- secure-mode
+- keys
+title: Kein Weg, den admin Public Key nach 'ocp init' anzuzeigen — decrypt_all_to_disk
+  ist toter Code
+updated: 2026-08-15T19:48:04Z
+---
+
+Gefunden bei citiai#23 (Cluster-Aufbau citiai auf cp-lab), Task 1 Schritt 6 des Plans
+docs/superpowers/plans/2026-08-15-cluster-citiai.md (Repo citiai).
+
+Der Plan (und die Skill-Doku ocp-usage) geht davon aus, dass OCP im secure mode nach
+`ocp init` die oeffentlichen Schluessel nach `.ocp/keys/<name>.pub` schreibt. Stimmt
+nicht mehr (oder nie): `OCP::Keys::decrypt_all_to_disk` (lib/OCP/Keys.pm:280) ist die
+einzige Stelle, die das taete — `grep -rn decrypt_all_to_disk lib/OCP/` findet
+ausserhalb ihrer eigenen POD keinen einzigen Aufrufer. Gemessen auf cp-lab nach
+frischem `ocp init`: `.ocp/keys/` existiert nicht, nur `.ocp/age.key` und `.ocp/age.pub`.
+
+Zusatzbefund, wahrscheinlich zusammenhaengend: die POD in Keys.pm (~Zeile 587) zeigt
+`public: ssh-ed25519 AAAA...` als Klartext-Beispiel im internen `$data` VOR dem
+Schreiben — tatsaechlich verschluesselt `_write_keys_file_encrypted` inzwischen auch
+das `public`-Feld (jeder Blattwert in keys.yaml ist `ENC[AES256_GCM,...]`, verifiziert
+am echten File). Nur `private` bekommt zusaetzlich die PIN2-Schicht (`_double_encrypt`,
+add_key ~Zeile 125) — `public` liegt nur hinter der age-Schicht und waere technisch
+schon mit dem beim `init` entsperrten `.ocp/age.key` lesbar (kein PIN2 noetig), aber
+nur ueber `File::SOPS->decrypt(identities=>[".ocp/age.key"])`
+(lib/OCP/Keys.pm:466-481), nicht per CLI.
+
+Ergebnis: nach `ocp init` gibt es AKTUELL KEINEN offiziellen Weg, den admin-Public-Key
+anzuzeigen — weder fuer `ocp node add` (das braucht ihn zum Verteilen auf neue
+Maschinen) noch fuer manuelle Distribution wie in unserem Plan Schritt 7. Betrifft
+jeden ssh-Provider-Workflow, nicht nur citiai.
+
+Vorschlag: entweder `decrypt_all_to_disk` tatsaechlich in `ocp init` aufrufen (dann
+stimmt die POD/Skill-Doku wieder), oder ein neues `ocp keys show [--purpose admin]`
+das nur den Public Key ausgibt (kein PIN2 noetig, siehe oben). Zweites ist sauberer -
+schreibt keine Klartext-Datei aufs Filesystem, wo sie liegen bleiben koennte.
+
+Zweiter, kleinerer Befund derselben Untersuchung: OCP::Cmd::SSH::execute prueft
+cluster_exists (kubeconfig.yaml vorhanden) und bricht mit "No cluster deployed yet"
+ab, BEVOR nach PIN2 gefragt wird. Erwartbar, aber falls irgendwo dokumentiert ist,
+ocp ssh liesse sich schon vor dem ersten apply zur reinen Erreichbarkeits-Pruefung
+nutzen: stimmt nicht, das Kommando lehnt vorher ab.
+
+Nicht angefasst — kubernetes-ocp ist Nachbarrepo von citiai, Aenderung gehoert auf
+dieses Board.
+ERLEDIGT 2026-08-15 (ocp-worker). Der zweite Vorschlag des Tickets umgesetzt -
+neues Kommando statt decrypt_all_to_disk zu reaktivieren.
+
+PIN2-ANNAHME SELBST VERIFIZIERT, nicht uebernommen: an add_key (~110-116) und
+_write_keys_file_encrypted nachgesehen - nur `private` geht durch
+_double_encrypt, `public` traegt allein die age-Schicht. Das Kommando verlangt
+also KEIN PIN2.
+
+NEU: lib/OCP/Cmd/Keys.pm + lib/OCP/Cmd/Keys/Show.pm
+
+  ocp keys show [--purpose admin|--name NAME]
+
+Gibt ausschliesslich den Public Key aus. Zwei Entwurfsentscheidungen:
+ - KEIN cluster_exists-Gate, anders als `ocp ssh`. Dort ist das Gate richtig; hier
+   waere es falsch, denn dieses Kommando beantwortet eine Frage, die genau VOR dem
+   ersten apply zaehlt - welchen Schluessel lege ich auf die Maschinen.
+ - Schluesselmaterial auf STDOUT, alles andere auf STDERR. Damit pipet es direkt
+   in authorized_keys.
+
+decrypt_all_to_disk ENTFERNT, zusammen mit dem Attribut keys_dir, das nur sie
+benutzte. Als Weg, einen Public Key zu lesen, war sie die falsche Form: sie schrieb
+als Nebenwirkung JEDEN PRIVATEN Schluessel im Klartext auf die Platte. Ein
+Grabstein-Kommentar haelt fest, warum sie weg ist - toter Code, dessen POD etwas
+verspricht, was nicht passiert, ist genau die Falle, die dieses Ticket ausgeloest hat.
+
+POD in OCP::Keys korrigiert: das Klartext-Beispiel `public: ssh-ed25519 AAAA...`
+war falsch (jeder Blattwert in keys.yaml ist age-verschluesselt). Neuer Abschnitt
+ENCRYPTION LAYERS sagt jetzt, welche Schicht welches Feld tatsaechlich deckt - das
+war der Nebenbefund des Tickets.
+
+Test in t/69-secure-ssh-keys.t: das Kommando macht NULL Passwort-Prompts, und es
+kann den privaten Schluessel unter keinen Umstaenden ausgeben - geprueft gegen die
+entschluesselte UND die gespeicherte Chiffrat-Form jedes Schluessels. Die zweite
+Assertion ist die wichtigere.
+
+Ein Test schlug zuerst fehl und es wurde die ASSERTION verengt, nicht der Code: er
+suchte im ganzen File nach decrypt_all_to_disk, seine Behauptung galt aber der POD -
+der Grabstein-Kommentar ist Absicht. Prueft jetzt den Abschnitt nach __END__.
+
+NEBENBEFUND des Tickets, nicht angefasst und weiterhin gueltig: OCP::Cmd::SSH::execute
+prueft cluster_exists und bricht mit "No cluster deployed yet" ab, BEVOR nach PIN2
+gefragt wird. Das ist dort richtig - `ocp ssh` braucht einen Cluster. Nur falls
+irgendwo dokumentiert ist, man koenne es vor dem ersten apply zur
+Erreichbarkeitspruefung nutzen: das stimmt nicht.
+
+Suite: Files=61, Tests=1025, PASS.
