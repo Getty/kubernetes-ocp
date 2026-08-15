@@ -1,0 +1,79 @@
+---
+class: standard
+completed: 2026-08-15T21:00:32Z
+created: 2026-08-15T20:21:43Z
+id: 94
+priority: medium
+started: 2026-08-15T21:00:32Z
+status: done
+tags:
+- cli
+- ssh
+- secure-mode
+title: ocp ssh verlangt PIN2 auch bei provider ssh, wo der admin-Key gar nicht gilt
+updated: 2026-08-15T21:00:32Z
+---
+
+Gefunden 2026-08-15 beim Fix von #87 (ocp-worker). Die Umkehrung von #87.
+
+OCP::Cmd::SSH fragt UNBEDINGT nach PIN2 und benutzt den admin-Key - auch bei einem
+Cluster mit provider: ssh. Dessen Maschinen trauen aber dem Bootstrap-Key
+(.ocp/id_ed25519), nicht dem admin-Key: niemand hat dort je einen admin-Public-Key
+hinterlegt, denn bei vorbestehenden Maschinen laedt OCP nichts hoch.
+
+Folge: `ocp ssh` gegen einen ssh-Provider-Cluster verlangt ein PIN2 und scheitert
+danach an der Authentifizierung - es sei denn, der Bediener hat den admin-Public-Key
+zusaetzlich von Hand verteilt. Genau dazu raet die Ausgabe von `ocp init` seit #85
+("ocp keys show --purpose admin"), aber verlassen kann man sich darauf nicht.
+
+Das ist spiegelbildlich zu #87: dort griffen vier Kommandos zum Bootstrap-Key,
+obwohl auf Hetzner der admin-Key gilt. Hier greift eines zum admin-Key, obwohl beim
+ssh-Provider der Bootstrap-Key gilt.
+
+ZU TUN: OCP::Cmd::SSH soll dieselbe Auswahl treffen wie der Rest - ueber
+OCP::ClusterKey / cluster_ssh_key (mit #87 eingefuehrt). Dann faellt es bei
+provider ssh auf den Bootstrap-Key und fragt gar nicht erst nach PIN2, und bei
+Hetzner bleibt es beim admin-Key wie bisher.
+
+VORHER ENTSCHEIDEN: `ocp ssh` ist ausdruecklich als Admin-Zugang gedacht (ABSTRACT:
+"SSH into cluster nodes with admin key", ADR 0006 nennt es als PIN2-Stelle). Wenn es
+bei provider ssh kuenftig ohne PIN2 verbindet, ist das eine Absenkung des
+Zugangsschutzes fuer diese Cluster-Art - technisch aendert es nichts (der
+Bootstrap-Key liegt ohnehin ungeschuetzt auf der Platte und gibt root), aber es
+sollte bewusst geschehen und in ADR 0006 stehen.
+
+Das beruehrt dieselbe Frage wie #88: ob der Bootstrap-Key ueberhaupt bleiben soll.
+Wird er abgeschafft, loest sich dieses Ticket mit auf - dann traegt jede Maschine
+den admin-Key und `ocp ssh` ist ueberall richtig.
+
+Lane: ocp-worker. Verwandt: #87, #88, #85, ADR 0006.
+ERLEDIGT 2026-08-15 durch ADR 0027 / Commit 4d8ed8e - aber ANDERS, als dieses
+Ticket vorgeschlagen hat.
+
+Das Ticket wollte den umgekehrten Fix: `ocp ssh` soll bei provider ssh auf den
+BOOTSTRAP-Key zurueckfallen und PIN2 ueberspringen, weil der Admin-Key auf diesen
+Maschinen nicht gilt.
+
+Mit der Entscheidung aus ADR 0027 ist diese Praemisse falsch geworden: der
+Bootstrap-Key existiert im secure mode nicht mehr, ssh-Provider-Maschinen tragen
+ab jetzt den ADMIN-Key in authorized_keys. Damit ist PIN2 in `ocp ssh` korrekt und
+kein Theater - es ist derselbe Schluessel, den die Maschine auch wirklich kennt.
+Die Ausstiegsklausel, die in diesem Ticket schon stand ("Wird er abgeschafft, loest
+sich dieses Ticket mit auf"), ist genau das, was passiert ist.
+
+EINE ECHTE HAELFTE HAT UEBERLEBT UND IST GEFIXT: In einem --nopassword-Projekt
+verlangte `ocp ssh` unbedingt PIN2 gegen eine keys.yaml, die es dort gar nicht
+gibt. Das konnte nur in "Wrong PIN2 or no admin-key found!" enden - das Kommando
+war im Dev-Mode schlicht unbenutzbar. OCP::Cmd::SSH laeuft jetzt ueber
+cluster_ssh_key und verbindet im Dev-Mode promptfrei mit dem Bootstrap-Key.
+
+Nebenbei entfaellt damit auch die handgeschriebene Kopie der Schluessel-Logik in
+SSH.pm (eigener prompt_password-Aufruf, eigenes File::Temp) - die Auswahl liegt
+jetzt an einer Stelle.
+
+Der zweite Fund aus derselben Untersuchung, den der ADR-Auditor gemeldet hatte
+(Apply.pm ~164-188 fragt im secure mode unabhaengig vom Provider nach PIN2), ist
+mit ADR 0027 ebenfalls richtig geworden: im secure mode gilt der Admin-Key fuer
+JEDEN Provider, der Prompt ist also am richtigen Ort.
+
+Tests: drei neue Subtests in t/71-cluster-ssh-key.t decken die Aufloesung ab.
