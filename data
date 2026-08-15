@@ -1,0 +1,76 @@
+---
+class: standard
+completed: 2026-08-15T07:46:12Z
+created: 2026-08-12T23:28:30Z
+id: 46
+priority: low
+started: 2026-08-15T07:20:55Z
+status: done
+tags:
+- reconcile
+- gpu
+- drift
+title: GPU-Operator meldet im Reconcile-Pfad weiter aus der Hash-Datei statt aus dem
+  Ergebnis
+updated: 2026-08-15T07:46:12Z
+---
+
+Aufgefallen beim Fix von #43 (ocp-worker), bewusst nicht mitgemacht: der GPU-Block
+in _reconcile_components liegt in der Lane des ocp-infra-worker (#44 arbeitet
+parallel an _generate_gpu_operator_manifest), deshalb hier notiert statt angefasst.
+
+Registry und NFD geben inzwischen zurueck, was sie getan haben
+(unchanged/deployed/restored/updated), und _report_component formuliert es. Der
+GPU-Block leitet sein Urteil weiter aus der Datei ab: er vergleicht
+_load_deployed_hashes vor und nach _setup_gpu_operator. Der Fall aus #43 faellt
+dabei durch das Raster — war der Hash gleich, aber der Operator vom Cluster
+verschwunden, dann rollt _setup_gpu_operator korrekt neu aus (die Existenzpruefung
+dort ist vorhanden), schreibt aber denselben Hash zurueck, und der Block meldet
+"GPU Operator up to date". Korrektheit ist also in Ordnung, nur die Meldung luegt.
+
+Der cert-manager-Block hat dieselbe Struktur, dort aber mit eigener
+_resource_exists-Pruefung und passender Meldung — er ist der harmlose Fall.
+
+ZU TUN: _setup_gpu_operator dieselben vier Rueckgabewerte geben lassen (inklusive
+eines fuenften fuer "keine GPU, uebersprungen", den der Block heute daran erkennt,
+dass hinterher kein gpu-operator-Key existiert) und den Block auf
+_report_component umstellen. Danach hat der Reconcile-Pfad keine zweite
+Hash-Berechnung mehr.
+
+Der Test t/47-deployed-state.t haelt die Invariante schon fest, dass jede Sub, die
+_load_deployed_hashes liest, auch den Cluster fragt — die Meldungs-Vokabeln pruefen
+lohnt sich beim Umstellen mitzunehmen.
+ERLEDIGT 2026-08-15 (ocp-worker). Der GPU-Block bildet sich kein eigenes Urteil
+mehr.
+
+setup_gpu_operator (lib/OCP/Cmd/Apply/Workloads.pm) gibt jetzt
+skipped/unchanged/deployed/restored/updated zurueck; DeployedHash.pm kennt
+"skipped" im Vokabular (zaehlt als keine Aenderung); der Block in
+Apply/Drift.pm ist auf einen einzigen _report_component-Aufruf zusammengeschrumpft.
+
+Der Fall "restored" ist genau der, den der alte Vorher/Nachher-Vergleich der
+Hash-Datei UEBERHAUPT NICHT sehen konnte - Hash gleich, Operator weg, korrekt neu
+ausgerollt, Meldung "up to date". Genau der Befund aus #43.
+
+Nach der Aenderung haelt der Reconcile-Pfad genau EINEN _load_deployed_hashes-
+Aufruf, im cert-manager-Block. Keine zweite Hash-Berechnung mehr.
+
+MIT ANGEFASST, ausserhalb der urspruenglichen Dateiliste und deshalb hier
+festgehalten: lib/OCP/Cmd/Apply/Deploy.pm. Die beiden "[ok] GPU Operator skipped"-
+Ausgaben standen in der Sub - sie WAREN das Urteil, das jetzt der Reporter faellt.
+Ohne Ersatz haette der Deploy-Pfad seine Abschlusszeile verloren; er hat
+stattdessen einen dreizeiligen _report_component-Aufruf bekommen. cert-manager
+blieb unangetastet.
+
+Tests: t/47-deployed-state.t - die Vokabel-Pruefung ist jetzt eine Tabelle, in der
+fuer jedes Wort mitgeprueft wird, was es die Zusammenfassung kostet; dazu ein
+Verhaltens-Subtest fuer beide Skip-Gruende und ein struktureller, der festhaelt,
+dass der Reconcile-Pfad kein eigenes Urteil mehr bildet.
+
+FOLGEARBEIT AN DER DOKU: ADR 0008 hat mit #47 eine Consequence bekommen, die den
+Zustand VOR diesem Fix beschreibt ("der GPU-Operator leitet seinen Bericht weiter
+aus der Hash-Datei ab, das Gate stimmt, der Satz nicht"). Der Satz stimmt jetzt
+nicht mehr. Laut der mit #47 eingefuehrten Konvention ist das KEIN Amendment-Fall
+- die Aussage war beim Schreiben richtig, der Code hat sich darunter bewegt -,
+die Bullet gehoert also bearbeitet oder gestrichen, nicht per zweitem Amendment
+ueberschrieben. Ist beim Commit dieses Durchgangs mit erledigt worden.
