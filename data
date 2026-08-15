@@ -1,0 +1,87 @@
+---
+class: standard
+completed: 2026-08-15T07:35:55Z
+created: 2026-08-12T19:28:59Z
+id: 41
+priority: medium
+started: 2026-08-15T07:21:33Z
+status: done
+tags:
+- tests
+- ci
+- manifests
+title: 'Test fehlt: Image-Referenz der Manifeste gegen den Publish-Workflow pruefen'
+updated: 2026-08-15T07:35:55Z
+---
+
+Aus #10. Der Fehler, den #10 behoben hat, war ueber Monate unsichtbar: die
+Manifeste zeigten auf ghcr.io/getty/ocp, der Workflow pushte raudssus/ocp, und
+kein Test hat die beiden je verglichen. t/33-registry-manifests.t prueft
+Manifest-Form, aber nicht diese Kopplung.
+
+Vorschlag fuer t/ (Lane ocp-test-writer, netzwerkfrei, reine Textpruefung):
+- share/robocop/deployment.yaml und share/robocop/overlays/dev/kustomization.yaml
+  parsen und das image-Repo extrahieren
+- .github/workflows/docker-publish.yml parsen und die publizierten Repos aus
+  den env-Keys GHCR_REPO und DOCKERHUB_REPO ziehen
+- behaupten, dass das Repo aus dem Deployment in der Menge der publizierten
+  Repos liegt
+
+Zweiter, billiger Waechter im selben File: der Workflow darf keine
+--platform-Zeile mehr enthalten, die nur linux/amd64 nennt. Genau diese Zeile
+war der Ausgangsbefund von #10, und ein Rueckfall waere wieder erst auf einem
+arm64-Cluster sichtbar. Die Matrix-Eintraege linux/amd64 und linux/arm64
+sollten beide vorkommen.
+
+Beides sind Textpruefungen ohne Cluster- oder Netzwerkbezug und passen in die
+bestehende Suite.
+NACHTRAG (2026-08-14): docker-publish.yml hat seit der Registry-Konsolidierung (#10 revidiert, #40 done) nur noch EINEN Env-Key fuer die Zielregistry, DOCKERHUB_REPO - GHCR_REPO existiert nicht mehr. Der vorgeschlagene Test sollte also nur noch DOCKERHUB_REPO aus dem Workflow ziehen und gegen das image-Repo aus den Manifesten vergleichen (raudssus/ocp ueberall, auch manifests/robocop-deployment.yaml, das im selben Zug korrigiert wurde). Der zweite Waechter (--platform darf nicht nur linux/amd64 sein, beide Matrix-Eintraege linux/amd64 und linux/arm64 muessen vorkommen) ist unveraendert gueltig.
+Nebenbefund beim Aufraeumen (2026-08-15): die Praemisse dieses Tickets ist teilweise ueberholt. .github/workflows/docker-publish.yml existiert nicht mehr im Repo (CI-Auto-Publish wurde komplett verworfen, siehe #10-Verlauf) - der vorgeschlagene Test 'Manifest-Image-Repo gegen Workflow-Registry pruefen' braucht also ein anderes Ziel, z.B. Makefile IMAGE-Variable statt Workflow-env-Keys. Der zweite Waechter (kein --platform mit nur linux/amd64) ist ebenfalls hinfaellig in der urspruenglichen Form: es gibt keinen Workflow mehr, und robocop ist seit heute per nodeSelector/Toleration fest an den (immer-amd64) Control-Plane-Node gepinnt (#10, Commit 03dec2e) - Multi-Arch ist fuer robocop nicht mehr architektonisch erforderlich. Empfehlung: Ticket-Scope neu fassen (z.B. Test, dass Makefile IMAGE-Variable und Manifest-image-Feld uebereinstimmen) oder als durch #10s Kurskorrektur obsolet schliessen - Entscheidung liegt beim Maintainer, nicht eigenmaechtig geaendert.
+ERLEDIGT 2026-08-15 (ocp-test-writer), in der neu gefassten Form - die
+urspruengliche Praemisse war ueberholt.
+
+WAS ENTFALLEN IST. .github/workflows/docker-publish.yml existiert nicht mehr
+(kein .github/ im Repo), der Test gegen GHCR_REPO/DOCKERHUB_REPO ist damit
+gegenstandslos. manifests/robocop-deployment.yaml ebenfalls weg (manifests/ ist
+mit #57 komplett geloescht). Der Multi-Arch-Waechter (--platform darf nicht nur
+linux/amd64 nennen) ist ersatzlos gestrichen: es gibt keinen Workflow mehr, und
+robocop ist seit 03dec2e per nodeSelector/Toleration an den immer-amd64
+Control-Plane-Node gebunden - Multi-Arch ist fuer robocop nicht mehr
+architektonisch noetig.
+
+WAS BLEIBT - der Kern des Tickets. Der Fehler aus #10 war monatelang unsichtbar,
+weil niemand die Image-Referenz in den Manifesten gegen die Stelle gehalten hat,
+die das Image tatsaechlich baut und pusht. Diese Stelle ist heute die
+Makefile-Variable IMAGE.
+
+t/66-image-registry-consistency.t (neu): zieht das Repo (Tag gestrippt) aus fuenf
+Traegern und behauptet, dass alle uebereinstimmen, mit Makefile IMAGE als Anker:
+ - Makefile, IMAGE ?= raudssus/ocp   (Anker)
+ - share/robocop/deployment.yaml
+ - share/robocop/overlays/dev/kustomization.yaml (images-Transformer)
+ - share/bin/ocp-build-image, REPO="${OCP_IMAGE_REPO:-...}"
+ - lib/OCP/Cmd/DeployImage.pm, our $DEFAULT_REPO
+ - xt/smoke.sh, IMAGE="${SMOKE_IMAGE:-...}"
+Die letzten beiden wurden ueber den urspruenglichen Ticket-Scope hinaus
+aufgenommen: es sind Code-Traeger derselben Zeichenkette, die bei einem
+Registry-Wechsel mitgezogen werden muessen und genauso still driften.
+Gegengeprueft, dass der Vergleich Zaehne hat: ein absichtlich verstellter
+Makefile-Wert (ghcr.io/getty/ocp) faellt durch.
+
+BEWUSST AUSGELASSEN: README.md traegt dieselbe Zeichenkette mehrfach, wird aber
+aus anderen Gruenden umformuliert - ein Waechter darauf waere ein
+Fehlalarm-Generator. Der Verzicht steht als Kommentar im Test.
+Ohne Image-Referenz und deshalb nicht im Vergleich: share/robocop/rbac.yaml,
+share/robocop/kustomization.yaml, share/robocop/crds/*. Der Treffer in
+share/gpu-operator/crds/nvidiadriver-crd.yaml ist das OpenAPI-Schema des
+NvidiaDriver-CRD (beschreibt Images, die der gpu-operator zieht), nicht OCPs
+eigenes Controller-Image - ausgeschlossen.
+
+ZUSAETZLICH, weil dieses Ticket sich darauf stuetzt: t/67-robocop-control-plane-pin.t
+(neu). Die Control-Plane-Bindung aus #10/03dec2e war die Begruendung dafuer, den
+Multi-Arch-Waechter fallenzulassen, hatte selbst aber keinen Regressionstest -
+eine Invariante, auf die sich eine geloeschte Pruefung stuetzt. Der Test prueft
+genau das, was 03dec2e eingefuehrt hat: beide Tolerations
+(node-role.kubernetes.io/control-plane und /master, operator Exists, NoSchedule)
+und die nodeAffinity auf node-role.kubernetes.io/control-plane. Eigene Datei
+statt in t/66, weil Pod-Scheduling und Image-Identitaet verschiedene Belange sind.
