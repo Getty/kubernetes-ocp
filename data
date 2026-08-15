@@ -1,0 +1,113 @@
+---
+class: standard
+completed: 2026-08-15T07:24:13Z
+created: 2026-08-14T00:28:31Z
+id: 51
+priority: critical
+started: 2026-08-15T07:24:13Z
+status: done
+tags:
+- node
+- provider-ssh
+- bug
+title: 'SSH-Worker koennen nie provisioniert werden: _provision uebergibt host in
+  spec, resolve_host liest opts{host}'
+updated: 2026-08-15T07:24:13Z
+---
+
+Gefunden 2026-08-14 beim Aufnehmen von brain als ssh-Worker in den Cluster cortex.
+
+  ocp node add brain --role worker --provider ssh-default --host brain.ai.citilan.de
+
+Der CR wird korrekt geschrieben:
+
+  spec: {"gpu":false,"host":"brain.ai.citilan.de","providerRef":"ssh-default","role":"worker"}
+
+Der Reconciler setzt ihn dann sofort auf Failed:
+
+  status: {"message":"SSH provider requires 8host8\n","phase":"Failed","reconciler":"cli"}
+
+## Ursache
+
+lib/OCP/Node.pm, _provision (Zeile ~185):
+
+    my $result = $self->provider->create_server(
+        name => $self->name,
+        node => $self->name,
+        role => $self->role,
+        spec => $self->cr->{spec},      # <- host steckt HIER drin
+    );
+
+lib/OCP/Role/Provider/ExistingHost.pm, create_server:
+
+    my $host = $self->resolve_host(%opts);
+
+lib/OCP/Provider/SSH.pm, resolve_host (Zeile 16):
+
+    my $host = $opts{host};             # <- aber HIER wird es gesucht
+    die "SSH provider requires 8host8\n" unless defined $host && length $host;
+
+$opts{host} ist nie gesetzt - der Host liegt unter $opts{spec}{host}.
+Damit stirbt JEDER ssh-Worker in _provision, bevor irgendetwas passiert.
+
+Der Control Plane ist nicht betroffen: der laeuft ueber den Bootstrap-Pfad,
+sein OCPNode wird von _ensure_cp_ocpnode nur beobachtend angelegt und nie
+durch _provision geschickt.
+
+Bemerkenswert: _install_kubernetes (Zeile 214) macht es eine Ebene tiefer
+bereits richtig:
+
+    my $host = $self->cr->{status}{publicIP} || $self->cr->{spec}{host};
+
+## Fix
+
+Entweder in _provision `host => $self->cr->{spec}{host}` mitgeben, oder
+resolve_host auf $opts{host} // $opts{spec}{host} erweitern. Die zweite
+Variante deckt auch server_exists und delete_server ab, die dieselben
+%opts durchreichen.
+
+## Folgeschaden
+
+Phase Failed ist laut Kommentar in _provision terminal ("the node would
+never be picked up again"). Ein misslungener Versuch muss also per CR-Loesch
+aufgeraeumt werden, bevor ein neuer Versuch moeglich ist.
+
+## Regressionstest
+
+Ein Test, der einen OCPNode mit provider ssh und spec.host durch _provision
+schickt und erwartet, dass create_server den Host zurueckmeldet statt zu
+sterben. Der Bug ist mit einem reinen Unit-Test auf resolve_host NICHT
+sichtbar - er entsteht erst aus der Kombination von _provision und
+ExistingHost::create_server.
+
+Verwandt: #29 (Worker-Pfad end-to-end unverifiziert, smoke faehrt nur
+Single-Node-CP) - genau deshalb konnte dieser Bug unbemerkt bleiben.
+Ein Smoke, der einen zweiten Node joint, haette ihn sofort gezeigt.
+
+## GEFIXT 2026-08-14 (im Arbeitsbaum, NICHT committed)
+
+lib/OCP/Provider/SSH.pm - resolve_host akzeptiert jetzt beide Aufrufformen:
+
+    my $host = $opts{host};
+    $host = $opts{spec}{host}
+        if !(defined $host && length $host) && ref $opts{spec} eq "HASH";
+
+Direkt uebergebener Host behaelt Vorrang, damit bestehende Aufrufer
+unveraendert bleiben. Deckt ueber ExistingHost auch server_exists und
+delete_server ab, die dieselben %opts durchreichen.
+
+Regressionstest in t/12-provider.t: bildet die Aufrufform aus _provision nach
+(name/node/role/spec) und prueft zusaetzlich Vorrang des direkten Hosts sowie
+den Fehlerfall ohne beides. Vorher rot an genau zwei Stellen, jetzt gruen.
+
+Volle Suite: Files=48, Tests=777, Result: PASS.
+
+Die Aenderung liegt uneingecheckt im Arbeitsbaum ~/dev/perl/kubernetes-ocp.
+Kein Image-Rebuild noetig - die ocp-Shellfunktion mountet den Baum als /src
+und startet perl -I/src/lib /src/bin/ocp.
+
+VERIFIZIERT AM ECHTEN CLUSTER 2026-08-14: Nach dem Fix lief _provision durch
+(status.publicIP wurde gesetzt) und der Join erreichte _install_kubernetes.
+Dort wartete direkt der naechste Bug, siehe #53. Beide zusammen gefixt
+=> "Node 8brain8 is Ready.
+ERLEDIGT: Fix ist committed als a18616a 'Fix SSH provider not finding the host when called via spec'. lib/OCP/Provider/SSH.pm::resolve_host akzeptiert jetzt $opts{host} und $opts{spec}{host}, direkter Host hat Vorrang; Kommentar im Code haelt den Grund fest. Regressionstest in t/12-provider.t. Der Arbeitsbaum ist sauber, die Aenderung ist im Repo - die Notiz 'NICHT committed' im Ticket war nur der Stand vom 2026-08-14.
