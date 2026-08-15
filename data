@@ -1,0 +1,129 @@
+---
+class: standard
+completed: 2026-08-15T20:25:08Z
+created: 2026-08-15T19:40:14Z
+id: 87
+priority: high
+started: 2026-08-15T19:51:23Z
+status: done
+tags:
+- secure-mode
+- hetzner
+- ssh
+- keys
+title: 'secure mode + Hetzner: update/destroy/node add greifen zum falschen SSH-Key'
+updated: 2026-08-15T20:25:08Z
+---
+
+Abgespalten von #85 (ocp-worker, 2026-08-15). #85 hat den ssh-Provider-Pfad
+repariert; dieser hier war schon vorher kaputt und bleibt es.
+
+BEFUND: Bei secure mode + provider hetzner greifen vier Stellen auf
+$config->ssh_private_key_path (.ocp/id_ed25519) als DATEIPFAD zu:
+
+  lib/OCP/Cmd/Update.pm:210, :230
+  lib/OCP/Cmd/Destroy.pm:129        (nur der ssh-Zweig; Hetzner-Nodes werden
+                                     ueber die API geloescht und fassen ihn nicht an)
+  lib/OCP/Cmd/Node/Add.pm:255
+  lib/OCP/Drift.pm:330
+
+Auf Hetzner-Maschinen ist dieser Schluessel aber nie verteilt worden — dort liegt der
+ADMIN-Key in authorized_keys, den OCP vor der Server-Erstellung ueber die API
+hochlaedt. Bootstrap.pm macht das richtig und holt sich fuer secure+Hetzner den
+Admin-Key in eine Temp-Datei (siehe Kommentar in setup_ssh_key). Die vier Stellen
+oben tun das nicht.
+
+WARUM ES BISHER NICHT AUFFIEL: In secure mode existierte .ocp/id_ed25519 ueberhaupt
+nicht, die Aufrufe scheiterten also frueh und verstaendlich ("cannot read SSH key",
+bzw. der -f-Waechter in Drift.pm sprang an).
+
+WAS #85 DARAN AENDERT: Nichts an der Ursache — aber #85 legt den Bootstrap-Key jetzt
+an. Damit die Diagnose auf dem Hetzner-Pfad nicht schlechter wird, ist die Erzeugung
+in Init auf `provider eq 'ssh'` beschraenkt worden, also genau die Bedingung, unter
+der Bootstrap.pm den Schluessel verlangt. Ein Hetzner-Projekt behaelt so sein
+bisheriges, ehrliches Scheitern.
+
+ZU TUN: Die vier Stellen muessen denselben Weg gehen wie Bootstrap.pm::setup_ssh_key
+— bei secure mode + Hetzner den Admin-Key benutzen statt des Bootstrap-Keys. Das ist
+Variante (b) aus #85, dort bewusst verworfen, weil sie vier Kommandos einen
+PIN2-Prompt aufzwingt, die heute keinen haben. GENAU DAS ist die Entscheidung, die
+dieses Ticket braucht:
+
+ - `ocp update`, `ocp destroy`, `ocp node add` und die Drift-Erkennung wuerden im
+   secure mode nach PIN2 fragen muessen. Fuer `ocp status`/Drift ist das besonders
+   unangenehm — ein lesendes Kommando, das nach einem Passwort fragt, wird umgangen.
+ - Alternative waere ein dritter Weg: den Admin-Key so ablegen, dass diese Pfade ihn
+   ohne PIN2 als Datei bekommen. Das ruehrt an das Schluesselmodell (ADR 0005/0006)
+   und ist keine Beilaeufigkeit.
+
+Solange nichts entschieden ist, gilt: secure mode + Hetzner ist fuer update, destroy,
+node add und die SSH-gestuetzte Drift-Erkennung nicht benutzbar. Das sollte
+mindestens dokumentiert sein, damit es niemand im Betrieb herausfindet.
+
+Verwandt: #85, #84, #86, ADR 0005/0006.
+NACHTRAG 2026-08-15: Mit dem #85-Fix ist die Erzeugung des Bootstrap-Keys auf `nopassword || provider eq "ssh"` beschraenkt worden. Fuer secure + Hetzner entsteht .ocp/id_ed25519 also weiterhin NICHT, und der -f-Waechter in Drift.pm meldet wieder ehrlich, dass der Schluessel fehlt, statt in einen SSH-Auth-Timeout zu laufen. Die Luecke ist damit unveraendert vorhanden, aber nicht mehr verdeckt: wer dieses Ticket aufnimmt, sieht das echte Fehlerbild. Verifiziert mit der echten CLI.
+ERLEDIGT 2026-08-15 (ocp-worker), Commit c57debf.
+
+Die Auswahl sitzt jetzt in lib/OCP/ClusterKey.pm (neu), erreichbar ueber
+cluster_ssh_key in lib/OCP/Role/Cmd.pm, das cached - EIN PIN2 je Kommando, nicht
+eins je Komponente. Bewusst NICHT in OCP::Keys/OCP::Secrets: die sind der
+Schluessel-SPEICHER, das hier ist POLITIK - das Einzige, das ocp.yaml, den Provider
+und Rex' key_file.pub-Konvention kennt.
+
+PIN2 wird am ORT DER BENUTZUNG erfragt, nicht vorsorglich: ein Reconcile ohne Drift
+bleibt promptfrei, erst eine faellige Rex-Remedy fragt. Ein nicht-interaktiver Lauf
+blockiert nicht, sondern faellt auf den vorhandenen Hinweis "Run 'ocp update
+--component X' instead" zurueck.
+
+MEINE ZWEITEILUNG WAR FALSCH und wurde verworfen: ich hatte Drift.pm:330 als
+lesenden Fall (ocp status) eingestuft. Die Zeile sitzt in
+lib/OCP/Cmd/Apply/Drift.pm::run_remedy, wird NUR aus reconcile_components von
+`ocp apply` gerufen und faehrt einen Rex-Task - also schreibend. OCP::Cmd::Status
+und OCP::Drift machen ueberhaupt kein SSH. Alle vier Stellen sind schreibend und
+werden gleich behandelt.
+Die SORGE dahinter traf aber etwas Echtes: die Reconcile-Zusammenfassung meldete
+"All N component(s) up to date", auch wenn Drift gefunden und die Remedy ABGELEHNT
+wurde - das #43/#46-Muster, in genau der Funktion, auf die dieses Ticket zeigte.
+Abgelehnte und gescheiterte Remedies werden jetzt gezaehlt, benannt, und der Lauf
+sagt "This run did NOT bring the cluster back to spec."
+
+DESTROY.PM BRAUCHTE KEINE AENDERUNG - das Ticket lag richtig. Der Zweig ist auf
+`$node->{provider} eq "ssh"` gegated, die Maschine ist also immer vorbestehend und
+traut dem Bootstrap-Key, egal was der Control Plane fuer einen Provider hat.
+Zusaetzlich: jeder Delete sitzt in einem eigenen eval. Ein Schluessel-Lookup, der
+sterben kann, saesse AUSSERHALB davon und wuerde die Schleife abbrechen - auf einem
+gemischten Cluster laesst das bezahlte Hetzner-Server stehen, weil bei einem
+ssh-Worker eine Schluesseldatei fehlt. Nur ein Kommentar, der beide Gruende festhaelt.
+
+ZWEI BUGS BEIM BAUEN DES TEMP-DATEI-BESITZES GEFUNDEN UND MITGEFIXT:
+ 1. setup_ssh_key benutzte UNLINK => 0 und liess einen LESBAREN PRIVATEN SCHLUESSEL
+    in /tmp liegen. War ausserdem toter Code - aus nichts ausser Tests gerufen.
+ 2. bootstrap_control_plane hielt sein File::Temp in einem Lexical der Sub und gab
+    nur den Pfad zurueck. Verifiziert: die Datei wird beim Return unlinkt. Auf
+    secure+Hetzner bekam OCP::Cmd::Apply::Deploy also einen Pfad auf eine GELOESCHTE
+    Datei, und JEDER Worker scheiterte mit "Could not read join token from CP". Die
+    .pub daneben hatte gar keinen Besitzer und blieb fuer immer liegen.
+Beide gehen jetzt durch setup_ssh_key -> ClusterKey, am Kommando-Objekt geparkt.
+admin_key wird durchgereicht, damit `ocp apply` nicht zweimal nach PIN2 fragt.
+
+BESITZMODELL: eine Instanz besitzt beide Haelften, ein Besitzer pro Datei.
+File::Temp (UNLINK => 1) besitzt den privaten Teil - von Hand zu unlinken erzeugt
+messbar "unlink0: ... is gone already", cleanup laesst deshalb nur die Referenz
+fallen. Die .pub hat keinen anderen Besitzer und wird selbst unlinkt. DESTROY ruft
+cleanup, auch waehrend Perl aus einem die herauslaeuft (getestet). Der Bootstrap-Key
+wird nie angefasst (getestet).
+
+DRITTER WEG GEPRUEFT UND ABGELEHNT (beide Public Keys bei Hetzner hochladen): das
+wuerde jeden Prompt sparen und dabei einen ungeschuetzt auf der Platte liegenden
+Schluessel zu root-Zugang auf jedem Node machen - genau das, was PIN2 verhindert.
+Nicht gebaut.
+
+Test: t/71-cluster-ssh-key.t (neu, 25 Subtests).
+
+OFFEN, EIGENE TICKETS: ADR 0006 zaehlt auf, dass destroy/update/node NICHT nach PIN2
+fragen - das stimmt nicht mehr (wird gerade nachgezogen). Dazu #92
+(Hetzner::create_server ignoriert spec, Worker bekommt KEINE authorized_keys), #93
+(OCP::Node schreibt keine .pub neben den Temp-Key) und #94 (ocp ssh verlangt PIN2
+auch bei provider ssh) - alle drei beim Durchgehen gefunden.
+
+Suite: Files=63, Tests=1061, PASS.
