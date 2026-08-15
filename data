@@ -1,0 +1,94 @@
+---
+class: standard
+completed: 2026-08-15T21:00:20Z
+created: 2026-08-15T19:40:20Z
+id: 88
+priority: low
+started: 2026-08-15T21:00:20Z
+status: done
+tags:
+- secure-mode
+- keys
+- design
+title: Bootstrap-Key reist nicht mit dem Repo - Mehr-Personen-Betrieb braucht eine
+  Entscheidung
+updated: 2026-08-15T21:00:20Z
+---
+
+Abgespalten von #85 (ocp-worker, 2026-08-15). Das ist die bewusste Grenze der dort
+gewaehlten Loesung, kein Fehler darin.
+
+#85 legt den Bootstrap-Key .ocp/id_ed25519 fuer provider:ssh in beiden Modi an. .ocp/
+ist gitignored (ADR 0004), der Schluessel wird also NICHT mit dem Repo geteilt.
+
+FOLGE: Ein zweiter Mensch, der das Projekt klont, bekommt ueber PIN1+PIN2 Zugriff auf
+alles in keys.yaml — aber nicht auf den Bootstrap-Key. Der muss ihm ausserhalb des
+Systems uebergeben werden. Fuer ein Werkzeug, dessen ganzes Schluesselmodell darauf
+ausgelegt ist, verschluesselt committed zu werden (keys.yaml, secrets.yaml,
+age.key.enc, kubeconfig.yaml), ist das ein Bruch in der Erzaehlung: genau ein
+Geheimnis reist per Hand.
+
+Auf einer Ein-Personen-Installation faellt das nicht auf. Bei zwei Operatoren schon,
+und dann meist zum ungeeigneten Zeitpunkt.
+
+DENKBARE WEGE, keiner entschieden:
+ a) Den Bootstrap-Key als dritte Stufe in keys.yaml aufnehmen — age-verschluesselt,
+    ohne PIN2, wie das public-Feld heute. Dann reist er mit dem Repo und ist ohne
+    Interaktion lesbar, was der Bootstrap braucht. Kostet eine Aenderung an der
+    purpose-Dispatch in decrypt_key.
+ b) Variante (b) aus #85 zu Ende denken: gar keinen Bootstrap-Key mehr, ueberall der
+    Admin-Key. Loest das Teilbarkeitsproblem mit, erzwingt aber PIN2 an Stellen, die
+    heute keins haben (siehe #87).
+ c) So lassen und dokumentieren, dass der Bootstrap-Key ein lokales Artefakt ist,
+    das bei Mehr-Personen-Betrieb aus dem Band uebergeben wird.
+
+a) und b) beruehren beide das Schluesselmodell aus ADR 0005/0006 und brauchen eine
+Entscheidung des Maintainers, keine Umsetzung auf Zuruf. c) ist billig und ehrlich,
+verschiebt das Problem aber nur auf den Menschen.
+
+Verwandt: #85, #87, #86, ADR 0004, ADR 0005/0006.
+ENTSCHIEDEN UND ERLEDIGT 2026-08-15. Der Maintainer hat Variante (b) gewaehlt:
+Bootstrap-Key raus aus dem secure mode. Festgehalten in ADR 0027
+("Reach every machine with the admin key, and keep the bootstrap key to dev
+mode"), umgesetzt in Commit 4d8ed8e.
+
+DAS ARGUMENT, DAS DIE ENTSCHEIDUNG GETRAGEN HAT, kam vom Maintainer selbst und ist
+staerker als das, was in diesem Ticket stand: Bootstrappen ist keine eigene
+Vertrauensstufe, sondern eine PROZEDUR, die man mit dem Admin-Key ausfuehrt. Am
+Code belegt:
+ - Bei Hetzner IST der Admin-Key im secure mode bereits das Bootstrap-Credential.
+   Bootstrap.pm laedt $admin_key->{public} ueber die API hoch und uebergibt
+   ssh_keys => [$key_name], BEVOR der Server existiert. Der Bootstrap-Key kommt
+   dort nie vor.
+ - Beim ssh-Provider ist der einzige Unterschied, WELCHEN Public Key ein Mensch von
+   Hand in authorized_keys legt. Seit #84 gibt `ocp keys show --purpose admin`
+   genau den aus - das Werkzeug fuer (b) entstand also, bevor die Entscheidung fiel.
+ - Bootstrappen ist selten, interaktiv und menschlich ausgeloest. Ein PIN2-Prompt
+   ist dort richtig, nicht laestig.
+
+Damit loest sich die Frage dieses Tickets auf: der nicht-teilbare Schluessel
+existiert im secure mode nicht mehr, also kann er auch nicht fehlen. Im Dev-Mode
+bleibt er - dort gibt es keine keys.yaml, er IST das Schluesselmaterial, und ein
+Dev-Projekt hat ohnehin kein Mehr-Personen-Modell.
+
+VARIANTE (a) aus diesem Ticket (Bootstrap-Key als dritte Stufe in keys.yaml)
+entfaellt ersatzlos. VARIANTE (c) (behalten und dokumentieren) ebenfalls.
+
+AUSDRUECKLICH VERWORFEN und in ADR 0027 als VERBOT niedergeschrieben, nicht bloss
+weggelassen: beide Public Keys bei der Hetzner-Servererstellung hochladen. Das
+haette jeden Prompt gespart und dabei einen ungeschuetzt auf der Platte liegenden
+Schluessel zu root-Zugang auf jedem Node gemacht - genau das, was PIN2 verhindern
+soll. Aus demselben Grund gibt es KEINEN Fallback auf den Bootstrap-Key, wenn der
+Admin-Key abgelehnt wird; das waere die Entscheidung durch die Hintertuer zurueck.
+
+WAS DIE ENTSCHEIDUNG KOSTET, ehrlich und in ADR 0027 als Konsequenz festgehalten:
+ - PIN2 dort, wo vorher keins war (update, node add, destroy, und der
+   Reconcile-Pfad von apply, wenn eine Rex-Remedy faellig ist). Am Ort der
+   Benutzung, einmal je Kommando, nicht-interaktiv nicht blockierend.
+ - Es gibt keine zweite Tuer mehr: PIN2 verloren heisst SSH zu allem verloren,
+   und Rotation ist nicht mehr lokal. Das ist jetzt #95.
+ - Ein Dev-Mode-Projekt kann nicht mehr in den secure mode wechseln. Das ist #96.
+ - Bestehende ssh-Maschinen brauchen eine einmalige Migration (Admin-Public-Key
+   nachverteilen), Worker bekommen dabei noch keinen Hinweis - #97.
+
+Verwandt: ADR 0027, ADR 0006 (amended), #84, #85, #87, #94, #95, #96, #97.
