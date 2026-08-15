@@ -1,0 +1,85 @@
+---
+class: standard
+completed: 2026-08-15T07:54:06Z
+created: 2026-08-15T07:31:10Z
+id: 68
+priority: medium
+started: 2026-08-15T07:44:29Z
+status: done
+tags:
+- tests
+- reconcile
+- deployed-state
+title: t/47 Invarianz-Scan erreicht die extrahierten Apply-Module nicht
+updated: 2026-08-15T07:54:06Z
+---
+
+Gefunden beim ADR-Audit zu #47 (ocp-adr-auditor), am HEAD verifiziert.
+
+Der Subtest "no component trusts the hash file on its own" in t/47-deployed-state.t
+slurpt genau zwei Dateien: lib/OCP/Cmd/Apply.pm und lib/OCP/Cmd/Apply/Drift.pm.
+
+Seit der Phase-8-Extraktion (#55) leben die Hash-Leser der Registry, von NFD und
+vom GPU-Operator aber in lib/OCP/Cmd/Apply/Registry.pm und
+lib/OCP/Cmd/Apply/Workloads.pm. Alle drei ERFUELLEN die Invariante - sie fragen
+den Cluster ueber _resource_exists -, aber der Test sieht sie nicht mehr.
+
+Folge: eine NEUE hash-gegatete Komponente, die in Registry.pm oder Workloads.pm
+angelegt wird und den Cluster NICHT fragt, kommt still durch. Der Test meldet
+Erfolg und behauptet eine Abdeckung, die er nicht mehr hat.
+
+Das ist genau die Sorte Luecke, aus der #43 entstanden ist: eine Invariante, die
+formal festgehalten ist, aber am Ort der Aenderung nicht mehr greift.
+
+Zu tun: den Scan auf alle Module unter lib/OCP/Cmd/Apply/ ausweiten, statt zwei
+Pfade fest zu verdrahten. Besser noch so formulieren, dass ein neues Modul
+automatisch mitgeprueft wird (Verzeichnis-Scan), damit dieselbe Luecke bei der
+naechsten Extraktion nicht wieder aufgeht.
+
+Lane: ocp-test-writer. Verwandt: #43 (Ursprung der Invariante), #55 (Extraktion),
+#47 (ADR-Nachtrag, der die Luecke ehrlich als Consequence festhaelt).
+ERLEDIGT 2026-08-15 (ocp-test-writer). Der Scan haengt nicht mehr an einer
+Dateiliste.
+
+t/47-deployed-state.t, Subtest "no component trusts the hash file on its own":
+ - SCANNT EIN VERZEICHNIS, keine Liste: path('lib/OCP/Cmd/Apply')->children(qr/\.pm$/)
+   plus Apply.pm selbst. Ein Modul aus der naechsten Extraktion ist automatisch
+   dabei - das war der Kern des Tickets, eine erweiterte feste Liste haette es nur
+   bis zur naechsten Umstrukturierung geloest.
+ - BENANNTE AUSNAHME: DeployedHash.pm ist ausgenommen, mit Kommentar warum. Es
+   DEFINIERT die Hash-Mechanik (load/save/report_component), es ist kein
+   Konsument, der den Datensatz befragt. Jeder echte Leser kommt ueber
+   $self->_load_deployed_hashes($config) an den Datensatz, und die Subs in
+   DeployedHash.pm rufen das nie - sie SIND die Implementierung. Ausgesprochen,
+   nicht stillschweigend gefiltert.
+ - EINE ECHTE INDIREKTION GENERISCH AUFGELOEST: Registry.pm::setup ruft
+   _resource_exists nicht selbst, es delegiert an das Geschwister running().
+   Statt `running` als zweiten magischen Namen fest zu verdrahten - dieselbe
+   Sproedigkeit wie der Ursprungsbug - laeuft eine kleine Call-Graph-Suche
+   INNERHALB DERSELBEN DATEI: von jeder Leser-Sub aus Aufrufen zu Subs derselben
+   Datei folgen, bis eine gefunden ist, die den Cluster fragt, oder der Graph
+   erschoepft ist. Bewusst pro Datei, nicht global zusammengefuehrt, damit
+   gleichnamige Helfer aus unabhaengigen Modulen sich nicht gegenseitig decken.
+
+NEU ERFASST und vorher unsichtbar: Registry.pm::setup, Workloads.pm::setup_nfd,
+Workloads.pm::setup_gpu_operator. Dazu weiterhin Drift.pm::reconcile_components
+(cert-manager-Block), der schon vorher gesehen wurde.
+
+ROT-BELEG: probeweise wurde eine Sub in Workloads.pm eingebaut, die
+_load_deployed_hashes liest und den Cluster nie fragt. Der Subtest wurde genau
+dort rot. Rueckgebaut und verifiziert - grep findet nichts mehr davon.
+
+ZUSAETZLICH, Luecke aus #35 mitgeschlossen: t/43-k8s-call-contract.t scannte nach
+->(get|delete|patch|list|ensure)\( und sah den literalen Kind-Namen hinter dem
+neuen Helfer OCP::Node::_delete_object nicht mehr. `_delete_object` ist jetzt in
+der Alternation. Repo-weit gegengesucht: es ist der EINZIGE Wrapper dieser Form.
+Ausgeschlossen und geprueft: _report_component (Anzeigetext), ->new('AES', ...)
+(Cipher-Name), ->child('Rexfile', ...) (Pfadsegment) - keiner erreicht
+Kubernetes::REST. Rot-Beleg auch hier: 'Node' probeweise durch 'v1' ersetzt, Test
+faellt, zurueckgebaut.
+
+SPROEDIGKEIT BENANNT statt geraten: der Versuch, die Methodennamen-Alternation
+ganz fallenzulassen und nur auf Kind-foermige Literale zu gehen, produziert
+Fehlalarme (scp_to('/local/file'), scp_from(...), _parse_image_ref('ghcr.io/foo/bar:v1.2.3')).
+Eine ratefreie Verallgemeinerung ist per Regex nicht zu haben. Steht als
+Kommentar im Test und als eigenes Ticket (#75).
