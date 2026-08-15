@@ -28,12 +28,19 @@ sub register {
 # "ensured OCPNode/cortex (control-plane, Ready)" while the stored CR had no
 # status at all and `ocp node ls` correctly reported Pending with no IP.
 #
-# Status is only writable through the separate /status endpoint, and
-# Kubernetes::REST has no method for it (patch/update both go through
-# _build_path, which cannot address a subresource). So this is the one place
-# in OCP allowed to reach for the raw _request escape; every status write goes
-# through here. If Kubernetes::REST grows a native writer we prefer it, which
-# also lets test fakes stub `patch_status` instead of emulating the transport.
+# Status is only writable through the separate /status endpoint. Kubernetes::REST
+# grew a native writer for it in 1.107 (the version this dist pins) and that is
+# what the first branch below uses; it also lets test fakes stub `patch_status`
+# instead of emulating the transport. The hand-built fallback underneath stays
+# for clients that predate it — `make test` runs against whatever CPAN state the
+# host has, not against the pin — and is the one place in OCP allowed to reach
+# for the raw _request escape.
+#
+# Note the two branches differ in what they hand back: the native writer returns
+# an inflated IO::K8s object, the fallback the raw HTTP response. Nothing reads
+# either — the return value is not part of this method's contract, callers only
+# care that it did not die. Do not start reading it without making both branches
+# agree first.
 sub patch_status {
     my ($class, $api, %args) = @_;
 
@@ -42,7 +49,16 @@ sub patch_status {
     my $status = $args{status} or croak "patch_status: 'status' required";
     my $ns     = $args{namespace};
 
-    return $api->patch_status(%args) if $api->can('patch_status');
+    # Kubernetes::REST >= 1.107 house form: typed Kind first, then named args.
+    # The payload key is 'patch' (not 'status'), the method appends /status to
+    # the path itself and defaults to merge-patch.
+    if ($api->can('patch_status')) {
+        return $api->patch_status($kind,
+            name      => $name,
+            namespace => $ns,
+            patch     => { status => $status },
+        );
+    }
 
     my $target = $api->expand_class($kind);
     my $path   = $api->_build_path($target, name => $name, namespace => $ns);
@@ -111,6 +127,12 @@ only method in OCP that writes it.
 
 The method itself is kind-agnostic, so it works for any resource whose CRD
 enables the subresource.
+
+It delegates to L<Kubernetes::REST/patch_status> (1.107 and later) and falls
+back to a hand-built C</status> request for older clients. The two paths return
+different things — an inflated object versus the raw response — so the return
+value is deliberately not part of this method's contract: it either writes the
+status or it dies.
 
 =head1 SEE ALSO
 

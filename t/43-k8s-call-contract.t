@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use Path::Tiny qw(path);
+use JSON::MaybeXS ();
 
 use lib 'lib';
 
@@ -47,7 +48,12 @@ package Transport {
         my ($self, $req) = @_;
         my $path = $req->url;
         $path =~ s{^https?://[^/]+}{};
-        push @{ $self->{seen} }, { method => $req->method, path => $path };
+        push @{ $self->{seen} }, {
+            method       => $req->method,
+            path         => $path,
+            body         => $req->content,
+            content_type => $req->headers->{'Content-Type'},
+        };
         return Resp->new;
     }
 }
@@ -119,6 +125,64 @@ subtest 'update() takes a blessed IO::K8s object, never a hash' => sub {
     is $t->{seen}[0]{method}, 'PUT', 'and issues a PUT';
     is $t->{seen}[0]{path}, '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/w1',
         'to the object it names';
+};
+
+#
+# Status writes. Kubernetes::REST had no /status method until 1.107, so
+# OCP::K8s carried a hand-built one and preferred a native writer if the client
+# ever grew one. It did -- and the flat hash OCP forwarded (kind/name/status)
+# is not a shape that method accepts, so the day 1.107 landed on a machine the
+# whole node path died with "Invalid arguments to patch_status()" without a
+# line changing in this repo. The argument form is therefore part of the
+# contract this file pins, not an implementation detail of OCP::K8s.
+#
+subtest 'patch_status takes the Kind first and the payload under patch' => sub {
+    my ($api, $t) = client();
+
+    # As with the api-version-first shapes above, the rejected form warns on
+    # its way to dying. That is evidence, not noise.
+    local $SIG{__WARN__} = sub {};
+
+    ok !eval { $api->patch_status(kind => 'OCPNode', name => 'w1',
+                                  namespace => 'ocp-system',
+                                  status    => { phase => 'Ready' }); 1 },
+        'the flat kind/name/status form dies -- it is not a supported shape';
+    is scalar @{ $t->{seen} }, 0, 'and dies before a request is built';
+
+    $api->patch_status('OCPNode',
+        name      => 'w1',
+        namespace => 'ocp-system',
+        patch     => { status => { phase => 'Ready' } },
+    );
+
+    is scalar @{ $t->{seen} }, 1, 'the supported shape issues one request';
+    is $t->{seen}[0]{method}, 'PATCH', 'PATCH verb';
+    is $t->{seen}[0]{path},
+        '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/w1/status',
+        'the client appends the /status subresource itself';
+    is $t->{seen}[0]{content_type}, 'application/merge-patch+json',
+        'and defaults to merge-patch';
+    is JSON::MaybeXS::decode_json($t->{seen}[0]{body})->{status}{phase}, 'Ready',
+        'the patch payload is sent as given';
+};
+
+subtest 'OCP::K8s->patch_status reaches that same endpoint' => sub {
+    my ($api, $t) = client();
+
+    OCP::K8s->patch_status($api,
+        kind      => 'OCPNode',
+        name      => 'w1',
+        namespace => 'ocp-system',
+        status    => { phase => 'Installing', providerId => 'SRV42' },
+    );
+
+    is scalar @{ $t->{seen} }, 1, 'one request';
+    is $t->{seen}[0]{path},
+        '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/w1/status',
+        'OCP\'s flat call form is translated, not forwarded';
+    my $sent = JSON::MaybeXS::decode_json($t->{seen}[0]{body});
+    is $sent->{status}{phase}, 'Installing', 'phase carried';
+    is $sent->{status}{providerId}, 'SRV42', 'and the rest of the status with it';
 };
 
 subtest 'expand_class resolves the registered CRDs but not an api-version' => sub {

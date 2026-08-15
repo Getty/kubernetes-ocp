@@ -42,14 +42,25 @@ use YAML::XS ();
         push @{$self->{calls}}, ['ensure', $doc->{kind}, $doc->{metadata}{name}, $doc];
         return $doc;
     }
-    # OCP::K8s::patch_status prefers a native writer when the api provides one,
-    # so stubbing it here records the /status write without having to emulate
-    # _build_path and the raw transport. The raw path has its own coverage in
-    # t/36-ocpnode-status.t.
+    # OCP::K8s::patch_status prefers the native writer when the api provides
+    # one, so stubbing it here records the /status write without having to
+    # emulate _build_path and the raw transport. The raw path has its own
+    # coverage in t/36-ocpnode-status.t.
+    #
+    # The signature is Kubernetes::REST 1.107's: Kind positional, payload under
+    # 'patch'. Unpacked strictly, because a double that also accepts the old
+    # flat form would keep passing after the client stopped accepting it.
     sub patch_status {
-        my ($self, %args) = @_;
+        my ($self, $kind, @rest) = @_;
+        die "patch_status: argument 0 must be a Kind\n"
+            if ref $kind || !defined $kind || $kind !~ /\A[A-Z]\w+\z/;
+        die "patch_status: odd number of named arguments after the Kind\n"
+            if @rest % 2;
+        my %args = @rest;
+        die "patch_status requires 'patch' parameter\n"
+            unless ref $args{patch} eq 'HASH';
         push @{$self->{calls}},
-            ['patch_status', $args{kind}, $args{name}, $args{status}];
+            ['patch_status', $kind, $args{name}, $args{patch}{status}];
         return 1;
     }
     # _server_side_apply falls back to a hand-built path when the kind is not

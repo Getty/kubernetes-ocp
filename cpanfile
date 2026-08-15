@@ -30,8 +30,11 @@ requires 'Crypt::PBKDF2';
 
 # Robocop controller
 requires 'IO::Async';
-requires 'IO::K8s', '1.105';
-requires 'Kubernetes::REST', '1.106';
+# 1.107 is the first Kubernetes::REST with a native patch_status(); OCP::K8s
+# calls it in that version's argument form (Kind first, payload under 'patch').
+# It requires IO::K8s 1.107 itself, so the two move together.
+requires 'IO::K8s', '1.107';
+requires 'Kubernetes::REST', '1.107';
 requires 'Net::Async::Kubernetes', '0.007';
 
 on test => sub {

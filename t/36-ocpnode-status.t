@@ -45,6 +45,29 @@ package FakeResponse {
     sub content { $_[0]{content} }
 }
 
+# Kubernetes::REST 1.107 grew a native patch_status, and OCP::K8s prefers it.
+# Its call form is the house one -- Kind in argument 0, then named arguments,
+# with the payload under 'patch' (not 'status'); it appends /status to the path
+# itself. The real method croaks on anything else, so the doubles below unpack
+# the same way rather than accepting whatever they are handed: a double that
+# swallows a call the shipped client would refuse cannot see the drift, which is
+# exactly how these subtests stayed green while the flat form OCP was sending
+# had already stopped being a shape Kubernetes::REST accepts.
+package StrictPatchStatus {
+    sub unpack_args {
+        my ($kind, @rest) = @_;
+        die "patch_status: argument 0 must be a Kind, got '"
+            . (ref($kind) || (defined $kind ? $kind : 'undef')) . "'\n"
+            if ref $kind || !defined $kind || $kind !~ /\A[A-Z]\w+\z/;
+        die "patch_status: odd number of named arguments after the Kind\n"
+            if @rest % 2;
+        my %a = @rest;
+        die "patch_status requires 'patch' parameter\n"
+            unless ref $a{patch} eq 'HASH';
+        return { kind => $kind, %a };
+    }
+}
+
 # An api that offers only the raw transport, so OCP::K8s::patch_status has to
 # take the _request escape and build the /status path itself.
 package RawApi {
@@ -122,15 +145,20 @@ subtest 'patch_status does not swallow an API error' => sub {
     }
 };
 
-subtest 'patch_status prefers a native writer when the client grows one' => sub {
-    # Kubernetes::REST has no status-subresource method today; the raw escape
-    # retires itself the moment it does.
+subtest 'patch_status prefers the native writer, in that client\'s argument form' => sub {
+    # The raw escape below is only for clients older than 1.107. When the client
+    # has the native writer, the call must be made in that client's form -- the
+    # flat %args OCP used to forward is exactly what it croaks on.
     my @seen;
     my $api = bless {}, 'NativeApi';
     {
         no strict 'refs';
         no warnings 'once';
-        *NativeApi::patch_status = sub { my ($s, %a) = @_; push @seen, \%a; 1 };
+        *NativeApi::patch_status = sub {
+            my ($s, @args) = @_;
+            push @seen, StrictPatchStatus::unpack_args(@args);
+            return 1;
+        };
         *NativeApi::_request = sub { die "must not reach the raw transport\n" };
     }
     OCP::K8s->patch_status($api,
@@ -138,7 +166,11 @@ subtest 'patch_status prefers a native writer when the client grows one' => sub 
         namespace => 'ocp-system', status => { phase => 'Ready' });
 
     is scalar @seen, 1, 'native writer used';
-    is $seen[0]{status}{phase}, 'Ready', 'status handed through unchanged';
+    is $seen[0]{kind}, 'OCPNode', 'Kind passed positionally, as the client wants it';
+    is $seen[0]{name}, 'w1', 'name named';
+    is $seen[0]{namespace}, 'ocp-system', 'namespace named';
+    is $seen[0]{patch}{status}{phase}, 'Ready',
+        'status handed through unchanged, wrapped in the patch payload';
 };
 
 #
@@ -153,8 +185,8 @@ package ApplyApi {
         return $doc;
     }
     sub patch_status {
-        my ($self, %a) = @_;
-        push @{$self->{statuses}}, \%a;
+        my ($self, @args) = @_;
+        push @{$self->{statuses}}, StrictPatchStatus::unpack_args(@args);
         return 1;
     }
     sub get {
@@ -195,10 +227,10 @@ subtest 'apply gives the control plane a real phase and IP' => sub {
     is $status->{kind}, 'OCPNode', 'targets OCPNode';
     is $status->{name}, 'cortex', 'targets the CP node';
     is $status->{namespace}, 'ocp-system', 'in ocp-system';
-    is $status->{status}{phase}, 'Ready', 'phase=Ready — never Pending';
-    is $status->{status}{reconciler}, 'cli',
+    is $status->{patch}{status}{phase}, 'Ready', 'phase=Ready — never Pending';
+    is $status->{patch}{status}{reconciler}, 'cli',
         'stamped reconciler=cli: apply owns the CP it bootstrapped';
-    is $status->{status}{publicIP}, '10.230.30.155',
+    is $status->{patch}{status}{publicIP}, '10.230.30.155',
         'IP taken from the Node object, not the configured DNS host';
 
     like $out, qr/\[ok\] ensured OCPNode\/cortex/, 'reports success';
@@ -246,7 +278,7 @@ subtest 'the three views agree: apply, the CR, and node ls' => sub {
             creationTimestamp => '2026-08-12T14:04:17Z',
         },
         spec   => $api->{ensured}[0]{spec},
-        status => $api->{statuses}[0]{status},
+        status => $api->{statuses}[0]{patch}{status},
     };
 
     my $ls = OCP::Cmd::Node::Ls->new(k8s => LsApi->new(nodes => [$stored]));
@@ -266,8 +298,8 @@ subtest 'the three views agree: apply, the CR, and node ls' => sub {
 package NodeApi {
     sub new { my ($c, %a) = @_; bless { calls => [], %a }, $c }
     sub patch_status {
-        my ($self, %a) = @_;
-        push @{$self->{calls}}, ['patch_status', \%a];
+        my ($self, @args) = @_;
+        push @{$self->{calls}}, ['patch_status', StrictPatchStatus::unpack_args(@args)];
         return 1;
     }
     sub patch {
@@ -294,7 +326,7 @@ subtest 'OCP::Node routes phase transitions to /status' => sub {
     is scalar @status_calls, 1, 'one status write';
     is $status_calls[0][1]{kind}, 'OCPNode', 'typed Kind, no path => form';
     is $status_calls[0][1]{name}, 'w1', 'targets the node';
-    is $status_calls[0][1]{status}{phase}, 'Installing', 'phase carried';
+    is $status_calls[0][1]{patch}{status}{phase}, 'Installing', 'phase carried';
 
     my @main_patches = grep { $_->[0] eq 'patch' } @{$api->{calls}};
     is scalar @main_patches, 0,
