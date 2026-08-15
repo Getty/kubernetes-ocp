@@ -1,0 +1,52 @@
+---
+class: standard
+completed: 2026-08-15T07:52:02Z
+created: 2026-08-12T15:56:13Z
+id: 27
+priority: low
+started: 2026-08-15T07:20:42Z
+status: done
+tags:
+- cli
+- hetzner
+- deadcode
+title: Wire OCP::Hetzner location/server_type pickers into ocp init
+updated: 2026-08-15T07:52:02Z
+---
+
+OCP::Hetzner::location_options and server_type_options build ready-to-use picker lists (label + value) and still have no callers - grep over lib/ and bin/ finds only their own definitions. ocp init --hetzner prompts for the API token and then writes the hardcoded cpx21/fsn1/debian-13 defaults from OCP::Config::write_spec without ever asking.
+
+Since the token is already in hand at that point in Init.pm step 6, the two lists are exactly what an interactive follow-up prompt needs. Ticket 14 made server_type_options safe for that (both architectures, architecture named in the label, deterministic order), so the remaining work is the prompting and passing server_type/location/image through to write_spec.
+
+Either do that, or delete both methods. Two methods that no code path reaches are the reason the x86 default sat there unnoticed.
+ERLEDIGT 2026-08-15 (ocp-worker). Entscheidung war "verdrahten, nicht loeschen".
+
+lib/OCP/Config.pm: `our %HETZNER_DEFAULTS = (server_type => 'cpx21',
+location => 'fsn1', image => 'debian-13')`, benutzt von _default_spec UND
+write_spec. Noetig, damit Picker-Vorauswahl und geschriebene Spec nicht
+auseinanderdriften koennen - genau die Sorte Doppelung, aus der #19 entstanden ist.
+
+lib/OCP/Cmd/Init.pm: neuer Schritt 6.5 direkt hinter dem Token-Schritt, ruft
+_prompt_hetzner_control_plane. Neue Attribute _interactive (Builder: -t STDIN),
+_picker (injizierbar), _location, _server_type. Schritt 7 reicht die beiden nur
+durch, wenn gesetzt.
+
+Der Schritt laeuft ausschliesslich bei --hetzner + Provider hetzner + wenn
+ocp.yaml ueberhaupt geschrieben wird. Er steigt STILL aus bei: kein TTY, kein
+Token, oder Katalog nicht lesbar (eval um beide Picker-Aufrufe, dann eine Zeile
+"[!!] ... keeping the defaults"). undef heisst "nie gefragt" -> write_spec setzt
+die alten Defaults. Kein Pfad kann `ocp init` blockieren oder scheitern lassen -
+das war die Bedingung, unter der das Ticket ueberhaupt umsetzbar war.
+
+_pick nimmt Listennummer oder den Wert selbst, Enter behaelt den Default, Unsinn
+faellt mit Hinweis auf den Default zurueck.
+
+Test: t/41-init-scaffold.t, 5 neue Subtests - Vorauswahl = Default, Auswahl per
+Nummer und per Name, unbekannte Antwort, _interactive => 0 fragt nichts,
+Durchreichung bis in ocp.yaml. Dazu ein echter `bin/ocp init --hetzner`-Lauf mit
+gesetztem Token und Pipe-STDIN, der beweist, dass der Batch-Fall NICHT haengt und
+weiter cpx21/fsn1 schreibt. Netzwerkfrei ueber injizierte _locations/_server_types,
+dasselbe Muster wie t/42.
+
+Damit haben location_options und server_type_options endlich Aufrufer - die
+Alternative aus dem Ticket (beide loeschen) entfaellt.
