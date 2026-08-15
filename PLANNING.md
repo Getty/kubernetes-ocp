@@ -14,8 +14,8 @@ on bare-metal servers reached over SSH, or on a single host (Local).
 - **Robocop**: in-Cluster-Controller-Pfad für Worker-Reconciliation
   (heute Platzhalter, ADR 0021 in Arbeit).
 - **Spec/Status-Trennung**: spec in Git (`ocp.yaml`), status aus dem Cluster.
-- **Toolchain**: Docker-first, multi-arch (`linux/amd64,linux/arm64`), `cpanfile`
-  + `cpanfile.snapshot` gepinnt, Versions-Manifest in `OCP::Versions`.
+- **Toolchain**: Docker-first, gebaut für die Architektur der Bau-Maschine,
+  `cpanfile` + `cpanfile.snapshot` gepinnt, Versions-Manifest in `OCP::Versions`.
 
 Architektur, Modul-Landkarte und Invarianten: Skill `ocp-core`. CLI und
 Config-Schema: Skill `ocp-usage`. Architektur-Entscheidungen mit Begründung:

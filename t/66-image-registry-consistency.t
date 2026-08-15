@@ -33,13 +33,13 @@ use Path::Tiny qw(path);
 # on every unrelated doc edit trains people to ignore it. If the repo ever
 # moves, README.md needs a manual pass regardless of what this test says.
 #
-# What this deliberately does NOT check: a --platform/multi-arch guard. #41
-# originally proposed one (protecting the linux/amd64-only regression that
-# was #10's original trigger), but that guard's target -- the CI workflow --
-# no longer exists, and robocop has been pinned to the (always-amd64)
-# control-plane node via nodeSelector/toleration since #10 (commit
-# 03dec2e), so multi-arch is no longer architecturally required for robocop
-# at all. See karr #41's addendum for the maintainer's call on this.
+# What this deliberately does NOT check: an architecture guard. The image is
+# built for the architecture of the machine that builds it, so there is no
+# platform list here for a guard to compare against. #41 originally proposed
+# one aimed at the CI workflow, which no longer exists, and robocop has been
+# pinned to the (always-amd64) control-plane node via nodeSelector/toleration
+# since #10 (commit 03dec2e). See karr #41's addendum for the maintainer's
+# call on this.
 #
 
 my $root = path(__FILE__)->parent->parent->absolute;

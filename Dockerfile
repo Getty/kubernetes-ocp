@@ -11,8 +11,8 @@
 # in being a newer maintenance release of the same 5.42.
 #
 # It is pinned to an exact patch version, which nails the artifact down as
-# precisely as the tarball's sha256 used to (ADR 0014), and the tag is
-# multi-arch (ADR 0020).
+# precisely as the tarball's sha256 used to (ADR 0014), and the tag resolves
+# to the architecture of the machine doing the build.
 #
 # It also closes a gap: `make snapshot` already resolves cpanfile.snapshot in
 # `perl:5.42` — same 5.42.3, same non-threaded shared-libperl build. The
@@ -43,10 +43,9 @@ ENV LANG=en_US.UTF-8
 # poke at the cluster from inside the image.
 
 #
-# The architecture comes from dpkg rather than from an ARG: it is whatever the
-# image is actually being built for, with no dependency on buildx passing
-# TARGETARCH. Hardcoding amd64 here put an unrunnable binary into every arm64
-# image.
+# The architecture comes from dpkg: it is whatever the image is being built
+# for, so kubectl always matches the rest of the image. A hardcoded amd64 here
+# would put an unrunnable binary into an image built on an arm64 machine.
 RUN ARCH="$(dpkg --print-architecture)" \
   && curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" \
   && chmod +x kubectl \

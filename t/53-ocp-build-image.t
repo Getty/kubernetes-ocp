@@ -6,28 +6,34 @@ use File::Temp qw(tempdir);
 use FindBin;
 use Path::Tiny qw(path);
 #
-# share/bin/ocp-build-image builds and (by default) pushes the OCP image,
-# multi-arch, idempotent, CI-friendly. The only thing this test actually
-# exercises is the script's command line — it must not require a running
-# docker daemon, a logged-in registry, or even `docker` in $PATH, because
-# those are precisely the things CI wants to assert are *not* needed.
+# share/bin/ocp-build-image builds and (by default) pushes the OCP image for
+# the architecture of the machine it runs on, idempotent, CI-friendly. The
+# only thing this test actually exercises is the script's command line — it
+# must not require a running docker daemon, a logged-in registry, or even
+# `docker` in $PATH, because those are precisely the things CI wants to
+# assert are *not* needed.
 #
-# Everything below runs the script with --dry-run, so docker is never
+# Almost everything below runs the script with --dry-run, so docker is never
 # invoked. The `mock docker` further down proves that point by recording
-# every invocation: in --dry-run mode the log stays empty.
+# every invocation: in --dry-run mode the log stays empty. The two
+# failure-mode subtests at the end are the exception — they need the real
+# code path to reach `docker`, and get there against the mock, never against
+# a daemon.
 #
 my $root   = path(__FILE__)->parent->parent->absolute;
 my $script = $root->child('share/bin/ocp-build-image');
 plan skip_all => 'share/bin/ocp-build-image not found' unless -f $script;
 
 # Run the script in a fresh sandbox and return (exit, stdout, stderr,
-# whether the mock docker was touched). Every invocation is forced into
-# --dry-run mode so docker is never actually called — the mock at the
-# front of PATH exists only to catch and log any invocation that slips
-# through, so the `--dry-run` claim has a witness, not just trust.
+# whether the mock docker was touched). Invocations are forced into
+# --dry-run mode unless the caller passes no_dry_run — the mock at the
+# front of PATH exists to catch and log any invocation that slips through,
+# so the `--dry-run` claim has a witness, not just trust, and to stand in
+# for docker in the no_dry_run failure-mode tests.
 sub run_ocp_build {
     my (%opts) = @_;
-    $opts{args} = [@{$opts{args} // []}, '--dry-run'];
+    $opts{args} = [@{$opts{args} // []}, '--dry-run']
+        unless $opts{no_dry_run};
     my $cwd = tempdir(CLEANUP => 1);
     path($cwd)->child('VERSION')->spew($opts{version})
         if defined $opts{version};
@@ -44,15 +50,19 @@ sub run_ocp_build {
     }
 
     # Mock docker in a bin/ dir we put at the FRONT of PATH. The mock
-    # only records its argv; the script must not call it under --dry-run.
+    # always records its argv; the script must not call it under --dry-run.
+    # docker_mock appends shell to that recorder, which is how the
+    # failure-mode tests make a specific subcommand fail.
     my $mockbin  = path($cwd)->child('mockbin');
     my $mock_log = $mockbin->child('.docker.log');
     $mockbin->mkpath;
     $mock_log->spew('');
-    $mockbin->child('docker')->spew(<<'EOS');
+    my $mock = <<'EOS';
 #!/bin/sh
 printf '%s\n' "$0" "$@" >> "$(dirname "$0")/.docker.log"
 EOS
+    $mock .= $opts{docker_mock} // "exit 0\n";
+    $mockbin->child('docker')->spew($mock);
     $mockbin->child('docker')->chmod(0755);
 
     # A docker config that says "logged in" — would matter only without
@@ -110,19 +120,27 @@ subtest 'script defaults to raudssus/ocp with the standard tag triple' => sub {
     like $r->{stdout}, qr/^\s*raudssus\/ocp:(?:[a-f0-9]{7}|unknown)$/m,
         'short git sha tag is part of the summary (7 hex chars, or "unknown" outside git)';
     like $r->{stdout}, qr/-t 'raudssus\/ocp:latest'/,
-        'latest tag is on the docker buildx build line';
+        'latest tag is on the docker build line';
     like $r->{stdout}, qr/-t 'raudssus\/ocp:1\.2\.3'/,
-        'version tag is on the docker buildx build line';
+        'version tag is on the docker build line';
+    like $r->{stdout}, qr/docker push 'raudssus\/ocp:latest'/,
+        'latest tag gets its own docker push line';
+    like $r->{stdout}, qr/docker push 'raudssus\/ocp:1\.2\.3'/,
+        'version tag gets its own docker push line';
     unlike $r->{stdout}, qr/^other\/x/m,
         'no leaked default-name override';
 };
 
-subtest 'platforms default to linux/amd64 and linux/arm64' => sub {
+# The image is built for the architecture of the machine running the
+# script, which is what a plain `docker build` does on its own.
+subtest 'the build command is a plain docker build' => sub {
     my $r = run_ocp_build(version => '0.0.1');
-    like $r->{stdout}, qr/--platform 'linux\/amd64,linux\/arm64'/,
-        'multi-arch comma-separated platforms (not space-separated)';
-    like $r->{stdout}, qr/\bamd64\b/, 'amd64 is in the platforms list';
-    like $r->{stdout}, qr/\barm64\b/, 'arm64 is in the platforms list';
+    like $r->{stdout}, qr/\[dry-run\] docker build -t /,
+        'the build line is `docker build` with tags';
+    unlike $r->{stdout}, qr/--platform\b/,
+        'no platform selection — the build host decides the architecture';
+    unlike $r->{stdout}, qr/--builder\b/,
+        'no builder selection';
 };
 
 subtest '--repo= overrides the default repository' => sub {
@@ -150,14 +168,16 @@ subtest 'OCP_IMAGE_REPO env var matches --repo=' => sub {
         'env var overrides the default just like --repo= does';
 };
 
-subtest '--no-push strips --push from the buildx command' => sub {
+subtest '--no-push drops the docker push commands' => sub {
     my $r = run_ocp_build(
         version => '1.0.0',
         args    => ['--no-push'],
     );
     is $r->{exit}, 0, 'still exits 0';
-    unlike $r->{stdout}, qr/--push\b/,
-        'no --push anywhere in the printed command';
+    unlike $r->{stdout}, qr/docker push/,
+        'no push command anywhere in the printed output';
+    like $r->{stdout}, qr/\[dry-run\] docker build/,
+        'the build itself is still printed';
     like $r->{stdout}, qr/^\s*raudssus\/ocp:latest$/m,
         'tags are still announced';
     like $r->{stdout}, qr/--cache-from/,
@@ -173,10 +193,10 @@ subtest '--dry-run never invokes docker' => sub {
     ok !$r->{docker_invoked},
         'docker was never executed' . ($r->{docker_invoked}
             ? " (log was:\n$r->{docker_log}\n)" : '');
-    like $r->{stdout}, qr/\[dry-run\] docker buildx build/,
-        'a buildx command is printed under [dry-run] prefix';
-    like $r->{stdout}, qr/\[dry-run\] docker buildx.*create/,
-        'a builder-create command is printed under [dry-run] prefix (as part of the inspect-or-create conditional)';
+    like $r->{stdout}, qr/\[dry-run\] docker build/,
+        'a build command is printed under [dry-run] prefix';
+    like $r->{stdout}, qr/\[dry-run\] docker push/,
+        'a push command is printed under [dry-run] prefix';
 };
 
 subtest 'missing VERSION file falls back, does not crash' => sub {
@@ -229,6 +249,48 @@ subtest '--help exits 0 and documents exit codes' => sub {
         'mentions push-fail exit code 2';
     like $r->{stdout}, qr/\b3\b.*not logged in/s,
         'mentions no-login exit code 3';
+};
+
+# The exit-code contract is only worth documenting if the script honours it.
+# Build and push are two separate docker invocations, so which one failed is
+# simply which command returned non-zero — these two subtests run the real
+# code path (no --dry-run) against the mock docker, never a daemon.
+subtest 'a failing build exits 1 and never reaches the push' => sub {
+    my $r = run_ocp_build(
+        version     => '1.0.0',
+        no_dry_run  => 1,
+        docker_mock => <<'EOS',
+case "$1" in
+  build) echo "failed to solve: something in the Dockerfile" >&2; exit 1 ;;
+esac
+exit 0
+EOS
+    );
+    is $r->{exit}, 1, 'exit code 1 is the build failure';
+    like $r->{stderr}, qr/build failed/,
+        'says the build failed';
+    unlike $r->{docker_log}, qr/^push$/m,
+        'no push was attempted after a failed build';
+};
+
+subtest 'a failing push exits 2 after a successful build' => sub {
+    my $r = run_ocp_build(
+        version     => '1.0.0',
+        no_dry_run  => 1,
+        docker_mock => <<'EOS',
+case "$1" in
+  push) echo "denied: requested access to the resource is denied" >&2; exit 1 ;;
+esac
+exit 0
+EOS
+    );
+    is $r->{exit}, 2, 'exit code 2 is the push failure, not the build failure';
+    like $r->{stderr}, qr/push failed/,
+        'says the push failed';
+    unlike $r->{stderr}, qr/build failed/,
+        'a push failure is never reported as a build failure';
+    like $r->{docker_log}, qr/^build$/m,
+        'the build itself did run';
 };
 
 done_testing;

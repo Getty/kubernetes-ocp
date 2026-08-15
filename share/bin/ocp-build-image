@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # ocp-build-image — Build and (optionally) push the OCP Docker image to a
-# registry. Multi-arch by default (linux/amd64,linux/arm64), idempotent,
-# CI-friendly. Standalone — works without `make` or any Perl.
+# registry. The image is built for the architecture of the machine running
+# this script. Idempotent, CI-friendly. Standalone — works without `make` or
+# any Perl.
 #
 # Tags written (in order):
 #   latest
@@ -18,8 +19,6 @@ set -euo pipefail
 
 # ---- Defaults ---------------------------------------------------------------
 REPO="${OCP_IMAGE_REPO:-raudssus/ocp}"
-PLATFORMS="${OCP_IMAGE_PLATFORMS:-linux/amd64,linux/arm64}"
-BUILDER_NAME="${OCP_BUILDER_NAME:-ocp-builder}"
 PUSH=1
 DRY_RUN=0
 TAG_OVERRIDE=""
@@ -29,15 +28,14 @@ usage() {
     cat <<'EOF'
 ocp-build-image — Build and (optionally) push the OCP Docker image
 
+Builds for the architecture of the machine this runs on.
+
 Usage:
   ocp-build-image [options]
 
 Options:
   --repo=NAME         Image repo (default: raudssus/ocp, or $OCP_IMAGE_REPO)
-  --platforms=LIST    Comma-separated platforms
-                      (default: linux/amd64,linux/arm64, or $OCP_IMAGE_PLATFORMS)
   --tag=VERSION       Override VERSION (otherwise from ./VERSION or git describe)
-  --builder=NAME      docker buildx builder name (default: ocp-builder)
   --push              Push to registry (default)
   --no-push           Build only, do not push
   --dry-run           Print docker commands instead of running them
@@ -45,8 +43,6 @@ Options:
 
 Environment:
   OCP_IMAGE_REPO        Default --repo value
-  OCP_IMAGE_PLATFORMS   Default --platforms value
-  OCP_BUILDER_NAME      Default --builder value
 
 Exit codes:
   0  success
@@ -60,9 +56,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo=*)      REPO="${1#*=}" ;;
-        --platforms=*) PLATFORMS="${1#*=}" ;;
         --tag=*)       TAG_OVERRIDE="${1#*=}" ;;
-        --builder=*)   BUILDER_NAME="${1#*=}" ;;
         --push)        PUSH=1 ;;
         --no-push)     PUSH=0 ;;
         --dry-run)     DRY_RUN=1 ;;
@@ -123,81 +117,55 @@ check_login() {
     return 3
 }
 
-# Make sure the buildx builder exists; create it on first run.
-# Idempotent: inspect first, create only if missing.
-ensure_builder() {
-    if [[ "$DRY_RUN" -eq 1 ]]; then
-        # Print the same conditional the real path runs, so a dry-run output
-        # reads as a faithful trace of what the script would do.
-        printf '[dry-run] docker buildx inspect %s >/dev/null 2>&1 ' "$BUILDER_NAME"
-        printf '|| docker buildx create --name %s --use --driver docker-container --bootstrap\n' \
-            "$BUILDER_NAME"
-        printf '[dry-run] docker buildx use %s\n' "$BUILDER_NAME"
-        return 0
-    fi
-    if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
-        docker buildx use "$BUILDER_NAME" >/dev/null
-    else
-        docker buildx create --name "$BUILDER_NAME" --use \
-            --driver docker-container --bootstrap >/dev/null
-    fi
-}
-
-# Print one docker command line for --dry-run. Uses single-quote escaping for
-# user-supplied values, which keeps commas (--platform, --cache-from) intact
-# rather than escaping them the way `%q` does.
+# Quote a value for the --dry-run output. Single-quote escaping keeps commas
+# (--cache-from) intact rather than escaping them the way `%q` does.
 shq() {
     # Single-quote-escape a value: ' → '\''
     local v="${1-}"
     v="${v//\'/\'\\\'\'}"
     printf "'%s'" "$v"
 }
-dry_run_line() {
-    printf '[dry-run] docker buildx build'
-    printf ' --builder %s' "$(shq "$BUILDER_NAME")"
-    printf ' --platform %s' "$(shq "$PLATFORMS")"
+
+# Print the docker commands --dry-run would have run: one build, then one
+# push per tag.
+dry_run_lines() {
+    printf '[dry-run] docker build'
     for tag in "${TAGS[@]}"; do
         printf ' -t %s' "$(shq "$REPO:$tag")"
     done
     printf ' --cache-from %s' "$(shq "type=registry,ref=$REPO:cache")"
-    if [[ "$PUSH" -eq 1 ]]; then
-        printf ' --push'
-    fi
     printf ' .\n'
+    if [[ "$PUSH" -eq 1 ]]; then
+        for tag in "${TAGS[@]}"; do
+            printf '[dry-run] docker push %s\n' "$(shq "$REPO:$tag")"
+        done
+    fi
 }
 
-# Execute the real docker buildx build. Captures stderr to distinguish push
-# failures from build failures (buildx runs both in one process).
+# Build the image for this machine's architecture. Exit code 1 is reserved for
+# a failing build; docker's own output goes straight to the terminal.
 run_build() {
-    local tmp_err
-    tmp_err="$(mktemp)"
-    # shellcheck disable=SC2064
-    trap "rm -f '$tmp_err'" EXIT
-
-    local -a cmd=(
-        docker buildx build
-        --builder "$BUILDER_NAME"
-        --platform "$PLATFORMS"
-    )
+    local -a cmd=( docker build )
     for tag in "${TAGS[@]}"; do
         cmd+=( -t "$REPO:$tag" )
     done
-    cmd+=( --cache-from "type=registry,ref=$REPO:cache" )
-    if [[ "$PUSH" -eq 1 ]]; then
-        cmd+=( --push )
-    fi
-    cmd+=( . )
+    cmd+=( --cache-from "type=registry,ref=$REPO:cache" . )
 
-    if ! "${cmd[@]}" 2>"$tmp_err"; then
-        if grep -qiE '(denied|unauthorized|forbidden|requested access|push.*refus|push.*fail)' "$tmp_err"; then
-            errl "push failed:"
-            sed 's/^/  /' "$tmp_err" >&2
-            return 2
-        fi
-        errl "build failed:"
-        sed 's/^/  /' "$tmp_err" >&2
+    if ! "${cmd[@]}"; then
+        errl "build failed"
         return 1
     fi
+}
+
+# Push every tag. Separate step from the build, so a failure here is
+# unambiguously a push failure (exit 2) and never a build failure.
+run_push() {
+    for tag in "${TAGS[@]}"; do
+        if ! docker push "$REPO:$tag"; then
+            errl "push failed: $REPO:$tag"
+            return 2
+        fi
+    done
 }
 
 # ---- Resolve tags ------------------------------------------------------------
@@ -214,7 +182,7 @@ TAGS=( "latest" "$VERSION" "$GIT_SHA" )
 
 # ---- Main --------------------------------------------------------------------
 main() {
-    log "repo=$REPO platforms=$PLATFORMS builder=$BUILDER_NAME push=$PUSH"
+    log "repo=$REPO push=$PUSH"
     log "tags=${TAGS[*]}"
 
     if [[ "$PUSH" -eq 1 ]]; then
@@ -223,12 +191,13 @@ main() {
         fi
     fi
 
-    ensure_builder
-
     if [[ "$DRY_RUN" -eq 1 ]]; then
-        dry_run_line
+        dry_run_lines
     else
-        run_build
+        run_build || exit $?
+        if [[ "$PUSH" -eq 1 ]]; then
+            run_push || exit $?
+        fi
     fi
 
     log "done"

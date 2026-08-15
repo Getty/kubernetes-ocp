@@ -53,9 +53,10 @@ make snapshot   # cpanfile.snapshot regenerieren — läuft IN Docker, nie auf d
 make smoke      # ACHTUNG: bootstrapped einen ECHTEN Host und wischt dessen Cluster
 ```
 
-Toolchain ist Docker-first: kein `carton install`/`cpm` auf dem Host. `kubectl` existiert
-nur zum Debuggen im Container — kein Code-Pfad darf es aufrufen (alles über
-Kubernetes::REST / IO::K8s).
+Toolchain ist Docker-first: kein `carton install`/`cpm` auf dem Host. `make build` baut
+immer nur für die Architektur der Maschine, auf der es läuft — ein arm64-Image entsteht
+auf einer arm64-Maschine. `kubectl` existiert nur zum Debuggen im Container — kein
+Code-Pfad darf es aufrufen (alles über Kubernetes::REST / IO::K8s).
 
 ## Workflow
 

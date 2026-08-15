@@ -12,12 +12,12 @@ use YAML::XS ();
 # once robocop can't land there. That commit added a toleration + nodeAffinity
 # pair to share/robocop/deployment.yaml with no test of its own.
 #
-# It matters here specifically because it is the reasoning t/66 leans on to
-# drop the old --platform/multi-arch guard from karr #41: "multi-arch is no
-# longer architecturally required for robocop" is only true while robocop
-# stays pinned to the (always-amd64) control-plane node. Without a test, that
-# pin could regress silently and both guards -- the one that used to exist
-# and the one that justified removing it -- would be gone at once.
+# It matters here specifically because this pin is part of why t/66 doesn't
+# check for a --platform/multi-arch guard (karr #41): robocop only ever runs
+# on the control-plane node, which is always amd64 in this project, so there
+# is no architecture list for such a guard to compare against. Without a test
+# of its own, that pin could regress silently and take t/66's reasoning with
+# it.
 #
 # Scope is deliberately narrow: only the two fields commit 03dec2e actually
 # added (tolerations, affinity.nodeAffinity). Everything else about the

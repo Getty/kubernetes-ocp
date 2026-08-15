@@ -1,6 +1,15 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Status writes work again against Kubernetes::REST 1.107, which is now
+      the required version (together with IO::K8s 1.107). 1.107 is the first
+      release with a native `patch_status`, and OCP preferred a native writer
+      over its own hand-built one as soon as the client offered it — but
+      forwarded its flat kind/name/status arguments, which that method does
+      not accept. Every status write then died with "Invalid arguments to
+      patch_status()": worker provisioning could not leave phase=Pending and
+      `ocp apply` could not stamp the control-plane CR. The call now uses the
+      client's own form.
     - An unknown subcommand now fails instead of quietly resolving to the
       root (karr #67). `ocp quatschkommando --help` printed the root usage
       and exited 0; MooX::Cmd looks for the first word it recognises
@@ -117,21 +126,31 @@ Revision history for OCP
       mismatch. `MooX::Cmd` derives the class name to `deployimage` and
       a `deploy-image` alias is registered in `OCP.pm` for the readable
       spelling. See `OCP::Cmd::DeployImage` POD and `t/54-deploy-image.t`.
+    - `share/bin/ocp-build-image`, `make build-image`, `make docker-push`
+      and `make docker-release` build a single image for the architecture
+      of the machine running them. The Makefile's `PLATFORMS`,
+      `buildx-setup` and `build-multiarch` targets are gone; `docker-push`
+      and `docker-release` now build with `make build` (already a plain
+      `docker build`, unchanged) and push each tag separately.
+      `share/bin/ocp-build-image` no longer takes `--platforms` or
+      `--builder`; it runs one plain `docker build` with its three tags
+      plus `--cache-from`, then pushes each tag with its own `docker push`.
+      Build and push are two separate commands now, so exit code 1
+      (build) and 2 (push) name the command that actually failed instead
+      of being recovered from a captured error stream.
     - New `share/bin/ocp-build-image` script and `make build-image`
       target for building and pushing `raudssus/ocp` images (karr #64).
       The script runs standalone (no `make`, no Perl, no network) and
-      is idempotent / CI-friendly. Multi-arch by default
-      (`linux/amd64,linux/arm64`), tags `latest` + `$VERSION` (from
-      `./VERSION` or `git describe`) + 7-char git sha. Uses buildx with
-      a docker-container builder named `ocp-builder` (created on first
-      run, reused after), pulls `--cache-from type=registry,ref=$REPO:cache`
-      for incremental builds, and verifies `docker login` before
-      pushing. `--repo` / `OCP_IMAGE_REPO` env override the repo,
-      `--platforms` and `--builder` override those defaults, `--tag`
-      overrides VERSION, `--no-push` builds locally, and `--dry-run`
-      prints every docker command instead of executing it (the form the
-      test suite uses). Exit codes: 0 success, 1 build fail, 2 push
-      fail, 3 no docker login. `make build-image` wraps
+      is idempotent / CI-friendly. Builds for the architecture of the
+      machine running it, tags `latest` + `$VERSION` (from `./VERSION`
+      or `git describe`) + 7-char git sha, pulls
+      `--cache-from type=registry,ref=$REPO:cache` for incremental
+      builds, and verifies `docker login` before pushing. `--repo` /
+      `OCP_IMAGE_REPO` env overrides the repo, `--tag` overrides
+      VERSION, `--no-push` builds locally, and `--dry-run` prints every
+      docker command instead of executing it (the form the test suite
+      uses). Exit codes: 0 success, 1 build fail, 2 push fail, 3 no
+      docker login. `make build-image` wraps
       `share/bin/ocp-build-image --push`; it does NOT need maintainer
       go-ahead because the maintainer-approval gate that protects the
       older `docker-push`/`docker-release` Makefile targets no longer

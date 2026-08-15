@@ -56,9 +56,23 @@ arm64/aarch64 is a supported target, not an exception. Concretely:
 
 ## Consequences
 
-The decision is honoured where OCP actually generates the artifact, and lapses
-where OCP ships the artifact. The split is the load-bearing fact; it has to be
-read as two columns, not one.
+The decision is honoured wherever OCP names an artifact for a machine it
+deploys to. That is the first column below, and it is the load-bearing one.
+
+It stops at OCP's own image, and that stop is deliberate. The image is built
+for the architecture of the machine doing the build (`make build`,
+`share/bin/ocp-build-image`), and the published `raudssus/ocp:latest` is amd64
+(pushed 2026-08-15). One architecture is enough because robocop is pinned to
+the control-plane node: `share/robocop/deployment.yaml` requires
+`node-role.kubernetes.io/control-plane` and tolerates it alongside
+`node-role.kubernetes.io/master`, so robocop cannot land on a worker at all
+(karr #10, commit 03dec2e). The control plane is amd64 in this project; arm64
+shows up on the workers, and the workers never run robocop. The CLI is
+unaffected either way — it runs outside the cluster (ADR 0013). The bound this
+leaves is exact and worth naming: an arm64 control plane needs an image built
+on an arm64 machine.
+
+The second column is what is asserted rather than verified.
 
 ### Where arm64 IS first-class today
 
@@ -81,8 +95,8 @@ read as two columns, not one.
   pick x86 over arm64 unless `architecture => 'arm' | 'x86'` narrows it on
   purpose.
 - **Multi-arch base image** — `perl:5.42.3-slim-trixie` carries `linux/arm64`
-  under the same tag as `linux/amd64`, and `make build-multiarch` runs both
-  arms locally (under QEMU on an amd64 host) without source changes.
+  under the same tag as `linux/amd64`, so the same Dockerfile resolves to the
+  right base image whichever architecture is building it.
 - **External image pins** — every image OCP pulls from outside (NFD,
   gpu-operator, container-toolkit, k8s-device-plugin, dcgm-exporter, dcgm,
   cilium, operator-generic, registry:2, cert-manager, debian:trixie) was
@@ -96,18 +110,6 @@ read as two columns, not one.
 
 ### Where arm64 is NOT yet first-class
 
-- **OCP's own published images are amd64-only.** `raudssus/ocp:latest` does not
-  carry `linux/arm64`, so robocop cannot run on an arm64 cluster — the CLI is
-  unaffected because it runs outside the cluster (ADR 0013). This is the
-  largest open hole. Multi-arch publish is built and locally verified
-  (`Makefile:docker-push`, `Makefile:build-multiarch`); the actual publish step
-  is maintainer-gated (karr #10).
-- **`Dockerfile.robocop` is amd64-only.** Carries its own `perl:5.40-slim` base
-  rather than the main image's `5.42.3-slim-trixie` and breaks the build
-  outright on missing `libexpat1-dev` (karr #39). It is not referenced by any
-  workflow or Makefile target; deletion is straightforward (karr #58). Once it
-  is gone, the "one image, multi-arch" claim stops having an exception written
-  in `Dockerfile.robocop`.
 - **No cross-architecture CI for the full reconcile path.** The arm64
   verification was a single k3s end-to-end run; the RKE2 arm64 fix that started
   the work has never been re-verified against a running RKE2 cluster
@@ -123,15 +125,23 @@ read as two columns, not one.
 - The "Where first-class" column is load-bearing — a new component pin must
   carry an arm64 entry, and a new download URL must go through `_node_arch`. No
   new literal arch strings anywhere.
-- The "Where not yet" column is the audit obligation. After karr #10 lands
-  (multi-arch publish) and karr #58 lands (`Dockerfile.robocop` removed), this
-  ADR becomes eligible for a third pass where the split collapses: the only
-  remaining gaps would be CI coverage and an aarch64 smoke, and those belong in
-  the verification path, not in the artifact claim.
+- The third pass this section used to wait for has happened, and it landed
+  differently than expected. karr #58 removed `Dockerfile.robocop`, so the "one
+  image" claim has no exception written anywhere. karr #10 settled the
+  robocop-on-arm64 question by pinning robocop to the control-plane node rather
+  than by widening the image. What remains in the "Where not yet" column is
+  verification and nothing else — cross-architecture CI and an aarch64 smoke —
+  which is where the audit obligation now sits.
+- Two things follow for anyone touching the image. Where it is built decides
+  what it runs on, so an arm64 control plane means building on an arm64
+  machine. And the control-plane pin in `share/robocop/deployment.yaml` is now
+  load-bearing for this ADR: loosening it puts robocop back on nodes whose
+  architecture the image does not match.
 - 0008 (Server-Side Apply), 0009 (status subresource) and 0013 (docker-first
   toolchain) reference arm64 only as a publication target. They themselves are
-  architecture-clean and do not need a parallel revision; the publication gap
-  this ADR names is also theirs.
+  architecture-clean and do not need a parallel revision; the bound this ADR
+  names — one architecture per build, robocop on the control plane — is also
+  theirs.
 
 ### Verified end-to-end (the historical run)
 
