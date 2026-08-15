@@ -199,6 +199,14 @@ sub _update_component {
     print colored("✓ $comp updated to $version\n", 'green');
 }
 
+# Both Rex paths below reach the control plane over SSH, and both used to
+# hand Rex $config->ssh_private_key_path unconditionally. On a Hetzner
+# control plane that file is the wrong answer twice over: it was never
+# distributed to the machine (OCP uploads the ADMIN public key through the
+# API before the server exists), and in secure mode `ocp init` does not even
+# create it — so `ocp update` on a secure Hetzner cluster could not work at
+# all. OCP::ClusterKey answers the question properly; cluster_ssh_key caches
+# it so a multi-component update prompts for PIN2 once. karr #87.
 sub _update_via_rex {
     my ($self, $config, $component, $version, $task) = @_;
 
@@ -207,7 +215,7 @@ sub _update_via_rex {
 
     my $rex = OCP::Rex->new(
         host     => $host,
-        key_file => $config->ssh_private_key_path,
+        key_file => $self->cluster_ssh_key($config, reason => 'ocp update')->path,
     );
 
     $rex->run_task($task,
@@ -227,7 +235,7 @@ sub _update_cilium {
 
     my $rex = OCP::Rex->new(
         host     => $host,
-        key_file => $config->ssh_private_key_path,
+        key_file => $self->cluster_ssh_key($config, reason => 'ocp update')->path,
     );
 
     # Use Rex task for cilium upgrade
@@ -289,6 +297,18 @@ The update process:
 2. Shows breaking changes and manual steps if any
 3. Performs updates via Rex tasks
 4. Tracks updated versions in status.yaml
+
+=head1 SSH ACCESS
+
+Updates run over SSH on the control plane, so C<ocp update> needs the key
+that machine trusts (see L<OCP::ClusterKey>).
+
+In a secure-mode project whose control plane OCP created itself — the
+Hetzner provider — that is the PIN2-protected admin key, and the first
+component to be updated prompts for PIN2 once.  A C<--dry-run>, an
+already-up-to-date cluster, and a C<provider: ssh> or C<--nopassword>
+project never prompt: the first two reach no Rex task, and the last two use
+the unencrypted bootstrap key in F<.ocp/id_ed25519>.
 
 =head1 OPTIONS
 

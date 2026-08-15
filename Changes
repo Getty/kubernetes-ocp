@@ -1,6 +1,63 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp update`, `ocp node add` and drift remediation work on a
+      secure-mode Hetzner cluster (karr #87). All three reached for
+      .ocp/id_ed25519 as the key to log in with, but a Hetzner machine was
+      never given that key: OCP uploads the ADMIN public key through the
+      provider API before the server exists, and since #85 `ocp init` does
+      not create a bootstrap key there at all. So `ocp update` died with
+      "cannot read SSH key", `ocp node add` could not fetch the join token,
+      and the reconcile path's Rex remedy declined every drift it found —
+      on the one provider and mode combination where it mattered. The
+      question "which key does this cluster's machines trust" now has one
+      answer, in the new OCP::ClusterKey: the bootstrap key for a
+      `provider: ssh` machine (pre-existing, trusts what the operator
+      authorised by hand) and for --nopassword dev mode, the PIN2-protected
+      admin key otherwise. `ocp update` and `ocp node add` therefore prompt
+      for PIN2 once on a secure Hetzner project, where they previously
+      failed; `ocp apply` against an existing cluster asks only if a drift
+      repair actually has to run, so a clean reconcile stays as promptless
+      as before, and `ocp apply --dry-run`, `ocp status` and drift detection
+      never ask because they never open an SSH connection at all. Without a
+      terminal — a piped or scheduled run — the admin key is refused with a
+      message naming what it wanted, instead of blocking on an invisible
+      password prompt. `ocp destroy` is unchanged: its SSH branch is
+      reached only for nodes that are themselves `provider: ssh`.
+    - The decrypted admin key no longer outlives the command that needed
+      it, and no longer disappears while it is still in use (karr #87). The
+      temp file pair OCP wrote for it had no owner: one path created it with
+      UNLINK => 0 and left a readable private key in /tmp, another tied it
+      to a lexical that went out of scope when the sub returned — so on a
+      secure Hetzner deploy the key was unlinked the moment
+      bootstrap_control_plane returned and every worker afterwards failed
+      as "Could not read join token from CP". The public half nobody
+      unlinked at all. OCP::ClusterKey owns both files, ties them to the
+      command object, and removes them when it goes away — including while
+      Perl unwinds out of a die.
+    - `ocp apply` no longer signs off with "All N component(s) up to date"
+      after a drift repair it could not carry out. Detected drift whose
+      remedy declined to run is now counted and named, and the run says it
+      did not bring the cluster back to spec.
+    - `ocp init` no longer destroys a project it was run in for the first
+      time (karr #86). .ocp/ is gitignored while keys.yaml, secrets.yaml and
+      age.key.enc are committed on purpose, so the second person to clone the
+      repo had all the encrypted material and no .ocp/age.key. Init checked
+      `has_age_key` — "is there one on this machine" — heard no, and
+      generated a fresh keypair over .ocp/age.pub; keys.yaml was then bound
+      to a recipient whose private half no longer existed anywhere, and init
+      itself died with "Could not decrypt data key with any of the provided
+      identities". Init now asks whether the PROJECT has a key, which
+      age.key.enc and the plaintext recipient in the committed SOPS files
+      answer without holding any key, and unlocks the existing one with PIN1
+      instead of minting a new one. Unlocking also restores .ocp/age.pub from
+      the private half, so a clone can encrypt again and not merely decrypt.
+      Where there is no way in — no age.key.enc, or --nopassword against a
+      secure project, or a wrong PIN1 — init aborts and names what is missing
+      and where it comes from, writing nothing. The same protection sits in
+      OCP::Secrets::generate_age_key itself, which now refuses to run while
+      anything is bound to a recipient, so it holds for any other path to
+      generation as well.
     - `ocp init` creates the bootstrap key .ocp/id_ed25519 for
       `provider: ssh` in secure mode, not only under --nopassword (karr #85).
       OCP::Cmd::Apply::Bootstrap picks exactly that file when

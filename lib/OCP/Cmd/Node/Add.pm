@@ -252,15 +252,20 @@ sub _cli_reconcile {
     my ($ssh_key, $server_url, $join_token);
 
     if ($cp_ip) {
-        my $ssh_key_path = $config->ssh_private_key_path;
-        $ssh_key = do {
-            local $/;
-            open my $fh, '<', $ssh_key_path
-                or die "Cannot read SSH key '$ssh_key_path': $!\n";
-            my $k = <$fh>;
-            close $fh;
-            $k;
-        };
+        # The key has to be the one the CONTROL PLANE trusts: this reads the
+        # join token off it over SSH. Reading $config->ssh_private_key_path
+        # straight was right for provider ssh and dev mode and wrong for a
+        # secure Hetzner cluster, where that file was never distributed and
+        # (since karr #85) is not even created — `ocp node add` died with
+        # "Cannot read SSH key" on the one path it was most needed. karr #87.
+        #
+        # The same key goes on to OCP::Node as ssh_key, which is what the
+        # deploy path does too (OCP::Cmd::Apply::CR::cli_reconcile_workers
+        # slurps the very file bootstrap picked): one key for the control
+        # plane and the workers it brings up.
+        my $key = $self->cluster_ssh_key($config, reason => 'ocp node add');
+        my $ssh_key_path = $key->path;
+        $ssh_key = $key->content;
 
         $server_url = $config->join_url($cp_ip);
 
@@ -374,8 +379,21 @@ C<--no-wait>: L<MooX::Options> reads a literal C<no-> as Getopt::Long's
 negation marker before it maps dashes to underscores, so the dashed form
 would ask to negate a C<wait> option that does not exist.
 
+=head1 SSH ACCESS
+
+The CLI reconcile path — the one taken when Robocop is not running — reads
+the cluster's join token off the control plane over SSH and hands the same
+key to L<OCP::Node> for the new machine.  That key is chosen by
+L<OCP::ClusterKey>: the bootstrap key in F<.ocp/id_ed25519> for a
+C<provider: ssh> control plane or a C<--nopassword> project, the
+PIN2-protected admin key for a secure-mode control plane OCP created itself.
+So a secure Hetzner project prompts for PIN2 here, once.
+
+C<--nowait> and the Robocop path never reach it and never prompt: both stop
+at the CR.
+
 =head1 SEE ALSO
 
-L<OCP::Node>, L<OCP::Cmd::Node::Rm>, L<OCP::Cmd::Node::Ls>
+L<OCP::Node>, L<OCP::ClusterKey>, L<OCP::Cmd::Node::Rm>, L<OCP::Cmd::Node::Ls>
 
 =cut

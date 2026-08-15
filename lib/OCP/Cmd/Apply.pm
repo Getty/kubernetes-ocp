@@ -214,7 +214,6 @@ sub execute {
         admin_key        => $admin_key,
         ssh_public_key   => $ssh_public_key,
         verbose          => $verbose,
-        no_password_mode => $no_password_mode,
     );
 
     # Now that the cluster is up, put the stack on it — registry, NFD, GPU

@@ -107,11 +107,15 @@ subtest 'secure mode creates the bootstrap key the deploy path requires' => sub 
 };
 
 subtest 'the bootstrap key is created only where something reads it' => sub {
-    # The gate is Bootstrap's own condition, $no_password_mode || ssh. A
-    # secure Hetzner control plane gets the admin key uploaded via the API and
-    # never sees this file, so creating one there would be inert — and would
-    # cost OCP::Cmd::Update / ::Destroy / ::Node::Add / ::Apply::Drift their
-    # honest "the key is missing" failure, since all four read the same path.
+    # The gate is the same condition OCP::ClusterKey answers with, dev mode
+    # || ssh. A secure Hetzner control plane gets the admin key uploaded via
+    # the API and never sees this file, so creating one there would be inert.
+    #
+    # It would also be actively misleading now: since karr #87, Update,
+    # Node::Add and the reconcile path's Rex remedy all go through
+    # OCP::ClusterKey and take the admin key on this combination. A bootstrap
+    # key sitting here would be a file that looks like the answer and is not
+    # — t/71 asserts that even when one exists, the admin key still wins.
     my $hetzner = run_init(provider => 'hetzner');
     is $hetzner->{err}, '', 'secure hetzner init completed' or diag $hetzner->{out};
     ok !-f $hetzner->{dir}->child('.ocp', 'id_ed25519'),

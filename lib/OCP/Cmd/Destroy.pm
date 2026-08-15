@@ -122,6 +122,25 @@ sub execute {
                 print "  Warning: $@\n";
             }
         }
+        # Deliberately the bootstrap key, and deliberately NOT routed through
+        # OCP::ClusterKey (karr #87 looked here and found nothing to fix).
+        # Two reasons, and both have to hold:
+        #
+        #   * This branch is guarded on the NODE's own provider being 'ssh',
+        #     so the machine reached here is always pre-existing. The
+        #     operator authorised .ocp/id_ed25519 on it by hand and that is
+        #     the only key it trusts — whatever provider the control plane
+        #     uses, whatever mode the project is in. A Hetzner node leaves
+        #     through the API branch above and never touches this key at all.
+        #     Prompting for PIN2 here would buy a key the machine does not
+        #     know.
+        #
+        #   * Teardown is best-effort per node: each delete sits in its own
+        #     eval so a host that is already gone is a warning, not the end
+        #     of the run. A key lookup that can die would sit OUTSIDE that
+        #     eval and abort the loop — on a mixed cluster that means paid
+        #     Hetzner servers left running because an ssh worker's key file
+        #     had been cleaned up. Nothing about this path may become fatal.
         elsif ($node->{provider} eq 'ssh' && $node->{public_ip} && $node->{public_ip} ne '-') {
             print "  Uninstalling RKE2 on $node->{public_ip}...\n";
             my $ssh_prov = OCP::Provider->for_spec(

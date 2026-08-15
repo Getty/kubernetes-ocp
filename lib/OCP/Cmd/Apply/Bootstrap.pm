@@ -4,12 +4,8 @@ package OCP::Cmd::Apply::Bootstrap;
 use strict;
 use warnings;
 
-use File::Temp;
-use Path::Tiny qw(path);
-
+use OCP::ClusterKey;
 use OCP::Config;
-use OCP::Keys;
-use OCP::Password;
 use OCP::Provider;
 use OCP::Rex;
 use OCP::Secrets;
@@ -34,10 +30,13 @@ use OCP::Versions;
     my $cp_id = OCP::Cmd::Apply::Bootstrap::cp_identity($config);
     my $label = OCP::Cmd::Apply::Bootstrap::dist_label($distribution);
 
-    # Mutating helper: pick the SSH key path the rest of the deploy
-    # will use, prompt PIN2 if secure mode, drop a temp admin-key file
-    # otherwise. Same rules as the original _setup_ssh_key.
-    OCP::Cmd::Apply::Bootstrap::setup_ssh_key($self, $config);
+    # Mutating helper: pick the SSH key the rest of the deploy will use
+    # (OCP::ClusterKey decides which), publish its path on the command
+    # object and keep the object alive so its temp files outlive the
+    # call. Pass admin_key when PIN2 was already entered further up.
+    my $key = OCP::Cmd::Apply::Bootstrap::setup_ssh_key($self, $config,
+        admin_key => $admin_key,
+    );
 
 =head1 DESCRIPTION
 
@@ -116,62 +115,34 @@ sub dist_label {
     return { rke2 => 'RKE2', k3s => 'K3s' }->{ lc $dist } // uc $dist;
 }
 
-# Pick the SSH key the rest of the deploy will use. Dev mode / SSH
-# provider: the bootstrap key in .ocp/id_ed25519. Secure mode +
-# Hetzner: drop the admin-key into a temp file so Rex can read it; the
-# public half gets written alongside because Rex expects key_file.pub.
+# Pick the SSH key the rest of the deploy will use, and remember it on the
+# command object so its temp files live exactly as long as the run that needs
+# them.
 #
-# The split follows who owns the machine. Hetzner servers are created
-# here, so OCP uploads the admin public key via the API before the
-# server exists and can rely on it being there. An ssh-provider machine
-# is pre-existing: the only key it trusts is the one the operator put
-# into authorized_keys by hand, which is the bootstrap key. That is why
-# `provider eq 'ssh'` overrides the mode rather than following it.
+# Which key that is, and why, now lives in OCP::ClusterKey — the same
+# question is asked by `ocp update`, `ocp node add` and the reconcile path's
+# Rex remedy, and four separate answers to it is what karr #87 was. The short
+# version: who created the machine decides. Hetzner servers are created here,
+# so OCP uploads the admin public key through the API before the server
+# exists; an ssh-provider machine is pre-existing and trusts only what the
+# operator put into authorized_keys by hand, which is the bootstrap key. That
+# is why `provider eq 'ssh'` overrides the mode rather than following it.
 #
-# OCP::Cmd::Init::_ensure_bootstrap_key is the other half of this
-# contract — it creates .ocp/id_ed25519 in BOTH modes. It used to create
-# it only under --nopassword, so this branch reached for a file that a
-# secure-mode project never had, and apply failed as "SSH not reachable".
+# OCP::Cmd::Init::_ensure_bootstrap_key is the other half of that contract:
+# it creates .ocp/id_ed25519 exactly where something reads it.
+#
+# The result is cached in the slot OCP::Role::Cmd::cluster_ssh_key uses, so a
+# later reconcile step on the same command object reuses this key instead of
+# prompting for PIN2 a second time.
 sub setup_ssh_key {
-    my ($self, $config) = @_;
+    my ($self, $config, %opt) = @_;
 
-    my $keys_file = $config->project_dir->child('keys.yaml');
-    my $no_password_mode = !-f $keys_file;
+    my $key = OCP::ClusterKey->for_config($config, %opt);
 
-    # SSH provider: always use bootstrap key (.ocp/id_ed25519)
-    my $cps = $config->control_planes;
-    my $provider = ($cps->[0] // {})->{provider} // 'hetzner';
+    $self->_ssh_key_path($key->path);
+    $self->{_cluster_ssh_key}{ OCP::ClusterKey::cache_slot($config, %opt) } = $key;
 
-    if ($no_password_mode || $provider eq 'ssh') {
-        $self->_ssh_key_path($config->ssh_private_key_path);
-    } else {
-
-
-
-
-        my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-        $secrets->ensure_age_key();
-
-        my $keys = OCP::Keys->new(project_dir => $config->project_dir);
-        my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key for SSH): ");
-        my $admin_key = $keys->get_admin_key($pin2);
-        unless ($admin_key) {
-            die "ERROR: Wrong PIN2 or no admin-key found!\n";
-        }
-
-        my $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 0);
-        print $temp_key_file $admin_key->{private};
-        close $temp_key_file;
-        chmod 0600, $temp_key_file->filename;
-
-        my $pub_path = $temp_key_file->filename . '.pub';
-        path($pub_path)->spew($admin_key->{public});
-        chmod 0644, $pub_path;
-
-        $self->_ssh_key_path($temp_key_file->filename);
-        # Keep ref so temp file lives as long as $self
-        $self->{_temp_ssh_key} = $temp_key_file;
-    }
+    return $key;
 }
 
 # The whole first-deploy sequence: provision, install, kubeconfig,
@@ -188,7 +159,13 @@ sub bootstrap_control_plane {
     my $admin_key      = $opts{admin_key}      or die "bootstrap_control_plane: admin_key is required";
     my $ssh_public_key = $opts{ssh_public_key} // $admin_key->{public};
     my $verbose        = $opts{verbose};
-    my $no_password_mode = $opts{no_password_mode};
+
+    # no_password_mode is deliberately NOT read here any more. It used to gate
+    # the inline key selection below; OCP::ClusterKey derives the same fact
+    # from the absence of keys.yaml, which is where every other caller reads
+    # it from too. Accepting the option and ignoring it would be the silently
+    # swallowed flag this repo keeps having to fix (karr #67, #37, #85), so
+    # OCP::Cmd::Apply stops passing it.
 
     # Resolve control plane identity (RoboCop naming for Hetzner, host
     # label for SSH).
@@ -250,33 +227,22 @@ sub bootstrap_control_plane {
     # Wait for SSH
     print "  [..] Waiting for SSH to be ready...\n";
 
-    # Prepare SSH key file (Rex needs both private + .pub!)
-    my $ssh_key_path;
-    my $temp_key_file;
-
-    if ($no_password_mode || $provider eq 'ssh') {
-        # Dev mode or SSH provider: Use bootstrap key (.ocp/id_ed25519)
-        # SSH provider servers already have this key in authorized_keys.
-        # For Hetzner, admin-key is uploaded via API before server creation.
-        $ssh_key_path = $config->ssh_private_key_path;
-    } else {
-        # Secure mode + Hetzner: Use admin-key (uploaded via Hetzner API)
-
-
-        # Private key
-        $temp_key_file = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
-        print $temp_key_file $admin_key->{private};
-        close $temp_key_file;
-        chmod 0600, $temp_key_file->filename;
-        $ssh_key_path = $temp_key_file->filename;
-
-        # Public key (Rex expects key_file.pub!)
-        my $pub_path = $temp_key_file->filename . '.pub';
-        path($pub_path)->spew($admin_key->{public});
-        chmod 0644, $pub_path;
-    }
-
-    $self->_ssh_key_path($ssh_key_path);
+    # Prepare the SSH key file (Rex needs both private + .pub!). This used to
+    # be a second, inline copy of setup_ssh_key with one fatal difference: it
+    # held the File::Temp object in a lexical of THIS sub and returned only
+    # ssh_key_path. For secure mode + Hetzner that meant the admin key was
+    # unlinked the moment bootstrap_control_plane returned, and the caller —
+    # OCP::Cmd::Apply::Deploy, which slurps that path to hand OCP::Node an
+    # ssh_key for every worker — got a path to a file that no longer existed.
+    # Workers then failed as "Could not read join token from CP". The .pub
+    # written next to it had no owner at all and stayed in /tmp forever.
+    #
+    # setup_ssh_key parks the key on $self, so it lives as long as the command
+    # object and both files go away together when it does. admin_key is passed
+    # through because `ocp apply` already unlocked it with PIN2 further up:
+    # prompting again here would be a bug, not extra safety.
+    my $key = setup_ssh_key($self, $config, admin_key => $admin_key);
+    my $ssh_key_path = $key->path;
 
     my $ssh = OCP::SSH->new(
         host     => $cp_host,
@@ -426,7 +392,7 @@ __END__
 
 =head1 SEE ALSO
 
-L<OCP::Cmd::Apply>, L<OCP::Provider>, L<OCP::Rex>, L<OCP::SSH>,
-L<OCP::Versions>.
+L<OCP::Cmd::Apply>, L<OCP::ClusterKey>, L<OCP::Provider>, L<OCP::Rex>,
+L<OCP::SSH>, L<OCP::Versions>.
 
 =cut

@@ -29,6 +29,15 @@ runs, its findings are printed, and not one write leaves the process.
 C<reconcile_components> then returns false, which is how the dispatcher
 knows to stop without stamping a version.
 
+C<run_remedy> is the only step here that leaves the process over SSH, and
+therefore the only one that can cost a PIN2 prompt (see L<OCP::ClusterKey>).
+It asks for the key at the point of use rather than up front, so a reconcile
+that finds nothing to repair — the common case — never prompts, and neither
+does the read-only dry run, which returns before this point. When no key can
+be had, the remedy is declined out loud and counted as unresolved: the
+closing summary then says the run did not bring the cluster back to spec
+rather than "all components up to date".
+
 The shape of reconcile is forced by t/38 in OCP::Cmd::Apply::Drift's
 source: it regex-extraps _reconcile_components and checks the body for
 the steps it must run (_configure_registry_dns, _ensure_cp_ocpnode,
@@ -68,6 +77,14 @@ sub reconcile_components {
     my $updated = 0;
     my $checked = 0;
 
+    # Drift entries this run named a repair for and did not carry out. Kept
+    # apart from $updated because the closing summary has to be able to tell
+    # "nothing was wrong" from "something was wrong and is still wrong" —
+    # printing "All N component(s) up to date" over a Rex task that declined
+    # to run is the same class of untruth as #43/#46, where a step that never
+    # looked reported success.
+    my @unresolved;
+
     # Drift: compare the running cluster against the version manifest and
     # ocp.yaml, then run whatever step brings it back.
     {
@@ -102,9 +119,14 @@ sub reconcile_components {
             my $done = eval { $self->_run_remedy($config, $entry) };
             if ($@) {
                 print "  [WARN] $entry->{remedy}{task} failed: $@";
+                push @unresolved, $entry->{label} // $entry->{component};
             } elsif ($done) {
                 print "  [ok] $entry->{label} updated to $entry->{expected}\n";
                 $updated++;
+            } else {
+                # _run_remedy has already said why. What it cannot do is stop
+                # the summary below from speaking for the whole run.
+                push @unresolved, $entry->{label} // $entry->{component};
             }
         }
     }
@@ -261,8 +283,17 @@ sub reconcile_components {
     print "\n";
     if ($updated) {
         print "  $updated component(s) updated, $checked checked.\n";
+    } elsif (@unresolved) {
+        print "  $checked component(s) checked, none updated.\n";
     } else {
         print "  All $checked component(s) up to date.\n";
+    }
+
+    if (@unresolved) {
+        print "  " . scalar(@unresolved)
+            . " known difference(s) left as they were: "
+            . join(', ', @unresolved) . ".\n";
+        print "  This run did NOT bring the cluster back to spec.\n";
     }
 
     return { cp_name => $cp_name, cp_ip => $cp_ip };
@@ -321,18 +352,26 @@ sub dry_run_report {
 
 # Run the step a drift entry asks for. Returns true when it ran, false when
 # it could not (and says why). Dies only if the step itself fails.
+#
+# The key lookup is late on purpose. This is the one write on the reconcile
+# path that goes over SSH, and on a secure-mode Hetzner cluster obtaining the
+# key OCP put on those machines costs a PIN2 prompt (OCP::ClusterKey, ADR
+# 0006). Asking for it up front would put a password prompt in front of every
+# `ocp apply` against an existing cluster — including the overwhelmingly
+# common case where nothing has drifted and no Rex task runs at all. Asking
+# for it here means the prompt appears exactly when a task is about to run,
+# and `ocp apply --dry-run` (which returns before this function) still never
+# prompts.
+#
+# It used to read $config->ssh_private_key_path directly, which on a Hetzner
+# control plane names a file that was never distributed to the machine and,
+# in secure mode, is not even created — so this always took the "missing"
+# branch and no drift with a Rex remedy could ever be repaired there. karr #87.
 sub run_remedy {
     my ($self, $config, $entry) = @_;
 
     my $remedy = $entry->{remedy} or return 0;
     return 0 unless ($remedy->{type} // '') eq 'rex';
-
-    my $key = $config->ssh_private_key_path;
-    unless (-f $key) {
-        print "  [!!] Needs SSH access to the control plane, but $key is missing.\n";
-        print "       Run 'ocp update --component $entry->{component}' instead.\n";
-        return 0;
-    }
 
     my $host = $config->cluster_status->{public_ip};
     unless ($host) {
@@ -340,9 +379,29 @@ sub run_remedy {
         return 0;
     }
 
+    # Declining is a reported outcome, never an exception: one unrepairable
+    # entry must not take the rest of the reconcile with it. Two things must
+    # not happen either — declining quietly (reconcile_components counts what
+    # this returns into its closing verdict) and blocking on a PIN2 prompt in
+    # a run with no terminal, which OCP::ClusterKey turns into this same
+    # decline rather than a hidden wait.
+    my $key = eval { $self->cluster_ssh_key($config, reason => 'ocp apply') };
+    unless ($key) {
+        my $why = $@ || "no usable SSH key for the control plane\n";
+        $why =~ s/\s+\z//;
+
+        my $what = $entry->{label} // $entry->{component} // 'this component';
+        print "  [!!] $remedy->{task} needs SSH access to the control plane and\n";
+        print "       could not get a key for it. NOT run: $what stays as it is.\n";
+        print "       $_\n" for split /\n/, $why;
+        print "       Run 'ocp update --component $entry->{component}' instead.\n"
+            if defined $entry->{component};
+        return 0;
+    }
+
     OCP::Rex->new(
         host     => $host,
-        key_file => $key,
+        key_file => $key->path,
         verbose  => $self->ocp->verbose,
     )->run_task($remedy->{task}, %{ $remedy->{params} // {} });
 
@@ -355,6 +414,6 @@ __END__
 
 =head1 SEE ALSO
 
-L<OCP::Cmd::Apply>, L<OCP::Drift>, L<OCP::Rex>.
+L<OCP::Cmd::Apply>, L<OCP::ClusterKey>, L<OCP::Drift>, L<OCP::Rex>.
 
 =cut
