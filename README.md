@@ -475,6 +475,71 @@ OCP generates separate SSH keys for different purposes:
 - **Team Sharing** - Share repo (git) + PIN1 + PIN2 (via 1Password/Signal)
 - **Recovery** - Lost `.ocp/`? → `git clone + PIN1 + PIN2` = recovered!
 
+### What Each PIN Actually Opens
+
+PIN1 unlocks `.ocp/age.key`, the master key behind every encrypted file in
+the project — `keys.yaml`, `secrets.yaml`, `kubeconfig.yaml`. PIN2 unlocks
+only one thing inside that: the **private** half of the admin SSH key.
+Nothing else in the project sits behind PIN2, and nothing sits behind *only*
+PIN2 — it is always the age layer plus PIN2, never PIN2 alone.
+
+| Lost | What that costs | Way back |
+|------|------------------|----------|
+| `.ocp/age.key` (the local file) | Nothing by itself — it's a decrypted cache; `.ocp/` is gitignored on purpose. | `git clone` + PIN1 regenerates it from the committed `age.key.enc`. |
+| **PIN1** (forgotten) | Everything. `age.key.enc` cannot be opened, so `keys.yaml`, `secrets.yaml` and `kubeconfig.yaml` are all unreadable — including the admin key's public half. | None inside OCP. This is the outer gate by design (ADR 0006). |
+| **PIN2** (forgotten) | The admin private key, permanently — `OCP::Keys::_double_decrypt` needs it and nothing else in OCP does. Since [ADR 0027](docs/adr/0027-one-admin-key-reaches-every-machine.md) removed the unattended bootstrap key, this also means **SSH to every machine in the cluster**: no second, PIN-less key still opens a control plane or an `ssh`-provider node. | None inside OCP — it has no key left to reach a machine with. Getting back in means an out-of-band path (Hetzner rescue console, physical/IPMI console, or whatever the provider offers) to hand-add a freshly generated key's public half to `authorized_keys`. |
+
+The robo-ssh key (`purpose: automation`) sits behind PIN1 alone — no PIN2
+prompt, ever (`OCP::Keys::get_automation_key`). That does **not** make it a
+second door: nothing in OCP puts the robo public key into any machine's
+`authorized_keys`. `OCP::ClusterKey`, the one place that decides which key
+reaches a machine, only ever returns the bootstrap key (dev mode) or the
+admin key (secure mode); the Hetzner worker path uploads the admin key's
+name too (`OCP::Provider::Hetzner::ssh_key_name`, filled from
+`admin_ssh_key_name`). Deploying the robo key anywhere is exactly what `ocp
+inject-key` would do, and that command is currently disabled. So: PIN2 loss
+really is total SSH loss, and PIN1 alone opens no SSH door at all.
+
+### Rotating the Admin Key
+
+There is no `ocp keys` subcommand for this — `ocp keys` only has `show`
+(`OCP::Cmd::Keys` dispatches to `OCP::Cmd::Keys::Show` alone) — and `ocp
+init`, even with `--force`, skips key generation entirely once an
+automation-purpose key already exists in `keys.yaml`. Adding a new admin
+keypair today means calling `OCP::Keys->add_key` from outside the CLI;
+nothing in `bin/ocp` wraps it. Until it does, here is the order that does
+not lock you out:
+
+1. Generate a new keypair yourself (`ssh-keygen -t ed25519 -f
+   /tmp/new-admin`) and keep the plaintext files — nothing in OCP will hand
+   a private key back to you later.
+2. Add it to `keys.yaml` as a second `purpose: admin` entry, alongside the
+   old one. Do not touch the old entry yet.
+3. Distribute the **new public** half everywhere, old key still working:
+   `ocp keys show --name <new-key-name>` (`--purpose admin` would also print
+   the still-present old key — use `--name` to be exact).
+   - **`ssh`/`local` machines** — paste it into `authorized_keys` by hand.
+   - **Hetzner** — uploading it under the existing `ocp-<cluster>-admin`
+     name replaces that name's key object in the Hetzner project, but only
+     for servers created *after* that point. A running server's
+     `authorized_keys` was written once, at creation, and nothing updates
+     it later — existing Hetzner machines need the same manual paste as an
+     ssh-provider machine.
+4. Verify with the plaintext key from step 1 directly (`ssh -i
+   /tmp/new-admin root@host`) against every machine — not `ocp ssh`, which
+   keeps resolving to the *oldest* non-deprecated admin entry in
+   `keys.yaml` until you act on the old one.
+5. Only once every machine accepts the new key: delete the plaintext files
+   from step 1, and mark the old `keys.yaml` entry deprecated
+   (`OCP::Keys->deprecate_key`) or delete it. From here `ocp ssh`/`ocp
+   apply` pick the new key automatically — it's the only non-deprecated
+   admin entry left.
+
+This is a different operation from the [one-time bootstrap-key
+migration](#ssh-existing-server) ADR 0027 requires on pre-existing `ssh`
+machines — that moves a cluster off the retired bootstrap key once; this is
+what replaces the admin key itself, repeatably.
+
 ### Memory-Only Key Storage (Robocop)
 
 Robocop controller keeps robo-ssh key in RAM only:

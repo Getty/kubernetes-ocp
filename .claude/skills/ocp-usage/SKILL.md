@@ -5,10 +5,11 @@ description: OCP CLI usage — commands and flags, ocp.yaml schema (snake_case!)
 
 # OCP Usage & Workflows
 
-Verified against the code 2026-08-12 (OCP::Config, OCP::Cmd::*, OCP::Drift), including
-live runs of each command in the shipped Docker image (not `--help` text or source
-inspection alone — see the note on dash/underscore flags below, where `--help` output
-alone would have been actively misleading).
+Verified against the code 2026-08-16 (OCP::Config, OCP::Cmd::*, OCP::Drift, OCP::Keys,
+OCP::Secrets, OCP::ClusterKey), including live runs of each command in the shipped
+Docker image (not `--help` text or source inspection alone — see the note on
+dash/underscore flags below, where `--help` output alone would have been actively
+misleading).
 
 ## Standard Workflow
 
@@ -81,6 +82,10 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   — OCPNodeProvider CR + Secret
 - `ocp provider rm NAME` — blocked while OCPNodes reference it
 - `ocp provider ls` — list providers with reference counts
+- `ocp keys show [--purpose admin|automation|general] [--name NAME]` — print
+  a **public** key from `keys.yaml`; the only `ocp keys` subcommand there is
+  (see "PIN Loss & Admin-Key Rotation" below — there is no rotate/add
+  subcommand)
 
 ## ocp.yaml Schema — snake_case, no aliases
 
@@ -179,6 +184,52 @@ gpu:
   admin key there before running anything else. There is no fallback — OCP
   diagnoses the lockout (`OCP::ClusterKey::migration_hint`) but never reaches
   for the old key.
+
+## PIN Loss & Admin-Key Rotation
+
+What happens when you don't have a PIN any more, or want to swap the admin
+key on a cluster that already exists — two permanent states ADR 0027 created
+by dropping the bootstrap key, and neither is covered anywhere else.
+
+- **PIN1 lost** → everything. `age.key.enc` cannot be opened, so
+  `keys.yaml`, `secrets.yaml`, `kubeconfig.yaml` are all unreadable —
+  admin key's public half included. No recovery inside OCP; it is the outer
+  gate by design (ADR 0006).
+- **PIN2 lost** → the admin private key, permanently
+  (`OCP::Keys::_double_decrypt` needs it; nothing else in OCP does) — and
+  since ADR 0027 removed the bootstrap key, also **SSH to every machine in
+  the cluster**. No second, PIN-less key still opens a control plane or an
+  `ssh`-provider node. No recovery inside OCP either: the way back is
+  out-of-band (rescue console / IPMI / provider UI to hand-add a fresh key),
+  not a command — OCP has nothing left it can reach the machine with.
+- **`.ocp/age.key` deleted** → not lost. `git clone` + PIN1 regenerates it
+  from the committed `age.key.enc` (`ensure_age_key`/`restore_age_recipient`).
+- **robo-ssh key ≠ a second door.** PIN1 alone decrypts it
+  (`OCP::Keys::get_automation_key`, no PIN2 ever), but nothing in OCP puts
+  its public half into any `authorized_keys`: `OCP::ClusterKey` only ever
+  selects the bootstrap key (dev mode) or the admin key (secure mode), and
+  the Hetzner worker path uploads the admin key's name too (`ssh_key_name`
+  ← `admin_ssh_key_name`). Deploying the robo key anywhere is `ocp
+  inject-key`, currently disabled. So PIN1 alone opens no SSH door at all.
+- **No rotation command exists.** `ocp keys` has only `show`
+  (`OCP::Cmd::Keys` dispatches to `Show` alone); `ocp init`, even
+  `--force`, skips key generation entirely whenever an automation-purpose
+  key is already in `keys.yaml` (`OCP::Cmd::Init`, unconditional on
+  `--force`). Adding a replacement admin key today needs
+  `OCP::Keys->add_key` called from outside the CLI.
+- **Rotation order that doesn't lock you out**: generate a new keypair
+  yourself and keep the plaintext → add it to `keys.yaml` as a second
+  `purpose: admin` entry, old entry untouched → distribute the new public
+  half everywhere (`ocp keys show --name <new-name>`; `ssh`/`local` by
+  hand, Hetzner re-upload under the existing key name only affects servers
+  created afterward, never already-running ones) → verify with the
+  plaintext key directly (`ssh -i`, not `ocp ssh` — `get_admin_key` with no
+  name walks `keys.yaml` in order and keeps resolving to the *oldest*
+  non-deprecated admin entry until you act) → only then
+  `OCP::Keys->deprecate_key`/`delete_key` the old entry. Different
+  operation from the one-time bootstrap-key migration above — that moves an
+  `ssh` cluster off the retired bootstrap key once; this replaces the admin
+  key itself, repeatably.
 
 ## Reconciliation & Drift
 
