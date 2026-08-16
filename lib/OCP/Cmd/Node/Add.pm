@@ -60,9 +60,8 @@ option image => (
 );
 
 option gpu => (
-    is      => 'ro',
-    is_bool => 1,
-    doc     => 'Enable GPU support',
+    is  => 'ro',
+    doc => 'Enable GPU support',
 );
 
 # Spelled without a dash on purpose, like --nogit and --nopassword in
@@ -71,10 +70,9 @@ option gpu => (
 # negate a "wait" option that does not exist and died with "Unknown option:
 # wait". `--no_wait` stays as an alias for anything that already uses it.
 option nowait => (
-    is      => 'ro',
-    is_bool => 1,
-    short   => 'no_wait',
-    doc     => 'Write CR and exit without waiting for Ready',
+    is    => 'ro',
+    short => 'no_wait',
+    doc   => 'Write CR and exit without waiting for Ready',
 );
 
 has k8s => (is => 'rw');
