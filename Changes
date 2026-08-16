@@ -46,6 +46,24 @@ Revision history for OCP
       subtests in t/77-destroy-local-provider.t cover the status.yaml path,
       both halves of the spec fallback, and a regression that fails if the
       `eq 'ssh'` and `// 'ssh'` literals come back.
+    - `ocp node add` flag validation no longer hand-codes the provider
+      types it knows (karr #121). The old if/elsif chain spelled out
+      `hetzner`/`ssh`/`local` and only used `OCP::Provider->types` for
+      the unknown branch — so a fourth provider added to the factory
+      was accepted by `OCP::Provider` but rejected here as "Unknown
+      provider type", the same message a typo would have produced. The
+      known check now goes through `OCP::Provider->known_type`, the
+      unknown rejection still names the values that would have worked
+      (read from `OCP::Provider->types`), and `local` plus any future
+      type get the same flag-rejection treatment ssh has always had:
+      `--host` is refused and the hetzner-specific overrides are
+      refused; `ssh` is the only type that *requires* `--host`, and
+      `hetzner` is the only type that accepts its own overrides.
+      New subtests in t/18b-node-add.t assert both halves: adding a
+      fourth type to `OCP::Provider` makes `_validate_flags` accept
+      it, and the unknown branch's listing matches what
+      `OCP::Provider->types` produces (so a regression to a hand-coded
+      copy of three words is caught at `make test`).
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a

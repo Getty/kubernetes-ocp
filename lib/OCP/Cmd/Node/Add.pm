@@ -137,43 +137,44 @@ sub _resolve_provider {
 sub _validate_flags {
     my ($self, $provider_type, $provider_name) = @_;
 
-    if ($provider_type eq 'hetzner') {
-        die "--host is not valid for provider type 'hetzner'\n"
-            if $self->host;
-    }
-    elsif ($provider_type eq 'ssh') {
+    # The type came out of a provider CR, not off this command line, so the
+    # rejection names the CR that carries it — telling the operator a word
+    # they never typed is invalid explains nothing about where to go and
+    # fix it. known_type is the same source OCP::Choices::unknown reads
+    # below via OCP::Provider->types (karr #121): a fourth provider added
+    # to OCP::Provider is accepted here, not classified as unknown.
+    die OCP::Choices::unknown('provider type', $provider_type,
+        [ OCP::Provider->types ],
+        hint => defined $provider_name
+            ? "OCPNodeProvider '$provider_name' declares spec.type"
+              . " '$provider_type'.\n"
+            : '',
+    ) unless OCP::Provider->known_type($provider_type);
+
+    # --host is ssh's contract: the SSH provider works by reaching an
+    # existing machine, so ssh requires it and every other known type
+    # rejects it. A future provider that does take a host would land here
+    # too; the existing types are the only ones that do.
+    if ($provider_type eq 'ssh') {
         die "--host is required for provider type 'ssh'\n"
             unless $self->host;
-        die "--server-type is only valid for provider type 'hetzner' (given for 'ssh')\n"
-            if $self->server_type;
-        die "--location is only valid for provider type 'hetzner' (given for 'ssh')\n"
-            if $self->location;
-        die "--image is only valid for provider type 'hetzner' (given for 'ssh')\n"
-            if $self->image;
-    }
-    elsif ($provider_type eq 'local') {
-        die "--host is not valid for provider type 'local'\n"
-            if $self->host;
-        die "--server-type is only valid for provider type 'hetzner' (given for 'local')\n"
-            if $self->server_type;
-        die "--location is only valid for provider type 'hetzner' (given for 'local')\n"
-            if $self->location;
-        die "--image is only valid for provider type 'hetzner' (given for 'local')\n"
-            if $self->image;
     }
     else {
-        # The type came out of a provider CR, not off this command line, so
-        # the rejection names the CR that carries it — telling the operator
-        # a word they never typed is invalid explains nothing about where to
-        # go and fix it.
-        die OCP::Choices::unknown('provider type', $provider_type,
-            [ OCP::Provider->types ],
-            hint => defined $provider_name
-                ? "OCPNodeProvider '$provider_name' declares spec.type"
-                  . " '$provider_type'.\n"
-                : '',
-        );
+        die "--host is not valid for provider type '$provider_type'\n"
+            if $self->host;
     }
+
+    # --server-type, --location and --image are hetzner overrides; ssh,
+    # local and every future provider reject them. hetzner accepts them
+    # because they are its own.
+    return if $provider_type eq 'hetzner';
+
+    die "--server-type is only valid for provider type 'hetzner' (given for '$provider_type')\n"
+        if $self->server_type;
+    die "--location is only valid for provider type 'hetzner' (given for '$provider_type')\n"
+        if $self->location;
+    die "--image is only valid for provider type 'hetzner' (given for '$provider_type')\n"
+        if $self->image;
 }
 
 sub _build_cr {
