@@ -140,6 +140,45 @@ my $tmpdir = tempdir(CLEANUP => 1);
 }
 
 #
+# Worker pool provider is validated against OCP::Provider->types (karr #115):
+# `local` is a real type and must be accepted; an unknown type must be
+# rejected with a message that names the valid ones, mirroring the
+# control-plane check above.
+#
+
+{
+    my $f = path($tmpdir)->child('worker-local.yaml');
+    $ocp->dump_file($f->stringify, {
+        name          => 'wl',
+        control_planes => [{ provider => 'local' }],
+        workers       => [
+            { name => 'w1', provider => 'local' },
+        ],
+    });
+    my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
+    my @errors = $c->validate;
+    is(scalar @errors, 0, 'worker pool with provider local accepted')
+        or diag(join "\n", @errors);
+}
+
+{
+    my $f = path($tmpdir)->child('worker-quatsch.yaml');
+    $ocp->dump_file($f->stringify, {
+        name          => 'wq',
+        control_planes => [{ provider => 'local' }],
+        workers       => [
+            { name => 'w1', provider => 'quatsch' },
+        ],
+    });
+    my $c = OCP::Config->new(file => $f->stringify, ocp => $ocp);
+    my @errors = $c->validate;
+    ok((grep { /worker pool 'w1': invalid provider 'quatsch'/ } @errors),
+        'worker pool with unknown provider rejected');
+    ok((grep { /must be.*hetzner.*ssh.*local/s } @errors),
+        'rejection names the valid provider types');
+}
+
+#
 # Test: only canonical schema keys are read
 #
 
