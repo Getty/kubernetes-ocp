@@ -1,0 +1,97 @@
+---
+class: standard
+completed: 2026-08-16T01:43:53Z
+created: 2026-08-15T20:21:36Z
+id: 93
+priority: medium
+started: 2026-08-16T00:46:07Z
+status: done
+tags:
+- node
+- rex
+- ssh
+title: OCP::Node schreibt keine .pub neben den Temp-Key - Rex zeigt ins Leere
+updated: 2026-08-16T01:43:53Z
+---
+
+Gefunden 2026-08-15 beim Fix von #87 (ocp-worker). Dieselbe Klasse Fehler, die #87
+in Bootstrap.pm behoben hat - nur auf dem Worker-Pfad und noch offen.
+
+OCP::Node::_build_ssh_key_file schreibt den privaten Schluessel in eine Temp-Datei
+und reicht deren Pfad an OCP::Rex weiter. Rex setzt daraus
+
+    REX_PUBLIC_KEY = key_file . '.pub'
+
+Diese .pub-Datei wird nie geschrieben. Rex bekommt also einen Pfad auf etwas, das
+nicht existiert - bei JEDEM Worker-Install, ueber robocop wie ueber die CLI.
+
+Der identische Fehler sass in Bootstrap.pm und ist mit #87 dort behoben (die
+Auswahl liefert jetzt beide Haelften). OCP::Node ist nicht mitgezogen worden, weil
+es ausserhalb des Ticket-Scopes lag.
+
+ZU TUN: _build_ssh_key_file muss die .pub-Haelfte mitschreiben, mit demselben
+Besitz- und Aufraeum-Modell wie OCP::ClusterKey (eine Instanz besitzt beide
+Dateien, DESTROY raeumt beide, auch waehrend Perl aus einem die herauslaeuft).
+Pruef, ob sich ClusterKey dafuer direkt wiederverwenden laesst - dann waere es eine
+Zeile statt einer zweiten Implementierung derselben Sache, und die naechste
+Aenderung trifft nur einen Ort.
+
+Woher die oeffentliche Haelfte kommt, ist zu klaeren: OCP::Node bekommt heute nur
+den privaten Schluessel als String (Attribut ssh_key). Entweder wird sie
+mitgeliefert, oder sie wird abgeleitet (bei ed25519 aus dem privaten Teil moeglich -
+#86 macht genau das fuer den age-Key ueber public_key_from_secret).
+
+Lane: ocp-worker bzw. ocp-robocop-worker. Verwandt: #87, #29.
+ERLEDIGT 2026-08-16 (ocp-worker), Commit e8f5307.
+
+WICHTIGE EINORDNUNG ZUERST, weil sie die Praemisse des Tickets korrigiert:
+DER BUG WAR LATENT, NICHT LIVE. share/Rexfile:15 waehlt connection => "LibSSH",
+und Rex/Interface/Connection/LibSSH.pm:67 ruft auth_publickey($privkey) - EIN
+Argument, der public_key-Pfad wird nie gelesen und nicht einmal gestattet. Der
+Pfad laeuft nur durch Rex::Task:659 resolv_path(..., 1), das ~ expandiert und
+sonst nichts.
+LIVE wird es auf dem SSH-Backend (Net::SSH2): Connection/SSH.pm:111 croakt
+"No public_key file defined." und uebergibt die Datei an auth_publickey, das sie
+wirklich liest. Ausserdem liefert Rex::Config::get_public_key $ENV{REX_PUBLIC_KEY}
+unbedingt, VOR allem, was der Rexfile setzt.
+Es war also eine gebrochene Invariante (die aus #87), kein laufender Fehler. Das
+senkt die Dringlichkeit, nicht die Berechtigung - vom Orchestrator unabhaengig an
+der Rex-Quelle nachgeprueft.
+
+GEBAUT: lib/OCP/TempKeyPair.pm (neu) besitzt das Paar aus privatem Temp-Key und
+.pub-Geschwister. BEIDE Seiten gehen darueber - OCP::ClusterKey::_admin_key und
+OCP::Node::_build_ssh_key_file.
+ClusterKey direkt wiederzuverwenden ging nicht: sein einziger Konstruktor ist
+for_config($config) und braucht Projektverzeichnis, keys.yaml-Moduserkennung und
+OCP::Keys/Secrets/Password - nichts davon existiert in robocops Container. Ihm
+einen from_material-Konstruktor anzuhaengen haette den ganzen Unlock-Stack in
+robocops Ladepfad gezogen. Also die BESITZ-Haelfte herausgezogen, nicht die
+Auswahl. ClusterKeys eigener Header hielt schon fest, dass zwei frueher
+handgeschriebene Kopien dieses Tanzes geleckt haben; eine dritte in OCP::Node
+haette das wiederholt.
+
+DIE OEFFENTLICHE HAELFTE WIRD ABGELEITET, nicht durchgereicht. Von den drei
+Aufrufern entscheidet nur einer: OCP::Robocop::Controller bekommt privates
+Schluesselmaterial ueber einen Socket und hat keinen Key-Store - sie von den
+Aufrufern zu nehmen haette das CLI repariert und den Controller genau so kaputt
+gelassen, wie das Ticket es beschreibt.
+KEIN Shell-Aufruf: ssh-keygen -y wuerde openssh-client zur Laufzeitabhaengigkeit
+des Controller-Images machen, pro Worker forken - und bei einem
+passphrase-geschuetzten Schluessel anhalten und nach einem Passwort fragen.
+Stattdessen: ein openssh-key-v1-File traegt seine oeffentliche Haelfte IM KLARTEXT
+vor dem verschluesselten Abschnitt. public_from_private liest sie mit
+MIME::Base64 allein heraus (core). Byte-fuer-byte gegen ssh-keygens eigene .pub
+verifiziert, fuer blanke UND passphrase-geschuetzte ed25519-Schluessel.
+Nicht parsebares Material liefert undef und die .pub wird leer geschrieben statt
+falsch - dieselbe Konzession, die ClusterKey mit `// ''` schon macht.
+
+Rot-vor-gruen belegt: mit dem alten Builder faellt t/16-node.t an
+"the public half exists at the exact path OCP::Rex builds for REX_PUBLIC_KEY".
+Tests: t/72-temp-key-pair.t (neu, 10 Subtests; die Ableitungs-Subtests
+skip_all ohne ssh-keygen, damit kein privater Schluessel im Repo landet) und drei
+Subtests in t/16-node.t an der Rex-Konstruktions-Naht.
+
+Traegt den robocop-Pfad im Container: keine neue Abhaengigkeit, kein Fork, kein
+Dateizugriff, nichts, was CLI und Controller unterscheidet.
+Dass bin/robocop diesen Pfad noch gar nicht erreicht (start_reconciliation_loop ist
+ein Platzhalter), ist unveraendert #33.
