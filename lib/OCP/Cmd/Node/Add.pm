@@ -278,10 +278,15 @@ sub _cli_reconcile {
         ? eval { OCP::Provider->from_cr($provider_h, k8s => $api) }
         : undef;
 
-    my $cp_ip = do {
-        my $cps = $config->control_planes;
-        ($cps && @$cps) ? ($cps->[0]{public_ip} // $cps->[0]{host}) : undef;
-    };
+    # The control plane's address lives in two places: ocp.yaml (spec) names
+    # what the operator wants, .ocp/status.yaml records what the cluster
+    # actually has. cluster_status reads the latter first and falls back to
+    # the former only when nothing has been recorded -- so a server whose IP
+    # drifted since the last `ocp apply` (or never had an `ocp apply`) is
+    # still reached. Reading control_planes straight, as this used to, gave
+    # back the spec address and SSH'd to a machine that may not exist
+    # (karr #120, sibling of karr #98).
+    my $cp_ip = $config->cluster_status->{public_ip};
 
     # $key outlives the block on purpose: the failure it explains happens at
     # the bottom of this sub, long after the join token was read.
