@@ -779,6 +779,7 @@ sub generate_gpu_operator_manifest {
         # driver.enabled follows gpu.driver — see above
         # nfd.enabled: false — we deploy NFD ourselves
         # gfd.enabled: false — NFD handles GPU feature discovery
+        # cdi.enabled: true — keep runc the default runtime (karr #76, decision #23)
         {
             apiVersion => 'nvidia.com/v1',
             kind       => 'ClusterPolicy',
@@ -786,6 +787,17 @@ sub generate_gpu_operator_manifest {
             spec       => {
                 operator => {
                     defaultRuntime => 'containerd',
+                },
+                # CDI is the operator gate that writes
+                # NVIDIA_RUNTIME_SET_AS_DEFAULT=false into the toolkit env, which
+                # is what outvotes CONTAINERD_SET_AS_DEFAULT=1 (deleted in karr
+                # #30) and keeps runc as defaultRuntimeName. The CRD's
+                # kubebuilder default makes the field true when OCP leaves it
+                # out, so today this works by accident; set it explicitly so
+                # the #23 decision does not ride on an upstream default OCP has
+                # not pinned (karr #76).
+                cdi => {
+                    enabled => JSON::PP::true,
                 },
                 driver => $driver_by_operator
                     ? {

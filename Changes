@@ -1,6 +1,20 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - The GPU ClusterPolicy now writes spec.cdi.enabled explicitly
+      (karr #76). The #23 decision -- "OCP does not make the nvidia
+      runtime the node's default runtime" -- rests on the operator
+      writing NVIDIA_RUNTIME_SET_AS_DEFAULT=false into the toolkit env,
+      and that write is gated on config.CDI.IsEnabled(). IsEnabled() was
+      returning true only because the ClusterPolicy CRD's kubebuilder
+      default fills the field in for nil -- an upstream default OCP
+      pinned nothing to and tested nothing against. The field is now
+      written in the spec (true), so the decision rides on the line OCP
+      actually emits, and a future CRD-default flip in gpu-operator
+      cannot silently make nvidia the defaultRuntimeName for every
+      container on the node. New subtests in t/40-gpu-clusterpolicy.t
+      assert the field is present and the rendered YAML contains the
+      literal "enabled: true" under cdi:.
     - cert-manager's reconcile gate now compares the recorded version
       against OCP::Versions->get_component_version('cert_manager'), not
       against mere presence. The previous `if ($cm_running && $deployed->{certmanager})`
