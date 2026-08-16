@@ -416,10 +416,25 @@ subtest 'the wait says what it is waiting for, once per phase' => sub {
 }
 
 {
+    # Config stand-in for _cli_reconcile. By default it has no CP IP, which
+    # is what the wait/timeout tests want: the if ($cp_ip) block in
+    # _cli_reconcile is skipped, no SSH is opened, and OCP::Node is driven
+    # with no join token. Tests that need a CP IP set cluster_status and/or
+    # control_planes to whatever shape they want; the regression test for
+    # karr #120 sets BOTH with different IPs so a wrong read is impossible
+    # to mistake for a correct one.
     package FakeAddConfig;
-    sub new             { bless {}, shift }
-    sub control_planes  { [] }          # no CP: skips the join-token read
+    sub new {
+        my ($c, %a) = @_;
+        bless {
+            cluster_status => $a{cluster_status} // {},
+            control_planes => $a{control_planes} // [],
+        }, $c;
+    }
+    sub cluster_status  { $_[0]->{cluster_status} }
+    sub control_planes  { $_[0]->{control_planes} }
     sub distribution    { 'rke2' }
+    sub join_url        { my ($s, $host) = @_; "https://$host:9345" }
 }
 
 sub cli_reconcile_out {
@@ -506,6 +521,120 @@ subtest 'explicit --provider overrides implicit resolution' => sub {
 
     my $p = $add->_resolve_provider($k8s);
     is $p->{metadata}{name}, 'hetzner-a', 'explicit --provider wins over default annotation';
+};
+
+#
+# The CP address is in two places: ocp.yaml (spec, what the operator wants)
+# and .ocp/status.yaml (status, what the cluster actually has). The old code
+# read spec first, which is the source of truth for `ocp apply` but the
+# wrong source for `ocp node add` -- the SSH call to read the join token
+# needs the address that is reachable right now, and on a cluster whose CP
+# IP drifted since the last apply the spec IP is the one that does not
+# work (karr #120, sibling of karr #98).
+#
+# These tests pin where _cli_reconcile reads the IP from. The plumbing
+# beyond that (OCP::SSH->new, cluster_ssh_key, the run that fetches the
+# join token) is stubbed out -- the only question on the table is the
+# value of `host` OCP::SSH is constructed with.
+#
+
+{
+    # OCP::ClusterKey prompts for PIN2 / reads .ocp/id_ed25519. _cli_reconcile
+    # only needs `path` and `content` off the key, plus `migration_hint` in
+    # the failure path; none of those touch the real filesystem.
+    package FakeClusterKey;
+    sub new            { bless {}, shift }
+    sub path           { '/dev/null' }
+    sub content        { "FAKE\n" }
+    sub migration_hint { '' }
+}
+
+# Capture every OCP::SSH->new call. _cli_reconcile constructs it only inside
+# the if ($cp_ip) block, so the count is also a sanity check on whether the
+# block ran at all.
+our @ssh_calls;
+sub reset_ssh_calls { @ssh_calls = () }
+
+sub cli_reconcile_for_ip {
+    my (%over) = @_;
+    local $FakeWaitNode::phase   = $over{phase}   // 'Installing';
+    local $FakeWaitNode::verdict = $over{verdict} // 0;
+
+    my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
+    my $add = OCP::Cmd::Node::Add->new(k8s => $k8s, name => 'worker-t');
+    my $cr  = {
+        metadata => { name => 'worker-t', namespace => 'ocp-system' },
+        spec     => { role => 'worker', providerRef => 'hetzner-a' },
+    };
+
+    no warnings 'redefine';
+    local *OCP::Node::from_cr = sub { bless {}, 'FakeWaitNode' };
+
+    # Stub the cluster key + the SSH client. _cli_reconcile's require
+    # OCP::SSH has to find the package, so load it first; then replace
+    # ->new so every call lands in our capture buffer.
+    require OCP::SSH;
+    no warnings 'redefine';
+    local *OCP::SSH::new = sub {
+        my ($c, %a) = @_;
+        push @ssh_calls, \%a;
+        return bless { %a }, 'FakeSSHForAdd';
+    };
+    {
+        package FakeSSHForAdd;
+        sub run { { stdout => "FAKE-JOIN-TOKEN\n", stderr => '', exit => 0 } }
+    }
+    local *OCP::Cmd::Node::Add::cluster_ssh_key = sub {
+        return FakeClusterKey->new;
+    };
+
+    my $config = FakeAddConfig->new(
+        cluster_status => $over{cluster_status} // {},
+    );
+
+    reset_ssh_calls();
+    my $out = capture_stdout {
+        $add->_cli_reconcile($cr, $k8s, $config, undef);
+    };
+    return { out => $out };
+}
+
+subtest 'CP IP comes from status, not spec' => sub {
+    # Spec and status disagree on a CP whose IP drifted since the last
+    # `ocp apply`. The SSH call must follow status -- the address that is
+    # actually reachable -- not the spec entry the operator typed when the
+    # cluster was built (karr #120). Both sources are populated with
+    # different IPs so a wrong read is unambiguous.
+    my $r = cli_reconcile_for_ip(
+        cluster_status => { public_ip => '192.168.1.1', name => 'cp-1' },
+        control_planes => [{ public_ip => '10.0.0.1', host => 'spec.example' }],
+    );
+    is scalar(@ssh_calls), 1, 'one SSH connection was attempted';
+    is $ssh_calls[0]{host}, '192.168.1.1',
+        'SSH went to the status IP, ignoring the spec one';
+};
+
+subtest 'falls back to spec IP when status has no CP row' => sub {
+    # First-ever `ocp node add` -- no CP in .ocp/status.yaml. cluster_status
+    # returns the spec IP, and SSH must reach it. This is what the old
+    # control_planes-based code already did; the regression test pins it so
+    # the new cluster_status-based code does not regress the empty-status
+    # case.
+    my $r = cli_reconcile_for_ip(
+        cluster_status => { public_ip => '10.0.0.1' },
+        control_planes => [{ public_ip => '10.0.0.1', host => 'spec.example' }],
+    );
+    is scalar(@ssh_calls), 1, 'one SSH connection was attempted';
+    is $ssh_calls[0]{host}, '10.0.0.1',
+        'SSH went to the spec IP when status was empty';
+};
+
+subtest 'no SSH when neither status nor spec names a CP' => sub {
+    # Local provider, no host anywhere. The if ($cp_ip) block must NOT
+    # run -- there is nothing to SSH to. Same shape the previous code had:
+    # FakeAddConfig with empty control_planes, no SSH attempted.
+    my $r = cli_reconcile_for_ip(cluster_status => {});
+    is scalar(@ssh_calls), 0, 'no SSH connection attempted';
 };
 
 done_testing;

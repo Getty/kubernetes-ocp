@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add` now reads the control plane IP from
+      `OCP::Config::cluster_status` instead of `control_planes` (karr #120).
+      The spec (ocp.yaml) is what the operator wants; the status
+      (.ocp/status.yaml) is what the cluster actually has. On a cluster
+      whose CP IP drifted since the last `ocp apply` -- the same shape
+      karr #98 fixed for the bootstrap path -- reading the spec made the
+      CLI's SSH call go to a machine that no longer existed. The same
+      helper is used by `ocp update` and the drift reconcile, so the
+      status IP is now the single source of truth across every path that
+      reads the join token. New subtests in t/18b-node-add.t assert that
+      the status IP wins over the spec IP, that the spec IP is still used
+      when status is empty (the first-ever `ocp node add`), and that no
+      SSH is attempted when neither names a CP.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a
