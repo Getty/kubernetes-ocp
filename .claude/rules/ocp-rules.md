@@ -39,7 +39,7 @@ Depends on whether the Agent/Task tool is available to you.
   |---|---|
   | CLI, modules, providers, drift, K8s access | `ocp-worker` (default) |
   | robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
-  | manifests/, share/, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
+  | share/, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
   | Write or extend tests in `t/` | `ocp-test-writer` |
   | POD and prose docs | `ocp-doc-writer` |
   | Pre-release audit | `ocp-release-checker` |
@@ -48,7 +48,7 @@ Depends on whether the Agent/Task tool is available to you.
 - **You cannot spawn subagents** (you ARE an `ocp-*` agent): the lock does not apply —
   implement, refactor, debug and test per these rules.
 
-Behavior-relevant = everything under `lib/` and `bin/`, `manifests/`, `share/`
+Behavior-relevant = everything under `lib/` and `bin/`, `share/`
 (templates + Rexfile), and the tests. Prose in `README.md` and `Changes` bullets are not.
 
 ## Coordination — karr board (always in scope)
