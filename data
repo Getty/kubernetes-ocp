@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-08-16T04:27:45Z
+created: 2026-08-16T03:19:07Z
+id: 114
+priority: low
+started: 2026-08-16T04:08:51Z
+status: done
+tags:
+- tests
+- pod
+- invariants
+title: t/51-pod.t prueft eine feste Pfadliste statt aller Module
+updated: 2026-08-16T04:27:45Z
+---
+
+Gefunden 2026-08-16 beim Fix von #103 (ocp-worker), Kleinkram mit einem echten
+Kern.
+
+1. t/51-pod.t prueft die Weaver-Struktur nur fuer lib/OCP/Provider*.pm und
+   lib/OCP/Role/Provider*.pm. Das neue lib/OCP/Choices.pm hat den vollen Satz
+   (# ABSTRACT, =synopsis, =description, =method, =seealso, kein $VERSION, kein
+   handgeschriebenes =head1 NAME) - aber der Test sieht es nicht, und er saehe
+   auch das naechste neue Modul nicht.
+   DAS IST DIESELBE FORM WIE #68: eine Pruefung, die eine Regel behauptet und
+   dabei eine feste Pfadliste benutzt. Die Lehre gilt unveraendert - Verzeichnis
+   scannen statt aufzaehlen, mit benannten Ausnahmen wo noetig.
+
+2. lib/OCP/Node.pm:453, `die "unknown phase: $p\n"` im reconcile-Dispatch. Formal
+   dieselbe Familie wie #103, aber die Eingabe ist OCPs EIGENES Statusfeld, nicht
+   die eines Bedieners. Eine Auflistung wuerde einem Entwickler helfen, nicht dem
+   Nutzer. Geringer Wert, der Vollstaendigkeit halber notiert - und weil die
+   Phasenmenge inzwischen an zwei Orten steht (hier und im CRD-Enum), was fuer
+   sich genommen wieder die Frage aus #110/#111 ist.
+
+Lane: ocp-test-writer (1), ocp-worker (2). Verwandt: #103, #68, #110, #111.
