@@ -221,6 +221,20 @@ Revision history for OCP
       OCP::Secrets::generate_age_key itself, which now refuses to run while
       anything is bound to a recipient, so it holds for any other path to
       generation as well.
+    - `ocp apply` in dev mode (`ocp init --nopassword`) no longer mints over a
+      committed binding (karr #90). The dev-mode branch used the
+      `has_age_key`-on-this-machine check `ocp init` had before #86, and once
+      #86 put the safety net inside `OCP::Secrets::generate_age_key` that
+      branch hit the generic "Unlock the existing key with PIN1 (age.key.enc)"
+      croak — advice that has nowhere to go on a path without a PIN. The
+      check is now `project_has_age_key` (added in #86): nothing committed,
+      generate as before; project bound to a recipient and `.ocp/age.key`
+      missing, abort with the dev-mode-specific answer (the key has to come
+      back from a backup or from the machine that created the project —
+      `.ocp/` is gitignored). Generating over an existing recipient still
+      has to be impossible; OCP::Secrets::generate_age_key's own refusal is
+      unchanged and now sits below a check that gives the user the right
+      diagnosis for this branch.
     - `ocp init` creates the bootstrap key .ocp/id_ed25519 for
       `provider: ssh` in secure mode, not only under --nopassword (karr #85).
       OCP::Cmd::Apply::Bootstrap picks exactly that file when
