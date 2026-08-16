@@ -78,6 +78,24 @@ Revision history for OCP
       preserved.t cycles a foreign key through every read path and
       asserts the named-recipients error, the karr #86 fallout file,
       and that the right key still decrypts once it's back.
+    - `ocp ssh --node` no longer crashes on multi-CP clusters with
+      'Not a HASH reference' (karr #117). The dispatch read
+      `$spec->{control_planes}->{provider}` directly, but
+      OCP::Config stores multi-CP `control_planes` as an arrayref,
+      so the moment a project had more than one control plane the
+      deref blew up before `_unknown_node_error` could run -- and
+      on a `provider: ssh` first entry the only diagnosis was the
+      Perl error, not anything the operator could act on. The
+      dispatch now lives in a single helper,
+      `OCP::Cmd::SSH::_resolve_target_host`, which normalises the
+      raw field into a list of CPs and walks it matching each CP's
+      identity (policeN for Hetzner, host-label for ssh); misses
+      fall through to the legacy police/cp regex and from there
+      to the IP/hostname path the way they always did. New
+      subtests in t/77-cmd-ssh-multi-cp.t assert the deref no
+      longer crashes on arrayref `control_planes`, that the
+      matching CP (not the first one) decides provider dispatch,
+      and that an empty `provider` field no longer throws either.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a
