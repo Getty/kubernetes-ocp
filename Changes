@@ -8,6 +8,18 @@ Revision history for OCP
       worker list and the control-plane list share one source -- the
       fourth hand-kept `hetzner|ssh` regex is gone. New subtests in
       t/15-config-validation.t cover both directions.
+    - `OCP::Drift::distribution_drift` no longer swallows API failures into
+      "no drift" (karr #119). The bare `eval { ... } or return` collapsed every
+      list('Node') failure -- revoked token, RBAC denial, TLS, apiserver 5xx --
+      into a silent undef, so `ocp status` printed a green drift summary with
+      no warning, no log, and no entry while the actual reason nothing was
+      compared was that the API never answered. The sub now returns one
+      `kind => 'error'` drift entry naming the distribution and the underlying
+      exception, and carps the exception to stderr -- the same way
+      OCP::Cmd::Status already handles its `list_nodes` failure. New subtests
+      in t/25-drift.t assert the entry carries the original error text and
+      reaches the drift list `detect()` returns, so a stray `ocp status`
+      against a broken kubeconfig does not stay silent.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a
