@@ -8,10 +8,12 @@ use Path::Tiny qw(path);
 use File::Copy qw(copy move);
 
 use OCP;
+use OCP::Choices;
 use OCP::Config;
 use OCP::Hetzner::Picker;
 use OCP::Keys;
 use OCP::Password;
+use OCP::Provider;
 use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
@@ -103,6 +105,51 @@ has _server_type => (is => 'rw');
 
 sub execute {
     my ($self, $args, $chain) = @_;
+
+    # Validate enum-shaped options before any side effect. The doc strings on
+    # these options already advertise the valid set; refusing a typo at the
+    # option boundary is the same discipline karr #67, #89 and #103 applied
+    # elsewhere -- the rejection names what would have worked. A typo here
+    # used to sail through CLI parsing and die far downstream (karr #124):
+    # `ocp init --dist rke3` reached write_spec, `ocp init --provider
+    # hetzner-cloud` wrote a spec with no control_planes block, and
+    # `ocp init --ssh-key ~/.ssh/id_ed25519.pub` copied the public half into
+    # the private slot.
+    if (defined $self->dist && !grep { $_ eq $self->dist } qw(rke2 k3s)) {
+        die OCP::Choices::unknown('dist', $self->dist, [ qw(rke2 k3s) ]);
+    }
+
+    if (defined $self->provider && !OCP::Provider->known_type($self->provider)) {
+        die OCP::Choices::unknown('provider', $self->provider,
+            [ OCP::Provider->types ]);
+    }
+
+    if (defined $self->service && !grep { $_ eq $self->service } qw(systemd none)) {
+        die OCP::Choices::unknown('service', $self->service, [ qw(systemd none) ]);
+    }
+
+    # --ssh-key takes the PRIVATE half: the .pub convention is universal
+    # enough that "ends in .pub" catches the mistake the field exists for
+    # (copying the public key into the private slot). No Available: line
+    # here -- there is no second valid value, only a shape.
+    if (defined $self->ssh_key && $self->ssh_key =~ /\.pub\z/) {
+        die OCP::Choices::unknown('SSH key', $self->ssh_key, [],
+            hint => "--ssh-key takes the PRIVATE key (no .pub extension);"
+                  . " the public half is ssh_key + '.pub'.\n",
+        );
+    }
+
+    # --host is only meaningful with --provider ssh. The converse -- ssh
+    # without --host -- is the existing check further down; this one is the
+    # silent counterpart karr #124 flagged: --host with any non-ssh provider
+    # is dropped on the floor by write_spec (only the ssh branch reads it).
+    if (defined $self->host && $self->_provider ne 'ssh') {
+        die OCP::Choices::unknown('--host target', $self->host, [],
+            hint => "--host is only used with --provider ssh; this init"
+                  . " writes provider: " . $self->_provider
+                  . " and --host would be ignored.\n",
+        );
+    }
 
     my $project_dir = path('.');
     my $config_file = $self->ocp->config;
