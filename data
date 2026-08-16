@@ -1,0 +1,58 @@
+---
+class: standard
+completed: 2026-08-16T04:25:56Z
+created: 2026-08-16T03:18:31Z
+id: 113
+priority: high
+started: 2026-08-16T04:08:51Z
+status: done
+tags:
+- cli
+- update
+- safety
+title: ocp update --component mit Tippfehler meldet Erfolg und tut nichts
+updated: 2026-08-16T04:25:56Z
+---
+
+Gefunden 2026-08-16 beim Fix von #103 (ocp-worker). Das ist KEINE schlechte
+Meldung - es ist ein STILLER ERFOLG, und damit die gefaehrlichere Variante.
+
+lib/OCP/Cmd/Update.pm:91:
+
+    next if $selected && $comp ne $selected;
+
+Ein `--component`, das keine Komponente trifft, matcht nichts, @updates bleibt
+leer, und das Kommando druckt
+
+    "All components up to date."
+
+und beendet mit 0. Der Bediener glaubt, Cilium sei aktualisiert worden. Es ist
+nichts passiert, und nichts sagt es ihm.
+
+  ocp update --component cilum      # Tippfehler
+  -> "All components up to date."   Exit 0
+
+DIESELBE FAMILIE WIE #67: dort fuehrte ein unbekanntes Subkommando still die
+Wurzel aus und meldete Erfolg. Hier meldet ein unbekannter Komponentenname
+Erfolg, ohne etwas getan zu haben. #67 wurde als "gefaehrlich, nicht nur
+unschoen" eingestuft, und das gilt hier genauso - `ocp update` ist ein Kommando,
+das man faehrt, WEIL man eine Aenderung erwartet.
+
+DER FIX IST EINE ZEILE, weil #103 die Naht dafuer gebaut hat. Die Menge steht
+bereits eine Zeile darueber im Scope:
+
+    die OCP::Choices::unknown('component', $selected, [ sort keys %$target_comps ])
+        if $selected && !exists $target_comps->{$selected};
+
+Der #103-Agent hat ihn BEWUSST NICHT gebaut, sondern als Beleg stehen lassen,
+dass der siebte Fall billiger ist als der sechste - das war das Kriterium, an dem
+#103 gemessen wurde. Der Beleg ist erbracht; jetzt gehoert er eingebaut.
+
+MITZUNEHMEN, gleiche Datei, andere Frage: pruef beim Bauen, ob `ocp update` ohne
+--component ebenfalls "All components up to date" sagen kann, obwohl etwas
+schiefging (leere Liste aus einem anderen Grund als "nichts zu tun"). Der
+Unterschied zwischen "nichts zu tun" und "nichts gefunden" ist genau der, um den
+es hier geht.
+
+Lane: ocp-worker. Verwandt: #103 (hat die Naht gebaut), #67 (dieselbe Familie),
+#89.
