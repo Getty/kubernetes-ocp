@@ -1,0 +1,58 @@
+---
+class: standard
+completed: 2026-08-16T04:25:31Z
+created: 2026-08-15T20:12:53Z
+id: 90
+priority: medium
+started: 2026-08-16T04:17:17Z
+status: done
+tags:
+- keys
+- dev-mode
+- apply
+title: 'Dev-Mode-apply hat dieselbe age-Key-Falle wie #86, nur mit generischer Meldung'
+updated: 2026-08-16T04:25:31Z
+---
+
+Gefunden 2026-08-15 beim Fix von #86 (ocp-worker). Dieselbe Fehlerklasse, anderer
+Modus — und der Kommentar, der dort die Grenze ziehen soll, zieht sie zu eng.
+
+lib/OCP/Cmd/Apply.pm ~Zeile 129-137, Dev-Mode-Zweig:
+
+    # We need an age key for encrypting the kubeconfig later. In dev mode
+    # we never prompt for a PIN: if a plain age.key already exists, use
+    # it; otherwise generate a fresh one. We deliberately do NOT touch
+    # age.key.enc here - that would imply secure mode and a PIN prompt.
+    if (!$secrets->has_age_key) { ... generate_age_key ... }
+
+Die Grenze lautet "age.key.enc wird nicht angefasst". Das deckt aber nur EINE der
+Dateien ab, an die ein Projekt gebunden sein kann. Ein Dev-Mode-Projekt hat sehr
+wohl age-gebundenes Material:
+
+  ocp init --nopassword --hetzner  -> schreibt ein verschluesseltes secrets.yaml
+  ocp apply                        -> schreibt kubeconfig.yaml
+
+Klont jemand ein solches Projekt (ohne .ocp/, das ist gitignored) und faehrt
+`ocp apply`, greift genau derselbe Mechanismus wie in #86: has_age_key sagt "nein",
+es wird ein frischer Schluessel erzeugt, und secrets.yaml/kubeconfig.yaml sind an
+einen Empfaenger gebunden, den niemand hat.
+
+STAND NACH #86: Der Schaden ist bereits VERHINDERT — generate_age_key croakt jetzt,
+sobald irgendetwas gebunden ist (age.key.enc ODER eine SOPS-Datei). Die Sicherung
+sitzt im Mechanismus, nicht im Aufrufer, und greift deshalb auch hier.
+
+WAS BLEIBT: die MELDUNG. Dieser Pfad bekommt den generischen Croak aus OCP::Secrets
+statt einer Erklaerung, die zum Dev-Mode passt. Und er kann sich nicht selbst
+helfen: PIN1 abzufragen ist im Dev-Mode ausdruecklich nicht vorgesehen, ein
+Entsperren aus age.key.enc scheidet also aus.
+
+ZU TUN: Der Dev-Mode-Zweig soll den Fall selbst erkennen und sauber abbrechen —
+mit der Aussage, dass dieses Projekt bereits an einen age-Schluessel gebunden ist
+und .ocp/age.key wiederhergestellt werden muss (aus einem Backup oder von der
+Maschine, auf der das Projekt angelegt wurde). Kein Prompt, kein Erzeugen.
+Im selben Zug den Kommentar korrigieren: die Grenze ist nicht "age.key.enc", sondern
+"irgendetwas in diesem Projekt ist an einen Empfaenger gebunden". OCP::Secrets hat
+seit #86 mit project_has_age_key / age_key_bindings genau die Abfrage dafuer.
+
+Lane: ocp-worker. Verwandt: #86 (gleiche Ursache, secure mode), ADR 0004
+(.ocp/ ist gitignored - die Regel, die den Fall ueberhaupt erzeugt).
