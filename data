@@ -1,0 +1,59 @@
+---
+class: standard
+completed: 2026-08-16T05:15:39Z
+created: 2026-08-16T02:54:40Z
+id: 112
+priority: medium
+started: 2026-08-16T04:58:15Z
+status: done
+tags:
+- timeouts
+- ssh
+- hetzner
+title: Adress-Budget steht dreimal, und is_reachable hat eine Zahl die luegt
+updated: 2026-08-16T05:15:39Z
+---
+
+Gefunden 2026-08-16 beim Fix von #109 (ocp-worker). Dieselbe Form wie #109, einen
+Schritt bevor sie zubeisst.
+
+DAS ADRESS-BUDGET STEHT DREIMAL, aktuell zufaellig ueberall 120:
+
+  lib/OCP/Provider/Hetzner.pm   wait_for_running: $timeout //= 120   (eigener Default)
+  lib/OCP/Node.pm:249           our $ADDRESS_TIMEOUT = 120
+  lib/OCP/Cmd/Apply/Bootstrap.pm:237  wait_for_running($info, 120)   (nacktes Literal)
+
+Wer heute $ADDRESS_TIMEOUT anhebt, laesst Bootstrap zurueck - genau die Asymmetrie,
+die #109 gerade beim SSH-Warten beseitigt hat, nur noch nicht eingetreten.
+
+DIE LEHRE AUS #109 GILT HIER UNVERAENDERT und ist staerker als "eine Konstante":
+wait_for_ssh hatte seinen eigenen Default bereits, und beide Aufrufer haben ihn
+ueberschrieben. Die Loesung war, dass KEIN Aufrufer mehr eine Zahl nennt. Hier ist
+die Lage identisch - Hetzner::wait_for_running hat seinen Default schon, Bootstrap
+uebergibt trotzdem ein Literal.
+
+ZU TUN:
+ - Bootstraps Literal streichen, damit der Default der Methode gilt.
+ - $OCP::Node::ADDRESS_TIMEOUT pruefen: er existiert aus einem GUTEN Grund - die
+   Fehlermeldung in OCP::Node zitiert die Zahl ("waiting up to ${ADDRESS_TIMEOUT}s").
+   Entweder er liest den Default aus dem Provider, oder der Provider bekommt seine
+   Zahl von dort. Eine Richtung waehlen und begruenden; zwei Konstanten, die
+   dieselbe Frage beantworten, sind wieder der Ausgangszustand.
+ - Test wie in #109: EINE Assertion, die die effektiven Budgets gegeneinander
+   haelt, nicht zwei mit je einer Zahl.
+
+MITZUNEHMEN, gleiche Kategorie: t/16-node.t enthaelt aus #99 noch
+`is $waited->{timeout}, 120` - eine einzelne Zahl-Assertion fuer genau dieses
+Budget. Das ist der Stil, den #109 verworfen hat; sie wuerde ein Auseinanderlaufen
+nicht bemerken, sondern nur bestaetigen, dass eine Seite 120 sagt.
+
+ZWEITER, UNABHAENGIGER BEFUND aus demselben Durchgang - EINE ZAHL, DIE LUEGT:
+lib/OCP/SSH.pm::is_reachable nimmt $timeout, setzt `$timeout //= 5` und BENUTZT
+den Wert dann nie. Die tatsaechliche Schranke ist ConnectTimeout aus dem Attribut
+connect_timeout (10). OCP::Provider::SSH ruft es mit 10 auf und meint "gib ihm 10
+Sekunden" - tatsaechlich ist es "wiederhole einen 10-Sekunden-Connect alle 2
+Sekunden, 10 Sekunden lang". Der Parameter suggeriert eine Kontrolle, die es nicht
+gibt. Entweder benutzen oder entfernen.
+
+Lane: ocp-worker. Verwandt: #109 (dieselbe Form, geloest), #99 (hat
+$ADDRESS_TIMEOUT eingefuehrt), #102 (Liste statt Naht).
