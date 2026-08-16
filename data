@@ -1,0 +1,81 @@
+---
+class: standard
+completed: 2026-08-16T02:08:10Z
+created: 2026-08-16T01:29:34Z
+id: 104
+priority: low
+started: 2026-08-16T02:08:10Z
+status: done
+tags:
+- docs
+- agents
+- briefing
+title: Agenten-Briefing behauptet $VERSION in allen 43 Modulen - seit 4aa92cf falsch
+updated: 2026-08-16T02:08:10Z
+---
+
+Von zwei verschiedenen Agenten unabhaengig gemeldet (2026-08-15 beim Nachlauf zu
+#37, 2026-08-16 beim Fix von #89): die Briefings der ocp-*-Agenten behaupten,
+`our $VERSION = '0.001'` stehe "in jedem Modul, alle 43".
+
+Das stimmt seit Commit 4aa92cf ("Drop per-module $VERSION, keep it single-sourced
+in OCP.pm") nicht mehr. Gemessen: von 59 .pm-Dateien tragen genau ZWEI ein
+$VERSION - lib/OCP.pm und lib/OCP/Versions.pm.
+
+WARUM DAS ZAEHLT: ein Briefing ist die Grundlage, auf der ein Agent Entscheidungen
+trifft, ohne nachzusehen. Eine falsche Zahl darin ist schlimmer als eine fehlende -
+sie klingt praezise. Dass zwei Agenten unabhaengig darueber gestolpert sind, zeigt,
+dass es beim Anlegen neuer Module tatsaechlich gelesen wird: beide mussten erst
+pruefen, ob ihre neue Datei ein $VERSION braucht.
+
+ZU TUN: die Stelle in den Briefings (.claude/agents/*.md bzw. die dort
+force-geladenen Skills) auf den Stand bringen - $VERSION ist in OCP.pm
+single-sourced, neue Module bekommen keins, nur die "# ABSTRACT:"-Zeile.
+Im selben Zug pruefen, ob weitere Zahlenangaben in den Briefings veraltet sind;
+Zahlen altern schneller als Regeln, und wo eine Regel genuegt, sollte keine Zahl
+stehen ("single-sourced in OCP.pm" ist wartungsfrei, "alle 43" nicht).
+
+ACHTUNG BEIM EDITIEREN: die Skills unter .claude/skills/ sind teilweise
+hardlinked ueber viele Repos (perl-core: Linkcount 36). NIEMALS mit Edit oder
+Write anfassen, immer `cat > datei`, danach Inode und Linkcount gegenpruefen.
+Details: Skill manage-skills.
+
+Verwandt: 4aa92cf, #74 (bin/ocp traegt sein $VERSION aus einem anderen, gueltigen
+Grund - nicht verwechseln).
+ERLEDIGT 2026-08-16 (ocp-doc-writer). Zwei Behauptungen korrigiert, beide zur
+REGEL statt zu einer neuen Zahl.
+
+$VERSION: in .claude/agents/ocp-worker.md, ocp-release-checker.md und
+ocp-robocop-worker.md stand "in every module (43 of them)". Vor dem Schreiben
+nachgemessen: 59 .pm-Dateien unter lib/, und repo-weit tragen genau VIER Dateien
+ein $VERSION - lib/OCP.pm, lib/OCP/Versions.pm, bin/ocp, bin/robocop.
+Neu formuliert als Regel: single-sourced in OCP.pm, neue Module bekommen keins,
+nur die "# ABSTRACT:"-Zeile. bin/ocp und bin/robocop sind ausdruecklich als
+GUELTIGE Ausnahme benannt (:ExecFiles, vom Release-Rewriter gestempelt, siehe #74) -
+damit sie niemand "aufraeumt". Die Begruendung wurde gegen #74s tatsaechliche
+Befunde geprueft, nicht aus der Aufgabenstellung zusammengesetzt.
+
+An dieser falschen Angabe sind an einem Tag DREI Agenten unabhaengig
+haengengeblieben: zwei mussten pruefen, ob ihr neues Modul ein $VERSION braucht,
+einer meldete es beim Release-Audit.
+
+make test: mit #79 ist `make test` der gepinnte Lauf im Image, `make test-host`
+der schnelle, nicht bindende Host-Lauf. In ocp-worker.md, ocp-robocop-worker.md,
+ocp-infra-worker.md und ocp-test-writer.md stand noch "(prove -l t/)".
+Nachgezogen - samt dem GRUND, nicht nur der Syntax: die Suite lief gegen
+host-installierte Module UND ein anderes Perl (Host 5.036 vs Image 5.042003), und
+war deshalb am 2026-08-15 morgens gruen und abends rot, ohne dass sich eine Zeile
+im Repo bewegt hatte. Dazu die Messung 159s vs 160s, damit niemand aus
+Bequemlichkeit auf test-host ausweicht.
+
+EIN FEHLER IN MEINER EIGENEN BEAUFTRAGUNG, der Erwaehnung verdient: ich hatte
+.claude/skills/ocp-core/SKILL.md:46 als Fundstelle mitgegeben - uebernommen aus
+dem Bericht eines anderen Agenten, ohne es selbst zu pruefen. Die Behauptung steht
+dort NICHT (Zeile 46 handelt von make snapshot / docker-test, die Datei hat gar
+keinen Build-&-Test-Abschnitt). Der Agent hat die Datei daraufhin UNANGETASTET
+gelassen und die Abweichung gemeldet, statt einen Fix zu erfinden. Inode 274998835
+und Linkcount 2 vorher wie nachher - kein Hardlink-Risiko eingegangen.
+
+Weitere Staleness aus demselben Durchgang ist jetzt #108 (manifests/ in der
+Delegations-Tabelle und in ocp-core, veralteter Suite-Umfang, unvollstaendige
+Pin-Liste im Release-Checker).
