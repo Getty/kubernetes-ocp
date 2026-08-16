@@ -7,6 +7,8 @@ use JSON::PP ();
 use lib 'lib';
 
 use OCP::Cmd::Node::Add;
+use OCP::Choices;
+use OCP::Provider;
 # Loaded by the command anyway; named here because the budget assertions below
 # read $OCP::Node::READY_TIMEOUT straight out of it.
 use OCP::Node;
@@ -190,6 +192,58 @@ subtest 'requires --host for ssh provider' => sub {
 
     eval { $add->_validate_flags('ssh') };
     like $@, qr/--host.*required.*ssh/i, 'ssh requires --host';
+};
+
+subtest 'accepts every type OCP::Provider knows (karr #121)' => sub {
+    # The if/elsif/elsif chain hand-coded 'hetzner'/'ssh'/'local' and only
+    # used OCP::Provider->types in the unknown branch — so adding a fourth
+    # provider to the factory sent it straight to "Unknown provider type",
+    # the same message a typo would have produced. The fix routes the known
+    # branch through OCP::Provider->known_type instead, so a type the factory
+    # knows is treated as known here too.
+    #
+    # OCP::Provider's @TYPES is a `my`, not a package variable, so it cannot
+    # be `local`'d from outside. Override the two readers for this test only:
+    # they are the public surface `_validate_flags` asks about.
+    {
+        no warnings 'redefine';
+        local *OCP::Provider::types      = sub { qw(hetzner ssh local fake) };
+        local *OCP::Provider::known_type = sub {
+            my ($class, $type) = @_;
+            return 0 unless defined $type;
+            return scalar grep { $_ eq $type } qw(hetzner ssh local fake);
+        };
+
+        my $k8s = FakeK8sA->new(providers => []);
+        my $add = OCP::Cmd::Node::Add->new(
+            k8s  => $k8s,
+            name => 'worker-1',
+        );
+
+        eval { $add->_validate_flags('fake') };
+        is $@, '', 'a type the factory knows is not rejected as unknown';
+    }
+};
+
+subtest 'the unknown branch lists every type the factory knows (karr #121)' => sub {
+    # The other half of the same fix: the rejection must name the values
+    # that would have worked, read from OCP::Provider->types. A test that
+    # omits 'local' (or whatever else the factory has) from the listing
+    # catches a regression to a hand-coded copy of three words.
+    my $k8s = FakeK8sA->new(providers => []);
+    my $add = OCP::Cmd::Node::Add->new(
+        k8s  => $k8s,
+        name => 'worker-1',
+    );
+
+    eval { $add->_validate_flags('aws', 'legacy-aws') };
+    my $err = $@;
+    like $err, qr/^Unknown provider type 'aws'\./,
+        'a type the factory does not know is rejected';
+    like $err, qr/\Q@{[ OCP::Choices::available(OCP::Provider->types) ]}\E/,
+        'and the listing is exactly what OCP::Provider->types produces';
+    like $err, qr/OCPNodeProvider 'legacy-aws' declares spec\.type 'aws'/,
+        'and names the CR the type came from';
 };
 
 subtest 'writes OCPNode CR via ensure' => sub {
