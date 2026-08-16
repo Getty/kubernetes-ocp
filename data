@@ -1,0 +1,41 @@
+---
+class: standard
+completed: 2026-08-16T04:25:37Z
+created: 2026-08-15T20:13:00Z
+id: 91
+priority: low
+started: 2026-08-16T04:08:51Z
+status: done
+tags:
+- keys
+- errors
+title: _get_age_recipient reicht undef durch statt zu sagen, dass age.pub fehlt
+updated: 2026-08-16T04:25:37Z
+---
+
+Gefunden 2026-08-15 beim Fix von #86 (ocp-worker), verifiziert statt vermutet.
+
+lib/OCP/Keys.pm:460, _get_age_recipient: liefert still undef, wenn .ocp/age.pub
+fehlt. add_key reicht das undef an Crypt::Age weiter. Gemessenes Ergebnis:
+
+  Use of uninitialized value $recipient in ...   (zweimal)
+  Unsupported recipient format:
+
+Also zwei Perl-Warnungen und eine Fehlermeldung, die den eigentlichen Mangel nicht
+benennt. Wer das sieht, sucht an der falschen Stelle - der fehlende Empfaenger ist
+eine fehlende DATEI, kein kaputtes Format.
+
+Nach #86 ist die Stelle schwerer zu erreichen: das Entsperren stellt .ocp/age.pub
+aus .ocp/age.key wieder her (restore_age_recipient), der Normalfall faellt also
+nicht mehr hinein. Erreichbar bleibt sie fuer jeden Pfad, der add_key ruft, ohne
+vorher ensure_age_key durchlaufen zu haben.
+
+ZU TUN: croak mit Nennung der fehlenden Datei statt undef durchzureichen.
+Zwei Zeilen. Bewusst nicht mit #86 gemacht, um den Diff dort eng zu halten.
+
+Im selben Zug mitnehmbar, gleiche Kategorie (Meldung zeigt auf etwas, das nicht
+mehr stimmt): lib/OCP/Secrets.pm:348, create_secrets sagt
+"No age recipient found. Run generate_age_key first." - generate_age_key wird
+diesen Aufruf seit #86 aber (zu Recht) verweigern, sobald das Projekt gebunden ist.
+
+Lane: ocp-worker. Verwandt: #86.
