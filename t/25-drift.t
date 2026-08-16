@@ -186,6 +186,34 @@ YAML
 }
 
 #
+# Test: a skip_if that names a method OCP::Config does not have is a
+# programmer error and dies loudly. Before karr #106 the missing method made
+# the can() probe fall through and the probe ran as if no skip_if was set --
+# a cluster with `nocert: true` would then be reported as cert-manager-
+# drifting after someone renamed or removed OCP::Config::no_cert.
+#
+
+{
+    # Splicing a single bogus probe keeps the rest of the table from running
+    # and going through the real skip_if code path, which is what we want to
+    # exercise -- not the broader component_drift behaviour.
+    local @OCP::Drift::COMPONENT_PROBES = (
+        { component => 'never', label => 'Never', kind => 'Deployment',
+          name => 'never', namespace => 'never',
+          skip_if => 'definitely_not_a_real_method', },
+    );
+
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => {});
+
+    eval { OCP::Drift->new(config => $config, api => $api)->component_drift };
+    like($@, qr/definitely_not_a_real_method/,
+        'croak names the offending skip_if target');
+    like($@, qr/skip_if target not found on OCP::Config/,
+        'croak says what is wrong');
+}
+
+#
 # Test: the GPU stack
 #
 # @COMPONENT_PROBES had two entries, cilium and cert_manager, while the whole

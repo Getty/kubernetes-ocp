@@ -3,6 +3,7 @@ package OCP::Drift;
 
 use Moo;
 use Socket;
+use Carp qw(croak);
 use OCP::Versions;
 
 has config => (is => 'ro', required => 1);
@@ -161,7 +162,17 @@ sub component_drift {
 
     for my $probe (@COMPONENT_PROBES) {
         my $skip = $probe->{skip_if};
-        next if $skip && $config->can($skip) && $config->$skip;
+
+        # The name is from a constant table in this distribution, the target
+        # is a method on OCP::Config in the same distribution. There is no
+        # scenario where the table names something the target legitimately
+        # lacks -- it can only mean the probe or the predicate was renamed
+        # out of sync. The old `can &&` silently let such a probe run and
+        # turned `nocert: true` into a false cert-manager drift report.
+        croak "skip_if target not found on OCP::Config: $skip"
+            if $skip && !$config->can($skip);
+
+        next if $skip && $config->$skip;
 
         my $expected = OCP::Versions->get_component_version($probe->{component});
         next unless defined $expected;
