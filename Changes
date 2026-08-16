@@ -1,6 +1,42 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A worker that is slow to boot is no longer lost for good. Waiting for
+      SSH on a freshly created machine had two budgets for one question: 120s
+      when `ocp apply` bootstraps a control plane, 60s when a worker is
+      installed — and on the worker side running out is terminal, so a server
+      whose sshd needed 70 seconds was marked Failed permanently while it kept
+      billing. Both now take the same 120s from `$OCP::SSH::WAIT_TIMEOUT`, the
+      module that does the waiting; the control-plane path spends exactly what
+      it always did. The wait had been unreachable for Hetzner workers until
+      the address fix in this same release, which is why nobody had hit it.
+    - `ocp node add` says what it is waiting for. It could sit silent for ten
+      minutes and then report "did not reach Ready state" with an SSH-key
+      hint, which is the wrong diagnosis for a machine that was merely still
+      installing. It now prints each phase as the node reaches it, and
+      distinguishes "ran out of time" from "failed" — nothing is rolled back,
+      and re-running the command continues from the phase in the CR. The
+      budget for that wait went from 600s to 900s and lives in one place
+      (`$OCP::Node::READY_TIMEOUT`) instead of being restated by three
+      callers: it has to cover the address wait, the SSH wait, the whole RKE2
+      install and the join, and no longer did.
+    - `ocp provider add --location nbg1` now actually puts servers in nbg1.
+      `--location`, `--server-type` and `--image` were written onto the
+      OCPNodeProvider CR and printed by `ocp provider ls`, and nothing ever
+      read them back — the provider level was decoration and only the node
+      level counted. They are now the middle rank of a stated order: a node's
+      own `ocp node add --server-type` wins, then the provider's default, then
+      the built-in default (cx32 / debian-13 / fsn1). An empty value counts as
+      "not set" at every rank, so a provider that says nothing changes
+      nothing, and a provider named `hetzner-nbg1` is finally worth having.
+      The control plane is unaffected: `ocp apply` names all three out of
+      ocp.yaml, which is the top rank. The CRD also declared
+      `serverType: default: cx23` — a server type Hetzner does not sell — so
+      every provider CR read back cx23 while every server came up cx32. That
+      default is gone rather than corrected: a schema default is materialised
+      into every CR by the API server, which would have made "this provider
+      does not care" impossible to express. One `ocp apply` clears the stale
+      value out of an existing CR.
     - `ocp destroy` no longer leaves paid Hetzner workers running. Every
       server carries an `ocp-cluster` label, and the teardown deletes by it —
       but the worker path (`ocp node add` and robocop alike) took the cluster

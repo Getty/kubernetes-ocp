@@ -324,7 +324,12 @@ sub _install_kubernetes {
         key_file => $self->_ssh_key_file->path,
         user     => 'root',
     );
-    eval { $ssh->wait_for_ssh(60) };
+    # No budget named here on purpose: this is the same wait for the same kind
+    # of freshly created machine the control-plane path does, so it takes the
+    # same number from the module that owns the operation
+    # ($OCP::SSH::WAIT_TIMEOUT, 120s). It used to name 60 -- half of what
+    # Bootstrap spends -- and the failure below is terminal (karr #109).
+    eval { $ssh->wait_for_ssh };
     if ($@) {
         $self->_patch_status(phase => 'Failed', message => "SSH not reachable: $@");
         return;
@@ -435,16 +440,63 @@ sub _refresh {
     $self->_set_cr($fresh) if $fresh;
 }
 
+# How long a caller may watch one node on its way to Ready.
+#
+# Everything a fresh cloud worker does has to fit in here, and two of the
+# lines are ceilings this distribution sets itself:
+#
+#   provision: create_server + the status writes            ~10 s
+#   address:   $OCP::Node::ADDRESS_TIMEOUT                <= 120 s   (karr #99)
+#   ssh:       $OCP::SSH::WAIT_TIMEOUT                    <= 120 s   (karr #109)
+#   install:   prepare_node (apt refresh, chrony,
+#              locale-gen) + get.rke2.io download,
+#              install, service start                      ~300 s
+#   join:      kubelet registers, Cilium's agent pod is
+#              scheduled and its image pulled, node Ready   ~180 s
+#   loop:      interval sleeps and API round trips           ~30 s
+#   ------------------------------------------------------------
+#                                                           ~760 s
+#
+# The first three numbers are exact; the last three are what a slow-but-healthy
+# machine costs, and nothing caps them -- they are a mirror, an image and a
+# network away from this code. 600 was already short of that sum, and karr #109
+# added 60 s of it by giving the worker the same SSH budget as the control
+# plane. Hence 900.
+#
+# Running out is not terminal: the loop only stops watching. The CR keeps the
+# phase it reached, and robocop -- or the next `ocp apply` -- carries it the
+# rest of the way. What it does cost is the report: `ocp node add` calls the
+# node not Ready and prints the authorized_keys migration hint with it, so a
+# budget shorter than the install turns "still installing" into a wrong
+# diagnosis. That asymmetry is why this errs long rather than short.
+#
+# `our` so a test can shorten it without timing the real thing.
+our $READY_TIMEOUT = 900;
+
 sub reconcile_until_ready {
     my ($self, %opt) = @_;
-    my $timeout  = $opt{timeout}  // 600;
+    my $timeout  = $opt{timeout}  // $READY_TIMEOUT;
     my $interval = $opt{interval} // 5;
+    my $on_phase = $opt{on_phase};
     my $deadline = time + $timeout;
+    my $reported = '';
 
     while (time < $deadline) {
         $self->_refresh;
-        return 1 if $self->phase eq 'Ready';
-        return 0 if $self->phase eq 'Failed';
+        my $phase = $self->phase;
+
+        # This class still never prints -- it hands the phase to whoever asked
+        # for it. `ocp node add` has an operator sitting in front of it for up
+        # to fifteen minutes and passes a sink that says what they are for;
+        # robocop passes none and nothing is written. Reported before the two
+        # returns below, so a Failed CR's message is the one that gets read.
+        if ($on_phase && $phase ne $reported) {
+            $reported = $phase;
+            $on_phase->($phase, $self->cr->{status}{message});
+        }
+
+        return 1 if $phase eq 'Ready';
+        return 0 if $phase eq 'Failed';
         $self->reconcile;
         sleep $interval;
     }
@@ -565,8 +617,12 @@ OCP::Node - Trigger-neutral node reconcile state machine
     # Single step (called by Robocop watch-loop)
     $node->reconcile;
 
-    # Block until Ready or Failed (called by ocp node add)
-    $node->reconcile_until_ready(timeout => 600);
+    # Block until Ready or Failed (called by ocp node add), optionally
+    # reporting each phase it passes through
+    $node->reconcile_until_ready(on_phase => sub {
+        my ($phase, $message) = @_;
+        print "  [..] $phase\n";
+    });
 
     # Drain + delete provider server + delete CRs
     $node->teardown;
@@ -604,6 +660,13 @@ L<OCP::Cmd::Apply::Bootstrap> spends on the same wait).  A resolved address
 is written back to C<status.publicIP> before it is used, so later passes,
 C<ocp node ls> and C<teardown> all see it.
 
+The SSH wait that follows is bounded the same way and for the same reason, by
+C<$OCP::SSH::WAIT_TIMEOUT> — see L<OCP::SSH/Waiting for a machine to come up>.
+Neither budget is named here: a worker and a control plane wait for the same
+kind of freshly created machine, and when this class named its own number it
+drifted to half of what L<OCP::Cmd::Apply::Bootstrap> spends, on the one of the
+two paths where running out is terminal (karr #109).
+
 Waiting there rather than in C<_provision> is deliberate.  C<Installing> is
 re-enterable and the provider id is already in status by the time the wait
 starts; a wait inside C<_provision> would sit on the reconciler lease with
@@ -618,6 +681,25 @@ through C<expand_class>, so an api-version passed there is fatal rather than
 merely wrong; and C<update> requires a blessed L<IO::K8s> object while this
 class handles C<cr> as a plain hash.  Both rules are honoured in those three
 methods and nowhere else.
+
+=head2 Waiting for Ready
+
+C<reconcile_until_ready> drives the phases in a loop until the node is C<Ready>
+or C<Failed>, for up to C<$OCP::Node::READY_TIMEOUT> (900 s).  That one budget
+has to hold the address wait, the SSH wait, the whole Rex install and the join
+— the sum is written out above the constant, and it is why 900 and not the 600
+each caller used to name.
+
+Running out of it is not a verdict on the node.  The loop stops watching; the
+CR keeps the phase it reached and Robocop or the next C<ocp apply> carries it
+on.  Only the caller's report is affected, which is the reason the budget errs
+long: C<ocp node add> answers a timeout with "did not reach Ready" and an SSH
+key hint, and neither is true of a machine that is merely still installing.
+
+C<on_phase> is an optional coderef, called with C<($phase, $message)> the first
+time each phase is seen — including the C<Ready> or C<Failed> the loop returns
+on.  It exists because this class must not print: C<ocp node add> has an
+operator waiting and passes a sink, Robocop passes none.
 
 =head2 Lease Mechanics
 

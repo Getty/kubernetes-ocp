@@ -588,7 +588,12 @@ sub cli_reconcile_workers {
             verbose      => $self->ocp->verbose,
         );
 
-        my $ok = eval { $node->reconcile_until_ready(timeout => 600, interval => 10) };
+        # The interval is this path's own (workers are driven one after the
+        # other, so poll less often); the budget is not. It is the same
+        # question `ocp node add` asks, and OCP::Node answers it once, in
+        # $OCP::Node::READY_TIMEOUT -- the 600 named here was a third copy of a
+        # number that no longer covered the waits underneath it (karr #109).
+        my $ok = eval { $node->reconcile_until_ready(interval => 10) };
         my $phase = $ok ? 'Ready' : ($node->phase || 'Failed');
 
         # Only from here, where a key was actually offered to a machine. The

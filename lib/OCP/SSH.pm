@@ -168,9 +168,28 @@ sub is_reachable {
     return $result->{exit} == 0;
 }
 
+# How long a machine that is coming up may take to answer on SSH.
+#
+# One number for one wait. Both callers that wait for a boot do the same thing
+# to the same kind of freshly created machine -- OCP::Cmd::Apply::Bootstrap for
+# the control plane, OCP::Node for every worker -- and both used to restate
+# this module's default themselves: 120 there, 60 here. Nothing justified the
+# half budget, and it was the terminal one: OCP::Node marks the node Failed,
+# which is final, so a server whose sshd needed 70s was lost for good and kept
+# billing (karr #109). The worker was the outlier; 120 is what the
+# control-plane path has always spent on exactly this wait.
+#
+# Waiting for a boot means passing nothing and taking this. A caller asking a
+# different question still names its own budget -- OCP::Provider::SSH's
+# is_reachable probes a host that is supposed to be up already and gives it
+# 10s, which is a reachability check, not a wait.
+#
+# `our` so a test can shorten it without timing the real thing.
+our $WAIT_TIMEOUT = 120;
+
 sub wait_for_ssh {
     my ($self, $timeout, $interval) = @_;
-    $timeout //= 120;
+    $timeout //= $WAIT_TIMEOUT;
     $interval //= 2;
 
     # Allow Ctrl-C to interrupt
@@ -208,8 +227,8 @@ OCP::SSH - SSH operations for OCP using IPC::Open3
         key_file => '.ocp/id_ed25519',
     );
 
-    # Wait for SSH to be available
-    $ssh->wait_for_ssh(60);
+    # Wait for a machine that is booting to answer
+    $ssh->wait_for_ssh;
 
     # Run a command
     my $result = $ssh->run('uname -a');
@@ -235,5 +254,18 @@ OCP::SSH - SSH operations for OCP using IPC::Open3
 Central SSH module for OCP. All SSH connections go through this module
 to ensure consistent options: ignores user F<~/.ssh/config> (via C<-F /dev/null>),
 disables host key checking, and uses only the explicitly provided key.
+
+=head2 Waiting for a machine to come up
+
+C<wait_for_ssh> called without an argument counts down from
+C<$OCP::SSH::WAIT_TIMEOUT> (120 s). That is the budget for the same wait
+everywhere it happens: L<OCP::Cmd::Apply::Bootstrap> after the control-plane
+server reaches C<running>, and L<OCP::Node> after a worker does. Neither names
+a number of its own — they used to, with 120 and 60, and the worker's half
+budget failed nodes that were merely slow to boot (karr #109).
+
+An explicit argument is for a different question. L<OCP::Provider::SSH>'s
+C<is_reachable> passes 10: it probes a host that is supposed to be up already
+and wants a quick no, not a boot wait.
 
 =cut

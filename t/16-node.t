@@ -160,8 +160,16 @@ package FakeProvider {
 }
 
 package FakeSSH {
+    our @_waits;
     sub new { my ($c, %a) = @_; bless { %a }, $c }
-    sub wait_for_ssh { my ($s, $n) = @_; $s->{ssh_cb} ? $s->{ssh_cb}->($n) : 1 }
+    # Records what the caller ASKED for, which is not the same as what it got:
+    # undef means it named no budget and takes OCP::SSH's, and that is the
+    # whole of karr #109.
+    sub wait_for_ssh {
+        my ($s, $n) = @_;
+        push @_waits, $n;
+        return $s->{ssh_cb} ? $s->{ssh_cb}->($n) : 1;
+    }
 }
 
 package FakeRex {
@@ -212,8 +220,12 @@ package FakeHetznerCloud {
 
 package main;
 
+use Path::Tiny ();
 use OCP::Node;
 use OCP::Provider::Hetzner;
+# Loaded by OCP::Node anyway; named here because the budget assertions below
+# read $OCP::SSH::WAIT_TIMEOUT straight out of it.
+use OCP::SSH;
 
 sub ocpnode {
     my (%over) = @_;
@@ -1110,6 +1122,132 @@ subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
     my $node = OCP::Node->from_cr($k->cr, k8s => $k,
         provider => FakeProvider->new, ssh_key => 'K', server_url => 'U', join_token => 'T');
     is $node->reconcile, 0, 'Terminating terminal: reconcile returns 0';
+};
+
+#
+# Two callers waited for the same thing with two budgets: the control plane got
+# 120s to answer on SSH (OCP::Cmd::Apply::Bootstrap), a worker got 60 -- and on
+# the worker side running out is TERMINAL (phase => Failed, which nothing
+# retries), so a machine whose sshd needed 70s was lost for good while its bill
+# kept running. Nobody had noticed, because before karr #99 a Hetzner worker
+# died one step earlier, at "No host IP in status or spec".
+#
+# The assertions below are about the seam, not about either number: two numbers
+# for one question is the defect, so they are compared to each other rather
+# than each pinned on its own. Bootstrap's side is read from source because
+# bootstrap_control_plane cannot be driven without a provider, a key and a real
+# install -- same reason, same shape as t/28.
+#
+subtest 'the SSH wait is one budget, not one per caller' => sub {
+    # The budget a call site actually spends: the number it names, or the
+    # module's when it names none.
+    my $budget_in = sub {
+        my ($file) = @_;
+        my $src = Path::Tiny::path(__FILE__)->parent->parent->child($file)->slurp_utf8;
+        my @named = $src =~ /->wait_for_ssh\s*(?:\(\s*([^)]*?)\s*\))?/g;
+        is scalar @named, 1, "$file waits for SSH in exactly one place";
+        return defined $named[0] && length $named[0]
+            ? $named[0]
+            : $OCP::SSH::WAIT_TIMEOUT;
+    };
+
+    is $budget_in->('lib/OCP/Node.pm'),
+       $budget_in->('lib/OCP/Cmd/Apply/Bootstrap.pm'),
+       'a worker and a control plane wait for SSH with the same budget';
+
+    is $OCP::SSH::WAIT_TIMEOUT, 120,
+        'and it is the 120s the control-plane path has always spent';
+
+    # That the constant is the number, not a comment next to one: at zero the
+    # loop body never runs, so this reaches no network and dials no host.
+    {
+        local $OCP::SSH::WAIT_TIMEOUT = 0;
+        local $@;
+        eval { OCP::SSH->new(host => '203.0.113.9')->wait_for_ssh };
+        like $@, qr/after 0s/,
+            'an argument-less wait_for_ssh counts down from $OCP::SSH::WAIT_TIMEOUT';
+    }
+};
+
+subtest 'the worker install names no SSH budget of its own' => sub {
+    @FakeSSH::_waits = ();
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 'i9', namespace => 'ocp-system' },
+        status   => { phase => 'Installing', publicIP => '1.2.3.4' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'https://cp:9345', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->reconcile;
+
+    is scalar @FakeSSH::_waits, 1, 'the install waited for SSH once';
+    is $FakeSSH::_waits[0], undef,
+        'and asked for no budget -- so it spends OCP::SSH::WAIT_TIMEOUT, not the 60 it used to name';
+};
+
+#
+# One budget has to cover everything between "there is a CR" and "there is a
+# Ready node": the address wait, the SSH wait, the whole Rex install and the
+# join. Three callers named 600 for it, and the sum underneath had grown past
+# that -- karr #109 alone added 60s of it. The number lives in OCP::Node now,
+# with the arithmetic written next to it.
+#
+subtest 'reconcile_until_ready has one budget for every caller' => sub {
+    is $OCP::Node::READY_TIMEOUT, 900,
+        'the budget covers the waits it is made of, with room for a slow mirror';
+
+    # Not a literal that happens to match: at zero the loop never looks, so a
+    # CR that is already Ready still comes back 0.
+    {
+        local $OCP::Node::READY_TIMEOUT = 0;
+        my $k = StrictK8s::build(cr => ocpnode(
+            metadata => { name => 'b0', namespace => 'ocp-system' },
+            status   => { phase => 'Ready' }));
+        my $node = OCP::Node->from_cr($k->cr, k8s => $k,
+            provider => FakeProvider->new, ssh_key => 'K',
+            server_url => 'U', join_token => 'T');
+        is $node->reconcile_until_ready, 0,
+            'the default comes from $OCP::Node::READY_TIMEOUT';
+    }
+
+    for my $file (qw(lib/OCP/Cmd/Node/Add.pm lib/OCP/Cmd/Apply/CR.pm)) {
+        my $src = Path::Tiny::path(__FILE__)->parent->parent->child($file)->slurp_utf8;
+        my @calls = $src =~ /->reconcile_until_ready\(([^)]*)/g;
+        ok scalar @calls, "$file drives a node to Ready";
+        unlike $_, qr/timeout/, "$file names no budget of its own" for @calls;
+    }
+};
+
+#
+# Fifteen minutes is a long time to look at a cursor. OCP::Node must not print
+# -- robocop runs the same code -- so it hands the phase to whoever asked.
+#
+package PhaseTape {
+    our @ISA = ('OCP::Node');
+    our @tape;
+    sub _refresh  { }
+    sub phase     { shift @tape }
+    sub reconcile { 1 }
+}
+
+subtest 'reconcile_until_ready reports each phase once, and only when asked' => sub {
+    my $k = StrictK8s::build(cr => ocpnode(metadata =>
+        { name => 'p1', namespace => 'ocp-system' }));
+
+    @PhaseTape::tape = qw(Pending Installing Installing Installing Joining Ready);
+    my @seen;
+    my $node = PhaseTape->new(cr => $k->cr, k8s => $k);
+    is $node->reconcile_until_ready(interval => 0,
+        on_phase => sub { push @seen, $_[0] }), 1, 'still returns the verdict';
+    is_deeply \@seen, [qw(Pending Installing Joining Ready)],
+        'one line per phase, not per tick, and the phase it returns on is reported too';
+
+    @PhaseTape::tape = qw(Pending Failed);
+    my $quiet = PhaseTape->new(cr => $k->cr, k8s => $k);
+    is $quiet->reconcile_until_ready(interval => 0), 0,
+        'and without a sink it says nothing and still answers';
 };
 
 #

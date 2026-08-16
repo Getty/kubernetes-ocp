@@ -203,12 +203,18 @@ sub _robocop_ready {
     return ($h->{status}{readyReplicas} // 0) >= 1;
 }
 
+# Robocop is doing the work; this only watches the CR it writes.
+#
+# Same budget as the CLI path below, from the same place: the machine takes as
+# long as it takes, and who drives it changes nothing about that -- if anything
+# this side is slower, since every phase has to wait for robocop's next tick.
 sub _poll_until_ready {
     my ($self, $api, %opt) = @_;
 
-    my $timeout  = $opt{timeout}  // 600;
+    my $timeout  = $opt{timeout}  // $OCP::Node::READY_TIMEOUT;
     my $interval = $opt{interval} // 5;
     my $deadline = time + $timeout;
+    my $reported = '';
 
     while (time < $deadline) {
         my $cr = eval {
@@ -217,12 +223,32 @@ sub _poll_until_ready {
         if ($cr) {
             my $h     = $api->k8s->object_to_struct($cr);
             my $phase = $h->{status}{phase} // 'Pending';
+            $reported = $self->_report_phase($reported, $phase,
+                $h->{status}{message});
             return 1 if $phase eq 'Ready';
             return 0 if $phase eq 'Failed';
         }
         sleep $interval;
     }
     return 0;
+}
+
+# Say what is being waited for, once per phase.
+#
+# Both wait paths can sit here for a quarter of an hour (OCP::Node's
+# READY_TIMEOUT, and the sum it is made of), and both used to do it in complete
+# silence: the operator saw the command hang and, if the budget ran out, a bare
+# "did not reach Ready state" with nothing to say how far it got. Returns the
+# phase now reported, so the caller can pass it back in on the next tick.
+sub _report_phase {
+    my ($self, $reported, $phase, $message) = @_;
+
+    return $reported if $phase eq $reported;
+
+    print "  [..] $phase"
+        . (defined $message && length $message ? ": $message" : '') . "\n";
+
+    return $phase;
 }
 
 sub _cli_reconcile {
@@ -298,7 +324,30 @@ sub _cli_reconcile {
         reconciler_id => 'cli',
     );
 
-    my $ok = $node->reconcile_until_ready(timeout => 600);
+    # No budget named here: OCP::Node owns it ($OCP::Node::READY_TIMEOUT), and
+    # it is one question -- how long may a machine take to become a node --
+    # regardless of who is watching. The 600 this used to name did not cover
+    # the sum of the waits underneath it.
+    my $reported = '';
+    my $ok = $node->reconcile_until_ready(on_phase => sub {
+        my ($phase, $message) = @_;
+        $reported = $self->_report_phase($reported, $phase, $message);
+    });
+
+    # Ran out of budget rather than reaching a verdict. Worth separating: the
+    # node is not broken, nobody rolled anything back, and the very next run
+    # continues from the phase in the CR.
+    #
+    # Told apart by what the sink last reported, not by asking the node again:
+    # a phase of Failed means OCP::Node reached a verdict and said so, and
+    # anything else means the loop stopped watching mid-flight. Nothing
+    # reported at all (nothing was ever waited for) says nothing here either.
+    if (!$ok && length $reported && $reported ne 'Failed') {
+        print STDERR "  [!!] Still in phase '$reported' after "
+          . $OCP::Node::READY_TIMEOUT . "s -- the install may well still be "
+          . "running on the machine. The CR keeps its phase; re-running this "
+          . "command or `ocp apply` continues from there.\n";
+    }
 
     # The worker never came up, and this project still has the pre-ADR-0027
     # bootstrap key on disk: most likely a machine whose authorized_keys were
@@ -396,6 +445,12 @@ Creates an OCPNode CR in the C<ocp-system> namespace, then waits for the
 node to reach C<Ready> status.  If Robocop is running in the cluster, the
 command polls the CR status and lets Robocop do the work.  Otherwise it
 drives reconciliation directly via L<OCP::Node>.
+
+Either way the wait is bounded by C<$OCP::Node::READY_TIMEOUT> — one budget for
+both paths, because the machine takes as long as it takes whoever is driving it
+— and every phase the node passes through is printed as it happens.  Running
+out of it is reported as that and not as a failure of the machine: the CR keeps
+its phase, and re-running the command carries on from there.
 
 Pass C<--nowait> to write the CR and return immediately.  The older
 C<--no_wait> spelling is kept as an alias.  There is deliberately no

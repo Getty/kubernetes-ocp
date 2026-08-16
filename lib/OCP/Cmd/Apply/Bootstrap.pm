@@ -262,7 +262,10 @@ sub bootstrap_control_plane {
         user     => 'root',
     );
 
-    eval { $ssh->wait_for_ssh(120) };
+    # The 120s this has always spent, now taken from $OCP::SSH::WAIT_TIMEOUT
+    # rather than restated here -- OCP::Node does the same wait on a worker and
+    # had drifted to half of it (karr #109).
+    eval { $ssh->wait_for_ssh };
     if ($@) {
         # The one failure that is usually not a network problem: an existing
         # ssh-provider machine that only ever had the bootstrap key

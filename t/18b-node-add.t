@@ -7,6 +7,9 @@ use JSON::PP ();
 use lib 'lib';
 
 use OCP::Cmd::Node::Add;
+# Loaded by the command anyway; named here because the budget assertions below
+# read $OCP::Node::READY_TIMEOUT straight out of it.
+use OCP::Node;
 
 sub capture_stdout (&) {
     my ($code) = @_;
@@ -367,6 +370,119 @@ subtest 'cr spec omits optional fields when not provided' => sub {
     ok !exists $spec->{image},      'image absent from spec';
     ok !exists $spec->{gpu},        'gpu absent from spec';
     ok !exists $spec->{host},       'host absent from spec';
+};
+
+#
+# Both wait paths -- the one where robocop does the work and the one where this
+# command does it -- can sit here for a quarter of an hour (OCP::Node's
+# READY_TIMEOUT, and the sum of waits it is made of, karr #109). They used to do
+# it in silence, and answer a budget that ran out with a bare "did not reach
+# Ready state" plus an SSH-key hint, which is the wrong diagnosis for a machine
+# that is merely still installing.
+#
+subtest 'the wait says what it is waiting for, once per phase' => sub {
+    my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
+    my $add = OCP::Cmd::Node::Add->new(
+        k8s      => $k8s,
+        name     => 'worker-p',
+        provider => 'hetzner-a',
+    );
+
+    my $out = capture_stdout {
+        my $r = '';
+        $r = $add->_report_phase($r, 'Installing', 'Waiting for address');
+        $r = $add->_report_phase($r, 'Installing', 'Waiting for address');
+        $r = $add->_report_phase($r, 'Joining', 'RKE2 agent installed');
+        $r = $add->_report_phase($r, 'Joining', 'RKE2 agent installed');
+    };
+
+    is scalar(() = $out =~ /\[\.\.\]/g), 2,
+        'one line per phase, not one per poll';
+    like $out, qr/Installing: Waiting for address/,
+        'and it carries the message from the CR, which is where the detail is';
+    like $out, qr/Joining: RKE2 agent installed/, 'same for the next phase';
+};
+
+{
+    # Enough of a node to answer the one question these two subtests ask:
+    # what did the CLI do with a reconcile that ended without a Ready?
+    package FakeWaitNode;
+    our ($phase, $verdict) = ('Installing', 0);
+    sub reconcile_until_ready {
+        my ($self, %opt) = @_;
+        $opt{on_phase}->($phase, 'Waiting for SSH') if $opt{on_phase};
+        return $verdict;
+    }
+}
+
+{
+    package FakeAddConfig;
+    sub new             { bless {}, shift }
+    sub control_planes  { [] }          # no CP: skips the join-token read
+    sub distribution    { 'rke2' }
+}
+
+sub cli_reconcile_out {
+    my (%over) = @_;
+    local $FakeWaitNode::phase   = $over{phase}   // 'Installing';
+    local $FakeWaitNode::verdict = $over{verdict} // 0;
+
+    my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
+    my $add = OCP::Cmd::Node::Add->new(k8s => $k8s, name => 'worker-t');
+    my $cr  = {
+        metadata => { name => 'worker-t', namespace => 'ocp-system' },
+        spec     => { role => 'worker', providerRef => 'hetzner-a' },
+    };
+
+    no warnings 'redefine';
+    local *OCP::Node::from_cr = sub { bless {}, 'FakeWaitNode' };
+
+    my $err;
+    my $out = capture_stdout {
+        $err = capture_stderr { $add->_cli_reconcile($cr, $k8s, FakeAddConfig->new, undef) };
+    };
+    return { out => $out, err => $err };
+}
+
+subtest 'running out of budget is reported as that, not as a verdict' => sub {
+    # "did not reach Ready state" on its own reads as "this machine is broken".
+    # For a budget that expired it is not even a claim about the machine: the
+    # install is probably still running, and the CR keeps its phase.
+    my $r = cli_reconcile_out(phase => 'Installing', verdict => 0);
+
+    like $r->{out}, qr/\[\.\.\] Installing: Waiting for SSH/,
+        'the phase it was waiting in was said as it happened';
+    like $r->{err}, qr/Still in phase 'Installing'/,
+        'and the give-up line names it rather than leaving the operator guessing';
+    like $r->{err}, qr/after \Q$OCP::Node::READY_TIMEOUT\Es/,
+        'with the budget that ran out';
+    like $r->{err}, qr/continues from there/,
+        'and says the run is resumable, because nothing was rolled back';
+};
+
+subtest 'a node that reached a verdict is not second-guessed' => sub {
+    my $failed = cli_reconcile_out(phase => 'Failed', verdict => 0);
+    unlike $failed->{err}, qr/Still in phase/,
+        'Failed is OCP::Node speaking; no timeout is invented on top of it';
+
+    my $ready = cli_reconcile_out(phase => 'Ready', verdict => 1);
+    is $ready->{err}, '', 'and a worker that came up is told nothing at all';
+};
+
+subtest 'both wait paths take their budget from OCP::Node' => sub {
+    my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
+    my $add = OCP::Cmd::Node::Add->new(
+        k8s      => $k8s,
+        name     => 'worker-b',
+        provider => 'hetzner-a',
+    );
+
+    # Zero budget: the loop never looks, which is only true if the default is
+    # read from the variable rather than written out here as well.
+    local $OCP::Node::READY_TIMEOUT = 0;
+    is $add->_poll_until_ready($k8s), 0, 'the robocop-side wait honours it';
+    is scalar(grep { $_->[0] eq 'get' && $_->[1] eq 'OCPNode' } @{$k8s->{calls}}), 0,
+        'and stopped before the first look, so the budget was the shared one';
 };
 
 subtest 'errors on no providers' => sub {
