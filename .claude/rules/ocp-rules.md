@@ -37,9 +37,14 @@ Depends on whether the Agent/Task tool is available to you.
 
   | Task | Agent |
   |---|---|
-  | CLI, modules, providers, drift, K8s access | `ocp-worker` (default) |
+  | Input validation, `OCP::Choices`, `option(...)`, `_validate_*` | `ocp-choices-worker` |
+  | Secrets/Keys: `OCP::Secrets`, `OCP::Keys`, `OCP::ClusterKey`, age/SOPS/PIN | `ocp-secrets-worker` |
+  | State machine: `OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions` | `ocp-state-worker` |
+  | Provider base + roles, Hetzner/Local/SSH provisioning, `OCP::Rex` | `ocp-provider-worker` |
+  | `ocp init/apply/status/update/destroy/deploy-image`, `OCP::Cmd::Apply/*` | `ocp-lifecycle-worker` |
   | robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
   | share/, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
+  | Cross-cutting or not assignable elsewhere | `ocp-worker` (default) |
   | Write or extend tests in `t/` | `ocp-test-writer` |
   | POD and prose docs | `ocp-doc-writer` |
   | Pre-release audit | `ocp-release-checker` |
