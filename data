@@ -1,0 +1,91 @@
+---
+class: standard
+completed: 2026-08-16T01:41:27Z
+created: 2026-08-15T19:55:53Z
+id: 89
+priority: medium
+started: 2026-08-16T01:08:14Z
+status: done
+tags:
+- cli
+- ux
+- node
+title: '''ocp node add --provider ssh'' schlaegt mit ''Provider not found'' fehl —
+  braucht den Provider-CR-Namen, nicht den Typ'
+updated: 2026-08-16T01:41:27Z
+---
+
+Gefunden bei citiai#23, Task 4 (SPIKE otho-gpu). Der Plan-Text (und vermutlich jede
+naive Lesart von `ocp node add --help`, wo `--provider` als "OCPNodeProvider name"
+dokumentiert ist, aber ohne Beispiel) fuehrt dazu, `--provider ssh` zu schreiben -
+den Provider-TYP, nicht den CR-NAMEN.
+
+Ergebnis: `Error: Provider "ssh" not found` (Exit 1 - immerhin kein stiller
+Wurzel-Fallback, #67 wirkt hier korrekt). Der tatsaechliche Name ist `ssh-default`,
+von `ocp apply` beim Bootstrap automatisch als OCPNodeProvider-CR angelegt
+(`ocp provider ls` zeigt ihn).
+
+Kein Bug im engeren Sinn - `--host doc` sagt korrekt "OCPNodeProvider name" - aber die
+Verwechslungsgefahr Typ vs. Name ist real und hat uns eine SPIKE-Iteration gekostet,
+bevor der Fehler klar war. Betraf gleichermassen die fuer Task 4, 5, 6 in
+docs/superpowers/plans/2026-08-15-cluster-citiai.md (Repo citiai) dokumentierten
+Kommandos - alle drei schreiben `--provider ssh`.
+
+Vorschlag: entweder `ocp node add --help` ein Beispiel ergaenzen ("z.B. ssh-default,
+siehe ocp provider ls"), oder bei "Provider not found" automatisch `ocp provider ls`
+mitausgeben, damit der naechste Versuch nicht wieder rät.
+
+Nicht angefasst - kubernetes-ocp ist Nachbarrepo von citiai, Aenderung gehoert auf
+dieses Board.
+ERLEDIGT 2026-08-16 (ocp-worker), Commit 70c3105.
+
+Die Zurueckweisung nennt jetzt, was gegolten haette - in der Form, die #67 fuer
+Subkommandos eingefuehrt hat:
+
+  Error: Unknown provider 'ssh'.
+  Available: hetzner-default (type hetzner), ssh-default (type ssh)
+  'ssh' is a provider type, not a provider name. 'ocp apply' names its CR 'ssh-default'.
+
+DIE TYP-ZEILE ERSCHEINT NUR, WENN SIE WAHR IST. Ein echter Tippfehler
+(`ssh-defualt`) bekommt die Liste ohne sie, weil die Behauptung sonst falsch waere.
+Ein Cluster ganz ohne Provider-CR bekommt stattdessen den Hinweis auf `ocp apply` -
+den CR zu nennen, den dieser Lauf anlegen wuerde, haette `ocp apply` zweimal gesagt.
+Name UND Typ stehen in der Liste, weil der Typ das ist, was der Bediener getippt
+hat: die richtige Antwort zu zeigen, ohne zu zeigen WARUM sie richtig ist, lehrt
+nichts.
+
+ZUSAMMENGEFUEHRT statt kopiert: OCP::Role::Cmd (wo seit #87 cluster_ssh_key sitzt)
+traegt jetzt provider_crs / provider_choices / provider_cr. Beide Fundstellen -
+lib/OCP/Cmd/Node/Add.pm::_resolve_provider und lib/OCP/Cmd/Provider/Rm.pm - gehen
+darueber. `ocp provider rm ssh` und `ocp node add --provider ssh` liefern damit
+BYTE-IDENTISCH dieselbe Meldung; ein Test behauptet das (is $rm_err, $add_err),
+statt es zu hoffen.
+Mitgenommen: die dritte Zurueckweisung an derselben Option ("Multiple providers
+found, --provider required") listet jetzt ebenfalls.
+Die uebrigen vier OCPNodeProvider-Lookups (Node/Rm.pm:72, Node/Add::_cli_reconcile,
+Apply/CR.pm:525, Robocop/Controller.pm:158) loesen einen BESTEHENDEN providerRef auf
+und sind absichtlich tolerant gegenueber einem Fehltreffer - bewusst nicht angefasst.
+
+--help zeigt jetzt ein Beispiel:
+  --provider: String
+      OCPNodeProvider name, e.g. ssh-default - not the type 'ssh' (see 'ocp provider ls')
+
+KEINE AUTO-AUFLOESUNG gebaut, wie beauftragt - und der Agent hat kein Gegenargument
+gefunden, das ein Ticket verdient haette: Apply/CR.pm:99 verdrahtet "$type-default"
+fest, eine Zuordnung saehe also total aus, waere aber nur eine Konvention, die ein
+`ocp provider add` weit von der Kollision entfernt ist. Ein Test haelt fest, dass
+ein Typ NIE zum CR aufgeloest wird (stirbt, null ensure-Aufrufe).
+
+Test: t/73-provider-name-vs-type.t (neu, 9 Subtests, mock-only) - beide Kommandos,
+Typ-Fall, Tippfehler-Fall, Leer-Fall, keine Seiteneffekte bei Ablehnung, der
+STDERR/Exit-1-Pfad durch das echte OCP::_report_error, und eine Formpruefung, die
+die Meldung an dieselbe Gestalt bindet, die OCP::_resolve_commands fuer
+`ocp quatschkommando` benutzt.
+t/19-provider.t hatte einen roten Test (`rm errors on unknown provider`, prueft
+qr/not found/i). Seine BEHAUPTUNG - ein unbekannter Name wird abgelehnt und die
+Meldung benennt ihn - bleibt gueltig und wird staerker; nur die Formulierung
+aendert sich. Assertion entsprechend ersetzt, nicht abgeschwaecht.
+
+Sechs weitere Zurueckweisungen derselben Familie wurden beim Durchgehen gefunden
+und sind jetzt #103 - darunter `ocp node add --role quatsch`, das CLI-seitig gar
+nicht geprueft wird und als rohes Kubernetes-422 zurueckkommt.
