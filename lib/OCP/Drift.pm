@@ -3,7 +3,7 @@ package OCP::Drift;
 
 use Moo;
 use Socket;
-use Carp qw(croak);
+use Carp qw(croak carp);
 use OCP::Versions;
 
 has config => (is => 'ro', required => 1);
@@ -241,7 +241,29 @@ sub distribution_drift {
     my $expected = $config->version || OCP::Versions->get_component_version($dist);
     return unless defined $expected && length $expected;
 
-    my $list = eval { $self->api->list('Node') } or return;
+    my $list = eval { $self->api->list('Node') };
+    if (!$list && $@) {
+        # The bare `eval { ... } or return` here used to swallow API failures
+        # entirely: a revoked token, an RBAC denial, a TLS error, an apiserver
+        # 5xx -- any of them made `ocp status` print a green drift summary
+        # saying nothing was drifted, with no warning, no log, and no entry
+        # in the drift table (karr #119). Surface it as a drift entry of its
+        # own kind and carp it to stderr, the same way OCP::Cmd::Status
+        # handles its `list_nodes` failure.
+        my $err = $@;
+        chomp $err;
+        carp "OCP::Drift::distribution_drift: list('Node') failed: $err";
+        return {
+            kind      => 'error',
+            component => $dist,
+            label     => "$dist kubelet versions",
+            expected  => $expected,
+            actual    => undef,
+            message   => "$dist kubelet versions: could not list Nodes: $err",
+            remedy    => undef,
+        };
+    }
+    return unless $list;
     my $items = _dig($list, 'items') || [];
     return unless ref $items eq 'ARRAY' && @$items;
 
@@ -486,7 +508,9 @@ Each entry is a hashref:
 
 =over 4
 
-=item * B<kind> - C<spec>, C<version> or C<missing>
+=item * B<kind> - C<spec>, C<version>, C<missing> or C<error>. C<error> is a query that
+could not be made -- revoked token, RBAC denial, TLS failure, apiserver 5xx --
+rather than a comparison that came back wrong.
 
 =item * B<component> - key in the version manifest, or the node name for spec drift
 
@@ -548,6 +572,12 @@ re-applies, which is what C<self_healing> on those entries says.
 Nodes whose kubelet version differs from the configured distribution version.
 Never carries a remedy — distribution upgrades are a manual, node-by-node
 operation.
+
+If the C<list('Node')> call fails (revoked token, RBAC denial, TLS, apiserver
+5xx), the sub returns one C<kind =E<gt> 'error'> entry naming the distribution
+and the underlying exception, and carps the same exception to stderr. The
+silent return that used to leave C<ocp status> printing a green drift summary
+on a cluster it could not actually query is gone (karr #119).
 
 =head2 registry_dns_drift
 

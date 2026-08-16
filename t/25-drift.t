@@ -27,6 +27,7 @@ package FakeApi {
 
     sub list {
         my ($self, $kind) = @_;
+        die $self->{list_die}{$kind} if $self->{list_die}{$kind};
         return $self->{lists}{$kind} // { items => [] };
     }
 }
@@ -321,6 +322,62 @@ YAML
     is(scalar @drift, 1, 'only the outdated node drifts');
     is($drift[0]{label}, 'rke2 on worker-1', 'names the node');
     is($drift[0]{remedy}, undef, 'distribution upgrades stay manual');
+}
+
+#
+# Test: a list('Node') that throws must be surfaced, not swallowed (karr #119).
+#
+# Before the fix: `my $list = eval { ... } or return` collapsed every API
+# failure -- revoked token, RBAC denial, TLS, apiserver 5xx -- into a silent
+# undef. `ocp status` then printed a green drift summary with no entry, no
+# warning, no log, while the actual reason nothing was compared was that the
+# API never answered. The fix returns an error-kind drift entry and carps
+# the underlying exception, same as OCP::Cmd::Status handles its
+# list_nodes failure.
+#
+
+{
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(
+        list_die => { Node => "token \xE2\x9D\x8C expired, please re-auth\n" },
+    );
+
+    my @warn;
+    local $SIG{__WARN__} = sub { push @warn, $_[0] };
+
+    my @drift = OCP::Drift->new(config => $config, api => $api)->distribution_drift;
+    is(scalar @drift, 1, 'an API error returns one entry, not undef');
+    is($drift[0]{kind}, 'error', 'the entry is its own kind, not missing');
+    is($drift[0]{remedy}, undef, 'API errors carry no automatic remedy');
+    like($drift[0]{message}, qr/could not list Nodes/,
+        'the message says what was being asked');
+    like($drift[0]{message}, qr/expired/,
+        'the message carries the underlying error text');
+    like($drift[0]{message}, qr/rke2/,
+        'the message names the distribution that could not be checked');
+    ok(@warn, 'a warning went to stderr (carp), so a stray ocp status does not stay silent');
+    like($warn[0], qr/list\('Node'\) failed/,
+        'warning names the API call that failed');
+    like($warn[0], qr/expired/,
+        'warning carries the underlying error text');
+}
+
+{
+    # The error must travel through detect() into the drift list a real
+    # `ocp status` reads. Otherwise the silent path is just moved one level
+    # up.
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(
+        list_die => { Node => "apiserver unreachable\n" },
+    );
+
+    my @warn;
+    local $SIG{__WARN__} = sub { push @warn, $_[0] };
+
+    my $drift = OCP::Drift->new(config => $config, api => $api)->detect;
+    my ($entry) = grep { $_->{kind} eq 'error' } @$drift;
+    ok($entry, 'detect() surfaces a distribution API error as a drift entry');
+    is($entry->{component}, 'rke2', 'the entry attributes the error to the distribution');
 }
 
 #
