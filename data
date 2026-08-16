@@ -1,0 +1,34 @@
+---
+class: standard
+completed: 2026-08-16T05:29:12Z
+created: 2026-08-16T05:07:20Z
+id: 120
+priority: medium
+started: 2026-08-16T05:25:43Z
+status: done
+tags:
+- bug
+- node
+- spec-status
+title: 'ocp node add reads CP public_ip from spec, not status (variant of #98)'
+updated: 2026-08-16T05:29:12Z
+---
+
+File: lib/OCP/Cmd/Node/Add.pm:282
+
+```perl
+my $cp_ip = do {
+    my $cps = $config->control_planes;
+    ($cps && @$cps) ? ($cps->[0]{public_ip} // $cps->[0]{host}) : undef;
+};
+```
+
+`$config->control_planes` reads from `ocp.yaml` (spec), where `public_ip` is either user-typed or computed on a previous run. The same CP address is also in `.ocp/status.yaml`, written by `OCP::Config::save_node_status`. Reading spec first means a server whose IP drifted (the entire point of karr #98) is read from a stale or wrong source. The bootstrap path was fixed in karr #98 to use cluster_status; this command was missed.
+
+Mirror the karr #98 fix: read from `cluster_status` first, fall back to spec only when status is empty.
+
+Repro:
+1. ocp.yaml has control_planes[0].public_ip: 1.2.3.4
+2. Real cluster has moved to a new IP (e.g. Hetzner rebuild)
+3. ocp node add
+Observed: SSH call uses 1.2.3.4, fails or hits a different machine.
