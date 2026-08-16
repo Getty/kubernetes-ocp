@@ -175,7 +175,7 @@ sub poll_deployment_ready {
         if ($deploy && $deploy->status && ($deploy->status->availableReplicas // 0) > 0) {
             return 1;
         }
-        sleep 5;
+        $self->wait_seconds(5);
     }
     return 0;
 }

@@ -35,8 +35,16 @@ sub run_issuers {
         return 1;
     };
     local *OCP::Cmd::Apply::_k8s_api = sub { FakeApi->new };
-    # Keep the test fast: the retry path sleeps between attempts.
-    local *OCP::Cmd::Apply::sleep = sub { 1 };
+    # Keep the test fast: the retry path waits between attempts via
+    # OCP::Role::Cmd::wait_seconds (karr #102). That method is the one seam
+    # every Apply::* module's retry/poll delay goes through, reached by
+    # dispatch on $self — mocking it here works regardless of which module
+    # under lib/OCP/Cmd/Apply/ actually calls it. A `local *OCP::Cmd::Apply::
+    # sleep` mock used to sit here instead; it aimed at a `sleep` sub that
+    # was never called (the retry loop lives in Apply::Network, which calls
+    # the CORE::sleep builtin, not a package-qualified one), so the test
+    # spent 100+ real seconds asleep despite the mock being green.
+    local *OCP::Cmd::Apply::wait_seconds = sub { 1 };
 
     my $apply = bless {}, 'OCP::Cmd::Apply';
     my $config = bless { ssl_email => '' }, 'FakeConfig';

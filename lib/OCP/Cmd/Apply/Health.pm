@@ -127,7 +127,7 @@ sub check {
         $scan = scan_pods($self, $api);
         last unless @{ $scan->{starting} };
         last if time >= $deadline;
-        sleep $interval;
+        $self->wait_seconds($interval);
     }
 
     my (@critical, @warnings);

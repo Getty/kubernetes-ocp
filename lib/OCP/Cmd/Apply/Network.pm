@@ -89,7 +89,7 @@ sub create_cert_issuers {
 
     # Wait a bit for webhook to be fully ready (timing issue)
     print "      Waiting for cert-manager webhook to stabilize...\n";
-    sleep 5;
+    $self->wait_seconds(5);
 
     # Build issuer resources
     my @issuers = (selfsigned_issuer());
@@ -124,7 +124,7 @@ sub create_cert_issuers {
             if ($attempt < $retries) {
                 my $delay = $attempt < 4 ? 5 : 10;
                 print "      Webhook not ready (attempt $attempt/$retries), retrying in ${delay}s...\n";
-                sleep $delay;
+                $self->wait_seconds($delay);
             }
         }
         push @failed, [$name, $error] if defined $error;
@@ -250,7 +250,7 @@ sub setup_cilium_gateway {
                 }
             }
         }
-        sleep 2;
+        $self->wait_seconds(2);
     }
     die "Gateway 'cilium-gateway' did not become Accepted within 60s\n";
 }
@@ -308,7 +308,7 @@ sub setup_lb_ipam {
             last;
         }
         print "      ... waiting for Cilium operator (${i}/30)\n" if $i % 5 == 0;
-        sleep 10;
+        $self->wait_seconds(10);
     }
     die "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s\n"
         unless $crd_ready;
@@ -335,7 +335,7 @@ sub setup_lb_ipam {
     $self->_server_side_apply_all($api, @resources);
 
     # Verify Gateway got an IP (raw CRD get — Gateway has no IO::K8s class)
-    sleep 2;
+    $self->wait_seconds(2);
     my $gw_path = '/apis/gateway.networking.k8s.io/v1/namespaces/kube-system/gateways/cilium-gateway';
     my $gw = $self->_crd_get($api, $gw_path);
     if ($gw && $gw->{status} && $gw->{status}{addresses} && @{ $gw->{status}{addresses} }) {

@@ -202,7 +202,7 @@ sub deploy {
                 $robocop_ready = $self->_wait_robocop_ready($api, 60);
                 if ($robocop_ready) {
                     print "  [ok] robocop ready — grace period (5s)\n";
-                    sleep 5;
+                    $self->wait_seconds(5);
                 } else {
                     print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
                 }

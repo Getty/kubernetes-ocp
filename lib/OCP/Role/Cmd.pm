@@ -117,6 +117,47 @@ sub cluster_ssh_key_if_known {
     return $self->{_cluster_ssh_key}{ OCP::ClusterKey::cache_slot($config, %opt) };
 }
 
+# Every retry/poll pause a command makes goes through here — ONE seam,
+# reached by method dispatch on $self rather than by a bareword `sleep`
+# sitting in whatever file the calling code happens to live in this week.
+#
+# That distinction is the point (karr #102): OCP::Cmd::Apply's reconciliation
+# steps live across half a dozen Apply::* modules after the phase-8
+# extraction (#55), and a test that localised `*OCP::Cmd::Apply::sleep` to
+# stub the retry delay had stopped mocking anything the moment those `sleep`
+# calls moved into Apply::Network, Apply::CR, and friends — CORE::sleep
+# never dispatches through the package that calls it, so the glob it
+# replaced was never read. A fixed list of "the modules that sleep today"
+# would only survive until the next split. Calling $self->wait_seconds
+# instead survives it: every one of those modules already receives $self (the
+# OCP::Cmd::Apply instance) as its first argument, so the method resolves to
+# whatever "wait_seconds" currently means for that object no matter which
+# file defines the caller — and a test only ever has to stub it once, on the
+# consuming class ($self's class — flat after Moo::Role composition, so
+# stubbing it on OCP::Role::Cmd itself would miss classes that already
+# composed the role).
+#
+# Not only a test seam: OCP::Cmd::Node::Add and OCP::Cmd::DeployImage sleep
+# in their own poll loops too (both consume this role), and both already had
+# a *different* seam for that (a settable poll interval / _poll_interval
+# attribute) rather than mocking sleep directly — this gives them the same
+# one-method hook without forcing an attribute onto every command that waits
+# for something. It also earns its keep outside of tests: every wait is
+# tallied on the object, so a command can report afterwards how much of its
+# wall-clock time went to polling rather than doing.
+sub wait_seconds {
+    my ($self, $seconds) = @_;
+
+    $self->{_wait_seconds_total} += $seconds;
+    sleep $seconds;
+    return;
+}
+
+# Total seconds this command object has spent in wait_seconds so far. Mostly
+# for diagnostics (a verbose summary line, a slow-run report) — nothing reads
+# it today, but it is the reason wait_seconds is more than a mock point.
+sub wait_seconds_total { $_[0]->{_wait_seconds_total} // 0 }
+
 1;
 
 __END__
@@ -223,6 +264,26 @@ The last line appears only when the rejected name is a provider type and the
 cluster has providers at all; without any, the bootstrap hint is the whole
 answer.  A type is never resolved to the CR that happens to carry it:
 provider names and provider types are separate namespaces and may collide.
+
+=method wait_seconds
+
+    $self->wait_seconds(5);
+    $self->wait_seconds($delay) if $attempt < $retries;
+
+Sleeps for the given number of seconds and adds them to
+L</wait_seconds_total>.  Every retry/poll pause a command makes should go
+through this instead of a bare C<sleep>: it is one method, reached by
+dispatch on C<$self>, so it stays reachable no matter which file the caller
+ends up living in after the next refactor — unlike C<sleep> itself, which
+resolves per-package and silently stops being the C<sleep> a test replaced
+the moment the calling code moves to a new module.
+
+=method wait_seconds_total
+
+    my $waited = $self->wait_seconds_total;
+
+Seconds this command object has spent in L</wait_seconds> so far, C<0> if it
+never waited.
 
 =seealso
 

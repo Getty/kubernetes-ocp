@@ -373,7 +373,7 @@ sub bootstrap_control_plane {
                 }
                 print "      ... waiting (${i}/60) status='$status'\n";
             }
-            sleep 10;
+            $self->wait_seconds(10);
         }
         unless ($node_ready) {
             # Last resort: check via SSH directly on the node

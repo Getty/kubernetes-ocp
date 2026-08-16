@@ -100,7 +100,7 @@ sub setup_nfd {
             print "      NFD worker running on " . $ds->status->numberReady . " node(s)\n";
             last;
         }
-        sleep 10;
+        $self->wait_seconds(10);
     }
 
     # Wait for NFD to label nodes (needs a few seconds after worker starts)
@@ -117,7 +117,7 @@ sub setup_nfd {
         if ($i == 12) {
             die "NFD labels not detected on any node after 120s\n";
         }
-        sleep 10;
+        $self->wait_seconds(10);
     }
 
     $self->_save_deployed_hash($config, 'nfd', $hash);
@@ -499,7 +499,7 @@ sub setup_gpu_operator {
     $self->_apply_yaml_file($api, $driver_crd_file->stringify);
 
     # Wait briefly for CRDs to be established
-    sleep 3;
+    $self->wait_seconds(3);
 
     # Apply operator + ClusterPolicy
     print "      Deploying GPU Operator...\n";
@@ -522,7 +522,7 @@ sub setup_gpu_operator {
             my $state = ($cp && $cp->{status}) ? ($cp->{status}{state} // 'unknown') : 'unknown';
             print "      ClusterPolicy state: $state (may still be reconciling)\n";
         }
-        sleep 10;
+        $self->wait_seconds(10);
     }
 
     $self->_save_deployed_hash($config, 'gpu-operator', $hash);
