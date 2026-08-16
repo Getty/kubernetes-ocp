@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-08-16T05:27:02Z
+created: 2026-08-16T05:07:27Z
+id: 121
+priority: medium
+started: 2026-08-16T05:18:58Z
+status: done
+tags:
+- bug
+- validation
+- cli
+title: OCP::Cmd::Node::Add::_validate_flags hand-codes provider types
+updated: 2026-08-16T05:27:02Z
+---
+
+File: lib/OCP/Cmd/Node/Add.pm:137-177
+
+The if/elsif chain spells out `hetzner`, `ssh`, `local` at lines 140, 144, 154, then falls back to `OCP::Provider->types` at line 169 for the unknown branch. The two halves disagree the moment a fourth provider is added to OCP::Provider->@TYPES — the known branches miss the new type, the unknown branch catches it. Same defect shape that karr #103 was filed for.
+
+Fix: drive every branch through OCP::Provider->known_type / OCP::Choices, and use the canonical helper to emit the rejection (so karr #103's "name the values that would have worked" applies here too).
+
+Repro:
+1. Add a fourth provider to OCP::Provider->@TYPES
+2. ocp node add ... --provider newprov-default
+Observed: validates as a known type, but flag combinations inside _validate_flags are still checked against the old three.
+Fix shipped in f35ceb8: _validate_flags now goes through OCP::Provider->known_type, the unknown branch reads from OCP::Provider->types via OCP::Choices::unknown. Only 'ssh' (requires --host) and 'hetzner' (accepts its own overrides) remain as hand-coded special cases; 'local' and any future provider fall through the generic flag-rejection path. Regression coverage in t/18b-node-add.t asserts both halves. Touched only _validate_flags and Changes; left the CP public_ip read for #120.
