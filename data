@@ -1,0 +1,47 @@
+---
+class: standard
+completed: 2026-08-16T02:56:32Z
+created: 2026-08-16T00:51:10Z
+id: 100
+priority: medium
+started: 2026-08-16T02:27:58Z
+status: done
+tags:
+- hetzner
+- crd
+- provider
+title: 'OCPNodeProvider: location/serverType/image sind schreib-only, CRD-Default
+  cx23 ist falsch'
+updated: 2026-08-16T02:56:32Z
+---
+
+Gefunden 2026-08-16 beim Fix von #92 (ocp-worker). Zwei kleine, aber irrefuehrende
+Befunde am OCPNodeProvider-CR.
+
+1. spec.hetzner.location, .serverType und .image sind SCHREIB-ONLY.
+   OCP::Cmd::Provider::Add schreibt sie, `ocp provider ls` zeigt sie an - aber
+   OCP::Provider::from_cr liest sie nie. `ocp provider add --location nbg1` hat
+   also keinerlei Wirkung auf tatsaechlich erzeugte Server.
+   Seit #92 liest create_server immerhin spec des NODE-CR (spec.serverType usw.),
+   die Provider-Ebene bleibt aber wirkungslos. Damit gibt es zwei Orte, an denen
+   dasselbe stehen kann, und nur einer zaehlt.
+
+2. Die CRD deklariert serverType mit `default: cx23`, der Code-Default ist cx32.
+   Der API-Server materialisiert also cx23 in jedes CR, das den Wert nicht setzt -
+   und dieser Wert wird anschliessend ignoriert. Wer ins CR schaut, sieht cx23 und
+   bekommt cx32.
+   (cx23 sieht ohnehin nach einem Tippfehler aus - Hetzner hat cx22 und cx32.)
+
+ZU ENTSCHEIDEN, das ist der eigentliche Inhalt des Tickets:
+Sollen die Provider-Felder als DEFAULTS fuer Nodes dieses Providers wirken (dann
+muss from_cr sie lesen und create_server sie unterhalb der Node-spec einordnen:
+Node-spec > Provider-CR > Code-Default), oder sind sie ueberfluessig und gehoeren
+aus CRD und `provider add` entfernt?
+Die erste Variante ist nuetzlich - ein Provider "hetzner-nbg1" waere dann etwas
+wert. Sie verlangt aber eine klare Rangfolge, sonst ist es wieder zweimal
+dieselbe Wahrheit.
+Der falsche CRD-Default gehoert in beiden Faellen korrigiert.
+
+Lane: ocp-worker (Code) + ocp-infra-worker (CRD unter share/).
+Verwandt: #92, #98.
+ERLEDIGT 2026-08-16, Commit a137670. Volle Begruendung in der Commit-Message. Variante (a): vier Raenge - benannte Option > OCPNode-spec > Provider-CR > Code-Default, Leerstring gilt ueberall als abwesend. Der CRD-Default cx23 ist ENTFERNT statt korrigiert: der API-Server materialisierte ihn in jeden Provider-CR, damit waere 'nicht gesetzt' von 'gesetzt' ununterscheidbar und Rang 4 unerreichbar geworden. cx23 existiert bei Hetzner gar nicht (cx22/cx32/cx42/cx52). Nebenbefund: eine Fixture schrieb server_type statt serverType - ein Tippfehler, den nichts fangen konnte, solange das Feld ohnehin niemand las. Vier weitere CRD/Code-Abweichungen sind jetzt #111.
