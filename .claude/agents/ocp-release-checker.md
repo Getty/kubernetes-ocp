@@ -35,11 +35,11 @@ releases. **Never** run `dzil release`, `make docker-push`,
 
 - **Getty-authored pins may run ahead of CPAN during a coordinated family
   release.** IO::K8s, Kubernetes::REST, Net::Async::Kubernetes, WWW::Hetzner,
-  Crypt::Age and File::SOPS are sibling repos on this machine; a pin staged
-  for a not-yet-uploaded sibling version is intentional staging, not an error.
-  Verify against CPAN (`cpanm --info Module`), and report a mismatch as
-  "staged ahead of CPAN — confirm sibling release order", not as a blocker to
-  silently downgrade.
+  Crypt::Age, File::SOPS and Rex::Interface::Connection::LibSSH are sibling
+  repos on this machine; a pin staged for a not-yet-uploaded sibling version is
+  intentional staging, not an error. Verify against CPAN (`cpanm --info Module`),
+  and report a mismatch as "staged ahead of CPAN — confirm sibling release
+  order", not as a blocker to silently downgrade.
 
 ## Checklist
 

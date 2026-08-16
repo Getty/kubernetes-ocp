@@ -18,7 +18,7 @@ Prinzip und Lanes stehen in `.claude/rules/ocp-rules.md`.
 |---|---|
 | CLI, Module, Provider, Drift, K8s-Zugriff | `ocp-worker` (Default) |
 | robocop Controller, IO::Async, Reconciliation-Loop | `ocp-robocop-worker` |
-| manifests/, share/, Rexfile, Cilium/RKE2/Registry/GPU | `ocp-infra-worker` |
+| share/, Rexfile, Cilium/RKE2/Registry/GPU | `ocp-infra-worker` |
 | Tests schreiben/erweitern | `ocp-test-writer` |
 | POD und Prosa-Doku | `ocp-doc-writer` |
 | Pre-Release-Audit | `ocp-release-checker` |

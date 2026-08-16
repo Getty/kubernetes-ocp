@@ -1,6 +1,6 @@
 ---
 name: ocp-core
-description: OCP architecture and invariants — CLI vs robocop split, stack decisions (Cilium, no Helm), spec/status separation, module map, CRDs, reconciliation states. Load for any work on lib/, bin/, or the manifests.
+description: OCP architecture and invariants — CLI vs robocop split, stack decisions (Cilium, no Helm), spec/status separation, module map, CRDs, reconciliation states. Load for any work on lib/, bin/, or share/ (templates + Rexfile).
 ---
 
 # OCP Core — Architecture & Invariants
@@ -130,7 +130,7 @@ status:
 ```
 
 Reconciliation states: `Pending → Provisioning → Installing → Joining → Ready`,
-plus `Failed` (retry with backoff). Manifests live in `manifests/robocop/`
+plus `Failed` (retry with backoff). Manifests live in `share/robocop/`
 (crds/, rbac.yaml, deployment.yaml, kustomization.yaml).
 
 ## Repo layout
@@ -138,8 +138,8 @@ plus `Failed` (retry with backoff). Manifests live in `manifests/robocop/`
 ```
 bin/ocp, bin/robocop       # entry points
 lib/OCP/…                  # modules (map above)
-manifests/robocop/         # CRDs, RBAC, deployment (kustomize root)
-share/                     # manifest templates, Rexfile, CRDs
+share/                     # templates, Rexfile, nfd/, gpu-operator/, patches/, bin/
+share/robocop/             # CRDs, RBAC, deployment (kustomize root)
 t/NN-topic.t               # flat, numbered, mock-based tests
 xt/smoke.sh                # real-machine smoke test (make smoke) — destructive
 ```

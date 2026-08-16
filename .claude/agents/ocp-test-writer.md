@@ -27,10 +27,11 @@ never move its concerns into `t/`.
 
 ## The suite's shape
 
-Flat `t/NN-topic.t`, numbered in rough dependency order (`00-load.t` …
-`34-ocp-version-stamp.t`, with letter suffixes like `18b-node-add.t` for
-siblings of a topic). Match the numbering; reuse an existing file when the
-topic already has a home.
+Flat `t/NN-topic.t`, numbered in rough dependency order — siblings carry a
+letter suffix like `18b-node-add.t`. Pick the next free number as
+`highest existing test number + 1` (re-run `ls t/ | sort -V` to confirm; the
+suite only grows, so a frozen range goes stale). Match the numbering; reuse
+an existing file when the topic already has a home.
 
 - Mocking pattern: inline packages in the test file —
   `package FakeK8s { sub new {…} sub get {…} }` recording calls into
