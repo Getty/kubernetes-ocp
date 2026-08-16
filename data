@@ -1,0 +1,61 @@
+---
+class: standard
+completed: 2026-08-16T03:20:07Z
+created: 2026-08-16T01:29:28Z
+id: 103
+priority: medium
+started: 2026-08-16T02:56:51Z
+status: done
+tags:
+- cli
+- ux
+- errors
+title: Sechs weitere Zurueckweisungen sagen nicht, was gueltig waere
+updated: 2026-08-16T03:20:07Z
+---
+
+Gesammelt 2026-08-16 beim Fix von #89 (ocp-worker). #89 hat die Provider-Faelle
+geloest; beim Durchgehen fielen sechs Geschwister auf, die dasselbe tun: eine
+Eingabe zurueckweisen, ohne zu sagen, was gueltig waere.
+
+Die Hausregel steht seit #67 fest und ist jetzt zweimal umgesetzt (#67 fuer
+Subkommandos, #89 fuer Provider): wer Eingabe ablehnt, nennt die Alternativen.
+OCP::Role::Cmd traegt seit #89 mit provider_crs / provider_choices / provider_cr
+das Muster dafuer.
+
+DIE FUNDSTELLEN, jeweils mit der Quelle, die die Liste schon kennt:
+
+1. lib/OCP/Cmd/Node/Rm.pm:64   die "Node '$name' not found\n"
+   Der naechste Verwandte von #89. Die Daten von `ocp node ls` sind ein
+   list('OCPNode') entfernt, und provider_choices hat eine node-foermige
+   Zwillingsform, die praktisch dieselbe Gestalt haette.
+
+2. lib/OCP/Cmd/SSH.pm:91       "Could not determine host for node: $node_arg"
+   Sagt nicht, welche Nodes es kennt.
+
+3. lib/OCP/Cmd/Keys/Show.pm:58,65
+   "No key named 'X' in keys.yaml." / "No key with purpose 'X' in keys.yaml."
+   $keys->list_keys steht zwei Zeilen darueber schon im Scope.
+
+4. lib/OCP/Cmd/Update.pm:70    "Unknown target version: $target_version"
+   OCP::Versions kennt die ganze Menge.
+
+5. DIE SPIEGELBILDER VON #89 - Typ-Zurueckweisungen ohne Typ-Liste:
+   lib/OCP/Provider.pm, _build            "Unsupported provider: $type"
+   lib/OCP/Cmd/Node/Add.pm, _validate_flags "Unknown provider type '$t'"
+   Das VORBILD steht im selben Repo: OCP::Config::validate macht es richtig -
+   "invalid provider 'X' (must be hetzner, ssh, or local)". Daran ausrichten.
+
+6. `ocp node add --role quatsch` wird CLI-seitig GAR NICHT geprueft. Das OCPNode-CRD
+   hat enum: [control-plane, worker], der Fehler kommt also als rohes Kubernetes-422
+   zurueck statt als OCP-Zurueckweisung. Der --role-doc nennt die zwei Werte bereits.
+
+ZU TUN: die sechs auf dasselbe Muster bringen. Nicht sechsmal eine Liste
+hinschreiben - #89 hat die gemeinsame Stelle in OCP::Role::Cmd angelegt, das ist
+der Ort. Punkt 6 ist eine Validierung, kein Meldungstext, und wiegt am
+schwersten: eine CLI, die einen Tippfehler an die Kubernetes-API durchreicht,
+erklaert dem Bediener einen 422 statt seiner Eingabe.
+
+Lane: ocp-worker. Verwandt: #67, #89, #37, #73 - dieselbe Familie
+("die CLI nimmt an, was sie nicht versteht" bzw. "lehnt ab, ohne zu helfen").
+ERLEDIGT 2026-08-16, Commit 76abc11. Volle Begruendung in der Commit-Message. OCP::Choices wurde ein eigenes MODUL statt einer Methode auf OCP::Role::Cmd - zwei der sechs Fundstellen (OCP::Provider::_build, OCP::Config::validate) konsumieren die Rolle gar nicht, eine Methode dort haette das Bild in zwei geteilt. OCP::Choices haelt KEINE Menge; ein Test greppt den eigenen Quelltext, um das zu behaupten. Die Provider-Typen waren VIER handgeschriebene Kopien und lesen jetzt alle OCP::Provider::types. Die Node-Rollen haben notgedrungen zwei Schreibweisen (ein YAML-Enum kann kein Perl rufen) - gehalten von einem Test, der das CRD liest und per is_deeply gegen OCP::Node->roles haelt. --role wird jetzt VOR dem Bau des K8s-Clients geprueft (null API-Aufrufe, asserted), also kein 422 mehr fuer einen Tippfehler. Nachlaeufer: #113 (ocp update --component meldet bei Tippfehler Erfolg - stiller Erfolg, schwerer als alles in diesem Ticket), #114 (t/51-pod.t prueft eine feste Pfadliste), und ein Nachtrag an #110 (der Ort fuer die Typmenge existiert jetzt).
