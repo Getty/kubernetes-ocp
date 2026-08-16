@@ -1,0 +1,65 @@
+---
+class: standard
+completed: 2026-08-16T05:20:09Z
+created: 2026-08-15T07:50:04Z
+id: 74
+priority: low
+started: 2026-08-16T04:58:01Z
+status: done
+tags:
+- release
+- dist-ini
+- versions
+title: 'bin/ocp $VERSION: dist.ini setzt version_finder nicht - 4aa92cf ist unvollstaendig'
+updated: 2026-08-16T05:20:09Z
+---
+
+Gefunden beim Nachlauf zu #37 (ocp-worker, 2026-08-15). Gemessen mit `dzil build`
+gegen Log und gebautes Verzeichnis - keine Vermutung.
+
+AUSGANGSPUNKT: bin/ocp traegt noch `our $VERSION = '0.001'`, obwohl 4aa92cf
+"Drop per-module $VERSION, keep it single-sourced in OCP.pm" heisst. Naheliegender
+Schluss waere, die Zeile auch dort zu entfernen. DAS WAERE FALSCH.
+
+BEFUND 1: dist.ini setzt `version_finder` NICHT. Die Aussage in der
+Commit-Message von 4aa92cf, `no_cpan = 1` mache den version_finder zu
+:MainModule, stimmt nicht - der Bundle-Code (Author::GETTY, Zeile 326-331) liest
+ausschliesslich payload->{version_finder} und laesst ihn sonst leer. Die
+Version-Plugins nehmen dann ihren eigenen Default: [':InstallModules',
+':ExecFiles'] (RewriteVersion.pm:147, BumpVersionAfterRelease.pm:204).
+
+BEFUND 2: bin/ocp und bin/robocop sind :ExecFiles, liegen also IM Rewrite-Set.
+Ihre $VERSION-Zeile wird beim Build aus lib/OCP.pm gestempelt und nach dem Release
+von BumpVersionAfterRelease im Repo mitgezogen. Das ist gepflegte
+Release-Mechanik, nicht stehengebliebener Drift.
+
+BEFUND 3: 4aa92cf hat die Modul-Versionen aus dem ARTEFAKT gar nicht entfernt.
+RewriteVersion::Transitional setzt sie beim Build via PkgVersion wieder ein - im
+gebauten Dist tragen 55 von 55 .pm ein `our $VERSION`, und
+"Skipping: no our $VERSION found" kommt im Log NULL mal vor. Single-sourced ist
+nur das Repo, nicht der Tarball.
+
+BEFUND 4, der entscheidende: PkgVersion haengt seine Einfuegung an ein
+`package`-Statement (PkgVersion.pm:193-195, "skipping %s: no package statement
+found"). bin/ocp hat keines. Die Zeile zu entfernen wuerde dem ausgelieferten
+Skript den Version-Stempel ERSATZLOS nehmen, waehrend alle 55 Module einen
+bekommen. Das Gegenteil von Aufraeumen.
+
+Kein Leser ist gefaehrdet - `ocp version` und der Hilfetext lesen ausdruecklich
+$OCP::VERSION, OCP::Versions ruft OCP->VERSION, $main::VERSION liest niemand. Die
+Zeile ist ungenutzt, aber sie ist der Anker, an dem der Rewriter greift.
+
+ZU ENTSCHEIDEN (Maintainer, Release-Toolchain):
+Wenn "$VERSION wirklich nur in OCP.pm" das Ziel ist, gehoert die Aenderung nicht
+nach bin/, sondern in dist.ini: `version_finder = :MainModule` unter
+[@Author::GETTY]. Erst das macht die Commit-Message von 4aa92cf wahr. Vorher
+pruefen, was das fuer die :ExecFiles und fuer den Version-Stempel im Docker-Image
+bedeutet.
+
+Alternative: nichts aendern und die Commit-Message von 4aa92cf als das nehmen,
+was sie ist - eine Aufraeumaktion im Repo, nicht im Artefakt. Dann sollte dieses
+Ticket den Sachverhalt festhalten, damit der naechste Leser bin/ocp nicht fuer
+vergessen haelt.
+
+Lane: ocp-release-checker / Maintainer. Verwandt: 4aa92cf.
+Fixed in ddcd4c2 on worktree-agent-fb2955f9abfe0534. dist.ini now sets version_finder = :MainModule + :ExecFiles; t/77-dist-version-finder.t pins the constraint. Reasoning: :MainModule alone would drop bin/ocp and bin/robocop from the rewrite set (BEFUND 4 -- PkgVersion skips them anyway, and RewriteVersion without :ExecFiles would leave bin/ocp '$VERSION = 0.001' stale forever). Keeping :ExecFiles preserves the runtime stamper on bin/ocp/bin/robocop. Verified: dzil build clean, only lib/OCP.pm has 'our $VERSION' in the build, bin/ocp + bin/robocop carry the rewritten $VERSION (verified with V=0.456). make test-host green at 70 files / 1149 tests.
