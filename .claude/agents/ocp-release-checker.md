@@ -20,14 +20,18 @@ releases. **Never** run `dzil release`, `make docker-push`,
 
 ## The exceptions you will meet
 
-- **`our $VERSION` appears in every module (43 of them), not only in
-  `lib/OCP.pm`.** Correct here — OCP ships to CPAN, so every package carries
-  its own version for PAUSE indexing. Check **consistency**, don't "fix" it:
+- **`$VERSION` is single-sourced in `lib/OCP.pm`, not repeated per module.**
+  New modules carry no `$VERSION` line, only `# ABSTRACT:`. Check that no
+  other `.pm` under `lib/` has grown one back:
 
   ```bash
-  grep -rh 'our \$VERSION =' lib | sort -u     # exactly one line
-  grep -rL 'our \$VERSION' $(find lib -name '*.pm')   # empty
+  grep -rl 'our \$VERSION' lib     # expect only lib/OCP.pm (+ lib/OCP/Versions.pm, unrelated)
   ```
+
+  `bin/ocp` and `bin/robocop` are a separate, valid case, not drift: they are
+  `:ExecFiles`, and the release rewriter stamps their `$VERSION` from
+  `lib/OCP.pm` at build/release time (karr #74). Don't flag them and don't
+  "fix" them to match the module rule.
 
 - **Getty-authored pins may run ahead of CPAN during a coordinated family
   release.** IO::K8s, Kubernetes::REST, Net::Async::Kubernetes, WWW::Hetzner,
@@ -52,8 +56,11 @@ releases. **Never** run `dzil release`, `make docker-push`,
    if no tag exists yet, say so instead of failing).
 6. **`dzil build`** — clean, no warnings, no missing files; built `META.json`
    `provides` lists every package under `lib/` at the dist version.
-7. **Tests** — `make test` green; report skipped tests as skipped, a suite
-   that skipped is not a suite that passed.
+7. **Tests** — `make test` green. Since karr #79 this is the pinned run in
+   the Docker image (`cpanfile.snapshot`); a green `make test-host` does not
+   count — it runs against whatever's in `~/perl5` and is explicitly not
+   binding. Report skipped tests as skipped, a suite that skipped is not a
+   suite that passed.
 8. **Docker** — `make build` succeeds; the Dockerfile's cpanfile.snapshot is
    current (regenerated via `make snapshot` if the cpanfile changed — inside
    Docker, never on the host).

@@ -47,16 +47,27 @@ immer `cat > datei` (Details: globale CLAUDE.md / Skill `manage-skills`).
 ## Build & Test
 
 ```bash
-make test       # prove -l t/ — flache, mock-basierte Suite, netzwerkfrei
+make test       # DIE bindende Suite: prove -l t/ IM Image, gegen den Pin aus
+                # cpanfile.snapshot; Arbeitsbaum read-only nach /src gemountet
+make test-v     # dasselbe, verbose
+make test-host  # prove -l t/ gegen das Host-CPAN — schnell, aber NICHT bindend
 make build      # Docker Image bauen
 make snapshot   # cpanfile.snapshot regenerieren — läuft IN Docker, nie auf dem Host
+make docker-test # prüft nur, dass das Image startet — nicht die Suite
 make smoke      # ACHTUNG: bootstrapped einen ECHTEN Host und wischt dessen Cluster
 ```
 
-Toolchain ist Docker-first: kein `carton install`/`cpm` auf dem Host. `make build` baut
-immer nur für die Architektur der Maschine, auf der es läuft — ein arm64-Image entsteht
-auf einer arm64-Maschine. `kubectl` existiert nur zum Debuggen im Container — kein
-Code-Pfad darf es aufrufen (alles über Kubernetes::REST / IO::K8s).
+Einzelne Datei über `TESTS`: `make test TESTS=t/33-registry-manifests.t`.
+
+Toolchain ist Docker-first: kein `carton install`/`cpm` auf dem Host — und seit karr #79
+gilt das auch für den Testlauf. `make test` geht durch `make build` (gecacht ~1s) und
+fährt die Suite dann im Image; nur die Dependencies kommen von dort, `lib/`, `bin/` und
+`share/` kommen aus dem Mount. Der Host-Lauf ist etwa gleich schnell, aber sein Ergebnis
+hängt davon ab, was zufällig in `~/perl5` liegt: am 2026-08-15 war er morgens grün und
+abends rot, ohne dass sich eine Zeile geändert hatte. `make build` baut immer nur für die
+Architektur der Maschine, auf der es läuft — ein arm64-Image entsteht auf einer
+arm64-Maschine. `kubectl` existiert nur zum Debuggen im Container — kein Code-Pfad darf
+es aufrufen (alles über Kubernetes::REST / IO::K8s).
 
 ## Workflow
 

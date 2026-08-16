@@ -4,8 +4,32 @@
 IMAGE ?= raudssus/ocp
 TAG ?= latest
 
-.PHONY: all build test test-v clean docker-test docker-push docker-release snapshot smoke \
-        build-image
+# What the test targets run. Override for a single file:
+#   make test TESTS=t/33-registry-manifests.t
+TESTS ?= t/
+
+# The suite inside the image, i.e. against the dependency stand that
+# cpanfile.snapshot pins and the image installs, with the working tree mounted
+# at /src.
+#
+# Only the dependencies come from the image; lib/, bin/ and share/ all come
+# from the mount. `prove -l` puts /src/lib on @INC, and OCP::Share resolves
+# share/ next to the running test, so a test file under /src/t reaches
+# /src/share (ADR 0023). Verified: OCP.pm -> /src/lib/OCP.pm, share ->
+# /src/share, Kubernetes::REST -> the image's local-lib.
+#
+# Mounted read-only: the suite writes only into File::Temp directories, and a
+# mount that cannot be written cannot be dirtied by a test that gets that
+# wrong. It also makes the uid mismatch between the image's `ocp` user and the
+# checkout's owner a non-issue.
+#
+# $(CURDIR), not $(PWD): make knows its own directory even under `make -C`,
+# the inherited PWD does not.
+DOCKER_PROVE = docker run --rm -v $(CURDIR):/src:ro -w /src \
+	--entrypoint prove $(IMAGE):$(TAG)
+
+.PHONY: all build test test-v test-host clean docker-test docker-push docker-release \
+        snapshot smoke build-image
 
 all: build
 
@@ -13,13 +37,30 @@ all: build
 build:
 	docker build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
 
-# Run tests locally (uses CPAN modules)
-test:
-	prove -l t/
+# Run the suite against the pinned dependencies inside the image. THIS is the
+# binding result — the same perl and the same module versions the release
+# ships, so a green here means the artifact is green.
+#
+# It goes through `build` on purpose: an image that has not been rebuilt since
+# cpanfile.snapshot moved is the same lie as a host that was never updated for
+# it, one layer further out. Fully cached that costs about a second; when the
+# pin has actually moved it costs a dependency install, which is the point.
+test: build
+	$(DOCKER_PROVE) -l $(TESTS)
 
-# Run tests verbose
-test-v:
-	prove -lv t/
+# Same run, verbose
+test-v: build
+	$(DOCKER_PROVE) -lv $(TESTS)
+
+# The suite against whatever CPAN happens to be installed on this machine.
+# Fast and fine while iterating, but its result does NOT bind: it is neither
+# the perl nor the module versions that ship. On 2026-08-15 this run went from
+# green to red between morning and evening without a line of the repo
+# changing, because a newer Kubernetes::REST than the snapshot pins had been
+# installed on the host (karr #79). The reverse is worse and silent: a host
+# that stays on an old version keeps this green while the image is broken.
+test-host:
+	prove -l $(TESTS)
 
 # Clean build artifacts
 clean:
@@ -35,7 +76,8 @@ snapshot:
 	    build-essential pkg-config && \
 	   cpanm --notest Carton && carton install"
 
-# Quick test run with Docker
+# Check that the built image starts and its entrypoint answers. This is a
+# smoke test of the artifact, NOT a run of the suite — `make test` is that.
 docker-test: build
 	docker run --rm $(IMAGE):$(TAG) --help
 	@echo "Docker image works!"

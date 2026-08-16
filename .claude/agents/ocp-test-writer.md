@@ -57,8 +57,19 @@ leave it behind.
 1. Read the code under test and the nearest existing test file.
 2. Name the behavior being exercised and why it matters.
 3. Write the test with inline mocks and literal fixtures.
-4. `prove -lv t/NN-topic.t` until green, then `make test` (`prove -l t/`) to
-   confirm nothing else moved. If host Perl lacks a dep, run inside the
-   Docker image — never `carton install` on the host.
+4. `prove -lv t/NN-topic.t` locally until green, then `make test` to confirm
+   nothing else moved. Since karr #79, `make test` is the binding run — it
+   drives `prove -l t/` **inside the Docker image**, against the
+   `cpanfile.snapshot` pin, with the work tree mounted (so it's your current
+   code, not a stale build). `make test TESTS=t/NN-topic.t` runs a single
+   file the same way. `make test-host` runs the identical suite against
+   host-installed CPAN instead — fast, but explicitly NOT binding: it depends
+   on whatever's in `~/perl5`, which is why the suite went green in the
+   morning and red in the evening on 2026-08-15 with no line changed in the
+   repo (host Perl 5.036 vs image 5.042003, six releases apart). The two runs
+   cost about the same (159s vs 160s, ~0.5% CPU apart), so don't reach for
+   `test-host` for speed — it isn't faster and its result doesn't count. If
+   the image is missing a dependency, add it via `cpanfile`/`make snapshot`,
+   never `carton install` on the host.
 
 Apply the conventions above silently.

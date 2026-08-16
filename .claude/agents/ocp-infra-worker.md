@@ -42,7 +42,15 @@ Coordinate via `karr`; record drift as tickets instead of widening scope.
 
 ## Verification
 
-`make test` (`prove -l t/`) — manifest-shape changes are covered by
+`make test` — since karr #79 this is the binding run: `prove -l t/` inside
+the Docker image, against the `cpanfile.snapshot` pin (the work tree is
+mounted in, so it's your current code under test). Single file:
+`make test TESTS=t/NN-topic.t`. `make test-host` runs the same suite against
+host CPAN — fast, but NOT binding, since its result depends on `~/perl5`; that
+gap is why the suite was green in the morning and red in the evening on
+2026-08-15 with no repo change (host Perl 5.036 vs image 5.042003). The two
+runs cost about the same (159s vs 160s, ~0.5% CPU apart), so don't reach for
+`test-host` to save time. Manifest-shape changes are covered by
 `t/33-registry-manifests.t` and friends; extend those rather than adding a
 cluster dependency. Never run `make smoke` (wipes a real machine), never
 `docker-push`/`docker-release`.

@@ -25,10 +25,12 @@ find as new tickets rather than expanding scope mid-change.
 
 ## Repo facts that live in no skill
 
-- **`our $VERSION = '0.001'` is in every module and must stay identical across
-  all 43.** This ships to CPAN, so every package carries its own version for
-  PAUSE indexing. A new module gets the current version; never bump by hand —
-  `[@Author::GETTY]` handles that at release.
+- **`$VERSION` is single-sourced in `lib/OCP.pm`.** New modules get no
+  `$VERSION` line at all — just the `# ABSTRACT:`. `bin/ocp` and `bin/robocop`
+  are the one exception: they still carry `our $VERSION = '0.001'`, but for a
+  different, valid reason (they're `:ExecFiles`, stamped by the release
+  rewriter from `lib/OCP.pm` — see karr #74). Don't "clean that up" to match
+  the module rule.
 - **Every `.pm` needs a `# ABSTRACT:` line** — PodWeaver builds NAME from it.
 - **User-facing change → a bullet under `{{$NEXT}}` in `Changes`.**
 - `OCP::Node` is trigger-neutral by design: the same state machine serves
@@ -40,10 +42,17 @@ find as new tickets rather than expanding scope mid-change.
 
 ## Verification
 
-`make test` (`prove -l t/` — the suite is flat, mock-based and network-free).
-Single file: `prove -lv t/NN-topic.t`. If host Perl lacks a dependency, do NOT
-`carton install` on the host — run the tests inside the Docker image instead,
-and add a Make target for that if one is missing.
+`make test` — since karr #79 this is the binding run: `prove -l t/` **inside
+the Docker image**, against the pin from `cpanfile.snapshot`, with the work
+tree mounted read-only (so it tests your current code, not a stale build).
+Single file: `make test TESTS=t/NN-topic.t`. `make test-host` runs the same
+suite against host-installed CPAN — fast, but explicitly NOT binding: it
+depends on whatever happens to be in `~/perl5`, which is exactly why the suite
+went green in the morning and red in the evening on 2026-08-15 with zero lines
+changed in the repo (host Perl 5.036 vs image 5.042003, six releases apart).
+Report a red `make test-host` differently than a red `make test`. The two runs
+cost about the same (159s vs 160s, ~0.5% CPU apart) — there's no speed excuse
+for reaching for `test-host` when it doesn't bind.
 
 Never run `dzil release`, `make docker-push`, `make docker-release`, or
 `make smoke` (wipes a real machine).
