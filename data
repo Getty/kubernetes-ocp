@@ -1,0 +1,62 @@
+---
+class: standard
+completed: 2026-08-16T02:27:28Z
+created: 2026-08-16T01:28:44Z
+id: 102
+priority: high
+started: 2026-08-16T01:45:59Z
+status: done
+tags:
+- tests
+- performance
+- refactor-debt
+title: t/31 schlaeft wirklich - der sleep-Mock zeigt seit der Extraktion ins Leere
+updated: 2026-08-16T02:29:20Z
+---
+
+Gefunden 2026-08-16 beim Fix von #89 (ocp-worker), vom Orchestrator nachgemessen.
+
+t/31-cert-issuers.t versucht die Retry-Pausen wegzumocken:
+
+  # Keep the test fast: the retry path sleeps between attempts.
+  local *OCP::Cmd::Apply::sleep = sub { 1 };
+
+DER MOCK GREIFT NICHT. In lib/OCP/Cmd/Apply.pm steht kein einziges `sleep` mehr -
+die Aufrufe sitzen nach der Phase-8-Extraktion (#55) in den ausgelagerten Modulen:
+
+  Apply/Network.pm:92, :127, :253, :311
+  Apply/CR.pm:387, :458
+  Apply/K8s.pm:178
+  Apply/Deploy.pm:205
+  Apply/Bootstrap.pm:376
+  Apply/Health.pm:130
+
+Perl warnt bei jedem Lauf "Name OCP::Cmd::Apply::sleep used only once" - der
+Glob zeigt auf einen Namensraum, in dem niemand sleept.
+
+GEMESSEN: t/31-cert-issuers.t allein braucht 106 SEKUNDEN. Die volle Suite liegt
+bei rund 158 Sekunden Wall-Clock gegen 53 Sekunden CPU. Diese eine Datei ist also
+der groesste Einzelposten der Suite, und sie schlaeft ihn ab.
+
+DAS IST DIESELBE FEHLERKLASSE WIE #68: ein Test-Artefakt, das nach der Extraktion
+still aufgehoert hat zu wirken. Dort war es ein Scan, der zwei Dateien fest
+verdrahtet hatte; hier ein Mock, der einen Namensraum fest verdrahtet hat. In
+beiden Faellen blieb der Test GRUEN - nur seine Wirkung war weg. #68s Lehre gilt
+auch hier: nicht die Liste erweitern, sondern so formulieren, dass eine kuenftige
+Extraktion sie nicht wieder aushebelt.
+
+ZU TUN:
+ - Den Mock dorthin legen, wo wirklich geschlafen wird. Wenn das mehrere Module
+   sind, ist die feste Liste schon wieder die Falle - besser eine Stelle, durch
+   die alle Wartezeiten laufen (ein Helfer in OCP::Role::Cmd oder ein eigener
+   kleiner Wrapper), die man dann an EINEM Ort mocken kann.
+ - Danach nachmessen. Ziel ist, dass die Suite wieder nahe an ihrer CPU-Zeit
+   liegt.
+ - Pruefen, ob andere Tests denselben Trick versuchen und ebenso ins Leere
+   zielen - `grep -rn "local \*OCP::" t/` ist der Einstieg.
+
+NEBENBEI: dass die Suite dreimal so lange braucht wie noetig, hat heute jeden
+Durchgang verlangsamt. Der Fix zahlt sich sofort aus.
+
+Lane: ocp-test-writer. Verwandt: #68 (gleiche Klasse), #55 (die Extraktion), #79.
+ERLEDIGT 2026-08-16, Commit 5c128b2. Die vollstaendige Begruendung steht in der Commit-Message. t/31 allein von 106s auf 0.5s, volle Suite von 160s auf 55s - jetzt innerhalb einer Sekunde ihrer CPU-Zeit. wait_seconds sitzt in OCP::Role::Cmd und wird per Methoden-Dispatch auf $self erreicht, ueberlebt also die naechste Extraktion. Das Ticket nannte 10 sleep-Stellen, es waren 15.
