@@ -3,6 +3,7 @@ package OCP::Robocop::Controller;
 
 use Moo;
 use Carp qw(croak);
+use Time::Piece ();
 use Try::Tiny;
 
 use OCP::K8s;
@@ -128,6 +129,14 @@ sub run {
                 } catch {
                     my $name = $cr->{metadata}{name} // '?';
                     $self->log("ERROR reconciling $name: $_");
+                    # Defense in depth: _on_node_event already patches status
+                    # on every failure it knows about, but a crash past those
+                    # paths (a transport exception in the middle of a status
+                    # patch, a croak from a test stub) used to leave the CR
+                    # with whatever phase it had -- usually Pending -- and the
+                    # operator with only robocop's pod logs to read. Mark the
+                    # CR Failed so the failure is visible without the logs.
+                    $self->_mark_failed($cr, $_);
                 };
             }
         }
@@ -139,13 +148,24 @@ sub run {
 #
 # Event dispatcher → OCP::Node
 #
+# Every path that fails before OCP::Node takes over MUST patch the OCPNode's
+# status to Failed with the reason: an OCPNode that the controller saw but
+# could not start reconciling used to stay Pending forever, with no message
+# and no diagnostic outside robocop's pod logs (karr #123). The status write
+# goes to /status because the CRD enables that subresource, and it goes
+# through OCP::K8s->patch_status because that is the only place in OCP that
+# writes it correctly. Anything that can fail before OCP::Node owns the CR
+# routes through _mark_failed below.
+#
 
 sub _on_node_event {
     my ($self, $cr) = @_;
 
     my $provider_name = $cr->{spec}{providerRef};
     unless ($provider_name) {
-        $self->log("No providerRef on " . ($cr->{metadata}{name} // '?'));
+        $self->_mark_failed($cr,
+            "spec.providerRef is missing on this OCPNode; "
+          . "robocop will not provision it until the field is set");
         return;
     }
 
@@ -155,26 +175,81 @@ sub _on_node_event {
         $self->kube->get('OCPNodeProvider', name => $provider_name, namespace => $ns);
     };
     if ($@ || !$provider_cr_obj) {
-        $self->log("Failed to load provider CR $provider_name: " . ($@ // 'not found'));
+        $self->_mark_failed($cr,
+            "Failed to load OCPNodeProvider/$provider_name: "
+          . ($@ ? $@ : 'not found'));
         return;
     }
     my $provider_cr = $self->kube->k8s->object_to_struct($provider_cr_obj);
 
-    my $provider = OCP::Provider->from_cr($provider_cr, k8s => $self->kube);
+    my $provider = eval { OCP::Provider->from_cr($provider_cr, k8s => $self->kube) };
+    if ($@) {
+        chomp $@;
+        $self->_mark_failed($cr,
+            "Failed to build provider from OCPNodeProvider/$provider_name: $@");
+        return;
+    }
 
-    my $node = OCP::Node->from_cr(
-        $cr,
-        k8s           => $self->kube,
-        provider      => $provider,
-        ssh_key       => $self->ssh_key,
-        server_url    => $self->server_url,
-        join_token    => $self->join_token,
-        distribution  => $self->distribution,
-        verbose       => $self->verbose,
-        reconciler_id => 'robocop',
-    );
+    my $node = eval {
+        OCP::Node->from_cr(
+            $cr,
+            k8s           => $self->kube,
+            provider      => $provider,
+            ssh_key       => $self->ssh_key,
+            server_url    => $self->server_url,
+            join_token    => $self->join_token,
+            distribution  => $self->distribution,
+            verbose       => $self->verbose,
+            reconciler_id => 'robocop',
+        );
+    };
+    if ($@) {
+        chomp $@;
+        $self->_mark_failed($cr, "Failed to construct OCPNode: $@");
+        return;
+    }
 
     $node->reconcile;
+}
+
+# Patches the OCPNode's status to Failed with the given message, and logs.
+#
+# Best-effort: the status write itself can fail (the CR was deleted between
+# list and patch, the API is unreachable). In that case the failure is logged
+# and the caller keeps going -- the alternative is to throw, which would
+# bounce the CR back through run()'s catch and try to patch Failed again, or
+# if THAT also fails, take the controller down on a single bad CR. The
+# operator reads both the status and the logs; one of them is enough to make
+# a stuck CR diagnosable.
+#
+# The two timestamp/reconciler fields are the ones OCP::Node::_patch_status
+# adds by default. We write them ourselves here because the controller sits
+# outside OCP::Node on every path that calls _mark_failed.
+sub _mark_failed {
+    my ($self, $cr, $message) = @_;
+
+    my $name = $cr->{metadata}{name}     // '?';
+    my $ns   = $cr->{metadata}{namespace} // $self->namespace;
+
+    $self->log("marking $name Failed: $message");
+
+    my $status = {
+        phase             => 'Failed',
+        message           => $message,
+        lastReconcileTime => Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ'),
+        reconciler        => 'robocop',
+    };
+
+    eval {
+        OCP::K8s->patch_status(
+            $self->kube,
+            kind      => 'OCPNode',
+            name      => $name,
+            namespace => $ns,
+            status    => $status,
+        );
+        1;
+    } or $self->log("ERROR patching status for $name: $@");
 }
 
 #
