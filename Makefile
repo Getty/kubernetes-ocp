@@ -69,12 +69,25 @@ clean:
 # Regenerate cpanfile.snapshot inside Docker (never on host).
 # Installs system deps (libssh-dev etc) + carton, then runs carton install
 # with the project mounted so the refreshed snapshot lands on the host.
+#
+# Runs the container as root because apt-get install needs it, then chowns
+# the files carton writes (cpanfile.snapshot + local/) back to the host
+# uid:gid so the operator can edit them without sudo. The host ids are
+# passed in as env vars; chown accepts numeric ids that are not in the
+# container's /etc/passwd, so this works on a clean tree without a
+# matching user being created.
+#
+# Not handled here: local/ that is already root-owned from older runs.
+# Clean that up with `sudo chown -R $$UID:$$GID local/` before re-running.
 snapshot:
-	docker run --rm -v $(PWD):/work -w /work perl:5.42 bash -c \
-	  "apt-get update -qq && apt-get install -y --no-install-recommends \
+	docker run --rm -v $(PWD):/work -w /work \
+	  -e HOST_UID=$(shell id -u) -e HOST_GID=$(shell id -g) \
+	  perl:5.42 bash -c \
+	  'apt-get update -qq && apt-get install -y --no-install-recommends \
 	    libssh-dev libssl-dev libexpat1-dev zlib1g-dev \
 	    build-essential pkg-config && \
-	   cpanm --notest Carton && carton install"
+	   cpanm --notest Carton && carton install && \
+	   chown -R "$$HOST_UID:$$HOST_GID" /work/cpanfile.snapshot /work/local'
 
 # Check that the built image starts and its entrypoint answers. This is a
 # smoke test of the artifact, NOT a run of the suite — `make test` is that.
