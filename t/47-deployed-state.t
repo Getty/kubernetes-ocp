@@ -385,6 +385,166 @@ subtest 'reconcile forms no verdict of its own' => sub {
 };
 
 #
+# karr #69: cert-manager's reconcile gate used to test presence, not
+# equality, against OCP::Versions->get_component_version('cert_manager').
+# A version bump in OCP::Versions would never be reconciled on this path --
+# the gate read "entry exists, deployment is running" and skipped. Asserted
+# directly: a recorded version that does not match the canonical one must
+# trigger _apply_cert_manager; a matching version must not.
+#
+
+package CertManagerGate::Api {
+    sub new { my ($c, %a) = @_; bless { have => $a{have} // {}, %a }, $c }
+    sub get { die "404 unexpected get\n" }
+    sub list {
+        my ($s, $kind) = @_;
+        return $kind eq 'Node' ? { items => [] } : { items => [] };
+    }
+    sub expand_class { undef }
+    sub _request { bless {}, 'NoopResponse' }
+}
+package NoopResponse { sub new { bless {}, shift } sub status { 200 } sub content { '{}' } }
+
+package CertManagerGate::Ocp {
+    sub new       { bless {}, shift }
+    sub verbose   { 0 }
+    sub load_file { my ($s, $f) = @_; YAML::XS::LoadFile("$f") }
+    sub dump_file { my ($s, $f, $d) = @_; YAML::XS::DumpFile("$f", $d) }
+    sub dump      { '' }
+    sub config    { $_[0]{config} }
+}
+
+package main;
+
+sub reconcile_cert_manager {
+    my (%opt) = @_;
+
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML');
+name: cortex
+kubernetes:
+  dist: k3s
+control_planes:
+  provider: ssh
+  host: cortex.ocp.invalid
+lbipam: true
+YAML
+    $dir->child('.ocp')->mkpath;
+
+    if (my $hashes = $opt{deployed}) {
+        YAML::XS::DumpFile($dir->child('.ocp', 'deployed.yaml'), $hashes);
+    }
+
+    my $config = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
+
+    my @applied_cert;
+    my @waited;
+    my @saved;
+    my @exists_calls;
+
+    {
+        no warnings 'redefine';
+        no strict 'refs';
+
+        *OCP::Secrets::read_kubeconfig = sub { "apiVersion: v1\nkind: Config\n" };
+
+        *OCP::Cmd::Apply::_k8s_api = sub { $_[0]{_k8s_api} };
+        *OCP::Cmd::Apply::_resource_exists = sub {
+            my ($s, $api, $kind, $name, %o) = @_;
+            push @exists_calls, "$kind/$o{namespace}/$name";
+            return $opt{cm_running} ? 1 : 0;
+        };
+        *OCP::Cmd::Apply::_apply_cert_manager = sub {
+            push @applied_cert, 1;
+            return 1;
+        };
+        *OCP::Cmd::Apply::_wait_cert_manager_and_create_issuers = sub {
+            push @waited, 1;
+            return 1;
+        };
+        *OCP::Cmd::Apply::_save_deployed_hash = sub {
+            push @saved, { component => $_[2], value => $_[3] };
+            return 1;
+        };
+
+        # Stub every other piece the reconcile path touches. None of them
+        # should fire for the cert-manager block; if any does, the test sees
+        # it in @touched below and the assert is loosened for that reason.
+        *OCP::Cmd::Apply::_setup_registry             = sub { 'unchanged' };
+        *OCP::Cmd::Apply::_configure_registry_dns     = sub { 0 };
+        *OCP::Cmd::Apply::_setup_nfd                  = sub { 'unchanged' };
+        *OCP::Cmd::Apply::_setup_gpu_operator         = sub { 'skipped' };
+        *OCP::Cmd::Apply::_setup_cilium_gateway       = sub { 1 };
+        *OCP::Cmd::Apply::_setup_lb_ipam              = sub { 1 };
+        *OCP::Cmd::Apply::_ensure_crds                = sub { 1 };
+        *OCP::Cmd::Apply::_ensure_providers           = sub { 1 };
+        *OCP::Cmd::Apply::_migrate_legacy_nodes       = sub { 1 };
+        *OCP::Cmd::Apply::_ensure_cp_ocpnode          = sub { 1 };
+        *OCP::Cmd::Apply::_run_remedy                 = sub { 0 };
+        *OCP::Cmd::Apply::_stamp_ocp_version          = sub { 1 };
+    }
+
+    my $apply = OCP::Cmd::Apply->new(command_chain => [ bless {}, 'CertManagerGate::Ocp' ]);
+    $apply->{_k8s_api} = CertManagerGate::Api->new;
+
+    my ($out) = capture_stdout { $apply->_reconcile_components($config) };
+
+    return {
+        out           => $out,
+        applied_cert  => [ @applied_cert ],
+        waited        => [ @waited ],
+        saved         => [ @saved ],
+    };
+}
+
+subtest 'reconcile gates cert-manager on version equality, not presence (karr #69)' => sub {
+
+    # Recorded equals canonical -> skipped. A version that already matches
+    # OCP::Versions must not be rolled out again on every reconcile.
+    my $canonical = OCP::Versions->get_component_version('cert_manager');
+    my $match = reconcile_cert_manager(
+        deployed  => { certmanager => $canonical },
+        cm_running => 1,
+    );
+    is scalar @{ $match->{applied_cert} }, 0,
+        'matching recorded version -> nothing to apply';
+    is scalar @{ $match->{saved} }, 0,
+        'and the hash is not rewritten';
+    like $match->{out}, qr/cert-manager up to date/,
+        'and the printout says so';
+
+    # Recorded older than canonical -> redeployed. This is the case the
+    # presence-only gate let slip: the entry was there, the deployment was
+    # running, and a newer OCP::Versions was silently skipped.
+    my $stale = reconcile_cert_manager(
+        deployed  => { certmanager => 'v0.0.0-older' },
+        cm_running => 1,
+    );
+    is scalar @{ $stale->{applied_cert} }, 1,
+        'stale recorded version -> cert-manager is re-applied';
+    is scalar @{ $stale->{waited} }, 1,
+        'and the wait + issuers step runs with it';
+    is scalar @{ $stale->{saved} }, 1,
+        'and the canonical version overwrites the stale hash';
+    is $stale->{saved}[0]{component}, 'certmanager',
+        'saved under the same key the gate consults';
+    is $stale->{saved}[0]{value}, $canonical,
+        'the saved value is the live OCP::Versions value, not the old one';
+    like $stale->{out}, qr/Updating cert-manager/,
+        'and the printout says it was an update';
+
+    # No record at all -> deployed. The original gate caught this through
+    # the !$cm_running branch; the new gate additionally catches stale
+    # records, which is what the ticket was about.
+    my $fresh = reconcile_cert_manager(
+        deployed  => {},
+        cm_running => 1,
+    );
+    is scalar @{ $fresh->{applied_cert} }, 1,
+        'no recorded version -> cert-manager is still re-applied';
+};
+
+#
 # destroy: the record dies with the cluster it describes (ADR 0004).
 #
 

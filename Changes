@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - cert-manager's reconcile gate now compares the recorded version
+      against OCP::Versions->get_component_version('cert_manager'), not
+      against mere presence. The previous `if ($cm_running && $deployed->{certmanager})`
+      matched every truthy entry, so a cert-manager version bump in
+      OCP::Versions was silently skipped on the reconcile path -- only
+      OCP::Drift, which reads the running image from the cluster, caught
+      it. Registry, NFD and the GPU operator already used this equality
+      shape; cert-manager is now consistent with them (karr #69).
     - t/51-pod.t now discovers its scope from globs instead of an
       enumeration. The hardcoded list of five Provider modules was
       silent about new ones and quietly drifted when Choices.pm
