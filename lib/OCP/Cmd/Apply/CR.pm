@@ -529,8 +529,8 @@ sub cli_reconcile_workers {
             user     => 'root',
         );
         my $token_path = $distribution eq 'k3s'
-            ? '/var/lib/rancher/k3s/server/node-token'
-            : '/var/lib/rancher/rke2/server/node-token';
+            ? $OCP::Node::K3S_TOKEN_PATH
+            : $OCP::Node::RKE2_TOKEN_PATH;
         my $res = $cp_ssh->run("cat $token_path");
         $join_token = $res->{stdout} // '';
         chomp $join_token;

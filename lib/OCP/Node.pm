@@ -498,6 +498,21 @@ sub _refresh {
 # `our` so a test can shorten it without timing the real thing.
 our $READY_TIMEOUT = 900;
 
+# Where the control plane stores the join token each distro writes, on disk
+# inside the server. Read once by the CLI (ocp node add, ocp apply) before
+# any worker can be told to use it.
+#
+# These are facts about how RKE2 and K3s lay their files out, not facts about
+# OCP, but they have to live in one place: the literal was duplicated between
+# OCP::Cmd::Node::Add and OCP::Cmd::Apply::CR, and bumping one without the
+# other meant the two commands disagreed on which file to read (karr #122).
+# OCP::Node already owns the analogous `our` constant for the ready budget,
+# and both call sites already `use OCP::Node`, so the same shape applies.
+#
+# `our` so a test can substitute a temp path without spinning a real cluster.
+our $K3S_TOKEN_PATH   = '/var/lib/rancher/k3s/server/node-token';
+our $RKE2_TOKEN_PATH  = '/var/lib/rancher/rke2/server/node-token';
+
 sub reconcile_until_ready {
     my ($self, %opt) = @_;
     my $timeout  = $opt{timeout}  // $READY_TIMEOUT;
