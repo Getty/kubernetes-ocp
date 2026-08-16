@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-08-16T05:28:15Z
+created: 2026-08-16T05:06:53Z
+id: 117
+priority: high
+started: 2026-08-16T05:18:52Z
+status: done
+tags:
+- bug
+- ssh
+- cli
+title: OCP::Cmd::SSH dies on multi-CP clusters with 'Not a HASH reference'
+updated: 2026-08-16T05:28:15Z
+---
+
+File: lib/OCP/Cmd/SSH.pm:75-79
+
+```perl
+my $cp_spec = $spec->{control_planes};
+if ($node_arg eq 'police1' || $node_arg =~ /^police\d+$/ || $node_arg =~ /^cp/) {
+    if ($cp_spec->{provider} eq 'ssh') {
+```
+
+`$spec->{control_planes}` is the raw `ocp.yaml` field, which OCP::Config always treats as an arrayref (see _compact_control_planes and `cps->[0] // {}` in OCP::Cmd::Apply::Bootstrap::cp_identity). Dereferencing it as a hash throws `Not a HASH reference at lib/OCP/Cmd/SSH.pm line 79.` and bypasses the helpful `_unknown_node_error` path on line 92. Use `$cp_spec->[0]{provider}` instead.
+
+Repro:
+1. Set control_planes in ocp.yaml to a list of multiple CPs (mixed hetzner+ssh is the canonical case).
+2. ocp ssh --node police1
+Observed: process dies with "Not a HASH reference" before the unknown-node handler can run.
