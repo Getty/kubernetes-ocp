@@ -1,6 +1,14 @@
 requires 'Moo';
-requires 'MooX::Cmd';
-requires 'MooX::Options';
+# Both are pinned because OCP.pm reaches into their PRIVATE API to check a
+# command word before MooX::Cmd sees the argument vector: _build_command_commands
+# for the subcommands a class dispatches to, _options_data for which options
+# swallow the next argument. Unversioned, that check silently degrades — a
+# renamed private method makes _command_map return {} and _command_word_index
+# mistake an option's value for a command word, which is how `ocp typo apply`
+# used to run apply. These are the versions in cpanfile.snapshot, i.e. the ones
+# the image is built from.
+requires 'MooX::Cmd', '1.000';
+requires 'MooX::Options', '4.103';
 requires 'MooX::Singleton';
 requires 'YAML::XS';
 requires 'Path::Tiny';

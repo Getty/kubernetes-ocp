@@ -62,30 +62,45 @@ sub _build_api {
     return $api;
 }
 
+# The resource-map providers for the Kinds OCP addresses by name. All three
+# ship inside IO::K8s itself, which cpanfile pins to 1.107, and IO::K8s::add
+# loads each one for us.
+#
+# Nothing here is probed or eval'd any more. The old body asked
+# $api->can('k8s'), skipped a provider whose require failed, and swallowed the
+# result of add(): three ways to end up with an api that answers every call
+# but has no idea what a CiliumNetworkPolicy is, and no way to hear about it
+# until an untyped lookup fails somewhere else entirely. The pin is the
+# promise that these classes are there; a second, quieter promise at runtime
+# only gives it somewhere to drift to.
+my @RESOURCE_PROVIDERS = qw(
+    IO::K8s::Cilium
+    IO::K8s::CertManager
+    IO::K8s::GatewayAPI
+);
+
 sub register_resource_providers {
     my ($self, $api) = @_;
 
-    return unless $api && $api->can('k8s');
-
-    for my $provider (qw(
-        IO::K8s::Cilium
-        IO::K8s::CertManager
-        IO::K8s::GatewayAPI
-    )) {
-        eval "require $provider; 1" or next;
-        eval { $api->k8s->add($provider) };
-    }
+    $api->k8s->add(@RESOURCE_PROVIDERS);
 
     return $api;
 }
 
+# Kubernetes::REST 1.107 answers list() with an IO::K8s::List whose items is a
+# required arrayref, and croaks on the way there for anything the API server
+# did not answer 2xx to. So there is one shape, and exactly one meaning for an
+# empty arrayref: the cluster has no nodes.
+#
+# This used to guess -- undef, an object with items, a plain arrayref, else []
+# -- and the else was the whole problem. An api that is not a Kubernetes::REST,
+# or one too old to inflate a list, came back as "no nodes", which OCP::Cmd::Status
+# prints as a successful reading of an empty cluster. Now an unreachable
+# cluster or an unexpected client dies where it happened, and the callers that
+# want to survive that (Status) already wrap it in an eval.
 sub list_nodes {
     my ($self) = @_;
-    my $list = $self->api->list('Node');
-    return [] unless $list;
-    return $list->items if $list->can('items');
-    return $list if ref $list eq 'ARRAY';
-    return [];
+    return $self->api->list('Node')->items;
 }
 
 sub node_name {
@@ -251,18 +266,24 @@ being run.
     $k8s->register_resource_providers($api);
 
 Adds the typed IO::K8s classes OCP relies on (C<IO::K8s::Cilium>,
-C<IO::K8s::CertManager>, C<IO::K8s::GatewayAPI>) to C<$api->k8s>.  Safe to
-call on an API that has no C<k8s> method — silently returns.  Called
+C<IO::K8s::CertManager>, C<IO::K8s::GatewayAPI>) to C<$api->k8s>.  Called
 automatically from the C<api> builder; exposed for callers that already
 hold an API object.
+
+Requires a real L<Kubernetes::REST> — an C<$api> without C<k8s>, or an
+IO::K8s install missing one of the three providers, dies here rather than
+leaving the Kinds unregistered for a later lookup to trip over.
 
 =method list_nodes
 
     my $nodes = $k8s->list_nodes;
 
-Returns an arrayref of C<Node> resources, or an empty arrayref on any
-error.  Accepts the loose shapes C<Kubernetes::REST> sometimes returns
-(arrayref, an object with C<items>, or undef).
+Returns the arrayref of C<Node> resources from C<< $api->list('Node') >>.
+
+Empty means empty: the cluster has no nodes.  A cluster that could not be
+reached, or an API object that is not a L<Kubernetes::REST>, dies instead
+of reporting nothing — the two are not the same answer.  Callers that must
+survive an unreachable cluster (L<OCP::Cmd::Status>) wrap the call.
 
 =method node_name
 
