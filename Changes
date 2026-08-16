@@ -1,6 +1,20 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `OCP::Secrets` read paths now run the karr #86 recipient guard
+      (`_assert_key_matches_project`) before handing `.ocp/age.key` to
+      `File::SOPS->decrypt`. `read_all_secrets`, `read_kubeconfig` and
+      `decrypt_file` used to skip the guard: a foreign key sitting in
+      `.ocp/age.key` produced `Could not decrypt data key with any of
+      the provided identities` from wherever `ocp` happened to reach
+      first, with the broken recipient never named. All three now
+      croak with the karr #86 message — both recipients listed, and
+      the file that needs the unlocked one. The guard's last line went
+      from "Nothing was written" to "Nothing was done" so it reads
+      correctly on either side. New subtest in t/70-init-age-key-
+      preserved.t cycles a foreign key through every read path and
+      asserts the named-recipients error, the karr #86 fallout file,
+      and that the right key still decrypts once it's back.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a

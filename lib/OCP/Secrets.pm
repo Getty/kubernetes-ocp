@@ -216,7 +216,7 @@ sub _assert_key_matches_project {
       . "  The key opens:   $public\n"
       . join('', map { sprintf "  %-16s %s\n", "$_->{file} needs:", $_->{recipient} }
                  @$bound)
-      . "Nothing was written. Use the key those files name.";
+      . "Nothing was done. Use the key those files name.";
 }
 
 # Does the key in this checkout open what the project is bound to? Croaks
@@ -374,6 +374,10 @@ sub read_all_secrets {
 
     my $identity = $self->age_key_file->slurp;
     chomp $identity;
+    # The same guard the write paths use: a foreign key in .ocp/age.key
+    # must surface as the named-recipients error, not as File::SOPS's
+    # opaque "could not decrypt data key" line (karr #118).
+    $self->_assert_key_matches_project($identity);
 
     my $encrypted = $self->secrets_file->slurp;
 
@@ -490,6 +494,8 @@ sub read_kubeconfig {
 
     my $identity = $self->age_key_file->slurp;
     chomp $identity;
+    # Same guard as the write paths — karr #118.
+    $self->_assert_key_matches_project($identity);
 
     my $encrypted = $self->kubeconfig_file->slurp;
 
@@ -551,6 +557,8 @@ sub decrypt_file {
 
     my $identity = $self->age_key_file->slurp;
     chomp $identity;
+    # Same guard as the write paths — karr #118.
+    $self->_assert_key_matches_project($identity);
 
     my $encrypted = $file_path->slurp;
 
