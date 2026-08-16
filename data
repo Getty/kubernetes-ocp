@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-08-16T05:26:39Z
+created: 2026-08-16T05:06:47Z
+id: 116
+priority: high
+started: 2026-08-16T05:26:39Z
+status: done
+tags:
+- bug
+- provider
+- destroy
+title: OCP::Cmd::Destroy leaves local-provider workers running (billing risk)
+updated: 2026-08-16T05:26:39Z
+---
+
+File: lib/OCP/Cmd/Destroy.pm:130,135
+
+Lines 130 and 135 hand-code `eq 'ssh'` for both the CP fallback and the worker-pool teardown. A worker pool whose provider is `local` is silently dropped from the destroy fallback reconstruction, so the local node keeps running (and billing) after `ocp destroy --force`. Replace the literals with `OCP::Provider->known_type($w->{provider} // q())` checks — same pattern as karr #103.
+
+Repro:
+1. ocp init --provider local
+2. ocp apply
+3. ocp destroy --force
+Observed: local node is not in the destruction list.
