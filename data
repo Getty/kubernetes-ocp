@@ -1,0 +1,55 @@
+---
+class: standard
+completed: 2026-08-16T04:25:18Z
+created: 2026-08-15T07:49:58Z
+id: 73
+priority: medium
+started: 2026-08-16T04:09:37Z
+status: done
+tags:
+- cli
+- moox
+- options
+title: is_bool ist ein Phantom-Key - MooX::Options ignoriert ihn still
+updated: 2026-08-16T04:25:18Z
+---
+
+Gefunden beim Nachlauf zu #37 (ocp-worker, 2026-08-15), am Modul-Quelltext belegt.
+
+`is_bool => 1` IST KEIN MooX::Options-ATTRIBUT. @OPTIONS_ATTRIBUTES in
+MooX/Options.pm 4.103 kennt nur: format short repeatable negatable autosplit
+autorange doc long_doc order json hidden spacer_before spacer_after. Alles andere
+reicht _filter_attributes unveraendert an Moos `has` durch, wo es stillschweigend
+ignoriert wird.
+
+`is_bool` hat also NIE etwas getan. Es sieht nur so aus, als taete es das, weil
+ein positives Flag ohne `format` ohnehin boolesch parst.
+
+WAS DAS BEI deploy-image ANGERICHTET HAT (mit #37s Nachlauf behoben): `--restart`
+mit `default => 1` hatte KEINE funktionierende Ausschalt-Schreibweise. Weder
+--no-restart noch --no_restart noch --norestart - obwohl POD, doc-String und die
+Laufzeitmeldung --no_restart versprachen. Ein dokumentiertes Default-on-Flag ohne
+Aus-Schalter. Unentdeckt, weil t/54 das Objekt direkt mit restart => 0 baut und
+damit an der Option-Parsestufe vorbeigeht.
+Behoben durch `negatable => 1` an beiden Flags, Defaults unveraendert.
+
+NOCH OFFEN - derselbe Phantom-Key steht weiterhin in:
+  lib/OCP/Cmd/Provider/Add.pm   Option `default`
+  lib/OCP/Cmd/Node/Add.pm       Optionen `gpu` und `nowait`
+
+Dort heute FOLGENLOS, weil es reine Positiv-Flags ohne Default sind - niemand
+braucht eine Negation. Aber es ist derselbe Schluessel, der nichts tut, und er
+laedt zum naechsten --no-...-Fehlschlag ein, sobald jemand eines dieser Flags auf
+default => 1 stellt oder ein neues Flag nach diesem Muster kopiert.
+
+ZU TUN:
+ - is_bool an den drei Stellen entfernen (es tut nichts) oder, wo eine Negation
+   sinnvoll ist, durch negatable => 1 ersetzen. Fuer gpu und nowait ist
+   ersatzloses Entfernen vermutlich richtig; entscheiden, nicht raten.
+ - Ein Test, der repo-weit dafuer sorgt, dass in `option`-Blocks nur Schluessel
+   aus @OPTIONS_ATTRIBUTES stehen (plus die Moo-eigenen wie is/default/required).
+   Das ist der eigentliche Wert des Tickets: ein Tippfehler oder ein erfundener
+   Schluessel in einem option-Block wird heute von nichts bemerkt.
+
+Lane: ocp-worker. Verwandt: #37, #67 (dieselbe Familie - die CLI nimmt Eingaben
+an bzw. Deklarationen hin, die sie nicht versteht, statt sie zurueckzuweisen).
