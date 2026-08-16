@@ -61,9 +61,8 @@ option ssh_key_name => (
 );
 
 option default => (
-    is      => 'ro',
-    is_bool => 1,
-    doc     => 'Mark as default provider',
+    is  => 'ro',
+    doc => 'Mark as default provider',
 );
 
 has k8s => (is => 'rw');
