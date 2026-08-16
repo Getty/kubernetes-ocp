@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-08-16T05:23:00Z
+created: 2026-08-16T05:07:13Z
+id: 119
+priority: medium
+started: 2026-08-16T05:21:37Z
+status: done
+tags:
+- bug
+- drift
+- k8s
+title: OCP::Drift::distribution_drift swallows API errors and prints 'no drift'
+updated: 2026-08-16T05:23:00Z
+---
+
+File: lib/OCP/Drift.pm:244
+
+```perl
+my $list = eval { $self->api->list('Node') } or return;
+```
+
+When the Kubernetes API call throws (auth revoked, 5xx, TLS, RBAC denied), the whole distribution_drift pass silently returns undef. `ocp status` then prints a green drift summary saying every component matches, while the actual reason nothing was compared was a transient API failure. No warn, no log, no status row that says "could not query kubelet versions".
+
+Replace the bare `eval` with explicit error reporting — log the failure and surface it in the drift table, same as karr #106 demands for any eval-guarded k8s call.
+
+Repro:
+1. Point OCP_DRIFT_API at a kubeconfig with a revoked token
+2. ocp status
+Observed: prints a green drift summary with no warning.
