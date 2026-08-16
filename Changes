@@ -80,6 +80,21 @@ Revision history for OCP
       dynamic derivation in place: if anyone re-hardcodes the alternation
       (or half-reverts and leaves the helper unused) the test fails on
       names Kubernetes::REST 1.107 already exposed.
+    - dist.ini now sets `version_finder = :MainModule` + `:ExecFiles`
+      so the single-source claim from 4aa92cf is true in the build,
+      not just in the repo (karr #74). The Author::GETTY bundle
+      reads `version_finder` from its own payload (lines 326-331 of
+      PluginBundle/Author/GETTY) and forwards it to PkgVersion,
+      RewriteVersion::Transitional and BumpVersionAfterRelease;
+      without an explicit value the rewriters fall back to
+      [':InstallModules', ':ExecFiles'] and PkgVersion quietly
+      re-inserted `our $VERSION = '0.001';` into all 55 modules
+      behind the user's back. With the finders restricted to
+      lib/OCP.pm and the bin scripts, only lib/OCP.pm carries
+      $VERSION in the source, bin/ocp and bin/robocop keep their
+      anchor line for RewriteVersion to stamp, and the 55 modules
+      no longer ship with stale version stamps. t/77 replaces the
+      silent drift with a regression test.
     - t/51-pod.t now discovers its scope from globs instead of an
       enumeration. The hardcoded list of five Provider modules was
       silent about new ones and quietly drifted when Choices.pm
