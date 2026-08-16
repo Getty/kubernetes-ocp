@@ -1,0 +1,48 @@
+---
+class: standard
+completed: 2026-08-16T05:15:32Z
+created: 2026-08-15T07:57:47Z
+id: 76
+priority: medium
+started: 2026-08-16T05:02:53Z
+status: done
+tags:
+- gpu
+- clusterpolicy
+- cdi
+title: 'cdi.enabled nicht explizit gesetzt - #23s Entscheidung ruht auf einem CRD-Default'
+updated: 2026-08-16T05:15:32Z
+---
+
+Vorschlag aus dem Fix von #30 (ocp-infra-worker, 2026-08-15), an den gepinnten
+Upstream-Quellen belegt (gpu-operator v26.3.3, nvidia-container-toolkit v1.19.1).
+
+#23 hat als Entscheidung festgehalten: OCP macht die nvidia-Runtime NICHT zum
+Default fuer jeden Container auf dem Node. #30 hat die Hintertuer geschlossen,
+durch die OCP das Gegenteil verlangte (CONTAINERD_SET_AS_DEFAULT=1 im
+toolkit.env-Block ist ersatzlos gestrichen).
+
+WAS DAS NICHT LEISTET, und deshalb dieses Ticket: das Weglassen ist kein Schutz.
+Der Default des Toolkits fuer --set-as-default ist `true`
+(nvidia-container-toolkit, cmd/nvidia-ctk-installer/container/runtime/runtime.go:33).
+Was runc heute als defaultRuntimeName haelt, ist CDI: der Operator setzt
+NVIDIA_RUNTIME_SET_AS_DEFAULT=false in transformToolkitCtrForCDI, und der Aufruf
+haengt an `if config.CDI.IsEnabled()`.
+
+Und genau da liegt die Abhaengigkeit: OCP schreibt `cdi.enabled` NICHT in die
+ClusterPolicy-Spec. Es verlaesst sich darauf, dass das CRD den Wert per
+kubebuilder:default=true vorbelegt und IsEnabled() bei nil true liefert. Eine
+getroffene Architekturentscheidung ruht damit auf einem Upstream-Default, den OCP
+weder gepinnt noch getestet hat.
+
+ZU TUN: cdi.enabled: true explizit in die generierte ClusterPolicy schreiben,
+plus Regressionstest in t/40-gpu-clusterpolicy.t, der die Anwesenheit des Feldes
+behauptet - mit Verweis auf #23 und dieses Ticket, damit klar ist, dass es nicht
+Kosmetik ist.
+
+ZU BEDENKEN: das aendert die ClusterPolicy und damit den Manifest-Hash, also
+rollt der naechste `ocp apply` den GPU-Stack neu aus. Sinnvoll also gemeinsam mit
+#30 oder einem anderen GPU-Stack-Redeploy zu fahren, nicht als einzelner
+Nachschlag.
+
+Lane: ocp-infra-worker. Verwandt: #30, #23, #44.
