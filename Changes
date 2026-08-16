@@ -1,6 +1,21 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Hetzner workers are no longer created without SSH keys. A worker
+      provisioned through an OCPNode CR reached the Hetzner provider with the
+      node spec rather than named options, and the provider read only the
+      options: every such machine was created with an empty authorized_keys —
+      running, billable and unreachable for OCP forever — and the
+      --server-type/--location/--image given to `ocp node add` were dropped
+      for the cx32/debian-13/fsn1 defaults. The provider now reads the spec
+      too (a directly passed option still wins, so control-plane bootstrap is
+      unchanged), and it refuses to create a server with no SSH key at all
+      instead of leaving an unreachable machine behind. Which key that is
+      comes from `spec.hetzner.sshKeyName` on the OCPNodeProvider CR, written
+      by `ocp apply` and `ocp provider add` as the cluster's admin key name —
+      the same key bootstrap uploads. Run `ocp apply` once to add the field to
+      an existing cluster's provider, or set it with
+      `ocp provider add --ssh-key-name`.
     - Secure mode has two SSH key tiers instead of three: robo
       (`purpose: automation`, no PIN2) for unattended automation, and admin
       (`purpose: admin`, age + PIN2) for everything a human triggers —
@@ -75,6 +90,20 @@ Revision history for OCP
       unlinked at all. OCP::ClusterKey owns both files, ties them to the
       command object, and removes them when it goes away — including while
       Perl unwinds out of a die.
+    - Worker installs no longer point Rex at a public key file that was
+      never written (karr #93). OCP::Node wrote the private key to a temp
+      file and handed Rex the path; OCP::Rex sets REX_PUBLIC_KEY to that
+      path plus ".pub" unconditionally, and nothing put a file there — so
+      every worker install, robocop's as much as `ocp node add`'s, ran with
+      REX_PUBLIC_KEY naming something that did not exist. The same defect
+      was fixed for the control plane by #87; the worker path was outside
+      that ticket. Both halves are now written and owned together by the new
+      OCP::TempKeyPair, which OCP::ClusterKey uses as well. The public half
+      is read out of the private key material itself rather than passed in
+      or shelled out for: robocop is handed private key material and nothing
+      else, so anything only the CLI could supply would have left the
+      controller broken, and `ssh-keygen -y` would have made openssh-client
+      an undeclared runtime dependency of the controller image.
     - `ocp apply` no longer signs off with "All N component(s) up to date"
       after a drift repair it could not carry out. Detected drift whose
       remedy declined to run is now counted and named, and the run says it

@@ -2,7 +2,6 @@ package OCP::Node;
 # ABSTRACT: Trigger-neutral node reconcile state machine
 
 use Moo;
-use File::Temp ();
 use Time::Piece ();
 use OCP::K8s;
 # ssh_class and rex_class default to these by name. Nothing else in the
@@ -10,6 +9,7 @@ use OCP::K8s;
 # dies on ->new the first time it runs against a real host.
 use OCP::Rex;
 use OCP::SSH;
+use OCP::TempKeyPair;
 use OCP::Versions;
 use namespace::clean;
 
@@ -26,15 +26,27 @@ has reconciler_id => (is => 'ro', default => sub { 'cli' });
 has ssh_class     => (is => 'ro', default => sub { 'OCP::SSH' });
 has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
 
+# The key pair this node's Rex and SSH calls run on, alive as long as the node
+# object and removed with it.
+#
+# It used to be a bare File::Temp holding the private half, which left every
+# worker install pointing REX_PUBLIC_KEY at a file nobody had written:
+# OCP::Rex sets it to key_file . '.pub' unconditionally, and nothing here put
+# anything there (karr #93, the worker-path twin of #87). OCP::TempKeyPair
+# writes both halves and owns both.
+#
+# The public half is DERIVED from `ssh_key` rather than passed in, and that is
+# what keeps this class trigger-neutral: `ocp node add` could hand one over
+# (it holds an OCP::ClusterKey, which has both), but robocop cannot -- the
+# controller is handed private key material and nothing else, with no key
+# store and no project directory in the container. A public half that only
+# the CLI could supply would fix the CLI and leave the controller exactly as
+# broken.
 has _ssh_key_file => (is => 'lazy', builder => '_build_ssh_key_file');
 
 sub _build_ssh_key_file {
     my ($self) = @_;
-    my $tmp = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
-    print $tmp $self->ssh_key;
-    close $tmp;
-    chmod 0600, $tmp->filename;
-    return $tmp;
+    return OCP::TempKeyPair->for_private_key($self->ssh_key);
 }
 
 sub name      { $_[0]->cr->{metadata}{name} }
@@ -224,7 +236,7 @@ sub _install_kubernetes {
 
     my $ssh = $self->ssh_class->new(
         host     => $host,
-        key_file => $self->_ssh_key_file->filename,
+        key_file => $self->_ssh_key_file->path,
         user     => 'root',
     );
     eval { $ssh->wait_for_ssh(60) };
@@ -235,7 +247,7 @@ sub _install_kubernetes {
 
     my $rex = $self->rex_class->new(
         host     => $host,
-        key_file => $self->_ssh_key_file->filename,
+        key_file => $self->_ssh_key_file->path,
         user     => 'root',
         verbose  => $self->verbose,
     );

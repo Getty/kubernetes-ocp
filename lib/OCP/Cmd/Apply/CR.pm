@@ -117,8 +117,14 @@ sub ensure_provider_cr {
             });
             print "  [ok] ensured Secret/$secret_name\n";
         }
+        # sshKeyName is what makes the worker path reachable at all. OCP::Node
+        # is trigger-neutral and carries no cluster identity, and robocop has
+        # none either — so the provider CR is the only thing that can tell a
+        # Hetzner worker which uploaded key to boot with. This is the same
+        # derivation bootstrap uses when it uploads it (karr #92).
         $spec->{hetzner} = {
             tokenSecretRef => { name => $secret_name, key => 'token' },
+            sshKeyName     => $config->admin_ssh_key_name,
         };
     } elsif ($type eq 'ssh') {
         $spec->{ssh} = { user => 'root' };

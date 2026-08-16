@@ -5,7 +5,6 @@ use strict;
 use warnings;
 
 use Carp qw(croak);
-use File::Temp ();
 
 # Not imported: this class has its own ->path accessor, and importing
 # Path::Tiny's function of that name into the package would clobber it.
@@ -14,6 +13,7 @@ use Path::Tiny ();
 use OCP::Keys;
 use OCP::Password;
 use OCP::Secrets;
+use OCP::TempKeyPair;
 
 # Whether there is a human who could answer a PIN2 prompt. undef asks the
 # terminal, which is the right answer in production; a test that wants to
@@ -50,10 +50,11 @@ our $INTERACTIVE;
 #
 # The admin key lives behind PIN2, so the secure branch needs a human at a
 # prompt and a temp file for Rex/ssh to read. Getting that temp file removed
-# again is the other half of this module's job: it holds a private key in
-# /tmp, and both places that open-coded this dance before
-# (OCP::Cmd::Apply::Bootstrap, OCP::Cmd::SSH) leaked at least the public half
-# and, in setup_ssh_key's case with UNLINK => 0, the private half too.
+# again is not this module's job any more: it belongs to OCP::TempKeyPair,
+# which is where the ownership rules live now. Three places open-coded that
+# dance before — OCP::Cmd::Apply::Bootstrap and OCP::Cmd::SSH leaked at least
+# the public half (and, in setup_ssh_key's case with UNLINK => 0, the private
+# half too), OCP::Node never wrote the public half at all (karr #93).
 #
 # Why here and not in OCP::Keys: OCP::Keys is the key *store* — it answers
 # "decrypt the key called X". This is *selection* policy — "which key does
@@ -214,30 +215,24 @@ sub _admin_key {
 
     my $admin_key = $opt{admin_key} || _unlock_admin_key($config, $provider, %opt);
 
-    # One owner per file. File::Temp owns the private half — UNLINK => 1
-    # means dropping the object removes the file, and File::Temp also has its
-    # own end-of-process net. Unlinking it by hand instead warns loudly
-    # ("unlink0: ... is gone already"), so cleanup below drops the reference
-    # rather than reaching past it. The .pub has no such owner and is ours.
-    my $temp = File::Temp->new(SUFFIX => '.key', UNLINK => 1);
-    print {$temp} $admin_key->{private};
-    close $temp;
-    chmod 0600, $temp->filename;
-
     # OCP::Rex sets REX_PUBLIC_KEY to key_file . '.pub' unconditionally, so
     # the public half has to sit next to the private one or every Rex task
-    # over this key points at a path that does not exist.
-    my $pub_path = $temp->filename . '.pub';
-    Path::Tiny::path($pub_path)->spew($admin_key->{public} // '');
-    chmod 0644, $pub_path;
+    # over this key points at a path that does not exist. Writing that pair
+    # and owning it is OCP::TempKeyPair's whole job — it was open-coded here
+    # until OCP::Node needed the identical dance for its worker keys and
+    # copying it a fourth time was the wrong answer (karr #93).
+    my $pair = OCP::TempKeyPair->for_private_key(
+        $admin_key->{private},
+        public => $admin_key->{public},
+    );
 
     return bless {
-        path        => $temp->filename,
-        public_path => $pub_path,
+        path        => $pair->path,
+        public_path => $pair->public_path,
         origin      => 'admin',
         provider    => $provider,
         name        => $admin_key->{name},
-        temp        => $temp,
+        temp        => $pair,
         # Kept for migration_hint alone: a bootstrap key still on disk in a
         # secure-mode project is the signature of a cluster authorised before
         # the two-tier decision.
@@ -442,14 +437,10 @@ sub cleanup {
 
     return unless $self->{temp};
 
-    # The public half first: it has no other owner, plain unlink.
-    my $pub = delete $self->{public_path};
-    unlink $pub if defined $pub && -e $pub;
-
-    # The private half belongs to the File::Temp object. Dropping the last
-    # reference to it is what removes the file; unlinking behind its back
-    # would warn on the way out.
-    delete $self->{temp};
+    # Both files belong to the OCP::TempKeyPair; it knows which of the two it
+    # may unlink itself and which one File::Temp has to be left to remove.
+    delete $self->{public_path};
+    (delete $self->{temp})->cleanup;
 
     $self->{path} = undef;
 

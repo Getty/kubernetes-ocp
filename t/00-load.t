@@ -15,6 +15,7 @@ use_ok('OCP::Password');
 use_ok('OCP::Kubeconfig');
 use_ok('OCP::Drift');
 use_ok('OCP::ClusterKey');
+use_ok('OCP::TempKeyPair');
 
 # Roles
 use_ok('OCP::Role::Cmd');

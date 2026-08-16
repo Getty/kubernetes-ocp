@@ -53,6 +53,14 @@ sub from_cr {
 
         $args{token}        = MIME::Base64::decode_base64($encoded);
         $args{cluster_name} = $name;
+
+        # Which uploaded SSH key a server created through this provider gets.
+        # The CR is the carrier because it is the only end of the seam that
+        # knows: OCP::Node is trigger-neutral, and robocop -- the other
+        # caller of create_server -- never learns the cluster name. Absent
+        # here means create_server refuses rather than building a machine
+        # with an empty authorized_keys (karr #92).
+        $args{ssh_key_name} = $hspec->{sshKeyName};
     }
     elsif ($type eq 'ssh') {
         $args{ssh_key_path} = $cr->{spec}{ssh}{keyPath} // '';
@@ -86,6 +94,7 @@ sub _build {
         return OCP::Provider::Hetzner->new(
             token        => $args->{token},
             cluster_name => $args->{cluster_name},
+            ($args->{ssh_key_name} ? (ssh_key_name => $args->{ssh_key_name}) : ()),
         );
     }
     elsif ($type eq 'ssh') {
@@ -173,6 +182,12 @@ named arguments carry the credentials.
 In-cluster entry point.  C<$cr> is an C<OCPNodeProvider> resource as a hash;
 C<k8s> is a L<Kubernetes::REST> client, required when C<spec.type> is
 C<hetzner> (the token is fetched from the referenced Secret).
+
+For C<hetzner>, C<spec.hetzner.sshKeyName> becomes the adapter's
+L<OCP::Provider::Hetzner/ssh_key_name> — the key every server created
+through this provider boots with.  It is the only route by which a worker
+learns which key to use: L<OCP::Node> is trigger-neutral and neither it nor
+robocop knows the cluster name.
 
 =seealso
 

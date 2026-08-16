@@ -20,10 +20,25 @@ C<ocp-cluster> label on every server created or looked up. Optional:
 servers can be created without a cluster scope, but C<server_exists>
 and C<list_servers_by_cluster> then have nothing to filter by.
 
+=attr ssh_key_name
+
+    my $hz = OCP::Provider::Hetzner->new(ssh_key_name => 'ocp-mycluster-admin');
+
+Name of an SSH key already uploaded to the Hetzner project (see
+C<upload_ssh_key>). C<create_server> falls back to it when the caller passes
+no C<ssh_keys> of its own — which is exactly the worker path: L<OCP::Node>
+is trigger-neutral, so neither it nor robocop knows the cluster name the key
+is derived from. L<OCP::Provider/from_cr> fills this in from
+C<spec.hetzner.sshKeyName> on the OCPNodeProvider CR.
+
+Empty by default, and an empty value is not a usable one: a server with no
+key is unreachable, so C<create_server> refuses instead of creating it.
+
 =cut
 
 has token => (is => 'ro', required => 1);
 has cluster_name => (is => 'ro', default => '');
+has ssh_key_name => (is => 'ro', default => '');
 
 has cloud => (
     is      => 'lazy',
@@ -116,7 +131,27 @@ A label match is returned with C<newly_created = 0> and no IP set; this
 is the same shape the caller would have built from a fresh create, minus
 the wait.
 
+Two call shapes reach this method. The bootstrap path names every option
+directly; L<OCP::Node/_provision> instead hands over the whole OCPNode spec
+as C<< spec => $cr->{spec} >> and names none of them. Both are read, and a
+directly passed value wins — note the spelling, C<serverType> in the CRD
+against C<server_type> in the options. C<ssh_keys> falls back to
+L</ssh_key_name>; when neither yields a key the call dies before anything is
+created, because a Hetzner server with an empty C<authorized_keys> runs,
+bills, and can never be logged in to.
+
 =cut
+
+# First value that is present and non-empty. The empty string is treated as
+# absent on purpose: `ocp node add` writes spec fields only when they were
+# given, but a hand-edited CR can carry `serverType: ""`, and that must not
+# beat the default.
+sub _first_set {
+    for my $value (@_) {
+        return $value if defined $value && length $value;
+    }
+    return undef;
+}
 
 sub create_server {
     my ($self, %opts) = @_;
@@ -137,12 +172,32 @@ sub create_server {
         }
     }
 
+    # OCP::Node::_provision passes the OCPNode spec rather than these options,
+    # so reading only the options silently threw away every serverType,
+    # location and image a user typed into `ocp node add`. Same defect and
+    # same fix as OCP::Provider::SSH::resolve_host (karr #51, #92).
+    my $spec = ref $opts{spec} eq 'HASH' ? $opts{spec} : {};
+
+    # An explicitly passed key wins, then the cluster key this provider was
+    # built with. An empty list is never a default: the machine would be
+    # unreachable from its first boot, which is not a state any caller wants
+    # and not one that can be repaired afterwards.
+    my @ssh_keys = grep { defined && length } @{ $opts{ssh_keys} // [] };
+    @ssh_keys = ($self->ssh_key_name)
+        if !@ssh_keys && length $self->ssh_key_name;
+
+    die "Refusing to create Hetzner server '$name' without an SSH key: it "
+      . "would run, cost money and be unreachable.\n"
+      . "Pass ssh_keys => [...], or set spec.hetzner.sshKeyName on the "
+      . "OCPNodeProvider CR ('ocp apply' writes it as ocp-<cluster>-admin).\n"
+        unless @ssh_keys;
+
     my $server = $self->cloud->servers->create(
         name        => $name,
-        server_type => $opts{server_type} // 'cx32',
-        image       => $opts{image} // 'debian-13',
-        location    => $opts{location} // 'fsn1',
-        ssh_keys    => $opts{ssh_keys} // [],
+        server_type => _first_set($opts{server_type}, $spec->{serverType}, 'cx32'),
+        image       => _first_set($opts{image},       $spec->{image},      'debian-13'),
+        location    => _first_set($opts{location},    $spec->{location},   'fsn1'),
+        ssh_keys    => \@ssh_keys,
         labels      => {
             'ocp-cluster' => $cluster,
             'ocp-role'    => $opts{role} // 'control-plane',
@@ -276,6 +331,12 @@ __END__
 Manages server lifecycle on Hetzner Cloud. The methods on this class are
 the in-cluster adapter side of L<OCP::Provider>'s seam — C<ocp apply> and
 robocop reach them through L<OCP::Provider::Hetzner> only.
+
+Every server this adapter creates gets an SSH key, or it does not get
+created. C<create_server> takes the key from its C<ssh_keys> argument (the
+bootstrap path) or from C<ssh_key_name> (the worker path, filled from the
+OCPNodeProvider CR), and refuses when both are empty — an unreachable
+Hetzner server cannot be repaired after the fact, only deleted and paid for.
 
 Idempotency is built in: C<create_server> checks the
 C<ocp-cluster>/C<ocp-node> label pair before allocating anything, so a

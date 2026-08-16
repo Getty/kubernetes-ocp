@@ -209,8 +209,13 @@ sub bootstrap_control_plane {
 
     print "  [..] Provisioning server ($provider)...\n";
 
-    # Upload SSH key (Hetzner uploads to cloud, SSH/Local is no-op)
-    my $key_name = "ocp-" . $config->name . "-admin";
+    # Upload SSH key (Hetzner uploads to cloud, SSH/Local is no-op).
+    #
+    # The name is derived, not spelled out here: the worker path has to
+    # reference this exact key later, and it reads the name off the
+    # OCPNodeProvider CR that OCP::Cmd::Apply::CR writes from the same
+    # derivation. One source, so the two paths cannot drift (karr #92).
+    my $key_name = $config->admin_ssh_key_name;
     $prov->upload_ssh_key($key_name, $admin_key->{public});
 
     # Create server (idempotent for Hetzner — checks labels first)

@@ -196,6 +196,42 @@ subtest 'add hetzner provider writes Secret + CR' => sub {
     is $ensures[1][1]{spec}{hetzner}{serverType}, 'cx32', 'serverType passed through';
 };
 
+subtest 'add hetzner writes the SSH key name onto the CR' => sub {
+    # A provider CR without sshKeyName produces servers with an empty
+    # authorized_keys once `ocp node add` reaches it (karr #92). With no
+    # project on disk there is nothing to derive from -- the field is then
+    # left off rather than guessed, and --ssh-key-name is the way in.
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s          => $k8s,
+        name         => 'hetzner-c',
+        type         => 'hetzner',
+        token_file   => "$tfile",
+        ssh_key_name => 'ocp-cortex-admin',
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    is $ensures[1][1]{spec}{hetzner}{sshKeyName}, 'ocp-cortex-admin',
+        '--ssh-key-name lands on the CR';
+};
+
+subtest 'ssh type rejects --ssh-key-name' => sub {
+    eval {
+        OCP::Cmd::Provider::Add->new(
+            k8s          => FakeK8sP->new,
+            name         => 'x',
+            type         => 'ssh',
+            ssh_key_name => 'ocp-cortex-admin',
+        )->execute([], []);
+    };
+    like $@, qr/--ssh-key-name.*only.*hetzner/i,
+        'the flag is hetzner-only, like --location and --image';
+};
+
 subtest 'add with --default annotates CR' => sub {
     my $tfile = Path::Tiny->tempfile;
     $tfile->spew("tok\n");

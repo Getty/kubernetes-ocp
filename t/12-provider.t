@@ -163,6 +163,172 @@ use OCP::Provider::Local;
 }
 
 #
+# Test: Hetzner create_server reads the OCPNode spec and always sets a key
+#
+# Same gap as the ssh case above, on the other provider. OCP::Node::_provision
+# passes `spec => $cr->{spec}` and names no options at all, so create_server
+# used to fall through to its own defaults on every field -- and to
+# `ssh_keys => []`, which produces a Hetzner server with an empty
+# authorized_keys: running, billed, and unreachable for OCP forever (karr #92).
+#
+# The cloud client is faked so nothing here talks to Hetzner. `cloud` is a
+# lazy attribute, so passing it in replaces the builder outright.
+#
+
+package FakeHzServer {
+    sub new  { my ($c, %a) = @_; bless {%a}, $c }
+    sub id   { $_[0]{id} }
+    sub ipv4 { $_[0]{ipv4} }
+}
+
+package FakeHzServers {
+    sub new { my ($c, %a) = @_; bless { created => [], %a }, $c }
+    sub list_by_label { $_[0]{existing} // [] }
+    sub create {
+        my ($self, %params) = @_;
+        push @{ $self->{created} }, \%params;
+        return FakeHzServer->new(id => 'SRV-' . scalar @{ $self->{created} });
+    }
+}
+
+package FakeHzCloud {
+    sub new     { my ($c, %a) = @_; bless { servers => FakeHzServers->new(%a) }, $c }
+    sub servers { $_[0]{servers} }
+}
+
+package main;
+
+sub hz_provider {
+    my (%over) = @_;
+    my $cloud = FakeHzCloud->new;
+    my $prov  = OCP::Provider::Hetzner->new(
+        token        => 'fake-token',
+        cluster_name => 'cortex',
+        cloud        => $cloud,
+        %over,
+    );
+    return ($prov, $cloud->servers);
+}
+
+subtest 'create_server reads serverType/location/image out of the CR spec' => sub {
+    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin');
+
+    # Exactly the call shape OCP::Node::_provision uses.
+    $prov->create_server(
+        name => 'w1',
+        node => 'w1',
+        role => 'worker',
+        spec => {
+            role        => 'worker',
+            providerRef => 'hetzner-default',
+            serverType  => 'cx42',
+            location    => 'nbg1',
+            image       => 'debian-12',
+        },
+    );
+
+    my $sent = $servers->{created}[0];
+    ok $sent, 'a server was created';
+    is $sent->{server_type}, 'cx42',      'spec.serverType reaches server_type';
+    is $sent->{location},    'nbg1',      'spec.location reaches location';
+    is $sent->{image},       'debian-12', 'spec.image reaches image';
+    is $sent->{labels}{'ocp-role'}, 'worker', 'role still labelled from the option';
+};
+
+subtest 'a spec-driven create still gets an SSH key' => sub {
+    # THE assertion. Everything else on this path is comfort; a server without
+    # a key cannot be joined, cannot be logged into, and cannot be fixed.
+    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin');
+
+    $prov->create_server(
+        name => 'w1', node => 'w1', role => 'worker',
+        spec => { role => 'worker', providerRef => 'hetzner-default' },
+    );
+
+    my $keys = $servers->{created}[0]{ssh_keys};
+    ok scalar @$keys, 'ssh_keys is not empty';
+    is_deeply $keys, ['ocp-cortex-admin'], 'the cluster admin key is referenced';
+};
+
+subtest 'directly passed options beat the spec' => sub {
+    # The bootstrap path names every option; it must keep winning, or `ocp
+    # apply` would start taking a worker CR's overrides for its control plane.
+    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin');
+
+    $prov->create_server(
+        name        => 'cp1',
+        node        => 'cp1',
+        role        => 'control-plane',
+        server_type => 'cx32',
+        image       => 'debian-13',
+        location    => 'fsn1',
+        ssh_keys    => ['explicit-key'],
+        spec        => {
+            serverType => 'cx42',
+            image      => 'ubuntu-24.04',
+            location   => 'nbg1',
+        },
+    );
+
+    my $sent = $servers->{created}[0];
+    is $sent->{server_type}, 'cx32',      'explicit server_type wins over spec.serverType';
+    is $sent->{image},       'debian-13', 'explicit image wins over spec.image';
+    is $sent->{location},    'fsn1',      'explicit location wins over spec.location';
+    is_deeply $sent->{ssh_keys}, ['explicit-key'],
+        'explicit ssh_keys wins over ssh_key_name';
+};
+
+subtest 'defaults still apply when neither option nor spec says anything' => sub {
+    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin');
+
+    $prov->create_server(name => 'w2', node => 'w2', role => 'worker');
+
+    my $sent = $servers->{created}[0];
+    is $sent->{server_type}, 'cx32',      'default server type';
+    is $sent->{image},       'debian-13', 'default image';
+    is $sent->{location},    'fsn1',      'default location';
+};
+
+subtest 'a create with no key at all fails before the server exists' => sub {
+    my ($prov, $servers) = hz_provider();   # no ssh_key_name
+
+    eval {
+        $prov->create_server(
+            name => 'w3', node => 'w3', role => 'worker',
+            spec => { role => 'worker', providerRef => 'hetzner-default' },
+        );
+    };
+    my $err = $@;
+
+    ok $err, 'create_server dies rather than creating an unreachable machine';
+    like $err, qr/without an SSH key/, 'the message names what is missing';
+    like $err, qr/sshKeyName/,         'and where to set it';
+    is scalar @{ $servers->{created} }, 0,
+        'nothing was sent to Hetzner -- the refusal comes first, so no server is billed';
+
+    # An ssh_keys list that only holds empty strings is the same nothing.
+    my ($prov2, $servers2) = hz_provider();
+    eval { $prov2->create_server(name => 'w4', ssh_keys => ['', undef]) };
+    like $@, qr/without an SSH key/, 'an empty key list is not a key';
+    is scalar @{ $servers2->{created} }, 0, 'and still creates nothing';
+};
+
+subtest 'an existing labelled server is returned without needing a key' => sub {
+    # The idempotency branch must stay ahead of the refusal: a server that is
+    # already there does not need a key decided for it.
+    my $cloud = FakeHzCloud->new(
+        existing => [ FakeHzServer->new(id => 'SRV-OLD', ipv4 => '1.2.3.4') ],
+    );
+    my $prov = OCP::Provider::Hetzner->new(
+        token => 'fake-token', cluster_name => 'cortex', cloud => $cloud,
+    );
+
+    my $info = $prov->create_server(name => 'w1', node => 'w1', role => 'worker');
+    is $info->{id}, 'SRV-OLD',      'existing server reported back';
+    is $info->{newly_created}, 0,   'and not marked as newly created';
+};
+
+#
 # Test: Hetzner upload_ssh_key validates input
 #
 
@@ -219,6 +385,44 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
     isa_ok $prov, 'OCP::Provider::Hetzner';
     is $prov->token, 'secret-token-xyz', 'token decoded from Secret data';
     is $prov->cluster_name, 'hetzner-a', 'cluster_name derived from CR metadata.name';
+};
+
+#
+# Test: from_cr carries spec.hetzner.sshKeyName into the adapter
+#
+# This is the only route by which a worker learns which uploaded key to boot
+# with: OCP::Node is trigger-neutral, and robocop -- the other caller of
+# create_server -- never learns the cluster name the key is derived from.
+#
+
+subtest 'from_cr carries sshKeyName into the adapter' => sub {
+    my $mock_k8s = bless {
+        secret => { data => { token => encode_base64('t', '') } },
+    }, 'FakeK8sForProvider';
+
+    my $with = OCP::Provider->from_cr({
+        metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
+        spec     => {
+            type    => 'hetzner',
+            hetzner => {
+                tokenSecretRef => { name => 'sec', key => 'token' },
+                sshKeyName     => 'ocp-cortex-admin',
+            },
+        },
+    }, k8s => $mock_k8s);
+    is $with->ssh_key_name, 'ocp-cortex-admin', 'sshKeyName reaches the adapter';
+
+    # A provider CR written before the field existed has none. That must stay
+    # empty rather than become a guessed name -- create_server then refuses
+    # with a message instead of creating an unreachable machine.
+    my $without = OCP::Provider->from_cr({
+        metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
+        spec     => {
+            type    => 'hetzner',
+            hetzner => { tokenSecretRef => { name => 'sec', key => 'token' } },
+        },
+    }, k8s => $mock_k8s);
+    is $without->ssh_key_name, '', 'absent sshKeyName leaves the adapter empty';
 };
 
 #

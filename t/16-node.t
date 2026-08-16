@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 use Test::More;
+use File::Temp ();
 use JSON::MaybeXS ();
 
 use lib 'lib';
@@ -162,9 +163,34 @@ package FakeRex {
     }
 }
 
+# The Hetzner adapter is exercised for real further down -- only the cloud
+# client under it is faked, so nothing here reaches the network. `cloud` is a
+# lazy attribute, so handing one in replaces the builder.
+package FakeHetznerServer {
+    sub new  { my ($c, %a) = @_; bless {%a}, $c }
+    sub id   { $_[0]{id} }
+    sub ipv4 { $_[0]{ipv4} }
+}
+
+package FakeHetznerServers {
+    sub new { my ($c, %a) = @_; bless { created => [], %a }, $c }
+    sub list_by_label { $_[0]{existing} // [] }
+    sub create {
+        my ($self, %params) = @_;
+        push @{ $self->{created} }, \%params;
+        return FakeHetznerServer->new(id => 'SRV-' . scalar @{ $self->{created} });
+    }
+}
+
+package FakeHetznerCloud {
+    sub new     { my ($c, %a) = @_; bless { servers => FakeHetznerServers->new(%a) }, $c }
+    sub servers { $_[0]{servers} }
+}
+
 package main;
 
 use OCP::Node;
+use OCP::Provider::Hetzner;
 
 sub ocpnode {
     my (%over) = @_;
@@ -367,6 +393,74 @@ subtest '_provision calls provider->create_server and transitions to Installing'
     is $sent->{status}{providerId}, 'SRV42', 'provider id recorded';
 };
 
+subtest '_provision through the real Hetzner adapter gives the server an SSH key' => sub {
+    # FakeProvider above cannot show this: the defect is not in _provision and
+    # not in create_server, it is in the seam between them. _provision names
+    # none of the provider options and passes `spec => $cr->{spec}` instead,
+    # so a create_server that reads only its options fell through to
+    # `ssh_keys => []` -- a Hetzner worker with an empty authorized_keys, up
+    # and billing and unreachable for good (karr #92, the Hetzner half of #51).
+    #
+    # So the adapter here is the real one, with only the cloud client faked.
+    my $cloud = FakeHetznerCloud->new;
+    my $prov  = OCP::Provider::Hetzner->new(
+        token        => 'fake-token',
+        cluster_name => 'cortex',
+        ssh_key_name => 'ocp-cortex-admin',   # from spec.hetzner.sshKeyName
+        cloud        => $cloud,
+    );
+
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 'w9', namespace => 'ocp-system', resourceVersion => '1' },
+        spec     => {
+            role        => 'worker',
+            providerRef => 'hetzner-default',
+            serverType  => 'cx42',
+            location    => 'nbg1',
+            image       => 'debian-12',
+        },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    $node->_provision;
+
+    my $sent = $cloud->servers->{created}[0];
+    ok $sent, 'a server was created through _provision';
+    ok scalar @{ $sent->{ssh_keys} }, 'the server has at least one SSH key';
+    is_deeply $sent->{ssh_keys}, ['ocp-cortex-admin'],
+        'and it is the cluster admin key bootstrap uploaded';
+
+    is $sent->{server_type}, 'cx42',      'spec.serverType survived _provision';
+    is $sent->{location},    'nbg1',      'spec.location survived _provision';
+    is $sent->{image},       'debian-12', 'spec.image survived _provision';
+    is $sent->{labels}{'ocp-node'}, 'w9', 'labelled for the idempotency lookup';
+};
+
+subtest '_provision refuses a keyless Hetzner worker instead of creating it' => sub {
+    # A provider CR written before sshKeyName existed. The node ends up Failed,
+    # which is terminal and needs a human -- that is the intended outcome: the
+    # alternative is a machine that costs money and can never be reached.
+    my $cloud = FakeHetznerCloud->new;
+    my $prov  = OCP::Provider::Hetzner->new(
+        token => 'fake-token', cluster_name => 'cortex', cloud => $cloud,
+    );
+
+    my $k = StrictK8s::build(cr => ocpnode(metadata =>
+        { name => 'w10', namespace => 'ocp-system', resourceVersion => '1' }));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    is $node->reconcile, 0, 'reconcile reports failure';
+    is scalar @{ $cloud->servers->{created} }, 0, 'no server was created';
+
+    my ($status_patch) = grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    my $sent = JSON::MaybeXS::decode_json($status_patch->{body});
+    is $sent->{status}{phase}, 'Failed', 'the node is marked Failed';
+    like $sent->{status}{message}, qr/without an SSH key/,
+        'and the message says what is missing, not just that something broke';
+};
+
 subtest 'a server that came up is not marked Failed because the lease release failed' => sub {
     # _provision reads once to acquire and once to release. Fail only the
     # second: the machine exists and the phase is written, so letting that
@@ -445,6 +539,111 @@ subtest '_install_kubernetes uses k3s task when distribution=k3s' => sub {
     $node->_install_kubernetes;
     my ($call) = @{ $FakeRex::_instances[0]{calls} };
     is $call->[0], 'install_k3s_agent', 'k3s task when distribution=k3s';
+};
+
+#
+# The key files OCP::Node hands to Rex (karr #93).
+#
+# OCP::Rex sets REX_PUBLIC_KEY to key_file . '.pub' unconditionally and never
+# looks to see whether anything is there. _build_ssh_key_file wrote a bare
+# File::Temp with the private half and nothing else, so on EVERY worker
+# install — robocop's as much as the CLI's — Rex was pointed at a path that
+# did not exist. The identical defect was fixed in OCP::Cmd::Apply::Bootstrap
+# by karr #87; the worker path was outside that ticket and stayed broken.
+#
+# These assertions are made where the defect lived: at the arguments Rex is
+# actually constructed with.
+#
+
+# Drive _install_kubernetes on a node in Installing phase and return the
+# key_file Rex was handed, plus the node (so the caller controls its lifetime,
+# which is what owns the files).
+sub installing_node {
+    my (%over) = @_;
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 'kf1', namespace => 'ocp-system' },
+        status   => { phase => 'Installing', publicIP => '1.2.3.4' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'PRIVATE-KEY-MATERIAL', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex', %over);
+    $node->_install_kubernetes;
+    return ($node, $FakeRex::_instances[0]{key_file});
+}
+
+subtest 'Rex is handed a key file that has its .pub beside it' => sub {
+    my ($node, $key_file) = installing_node();
+
+    ok $key_file, 'Rex was constructed with a key_file';
+    ok -f $key_file, 'and the private key is really there';
+
+    # This is the assertion the old builder could not pass.
+    ok -f "$key_file.pub",
+        'the public half exists at the exact path OCP::Rex builds for '
+      . 'REX_PUBLIC_KEY';
+
+    # SSH gets the same file, so wait_for_ssh and the Rex run cannot disagree
+    # about which key opened the machine.
+    my $ssh_key_file = $node->_ssh_key_file->path;
+    is $ssh_key_file, $key_file, 'OCP::SSH and OCP::Rex share one key file';
+};
+
+subtest 'the derived .pub is the real public half of the key material' => sub {
+    # Not merely "a file exists". Nothing in OCP::Node is ever handed a public
+    # key: `ocp node add` holds an OCP::ClusterKey that has both halves, but
+    # OCP::Robocop::Controller is given private key material over a socket and
+    # has no key store, no project directory and no ocp.yaml in its container.
+    # So the public half is derived from the private one, which is the only
+    # answer that works for both triggers — and this says it comes out right.
+    plan skip_all => 'needs ssh-keygen to make a fixture'
+        unless system('command -v ssh-keygen >/dev/null 2>&1') == 0;
+
+    my $dir = File::Temp->newdir;
+    my $f   = "$dir/k";
+    system("ssh-keygen -q -t ed25519 -N '' -C 'ocp-cluster-key' -f '$f' >/dev/null 2>&1") == 0
+        or die "ssh-keygen failed";
+    my $private = do { open my $fh, '<', $f or die $!; local $/; <$fh> };
+    my $public  = do { open my $fh, '<', "$f.pub" or die $!; local $/; <$fh> };
+
+    my ($node, $key_file) = installing_node(ssh_key => $private);
+    ok -f "$key_file.pub", 'a public half was written at all'
+        or return;
+    my $written = do { open my $fh, '<', "$key_file.pub" or die $!; local $/; <$fh> };
+
+    # ssh-keygen writes a third field, the comment. It lives in the section a
+    # passphrase encrypts and authenticates nothing.
+    my @want = split ' ', $public;
+    my @got  = split ' ', $written;
+    is "$got[0] $got[1]", "$want[0] $want[1]",
+        'the .pub holds the public key that belongs to this private key';
+};
+
+subtest 'neither key file outlives the node, even when something dies' => sub {
+    my ($priv, $pub);
+    {
+        my ($node, $key_file) = installing_node();
+        ($priv, $pub) = ($key_file, "$key_file.pub");
+        ok -f $priv && -f $pub, 'both exist while the node does';
+    }
+    ok !-e $priv, 'the private key is gone with the node';
+    ok !-e $pub,  'and so is the public half';
+
+    # The case that matters: a Rex task blowing up mid-install. Whatever
+    # unwinds the stack must not leave a readable private key in /tmp.
+    my ($dpriv, $dpub);
+    my $err = do {
+        local $@;
+        eval {
+            my ($node, $key_file) = installing_node();
+            ($dpriv, $dpub) = ($key_file, "$key_file.pub");
+            die "the install blew up\n";
+        };
+        $@;
+    };
+    like $err, qr/the install blew up/, 'the failure propagated';
+    ok $dpriv && !-e $dpriv, 'the private key did not survive it';
+    ok $dpub  && !-e $dpub,  'nor the public half';
 };
 
 subtest '_wait_ready returns true when k8s Node is Ready' => sub {

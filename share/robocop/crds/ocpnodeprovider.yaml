@@ -64,6 +64,14 @@ spec:
                     type: string
                     default: debian-13
                     description: "Default OS image"
+                  sshKeyName:
+                    type: string
+                    description: >-
+                      Name of the SSH key in the Hetzner project that every
+                      server created through this provider references
+                      (ocp-<cluster>-admin, uploaded during bootstrap).
+                      Without it a worker would boot with an empty
+                      authorized_keys and be unreachable.
 
               ssh:
                 type: object

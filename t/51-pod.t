@@ -70,7 +70,7 @@ subtest 'OCP::Provider::Hetzner documents each method with =method' => sub {
         ok $pod =~ /^=method\s+$m\b/m, "=method $m present";
     }
 
-    my @attrs = qw(token cluster_name);
+    my @attrs = qw(token cluster_name ssh_key_name);
     for my $a (@attrs) {
         ok $pod =~ /^=attr\s+$a\b/m, "=attr $a present";
     }

@@ -51,6 +51,13 @@ option image => (
     doc    => 'Default image (hetzner only)',
 );
 
+option ssh_key_name => (
+    is     => 'ro',
+    format => 's',
+    doc    => 'Uploaded SSH key every server gets (hetzner only; '
+            . 'defaults to ocp-<cluster>-admin)',
+);
+
 option default => (
     is      => 'ro',
     is_bool => 1,
@@ -104,10 +111,37 @@ sub _validate_flags {
             if $self->server_type;
         die "--image is only valid for type 'hetzner' (--image given for '$type')\n"
             if $self->image;
+        die "--ssh-key-name is only valid for type 'hetzner' (--ssh-key-name given for '$type')\n"
+            if $self->ssh_key_name;
     }
     else {
         die "Unknown provider type '$type'. Valid: hetzner, ssh, local\n";
     }
+}
+
+# Which uploaded key servers created through this provider boot with.
+#
+# Without it the provider is written, `ocp node add` reaches
+# OCP::Provider::Hetzner::create_server with no key, and that refuses (karr
+# #92) — so the default matters. It is derived from the project config,
+# which is the same source bootstrap uploads the key from
+# (OCP::Config::admin_ssh_key_name); --ssh-key-name overrides it for a
+# Hetzner project whose key was uploaded under some other name.
+#
+# No project on disk (the command is being driven with an injected k8s
+# client) means there is nothing to derive from, and guessing a key name
+# would be worse than leaving it out: create_server then says what is
+# missing instead of creating a machine nobody can reach.
+sub _resolve_ssh_key_name {
+    my ($self) = @_;
+
+    return $self->ssh_key_name if $self->ssh_key_name;
+
+    my $file = eval { $self->ocp->config } or return undef;
+    return undef unless -f $file;
+
+    my $config = eval { OCP::Config->new(file => $file) } or return undef;
+    return $config->admin_ssh_key_name;
 }
 
 sub _strip_default_annotation {
@@ -185,6 +219,9 @@ sub execute {
         $hetzner_spec{serverType} = $self->server_type if $self->server_type;
         $hetzner_spec{image}      = $self->image        if $self->image;
 
+        my $key_name = $self->_resolve_ssh_key_name;
+        $hetzner_spec{sshKeyName} = $key_name if $key_name;
+
         my $cr = {
             apiVersion => 'ocp.internal/v1',
             kind       => 'OCPNodeProvider',
@@ -250,6 +287,13 @@ Hetzner providers it also creates an C<Opaque> Secret containing the API
 token (base64-encoded).  The C<--default> flag sets the
 C<ocp.internal/default> annotation and removes it from any previous
 default provider.
+
+A Hetzner CR also carries C<spec.hetzner.sshKeyName>, the uploaded key every
+server created through it boots with.  It defaults to the cluster's admin key
+name (C<ocp-E<lt>clusterE<gt>-admin>, what C<ocp apply> uploads during
+bootstrap); pass C<--ssh-key-name> when the key lives in the Hetzner project
+under a different name.  Without it L<OCP::Provider::Hetzner> refuses to
+create a server rather than leaving an unreachable machine running.
 
 =head1 SEE ALSO
 

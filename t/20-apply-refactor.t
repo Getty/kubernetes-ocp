@@ -211,6 +211,18 @@ subtest '_ensure_providers writes Namespace + hetzner Secret/Provider + ssh Prov
     my ($secret) = grep { $_->[1] eq 'Secret' } @ensured;
     like $secret->[3]{data}{token}, qr/^[A-Za-z0-9+\/=]+$/,
         'Secret token is base64-encoded';
+
+    # The provider CR is the only place a worker can learn which uploaded SSH
+    # key to boot with -- OCP::Node is trigger-neutral and robocop never sees
+    # the cluster name. Without this field OCP::Provider::Hetzner creates a
+    # server with an empty authorized_keys (karr #92), so the name has to
+    # match what bootstrap uploads, not merely be present.
+    my ($hz) = grep { $_->[1] eq 'OCPNodeProvider' && $_->[2] eq 'hetzner-default' }
+                    @ensured;
+    is $hz->[3]{spec}{hetzner}{sshKeyName}, 'ocp-mycluster-admin',
+        'hetzner provider CR names the cluster admin key';
+    is $hz->[3]{spec}{hetzner}{sshKeyName}, $config->admin_ssh_key_name,
+        'and it is the same derivation bootstrap uploads the key under';
 };
 
 subtest '_ensure_cp_ocpnode writes CP CR with phase=Ready' => sub {

@@ -76,6 +76,22 @@ sub _default_spec {
 
 sub name { shift->spec->{name} // 'mycluster' }
 
+# The name this cluster's admin public key carries in a provider's key store.
+#
+# Bootstrap uploads the key under this name before the control plane exists
+# (OCP::Provider::Hetzner::upload_ssh_key is an ensure; ssh/local ignore it),
+# and every server created for the cluster afterwards has to reference the
+# very same one -- a Hetzner worker created with a different name, or with
+# none, boots with an empty authorized_keys and is unreachable for good
+# (karr #92).
+#
+# It lives here because OCP::Config is the only place that knows the cluster
+# name in both modes: secure mode uploads the PIN2-protected admin key,
+# --nopassword mode uploads the bootstrap key, and both land under this name.
+# Two hand-written copies of the string is exactly how the worker path and
+# the bootstrap path would drift apart again.
+sub admin_ssh_key_name { 'ocp-' . shift->name . '-admin' }
+
 sub kubernetes {
     my ($self) = @_;
     return $self->spec->{kubernetes} // {};
