@@ -4,6 +4,34 @@ package OCP::Provider;
 use strict;
 use warnings;
 
+use OCP::Choices;
+
+# The provider types OCP can build -- one _build branch each, below.
+#
+# This is the ONE place the set is written down. Everything that needs it
+# asks here: OCP::Config::validate, `ocp provider add --type`, `ocp node
+# add`'s flag check, and OCP::Role::Cmd's name-vs-type hint all used to spell
+# it out again, four hand-maintained copies of three words (karr #103).
+#
+# It sits with the factory because the factory decides: a type OCP supports
+# is exactly a type _build knows how to construct, and nothing else. To keep
+# this list and that dispatch from drifting apart across the ten lines
+# between them, t/75-unknown-input-lists-choices.t builds every type in the
+# list and asserts a type outside it is refused.
+#
+# The one reader that cannot call Perl is the CRD enum in
+# share/robocop/crds/ocpnodeprovider.yaml, which today lists two of these
+# three -- see karr #110, which will need this list to compare against.
+my @TYPES = qw(hetzner ssh local);
+
+sub types { return @TYPES }
+
+sub known_type {
+    my ($class, $type) = @_;
+    return 0 unless defined $type;
+    return scalar grep { $_ eq $type } @TYPES;
+}
+
 # Two entry points, one dispatch.
 #
 # `for_spec` is the CLI/bootstrap path: the control plane spec is a plain hash
@@ -171,7 +199,7 @@ sub _build {
         );
     }
     else {
-        die "Unsupported provider: $type\n";
+        die OCP::Choices::unknown('provider type', $type, [@TYPES]);
     }
 }
 
@@ -223,6 +251,23 @@ is required to fetch it.
 
 Both entry points normalise to the same internal shape and dispatch through a
 single private C<_build> method. Add a fourth provider in exactly one place.
+
+=method types
+
+    my @types = OCP::Provider->types;   # hetzner, ssh, local
+
+The provider types OCP can build, in declaration order.  The single source
+for the set: every rejection that lists valid provider types reads it from
+here rather than spelling out three words again (karr #103).
+
+It lives with the factory because the factory decides -- a supported type is
+exactly a type L</_build> knows how to construct.
+
+=method known_type
+
+    die ... unless OCP::Provider->known_type($type);
+
+True if C<$type> is one of L</types>.  C<undef> is not.
 
 =method for_spec
 

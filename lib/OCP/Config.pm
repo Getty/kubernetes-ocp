@@ -3,6 +3,8 @@ package OCP::Config;
 
 use Moo;
 use OCP;
+use OCP::Choices;
+use OCP::Provider;
 use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use Carp qw(croak);
@@ -357,8 +359,14 @@ sub validate {
         my $idx = $i + 1;
         my $prov = $cp->{provider} // 'hetzner';
 
-        unless ($prov =~ /^(hetzner|ssh|local)$/) {
-            push @errors, "control_planes[$idx]: invalid provider '$prov' (must be hetzner, ssh, or local)";
+        # The wording this rejection has always had; the SET behind it now
+        # comes from the factory that builds those providers instead of being
+        # spelled out a second time here (karr #103). Same three words, one
+        # source -- a fourth provider type appears in this message the moment
+        # OCP::Provider can construct it.
+        unless (OCP::Provider->known_type($prov)) {
+            push @errors, "control_planes[$idx]: invalid provider '$prov' (must be "
+                . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
         if ($prov eq 'hetzner') {

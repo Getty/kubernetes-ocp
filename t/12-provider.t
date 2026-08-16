@@ -54,8 +54,10 @@ use OCP::Provider::Local;
 #
 
 {
+    # Unchanged claim, stronger assertion: an unbuildable provider type is
+    # refused. Since karr #103 the refusal also names the buildable ones.
     eval { OCP::Provider->for_spec({ provider => 'aws' }) };
-    like($@, qr/Unsupported provider/, 'invalid provider dies');
+    like($@, qr/^Unknown provider type 'aws'\./, 'invalid provider dies');
 }
 
 #
@@ -709,7 +711,7 @@ subtest 'from_cr dies on unknown type' => sub {
         spec     => { type => 'unknown_garbage' },
     };
     eval { OCP::Provider->from_cr($cr, k8s => undef) };
-    like $@, qr/Unsupported provider/, 'dies on unknown';
+    like $@, qr/^Unknown provider type 'unknown_garbage'\./, 'dies on unknown';
 };
 
 subtest 'from_cr hetzner uses typed Kind args (not path=>)' => sub {

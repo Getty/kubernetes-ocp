@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add --role quatsch` is refused by OCP, not by Kubernetes. The
+      role was never checked on the way out: it went into spec.role, where the
+      OCPNode CRD declares `enum: [control-plane, worker]`, and the operator
+      got a raw 422 about a schema they never wrote. It is now rejected before
+      the first API call, naming the two roles.
+    - Six more rejections now say what would have worked, in the same shape
+      `ocp quatschkommando` has answered in since 0.001: an unknown node
+      (`ocp node rm`, `ocp ssh --node`) lists the nodes that exist, an unknown
+      `ocp keys show --name`/`--purpose` lists the keys and purposes in
+      keys.yaml (names and purposes only — no key material, ever), an unknown
+      provider type lists the types OCP can build, and `ocp update` on a
+      version with no manifest says so. `ocp ssh` also stops calling a node
+      unknown when the name was right and only its address is missing.
     - A worker that is slow to boot is no longer lost for good. Waiting for
       SSH on a freshly created machine had two budgets for one question: 120s
       when `ocp apply` bootstraps a control plane, 60s when a worker is

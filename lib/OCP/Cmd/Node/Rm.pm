@@ -6,6 +6,7 @@ use MooX::Cmd;
 use MooX::Options;
 use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
+use OCP::Choices;
 use OCP::Config;
 use OCP::Secrets;
 use OCP::K8s;
@@ -49,6 +50,26 @@ sub _k8s {
     return $api;
 }
 
+# The OCPNode CRs this cluster has, by name — for the rejection above and
+# nothing else. `ocp node ls` shows the same set with its columns; here only
+# the names matter, because a name is what `ocp node rm` takes.
+#
+# Tolerant on purpose, exactly like OCP::Role::Cmd::provider_crs: a list call
+# that fails while a message is being built must not replace "that node does
+# not exist" with something worse. No list means the rejection says so
+# instead of offering an empty one.
+#
+# Private rather than a sibling of provider_crs in the role: one command
+# needs it. provider_crs earned its place there by having three callers.
+sub _node_names {
+    my ($self, $api, $ns) = @_;
+
+    my $list = eval { $api->list('OCPNode', namespace => $ns) } or return ();
+
+    return sort map { $api->k8s->object_to_struct($_)->{metadata}{name} }
+                @{ $list->items // [] };
+}
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -61,7 +82,11 @@ sub execute {
     my $cr_obj = eval {
         $api->get('OCPNode', name => $name, namespace => $ns);
     };
-    die "Node '$name' not found\n" if $@ || !$cr_obj;
+    if ($@ || !$cr_obj) {
+        die OCP::Choices::unknown('node', $name, [ $self->_node_names($api, $ns) ],
+            empty => "No OCPNode exists in this cluster;"
+                   . " 'ocp node add' creates one.\n");
+    }
 
     my $cr = $api->k8s->object_to_struct($cr_obj);
 
@@ -106,6 +131,12 @@ Looks up the named OCPNode CR, resolves its provider, and calls
 L<OCP::Node/teardown>.  Teardown marks the node C<Terminating>, cordons it
 in Kubernetes, deletes the provider server, removes the Kubernetes node
 object, and deletes the CR.
+
+A name that matches no OCPNode is refused with the ones that exist, and
+nothing is torn down:
+
+    Unknown node 'wroker-1'.
+    Available: cp-lab, otho-gpu, worker-1
 
 =head1 SEE ALSO
 

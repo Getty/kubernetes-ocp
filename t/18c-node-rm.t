@@ -57,6 +57,23 @@ sub capture_stdout (&) {
 
         return undef;
     }
+
+    # Node::Rm lists the OCPNodes when a name does not resolve, so the
+    # rejection can say which ones exist (karr #103). Without this the fake
+    # would answer that question with a method error, and the empty-cluster
+    # branch would be exercised for a cluster this fake says has nodes.
+    sub list {
+        my ($self, $kind, %args) = @_;
+        push @{$self->{calls}}, ['list', $kind, \%args];
+        my $from = $kind eq 'OCPNode' ? $self->{nodes} : $self->{providers};
+        return FakeListRm->new([ map { $from->{$_} } sort keys %$from ]);
+    }
+}
+
+{
+    package FakeListRm;
+    sub new   { my ($c, $items) = @_; bless { items => $items }, $c }
+    sub items { $_[0]->{items} }
 }
 
 {
@@ -76,11 +93,20 @@ my $hetzner_provider_cr = {
 };
 
 subtest 'rm dies on missing node' => sub {
-    my $k8s = FakeK8sRm->new(nodes => {});
+    my $k8s = FakeK8sRm->new(nodes => { 'worker-1' => $worker_cr });
     my $rm = OCP::Cmd::Node::Rm->new(k8s => $k8s, name => 'no-such-node');
 
     eval { $rm->execute([], []) };
-    like $@, qr/no-such-node.*not found/i, 'dies with node-not-found message';
+
+    # Same claim this test always made — a name that resolves to no OCPNode
+    # is refused and the message names it. karr #103 only added the second
+    # half of the house shape (say what would have worked), so the assertion
+    # got stronger rather than different; the wording moved from "not found"
+    # to the form `ocp quatschkommando` has answered in since karr #67.
+    like $@, qr/^Unknown node 'no-such-node'\./,
+        'dies naming the node that does not exist';
+    like $@, qr/^Available: worker-1$/m,
+        'and naming the one that does';
 };
 
 subtest 'rm calls teardown on node' => sub {

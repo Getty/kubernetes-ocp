@@ -433,12 +433,28 @@ subtest 'ocp keys show selects by purpose and by name' => sub {
     my ($by_name) = run_keys_show($r->{dir}, name => $robo->{name});
     is $by_name, $robo->{public} . "\n", '--name picks the same key';
 
+    # Both claims are the ones this test always made — an unknown purpose and
+    # an unknown name are errors, not empty output. karr #103 kept them and
+    # added the second half of the house shape: the rejection now also says
+    # what would have worked. Against a REAL keys.yaml here, so the listing
+    # is the project's actual keys rather than a fixture's.
     my (undef, $missing) = run_keys_show($r->{dir}, purpose => 'nonesuch');
-    like $missing, qr/No key with purpose 'nonesuch'/,
+    like $missing, qr/^Unknown key purpose 'nonesuch'\./,
         'an unknown purpose is an error, not empty output';
+    like $missing, qr/^Available: .*\badmin\b/m,
+        'and names the purposes this project has keys for';
 
     my (undef, $unnamed) = run_keys_show($r->{dir}, name => 'no-such-key');
-    like $unnamed, qr/No key named 'no-such-key'/, 'so is an unknown name';
+    like $unnamed, qr/^Unknown key 'no-such-key'\./, 'so is an unknown name';
+    like $unnamed, qr/^Available: .*\Q$robo->{name}\E \(purpose automation\)/m,
+        'and names the keys that exist, with their purpose';
+
+    # The listing must never carry key material: this command's contract is
+    # that STDOUT is the key and nothing else (karr #84), and a rejection is
+    # not the place to break it.
+    unlike $unnamed, qr/\Q$robo->{public}\E/, 'no public half in the listing';
+    unlike $unnamed, qr/ssh-ed25519|ssh-rsa|BEGIN [A-Z ]*PRIVATE KEY/,
+        'no key material of any kind';
 };
 
 subtest 'ocp keys show explains itself in a --nopassword project' => sub {

@@ -3,12 +3,18 @@ package OCP::Role::Cmd;
 
 use Moo::Role;
 
+use OCP::Choices;
+use OCP::Provider;
+
 sub ocp { $_[0]->command_chain->[0] }
 
-# Provider types, as spelled in spec.type and in `ocp init --provider`. Listed
-# here only to recognise the mistake in provider_cr below; OCP::Provider is the
-# authority on what OCP can actually build.
-my @PROVIDER_TYPES = qw(hetzner ssh local);
+# What to say instead of a listing when the cluster has no OCPNodeProvider at
+# all: an empty "Available:" line answers nothing. Written once because two
+# methods below print it -- provider_choices for the callers that only want
+# the listing, provider_cr wrapped in a rejection.
+my $NO_PROVIDERS = "No OCPNodeProvider exists in this cluster.\n"
+                 . "'ocp apply' writes one per provider in ocp.yaml;"
+                 . " 'ocp provider add' adds one by hand.\n";
 
 # A provider is addressed by the NAME of its OCPNodeProvider CR, while
 # `ocp init --provider` and spec.type speak provider TYPES. Naming the type
@@ -36,19 +42,14 @@ sub provider_crs {
 sub provider_choices {
     my ($self, @providers) = @_;
 
-    return "No OCPNodeProvider exists in this cluster.\n"
-         . "'ocp apply' writes one per provider in ocp.yaml;"
-         . " 'ocp provider add' adds one by hand.\n"
-        unless @providers;
+    return $NO_PROVIDERS unless @providers;
 
     # Name AND type: the type is what the operator typed, so leaving it out
     # would show the right answer without showing why it is the right answer.
-    return 'Available: '
-         . join(', ', map {
-               sprintf '%s (type %s)',
-                   $_->{metadata}{name}, $_->{spec}{type} // '?'
-           } @providers)
-         . "\n";
+    return OCP::Choices::available(
+        map { [ $_->{metadata}{name}, 'type ' . ($_->{spec}{type} // '?') ] }
+        @providers
+    );
 }
 
 sub provider_cr {
@@ -63,14 +64,15 @@ sub provider_cr {
     # the answer is "run ocp apply", and naming the CR that run would create
     # would just say ocp apply twice.
     my @providers = $self->provider_crs($api, %opt);
-    my $type_hint = (@providers && grep { $_ eq $name } @PROVIDER_TYPES)
+    my $type_hint = (@providers && OCP::Provider->known_type($name))
         ? "'$name' is a provider type, not a provider name."
           . " 'ocp apply' names its CR '$name-default'.\n"
         : '';
 
-    die "Unknown provider '$name'.\n"
-      . $self->provider_choices(@providers)
-      . $type_hint;
+    # provider_choices, not a list: this caller owns both a listing and an
+    # empty case, which is the second form OCP::Choices::unknown takes.
+    die OCP::Choices::unknown('provider', $name,
+        $self->provider_choices(@providers), hint => $type_hint);
 }
 
 # Which private key reaches this cluster's machines — see OCP::ClusterKey for
@@ -249,6 +251,10 @@ Both name and type are shown on purpose: C<--provider> takes the CR name,
 while C<ocp init --provider> and C<spec.type> take the type, and confusing
 the two is the mistake this exists to answer.
 
+The line itself is built by L<OCP::Choices/available>, which is where every
+OCP rejection gets its shape; this method only decides what a I<provider>
+looks like in one.
+
 =method provider_cr
 
     my $provider = $self->provider_cr($api, 'ssh-default');
@@ -287,7 +293,7 @@ never waited.
 
 =seealso
 
-L<MooX::Cmd>, L<OCP>, L<OCP::ClusterKey>, L<OCP::Cmd::Apply>,
+L<MooX::Cmd>, L<OCP>, L<OCP::Choices>, L<OCP::ClusterKey>, L<OCP::Cmd::Apply>,
 L<OCP::Cmd::Status>, L<OCP::Cmd::Node::Add>, L<OCP::Cmd::Provider::Rm>
 
 =cut

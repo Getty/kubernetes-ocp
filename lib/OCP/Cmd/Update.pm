@@ -4,6 +4,7 @@ package OCP::Cmd::Update;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use OCP::Choices;
 use OCP::Config;
 use OCP::Versions;
 use OCP::Rex;
@@ -67,7 +68,16 @@ sub execute {
     my $target_manifest = OCP::Versions->get_versions($target_version);
 
     unless ($target_manifest) {
-        die "Unknown target version: $target_version\n";
+        # $target_version is $OCP::VERSION — this OCP's own version, never
+        # something the operator typed. So the hint is always true here: the
+        # only way to reach this line is an OCP.pm bumped without a matching
+        # entry in OCP::Versions, and saying so is more use than saying the
+        # version is unknown (karr #103).
+        die OCP::Choices::unknown('OCP version', $target_version,
+            [ OCP::Versions->known_versions ],
+            hint => "This OCP reports version $target_version, and"
+                  . " OCP::Versions carries no component manifest for it.\n",
+        );
     }
 
     my $current_comps = $current_manifest->{components} // {};

@@ -61,6 +61,15 @@ sub _ocp_version {
     return OCP->VERSION;
 }
 
+# Every OCP version this manifest carries, sorted.
+#
+# Derived from $VERSIONS itself rather than written out beside it, so a
+# rejection can never offer a version the manifest does not have (karr #103).
+sub known_versions {
+    my ($class) = @_;
+    return sort keys %$VERSIONS;
+}
+
 # Get component versions for a specific OCP version
 sub get_versions {
     my ($class, $version) = @_;
@@ -183,6 +192,14 @@ For updates with breaking changes, add documentation:
     }
 
 =head1 METHODS
+
+=head2 known_versions
+
+    my @versions = OCP::Versions->known_versions;
+
+Every OCP version the manifest carries, sorted.  Derived from the manifest
+itself, so a rejection that lists them (C<ocp update> on an OCP whose own
+version has no manifest entry) cannot offer a version that is not there.
 
 =head2 get_versions
 

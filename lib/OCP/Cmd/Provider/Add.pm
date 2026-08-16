@@ -7,7 +7,9 @@ use MooX::Options;
 use File::Temp ();
 use MIME::Base64 qw(encode_base64);
 use Kubernetes::REST::Kubeconfig;
+use OCP::Choices;
 use OCP::Config;
+use OCP::Provider;
 use OCP::Secrets;
 use OCP::K8s;
 
@@ -115,7 +117,8 @@ sub _validate_flags {
             if $self->ssh_key_name;
     }
     else {
-        die "Unknown provider type '$type'. Valid: hetzner, ssh, local\n";
+        die OCP::Choices::unknown('provider type', $type,
+            [ OCP::Provider->types ]);
     }
 }
 

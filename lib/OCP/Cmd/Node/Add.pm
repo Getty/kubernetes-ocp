@@ -7,6 +7,7 @@ use MooX::Options;
 use File::Temp ();
 use JSON::PP ();
 use Kubernetes::REST::Kubeconfig;
+use OCP::Choices;
 use OCP::Config;
 use OCP::Secrets;
 use OCP::K8s;
@@ -136,7 +137,7 @@ sub _resolve_provider {
 }
 
 sub _validate_flags {
-    my ($self, $provider_type) = @_;
+    my ($self, $provider_type, $provider_name) = @_;
 
     if ($provider_type eq 'hetzner') {
         die "--host is not valid for provider type 'hetzner'\n"
@@ -163,7 +164,17 @@ sub _validate_flags {
             if $self->image;
     }
     else {
-        die "Unknown provider type '$provider_type'\n";
+        # The type came out of a provider CR, not off this command line, so
+        # the rejection names the CR that carries it — telling the operator
+        # a word they never typed is invalid explains nothing about where to
+        # go and fix it.
+        die OCP::Choices::unknown('provider type', $provider_type,
+            [ OCP::Provider->types ],
+            hint => defined $provider_name
+                ? "OCPNodeProvider '$provider_name' declares spec.type"
+                  . " '$provider_type'.\n"
+                : '',
+        );
     }
 }
 
@@ -379,13 +390,22 @@ sub execute {
     die "Usage: ocp node add NAME [--role worker|control-plane]\n"
         unless defined $self->name && length $self->name;
 
+    # Before the API client is even built. --role is copied straight into
+    # spec.role, where the OCPNode CRD declares `enum: [control-plane,
+    # worker]`, so an unchecked typo used to travel all the way to the API
+    # server and come back as a raw 422 about a schema the operator never
+    # wrote: the CLI explained Kubernetes instead of explaining the input
+    # (karr #103). The set is OCP::Node's, held against the CRD by a test.
+    die OCP::Choices::unknown('role', $self->role, [ OCP::Node->roles ])
+        unless OCP::Node->known_role($self->role);
+
     my $api           = $self->_k8s;
     my $provider_hash = $self->_resolve_provider($api);
     my $provider_type = $provider_hash->{spec}{type}
         or die "Provider has no spec.type\n";
     my $provider_name = $provider_hash->{metadata}{name};
 
-    $self->_validate_flags($provider_type);
+    $self->_validate_flags($provider_type, $provider_name);
 
     my $cr = $self->_build_cr($provider_name);
     $api->ensure($cr);

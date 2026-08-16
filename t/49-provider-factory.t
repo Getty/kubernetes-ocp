@@ -156,9 +156,15 @@ subtest 'from_cr with missing tokenSecretRef dies with a useful message' => sub 
 # Unknown provider type dies loud — both entry points
 #
 
+# Same claim as before karr #103 — one dispatch, so both entry points refuse
+# an unbuildable type with ONE message. Only the wording changed: it now also
+# says which types _build does know, from OCP::Provider->types.
 subtest 'for_spec dies loud on unknown type' => sub {
     eval { OCP::Provider->for_spec({ provider => 'aws' }) };
-    like $@, qr/Unsupported provider/, 'for_spec unknown dies with one message (single dispatch)';
+    like $@, qr/^Unknown provider type 'aws'\./,
+        'for_spec unknown dies with one message (single dispatch)';
+    like $@, qr/^\QAvailable: @{[ join ', ', OCP::Provider->types ]}\E$/m,
+        'and lists the types it can build';
 };
 
 subtest 'from_cr dies loud on unknown type' => sub {
@@ -167,7 +173,8 @@ subtest 'from_cr dies loud on unknown type' => sub {
         spec     => { type => 'aws' },
     };
     eval { OCP::Provider->from_cr($cr, k8s => undef) };
-    like $@, qr/Unsupported provider/, 'from_cr unknown dies with the same message';
+    like $@, qr/^Unknown provider type 'aws'\./,
+        'from_cr unknown dies with the same message';
 };
 
 #

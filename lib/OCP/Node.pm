@@ -49,6 +49,34 @@ sub _build_ssh_key_file {
     return OCP::TempKeyPair->for_private_key($self->ssh_key);
 }
 
+# The two values spec.role may take, in the order the CRD lists them.
+#
+# The OCPNode CRD says the same thing in `enum: [control-plane, worker]`, and
+# that duplication is the point rather than an accident: a CLI that does not
+# check its own --role hands the typo to the API server, and the operator is
+# shown a Kubernetes 422 about a schema instead of a sentence about what they
+# typed (karr #103). Reading the CRD at flag-check time would mean parsing a
+# share file on every `ocp node add` -- and the CRD installed in the cluster
+# is not necessarily the one in this share dir anyway.
+#
+# So: two spellings, held together by a test.
+# t/75-unknown-input-lists-choices.t reads the enum out of
+# share/robocop/crds/ocpnode.yaml and asserts it against this list, which is
+# the honest version of "one source" here (karr #102, #109).
+#
+# It lives on OCP::Node and not in the command because the set is a fact
+# about a node, not about a CLI flag -- this class is trigger-neutral and
+# robocop reads the same roles out of the same CRs.
+my @ROLES = ('control-plane', 'worker');
+
+sub roles { return @ROLES }
+
+sub known_role {
+    my ($class, $role) = @_;
+    return 0 unless defined $role;
+    return scalar grep { $_ eq $role } @ROLES;
+}
+
 sub name      { $_[0]->cr->{metadata}{name} }
 sub role      { $_[0]->cr->{spec}{role} }
 sub phase     { $_[0]->cr->{status}{phase} // 'Pending' }
@@ -735,6 +763,28 @@ String identifying the reconciler holding the lease.  Defaults to
 C<'cli'>.  Robocop sets this to a pod-scoped identifier.
 
 =back
+
+=head1 CLASS METHODS
+
+=head2 roles
+
+    my @roles = OCP::Node->roles;   # control-plane, worker
+
+The values C<spec.role> may take, in the order the OCPNode CRD lists them.
+The single source for the set on the Perl side: C<ocp node add> checks
+C<--role> against it before touching the API, so a typo is answered by OCP
+naming the two roles rather than by a raw Kubernetes 422 about an enum
+(karr #103).
+
+The CRD in F<share/robocop/crds/ocpnode.yaml> spells the same set a second
+time -- it has to, nothing in a YAML schema can call Perl.  A test reads the
+enum and asserts it against this list, so the two cannot drift.
+
+=head2 known_role
+
+    die ... unless OCP::Node->known_role($role);
+
+True if C<$role> is one of L</roles>.  C<undef> is not.
 
 =head1 SEE ALSO
 

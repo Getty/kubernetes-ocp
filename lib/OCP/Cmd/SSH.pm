@@ -5,6 +5,7 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use OCP;
+use OCP::Choices;
 use OCP::ClusterKey;
 use OCP::Config;
 use OCP::Kubernetes;
@@ -88,7 +89,7 @@ sub execute {
     }
 
     unless ($target_host) {
-        die "ERROR: Could not determine host for node: $node_arg\n";
+        die $self->_unknown_node_error($node_arg, $self->_node_names($secrets));
     }
 
     print "[ok] Target: $target_host\n";
@@ -118,6 +119,57 @@ sub execute {
     $ssh->interactive;
 
     return 0;
+}
+
+# The names the Kubernetes API answers to, or nothing.
+#
+# Asked only once the connection target has already failed to resolve, so it
+# repeats the list call _lookup_node_ip may just have made. That is on
+# purpose: this way the answer is the same whichever of the branches above
+# came up empty — including the one that never asked at all — and the cost is
+# one API call on a path that is about to exit non-zero anyway.
+#
+# Tolerant like every listing built for an error message: a failing list must
+# not replace the message with its own.
+sub _node_names {
+    my ($self, $secrets) = @_;
+
+    return () unless $secrets->has_kubeconfig;
+    my $kubeconfig = $secrets->read_kubeconfig or return ();
+
+    my $k8s   = eval { OCP::Kubernetes->new(kubeconfig => $kubeconfig) } or return ();
+    my $nodes = eval { $k8s->list_nodes }                               or return ();
+
+    return sort grep { length } map { $k8s->node_name($_) } @$nodes;
+}
+
+# Why --node did not resolve to anything to connect to.
+#
+# Two different truths, so two different sentences. A name nothing answers to
+# gets the house rejection — name the word, then say what would have worked
+# (karr #67, #89, #103). A name that DOES match a node the API knows is not a
+# typo at all: that node simply has no address recorded, and calling it
+# unknown would be false. The same rule as the type hint in
+# OCP::Role::Cmd::provider_cr — a claim about the input is made only where it
+# is true.
+#
+# What gets listed is what this command could actually have used: Kubernetes
+# node names. Not OCPNode CRs — a CR whose machine has not joined yet is
+# nothing `ocp ssh` can reach, so offering it would be a lie of its own.
+sub _unknown_node_error {
+    my ($self, $node_arg, @names) = @_;
+
+    # The same match _lookup_node_ip makes, so "known but without an address"
+    # means the same thing in both places.
+    my ($matched) = grep { /\Q$node_arg\E/i } @names;
+
+    return "Node '$matched' has no address in the Kubernetes API.\n"
+         . "Connect by address instead: ocp ssh --node <ip>\n"
+        if defined $matched;
+
+    return OCP::Choices::unknown('node', $node_arg, [@names],
+        empty => "No node list could be read from the Kubernetes API"
+               . " (no kubeconfig in this project, or the API did not answer).\n");
 }
 
 sub _lookup_node_ip {
@@ -195,5 +247,15 @@ See L<OCP::ClusterKey/migration_hint>. It never falls back to that key.
 =head2 --node <name|ip>
 
 Node name or IP address to SSH into.
+
+A name that resolves to nothing is refused with the node names the
+Kubernetes API does answer to:
+
+    Unknown node 'police1'.
+    Available: cp-lab, otho-gpu
+
+A name that I<does> match a known node but has no address recorded is a
+different fact and gets a different sentence — it is not a typo, so it is not
+called unknown.
 
 =cut
