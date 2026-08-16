@@ -1,6 +1,20 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp init` options reject typos at the option boundary (karr #124).
+      Five option blocks (`--dist`, `--provider`, `--service`, `--ssh-key`,
+      `--host`) declared `is => 'ro'` with `format => 's'` and no enum check,
+      so `ocp init --dist rke3` reached `write_spec`, `ocp init --provider
+      hetzner-cloud` wrote a spec with no control_planes block, `ocp init
+      --host foo --provider hetzner` silently dropped `--host`, and `ocp
+      init --ssh-key ~/.ssh/id_ed25519.pub` copied the public half into
+      the private slot. Each invalid value now dies with the same shape
+      `ocp quatschkommando` answers in (karr #67, #89, #103): the rejection
+      names the input and lists what would have worked. `--host` and
+      `--ssh-key` use the hint form (no second valid value, only a shape);
+      `--provider` reads from `OCP::Provider->types`. New subtests in
+      t/41-init-scaffold.t assert each rejection, the rejection shape, and
+      that no spec was written on the way out.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a

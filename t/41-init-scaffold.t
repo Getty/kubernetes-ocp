@@ -83,6 +83,135 @@ subtest 'ssh without a host names every way out' => sub {
     like $out, qr/the default provider/,   'offers the hetzner default';
 };
 
+# karr #124: the five option blocks declared `is => 'ro'` with `format => 's'`
+# and no enum check, so a typo reached apply, write_spec or the SSH bootstrap
+# copy step. The discipline is the same one karr #67, #89 and #103 settled:
+# the rejection names the input and what would have worked.
+subtest 'unknown --provider is rejected with the valid types' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    my ($rc, $out) = run_init('--nogit', '--provider', 'hetzner-cloud');
+
+    isnt $rc, 0, '--provider hetzner-cloud is refused'
+        or diag $out;
+    like $out, qr/Unknown provider 'hetzner-cloud'\./,
+        'names the input';
+    like $out, qr/Available: hetzner, ssh, local/,
+        'lists the three provider types OCP::Provider builds';
+};
+
+subtest 'unknown --dist is rejected with the valid dists' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    my ($rc, $out) = run_init('--nogit', '--dist', 'rke3');
+
+    isnt $rc, 0, '--dist rke3 is refused'
+        or diag $out;
+    like $out, qr/Unknown dist 'rke3'\./, 'names the input';
+    like $out, qr/Available: rke2, k3s/, 'lists the two distributions OCP writes';
+};
+
+subtest 'unknown --service is rejected with the valid values' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    my ($rc, $out) = run_init('--nogit', '--service', 'launchd');
+
+    isnt $rc, 0, '--service launchd is refused'
+        or diag $out;
+    like $out, qr/Unknown service 'launchd'\./, 'names the input';
+    like $out, qr/Available: systemd, none/, 'lists the two service values';
+};
+
+subtest '--host without --provider ssh is rejected, not silently eaten' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    my ($rc, $out) = run_init('--nogit', '--provider', 'hetzner',
+        '--host', 'foo.example.com');
+
+    isnt $rc, 0, '--host with provider=hetzner is refused'
+        or diag $out;
+    like $out, qr/Unknown --host target 'foo\.example\.com'\./,
+        'names the input';
+    like $out, qr/--provider ssh/, 'explains the only provider that uses --host';
+
+    # And: nothing was written. ocp.yaml must NOT exist, because the whole
+    # point of the rejection is that the previous behaviour dropped --host
+    # on the floor and still wrote a spec.
+    my $dir = path(tempdir(CLEANUP => 1));
+    {
+        my $cwd = getcwd();
+        local $ENV{HETZNER_API_TOKEN} = '';
+        chdir $dir or die "chdir: $!";
+        `$^X -I'$LIB' '$BIN' init --nopassword --nogit --provider hetzner --host foo.example.com 2>/dev/null`;
+        chdir $cwd or die "chdir back: $!";
+        ok !$dir->child('ocp.yaml')->exists,
+            'no spec was written either — same exit, same refusal';
+    }
+};
+
+subtest '--ssh-key pointing at the public half is rejected' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    my $dir  = tempdir(CLEANUP => 1);
+    my $pub  = path($dir)->child('id_ed25519.pub');
+    $pub->spew("ssh-ed25519 AAAAFAKE fake-comment\n");
+
+    my ($rc, $out) = run_init('--nogit', '--ssh-key', "$pub");
+
+    isnt $rc, 0, "--ssh-key ending in .pub is refused"
+        or diag $out;
+    like $out, qr/Unknown SSH key '.*\.pub'\./, 'names the input as an SSH key';
+    like $out, qr/PRIVATE key/, 'explains the private half is wanted';
+    like $out, qr/no \.pub extension/, 'names the shape rule';
+
+    # And: .ocp/id_ed25519 was NOT written. The previous behaviour copied
+    # the public half into the private slot, which is the bug the test
+    # exists for.
+    ok !-f path($dir)->child('.ocp', 'id_ed25519'),
+        'no private key was created from the public half';
+};
+
+subtest 'every new rejection has the shape ocp quatschkommando answers in' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    # bin/ocp prefixes the die message with "Error: " through OCP::_report_error.
+    # Strip that to assert against the message itself.
+    sub strip_error_prefix {
+        my ($text) = @_;
+        $text =~ s/\AError: //;
+        return $text;
+    }
+
+    my @cases = (
+        ['--provider', 'hetzner-cloud', 1],   # 1 -> has Available: line
+        ['--dist',     'rke3',          1],
+        ['--service',  'launchd',       1],
+        ['--host',     'foo.example.com', 0], # 0 -> uses hint, no Available:
+    );
+
+    for my $case (@cases) {
+        my ($flag, $value, $has_available) = @$case;
+        my ($rc, $out) = run_init('--nogit', @$case);
+
+        isnt $rc, 0, "$flag $value: exit code is not 0" or diag $out;
+        my $msg = strip_error_prefix($out);
+        like $msg, qr/^Unknown .* '$value'\./,
+            "$flag $value: opens by naming what was not understood";
+        if ($has_available) {
+            like $msg, qr/^Available: /m,
+                "$flag $value: follows with what would have worked";
+        } else {
+            # Hint carries the answer instead -- ssh is named, not listed.
+            like $msg, qr/--provider ssh/,
+                "$flag $value: explains the only provider that uses --host";
+        }
+        like $out, qr/\n\z/,
+            "$flag $value: ends in a newline, no Perl location leaks";
+        unlike $out, qr/at \S+ line \d+/,
+            "$flag $value: no source line in the operator-facing message";
+    }
+};
+
 subtest 'the generated .gitignore keeps encrypted files committable' => sub {
     plan skip_all => 'needs git and ssh-keygen'
         unless _have('git') && _have('ssh-keygen');
