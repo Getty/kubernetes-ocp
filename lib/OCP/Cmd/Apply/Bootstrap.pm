@@ -234,7 +234,9 @@ sub bootstrap_control_plane {
     if ($server_info->{newly_created}) {
         print "  [ok] Server created: " . ($server_info->{id} // 'n/a') . "\n";
         print "  [..] Waiting for server to be running...\n";
-        $prov->wait_for_running($server_info, 120);
+        # Takes the module's default; naming our own 120 used to silently
+        # disagree with what workers spent (karr #112).
+        $prov->wait_for_running($server_info);
         print "  [ok] Server running: $server_info->{ip}\n";
     } else {
         print "  [ok] Using existing server: $server_info->{ip}\n";

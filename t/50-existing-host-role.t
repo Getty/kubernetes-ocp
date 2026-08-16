@@ -110,7 +110,7 @@ subtest 'create_server returns the documented hash shape' => sub {
 subtest 'wait_for_running is a passthrough' => sub {
     my $p = FakeHostAdapter->new;
     my $info = { ip => '10.0.0.5', id => undef, newly_created => 0 };
-    is $p->wait_for_running($info, 120), $info,
+    is $p->wait_for_running($info), $info,
         'returns the same hashref unchanged';
 };
 

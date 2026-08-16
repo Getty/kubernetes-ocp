@@ -160,9 +160,14 @@ sub scp_from {
     return 1;
 }
 
+# No timeout parameter on purpose. SSH's own ConnectTimeout (the
+# C<connect_timeout> attribute) bounds this call -- it is a single probe, not a
+# wait -- so any number the caller passed in would have been cosmetic. The
+# parameter used to be there, set with `$timeout //= 5` and never read: a
+# caller thinking "give it 10 seconds" actually got one probe with a 10 s
+# ConnectTimeout, and was told its number meant something (karr #112).
 sub is_reachable {
-    my ($self, $timeout) = @_;
-    $timeout //= 5;
+    my ($self) = @_;
 
     my $result = $self->run('true');
     return $result->{exit} == 0;

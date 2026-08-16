@@ -588,7 +588,7 @@ subtest 'the Installing pass asks the provider for the address and installs on i
     ok $waited, 'the provider was asked';
     is $waited->{id}, 'SRV-1',   'about the server _provision created';
     is $waited->{status}, 'running', 'waiting for it to be running';
-    is $waited->{timeout}, 120,
+    is $waited->{timeout}, $OCP::Provider::Hetzner::ADDRESS_TIMEOUT,
         'with the same budget OCP::Cmd::Apply::Bootstrap spends on this wait';
 
     my $r = $FakeRex::_instances[0];
@@ -625,7 +625,8 @@ subtest 'a server that never comes up fails with what was waited for' => sub {
                  grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
     is $sent->{phase}, 'Failed', 'the node fails visibly instead of waiting forever';
     like $sent->{message}, qr/SRV-9/,  'the message names the server';
-    like $sent->{message}, qr/120s/,   'and how long it was given';
+    like $sent->{message}, qr/\Q$OCP::Provider::Hetzner::ADDRESS_TIMEOUT\E\Qs\E/,
+        'and how long it was given';
     like $sent->{message}, qr/billed/, 'and that the machine is still costing money';
     unlike $sent->{message}, qr/No host IP/,
         'not the old message, which pointed at the CR instead of the server';
@@ -1132,6 +1133,57 @@ subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
 # kept running. Nobody had noticed, because before karr #99 a Hetzner worker
 # died one step earlier, at "No host IP in status or spec".
 #
+# The assertions below are about the seam, not about either number: two numbers
+# for one question is the defect, so they are compared to each other rather
+# than each pinned on its own. Bootstrap's side is read from source because
+# bootstrap_control_plane cannot be driven without a provider, a key and a real
+# install -- same reason, same shape as t/28.
+#
+# The address budget had the same shape before this test landed: a Hetzner
+# control-plane wait, a Hetzner worker wait, and a number in $OCP::Node that
+# neither was allowed to differ from. The defect was the same -- three numbers
+# for one question (karr #112). The provider now owns the constant, and the
+# two callers name no budget of their own.
+subtest 'the address wait is one budget, not one per caller' => sub {
+    # The budget a call site actually spends: the timeout argument it names,
+    # or the module's when it names none. The hashref is always passed, so
+    # only the second positional is the question.
+    my $budget_in = sub {
+        my ($file) = @_;
+        my $src = Path::Tiny::path(__FILE__)->parent->parent->child($file)->slurp_utf8;
+        my @calls = $src =~ /->wait_for_running\s*\(([^)]*)\)/g;
+        is scalar @calls, 1, "$file waits for the address in exactly one place";
+        my @args = split /\s*,\s*/, $calls[0] // '';
+        return @args >= 2 ? $args[1] : $OCP::Provider::Hetzner::ADDRESS_TIMEOUT;
+    };
+
+    is $budget_in->('lib/OCP/Node.pm'),
+       $budget_in->('lib/OCP/Cmd/Apply/Bootstrap.pm'),
+       'a worker and a control plane wait for the address with the same budget';
+
+    is $OCP::Provider::Hetzner::ADDRESS_TIMEOUT, 120,
+        'and it is the 120s the control-plane path has always spent';
+
+    # That the constant is the number, not a comment next to one: at zero
+    # the underlying wait_for_status call is given 0 seconds and times out,
+    # which is what $OCP::Provider::Hetzner::ADDRESS_TIMEOUT defaults to.
+    {
+        local $OCP::Provider::Hetzner::ADDRESS_TIMEOUT = 0;
+        my $cloud = FakeHetznerCloud->new(never_running => 1);
+        my $prov = OCP::Provider::Hetzner->new(
+            token        => 'fake-token',
+            cluster_name => 'cortex',
+            ssh_key_name => 'ocp-cortex-admin',
+            cloud        => $cloud,
+        );
+        my $ok = eval { $prov->wait_for_running({ id => 'SRV-Z' }); 1 };
+        ok !$ok && $@,
+            'an argument-less wait_for_running counts down from $OCP::Provider::Hetzner::ADDRESS_TIMEOUT';
+        is $cloud->servers->{waited}[0]{timeout}, 0,
+            'and the cloud saw the same number';
+    }
+};
+
 # The assertions below are about the seam, not about either number: two numbers
 # for one question is the defect, so they are compared to each other rather
 # than each pinned on its own. Bootstrap's side is read from source because

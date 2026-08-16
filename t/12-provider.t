@@ -796,7 +796,7 @@ package FakeExistingHost {
 {
     my $p = FakeExistingHost->new;
     my $info = { ip => '10.0.0.9' };
-    is($p->wait_for_running($info, 120), $info, 'wait_for_running is a passthrough');
+    is($p->wait_for_running($info), $info, 'wait_for_running is a passthrough');
 }
 
 #
