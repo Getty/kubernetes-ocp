@@ -109,6 +109,19 @@ Revision history for OCP
       the status IP wins over the spec IP, that the spec IP is still used
       when status is empty (the first-ever `ocp node add`), and that no
       SSH is attempted when neither names a CP.
+    - robocop's controller now marks the OCPNode `Failed` on every error
+      path that fires before OCP::Node takes over (karr #123). A CR with a
+      missing `spec.providerRef`, an unloadable `OCPNodeProvider`, or a
+      provider that dies in `OCP::Provider->from_cr` used to be left
+      `Pending` with no `message`, and the only diagnostic was robocop's
+      pod log. Every such path now patches `status.phase = Failed` and
+      `status.message` to the /status subresource via OCP::K8s->patch_status,
+      and the outer catch in `run()` does the same on anything that escapes.
+      `_mark_failed` is best-effort: a status patch that itself fails (CR
+      gone, API unreachable) is logged and the loop carries on instead of
+      taking the controller down on a single bad CR. New subtests in
+      t/45-robocop-kube.t cover the four failure paths and the
+      status-patch-itself-fails branch.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a

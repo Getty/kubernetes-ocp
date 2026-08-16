@@ -314,7 +314,17 @@ package MockTransport {
         my ($self, $req) = @_;
         my $path = $req->url;
         $path =~ s{^https?://[^/]+}{};
-        push @{ $self->{seen} }, { method => $req->method, path => $path };
+        push @{ $self->{seen} }, { method => $req->method, path => $path, body => $req->content };
+
+        # PATCH is the status-subresource write the controller now uses to
+        # record Failed transitions (karr #123). No caller in this file reads
+        # the response body, so answering 200 with the echoed payload is the
+        # minimum that keeps the request from dying.
+        if ($req->method eq 'PATCH') {
+            return main::Resp->new(status => 200,
+                content => $req->content // '{}');
+        }
+
         my $body = $self->{answers}{$path};
         return main::Resp->new(status => 404, content => '{"message":"not found"}')
             unless $body;
@@ -404,7 +414,10 @@ subtest '_on_node_event loads the provider CR and drives OCP::Node' => sub {
     is $out, '', 'nothing was logged: no step failed';
 };
 
-subtest '_on_node_event without a providerRef touches nothing' => sub {
+subtest '_on_node_event without a providerRef marks the CR Failed' => sub {
+    # A CR with no providerRef used to be left Pending with no message, and
+    # the only diagnostic was robocop's pod log (karr #123). The CR is now
+    # marked Failed with a message that names what was missing.
     my ($api, $t) = strict_k8s();
 
     my $out = '';
@@ -415,8 +428,115 @@ subtest '_on_node_event without a providerRef touches nothing' => sub {
             ocpnode_cr(spec => { role => 'worker' }));
     }
 
-    like $out, qr/No providerRef/, 'it says which CR it skipped';
-    is scalar @{ $t->{seen} }, 0, 'and issues no request at all';
+    like $out, qr/spec\.providerRef is missing/,
+        'the reason is logged for the pod-log reader';
+
+    my ($patch) = grep { $_->{method} eq 'PATCH' } @{ $t->{seen} };
+    ok $patch, 'a PATCH leaves the controller -- the status was patched';
+    is $patch->{path},
+        '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/w1/status',
+        'PATCH addresses the /status subresource, not the main endpoint';
+
+    my $sent = $JSON->decode($patch->{body});
+    is $sent->{status}{phase}, 'Failed', 'phase advanced to Failed';
+    like $sent->{status}{message}, qr/spec\.providerRef is missing/,
+        'message names what was missing';
+    ok $sent->{status}{lastReconcileTime}, 'lastReconcileTime is set';
+    is $sent->{status}{reconciler}, 'robocop',
+        'reconciler is the controller, not the CLI';
+};
+
+subtest '_on_node_event marks Failed when the provider CR cannot be loaded' => sub {
+    # Both branches of the load -- the API error and the absent CR -- end with
+    # the same outcome: a Failed status with the reason in the message.
+    subtest 'API error on get is recorded on the CR' => sub {
+        my ($api, $t) = strict_k8s();
+        # Default answer is 404 because strict_k8s has no answers for this
+        # path; that exercises the "not found" branch. Force the other branch
+        # by stubbing get() to die.
+        no warnings 'redefine';
+        local *Kubernetes::REST::get = sub { die "connection refused\n" };
+
+        my $out = '';
+        {
+            open my $fh, '>', \$out or die $!;
+            local *STDOUT = $fh;
+            controller(kube => $api)->_on_node_event(ocpnode_cr());
+        }
+
+        my ($patch) = grep { $_->{method} eq 'PATCH' } @{ $t->{seen} };
+        ok $patch, 'the CR is still patched when the load raises';
+        my $sent = $JSON->decode($patch->{body});
+        is $sent->{status}{phase}, 'Failed';
+        like $sent->{status}{message}, qr/connection refused/,
+            'the underlying error is in the message';
+        like $out, qr/marking w1 Failed/, 'and in the pod log';
+    };
+
+    subtest 'provider CR absent is recorded on the CR' => sub {
+        my ($api, $t) = strict_k8s();
+        # No answers => the provider GET 404s, exercises the !$provider_cr_obj
+        # branch.
+        controller(kube => $api)->_on_node_event(ocpnode_cr());
+
+        my ($patch) = grep { $_->{method} eq 'PATCH' } @{ $t->{seen} };
+        ok $patch, 'a missing CR still triggers a status patch';
+        my $sent = $JSON->decode($patch->{body});
+        is $sent->{status}{phase}, 'Failed';
+        like $sent->{status}{message}, qr/not found/,
+            'message distinguishes absence from a real API error';
+    };
+};
+
+subtest '_on_node_event marks Failed when the provider cannot be constructed' => sub {
+    # OCP::Provider->from_cr dies when the provider CR is malformed (missing
+    # clusterName, missing tokenSecretRef.name -- OCP/Provider.pm:59,68,80,108).
+    # The exception used to propagate out of _on_node_event and be caught
+    # only by run(), which logged to STDOUT and left the CR Pending (karr
+    # #123). The CR now carries the failure itself.
+    my ($api, $t) = strict_k8s(
+        '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodeproviders/p1' => {
+            apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
+            metadata   => { name => 'p1', namespace => 'ocp-system' },
+            spec       => { type => 'hetzner' },   # missing tokenSecretRef
+        },
+    );
+
+    controller(kube => $api)->_on_node_event(ocpnode_cr());
+
+    my ($patch) = grep { $_->{method} eq 'PATCH' } @{ $t->{seen} };
+    ok $patch, 'a provider-construction failure still patches status';
+    my $sent = $JSON->decode($patch->{body});
+    is $sent->{status}{phase}, 'Failed';
+    like $sent->{status}{message}, qr/tokenSecretRef\.name missing/,
+        'message carries the underlying construction error';
+    is $sent->{status}{reconciler}, 'robocop', 'reconciler is the controller';
+};
+
+subtest '_mark_failed survives a status patch that itself fails' => sub {
+    # If patch_status dies (CR gone, API unreachable), the controller still
+    # reaches the next iteration of the poll loop instead of taking itself
+    # down on a single bad CR. The error goes to the log and the failure is
+    # still diagnosable -- just from pod logs instead of status.
+    no warnings 'redefine';
+    local *OCP::K8s::patch_status = sub { die "API timeout\n" };
+
+    my ($api, $t) = strict_k8s();
+
+    my $out = '';
+    {
+        open my $fh, '>', \$out or die $!;
+        local *STDOUT = $fh;
+        # An OCPNode with no providerRef is the cheapest path that reaches
+        # _mark_failed; the controller must NOT throw on a patch failure.
+        eval { controller(kube => $api)->_on_node_event(
+            ocpnode_cr(spec => { role => 'worker' })) };
+        is $@, '', 'a failed status patch does not propagate';
+    }
+
+    like $out, qr/ERROR patching status for w1/,
+        'the patch failure is logged';
+    like $out, qr/API timeout/, 'and the underlying error is in the log';
 };
 
 done_testing;
