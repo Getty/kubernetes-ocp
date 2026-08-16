@@ -1,0 +1,73 @@
+---
+class: standard
+completed: 2026-08-16T02:27:15Z
+created: 2026-08-15T18:19:56Z
+id: 80
+priority: high
+started: 2026-08-16T01:46:05Z
+status: done
+tags:
+- k8s
+- deps
+- robustness
+title: can()-Proben machen das Verhalten vom Installationsstand abhaengig, nicht vom
+  Pin
+updated: 2026-08-16T02:29:13Z
+---
+
+Gefunden 2026-08-15 beim Fix des patch_status-Bruchs (Kubernetes::REST 1.107).
+Der Bruch selbst war der LAUTE Fall dieser Klasse. Die uebrigen sind still.
+
+OCP verzweigt an mehreren Stellen ueber ->can(...) und macht damit sein VERHALTEN
+vom zufaelligen Installationsstand abhaengig statt vom Pin in cpanfile. Bei einer
+gepinnten Abhaengigkeit ist das ueberfluessig - wenn wir 1.107 verlangen, koennen
+wir die Methode benutzen -, und es kostet Sichtbarkeit: faellt die Probe falsch
+aus, gibt es keinen Fehler, sondern anderes Verhalten.
+
+  lib/OCP/K8s.pm:56       $api->can('patch_status')
+      Der Fall, der zugebissen hat. Beide Seiten jetzt korrekt, aber es bleibt
+      eine Gabelung, die die installierte Version waehlt.
+
+  lib/OCP/K8s.pm:77       $api->can('_check_response')
+      STILL, und PRIVATER Methodenname. Wird er umbenannt, prueft der
+      Fallback-Zweig Antworten nicht mehr - ein 403 oder 409 beim Status-Schreiben
+      wird dann zum Erfolg. Das ist genau das Fehlerbild aus #21 und #35: der
+      Aufruf schlaegt fehl, die Operation meldet Erfolg.
+
+  lib/OCP/Kubernetes.pm:68  $api->can('k8s')
+      STILL. Die Cilium-, CertManager- und GatewayAPI-Klassen registrieren sich
+      dann einfach nicht; der Fehler taucht viel spaeter als untypisierter
+      Lookup auf.
+
+  lib/OCP/Kubernetes.pm:86  $list->can('items')
+      STILL und am gefaehrlichsten zu lesen: list_nodes liefert dann [], und
+      "keine Nodes" ist nicht von "Cluster leer" zu unterscheiden.
+
+  lib/OCP.pm:89 / :101    _build_command_commands, _options_data
+      Private MooX::Cmd- bzw. MooX::Options-API, und BEIDE Distributionen sind in
+      cpanfile UNGEPINNT. Die Subkommando-Pruefung aus #67 ruht darauf.
+
+Dazu benutzt der Fallback-Zweig in OCP::K8s expand_class, _build_path und
+_request - drei private Kubernetes::REST-Methoden - voellig ohne Probe.
+
+ZU TUN, in dieser Reihenfolge:
+ 1. Die Probes auf GEPINNTE Getty-Distributionen ersatzlos streichen und die
+    Methode direkt rufen. Der Pin ist die Zusage; eine zweite Zusicherung zur
+    Laufzeit ist Redundanz, die auseinanderlaufen kann. Betrifft K8s.pm:56 und
+    :77 und die beiden in Kubernetes.pm.
+ 2. Wenn ein Fallback bleiben MUSS, muss er laut sein: kein stilles anderes
+    Verhalten, sondern eine Warnung oder ein Tod mit Nennung der erwarteten
+    Version.
+ 3. MooX::Cmd und MooX::Options in cpanfile pinnen. Solange dort nichts steht,
+    haengt die #67-Pruefung an unversionierter privater API.
+ 4. Fuer die drei ungeprobten privaten Kubernetes::REST-Methoden entscheiden, ob
+    der handgebaute Fallback in OCP::K8s ueberhaupt noch gebraucht wird. Laut
+    Analyse ist er im Produktivpfad tot - beide Einstiege bauen ihren Client ueber
+    OCP::Kubernetes::api, also immer ein echtes Kubernetes::REST - und nur noch
+    von t/36s RawApi erreichbar. Er ueberlebt heute allein deshalb, weil
+    `make test` auf dem Host laufen kann, wo noch 1.106 liegt (#79). Wird #79
+    geloest, koennen Fallback, die _check_response-Probe und die RawApi-Subtests
+    gemeinsam in Rente.
+
+Verwandt: #79 (make test gegen Host-CPAN), #67, #21, #35.
+ERLEDIGT 2026-08-16, Commit 481536f. Die vollstaendige Begruendung steht in der Commit-Message. list_nodes kann nicht mehr eine unerreichbare API als leeren Cluster melden. register_resource_providers hatte DREI stille Ausgaenge statt einem. MooX::Cmd und MooX::Options sind jetzt gepinnt - die #67-Pruefung ruhte auf privater API ohne Untergrenze. Der Fallback in OCP::K8s bleibt bis #79 wirkt, sein Abbau braucht die 403/409-Abdeckung an einem nativen Double.
