@@ -550,6 +550,25 @@ subtest 'the CLI roles and the OCPNode CRD enum are the same set' => sub {
         'OCP::Node->roles is exactly the CRD enum';
 };
 
+subtest 'the CLI provider types and the OCPNodeProvider CRD enum are the same set' => sub {
+    my $crd = YAML::XS::LoadFile('share/robocop/crds/ocpnodeprovider.yaml');
+    my ($version) = @{ $crd->{spec}{versions} };
+    my $enum = $version->{schema}{openAPIV3Schema}
+                       {properties}{spec}{properties}{type}{enum};
+
+    ok $enum && @$enum, 'the CRD declares an enum for spec.type';
+
+    # The mirror image of the roles check above. `ocp provider add --type
+    # local` used to pass OCP::Provider->known_type and OCP::Cmd::Provider::Add
+    # validation and only then fail at the API server with a 422 about the
+    # schema, because the CRD enum was [hetzner, ssh] while the factory had
+    # been carrying `local` since the day OCP::Provider::Local existed (karr
+    # #110). Same discipline: nothing in a YAML schema can call Perl, so the
+    # test reads the enum off disk and compares.
+    is_deeply [ sort @$enum ], [ sort OCP::Provider->types ],
+        'OCP::Provider->types is exactly the CRD enum';
+};
+
 # -------------------------------------------------------------------------
 # One error picture, not six
 # -------------------------------------------------------------------------

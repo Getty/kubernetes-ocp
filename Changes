@@ -1,6 +1,15 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - The OCPNodeProvider CRD enum finally knows `local` (karr #110). The
+      schema declared `spec.type: [hetzner, ssh]` while OCP::Provider had
+      carried `local` since the day OCP::Provider::Local existed, so
+      `ocp provider add --type local` cleared CLI validation and then
+      failed at the API server with a 422 about a schema the operator
+      never wrote. The CRD enum is now [hetzner, ssh, local]; a new
+      subtest in t/75 reads the enum off disk and compares it against
+      OCP::Provider->types so the next drift is caught at `make test`
+      instead of at the cluster.
     - t/51-pod.t now discovers its scope from globs instead of an
       enumeration. The hardcoded list of five Provider modules was
       silent about new ones and quietly drifted when Choices.pm
