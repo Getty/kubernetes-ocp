@@ -119,28 +119,37 @@ sub execute {
         }
     }
 
-    # Fall back to spec (control planes + workers) if still no nodes
+    # Fall back to spec (control planes + workers) if still no nodes.
+    #
+    # Both gates use OCP::Provider->known_type rather than `eq 'ssh'`, so a
+    # CP/worker carrying `provider: local` reaches the destroy loop instead
+    # of being dropped on the floor -- the same seam karr #103 found in six
+    # other input checks. A missing or unknown provider is skipped rather
+    # than relabelled ssh: a literal `// 'ssh'` would put an unsupported node
+    # on the destruction list and let the loop's ssh-only branch hit a host
+    # that was never an ssh target (karr #116).
     if (!@$nodes) {
         my $cps = $config->control_planes;
         my $idx = 0;
         for my $cp (@$cps) {
+            next unless OCP::Provider->known_type($cp->{provider} // q());
             $idx++;
             push @$nodes, {
                 name     => $cp->{host} // ($config->name . "-cp-$idx"),
-                provider => $cp->{provider} // 'ssh',
+                provider => $cp->{provider},
                 public_ip => $cp->{host} // $cp->{public_ip} // '-',
             };
         }
         for my $w (@{$config->workers}) {
-            if ($w->{provider} eq 'ssh' && $w->{nodes}) {
-                for my $h (@{$w->{nodes}}) {
-                    my $host = ref $h ? $h->{host} : $h;
-                    push @$nodes, {
-                        name     => $host,
-                        provider => 'ssh',
-                        public_ip => $host,
-                    };
-                }
+            next unless OCP::Provider->known_type($w->{provider} // q());
+            next unless $w->{nodes};
+            for my $h (@{$w->{nodes}}) {
+                my $host = ref $h ? $h->{host} : $h;
+                push @$nodes, {
+                    name     => $host,
+                    provider => $w->{provider},
+                    public_ip => $host,
+                };
             }
         }
     }
@@ -239,22 +248,33 @@ sub execute {
                 print "  Warning: $@\n";
             }
         }
-        # An ssh-provider node: the machine survives, so what we can remove is
-        # what we installed on it. The key comes from above, already resolved
-        # or already known to be unavailable — nothing in this branch may die.
-        elsif ($node->{provider} eq 'ssh' && $node->{public_ip} && $node->{public_ip} ne '-') {
-            unless ($ssh_key) {
-                print "  Skipped: no SSH key, $node->{public_ip} keeps its RKE2/K3s install.\n";
-                next;
+        # An existing-host node (ssh, local): the machine survives, so what we
+        # remove is what we installed on it. The branch used to hard-code
+        # `eq 'ssh'`, so a local-provider node fell through with nothing --
+        # the same way a future provider type would silently fall through
+        # today. Both consume OCP::Role::Provider::ExistingHost, so the
+        # delete call is identical; only ssh needs the key (the cluster
+        # key comes from above, resolved or already known to be unavailable
+        # -- nothing in this branch may die).
+        elsif (OCP::Provider->known_type($node->{provider} // q())
+               && $node->{provider} ne 'hetzner'
+               && $node->{public_ip} && $node->{public_ip} ne '-') {
+            if ($node->{provider} eq 'ssh') {
+                unless ($ssh_key) {
+                    print "  Skipped: no SSH key, $node->{public_ip} keeps its RKE2/K3s install.\n";
+                    next;
+                }
             }
 
             print "  Uninstalling RKE2 on $node->{public_ip}...\n";
-            my $ssh_prov = OCP::Provider->for_spec(
-                { provider => 'ssh' },
-                ssh_key_path => $ssh_key->path,
+            my $host_prov = OCP::Provider->for_spec(
+                { provider => $node->{provider} },
+                ($node->{provider} eq 'ssh'
+                    ? (ssh_key_path => $ssh_key->path)
+                    : ()),
             );
             my $result = eval {
-                $ssh_prov->delete_server(undef, host => $node->{public_ip})
+                $host_prov->delete_server(undef, host => $node->{public_ip})
             };
             # OCP::SSH::run reports a failed connection as a non-zero exit
             # rather than an exception, so an unreachable host used to be
@@ -262,7 +282,9 @@ sub execute {
             my $failed = $@ || !ref $result || ($result->{exit} // 0) != 0;
             if ($failed) {
                 print "  Warning: Could not uninstall on $node->{public_ip} (may already be down).\n";
-                unless ($hinted++) {
+                # The migration hint names the bootstrap-vs-admin key story,
+                # which is ssh-only. A local uninstall has no key.
+                if ($node->{provider} eq 'ssh' && !$hinted++) {
                     print $ssh_key->migration_hint;
                 }
             } else {
