@@ -1,0 +1,107 @@
+---
+class: standard
+completed: 2026-08-16T00:52:47Z
+created: 2026-08-15T20:34:32Z
+id: 95
+priority: high
+started: 2026-08-16T00:41:03Z
+status: done
+tags:
+- secure-mode
+- keys
+- docs
+- ops
+title: Nach ADR 0027 gibt es keine zweite Tuer - PIN2-Verlust und Key-Rotation sind
+  unbeschrieben
+updated: 2026-08-16T00:52:47Z
+---
+
+Gefunden 2026-08-15 vom ocp-adr-auditor beim Schreiben von ADR 0027 (Bootstrap-Key
+raus aus dem secure mode). Zwei Folgen dieser Entscheidung, die im Code NIRGENDS
+abgedeckt sind und in keiner Doku stehen.
+
+1. ES GIBT KEINE ZWEITE TUER MEHR.
+   Der Bootstrap-Key war fuer ssh-Provider-Maschinen faktisch ein zweiter Zugang:
+   er lag unverschluesselt lokal und funktionierte ohne PIN2. Nach ADR 0027 gilt:
+   wer PIN2 verliert, verliert SSH zu ALLEM. keys.yaml ist committed und damit
+   sicher, aber ohne PIN2 ist der private Admin-Key nicht zu oeffnen.
+
+2. ROTATION IST NICHT MEHR LOKAL.
+   Den Admin-Key zu tauschen bedeutet ab jetzt: auf JEDER ssh-Provider-Maschine
+   muss die neue oeffentliche Haelfte von Hand in authorized_keys, sonst ist die
+   Maschine nach dem Tausch nicht mehr erreichbar. Bei Hetzner ist es einfacher
+   (OCP laedt den Key ueber die API hoch), aber auch dort gilt es nur fuer NEU
+   erstellte Server - bestehende behalten den alten.
+
+Beides ist die logische Folge davon, dass es nur noch einen menschlichen Schluessel
+gibt. Es ist nicht falsch, aber es ist unbeschrieben, und es faellt genau dann auf,
+wenn es am teuersten ist.
+
+ZU TUN, in dieser Reihenfolge:
+ a) Dokumentieren. Was passiert bei PIN2-Verlust, was ist der Weg zurueck (gibt es
+    einen?), und wie rotiert man den Admin-Key ueber einen bestehenden Cluster.
+    Das gehoert in die Prosa-Doku und in den Skill ocp-usage, nicht nur ins ADR.
+ b) Erst danach entscheiden, ob Werkzeug noetig ist. Denkbar: ein Kommando, das den
+    neuen Admin-Public-Key auf alle bekannten Nodes verteilt, BEVOR der alte
+    ungueltig wird - also erst hinzufuegen, dann pruefen, dann den alten entfernen.
+    Das ist die einzige Reihenfolge, die nicht aussperrt.
+
+NICHT VERWECHSELN mit der einmaligen Migration aus ADR 0027 (bestehende Maschinen
+tragen den Bootstrap-Key, der Admin-Key muss einmal nachverteilt werden). Das hier
+ist der Dauerzustand danach.
+
+Lane: ocp-doc-writer fuer a), danach ocp-worker fuer b).
+Verwandt: ADR 0027, ADR 0006, #88, #84.
+TEIL a) ERLEDIGT 2026-08-16 (ocp-doc-writer). Teil b) (Werkzeug) ist jetzt #102.
+
+DIE DREI BEHAUPTUNGEN WURDEN AM CODE GEPRUEFT, nicht uebernommen - und zwei davon
+sind praeziser geworden:
+
+a) PIN2-VERLUST IST ENDGUELTIG. Bestaetigt. get_admin_key croakt ohne $pin2;
+   decrypt_key croakt fuer jeden Zweck ausser 'automation' ohne PIN2; der einzige
+   Weg durch die zweite Schicht ist _double_decrypt, das das Passwort braucht, um
+   den PBKDF2-Schluessel abzuleiten, bevor die AES-256-GCM-Schicht aufgeht. Kein
+   anderer Pfad in OCP::Keys oder OCP::Secrets erreicht die private Haelfte des
+   Admin-Keys. PIN1 allein bringt nur an die OEFFENTLICHEN Haelften (list_keys)
+   und an die private Haelfte des robo-Keys.
+
+b) PIN1 ALLEIN OEFFNET HEUTE KEINE EINZIGE SSH-TUER - und der Grund ist schaerfer
+   als die Behauptung im Ticket. Der robo-Key entschluesselt zwar mit PIN1 allein
+   (get_automation_key prueft kein PIN2), aber NICHTS im ausgelieferten Code legt
+   seine oeffentliche Haelfte je in irgendwelche authorized_keys.
+   OCP::ClusterKey::for_config - die EINE Stelle, die entscheidet, welcher
+   Schluessel eine Maschine erreicht - liefert ausschliesslich den Bootstrap-Key
+   (dev) oder den Admin-Key (secure); 'automation' waehlt sie nie. Der einzige
+   Ort, der den robo-Key je an etwas SSH-faehiges geben wuerde, ist
+   `ocp inject-key`, und das ist deaktiviert.
+   Die Aussage in #95 stimmt also - dokumentiert wurde der MECHANISMUS, nicht nur
+   die Behauptung.
+
+c) ES GIBT KEIN ROTATIONS-KOMMANDO. OCP::Cmd::Keys kennt nur `show`. Der
+   Zwei-Tier-Block in OCP::Cmd::Init (~214-281) ueberspringt das Erzeugen
+   BEDINGUNGSLOS, sobald ein Key mit purpose 'automation' existiert - --force wird
+   dort nie geprueft. Einen Ersatz-Key anzulegen geht heute nur ueber
+   OCP::Keys->add_key ausserhalb der CLI.
+
+ZWEI DETAILS, die die Doku brauchbar statt bloss richtig machen:
+ - WWW::Hetzner::Cloud::API::SSHKeys::ensure loescht und legt den Hetzner-seitigen
+   Key OBJEKT neu an, wenn man denselben Namen erneut hochlaedt. Das wirkt nur auf
+   danach erzeugte Server - eine LAUFENDE Maschine aendert ihre authorized_keys
+   dadurch nie.
+ - get_admin_key ohne expliziten Namen laeuft keys.yaml in Einfuegereihenfolge ab
+   und liefert den AELTESTEN nicht-deprecateten Admin-Eintrag. Wer einen neuen
+   Admin-Key hinzufuegt, kann ihn deshalb NICHT mit `ocp ssh` verifizieren - das
+   nimmt weiter den alten. Verifiziert wird mit `ssh -i` gegen die Klartext-Datei.
+   Ohne diesen Satz waere die Rotationsanleitung eine Falle.
+
+GESCHRIEBEN:
+ - README.md, im Abschnitt "Security Model (Defense in Depth)": zwei neue
+   Unterabschnitte - "What Each PIN Actually Opens" (mit Verlust-Tabelle) und
+   "Rotating the Admin Key" (5 Schritte, neuen Zugang ueberall zuerst).
+ - .claude/skills/ocp-usage/SKILL.md: neuer Abschnitt "PIN Loss & Admin-Key
+   Rotation"; ausserdem fehlte `ocp keys show` in der Kommandoliste komplett.
+   HARDLINK GEWAHRT: Inode 274924105, Linkcount 2 vorher wie nachher, per
+   `cat > datei` geschrieben, gegen die citiai-Kopie als byte-identisch geprueft
+   (vom Orchestrator unabhaengig nachgemessen).
+
+Die einmalige Migration aus ADR 0027 wird referenziert, nicht wiederholt.
