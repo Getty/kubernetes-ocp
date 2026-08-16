@@ -1,0 +1,40 @@
+---
+class: standard
+completed: 2026-08-16T04:25:24Z
+created: 2026-08-15T18:20:35Z
+id: 82
+priority: low
+started: 2026-08-16T04:08:51Z
+status: done
+tags:
+- toolchain
+- docker
+- dx
+title: make snapshot laesst root-owned Dateien im Arbeitsbaum zurueck
+updated: 2026-08-16T04:25:24Z
+---
+
+Gefunden 2026-08-15 beim Regenerieren des Snapshots nach dem 1.107-Pin.
+
+`make snapshot` faehrt Docker ohne --user. Alles, was das Target im Arbeitsbaum
+anlegt oder neu schreibt, gehoert danach root:root - konkret cpanfile.snapshot
+und das ganze local/-Verzeichnis. Jede andere versionierte Datei im Repo gehoert
+getty:getty.
+
+Folge: nach `make snapshot` ist cpanfile.snapshot fuer den Benutzer nicht mehr
+schreibbar. Ein Editor, ein weiterer Snapshot-Lauf oder ein `git checkout` der
+Datei laufen in ein Permission-Problem, und der naheliegende Ausweg ist sudo auf
+dem Host - genau das, was die Docker-first-Regel vermeiden soll.
+
+Diesmal wurde es ueber ein `docker run ... chown 1000:1000` zurueckgedreht, also
+ohne sudo. Das ist die Reparatur, nicht die Loesung.
+
+ZU TUN: --user $(id -u):$(id -g) an den Docker-Aufruf im snapshot-Target, oder
+ein chown-Nachlauf im Target selbst. Beim Umbau pruefen, ob weitere Targets
+dasselbe Problem haben - alles, was aus dem Container heraus in den gemounteten
+Arbeitsbaum schreibt, ist Kandidat.
+
+local/ ist bereits von frueheren Laeufen root-owned; wer das aufraeumt, sollte es
+im selben Zug mitnehmen.
+
+Lane: ocp-infra-worker. Verwandt: #79 (Docker-first fuer Testlaeufe).
