@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A `skip_if` in `@COMPONENT_PROBES` that names an `OCP::Config` method
+      which does not exist used to make the probe silently run as if no
+      skip_if had been set -- a cluster with `nocert: true` would then be
+      reported as cert-manager-drifting after someone renamed or removed
+      `OCP::Config::no_cert`. The table and the method live in the same
+      distribution, so the name can only be wrong by accident; that is now a
+      croak at the top of the probe loop, naming the offending target.
     - `ocp node add --role quatsch` is refused by OCP, not by Kubernetes. The
       role was never checked on the way out: it went into spec.role, where the
       OCPNode CRD declares `enum: [control-plane, worker]`, and the operator
