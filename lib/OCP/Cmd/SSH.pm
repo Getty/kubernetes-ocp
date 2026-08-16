@@ -68,25 +68,7 @@ sub execute {
     print "[ok] " . $key->describe . "\n";
 
     # Determine target host
-    my $target_host;
-
-    # Try to find node in spec
-    my $spec = $config->spec;
-    my $cp_spec = $spec->{control_planes};
-
-    # Check if it's a control plane node
-    if ($node_arg eq 'police1' || $node_arg =~ /^police\d+$/ || $node_arg =~ /^cp/) {
-        if ($cp_spec->{provider} eq 'ssh') {
-            $target_host = $cp_spec->{host};
-        } elsif ($cp_spec->{provider} eq 'hetzner') {
-            # Look up the node's IP via the Kubernetes API
-            print "[..] Looking up control plane IP via Kubernetes API...\n";
-            $target_host = $self->_lookup_node_ip($secrets, $node_arg);
-        }
-    } else {
-        # Assume it's an IP or hostname
-        $target_host = $node_arg;
-    }
+    my $target_host = $self->_resolve_target_host($config, $secrets, $node_arg);
 
     unless ($target_host) {
         die $self->_unknown_node_error($node_arg, $self->_node_names($secrets));
@@ -141,6 +123,61 @@ sub _node_names {
     my $nodes = eval { $k8s->list_nodes }                               or return ();
 
     return sort grep { length } map { $k8s->node_name($_) } @$nodes;
+}
+
+# Resolve --node to an SSH target. Returns the host string, or undef when
+# nothing matches -- the caller hands that to _unknown_node_error.
+#
+# The raw YAML field is normalised into a list of CPs: single-CP clusters
+# store control_planes as a hash, multi-CP clusters (the canonical case is
+# mixed hetzner+ssh) store it as an arrayref. The previous dispatch read
+# $cp_spec->{provider} unconditionally, which threw 'Not a HASH reference'
+# the moment a project had more than one control plane -- bypassing
+# _unknown_node_error entirely (karr #117).
+#
+# Hetzner CPs follow the RoboCop naming (police1, police2, ...), ssh CPs
+# are named after their host's first label. The walk below matches the
+# node arg against that identity so a `ocp ssh --node police1` on a mixed
+# cluster reaches the hetzner CP, not whichever provider the first entry
+# happens to be.
+#
+# Anything that does not match a CP falls through to the legacy
+# police/cp regex (API lookup), and from there to the IP/hostname path
+# -- the same cascade that `ocp ssh --node 1.2.3.4` always used.
+sub _resolve_target_host {
+    my ($self, $config, $secrets, $node_arg) = @_;
+
+    my $raw = $config->spec->{control_planes};
+    my $cps = ref $raw eq 'ARRAY' ? $raw
+            : ref $raw eq 'HASH'  ? [ $raw ]
+            :                          [ {} ];
+
+    my $het_index = 0;
+    for my $cp (@$cps) {
+        my $cp_name;
+        if (($cp->{provider} // '') eq 'ssh' && $cp->{host}) {
+            ($cp_name = $cp->{host}) =~ s/\..*//;
+        } else {
+            $het_index++;
+            $cp_name = 'police' . $het_index;
+        }
+        next unless $cp_name && $node_arg eq $cp_name;
+
+        if (($cp->{provider} // '') eq 'ssh') {
+            return $cp->{host};
+        }
+        print "[..] Looking up control plane IP via Kubernetes API...\n";
+        return $self->_lookup_node_ip($secrets, $node_arg);
+    }
+
+    # No exact identity match. The legacy /^(police|cp)/ regex: anything
+    # that looks like a CP name is API-looked-up; anything else is an IP.
+    if ($node_arg eq 'police1' || $node_arg =~ /^police\d+$/ || $node_arg =~ /^cp/) {
+        print "[..] Looking up control plane IP via Kubernetes API...\n";
+        return $self->_lookup_node_ip($secrets, $node_arg);
+    }
+
+    return $node_arg;
 }
 
 # Why --node did not resolve to anything to connect to.
