@@ -1,0 +1,55 @@
+---
+class: standard
+completed: 2026-08-16T05:04:22Z
+created: 2026-08-16T02:24:41Z
+id: 110
+priority: low
+started: 2026-08-16T04:58:19Z
+status: done
+tags:
+- crd
+- provider
+- validation
+title: CRD-Enum kennt 'local' nicht, die CLI schon - provider add --type local scheitert
+  am API-Server
+updated: 2026-08-16T05:15:58Z
+---
+
+Gefunden 2026-08-16 beim Fix von #98 (ocp-worker). Pre-existing, nicht durch #98
+verursacht.
+
+share/robocop/crds/ocpnodeprovider.yaml deklariert spec.type mit
+    enum: [hetzner, ssh]
+
+Der Code kennt aber drei Typen:
+    lib/OCP/Cmd/Provider/Add.pm::_validate_flags  akzeptiert 'local'
+    lib/OCP/Provider::_build                      dispatcht 'local'
+    OCP::Config::validate                         nennt "hetzner, ssh, or local"
+
+FOLGE: `ocp provider add --type local` kommt durch die CLI-Validierung, wird dann
+aber vom API-Server abgelehnt, weil das CRD den Wert nicht kennt. Der Bediener
+bekommt einen rohen Kubernetes-Fehler fuer eine Eingabe, die OCP selbst fuer
+gueltig erklaert hat.
+
+Das ist dieselbe Familie wie #103 (`--role quatsch` wird CLI-seitig nicht geprueft
+und faellt als 422 auf), nur umgekehrt: hier prueft die CLI und das CRD ist der,
+der nicht mitspielt.
+
+ZU KLAEREN, bevor gefixt wird - WELCHE Seite hat recht?
+ a) Wenn 'local' ein unterstuetzter Provider ist, gehoert er ins CRD-Enum. Dann
+    aber pruefen, ob ein local-Provider als CR ueberhaupt Sinn ergibt: er wird
+    von OCP::Node/robocop benutzt, und ein Controller im Cluster, der einen
+    "local"-Provider bedient, ist eine seltsame Vorstellung.
+ b) Wenn 'local' nur fuer den CLI-/Dev-Pfad gedacht ist und nie als CR existieren
+    soll, dann darf `ocp provider add --type local` gar nicht erst durchkommen -
+    die CLI muss ihn ablehnen, mit Begruendung.
+b) ist vermutlich richtig, aber das ist eine Aussage ueber das Provider-Modell,
+keine ueber ein Enum. Erst entscheiden.
+
+Im selben Zug: OCP::Config::validate, _validate_flags und das CRD-Enum sind drei
+Orte, die dieselbe Menge kennen muessen. Wo immer die Antwort landet, sollte sie
+an EINEM Ort stehen - dieselbe Lehre wie bei #109 (zwei Timeouts) und #102
+(Namensraum-Liste).
+
+Lane: ocp-worker (Code) + ocp-infra-worker (CRD). Verwandt: #98, #103, #100.
+NACHTRAG 2026-08-16 aus #103: DER ORT FUER DIE TYPMENGE EXISTIERT JETZT. OCP::Provider::types / known_type (lib/OCP/Provider.pm) ist seit #103 die eine Quelle - vorher waren es VIER handgeschriebene Kopien (OCP::Role::Cmd, OCP::Config::validate, OCP::Cmd::Provider::Add, OCP::Cmd::Node::Add), alle lesen jetzt von dort. Der einzige Leser, der das nicht kann, ist das CRD-Enum in share/robocop/crds/ocpnodeprovider.yaml - genau der Fall dieses Tickets. DAS MUSTER ZUM KOPIEREN steht in t/75-unknown-input-lists-choices.t: dort wird fuer die Node-ROLLEN das CRD-Enum gelesen und per is_deeply gegen OCP::Node->roles gehalten, weil ein YAML-Enum kein Perl aufrufen kann. Fuer die Provider-Typen wuerde derselbe Test HEUTE ROT - das ist der Befund dieses Tickets, in Testform. Dritter Ort derselben Frage, ebenfalls aus #103 gemeldet und bewusst nicht angefasst: lib/OCP/Config.pm:380 prueft Worker-Pools mit /^(hetzner|ssh)$/ und schliesst 'local' aus, waehrend die Control-Plane-Pruefung drei Zeilen darueber es zulaesst. Ob das Absicht oder Drift ist, laesst sich am Code nicht entscheiden - es ist dieselbe Frage wie hier und gehoert zusammen entschieden.
