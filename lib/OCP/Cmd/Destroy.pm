@@ -24,6 +24,61 @@ option keep_status => (
     doc => 'Keep the local cluster state (.ocp/status.yaml, .ocp/deployed.yaml)',
 );
 
+# Servers this project paid for but which are not labelled with its name.
+#
+# Until karr #98, OCP::Provider::from_cr took the provider CR's OWN name for
+# the cluster name, and `ocp apply` writes that CR as "<type>-default". So
+# every worker brought up by `ocp node add` or robocop was labelled
+# ocp-cluster=hetzner-default while the control plane carried the real cluster
+# name. The teardown above searches ocp-cluster=<cluster> and walks straight
+# past them — they keep running, keep billing, and this command still says
+# "Cluster destroyed."
+#
+# The fix stops new ones appearing; it cannot relabel the machines already out
+# there. So they get NAMED, never deleted. That label is generic by
+# construction: a match may belong to a different OCP cluster in the same
+# Hetzner project with the same defect, and deleting someone else's control
+# plane to tidy up a labelling bug would be worse than the bug.
+sub _report_mislabelled_servers {
+    my ($self, $config, $hetzner_prov) = @_;
+    return unless $hetzner_prov;
+
+    # Exactly the names OCP::Cmd::Apply::CR::ensure_provider_cr writes, so this
+    # is a derivation and not a guess. A provider added by hand under some
+    # other name is out of reach here — the selector printed below finds those.
+    my %stale;
+    for my $entry (@{$config->control_planes}, @{$config->workers}) {
+        my $type = $entry->{provider} // 'hetzner';
+        next unless $type eq 'hetzner';
+        my $label = "$type-default";
+        next if $label eq $config->name;   # then the label was right all along
+        $stale{$label} = 1;
+    }
+    return unless %stale;
+
+    for my $label (sort keys %stale) {
+        my $servers = eval { $hetzner_prov->list_servers_by_cluster($label) } || [];
+        next unless @$servers;
+
+        print "\n";
+        printf "[!!] %d Hetzner server(s) carry the label ocp-cluster=%s and were\n",
+               scalar @$servers, $label;
+        print  "     NOT deleted. They are this cluster's, mislabelled before the\n";
+        print  "     fix for karr #98 — they keep running and keep billing.\n";
+        for my $s (@$servers) {
+            printf "       - %s (id %s, %s)\n",
+                   eval { $s->name } // '?',
+                   eval { $s->id }   // '?',
+                   eval { $s->ipv4 } // '-';
+        }
+        print  "     They are not removed automatically: that label is generic, so a\n";
+        print  "     match can belong to another cluster in the same project. Check\n";
+        print  "     and delete by hand:\n";
+        print  "       hcloud server list -l ocp-cluster=$label\n";
+        print  "       hcloud server delete <name>\n";
+    }
+}
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -231,6 +286,10 @@ sub execute {
         print "Encrypted kubeconfig removed.\n";
     }
 
+    # Last, so it is the thing left on screen: a teardown that reported success
+    # while paid machines kept running is the failure mode this is here for.
+    $self->_report_mislabelled_servers($config, $hetzner_prov);
+
     print "\nCluster destroyed.\n";
 
     return 0;
@@ -274,6 +333,17 @@ it can fail; a Hetzner-only teardown never asks).  B<A failure to obtain it
 does not stop the teardown.>  It is reported, the uninstall steps are skipped
 with a per-host line, and every Hetzner server is still deleted through the
 API — those cost money, an uninstall script does not.
+
+Before the final line the teardown looks once more, under the C<ocp-cluster>
+labels C<ocp apply> would have written a provider CR as
+(C<< <type>-default >>), and B<names> anything still running there.  Those are
+servers created before the fix for C<karr #98>, when the worker path took the
+provider CR's own name for the cluster name: they belong to this cluster but
+carry a label no teardown searches.  They are reported, never deleted — the
+label is generic, so a match can belong to another OCP cluster in the same
+Hetzner project.  The printed C<hcloud> selector is the way to inspect and
+remove them by hand, and it is also the way to find servers under a provider
+that was added with C<ocp provider add --name> rather than by C<ocp apply>.
 
 Sources for the node list, in order: C<.ocp/status.yaml>, the Hetzner
 project (orphans that C<status.yaml> did not record, picked up via

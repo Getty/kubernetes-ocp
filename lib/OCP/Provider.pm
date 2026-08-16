@@ -51,8 +51,40 @@ sub from_cr {
         my $encoded = $secret_hash->{data}{$secret_key}
             or die "from_cr: Secret '$secret_name' has no key '$secret_key'\n";
 
-        $args{token}        = MIME::Base64::decode_base64($encoded);
-        $args{cluster_name} = $name;
+        $args{token} = MIME::Base64::decode_base64($encoded);
+
+        # The cluster this provider serves — and NOT the CR's own name.
+        #
+        # It used to be $cr->{metadata}{name}, which ensure_provider_cr writes
+        # as "<type>-default". So every server the worker path created was
+        # labelled ocp-cluster=hetzner-default while bootstrap labelled the
+        # control plane ocp-cluster=<cluster>. Two silent consequences, both
+        # costing money: `ocp destroy` searches ocp-cluster=<cluster> and never
+        # saw those machines — they keep running and keep billing while the
+        # teardown reports success — and server_exists searched the same wrong
+        # label pair, so a second provisioning pass created a SECOND server
+        # instead of recognising the one already standing there (karr #98).
+        #
+        # The CR is the carrier because nothing else can be: OCP::Node is
+        # trigger-neutral, and robocop has no cluster identity beyond what is
+        # stored in the cluster. Exactly the reason sshKeyName lives here too
+        # (karr #92), and the reason a label on the CR was rejected in its
+        # favour — metadata is shared ground that kustomize, kubectl and other
+        # controllers rewrite, and this value decides which paid servers a
+        # teardown finds.
+        #
+        # Absent means refuse, for the same reason the missing key below does:
+        # an adapter built without it produces machines that run, bill, and
+        # cannot be found again. One `ocp apply` rewrites the CR.
+        my $cluster = $cr->{spec}{clusterName};
+        die "from_cr: OCPNodeProvider/$name in $ns has no spec.clusterName.\n"
+          . "Servers created through it would be labelled with the provider's "
+          . "name instead of the cluster's, and `ocp destroy` would never find "
+          . "them again — they would run and be billed forever.\n"
+          . "Run `ocp apply` once to rewrite the provider CR, or set "
+          . "spec.clusterName to the cluster name from ocp.yaml.\n"
+            unless defined $cluster && length $cluster;
+        $args{cluster_name} = $cluster;
 
         # Which uploaded SSH key a server created through this provider gets.
         # The CR is the carrier because it is the only end of the seam that
@@ -182,6 +214,19 @@ named arguments carry the credentials.
 In-cluster entry point.  C<$cr> is an C<OCPNodeProvider> resource as a hash;
 C<k8s> is a L<Kubernetes::REST> client, required when C<spec.type> is
 C<hetzner> (the token is fetched from the referenced Secret).
+
+For C<hetzner>, C<spec.clusterName> becomes the adapter's
+L<OCP::Provider::Hetzner/cluster_name> — the value of the C<ocp-cluster>
+label every server gets, and the selector C<ocp destroy> tears the cluster
+down by.  It is B<not> the CR's own name: C<ocp apply> writes the CR as
+C<< <type>-default >>, so taking C<metadata.name> labelled every worker
+C<ocp-cluster=hetzner-default> while the control plane carried the real
+cluster name.  Those workers survived C<ocp destroy> and kept billing, and
+C<server_exists> could never match one, so a repeat provisioning run built a
+second server next to the first (karr #98).
+
+A CR without C<spec.clusterName> makes C<from_cr> die rather than build an
+adapter that would create unfindable machines; one C<ocp apply> rewrites it.
 
 For C<hetzner>, C<spec.hetzner.sshKeyName> becomes the adapter's
 L<OCP::Provider::Hetzner/ssh_key_name> — the key every server created

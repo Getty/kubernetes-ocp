@@ -204,11 +204,29 @@ sub _provision {
         spec => $self->cr->{spec},
     );
 
+    # An address is not something provisioning knows. The host-based providers
+    # hand theirs straight back (it came out of spec.host in the first place),
+    # but a cloud provider allocates it when the machine reaches `running`,
+    # seconds after create returns -- Hetzner's create_server documents the
+    # `ip => undef` it returns for a fresh server.
+    #
+    # So write the key only when there is one. Two reasons: this is a merge
+    # patch, so `publicIP => undef` would DELETE an address an earlier pass had
+    # already found; and the message is the only place a human sees what this
+    # node is actually waiting on. _install_kubernetes resolves what is missing
+    # on the next pass -- that is the phase where the address is needed, and it
+    # is re-enterable, whereas a wait here would hold the lease with the
+    # provider id not yet written down (karr #99).
+    my $ip = $result->{ip} // $result->{ipv4};
+    $ip = undef unless defined $ip && length $ip;
+
     $self->_patch_status(
         phase      => 'Installing',
         providerId => $result->{id},
-        publicIP   => $result->{ip} // $result->{ipv4},
-        message    => 'Server provisioned, installing Kubernetes',
+        ($ip ? (publicIP => $ip) : ()),
+        message    => $ip
+            ? 'Server provisioned, installing Kubernetes'
+            : 'Server provisioned, waiting for it to report an address',
     );
 
     # Best-effort. The server exists and the phase is written; a failed release
@@ -222,15 +240,82 @@ sub _provision {
     return $result;
 }
 
+# How long to wait for a freshly created server to report an address.
+#
+# The same 120s the control-plane path spends on the same question in
+# OCP::Cmd::Apply::Bootstrap. One number for one wait: a region that is slow
+# enough to make `ocp apply` sit there must not be fast enough to make a worker
+# give up. `our` so a test can shorten it without timing the real thing.
+our $ADDRESS_TIMEOUT = 120;
+
+# Where this node can be reached, in the order the answer is cheapest.
+#
+#   1. status.publicIP  -- already known, and what every later pass sees
+#   2. spec.host        -- the ssh/local providers; the user typed it
+#   3. the provider     -- the server exists but has not been given an address
+#
+# Only step 3 is new (karr #99). It is a completion of the same lookup, not a
+# new lifecycle step: `Installing` already means "the server exists, Kubernetes
+# is going onto it", and finding out where the machine is belongs to getting
+# onto it, exactly like the wait_for_ssh below. A phase of its own would have
+# needed a new value in the OCPNode CRD's status.phase enum -- which the API
+# server rejects until every deployed cluster's CRD is re-applied -- to make a
+# distinction nobody reconciles on.
+#
+# ssh/local never reach step 3 twice over: their address is in spec.host, and
+# their create_server returns `id => undef`, so there is no providerId to ask
+# about. Their wait_for_running (OCP::Role::Provider::ExistingHost) is a
+# passthrough that would hand back the hashref unchanged anyway.
+sub _resolve_host {
+    my $self = shift;
+
+    my $host = $self->cr->{status}{publicIP} || $self->cr->{spec}{host};
+    return $host if defined $host && length $host;
+
+    my $id = $self->cr->{status}{providerId};
+    return undef unless defined $id && length $id;
+
+    # A provider double that does not implement it degrades to the old "nothing
+    # to go on" answer rather than dying with a method-resolution error.
+    my $provider = $self->provider;
+    return undef unless $provider && $provider->can('wait_for_running');
+
+    my $info = { id => $id };
+    my $ok = eval { $provider->wait_for_running($info, $ADDRESS_TIMEOUT); 1 };
+    unless ($ok) {
+        my $err = $@ // '';
+        chomp $err;
+        die "No address for provider server $id after waiting up to "
+          . "${ADDRESS_TIMEOUT}s for it to come up. The server exists and is "
+          . "still billed -- check it with the provider. Provider said: "
+          . ($err || 'nothing') . "\n";
+    }
+
+    $host = $info->{ip};
+    die "Provider server $id came up without a public address\n"
+        unless defined $host && length $host;
+
+    # Persist before using it. `ocp node ls` prints status.publicIP, teardown
+    # deletes host-based servers by it, and a robocop that restarts mid-install
+    # must not have to ask the provider again.
+    $self->_patch_status(publicIP => $host);
+
+    return $host;
+}
+
 sub _install_kubernetes {
     my $self = shift;
 
     my $name = $self->name;
-    my $host = $self->cr->{status}{publicIP} || $self->cr->{spec}{host};
     my $role = $self->role;
 
-    unless ($host) {
-        $self->_patch_status(phase => 'Failed', message => 'No host IP in status or spec');
+    my $host = eval { $self->_resolve_host };
+    unless (defined $host && length $host) {
+        # $@ carries the reason when there was one to give. The bare fallback
+        # is the case it used to report for everything, including a Hetzner
+        # worker that simply had not been asked yet.
+        $self->_patch_status(phase => 'Failed', message => $@
+            || "No host IP in status or spec, and no provider server to ask\n");
         return;
     }
 
@@ -502,6 +587,30 @@ but nothing in OCP writes it: C<_provision> creates the server and moves
 straight to C<Installing>.  The CRD keeps it in its enum, so a CR that
 arrived there some other way still reconciles instead of dying on an
 unknown phase.
+
+=head2 Where the node is
+
+C<_provision> records the address only when the provider already knows one.
+A cloud provider does not: Hetzner allocates the IP when the machine reaches
+C<running>, seconds after C<create_server> returns, so a freshly created
+worker enters C<Installing> with C<status.publicIP> unset and a message
+saying so.
+
+The C<Installing> pass resolves it, in this order: C<status.publicIP>,
+then C<spec.host> (which is where the C<ssh> and C<local> providers keep
+it), then the provider itself — bounded by
+C<$OCP::Node::ADDRESS_TIMEOUT> (120 s, the same budget
+L<OCP::Cmd::Apply::Bootstrap> spends on the same wait).  A resolved address
+is written back to C<status.publicIP> before it is used, so later passes,
+C<ocp node ls> and C<teardown> all see it.
+
+Waiting there rather than in C<_provision> is deliberate.  C<Installing> is
+re-enterable and the provider id is already in status by the time the wait
+starts; a wait inside C<_provision> would sit on the reconciler lease with
+the id of a running, billing server written down nowhere.  It needs no new
+phase either: the C<status.phase> enum in the OCPNode CRD is closed, so an
+extra value would be rejected by the API server until every deployed
+cluster's CRD had been re-applied.
 
 All Kubernetes access goes through C<_get_cr> / C<_put_cr> / C<_struct>.
 L<Kubernetes::REST> takes the B<Kind> in its first argument and resolves it

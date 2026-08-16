@@ -144,6 +144,28 @@ sub _resolve_ssh_key_name {
     return $config->admin_ssh_key_name;
 }
 
+# Which cluster the provider being written serves.
+#
+# Same source and same reason as the key name above: the project config is
+# what `ocp apply` labels its own servers from, so a provider added by hand
+# has to agree with it or its servers land under a different ocp-cluster label
+# than the control plane's and `ocp destroy` walks past them (karr #98).
+#
+# No flag overrides this. The cluster has exactly one name and it is in
+# ocp.yaml; an override would only be a way to get it wrong. With no project
+# on disk there is nothing to read, and the field is then left off rather than
+# guessed — OCP::Provider::from_cr refuses with a message the moment the CR is
+# used, which is better than a machine nobody can find.
+sub _resolve_cluster_name {
+    my ($self) = @_;
+
+    my $file = eval { $self->ocp->config } or return undef;
+    return undef unless -f $file;
+
+    my $config = eval { OCP::Config->new(file => $file) } or return undef;
+    return $config->name;
+}
+
 sub _strip_default_annotation {
     my ($self, $api) = @_;
 
@@ -177,6 +199,10 @@ sub execute {
     my $ns   = 'ocp-system';
     my $name = $self->name;
     my $type = $self->type;
+
+    # Resolved once for every provider type: it describes the cluster, not the
+    # backend, and both CR shapes below carry it.
+    my $cluster_name = $self->_resolve_cluster_name;
 
     if ($type eq 'hetzner') {
         my $token_file = $self->token_file;
@@ -232,6 +258,7 @@ sub execute {
             },
             spec => {
                 type    => 'hetzner',
+                ($cluster_name ? (clusterName => $cluster_name) : ()),
                 hetzner => \%hetzner_spec,
             },
         };
@@ -256,6 +283,7 @@ sub execute {
             },
             spec => {
                 type => $type,
+                ($cluster_name ? (clusterName => $cluster_name) : ()),
             },
         };
 
@@ -287,6 +315,14 @@ Hetzner providers it also creates an C<Opaque> Secret containing the API
 token (base64-encoded).  The C<--default> flag sets the
 C<ocp.internal/default> annotation and removes it from any previous
 default provider.
+
+Every CR carries C<spec.clusterName>, the name of the cluster the provider
+serves, read from C<ocp.yaml>.  It is what L<OCP::Provider::Hetzner> stamps
+onto each server as the C<ocp-cluster> label and what C<ocp destroy> searches
+by, so a hand-added provider that disagreed with the project would produce
+servers no teardown ever finds.  There is deliberately no flag for it — the
+cluster has one name.  With no project on disk it is left off, and
+L<OCP::Provider/from_cr> then refuses to build the adapter at all.
 
 A Hetzner CR also carries C<spec.hetzner.sshKeyName>, the uploaded key every
 server created through it boots with.  It defaults to the cluster's admin key

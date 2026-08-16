@@ -219,9 +219,19 @@ sub create_server {
 
 Blocks until the server reported in C<$info> is in C<running> state, then
 mutates C<$info> in place to set C<ip> to the public IPv4 and returns it.
-C<$timeout> defaults to 120 seconds. The control-plane path calls this
-right after C<create_server>; robocop never does (its node has the IP
-already).
+C<$timeout> defaults to 120 seconds, and a server that does not get there
+in time makes this die rather than return an C<$info> with no C<ip>.
+
+Only C<id> is read out of C<$info>, so a caller that holds nothing but the
+server id can build one: C<< { id => $id } >>.
+
+Both paths call this. L<OCP::Cmd::Apply::Bootstrap> calls it right after
+C<create_server> for the control plane, and L<OCP::Node/_resolve_host>
+calls it for a worker whose C<status.publicIP> is still empty. The line
+that used to stand here — "robocop never does, its node has the IP
+already" — was the assumption behind karr #99: a worker created through an
+OCPNode CR has no address at all until this method has run, and the install
+failed with "No host IP" before it ever tried to connect.
 
 =cut
 

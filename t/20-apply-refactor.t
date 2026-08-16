@@ -223,6 +223,18 @@ subtest '_ensure_providers writes Namespace + hetzner Secret/Provider + ssh Prov
         'hetzner provider CR names the cluster admin key';
     is $hz->[3]{spec}{hetzner}{sshKeyName}, $config->admin_ssh_key_name,
         'and it is the same derivation bootstrap uploads the key under';
+
+    # The CR is named after the TYPE, so a reader that takes metadata.name for
+    # the cluster labels every worker's server ocp-cluster=hetzner-default --
+    # invisible to `ocp destroy`, invisible to server_exists, billed either way
+    # (karr #98). clusterName is written outside the per-type branch, so an ssh
+    # provider carries it too and no future type can be forgotten.
+    is $hz->[3]{spec}{clusterName}, $config->name,
+        'hetzner provider CR names the cluster it serves';
+    my ($ssh) = grep { $_->[1] eq 'OCPNodeProvider' && $_->[2] eq 'ssh-default' }
+                     @ensured;
+    is $ssh->[3]{spec}{clusterName}, $config->name,
+        'and so does the ssh one';
 };
 
 subtest '_ensure_cp_ocpnode writes CP CR with phase=Ready' => sub {

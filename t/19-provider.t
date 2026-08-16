@@ -219,6 +219,80 @@ subtest 'add hetzner writes the SSH key name onto the CR' => sub {
         '--ssh-key-name lands on the CR';
 };
 
+#
+# A hand-added provider has to agree with the project about the cluster name,
+# or the servers it creates land under a different ocp-cluster label than the
+# control plane's and `ocp destroy` walks straight past them (karr #98). There
+# is deliberately no flag: the cluster has one name and it is in ocp.yaml.
+#
+
+{
+    package FakeOcpP;
+    sub new     { my ($c, %a) = @_; bless {%a}, $c }
+    sub verbose { 0 }
+    sub config  { $_[0]{config} }
+}
+
+subtest 'add writes the cluster name from the project onto every CR' => sub {
+    my $dir = Path::Tiny->tempdir;
+    $dir->child('ocp.yaml')->spew("name: cortex\ncontrol_planes:\n  - provider: hetzner\n");
+
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        command_chain => [ FakeOcpP->new(config => $dir->child('ocp.yaml')->stringify) ],
+        k8s           => $k8s,
+        name          => 'hetzner-d',
+        type          => 'hetzner',
+        token_file    => "$tfile",
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    my ($cr) = grep { $_->[1]{kind} eq 'OCPNodeProvider' } @ensures;
+    is $cr->[1]{spec}{clusterName}, 'cortex',
+        'spec.clusterName is the cluster from ocp.yaml';
+    isnt $cr->[1]{spec}{clusterName}, $cr->[1]{metadata}{name},
+        'and not the CR name the operator chose';
+
+    # ssh/local carry it too: it describes the cluster, not the backend, so it
+    # is written outside the per-type branch and cannot be forgotten for one.
+    my $k8s2 = FakeK8sP->new(providers => [], nodes => []);
+    my $add_ssh = OCP::Cmd::Provider::Add->new(
+        command_chain => [ FakeOcpP->new(config => $dir->child('ocp.yaml')->stringify) ],
+        k8s           => $k8s2,
+        name          => 'ssh-b',
+        type          => 'ssh',
+    );
+    capture_stdout { $add_ssh->execute([], []) };
+    my ($ssh_cr) = grep { $_->[0] eq 'ensure' && $_->[1]{kind} eq 'OCPNodeProvider' }
+                        @{$k8s2->{calls}};
+    is $ssh_cr->[1]{spec}{clusterName}, 'cortex', 'ssh provider CR carries it as well';
+};
+
+subtest 'no project on disk leaves clusterName off rather than guessing' => sub {
+    # OCP::Provider::from_cr then refuses the moment the CR is used, which says
+    # what is missing. A guessed cluster name would instead produce a running,
+    # billed server that no teardown can find.
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s        => $k8s,
+        name       => 'hetzner-e',
+        type       => 'hetzner',
+        token_file => "$tfile",
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my ($cr) = grep { $_->[0] eq 'ensure' && $_->[1]{kind} eq 'OCPNodeProvider' }
+                    @{$k8s->{calls}};
+    ok !exists $cr->[1]{spec}{clusterName}, 'the field is absent, not invented';
+};
+
 subtest 'ssh type rejects --ssh-key-name' => sub {
     eval {
         OCP::Cmd::Provider::Add->new(

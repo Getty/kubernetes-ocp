@@ -105,7 +105,14 @@ sub ensure_provider_cr {
 
     my $name = "$type-default";
 
-    my $spec = { type => $type };
+    # clusterName sits OUTSIDE the per-type branch on purpose: it is the
+    # cluster this provider serves, not a Hetzner setting, and one write here
+    # covers every provider type present and future. The CR name is
+    # "<type>-default" and says nothing about the cluster, so from_cr reading
+    # metadata.name gave every worker's server the label
+    # ocp-cluster=hetzner-default — invisible to `ocp destroy`, invisible to
+    # server_exists, and billed for either way (karr #98).
+    my $spec = { type => $type, clusterName => $config->name };
     if ($type eq 'hetzner') {
         my $secret_name = "hetzner-api-token-$type";
         my $token = eval { $secrets->hetzner_token };
@@ -391,7 +398,7 @@ sub wait_robocop_ready {
             my $ready = eval { $dep->status->readyReplicas } // 0;
             return 1 if $ready && $ready >= 1;
         }
-        sleep 5;
+        $self->wait_seconds(5);
     }
     return 0;
 }
@@ -462,7 +469,7 @@ sub poll_nodes_until_terminal {
             }
         }
         last if scalar(keys %terminal) == scalar(@$names);
-        sleep 10;
+        $self->wait_seconds(10);
     }
 
     my @results;

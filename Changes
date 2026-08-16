@@ -1,6 +1,24 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` no longer leaves paid Hetzner workers running. Every
+      server carries an `ocp-cluster` label, and the teardown deletes by it —
+      but the worker path (`ocp node add` and robocop alike) took the cluster
+      name from the OCPNodeProvider CR's own name, which `ocp apply` writes as
+      `hetzner-default`. So the control plane was labelled with the cluster
+      name and every worker with `hetzner-default`: the teardown never saw
+      them, they kept running and kept billing, and it still printed "Cluster
+      destroyed". The same wrong label made the idempotency check miss its own
+      machines, so a second provisioning attempt created a SECOND server
+      instead of finding the first. The provider CR now carries
+      `spec.clusterName`, written by `ocp apply` and `ocp provider add` and
+      read back by the worker path, so both ends label identically. A CR
+      without it is refused rather than used — one `ocp apply` rewrites it.
+      Servers already running under the old label cannot be relabelled: `ocp
+      destroy` now lists them by name, id and address at the end of a teardown
+      and prints the `hcloud` selector to remove them by hand. It never
+      deletes them itself — that label is generic enough to belong to another
+      cluster in the same project.
     - A rejected provider name now says which providers exist, with their
       types. `--provider` on `ocp node add` and the NAME of `ocp provider rm`
       take the name of an OCPNodeProvider CR, but `ocp init --provider` and

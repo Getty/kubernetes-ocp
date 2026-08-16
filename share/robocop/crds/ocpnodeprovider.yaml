@@ -34,6 +34,18 @@ spec:
                 - ssh
                 description: "Provider type: hetzner or ssh"
 
+              clusterName:
+                type: string
+                description: >-
+                  Name of the OCP cluster this provider serves (the `name:`
+                  from ocp.yaml). It becomes the ocp-cluster label on every
+                  server created through the provider, and the selector
+                  `ocp destroy` deletes by. The CR carries it because nothing
+                  in the cluster can supply it: OCPNode is trigger-neutral and
+                  robocop knows no cluster identity beyond what is stored here.
+                  Deriving it from metadata.name instead labelled workers
+                  ocp-cluster=<type>-default, which no teardown ever found.
+
               hetzner:
                 type: object
                 description: "Hetzner Cloud configuration"

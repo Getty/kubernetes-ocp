@@ -144,9 +144,19 @@ package StrictK8s {
 }
 
 package FakeProvider {
-    sub new { my ($c, %a) = @_; bless { %a }, $c }
+    sub new { my ($c, %a) = @_; bless { waits => [], %a }, $c }
     sub create_server { my ($s, %a) = @_; $s->{create_cb} ? $s->{create_cb}->(%a) : { id => 'SRV1', ip => '1.2.3.4' } }
     sub delete_server { my ($s, @a) = @_; $s->{delete_cb} ? $s->{delete_cb}->(@a) : 1 }
+    # Every real provider has this: Hetzner blocks on the cloud API,
+    # OCP::Role::Provider::ExistingHost hands the hashref straight back. What
+    # matters to the tests is whether it was called at all.
+    sub wait_for_running {
+        my ($s, $info, $timeout) = @_;
+        push @{ $s->{waits} }, { id => $info->{id}, timeout => $timeout };
+        return $s->{wait_cb}->($info, $timeout) if $s->{wait_cb};
+        $info->{ip} = '9.9.9.9';
+        return $info;
+    }
 }
 
 package FakeSSH {
@@ -173,12 +183,25 @@ package FakeHetznerServer {
 }
 
 package FakeHetznerServers {
-    sub new { my ($c, %a) = @_; bless { created => [], %a }, $c }
+    sub new { my ($c, %a) = @_; bless { created => [], waited => [], %a }, $c }
     sub list_by_label { $_[0]{existing} // [] }
+    # A freshly created server has an id and no address -- that is the real
+    # shape, and the whole of karr #99.
     sub create {
         my ($self, %params) = @_;
         push @{ $self->{created} }, \%params;
         return FakeHetznerServer->new(id => 'SRV-' . scalar @{ $self->{created} });
+    }
+    # WWW::Hetzner::Cloud::API::Servers croaks on timeout rather than returning
+    # a server that is not there yet; `never_running` reproduces that.
+    sub wait_for_status {
+        my ($self, $id, $status, $timeout) = @_;
+        push @{ $self->{waited} },
+            { id => $id, status => $status, timeout => $timeout };
+        die "Timeout waiting for server $id to reach status '$status'"
+            if $self->{never_running};
+        return FakeHetznerServer->new(
+            id => $id, ipv4 => $self->{running_ip} // '203.0.113.7');
     }
 }
 
@@ -459,6 +482,211 @@ subtest '_provision refuses a keyless Hetzner worker instead of creating it' => 
     is $sent->{status}{phase}, 'Failed', 'the node is marked Failed';
     like $sent->{status}{message}, qr/without an SSH key/,
         'and the message says what is missing, not just that something broke';
+};
+
+#
+# The address a Hetzner worker does not have yet (karr #99).
+#
+# create_server returns `ip => undef` for a fresh server: Hetzner allocates the
+# IP when the machine reaches `running`, and only wait_for_running reads it
+# back. _provision wrote that undef straight into status.publicIP and advanced
+# to Installing; _install_kubernetes then read `status.publicIP || spec.host`,
+# found neither -- a hetzner node has no spec.host -- and patched
+#
+#     phase => 'Failed', message => 'No host IP in status or spec'
+#
+# which is terminal, on a machine that had just been created and had started
+# billing, before a single connection was attempted. wait_for_running had
+# exactly one caller in the whole distribution, OCP::Cmd::Apply::Bootstrap, so
+# no worker ever asked.
+#
+# The tests below drive the two reconcile passes as two passes, because that is
+# what they are: robocop builds a fresh OCP::Node from the stored CR on every
+# tick, and `ocp node add` loops through reconcile_until_ready.
+#
+
+# Replay the recorded status writes onto a CR the way the API server would.
+# The mock transport serves one fixed document; pass 2 has to start from what
+# pass 1 actually stored, not from what the test set up.
+sub stored_after {
+    my ($k, $cr) = @_;
+    my %status = %{ $cr->{status} // {} };
+    for my $req (grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH')) {
+        my $patch = JSON::MaybeXS::decode_json($req->{body})->{status};
+        $status{$_} = $patch->{$_} for keys %$patch;
+    }
+    return { %$cr, status => \%status };
+}
+
+sub hetzner_provider {
+    my (%over) = @_;
+    my $cloud = FakeHetznerCloud->new(%over);
+    return (OCP::Provider::Hetzner->new(
+        token        => 'fake-token',
+        cluster_name => 'cortex',
+        ssh_key_name => 'ocp-cortex-admin',
+        cloud        => $cloud,
+    ), $cloud);
+}
+
+subtest '_provision writes no publicIP when the server has none yet' => sub {
+    my ($prov) = hetzner_provider();
+    my $k = StrictK8s::build(cr => ocpnode(metadata =>
+        { name => 'w11', namespace => 'ocp-system', resourceVersion => '1' }));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    $node->_provision;
+
+    my ($status_patch) = grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    my $sent = JSON::MaybeXS::decode_json($status_patch->{body})->{status};
+
+    is $sent->{phase}, 'Installing',
+        'the phase still advances -- the server exists, that part worked';
+    is $sent->{providerId}, 'SRV-1',
+        'and its id is written down before anything starts waiting on it';
+    ok !exists $sent->{publicIP},
+        'no publicIP key at all: this is a merge patch, so undef would delete one';
+    like $sent->{message}, qr/address/,
+        'and the message says what the node is waiting for';
+};
+
+subtest 'the Installing pass asks the provider for the address and installs on it' => sub {
+    # THE assertion of karr #99: a Hetzner worker that goes through _provision
+    # ends up with a publicIP in status, and the install runs against it.
+    @FakeRex::_instances = ();
+    my ($prov, $cloud) = hetzner_provider();
+    my $k = StrictK8s::build(cr => ocpnode(metadata =>
+        { name => 'w12', namespace => 'ocp-system', resourceVersion => '1' }));
+
+    my $pass1 = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    $pass1->_provision;
+
+    my $stored = stored_after($k, $k->cr);
+    is $stored->{status}{publicIP}, undef, 'pass 1 leaves no address behind';
+    $k->cr($stored);
+
+    my $pass2 = OCP::Node->from_cr($stored, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'https://cp:9345', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+    is $pass2->reconcile, 1, 'the second pass reconciles cleanly';
+
+    my $waited = $cloud->servers->{waited}[0];
+    ok $waited, 'the provider was asked';
+    is $waited->{id}, 'SRV-1',   'about the server _provision created';
+    is $waited->{status}, 'running', 'waiting for it to be running';
+    is $waited->{timeout}, 120,
+        'with the same budget OCP::Cmd::Apply::Bootstrap spends on this wait';
+
+    my $r = $FakeRex::_instances[0];
+    ok $r, 'the agent install ran';
+    is $r->{host}, '203.0.113.7',
+        'against the address the provider handed back';
+
+    my @status = map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+                 grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    is scalar(grep { ($_->{publicIP} // '') eq '203.0.113.7' } @status), 1,
+        'the address is written back to status.publicIP, once';
+    is scalar(grep { ($_->{message} // '') =~ /No host IP/ } @status), 0,
+        'and nothing was ever failed for "No host IP"';
+    is $status[-1]{phase}, 'Joining', 'the node reached Joining';
+};
+
+subtest 'a server that never comes up fails with what was waited for' => sub {
+    # Bounded, not endless -- but the message has to name the machine, the
+    # budget and the fact that it is still costing money. "No host IP in status
+    # or spec" said none of that and blamed the CR for it.
+    @FakeRex::_instances = ();
+    my ($prov) = hetzner_provider(never_running => 1);
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 'w13', namespace => 'ocp-system' },
+        status   => { phase => 'Installing', providerId => 'SRV-9' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->reconcile;
+
+    my ($sent) = map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+                 grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    is $sent->{phase}, 'Failed', 'the node fails visibly instead of waiting forever';
+    like $sent->{message}, qr/SRV-9/,  'the message names the server';
+    like $sent->{message}, qr/120s/,   'and how long it was given';
+    like $sent->{message}, qr/billed/, 'and that the machine is still costing money';
+    unlike $sent->{message}, qr/No host IP/,
+        'not the old message, which pointed at the CR instead of the server';
+    is scalar @FakeRex::_instances, 0,
+        'and nothing tried to install on a machine with no address';
+};
+
+subtest 'a node with spec.host never asks a provider for its address' => sub {
+    # The ssh and local providers keep the address in spec.host and hand it
+    # straight back from create_server, so status.providerId stays undef. Both
+    # guards have to hold: their wait_for_running (via
+    # OCP::Role::Provider::ExistingHost) is a passthrough that never sets `ip`,
+    # so asking it would look like a server that came up without an address.
+    @FakeRex::_instances = ();
+    my $prov = FakeProvider->new;
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 's1', namespace => 'ocp-system' },
+        spec     => { role => 'worker', providerRef => 'ssh-default',
+                      host => '10.0.0.5' },
+        status   => { phase => 'Installing' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->_install_kubernetes;
+
+    is scalar @{ $prov->{waits} }, 0, 'the provider was not asked';
+    is $FakeRex::_instances[0]{host}, '10.0.0.5',
+        'and the install ran against spec.host, unchanged';
+};
+
+subtest 'no address and no server to ask is still a visible failure' => sub {
+    @FakeRex::_instances = ();
+    my $prov = FakeProvider->new;
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 's2', namespace => 'ocp-system' },
+        status   => { phase => 'Installing' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->_install_kubernetes;
+
+    is scalar @{ $prov->{waits} }, 0,
+        'no providerId means there is nothing to ask about';
+    my ($sent) = map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+                 grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    is $sent->{phase}, 'Failed', 'still terminal -- nobody said where this node is';
+    like $sent->{message}, qr/no provider server to ask/,
+        'and the message says the provider had nothing to be asked about';
+};
+
+subtest 'a server that already had an address is not waited on again' => sub {
+    # The idempotent branch of Hetzner::create_server (a labelled server that
+    # already exists) returns its ipv4, so _provision writes publicIP and the
+    # install must go straight through.
+    @FakeRex::_instances = ();
+    my $prov = FakeProvider->new;
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 's3', namespace => 'ocp-system' },
+        status   => { phase => 'Installing', providerId => 'SRV-3',
+                      publicIP => '1.2.3.4' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->_install_kubernetes;
+
+    is scalar @{ $prov->{waits} }, 0, 'a known address is not re-resolved';
+    is $FakeRex::_instances[0]{host}, '1.2.3.4', 'the install used it directly';
 };
 
 subtest 'a server that came up is not marked Failed because the lease release failed' => sub {

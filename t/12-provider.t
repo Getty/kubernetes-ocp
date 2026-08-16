@@ -359,7 +359,8 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
         apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
         metadata   => { name => 'hetzner-a', namespace => 'ocp-system' },
         spec       => {
-            type => 'hetzner',
+            type        => 'hetzner',
+            clusterName => 'cortex',
             hetzner => {
                 tokenSecretRef => { name => 'ocp-provider-hetzner-a-token', key => 'token' },
                 location   => 'fsn1',
@@ -384,7 +385,15 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
     my $prov = OCP::Provider->from_cr($cr, k8s => $mock_k8s);
     isa_ok $prov, 'OCP::Provider::Hetzner';
     is $prov->token, 'secret-token-xyz', 'token decoded from Secret data';
-    is $prov->cluster_name, 'hetzner-a', 'cluster_name derived from CR metadata.name';
+
+    # This line used to assert the opposite -- 'hetzner-a', the CR's own name.
+    # That claim was the bug written down: metadata.name is what
+    # ensure_provider_cr writes as "<type>-default", so it labelled every
+    # worker's server ocp-cluster=hetzner-default and `ocp destroy` never
+    # found one again (karr #98).
+    is $prov->cluster_name, 'cortex', 'cluster_name comes from spec.clusterName';
+    isnt $prov->cluster_name, $cr->{metadata}{name},
+        'and never from the provider CR name';
 };
 
 #
@@ -403,7 +412,8 @@ subtest 'from_cr carries sshKeyName into the adapter' => sub {
     my $with = OCP::Provider->from_cr({
         metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
         spec     => {
-            type    => 'hetzner',
+            type        => 'hetzner',
+            clusterName => 'cortex',
             hetzner => {
                 tokenSecretRef => { name => 'sec', key => 'token' },
                 sshKeyName     => 'ocp-cortex-admin',
@@ -418,11 +428,66 @@ subtest 'from_cr carries sshKeyName into the adapter' => sub {
     my $without = OCP::Provider->from_cr({
         metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
         spec     => {
-            type    => 'hetzner',
-            hetzner => { tokenSecretRef => { name => 'sec', key => 'token' } },
+            type        => 'hetzner',
+            clusterName => 'cortex',
+            hetzner     => { tokenSecretRef => { name => 'sec', key => 'token' } },
         },
     }, k8s => $mock_k8s);
     is $without->ssh_key_name, '', 'absent sshKeyName leaves the adapter empty';
+};
+
+#
+# Test: from_cr refuses a provider CR with no spec.clusterName
+#
+# The other half of the same decision. A CR written before the field existed
+# has none, and every remaining source of a cluster name would be wrong:
+# metadata.name is "<type>-default", the namespace is ocp-system in every
+# cluster there is, and an empty cluster_name makes create_server skip its
+# idempotency check AND label the machine ocp-cluster= (matched by no
+# selector at all). Refusing is the only answer that does not leave a running,
+# billed, unfindable server behind.
+#
+
+subtest 'from_cr refuses a hetzner CR without spec.clusterName' => sub {
+    my $mock_k8s = bless {
+        secret => { data => { token => encode_base64('t', '') } },
+    }, 'FakeK8sForProvider';
+
+    my $prov = eval {
+        OCP::Provider->from_cr({
+            metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
+            spec     => {
+                type    => 'hetzner',
+                hetzner => { tokenSecretRef => { name => 'sec', key => 'token' } },
+            },
+        }, k8s => $mock_k8s);
+    };
+    my $err = $@;
+
+    ok !$prov, 'no adapter is built';
+    like $err, qr/spec\.clusterName/, 'the message names the missing field';
+    like $err, qr/ocp apply/,         'and how to get it written';
+
+    # An empty string is the same nothing: it would label the server
+    # ocp-cluster= and pass nothing to the label selector.
+    eval {
+        OCP::Provider->from_cr({
+            metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
+            spec     => {
+                type        => 'hetzner',
+                clusterName => '',
+                hetzner     => { tokenSecretRef => { name => 'sec', key => 'token' } },
+            },
+        }, k8s => $mock_k8s);
+    };
+    like $@, qr/spec\.clusterName/, 'an empty clusterName is not a cluster name';
+
+    # ssh and local carry no cluster label and must not grow the requirement.
+    my $ssh = OCP::Provider->from_cr({
+        metadata => { name => 'ssh-default', namespace => 'ocp-system' },
+        spec     => { type => 'ssh' },
+    }, k8s => undef);
+    isa_ok $ssh, 'OCP::Provider::SSH', 'ssh provider still builds without clusterName';
 };
 
 #
@@ -472,8 +537,9 @@ subtest 'from_cr hetzner uses typed Kind args (not path=>)' => sub {
         apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
         metadata   => { name => 'hz', namespace => 'ocp-system' },
         spec       => {
-            type    => 'hetzner',
-            hetzner => { tokenSecretRef => { name => 'mysecret', key => 'token' } },
+            type        => 'hetzner',
+            clusterName => 'cortex',
+            hetzner     => { tokenSecretRef => { name => 'mysecret', key => 'token' } },
         },
     };
     my $mock_k8s = bless {

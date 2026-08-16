@@ -75,8 +75,9 @@ subtest 'from_cr dispatches each type' => sub {
         hetzner => {
             metadata => { name => 'hz', namespace => 'ocp-system' },
             spec     => {
-                type    => 'hetzner',
-                hetzner => { tokenSecretRef => { name => 'sec', key => 'token' } },
+                type        => 'hetzner',
+                clusterName => 'c',
+                hetzner     => { tokenSecretRef => { name => 'sec', key => 'token' } },
             },
         },
         ssh => {
@@ -175,6 +176,11 @@ subtest 'from_cr dies loud on unknown type' => sub {
 #
 
 subtest 'for_spec and from_cr reach the same adapter when given the same args' => sub {
+    # The CR is deliberately NOT named after the cluster. It used to be
+    # ("shared" both times), and that is why this test watched from_cr take
+    # metadata.name for the cluster name for as long as it did: the two values
+    # were equal in the fixture and nowhere else (karr #98). `ocp apply` names
+    # the CR "<type>-default", so the fixture now does too.
     my $via_spec = OCP::Provider->for_spec(
         { provider => 'hetzner' },
         token        => 'shared-tok',
@@ -182,10 +188,11 @@ subtest 'for_spec and from_cr reach the same adapter when given the same args' =
     );
 
     my $via_cr = OCP::Provider->from_cr({
-        metadata => { name => 'shared', namespace => 'ocp-system' },
+        metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
         spec     => {
-            type    => 'hetzner',
-            hetzner => { tokenSecretRef => { name => 'sec', key => 'token' } },
+            type        => 'hetzner',
+            clusterName => 'shared',
+            hetzner     => { tokenSecretRef => { name => 'sec', key => 'token' } },
         },
     }, k8s => $shared_k8s);
 
@@ -195,6 +202,8 @@ subtest 'for_spec and from_cr reach the same adapter when given the same args' =
         'token identical between the two entry points';
     is $via_spec->cluster_name, $via_cr->cluster_name,
         'cluster_name identical between the two entry points';
+    isnt $via_cr->cluster_name, 'hetzner-default',
+        'and it is the cluster name, not the provider CR name';
 };
 
 done_testing;
