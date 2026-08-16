@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-08-16T05:27:52Z
+created: 2026-08-16T05:07:00Z
+id: 118
+priority: high
+started: 2026-08-16T05:27:46Z
+status: done
+tags:
+- bug
+- secrets
+- sops
+title: 'OCP::Secrets read paths bypass karr #86 recipient guard'
+updated: 2026-08-16T05:27:52Z
+---
+
+File: lib/OCP/Secrets.pm:370-385, 486-503, 546-564
+
+karr #86 added `_assert_key_matches_project`, but it is only called on the WRITE paths (`decrypt_age_key_with_password` at line 300). The READ paths (`read_all_secrets` 370-385, `read_kubeconfig` 486-503, `decrypt_file` 546-564) slurp `secrets_file` / `keys_file` / `kubeconfig_file` and hand the local `.ocp/age.key` straight to `File::SOPS->decrypt`. When the local key cannot open the committed files the user sees File::SOPS's opaque "could not decrypt data key with any of the provided identities" instead of the named-recipients error that karr #86 promised.
+
+Each read helper must call `_assert_key_matches_project` before slurping the encrypted file, exactly as the write path does.
+
+Repro:
+1. Commit secrets.yaml encrypted with age recipient age1A...
+2. Drop an unrelated age1B... key into .ocp/age.key
+3. Run `ocp status`
+Observed: opaque SOPS error. Expected: error naming both recipients (the karr #86 contract).
