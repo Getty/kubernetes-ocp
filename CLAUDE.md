@@ -12,25 +12,9 @@ House rules, Delegations-Lock, Hazards: `.claude/rules/ocp-rules.md` (auto-loade
 ## Delegation
 
 Verhaltensrelevanten Code an den passenden Agenten delegieren. Volle Tabelle + Lock:
-`.claude/rules/ocp-rules.md`.
-
-| Task | Agent |
-|---|---|
-| Input validation, `OCP::Choices`, `option(...)`, `_validate_*` | `ocp-choices-worker` |
-| Secrets/Keys: `OCP::Secrets`, `OCP::Keys`, `OCP::ClusterKey`, age/SOPS/PIN | `ocp-secrets-worker` |
-| State machine: `OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions` | `ocp-state-worker` |
-| Provider base + roles, Hetzner/Local/SSH provisioning, `OCP::Rex` | `ocp-provider-worker` |
-| `ocp init/apply/status/update/destroy/deploy-image`, `OCP::Cmd::Apply/*` | `ocp-lifecycle-worker` |
-| robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
-| `share/`, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
-| Cross-cutting oder nicht zuzuordnen | `ocp-worker` (Default) |
-| Tests schreiben/erweitern | `ocp-test-writer` |
-| POD und Prosa-Doku | `ocp-doc-writer` |
-| Pre-Release-Audit | `ocp-release-checker` |
-| ADR-Audit/Backfill in `docs/adr/` | `ocp-adr-auditor` |
-
-Agenten bekommen ihre Skills via `briefing.skills` force-geladen (siehe
-`.claude/agents/`); der Main-Agent delegiert, statt sie selbst zu laden.
+`.claude/rules/ocp-rules.md`. Agents bekommen ihre Skills via `briefing.skills`
+force-geladen (siehe `.claude/agents/`); der Main-Agent delegiert, statt sie
+selbst zu laden.
 
 ## Wissens-Landkarte (Skills in `.claude/skills/`)
 

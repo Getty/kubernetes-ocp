@@ -41,7 +41,9 @@ Depends on whether the Agent/Task tool is available to you.
   | Secrets/Keys: `OCP::Secrets`, `OCP::Keys`, `OCP::ClusterKey`, age/SOPS/PIN | `ocp-secrets-worker` |
   | State machine: `OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions` | `ocp-state-worker` |
   | Provider base + roles, Hetzner/Local/SSH provisioning, `OCP::Rex` | `ocp-provider-worker` |
-  | `ocp init/apply/status/update/destroy/deploy-image`, `OCP::Cmd::Apply/*` | `ocp-lifecycle-worker` |
+  | `ocp init/apply/update/deploy-image/deploy-robocop`, `OCP::Cmd::Apply/*`, `bin/ocp` dispatcher | `ocp-apply-worker` |
+  | `ocp destroy`, `OCP::Cmd::Destroy.pm` | `ocp-destroy-worker` |
+  | `ocp status`/`ocp version`, `OCP::Cmd::Status.pm`, `OCP::Cmd::Version.pm` | `ocp-status-worker` |
   | robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
   | share/, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
   | Cross-cutting or not assignable elsewhere | `ocp-worker` (default) |
