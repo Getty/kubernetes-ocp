@@ -1,6 +1,23 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - cert-manager's reconcile gate now compares the recorded version
+      against OCP::Versions->get_component_version('cert_manager'), not
+      against mere presence. The previous `if ($cm_running && $deployed->{certmanager})`
+      matched every truthy entry, so a cert-manager version bump in
+      OCP::Versions was silently skipped on the reconcile path -- only
+      OCP::Drift, which reads the running image from the cluster, caught
+      it. Registry, NFD and the GPU operator already used this equality
+      shape; cert-manager is now consistent with them (karr #69).
+    - The OCPNodeProvider CRD enum finally knows `local` (karr #110). The
+      schema declared `spec.type: [hetzner, ssh]` while OCP::Provider had
+      carried `local` since the day OCP::Provider::Local existed, so
+      `ocp provider add --type local` cleared CLI validation and then
+      failed at the API server with a 422 about a schema the operator
+      never wrote. The CRD enum is now [hetzner, ssh, local]; a new
+      subtest in t/75 reads the enum off disk and compares it against
+      OCP::Provider->types so the next drift is caught at `make test`
+      instead of at the cluster.
     - t/51-pod.t now discovers its scope from globs instead of an
       enumeration. The hardcoded list of five Provider modules was
       silent about new ones and quietly drifted when Choices.pm

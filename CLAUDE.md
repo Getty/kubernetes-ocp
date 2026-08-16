@@ -1,45 +1,48 @@
 # OCP - Omni Control Plane
 
-OCP ist ein Perl-basiertes CLI-Tool zur Verwaltung von Kubernetes-Clustern (RKE2/K3s),
-entwickelt als CPAN-Distribution mit Docker als primärer Installationsmethode. Zwei
-Komponenten: `ocp` (CLI, extern, bootstrapped Control Planes) und `robocop` (Controller
-im Cluster, managed Worker-Nodes via OCPNode/OCPNodeProvider CRDs).
+Perl-based CLI to manage Kubernetes clusters (RKE2/K3s) on Hetzner, packaged as a CPAN
+distribution and shipped as a Docker image. Two components: `ocp` (CLI; bootstraps
+control-plane servers) and `robocop` (in-cluster controller; manages worker nodes via
+OCPNode/OCPNodeProvider CRDs).
 
-Architektur, Stack-Entscheidungen (Cilium, kein Helm), Spec/Status-Trennung,
-Modul-Landkarte und Invarianten: **Skill `ocp-core`**. Regeln und Delegations-Lock:
-`.claude/rules/ocp-rules.md` (auto-geladen).
+Architektur, CRDs, Modul-Map, Spec/Status-Semantik: **Skill `ocp-core`**.
+CLI-Befehle, `ocp.yaml`-Schema, Provider-Modi: **Skill `ocp-usage`**.
+House rules, Delegations-Lock, Hazards: `.claude/rules/ocp-rules.md` (auto-loaded).
 
 ## Delegation
 
-Verhaltensrelevanten Code an den passenden Agenten delegieren statt selbst anfassen —
-Prinzip und Lanes stehen in `.claude/rules/ocp-rules.md`.
+Verhaltensrelevanten Code an den passenden Agenten delegieren. Volle Tabelle + Lock:
+`.claude/rules/ocp-rules.md`.
 
 | Task | Agent |
 |---|---|
-| CLI, Module, Provider, Drift, K8s-Zugriff | `ocp-worker` (Default) |
-| robocop Controller, IO::Async, Reconciliation-Loop | `ocp-robocop-worker` |
-| share/, Rexfile, Cilium/RKE2/Registry/GPU | `ocp-infra-worker` |
+| Input validation, `OCP::Choices`, `option(...)`, `_validate_*` | `ocp-choices-worker` |
+| Secrets/Keys: `OCP::Secrets`, `OCP::Keys`, `OCP::ClusterKey`, age/SOPS/PIN | `ocp-secrets-worker` |
+| State machine: `OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions` | `ocp-state-worker` |
+| Provider base + roles, Hetzner/Local/SSH provisioning, `OCP::Rex` | `ocp-provider-worker` |
+| `ocp init/apply/status/update/destroy/deploy-image`, `OCP::Cmd::Apply/*` | `ocp-lifecycle-worker` |
+| robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
+| `share/`, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
+| Cross-cutting oder nicht zuzuordnen | `ocp-worker` (Default) |
 | Tests schreiben/erweitern | `ocp-test-writer` |
 | POD und Prosa-Doku | `ocp-doc-writer` |
 | Pre-Release-Audit | `ocp-release-checker` |
-| ADR-Audit/Backfill in docs/adr/ | `ocp-adr-auditor` |
+| ADR-Audit/Backfill in `docs/adr/` | `ocp-adr-auditor` |
 
-Die Agenten bekommen ihre Skills via `briefing.skills` force-geladen (siehe
+Agenten bekommen ihre Skills via `briefing.skills` force-geladen (siehe
 `.claude/agents/`); der Main-Agent delegiert, statt sie selbst zu laden.
 
 ## Wissens-Landkarte (Skills in `.claude/skills/`)
 
 | Skill | Inhalt |
 |---|---|
-| `ocp-core` | Architektur, Invarianten, Modul-Map, CRDs, Spec/Status |
-| `ocp-usage` | CLI-Kommandos, Provider-Modi, PIN1/PIN2, Datei-Layout |
-| `k8s` | Server-Side Apply, Hash-Reconciliation, typed API Patterns |
-| `rke2` / `cilium` / `registry` / `gpu` | Komponenten-Konfiguration für OCP |
-| `perl-core` / `perl-moo` | Getty's Perl-Hausregeln, Moo-Patterns |
+| `ocp-core` / `ocp-usage` | Architektur & CLI |
+| `k8s` / `rke2` / `cilium` / `registry` / `gpu` | K8s- & Stack-Patterns |
+| `perl-core` / `perl-moo` | Getty's Perl-Hausregeln |
 | `perl-kubernetes-rest` / `perl-kubernetes-classes` | Kubernetes::REST / IO::K8s |
 | `perl-io-async-future` | Async-Perl für robocop |
 | `perl-release-author-getty` / `perl-release-dist-ini` | Release-Konventionen |
-| `karr` | Git-natives Ticket-Board (Koordination) |
+| `karr` | Git-natives Ticket-Board |
 
 Shared Skills sind Hardlinks (`manage-skills`) — **nie mit Edit/Write bearbeiten**,
 immer `cat > datei` (Details: globale CLAUDE.md / Skill `manage-skills`).
@@ -47,46 +50,31 @@ immer `cat > datei` (Details: globale CLAUDE.md / Skill `manage-skills`).
 ## Build & Test
 
 ```bash
-make test       # DIE bindende Suite: prove -l t/ IM Image, gegen den Pin aus
-                # cpanfile.snapshot; Arbeitsbaum read-only nach /src gemountet
-make test-v     # dasselbe, verbose
-make test-host  # prove -l t/ gegen das Host-CPAN — schnell, aber NICHT bindend
-make build      # Docker Image bauen
-make snapshot   # cpanfile.snapshot regenerieren — läuft IN Docker, nie auf dem Host
-make docker-test # prüft nur, dass das Image startet — nicht die Suite
-make smoke      # ACHTUNG: bootstrapped einen ECHTEN Host und wischt dessen Cluster
+make test          # bindende Suite (im Docker-Image, gegen cpanfile.snapshot)
+make test-v        # dasselbe, verbose
+make test-host     # schnell, nicht bindend (Host-CPAN)
+make build         # Docker-Image bauen
+make snapshot      # cpanfile.snapshot regenerieren (in Docker)
+make docker-test   # Image startet — nicht die Suite
+make smoke         # ACHTUNG: echter Host, echter Cluster
 ```
 
-Einzelne Datei über `TESTS`: `make test TESTS=t/33-registry-manifests.t`.
-
-Toolchain ist Docker-first: kein `carton install`/`cpm` auf dem Host — und seit karr #79
-gilt das auch für den Testlauf. `make test` geht durch `make build` (gecacht ~1s) und
-fährt die Suite dann im Image; nur die Dependencies kommen von dort, `lib/`, `bin/` und
-`share/` kommen aus dem Mount. Der Host-Lauf ist etwa gleich schnell, aber sein Ergebnis
-hängt davon ab, was zufällig in `~/perl5` liegt: am 2026-08-15 war er morgens grün und
-abends rot, ohne dass sich eine Zeile geändert hatte. `make build` baut immer nur für die
-Architektur der Maschine, auf der es läuft — ein arm64-Image entsteht auf einer
-arm64-Maschine. `kubectl` existiert nur zum Debuggen im Container — kein Code-Pfad darf
-es aufrufen (alles über Kubernetes::REST / IO::K8s).
+Einzelne Datei: `make test TESTS=t/33-registry-manifests.t`. Toolchain ist
+Docker-first — Details + Hazards in `.claude/rules/ocp-rules.md`.
 
 ## Workflow
 
 ```bash
 ocp init --hetzner   # Projekt initialisieren (Token, Keys, Config)
 vim ocp.yaml         # Spec bearbeiten
-ocp apply            # Cluster deployen / reconcilen
+ocp apply            # deployen / reconcilen
 ocp status           # Status + Drift
 ocp kubeconfig -e    # Kubeconfig mergen
-ocp destroy          # Cluster löschen (echte Server!)
+ocp destroy          # echte Server löschen
 ```
 
 ## Verwandte Projekte (Siblings, eigene Repos + Boards)
 
-`~/dev/perl/`: `p5-www-hetzner` (WWW::Hetzner), `p5-crypt-age` (Crypt::Age),
-`p5-file-sops` (File::SOPS), `p5-net-async-kubernetes` (Net::Async::Kubernetes),
-`io-k8s-p5` (IO::K8s), `kubernetes-rest` (Kubernetes::REST). Cross-Repo-Arbeit läuft
+`~/dev/perl/`: `p5-www-hetzner`, `p5-crypt-age`, `p5-file-sops`,
+`p5-net-async-kubernetes`, `io-k8s-p5`, `kubernetes-rest`. Cross-Repo-Arbeit läuft
 über karr-Tickets auf dem Board des jeweiligen Repos, nie als Direkt-Edit.
-
-Das `cpanfile` ist die Wahrheitsquelle für Dependencies; Getty-eigene Distributionen
-sind gepinnt. Bekannte Schuld: `Net::Async::Kubernetes` ist deklariert, aber ungenutzt
-(robocop pollt statt zu watchen, `ocp inject-key` deaktiviert) — einlösen oder werfen.

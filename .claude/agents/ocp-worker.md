@@ -1,6 +1,6 @@
 ---
 name: ocp-worker
-description: "Default OCP worker — implement, refactor, debug and test the CLI and its modules: commands under bin/ocp, OCP::Config/Secrets/Keys, providers, OCP::Node state machine, drift/versions, Kubernetes access via Kubernetes::REST/IO::K8s. Pre-loaded with Getty's Perl house rules, Moo patterns, OCP architecture and the K8s API patterns. Not for robocop's async loop (ocp-robocop-worker) or share/Rexfile content (ocp-infra-worker)."
+description: "OCP fallback worker — use only for cross-cutting tasks that don't fit one of the specialized agents. Default for work that spans multiple lanes (e.g. a refactor that touches both Secrets and the state machine). For focused work, prefer the lane-specific agent: ocp-choices-worker (input validation), ocp-secrets-worker (Secrets/Keys/ClusterKey), ocp-state-worker (Config/Drift/Node/Versions), ocp-provider-worker (Provider roles + Hetzner/Local/SSH), ocp-lifecycle-worker (init/apply/status/update/destroy)."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:

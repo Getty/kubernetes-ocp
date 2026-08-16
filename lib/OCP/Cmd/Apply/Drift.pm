@@ -218,7 +218,13 @@ sub reconcile_components {
             my $cm_running = $self->_resource_exists($api, 'Deployment', 'cert-manager',
                 namespace => 'cert-manager');
 
-            if ($cm_running && $deployed->{certmanager}) {
+            # Equality, not presence: OCP::Drift catches a running image that
+            # drifted from OCP::Versions, but this gate is the one that catches a
+            # versions bump that has not reached the cluster yet. Mirrors the
+            # shape registry, NFD and the GPU operator use — recorded version
+            # compared against the live one, with the cluster asked to confirm.
+            if ($cm_running
+                && ($deployed->{certmanager} // '') eq OCP::Versions->get_component_version('cert_manager')) {
                 print "  [ok] cert-manager up to date\n";
             } else {
                 my $was_missing = !$cm_running;

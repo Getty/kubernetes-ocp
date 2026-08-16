@@ -32,7 +32,8 @@ spec:
                 enum:
                 - hetzner
                 - ssh
-                description: "Provider type: hetzner or ssh"
+                - local
+                description: "Provider type: hetzner, ssh, or local"
 
               clusterName:
                 type: string
