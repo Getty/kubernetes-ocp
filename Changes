@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `OCP::Config::validate` now accepts `local` as a worker-pool
+      provider and rejects unknown ones with a message that lists the
+      valid types (karr #115). The check routes through
+      `OCP::Provider->known_type` / `OCP::Provider->types`, so the
+      worker list and the control-plane list share one source -- the
+      fourth hand-kept `hetzner|ssh` regex is gone. New subtests in
+      t/15-config-validation.t cover both directions.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a

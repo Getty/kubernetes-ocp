@@ -385,8 +385,15 @@ sub validate {
     for my $w (@{$self->workers}) {
         push @errors, "worker pool: name required" unless $w->{name};
         my $wprov = $w->{provider} // '';
-        push @errors, "worker pool '$w->{name}': provider required"
-            unless $wprov =~ /^(hetzner|ssh)$/;
+        if ($wprov eq '') {
+            push @errors, "worker pool '$w->{name}': provider required";
+        } elsif (!OCP::Provider->known_type($wprov)) {
+            # Same set, same source as the control-plane check above --
+            # spelling the regex here again is what karr #103 deleted for
+            # the control planes and what karr #110 made stale (karr #115).
+            push @errors, "worker pool '$w->{name}': invalid provider '$wprov' (must be "
+                . OCP::Choices::or_list(OCP::Provider->types) . ")";
+        }
     }
 
     return @errors;
