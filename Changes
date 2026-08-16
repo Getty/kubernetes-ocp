@@ -1,6 +1,21 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` no longer strands a local-provider node running and
+      billing (karr #116). The fallback node list hard-coded
+      `$cp->{provider} // 'ssh'` and `$w->{provider} eq 'ssh'` -- the
+      second silently dropped every local worker pool, the first relabelled
+      a local CP as ssh; the delete loop's `elsif ($node->{provider} eq 'ssh')`
+      branch then had no branch for `local`, so even a node that DID make
+      the list (via `.ocp/status.yaml`) fell through with nothing while the
+      teardown announced "Cluster destroyed.". The literals are replaced
+      with `OCP::Provider->known_type(...)` checks, the same shape karr
+      #103 settled on for six other input gates; ssh and local both consume
+      `OCP::Role::Provider::ExistingHost`, so the delete call is identical,
+      and only ssh still needs the cluster key (local IS the host). New
+      subtests in t/77-destroy-local-provider.t cover the status.yaml path,
+      both halves of the spec fallback, and a regression that fails if the
+      `eq 'ssh'` and `// 'ssh'` literals come back.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a
