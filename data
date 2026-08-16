@@ -1,0 +1,103 @@
+---
+class: standard
+completed: 2026-08-16T01:43:05Z
+created: 2026-08-15T20:21:30Z
+id: 92
+priority: high
+started: 2026-08-16T00:27:20Z
+status: done
+tags:
+- hetzner
+- node
+- provider
+- bug
+title: Hetzner::create_server ignoriert spec - Worker bekommt KEINE authorized_keys
+updated: 2026-08-16T01:43:05Z
+---
+
+Gefunden 2026-08-15 beim Fix von #87 (ocp-worker), am Code belegt. Das ist der
+Hetzner-Gegenpart zu #51 - dort wurde genau dieser Fehler fuer den ssh-Provider
+behoben und der Hetzner-Zweig blieb liegen.
+
+OCP::Node::_provision ruft:
+
+    $self->provider->create_server(
+        name => ..., node => ..., role => ..., spec => $self->cr->{spec},
+    );
+
+OCP::Provider::SSH liest $opts{spec} (seit #51). OCP::Provider::Hetzner::create_server
+liest es NICHT. Zwei Folgen, beide still:
+
+1. `ssh_keys => []`. Ein ueber diesen Pfad angelegter Hetzner-Worker bekommt
+   UEBERHAUPT KEINE authorized_keys. Die Maschine wird erzeugt, kostet Geld, und ist
+   fuer OCP unerreichbar. Der Bootstrap-Pfad macht es richtig
+   (Bootstrap.pm:223 laedt den admin-Public-Key hoch und uebergibt
+   ssh_keys => [$key_name]) - _provision nicht.
+
+2. spec.serverType, spec.location und spec.image aus `ocp node add` werden
+   stillschweigend verworfen. Wer `ocp node add --server-type cx42 --location nbg1`
+   tippt, bekommt die Defaults und keine Meldung.
+
+Damit ist der Hetzner-WORKER-Pfad ueber OCPNode/_provision genauso strukturell
+kaputt, wie es der ssh-Pfad vor #51 war. Und aus demselben Grund unentdeckt: es
+wurde nie ein Worker ueber diesen Weg angelegt (#29).
+
+ZU TUN:
+ - Hetzner::create_server muss $opts{spec} lesen: serverType, location, image, und
+   vor allem die SSH-Keys. Welcher Schluessel hochgeladen bzw. referenziert wird,
+   haengt am Modus - im secure mode ist es der admin-Key, den Bootstrap.pm schon
+   hochlaedt; der Name des bereits hochgeladenen Keys ist wiederverwendbar.
+ - Ein Test, der belegt, dass ein ueber _provision angelegter Hetzner-Server
+   nicht-leere ssh_keys bekommt. Das ist die Assertion, die zaehlt - alles andere
+   ist Komfort.
+ - Beim Bauen #51 danebenlegen: dort steht, warum ein reiner Unit-Test auf
+   create_server den Fehler NICHT zeigt. Er entsteht erst aus der Kombination von
+   _provision und der Provider-Implementierung.
+
+Lane: ocp-worker. Verwandt: #51 (derselbe Fehler, ssh-Seite, behoben), #29
+(Worker-Pfad unverifiziert - der Grund, warum es ueberlebt hat), #70.
+ERLEDIGT 2026-08-16 (ocp-worker), Commit e8f5307.
+
+Hetzner::create_server liest jetzt $opts{spec} - serverType, image, location - mit
+Vorrang fuer direkt uebergebene Werte, damit der Bootstrap-Pfad per Konstruktion
+unberuehrt bleibt (er uebergibt jedes Feld explizit und gar kein spec). _first_set
+behandelt den Leerstring als abwesend, dieselbe Regel wie SSH::resolve_host.
+
+EIN LEERES ssh_keys IST KEIN DEFAULT MEHR. Der Aufruf scheitert LAUT, bevor der
+Server erzeugt wird - eine schluessellose Maschine ist nie das, was jemand meinte:
+sie laeuft, kostet Geld und ist unerreichbar. Die Pruefung sitzt NACH dem
+server_exists-Zweig (ein vorhandener Server braucht keine Schluessel-Entscheidung)
+und VOR servers->create.
+
+WOHER DER KEY-NAME KOMMT - und warum der naheliegende Weg NICHT geht:
+Der Provider-CR traegt ihn als spec.hetzner.sshKeyName, OCP::Provider::for_cr liest
+ihn. OCP::Node ist dabei UNANGETASTET geblieben.
+Die billige Route (im Provider aus cluster_name ableiten) scheitert daran, dass
+from_cr cluster_name auf den Namen des PROVIDER-CR setzt, den ensure_provider_cr
+als "$type-default" schreibt - herausgekommen waere "ocp-hetzner-default-admin",
+und zwar auf genau dem kaputten Pfad. Das Durchreichen vom Trigger scheitert
+anders: OCP::Robocop::Controller hat ueberhaupt keine Cluster-Identitaet, der
+In-Cluster-Pfad waere also kaputt geblieben. Der CR bedient beide Trigger ohne
+Aenderung an der trigger-neutralen Klasse, und dort wohnt provider-spezifische
+Infrastruktur-Konfiguration ohnehin schon (tokenSecretRef, location, serverType).
+Die Ableitung selbst ist in OCP::Config::admin_ssh_key_name single-sourced, das
+Bootstrap jetzt ebenfalls ruft - Hochlader und Referenzierer koennen nicht driften.
+Die CRD musste das Feld deklarieren (sie ist structural, ein undeklariertes Feld
+wuerde vom API-Server weggeschnitten).
+
+Rot-vor-gruen belegt: die Tests gegen `git show HEAD:`-Kopien der beiden Provider
+zeigen exakt die gemeldeten Symptome - leeres ssh_keys und cx32/fsn1/debian-13
+statt cx42/nbg1/debian-12 aus der spec.
+Test: t/16-node.t faehrt die Kombination, die #51 als noetig beschreibt -
+_provision gegen einen ECHTEN OCP::Provider::Hetzner, nur der Cloud-Client gefaked.
+
+DREI FOLGEBEFUNDE, alle als eigene Tickets:
+ #98 (critical) - from_cr setzt cluster_name falsch: Server bekommen das Label
+     ocp-cluster=hetzner-default, destroy findet sie nie, und server_exists kann
+     einen vom Bootstrap gelabelten Server nicht treffen.
+ #99 (high) - der Pfad kommt trotzdem nicht ans Ziel: create_server liefert
+     ip => undef, _provision schreibt publicIP => undef, _install_kubernetes
+     stirbt an "No host IP". wait_for_running hat nur einen Aufrufer, den Bootstrap.
+ #100 - spec.hetzner.location/serverType/image am Provider-CR sind schreib-only,
+     und der CRD-Default cx23 widerspricht dem Code-Default cx32.
+ #101 - robocop joint mit dem robo-Key, hochgeladen wird nur der admin-Key.
