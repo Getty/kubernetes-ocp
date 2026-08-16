@@ -1,0 +1,79 @@
+---
+class: standard
+completed: 2026-08-16T05:15:26Z
+created: 2026-08-15T15:18:42Z
+id: 78
+priority: medium
+started: 2026-08-16T04:16:59Z
+status: done
+tags:
+- destroy
+- deployed-state
+- forensics
+title: 'destroy hat deployed.yaml auf cortex stehen lassen - #43 nur halb gegriffen?'
+updated: 2026-08-16T05:15:26Z
+---
+
+Gefunden 2026-08-15 beim Sichten des Cluster-Stands, nicht gemessen sondern aus
+Datei-Zeitstempeln erschlossen. Die Datei liegt noch da - der Befund ist
+reproduzierbar, die URSACHE nicht.
+
+BEFUND. In /storage/raid/home/getty/cluster/cortex/.ocp/ liegen:
+
+  deployed.yaml   mtime 2026-08-13 01:53
+                  certmanager: v1.21.1
+                  gpu-operator: 37aea8db628f2116cf5b8d0470b2ebcd
+                  nfd:          9cff2fd0a78ffa94e7e26c9abf0a14af
+                  registry:     849f74663dc8a486aa9121c27ce24486
+  status.yaml     mtime 2026-08-14 02:23, Inhalt "nodes: []"
+
+Der Cluster auf cortex EXISTIERT NICHT MEHR - direkt gemessen und in #45
+festgehalten: /var/lib/rancher ist weg.
+
+WARUM DAS EINE FRAGE AN destroy IST, nicht bloss Altlast. Der #43-Fix, der
+deployed.yaml gemeinsam mit status.yaml aufraeumt, ist am 2026-08-13 02:00 mit
+Commit 60aa766 gelandet - SIEBEN MINUTEN nach dem mtime von deployed.yaml, aber
+gut einen Tag VOR dem Teardown auf cortex. Ein regulaerer `ocp destroy` aus
+diesem Verzeichnis haette beide Dateien loeschen muessen. deployed.yaml lebt.
+
+Dazu passt die zweite Beobachtung nicht sauber: status.yaml hat einen JUENGEREN
+Zeitstempel als deployed.yaml und traegt "nodes: []". Es wurde also nach dem
+13.8. noch einmal geschrieben. Haette destroy es geloescht und etwas anderes es
+danach neu angelegt, muesste deployed.yaml trotzdem verschwunden sein.
+
+MOEGLICHE ERKLAERUNGEN, keine davon belegt:
+ a) destroy lief mit --keep_status. Dann ist alles korrekt und dieses Ticket
+    schliesst als "kein Fehler" - aber dann ist auch status.yaml absichtlich da.
+ b) destroy lief aus einem ANDEREN Projektverzeichnis oder gegen einen anderen
+    Pfad, und ~/cluster/cortex hat den Teardown nie mitbekommen.
+ c) destroy lief mit einem aelteren Code-Stand als dem im Arbeitsbaum (das Image
+    statt /src, oder ein Lauf von vor 60aa766).
+ d) destroy brach vor der Aufraeum-Schleife ab. Die Schleife sitzt spaet in
+    Destroy.pm, nach dem eigentlichen Abriss - ein Fehler davor wuerde die
+    Dateien stehen lassen, ohne dass der Abriss selbst misslungen waere.
+
+d) waere der interessante Fall und der einzige, der einen echten Fix braucht.
+
+WAS DER ZUSTAND HEUTE KOSTET. Genau der Schaden aus #43: ein `ocp apply` aus
+diesem Verzeichnis vergleicht einen neuen Cluster gegen die Komponenten des
+alten. Registry, NFD, GPU-Operator und cert-manager wuerden als "up to date"
+gemeldet und uebersprungen. Seit #43 gibt es zusaetzlich die Zeugen-Pruefung, die
+das abfaengt - der Hash allein reicht nicht mehr -, das Verzeichnis ist also
+nicht mehr scharf, aber es beschreibt weiterhin einen Cluster, den es nicht gibt.
+
+ZU TUN:
+ 1. Klaeren, welcher der vier Faelle es war. Am billigsten ueber die Shell-History
+    des Teardowns bzw. dessen Ausgabe - `ocp destroy` druckt "Removed
+    deployed.yaml." bzw. "Removed status.yaml." pro geloeschter Datei. Fehlen die
+    Zeilen im Protokoll, ist es c) oder d).
+ 2. Wenn d): Aufraeumen so umbauen, dass es einen abgebrochenen Abriss ueberlebt,
+    oder destroy laut scheitern lassen statt halb.
+ 3. Unabhaengig davon: ~/cluster/cortex ist Altlast. Der Cluster ist weg, cortex
+    kommt laut citiai #23 als Worker in citiai zurueck, das Verzeichnis wird nicht
+    mehr gebraucht. Erst nach Punkt 1 wegraeumen - danach ist der Beleg futsch.
+
+NICHT ANGEFASST: die Dateien liegen unveraendert, damit Punkt 1 ueberhaupt noch
+moeglich ist.
+
+Verwandt: #43 (Ursprung), #45 (Messung nach dem Teardown), citiai #23.
+BEHOBEN: commit c8be7cf (main). Destroy ruft die Cleanup-Routine _cleanup_project_state jetzt aus BEIDEN Pfaden in execute() — vom 'No nodes to destroy.'-Frueh-Return UND vom Main-Pfad-Ende. --keep_status bleibt der einzige Opt-Out und gilt in beiden Pfaden gleich. Subtests in t/47-deployed-state.t (drei neue subtests) decken das cortex-Szenario ab und fangen einen Rueckfall auf den Frueh-Return-ohne-Cleanup. make test-host: 1156 tests, alle gruen.
