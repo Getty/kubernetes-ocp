@@ -10,6 +10,7 @@ use OCP;
 use OCP::Cmd::Init;
 use OCP::Keys;
 use OCP::Secrets;
+use File::SOPS;
 
 # karr #86 — `ocp init` on a fresh clone used to destroy the project.
 #
@@ -384,6 +385,81 @@ subtest 'project_has_age_key answers for the project, not for this machine' => s
     ok $s->project_has_age_key, 'so does a committed SOPS file';
     is $s->project_age_recipients->[0], recipient_of($origin->child('keys.yaml')),
         'and it reports which recipient it is bound to';
+};
+
+# ----------------------------------------------------------- karr #118
+
+subtest 'read paths use the same recipient guard as the write paths' => sub {
+    # karr #86 wired _assert_key_matches_project into the WRITE paths
+    # (decrypt_age_key_with_password, restore_age_recipient). The READ
+    # paths (read_all_secrets, read_kubeconfig, decrypt_file) used to
+    # skip the guard and surface File::SOPS's opaque "could not decrypt
+    # data key with any of the provided identities" line. The fix:
+    # every read calls the same guard with the identity it is about to
+    # hand to SOPS, so the user sees the karr #86 message — with both
+    # recipients named — instead.
+    my $origin = run_init()->{dir};
+    my $clone  = clone_project($origin);
+
+    # Damage: a fresh keypair in .ocp/. Made in a scratch dir because
+    # generate_age_key now refuses to do this in a project that is bound.
+    my $scratch = path(tempdir(CLEANUP => 1));
+    OCP::Secrets->new(project_dir => $scratch)->generate_age_key;
+    $clone->child('.ocp')->mkpath;
+    $scratch->child('.ocp', $_)->copy($clone->child('.ocp', $_))
+        for qw(age.key age.pub);
+
+    my $secrets = OCP::Secrets->new(project_dir => $clone);
+
+    # The clone has keys.yaml (committed) but no secrets.yaml or
+    # kubeconfig.yaml — those are write-side products. Create both
+    # bound to the project's real recipient so the read paths
+    # actually reach the File::SOPS->decrypt call.
+    my $recipient = recipient_of($clone->child('keys.yaml'));
+
+    my $sops_secrets = File::SOPS->encrypt(
+        data       => { hetzner_token => 'something' },
+        recipients => [$recipient],
+        format     => 'yaml',
+    );
+    $clone->child('secrets.yaml')->spew($sops_secrets);
+
+    my $sops_kube = File::SOPS->encrypt(
+        data       => { apiVersion => 'v1', clusters => [] },
+        recipients => [$recipient],
+        format     => 'yaml',
+    );
+    $clone->child('kubeconfig.yaml')->spew($sops_kube);
+
+    # Each read path must croak with the karr #86 message, not the
+    # SOPS opaque "could not decrypt data key" line.
+    my @cases = (
+        [ 'read_all_secrets' => sub { $secrets->read_all_secrets } ],
+        [ 'read_secret'      => sub { $secrets->read_secret('hetzner_token') } ],
+        [ 'read_kubeconfig'  => sub { $secrets->read_kubeconfig } ],
+        [ 'decrypt_file'     => sub { $secrets->decrypt_file('keys.yaml') } ],
+    );
+    for my $case (@cases) {
+        my ($name, $code) = @$case;
+        my $err = do { local $@; eval { $code->() }; $@ };
+        ok $err, "$name: refused to decrypt with the wrong key";
+        like $err, qr/does not belong to this project/,
+            "$name: croaks with the karr #86 message, not the SOPS line";
+        like $err, qr/keys\.yaml needs:\s+age1/,
+            "$name: names which recipient the project really needs";
+        unlike $err, qr/could not decrypt data key/i,
+            "$name: not the opaque SOPS error";
+    }
+
+    # And the right key still works. Remove the foreign key, unlock
+    # the project's own key, and the read paths decrypt.
+    $clone->child('.ocp', $_)->remove for qw(age.key age.pub);
+    my $r = run_init(dir => $clone->stringify);
+    is $r->{err}, '', 'unlocked the project key' or diag $r->{out};
+
+    my $re_secrets = OCP::Secrets->new(project_dir => $clone);
+    is $re_secrets->read_secret('hetzner_token'), 'something',
+        'read_secret returns the value once the right key is back';
 };
 
 sub _have {
