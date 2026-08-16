@@ -1,0 +1,64 @@
+---
+class: standard
+completed: 2026-08-16T02:27:52Z
+created: 2026-08-16T00:51:03Z
+id: 99
+priority: high
+started: 2026-08-16T02:03:58Z
+status: done
+tags:
+- hetzner
+- node
+- provider
+- bug
+title: Hetzner-Worker bleibt ohne publicIP haengen - _provision wartet nicht auf die
+  Adresse
+updated: 2026-08-16T02:29:32Z
+---
+
+Gefunden 2026-08-16 beim Fix von #92 (ocp-worker). #92 hat den Server-Erstellungs-
+Schritt repariert; der Pfad kommt trotzdem nicht ans Ziel.
+
+KETTE, am Code nachvollzogen:
+
+  Hetzner::create_server liefert fuer einen FRISCHEN Server
+      ip => undef
+  (die Adresse steht erst nach wait_for_running fest, das ist Absicht)
+
+  OCP::Node::_provision schreibt daraufhin
+      publicIP => $result->{ip} // $result->{ipv4}     # = undef
+  und setzt die Phase auf Installing
+
+  OCP::Node::_install_kubernetes liest
+      $self->cr->{status}{publicIP} || $self->cr->{spec}{host}
+  Bei hetzner ist beides leer - spec.host gibt es dort nicht - und der Aufruf
+  stirbt mit "No host IP in status or spec".
+
+wait_for_running hat genau EINEN Aufrufer: lib/OCP/Cmd/Apply/Bootstrap.pm (~232),
+also nur den Control-Plane-Pfad. Der Worker-Pfad ruft es nie.
+
+FOLGE: Ein Hetzner-Worker ueber `ocp node add` oder ueber robocop wird ANGELEGT
+(kostet ab da Geld), bekommt seit #92 auch SSH-Keys und die richtige Groesse - und
+bleibt dann in Installing haengen bzw. faellt auf Failed, ohne dass je eine
+Verbindung versucht wurde. Zusammen mit #98 (falsches ocp-cluster-Label) heisst
+das: der Server laeuft, ist unbenutzt, und destroy findet ihn auch nicht.
+
+ZU TUN: _provision muss die Adresse abwarten, bevor es die Phase weiterschreibt.
+wait_for_running ist bei SSH/Local ein Durchreicher (ueber ExistingHost), ein
+Aufruf aus _provision bliebe also trigger-neutral - das ist der naheliegende Weg.
+ZU ENTSCHEIDEN ist trotzdem, WO gewartet wird:
+ - in _provision, synchron: einfach, aber die Reconcile-Schleife blockiert, und
+   bei robocop ist das eine Schleife, die andere Nodes bedienen muesste.
+ - als eigener Phasen-Schritt: der CR bleibt in Installing, und der naechste
+   Reconcile-Durchlauf holt die Adresse nach. Passt besser zur Zustandsmaschine
+   und zu robocop, kostet aber einen Zustand mehr.
+Die zweite Variante ist vermutlich richtig - sieh dir die Phasen in OCP::Node an,
+bevor du waehlst.
+
+Test: ein ueber _provision angelegter Hetzner-Node muss am Ende eine publicIP im
+Status haben, und _install_kubernetes darf nicht mit "No host IP" sterben.
+
+Lane: ocp-worker (mit Blick auf ocp-robocop-worker, weil es die Schleife beruehrt).
+Verwandt: #92, #98, #29 (Worker-Pfad end-to-end unverifiziert), #51/#53
+(dieselbe Familie: der ssh-Worker-Pfad war aus denselben Gruenden nie gelaufen).
+ERLEDIGT 2026-08-16, Commit cd6360d. Die vollstaendige Begruendung steht in der Commit-Message. Gewartet wird in _install_kubernetes, nicht in _provision - sonst existiert 120s lang ein abgerechneter Server, dessen providerId nirgends steht. Keine neue Phase, weil das status.phase-Enum der CRD geschlossen ist. Nebenbefund: _provision schrieb publicIP => undef, und ein Null im Merge-Patch LOESCHT eine bereits gefundene Adresse.
