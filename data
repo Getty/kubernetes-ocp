@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-08-16T05:20:34Z
+created: 2026-08-16T05:06:39Z
+id: 115
+priority: high
+started: 2026-08-16T05:20:07Z
+status: done
+tags:
+- bug
+- provider
+- validation
+title: OCP::Config::validate worker-provider regex excludes 'local'
+updated: 2026-08-16T05:20:34Z
+---
+
+File: lib/OCP/Config.pm:389
+
+In sub validate, the worker-pool provider check is hard-coded to /(hetzner|ssh)/, even though `local` is a valid OCP::Provider type and OCP::Provider->known_type("local") returns true. As a result a spec with workers: [{ name: w1, provider: local }] is rejected with "worker pool 'w1': provider required", while hetzner is accepted even though the same regex blocks local. Same pattern karr #103 already closed for other enums: route through OCP::Provider->known_type instead of a hand-kept regex.
