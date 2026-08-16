@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-08-16T05:29:38Z
+created: 2026-08-16T05:07:52Z
+id: 124
+priority: medium
+started: 2026-08-16T05:24:10Z
+status: done
+tags:
+- bug
+- cli
+- validation
+- init
+title: ocp init options lack enum validation (--provider/--dist/--service/--ssh-key/--host)
+updated: 2026-08-16T05:29:38Z
+---
+
+File: lib/OCP/Cmd/Init.pm:41-74
+
+Five MooX::Options blocks accept a plain `Str` with no enum check:
+
+- line 41 dist: doc says "rke2 (default) or k3s" but `ocp init --dist k8s` reaches apply unchallenged
+- line 47 provider: doc says "hetzner (default), ssh, or local" but a typo like `--provider hetzner-cloud` falls through OCP::Config::write_spec silently (only branches for hetzner|ssh|local at lib/OCP/Config.pm:465-485)
+- line 58 host: only guarded in one direction (`!$self->host` when ssh); `--host foo --provider hetzner` writes a spec and silently eats --host
+- line 64 service: doc promises "default systemd for others" that is never applied; write_spec only honours service for local
+- line 70 ssh_key: --ssh-key ~/.ssh/id_ed25519.pub copies the public half into the private slot (Init.pm:786-793 only -f checks, no key-shape check)
+
+Same defect shape as karr #103. Fix: drive each option through the canonical OCP::Choices / OCP::Provider->known_type helpers, and reject --host when provider != ssh. Add a regression test that fakes --provider garbage and asserts the user gets the named-values rejection (karr #103 pattern).
+
+Repro for --provider: ocp init --provider hetzner-cloud -> writes a spec with no control_planes block, no warning.
+Implemented in commit 66b51c4. Validation added for --dist, --provider, --service, --ssh-key, --host. Subtests in t/41-init-scaffold.t assert each rejection.
