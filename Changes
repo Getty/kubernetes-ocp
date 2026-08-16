@@ -1,6 +1,26 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - t/43-k8s-call-contract.t now derives the kind-bearing method list
+      from Kubernetes::REST at test time (via a helper that reads the
+      package source and picks out every top-level `sub NAME {`
+      definition) instead of hard-coding `(get|delete|patch|list|ensure|
+      _delete_object)` in the regex. The hand-kept list silently dropped
+      methods every time Kubernetes::REST grew one -- patch_status in 1.107
+      was the last known casualty -- so a fresh method was a fresh
+      regression that the next karr ticket would have to repeat this
+      fix for. The dynamic derivation also catches log/port_forward/exec/
+      attach/watch and the object-shaped update/create/update_status/
+      ensure_all/ensure_only, which the static list never did; OCP::Node's
+      own _delete_object wrapper (added in #35) is still joined in by a
+      small explicit list, since it is OCP code rather than Kubernetes::REST
+      code. The regex's "what kind of literal counts as an api-version"
+      half is unchanged -- broadening it caught ->scp_to('/local/file'),
+      ->_parse_image_ref('ghcr.io/foo/bar:v1.2.3') and similar, so the
+      `forbid method-name` shape stays. A regression subtest pins the
+      dynamic derivation in place: if anyone re-hardcodes the alternation
+      (or half-reverts and leaves the helper unused) the test fails on
+      names Kubernetes::REST 1.107 already exposed.
     - t/51-pod.t now discovers its scope from globs instead of an
       enumeration. The hardcoded list of five Provider modules was
       silent about new ones and quietly drifted when Choices.pm
