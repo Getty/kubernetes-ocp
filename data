@@ -1,0 +1,50 @@
+---
+class: standard
+completed: 2026-08-16T04:25:43Z
+created: 2026-08-16T01:59:45Z
+id: 106
+priority: medium
+started: 2026-08-16T04:09:37Z
+status: done
+tags:
+- drift
+- robustness
+title: Drift.pm ueberspringt still, wenn skip_if auf eine Methode zeigt, die es nicht
+  gibt
+updated: 2026-08-16T04:25:43Z
+---
+
+Gefunden 2026-08-16 beim Fix von #80 (ocp-worker). Dieselbe Fehlerform wie #80,
+aber gegen OCPs EIGENEN Code statt gegen eine Abhaengigkeit - und deshalb noch
+weniger zu rechtfertigen.
+
+lib/OCP/Drift.pm:164:
+
+    next if $skip && $config->can($skip) && $config->$skip;
+
+$skip kommt aus der Konstanten-Tabelle @COMPONENT_PROBES im selben Modul
+(skip_if => "no_cert"), und OCP::Config::no_cert existiert heute
+(lib/OCP/Config.pm:153).
+
+WAS PASSIERT, WENN DIE METHODE UMBENANNT ODER ENTFERNT WIRD: die can()-Probe
+schlaegt fehl, das `next` entfaellt, und die Probe wird nicht mehr uebersprungen -
+ohne ein Wort. Ein Cluster mit `nocert: true` wuerde dann dauerhaft als
+cert-manager-driftend gemeldet. Kein Fehler, kein Hinweis, nur ein Befund, der
+nicht stimmt.
+
+WARUM DAS SCHLIMMER IST ALS DER FALL IN #80: dort war die Probe auf eine FREMDE
+Distribution gerichtet, wo eine Versionsdifferenz wenigstens denkbar ist. Hier
+stehen Tabelle und Methode in DERSELBEN Distribution. Es gibt keinen Zustand, in
+dem der Name in der Tabelle steht und die Methode zu Recht fehlt - das waere
+schlicht ein Fehler, und genau den verschluckt die Probe.
+
+ZU TUN: bei einem Fehltreffer croaken statt still weiterzulaufen. Ein Name aus
+einer Konstanten-Tabelle derselben Distribution, den das Ziel nicht kennt, ist ein
+Programmierfehler und soll sich so verhalten. Zwei Zeilen.
+Im selben Zug pruefen, ob @COMPONENT_PROBES weitere Felder hat, die per Name auf
+OCP-eigene Methoden zeigen (remedy => {task => ...} ist ein Kandidat, geht aber an
+Rex, nicht an eine Perl-Methode - nachsehen).
+
+Lane: ocp-worker. Verwandt: #80 (dieselbe Form gegen Abhaengigkeiten), #32
+(hat @COMPONENT_PROBES zuletzt erweitert), #21/#35 (das Fehlerbild
+"Aufruf misslingt, Operation meldet Erfolg").
