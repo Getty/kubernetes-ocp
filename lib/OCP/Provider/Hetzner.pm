@@ -293,12 +293,13 @@ sub create_server {
 
 =method wait_for_running
 
-    $prov->wait_for_running($info, 120);
+    $prov->wait_for_running($info);
 
 Blocks until the server reported in C<$info> is in C<running> state, then
 mutates C<$info> in place to set C<ip> to the public IPv4 and returns it.
-C<$timeout> defaults to 120 seconds, and a server that does not get there
-in time makes this die rather than return an C<$info> with no C<ip>.
+C<$timeout> defaults to C<$OCP::Provider::Hetzner::ADDRESS_TIMEOUT>
+(120 s), and a server that does not get there in time makes this die rather
+than return an C<$info> with no C<ip>.
 
 Only C<id> is read out of C<$info>, so a caller that holds nothing but the
 server id can build one: C<< { id => $id } >>.
@@ -313,9 +314,18 @@ failed with "No host IP" before it ever tried to connect.
 
 =cut
 
+# How long a freshly created Hetzner server may take to reach C<running>.
+# Both L<OCP::Cmd::Apply::Bootstrap> and L<OCP::Node/_resolve_host> spend this
+# budget on the same wait; neither names its own number, so a region that is
+# slow enough to make `ocp apply` sit there is fast enough for a worker to give
+# up. The number lives in the module that owns the wait -- the same shape
+# L<OCP::SSH::WAIT_TIMEOUT> uses for the SSH equivalent (karr #109). `our` so
+# a test can shorten it without timing the real thing.
+our $ADDRESS_TIMEOUT = 120;
+
 sub wait_for_running {
     my ($self, $server_info, $timeout) = @_;
-    $timeout //= 120;
+    $timeout //= $ADDRESS_TIMEOUT;
 
     my $server = $self->cloud->servers->wait_for_status(
         $server_info->{id}, 'running', $timeout
@@ -411,7 +421,7 @@ __END__
         role     => 'control-plane',
         location => 'fsn1',
     );
-    $prov->wait_for_running($info, 120);
+    $prov->wait_for_running($info);
     print "Server up at $info->{ip}\n";
 
 =description

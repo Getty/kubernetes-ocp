@@ -64,7 +64,7 @@ the same way as the cloud adapter would.
 
 =method wait_for_running
 
-    my $info = $p->wait_for_running($info, 120);
+    my $info = $p->wait_for_running($info);
 
 No-op: the host was running before we got here. Returns its argument.
 

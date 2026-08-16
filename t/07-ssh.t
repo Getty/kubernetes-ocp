@@ -200,4 +200,28 @@ use OCP::SSH;
     is($ssh->key_file, '/env/ssh/key', 'key_file from OCP_SSH_KEY env');
 }
 
+#
+# Test: is_reachable takes no timeout -- SSH's ConnectTimeout is the only
+# ceiling on a probe (karr #112). The argument used to be there, defaulted to
+# 5, and was never read: a caller thinking "give it 10s" got one probe with a
+# 10s ConnectTimeout, and the parameter told it its number mattered.
+#
+
+{
+    # Bound probe, returns reachable=0 by default.
+    package FakeSSH {
+        sub new { my ($c, %a) = @_; bless { %a }, $c }
+        sub run {
+            my ($s, $cmd) = @_;
+            return { exit => $s->{reachable} ? 0 : 1, stdout => '', stderr => '' };
+        }
+    }
+    my $up   = FakeSSH->new(reachable => 1);
+    my $down = FakeSSH->new(reachable => 0);
+    ok  OCP::SSH::is_reachable($up),
+        'is_reachable answers true when run returns 0';
+    ok !OCP::SSH::is_reachable($down),
+        'is_reachable answers false when run returns non-zero';
+}
+
 done_testing;

@@ -268,14 +268,6 @@ sub _provision {
     return $result;
 }
 
-# How long to wait for a freshly created server to report an address.
-#
-# The same 120s the control-plane path spends on the same question in
-# OCP::Cmd::Apply::Bootstrap. One number for one wait: a region that is slow
-# enough to make `ocp apply` sit there must not be fast enough to make a worker
-# give up. `our` so a test can shorten it without timing the real thing.
-our $ADDRESS_TIMEOUT = 120;
-
 # Where this node can be reached, in the order the answer is cheapest.
 #
 #   1. status.publicIP  -- already known, and what every later pass sees
@@ -309,14 +301,19 @@ sub _resolve_host {
     return undef unless $provider && $provider->can('wait_for_running');
 
     my $info = { id => $id };
-    my $ok = eval { $provider->wait_for_running($info, $ADDRESS_TIMEOUT); 1 };
+    # No budget named here on purpose: this is the same wait the control-plane
+    # path makes in OCP::Cmd::Apply::Bootstrap, so it takes the same number
+    # from the provider that owns the operation
+    # ($OCP::Provider::Hetzner::ADDRESS_TIMEOUT, 120 s). Naming our own used
+    # to disagree with what Bootstrap spent (karr #112).
+    my $ok = eval { $provider->wait_for_running($info); 1 };
     unless ($ok) {
         my $err = $@ // '';
         chomp $err;
         die "No address for provider server $id after waiting up to "
-          . "${ADDRESS_TIMEOUT}s for it to come up. The server exists and is "
-          . "still billed -- check it with the provider. Provider said: "
-          . ($err || 'nothing') . "\n";
+          . "${OCP::Provider::Hetzner::ADDRESS_TIMEOUT}s for it to come up. "
+          . "The server exists and is still billed -- check it with the "
+          . "provider. Provider said: " . ($err || 'nothing') . "\n";
     }
 
     $host = $info->{ip};
@@ -474,7 +471,7 @@ sub _refresh {
 # lines are ceilings this distribution sets itself:
 #
 #   provision: create_server + the status writes            ~10 s
-#   address:   $OCP::Node::ADDRESS_TIMEOUT                <= 120 s   (karr #99)
+#   address:   $OCP::Provider::Hetzner::ADDRESS_TIMEOUT  <= 120 s   (karr #99, #112)
 #   ssh:       $OCP::SSH::WAIT_TIMEOUT                    <= 120 s   (karr #109)
 #   install:   prepare_node (apt refresh, chrony,
 #              locale-gen) + get.rke2.io download,
@@ -683,7 +680,7 @@ saying so.
 The C<Installing> pass resolves it, in this order: C<status.publicIP>,
 then C<spec.host> (which is where the C<ssh> and C<local> providers keep
 it), then the provider itself — bounded by
-C<$OCP::Node::ADDRESS_TIMEOUT> (120 s, the same budget
+C<$OCP::Provider::Hetzner::ADDRESS_TIMEOUT> (120 s, the same budget
 L<OCP::Cmd::Apply::Bootstrap> spends on the same wait).  A resolved address
 is written back to C<status.publicIP> before it is used, so later passes,
 C<ocp node ls> and C<teardown> all see it.

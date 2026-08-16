@@ -32,6 +32,22 @@ Revision history for OCP
       subtest in t/75 reads the enum off disk and compares it against
       OCP::Provider->types so the next drift is caught at `make test`
       instead of at the cluster.
+    - The address wait is one budget again. `$OCP::Node::ADDRESS_TIMEOUT` is
+      gone: the constant now lives in `$OCP::Provider::Hetzner` (where the
+      wait is owned, the same shape `OCP::SSH::WAIT_TIMEOUT` already
+      uses), and the two callers — `OCP::Cmd::Apply::Bootstrap` for the
+      control plane and `OCP::Node::_resolve_host` for every worker —
+      take the module's default. Naming their own number was the
+      asymmetry karr #109 just killed for SSH; the address wait had it
+      too, with three 120s that would have drifted the moment one of
+      them moved (karr #112). The single-source-of-truth test that
+      pinned it is the same shape as the SSH one — a budget comparison,
+      not a literal number per side.
+    - `OCP::SSH::is_reachable` no longer takes a `$timeout` it never read.
+      The parameter used to land in `$timeout //= 5`, then vanish — the
+      actual ceiling was `connect_timeout` (10 s) on a single probe. A
+      caller thinking "give it 10 s" got one probe with a 10 s
+      ConnectTimeout, and was told its number mattered. Removed.
     - t/51-pod.t now discovers its scope from globs instead of an
       enumeration. The hardcoded list of five Provider modules was
       silent about new ones and quietly drifted when Choices.pm
