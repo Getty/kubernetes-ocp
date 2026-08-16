@@ -93,6 +93,26 @@ sub from_cr {
         # here means create_server refuses rather than building a machine
         # with an empty authorized_keys (karr #92).
         $args{ssh_key_name} = $hspec->{sshKeyName};
+
+        # What every node of this provider gets when it names nothing itself.
+        # These three were written by `ocp provider add` and shown by `ocp
+        # provider ls` since the beginning and read by NOBODY, so
+        # `--location nbg1` moved no server (karr #100). They land at rank 3 of
+        # OCP::Provider::Hetzner::create_server's four: below the node's own
+        # spec, above the code default.
+        #
+        # They stay under spec.hetzner, unlike clusterName, because that is
+        # what they are: Hetzner backend configuration. clusterName went
+        # top-level in karr #98 for the opposite reason -- it names the cluster,
+        # not the backend, and every provider type has one.
+        #
+        # Only from_cr fills them. for_spec is the bootstrap path and there is
+        # no provider CR there at all; the control plane's server type comes
+        # out of ocp.yaml and is passed to create_server by name, which is
+        # rank 1 and beats this outright.
+        $args{default_server_type} = $hspec->{serverType};
+        $args{default_image}       = $hspec->{image};
+        $args{default_location}    = $hspec->{location};
     }
     elsif ($type eq 'ssh') {
         $args{ssh_key_path} = $cr->{spec}{ssh}{keyPath} // '';
@@ -126,7 +146,16 @@ sub _build {
         return OCP::Provider::Hetzner->new(
             token        => $args->{token},
             cluster_name => $args->{cluster_name},
+            # Guarded rather than passed straight: the attributes default to
+            # '' and treat '' as absent, and an explicit undef would defeat
+            # both. Absent from the CR must arrive as absent on the adapter.
             ($args->{ssh_key_name} ? (ssh_key_name => $args->{ssh_key_name}) : ()),
+            ($args->{default_server_type}
+                ? (default_server_type => $args->{default_server_type}) : ()),
+            ($args->{default_image}
+                ? (default_image       => $args->{default_image})       : ()),
+            ($args->{default_location}
+                ? (default_location    => $args->{default_location})    : ()),
         );
     }
     elsif ($type eq 'ssh') {
@@ -233,6 +262,20 @@ L<OCP::Provider::Hetzner/ssh_key_name> — the key every server created
 through this provider boots with.  It is the only route by which a worker
 learns which key to use: L<OCP::Node> is trigger-neutral and neither it nor
 robocop knows the cluster name.
+
+C<spec.hetzner.serverType>, C<.image> and C<.location> become
+L<OCP::Provider::Hetzner/default_server_type>, L</default_image> and
+L</default_location> — what a node of this provider gets when its own OCPNode
+spec names none.  They sit at rank 3 of the four
+L<OCP::Provider::Hetzner/create_server> resolves: below the node's own spec,
+above the code default.  Written since the beginning by C<ocp provider add>
+and read by nobody until karr #100, which is why C<--location nbg1> used to
+move no server at all.
+
+C<for_spec> sets none of them, and that is the point rather than an omission:
+it is the bootstrap path, there is no provider CR in it, and the control
+plane's server type comes out of C<ocp.yaml> as a named C<create_server>
+argument — rank 1, which beats every rank below.
 
 =seealso
 

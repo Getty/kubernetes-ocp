@@ -34,11 +34,40 @@ C<spec.hetzner.sshKeyName> on the OCPNodeProvider CR.
 Empty by default, and an empty value is not a usable one: a server with no
 key is unreachable, so C<create_server> refuses instead of creating it.
 
+=attr default_server_type
+
+    my $hz = OCP::Provider::Hetzner->new(default_server_type => 'cx42');
+
+The server type a node created through this provider gets when its own
+OCPNode spec names none.  Third of the four ranks C<create_server> resolves
+(see there); L<OCP::Provider/from_cr> fills it from
+C<spec.hetzner.serverType> on the OCPNodeProvider CR.  Empty by default, and
+empty counts as absent.
+
+=attr default_image
+
+    my $hz = OCP::Provider::Hetzner->new(default_image => 'debian-12');
+
+The OS image, same rank and same shape, from C<spec.hetzner.image>.
+
+=attr default_location
+
+    my $hz = OCP::Provider::Hetzner->new(default_location => 'nbg1');
+
+The datacentre location, same rank and same shape, from
+C<spec.hetzner.location>.  This is the one that makes a provider named
+C<hetzner-nbg1> worth having: every node of it that does not pick a region
+lands in that region.
+
 =cut
 
 has token => (is => 'ro', required => 1);
 has cluster_name => (is => 'ro', default => '');
 has ssh_key_name => (is => 'ro', default => '');
+
+has default_server_type => (is => 'ro', default => '');
+has default_image       => (is => 'ro', default => '');
+has default_location    => (is => 'ro', default => '');
 
 has cloud => (
     is      => 'lazy',
@@ -131,12 +160,44 @@ A label match is returned with C<newly_created = 0> and no IP set; this
 is the same shape the caller would have built from a fresh create, minus
 the wait.
 
-Two call shapes reach this method. The bootstrap path names every option
-directly; L<OCP::Node/_provision> instead hands over the whole OCPNode spec
-as C<< spec => $cr->{spec} >> and names none of them. Both are read, and a
-directly passed value wins — note the spelling, C<serverType> in the CRD
-against C<server_type> in the options. C<ssh_keys> falls back to
-L</ssh_key_name>; when neither yields a key the call dies before anything is
+C<server_type>, C<image> and C<location> have four possible sources, and the
+order between them is the contract:
+
+=over 4
+
+=item 1. the named option
+
+C<< server_type => 'cx32' >>. The bootstrap path
+(L<OCP::Cmd::Apply::Bootstrap>) names all three, so nothing below can move
+the control plane.
+
+=item 2. the OCPNode spec
+
+C<< spec => $cr->{spec} >>, which is all L<OCP::Node/_provision> passes —
+C<spec.serverType>, C<spec.image>, C<spec.location>, what the user typed into
+C<ocp node add>. Note the spelling: camelCase in the CR, snake_case in the
+options.
+
+=item 3. this provider's defaults
+
+L</default_server_type>, L</default_image>, L</default_location>, filled by
+L<OCP::Provider/from_cr> from C<spec.hetzner.*> on the OCPNodeProvider CR.
+The per-provider rank: what every node of C<hetzner-nbg1> gets unless it says
+otherwise.
+
+=item 4. the code default
+
+C<cx32> / C<debian-13> / C<fsn1>. The last word, and the only one that is not
+configurable.
+
+=back
+
+Higher wins, and an empty string counts as absent at every rank — a
+C<serverType: ""> in a hand-edited CR is a node that did not choose, not a
+node that chose nothing.
+
+C<ssh_keys> resolves on its own two-rank scale: the argument, then
+L</ssh_key_name>. When neither yields a key the call dies before anything is
 created, because a Hetzner server with an empty C<authorized_keys> runs,
 bills, and can never be logged in to.
 
@@ -192,11 +253,28 @@ sub create_server {
       . "OCPNodeProvider CR ('ocp apply' writes it as ocp-<cluster>-admin).\n"
         unless @ssh_keys;
 
+    # The order in each _first_set below IS the contract, so read it as one:
+    # named option, then the node's own spec, then this provider's default,
+    # then the constant. Rank 3 is the one karr #100 added -- the provider CR
+    # carried these three fields from the beginning, `ocp provider add` wrote
+    # them and `ocp provider ls` printed them, and nothing read them, so
+    # `--location nbg1` moved no server.
+    #
+    # It sits BELOW the node spec because the node is the more specific
+    # statement, and ABOVE the constant because a provider the user configured
+    # has to beat a value hardcoded here. That the OCPNodeProvider CRD declares
+    # no `default:` on these three is what keeps the rank meaningful: a
+    # materialised schema default is indistinguishable from a chosen value, so
+    # it would make "this provider said nothing" unrepresentable and the
+    # constant unreachable.
     my $server = $self->cloud->servers->create(
         name        => $name,
-        server_type => _first_set($opts{server_type}, $spec->{serverType}, 'cx32'),
-        image       => _first_set($opts{image},       $spec->{image},      'debian-13'),
-        location    => _first_set($opts{location},    $spec->{location},   'fsn1'),
+        server_type => _first_set($opts{server_type}, $spec->{serverType},
+                                  $self->default_server_type, 'cx32'),
+        image       => _first_set($opts{image},       $spec->{image},
+                                  $self->default_image,       'debian-13'),
+        location    => _first_set($opts{location},    $spec->{location},
+                                  $self->default_location,    'fsn1'),
         ssh_keys    => \@ssh_keys,
         labels      => {
             'ocp-cluster' => $cluster,
@@ -360,7 +438,9 @@ created branch.
 The OCP cluster this provider manages, embedded as the C<ocp-cluster>
 label. Set by the factory from C<OCP::Provider/for_spec>'s
 C<cluster_name> arg or C<OCP::Provider/from_cr>'s
-C<$cr-E<gt>{metadata}{name}>.
+C<spec.clusterName> — B<not> the CR's own name, which is C<< <type>-default >>
+and labelled every worker into a cluster C<ocp destroy> could not find
+(karr #98).
 
 =seealso
 

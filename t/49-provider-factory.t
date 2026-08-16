@@ -204,6 +204,19 @@ subtest 'for_spec and from_cr reach the same adapter when given the same args' =
         'cluster_name identical between the two entry points';
     isnt $via_cr->cluster_name, 'hetzner-default',
         'and it is the cluster name, not the provider CR name';
+
+    # The provider defaults are where the two entry points legitimately differ
+    # — from_cr can fill them, for_spec has no CR to fill them from — so
+    # equivalent inputs means a CR that names none of them. Both adapters then
+    # carry nothing and both fall through to the code default, which is what
+    # keeps the bootstrap path identical to what it was before karr #100.
+    is $via_spec->default_server_type, $via_cr->default_server_type,
+        'neither entry point invents a server type';
+    is $via_spec->default_image,       $via_cr->default_image,
+        'nor an image';
+    is $via_spec->default_location,    $via_cr->default_location,
+        'nor a location';
+    is $via_spec->default_server_type, '', 'and what they agree on is "unset"';
 };
 
 done_testing;

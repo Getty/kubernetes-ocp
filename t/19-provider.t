@@ -196,6 +196,108 @@ subtest 'add hetzner provider writes Secret + CR' => sub {
     is $ensures[1][1]{spec}{hetzner}{serverType}, 'cx32', 'serverType passed through';
 };
 
+subtest 'a flag that is not given writes no field' => sub {
+    # "This provider does not care" is a real answer and has to stay
+    # expressible, because OCP::Provider::Hetzner ranks the provider's default
+    # ABOVE its own code default (karr #100). A CR that carried a value for
+    # every flag would make the code default unreachable and pin every node of
+    # the provider to whatever `provider add` guessed.
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s        => $k8s,
+        name       => 'hetzner-plain',
+        type       => 'hetzner',
+        token_file => "$tfile",
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    my $hspec = $ensures[1][1]{spec}{hetzner};
+    ok !exists $hspec->{location},   'no --location, no spec.hetzner.location';
+    ok !exists $hspec->{serverType}, 'no --server-type, no spec.hetzner.serverType';
+    ok !exists $hspec->{image},      'no --image, no spec.hetzner.image';
+};
+
+#
+# The OCPNodeProvider CRD, read as a document -- karr #100.
+#
+# Two claims, and both are about the same three fields being a RANK rather
+# than a value.
+#
+#   * The schema declares no `default:` for them. A structural default is
+#     materialised by the API server into every CR that leaves the field out,
+#     which makes "this provider says nothing" indistinguishable from "this
+#     provider chose exactly this" -- and the field is now read, so that
+#     distinction is what decides whether the code default applies. It was not
+#     hypothetical: serverType carried `default: cx23`, a type Hetzner does not
+#     sell (cx22/cx32/cx42/cx52), and `ocp apply` writes spec.hetzner without
+#     these fields, so every provider CR in every cluster read back cx23 while
+#     every server came up cx32.
+#
+#   * Every key `ocp provider add` writes is declared. Structural schemas prune
+#     undeclared fields, so a name only the writer knows does not round-trip --
+#     it is accepted, dropped, and read back as absent.
+#
+
+subtest 'the OCPNodeProvider CRD leaves the hetzner defaults unset' => sub {
+    my $crd_file = path(__FILE__)->parent->parent
+        ->child('share/robocop/crds/ocpnodeprovider.yaml');
+    plan skip_all => 'CRD not found' unless -f $crd_file;
+
+    # Raw bytes, like OCP::Cmd::Apply::CR::ensure_crds reads it: YAML::XS
+    # decodes UTF-8 itself and chokes on already-decoded characters.
+    require YAML::XS;
+    my $raw = $crd_file->slurp_raw;
+    my $crd = YAML::XS::Load($raw);
+
+    my $props = $crd->{spec}{versions}[0]{schema}{openAPIV3Schema}
+                    {properties}{spec}{properties};
+    my $hetzner = $props->{hetzner}{properties};
+    ok $hetzner, 'the CRD declares spec.hetzner';
+
+    for my $field (qw(location serverType image)) {
+        ok exists $hetzner->{$field}, "spec.hetzner.$field is declared";
+        ok !exists $hetzner->{$field}{default},
+            "spec.hetzner.$field carries no schema default -- unset stays unset";
+    }
+
+    # The typo that started it must not come back as a value. Asserted against
+    # the PARSED document, not the file text: the comment above the fields
+    # explains why cx23 is gone and has every right to name it.
+    unlike YAML::XS::Dump($crd), qr/\bcx23\b/,
+        'cx23 appears nowhere in the schema -- Hetzner does not sell one';
+
+    # What the writer writes, the schema must declare, or the API server
+    # prunes it on the way in.
+    my $tfile = Path::Tiny->tempfile;
+    $tfile->spew("tok\n");
+    my $k8s = FakeK8sP->new(providers => [], nodes => []);
+    my $add = OCP::Cmd::Provider::Add->new(
+        k8s          => $k8s,
+        name         => 'hetzner-full',
+        type         => 'hetzner',
+        token_file   => "$tfile",
+        location     => 'nbg1',
+        server_type  => 'cx42',
+        image        => 'debian-12',
+        ssh_key_name => 'ocp-cortex-admin',
+    );
+    capture_stdout { $add->execute([], []) };
+
+    my @ensures = grep { $_->[0] eq 'ensure' } @{$k8s->{calls}};
+    my $written = $ensures[1][1]{spec}{hetzner};
+    for my $key (sort keys %$written) {
+        ok exists $hetzner->{$key},
+            "spec.hetzner.$key is declared in the CRD, so it survives the API server";
+    }
+    is $written->{location},   'nbg1',      '--location is written as spec.hetzner.location';
+    is $written->{serverType}, 'cx42',      '--server-type is written as spec.hetzner.serverType';
+    is $written->{image},      'debian-12', '--image is written as spec.hetzner.image';
+};
+
 subtest 'add hetzner writes the SSH key name onto the CR' => sub {
     # A provider CR without sshKeyName produces servers with an empty
     # authorized_keys once `ocp node add` reaches it (karr #92). With no

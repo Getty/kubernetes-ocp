@@ -289,6 +289,115 @@ subtest 'defaults still apply when neither option nor spec says anything' => sub
     is $sent->{location},    'fsn1',      'default location';
 };
 
+#
+# The four ranks, asserted as an order rather than four separate facts -- karr
+# #100.
+#
+# The provider's own defaults were the missing rung. spec.hetzner.location,
+# .serverType and .image existed on the OCPNodeProvider CR, `ocp provider add`
+# wrote them and `ocp provider ls` printed them, and from_cr read none of them:
+# `--location nbg1` moved no server. Making them count is only half the fix;
+# without a stated order it is the same value in two places with a precedence
+# rule living in the reader's head.
+#
+#   1. the named option        -- the bootstrap path
+#   2. the OCPNode spec        -- `ocp node add --server-type`
+#   3. this provider's default -- spec.hetzner.* on the provider CR
+#   4. the code default        -- cx32 / debian-13 / fsn1
+#
+
+subtest 'the provider defaults sit between the node spec and the code default' => sub {
+    # Rank 3 beats rank 4: a provider that says nbg1 puts its nodes in nbg1.
+    my ($prov, $servers) = hz_provider(
+        ssh_key_name        => 'ocp-cortex-admin',
+        default_server_type => 'cx42',
+        default_image       => 'debian-12',
+        default_location    => 'nbg1',
+    );
+    $prov->create_server(
+        name => 'w1', node => 'w1', role => 'worker',
+        spec => { role => 'worker', providerRef => 'hetzner-default' },
+    );
+    my $sent = $servers->{created}[0];
+    is $sent->{server_type}, 'cx42',      'provider default beats the code default (server type)';
+    is $sent->{image},       'debian-12', 'provider default beats the code default (image)';
+    is $sent->{location},    'nbg1',      'provider default beats the code default (location)';
+
+    # Rank 2 beats rank 3: the node is the more specific statement. This is the
+    # half that keeps `ocp node add --location hel1` meaningful on a provider
+    # pinned elsewhere.
+    my ($prov2, $servers2) = hz_provider(
+        ssh_key_name        => 'ocp-cortex-admin',
+        default_server_type => 'cx42',
+        default_image       => 'debian-12',
+        default_location    => 'nbg1',
+    );
+    $prov2->create_server(
+        name => 'w2', node => 'w2', role => 'worker',
+        spec => {
+            role        => 'worker',
+            providerRef => 'hetzner-default',
+            serverType  => 'cpx31',
+            image       => 'ubuntu-24.04',
+            location    => 'hel1',
+        },
+    );
+    my $sent2 = $servers2->{created}[0];
+    is $sent2->{server_type}, 'cpx31',        'node spec beats the provider default (server type)';
+    is $sent2->{image},       'ubuntu-24.04', 'node spec beats the provider default (image)';
+    is $sent2->{location},    'hel1',         'node spec beats the provider default (location)';
+
+    # Rank 1 beats everything. Bootstrap names all three, so a provider default
+    # can never reach the control plane.
+    my ($prov3, $servers3) = hz_provider(
+        ssh_key_name        => 'ocp-cortex-admin',
+        default_server_type => 'cx42',
+        default_image       => 'debian-12',
+        default_location    => 'nbg1',
+    );
+    $prov3->create_server(
+        name        => 'cp1', node => 'cp1', role => 'control-plane',
+        server_type => 'cx32',
+        image       => 'debian-13',
+        location    => 'fsn1',
+        ssh_keys    => ['explicit-key'],
+        spec        => { serverType => 'cpx31', location => 'hel1' },
+    );
+    my $sent3 = $servers3->{created}[0];
+    is $sent3->{server_type}, 'cx32',      'named option beats both lower ranks (server type)';
+    is $sent3->{image},       'debian-13', 'named option beats both lower ranks (image)';
+    is $sent3->{location},    'fsn1',      'named option beats both lower ranks (location)';
+};
+
+subtest 'a provider that says nothing changes nothing' => sub {
+    # The claim the removed CRD default used to make unrepresentable. The
+    # OCPNodeProvider CRD carried `default: cx23` on serverType -- a type
+    # Hetzner does not sell -- so the API server materialised it into every CR
+    # that left the field out, and once from_cr reads the field there is no
+    # longer any way to say "unset". With the schema default gone, absent
+    # reaches the adapter as absent and rank 4 answers.
+    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin');
+    is $prov->default_server_type, '', 'an unconfigured provider default is empty';
+    is $prov->default_image,       '', 'and so is the image';
+    is $prov->default_location,    '', 'and the location';
+
+    $prov->create_server(name => 'w1', node => 'w1', role => 'worker');
+    my $sent = $servers->{created}[0];
+    is $sent->{server_type}, 'cx32', 'the code default answers, not an empty string';
+
+    # Empty is absent at rank 3 too, exactly as it is at ranks 1 and 2: a
+    # hand-edited CR carrying `serverType: ""` did not choose anything.
+    my ($prov2, $servers2) = hz_provider(
+        ssh_key_name        => 'ocp-cortex-admin',
+        default_server_type => '',
+        default_location    => '',
+    );
+    $prov2->create_server(name => 'w2', node => 'w2', role => 'worker');
+    my $sent2 = $servers2->{created}[0];
+    is $sent2->{server_type}, 'cx32', 'an empty provider default is not a server type';
+    is $sent2->{location},    'fsn1', 'and an empty one is not a location';
+};
+
 subtest 'a create with no key at all fails before the server exists' => sub {
     my ($prov, $servers) = hz_provider();   # no ssh_key_name
 
@@ -363,8 +472,12 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
             clusterName => 'cortex',
             hetzner => {
                 tokenSecretRef => { name => 'ocp-provider-hetzner-a-token', key => 'token' },
+                # The CRD spelling, camelCase. This fixture used to say
+                # `server_type`, which nothing has ever read under any name --
+                # the field was write-only until karr #100 and a misspelt one
+                # was indistinguishable from a correct one.
                 location   => 'fsn1',
-                server_type => 'cx32',
+                serverType => 'cx32',
             },
         },
     };
@@ -394,6 +507,74 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
     is $prov->cluster_name, 'cortex', 'cluster_name comes from spec.clusterName';
     isnt $prov->cluster_name, $cr->{metadata}{name},
         'and never from the provider CR name';
+
+    # Same shape of claim, and the one karr #100 was about: these three were
+    # written onto the CR and printed by `ocp provider ls` and read by nobody,
+    # so `ocp provider add --location nbg1` produced servers in fsn1.
+    is $prov->default_location,    'fsn1', 'spec.hetzner.location reaches the adapter';
+    is $prov->default_server_type, 'cx32', 'spec.hetzner.serverType reaches the adapter';
+};
+
+#
+# from_cr fills the provider defaults; for_spec deliberately does not.
+#
+# The seam only exists on the in-cluster side. Bootstrap has no provider CR at
+# all -- OCP::Cmd::Apply::Bootstrap names server_type/image/location straight
+# out of ocp.yaml -- so there is nothing for a provider default to come from
+# and nothing for it to override.
+#
+
+subtest 'from_cr carries the hetzner defaults, absent stays absent' => sub {
+    my $mock_k8s = bless {
+        secret => { data => { token => encode_base64('t', '') } },
+    }, 'FakeK8sForProvider';
+
+    my $with = OCP::Provider->from_cr({
+        metadata => { name => 'hetzner-nbg1', namespace => 'ocp-system' },
+        spec     => {
+            type        => 'hetzner',
+            clusterName => 'cortex',
+            hetzner     => {
+                tokenSecretRef => { name => 'sec', key => 'token' },
+                location       => 'nbg1',
+                serverType     => 'cx42',
+                image          => 'debian-12',
+            },
+        },
+    }, k8s => $mock_k8s);
+    is $with->default_location,    'nbg1',      'location lands on default_location';
+    is $with->default_server_type, 'cx42',      'serverType lands on default_server_type';
+    is $with->default_image,       'debian-12', 'image lands on default_image';
+
+    # A CR that names none of them -- which is every CR `ocp apply` writes,
+    # since ensure_provider_cr sends only tokenSecretRef and sshKeyName. It has
+    # to arrive empty so the code default answers; the OCPNodeProvider CRD
+    # carries no schema default for exactly this reason.
+    my $without = OCP::Provider->from_cr({
+        metadata => { name => 'hetzner-default', namespace => 'ocp-system' },
+        spec     => {
+            type        => 'hetzner',
+            clusterName => 'cortex',
+            hetzner     => { tokenSecretRef => { name => 'sec', key => 'token' } },
+        },
+    }, k8s => $mock_k8s);
+    is $without->default_location,    '', 'absent location leaves the adapter empty';
+    is $without->default_server_type, '', 'absent serverType leaves the adapter empty';
+    is $without->default_image,       '', 'absent image leaves the adapter empty';
+};
+
+subtest 'for_spec builds an adapter with no provider defaults at all' => sub {
+    # The bootstrap regression guard, stated structurally rather than by
+    # replaying the command: for_spec cannot pick up a provider default because
+    # it is never given one, so no CR anywhere can move the control plane.
+    my $prov = OCP::Provider->for_spec(
+        { provider => 'hetzner' },
+        token        => 'hz-tok',
+        cluster_name => 'cortex',
+    );
+    is $prov->default_server_type, '', 'no server type from the bootstrap path';
+    is $prov->default_image,       '', 'no image from the bootstrap path';
+    is $prov->default_location,    '', 'no location from the bootstrap path';
 };
 
 #

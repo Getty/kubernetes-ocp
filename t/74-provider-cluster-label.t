@@ -188,6 +188,26 @@ use OCP::Provider::Hetzner;
 
 my $CLUSTER = 'cortex';
 
+# `cloud` is a lazy attribute, so an adapter can only be given a fake one at
+# construction -- which means rebuilding the one from_cr just handed back.
+#
+# Every attribute the factory can set has to be copied across, or the rebuilt
+# adapter is a weaker thing than the real one and the seam test quietly stops
+# covering whatever was dropped. It happened: the three provider defaults
+# arrived in karr #100 and this copy would have left them behind.
+sub rebuild_with_fake_cloud {
+    my ($prov, $cloud) = @_;
+    return OCP::Provider::Hetzner->new(
+        token               => $prov->token,
+        cluster_name        => $prov->cluster_name,
+        ssh_key_name        => $prov->ssh_key_name,
+        default_server_type => $prov->default_server_type,
+        default_image       => $prov->default_image,
+        default_location    => $prov->default_location,
+        cloud               => $cloud,
+    );
+}
+
 # A real project on disk: the cluster name has exactly one source, and both
 # ends of the seam have to reach the same one.
 my $tmp = Path::Tiny->tempdir;
@@ -293,12 +313,7 @@ sub worker_provision {
 
     my $provider = OCP::Provider->from_cr($fetched, k8s => $k8s);
     my $cloud    = FakeHzCloud->new;
-    $provider    = OCP::Provider::Hetzner->new(
-        token        => $provider->token,
-        cluster_name => $provider->cluster_name,
-        ssh_key_name => $provider->ssh_key_name,
-        cloud        => $cloud,
-    );
+    $provider    = rebuild_with_fake_cloud($provider, $cloud);
 
     my $node = OCP::Node->from_cr($k8s->cr,
         k8s           => $k8s,
@@ -358,6 +373,117 @@ subtest 'a provider CR from before the field refuses rather than mislabelling' =
     ok !$prov, 'no adapter is built';
     like $@, qr/spec\.clusterName/, 'the message names the field';
     like $@, qr/billed/,            'and says what it would have cost';
+};
+
+#
+# The same seam, for the three fields that were write-only until karr #100.
+#
+# spec.hetzner.location/.serverType/.image were written by `ocp provider add`,
+# printed by `ocp provider ls`, and read by no one: `--location nbg1` produced
+# servers in fsn1. This walks the whole in-cluster path the way the block above
+# walks it for the cluster label -- a provider CR, read back THROUGH the typed
+# client (spec.hetzner is nested one level deeper than clusterName, so its
+# survival is a separate fact), into an OCP::Node::_provision call.
+#
+# And it asserts the order, not just the reading. A rank that is never
+# out-ranked in a test is indistinguishable from a value that is simply used.
+#
+
+sub provision_through_cr {
+    my (%arg) = @_;
+
+    my $k8s = StrictK8s::build();
+    $k8s->secret({
+        apiVersion => 'v1', kind => 'Secret',
+        metadata   => { name => 'hetzner-api-token-hetzner', namespace => 'ocp-system' },
+        data       => { token => encode_base64('hz-tok', '') },
+    });
+    $k8s->cr({
+        apiVersion => 'ocp.internal/v1',
+        kind       => 'OCPNode',
+        metadata   => { name => 'pool-a-1', namespace => 'ocp-system' },
+        spec       => {
+            role        => 'worker',
+            providerRef => 'hetzner-default',
+            %{ $arg{node_spec} // {} },
+        },
+    });
+    $k8s->provider_cr({
+        apiVersion => 'ocp.internal/v1',
+        kind       => 'OCPNodeProvider',
+        metadata   => { name => 'hetzner-default', namespace => 'ocp-system' },
+        spec       => {
+            type        => 'hetzner',
+            clusterName => $CLUSTER,
+            hetzner     => {
+                tokenSecretRef => { name => 'hetzner-api-token-hetzner', key => 'token' },
+                sshKeyName     => "ocp-$CLUSTER-admin",
+                %{ $arg{provider_hetzner} // {} },
+            },
+        },
+    });
+
+    my $fetched = $k8s->k8s->object_to_struct(
+        $k8s->get('OCPNodeProvider', 'hetzner-default', namespace => 'ocp-system')
+    );
+    my $cloud = FakeHzCloud->new;
+    my $node  = OCP::Node->from_cr($k8s->cr,
+        k8s           => $k8s,
+        provider      => rebuild_with_fake_cloud(
+            OCP::Provider->from_cr($fetched, k8s => $k8s), $cloud),
+        reconciler_id => 'robocop',
+    );
+    $node->_provision;
+
+    return ($cloud->servers->{created}[0], $fetched);
+}
+
+subtest 'a provider default reaches the server, and the node still outranks it' => sub {
+    my ($sent, $fetched) = provision_through_cr(
+        provider_hetzner => {
+            location   => 'nbg1',
+            serverType => 'cx42',
+            image      => 'debian-12',
+        },
+    );
+
+    is $fetched->{spec}{hetzner}{location}, 'nbg1',
+        'spec.hetzner.location survives the typed round trip robocop reads through';
+
+    is $sent->{location},    'nbg1',      'the provider default decides the region';
+    is $sent->{server_type}, 'cx42',      'and the server type';
+    is $sent->{image},       'debian-12', 'and the image';
+
+    isnt $sent->{server_type}, 'cx32',
+        'not the code default -- which is what a write-only field would have produced';
+
+    # The node is the more specific statement and wins. Both halves have to
+    # hold or "Node-spec > Provider-CR > code default" is not an order, just a
+    # value that happens to be read.
+    my ($override) = provision_through_cr(
+        provider_hetzner => {
+            location   => 'nbg1',
+            serverType => 'cx42',
+            image      => 'debian-12',
+        },
+        node_spec => {
+            location   => 'hel1',
+            serverType => 'cpx31',
+        },
+    );
+    is $override->{location},    'hel1',      'the node spec outranks the provider default';
+    is $override->{server_type}, 'cpx31',     'on every field it names';
+    is $override->{image},       'debian-12', 'and leaves the rest to the provider';
+
+    # And the bottom of the ladder still exists: a provider that names nothing
+    # -- which is every CR ensure_provider_cr writes -- lands on the code
+    # default. The OCPNodeProvider CRD declares no schema default for exactly
+    # this reason; with one, the API server would have materialised a value
+    # into this CR and this assertion could not be made.
+    my ($plain) = provision_through_cr();
+    is $plain->{server_type}, 'cx32',      'no provider default, code default answers';
+    is $plain->{image},       'debian-13', 'same for the image';
+    is $plain->{location},    'fsn1',      'same for the location';
 };
 
 #

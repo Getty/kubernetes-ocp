@@ -64,18 +64,48 @@ spec:
                         type: string
                         default: token
                         description: "Key in secret (default: token)"
+                  # No `default:` on these three, deliberately.
+                  #
+                  # They are rank 3 of the four OCP::Provider::Hetzner resolves
+                  # (node spec > provider CR > code default), and a structural
+                  # default destroys that rank: the API server materialises it
+                  # into every CR that leaves the field out, after which "this
+                  # provider says nothing" is indistinguishable from "this
+                  # provider chose exactly this" and the code default below it
+                  # becomes unreachable.
+                  #
+                  # It was not theoretical. serverType carried `default: cx23`,
+                  # a type Hetzner does not sell (the line is cx22/cx32/cx42/
+                  # cx52), and `ocp apply` writes spec.hetzner without these
+                  # fields — so every cluster's provider CR read back cx23
+                  # while every server came up cx32 (karr #100). The same three
+                  # fields on the OCPNode CRD have carried no default all
+                  # along; this matches them.
+                  #
+                  # `ocp apply` migrates a CR that already has the materialised
+                  # values: ensure_crds runs immediately before
+                  # ensure_provider_cr on both the deploy and the drift path,
+                  # and Kubernetes::REST::ensure PUTs the whole object, so with
+                  # the default gone the stale values are not written back.
                   location:
                     type: string
-                    default: fsn1
-                    description: "Default location (fsn1, nbg1, hel1)"
+                    description: >-
+                      Default location (fsn1, nbg1, hel1) for nodes of this
+                      provider that do not set spec.location themselves.
+                      Leave unset to fall through to the code default (fsn1).
                   serverType:
                     type: string
-                    default: cx23
-                    description: "Default server type (cx23, cx32, etc.)"
+                    description: >-
+                      Default server type (cx22, cx32, cpx21, cax21, ...) for
+                      nodes of this provider that do not set spec.serverType
+                      themselves. Leave unset to fall through to the code
+                      default (cx32).
                   image:
                     type: string
-                    default: debian-13
-                    description: "Default OS image"
+                    description: >-
+                      Default OS image for nodes of this provider that do not
+                      set spec.image themselves. Leave unset to fall through
+                      to the code default (debian-13).
                   sshKeyName:
                     type: string
                     description: >-

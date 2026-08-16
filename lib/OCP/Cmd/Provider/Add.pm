@@ -324,6 +324,20 @@ servers no teardown ever finds.  There is deliberately no flag for it — the
 cluster has one name.  With no project on disk it is left off, and
 L<OCP::Provider/from_cr> then refuses to build the adapter at all.
 
+C<--location>, C<--server-type> and C<--image> write
+C<spec.hetzner.location>, C<.serverType> and C<.image>: what every node of
+this provider gets when its own OCPNode spec names none.  That is rank 3 of
+the four L<OCP::Provider::Hetzner/create_server> resolves — a node's own
+C<ocp node add --location> still wins, and with none of them given the code
+default applies.  A provider named C<hetzner-nbg1> is worth having for
+exactly this reason; until karr #100 the fields were written here and read
+nowhere, so C<--location nbg1> changed no server.
+
+Each is written only when the flag is given.  Leaving one out is a real
+answer — "this provider does not care" — and the OCPNodeProvider CRD
+deliberately declares no schema default, so nothing materialises one behind
+your back.
+
 A Hetzner CR also carries C<spec.hetzner.sshKeyName>, the uploaded key every
 server created through it boots with.  It defaults to the cluster's admin key
 name (C<ocp-E<lt>clusterE<gt>-admin>, what C<ocp apply> uploads during
