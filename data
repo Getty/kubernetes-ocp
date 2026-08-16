@@ -1,0 +1,113 @@
+---
+class: standard
+completed: 2026-08-16T01:42:17Z
+created: 2026-08-15T20:56:51Z
+id: 97
+priority: medium
+started: 2026-08-16T01:25:36Z
+status: done
+tags:
+- secure-mode
+- node
+- migration
+- ux
+title: Vorbestehende ssh-Worker bekommen keinen Migrations-Hinweis - nur einen nackten
+  Timeout
+updated: 2026-08-16T01:42:17Z
+---
+
+Gefunden 2026-08-15 beim Umbau nach ADR 0027 (ocp-worker). Bewusst offen gelassen,
+weil der Fix an einer Stelle sitzt, die zwei Aufrufer hat.
+
+ADR 0027 nimmt den Bootstrap-Key aus dem secure mode. Bestehende
+ssh-Provider-Maschinen tragen aber weiterhin dessen Public Key in
+authorized_keys, nicht den Admin-Key — sie muessen einmalig nachgeruestet werden.
+
+Fuer den CLI-Pfad ist das abgefedert: OCP::ClusterKey::migration_hint erkennt die
+Lage (Admin-Key im Einsatz UND ein .ocp/id_ed25519 liegt noch lokal) und die
+Meldungen von apply, ssh, node add und destroy nennen den Weg —
+`ocp keys show --purpose admin` und den Eintrag in authorized_keys.
+
+FUER WORKER GILT DAS NICHT. Deren Verbindung passiert in OCP::Node, und das ist
+absichtlich TRIGGER-NEUTRAL: dieselbe Klasse wird vom CLI und von robocop benutzt.
+Eine CLI-seitige Diagnose gehoert dort nicht hinein, sonst redet der Controller
+im Cluster ueber `ocp keys show`, ein Kommando, das er nicht hat und das sein
+Bediener nicht sieht.
+
+Folge heute: ein vorbestehender ssh-Worker, der den Admin-Key noch nicht kennt,
+scheitert mit einem nackten Timeout. Kein Hinweis, keine Ursache.
+
+ZU KLAEREN, bevor gebaut wird — wo darf die Diagnose entstehen?
+ a) Der Aufrufer reicht sie hinein. OCP::Node bekommt einen optionalen
+    Hinweistext bzw. ein Callback vom Trigger; das CLI fuellt ihn, robocop nicht.
+    Haelt die Klasse neutral, kostet einen Parameter.
+ b) OCP::Node meldet nur den Sachverhalt ("SSH auf HOST nicht erreichbar, Key aus
+    Quelle X"), und der jeweilige Trigger uebersetzt ihn in Rat. Sauberer getrennt,
+    mehr Arbeit an beiden Enden.
+ c) Nur die CLI-Pfade, die OCP::Node aufrufen, pruefen VORHER selbst und melden.
+    Billig, deckt robocop nicht ab — was in Ordnung sein koennte, denn robocop
+    joint mit dem robo-Key, nicht mit dem Admin-Key.
+
+c) ist vermutlich richtig und klein, aber es haengt daran, welchen Schluessel ein
+Worker-Join im CLI-Pfad tatsaechlich benutzt (seit #87 reicht Node/Add denselben
+Schluessel durch, den es fuer den Control Plane holt). Erst nachsehen, dann bauen.
+
+Verwandt: ADR 0027, #87, #93 (OCP::Node, fehlende .pub), #29 (Worker-Pfad
+unverifiziert). Lane: ocp-worker.
+ERLEDIGT 2026-08-16 (ocp-worker), Commit 70c3105. Variante (c) aus dem Ticket.
+
+OCP::Node IST UNANGETASTET GEBLIEBEN - `git diff --stat lib/OCP/Node.pm` ist leer.
+Kein Hinweistext, kein Callback, kein Attribut, keine Abhaengigkeit. Das war die
+Bedingung: ein CLI-Hinweis dort liesse den Controller im Cluster ueber
+`ocp keys show` reden, ein Kommando, das er nicht hat und dessen Ausgabe niemand
+sieht.
+
+WO DER HINWEIS JETZT HERAUSKOMMT:
+ - lib/OCP/Cmd/Node/Add.pm::_cli_reconcile, nach reconcile_until_ready. `my $key`
+   musste dafuer aus dem if-Block gehoben werden - er war block-scoped und
+   ueberlebte den Fehler nicht, den er erklaert. STDERR, weil dort auch
+   "Node '...' did not reach Ready state." schon hingeht. Der Rueckgabewert bleibt
+   unveraendert.
+ - lib/OCP/Cmd/Apply/CR.pm::cli_reconcile_workers, an zwei Punkten: nach einem
+   fehlgeschlagenen Worker und im Join-Token-Fehlerzweig (dort weist der Control
+   Plane denselben Schluessel zurueck; die Worker darunter werden nie versucht,
+   also ist das die einzige Gelegenheit des Laufs, es zu sagen).
+
+BEWUSST NICHT gefeuert aus den beiden next-Zweigen darueber (CR nicht gefunden,
+Provider nicht aufloesbar): dort scheitert es, BEVOR irgendeiner Maschine ein
+Schluessel angeboten wurde. authorized_keys dafuer verantwortlich zu machen waere
+eine Vermutung im Gewand einer Diagnose.
+
+DER TEIL, DER MEHR ALS EIN PRINT WAR: der ClusterKey ist in Apply/CR sauber
+erreichbar - er liegt am Kommando-Objekt, geparkt von
+Apply::Bootstrap::setup_ssh_key, dessen eigener Kommentar genau diesen Fall schon
+nennt ("a later reconcile step on the same command object reuses this key").
+ABER: ihn ueber cluster_ssh_key zu holen wuerde ihn auf einem kalten Cache BAUEN -
+also einen Worker-Rollout auf einem PIN2-Prompt anhalten, nur um zu entscheiden,
+ob ein Absatz gedruckt wird. Deshalb neu in OCP::Role::Cmd:
+
+    sub cluster_ssh_key_if_known   # schaut nur in den Cache, baut nie
+
+Kein Schluessel am Objekt -> kein Hinweis. Das ist strukturell abgesichert
+($PROMPTS == 0 auf kaltem Cache).
+
+EINMAL PRO LAUF, nicht je Worker - dem Destroy-Idiom aus #87 woertlich gefolgt
+(`my $hinted = 0; ... print if ... && !$hinted++`), mit einem Zaehler ueber beide
+Aufrufstellen. Bei fuenf unerreichbaren Maschinen: fuenf Failed-Zeilen, ein Hinweis.
+
+Exit-Codes und Ergebniszeilen unveraendert - ein Worker, der nicht hochkommt, ist
+weiterhin Failed. Der Hinweis ist eine DIAGNOSE, kein Preflight, und sagt das auch.
+Kein Fallback auf den Bootstrap-Key (ADR 0027 verbietet ihn ausdruecklich).
+
+Tests in t/71-cluster-ssh-key.t, ueber den PRODUKTIVEN Schluesselweg
+(setup_ssh_key -> Cache -> cluster_ssh_key_if_known), nicht ueber eine Abkuerzung:
+Worker scheitert + Bootstrap-Key liegt da -> Hinweis; ohne Bootstrap-Key -> still;
+im Dev-Mode -> still; Worker gelingt -> still; fuenf gescheiterte Worker -> genau
+ein Hinweis; kalter Cache -> kein Hinweis UND kein PIN2-Prompt.
+Rot-vor-gruen belegt: mit deaktivierten print-Zeilen fallen genau die drei
+Anwesenheits-Subtests, die Abwesenheits-Subtests bleiben gruen - was ihr Zweck ist.
+
+NEBENBEFUND, jetzt #105: der Hinweis geht in Node/Add auf STDERR und in Apply/CR
+auf STDOUT - jeweils passend zur Umgebung, aber das Repo hat keine ausgesprochene
+Regel dafuer, welcher Kanal wofuer gilt. Relevant, seit `ocp keys show` (#84)
+bewusst trennt, damit es sich pipen laesst.
