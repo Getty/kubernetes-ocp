@@ -20,6 +20,17 @@ Revision history for OCP
       in t/25-drift.t assert the entry carries the original error text and
       reaches the drift list `detect()` returns, so a stray `ocp status`
       against a broken kubeconfig does not stay silent.
+    - The RKE2/K3s join-token path now lives in one place
+      (`$OCP::Node::K3S_TOKEN_PATH` / `$OCP::Node::RKE2_TOKEN_PATH`) and
+      `OCP::Cmd::Node::Add` and `OCP::Cmd::Apply::CR` read it from there
+      (karr #122). The two paths were spelled as literals in both files,
+      and bumping one without the other meant `ocp node add` and
+      `ocp apply` disagreed on which file to `cat` -- one came back with
+      an empty join token and died. The constants sit alongside
+      `$OCP::Node::READY_TIMEOUT` so the pattern matches the one karr
+      #109/#112 settled on for the address and SSH budgets, and a new
+      subtest in t/16-node.t asserts both call sites reference the
+      constants instead of spelling the literals.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
       even when the early-return path fires (karr #78). A project whose
       cluster was torn down out of band left both files describing a

@@ -306,8 +306,8 @@ sub _cli_reconcile {
 
         my $dist = $config->distribution || 'rke2';
         my $token_path = $dist eq 'k3s'
-            ? '/var/lib/rancher/k3s/server/node-token'
-            : '/var/lib/rancher/rke2/server/node-token';
+            ? $OCP::Node::K3S_TOKEN_PATH
+            : $OCP::Node::RKE2_TOKEN_PATH;
 
         require OCP::SSH;
         my $cp_ssh = OCP::SSH->new(

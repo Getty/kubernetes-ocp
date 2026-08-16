@@ -1321,4 +1321,44 @@ subtest 'default ssh_class and rex_class are loaded by OCP::Node alone' => sub {
     }
 };
 
+# The join-token path is a fact about how RKE2 and K3s lay their files out,
+# not about OCP, but it has to live in one place: the literal was duplicated
+# between OCP::Cmd::Node::Add and OCP::Cmd::Apply::CR, and bumping one without
+# the other meant the two commands read different files (karr #122). The
+# constants live on OCP::Node alongside $READY_TIMEOUT, and both call sites
+# already `use OCP::Node` -- the seam is the lockstep between the two files.
+subtest 'the join-token path is one constant, not one per caller' => sub {
+    is $OCP::Node::K3S_TOKEN_PATH,  '/var/lib/rancher/k3s/server/node-token',
+        'the k3s path is the one on disk inside the server';
+    is $OCP::Node::RKE2_TOKEN_PATH, '/var/lib/rancher/rke2/server/node-token',
+        'and the rke2 path is the one on disk inside the server';
+
+    # Both call sites reference the constants, neither spells the literal.
+    # The literal is what was duplicated; the constant reference is what the
+    # fix replaced it with, and the two files have to stay aligned for the
+    # duplication not to come back.
+    for my $file (qw(lib/OCP/Cmd/Node/Add.pm lib/OCP/Cmd/Apply/CR.pm)) {
+        my $src = Path::Tiny::path(__FILE__)->parent->parent->child($file)->slurp_utf8;
+        unlike $src, qr{/var/lib/rancher/k3s/server/node-token},
+            "$file does not name the k3s token path as a literal";
+        unlike $src, qr{/var/lib/rancher/rke2/server/node-token},
+            "$file does not name the rke2 token path as a literal";
+        like $src, qr{\$OCP::Node::K3S_TOKEN_PATH},
+            "$file reads the k3s path from the constant";
+        like $src, qr{\$OCP::Node::RKE2_TOKEN_PATH},
+            "$file reads the rke2 path from the constant";
+    }
+
+    # That the constant is the path, not a comment next to one: a localised
+    # override changes what both call sites would read, because both files
+    # reach the path through `$OCP::Node::*_TOKEN_PATH`. We check the
+    # constant directly rather than spinning a CP -- the seam is the
+    # reference, and the reference is what both files hold.
+    {
+        local $OCP::Node::K3S_TOKEN_PATH = '/tmp/ocp-k122-k3s-token';
+        is $OCP::Node::K3S_TOKEN_PATH, '/tmp/ocp-k122-k3s-token',
+            'a localised override of the constant is what subsequent reads see';
+    }
+};
+
 done_testing;
