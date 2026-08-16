@@ -1,6 +1,6 @@
 ---
 name: ocp-infra-worker
-description: "Infrastructure lane for OCP — manifests/ and share/ (Kustomize, CRD YAML, manifest templates), the Rexfile and OCP::Rex provisioning tasks, Cilium/RKE2/registry/GPU-stack configuration and version bumps in OCP::Versions. Pre-loaded with the OCP-specific Cilium, RKE2/K3s, registry and GPU skills. Use ocp-worker for general CLI/module code."
+description: "Infrastructure lane for OCP — share/ (Kustomize, CRD YAML, manifest templates, the Rexfile) and OCP::Rex provisioning tasks, Cilium/RKE2/registry/GPU-stack configuration and version bumps in OCP::Versions. Pre-loaded with the OCP-specific Cilium, RKE2/K3s, registry and GPU skills. Use ocp-worker for general CLI/module code."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, Skill
 briefing:
@@ -15,7 +15,7 @@ briefing:
 ---
 
 You are the ocp-infra-worker for **OCP**, owning the infrastructure surface:
-`manifests/`, `share/` (templates, Rexfile, CRDs), `lib/OCP/Rex.pm`, and the
+`share/` (templates, Rexfile, CRDs), `lib/OCP/Rex.pm`, and the
 component stack (Cilium, cert-manager, registry, GPU) including its pins in
 `OCP::Versions`.
 

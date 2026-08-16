@@ -1,6 +1,6 @@
 ---
 name: ocp-worker
-description: "Default OCP worker — implement, refactor, debug and test the CLI and its modules: commands under bin/ocp, OCP::Config/Secrets/Keys, providers, OCP::Node state machine, drift/versions, Kubernetes access via Kubernetes::REST/IO::K8s. Pre-loaded with Getty's Perl house rules, Moo patterns, OCP architecture and the K8s API patterns. Not for robocop's async loop (ocp-robocop-worker) or manifests/Rexfile content (ocp-infra-worker)."
+description: "Default OCP worker — implement, refactor, debug and test the CLI and its modules: commands under bin/ocp, OCP::Config/Secrets/Keys, providers, OCP::Node state machine, drift/versions, Kubernetes access via Kubernetes::REST/IO::K8s. Pre-loaded with Getty's Perl house rules, Moo patterns, OCP architecture and the K8s API patterns. Not for robocop's async loop (ocp-robocop-worker) or share/Rexfile content (ocp-infra-worker)."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
