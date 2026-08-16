@@ -40,6 +40,13 @@ reaches Ready/Failed or times out. When robocop is disabled or not yet
 ready, it falls back to C<OCP::Node->reconcile_until_ready> per worker —
 that's the CLI path, and it is what t/38-reconcile-path.t exercises.
 
+On that fallback path a worker that never reaches Ready is explained with
+L<OCP::ClusterKey/migration_hint>, once per run however many machines are
+unreachable. That belongs here and not in L<OCP::Node>: the same class runs
+inside Robocop, which joins with the robo key and has no C<ocp keys show> to
+point anybody at. The hint changes nothing about the result rows — a worker
+that did not come up is still C<Failed>.
+
 L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
 forwarder — the existing test surface (t/20-apply-refactor.t,
 t/36-ocpnode-status.t, t/38-reconcile-path.t) keeps working.
@@ -478,6 +485,31 @@ sub cli_reconcile_workers {
     my $secrets      = $deps->{secrets};
     my $distribution = $config->distribution || 'rke2';
 
+    # What a machine that will not answer probably means, ready to print.
+    #
+    # $deps carries only the key's PATH, but the OCP::ClusterKey it came from
+    # is parked on the command object by
+    # OCP::Cmd::Apply::Bootstrap::setup_ssh_key — which is exactly what the
+    # caching in OCP::Role::Cmd was built for, and the only route this sub has
+    # to the key's ORIGIN. A path cannot answer "was this the admin key", and
+    # rebuilding the condition here would be a second copy of a decision that
+    # already has one home.
+    #
+    # The non-building lookup on purpose: a rollout must not stop for a PIN2
+    # prompt just to work out whether to print a paragraph. No key on the
+    # object, no hint.
+    #
+    # OCP::Node learns none of this. It is the same class robocop runs in the
+    # cluster, where `ocp keys show` is not a command anyone can type; robocop
+    # also joins with the robo key, so its failure is a different one
+    # (karr #97, ADR 0027).
+    my $key  = $self->cluster_ssh_key_if_known($config);
+    my $hint = $key ? $key->migration_hint : '';
+
+    # One appearance per run, the way `ocp destroy` does it: five unreachable
+    # machines are five failures, not five essays.
+    my $hinted = 0;
+
     # Retrieve join token from the CP once, reused for every worker.
     my $join_token = '';
     my $server_url = $config->join_url($cp_ip);
@@ -497,6 +529,10 @@ sub cli_reconcile_workers {
         chomp $join_token;
     };
     if ($@ || !$join_token) {
+        # The control plane itself refused the key — same diagnosis, and the
+        # workers below are never attempted, so this is the only place it can
+        # be said on this run.
+        print $hint if $hint && !$hinted++;
         my @results = map { {
             name    => $_,
             phase   => 'Failed',
@@ -547,6 +583,18 @@ sub cli_reconcile_workers {
 
         my $ok = eval { $node->reconcile_until_ready(timeout => 600, interval => 10) };
         my $phase = $ok ? 'Ready' : ($node->phase || 'Failed');
+
+        # Only from here, where a key was actually offered to a machine. The
+        # two `next` branches above failed before any SSH happened — blaming
+        # authorized_keys for a missing CR would be a guess wearing a
+        # diagnosis's clothes.
+        #
+        # Printed as it happens rather than after the loop, so the operator
+        # reads it at the first refusal instead of after four more timeouts.
+        # The result row is unchanged: this worker stays Failed and `ocp
+        # apply` still ends the way it would have.
+        print $hint if !$ok && $hint && !$hinted++;
+
         push @results, {
             name    => $name,
             phase   => $phase,

@@ -31,7 +31,7 @@ option role => (
 option provider => (
     is     => 'ro',
     format => 's',
-    doc    => 'OCPNodeProvider name',
+    doc    => "OCPNodeProvider name, e.g. ssh-default - not the type 'ssh' (see 'ocp provider ls')",
 );
 
 option host => (
@@ -110,23 +110,20 @@ sub _resolve_provider {
 
     my $ns = 'ocp-system';
 
-    if ($self->provider) {
-        my $p = eval {
-            $api->get('OCPNodeProvider', name => $self->provider, namespace => $ns)
-        };
-        die "Provider '" . $self->provider . "' not found\n" unless $p;
-        return $api->k8s->object_to_struct($p);
-    }
+    # Both rejections below name the providers that exist, with their types:
+    # --provider takes the CR name and the type is what gets typed instead.
+    # OCP::Role::Cmd owns the wording so `ocp provider rm` says the same thing.
+    return $self->provider_cr($api, $self->provider, namespace => $ns)
+        if $self->provider;
 
-    my $list  = $api->list('OCPNodeProvider', namespace => $ns);
-    my @items = map { $api->k8s->object_to_struct($_) } @{ $list->items // [] };
+    my @items = $self->provider_crs($api, namespace => $ns);
 
     if (@items == 1) {
         return $items[0];
     }
 
     if (@items == 0) {
-        die "No OCPNodeProvider found in cluster. Add one with 'ocp provider add'.\n";
+        die $self->provider_choices();
     }
 
     for my $p (@items) {
@@ -134,7 +131,8 @@ sub _resolve_provider {
         return $p if ($ann->{'ocp.internal/default'} // '') eq 'true';
     }
 
-    die "Multiple providers found, --provider required\n";
+    die "Multiple providers found, --provider required.\n"
+      . $self->provider_choices(@items);
 }
 
 sub _validate_flags {
@@ -249,7 +247,9 @@ sub _cli_reconcile {
         ($cps && @$cps) ? ($cps->[0]{public_ip} // $cps->[0]{host}) : undef;
     };
 
-    my ($ssh_key, $server_url, $join_token);
+    # $key outlives the block on purpose: the failure it explains happens at
+    # the bottom of this sub, long after the join token was read.
+    my ($ssh_key, $server_url, $join_token, $key);
 
     if ($cp_ip) {
         # The key has to be the one the CONTROL PLANE trusts: this reads the
@@ -263,7 +263,7 @@ sub _cli_reconcile {
         # deploy path does too (OCP::Cmd::Apply::CR::cli_reconcile_workers
         # slurps the very file bootstrap picked): one key for the control
         # plane and the workers it brings up.
-        my $key = $self->cluster_ssh_key($config, reason => 'ocp node add');
+        $key = $self->cluster_ssh_key($config, reason => 'ocp node add');
         my $ssh_key_path = $key->path;
         $ssh_key = $key->content;
 
@@ -298,7 +298,29 @@ sub _cli_reconcile {
         reconciler_id => 'cli',
     );
 
-    return $node->reconcile_until_ready(timeout => 600);
+    my $ok = $node->reconcile_until_ready(timeout => 600);
+
+    # The worker never came up, and this project still has the pre-ADR-0027
+    # bootstrap key on disk: most likely a machine whose authorized_keys were
+    # written back when that key was what OCP handed out, so it refuses the
+    # admin key this run offered. migration_hint says nothing unless both
+    # halves of that are true.
+    #
+    # It is said HERE and not in OCP::Node, which is trigger-neutral: the same
+    # class runs inside robocop, where `ocp keys show` is not a command anyone
+    # can type and nobody reads the output (karr #97).
+    #
+    # Diagnosis, not preflight — nothing looked ahead to see which key this
+    # machine accepts, and the hint's own wording says so. Nothing falls back
+    # to the bootstrap key either, and $ok is passed through untouched: a
+    # worker that did not come up still fails, with the same exit code.
+    #
+    # Once per run comes free here — `ocp node add` adds one node. The other
+    # place this key is named is the join-token failure above, which dies
+    # before ever reaching this line.
+    print STDERR $key->migration_hint if !$ok && $key;
+
+    return $ok;
 }
 
 sub execute {
@@ -364,8 +386,8 @@ OCP::Cmd::Node::Add - Add an OCPNode CR and optionally reconcile it
 =head1 SYNOPSIS
 
     ocp node add worker-1 --role worker
-    ocp node add gpu-1    --role worker --provider hetzner-a --gpu
-    ocp node add ssh-1    --role worker --provider ssh-a --host 10.0.0.5
+    ocp node add gpu-1    --role worker --provider hetzner-default --gpu
+    ocp node add ssh-1    --role worker --provider ssh-default --host 10.0.0.5
     ocp node add worker-2 --role worker --nowait
 
 =head1 DESCRIPTION
@@ -381,6 +403,21 @@ C<--no-wait>: L<MooX::Options> reads a literal C<no-> as Getopt::Long's
 negation marker before it maps dashes to underscores, so the dashed form
 would ask to negate a C<wait> option that does not exist.
 
+=head1 CHOOSING THE PROVIDER
+
+C<--provider> takes the B<name> of an C<OCPNodeProvider> CR, not a provider
+type: C<--provider ssh-default>, not C<--provider ssh>.  C<ocp apply> writes
+one CR per provider in F<ocp.yaml> and names it C<< <type>-default >>, so a
+bootstrapped cluster has C<ssh-default> or C<hetzner-default>; C<ocp provider
+ls> lists them.  A type is never resolved to the CR that carries it — names
+and types are separate namespaces and nothing stops a provider from being
+named C<ssh>.  Naming one that does not exist is refused with the providers
+that do, and their types (see L<OCP::Role::Cmd/provider_cr>).
+
+Without C<--provider> the single provider is used, or the one annotated
+C<ocp.internal/default>; with several and no default, the command asks for
+C<--provider> and lists the candidates.
+
 =head1 SSH ACCESS
 
 The CLI reconcile path — the one taken when Robocop is not running — reads
@@ -392,6 +429,15 @@ project.  So a secure-mode project prompts for PIN2 here, once.
 
 C<--nowait> and the Robocop path never reach it and never prompt: both stop
 at the CR.
+
+When a worker driven this way never reaches Ready, this command prints
+L<OCP::ClusterKey/migration_hint> alongside its failure — the machine most
+likely has C<authorized_keys> from before the bootstrap key left secure mode
+and refuses the admin key.  It is said here rather than in L<OCP::Node>,
+because that class is trigger-neutral and also runs inside Robocop, where
+C<ocp keys show> is not a command anyone can type.  A diagnosis only: nothing
+looked ahead to see which key the machine accepts, nothing falls back to the
+bootstrap key, and the command still exits non-zero.
 
 =head1 SEE ALSO
 

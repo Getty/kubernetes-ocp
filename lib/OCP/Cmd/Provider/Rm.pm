@@ -51,11 +51,9 @@ sub execute {
     my $name = $self->name // ($args && $args->[0]);
     die "Usage: ocp provider rm NAME\n" unless $name;
 
-    my $cr_obj = eval {
-        $api->get('OCPNodeProvider', name => $name, namespace => $ns)
-    };
-    die "Provider '$name' not found\n" if $@ || !$cr_obj;
-    my $cr = $api->k8s->object_to_struct($cr_obj);
+    # Names the providers that exist, with their types — same wording as
+    # `ocp node add --provider`, one place: OCP::Role::Cmd (karr #89).
+    $self->provider_cr($api, $name, namespace => $ns);
 
     my $nodes_list = $api->list('OCPNode', namespace => $ns);
     my @nodes = map { $api->k8s->object_to_struct($_) } @{ $nodes_list->items // [] };
@@ -100,6 +98,11 @@ OCP::Cmd::Provider::Rm - Remove an OCPNodeProvider CR (and its Secret)
 Deletes the named OCPNodeProvider CR and its associated token Secret (if
 any).  Refuses to delete if any OCPNode CRs reference the provider; lists
 the blocking nodes and suggests the removal command.
+
+C<NAME> is the name of the CR, not a provider type: C<ssh-default>, not
+C<ssh>.  An unknown name is refused with the providers that do exist and
+their types, in the wording L<OCP::Role::Cmd/provider_cr> gives every
+command that takes a provider name.
 
 =head1 SEE ALSO
 

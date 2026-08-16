@@ -338,7 +338,19 @@ subtest 'rm errors on unknown provider' => sub {
     my $k8s = FakeK8sP->new(providers => [], nodes => []);
     my $rm = OCP::Cmd::Provider::Rm->new(k8s => $k8s, name => 'nonexistent');
     eval { $rm->execute([], []) };
-    like $@, qr/not found/i;
+    like $@, qr/Unknown provider 'nonexistent'/;
+
+    # The rejection has to say what would have worked, with the type next to
+    # the name — naming the type instead of the CR is the mistake that gets
+    # made (karr #89, full coverage in t/73-provider-name-vs-type.t).
+    my $stocked = FakeK8sP->new(
+        providers => [{ metadata => { name => 'ssh-default' }, spec => { type => 'ssh' } }],
+        nodes     => [],
+    );
+    my $rm2 = OCP::Cmd::Provider::Rm->new(k8s => $stocked, name => 'ssh');
+    eval { $rm2->execute([], []) };
+    like $@, qr/^Available: ssh-default \(type ssh\)$/m,
+        'lists the existing providers with their types';
 };
 
 subtest 'rm uses typed Kind args (not path=>)' => sub {

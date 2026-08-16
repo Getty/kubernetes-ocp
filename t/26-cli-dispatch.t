@@ -136,6 +136,20 @@ for my $cmd (@COMMANDS) {
     }
 }
 
+# --provider takes the NAME of an OCPNodeProvider CR, and `ocp apply` names
+# those <type>-default. The help said "OCPNodeProvider name", which is correct
+# and still let `--provider ssh` look right (karr #89) — so it shows the
+# difference now. The message that answers the wrong name lives in
+# t/73-provider-name-vs-type.t.
+{
+    my ($out, $rc) = ocp('node', 'add', '--help');
+    is($rc, 0, "'ocp node add --help' exits 0");
+    like($out, qr/ssh-default/,
+        'the --provider help gives an example of a provider name');
+    like($out, qr/\bnot the type\b/,
+        'the --provider help says a type is not a name');
+}
+
 # ... and known input keeps behaving exactly as before
 {
     my (undef, $help_rc) = ocp('--help');

@@ -1,6 +1,20 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A rejected provider name now says which providers exist, with their
+      types. `--provider` on `ocp node add` and the NAME of `ocp provider rm`
+      take the name of an OCPNodeProvider CR, but `ocp init --provider` and
+      `spec.type` take a provider type, so `--provider ssh` for the CR
+      `ssh-default` that `ocp apply` writes is an easy mistake — and the old
+      "Provider 'ssh' not found" was a correct rejection that helped with
+      nothing. Both commands now answer in the shape an unknown command word
+      does: `Unknown provider 'ssh'.` followed by `Available: ssh-default
+      (type ssh), hetzner-default (type hetzner)`, plus a line naming the
+      confusion when the rejected name is a type. A cluster with no provider
+      at all points at `ocp apply` and `ocp provider add` instead of an empty
+      list, and `ocp node add --help` now shows an example. Provider types are
+      still never resolved to a CR that carries them: names and types are
+      separate namespaces and may collide.
     - Hetzner workers are no longer created without SSH keys. A worker
       provisioned through an OCPNode CR reached the Hetzner provider with the
       node spec rather than named options, and the provider read only the
@@ -46,6 +60,19 @@ Revision history for OCP
       steps out of it when a connection is refused and a bootstrap key is
       still lying in the project. Hetzner clusters and dev-mode projects
       need nothing.
+    - A WORKER that will not come up is now covered by that diagnosis too. It
+      was the one machine left out: a worker's SSH happens inside OCP::Node,
+      which is shared with the in-cluster robocop controller and therefore
+      says nothing about `ocp keys show` — a command robocop does not have and
+      whose output nobody would read. So a pre-existing ssh worker that still
+      only trusts the bootstrap key failed with a bare timeout and no cause.
+      The two CLI paths that drive OCP::Node — `ocp apply`'s worker rollout
+      and `ocp node add` — now print the explanation themselves when a worker
+      does not reach Ready and a bootstrap key is still in the project, once
+      per run however many machines are unreachable. It stays a diagnosis
+      after the fact: nothing checks in advance which key a machine accepts,
+      nothing falls back to the bootstrap key, and a worker that did not come
+      up still fails with the same exit code (karr #97).
     - `ocp destroy` no longer strands paid servers when it cannot get an SSH
       key. Its ssh-node branch needs the PIN2-protected admin key now, which
       means a lookup that can fail — a wrong PIN, no terminal, no keys.yaml.

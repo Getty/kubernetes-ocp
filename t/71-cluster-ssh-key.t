@@ -8,6 +8,8 @@ use Path::Tiny qw(path);
 use OCP;
 use OCP::ClusterKey;
 use OCP::Cmd::Apply;
+use OCP::Cmd::Apply::Bootstrap;
+use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Drift;
 use OCP::Cmd::Destroy;
 use OCP::Cmd::Node::Add;
@@ -619,8 +621,16 @@ subtest 'the update temp key is gone when the command object is' => sub {
 
 # _cli_reconcile reads the join token off the control plane over SSH, then
 # hands the same key material to OCP::Node for the machine being added.
+#
+# `ready` drives what OCP::Node reports back. It defaults to success, which is
+# what the key-selection subtests below want; the migration subtests set it to
+# 0, because the diagnosis only exists for the machine that did not answer.
+# STDERR is captured separately from the selected handle `capture` swaps: the
+# hint belongs next to the failure line `ocp node add` prints, which is there.
 sub node_add_key {
-    my ($config) = @_;
+    my ($config, %opt) = @_;
+
+    my $ready = exists $opt{ready} ? $opt{ready} : 1;
 
     my (%seen);
     my $add = OCP::Cmd::Node::Add->new(
@@ -642,20 +652,28 @@ sub node_add_key {
         $seen{node_ssh_key} = $a{ssh_key};
         bless {}, 'FakeNode';
     };
-    local *FakeNode::reconcile_until_ready = sub { 1 };
+    local *FakeNode::reconcile_until_ready = sub { $ready };
 
     my $cr = {
         metadata => { name => 'worker-1', namespace => 'ocp-system' },
         spec     => { role => 'worker', providerRef => 'hetzner-a' },
     };
 
-    my ($out, $err) = capture(sub {
-        with_key_store(sub {
-            $add->_cli_reconcile($cr, FakeNodeApi->new, $config, undef);
-        });
-    });
+    my $stderr = '';
+    open my $errfh, '>', \$stderr or die "stderr capture: $!";
 
-    return { %seen, out => $out, err => $err };
+    my ($out, $err, $rv);
+    {
+        local *STDERR = $errfh;
+        ($out, $err, $rv) = capture(sub {
+            with_key_store(sub {
+                $add->_cli_reconcile($cr, FakeNodeApi->new, $config, undef);
+            });
+        });
+    }
+    close $errfh;
+
+    return { %seen, out => $out, err => $err, stderr => $stderr, rv => $rv };
 }
 
 subtest 'ocp node add on secure + hetzner uses the admin key for both halves' => sub {
@@ -692,6 +710,214 @@ subtest 'ocp node add in dev mode is unchanged' => sub {
     is $r->{ssh_key_file}, $config->ssh_private_key_path, 'still the bootstrap key';
     is $r->{node_ssh_key}, $BOOTSTRAP_PRIVATE, 'and its material goes to OCP::Node';
     is $PROMPTS, 0, 'no prompt';
+};
+
+# ------------------------------------ a worker that will not answer, explained
+#
+# The gap karr #97 names. ADR 0027 took the bootstrap key out of secure mode,
+# so a machine authorised before that carries the bootstrap PUBLIC key and
+# refuses the admin key OCP now offers. `ocp apply`, `ocp ssh`, `ocp destroy`
+# and the join-token step of `ocp node add` all say so; the WORKER never did,
+# because its connection happens inside OCP::Node.
+#
+# OCP::Node is trigger-neutral on purpose — robocop runs the same class in the
+# cluster, where `ocp keys show` is not a command anyone can type — so the fix
+# is that the CLI paths driving it report for themselves. These subtests are
+# the claim that they do, and that they stay quiet for everyone the migration
+# does not concern.
+
+subtest 'a worker that never came up says why, where there is a why' => sub {
+    my $config = project(provider => 'ssh');
+    my $r = node_add_key($config, ready => 0);
+
+    is $r->{err}, '', 'the reconcile ran to a verdict' or diag $r->{out};
+
+    ok defined $r->{rv} && !$r->{rv},
+        'and the verdict is still failure — a hint does not rescue a worker';
+
+    like $r->{stderr}, qr/ocp keys show --purpose admin/,
+        'the operator is told which command prints the key to install';
+    like $r->{stderr}, qr/authorized_keys/, 'and where it goes on the machine';
+    like $r->{stderr}, qr/\Q${\ $config->ssh_private_key_path }\E/,
+        'having named the leftover key that is the evidence';
+    like $r->{stderr}, qr/not before it|advance|sooner/,
+        'and it does not pretend anything could have checked beforehand';
+    like $r->{stderr}, qr/Nothing here falls back to the bootstrap key/,
+        'diagnosis only: no fallback to the key those machines do trust';
+};
+
+subtest 'a worker failure with nothing to migrate stays a plain failure' => sub {
+    # The other half, and the reason this is gated at all: for every project
+    # the migration does not concern, the paragraph is noise. No bootstrap key
+    # on disk means this cluster was never authorised with one.
+    my $config = project(provider => 'hetzner', bootstrap_key => 0);
+    my $r = node_add_key($config, ready => 0);
+
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    ok defined $r->{rv} && !$r->{rv}, 'still a failure';
+    is $r->{stderr}, '', 'and nothing is said about a migration that does not apply';
+};
+
+subtest 'a worker that came up is told nothing at all' => sub {
+    # Even in the project that has every ingredient for the hint. Success is
+    # proof the machine accepted the key, which is the opposite of the claim.
+    my $config = project(provider => 'ssh');
+    my $r = node_add_key($config, ready => 1);
+
+    ok $r->{rv}, 'the worker reached Ready';
+    is $r->{stderr}, '', 'so there is nothing to diagnose';
+};
+
+subtest 'dev mode has no migration to report' => sub {
+    # The bootstrap key is dev mode's current key, not a leftover.
+    my $config = project(provider => 'ssh', secure => 0);
+    my $r = node_add_key($config, ready => 0);
+
+    ok defined $r->{rv} && !$r->{rv}, 'the worker failed';
+    is $r->{stderr}, '', 'and no migration is invented for it';
+};
+
+# ------------------------------------------ the workers `ocp apply` brings up
+#
+# The other CLI caller of OCP::Node, and the harder one: it is handed only
+# $deps->{ssh_key_path}, and a path cannot answer "was this the admin key".
+# The OCP::ClusterKey itself comes off the command object, where
+# OCP::Cmd::Apply::Bootstrap::setup_ssh_key parks it — the same cache that
+# keeps `ocp update` down to one PIN2 prompt. These subtests drive that route,
+# not a shortcut around it.
+
+{
+    package FakeApplyApi;
+    sub new  { bless {}, shift }
+    sub k8s  { $_[0] }
+    sub object_to_struct { $_[1] }
+
+    sub get {
+        my ($self, $kind, $name, %a) = @_;
+        return {
+            metadata => { name => $name, namespace => 'ocp-system' },
+            spec     => { role => 'worker', providerRef => 'ssh-default' },
+            status   => {},
+        } if $kind eq 'OCPNode';
+        return {
+            metadata => { name => 'ssh-default', namespace => 'ocp-system' },
+            spec     => { type => 'ssh' },
+        } if $kind eq 'OCPNodeProvider';
+        return undef;
+    }
+}
+
+{
+    package FakeWorkerProvider;
+}
+{
+    package FakeWorkerNode;
+    sub phase { 'Failed' }
+    sub reconcile_until_ready { 0 }
+}
+
+# One CLI-fallback worker rollout, as OCP::Cmd::Apply::Deploy drives it.
+# `warm` decides whether bootstrap already picked the cluster key and left it
+# on the command object, which is what production always does.
+sub apply_workers {
+    my ($config, %opt) = @_;
+
+    my $names = $opt{names} // ['worker-1'];
+    my $ready = $opt{ready} // 0;
+    my $warm  = exists $opt{warm} ? $opt{warm} : 1;
+
+    my $apply = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
+
+    no warnings 'redefine';
+    local *OCP::SSH::new          = sub { bless {}, $_[0] };
+    local *OCP::SSH::run          = sub { { stdout => "K10::token\n" } };
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeWorkerProvider' };
+    local *OCP::Node::from_cr     = sub { bless {}, 'FakeWorkerNode' };
+    local *FakeWorkerNode::reconcile_until_ready = sub { $ready };
+
+    my ($out, $err, @results) = capture(sub {
+        with_key_store(sub {
+            # The production route to the key: bootstrap picks it, parks it on
+            # the command object and passes the PATH on to the deploy step.
+            my $path = $warm
+                ? OCP::Cmd::Apply::Bootstrap::setup_ssh_key($apply, $config)->path
+                : $config->ssh_private_key_path;
+
+            OCP::Cmd::Apply::CR::cli_reconcile_workers(
+                $apply, FakeApplyApi->new, $config, $names,
+                { ssh_key_path => $path, cp_ip => '1.2.3.4' },
+            );
+        });
+    });
+
+    return { out => $out, err => $err, results => \@results };
+}
+
+# How often the diagnosis appears in a run's output.
+sub hint_count {
+    my ($text) = @_;
+    my $n = () = $text =~ /ocp keys show --purpose admin/g;
+    return $n;
+}
+
+subtest 'ocp apply explains a worker that would not take the admin key' => sub {
+    my $config = project(provider => 'ssh');
+    my $r = apply_workers($config);
+
+    is $r->{err}, '', 'the rollout ran' or diag $r->{out};
+
+    is scalar @{$r->{results}}, 1, 'one worker was reported on';
+    is $r->{results}[0]{phase}, 'Failed',
+        'and it is still Failed — the hint changes nothing about the outcome';
+
+    is hint_count($r->{out}), 1, 'the diagnosis was given';
+    like $r->{out}, qr/authorized_keys/, 'naming where the key goes';
+    like $r->{out}, qr/Nothing here falls back to the bootstrap key/,
+        'and refusing the fallback in as many words';
+};
+
+subtest 'five unreachable workers are five failures, not five essays' => sub {
+    my $config = project(provider => 'ssh');
+    my $r = apply_workers($config, names => [map { "worker-$_" } 1 .. 5]);
+
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    is scalar @{$r->{results}}, 5, 'all five were attempted';
+    is scalar(grep { $_->{phase} eq 'Failed' } @{$r->{results}}), 5,
+        'all five failed, each on its own row';
+    is hint_count($r->{out}), 1, 'and the explanation appears exactly once';
+};
+
+subtest 'ocp apply says nothing where there is nothing to migrate' => sub {
+    my $config = project(provider => 'hetzner', bootstrap_key => 0);
+    my $r = apply_workers($config);
+
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    is $r->{results}[0]{phase}, 'Failed', 'the worker still failed';
+    is hint_count($r->{out}), 0,
+        'without a leftover bootstrap key there is no claim to make';
+};
+
+subtest 'workers that came up get no diagnosis' => sub {
+    my $config = project(provider => 'ssh');
+    my $r = apply_workers($config, names => ['w1', 'w2'], ready => 1);
+
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    is scalar(grep { $_->{phase} eq 'Ready' } @{$r->{results}}), 2, 'both Ready';
+    is hint_count($r->{out}), 0, 'and nothing was explained';
+};
+
+subtest 'the diagnosis never builds a key, so it never prompts' => sub {
+    # The structural half of the fix. cli_reconcile_workers reaches for the key
+    # the command ALREADY has; asking OCP::ClusterKey to build one would stop a
+    # worker rollout on a PIN2 prompt purely to decide whether to print a
+    # paragraph. Cold cache: the hint is lost, the run is not interrupted.
+    my $config = project(provider => 'ssh');
+    my $r = apply_workers($config, warm => 0);
+
+    is $r->{err}, '', 'ran' or diag $r->{out};
+    is $r->{results}[0]{phase}, 'Failed', 'the worker still failed';
+    is $PROMPTS, 0, 'and nothing asked for PIN2 on the way to a message';
+    is hint_count($r->{out}), 0, 'no key on the command object, no guess';
 };
 
 # --------------------------------------------------- the reconcile-path remedy
