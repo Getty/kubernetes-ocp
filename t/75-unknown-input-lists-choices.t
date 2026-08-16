@@ -359,6 +359,51 @@ subtest 'known_versions comes from the manifest itself' => sub {
               'not a second list beside it';
 };
 
+subtest 'ocp update --component TYPO names the components it would have run' => sub {
+    # The same shape as the karr #103 case above, for the input karr #103
+    # deliberately left alone: --component. A typo here used to skip every
+    # iteration of the loop, leave @updates empty, and reach the
+    # "All components up to date" branch as if nothing had happened — same
+    # line, same exit 0 as a real no-op (karr #113).
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('.ocp')->mkpath;
+    $dir->child('ocp.yaml')->spew("name: t\n");
+    # 0.001 IS in the manifest, so the loop body is reached — and the typo
+    # would otherwise skip every iteration of it. --force is set so the
+    # earlier "already up to date" early-return doesn't hide the bug.
+    $dir->child('.ocp', 'status.yaml')->spew("ocpVersion: '0.001'\n");
+    $dir->child('kubeconfig.yaml')->spew("placeholder\n");
+
+    my $update = OCP::Cmd::Update->new(
+        command_chain => [ OCP->new(config => $dir->child('ocp.yaml')->stringify) ],
+        component     => 'ciliu',
+        force         => 1,
+    );
+
+    my ($err, $out);
+    {
+        my $o = '';
+        open my $fh, '>', \$o or die "capture stdout: $!";
+        my $old = select $fh;
+        eval { $update->execute([], []) };
+        $err = $@;
+        select $old;
+        $out = $o;
+    }
+
+    like $err, qr/^Unknown component 'ciliu'\./, 'names the word that was not understood';
+    my @comps = sort keys %{ OCP::Versions->get_versions('0.001')->{components} };
+    my $listing = join ', ', @comps;
+    like $err, qr/^\QAvailable: $listing\E$/m,
+        'lists every component the manifest has, read from the manifest';
+    unlike $out, qr/All components up to date/,
+        'and does NOT print the no-op line — that is the bug';
+
+    my ($stderr, $rc) = reported($err);
+    isnt $rc, 0, 'exit code is not 0';
+    like $stderr, qr/^Error: Unknown component 'ciliu'\./, 'STDERR carries it';
+};
+
 # -------------------------------------------------------------------------
 # 5. Provider types — the mirror image of karr #89
 # -------------------------------------------------------------------------
