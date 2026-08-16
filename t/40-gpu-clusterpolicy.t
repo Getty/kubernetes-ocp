@@ -278,4 +278,39 @@ subtest 'the retired half of the 22.9 recipe is gone from the whole manifest' =>
     }
 };
 
+#
+# cdi.enabled is the field the #23 decision rides on. The toolkit defaults
+# --set-as-default to true, and the operator only writes
+# NVIDIA_RUNTIME_SET_AS_DEFAULT=false ahead of it when config.CDI.IsEnabled()
+# returns true. The CRD's kubebuilder default makes that true for nil, which is
+# what kept runc as defaultRuntimeName on cortex — but OCP had no pin and no
+# test for it. An operator release that flips the CRD default silently undoes
+# #23 and makes nvidia the node's default runtime (karr #76). The field has to
+# be present in the spec so OCP stops leaning on a default it does not own.
+#
+
+subtest 'cdi.enabled is set explicitly in the ClusterPolicy spec' => sub {
+    for my $distribution (qw(k3s rke2)) {
+        my ($policy) = cluster_policy_for($distribution);
+        my $cdi = $policy->{spec}{cdi};
+        ok ref $cdi eq 'HASH',
+            "$distribution: cdi is a top-level spec section, not a stray field";
+        ok exists $cdi->{enabled},
+            "$distribution: cdi.enabled is present — the field the decision rides on";
+        ok $cdi->{enabled},
+            "$distribution: cdi.enabled is true — the operator only writes "
+          . 'NVIDIA_RUNTIME_SET_AS_DEFAULT=false when IsEnabled() is true, and '
+          . 'that is what keeps runc as defaultRuntimeName (karr #76, decision #23)';
+    }
+};
+
+subtest 'the cdi decision does not ride on the CRD default in the rendered YAML' => sub {
+    for my $distribution (qw(k3s rke2)) {
+        my (undef, $yaml) = cluster_policy_for($distribution);
+        like $yaml, qr/^\s+cdi:\s*\n\s+enabled:\s*true\s*$/m,
+            "$distribution: cdi.enabled appears as a literal 'enabled: true' "
+          . 'block in the rendered YAML, not omitted and not left to a CRD default';
+    }
+};
+
 done_testing;
