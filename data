@@ -1,0 +1,73 @@
+---
+class: standard
+completed: 2026-08-16T02:27:03Z
+created: 2026-08-15T18:05:57Z
+id: 79
+priority: high
+started: 2026-08-16T01:46:11Z
+status: done
+tags:
+- testing
+- toolchain
+- docker
+- reproducibility
+title: make test faehrt gegen Host-CPAN, nicht gegen den Pin
+updated: 2026-08-16T02:29:07Z
+---
+
+Aufgefallen 2026-08-15 auf die unangenehmste Art: die Suite war morgens gruen
+(Files=55, Tests=906, PASS), abends rot (Files=60, Tests=982, FAIL) - ohne dass
+sich eine Zeile im Repo geaendert haette. Auch der Stand VOR dem Tagesdurchgang
+(03dec2e) ist rot, wenn man ihn heute abend faehrt.
+
+Ursache war eine Aenderung AUSSERHALB des Repos: Kubernetes::REST 1.107 wurde
+released und auf dem Host installiert, waehrend cpanfile und cpanfile.snapshot
+1.106 pinnen. lib/OCP/K8s.pm hat einen `$api->can('patch_status')`-Zweig, der
+damit erstmals feuerte - mit der falschen Argumentform.
+
+DAS IST NICHT DER PUNKT DIESES TICKETS. Der Bug wird separat gefixt. Der Punkt
+ist, dass die Suite es ueberhaupt gemerkt hat und wir es trotzdem fast nicht.
+
+  test:
+      prove -l t/
+
+`make test` faehrt gegen die host-installierten CPAN-Module. Der Pin in
+cpanfile.snapshot und das Docker-Image, das ihn benutzt, spielen dabei keine
+Rolle. Zwei Entwickler mit verschieden gefuellten ~/perl5 bekommen verschiedene
+Ergebnisse aus demselben Commit, und derselbe Entwickler bekommt an zwei Tagen
+verschiedene Ergebnisse - genau das ist heute passiert.
+
+Das widerspricht der Hausregel ausdruecklich: "Toolchain ist Docker-first: kein
+carton install/cpm auf dem Host ... Host-Laeufe verschmutzen den Host-CPAN-Stand
+und liefern inkonsistente Ergebnisse." Fuer die INSTALLATION ist die Regel
+umgesetzt, fuer den TESTLAUF nicht.
+
+Das vorhandene `docker-test` schliesst die Luecke nicht - es ruft nur
+`docker run --rm $(IMAGE):$(TAG) --help` und prueft damit, dass das Image
+startet, nicht dass die Suite gruen ist.
+
+ZU TUN:
+ - Ein Target, das `prove -l t/` IM Image faehrt, gegen den gepinnten Stand aus
+   cpanfile.snapshot. Der Arbeitsbaum muss dabei hineingemountet werden, damit
+   man den aktuellen Code testet und nicht den einkompilierten - die
+   ocp-Shellfunktion macht genau das bereits (mountet den Baum als /src und
+   startet perl -I/src/lib /src/bin/ocp), das Muster existiert also schon.
+ - Entscheiden, was `make test` dann bedeutet. Vorschlag: `make test` wird der
+   gepinnte Lauf (das ist die Wahrheit, an der auch das Release haengt), und der
+   schnelle Host-Lauf bekommt einen eigenen Namen, damit klar ist, dass sein
+   Ergebnis nicht bindet. Umgekehrt waere bequemer und genau deshalb falsch: die
+   bindende Zahl darf nicht die zufaellige sein.
+ - t/48-image-toolchain.t prueft schon Eigenschaften des Images; ein Waechter,
+   dass die im Image installierte Kubernetes::REST/IO::K8s-Version zu cpanfile
+   passt, waere dort billig und haette diesen Fall am Pin statt am Symptom
+   gezeigt.
+
+ZWEITER, VERWANDTER BEFUND: `$api->can('patch_status')` in lib/OCP/K8s.pm macht
+das VERHALTEN vom Installationsstand abhaengig statt vom Pin - dieselbe Klasse
+Problem eine Ebene tiefer. Ein Feature-Detect, der still die Semantik wechselt,
+ist auf einer gepinnten Abhaengigkeit ueberfluessig: wenn wir 1.107 verlangen,
+koennen wir die native Methode einfach benutzen. Beim Fix mitpruefen, wo OCP
+sonst noch `->can(...)` auf gepinnte Getty-Distributionen anwendet.
+
+Lane: ocp-infra-worker (Makefile/Image) + ocp-test-writer (Waechter).
+ERLEDIGT 2026-08-16, Commit e81096e. Die vollstaendige Begruendung steht in der Commit-Message. make test faeahrt jetzt IM IMAGE gegen den Pin; make test-host ist der nicht bindende Host-Lauf. Gemessen 159s/53.51 CPU (Image) vs 160s/53.77 (Host) - der Container ist NICHT die langsame Bahn, damit faellt das Argument gegen das gepinnte Ziel. Groesserer Befund als im Ticket: die Abweichung betraf auch PERL SELBST, Host 5.036000 gegen Image 5.042003.
