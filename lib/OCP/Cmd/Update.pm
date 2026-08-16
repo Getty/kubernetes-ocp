@@ -87,6 +87,15 @@ sub execute {
     my @updates;
     my $selected = $self->component;
 
+    # karr #113: --component TYPO used to skip every iteration of the loop
+    # below, fall through with @updates empty, and reach the
+    # "All components up to date" branch as if nothing had happened. Refuse
+    # here instead — same shape `ocp quatschkommando` answers in (karr #67,
+    # #103). Without this guard, a typo is indistinguishable from a real
+    # no-op: same line, same exit 0.
+    die OCP::Choices::unknown('component', $selected, [ sort keys %$target_comps ])
+        if $selected && !exists $target_comps->{$selected};
+
     for my $comp (sort keys %$target_comps) {
         # Skip if specific component requested and this isn't it
         next if $selected && $comp ne $selected;
