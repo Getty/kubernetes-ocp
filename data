@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-08-16T05:29:25Z
+created: 2026-08-16T05:07:45Z
+id: 123
+priority: medium
+started: 2026-08-16T05:17:48Z
+status: done
+tags:
+- bug
+- robocop
+- status
+title: OCP::Robocop::Controller swallows provider errors without updating OCPNode
+  status
+updated: 2026-08-16T05:29:25Z
+---
+
+File: lib/OCP/Robocop/Controller.pm:128-178
+
+In `_on_node_event`, two failure paths return early without touching the OCPNode's `status.phase`/`status.message`:
+
+1. Lines 146-150: missing spec.providerRef -> logs and returns, CR stays Pending
+2. Lines 157-160: OCP::Provider->from_cr dies (e.g. "spec.hetzner.tokenSecretRef.name missing" raised in OCP/Provider.pm:59,68,80,108) -> exception propagates to the try/catch in run (line 113), catch only logs to STDOUT
+
+Either way operators see a CR stuck Pending with no `message`, and the only diagnostic is robocop's pod logs.
+
+Fix: on every early-return path, patch the CR with `status.phase = Failed` and `status.message = <the local error>`. The catch in run must do the same.
+
+Repro:
+1. Apply an OCPNode with spec.providerRef: nonexistent
+2. Observe: CR stays Pending, message unset, robocop logs "Failed to load provider CR nonexistent" silently.
