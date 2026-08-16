@@ -147,6 +147,14 @@ sub execute {
 
     unless (@$nodes) {
         print "No nodes to destroy.\n";
+        # karr #78: this early-return used to skip the cleanup that runs at
+        # the bottom of execute(). It is exactly the shape a project takes
+        # after a cluster was torn down out of band — status.yaml with
+        # `nodes: []`, the spec slimmed down, no orphans at Hetzner — and
+        # leaving deployed.yaml behind made the next `ocp apply` compare a
+        # fresh cluster against the hashes of one that was gone (ADR 0004).
+        # --keep_status opts out below.
+        $self->_cleanup_project_state($config);
         return;
     }
 
@@ -263,15 +271,41 @@ sub execute {
         }
     }
 
-    # Clear status + kubeconfig
-    #
-    # deployed.yaml goes with status.yaml, and for the same reason: both
-    # describe the cluster that was just deleted (ADR 0004). Leaving the
-    # manifest hashes behind made the next `ocp apply` compare a brand new
-    # cluster against the components of the old one — it announced "Registry
-    # already deployed (up to date)" on an empty ocp-system and then pointed
-    # CoreDNS at a registry that was never rolled out. Nothing on the way to
-    # that was an error, so nothing reported one.
+    # Clear status + kubeconfig. Pulled into a helper so the early-return
+    # path above ("no nodes to destroy") and the main path land at the same
+    # code; the early-return bypass used to leave .ocp/deployed.yaml behind
+    # when a cluster was torn down out of band (karr #78).
+    $self->_cleanup_project_state($config);
+
+    # Last, so it is the thing left on screen: a teardown that reported success
+    # while paid machines kept running is the failure mode this is here for.
+    $self->_report_mislabelled_servers($config, $hetzner_prov);
+
+    print "\nCluster destroyed.\n";
+
+    return 0;
+}
+
+# Remove the local files a successful destroy is meant to leave behind. Both
+# paths through execute() -- the early "no nodes to destroy" return and the
+# "nodes deleted, now tidy up" tail -- call this, so the local state dies with
+# the cluster it described regardless of whether anything was actually torn
+# down on the wire (karr #78).
+#
+# deployed.yaml goes with status.yaml, and for the same reason: both describe
+# the cluster that was just deleted (ADR 0004). Leaving the manifest hashes
+# behind made the next `ocp apply` compare a brand new cluster against the
+# components of the old one — it announced "Registry already deployed (up to
+# date)" on an empty ocp-system and then pointed CoreDNS at a registry that
+# was never rolled out. Nothing on the way to that was an error, so nothing
+# reported one.
+#
+# --keep_status is the documented opt-out; it covers status.yaml and
+# deployed.yaml only. The encrypted kubeconfig is removed unconditionally —
+# it is cluster access material, not cluster state.
+sub _cleanup_project_state {
+    my ($self, $config) = @_;
+
     unless ($self->keep_status) {
         for my $file ($config->status_file, $config->deployed_file) {
             next unless -f $file;
@@ -285,14 +319,6 @@ sub execute {
         unlink $kubeconfig;
         print "Encrypted kubeconfig removed.\n";
     }
-
-    # Last, so it is the thing left on screen: a teardown that reported success
-    # while paid machines kept running is the failure mode this is here for.
-    $self->_report_mislabelled_servers($config, $hetzner_prov);
-
-    print "\nCluster destroyed.\n";
-
-    return 0;
 }
 
 1;
@@ -350,12 +376,15 @@ project (orphans that C<status.yaml> did not record, picked up via
 L<OCP::Provider::Hetzner/list_servers_by_cluster>), and finally the
 C<control_planes> and C<workers> sections of C<ocp.yaml> as a last resort.
 
-After the nodes are gone, both C<.ocp/status.yaml> and
-C<.ocp/deployed.yaml> are removed (unless C<--keep_status> is set) and the
-encrypted C<kubeconfig.yaml> is deleted.  Leaving C<deployed.yaml> behind
-was the bug behind C<ADR 0004>: a fresh C<ocp apply> compared a brand-new
-cluster against the hash file of the previous one and announced every
-component as "up to date" against a registry that was never rolled out.
+After the run, both C<.ocp/status.yaml> and C<.ocp/deployed.yaml> are
+removed (unless C<--keep_status> is set) and the encrypted C<kubeconfig.yaml>
+is deleted.  Leaving C<deployed.yaml> behind was the bug behind C<ADR 0004>:
+a fresh C<ocp apply> compared a brand-new cluster against the hash file of
+the previous one and announced every component as "up to date" against a
+registry that was never rolled out.  Cleanup runs even when no nodes were
+found to delete (C<karr #78>) — a teardown that discovers nothing on the
+wire is exactly the shape a project directory takes after a cluster was
+torn down out of band.
 
 =opt force
 

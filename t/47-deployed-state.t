@@ -625,6 +625,109 @@ YAML
     ok -f $deployed, 'deployed.yaml kept with it — one switch, one meaning';
 };
 
+#
+# karr #78: destroy used to return at "No nodes to destroy." and skip the
+# cleanup, so a project whose cluster was torn down out of band kept its
+# .ocp/deployed.yaml. The next `ocp apply` then compared a fresh cluster
+# against the hashes of one that was gone. The early-return path now runs
+# the same cleanup as the main path; these subtests assert it on the exact
+# shapes that triggered the bug.
+#
+
+subtest 'destroy cleans up when status is empty and the spec has no nodes' => sub {
+    # Empty control_planes array -> control_planes() returns []; the fallback
+    # in execute() finds nothing to push. status.yaml with `nodes: []` is
+    # what the cluster leaves behind once it has actually been destroyed
+    # (the shape cortex was in when the ticket was filed).
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML');
+name: cortex
+kubernetes:
+  dist: rke2
+control_planes: []
+workers: []
+YAML
+
+    $dir->child('.ocp')->mkpath;
+    my $status   = path($dir->child('.ocp', 'status.yaml'));
+    my $deployed = path($dir->child('.ocp', 'deployed.yaml'));
+    my $kubeconfig = $dir->child('kubeconfig.yaml');
+    $status->spew("nodes: []\n");
+    $deployed->spew("registry: deadbeef\nnfd: cafebabe\ngpu-operator: feedface\n");
+    $kubeconfig->spew("encrypted\n");
+
+    my $destroy = OCP::Cmd::Destroy->new(
+        command_chain => [ FakeOcp->new_with_config($dir->child('ocp.yaml')->stringify) ],
+        force         => 1,
+    );
+
+    my ($out) = capture_stdout { $destroy->execute([], []) };
+
+    like $out, qr/No nodes to destroy\./,
+        'the early-return path announces what it found';
+    ok !-f $status,   'status.yaml is gone (empty-nodes, spec-stripped)';
+    ok !-f $deployed,
+        'deployed.yaml is gone too — otherwise the next apply skips what is missing';
+    ok !-f $kubeconfig, 'and the encrypted kubeconfig is gone';
+};
+
+subtest 'destroy cleans up when there is no local state at all' => sub {
+    # The same shape, even emptier: no .ocp/, no kubeconfig. The early-return
+    # path must not die, must not warn, and must not refuse to run — there
+    # is nothing to undo, but the user did ask for destroy.
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML');
+name: cortex
+kubernetes:
+  dist: rke2
+control_planes: []
+workers: []
+YAML
+
+    my $destroy = OCP::Cmd::Destroy->new(
+        command_chain => [ FakeOcp->new_with_config($dir->child('ocp.yaml')->stringify) ],
+        force         => 1,
+    );
+
+    my ($out) = capture_stdout { $destroy->execute([], []) };
+
+    like $out, qr/No nodes to destroy\./,
+        'the empty-project case is the same early-return path';
+    unlike $out, qr/\QRemoved\E/,
+        'and nothing announces "Removed ..." because nothing was there to remove';
+};
+
+subtest '--keep-status preserves state on the early-return path too' => sub {
+    # Same shape as the regression above, with --keep_status. The opt-out is
+    # one switch with one meaning; the early-return path is not a separate
+    # rule.
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML');
+name: cortex
+kubernetes:
+  dist: rke2
+control_planes: []
+workers: []
+YAML
+
+    $dir->child('.ocp')->mkpath;
+    my $status   = path($dir->child('.ocp', 'status.yaml'));
+    my $deployed = path($dir->child('.ocp', 'deployed.yaml'));
+    $status->spew("nodes: []\n");
+    $deployed->spew("registry: deadbeef\n");
+
+    my $destroy = OCP::Cmd::Destroy->new(
+        command_chain => [ FakeOcp->new_with_config($dir->child('ocp.yaml')->stringify) ],
+        force         => 1,
+        keep_status   => 1,
+    );
+
+    capture_stdout { $destroy->execute([], []) };
+
+    ok -f $status,   'status.yaml kept on the early-return path';
+    ok -f $deployed, 'deployed.yaml kept on the early-return path';
+};
+
 done_testing;
 
 sub FakeOcp::new_with_config {

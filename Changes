@@ -1,6 +1,18 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
+      even when the early-return path fires (karr #78). A project whose
+      cluster was torn down out of band left both files describing a
+      cluster that no longer existed; the next `ocp apply` then compared
+      a fresh cluster against the hashes of one that was gone and
+      announced every component as "up to date" against a registry that
+      was never rolled out (ADR 0004). The cleanup now lives in one
+      helper, called from both the main path and the "no nodes to
+      destroy" return; `--keep_status` is still the opt-out and still
+      means the same thing in both places. New subtests in
+      t/47-deployed-state.t assert the files are gone on the
+      empty-nodes/spec-stripped shape cortex was in.
     - The GPU ClusterPolicy now writes spec.cdi.enabled explicitly
       (karr #76). The #23 decision -- "OCP does not make the nvidia
       runtime the node's default runtime" -- rests on the operator
