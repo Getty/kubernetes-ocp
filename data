@@ -1,0 +1,56 @@
+---
+class: standard
+completed: 2026-08-16T04:25:50Z
+created: 2026-08-16T02:07:58Z
+id: 108
+priority: medium
+started: 2026-08-16T04:08:51Z
+status: done
+tags:
+- docs
+- agents
+- briefing
+title: 'Briefings und CLAUDE.md schicken Agenten nach manifests/ - das Verzeichnis
+  ist seit #57 weg'
+updated: 2026-08-16T04:25:50Z
+---
+
+Gefunden 2026-08-16 beim Abarbeiten von #104 (ocp-doc-writer). #104 selbst
+(falsche $VERSION-Angaben) und der make-test-Abgleich sind erledigt; dabei fiel
+weitere Staleness auf, die einen eigenen Durchgang braucht.
+
+1. manifests/ EXISTIERT NICHT MEHR (mit #57 geloescht, share/ ist die einzige
+   Wahrheit) - wird aber weiterhin genannt in:
+     CLAUDE.md:21                       Delegations-Tabelle
+     .claude/agents/ocp-infra-worker.md:3 (description) und :18
+     .claude/agents/ocp-worker.md:3      (description)
+     .claude/skills/ocp-core/SKILL.md:133 "Manifests live in manifests/robocop/"
+     .claude/skills/ocp-core/SKILL.md:141 Repo-Layout-Block
+   DAS WIEGT AM SCHWERSTEN von allem hier: die Delegations-Tabelle ist das, wonach
+   Arbeit verteilt wird, und ocp-core ist die force-geladene Architektur-Landkarte.
+   Beide schicken Agenten in ein Verzeichnis, das es nicht gibt. Der tatsaechliche
+   Ort ist share/robocop/ (CRDs, rbac.yaml, deployment.yaml, kustomization.yaml).
+
+2. .claude/agents/ocp-test-writer.md nennt den Suite-Umfang als
+   "00-load.t ... 34-ocp-version-stamp.t". Tatsaechlich laeuft t/ inzwischen bis
+   t/73-provider-name-vs-type.t. Eine Zahl, die altert - besser durch eine Regel
+   ersetzen ("fortlaufend nummeriert, hoechste Nummer + 1 fuer Neues") als durch
+   eine neue Zahl.
+
+3. .claude/agents/ocp-release-checker.md fuehrt die Getty-Pin-Ausnahmen auf, laesst
+   dabei aber Rex::Interface::Connection::LibSSH weg, das cpanfile sehr wohl pinnt
+   ('0.002') und das ocp-core in Invariante 3 auch nennt. Eine unvollstaendige
+   Aufzaehlung an genau der Stelle, die vor einem Release prueft, ob alles gepinnt
+   ist.
+
+ZU TUN: einen Durchgang ueber CLAUDE.md, die sieben Briefings und ocp-core.
+Wo eine REGEL genuegt, keine Zahl und keinen Pfad hinschreiben - das ist die
+gemeinsame Ursache aller drei Punkte.
+
+ACHTUNG BEIM EDITIEREN: .claude/skills/ocp-core/SKILL.md ist HARDLINKED
+(Inode 274998835, Linkcount 2). NIEMALS Edit oder Write, immer `cat > datei`,
+danach Inode und Linkcount gegenpruefen. Die Agenten-Briefings unter
+.claude/agents/ haben Linkcount 1, dort ist Edit in Ordnung. CLAUDE.md ebenfalls.
+
+Lane: ocp-doc-writer. Verwandt: #104 (der erste Teil, erledigt), #57 (die
+Loeschung von manifests/), #79 (make test), manage-skills.
