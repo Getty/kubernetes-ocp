@@ -1,0 +1,54 @@
+---
+class: standard
+completed: 2026-08-16T02:56:44Z
+created: 2026-08-16T02:20:43Z
+id: 109
+priority: medium
+started: 2026-08-16T02:35:17Z
+status: done
+tags:
+- node
+- timeouts
+- hetzner
+title: 'wait_for_ssh: Worker bekommt 60s, Control Plane 120s - seit #99 erreichbar
+  und terminal'
+updated: 2026-08-16T02:56:44Z
+---
+
+Gefunden 2026-08-16 beim Fix von #99 (ocp-worker), und ausdruecklich als
+"das naechste, was zubeisst" gemeldet.
+
+Zwei Stellen warten auf denselben Vorgang mit unterschiedlichem Budget:
+
+  lib/OCP/Cmd/Apply/Bootstrap.pm:265   wait_for_ssh(120)   Control Plane
+  lib/OCP/Node.pm:327                  wait_for_ssh(60)    Worker
+
+WARUM ES JETZT ERST ZAEHLT: Vor #99 wurde die Stelle in OCP::Node auf dem
+Hetzner-Pfad NIE erreicht - der Node starb vorher an "No host IP in status or
+spec". Mit #99 laeuft der Pfad durch, und zwar so, dass wir SSH auf einer Maschine
+versuchen, die vor Sekunden erst den Status "running" erreicht hat. Genau dort ist
+das Budget jetzt halb so gross wie beim Control Plane, der dasselbe tut.
+
+VERSCHAERFEND: ein Fehlschlag dort ist TERMINAL (phase => Failed), und Failed ist
+laut Kommentar in _provision endgueltig. Ein Server, der 70 Sekunden bis zum
+SSH-Daemon braucht, ist damit dauerhaft verloren - inklusive der Kosten, denn die
+Maschine laeuft weiter.
+
+Es gibt keinen erkennbaren Grund fuer die Asymmetrie. Ein frisch erzeugter
+Hetzner-Worker braucht eher MEHR Zeit als ein Control Plane, nicht weniger:
+er kommt gerade erst aus wait_for_status.
+
+ZU TUN: die beiden Zahlen zusammenfuehren. Empfehlung des #99-Agenten und meine:
+auf 120 anheben. Besser noch an EINEN Ort legen - #99 hat es fuer das
+Adress-Warten schon so gemacht (our $ADDRESS_TIMEOUT = 120 in OCP::Node, dieselbe
+Zahl, die Bootstrap.pm fuer denselben Vorgang benutzt). Eine Konstante fuer eine
+Frage; zwei Zahlen an zwei Orten sind der Grund, warum diese hier auseinanderlief.
+
+IM SELBEN ZUG PRUEFEN: reconcile_until_ready(timeout => 600) in `ocp node add`
+muss inzwischen bis zu 120s Adresse + 60s (bzw. 120s) SSH + den Rex-Install in
+EIN Budget packen. Das war schon vorher knapp und ist jetzt knapper. Nachrechnen
+und ggf. anheben - oder begruenden, warum 600 reicht.
+
+Lane: ocp-worker. Verwandt: #99 (macht die Stelle ueberhaupt erreichbar), #92,
+#29 (der Worker-Pfad war nie gelaufen - deshalb fiel es nie auf).
+ERLEDIGT 2026-08-16, Commit 1f25f58. Volle Begruendung in der Commit-Message. Die Loesung ist nicht eine gemeinsame Konstante, sondern dass KEIN Aufrufer mehr eine Zahl nennen kann: wait_for_ssh hatte seinen Default (120) laengst selbst, beide Aufrufer haben ihn ueberschrieben - einer mit demselben Wert, einer mit der Haelfte. Jetzt haelt $OCP::SSH::WAIT_TIMEOUT ihn und niemand uebergibt ein Argument. Das 600s-Budget ging auf 900 ($OCP::Node::READY_TIMEOUT) mit der Rechnung als Kommentar; dabei kamen eine DRITTE und VIERTE Kopie der 600 zum Vorschein (Apply/CR.pm, Node/Add.pm). Wichtig: ein abgelaufenes Budget ist NICHT terminal - es verdarb nur den Bericht, indem ocp node add den #97-Migrationshinweis fuer eine Maschine ausgab, die schlicht noch installierte. Beide Wartepfade melden jetzt ihre Phase (on_phase-Sink, OCP::Node bleibt trigger-neutral). Nachlauf: #112.
