@@ -1,0 +1,45 @@
+---
+class: standard
+completed: 2026-08-16T05:04:09Z
+created: 2026-08-15T07:31:22Z
+id: 69
+priority: low
+started: 2026-08-16T04:58:21Z
+status: done
+tags:
+- reconcile
+- cert-manager
+- drift
+title: cert-manager-Gate prueft Vorhandensein statt Gleichheit
+updated: 2026-08-16T05:15:52Z
+---
+
+Gefunden beim ADR-Audit zu #47 (ocp-adr-auditor), am HEAD verifiziert.
+
+lib/OCP/Cmd/Apply/Drift.pm gated cert-manager so:
+
+    if ($cm_running && $deployed->{certmanager})
+
+Der zweite Teil prueft nur, ob UEBERHAUPT ein Eintrag existiert. Jeder wahre Wert
+erfuellt ihn. Er wird nie gegen
+OCP::Versions->get_component_version("cert_manager") verglichen - anders als bei
+Registry, NFD und GPU-Operator, die ihren gespeicherten Hash gegen den frisch
+berechneten halten.
+
+VERHALTEN IST HEUTE GEDECKT, nur nicht hier: Versions-Drift bei cert-manager faellt
+ueber OCP::Drift auf, das die laufende Image-Version aus dem Cluster liest. Der
+Reconcile-Pfad selbst wuerde einen Versionswechsel in OCP::Versions aber nicht
+bemerken - er sieht "Eintrag da, Deployment laeuft" und ueberspringt.
+
+ADR 0008 formuliert fuer diesen Pfad "tracked by component version". Das
+beschreibt den EINTRAG, nicht einen Vergleich, den auf diesem Pfad jemand macht.
+Der Wortlaut des ADR wurde bewusst nicht angefasst - erst entscheiden, ob das
+Gate angeglichen wird, dann die Doku nachziehen.
+
+Zu tun: entscheiden, ob cert-manager dasselbe Gleichheits-Gate bekommt wie die
+uebrigen Komponenten (dann ist das ADR-Wording korrekt) oder ob die Sonderrolle
+gewollt ist (dann gehoert der Grund in 0008). Nicht blind angleichen - ein
+schaerferes Gate loest bei jedem cert-manager-Versionsbump einen Redeploy aus,
+das ist eine Verhaltensaenderung.
+
+Lane: ocp-worker. Verwandt: #47, #43, ADR 0008.
