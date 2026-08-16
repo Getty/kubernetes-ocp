@@ -1,0 +1,36 @@
+---
+claimed_at: 2026-08-16T05:24:38Z
+claimed_by: ocp-infra-worker
+class: standard
+completed: 2026-08-16T05:24:05Z
+created: 2026-08-16T05:07:34Z
+id: 122
+priority: medium
+started: 2026-08-16T05:23:45Z
+status: done
+tags:
+- bug
+- duplication
+- k3s
+- rke2
+title: Node-token path literal duplicated in Cmd/Node/Add and Cmd/Apply/CR
+updated: 2026-08-16T05:24:38Z
+---
+
+Files:
+- lib/OCP/Cmd/Node/Add.pm:308-310
+- lib/OCP/Cmd/Apply/CR.pm:531-533
+
+Both blocks compute the same three-line expression:
+```perl
+my $token_path = $dist eq 'k3s'
+    ? '/var/lib/rancher/k3s/server/node-token'
+    : '/var/lib/rancher/rke2/server/node-token';
+```
+
+The `dist` selector and the two path strings can drift apart silently. Same defect shape karr #112 covers for the address-budget literals.
+
+Fix: lift the two paths into OCP::Node (or a new OCP::TokenPath helper) as `our $K3S_TOKEN_PATH` / `our $RKE2_TOKEN_PATH` constants and reference them from both call sites. Add a test that the two paths are kept in lockstep.
+
+Repro: bump the k3s token path in one file only. ocp node add and ocp apply disagree on what to read; one dies with an empty join token.
+Hoisted the literal into $OCP::Node::K3S_TOKEN_PATH / $OCP::Node::RKE2_TOKEN_PATH (our, alongside $READY_TIMEOUT). Both call sites now read from there. Regression subtest in t/16-node.t asserts both files reference the constants and not the literal, and that localising the constant is what subsequent reads see. Commit 58eb005 on branch worktree-agent-ocp-infra-k122.
