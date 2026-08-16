@@ -1,0 +1,63 @@
+---
+class: standard
+completed: 2026-08-16T02:27:40Z
+created: 2026-08-16T00:50:18Z
+id: 98
+priority: critical
+started: 2026-08-16T02:06:06Z
+status: done
+tags:
+- hetzner
+- provider
+- destroy
+- bug
+title: from_cr setzt cluster_name auf den Provider-CR-Namen - destroy findet die Server
+  nicht
+updated: 2026-08-16T02:29:26Z
+---
+
+Gefunden 2026-08-16 beim Fix von #92 (ocp-worker), am Code belegt. DAS KOSTET GELD.
+
+lib/OCP/Provider.pm, from_cr (~Zeile 55):
+
+    $args{cluster_name} = $name;
+
+$name ist dort der Name des PROVIDER-CR, nicht der des Clusters. ensure_provider_cr
+schreibt ihn als "$type-default", also z.B. "hetzner-default". Auf der anderen
+Seite der Naht macht for_spec es richtig: cluster_name => $config->name.
+
+Der from_cr-Pfad ist der, den OCP::Node benutzt - also jeder Worker, ob ueber
+`ocp node add` oder ueber robocop.
+
+DREI FOLGEN, alle still:
+
+1. DESTROY LAESST BEZAHLTE SERVER STEHEN. create_server labelt
+   'ocp-cluster' => $cluster, also "hetzner-default" statt des echten
+   Cluster-Namens. `ocp destroy` sucht ueber list_servers_by_cluster($config->name)
+   - findet diese Server nie. Sie laufen weiter und werden weiter berechnet, und
+   der Teardown meldet Erfolg.
+
+2. IDEMPOTENZ IST HIN. server_exists sucht nach dem Label-Paar
+   ocp-cluster=hetzner-default / ocp-node=<name> und kann einen vom Bootstrap
+   gelabelten Server nie treffen. Ein zweiter Provisionierungsversuch legt also
+   einen ZWEITEN Server an, statt den vorhandenen zu erkennen.
+
+3. Es blockiert den naheliegenden Weg, den Hetzner-SSH-Key-Namen aus dem
+   Cluster-Namen abzuleiten - genau daran ist der erste Ansatz in #92 gescheitert
+   (es waere "ocp-hetzner-default-admin" herausgekommen). Deshalb traegt jetzt der
+   Provider-CR das Feld sshKeyName.
+
+ZU TUN:
+ - from_cr muss den echten Cluster-Namen bekommen. Woher? Der Provider-CR kennt
+   ihn heute nicht. Kandidaten: ein Feld im CR (wie sshKeyName in #92), ein Label
+   am CR, oder der Namespace. Entscheiden, nicht raten - und dabei beachten, dass
+   robocop keinerlei Cluster-Identitaet hat ausser dem, was im Cluster steht.
+ - Ein Test, der belegt, dass ein ueber _provision angelegter Server dasselbe
+   ocp-cluster-Label bekommt wie einer aus dem Bootstrap. Das ist die Assertion,
+   die Punkt 1 und 2 zugleich abdeckt.
+ - Pruefen, ob bereits Server mit falschem Label existieren. Auf einem laufenden
+   Hetzner-Cluster waere das eine Handaufraeumung, kein Code-Problem.
+
+Lane: ocp-worker. Verwandt: #92 (dort gefunden), #29 (Worker-Pfad unverifiziert -
+der Grund, warum es ueberlebt hat), #43 (destroy raeumt nicht vollstaendig auf).
+ERLEDIGT 2026-08-16, Commit cd6360d. Die vollstaendige Begruendung steht in der Commit-Message. cluster_name kommt jetzt aus spec.clusterName statt aus metadata.name. Label statt Feld wurde verworfen: metadata ist geteilter Boden (kustomize, kubectl label, fremde Field Manager), und Label-Werte sind laengen- und zeichenbeschraenkt. Zwei Tests hatten den Bug als gruene Behauptung festgeschrieben (t/12:387, t/49-Fixture mit gleichnamigem CR und Cluster). destroy nennt Alt-Server mit falschem Label, loescht sie nie.
