@@ -1,0 +1,53 @@
+---
+class: standard
+completed: 2026-08-16T05:15:45Z
+created: 2026-08-15T07:54:12Z
+id: 75
+priority: low
+started: 2026-08-16T04:58:40Z
+status: done
+tags:
+- tests
+- k8s
+- invariants
+title: t/43 haelt einen repo-weiten Vertrag mit einer handgepflegten Namensliste
+updated: 2026-08-16T05:15:45Z
+---
+
+Gefunden beim Fix von #68 (ocp-test-writer, 2026-08-15), mit einem belegten
+Fehlversuch.
+
+t/43-k8s-call-contract.t haelt einen REPO-WEITEN Vertrag fest: kein Aufrufort in
+lib/ uebergibt eine API-Version als Argument 0. Erkannt wird das ueber eine
+Methodennamen-Alternation:
+
+  ->(get|delete|patch|list|ensure|_delete_object)\(
+
+Das ist derselbe Fehlertyp, den #68 gerade in t/47 beseitigt hat, nur eine Ebene
+hoeher: die Pruefung behauptet eine repo-weite Regel, kennt aber eine feste Liste
+von Namen. Jeder kuenftige Wrapper, der einen literalen Kind-Namen an
+Kubernetes::REST durchreicht, muss von Hand nachgetragen werden - sonst faellt er
+still aus der Pruefung. Genau das ist mit _delete_object aus #35 passiert.
+
+RATEFREIE VERALLGEMEINERUNG PER REGEX GIBT ES NICHT - probiert und verworfen:
+die Alternation ganz fallenzulassen und nur auf Kind-foermige Literale zu gehen
+(Slash oder v\d+-Muster) erzeugt Fehlalarme auf scp_to('/local/file'),
+scp_from('/remote/file') und _parse_image_ref('ghcr.io/foo/bar:v1.2.3'). Diese
+Faelle einzeln auszunehmen waere selbst wieder die Handpflege, die das Ticket
+beseitigen soll.
+
+MOEGLICHE FORMEN, keine davon entschieden:
+ - AST-basierter Scan (PPI) statt Regex: erkennt Aufrufe strukturell und kann die
+   Kette Wrapper -> Kubernetes::REST wirklich verfolgen, statt sie zu erraten.
+ - Eine Namenskonvention fuer solche Wrapper plus eine Lint-Regel darauf - billig,
+   aber sie verlagert das Problem nur auf die Disziplin beim Benennen.
+ - Die Pruefung dorthin verlagern, wo der Kind-Name ankommt: eine Zusicherung in
+   OCP::K8s selbst, die zur Laufzeit (und damit in jedem Test, der durch den
+   Mock-Transport geht) meckert, wenn Argument 0 wie eine API-Version aussieht.
+   Das braucht keine statische Analyse und kann nicht veralten - dafuer greift es
+   nur auf Pfaden, die ein Test tatsaechlich faehrt.
+
+Die dritte Variante ist vermutlich die stabilste und die billigste; sie wuerde die
+statische Pruefung nicht ersetzen, sondern ihr das Raten abnehmen.
+
+Lane: ocp-test-writer (mit ocp-worker fuer Variante 3). Verwandt: #68, #35, #21.
