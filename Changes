@@ -1,6 +1,17 @@
 Revision history for OCP
 
 {{$NEXT}}
+- `ocp node add --gpu` now reaches the worker install (karr #70). The flag
+  was a JSON boolean on the OCPNode CR since #50; nothing on the CLI
+  path read it, so the field was decoration. `OCP::Node->
+  _install_kubernetes` now threads `spec.gpu` into the Rex params
+  (`gpu => 1` for true, `gpu => 0` for false; absent leaves OCP::Rex's
+  `// 1` default in charge -- what every worker does today -- and
+  flipping that default is a wider decision that belongs to karr #31,
+  robocop side). t/70-gpu-flag.t asserts the field reaches the Rex
+  call on both rke2 and k3s paths, and that `gpu_driver` stays out of
+  the params (the CRD has no `spec.gpu.driver`; that source lands
+  with #31).
 - Pin Perl baseline to 5.42.3 across Dockerfile, Makefile(snapshot), and
       cpanfile floor (ADR 0025).
 - `OCP::Provider->from_cr` no longer reads `spec.ssh.keyPath` (karr #111).

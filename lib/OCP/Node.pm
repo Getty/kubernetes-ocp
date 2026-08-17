@@ -382,6 +382,16 @@ sub _install_kubernetes {
         ntp       => 1,
     );
 
+    # `ocp node add --gpu` writes spec.gpu as a JSON boolean onto the CR (karr
+    # #50); OCP::Rex and the Rexfile have always honoured a `gpu` parameter
+    # (karr #13), but this method built its own %params without it, so the
+    # flag on the CR was decoration. Thread it through so --gpu actually
+    # affects the worker install. Absent leaves OCP::Rex's // 1 default in
+    # charge -- flipping the default would change every worker and is a
+    # wider decision that belongs to karr #31 (robocop side).
+    my $cr_gpu = $self->cr->{spec}{gpu};
+    $params{gpu} = $cr_gpu ? 1 : 0 if defined $cr_gpu;
+
     my $ok = eval { $rex->run_task($task, %params) };
     if (!$ok || $@) {
         $self->_patch_status(phase => 'Failed',
