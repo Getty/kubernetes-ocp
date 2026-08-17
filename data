@@ -1,0 +1,74 @@
+---
+class: standard
+created: 2026-08-15T07:44:13Z
+id: 71
+priority: medium
+status: backlog
+tags:
+- drift
+- rex
+- cleanup
+title: OCP::Drift braucht eine Host-Probe fuer Reste, die kein apply erreicht
+updated: 2026-08-17T05:40:58Z
+---
+
+Abgespalten von #45 Punkt b) (ocp-infra-worker, 2026-08-15). Punkt a) ist
+erledigt: share/Rexfile hat jetzt cleanup_legacy_containerd_template, das das
+Alt-Template inhaltsbasiert entfernt.
+
+WARUM b) TROTZDEM GEBRAUCHT WIRD - Reichweite von a) ist gemessen und zu klein:
+prepare_node wird nur ueber die install-Tasks erreicht, und OCP::Rex::install_server
+ruft nur lib/OCP/Cmd/Apply/Bootstrap.pm. reconcile_components ruft es
+ausdruecklich NICHT (t/38-reconcile-path.t haelt das fest). Auf einem bestehenden
+Cluster nimmt `ocp apply` also den Reconcile-Pfad, und die Aufraeum-Task feuert
+NICHT - ausgerechnet auf dem Host, um den es geht: einmal gebootstrapped,
+seither nur upgraded.
+
+Sie feuert bei: frischem Bootstrap (no-op), wiederholtem Bootstrap, und bei
+install_agent - der interessante Fall fuer den ssh/existing-host-Provider, wenn
+eine vorbestehende Maschine als Worker dazukommt. Sonst nur von Hand:
+  rex -f share/Rexfile -H <host> -u root cleanup_legacy_containerd_template
+
+WAS ZU BAUEN WAERE. Ein OCP::Drift-Eintrag, dessen ERKENNUNG eine Rex-Probe ist
+und dessen remedy cleanup_legacy_containerd_template ist. Die Remedy-Haelfte
+existiert schon: lib/OCP/Drift.pm:459 fuehrt Rex-Remedies aus
+($rex->run_task($entry->{remedy}{task}, ...)), lib/OCP/Cmd/Apply/Drift.pm:347 ist
+der Aufrufer. Neu ist nur die Probe-Seite.
+
+DAS IST DIE ARCHITEKTUR-ENTSCHEIDUNG, DIE DAS TICKET BRAUCHT: OCP::Drift erkennt
+heute ausschliesslich ueber die Kubernetes-API. Eine Probe, die per SSH auf einen
+Host schaut, gibt `ocp status` eine zweite Erkennungsart mit ganz anderen
+Fehlermodi - Host nicht erreichbar, Key fehlt, langsam. Das ist ein echter
+Schritt, kein Anbau. Deshalb eigenes Ticket statt Beifang in #45.
+
+Wenn die Entscheidung faellt, gehoeren zwei weitere Host-Reste in dieselbe
+Mechanik (beide aus #45 gemessen, heute harmlos, niemand raeumt sie):
+ - /etc/containerd/conf.d/99-nvidia.toml - wirkt nur, wenn ein config.toml.tmpl
+   sie per imports einbindet. Ein spaeterer Bootstrap, der wieder ein Template
+   anlegt, wuerde sie stillschweigend aktivieren.
+ - die PATH-Zeile in /etc/default/rke2-server aus #23 - additiv, ueberlebt aber
+   ein destroy und beschreibt einen Zustand (nvidia-Runtime auf dem Host), der
+   danach nicht mehr garantiert ist.
+
+Gemeinsamer Nenner mit #43: OCP hinterlaesst Zustand ausserhalb dessen, was es
+selbst wieder aufraeumt. destroy sollte definieren, was es zurueck laesst, statt
+es dem Zufall der Uninstall-Skripte zu ueberlassen.
+
+Lane: ocp-infra-worker (Probe) + ocp-worker (Drift-Mechanik). Verwandt: #45, #23, #43.
+## TODO for foundation (Maintainer-Entscheidung noetig)
+
+Body dokumentiert: prepare_node bzw. cleanup_legacy_containerd_template wird nur ueber install-Tasks erreicht, NICHT ueber reconcile_components. Auf einem bestehenden Cluster loest  die Aufraeum-Task nicht aus.
+
+Cross-Refs: #45 (parent, Punkt a zu, b offen), #43 (OCP hinterlaesst Zustaende ausserhalb dessen, was es aufraeumt), zwei weitere Host-Reste aus dem Body (/etc/containerd/conf.d/99-nvidia.toml, /etc/default/rke2-server PATH-Zeile).
+
+### Architektur-Entscheidung (Maintainer)
+
+OCP::Drift erkennt heute nur ueber die K8s-API. Eine Rex-Probe waere eine zweite Erkennungsart mit anderen Fehlmodi (Host nicht erreichbar, Key fehlt, langsam). Die Entscheidung ist nicht anbau, sondern Schritt.
+
+### Aufgaben NACH der Entscheidung
+
+- [ ] OCP::Drift: ein neuer Subtyp 'rex_probe' mit Feldern (host_selector, detection_task, remedy_task). Body nennt die konkreten Stellen (Drift.pm:459 fuer Remedy-Aufruf, Apply/Drift.pm:347 als Aufrufer) - die Remedy-Haelfte existiert schon
+- [ ] Probe-Seite: cleanup_legacy_containerd_template als rex_probe einhaengen. host_selector: alle CPs, die laut ocp.yaml machine.cps kennen (Spec.provider / ssh). Detection: cleanup_legacy_containerd_template selbst oder ein Read-Task, der feststellt ob das Template noch existiert
+- [ ] Ausweitung: mit der gleichen Mechanik spaeter 99-nvidia.toml und PATH-Zeile in /etc/default/rke2-server (Body listet sie explizit auf)
+- [ ] Tests: t/71-drift-rex-probe.t verifiziert, dass Drift-Eintraege des neuen Subtyps korrekt lifecycle-detect-remedy laufen. Mock-Rex reicht
+- [ ] ocp status: zeigt Rex-Drifts im Output, ohne den Drift-Pfad zu blockieren wenn keine Rex-Verbindung steht (heute ein No-Go-Szenario)
