@@ -1,0 +1,54 @@
+---
+class: standard
+created: 2026-08-12T16:12:28Z
+depends_on:
+- 1
+id: 29
+priority: medium
+status: backlog
+tags:
+- workers
+- testing
+- smoke
+title: Worker-Pfad ist end-to-end unverifiziert - smoke faehrt nur Single-Node-CP
+updated: 2026-08-17T05:43:50Z
+---
+
+#21 hat sieben Defekte im Worker-Pfad gefunden, #28 einen achten in robocop. Alle
+haben so lange ueberlebt, weil nie ein echter Worker provisioniert wurde.
+
+Am Cluster auf cortex nachgesehen (lesend, ueber Kubernetes::REST::Kubeconfig):
+genau ein OCPNode (cortex, control-plane, Ready, reconciler=cli) und genau ein
+k8s Node (cortex). Es hat dort nie einen Worker gegeben.
+
+Die Suite ist nach #21 auf Signatur- und Pfad-Ebene streng: t/16-node.t faehrt
+ein echtes Kubernetes::REST mit Mock-Transport, t/43-k8s-call-contract.t haelt
+den Vertrag fest. Was Mocks aber nicht zeigen koennen:
+
+- ob der RKE2-Agent auf einer frischen Maschine wirklich hochkommt
+- ob sich der Node am CP registriert und unter welchem Namen
+  (status.kubernetesNodeName ist geraten, wenn er nicht gesetzt ist)
+- ob teardown die Maschine beim Provider wirklich abraeumt
+- ob zwei Reconciler sich am Lease tatsaechlich per 409 aussperren
+  (die Optimistic Concurrency haengt an resourceVersion und ist nie
+  gegen einen echten API-Server gelaufen)
+
+xt/smoke.sh bootstrapped nur einen Single-Node-CP ohne Worker.
+
+Braucht eine Entscheidung: einen Worker in smoke aufnehmen (kostet echte
+Server und Laufzeit) oder den Pfad bewusst als unverifiziert markieren.
+Siehe auch #26 - der Reconcile-Pfad legt ohnehin keine Worker an.
+BLOCKIERT durch #1: der Maintainer ueberarbeitet erst Net::Async::Kubernetes, danach wird robocop komplett neu gedacht. Bis dahin keine Architekturarbeit an diesem Ticket.
+## TODO for foundation (when #1 unblocks)
+
+Body dokumentiert den Status: t/16-node.t und t/43-k8s-call-contract.t sind streng auf Mock-Ebene, smoke faehrt nur Single-Node-CP. Was Mocks nicht zeigen koennen, ist im Body aufgelistet (Agent hochfahren, Node-Registrierung, teardown-Aufraeumung, Lease-409).
+
+Cross-Refs: #33 (robocop tickt nicht - Voraussetzung fuer Worker-Loop), #26 (worker-Reconcile-Pfad), #1.
+
+### Aufgaben
+
+- [ ] xt/smoke.sh: Worker-Drift einbauen. Mindestens: worker-Provisionierung verifizieren, status.kubernetesNodeName explizit lesen (nicht raten), teardown auf Server-Existenz pruefen, zwei reconciler-Instanzen mit 409 aussperren
+- [ ] xt/WORKERS.md oder smoke-README: was kostet der erweiterte Smoke (Server-Anzahl, Laufzeit) - ehrliche Doku fuer den Maintainer
+- [ ] Offene Maintainer-Entscheidung (Body): 'erweitern oder explizit als unverifiziert markieren'. Bei 'unverifiziert' Variante: Banner in xt/smoke.sh + README, der die Luecke benennt
+- [ ] Cross-checks: #26 loest das Reconcile-Problem, #33 den Controller - Smoke-Validierung ist die Konsequenz beider
+- [ ] Tests: nichts neues in t/, weil smoke und t/ unterschiedliche Realitaeten testen - bestehende Mock-Suite bleibt, smoke wird nur ehrlicher
