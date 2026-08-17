@@ -1,0 +1,61 @@
+---
+class: standard
+completed: 2026-08-17T03:14:32Z
+created: 2026-08-16T02:44:06Z
+id: 111
+priority: medium
+started: 2026-08-17T03:11:27Z
+status: done
+tags:
+- crd
+- provider
+- consistency
+title: OCPNodeProvider-CRD und Code meinen an vier Stellen nicht dasselbe
+updated: 2026-08-17T23:51:22Z
+---
+
+Gefunden 2026-08-16 beim Fix von #100 (ocp-worker). #100 hat die drei
+hetzner-Felder verdrahtet; dabei fielen vier weitere Stellen auf, an denen CRD und
+Code nicht dasselbe meinen. Eine davon ist ein echter Bug.
+
+1. spec.ssh.keyPath IST DER SPIEGELFALL VON #100 - gelesen, aber nicht deklariert.
+   lib/OCP/Provider.pm:118 liest $cr->{spec}{ssh}{keyPath}, die OCPNodeProvider-CRD
+   deklariert das Feld NICHT. Structural Schemas schneiden undeklarierte Felder
+   weg, der API-Server verwirft es also auf dem Hinweg, und der Wert loest immer zu
+   '' auf. Wer ihn setzt, bekommt keine Wirkung und keine Meldung.
+   Das ist derselbe Fehler wie #100, nur andersherum - dort schrieb die CLI etwas,
+   das niemand las; hier liest der Code etwas, das nie ankommt.
+   DAS IST DER EINZIGE ECHTE BUG IN DIESER LISTE.
+
+2. spec.ssh.user ist schreib-only. ensure_provider_cr schreibt { user => 'root' },
+   die CRD deklariert es mit default: root, gelesen wird es von nichts.
+
+3. spec.ssh.keySecretRef ist deklariert (mit required: [name]) und wird weder
+   geschrieben noch gelesen.
+
+4. status.ready / .message / .lastChecked am OCPNodeProvider sind deklariert und
+   werden VON NICHTS geschrieben. Verschaerfend: additionalPrinterColumns holt
+   "Ready" aus .status.ready - `kubectl get ocpnodeproviders` zeigt also dauerhaft
+   eine leere Spalte. Wer das sieht, haelt den Provider fuer kaputt.
+
+ZU TUN, nach Gewicht:
+ - Punkt 1 reparieren: entweder keyPath in die CRD aufnehmen, oder - falls der
+   ssh-Provider seinen Schluessel inzwischen anders bekommt (seit ADR 0027 laeuft
+   das ueber OCP::ClusterKey) - die Leseseite entfernen. ERST PRUEFEN, welcher der
+   beiden Faelle gilt; nach ADR 0027 ist gut moeglich, dass keyPath schlicht
+   ueberholt ist.
+ - Punkte 2 und 3: entscheiden ob weg oder verdrahten. Beides ist billig, aber
+   nicht raten - `user` koennte fuer Nicht-root-Zugaenge gedacht gewesen sein.
+ - Punkt 4: entweder status schreiben (dann waere die Spalte nuetzlich) oder die
+   Spalte entfernen. Eine leere Spalte in kubectl ist schlimmer als keine.
+
+GEMEINSAMER NENNER, und das ist der eigentliche Wert des Tickets: CRD und Code
+werden von nichts gegeneinander geprueft. #100 hat dafuer den Anfang gemacht
+(t/19 behauptet jetzt, dass jedes Feld, das provider add schreibt, auch deklariert
+ist). Diese Pruefung in beide Richtungen zu fuehren - jedes deklarierte Feld wird
+gelesen oder geschrieben, jedes gelesene Feld ist deklariert - haette alle vier
+Punkte auf einmal gefunden.
+
+Lane: ocp-worker (Code) + ocp-infra-worker (CRD) + ocp-test-writer (die
+Zwei-Wege-Pruefung). Verwandt: #100, #110 (CRD-Enum kennt local nicht), #98.
+KORREKTUR (main-agent review, 2026-08-17): dieses Ticket wurde auf done gesetzt, obwohl nur Punkt 1 der vier Befunde umgesetzt ist (spec.ssh.keyPath, Commit 5436c28). Punkte 2 (spec.ssh.user schreib-only), 3 (keySecretRef weder gelesen noch geschrieben) und 4 (status.ready/.message/.lastChecked ohne Schreiber, leere kubectl-Spalte) sowie die Zwei-Wege-Pruefung CRD<->Code stehen weiter offen und leben jetzt in #126. Dieses Ticket bleibt done fuer Punkt 1.
