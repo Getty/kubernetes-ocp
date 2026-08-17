@@ -1,0 +1,58 @@
+---
+class: standard
+created: 2026-08-15T20:34:39Z
+id: 96
+priority: medium
+status: backlog
+tags:
+- secure-mode
+- dev-mode
+- migration
+title: Dev-Mode-Projekt kann nicht in den secure mode wechseln
+updated: 2026-08-17T05:41:15Z
+---
+
+Gefunden 2026-08-15 vom ocp-adr-auditor beim Schreiben von ADR 0027.
+
+Ein Projekt, das mit `ocp init --nopassword` angelegt wurde, kann nicht in den
+secure mode wechseln. Seine Maschinen trauen .ocp/id_ed25519, und es gibt kein
+Kommando, das ihnen den Admin-Key beibringt.
+
+Bisher fiel das nicht auf, weil der Bootstrap-Key im secure mode ohnehin weiter
+benutzt wurde - der Uebergang war unscharf. Mit ADR 0027 ist die Grenze scharf:
+Dev-Mode benutzt den Bootstrap-Key, secure mode den Admin-Key, und dazwischen gibt
+es keinen Weg.
+
+Praktisch heisst das: wer ein Projekt "erstmal schnell" ohne PIN aufsetzt und
+spaeter absichern will, muss den Cluster neu bauen oder die authorized_keys aller
+Maschinen von Hand umstellen. Nichts sagt ihm das.
+
+ZU KLAEREN, bevor gebaut wird - ist das ein gewollter Zustand?
+ - Wenn ja: dokumentieren, und zwar bei `--nopassword` selbst. Das Flag sollte
+   sagen, dass die Entscheidung dauerhaft ist, nicht nur bequem. Heute liest es
+   sich wie eine Abkuerzung, die man spaeter zurueckgehen kann.
+ - Wenn nein: ein Migrationsweg. Der ist nicht trivial, aber auch nicht exotisch -
+   waehrend der Bootstrap-Key noch gilt, ist OCP auf allen Maschinen handlungs-
+   faehig und koennte den Admin-Public-Key selbst verteilen. Danach keys.yaml
+   anlegen und den Modus umschalten. Genau diese Reihenfolge (neuen Zugang
+   hinzufuegen, solange der alte noch traegt) ist auch die Antwort auf #95.
+
+Verwandt: ADR 0027, #95 (dieselbe Reihenfolge-Frage fuer Rotation), ADR 0006.
+Lane: Entscheidung Maintainer, dann ocp-worker.
+## TODO for foundation (Maintainer-Entscheidung noetig, DANN Migration)
+
+Body dokumentiert: ADR-0027 schneidet den Schluessel-Moduswechsel scharf (Dev-Mode = Bootstrap-Key, secure-Mode = Admin-Key). Aktuell kein Weg dazwischen - Maschinen vertrauen .ocp/id_ed25519, kein Mechanismus bringt ihnen den Admin-Key bei.
+
+Cross-Refs: ADR-0027, ADR-0006, #95 (gleiche Reihenfolge-Frage fuer Rotation - neuen Zugang hinzufuegen, solange der alte noch traegt).
+
+### Maintainer-Entscheidung (offen)
+
+a) Gewollter Zustand. DANN: Doku an ocp init --nopassword - die Entscheidung ist dauerhaft, nicht rueckgaengig. Heute liest sich das Flag wie eine Abkuerzung.
+b) Migration. Waehrend Bootstrap-Key gilt, ist OCP auf allen Maschinen handlungsfaehig und kann den Admin-Public-Key selbst verteilen.
+
+### Aufgaben NACH der Entscheidung
+
+- [ ] ocp init --nopassword: wenn a), POD-Hinweis schreiben - explizit 'dauerhaft, kein Rueckweg ohne Rebuild' statt der heutigen 'Abkuerzung'-Implikation (Lane: ocp-choices-worker, hangt am Validierungstext)
+- [ ] ocp init: wenn b), neuer Sub-Pfad 'switch-to-secure' (oder CLI-Toggle) der waehrend laufendem Bootstrap den Admin-Public-Key verteilt, keys.yaml anlegt und den Modus umschaltet. Reihenfolge identisch zu #95 (Rotation). Lane: ocp-secrets-worker, weil er die Schluesseldatei schreibt
+- [ ] Tests: t/96-switch-secure.t (an t/14-secret-roundtrip.t orientieren) - Mock-SSH/Mock-Cluster, der den Pfad verifiziert: bootstrap-Key aktiv -> Public-Key verteilt -> Mode-Switch -> keys.yaml angelegt
+- [ ] Doku: ADR-0027-Rueckverweis bzw. Anhang, der den gewaehlten Pfad dokumentiert (insbesondere die Timing-Annahme: Bootstrap-Key muss waehrend der Migration noch ziehen)
