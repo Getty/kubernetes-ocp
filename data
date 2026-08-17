@@ -1,0 +1,85 @@
+---
+class: standard
+created: 2026-08-16T00:51:45Z
+depends_on:
+- 33
+id: 101
+priority: medium
+status: backlog
+tags:
+- robocop
+- hetzner
+- keys
+- decision
+title: robocop kommt an Hetzner-Worker nicht heran - nur der admin-Key wird hochgeladen
+updated: 2026-08-17T05:44:05Z
+---
+
+Gefunden 2026-08-16 beim Fix von #92 (ocp-worker), ausdruecklich zur ENTSCHEIDUNG
+gemeldet statt eigenmaechtig gebaut - es beruehrt das Schluesselmodell.
+
+BEFUND, am Code belegt:
+ - upload_ssh_key hat im ganzen Baum GENAU EINEN Aufrufer:
+   lib/OCP/Cmd/Apply/Bootstrap.pm (~219), mit $admin_key->{public}. Der
+   ROBO-Public-Key wird nie in ein Hetzner-Projekt hochgeladen.
+ - OCP::Robocop::Controller baut OCP::Node mit ssh_key => $self->ssh_key, und
+   bin/robocop dokumentiert das als den robo-Key ("Provisions workers using
+   robo-key / CANNOT access control planes").
+ - Ein Hetzner-Worker bekommt seit #92 den Schluessel aus
+   spec.hetzner.sshKeyName, also den ADMIN-Key.
+
+FOLGE: Eine Maschine, die nur ocp-<cluster>-admin in authorized_keys hat, laesst
+robocop nicht herein. robocops _install_kubernetes scheitert an wait_for_ssh, der
+Node geht auf Failed - und Failed ist laut Kommentar in _provision terminal.
+
+WARUM DAS NICHT DURCH ADR 0027 GEDECKT IST: 0027 verwirft ausdruecklich, "beide
+Public Keys" bei der Servererstellung hochzuladen. Das dort verworfene Paar ist
+aber BOOTSTRAP + ADMIN, und die Begruendung ist, dass der Bootstrap-Key
+unverschluesselt auf der Platte liegt und keinen zweiten Faktor hat. Auf den
+ROBO-Key trifft das nicht zu: er ist age-verschluesselt und ist genau die
+Automations-Stufe, die 0006 und 0027 bewusst BEHALTEN. Die Begruendung traegt also
+nicht herueber - das hier ist eine offene Frage, keine schon getroffene
+Entscheidung.
+
+ZU ENTSCHEIDEN:
+ a) Beide Schluessel (admin + robo) in authorized_keys jeder Maschine, die robocop
+    bedienen soll. Dann muss upload_ssh_key auch fuer den robo-Key gerufen werden
+    und create_server beide Namen referenzieren. Sauber, aber es verbreitert die
+    Angriffsflaeche um genau den Schluessel, der ohne zweiten Faktor auskommt -
+    das ist die Abwaegung, die ADR 0027 fuer den Bootstrap-Key negativ entschieden
+    hat, hier aber mit anderem Vorzeichen (age-verschluesselt statt Klartext).
+ b) robocop bedient Hetzner-Worker gar nicht, sondern nur ssh-Provider-Nodes.
+    Dann muss das irgendwo stehen, und der Hetzner-Worker-Pfad gehoert dem CLI.
+ c) robocop bekommt den admin-Key. Widerspricht bin/robocops eigener Zusage
+    ("CANNOT access control planes") und wuerde PIN2-geschuetztes Material in
+    einen dauerhaft laufenden Pod legen - vermutlich das Schlechteste.
+
+Solange nichts entschieden ist, ist der Hetzner-Worker-Pfad UEBER ROBOCOP nicht
+benutzbar. Ueber die CLI funktioniert er (der admin-Key ist da), sobald #99 und
+#98 geloest sind.
+
+Praktisch derzeit nicht akut, weil robocop seinen Controller ohnehin nie erreicht
+(#33, blockiert durch #1) - aber genau bei dessen Neubau muss die Antwort
+vorliegen.
+
+Lane: Entscheidung Maintainer, dann ocp-worker / ocp-robocop-worker.
+Verwandt: ADR 0027, ADR 0006, #92, #33, #1.
+## TODO for foundation (Maintainer-Entscheidung noetig)
+
+Body dokumentiert die Stelle präzise: upload_ssh_key hat genau einen Aufrufer (Bootstrap.pm:219, mit admin_key->public). Der ROBO-Public-Key wird nie hochgeladen. OCP::Robocop::Controller baut mit ssh_key=>self->ssh_key den robo-Key - und der admin-Key kommt in keiner authorized_keys vor, in der robocop nicht sowieso schon waere.
+
+Cross-Refs: #33 (Hauptbrenner, robocop tickt nicht), #92 (parent, fix abgeschlossen), ADR-0027 (verwirft explizit 'beide Public Keys'-Variante fuer Bootstrap+Admin - Begruendung traegt NICHT fuer den age-verschluesselten robo-Key, Body erklaert das).
+
+### Maintainer-Entscheidung (offen, siehe Body)
+
+a) admin + robo in authorized_keys jeder Maschine, die robocop bedienen soll. Sauber, aber verbreitert die Angriffsflaeche.
+b) robocop bedient Hetzner-Worker gar nicht, nur ssh-Provider-Nodes. Hetzner-Worker dann CLI-only.
+c) robocop bekommt den admin-Key. Widerspricht bin/robocop-Eigenzusage, PIN2-Material im Pod - vermutlich Schlechtestes.
+
+### Aufgaben NACH der Entscheidung
+
+- [ ] Variante a: upload_ssh_key (oder ein gleichnamiger Helper, denn der nimmt heute schon den admin_key->public) bekommt einen zweiten Aufruf fuer den robo-Key in der Maschinenerstellung. create_server referenziert beide Namen. Lane: ocp-provider-worker (Hetzner-Servererstellung) + ocp-secrets-worker (Schluesselmaterial).
+- [ ] Variante a (Folge): Provider-CR-Schema fuer gpu-Flags (siehe #31) wird in der gleichen Aenderung mitgezogen, weil es dieselbe Maschine betrifft.
+- [ ] Variante b: Doku + robocop-Startverhalten (bin/robopod: 'controller'-Pfad erkennt ssh-only, Hetzner-Provider weigert sich). Lane: ocp-robocop-worker.
+- [ ] Tests: t/101-worker-keys.t (an t/23-hetzner-ssh-keys.t, falls vorhanden, sonst neu) - Mock-Hetzner + Mock-Rex verifizieren den gewaehlten Pfad.
+- [ ] Cross-checks: #33 (Controller braucht die richtige Schluesselquelle), #31 (gpu-Provider-CR haengt am selben Maschin-Lifecycle), #99/#98 (Hetzner-CLI-Pfad muss fuer b auch weiter funktionieren).
