@@ -1,0 +1,62 @@
+---
+class: standard
+completed: 2026-08-17T03:17:09Z
+created: 2026-08-16T02:02:03Z
+id: 107
+priority: medium
+started: 2026-08-17T03:16:56Z
+status: done
+tags:
+- adr
+- toolchain
+- docker
+title: 'ADR 0013 verwirft die Alternative, die mit #79 ausgeliefert wurde'
+updated: 2026-08-17T23:51:36Z
+---
+
+Gefunden 2026-08-16 beim Umsetzen von #79 (ocp-infra-worker). Ein ADR, dessen
+VERWORFENE Alternative gerade ausgeliefert wurde - und dessen Begruendung fuer die
+Verwerfung durch eine Messung widerlegt ist.
+
+docs/adr/0013-docker-first-toolchain.md haelt als Entscheidung fest:
+
+  "The test suite is the one thing that runs either way: `make test` is plain
+   `prove -l t/`"
+
+und unter Alternatives rejected:
+
+  "Everything including tests only in Docker - makes the fast inner loop slow for
+   a suite that touches nothing outside its temp directories."
+
+MIT #79 IST GENAU DIESE VERWORFENE ALTERNATIVE UMGESETZT: `make test` faehrt jetzt
+`prove -l t/` IM IMAGE gegen den Pin, `make test-host` ist der schnelle,
+ausdruecklich nicht bindende Host-Lauf.
+
+DIE BEGRUENDUNG DER VERWERFUNG IST GEMESSEN FALSCH. Beide Laeufe gleichzeitig
+gestartet, damit derselbe Boden gilt:
+
+  make test (Image, gepinnt)   159 s wall, 53,51 CPU
+  make test-host (Host-CPAN)   160 s wall, 53,77 CPU
+
+Files=65, Tests=1123, PASS auf beiden, Ergebniszeilen je Datei identisch, null
+Skips. Der Container ist NICHT die langsame Bahn - er liegt 0,5 % daneben. Damit
+faellt das Argument "macht die schnelle innere Schleife langsam" ersatzlos.
+
+DER STAERKERE PUNKT, den das ADR gar nicht kannte: die Abweichung betraf nicht nur
+Module, sondern PERL SELBST - Host 5.036000 gegen Image 5.042003, sechs Releases
+auseinander. `make test` hat nie den Interpreter gefahren, der ausgeliefert wird.
+
+ZU TUN: 0013 auf den Stand bringen. Die Formentscheidung gehoert dem
+ocp-adr-auditor - meine Einschaetzung, die zu pruefen ist: die ENTSCHEIDUNG des
+ADR (Docker-first) faellt nicht, sie wird konsequenter angewandt; was faellt, ist
+eine benannte Ausnahme davon plus die Begruendung, mit der sie eingefuehrt wurde.
+Nach der Konvention in docs/adr/README.md riecht das nach Amendment: die Aussage
+"macht die innere Schleife langsam" war eine Behauptung ueber die Folgen der
+eigenen Entscheidung, und sie war falsch - nicht spaeter ueberholt, sondern durch
+Messung widerlegt.
+Die Messwerte gehoeren mit hinein; ein ADR, das eine Alternative verwirft, sollte
+die Zahl nennen, an der man das nachpruefen kann.
+
+Verwandt: #79, ADR 0013, ADR 0025 (#81, Perl-Baseline - dieselbe Ecke).
+Lane: ocp-adr-auditor.
+NACHTRAG (main-agent review, 2026-08-17): dem Amendment in ADR 0013 fehlte die Messumgebung. Die Zahlen (159 s / 160 s, Host-Perl 5.036000) stammen von pikachu, der damaligen Entwicklungsmaschine mit eigenem Perl-Build. Auf reuben (System-Perl 5.40.1) reproduzieren sie nicht: make test-host bricht in Sekunden ab, weil dem Host-CPAN MooX::Singleton und WWW::Hetzner::Cloud fehlen. Das ADR hat jetzt einen Abschnitt "Where the numbers come from", der die Herkunft nennt, den kleineren Perl-Abstand (5.40.1 gegen 5.42.3) festhaelt und klarstellt, dass die Zahl maschinengebunden ist. Schlussfolgerung des Amendments unveraendert.
