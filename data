@@ -1,0 +1,76 @@
+---
+claimed_at: 2026-08-17T05:42:36Z
+claimed_by: main-agent
+class: standard
+created: 2026-08-16T01:37:44Z
+id: 105
+priority: low
+started: 2026-08-17T05:42:36Z
+status: todo
+tags:
+- cli
+- ux
+- convention
+title: Keine Regel, was auf STDOUT und was auf STDERR gehoert
+updated: 2026-08-17T05:42:36Z
+---
+
+Gefunden 2026-08-16 beim Fix von #97 (ocp-worker), ausdruecklich gemeldet statt
+eigenmaechtig vereinheitlicht.
+
+Der Migrations-Hinweis aus #97 geht an zwei Stellen heraus, auf zwei verschiedenen
+Kanaelen:
+
+  lib/OCP/Cmd/Node/Add.pm      STDERR
+  lib/OCP/Cmd/Apply/CR.pm      STDOUT
+
+Beide sind fuer sich richtig gewaehlt - jede folgt der Erzaehlung ihrer Umgebung.
+Node/Add schreibt seine Fehlermeldung ("Node '...' did not reach Ready state.")
+ohnehin nach STDERR, Apply/CR erzaehlt den Rollout auf STDOUT.
+
+Nur: das Repo hat keine ausgesprochene Regel dafuer. Weitere Beispiele:
+  OCP::Cmd::Destroy, OCP::Cmd::SSH   Diagnosen auf STDOUT
+  OCP::Cmd::Apply::Bootstrap         haengt die Diagnose an ein die (also STDERR)
+  OCP.pm::_report_error              Fehlerbild aus #67 auf STDERR
+
+WARUM DAS ZAEHLT, und zwar mehr als Kosmetik: `ocp keys show` trennt seit #84
+bewusst - Schluesselmaterial auf STDOUT, alles andere auf STDERR - damit es sich
+nach authorized_keys pipen laesst. Sobald jemand ein OCP-Kommando in eine Pipe
+haengt, entscheidet die Kanalwahl, ob Diagnosen die Nutzlast verunreinigen.
+Solange es keine Regel gibt, wird das bei jedem neuen Kommando neu geraten.
+
+ZU TUN: eine Regel formulieren und die vorhandenen Stellen daran ausrichten.
+Vorschlag als Diskussionsgrundlage, nicht als Entscheidung:
+ - STDOUT ist die Nutzlast bzw. der Fortschrittsbericht, den ein Mensch liest
+ - STDERR ist alles, was schiefging, samt Diagnose dazu
+ - Wenn ein Kommando maschinenlesbar ausgibt (keys show, kubeconfig), gehoert
+   AUSSCHLIESSLICH die Nutzlast auf STDOUT
+Danach die Ausreisser angleichen. Der Ort fuer die Regel ist vermutlich
+.claude/rules/ocp-rules.md oder ein ADR, wenn es als Entscheidung gelten soll.
+
+Lane: Entscheidung Maintainer, dann ocp-worker. Verwandt: #97, #84, #67.
+## TODO for foundation (Regel in .claude/rules/ocp-rules.md, dann Angleichen)
+
+Body dokumentiert die Diagnose: Node/Add schreibt Fehler nach STDERR, Apply/CR schreibt Erzaehlung auf STDOUT. Beide sind in ihrer Umgebung richtig. Weitere Beispiele: OCP::Cmd::Destroy, OCP::Cmd::SSH auf STDOUT; OCP::Cmd::Apply::Bootstrap haengt die Diagnose an die (also STDERR); OCP.pm::_report_error auf STDERR (Fehlerbild aus #67).
+
+ trennt seit #84 bewusst (Schluesselmaterial auf STDOUT, anderes auf STDERR) - das ist der Praezedenzfall fuer 'maschinenlesbar=NUR-Nutzlast auf STDOUT'.
+
+Cross-Refs: #97 (parents, Migration-Hinweis der zwei Kanaele nutzt), #84 (Praezedenzfall keys show), #67 (Fehlerbild).
+
+### Aufgaben
+
+- [ ] .claude/rules/ocp-rules.md: Abschnitt schreiben, der die STDOUT/STDERR-Regel festlegt. Body nennt den Vorschlag: STDOUT = Nutzlast oder Fortschrittsbericht; STDERR = alles Schiefgegangene samt Diagnose; maschinenlesbar (keys show, kubeconfig) = AUSSCHLIESSLICH Nutzlast auf STDOUT. Hierhin, nicht als ADR (Body-Hinweis).
+- [ ] Anschliessend Inventar machen: in einem Sweep alle Stellen finden, die nicht zur Regel passen - Body listet 4 Beispiele, weitere sind zu erwarten
+- [ ] Ausreisser angleichen: jedes gefundene print/die/say korrigieren. Lane: ocp-worker (generisch ueber die Kommandos hinweg)
+- [ ] Test-Konvention: ein Smoke-Stueck (oder t/-Test, der nicht Netz/external braucht) das fuer 2-3 Kommandos verifiziert, dass STDERR leer ist, wenn der Befehl erfolgreich war und umgekehrt. Mind. fuer die maschinenlesbaren Pfade (keys show, kubeconfig) hart testen
+- [ ] Cross-check: das Pipe-Verhalten - keys show | ssh wird sauberer, sobald keine Diagnose mehr in STDOUT landet
+## TEILERLEDIGT (Main-Agent, 2026-08-17)
+
+Die Regel selbst ist formuliert und in .claude/rules/ocp-rules.md unter 'Output channels — STDOUT vs STDERR' eingetragen (diff in working tree). Inhalt: STDOUT=Nutzlast/Fortschritt, STDERR=Fehler+Diagnose, maschinenlesbar=ausschliesslich Nutzlast auf STDOUT. Praezedenzfall #84 explizit zitiert.
+
+Verbleibend fuer foundation (oder Maintainer-Pickup):
+- Inventur aller Ausreisser (Body listet 4 Beispiele, weitere zu erwarten)
+- Ausreisser angleichen
+- Pipe-Test in t/ (mind. fuer keys show, kubeconfig)
+
+Wenn die Regel zu eng erscheint, anpassen - sie ist als erste Version hingestellt, nicht als Denkmal.
