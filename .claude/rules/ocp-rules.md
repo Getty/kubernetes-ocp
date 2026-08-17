@@ -96,6 +96,27 @@ the maintainer's explicit go-ahead: `dzil release`, `make docker-push`,
   `age.key.enc`, `kubeconfig.yaml` — SOPS/age). `.ocp/` (decrypted state) is gitignored
   and must stay out.
 
+## Output channels — STDOUT vs STDERR
+
+Jedes `ocp`-Kommando hat zwei Ausgabekanäle mit getrennten Aufgaben. Wer mischt,
+macht die Pipe kaputt — die Regel existiert genau dafür.
+
+- **STDOUT ist die Nutzlast** (Ergebnis) oder der **Fortschrittsbericht** (Rollout,
+  Apply-Erzählung), den ein Mensch liest oder eine Maschine weiterverarbeitet.
+- **STDERR ist alles, was schiefging**, samt Diagnose. Eine Fehlermeldung ohne
+  Diagnose verstößt ebenso wie eine Diagnose ohne Fehler (Wartungsrauschen auf
+  STDOUT).
+- **Maschinenlesbare Kommandos** (`keys show`, `kubeconfig`, künftige
+  Maschinen-Schnittstellen) geben **ausschließlich** die Nutzlast auf STDOUT aus.
+  Diagnose strikt auf STDERR. Anders lässt sich nicht sauber nach `authorized_keys`
+  oder in einen Parser pipen.
+
+Präzedenzfall: `ocp keys show` trennt seit #84 bewusst — Schlüsselmaterial auf
+STDOUT, alles andere auf STDERR. Diese Regel ist die Verallgemeinerung dessen.
+
+Ausnahmen und Streitfälle gehören ins Issue, nicht in eine stillschweigende
+Ausnahme. Jede Abweichung kostet Begründung.
+
 ## Perl specifics — reference, don't restate
 
 Module loading, Moo patterns, cpanfile pinning and house style live in skills
