@@ -1,0 +1,68 @@
+---
+class: standard
+created: 2026-08-12T15:22:22Z
+depends_on:
+- 1
+id: 26
+priority: medium
+status: backlog
+tags:
+- apply
+- workers
+- reconcile
+title: apply auf bestehendem Cluster provisioniert keine neu konfigurierten Worker
+updated: 2026-08-17T05:43:44Z
+---
+
+Bewusst ausserhalb von #22 gelassen, hier dokumentiert.
+
+Der Reconcile-Pfad (cluster_exists -> _reconcile_components) konvergiert jetzt
+Registry, registry.local-DNS, NFD, GPU-Operator, cert-manager, Cilium Gateway,
+LB-IPAM und die CR-Schicht (CRDs, Provider-CRs, CP-OCPNode). Was er nicht tut:
+Worker anlegen.
+
+Wer einen Worker in ocp.yaml eintraegt und `ocp apply` faehrt, bekommt auf einem
+bestehenden Cluster nichts — kein OCPNode, kein Server, keine Meldung. Das war
+vorher auch schon so, faellt jetzt aber staerker auf, weil der Rest des Pfads
+konvergiert.
+
+Nicht mitgefixt, weil _ensure_worker_ocpnodes + _drive_workers echte (kostende)
+Server anlegen und mit 600s Timeout warten. Der Reconcile-Pfad ist der, den man
+haeufig faehrt; ihn pauschal teuer und infrastruktur-veraendernd zu machen ist
+eine eigene Entscheidung, kein Beifang.
+
+Denkbare Formen: nur die OCPNode-CRs schreiben und robocop treiben lassen; oder
+hinter ein explizites Flag (`ocp apply --workers`); oder `ocp node add` bleibt
+der einzige Weg. Braucht eine Entscheidung, bevor jemand es baut.
+BLOCKIERT durch #1: der Maintainer ueberarbeitet erst Net::Async::Kubernetes, danach wird robocop komplett neu gedacht. Bis dahin keine Architekturarbeit an diesem Ticket.
+
+---
+2026-08-14, konkreter Fall aus dem Cluster cortex: brain sollte als zweiter
+Node (ssh-Provider, GB10) dazu. `ocp apply --only workers` lief durch und
+meldete "All 8 component(s) up to date" - ohne OCPNode und ohne Hinweis, dass
+der workers-Eintrag ignoriert wurde. Der Weg ueber `ocp node add` scheitert
+dann an einem eigenen Bug, siehe #51.
+
+Fuer die Entscheidung, die dieses Ticket verlangt: bei provider ssh legt
+_ensure_worker_ocpnodes keine Server an und kostet nichts - es schreibt nur
+CRs zu Maschinen, die ohnehin existieren. Das Kostenargument gilt fuer
+hetzner, nicht fuer ssh. Eine Unterscheidung nach Provider waere denkbar.
+## TODO for foundation (when #1 unblocks + Decider-Entscheidung)
+
+Body dokumentiert den Status: cluster_exists -> _reconcile_components konvergiert alle Komponenten AUSSER Worker. _ensure_worker_ocpnodes + _drive_workers wurden bewusst draussen gelassen, weil sie kosten.
+
+Maintainer-Entscheidung steht aus (Body listet 3 Optionen). Bis dahin nichts implementieren.
+
+### Cross-Refs
+
+- haengt an #1 (Watch-Loop in robocop, siehe dort)
+- haengt an #99 / #98 (CLI-Pfad fuer Hetzner-Worker muss stehen, sonst kann apply den Weg nicht nutzen)
+- haengt an #101 (Schluesselmodell-Entscheidung)
+
+### Aufgaben NACH der Decider-Entscheidung
+
+- [ ] wenn Entscheidung = '--workers' Flag (Body Option 2): OCP::Cmd::Apply ODER-Wert --workers, der _ensure_worker_ocpnodes zusaetzlich zu reconcile_components aufruft. Ssh-Provider: nur CR-Schreibweise (kein Server-Anlegen). Hetzner-Provider: hinter dem gleichen Flag, dann aber Kosten - Flag muss deshalb wirklich explizit sein
+- [ ] wenn Entscheidung = robocop-treibt (Body Option 1): apply schreibt nur die OCPNode-CRs, das Worker-Anlegen zieht robocop - dann ist #33 Voraussetzung
+- [ ] wenn Entscheidung = nur ocp node add (Status quo + Doku): Doku am Kommando, was schon funktioniert; Bug aus #51 muss weg
+- [ ] Test: t/26-reconcile-workers.t verifiziert den gewaehlten Pfad echt (Mock-K8s reicht, weil _ensure_worker_ocpnodes CR-only ist; Hetzner-Weg braucht Sandbox)
+- [ ] Reporting: 'All N component(s) up to date' heute taeuschend - wenn workers stillschweigend uebergangen werden, muss der Output das sichtbar machen (siehe #105 STDOUT/STDERR-Regel)
