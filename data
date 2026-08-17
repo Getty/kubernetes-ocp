@@ -1,0 +1,48 @@
+---
+class: standard
+created: 2026-08-12T03:56:12Z
+depends_on:
+- 1
+id: 2
+priority: low
+status: backlog
+tags:
+- robocop
+- cli
+title: ocp inject-key reaktivieren (braucht port_forward)
+updated: 2026-08-17T05:43:39Z
+---
+
+Kommando ist deaktiviert, weil port_forward fehlt (Net::Async::Kubernetes). Hängt am Watch/Async-Ticket.
+BLOCKIERT durch #1: der Maintainer ueberarbeitet erst Net::Async::Kubernetes, danach wird robocop komplett neu gedacht. Bis dahin keine Architekturarbeit an diesem Ticket.
+STANDKORREKTUR 2026-08-15: Der Titel dieses Tickets stimmt nicht mehr. `ocp
+inject-key` ist nicht "deaktiviert", sondern seit #59 (tote Commands entfernt)
+komplett aus dem CLI verschwunden - lib/OCP/Cmd/InjectKey.pm existiert nicht mehr,
+grep ueber lib/ und bin/ findet kein Subkommando dieses Namens. Was uebrig ist,
+sitzt nur noch auf der Gegenseite: OCP::Robocop::wait_for_key_injection lauscht
+weiter auf Port 9999 auf einen Injector, den es nicht mehr gibt.
+
+Damit ist "reaktivieren" die falsche Beschreibung - es waere ein Neubau. Das
+aendert an der Reihenfolge nichts: weiterhin BLOCKIERT durch #1, weil port_forward
+aus Net::Async::Kubernetes kommt und der Maintainer die Distribution zuerst
+ueberarbeitet.
+
+Wenn robocop nach #1 neu gedacht wird, ist die eigentliche Frage nicht "wie kommt
+inject-key zurueck", sondern ob der Key ueberhaupt noch per Port-Forward
+hereingereicht werden soll oder ueber ein Secret. Der wartende Listener in
+OCP::Robocop gehoert bei der Gelegenheit mit auf den Tisch: er haelt heute den Pod
+am Leben und laesst ihn Ready aussehen, ohne dass irgendetwas kommen kann (#33).
+
+Ausserdem veraltet und beim naechsten Anfassen mitzuziehen: der Skill ocp-usage
+listet `ocp inject-key` noch als "disabled (dies with explanation)".
+## TODO for foundation (when #1 unblocks)
+
+Body ist abgeschlossen (Stand 2026-08-15):  existiert nicht mehr (seit #59), nur noch OCP::Robocop::wait_for_key_injection blockiert auf Port 9999. Cross-Refs: #33 (Hauptverbraucher), #1 (port_forward-Quelle), ADR-0027.
+
+### Aufgaben
+
+- [ ] Entscheidung: Secret vs port-forward? Body schlaegt Secret-Pfad als saubere Loesung vor (kein offener Port, kein zweiter Kanal). Wenn Secret: nicht 'inject-key reaktivieren', sondern API als 'admin-key rotation' auf CLI-Seite (OCP::Secrets, lane: ocp-secrets-worker)
+- [ ] OCP::Robocop::wait_for_key_injection: bei Entscheidung Secret: entfernen. Bei port-forward: durch Kubernetes::REST::port_forward ersetzen (kommt aus N::A::K, siehe #1)
+- [ ] share/robocop/deployment.yaml+OCP::Robocop::Controller: Quelle fuer ssh_key, server_url, join_token fest verdrahten (Secrets-Refs in deployment.yaml). Querbeziehung zu #33-Step 1 und #101
+- [ ] ocp-usage Skill: 'disabled (dies with explanation)' raus - entweder Befehl existiert (Secret-Pfad), oder die Erklaerung beschreibt den Secret-Mechanismus
+- [ ] Test: t/02-secret-rotation.t (an t/14-secret-roundtrip.t orientieren) verifiziert, dass der Admin-Public-Key nach Mode-Switch ohne Migrationsweg an Maschinen ankommt (siehe #96)
