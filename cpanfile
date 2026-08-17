@@ -1,3 +1,4 @@
+requires 'perl', '5.042003';
 requires 'Moo';
 # Both are pinned because OCP.pm reaches into their PRIVATE API to check a
 # command word before MooX::Cmd sees the argument vector: _build_command_commands

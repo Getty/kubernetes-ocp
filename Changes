@@ -1,7 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
-- `OCP::Config::validate` now accepts `local` as a worker-pool
+- Pin Perl baseline to 5.42.3 across Dockerfile, Makefile(snapshot), and
+      cpanfile floor (ADR 0025).
+    - `OCP::Config::validate` now accepts `local` as a worker-pool
       provider and rejects unknown ones with a message that lists the
       valid types (karr #115). The check routes through
       `OCP::Provider->known_type` / `OCP::Provider->types`, so the

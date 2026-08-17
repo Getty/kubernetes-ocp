@@ -82,7 +82,7 @@ clean:
 snapshot:
 	docker run --rm -v $(PWD):/work -w /work \
 	  -e HOST_UID=$(shell id -u) -e HOST_GID=$(shell id -g) \
-	  perl:5.42 bash -c \
+	  perl:5.42.3-slim-trixie bash -c \
 	  'apt-get update -qq && apt-get install -y --no-install-recommends \
 	    libssh-dev libssl-dev libexpat1-dev zlib1g-dev \
 	    build-essential pkg-config && \
