@@ -82,7 +82,7 @@ subtest 'from_cr dispatches each type' => sub {
         },
         ssh => {
             metadata => { name => 's', namespace => 'ocp-system' },
-            spec     => { type => 'ssh', ssh => { keyPath => '/k' } },
+            spec     => { type => 'ssh', ssh => { user => 'root' } },
         },
         local => {
             metadata => { name => 'l', namespace => 'ocp-system' },

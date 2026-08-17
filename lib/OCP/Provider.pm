@@ -142,9 +142,10 @@ sub from_cr {
         $args{default_image}       = $hspec->{image};
         $args{default_location}    = $hspec->{location};
     }
-    elsif ($type eq 'ssh') {
-        $args{ssh_key_path} = $cr->{spec}{ssh}{keyPath} // '';
-    }
+    # 'ssh' reads no extra args from the CR today: spec.ssh declares only
+    # user + keySecretRef (share/robocop/crds/ocpnodeprovider.yaml), and the
+    # SSH private key travels through OCP::ClusterKey / the CLI pipeline, not
+    # the CR (ADR 0027, karr #111).
     # 'local' needs no extra args from the CR.
 
     return $class->_build(\%args);
