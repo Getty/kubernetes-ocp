@@ -1,0 +1,65 @@
+---
+class: standard
+created: 2026-08-12T18:35:57Z
+depends_on:
+- 1
+id: 33
+priority: high
+status: backlog
+tags:
+- bug
+- robocop
+- controller
+title: robocop erreicht seinen Controller nie - bin/robocop endet im Key-Injection-Stub
+updated: 2026-08-17T05:44:00Z
+---
+
+Gefunden beim Fix von #28. #28 hat _build_kube repariert; damit baut der Controller
+jetzt einen echten Client (gegen cortex verifiziert, lesend). Nur: nichts im Repo
+konstruiert OCP::Robocop::Controller ueberhaupt.
+
+Kette:
+
+1. share/robocop/deployment.yaml startet den Container mit command [robocop,
+   controller].
+2. bin/robocop liest @ARGV nicht an. Es macht OCP::Robocop->new->run - das
+   Argument "controller" faellt auf den Boden.
+3. OCP::Robocop::run versucht CRIU-Restore, sonst wartet es auf Key-Injection
+   auf Port 9999. Der einzige Injector ist ocp inject-key, und der ist
+   deaktiviert (#2, braucht port_forward). Der Pod laeuft also und blockiert.
+4. Selbst mit Key ruft run() start_reconciliation_loop, und das ist ein Stub:
+   drei TODO-Kommentare, druckt "Reconciliation loop not yet implemented" und
+   schlaeft in einer 60s-Schleife.
+5. grep ueber lib/ und bin/: OCP::Robocop::Controller wird nirgends
+   instanziiert. Der ganze Controller ist toter Code.
+
+Folge fuer ocp apply: _wait_robocop_ready prueft nur readyReplicas des
+Deployments. Der Pod ist Ready (kein readinessProbe, er blockiert nur auf dem
+Listener), also gilt robocop_ready=1, und _drive_workers uebergibt die Worker an
+_poll_nodes_until_terminal. Das pollt 600s die CR-Phasen, die niemand
+weiterschreibt, und meldet dann jeden Worker als Unknown / "timed out waiting for
+phase". Der CLI-Fallback _cli_reconcile_workers laeuft genau dann NICHT.
+
+Zweite Haelfte des Problems: der Controller verlangt ssh_key, server_url und
+join_token als required. Das Deployment setzt nur NAMESPACE und POD_NAME. Es gibt
+also aktuell keine Quelle fuer diese drei Werte im Cluster. Das ist die
+Entscheidung, die das Ticket braucht - Secret? Join-Token aus dem RKE2-Server-
+Secret lesen? robo-key ueber inject-key (#2) oder ueber ein Secret? -, und
+deshalb wurde beim #28-Fix bewusst nichts davon erfunden.
+
+Betrifft: bin/robocop, lib/OCP/Robocop.pm, share/robocop/deployment.yaml
+(Infra-Lane), lib/OCP/Cmd/Apply.pm (_wait_robocop_ready-Semantik).
+BLOCKIERT durch #1: der Maintainer ueberarbeitet erst Net::Async::Kubernetes, danach wird robocop komplett neu gedacht. Bis dahin keine Architekturarbeit an diesem Ticket.
+## TODO for foundation (when #1 unblocks)
+
+ROOT CAUSE: zwei Haelften fehlen: (1) bin/robocop liest @ARGV nicht und ruft OCP::Robocop->run statt OCP::Robocop::Controller auf; (2) share/robocop/deployment.yaml setzt nur NAMESPACE/POD_NAME, der Controller braucht aber ssh_key, server_url, join_token als required. Die Analyse Steps 1-5 im Body ist abgeschlossen - Step 6 fehlt.
+
+### Aufgaben (in Reihenfolge)
+
+- [ ] share/robocop/deployment.yaml: env um SSH_KEY_NAME, RKE2_SERVER_URL, RKE2_TOKEN beschicken (Secret-Refs, siehe #101 fuer die Key-Frage)
+- [ ] bin/robocop: bei argv=controller OCP::Robocop::Controller->new(...) aufbauen und dessen ->run aufrufen statt OCP::Robocop->run->start_reconciliation_loop-Stub
+- [ ] OCP::Robocop: den Controller-Pfad von dem key-injection-Stub entkoppeln (Stub @ARGV ignorieren ist Hauptbug, nicht der Stub selbst)
+- [ ] OCP::Robocop::Controller: start_reconciliation_loop implementieren (drei TODOs dort). Loop ueber Kubernetes::REST::Watch auf OCPNode/OCPNodeProvider, Lease-Holder-Check vor jeder Aktion, ssh_key/server_url/join_token aus Env/Secret
+- [ ] OCP::Cmd::Apply::_wait_robocop_ready: die readiness-Taeuschung fixen (heute laedt der Listener den Pod 'Ready' ohne Arbeit). readinessProbe einbauen, oder explizit auf den ersten reconcile-Loop-Tick warten
+- [ ] Tests: t/33-robocop-controller.t (an t/16-node.t orientieren - echter K8s-Client mit Mock-Transport), der den argv-Pfad, die Env-Injektion und die Lease-Mechanik verifiziert
+- [ ] Cross-checks: #2 (inject-key-Listener kann endlich weg oder wird umgewidmet), #29 (Worker-Pfad verifizierbar sobald robocop echt tickt), #31 (gpu-Flags kommen ueber den Provider-CR, siehe #101)
