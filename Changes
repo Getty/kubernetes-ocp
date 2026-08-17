@@ -15,6 +15,12 @@ Revision history for OCP
     dead reader is not a regression. t/49-provider-factory.t updated
     the ssh fixture from `keyPath => '/k'` to `user => 'root'` (what
     the CR writer actually produces) and still exercises the factory.
+- robocop's ClusterRole no longer asks for `events` create/patch
+    (karr #72). No Event writer exists in lib/ or bin/; the rule was a
+    no-op grant against a nonexistent caller. The three other rules stay
+    -- ocpnodeproviders/status, secrets list/watch and the existing
+    CR reads are judgement calls, not the unambiguous dead grant this
+    one was.
     - `OCP::Config::validate` now accepts `local` as a worker-pool
       provider and rejects unknown ones with a message that lists the
       valid types (karr #115). The check routes through
