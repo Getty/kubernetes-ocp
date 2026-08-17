@@ -1,0 +1,34 @@
+---
+class: standard
+created: 2026-08-12T03:56:07Z
+id: 1
+priority: medium
+status: backlog
+tags:
+- robocop
+- deps
+title: Net::Async::Kubernetes einlösen oder aus cpanfile werfen
+updated: 2026-08-17T05:39:53Z
+---
+
+Deklariert (0.007) aber ungenutzt: robocop pollt in einer Schleife statt zu watchen. Entweder Watch-Loop umsetzen oder Dependency droppen. Siehe ocp-core Skill, 'Known debt'.
+ENTSCHEIDUNG DES MAINTAINERS (2026-08-12): Net::Async::Kubernetes wird gefixt, nicht geworfen. Er arbeitet selbst daran — die Distribution ist alt und braucht Ueberarbeitung.
+
+Damit ist die Reihenfolge fuer den gesamten robocop-Komplex festgelegt: erst N::A::K, dann robocop komplett neu denken. Bis dahin keine Architekturarbeit an robocop.
+
+Abhaengig davon und deshalb blockiert: #33 (nichts konstruiert den Controller), #26 (apply provisioniert keine Worker), #2 (inject-key braucht port_forward), #29 (Worker-Pfad end-to-end unverifiziert), #31 (robocop-gejointe Worker ignorieren gpu.enabled).
+
+Reparaturen an robocop, die NICHT auf N::A::K warten muessen, weil sie unabhaengig kaputt sind: #34 (SA-Token wird gecacht statt neu gelesen) und #35 (RBAC ohne delete auf nodes, Deployment zieht ein nicht existierendes Image).
+## Status (vom Main-Agent, 2026-08-17)
+
+Dieses Ticket ist der Blocker fuer #2, #26, #29, #31, #33. Maintainer arbeitet selbst an der Distribution.
+
+Was Foundation NICHT anfassen sollte, solange Maintainer das treibt: nichts.
+
+### Aufgaben NACH Loesung von N::A::K
+
+- [ ] sobald watch_loop() in Net::Async::Kubernetes existiert: robocop pollt heute alle 5-10s die CRs. Watch-Loop einbauen (OCP::Robocop nutzt es dann, sobald #33 abgearbeitet ist)
+- [ ] cpanfile: Version-Bump auf geloeste Version, Snapshot regenerieren (make snapshot, Docker)
+- [ ] Cross-checks: alle robocop-Tickets (#2, #26, #29, #31, #33) werden erst dann realisierbar
+
+Blockierte Tickets sollten dieses Ticket als 'depends_on' fuehren - bei #33 schon so, die anderen nur per Kommentar.
