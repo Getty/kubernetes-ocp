@@ -1,0 +1,67 @@
+---
+class: standard
+completed: 2026-08-17T03:16:05Z
+created: 2026-08-15T18:33:10Z
+id: 83
+priority: medium
+started: 2026-08-17T03:15:53Z
+status: done
+tags:
+- adr
+- docs
+- arm64
+title: 'ADR 0020 behauptet den arm64-RKE2-Pfad als unverifiziert - #9 belegt das Gegenteil'
+updated: 2026-08-17T03:16:05Z
+---
+
+Gefunden 2026-08-15 vom ocp-adr-auditor, beim Nachziehen von ADR 0020 auf den
+Stand nach der Entfernung der Cross-Build-Maschinerie. Bewusst NICHT im selben
+Zug mitgeaendert, weil es ein anderer Fall ist.
+
+ADR 0020 behauptet an zwei Stellen, der arm64-Pfad fuer RKE2 sei nie gegen einen
+laufenden Cluster verifiziert worden:
+
+  Zeile ~113-117: "the RKE2 arm64 fix that started the work has never been
+                   re-verified against a running RKE2 cluster (karr #9)"
+  Zeile ~151-153: "which is why the RKE2 arm64 path is still only statically
+                   checked (karr #9)"
+
+DAS STIMMT NICHT, und es stimmte schon beim Schreiben nicht.
+
+`karr show 9` endet mit "VOLLSTAENDIG VERIFIZIERT auf cortex": RKE2
+v1.36.3+rke2r1 auf arm64, "Node architecture: arm64", Tarball-Groesse
+36693999 Bytes, "[ok] RKE2 server installed", vollstaendiger Stack inklusive
+GPU-Operator mit nvidia.com/gpu: 1.
+
+Zeitlich eindeutig: Ticket #9 zuletzt aktualisiert 2026-08-12T22:40:58Z. Der
+Commit, der die beiden Saetze geschrieben hat, ist 8a02ea8 vom 2026-08-14 20:45.
+Die Verifikation stand also zwei Tage vorher auf dem Board.
+
+WARUM DAS EIN AMENDMENT-FALL IST, anders als die uebrigen Korrekturen von heute:
+Die heutigen Aenderungen an 0020 betrafen Aussagen, die beim Schreiben WAHR waren
+und die spaeter von unabhaengiger Arbeit ueberholt wurden - laut der Konvention in
+docs/adr/README.md eine schlichte Korrektur. Hier liegt es umgekehrt: das ADR
+macht eine Aussage ueber den eigenen VERIFIKATIONSSTAND, und die war zum
+Zeitpunkt der Niederschrift falsch. Genau dafuer ist die Amendment-Form gedacht -
+der alte Wortlaut wird zitiert, damit ein Leser erkennt, was geglaubt wurde.
+
+Die UEBERSCHRIFT "No cross-architecture CI for the full reconcile path" bleibt
+wahr und ist sogar staerker als der Text zugibt: .github/workflows/ existiert
+inzwischen gar nicht mehr, es gibt also CI fuer keine Architektur. Auch das
+gehoert in denselben Durchgang.
+
+Die beiden Stellen stehen in verschiedenen Abschnitten und muessen gemeinsam
+bewegt werden.
+
+ZWEI KLEINERE BEFUNDE AUS DEMSELBEN SWEEP, bewusst liegengelassen:
+ - Zeile 91, kubectl-Bullet: begruendet dpkg --print-architecture weiterhin mit
+   "no dependency on buildx passing TARGETARCH". Nicht haengend (buildx ist ein
+   Docker-Feature, kein geloeschtes Target), aber die letzte Stelle, an der die
+   Prosa gegen ein Cross-Build-Setup kalibriert ist; der passende Kommentar im
+   Dockerfile wurde heute bereits umformuliert.
+ - Zeile 39, Decision: die Liste verifizierter Images endet auf perl:5.40-slim,
+   die Basis des geloeschten Dockerfile.robocop. Bewusst SO LASSEN - das ist die
+   datierte Aufzeichnung dessen, was jener Audit geprueft hat, und ein ADR wird
+   nicht so umgeschrieben, als haette es immer das Richtige gesagt.
+
+Lane: ocp-adr-auditor. Verwandt: #9, ADR 0020, #47 (Amendment-Konvention).
