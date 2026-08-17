@@ -1,0 +1,42 @@
+---
+class: standard
+created: 2026-08-17T23:47:18Z
+id: 125
+priority: medium
+status: backlog
+tags:
+- adr
+- toolchain
+- perl
+title: 'ADR 0025: cpanfile-Floor begruendet den falschen Mechanismus und stand zu
+  hoch'
+updated: 2026-08-17T23:47:18Z
+---
+
+Gefunden 2026-08-17 im Commit-Review von c47e8d2 (main-agent).
+
+ZWEI BEFUNDE.
+
+1) MECHANISMUS FALSCH BESCHRIEBEN. c47e8d2 und ADR 0025 behaupten, der cpanfile-Eintrag
+   requires "perl", "5.042003" lasse "eine CPAN-Dependency, die ein neueres Perl will,
+   im Snapshot-Regenerator scheitern". Das kann ein Floor nicht leisten: er ist eine
+   UNTERGRENZE fuer unsere eigene Distribution, keine Obergrenze und keine Aussage ueber
+   Dependencies. Was den Fall wirklich faengt, ist der Makefile-Pin auf
+   perl:5.42.3-slim-trixie - wer den Snapshot in 5.42.3 regeneriert, sieht die
+   5.44-Anforderung dort scheitern. Der Floor kauft etwas anderes: niemand kann Snapshot
+   oder Dist auf einem AELTEREN Perl aufloesen, plus die dokumentierte ABI-Baseline.
+   Betroffen: ADR 0025 Decision (cpanfile-Bullet, Satz "Below the floor the floor is
+   meaningless" ist zusaetzlich verstuemmelt) und Consequences (erster Bullet).
+
+2) FLOOR HISTORISCH ZU HOCH. 5.042003 stammt aus der pikachu-Aera (eigener Perl-Build).
+   Entwicklungsmaschine ist jetzt reuben mit System-Perl 5.40.1 - der Floor lag also
+   ueber dem Perl der Maschine, auf der entwickelt wird. Folge: @Author::GETTY laedt
+   Prereqs::FromCPANfile (Bundle Zeile 633), der Floor landet als MIN_PERL_VERSION im
+   META, und damit liegen make test-host und dzil build auf reuben unter der eigenen
+   Baseline. Maintainer-Entscheidung 2026-08-17: Floor runter auf das System-Perl.
+
+ERLEDIGT MIT DIESEM TICKET: cpanfile auf 5.040001, ADR 0025 amendiert (Mechanismus
+richtiggestellt, Floor-Senkung begruendet, Lockstep bleibt zwischen Dockerfile und
+Makefile:snapshot - der Floor war nie Teil davon).
+
+Verwandt: #81 (ADR 0025 Urspruch), #79/#107 (dieselbe Ecke), ADR 0013.
