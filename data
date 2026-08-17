@@ -1,0 +1,49 @@
+---
+class: standard
+created: 2026-08-17T23:50:57Z
+id: 126
+priority: medium
+status: backlog
+tags:
+- crd
+- provider
+- consistency
+title: 'OCPNodeProvider-CRD: drei deklarierte Felder ohne Leser/Schreiber (Rest von
+  #111)'
+updated: 2026-08-17T23:50:57Z
+---
+
+Abgespalten von #111 im Review 2026-08-17 (main-agent). #111 wurde auf done gesetzt,
+umgesetzt ist aber nur Punkt 1 der vier Befunde (der echte Bug: spec.ssh.keyPath wurde
+gelesen, ohne deklariert zu sein - Leseseite entfernt, Commit 5436c28). Die drei
+uebrigen Punkte standen ohne Nachfolger da; hier sind sie.
+
+2. spec.ssh.user ist schreib-only. OCP::Cmd::Apply::CR (ensure_provider_cr) schreibt
+   { user => "root" }, die CRD deklariert es mit default: root - gelesen wird es von
+   nichts. OCP::Provider::SSH::_ssh verdrahtet user => "root" hart (lib/OCP/Provider/
+   SSH.pm:79). Wer im CR einen anderen User setzt, bekommt keine Wirkung und keine
+   Meldung - dasselbe Fehlerbild wie #100, nur in der anderen Richtung.
+   Entscheiden: verdrahten (dann liest from_cr spec.ssh.user und OCP::Provider::SSH
+   bekommt ein ssh_user-Attribut) oder aus der CRD entfernen. Nicht raten - "user"
+   koennte fuer Nicht-root-Zugaenge gedacht gewesen sein.
+
+3. spec.ssh.keySecretRef ist deklariert (mit required: [name]) und wird weder
+   geschrieben noch gelesen. Nach ADR 0027 laeuft der Schluessel ueber OCP::ClusterKey
+   / die CLI-Pipeline, nicht ueber den CR - dann gehoert das Feld raus. Falls robocop
+   ihn spaeter doch aus einem Secret ziehen soll (#101), gehoert es verdrahtet.
+   Zusammen mit Punkt 2 entscheiden, es ist dieselbe Frage.
+
+4. status.ready / .message / .lastChecked am OCPNodeProvider sind deklariert und
+   werden VON NICHTS geschrieben. additionalPrinterColumns holt "Ready" aus
+   .status.ready, `kubectl get ocpnodeproviders` zeigt also dauerhaft eine leere
+   Spalte - wer das sieht, haelt den Provider fuer kaputt. Entweder status schreiben
+   oder die Spalte entfernen.
+
+DER EIGENTLICHE WERT (aus #111 uebernommen): CRD und Code werden von nichts
+gegeneinander geprueft. #100 hat die eine Richtung begonnen (t/19 prueft, dass jedes
+Feld, das `provider add` schreibt, deklariert ist). Die Pruefung in BEIDE Richtungen -
+jedes deklarierte Feld wird gelesen oder geschrieben, jedes gelesene ist deklariert -
+haette alle vier Punkte auf einmal gefunden und faengt den naechsten.
+
+Lane: ocp-provider-worker (Code) + ocp-infra-worker (CRD) + ocp-test-writer
+(Zwei-Wege-Pruefung). Verwandt: #111, #100, #110, #101, ADR 0027.
