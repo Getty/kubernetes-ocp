@@ -1,0 +1,27 @@
+---
+class: standard
+created: 2026-08-12T04:27:20Z
+id: 8
+priority: medium
+status: backlog
+tags:
+- apply
+- feature
+title: 'Multi-CP nicht implementiert: apply deployed nur control_planes[0]'
+updated: 2026-08-17T05:41:54Z
+---
+
+Apply.pm:182-198, kein CP-Loop — police2+ existiert nur im Naming-Schema. control_planes mit nodes>1 oder Array-Form suggeriert mehr, als apply liefert.
+## TODO for foundation (sofort machbar, kein Blocker)
+
+Body identifiziert die Stelle: Apply.pm:182-198, kein CP-Loop. control_planes mit nodes>1 oder Array-Form suggeriert mehr als apply liefert; police2+ existiert nur im Naming-Schema.
+
+Cross-Refs: keiner (eigenstaendiges Feature-Ticket, nicht blockiert).
+
+### Aufgaben
+
+- [ ] Lane: ocp-apply-worker. Apply.pm:182-198 patchen: Schleife ueber control_planes, nicht ueber control_planes[0]. Naming-Schema (police{N}) konsequent fuer jeden Eintrag anwenden
+- [ ] ocp.yaml-Schema klären: ist control_planes ein Array (mehrere Eintraege mit eigener Replica-Zahl) oder eine Liste mit replicas-Key (ein Eintrag, mehrfach hoch)? Heute ist es unklar - das Schema selbst ist das Problem
+- [ ] Reihenfolge mit #26 abgleichen: workers-Lookup repraesentiert eine parallele Schleife ueber Maschinen, die hier vorbereitet wird (gleiche Bewegung)
+- [ ] Test: t/08-multi-cp.t (an t/08-apply-bootstrap.t oder t/16-node.t) verifiziert, dass die Schleife ueber N>1 CP-Eintraege tatsaechlich N K8s-Knoten produziert. Mock-K8s, weil es um die Aufrufe geht, nicht um die echte Maschine
+- [ ] Doku: ocp.yaml-Schema-Beispiel mit zwei CP-Eintraegen, das heute fehlt
