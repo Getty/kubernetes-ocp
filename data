@@ -1,0 +1,46 @@
+---
+class: standard
+created: 2026-08-12T16:12:52Z
+depends_on:
+- 1
+id: 31
+priority: low
+status: backlog
+tags:
+- gpu
+- robocop
+- config
+title: robocop-gejointe Worker ignorieren gpu.enabled / gpu.driver
+updated: 2026-08-17T23:51:31Z
+---
+
+Folge aus #13 (ocp-infra-worker).
+
+OCP::Rex install_server/install_agent reichen jetzt gpu und gpu_driver an den
+Rexfile durch, und Apply.pm fuellt sie aus OCP::Config. OCP::Node::_install_kubernetes
+ruft install_rke2_agent / install_k3s_agent aber direkt ueber run_task auf, mit
+einer eigenen kleinen %params-Liste (server, token, version, node_name, hostname,
+ntp) - ohne gpu.
+
+Der Rexfile behandelt fehlende Parameter absichtlich als "ja" (siehe
+_maybe_detect_gpu), damit ein robocop-gejointer Worker nicht still ohne Treiber
+hochkommt. Folge: gpu.enabled: false gilt fuer den Control Plane, aber nicht fuer
+Worker, die robocop joint.
+
+Zu tun: entscheiden, woher robocop die Schalter kennt. Sie stehen in ocp.yaml,
+robocop sieht nur die OCPNode/OCPNodeProvider-CRs - vermutlich muessen sie in
+den Provider-CR. Lane: ocp-robocop-worker.
+## TODO for foundation (when #1 unblocks + #33 loest)
+
+Body identifiziert die Stelle: OCP::Node::_install_kubernetes ruft install_rke2_agent / install_k3s_agent ueber run_task mit eigener %params-Liste auf (server, token, version, node_name, hostname, ntp) - ohne gpu. Der Rexfile behandelt fehlende gpu-Parameter als 'ja'.
+
+Cross-Refs: #70 (gleiche %params-Liste, aber CLI-Seite - gemeinsamer Fix moeglich), #33 (robocop instanziiert Controller erst), #13 (ocp-infra-worker, parents).
+
+### Aufgaben
+
+- [ ] OCP::Node::_install_kubernetes: %params um gpu und gpu_driver erweitern. Quelle: OCPNode->spec.gpu und spec.gpu.driver (siehe #70 - dort wird das Verstehen der CR-Felder geklaert)
+- [ ] Provider-CR-Schema: gpu.enabled / gpu.driver in den OCPNodeProvider aufnehmen, damit robocop die Flags sieht (sonst kennt robocop nur die OCPNode-CR, nicht die Worker-Flags). Cross-Ref zu #101 - dort wird die Schluesselfrage geklaert, die Provider-CR-Reichweite ist ein Nebenprodukt
+- [ ] Robocop-Pfad: beim Joint eines Workers liest robocop den Provider-CR, zieht die Flags, ruft _install_kubernetes mit gpu und gpu_driver auf
+- [ ] Tests: t/31-robocop-gpu.t verifiziert, dass die Flags im Worker-install durchkommen. Mock-Rex reicht (FakeRex-Fassung vorhanden)
+- [ ] Reihenfolge mit #70 abgleichen: wenn #70-Variante a (Verdrahten) gewaehlt wurde, ist die OCP::Node-Seite schon richtig - dann nur noch Provider-CR + Robocop-Anbindung
+TEIL ERLEDIGT DURCH #70 (main-agent, 2026-08-17): Aufgabe 1 dieser Liste ("OCP::Node::_install_kubernetes: %params um gpu erweitern") ist mit Commit 9f9b74a auf main erledigt - spec.gpu wird gelesen und als gpu => 1/0 an den Rex-Task gereicht, absent laesst OCP::Rex bei // 1. Da OCP::Node trigger-neutral ist (ADR 0003), gilt das auch fuer den robocop-Pfad: ein robocop-gejointer Worker honoriert jetzt spec.gpu am OCPNode-CR. OFFEN bleibt genau der Rest dieses Tickets: gpu_driver (die CRD hat kein spec.gpu.driver), die cluster-weiten Flags aus ocp.yaml (gpu.enabled / gpu.driver), die robocop kennen muss, das Provider-CR-Schema dafuer und t/31-robocop-gpu.t.
