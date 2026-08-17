@@ -1,0 +1,49 @@
+---
+class: standard
+completed: 2026-08-17T03:19:05Z
+created: 2026-08-15T07:44:19Z
+id: 72
+priority: low
+started: 2026-08-17T03:18:01Z
+status: done
+tags:
+- robocop
+- rbac
+- cleanup
+title: robocop-ClusterRole vergibt Rechte, die kein Code-Pfad nutzt
+updated: 2026-08-17T03:19:05Z
+---
+
+Gefunden beim Fix von #35 (ocp-infra-worker, 2026-08-15). Beim Abgleich der
+robocop-ClusterRole gegen die tatsaechlichen Aufrufe fiel auf: `delete` auf nodes
+fehlte (mit #35 ergaenzt), aber in der anderen Richtung sind reichlich Rechte
+vergeben, die kein Code-Pfad in lib/ oder bin/ je benutzt.
+
+GEMESSEN, ueber den ganzen robocop-Pfad (OCP::Robocop::Controller -> OCP::Node ->
+OCP::Provider::from_cr) gegen share/robocop/rbac.yaml:
+
+  nodes:                   list, watch, update   (list_nodes ist CLI-seitig)
+  ocpnodes:                create, watch, patch  (Status geht an die Subresource)
+  ocpnodes/status:         get, update
+  ocpnodeproviders/status: get, update, patch    (nichts schreibt Provider-Status)
+  secrets:                 list, watch
+  events:                  create, patch         (NICHTS erzeugt irgendwo ein Event)
+
+Bewusst nicht mit #35 gestrichen: Rechte von einem laufenden Controller
+wegzunehmen ist eine eigene Entscheidung, und #35 hatte einen Bugfix-Scope.
+
+ZU ENTSCHEIDEN: kuerzen oder als Vorrat fuer #33 stehen lassen. Das Argument fuer
+Vorrat ist schwach, solange #33 offen ist und niemand weiss, welche Form robocop
+nach der Net::Async::Kubernetes-Ueberarbeitung (#1) haben wird - dann wird die
+Rolle ohnehin neu geschrieben. Das Argument fuers Kuerzen: eine ClusterRole, die
+mehr kann als der Code, ist genau die Sorte Rechteueberschuss, die spaeter
+niemand mehr zu begruenden weiss.
+
+`events` ist der klarste Fall - es gibt keinen Event-Writer, und wenn robocop
+spaeter Events schreiben soll, ist das eine bewusste Ergaenzung mit Test.
+
+t/55-robocop-rbac.t leitet die noetigen nodes-Verben bereits aus lib/OCP/Node.pm
+ab statt sie zu wiederholen; ein Kuerzen sollte demselben Muster folgen und die
+Rolle gegen die Aufrufe herleiten, nicht gegen eine gepflegte Liste.
+
+Lane: ocp-infra-worker. Verwandt: #35, #33, #1.
