@@ -110,11 +110,11 @@ The second column is what is asserted rather than verified.
 
 ### Where arm64 is NOT yet first-class
 
-- **No cross-architecture CI for the full reconcile path.** The arm64
-  verification was a single k3s end-to-end run; the RKE2 arm64 fix that started
-  the work has never been re-verified against a running RKE2 cluster
-  (karr #9). Static checks replaced the live run because the live run would
-  have re-bootstrapped a real machine.
+- **No cross-architecture CI for the full reconcile path.** *Amended
+  2026-08-17 — see below.* The arm64 verification was a single k3s end-to-end
+  run; the RKE2 arm64 fix that started the work has never been re-verified
+  against a running RKE2 cluster (karr #9). Static checks replaced the live
+  run because the live run would have re-bootstrapped a real machine.
 - **No `xt/smoke.sh` on aarch64.** `make smoke` is amd64-only (`xt/smoke.sh`
   needs `SMOKE_HOST`); an aarch64 smoke would need an aarch64 runner with the
   same `SMOKE_HOST` target. Until it exists, "first-class on arm64" is asserted
@@ -150,4 +150,39 @@ Cilium 1.20.0 (the CLI resolved `linux-arm64` correctly), registry, NFD,
 cert-manager, Cilium Gateway, and the GPU stack reporting `nvidia.com/gpu: 1`
 with a successful CUDA workload validation. The run went over k3s, whose
 install script self-detects, which is why the RKE2 arm64 path is still only
-statically checked (karr #9).
+statically checked (karr #9). *Amended 2026-08-17 — see below: RKE2 on
+arm64 has since been verified end-to-end (RKE2 v1.36.3+rke2r1, cortex,
+2026-08-12); the caveat no longer holds.*
+
+## Amendment 2026-08-17 (karr #83)
+
+Two sentences in this ADR claimed that the RKE2 arm64 path has "never been
+re-verified against a running RKE2 cluster" and is "still only statically
+checked" (karr #9). The first sentence lived under *Where arm64 is NOT yet
+first-class*; the second was the closing note of *Verified end-to-end*. Both
+are wrong as written, and they were already wrong when the ADR was filed.
+
+What the ticket #9 record actually contains: after the multi-arch work landed
+in the working tree and the Rexfile-mount bug (#42) was fixed, a full RKE2
+1.36.3+rke2r1 deployment on cortex (NVIDIA DGX Spark, GB10, aarch64) ran
+end-to-end on 2026-08-12. Tarball 36 693 999 bytes, `[ok] RKE2 server
+installed`, `Node architecture: arm64`, the complete stack (Cilium, registry,
+NFD, cert-manager, GPU-Operator with `nvidia.com/gpu: 1`, cuda-validator
+Completed, registry.local resolving from a Pod). The commit that wrote the
+two false sentences (8a02ea8, 2026-08-14 20:45) post-dates the verification on
+the board (2026-08-12T22:40:58Z) by two days.
+
+Both inline markers point here. The amendment does not retract the
+"NOT yet first-class" header — that header is, if anything, stronger today
+than when the ADR was written: `.github/workflows/` no longer exists at all,
+so there is no CI for **any** architecture, and the "first-class" claim rests
+on the historical run plus the static checks that substituted for it (the
+"No cross-architecture CI" bullet carries that strengthening — see also
+#10).
+
+Two adjacent claims were deliberately left alone. The `dpkg --print-architecture`
+rationale for the kubectl bullet (line 91) still calibrates against the
+removed cross-build machinery; the historical `perl:5.40-slim` in the
+verified-images list is the dated record of what that earlier audit
+checked, and a record is not rewritten to look as if it had always said
+the right thing.
