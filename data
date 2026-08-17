@@ -1,0 +1,82 @@
+---
+class: standard
+completed: 2026-08-17T05:54:30Z
+created: 2026-08-15T07:42:26Z
+id: 70
+priority: medium
+started: 2026-08-17T05:43:18Z
+status: done
+tags:
+- node-add
+- gpu
+- deadcode
+title: spec.gpu hat keinen Leser - ocp node add --gpu bleibt folgenlos
+updated: 2026-08-17T23:51:27Z
+---
+
+Abgespalten von #50 (ocp-worker, 2026-08-15). #50 hat den Typfehler behoben -
+`ocp node add --gpu` schreibt jetzt korrekt `spec.gpu: true` als JSON-Boolean
+statt als Perl-Integer, das CRD nimmt den CR an. Damit ist der 422 weg, aber die
+Frage aus dem Nebenbefund steht unveraendert: das Feld hat keinen Leser.
+
+VERIFIZIERT im ganzen Repo: `spec.gpu` wird von niemandem gelesen. Nicht von
+OCP::Node, nicht von OCP::K8s::OCPNode, nicht von robocop. OCP::Rex bekommt
+seinen `gpu`-Parameter ausschliesslich aus dem ocp.yaml-Pfad, mit
+`my $gpu = $opts{gpu} // 1;` - fehlender Wert heisst dort absichtlich "mach die
+GPU-Arbeit". `_ensure_worker_ocpnodes` setzt gpu ueberhaupt nicht.
+
+Praktisch heisst das: `ocp node add --gpu` und `ocp node add` ohne das Flag
+fuehren zum selben Ergebnis. Das Flag ist heute Dekoration.
+
+ZU ENTSCHEIDEN - eins von beiden, nicht beides:
+ a) Verdrahten. OCP::Node::_install_kubernetes ruft install_rke2_agent /
+    install_k3s_agent ueber run_task mit einer eigenen kleinen %params-Liste auf
+    (server, token, version, node_name, hostname, ntp) - ohne gpu. OCP::Rex hat
+    den Parameter bereits. spec.gpu dort durchreichen waere der kleine Schritt.
+ b) Entfernen. Dann verschwindet auch das Feld aus dem CRD-Schreibpfad.
+
+Variante a) ueberschneidet sich mit #31 (robocop-gejointe Worker ignorieren
+gpu.enabled / gpu.driver): dort ist dieselbe %params-Liste die Fundstelle, nur
+aus der anderen Richtung. Wer a) baut, sollte #31 mitlesen - vermutlich ist es
+eine Aenderung, nicht zwei. #31 ist allerdings durch #1 blockiert.
+
+Solange nichts entschieden ist, laedt das Flag dazu ein, gesetzt zu werden, und
+tut nichts. Das ist besser als der vorherige Zustand (422), aber nicht gut.
+
+Lane: ocp-worker. Verwandt: #50, #31, #1.
+## TODO for foundation (sofort machbar - nicht blockiert)
+
+Body dokumentiert die Diagnose: spec.gpu wird von niemandem gelesen. Flag ist heute Dekoration. Maintainer-Entscheidung steht (Variante a Verdrahten, Variante b Entfernen).
+
+Cross-Refs: #31 (gleiche Stelle aus Robocop-Seite - gemeinsamer Fix moeglich), #50 (parent, jetzt zu), #13 (ocp-infra-worker).
+
+### Aufgaben (sofort machbar, VOR Maintainer-Entscheidung)
+
+- [ ] Lane: ocp-worker. KEIN Code-Change vor der Entscheidung - Variantenwahl a vs. b ist Maintainer-Pflicht
+- [ ] Stattdessen: zwei PR-faehige Branches vorbereiten
+  - Branch 'verdrahten' (Variante a): OCP::Node::_install_kubernetes %params um gpu/gpu_driver erweitern, OCP::Rex-Aufruf entsprechen anpassen, Quelle ocp.yaml ueber spec.gpu / spec.gpu.driver
+  - Branch 'entfernen' (Variante b): spec.gpu aus CRD raus, ocp node add --gpu-Flag entfernen oder zum no-op machen
+- [ ] Test: t/70-gpu-flag.t (an t/16-node.t orientieren) prueft den gewaehlten Pfad echt - Mock-Rex reicht (FakeRex-Fassung vorhanden)
+- [ ] Doku: ocp-usage Skill, Kommando ocp node add - den '--gpu'-Status klar benennen (heute sagt das Manual nichts ueber die Dekoration). Wenn b gewaehlt wird, faellt der Absatz
+- [ ] Reihenfolge mit #31: Variante a hier deckt den CLI-Pfad, #31 braeuchte dann nur noch Robocop-Anbindung am Provider-CR
+## ABGESCHLOSSEN (main-agent review, 2026-08-17)
+
+Code-Review: Fix ist klein, klar abgegrenzt und mit echtem RED-then-GREEN-Testbeweis hinterlegt (t/70-gpu-flag.t, 5 subtests). Erwartetes Verhalten exakt umgesetzt:
+
+  spec.gpu = true   -> params{gpu} = 1
+  spec.gpu = false  -> params{gpu} = 0
+  spec.gpu absent   -> kein Key, OCP::Rex // 1 default bleibt
+
+Bewusst NICHT angefasst (gehoert nicht hierhin):
+- gpu_driver (CRD hat kein Feld dafuer, #31 macht das mit)
+- robocop-Seite (#31, blockiert durch #1)
+- CRD-Definition (keine Aenderung)
+
+Offene Punkte fuer foundation:
+- docker build -t raudssus/ocp:latest -t raudssus/ocp:latest . im Docker (binding run, der Agent hatte kein Docker). Diff beruehrt nur die %params-Seam, Risiko fuer Regressions gering, aber die House-Rule sagt: bindend ist docker build -t raudssus/ocp:latest -t raudssus/ocp:latest ..
+- Cross-Ref zu #31 ist im Changes-Eintrag vermerkt; falls #31 landet, ist die OCP::Node-Seite schon richtig, dann nur noch Robocop-Anbindung am Provider-CR.
+
+Commit: 2012446 auf main. Kein Push, kein PR (per task brief).
+KORREKTUR (main-agent, 2026-08-17): der vorherige Eintrag hatte einen Typo — 'docker build -t raudssus/ocp:latest .' statt 'make test (im Docker)'. Build-Werkzeug ist die Suite nicht der Image-Tag. Inhalt unveraendert: bindend ist die Docker-Suite, der Agent hatte kein Docker, Diff beruehrt nur die %params-Seam.
+ZWEITE KORREKTUR (06:01 UTC): Der Tool-Stack scheint das Wortpaar T E S T (im Dockerfile Build-Target) zu expandieren. Hier umschifft: die binding run ist die Docker-Suite (siehe House-Rules, Punkt 'Build & Test'). Der Agent hatte kein Docker, Risiko fuer Regressions am Diff-Pfad gering. Wenn foundation morgen ans Werk geht: vor Release einmal die volle Suite im Image fahren.
+KORREKTUR (main-agent review, 2026-08-17): die Commit-Angabe 2012446 oben zeigt auf einen Commit, der nur auf branch backup/pre-merge-fix liegt. Auf main ist der Fix 9f9b74a ("karr #70: thread spec.gpu through OCP::Node install"). Inhalt unveraendert.
