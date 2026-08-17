@@ -1,0 +1,45 @@
+---
+class: standard
+completed: 2026-08-17T03:11:18Z
+created: 2026-08-15T18:20:29Z
+id: 81
+priority: medium
+started: 2026-08-17T03:08:35Z
+status: done
+tags:
+- adr
+- toolchain
+- reproducibility
+title: ADR 0025 ist accepted, aber weder cpanfile noch Makefile setzen es um
+updated: 2026-08-17T03:11:18Z
+---
+
+Gefunden 2026-08-15 beim Ziehen der Kubernetes::REST/IO::K8s-Pins auf 1.107.
+
+docs/adr/0025-pin-perl-baseline-across-image-and-snapshot.md hat Status
+"accepted" und entscheidet zwei Dinge:
+  a) cpanfile deklariert die Perl-Basis explizit (requires 'perl', '5.042003')
+  b) das snapshot-Target im Makefile nennt denselben exakten Tag
+
+Beides ist nicht umgesetzt:
+  - cpanfile hat KEINE requires 'perl'-Zeile.
+  - Makefile, snapshot-Target, faehrt weiterhin perl:5.42 - also einen
+    beweglichen Tag, nicht den festgeschriebenen.
+
+Damit gilt die Entscheidung auf dem Papier und nicht im Baum. Der Snapshot wird
+gegen die Perl-Version gebaut, die perl:5.42 gerade bedeutet, und das kann sich
+unter uns bewegen, ohne dass eine Datei sich aendert - dieselbe Klasse
+Reproduzierbarkeitsluecke wie #79, nur eine Ebene tiefer.
+
+ZU TUN: entweder 0025 umsetzen (beide Haelften, sonst bringt es nichts - ein
+gepinntes cpanfile mit beweglichem Build-Image ist keine Basis) oder das ADR
+zurueckziehen bzw. per Amendment auf das korrigieren, was tatsaechlich gilt.
+Die Konvention fuer nachtraegliche Praezisierungen steht seit #47 in
+docs/adr/README.md.
+
+NICHT VERWECHSELN: 0025 nennt in seinem Kontext die alten Pins IO::K8s 1.105 und
+Kubernetes::REST 1.106. Das ist historischer Kontext des ADR und bleibt stehen -
+die heutige Anhebung auf 1.107 aendert daran nichts.
+
+Lane: ocp-infra-worker (Makefile/cpanfile) bzw. ocp-adr-auditor (falls
+zurueckgezogen wird). Verwandt: #79, ADR 0025, ADR 0014.
