@@ -1,0 +1,85 @@
+---
+class: standard
+created: 2026-08-20T20:01:12Z
+id: 127
+priority: high
+status: backlog
+tags:
+- cilium
+- lb-ipam
+- l2
+- multi-node
+title: 'Netzwerk-Pfad: LB-Pool nimmt Control-Plane-IP, L2-Regex matcht Fabric-Interfaces'
+updated: 2026-08-20T20:01:12Z
+---
+
+Gefunden am 2026-08-20 beim Aufbau des Gateways im Cluster citiai (citiai karr #44).
+OCP::Cmd::Apply::Network legt zwei Objekte an, die auf einem Multi-Node-Cluster
+mit getrennter Hochgeschwindigkeits-Fabric beide falsch sind.
+
+## 1. Der LB-Pool vergibt die Control-Plane-IP selbst
+
+    CiliumLoadBalancerIPPool default-pool
+      spec.blocks = [{ cidr => "$node_ip/32" }]
+
+$node_ip ist die Control-Plane-Adresse. Auf einem Single-Node-Cluster ist das ein
+brauchbarer Trick -- der Node ist ohnehin alles. Auf einem Cluster mit mehreren
+Nodes bekommt der LoadBalancer damit eine Adresse, die bereits einem Node gehoert
+(hier waere es 10.230.30.110, cp-lab). Der Gateway-Envoy kuendigt dann eine IP an,
+die dem Node selbst gehoert.
+
+Erwartet: ein konfigurierbarer Bereich. Im Cluster citiai wurde von Hand ein
+eigener Pool angelegt:
+
+    CiliumLoadBalancerIPPool citiai-lan-pool
+      spec.blocks = [{ start: 10.230.30.240, stop: 10.230.30.249 }]
+
+Bewusst NICHT unter dem Namen default-pool -- ein OCP-Lauf soll sichtbar
+kollidieren statt still zu ueberschreiben.
+
+## 2. Der L2-Interface-Regex matcht die falschen Interfaces
+
+    CiliumL2AnnouncementPolicy default-l2
+      interfaces = ["^eth[0-9]+", "^en[a-z0-9]+"]
+
+Auf den beiden GB10-Maschinen des Clusters citiai:
+
+    brain    enP7s7.30      10.230.30.195/24   LAN
+             enp1s0f0np0    192.168.100.1/30   QSFP-Fabric, 200 Gb/s, MTU 9000
+    cortex   enP7s7.30      10.230.30.155/24   LAN
+             enp1s0f0np0    192.168.100.2/30   QSFP-Fabric
+
+Der Regex wirkt in beide Richtungen verkehrt:
+
+  - "^en[a-z0-9]+" MATCHT enp1s0f0np0 -- die Fabric. Ueber sie faehrt eine
+    DeepSeek-Instanz ihren Tensor-Parallelismus ueber zwei Maschinen. ARP-Verkehr
+    gehoert dort nicht hin.
+  - Er matcht enP7s7.30 NICHT: [a-z0-9] deckt das grosse P nicht ab. Das echte
+    LAN-Interface der GB10 bliebe also aussen vor.
+
+Ein Node kann mehr als ein Interface haben, und nicht jedes davon ist ein
+LAN-Interface, auf dem angekuendigt werden darf. Ein Zeichenketten-Regex ueber
+Interface-Namen kann diese Unterscheidung nicht treffen.
+
+## Vorschlag
+
+- LB-Pool-Bereich konfigurierbar in ocp.yaml (Fallback auf das heutige
+  $node_ip/32 nur, solange der Cluster genau einen Node hat).
+- L2-Policy per nodeSelector begrenzbar, statt sich auf Interface-Namen zu
+  verlassen. Im Cluster citiai geloest ueber ein Faehigkeits-Label:
+
+      CiliumL2AnnouncementPolicy citiai-lan-l2
+        nodeSelector.matchLabels: { ai.citilan.de/l2-announce: "true" }
+        interfaces: ["^eth[0-9]+$"]
+
+  cp-lab und agent-lab tragen das Label und haben schlicht eth0 und keine
+  Fabric; brain und cortex sind konstruktiv aussen vor statt per Regex
+  wegformuliert.
+- Mindestens: den Regex verankern ("$") und dokumentieren, dass er auf Nodes mit
+  mehreren Interfaces geprueft werden muss.
+
+## Stand im Cluster citiai
+
+Der OCP-Netzwerk-Pfad wurde dort nie gefahren -- weder default-pool noch
+default-l2 existieren. Ein "ocp apply", das ihn faehrt, wuerde beide oben
+beschriebenen Objekte anlegen und waere auf diesem Cluster schaedlich.
