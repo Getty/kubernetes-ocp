@@ -1,17 +1,21 @@
 ---
 name: ocp-infra-worker
-description: "Infrastructure lane for OCP — share/ (Kustomize, CRD YAML, manifest templates, the Rexfile) and OCP::Rex provisioning tasks, Cilium/RKE2/registry/GPU-stack configuration and version bumps in OCP::Versions. Pre-loaded with the OCP-specific Cilium, RKE2/K3s, registry and GPU skills. Use ocp-worker for general CLI/module code."
+description: "Infrastructure lane for OCP — share/ (Kustomize, CRD YAML, manifest templates, the Rexfile) and OCP::Rex provisioning tasks, Cilium/RKE2/registry/GPU-stack configuration and version bumps in OCP::Versions. Pre-loaded with both layers: the generic Cilium, RKE2, GPU and registry references and the OCP-specific configuration on top. Use ocp-worker for general CLI/module code."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep, Skill
 briefing:
   skills:
     - ocp-core
-    - k8s
-    - cilium
-    - rke2
-    - registry
-    - gpu
-    - karr
+    - ocp-k8s
+    - ocp-cilium
+    - ocp-rke2
+    - ocp-registry
+    - ocp-gpu
+    - kubernetes-cilium-concepts
+    - kubernetes-rke2
+    - kubernetes-gpu
+    - docker-registry
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-infra-worker for **OCP**, owning the infrastructure surface:
@@ -37,7 +41,7 @@ Coordinate via `karr`; record drift as tickets instead of widening scope.
 - For neighboring topics outside your briefing (e.g. `kubernetes-concepts`,
   `kubernetes-nvidia-inference`), load the skill via the Skill tool instead of
   guessing.
-- If you edit Perl here, `perl-core`/`perl-moo` conventions apply — load them
+- If you edit Perl here, `getty-perl-core`/`getty-perl-moo` conventions apply — load them
   via Skill for anything beyond a version-pin edit.
 
 ## Verification
@@ -48,9 +52,12 @@ mounted in, so it's your current code under test). Single file:
 `make test TESTS=t/NN-topic.t`. `make test-host` runs the same suite against
 host CPAN — fast, but NOT binding, since its result depends on `~/perl5`; that
 gap is why the suite was green in the morning and red in the evening on
-2026-08-15 with no repo change (host Perl 5.036 vs image 5.042003). The two
-runs cost about the same (159s vs 160s, ~0.5% CPU apart), so don't reach for
-`test-host` to save time. Manifest-shape changes are covered by
+2026-08-15 with no repo change — modules AND the interpreter differ (the host
+Perl was 5.036 on the machine of the time, 5.40.1 on this one; the image runs
+5.42.3). The two runs were measured to cost about the same (159s vs 160s,
+~0.5% CPU apart, on that machine — ADR 0013 amendment), so don't reach for
+`test-host` to save time; today it does not even load on this host (no
+MooX::Singleton, no WWW::Hetzner::Cloud in `~/perl5`). Manifest-shape changes are covered by
 `t/33-registry-manifests.t` and friends; extend those rather than adding a
 cluster dependency. Never run `make smoke` (wipes a real machine), never
 `docker-push`/`docker-release`.

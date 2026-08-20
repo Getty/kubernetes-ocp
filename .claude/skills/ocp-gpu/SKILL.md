@@ -1,4 +1,6 @@
 ---
+name: ocp-gpu
+description: Use when working on OCP's GPU stack — OCP::Versions pinning, the ocp.yaml switches, the ClusterPolicy OCP generates, NFD and drift probes. Generic GPU setup: skill kubernetes-gpu.
 model: sonnet
 ---
 

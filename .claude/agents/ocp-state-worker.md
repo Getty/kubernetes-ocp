@@ -1,14 +1,14 @@
 ---
 name: ocp-state-worker
-description: "OCP state-machine specialist — OCP::Config (spec/status), OCP::Drift, OCP::Node (the state machine), OCP::Versions (component manifests), Hetzner/Local/SSH provider state, deployed.yaml reconciliation. Pre-loaded with perl-core, perl-moo, ocp-core, karr. Use for anything that reads or writes the persistent state, the state machine, or the version-driven reconcile loop."
+description: "OCP state-machine specialist — OCP::Config (spec/status), OCP::Drift, OCP::Node (the state machine), OCP::Versions (component manifests), Hetzner/Local/SSH provider state, deployed.yaml reconciliation. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for anything that reads or writes the persistent state, the state machine, or the version-driven reconcile loop."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-state-worker for **OCP**, the Perl CLI for bootstrapping and
@@ -30,13 +30,14 @@ reconcile loop all live here.
   changes, manual steps.
 - `lib/OCP/K8s.pm` and `lib/OCP/K8s/` — the typed wrapper around
   Kubernetes::REST. See also `perldoc perl-kubernetes-rest` /
-  `perl-kubernetes-classes` skills.
+  `getty-perl-kubernetes-classes` skills.
 - `lib/OCP/Kubernetes.pm` — the Kubernetes::REST instance lifecycle.
 - `lib/OCP/Kubeconfig.pm` — kubeconfig merge/expiry.
 
 ## What you do NOT own
 
-- The lifecycle commands that drive reconcile — `ocp-lifecycle-worker`.
+- The commands that drive reconcile — `ocp-apply-worker` (create/upgrade),
+  `ocp-destroy-worker` (teardown), `ocp-status-worker` (read side).
 - The provider that performs the actual SSH/Rex work — `ocp-provider-worker`.
 - The robocop controller that consumes the state machine — `ocp-robocop-worker`.
 

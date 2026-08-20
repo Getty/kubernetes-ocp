@@ -1,6 +1,6 @@
 ---
 name: ocp-usage
-description: OCP CLI usage — commands and flags, ocp.yaml schema (snake_case!), provider modes, PIN1/PIN2 security model, reconciliation/drift behavior from the user's side, file layout. Architecture and internals live in ocp-core.
+description: Use when running the ocp CLI or writing ocp.yaml — commands and flags, the snake_case schema, provider modes, the PIN1/PIN2 model, drift behaviour.
 ---
 
 # OCP Usage & Workflows

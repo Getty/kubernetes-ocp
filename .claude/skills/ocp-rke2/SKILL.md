@@ -1,4 +1,6 @@
 ---
+name: ocp-rke2
+description: Use when OCP provisions RKE2 or K3s — the config.yaml and registries.yaml OCP generates, the Rex install flow, the Cilium handover. Generic RKE2 behaviour: skill kubernetes-rke2.
 model: sonnet
 ---
 

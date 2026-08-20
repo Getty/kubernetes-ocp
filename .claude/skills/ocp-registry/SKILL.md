@@ -1,4 +1,6 @@
 ---
+name: ocp-registry
+description: Use when working on OCP's two registries in ocp-system — ocp-cache and ocp-registry, manifest generation, CoreDNS patching, image reference paths. Generic registry operation: skill docker-registry.
 model: sonnet
 ---
 

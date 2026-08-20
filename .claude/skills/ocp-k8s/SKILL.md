@@ -1,4 +1,6 @@
 ---
+name: ocp-k8s
+description: Use when OCP applies Kubernetes resources from Perl — Server-Side Apply, IO::K8s typed objects, hash-based reconciliation, CRD resource paths.
 model: sonnet
 ---
 

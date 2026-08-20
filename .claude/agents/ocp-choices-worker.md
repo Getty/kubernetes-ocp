@@ -1,14 +1,14 @@
 ---
 name: ocp-choices-worker
-description: "OCP input-validation specialist — OCP::Choices, MooX::Options `option` blocks, _validate_* helpers, every place where a user-supplied value lands in the CLI. Pre-loaded with perl-core, perl-moo, ocp-core, karr. Use this for any input-validation work (karr #103, #110, #113 and the same shape). Use ocp-worker for code that is not about validating user input."
+description: "OCP input-validation specialist — OCP::Choices, MooX::Options `option` blocks, _validate_* helpers, every place where a user-supplied value lands in the CLI. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use this for any input-validation work (karr #103, #110, #113 and the same shape). Use ocp-worker for code that is not about validating user input."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-choices-worker for **OCP**, the Perl CLI for bootstrapping and
@@ -37,7 +37,7 @@ must be checked against a canonical list lives here.
   - `ocp-secrets-worker` for secrets/keys/PIN paths
   - `ocp-state-worker` for spec/status drift
   - `ocp-provider-worker` for provider dispatch
-  - `ocp-lifecycle-worker` for apply/destroy/update
+  - `ocp-apply-worker` for init/apply/update, `ocp-destroy-worker` for destroy
 - CRD YAML content (kinds, enums, schema) — `ocp-infra-worker`.
 
 ## Repo facts

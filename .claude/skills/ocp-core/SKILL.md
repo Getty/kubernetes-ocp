@@ -1,6 +1,6 @@
 ---
 name: ocp-core
-description: OCP architecture and invariants — CLI vs robocop split, stack decisions (Cilium, no Helm), spec/status separation, module map, CRDs, reconciliation states. Load for any work on lib/, bin/, or share/ (templates + Rexfile).
+description: Load for any work on OCP lib/, bin/ or share/ — the CLI vs robocop split, stack decisions, spec/status separation, CRDs, reconciliation states.
 ---
 
 # OCP Core — Architecture & Invariants

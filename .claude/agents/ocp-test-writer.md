@@ -5,10 +5,10 @@ model: sonnet
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You write tests for **OCP**.

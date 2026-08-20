@@ -1,17 +1,17 @@
 ---
 name: ocp-worker
-description: "OCP fallback worker — use only for cross-cutting tasks that don't fit one of the specialized agents. Default for work that spans multiple lanes (e.g. a refactor that touches both Secrets and the state machine). For focused work, prefer the lane-specific agent: ocp-choices-worker (input validation), ocp-secrets-worker (Secrets/Keys/ClusterKey), ocp-state-worker (Config/Drift/Node/Versions), ocp-provider-worker (Provider roles + Hetzner/Local/SSH), ocp-lifecycle-worker (init/apply/status/update/destroy)."
+description: "OCP fallback worker — use only for cross-cutting tasks that don't fit one of the specialized agents. Default for work that spans multiple lanes (e.g. a refactor that touches both Secrets and the state machine). For focused work, prefer the lane-specific agent: ocp-choices-worker (input validation), ocp-secrets-worker (Secrets/Keys/ClusterKey), ocp-state-worker (Config/Drift/Node/Versions), ocp-provider-worker (Provider roles + Hetzner/Local/SSH), ocp-apply-worker (init/apply/update/deploy-*), ocp-destroy-worker (destroy), ocp-status-worker (status/version)."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - k8s
+    - ocp-k8s
     - perl-kubernetes-rest
-    - perl-kubernetes-classes
-    - karr
+    - getty-perl-kubernetes-classes
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-worker for **OCP**, the Perl CLI that bootstraps and manages

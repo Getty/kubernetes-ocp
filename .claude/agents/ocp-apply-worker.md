@@ -1,14 +1,14 @@
 ---
 name: ocp-apply-worker
-description: "OCP create/upgrade-command specialist — `ocp init`, `ocp apply`, `ocp update`, `ocp deploy-image`, `ocp deploy-robocop`, the dispatcher `bin/ocp`, `OCP::Cmd::Apply.pm` and its sub-classes (`OCP::Cmd::Apply::Bootstrap`, `OCP::Cmd::Apply::Drift`, `OCP::Cmd::Apply::Robocop`, `OCP::Cmd::Apply::CR`, `OCP::Cmd::Apply::Workloads`). Pre-loaded with perl-core, perl-moo, ocp-core, karr. Use for any work that brings a cluster up or rolls it forward. Use ocp-destroy-worker for `ocp destroy`, ocp-status-worker for `ocp status`/`ocp version`, ocp-state-worker for the state machine that Apply drives."
+description: "OCP create/upgrade-command specialist — `ocp init`, `ocp apply`, `ocp update`, `ocp deploy-image`, `ocp deploy-robocop`, the dispatcher `bin/ocp`, `OCP::Cmd::Apply.pm` and its sub-classes (`OCP::Cmd::Apply::Bootstrap`, `OCP::Cmd::Apply::Drift`, `OCP::Cmd::Apply::Robocop`, `OCP::Cmd::Apply::CR`, `OCP::Cmd::Apply::Workloads`). Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for any work that brings a cluster up or rolls it forward. Use ocp-destroy-worker for `ocp destroy`, ocp-status-worker for `ocp status`/`ocp version`, ocp-state-worker for the state machine that Apply drives."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-apply-worker for **OCP**, the Perl CLI for bootstrapping

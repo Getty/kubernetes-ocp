@@ -1,4 +1,6 @@
 ---
+name: ocp-cilium
+description: Use when configuring Cilium for an OCP cluster — the install flags OCP passes, LB-IPAM pools, the CRD wait pattern, pinned versions. Generic Cilium behaviour: skill kubernetes-cilium-concepts.
 model: sonnet
 ---
 

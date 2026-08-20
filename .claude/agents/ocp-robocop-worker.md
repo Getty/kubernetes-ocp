@@ -5,13 +5,13 @@ model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
     - perl-io-async-future
     - perl-kubernetes-rest
-    - perl-kubernetes-classes
-    - karr
+    - getty-perl-kubernetes-classes
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-robocop-worker for **OCP**, owning the in-cluster controller

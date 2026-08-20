@@ -1,6 +1,6 @@
 ---
 name: perl-kubernetes-rest
-description: "Kubernetes::REST — How to talk to the Kubernetes API from Perl"
+description: Use when talking to the Kubernetes API from Perl — Kubernetes::REST connect, CRUD, the /status subresource, watch, log.
 user-invocable: false
 allowed-tools: Read, Grep, Glob
 model: sonnet

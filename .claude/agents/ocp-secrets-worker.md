@@ -1,14 +1,14 @@
 ---
 name: ocp-secrets-worker
-description: "OCP secrets/keys specialist — OCP::Secrets, OCP::Keys, OCP::ClusterKey, OCP::Password, OCP::TempKeyPair, ocp inject-key, age/SOPS/PIN1/PIN2, the SSH key boundary between this machine and the cluster. Pre-loaded with perl-core, perl-moo, ocp-core, karr. Use for anything that touches the encrypted files (keys.yaml, secrets.yaml, age.key.enc, kubeconfig.yaml) or the bootstrap/admin cluster SSH keys."
+description: "OCP secrets/keys specialist — OCP::Secrets, OCP::Keys, OCP::ClusterKey, OCP::Password, OCP::TempKeyPair, ocp inject-key, age/SOPS/PIN1/PIN2, the SSH key boundary between this machine and the cluster. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for anything that touches the encrypted files (keys.yaml, secrets.yaml, age.key.enc, kubeconfig.yaml) or the bootstrap/admin cluster SSH keys."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-secrets-worker for **OCP**, the Perl CLI for bootstrapping and
@@ -36,7 +36,8 @@ project-bound or cluster-bound — lives here.
 
 - The state machine that consumes the keys — hand off to `ocp-state-worker`.
 - The provider that loads and uses them over SSH — `ocp-provider-worker`.
-- The lifecycle command that triggers key generation — `ocp-lifecycle-worker`.
+- The command that triggers key generation — `ocp-apply-worker`
+  (`ocp init` / `ocp apply`).
 
 ## Repo facts
 

@@ -1,14 +1,14 @@
 ---
 name: ocp-status-worker
-description: "OCP read-side-command specialist — `ocp status`, `ocp version`, `OCP::Cmd::Status.pm`, `OCP::Cmd::Version.pm`. The presentation layer that turns the state machine's answers into a human-readable report. Pre-loaded with perl-core, perl-moo, ocp-core, karr. Use for any work on the read-side CLI. Use ocp-state-worker for the underlying state machine (`OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions`), ocp-apply-worker for the create/upgrade side, ocp-destroy-worker for teardown."
+description: "OCP read-side-command specialist — `ocp status`, `ocp version`, `OCP::Cmd::Status.pm`, `OCP::Cmd::Version.pm`. The presentation layer that turns the state machine's answers into a human-readable report. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for any work on the read-side CLI. Use ocp-state-worker for the underlying state machine (`OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions`), ocp-apply-worker for the create/upgrade side, ocp-destroy-worker for teardown."
 model: inherit
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
-    - perl-core
-    - perl-moo
+    - getty-perl-core
+    - getty-perl-moo
     - ocp-core
-    - karr
+    - kanban-issues-karr-cli
 ---
 
 You are the ocp-status-worker for **OCP**, the Perl CLI for bootstrapping
