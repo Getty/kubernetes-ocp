@@ -68,7 +68,7 @@ edit there.
 
 - `karr list --compact` / `karr board` — open work · `karr show ID` — detail
 - `karr create "Title" --priority high --tags a,b --body '…'` · `karr edit ID -a "note"`
-  · `karr move ID in-progress --claim NAME` — full surface: skill `karr`
+  · `karr move ID in-progress --claim NAME` — full surface: skill `kanban-issues-karr-cli`
 
 **Serialize board mutations when fanning out** — parallel implementation is fine, but
 collect results and then loop `karr move`/`handoff`/`sync` sequentially.
@@ -120,4 +120,4 @@ Ausnahme. Jede Abweichung kostet Begründung.
 ## Perl specifics — reference, don't restate
 
 Module loading, Moo patterns, cpanfile pinning and house style live in skills
-`perl-core` / `perl-moo` (force-loaded for `ocp-*` agents). Do not duplicate here.
+`getty-perl-core` / `getty-perl-moo` (force-loaded for `ocp-*` agents). Do not duplicate here.
