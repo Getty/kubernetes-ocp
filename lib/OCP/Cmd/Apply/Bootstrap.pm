@@ -6,6 +6,7 @@ use warnings;
 
 use OCP::ClusterKey;
 use OCP::Config;
+use OCP::Keys;
 use OCP::Provider;
 use OCP::Rex;
 use OCP::Secrets;
@@ -144,6 +145,48 @@ sub setup_ssh_key {
     return $key;
 }
 
+# The (name => public-key) pairs to upload before a machine of this cluster
+# exists. The admin key is always present, under $config->admin_ssh_key_name;
+# the robo public follows, under $config->robo_ssh_key_name, whenever secure
+# mode holds an automation key. See the upload block in bootstrap_control_plane
+# for why robocop needs it (karr #101).
+sub _cluster_ssh_key_uploads {
+    my ($config, $secrets, $admin_key) = @_;
+
+    my @uploads = ([ $config->admin_ssh_key_name, $admin_key->{public} ]);
+
+    if (my $robo_public = _robo_public_key($config, $secrets)) {
+        push @uploads, [ $config->robo_ssh_key_name, $robo_public ];
+    }
+
+    return @uploads;
+}
+
+# The robo (automation) PUBLIC key for this cluster, or undef when there is
+# none (dev mode has no keys.yaml, so no robo key at all). Reads it off
+# keys.yaml with the age layer alone -- public halves carry no PIN2 layer
+# (OCP::Keys ENCRYPTION LAYERS), so nothing here prompts. Deliberately never
+# decrypts the private half: only the public key travels to the provider.
+sub _robo_public_key {
+    my ($config, $secrets) = @_;
+
+    my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+    return unless $keys->has_keys_file;   # dev mode: no robo key exists
+
+    # PIN1 only, and idempotent -- in secure mode the age key is already
+    # unlocked by the time apply has an admin key in hand.
+    $secrets->ensure_age_key;
+
+    my ($robo) = grep { ($_->{purpose} // '') eq 'automation' && !$_->{deprecated} }
+                 @{ $keys->list_keys };
+    return unless $robo;
+
+    my $public = $robo->{public};
+    return unless defined $public && length $public;
+
+    return $public;
+}
+
 # The whole first-deploy sequence: provision, install, kubeconfig,
 # wait-Ready. Returns the Kubernetes api handle plus the control-plane
 # identity the caller needs to write the OCPNode CR afterwards.
@@ -209,14 +252,28 @@ sub bootstrap_control_plane {
 
     print "  [..] Provisioning server ($provider)...\n";
 
-    # Upload SSH key (Hetzner uploads to cloud, SSH/Local is no-op).
+    # Upload the SSH keys this machine must trust (Hetzner uploads to the cloud
+    # project, SSH/Local is a no-op), and collect their names for create_server.
     #
-    # The name is derived, not spelled out here: the worker path has to
-    # reference this exact key later, and it reads the name off the
-    # OCPNodeProvider CR that OCP::Cmd::Apply::CR writes from the same
-    # derivation. One source, so the two paths cannot drift (karr #92).
-    my $key_name = $config->admin_ssh_key_name;
-    $prov->upload_ssh_key($key_name, $admin_key->{public});
+    # The admin key always: it is what every human command reaches a machine
+    # with, and its name is derived, not spelled out here, because the worker
+    # path references the same key later off the OCPNodeProvider CR that
+    # OCP::Cmd::Apply::CR writes from the same derivation (karr #92).
+    #
+    # The robo (automation) public key too, when secure mode has one: robocop
+    # holds the robo key, never the admin one, so a Hetzner worker it
+    # provisions needs the robo public in authorized_keys or its install can
+    # never connect and the node goes Failed (karr #101, variant a). Only the
+    # PUBLIC half travels to the provider and it sits behind the age layer
+    # alone, so this costs no PIN2 -- the age-encrypted robo tier ADR 0006/0027
+    # keep, not the unencrypted bootstrap key their "upload both keys"
+    # rejection was about.
+    my @ssh_key_names;
+    for my $upload (_cluster_ssh_key_uploads($config, $secrets, $admin_key)) {
+        my ($name, $pubkey) = @$upload;
+        $prov->upload_ssh_key($name, $pubkey);
+        push @ssh_key_names, $name;
+    }
 
     # Create server (idempotent for Hetzner — checks labels first)
     my $server_info = $prov->create_server(
@@ -227,7 +284,7 @@ sub bootstrap_control_plane {
         server_type => $first_cp->{server_type} // 'cx32',
         image       => $first_cp->{image} // 'debian-13',
         location    => $first_cp->{location} // 'fsn1',
-        ssh_keys    => [$key_name],
+        ssh_keys    => \@ssh_key_names,
         host        => $first_cp->{host},
     );
 

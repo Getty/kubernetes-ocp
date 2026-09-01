@@ -94,6 +94,20 @@ sub name { shift->spec->{name} // 'mycluster' }
 # the bootstrap path would drift apart again.
 sub admin_ssh_key_name { 'ocp-' . shift->name . '-admin' }
 
+# The name this cluster's robo (automation) public key carries in a provider's
+# key store, mirroring admin_ssh_key_name. Bootstrap uploads the robo public
+# half beside the admin one so that every Hetzner machine trusts the key
+# robocop holds -- otherwise a worker robocop provisions has only the admin key
+# in authorized_keys and refuses the robo key, so its install never connects
+# and the node goes Failed (karr #101, variant a). Only the PUBLIC half travels
+# to the provider, and it sits behind the age layer alone, so no PIN2 is
+# involved -- the age-encrypted robo tier ADR 0006/0027 deliberately keep.
+#
+# Lives here for the same reason as admin_ssh_key_name: OCP::Config is the one
+# place that knows the cluster name, so the bootstrap path and the (later)
+# worker path derive the identical string instead of drifting apart.
+sub robo_ssh_key_name { 'ocp-' . shift->name . '-robo' }
+
 sub kubernetes {
     my ($self) = @_;
     return $self->spec->{kubernetes} // {};
