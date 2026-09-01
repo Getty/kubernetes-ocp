@@ -47,6 +47,35 @@ spec:
                   Deriving it from metadata.name instead labelled workers
                   ocp-cluster=<type>-default, which no teardown ever found.
 
+              gpu:
+                type: object
+                description: >-
+                  Cluster-wide GPU switches, copied from ocp.yaml's `gpu:`
+                  block by `ocp apply`. They sit on the provider CR, not the
+                  OCPNode CR, because they are the same for every node of a
+                  provider and because robocop never sees ocp.yaml — this is
+                  the only channel through which a worker robocop joins learns
+                  the cluster's gpu.enabled / gpu.driver. Without them such a
+                  worker runs the Rexfile's "missing means yes" defaults and
+                  comes up doing GPU detection even where the cluster set
+                  gpu.enabled: false.
+                properties:
+                  enabled:
+                    type: boolean
+                    description: >-
+                      Whether OCP does any GPU handling on nodes of this
+                      provider. false switches host-side detection and driver
+                      install off. Mirrors ocp.yaml gpu.enabled.
+                  driver:
+                    type: string
+                    enum:
+                    - host
+                    - operator
+                    description: >-
+                      Who installs the NVIDIA driver: host = the Rexfile does
+                      it on the node, operator = the GPU Operator's DaemonSet
+                      does. Mirrors ocp.yaml gpu.driver.
+
               hetzner:
                 type: object
                 description: "Hetzner Cloud configuration"

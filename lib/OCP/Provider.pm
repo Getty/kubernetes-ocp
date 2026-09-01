@@ -32,6 +32,40 @@ sub known_type {
     return scalar grep { $_ eq $type } @TYPES;
 }
 
+# The cluster-wide GPU switches, read off an OCPNodeProvider CR.
+#
+# They ride on the provider CR rather than the OCPNode CR because robocop
+# never sees ocp.yaml: the provider CR is the one channel through which the
+# cluster-wide gpu.enabled / gpu.driver reach a worker robocop joins (karr
+# #31). `ocp apply` writes them there (OCP::Cmd::Apply::CR::ensure_provider_cr);
+# from_cr's two callers -- OCP::Robocop::Controller and the CLI reconcile path
+# -- read them back here and hand them to OCP::Node as gpu_enabled / gpu_driver.
+#
+# It lives at the factory layer, next to from_cr, and reads only spec.gpu --
+# never provider-type-specific fields -- so the same parse serves hetzner, ssh
+# and local without the adapter classes carrying the flags.
+#
+# Normalised the way OCP::Config normalises the same two ocp.yaml keys: 0/1 for
+# enabled (the CR stores a JSON boolean neither OCP::Node nor the Rexfile should
+# have to know about), the string for driver. Absent stays absent -- a key that
+# is not present in the returned list, so OCP::Node leaves the parameter out and
+# OCP::Rex's own defaults win. That is the behaviour a provider CR predating the
+# field must keep.
+sub gpu_flags_from_cr {
+    my ($class, $cr) = @_;
+
+    my $gpu = ($cr->{spec} && $cr->{spec}{gpu}) || {};
+
+    my %flags;
+    my $enabled = $gpu->{enabled};
+    $flags{gpu_enabled} = $enabled ? 1 : 0 if defined $enabled;
+
+    my $driver = $gpu->{driver};
+    $flags{gpu_driver} = $driver if defined $driver && length $driver;
+
+    return %flags;
+}
+
 # Two entry points, one dispatch.
 #
 # `for_spec` is the CLI/bootstrap path: the control plane spec is a plain hash
@@ -269,6 +303,25 @@ exactly a type L</_build> knows how to construct.
     die ... unless OCP::Provider->known_type($type);
 
 True if C<$type> is one of L</types>.  C<undef> is not.
+
+=method gpu_flags_from_cr
+
+    my %flags = OCP::Provider->gpu_flags_from_cr($provider_cr);
+    # %flags = ( gpu_enabled => 0|1, gpu_driver => 'host'|'operator' )
+
+The cluster-wide GPU switches read off an C<OCPNodeProvider> CR, ready to
+splat into C<< OCP::Node->from_cr >>.  They live on the provider CR because
+robocop never sees F<ocp.yaml>: this is the only channel through which the
+cluster's C<gpu.enabled> / C<gpu.driver> reach a worker robocop joins (karr
+#31).  C<ocp apply> copies them there from F<ocp.yaml>
+(L<OCP::Cmd::Apply::CR/ensure_provider_cr>), and both callers of L</from_cr>
+read them back with this method.
+
+Normalised like the matching L<OCP::Config> accessors: C<gpu_enabled> is 0/1
+(the CR stores a JSON boolean), C<gpu_driver> is the string.  A field absent
+from the CR is B<absent> from the returned list, so L<OCP::Node> leaves the
+Rex parameter out and L<OCP::Rex>'s own default wins — the behaviour a
+provider CR that predates the field must keep.
 
 =method for_spec
 

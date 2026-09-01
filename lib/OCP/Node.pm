@@ -22,6 +22,18 @@ has join_token    => (is => 'ro');
 has distribution  => (is => 'ro', default => sub { 'rke2' });
 has registry_cfg  => (is => 'ro');
 has verbose       => (is => 'ro', default => 0);
+
+# Cluster-wide GPU switches, from ocp.yaml's gpu: block. They are not on the
+# OCPNode CR -- they are the same for every node of a provider, and robocop
+# never sees ocp.yaml, so `ocp apply` copies them onto the OCPNodeProvider CR
+# and the caller reads them back with OCP::Provider->gpu_flags_from_cr and
+# hands them here (karr #31). Both stay undef when the provider CR predates the
+# field, which is what keeps a worker's install identical to the pre-#31
+# baseline: _install_kubernetes then leaves the Rex parameter out and lets
+# OCP::Rex's own default win. gpu_enabled is 0/1; gpu_driver is 'host' or
+# 'operator'.
+has gpu_enabled   => (is => 'ro');
+has gpu_driver    => (is => 'ro');
 has reconciler_id => (is => 'ro', default => sub { 'cli' });
 has ssh_class     => (is => 'ro', default => sub { 'OCP::SSH' });
 has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
@@ -382,15 +394,36 @@ sub _install_kubernetes {
         ntp       => 1,
     );
 
-    # `ocp node add --gpu` writes spec.gpu as a JSON boolean onto the CR (karr
-    # #50); OCP::Rex and the Rexfile have always honoured a `gpu` parameter
-    # (karr #13), but this method built its own %params without it, so the
-    # flag on the CR was decoration. Thread it through so --gpu actually
-    # affects the worker install. Absent leaves OCP::Rex's // 1 default in
-    # charge -- flipping the default would change every worker and is a
-    # wider decision that belongs to karr #31 (robocop side).
-    my $cr_gpu = $self->cr->{spec}{gpu};
-    $params{gpu} = $cr_gpu ? 1 : 0 if defined $cr_gpu;
+    # Two GPU inputs meet here. spec.gpu on the OCPNode is per-node: `ocp node
+    # add --gpu` writes it as a JSON boolean (karr #50), and OCP::Rex and the
+    # Rexfile have always honoured a `gpu` parameter (karr #13) -- but this
+    # method built its own %params without it, so the CR flag was decoration
+    # until karr #70 threaded it through. gpu_enabled / gpu_driver are
+    # cluster-wide, from ocp.yaml's gpu: block, carried on the OCPNodeProvider
+    # CR because robocop never sees ocp.yaml; the caller read them off that CR
+    # with OCP::Provider->gpu_flags_from_cr and handed them in (karr #31).
+    #
+    # gpu.enabled: false is a cluster kill switch -- "no detection on any node"
+    # -- so it wins over a per-node spec.gpu that says yes: a worker robocop
+    # joins must not come up running GPU detection on a cluster configured to
+    # skip it. Otherwise the per-node flag decides, exactly as karr #70 left
+    # it. Only when neither is set is the parameter left out, so OCP::Rex's
+    # // 1 default stays in charge -- the documented baseline.
+    my $cr_gpu      = $self->cr->{spec}{gpu};
+    my $gpu_enabled = $self->gpu_enabled;
+    if (defined $gpu_enabled && !$gpu_enabled) {
+        $params{gpu} = 0;
+    }
+    elsif (defined $cr_gpu) {
+        $params{gpu} = $cr_gpu ? 1 : 0;
+    }
+
+    # gpu_driver is cluster-wide only -- there is no per-node override on the
+    # OCPNode CRD. Absent leaves OCP::Rex's 'host' default in charge, the same
+    # reason the gpu flag above can be omitted entirely. The Rexfile ignores it
+    # when gpu is off, so passing it alongside gpu => 0 is harmless.
+    my $gpu_driver = $self->gpu_driver;
+    $params{gpu_driver} = $gpu_driver if defined $gpu_driver && length $gpu_driver;
 
     my $ok = eval { $rex->run_task($task, %params) };
     if (!$ok || $@) {
@@ -778,6 +811,18 @@ C<OCP::K8s->register>.
 
 An C<OCP::Provider::*> instance used for server create/delete.  Optional
 when the node already has a public IP in status.
+
+=item gpu_enabled / gpu_driver
+
+The cluster-wide GPU switches from F<ocp.yaml>'s C<gpu:> block, both optional.
+They are not on the OCPNode CR — they are the same for every node of a provider
+and robocop never sees F<ocp.yaml> — so C<ocp apply> copies them onto the
+OCPNodeProvider CR and the caller reads them back with
+L<OCP::Provider/gpu_flags_from_cr> and passes them here.  C<gpu_enabled> is 0/1
+and acts as a cluster kill switch: false forces C<gpu =E<gt> 0> at install even
+when the OCPNode's own C<spec.gpu> is true.  C<gpu_driver> is C<'host'> or
+C<'operator'>.  Both unset (a provider CR predating the field) leaves
+L<OCP::Rex>'s own defaults in charge — the pre-karr-#31 baseline.
 
 =item reconciler_id
 

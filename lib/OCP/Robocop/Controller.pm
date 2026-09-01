@@ -320,6 +320,14 @@ sub _on_node_event {
         return;
     }
 
+    # The cluster-wide gpu.enabled / gpu.driver from ocp.yaml live nowhere
+    # robocop can see them except the provider CR -- `ocp apply` copies them
+    # there, and this is the whole reason they can reach a worker robocop joins
+    # (karr #31). Read them off the same CR from_cr just consumed and hand them
+    # to OCP::Node; absent from a CR that predates the field means OCP::Node
+    # keeps OCP::Rex's default.
+    my %gpu_flags = OCP::Provider->gpu_flags_from_cr($provider_cr);
+
     my $node = eval {
         OCP::Node->from_cr(
             $cr,
@@ -331,6 +339,7 @@ sub _on_node_event {
             distribution  => $self->distribution,
             verbose       => $self->verbose,
             reconciler_id => 'robocop',
+            %gpu_flags,
         );
     };
     if ($@) {

@@ -4,6 +4,7 @@ package OCP::Cmd::Apply::CR;
 use strict;
 use warnings;
 
+use JSON::PP ();
 use MIME::Base64 ();
 use Path::Tiny qw(path);
 use YAML::XS ();
@@ -113,6 +114,22 @@ sub ensure_provider_cr {
     # ocp-cluster=hetzner-default — invisible to `ocp destroy`, invisible to
     # server_exists, and billed for either way (karr #98).
     my $spec = { type => $type, clusterName => $config->name };
+
+    # Cluster-wide GPU switches ride on the provider CR, outside the per-type
+    # branch, for the same reason clusterName does: they are a fact about the
+    # cluster, not the backend, and robocop -- which never sees ocp.yaml -- has
+    # no other channel to learn them. Without this a worker robocop joins runs
+    # the Rexfile's "missing means yes" defaults and comes up doing GPU
+    # detection even on a cluster configured gpu.enabled: false (karr #31).
+    # OCP::Provider->gpu_flags_from_cr reads them back. enabled goes out as a
+    # JSON boolean because the CRD field is `type: boolean` and a bare Perl 1
+    # serialises as an integer the API rejects (same reason `ocp node add
+    # --gpu` uses JSON::PP::true, karr #50).
+    $spec->{gpu} = {
+        enabled => $config->gpu_enabled ? JSON::PP::true : JSON::PP::false,
+        driver  => $config->gpu_driver,
+    };
+
     if ($type eq 'hetzner') {
         my $secret_name = "hetzner-api-token-$type";
         my $token = eval { $secrets->hetzner_token };
@@ -563,20 +580,28 @@ sub cli_reconcile_workers {
         # from_cr reads its argument as a plain hash ($cr->{spec}{hetzner}...).
         # get() returns a typed IO::K8s object, which only answers that because
         # IO::K8s objects happen to be blessed hashes -- convert it, the way
-        # the OCPNode above and OCP::Robocop::Controller already do.
+        # the OCPNode above and OCP::Robocop::Controller already do. The struct
+        # is captured because the cluster-wide GPU flags are read off it too.
+        my $prov_struct;
         my $provider = eval {
             my $prov_cr = $api->get('OCPNodeProvider',
                 $hash->{spec}{providerRef}, namespace => $ns);
-            OCP::Provider->from_cr(
-                ref($prov_cr) eq 'HASH' ? $prov_cr : $api->k8s->object_to_struct($prov_cr),
-                k8s => $api,
-            );
+            $prov_struct = ref($prov_cr) eq 'HASH'
+                ? $prov_cr : $api->k8s->object_to_struct($prov_cr);
+            OCP::Provider->from_cr($prov_struct, k8s => $api);
         };
         if ($@ || !$provider) {
             push @results, { name => $name, phase => 'Failed',
                              message => "Provider resolve failed: " . ($@ // 'unknown') };
             next;
         }
+
+        # The cluster-wide gpu.enabled / gpu.driver reach OCP::Node the same way
+        # robocop feeds them (OCP::Robocop::Controller): off the provider CR, so
+        # the CLI reconcile path and the controller honour the switch
+        # identically. Absent from a CR that predates the field means absent
+        # here, and OCP::Node keeps OCP::Rex's default (karr #31).
+        my %gpu_flags = OCP::Provider->gpu_flags_from_cr($prov_struct);
 
         my $node = OCP::Node->from_cr($hash,
             k8s          => $api,
@@ -586,6 +611,7 @@ sub cli_reconcile_workers {
             join_token   => $join_token,
             distribution => $distribution,
             verbose      => $self->ocp->verbose,
+            %gpu_flags,
         );
 
         # The interval is this path's own (workers are driven one after the

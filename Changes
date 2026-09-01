@@ -1,6 +1,17 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Workers robocop joins now honour the cluster-wide `gpu.enabled` /
+      `gpu.driver` from ocp.yaml (k31). robocop only sees the OCPNode /
+      OCPNodeProvider CRs, so `ocp apply` copies the two switches onto the
+      OCPNodeProvider CR (new `spec.gpu.enabled` / `spec.gpu.driver`), and both
+      the controller and the CLI reconcile path read them back and pass them to
+      OCP::Node. `gpu.enabled: false` now acts as a cluster kill switch that
+      overrides a per-node `spec.gpu`, and `gpu.driver` reaches the worker
+      install for the first time. Previously such a worker ran the Rexfile's
+      "missing means yes" defaults and came up doing GPU detection even where
+      the cluster had disabled it. New `OCP::Provider->gpu_flags_from_cr`.
+      t/31-robocop-gpu.t.
     - `ocp apply` no longer silently claims more control planes than it deploys
       (k8). OCP::Config normalises `control_planes` into an N-element list, but
       apply only ever bootstrapped the first (police1) while printing
