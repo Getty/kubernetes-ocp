@@ -1,5 +1,5 @@
 ---
-name: getty-perl-kubernetes-classes
+name: perl-io-k8s-kubernetes-classes
 description: Use when building or consuming typed Kubernetes objects in Perl with IO::K8s — object construction, serialization, the k8s attribute DSL, or CRD providers.
 user-invocable: false
 allowed-tools: Read, Grep, Glob

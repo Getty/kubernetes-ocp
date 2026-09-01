@@ -30,7 +30,7 @@ reconcile loop all live here.
   changes, manual steps.
 - `lib/OCP/K8s.pm` and `lib/OCP/K8s/` — the typed wrapper around
   Kubernetes::REST. See also `perldoc perl-kubernetes-rest` /
-  `getty-perl-kubernetes-classes` skills.
+  `perl-io-k8s-kubernetes-classes` skills.
 - `lib/OCP/Kubernetes.pm` — the Kubernetes::REST instance lifecycle.
 - `lib/OCP/Kubeconfig.pm` — kubeconfig merge/expiry.
 

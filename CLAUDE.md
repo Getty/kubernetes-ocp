@@ -21,11 +21,12 @@ selbst zu laden.
 | Skill | Inhalt |
 |---|---|
 | `ocp-core` / `ocp-usage` | Architektur & CLI |
-| `k8s` / `rke2` / `cilium` / `registry` / `gpu` | K8s- & Stack-Patterns |
-| `perl-core` / `perl-moo` | Getty's Perl-Hausregeln |
-| `perl-kubernetes-rest` / `perl-kubernetes-classes` | Kubernetes::REST / IO::K8s |
+| `ocp-k8s` / `ocp-rke2` / `ocp-cilium` / `ocp-registry` / `ocp-gpu` | OCP-Konfiguration dieser Stack-Teile |
+| `kubernetes-rke2` / `kubernetes-cilium-concepts` / `kubernetes-gpu` / `docker-registry` | die generischen Referenzen darunter |
+| `getty-perl-core` / `getty-perl-moo` | Getty's Perl-Hausregeln |
+| `perl-kubernetes-rest` / `perl-io-k8s-kubernetes-classes` | Kubernetes::REST / IO::K8s |
 | `perl-io-async-future` | Async-Perl für robocop |
-| `perl-release-author-getty` / `perl-release-dist-ini` | Release-Konventionen |
+| `getty-perl-release-author-getty` / `perl-release-dist-ini` | Release-Konventionen |
 | `karr` | Git-natives Ticket-Board |
 
 Shared Skills sind Hardlinks (`manage-skills`) — **nie mit Edit/Write bearbeiten**,

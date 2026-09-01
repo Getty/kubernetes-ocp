@@ -10,7 +10,7 @@ briefing:
     - ocp-core
     - ocp-k8s
     - perl-kubernetes-rest
-    - getty-perl-kubernetes-classes
+    - perl-io-k8s-kubernetes-classes
     - kanban-issues-karr-cli
 ---
 
