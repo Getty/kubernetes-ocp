@@ -3,6 +3,11 @@ package OCP::Robocop::Controller;
 
 use Moo;
 use Carp qw(croak);
+use File::Temp ();
+use IO::Async::Loop;
+use IO::K8s;
+use Net::Async::Kubernetes;
+use Scalar::Util qw(weaken);
 use Time::Piece ();
 use Try::Tiny;
 
@@ -48,9 +53,9 @@ has distribution => (
     default => 'rke2',
 );
 
-has poll_interval => (
+has watch_timeout => (
     is      => 'ro',
-    default => 10,   # seconds
+    default => 300,   # seconds: server-side watch cycle, then reconnect
 );
 
 has verbose => (
@@ -59,12 +64,64 @@ has verbose => (
 );
 
 #
+# Construction from the environment (how bin/robocop builds the controller)
+#
+# The three required values have no default and no other source inside the pod,
+# so a missing one is fatal here -- croaked, which reaches STDERR -- rather than
+# surfacing as an obscure failure deep in the first reconcile. namespace mirrors
+# the deployment's NAMESPACE fieldRef; distribution is optional and defaults to
+# rke2. Secret wiring in the Deployment is a separate lane (karr #33 / #101).
+#
+sub from_env {
+    my ($class, %overrides) = @_;
+
+    my %env_of = (
+        ssh_key    => 'ROBO_SSH_KEY',
+        server_url => 'RKE2_SERVER_URL',
+        join_token => 'RKE2_TOKEN',
+    );
+
+    my %args;
+    for my $attr (keys %env_of) {
+        my $val = $ENV{ $env_of{$attr} };
+        $args{$attr} = $val if defined $val && length $val;
+    }
+
+    my @missing = sort map { $env_of{$_} }
+        grep { !defined $args{$_} || !length $args{$_} }
+        keys %env_of;
+    croak "robocop controller: missing required environment variable(s): "
+        . join(', ', @missing)
+        if @missing;
+
+    $args{namespace} = $ENV{NAMESPACE}
+        if defined $ENV{NAMESPACE} && length $ENV{NAMESPACE};
+    $args{distribution} = $ENV{OCP_DISTRIBUTION}
+        if defined $ENV{OCP_DISTRIBUTION} && length $ENV{OCP_DISTRIBUTION};
+
+    return $class->new(%args, %overrides);
+}
+
+#
 # Lazy-built Kubernetes client
 #
 
 has kube => (
     is      => 'lazy',
     builder => '_build_kube',
+);
+
+# The watch stream runs on Net::Async::Kubernetes; the reconcile side keeps the
+# synchronous `kube` above that OCP::Node, list_ocp_nodes and _mark_failed use.
+# Two clients, one decision about where to authenticate (_kube_source).
+has loop => (
+    is      => 'lazy',
+    builder => sub { IO::Async::Loop->new },
+);
+
+has async_kube => (
+    is      => 'lazy',
+    builder => '_build_async_kube',
 );
 
 # Both branches of this builder used to die.
@@ -107,42 +164,115 @@ sub _kube_source {
     return (kubeconfig => $kc);
 }
 
-#
-# Main loop: poll and reconcile
-#
+# The async client for the watch stream, built from the same credential
+# decision as the sync client so both authenticate identically.
+sub _build_async_kube {
+    my ($self) = @_;
 
+    my %source = $self->_kube_source;
+    my %args = (resource_map => $self->_async_resource_map);
+
+    if (my $path = $source{kubeconfig_path}) {
+        $args{kubeconfig} = $path;
+    } elsif (defined(my $content = $source{kubeconfig})) {
+        # Net::Async::Kubernetes takes a kubeconfig path, not a document, so a
+        # kubeconfig handed in as content (the out-of-cluster testing hatch) is
+        # materialized to a temp file kept alive on $self.
+        my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print {$fh} $content;
+        close $fh;
+        $self->{_async_kubeconfig_tmp} = $fh;
+        $args{kubeconfig} = $fh->filename;
+    }
+    # in_cluster: no kubeconfig/server args -- Net::Async::Kubernetes
+    # auto-detects the pod's service account token.
+
+    return Net::Async::Kubernetes->new(%args);
+}
+
+# OCPNode and OCPNodeProvider are CRDs, so the async client needs them in its
+# resource map the way OCP::K8s->register adds them to the sync client.
+sub _async_resource_map {
+    return {
+        %{ IO::K8s->default_resource_map },
+        OCPNode         => '+OCP::K8s::OCPNode',
+        OCPNodeProvider => '+OCP::K8s::OCPNodeProvider',
+    };
+}
+
+#
+# Main loop: watch OCPNode and reconcile on every event
+#
+# This replaces the former while(1)+sleep poll (karr #1, the #33 follow-up). A
+# fresh watch with no resourceVersion replays a synthetic ADDED for every
+# existing OCPNode before it streams changes, so nodes already in the cluster
+# are reconciled at startup exactly as the initial poll pass used to do.
+#
+# Reconciliation stays synchronous on purpose: the lease check and the whole
+# OCP::Node state machine run inside the callback, on the sync `kube`, precisely
+# as they did under the poll. Only the trigger changed -- from a timer to a
+# watch event -- so the tested error handling (_on_node_event / _mark_failed) is
+# untouched. A long-running reconcile blocks the loop for its duration, the same
+# way it blocked the poll; making reconcile itself async is a separate step.
+#
 sub run {
     my ($self) = @_;
 
     $self->log("Robocop controller starting (namespace=" . $self->namespace . ")");
     $self->log("Server URL:   " . $self->server_url);
     $self->log("Distribution: " . $self->distribution);
+    $self->log("Watching OCPNode via Net::Async::Kubernetes");
 
-    while (1) {
-        my $nodes = eval { $self->list_ocp_nodes };
-        if ($@) {
-            $self->log("ERROR listing OCPNodes: $@");
-        } else {
-            for my $cr (@$nodes) {
-                try {
-                    $self->_on_node_event($cr);
-                } catch {
-                    my $name = $cr->{metadata}{name} // '?';
-                    $self->log("ERROR reconciling $name: $_");
-                    # Defense in depth: _on_node_event already patches status
-                    # on every failure it knows about, but a crash past those
-                    # paths (a transport exception in the middle of a status
-                    # patch, a croak from a test stub) used to leave the CR
-                    # with whatever phase it had -- usually Pending -- and the
-                    # operator with only robocop's pod logs to read. Mark the
-                    # CR Failed so the failure is visible without the logs.
-                    $self->_mark_failed($cr, $_);
-                };
-            }
-        }
+    my $loop = $self->loop;
+    my $kube = $self->async_kube;
+    $loop->add($kube);
 
-        sleep $self->poll_interval;
-    }
+    weaken(my $wself = $self);
+
+    $self->{_watcher} = $kube->watcher('OCPNode',
+        namespace   => $self->namespace,
+        timeout     => $self->watch_timeout,
+        on_added    => sub { $wself && $wself->_handle_watch_object($_[0]) },
+        on_modified => sub { $wself && $wself->_handle_watch_object($_[0]) },
+        on_error    => sub {
+            my ($status) = @_;
+            return unless $wself;
+            my $msg = ref $status eq 'HASH' ? ($status->{message} // 'unknown')
+                    : (defined $status ? $status : 'unknown');
+            $wself->log("watch ERROR: " . $msg);
+        },
+    );
+
+    $loop->run;
+}
+
+# The watcher hands its callbacks an inflated IO::K8s object; the rest of the
+# controller (and OCP::Node) speaks the plain struct _on_node_event expects, so
+# convert once here at the boundary and hand it to the shared reconcile path.
+sub _handle_watch_object {
+    my ($self, $obj) = @_;
+    return unless $obj;
+    my $cr = $self->kube->k8s->object_to_struct($obj);
+    $self->_reconcile_cr($cr);
+}
+
+# One CR through the state machine, with the same guard the poll loop had.
+sub _reconcile_cr {
+    my ($self, $cr) = @_;
+
+    try {
+        $self->_on_node_event($cr);
+    } catch {
+        my $name = $cr->{metadata}{name} // '?';
+        $self->log("ERROR reconciling $name: $_");
+        # Defense in depth: _on_node_event already patches status on every
+        # failure it knows about, but a crash past those paths (a transport
+        # exception in the middle of a status patch, a croak from a test stub)
+        # used to leave the CR with whatever phase it had -- usually Pending --
+        # and the operator with only robocop's pod logs to read. Mark the CR
+        # Failed so the failure is visible without the logs.
+        $self->_mark_failed($cr, $_);
+    };
 }
 
 #
@@ -296,12 +426,29 @@ OCP::Robocop::Controller - Kubernetes controller for OCP nodes
         distribution => 'rke2',
     );
 
-    $controller->run;  # blocks, polls OCPNodes, reconciles via OCP::Node
+    # Or, the way bin/robocop builds it, from the environment:
+    my $controller = OCP::Robocop::Controller->from_env;
+
+    $controller->run;  # blocks: watches OCPNodes, reconciles via OCP::Node
 
 =head1 DESCRIPTION
 
-Watches OCPNode custom resources and dispatches each event to L<OCP::Node>
-for reconciliation. The state machine lives entirely in C<OCP::Node>.
+Watches OCPNode custom resources over L<Net::Async::Kubernetes> and dispatches
+each event to L<OCP::Node> for reconciliation. The state machine lives entirely
+in C<OCP::Node>.
+
+The watch stream runs on an async L<Net::Async::Kubernetes> client, while
+reconciliation itself stays synchronous on the L<Kubernetes::REST> C<kube>
+client: each event triggers the lease check and the C<OCP::Node> state machine
+inline. A fresh watch replays existing OCPNodes as C<ADDED> events, so nodes
+already in the cluster are reconciled on startup.
+
+=head2 from_env
+
+Class method. Builds a controller from the environment C<bin/robocop> runs in:
+C<ROBO_SSH_KEY>, C<RKE2_SERVER_URL> and C<RKE2_TOKEN> are required (a missing one
+is fatal), C<NAMESPACE> and C<OCP_DISTRIBUTION> are optional. Extra arguments
+override the environment-derived ones.
 
 =head2 Reconciliation state machine
 
