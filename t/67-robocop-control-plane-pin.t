@@ -41,6 +41,36 @@ ok $dep, 'share/robocop/deployment.yaml parses and carries a Deployment named ro
 
 my $pod_spec = $dep->{spec}{template}{spec};
 
+subtest 'controller creds arrive via the robocop-credentials Secret' => sub {
+    # karr #129 (Weg A, deploy-time Secret): OCP::Robocop::Controller::from_env
+    # requires ROBO_SSH_KEY, RKE2_SERVER_URL and RKE2_TOKEN. All three are
+    # delivered through the robocop-credentials Secret that `ocp deploy-robocop`
+    # writes -- the RKE2 join token included, because it is not readable
+    # in-cluster via the K8s API (a file on the CP disk, not a Secret). A
+    # regression to fieldRef/plain value or a wrong key/Secret name would leave
+    # the controller unable to start.
+    my ($container) = grep { ($_->{name} // '') eq 'controller' }
+        @{ $pod_spec->{containers} // [] };
+    ok $container, 'the controller container is present'
+        or BAIL_OUT('no controller container to check');
+
+    my %env = map { ($_->{name} // '') => $_ } @{ $container->{env} // [] };
+
+    my %want = (
+        ROBO_SSH_KEY    => 'robo-ssh-key',
+        RKE2_SERVER_URL => 'server-url',
+        RKE2_TOKEN      => 'rke2-token',
+    );
+    for my $name (sort keys %want) {
+        my $ref = $env{$name}{valueFrom}{secretKeyRef};
+        ok $ref, "$name is sourced from a secretKeyRef";
+        next unless $ref;
+        is $ref->{name}, 'robocop-credentials',
+            "$name reads from the robocop-credentials Secret";
+        is $ref->{key}, $want{$name}, "$name reads Secret key $want{$name}";
+    }
+};
+
 subtest 'tolerates both control-plane taints RKE2 sets on server nodes' => sub {
     my $tolerations = $pod_spec->{tolerations};
     is ref($tolerations), 'ARRAY', 'tolerations is a list'

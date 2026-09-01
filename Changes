@@ -1,6 +1,21 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - robocop's controller credentials reach the pod, configurably (k129,
+      completing k33's second half). `ocp deploy-robocop` now writes a
+      `robocop-credentials` Secret (ocp-system) that the Deployment mounts as
+      ROBO_SSH_KEY / RKE2_SERVER_URL / RKE2_TOKEN -- the controller's three
+      required env vars, which previously had no source in the cluster. A new
+      `robocop.security_level` (`secret` | `secret_approved` | `inject`, default
+      `secret`) chooses the key-delivery model: `secret` decrypts the robo key
+      with PIN1 and writes the Secret; `secret_approved` gates the write behind
+      admin PIN2; `inject` (the in-memory, never-persisted model) is accepted but
+      refused as not yet available (k2). The RKE2 join token is read off the
+      control plane over SSH at deploy time -- it is not a K8s object (it lives
+      only on the server disk and is the datastore passphrase), so a secure-mode
+      deploy uses the admin key once while the runtime stays unattended.
+      t/129-robocop-security-level.t; t/67 asserts the Deployment's three
+      secretKeyRefs.
     - Workers robocop joins now honour the cluster-wide `gpu.enabled` /
       `gpu.driver` from ocp.yaml (k31). robocop only sees the OCPNode /
       OCPNodeProvider CRs, so `ocp apply` copies the two switches onto the

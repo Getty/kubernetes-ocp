@@ -168,12 +168,62 @@ sub api_url {
 # Add-on flags (default: enabled, set to true to disable)
 sub no_cert { shift->spec->{nocert} // 0 }
 
+# robocop may be a scalar toggle (robocop: true) or a mapping that also
+# carries security_level (robocop: { enabled: true, security_level: secret }).
+#
+#   scalar         → that boolean
+#   mapping        → its `enabled` key when set, else on: writing a robocop
+#                    mapping at all is an explicit opt-in (as gpu: is), and
+#                    enabled:false is how you keep the mapping but turn it off
+#   absent         → the hetzner auto-on rule
 sub robocop_enabled {
     my $self = shift;
     my $val = $self->spec->{robocop};
+
+    if (ref $val eq 'HASH') {
+        return $val->{enabled} ? 1 : 0 if defined $val->{enabled};
+        return 1;
+    }
     return $val ? 1 : 0 if defined $val;
+
     return 1 if $self->_any_hetzner_provider;
     return 0;
+}
+
+# How the private robo (automation) SSH key reaches the cluster (karr #129),
+# read from `robocop.security_level` (the mapping form of the robocop key):
+#
+#   secret           `ocp deploy-robocop` decrypts the robo key with PIN1 and
+#                    writes it into a K8s Secret; a pod restart self-heals.
+#   secret_approved  as secret, but writing the Secret is gated behind PIN2.
+#   inject           in-memory, never persisted (karr #2) — deferred; the
+#                    config accepts it, the deploy path refuses it cleanly.
+#
+# Default secret: an automation controller must survive pod restarts
+# unattended, so the key has to rest in the cluster.
+our @ROBOCOP_SECURITY_LEVELS = qw( secret secret_approved inject );
+
+# Croaks on an unknown value — the accessor is the point of use (DeployRobocop),
+# and a typo there must not silently fall back to a level the operator did not
+# ask for, exactly as gpu_driver refuses an unknown driver. validate() carries
+# the report-only twin for `ocp apply`.
+sub robocop_security_level {
+    my ($self) = @_;
+
+    my $level = $self->_raw_robocop_security_level // 'secret';
+
+    croak "robocop.security_level must be "
+        . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS)
+        . ", not '$level'"
+        unless grep { $_ eq $level } @ROBOCOP_SECURITY_LEVELS;
+
+    return $level;
+}
+
+sub _raw_robocop_security_level {
+    my ($self) = @_;
+    my $val = $self->spec->{robocop};
+    return ref $val eq 'HASH' ? $val->{security_level} : undef;
 }
 
 sub _any_hetzner_provider {
@@ -440,6 +490,14 @@ sub validate {
     }
 
     push @errors, $self->_validate_network;
+
+    # robocop.security_level, report-only (karr #129). The accessor croaks; here
+    # we collect one line so `ocp apply` lists it with every other config error.
+    my $rl = $self->_raw_robocop_security_level;
+    if (defined $rl && !grep { $_ eq $rl } @ROBOCOP_SECURITY_LEVELS) {
+        push @errors, "robocop.security_level: invalid value '$rl' (must be "
+            . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS) . ")";
+    }
 
     for my $w (@{$self->workers}) {
         push @errors, "worker pool: name required" unless $w->{name};
