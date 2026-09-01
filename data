@@ -1,0 +1,48 @@
+---
+class: standard
+completed: 2026-09-01T18:36:00Z
+created: 2026-09-01T15:50:16Z
+id: 129
+priority: high
+started: 2026-09-01T15:52:01Z
+status: done
+tags:
+- robocop
+- security
+- config
+- deployment
+title: 'robocop security_level: konfigurierbares Key-Delivery-Modell (loest k33-Haelfte
+  2)'
+updated: 2026-09-01T18:36:00Z
+---
+
+Aus k33 (Controller braucht ROBO_SSH_KEY/RKE2_SERVER_URL/RKE2_TOKEN im Pod) + Maintainer-Entscheidung 2026-09-01: die drei Key-Delivery-Modelle werden per ocp.yaml waehlbar.
+
+## Config
+robocop.security_level: secret | secret_approved | inject   (default: secret)
+- secret          : ocp deploy-robocop entschluesselt den privaten robo-Key (PIN1), legt ihn in ein K8s Secret; deployment mountet ihn als ROBO_SSH_KEY. Pod-Restart selbstheilend. Key ruht im Cluster-Secret.
+- secret_approved : wie secret, aber Schreiben verlangt PIN2 (admin-gated).
+- inject          : in-memory, nie persistiert (port-9999/k2). VERTAGT - Config akzeptiert es, deploy-Pfad weist es sauber als "noch nicht verfuegbar (k2)" ab. Belebt sich mit k2.
+
+## Entscheidungen
+- Default = secret (PIN1): Automations-Controller muss Pod-Restarts unbeaufsichtigt ueberstehen.
+- Build jetzt: die zwei Secret-Level + Strategie-Abstraktion; inject nur config-akzeptiert-aber-abgewiesen.
+- join_token: in-cluster aus dem RKE2-Server-Secret lesen (RBAC), NICHT ins Secret kopieren. server_url: aus Cluster-State ins deployment-Env.
+
+## FEASIBILITY ZUERST PRUEFEN (kann Design kippen)
+Der RKE2-node-join-Token liegt per Default als Datei /var/lib/rancher/rke2/server/node-token auf der Server-Platte, NICHT als K8s Secret. Verifizieren, ob er ueberhaupt via K8s-API in-cluster lesbar ist (existiert ein Secret? welcher Name/namespace/key?). Wenn NEIN: zurueckmelden - dann faellt join_token auf den deploy-time-Secret-Weg zurueck (Maintainer-Q2 war "in-cluster read", das setzt Lesbarkeit voraus).
+
+## Contract (Vorschlag, Worker darf anpassen wenn begruendet)
+- Secret: name robocop-credentials, ns ocp-system, key robo-ssh-key = privater robo-Key PEM.
+- deployment env: ROBO_SSH_KEY via secretKeyRef; RKE2_SERVER_URL als getemplateter Wert (deploy-time bekannt, nicht sensibel); RKE2_TOKEN optional/Fallback (Controller liest in-cluster).
+- rbac.yaml: enger get-Grant auf genau das Server-Token-Secret (Name aus Feasibility-Check).
+- Controller.from_env: RKE2_TOKEN wird optional; neue Methode liest den Token in-cluster.
+
+## Dateien / Lanes
+OCP::Config (Feld+Validierung, state), OCP::Cmd::DeployRobocop (Secret erstellen, PIN1/PIN2, apply), OCP::Keys (privater robo-Key lesen, secrets), share/robocop/deployment.yaml + rbac.yaml (infra), OCP::Robocop::Controller (in-cluster token-read, RKE2_TOKEN optional, robocop). Cross-lane, tight coupling ueber den Secret/Env-Contract - deshalb EIN kohaerenter Bau, nicht fan-out.
+
+Verwandt: k33 (Haelfte 1 erledigt: Controller+Watch, ce6dacd), k2 (inject-key/port_forward, blockt inject-Level), k101 (robo-PUBLIC-Upload erledigt, 364d6c6), ADR 0006/0027 (Schluesselmodell).
+
+CONTRACT-AMENDMENT (Maintainer 2026-09-01): in-cluster join-token-read ist NICHT baubar (Worker R Feasibility: RKE2-node-token liegt nur als Datei /var/lib/rancher/rke2/server/node-token, kein K8s-Secret, zugleich Bootstrap-Passphrase). Gewaehlt: Weg A = deploy-time-Secret. Das robocop-credentials-Secret bekommt einen 3. key rke2-token; DeployRobocop liest ihn per SSH (spiegelt CR.pm:538-555). RKE2_TOKEN bleibt required via secretKeyRef; Controller.pm UNVERAENDERT; KEINE neue RBAC. Worker S erweitert (Token ins Secret), Worker R baut den deployment.yaml-Env-Block (3 secretKeyRefs).
+
+Erledigt, Commit ef71fac (main-agent, 2026-09-01). robocop.security_level {secret|secret_approved|inject}, default secret. DeployRobocop erzeugt robocop-credentials-Secret (robo-ssh-key + server-url + rke2-token), deployment.yaml mountet alle drei via secretKeyRef. join-Token per SSH beim deploy gelesen (kein K8s-Objekt). MAINTAINER-ENTSCHEIDUNG akzeptiert: secure-mode-secret braucht beim Deploy einmalig PIN2 (nur admin-Key liest den Token, ADR 0006/0027) - Laufzeit bleibt unbeaufsichtigt. inject vertagt auf k2. t/129 (11) + t/67-Assertion gruen, Suite 1288 PASS.
