@@ -519,17 +519,23 @@ package main;
 
 use OCP::Cmd::Destroy;
 
-sub capture_stdout_of {
+# Captures both channels for one run. The mislabelled-server warning is a
+# diagnosis and goes to STDERR (karr #105); the payload channel must stay
+# clean, so the test asserts on both.
+sub capture_both_of {
     my ($code) = @_;
-    my $out = '';
-    open my $fh, '>', \$out or die "capture: $!";
-    my $old = select $fh;
+    my ($out, $errout) = ('', '');
+    open my $ofh, '>', \$out    or die "capture: $!";
+    open my $efh, '>', \$errout or die "capture: $!";
+    my $old = select $ofh;
+    local *STDERR = $efh;
     eval { $code->() };
     my $err = $@;
     select $old;
-    close $fh;
+    close $ofh;
+    close $efh;
     die $err if $err;
-    return $out;
+    return { out => $out, err => $errout };
 }
 
 subtest 'destroy names the servers left behind under the old label' => sub {
@@ -542,18 +548,20 @@ subtest 'destroy names the servers left behind under the old label' => sub {
         ],
     });
 
-    my $out = capture_stdout_of(sub {
+    my $cap = capture_both_of(sub {
         $destroy->_report_mislabelled_servers($config, $prov);
     });
 
     is_deeply $prov->{asked}, ['hetzner-default'],
         'it looks under exactly the provider-CR name `ocp apply` writes';
-    like $out, qr/ocp-cluster=hetzner-default/, 'the label is spelled out';
-    like $out, qr/pool-a-1.*4711.*203\.0\.113\.7/, 'each server is named with its id and address';
-    like $out, qr/pool-a-2/,                       'all of them, not just the first';
-    like $out, qr/NOT deleted/,                    'and it says they were not removed';
-    like $out, qr/hcloud server list -l ocp-cluster=hetzner-default/,
+    like $cap->{err}, qr/ocp-cluster=hetzner-default/, 'the label is spelled out';
+    like $cap->{err}, qr/pool-a-1.*4711.*203\.0\.113\.7/, 'each server is named with its id and address';
+    like $cap->{err}, qr/pool-a-2/,                       'all of them, not just the first';
+    like $cap->{err}, qr/NOT deleted/,                    'and it says they were not removed';
+    like $cap->{err}, qr/hcloud server list -l ocp-cluster=hetzner-default/,
         'the operator gets the selector that finds them';
+    is $cap->{out}, '',
+        'the warning is a diagnosis — the payload channel stays clean';
 
     is_deeply $prov->{deleted}, [],
         'nothing is deleted — a generic label can point at another cluster entirely';
@@ -563,16 +571,17 @@ subtest 'a clean project says nothing' => sub {
     my $destroy = OCP::Cmd::Destroy->new(command_chain => []);
     my $prov    = MislabelledProvider->new(by_label => {});
 
-    my $out = capture_stdout_of(sub {
+    my $cap = capture_both_of(sub {
         $destroy->_report_mislabelled_servers($config, $prov);
     });
-    is $out, '', 'no output when the stale label matches nothing';
+    is $cap->{err}, '', 'no output when the stale label matches nothing';
+    is $cap->{out}, '', 'and nothing on the payload channel either';
 
     # And no Hetzner provider at all (no token) must not make the teardown die.
-    my $quiet = capture_stdout_of(sub {
+    my $quiet = capture_both_of(sub {
         $destroy->_report_mislabelled_servers($config, undef);
     });
-    is $quiet, '', 'without a Hetzner client the check is simply skipped';
+    is $quiet->{err}, '', 'without a Hetzner client the check is simply skipped';
 };
 
 done_testing;

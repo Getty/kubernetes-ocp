@@ -49,11 +49,15 @@ sub execute {
 
     my $secure = -f $config->project_dir->child('keys.yaml');
 
-    print "╔═══════════════════════════════════════════════════════════════╗\n";
-    printf "║  %-60s║\n", $secure
+    # This command's payload is the interactive session ->interactive execs
+    # into, which inherits STDOUT. So all of ocp's own framing goes to STDERR
+    # to keep STDOUT clean for the remote shell (house rule: STDOUT is the
+    # payload, everything else is diagnosis).
+    print STDERR "╔═══════════════════════════════════════════════════════════════╗\n";
+    printf STDERR "║  %-60s║\n", $secure
         ? 'ADMIN-SSH ACCESS (requires PIN2)'
         : 'SSH ACCESS (dev mode: .ocp/id_ed25519, no PIN)';
-    print "╚═══════════════════════════════════════════════════════════════╝\n\n";
+    print STDERR "╚═══════════════════════════════════════════════════════════════╝\n\n";
 
     # PIN1 if the age key is still locked: _lookup_node_ip below decrypts
     # kubeconfig.yaml with it, and it is a no-op once .ocp/age.key is there.
@@ -65,7 +69,7 @@ sub execute {
     # File::Temp here had UNLINK => 1 but no owner for the .pub Rex-style
     # callers expect.
     my $key = $self->cluster_ssh_key($config, reason => 'ocp ssh');
-    print "[ok] " . $key->describe . "\n";
+    print STDERR "[ok] " . $key->describe . "\n";
 
     # Determine target host
     my $target_host = $self->_resolve_target_host($config, $secrets, $node_arg);
@@ -74,8 +78,8 @@ sub execute {
         die $self->_unknown_node_error($node_arg, $self->_node_names($secrets));
     }
 
-    print "[ok] Target: $target_host\n";
-    print "[..] Connecting...\n\n";
+    print STDERR "[ok] Target: $target_host\n";
+    print STDERR "[..] Connecting...\n\n";
 
     my $ssh = OCP::SSH->new(
         host     => $target_host,
@@ -92,9 +96,9 @@ sub execute {
     # a normal `ocp ssh` keeps its single connection.
     if (my $hint = $key->migration_hint) {
         unless ($ssh->is_reachable) {
-            print "[!!] $target_host did not accept the admin key.\n";
-            print $hint;
-            print "\nHanding over to ssh anyway — its own error follows.\n\n";
+            print STDERR "[!!] $target_host did not accept the admin key.\n";
+            print STDERR $hint;
+            print STDERR "\nHanding over to ssh anyway — its own error follows.\n\n";
         }
     }
 
@@ -166,14 +170,14 @@ sub _resolve_target_host {
         if (($cp->{provider} // '') eq 'ssh') {
             return $cp->{host};
         }
-        print "[..] Looking up control plane IP via Kubernetes API...\n";
+        print STDERR "[..] Looking up control plane IP via Kubernetes API...\n";
         return $self->_lookup_node_ip($secrets, $node_arg);
     }
 
     # No exact identity match. The legacy /^(police|cp)/ regex: anything
     # that looks like a CP name is API-looked-up; anything else is an IP.
     if ($node_arg eq 'police1' || $node_arg =~ /^police\d+$/ || $node_arg =~ /^cp/) {
-        print "[..] Looking up control plane IP via Kubernetes API...\n";
+        print STDERR "[..] Looking up control plane IP via Kubernetes API...\n";
         return $self->_lookup_node_ip($secrets, $node_arg);
     }
 

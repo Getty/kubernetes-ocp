@@ -1012,6 +1012,12 @@ sub run_ocp_ssh {
         node          => $opt{node} // '9.9.9.9',
     );
 
+    # `capture` redirects STDOUT via select; diagnoses now go to STDERR
+    # (karr #105), so redirect that into its own scalar for the same run.
+    my $errout = '';
+    open my $efh, '>', \$errout or die "capture stderr: $!";
+    local *STDERR = $efh;
+
     my ($out, $err) = capture(sub {
         with_key_store(sub {
             no warnings 'redefine';
@@ -1029,7 +1035,7 @@ sub run_ocp_ssh {
         }, %opt);
     });
 
-    return { %seen, out => $out, err => $err };
+    return { %seen, out => $out, err => $err, stderr => $errout };
 }
 
 subtest 'ocp ssh on a secure ssh-provider cluster uses the admin key' => sub {
@@ -1067,8 +1073,8 @@ subtest 'ocp ssh diagnoses a refused admin key instead of just exec-ing' => sub 
     is $r->{err}, '', 'it did not refuse to run' or diag $r->{out};
     ok $r->{connected}, 'ssh still got the terminal';
 
-    like $r->{out}, qr/did not accept the admin key/, 'it says what happened';
-    like $r->{out}, qr/ocp keys show --purpose admin/, 'and what to do about it';
+    like $r->{stderr}, qr/did not accept the admin key/, 'it says what happened';
+    like $r->{stderr}, qr/ocp keys show --purpose admin/, 'and what to do about it';
 };
 
 # ------------------------------------------------------------- ocp destroy
@@ -1093,6 +1099,12 @@ sub run_destroy {
         force         => 1,       # no confirmation prompt in a test
     );
 
+    # `capture` redirects STDOUT via select; diagnoses now go to STDERR
+    # (karr #105), so redirect that into its own scalar for the same run.
+    my $errout = '';
+    open my $efh, '>', \$errout or die "capture stderr: $!";
+    local *STDERR = $efh;
+
     my ($out, $err) = capture(sub {
         with_key_store(sub {
             no warnings 'redefine';
@@ -1109,7 +1121,7 @@ sub run_destroy {
         }, %opt);
     });
 
-    return { out => $out, err => $err, deleted => \@deleted };
+    return { out => $out, err => $err, stderr => $errout, deleted => \@deleted };
 }
 
 subtest 'destroy on secure + mixed cluster uses the admin key for ssh nodes' => sub {
@@ -1148,11 +1160,11 @@ subtest 'a key that cannot be obtained never costs a Hetzner server' => sub {
     ok !(grep { $_->{type} eq 'ssh' } @{ $r->{deleted} }),
         'the ssh uninstall was skipped, since there was no key to do it with';
 
-    like $r->{out}, qr/Could not obtain the SSH key/,
+    like $r->{stderr}, qr/Could not obtain the SSH key/,
         'the operator is told what failed';
-    like $r->{out}, qr/deleted through the provider API/,
+    like $r->{stderr}, qr/deleted through the provider API/,
         'and that nothing chargeable was left behind';
-    like $r->{out}, qr/rke2-uninstall\.sh/,
+    like $r->{stderr}, qr/rke2-uninstall\.sh/,
         'with the manual step named for the machines that kept their install';
 };
 
@@ -1178,7 +1190,7 @@ subtest 'a Hetzner-only teardown asks for nothing' => sub {
     my $r = run_destroy($config);
     is $r->{err}, '', 'ran' or diag $r->{out};
     is $PROMPTS, 0, 'no PIN2 prompt where no SSH connection is made';
-    unlike $r->{out}, qr/Could not obtain the SSH key/,
+    unlike $r->{stderr}, qr/Could not obtain the SSH key/,
         'and no warning about a key nobody wanted';
     ok scalar(grep { $_->{type} eq 'hetzner' } @{ $r->{deleted} }), 'server deleted';
 };

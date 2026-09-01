@@ -60,22 +60,22 @@ sub _report_mislabelled_servers {
         my $servers = eval { $hetzner_prov->list_servers_by_cluster($label) } || [];
         next unless @$servers;
 
-        print "\n";
-        printf "[!!] %d Hetzner server(s) carry the label ocp-cluster=%s and were\n",
+        print STDERR "\n";
+        printf STDERR "[!!] %d Hetzner server(s) carry the label ocp-cluster=%s and were\n",
                scalar @$servers, $label;
-        print  "     NOT deleted. They are this cluster's, mislabelled before the\n";
-        print  "     fix for k98 — they keep running and keep billing.\n";
+        print  STDERR "     NOT deleted. They are this cluster's, mislabelled before the\n";
+        print  STDERR "     fix for k98 — they keep running and keep billing.\n";
         for my $s (@$servers) {
-            printf "       - %s (id %s, %s)\n",
+            printf STDERR "       - %s (id %s, %s)\n",
                    eval { $s->name } // '?',
                    eval { $s->id }   // '?',
                    eval { $s->ipv4 } // '-';
         }
-        print  "     They are not removed automatically: that label is generic, so a\n";
-        print  "     match can belong to another cluster in the same project. Check\n";
-        print  "     and delete by hand:\n";
-        print  "       hcloud server list -l ocp-cluster=$label\n";
-        print  "       hcloud server delete <name>\n";
+        print  STDERR "     They are not removed automatically: that label is generic, so a\n";
+        print  STDERR "     match can belong to another cluster in the same project. Check\n";
+        print  STDERR "     and delete by hand:\n";
+        print  STDERR "       hcloud server list -l ocp-cluster=$label\n";
+        print  STDERR "       hcloud server delete <name>\n";
     }
 }
 
@@ -224,15 +224,15 @@ sub execute {
         unless ($ssh_key) {
             my $why = $@ || "unknown error\n";
             chomp $why;
-            print "\n";
-            print "[!!] Could not obtain the SSH key for the ssh-provider nodes:\n";
-            print join('', map { "     $_\n" } split /\n/, $why);
-            print "     Their RKE2/K3s uninstall will be SKIPPED. Everything\n";
-            print "     that costs money is deleted through the provider API\n";
-            print "     and is unaffected.\n";
-            print "     To clean those machines up later, run on each of them:\n";
-            print "       rke2-uninstall.sh   # or k3s-uninstall.sh\n";
-            print "\n";
+            print STDERR "\n";
+            print STDERR "[!!] Could not obtain the SSH key for the ssh-provider nodes:\n";
+            print STDERR join('', map { "     $_\n" } split /\n/, $why);
+            print STDERR "     Their RKE2/K3s uninstall will be SKIPPED. Everything\n";
+            print STDERR "     that costs money is deleted through the provider API\n";
+            print STDERR "     and is unaffected.\n";
+            print STDERR "     To clean those machines up later, run on each of them:\n";
+            print STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh\n";
+            print STDERR "\n";
         }
     }
 
@@ -245,7 +245,7 @@ sub execute {
         if ($node->{provider} eq 'hetzner' && $node->{providerId} && $hetzner_prov) {
             eval { $hetzner_prov->delete_server($node->{providerId}) };
             if ($@) {
-                print "  Warning: $@\n";
+                print STDERR "  Warning: $@\n";
             }
         }
         # An existing-host node (ssh, local): the machine survives, so what we
@@ -261,7 +261,7 @@ sub execute {
                && $node->{public_ip} && $node->{public_ip} ne '-') {
             if ($node->{provider} eq 'ssh') {
                 unless ($ssh_key) {
-                    print "  Skipped: no SSH key, $node->{public_ip} keeps its RKE2/K3s install.\n";
+                    print STDERR "  Skipped: no SSH key, $node->{public_ip} keeps its RKE2/K3s install.\n";
                     next;
                 }
             }
@@ -281,11 +281,11 @@ sub execute {
             # announced as a successful uninstall. Both shapes are a warning.
             my $failed = $@ || !ref $result || ($result->{exit} // 0) != 0;
             if ($failed) {
-                print "  Warning: Could not uninstall on $node->{public_ip} (may already be down).\n";
+                print STDERR "  Warning: Could not uninstall on $node->{public_ip} (may already be down).\n";
                 # The migration hint names the bootstrap-vs-admin key story,
                 # which is ssh-only. A local uninstall has no key.
                 if ($node->{provider} eq 'ssh' && !$hinted++) {
-                    print $ssh_key->migration_hint;
+                    print STDERR $ssh_key->migration_hint;
                 }
             } else {
                 print "  RKE2/K3s uninstalled on $node->{public_ip}.\n";
