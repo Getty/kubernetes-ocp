@@ -61,10 +61,17 @@ Behavior-relevant = everything under `lib/` and `bin/`, `share/`
 ## Coordination — karr board (always in scope)
 
 Ticket coordination is the orchestrating agent's job, so `karr` is always in scope —
-don't invoke the skill first, just use it. Git-native kanban; state lives in
-`refs/karr/*` in this repo. Sibling distributions (io-k8s-p5, kubernetes-rest, …) have
-their own boards — cross-repo work is a ticket on the other repo's board, never a direct
-edit there.
+you never need to ask or wait to touch the board. But "always in scope" is not "never
+read the docs": **load the `kanban-issues-karr-cli` skill before you write anything to a
+card or a commit** — the conventions live only there, not in this file. The one that
+bites hardest, stated here so it cannot be missed: **a karr id is written `kNN`, never a
+bare `#NN`** — in commit subjects, card bodies, anywhere the text travels, because a Git
+forge resolves `#NN` against its *own* issue tracker, a different thing. Claim/handoff,
+cross-board `needs`, and the gotcha that `edit`/`move --claim` fail on a card claimed by
+another agent are all in the skill too. Routine reads (`karr list`, `karr show`) need no
+ceremony. Git-native kanban; state lives in `refs/karr/*` in this repo. Sibling
+distributions (io-k8s-p5, kubernetes-rest, …) have their own boards — cross-repo work is
+a ticket on the other repo's board, never a direct edit there.
 
 - `karr list --compact` / `karr board` — open work · `karr show ID` — detail
 - `karr create "Title" --priority high --tags a,b --body '…'` · `karr edit ID -a "note"`
