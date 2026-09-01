@@ -42,7 +42,7 @@ image will not.
 
 The Perl that builds the image, the Perl that resolves the snapshot, and the
 Perl the image runs are versionally one release, and they are pinned on every
-side where the chain can drift.
+side where the chain can drift. *(amended 2026-08-17, see below)*
 
 Concretely:
 
@@ -56,6 +56,7 @@ Concretely:
   different repository (`perl:5.42`) is a documented follow-up, not an
   oversight.
 - **`cpanfile`** declares `perl 5.042003` (Carton form) as a runtime floor.
+  *(amended 2026-08-17, see below)*
   Below the floor the floor is meaningless — `carton install` checks it, the
   snapshot records it, and an upgrade that lands a `perl 5.044` requirement
   fails the snapshot regenerator visibly instead of silently producing a
@@ -73,8 +74,9 @@ Concretely:
   pairing invisibly — `cpm install` either errors against the snapshot's Perl
   or succeeds against a re-resolved snapshot and lands a `cpanfile.snapshot`
   that describes a Perl the image does not have.
-- **Floor at `5.42` (major.minor) instead of `5.42.3` (patch).** Matches
-  `Makefile:snapshot`'s current wording. Loses the guarantee that a same-day
+- **Floor at `5.42` (major.minor) instead of `5.42.3` (patch).**
+  *(amended 2026-08-17, see below)* Matches `Makefile:snapshot`'s current
+  wording. Loses the guarantee that a same-day
   maintenance release (5.42.4, 5.42.5, …) is in lockstep with the snapshot.
   The Dockerfile already names the patch; matching it in `cpanfile` is free.
 - **Floor at `5.44` to leave headroom for `Rex`'s Perl requirements.** Rex's
@@ -90,7 +92,7 @@ Concretely:
 
 - A CPAN release that asks for `perl 5.044` will fail the snapshot
   regenerator in CI, not in production. The visible failure is what this ADR
-  is for.
+  is for. *(amended 2026-08-17, see below)*
 - `carton install --deployment` (used in CI) is allowed to disagree with the
   snapshot's Perl because the snapshot pins Perl, not the other way around.
 - The floor is in the same file as the dependency declarations, which means
@@ -104,3 +106,63 @@ Concretely:
 - The Dockerfile comment block that explains the base-image choice (lines
   5–20) was written against an earlier version of this decision; it is the
   in-code companion to this ADR and is not duplicated here.
+
+## Amendment 2026-08-17 (karr #125)
+
+Two things here did not survive review: what the `cpanfile` floor mechanically
+does, and the value it was set to. The decision — one Perl for the image and the
+snapshot, pinned where the chain can drift — stands.
+
+### The floor does not do what this ADR credits it with
+
+The Decision said, and the Consequences repeated:
+
+> **`cpanfile`** declares `perl 5.042003` (Carton form) as a runtime floor.
+> Below the floor the floor is meaningless — `carton install` checks it, the
+> snapshot records it, and an upgrade that lands a `perl 5.044` requirement
+> fails the snapshot regenerator visibly instead of silently producing a
+> snapshot that ships a Perl the image lacks.
+
+> A CPAN release that asks for `perl 5.044` will fail the snapshot regenerator
+> in CI, not in production. The visible failure is what this ADR is for.
+
+A `requires 'perl', …` line is a lower bound on *this* distribution. It says
+nothing about what a dependency requires, and it cannot fail on a dependency
+asking for more. What actually catches the `perl 5.044` case is the other half
+of this ADR: `Makefile:snapshot` resolving inside `perl:5.42.3-slim-trixie`.
+Regenerate there and the dependency's own requirement is unsatisfiable in that
+container — visibly, in CI, which is the outcome this ADR wanted. The floor was
+credited with work the image tag was already doing.
+
+What the floor does buy is real, just smaller: the snapshot cannot be resolved
+and the distribution cannot be installed on a Perl *older* than the baseline,
+and the baseline is written down next to the dependencies bound to it. That is
+the claim it can carry. (The sentence "Below the floor the floor is meaningless"
+was garbled on the way in; the intended reading is that below the floor nothing
+installs at all.)
+
+### The floor was set from a machine that is no longer the development machine
+
+`5.042003` matched the Perl of the machine this ADR was written on (pikachu, a
+custom Perl build). Development has since moved to reuben, whose system Perl is
+5.40.1 — below the declared floor. That is not cosmetic: `@Author::GETTY` loads
+`Prereqs::FromCPANfile`, so the floor is not a note to the reader, it lands in
+`META` as `MIN_PERL_VERSION`. `make test-host` and `dzil build` on the
+development machine then run below the distribution's own baseline.
+
+Maintainer decision 2026-08-17: the floor drops to `5.040001`, the system Perl
+of the current machine. With it falls the reasoning of the rejected alternative
+"Floor at `5.42` (major.minor)" — the argument there was that matching the
+Dockerfile's patch level is free. The floor no longer tracks the image tag at
+all; it tracks the oldest Perl OCP is expected to run on, which is the
+development machine's.
+
+The lockstep this ADR is about is untouched: it holds between `Dockerfile:21`
+and `Makefile:snapshot`, the two places naming the Perl the artifact is built
+and shipped with. The floor was never part of that pair and could not have
+been — `cpanfile` has no upper bound to give.
+
+Stated plainly, so the next reader does not take it for drift: image (5.42.3)
+and floor (5.40.1) differ on purpose. A green `make test-host` says "runs on
+the baseline", a green `make test` says "runs on what ships", and only the
+second one binds (ADR 0013).

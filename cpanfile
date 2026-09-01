@@ -1,4 +1,10 @@
-requires 'perl', '5.042003';
+# Untergrenze, nicht der Auslieferungs-Pin: das Image faehrt 5.42.3 (Dockerfile,
+# Makefile:snapshot). Der Floor sagt nur, ab welchem Perl OCP ueberhaupt laeuft,
+# und muss deshalb das Perl der Entwicklungsmaschine einschliessen -- sonst
+# liegen `make test-host` und `dzil build` dort unter der eigenen Baseline
+# (@Author::GETTY traegt den Floor via Prereqs::FromCPANfile als
+# MIN_PERL_VERSION ins META). ADR 0025 + Amendment 2026-08-17.
+requires 'perl', '5.040001';
 requires 'Moo';
 # Both are pinned because OCP.pm reaches into their PRIVATE API to check a
 # command word before MooX::Cmd sees the argument vector: _build_command_commands
@@ -14,15 +20,15 @@ requires 'MooX::Singleton';
 requires 'YAML::XS';
 requires 'Path::Tiny';
 requires 'namespace::clean';
-requires 'WWW::Hetzner', '0.100';
+requires 'WWW::Hetzner', '0.101';
 # WWW::Hetzner reaches api.hetzner.cloud through LWP::UserAgent, and LWP only
 # speaks https once this protocol handler is installed. It used to be cpanm'd
 # into the system perl by the Dockerfile, which made the one module standing
 # between OCP and every Hetzner API call the one module the snapshot did not
 # describe.
 requires 'LWP::Protocol::https';
-requires 'Crypt::Age', '0.001';
-requires 'File::SOPS', '0.002';
+requires 'Crypt::Age', '0.003';
+requires 'File::SOPS', '0.003';
 requires 'Rex';
 requires 'Rex::Interface::Connection::LibSSH', '0.002';
 requires 'IPC::Run';
@@ -42,9 +48,9 @@ requires 'IO::Async';
 # 1.107 is the first Kubernetes::REST with a native patch_status(); OCP::K8s
 # calls it in that version's argument form (Kind first, payload under 'patch').
 # It requires IO::K8s 1.107 itself, so the two move together.
-requires 'IO::K8s', '1.107';
-requires 'Kubernetes::REST', '1.107';
-requires 'Net::Async::Kubernetes', '0.007';
+requires 'IO::K8s', '1.108';
+requires 'Kubernetes::REST', '1.108';
+requires 'Net::Async::Kubernetes', '0.008';
 
 on test => sub {
     requires 'Test::More';

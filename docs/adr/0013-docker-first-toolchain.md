@@ -88,7 +88,8 @@ host tools, install, snapshot) is unchanged; what changed is which side of
 the test boundary is binding and the rationale for that choice.
 
 The "slow loop" claim did not survive a stopwatch. Two side-by-side runs on
-the same tree, same wall-clock window, against the post-#79 targets:
+the same tree, same wall-clock window, against the post-#79 targets (on the
+development machine of the time — see "Where the numbers come from" below):
 
   make test (pinned image)        159 s wall   53.51 CPU   Files=65  Tests=1123
   make test-host (host CPAN)      160 s wall   53.77 CPU   Files=65  Tests=1123
@@ -112,3 +113,25 @@ host side as documented fast-iteration tooling rather than a second
 binding lane. `.github/workflows/` no longer exists at all (see ADR 0020
 amendment), and that is unrelated to test binding — the measure above is
 the relevant number now.
+
+### Where the numbers come from (added 2026-08-17, karr #107)
+
+The two runs above were measured on the development machine of the time:
+pikachu, whose host Perl was a custom build — the 5.36.000 named above. Since
+then development moved to reuben, whose system Perl is 5.40.1, and the pair does
+not reproduce there: `make test-host` aborts within seconds because the host
+CPAN has no MooX::Singleton and no WWW::Hetzner::Cloud, so there is no 160 s
+host run to hold the image run against.
+
+This does not weaken the conclusion — a host lane that cannot even load the
+distribution is the strongest form of "the host run does not bind" this ADR
+could have asked for. It does mean the figures are bound to the machine that
+produced them and have to be read with it. Whoever re-checks the 0.5 % delta
+measures on their own box; the number is evidence for "the container is not the
+slow lane", not a constant of the repository.
+
+The Perl gap the amendment leans on moved with the machine and is smaller now:
+reuben's 5.40.1 against the image's 5.42.3, not 5.36 against 5.42. The argument
+is unchanged — the host interpreter is still not the one that ships — and the
+floor in `cpanfile` follows the development machine rather than the image
+(ADR 0025, amended 2026-08-17).

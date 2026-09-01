@@ -59,13 +59,18 @@ package _Anything { sub new { bless {}, shift } }
 
 sub ocpnode {
     my (%over) = @_;
+    # spec/status are merged onto the defaults rather than replaced outright,
+    # so a caller passing spec => { gpu => ... } still gets role/providerRef
+    # on the CR -- the shape `ocp node add` actually writes.
+    my $spec   = delete $over{spec}   || {};
+    my $status = delete $over{status} || {};
     return {
         apiVersion => 'ocp.internal/v1',
         kind       => 'OCPNode',
         metadata   => { name => 'gpu-w1', namespace => 'ocp-system',
                         resourceVersion => '100' },
-        spec       => { role => 'worker', providerRef => 'ssh-default' },
-        status     => { phase => 'Installing', publicIP => '1.2.3.4' },
+        spec       => { role => 'worker', providerRef => 'ssh-default', %$spec },
+        status     => { phase => 'Installing', publicIP => '1.2.3.4', %$status },
         %over,
     };
 }
@@ -102,6 +107,10 @@ sub installing_node_call {
     my (%over) = @_;
     load_ocp_node() or return;
     @FakeRex::_instances = ();
+    # distribution is a constructor attribute of OCP::Node (lib/OCP/Node.pm),
+    # not a CR field -- pull it out before building the CR so it doesn't leak
+    # onto the CR as a stray top-level key.
+    my $distribution = delete $over{distribution};
     my $cr = ocpnode(%over);
 
     my $node = OCP::Node->from_cr($cr,
@@ -112,7 +121,7 @@ sub installing_node_call {
         join_token => 'TOKEN',
         ssh_class  => 'FakeSSH',
         rex_class  => 'FakeRex',
-        ($over{distribution} ? (distribution => $over{distribution}) : ()),
+        ($distribution ? (distribution => $distribution) : ()),
     );
     $node->_install_kubernetes;
     return $FakeRex::_instances[0]{calls}[0];
