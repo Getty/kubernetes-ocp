@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` no longer silently claims more control planes than it deploys
+      (k8). OCP::Config normalises `control_planes` into an N-element list, but
+      apply only ever bootstrapped the first (police1) while printing
+      `Count: N`. It now warns loudly on STDERR when N > 1 and prints an honest
+      `deploying 1 (police1)` banner, still deploying police1 as before -- the
+      full multi-CP feature (RKE2-only, embedded etcd) is not built yet: no join
+      path for a second control plane exists in the tree. t/08-multi-cp-guard.t.
     - Network path: the LoadBalancer IP pool and L2 announcement policy are now
       configurable for multi-node clusters (k127). The pool no longer hands
       the LoadBalancer the control-plane's own IP: `network.lb_pool` (a

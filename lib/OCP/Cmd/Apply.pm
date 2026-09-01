@@ -206,12 +206,9 @@ sub execute {
     my $cps = $config->control_planes;
     my $first_cp = $cps->[0] // {};
     my $provider = $first_cp->{provider} // 'hetzner';
-    my $num_control_planes = scalar @$cps;
 
     my $deploy_step = $no_password_mode ? 2 : 3;
-    print "Step $deploy_step: Deploy control plane(s)\n";
-    print "        Provider: $provider\n";
-    print "        Count: $num_control_planes\n\n";
+    $self->_announce_control_planes($config, $deploy_step);
 
     if ($self->dry_run) {
         print "[Dry run - no changes made]\n";
@@ -252,6 +249,39 @@ sub execute {
         cp_name => $b->{cp_name},
         cp_ip   => $b->{cp_ip},
     );
+}
+
+# Announce the control-plane deploy step, honestly.
+#
+# OCP::Config normalises `control_planes` (array form, or a single entry with
+# `nodes: N`) into an N-element arrayref, but `ocp apply` bootstraps only the
+# first entry — police1. Multi-CP deployment is not built yet (tracked as a
+# separate feature; when it lands it is RKE2-only with embedded etcd). Until
+# then a spec asking for more than one control plane would print "Count: N" and
+# quietly deploy one — the silent contradiction k8 is about.
+#
+# So warn loudly on STDERR when more than one is configured (diagnosis is a
+# STDERR concern, never the STDOUT progress channel), and keep the STDOUT
+# banner from implying that N are deployed. The single-CP path is unchanged.
+sub _announce_control_planes {
+    my ($self, $config, $deploy_step) = @_;
+
+    my $cps      = $config->control_planes;
+    my $num      = scalar @$cps;
+    my $provider = ($cps->[0] // {})->{provider} // 'hetzner';
+
+    if ($num > 1) {
+        warn "WARNING: $num control planes configured, but only the first "
+           . "(police1) is deployed — multi-CP is not yet supported (k8).\n";
+    }
+
+    print "Step $deploy_step: Deploy control plane(s)\n";
+    print "        Provider: $provider\n";
+    print $num > 1
+        ? "        Control planes: $num configured, deploying 1 (police1)\n\n"
+        : "        Count: $num\n\n";
+
+    return $num;
 }
 
 #
