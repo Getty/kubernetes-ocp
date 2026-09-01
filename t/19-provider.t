@@ -298,6 +298,120 @@ subtest 'the OCPNodeProvider CRD leaves the hetzner defaults unset' => sub {
     is $written->{image},      'debian-12', '--image is written as spec.hetzner.image';
 };
 
+#
+# The OTHER direction -- k126 (the rest of k111).
+#
+# The forward subtest above proves every key `ocp provider add` WRITES is
+# declared in the CRD. This one proves the reverse: every field the CRD
+# DECLARES is actually read or written somewhere in lib/ or bin/. A declared
+# field with no consumer is dead weight at best and a silent lie at worst --
+# `spec.ssh.user` was write-only and had no effect, `keySecretRef` was neither
+# read nor written, and `status.ready` fed a kubectl printer column that stayed
+# permanently empty because nothing ever wrote the status. All four k111/k126
+# findings are exactly a declared-but-unconsumed field; this check would have
+# caught all of them at once, and catches the next one that gets smuggled in.
+#
+# Two assertions together make that robust:
+#
+#   * completeness -- the set of leaf paths the CRD declares must equal the set
+#     the inventory below registers. Add a field to the CRD without registering
+#     a consumer for it and this fails, naming the orphan. This is what catches
+#     a future dead field regardless of how generic its name is.
+#
+#   * liveness -- each registered field's consumer regex must still match the
+#     (comment-stripped) source. Delete the reader and leave the CRD field and
+#     this fails. The regexes are anchored to the actual access/write syntax
+#     (`->{serverType}`, `tokenSecretRef => { ... }`) rather than the bare leaf
+#     name, so a generic name like `key` cannot false-green off an unrelated
+#     `key =>` elsewhere in the tree.
+#
+subtest 'every field the OCPNodeProvider CRD declares is read or written' => sub {
+    my $root     = path(__FILE__)->parent->parent;
+    my $crd_file = $root->child('share/robocop/crds/ocpnodeprovider.yaml');
+    plan skip_all => 'CRD not found' unless -f $crd_file;
+
+    require YAML::XS;
+    my $crd = YAML::XS::Load($crd_file->slurp_raw);
+
+    # Collect the dotted leaf paths of an openAPIV3Schema: recurse through
+    # `properties`, a node that has its own `properties` is a branch, one that
+    # does not is a leaf (the actual field a client sets).
+    my $leaves;
+    $leaves = sub {
+        my ($schema, $prefix) = @_;
+        my $props = $schema->{properties} or return ();
+        my @out;
+        for my $k (sort keys %$props) {
+            my $child = $props->{$k};
+            my $path  = $prefix ? "$prefix.$k" : $k;
+            if (ref $child eq 'HASH' && $child->{properties}) {
+                push @out, $leaves->($child, $path);
+            } else {
+                push @out, $path;
+            }
+        }
+        return @out;
+    };
+
+    my @declared = $leaves->(
+        $crd->{spec}{versions}[0]{schema}{openAPIV3Schema}, ''
+    );
+
+    # Every declared leaf -> the syntax that consumes it in lib/ or bin/.
+    # Adding a CRD field means adding a line here that points at its reader or
+    # writer; there is nowhere to register a field that has neither.
+    my %consumer = (
+        'spec.type'                        => qr/->\{spec\}\{type\}/,
+        'spec.clusterName'                 => qr/->\{spec\}\{clusterName\}/,
+        # The cluster-wide GPU switches OCP::Provider::gpu_flags_from_cr reads
+        # off the provider CR (`$gpu->{enabled}` / `$gpu->{driver}`) and
+        # OCP::Cmd::Apply::CR::ensure_provider_cr writes there (k31). Both
+        # `->{enabled}` and `->{driver}` are GPU-only in the tree, so anchoring
+        # to the access syntax cannot false-green off an unrelated leaf.
+        'spec.gpu.enabled'                 => qr/->\{enabled\}/,
+        'spec.gpu.driver'                  => qr/->\{driver\}/,
+        'spec.hetzner.tokenSecretRef.name' => qr/tokenSecretRef\s*=>\s*\{[^}]*\bname\b/,
+        'spec.hetzner.tokenSecretRef.key'  => qr/tokenSecretRef\s*=>\s*\{[^}]*\bkey\b/,
+        'spec.hetzner.location'            => qr/->\{location\}/,
+        'spec.hetzner.serverType'          => qr/->\{serverType\}/,
+        'spec.hetzner.image'               => qr/->\{image\}/,
+        'spec.hetzner.sshKeyName'          => qr/\bsshKeyName\b/,
+    );
+
+    # Completeness, in both directions.
+    is_deeply [sort @declared], [sort keys %consumer],
+        'CRD leaf fields and the consumer inventory are the same set'
+        or diag "declared: @{[ sort @declared ]}\n"
+              . "registered: @{[ sort keys %consumer ]}\n"
+              . "a field on one side only is either a dead declaration "
+              . "(wire it or remove it) or a stale inventory entry";
+
+    # Liveness: read every lib/ + bin/ source once, strip comments and POD so a
+    # field named only in prose does not count as consumed, then confirm each
+    # registered field's consumer syntax is really there.
+    my $src = '';
+    for my $dir (qw(lib bin)) {
+        my $d = $root->child($dir);
+        next unless -d $d;
+        $d->visit(sub {
+            my ($f) = @_;
+            return unless -f $f && $f =~ /\.pm$|\.pl$|bin\/[^.\/]+$/;
+            my $text = $f->slurp_utf8;
+            $text =~ s/^=\w+.*?^=cut//gms;   # POD blocks
+            $text =~ s/#.*$//mg;             # trailing/line comments
+            $src .= $text;
+        }, { recurse => 1 });
+    }
+
+    for my $field (sort keys %consumer) {
+        # Only check liveness for fields that are actually declared; a stale
+        # inventory entry is already reported by the is_deeply above.
+        next unless grep { $_ eq $field } @declared;
+        like $src, $consumer{$field},
+            "$field is read or written in lib/ or bin/";
+    }
+};
+
 subtest 'add hetzner writes the SSH key name onto the CR' => sub {
     # A provider CR without sshKeyName produces servers with an empty
     # authorized_keys once `ocp node add` reaches it (k92). With no

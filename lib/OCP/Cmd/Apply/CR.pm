@@ -157,9 +157,12 @@ sub ensure_provider_cr {
             tokenSecretRef => { name => $secret_name, key => 'token' },
             sshKeyName     => $config->admin_ssh_key_name,
         };
-    } elsif ($type eq 'ssh') {
-        $spec->{ssh} = { user => 'root' };
     }
+    # No spec.ssh branch: the SSH provider reads nothing from the CR (from_cr's
+    # ssh branch takes no args) and the OCPNodeProvider CRD declares no spec.ssh
+    # fields. `{ ssh => { user => 'root' } }` used to be written here and read by
+    # nobody -- OCP::Provider::SSH hardwires the root user -- so it was a dead
+    # write against a since-removed dead field (k126, ADR 0027).
 
     $api->ensure({
         apiVersion => 'ocp.internal/v1',

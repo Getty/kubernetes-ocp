@@ -145,48 +145,27 @@ spec:
                       Without it a worker would boot with an empty
                       authorized_keys and be unreachable.
 
-              ssh:
-                type: object
-                description: "SSH provider configuration"
-                properties:
-                  user:
-                    type: string
-                    default: root
-                    description: "SSH user (default: root)"
-                  keySecretRef:
-                    type: object
-                    required:
-                    - name
-                    properties:
-                      name:
-                        type: string
-                        description: "Secret name containing SSH private key"
-                      key:
-                        type: string
-                        default: privateKey
-                        description: "Key in secret (default: privateKey)"
+              # No spec.ssh block. `type: ssh` is a full provider, but the SSH
+              # provider reads nothing from the CR: from_cr's ssh branch takes
+              # no args, and the private key travels through OCP::ClusterKey /
+              # the CLI pipeline rather than a Secret ref (ADR 0027). The block
+              # once declared `user` (never read -- OCP::Provider::SSH hardwires
+              # root) and `keySecretRef` (never read or written); both were dead
+              # declarations and were removed with the rest of k111/k126.
+              # If robocop is ever taught to pull the key from a Secret (k101),
+              # the field gets added back here together with its reader.
 
-          status:
-            type: object
-            properties:
-              ready:
-                type: boolean
-                description: "Provider is configured and ready"
-              message:
-                type: string
-                description: "Status message"
-              lastChecked:
-                type: string
-                format: date-time
-                description: "Last health check timestamp"
+          # No status schema. Nothing writes the OCPNodeProvider status: only
+          # OCPNode carries a reconciled status (OCP::Cmd::Apply::CR,
+          # OCP::Node). The block once declared ready/message/lastChecked with
+          # no writer, and a `.status.ready` printer column that `kubectl get
+          # ocpnodeproviders` therefore rendered permanently empty -- both were
+          # removed with k126. Add them back only alongside a writer.
 
     additionalPrinterColumns:
     - name: Type
       type: string
       jsonPath: .spec.type
-    - name: Ready
-      type: boolean
-      jsonPath: .status.ready
     - name: Age
       type: date
       jsonPath: .metadata.creationTimestamp

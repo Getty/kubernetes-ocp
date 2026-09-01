@@ -176,10 +176,10 @@ sub from_cr {
         $args{default_image}       = $hspec->{image};
         $args{default_location}    = $hspec->{location};
     }
-    # 'ssh' reads no extra args from the CR today: spec.ssh declares only
-    # user + keySecretRef (share/robocop/crds/ocpnodeprovider.yaml), and the
-    # SSH private key travels through OCP::ClusterKey / the CLI pipeline, not
-    # the CR (ADR 0027, k111).
+    # 'ssh' reads no extra args from the CR: the OCPNodeProvider CRD declares no
+    # spec.ssh fields at all (the dead user + keySecretRef declarations were
+    # removed in k126), and the SSH private key travels through
+    # OCP::ClusterKey / the CLI pipeline, not the CR (ADR 0027, k111).
     # 'local' needs no extra args from the CR.
 
     return $class->_build(\%args);
