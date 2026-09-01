@@ -188,6 +188,49 @@ sub registry_name        { shift->registry_config->{name} // 'ocp.internal' }
 sub has_external_cache   { shift->registry_cache ne '' }
 sub has_external_upstream { shift->registry_upstream ne '' }
 
+# Network configuration — the Cilium LB-IPAM pool and L2 announcement policy
+# (karr #127). All optional; a cluster that sets nothing keeps the historical
+# single-node behaviour (pool = node IP /32, announce on every node).
+#
+#   network:
+#     lb_pool:
+#       start: 10.230.30.240      # a range, as the citiai cluster uses,
+#       stop:  10.230.30.249      # ... or:
+#       cidr:  10.230.30.240/28   # a block (mutually exclusive with start/stop)
+#     l2:
+#       node_selector:            # limit announcement to labelled nodes instead
+#         ai.citilan.de/l2-announce: "true"   # of trusting interface names
+#       interfaces:               # override the built-in (anchored) regexes
+#         - "^eth[0-9]+$"
+sub network_config { shift->spec->{network} // {} }
+
+sub lb_pool_config { shift->network_config->{lb_pool} // {} }
+
+# The CiliumLoadBalancerIPPool blocks list, or undef when no pool is
+# configured — the caller then falls back to the node IP, but only on a
+# single-node cluster.
+sub lb_pool_blocks {
+    my $self = shift;
+    my $p = $self->lb_pool_config;
+    return undef unless %$p;
+    return [{ cidr => $p->{cidr} }] if defined $p->{cidr};
+    return [{ start => $p->{start}, stop => $p->{stop} }];
+}
+
+sub l2_config        { shift->network_config->{l2} // {} }
+sub l2_node_selector { shift->l2_config->{node_selector} // {} }
+
+# The interface-name regexes for CiliumL2AnnouncementPolicy. The built-in list
+# is anchored on both ends: an unanchored "^en[a-z0-9]+" matched the QSFP
+# fabric (enp1s0f0np0) it had no business announcing on. A node with more than
+# one interface should use l2.node_selector rather than lean on these.
+sub l2_interfaces {
+    my $self = shift;
+    my $i = $self->l2_config->{interfaces};
+    return $i if ref $i eq 'ARRAY' && @$i;
+    return ['^eth[0-9]+$', '^en[a-z0-9]+$'];
+}
+
 # SSL configuration (for cert-manager)
 sub ssl_config { shift->spec->{ssl} // {} }
 sub ssl_email { shift->spec->{ssl}{email} // '' }
@@ -382,6 +425,8 @@ sub validate {
         }
     }
 
+    push @errors, $self->_validate_network;
+
     for my $w (@{$self->workers}) {
         push @errors, "worker pool: name required" unless $w->{name};
         my $wprov = $w->{provider} // '';
@@ -397,6 +442,93 @@ sub validate {
     }
 
     return @errors;
+}
+
+# network.lb_pool / network.l2 validation (karr #127). Report-only: returns a
+# list of human-readable errors, same contract as validate() itself.
+sub _validate_network {
+    my ($self) = @_;
+    my $net = $self->spec->{network};
+    return () unless defined $net;
+    return ("network: must be a mapping") unless ref $net eq 'HASH';
+
+    my @errors;
+
+    if (defined(my $pool = $net->{lb_pool})) {
+        if (ref $pool ne 'HASH') {
+            push @errors, "network.lb_pool: must be a mapping (cidr, or start+stop)";
+        }
+        else {
+            my $has_cidr  = defined $pool->{cidr};
+            my $has_start = defined $pool->{start};
+            my $has_stop  = defined $pool->{stop};
+
+            if ($has_cidr && ($has_start || $has_stop)) {
+                push @errors, "network.lb_pool: use either cidr or start+stop, not both";
+            }
+            elsif ($has_cidr) {
+                push @errors, "network.lb_pool.cidr: '$pool->{cidr}' is not an IPv4 CIDR (e.g. 10.0.0.240/28)"
+                    unless _looks_like_cidr($pool->{cidr});
+            }
+            elsif ($has_start || $has_stop) {
+                push @errors, "network.lb_pool: start and stop must both be set"
+                    unless $has_start && $has_stop;
+                push @errors, "network.lb_pool.start: '$pool->{start}' is not an IPv4 address"
+                    if $has_start && !_looks_like_ipv4($pool->{start});
+                push @errors, "network.lb_pool.stop: '$pool->{stop}' is not an IPv4 address"
+                    if $has_stop && !_looks_like_ipv4($pool->{stop});
+            }
+            else {
+                push @errors, "network.lb_pool: needs cidr or start+stop";
+            }
+        }
+    }
+
+    if (defined(my $l2 = $net->{l2})) {
+        if (ref $l2 ne 'HASH') {
+            push @errors, "network.l2: must be a mapping";
+        }
+        else {
+            if (defined(my $ns = $l2->{node_selector})) {
+                if (ref $ns ne 'HASH' || !%$ns) {
+                    push @errors, "network.l2.node_selector: must be a non-empty mapping of label => value";
+                }
+                else {
+                    for my $k (sort keys %$ns) {
+                        push @errors, "network.l2.node_selector.$k: value must be a scalar"
+                            if ref $ns->{$k};
+                    }
+                }
+            }
+            if (defined(my $if = $l2->{interfaces})) {
+                if (ref $if ne 'ARRAY' || !@$if) {
+                    push @errors, "network.l2.interfaces: must be a non-empty list of interface-name regexes";
+                }
+                elsif (grep { ref $_ } @$if) {
+                    push @errors, "network.l2.interfaces: entries must be strings";
+                }
+            }
+        }
+    }
+
+    return @errors;
+}
+
+sub _looks_like_ipv4 {
+    my $ip = shift;
+    return 0 unless defined $ip && !ref $ip;
+    return 0 unless $ip =~ /^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$/;
+    return 0 if grep { $_ > 255 } ($1, $2, $3, $4);
+    return 1;
+}
+
+sub _looks_like_cidr {
+    my $c = shift;
+    return 0 unless defined $c && !ref $c;
+    return 0 unless $c =~ m{^(.+)/([0-9]{1,2})$};
+    my ($ip, $bits) = ($1, $2);
+    return 0 if $bits > 32;
+    return _looks_like_ipv4($ip);
 }
 
 #

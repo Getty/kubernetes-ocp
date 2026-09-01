@@ -119,9 +119,19 @@ sub execute {
         }
     }
 
-    # Drift between what ocp.yaml/the version manifest say and what runs
+    # Drift between what ocp.yaml/the version manifest say and what runs.
+    #
+    # rex_prober adds OCP::Drift's SSH-side detection (host residue no API query
+    # can see). It is non-prompting and returns undef when no key is at hand, so
+    # this stays as read-only and interaction-free as the rest of the command --
+    # an unreachable host or a missing key degrades to "not checked", never a
+    # prompt and never a failure of `ocp status`.
     my $drift = eval {
-        OCP::Drift->new(config => $config, api => $k8s->api)->detect;
+        OCP::Drift->new(
+            config     => $config,
+            api        => $k8s->api,
+            rex_prober => $self->rex_prober($config),
+        )->detect;
     } // [];
 
     if (@$drift) {

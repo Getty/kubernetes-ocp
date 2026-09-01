@@ -119,6 +119,58 @@ sub cluster_ssh_key_if_known {
     return $self->{_cluster_ssh_key}{ OCP::ClusterKey::cache_slot($config, %opt) };
 }
 
+# A rex prober for OCP::Drift's host-side detection, or undef when no key can be
+# had without a prompt. OCP::Drift calls it as $prober->($host, $task, \%params);
+# it runs the read-only detection task over SSH and returns OCP::Rex's result.
+#
+# Non-prompting on purpose. Detection runs on read-only `ocp status` and at the
+# top of every `ocp apply`; obtaining a secure-mode cluster key costs a PIN2
+# prompt (OCP::ClusterKey), and putting that in front of every status/apply --
+# just to look for host residue that is usually not there -- is exactly the cost
+# the reconcile path already refuses to pay up front (see
+# OCP::Cmd::Apply::Drift::run_remedy, which gets the key late, only once a fix is
+# about to run). So this uses only a key already in hand: one this command
+# cached earlier, or an on-disk private key for the providers that keep one there
+# (ssh/local). When there is none, it returns undef and OCP::Drift skips the SSH
+# mode -- the graceful degradation `ocp status` needs when a host is out of reach.
+#
+# The narration OCP::Rex prints to STDOUT is captured, not emitted: detection
+# runs inside the status/drift report, where that would be noise on the payload
+# channel. The task's real stdout still comes back in the result hashref (IPC::Run
+# collects it over its own pipes, not through Perl's STDOUT).
+sub rex_prober {
+    my ($self, $config, %opt) = @_;
+
+    require OCP::Rex;
+
+    my $key      = $self->cluster_ssh_key_if_known($config, %opt);
+    my $key_file = $key ? $key->path : undef;
+
+    unless (defined $key_file) {
+        my $path = $config->ssh_private_key_path;
+        $key_file = $path if defined $path && -f $path;
+    }
+    return undef unless defined $key_file;
+
+    my $verbose = eval { $self->ocp->verbose } || 0;
+
+    return sub {
+        my ($host, $task, $params) = @_;
+        my $rex = OCP::Rex->new(
+            host     => $host,
+            key_file => $key_file,
+            verbose  => $verbose,
+        );
+
+        my $sink = '';
+        return do {
+            local *STDOUT;
+            open STDOUT, '>', \$sink or die "cannot capture rex output: $!\n";
+            $rex->run_task($task, %{ $params // {} });
+        };
+    };
+}
+
 # Every retry/poll pause a command makes goes through here — ONE seam,
 # reached by method dispatch on $self rather than by a bareword `sleep`
 # sitting in whatever file the calling code happens to live in this week.
@@ -226,6 +278,24 @@ L<OCP::ClusterKey/migration_hint>, where the only question is whether to print
 an explanation.  Building a key for that would make a message cost a PIN2
 prompt in the middle of a run that had not asked for one.  Use
 L</cluster_ssh_key> whenever the key is actually going to reach a machine.
+
+=method rex_prober
+
+    my $prober = $self->rex_prober($config);
+    OCP::Drift->new(config => $config, api => $api, rex_prober => $prober)->detect;
+
+A coderef for L<OCP::Drift/rex_prober>, or C<undef> when no SSH key can be
+obtained without a prompt.  It runs a read-only Rex detection task over SSH and
+returns L<OCP::Rex>'s result.
+
+Deliberately non-prompting: detection runs on read-only C<ocp status> and at
+the top of every C<ocp apply>, and a secure-mode cluster key costs a PIN2
+prompt.  It uses only a key already in hand — one L</cluster_ssh_key_if_known>
+already built, or an on-disk private key (C<ssh>/C<local> providers).  With
+none, it returns C<undef> and L<OCP::Drift> skips its SSH detection mode, which
+is the graceful degradation C<ocp status> needs when a host is unreachable.  The
+narration L<OCP::Rex> prints is captured so it does not land on the report's
+STDOUT.
 
 =method provider_crs
 

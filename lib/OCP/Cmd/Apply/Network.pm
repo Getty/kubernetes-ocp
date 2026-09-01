@@ -24,7 +24,7 @@ our @COREDNS_CONFIGMAPS = @OCP::Drift::COREDNS_CONFIGMAPS;
     OCP::Cmd::Apply::Network::apply_cert_manager($apply);
     OCP::Cmd::Apply::Network::wait_cert_manager_and_create_issuers($apply, $config);
     OCP::Cmd::Apply::Network::setup_cilium_gateway($apply, $config);
-    OCP::Cmd::Apply::Network::setup_lb_ipam($apply, $node_ip);
+    OCP::Cmd::Apply::Network::setup_lb_ipam($apply, $node_ip, $config);
     OCP::Cmd::Apply::Network::configure_registry_dns($apply, $node_ip);
 
     # Pure functions (no $self):
@@ -255,8 +255,74 @@ sub setup_cilium_gateway {
     die "Gateway 'cilium-gateway' did not become Accepted within 60s\n";
 }
 
+#
+# Build the two LB-IPAM objects OCP manages: the CiliumLoadBalancerIPPool and
+# the CiliumL2AnnouncementPolicy. Pure so t/78 can assert their shape without a
+# cluster.
+#
+# The pool range comes from network.lb_pool when the user set it; otherwise the
+# node IP as a /32. That /32 is a single-node convenience — the node is the
+# whole cluster — but on a multi-node cluster it hands the LoadBalancer an
+# address that already belongs to a node (karr #127). So without a configured
+# pool we build the /32 only when the cluster has exactly one node, and die
+# otherwise rather than announce a node's own IP.
+#
+# The L2 policy takes a nodeSelector (network.l2.node_selector) so a node that
+# should not announce is excluded by a capability label rather than by trying
+# to spell its interface names out of a regex — which cannot tell the LAN port
+# from a QSFP fabric anyway.
+#
+sub lb_ipam_resources {
+    my ($node_ip, $config) = @_;
+
+    my $blocks;
+    if ($config && (my $configured = $config->lb_pool_blocks)) {
+        $blocks = $configured;
+    }
+    elsif ($config && !$config->single_node) {
+        die "LB-IPAM: refusing to use the node IP ($node_ip) as the pool on a "
+          . "multi-node cluster — set network.lb_pool (cidr, or start+stop) in ocp.yaml\n";
+    }
+    else {
+        $blocks = [{ cidr => "$node_ip/32" }];
+    }
+
+    my $l2_spec = {
+        interfaces => $config ? $config->l2_interfaces
+                              : ['^eth[0-9]+$', '^en[a-z0-9]+$'],
+        externalIPs     => JSON::PP::true,
+        loadBalancerIPs => JSON::PP::true,
+    };
+    if ($config) {
+        my $ns = $config->l2_node_selector;
+        $l2_spec->{nodeSelector} = { matchLabels => $ns } if %$ns;
+    }
+
+    return [
+        {
+            apiVersion => 'cilium.io/v2',
+            kind       => 'CiliumLoadBalancerIPPool',
+            metadata   => { name => 'default-pool' },
+            spec       => { blocks => $blocks },
+        },
+        {
+            apiVersion => 'cilium.io/v2alpha1',
+            kind       => 'CiliumL2AnnouncementPolicy',
+            metadata   => { name => 'default-l2' },
+            spec       => $l2_spec,
+        },
+    ];
+}
+
+sub _describe_blocks {
+    my ($blocks) = @_;
+    return join ', ', map {
+        defined $_->{cidr} ? $_->{cidr} : "$_->{start}-$_->{stop}"
+    } @$blocks;
+}
+
 sub setup_lb_ipam {
-    my ($self, $node_ip) = @_;
+    my ($self, $node_ip, $config) = @_;
 
     my $api = $self->_k8s_api;
 
@@ -291,7 +357,11 @@ sub setup_lb_ipam {
             print "      WARNING: Only loopback IP available, LB-IPAM may not work externally\n";
         }
     }
-    print "      LB-IPAM pool: $node_ip/32\n";
+
+    # Build the objects now, before the long CRD wait: a multi-node cluster with
+    # no configured pool must fail fast here, not after five minutes of polling.
+    my $resources = lb_ipam_resources($node_ip, $config);
+    print "      LB-IPAM pool: " . _describe_blocks($resources->[0]{spec}{blocks}) . "\n";
 
     # Wait for Cilium to serve the LB-IPAM API. In Cilium 1.19+ both
     # CiliumLoadBalancerIPPool and most BGP resources are served under v2;
@@ -313,26 +383,7 @@ sub setup_lb_ipam {
     die "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s\n"
         unless $crd_ready;
 
-    my @resources = (
-        {
-            apiVersion => 'cilium.io/v2',
-            kind       => 'CiliumLoadBalancerIPPool',
-            metadata   => { name => 'default-pool' },
-            spec       => { blocks => [{ cidr => "$node_ip/32" }] },
-        },
-        {
-            apiVersion => 'cilium.io/v2alpha1',
-            kind       => 'CiliumL2AnnouncementPolicy',
-            metadata   => { name => 'default-l2' },
-            spec       => {
-                interfaces      => ['^eth[0-9]+', '^en[a-z0-9]+'],
-                externalIPs     => JSON::PP::true,
-                loadBalancerIPs => JSON::PP::true,
-            },
-        },
-    );
-
-    $self->_server_side_apply_all($api, @resources);
+    $self->_server_side_apply_all($api, @$resources);
 
     # Verify Gateway got an IP (raw CRD get — Gateway has no IO::K8s class)
     $self->wait_seconds(2);

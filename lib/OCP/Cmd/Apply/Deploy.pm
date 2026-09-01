@@ -147,7 +147,7 @@ sub deploy {
     if ($config->lbipam) {
         print "  [..] Setting up LB-IPAM (opt-in)...\n";
         eval {
-            $self->_setup_lb_ipam($cp_ip);
+            $self->_setup_lb_ipam($cp_ip, $config);
         };
         if ($@) {
             print "  [WARN] LB-IPAM setup failed: $@\n";

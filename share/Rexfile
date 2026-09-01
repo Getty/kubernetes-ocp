@@ -1074,6 +1074,22 @@ sub _legacy_containerd_template_paths {
     );
 }
 
+# Read-only counterpart of cleanup_legacy_containerd_template: it reports the
+# residue without touching it, so OCP::Drift's rex_probe mode can run it on
+# `ocp status` (which must never modify a host). One "OCP-DRIFT-PRESENT <path>"
+# line per legacy template still present; silence means clean. The marker string
+# is the one OCP::Drift matches ($OCP::Drift::REX_DRIFT_MARKER) -- keep the two
+# in step.
+desc "Report whether the obsolete pre-#23 containerd config template is still present (read-only)";
+task "detect_legacy_containerd_template", sub {
+    for my $path (_legacy_containerd_template_paths()) {
+        next unless is_file($path);
+        my $content = eval { cat $path };
+        next unless _is_legacy_containerd_template($content);
+        say "OCP-DRIFT-PRESENT $path";
+    }
+};
+
 desc "Remove the obsolete containerd config template OCP wrote before karr #23";
 task "cleanup_legacy_containerd_template", sub {
     for my $path (_legacy_containerd_template_paths()) {

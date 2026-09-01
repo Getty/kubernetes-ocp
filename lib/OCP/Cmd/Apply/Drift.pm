@@ -92,8 +92,9 @@ sub reconcile_components {
         print "  [..] Checking for drift...\n";
 
         my $drift = OCP::Drift->new(
-            config => $config,
-            api    => $self->_k8s_api,
+            config     => $config,
+            api        => $self->_k8s_api,
+            rex_prober => $self->rex_prober($config),
         )->detect;
 
         if (!@$drift) {
@@ -256,7 +257,7 @@ sub reconcile_components {
     if ($config->lbipam && $cp_ip) {
         $checked++;
         print "  [..] Checking LB-IPAM (opt-in)...\n";
-        eval { $self->_setup_lb_ipam($cp_ip); 1 }
+        eval { $self->_setup_lb_ipam($cp_ip, $config); 1 }
             ? print "  [ok] LB-IPAM up to date\n"
             : print "  [WARN] LB-IPAM setup failed: $@";
     }
@@ -335,8 +336,9 @@ sub dry_run_report {
     print "  [..] Checking for drift (read-only)...\n";
 
     my $drift = OCP::Drift->new(
-        config => $config,
-        api    => $self->_k8s_api,
+        config     => $config,
+        api        => $self->_k8s_api,
+        rex_prober => $self->rex_prober($config),
     )->detect;
 
     print "  [ok] No drift detected\n" unless @$drift;
@@ -379,7 +381,10 @@ sub run_remedy {
     my $remedy = $entry->{remedy} or return 0;
     return 0 unless ($remedy->{type} // '') eq 'rex';
 
-    my $host = $config->cluster_status->{public_ip};
+    # A host-side probe (OCP::Drift's rex_probe mode) names the machine it
+    # drifted on, so the fix runs there. Everything else keeps aiming at the
+    # control plane, as before.
+    my $host = $remedy->{host} // $config->cluster_status->{public_ip};
     unless ($host) {
         print "  [!!] No control plane address known, cannot run $remedy->{task}.\n";
         return 0;

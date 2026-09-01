@@ -11,6 +11,15 @@ has config => (is => 'ro', required => 1);
 # Kubernetes::REST api. Without it only spec drift is detectable.
 has api => (is => 'ro');
 
+# A rex prober: a coderef, called as $prober->($host, $task, \%params), that
+# runs a read-only detection task over SSH on $host and returns OCP::Rex's
+# result ({ stdout => ..., exit => ... }), or throws when the host cannot be
+# reached. This is OCP::Drift's second, SSH-side detection mode, and it has
+# failure modes the Kubernetes API does not -- host down, no key, slow link.
+# Without it, host-side probes are skipped, the same graceful degradation the
+# missing `api` gives spec-only detection. Built by OCP::Role::Cmd::rex_prober.
+has rex_prober => (is => 'ro');
+
 # Components whose running version can be read off a workload image.
 #
 #   remedy       the Rex task that brings the cluster back to the target, or
@@ -91,6 +100,39 @@ our @COREDNS_CONFIGMAPS = ('coredns', 'rke2-coredns-rke2-coredns');
 # The name `ocp apply` points at the node that serves the registry NodePorts.
 our $REGISTRY_HOSTNAME = 'registry.local';
 
+# Host-side probes: drift that lives on the machine, not in the Kubernetes API,
+# so no query the apiserver answers can see it. Each entry runs a read-only Rex
+# task over SSH on the hosts its selector names; a host whose stdout carries
+# $REX_DRIFT_MARKER gets a drift entry whose remedy is the cleanup task, run by
+# OCP::Cmd::Apply::Drift exactly like every other rex remedy. See rex_probe_drift.
+#
+#   host_selector   which machines to probe -- 'control_planes' for now
+#   detection_task  read-only Rex task; prints $REX_DRIFT_MARKER when the residue is present
+#   remedy_task     the Rex task that removes it
+#   message         the tail of the human-readable finding, after "<label> on <host>: "
+#
+# The marker string is shared with the detection tasks in share/Rexfile; the two
+# cannot import from each other (the Rexfile runs in its own rex process), so a
+# change here has to change there too, the same coupling @COREDNS_CONFIGMAPS has
+# with its writer.
+our $REX_DRIFT_MARKER = 'OCP-DRIFT-PRESENT';
+our @REX_PROBES = (
+    # The obsolete pre-#23 containerd config template (share/Rexfile's
+    # cleanup_legacy_containerd_template removes it). Reachable via install-only
+    # tasks, so an already-bootstrapped, only-ever-upgraded cluster never runs
+    # the cleanup on the reconcile path -- which is precisely the host that has
+    # it (karr #45/#71). The detection task is read-only so `ocp status` can run
+    # it without touching the host.
+    {
+        component      => 'legacy_containerd_template',
+        label          => 'Legacy containerd template',
+        host_selector  => 'control_planes',
+        detection_task => 'detect_legacy_containerd_template',
+        remedy_task    => 'cleanup_legacy_containerd_template',
+        message        => 'obsolete pre-#23 containerd config template present; ocp apply removes it',
+    },
+);
+
 sub detect {
     my ($self) = @_;
 
@@ -99,6 +141,7 @@ sub detect {
         push @drift, $self->component_drift;
         push @drift, $self->registry_dns_drift;
     }
+    push @drift, $self->rex_probe_drift if $self->rex_prober;
 
     return \@drift;
 }
@@ -376,6 +419,78 @@ sub registry_dns_drift {
 }
 
 #
+# Host-side drift: state on the machine that no Kubernetes query can see
+#
+# This is the SSH-side detection mode. Where component_drift asks the apiserver,
+# this runs a read-only Rex task on each host a probe selects and reads its
+# stdout for $REX_DRIFT_MARKER. Its failure modes are the ones the API path does
+# not have -- the host is down, the key needs a PIN, the link is slow -- and
+# none of them is drift: a probe that cannot run is carped to stderr and
+# skipped, so `ocp status` on an unreachable machine degrades to "could not
+# check" rather than blocking or reporting a clean host. Only a host that
+# answers with the marker becomes an entry, and that entry carries the cleanup
+# task as its remedy, with the host it drifted on, so the reconcile loop runs
+# the fix where the drift is.
+sub rex_probe_drift {
+    my ($self) = @_;
+
+    my $prober = $self->rex_prober or return;
+    my @drift;
+
+    for my $probe (@REX_PROBES) {
+        for my $host ($self->_probe_hosts($probe->{host_selector})) {
+            my $result = eval { $prober->($host, $probe->{detection_task}, {}) };
+            if (my $err = $@) {
+                chomp $err;
+                carp "OCP::Drift: probe '$probe->{detection_task}' on $host failed: $err";
+                next;
+            }
+            next unless $result;
+
+            my $out = ref $result eq 'HASH' ? ($result->{stdout} // '') : $result;
+            next unless defined $out && index($out, $REX_DRIFT_MARKER) >= 0;
+
+            push @drift, {
+                kind      => 'rex_probe',
+                component => $probe->{component},
+                label     => $probe->{label},
+                expected  => undef,
+                actual    => undef,
+                host      => $host,
+                message   => "$probe->{label} on $host: $probe->{message}",
+                remedy    => {
+                    type   => 'rex',
+                    task   => $probe->{remedy_task},
+                    host   => $host,
+                    params => {},
+                },
+            };
+        }
+    }
+
+    return @drift;
+}
+
+# The machines a host_selector names. Only 'control_planes' for now: the CPs
+# from ocp.yaml, addressed by their pinned public_ip (or host). A selector this
+# module does not know is a programmer error -- a probe table that named one out
+# of sync -- not a quiet empty list that silently probes nothing.
+sub _probe_hosts {
+    my ($self, $selector) = @_;
+    $selector //= 'control_planes';
+
+    croak "OCP::Drift: unknown host_selector '$selector'"
+        unless $selector eq 'control_planes';
+
+    my @hosts;
+    for my $cp (@{ $self->config->control_planes }) {
+        my $host = $cp->{public_ip} // $cp->{host};
+        push @hosts, $host if defined $host && length $host && $host ne '-';
+    }
+    return @hosts;
+}
+
+#
 # Helpers
 #
 
@@ -508,9 +623,10 @@ Each entry is a hashref:
 
 =over 4
 
-=item * B<kind> - C<spec>, C<version>, C<missing> or C<error>. C<error> is a query that
-could not be made -- revoked token, RBAC denial, TLS failure, apiserver 5xx --
-rather than a comparison that came back wrong.
+=item * B<kind> - C<spec>, C<version>, C<missing>, C<error> or C<rex_probe>.
+C<error> is a query that could not be made -- revoked token, RBAC denial, TLS
+failure, apiserver 5xx -- rather than a comparison that came back wrong.
+C<rex_probe> is host-side drift found over SSH rather than through the API.
 
 =item * B<component> - key in the version manifest, or the node name for spec drift
 
@@ -538,6 +654,16 @@ An L<OCP::Config>. Required.
 =head2 api
 
 A L<Kubernetes::REST> API object. Without it, only spec drift is detected.
+
+=head2 rex_prober
+
+A coderef, called as C<< $prober->($host, $task, \%params) >>, that runs a
+read-only detection task over SSH on C<$host> and returns L<OCP::Rex>'s result
+(C<< { stdout => ..., exit => ... } >>), or throws when the host cannot be
+reached. This is the second, SSH-side detection mode; without it, host-side
+probes are skipped just as spec-only detection skips the API when C<api> is
+absent. L<OCP::Role::Cmd/rex_prober> builds it, non-prompting, so C<ocp status>
+and the top of C<ocp apply> never grow a password prompt.
 
 =head1 METHODS
 
@@ -586,6 +712,21 @@ an address that is not the control plane's. Both distributions own that
 ConfigMap themselves and reset it on an upgrade or a restart, taking the record
 with them; C<ocp apply> writes it back, so the entry reports the window in
 between rather than a permanent fault, and carries no remedy of its own.
+
+=head2 rex_probe_drift
+
+Host-side drift found by running a read-only Rex task over SSH on the hosts a
+probe selects (C<@REX_PROBES>) and matching its stdout against
+C<$REX_DRIFT_MARKER>. A host that answers with the marker gets one
+C<kind =E<gt> 'rex_probe'> entry naming the host it drifted on and carrying the
+cleanup task as its C<remedy> (with that same host), so
+L<OCP::Cmd::Apply::Drift> runs the fix where the drift is.
+
+Needs L</rex_prober>; without it, nothing is probed. A probe that throws --
+host unreachable, no key, timeout -- is carped to stderr and skipped, never an
+exception and never drift, so a single unreachable machine cannot block
+C<detect> or make C<ocp status> a no-go. The first probe is the obsolete
+pre-#23 containerd config template on the control planes (karr #45/#71).
 
 =head2 resolve_address
 

@@ -1,37 +1,81 @@
 Revision history for OCP
 
 {{$NEXT}}
-- `ocp node add --gpu` now reaches the worker install (karr #70). The flag
-  was a JSON boolean on the OCPNode CR since #50; nothing on the CLI
-  path read it, so the field was decoration. `OCP::Node->
-  _install_kubernetes` now threads `spec.gpu` into the Rex params
-  (`gpu => 1` for true, `gpu => 0` for false; absent leaves OCP::Rex's
-  `// 1` default in charge -- what every worker does today -- and
-  flipping that default is a wider decision that belongs to karr #31,
-  robocop side). t/70-gpu-flag.t asserts the field reaches the Rex
-  call on both rke2 and k3s paths, and that `gpu_driver` stays out of
-  the params (the CRD has no `spec.gpu.driver`; that source lands
-  with #31).
-- Pin Perl baseline to 5.42.3 across Dockerfile, Makefile(snapshot), and
-      cpanfile floor (ADR 0025).
-- `OCP::Provider->from_cr` no longer reads `spec.ssh.keyPath` (karr #111).
-    The OCPNodeProvider CRD never declared that field; the API server
-    stripped it on the way past, and every provider CR was read back with
-    an empty path. The ssh branch of `from_cr` is gone -- ssh reads no
-    args from the CR today (spec.ssh carries only `user` + `keySecretRef`,
-    share/robocop/crds/ocpnodeprovider.yaml); the SSH private key travels
-    through `OCP::ClusterKey` / the CLI pipeline, not the CR (ADR 0027).
-    `OCP::Provider::SSH` documents that empty/undef ssh_key_path is
-    allowed and falls back to the default + identity, so removing the
-    dead reader is not a regression. t/49-provider-factory.t updated
-    the ssh fixture from `keyPath => '/k'` to `user => 'root'` (what
-    the CR writer actually produces) and still exercises the factory.
-- robocop's ClusterRole no longer asks for `events` create/patch
-    (karr #72). No Event writer exists in lib/ or bin/; the rule was a
-    no-op grant against a nonexistent caller. The three other rules stay
-    -- ocpnodeproviders/status, secrets list/watch and the existing
-    CR reads are judgement calls, not the unambiguous dead grant this
-    one was.
+    - Network path: the LoadBalancer IP pool and L2 announcement policy are now
+      configurable for multi-node clusters (k127). The pool no longer hands
+      the LoadBalancer the control-plane's own IP: `network.lb_pool` (a
+      `start`/`stop` range or a `cidr`) sets the pool, and the old `$node_ip/32`
+      trick survives only as the single-node fallback -- a multi-node cluster
+      with no `network.lb_pool` now dies with a message naming the key instead of
+      announcing an IP a node already owns. The L2 policy gained
+      `network.l2.node_selector` (a capability label) and `network.l2.interfaces`
+      so announcement can be scoped by node rather than by an interface-name
+      regex that matched a QSFP fabric and missed `enP7s7.30`; the built-in
+      regexes are now anchored (`^eth[0-9]+$`, `^en[a-z0-9]+$`) as a floor.
+      Manifests move to a pure `lb_ipam_resources($node_ip, $config)`, tested in
+      t/78-lb-ipam-multinode.t.
+    - `OCP::Drift` gained a second, SSH-side detection mode (k71). It
+      detected only through the Kubernetes API; it now also runs read-only Rex
+      probes to find host residue no API query can see. First probe:
+      `legacy_containerd_template` across the control planes, remedied by the
+      existing `cleanup_legacy_containerd_template` task (share/Rexfile gains a
+      read-only `detect_legacy_containerd_template`). The prober is injected like
+      `api` -- absent, or when no SSH key is obtainable without a PIN2 prompt, the
+      SSH mode is silently skipped, and a probe that throws (host down, no key,
+      slow) is carped to STDERR and skipped, never blocking `ocp status` or the
+      drift path. t/71-drift-rex-probe.t covers the lifecycle; the API-only claim
+      in t/71-cluster-ssh-key.t was replaced with its real intent (the read paths
+      never prompt).
+    - robocop finally reaches its reconciliation controller (k33, k1).
+      `bin/robocop` ignored @ARGV, so `robocop controller` (what the Deployment
+      runs) fell through to OCP::Robocop's disabled port-9999 key-injection stub
+      and blocked instead of reconciling. It now reads the subcommand and, for
+      `controller`, builds OCP::Robocop::Controller->from_env (ROBO_SSH_KEY,
+      RKE2_SERVER_URL, RKE2_TOKEN required; NAMESPACE, OCP_DISTRIBUTION optional;
+      a missing required var dies on STDERR). The controller no longer polls in a
+      sleep loop: it watches OCPNode over Net::Async::Kubernetes 0.008, driving
+      the unchanged OCP::Node state machine (lease check and _on_node_event /
+      _mark_failed error handling intact) on each event. Deployment Secret wiring
+      of those env vars is a separate lane (k101).
+    - `ocp node add --gpu` now reaches the worker install (karr #70). The flag
+      was a JSON boolean on the OCPNode CR since #50; nothing on the CLI
+      path read it, so the field was decoration. `OCP::Node->
+      _install_kubernetes` now threads `spec.gpu` into the Rex params
+      (`gpu => 1` for true, `gpu => 0` for false; absent leaves OCP::Rex's
+      `// 1` default in charge -- what every worker does today -- and
+      flipping that default is a wider decision that belongs to karr #31,
+      robocop side). t/70-gpu-flag.t asserts the field reaches the Rex
+      call on both rke2 and k3s paths, and that `gpu_driver` stays out of
+      the params (the CRD has no `spec.gpu.driver`; that source lands
+      with #31).
+    - Perl baseline pinned across image and snapshot (ADR 0025, karr #125).
+      Dockerfile and Makefile:snapshot both name `perl:5.42.3-slim-trixie`, so
+      the snapshot is resolved by the same Perl the image runs. `cpanfile`
+      gains a floor too, but a lower one: `perl 5.040001`, the system Perl of
+      the development machine. The floor is the oldest Perl OCP is expected to
+      run on, not the one that ships -- @Author::GETTY turns it into
+      MIN_PERL_VERSION, so a floor above the development machine would put
+      `make test-host` and `dzil build` below the distribution's own baseline.
+      What catches a dependency demanding a *newer* Perl is not the floor but
+      the pinned tag the snapshot is regenerated in.
+    - `OCP::Provider->from_cr` no longer reads `spec.ssh.keyPath` (karr #111).
+      The OCPNodeProvider CRD never declared that field; the API server
+      stripped it on the way past, and every provider CR was read back with
+      an empty path. The ssh branch of `from_cr` is gone -- ssh reads no
+      args from the CR today (spec.ssh carries only `user` + `keySecretRef`,
+      share/robocop/crds/ocpnodeprovider.yaml); the SSH private key travels
+      through `OCP::ClusterKey` / the CLI pipeline, not the CR (ADR 0027).
+      `OCP::Provider::SSH` documents that empty/undef ssh_key_path is
+      allowed and falls back to the default + identity, so removing the
+      dead reader is not a regression. t/49-provider-factory.t updated
+      the ssh fixture from `keyPath => '/k'` to `user => 'root'` (what
+      the CR writer actually produces) and still exercises the factory.
+    - robocop's ClusterRole no longer asks for `events` create/patch
+      (karr #72). No Event writer exists in lib/ or bin/; the rule was a
+      no-op grant against a nonexistent caller. The three other rules stay
+      -- ocpnodeproviders/status, secrets list/watch and the existing
+      CR reads are judgement calls, not the unambiguous dead grant this
+      one was.
     - `OCP::Config::validate` now accepts `local` as a worker-pool
       provider and rejects unknown ones with a message that lists the
       valid types (karr #115). The check routes through

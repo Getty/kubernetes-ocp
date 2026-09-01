@@ -1198,16 +1198,30 @@ subtest 'destroy in dev mode is unchanged' => sub {
 # ------------------------------------------------- `ocp status` stays read-only
 
 subtest 'the read-only paths cannot acquire a key, so they cannot prompt' => sub {
-    # `ocp status` and OCP::Drift answer entirely from the Kubernetes API.
-    # #87 must not have given either of them a reason to want a password:
-    # a read command that prompts is a read command that gets avoided.
+    # karr #71 gave the read paths a second, SSH-side detection mode, so they
+    # are no longer "Kubernetes API only". What must stay true is narrower and
+    # is the whole point of #87: they never PROMPT -- a read command that asks
+    # for a password is a read command that gets avoided. OCP::Drift does not
+    # open SSH itself (it calls an injected prober), and Status builds that
+    # prober through OCP::Role::Cmd::rex_prober, which is non-prompting by
+    # construction. So the guard is the prompting key builder, not the words.
     for my $file (qw(lib/OCP/Cmd/Status.pm lib/OCP/Drift.pm)) {
         my $source = path($file)->slurp;
-        unlike $source, qr/cluster_ssh_key|ClusterKey|ssh_private_key_path/,
-            "$file asks for no SSH key";
-        unlike $source, qr/OCP::Rex|OCP::SSH|prompt_password/,
-            "$file opens no SSH connection and prompts for nothing";
+        unlike $source, qr/->cluster_ssh_key\b(?!_if_known)|ClusterKey/,
+            "$file never reaches the prompting cluster key (what costs a PIN2)";
+        unlike $source, qr/\buse OCP::(?:Rex|SSH)\b|prompt_password/,
+            "$file imports no SSH client and opens no connection of its own";
     }
+
+    # The prober the read paths do use takes only a key already in hand and
+    # never builds one, so no `ocp status` and no dry run can grow a prompt.
+    my $role = path('lib/OCP/Role/Cmd.pm')->slurp;
+    my ($prober) = $role =~ /sub rex_prober \{(.*?)\n\}/ms;
+    ok $prober, 'found rex_prober';
+    like $prober, qr/cluster_ssh_key_if_known/,
+        'rex_prober uses only a key already cached';
+    unlike $prober, qr/->cluster_ssh_key\b(?!_if_known)|ClusterKey->/,
+        'and never builds one, so the read-path probe cannot prompt';
 
     # And the dry run stops before the only step on the reconcile path that
     # could want one.
