@@ -1,0 +1,36 @@
+---
+claimed_at: 2026-09-02T04:52:45Z
+claimed_by: main-agent
+class: standard
+completed: 2026-09-02T04:52:45Z
+created: 2026-09-01T14:24:48Z
+id: 128
+priority: low
+started: 2026-09-02T01:46:10Z
+status: done
+tags:
+- docs
+- convention
+title: 'Migrate #NN -> kNN ticket notation repo-wide'
+updated: 2026-09-02T04:52:45Z
+---
+
+Die alte #NN / "karr #NN"-Notation steht noch an vielen Stellen; kNN ist die Konvention (kanban-issues-karr-cli Skill, "Referring to a karr id"): eine Forge loest #NN gegen ihren EIGENEN Issue-Tracker auf.
+
+Bereits gefixt (2026-09-01): die vier Commit-Messages dieser Session, meine drei Changes-Bullets (k33/k71/k127/k101), und .claude/rules/ocp-rules.md (Regel verlangt jetzt Skill-Load vor jedem Schreiben + kNN inline).
+
+OFFEN, nach Schaden sortiert:
+- ADR-Bodies (docs/adr/*.md): MARKDOWN, die Forge verlinkt #NN -> schaedlich. Voller Sweep #NN->kNN, konsistent pro Datei (nicht nur neue Amendment-Zeilen).
+- Changes {{$NEXT}}: ~50 historische Bullets fruehere Sessions (k30..k124) noch in #NN. Alles unreleased, ein mechanischer Sweep als eigener Commit (blame-bewusst).
+- .pm / share/Rexfile Kommentare: #NN wird NICHT als Markdown gerendert -> nicht schaedlich, aber der Konsistenz halber mitziehen.
+
+Mechanik: perl -pi -e "s/\bkarr #(\d+)/k\$1/g; s/#(\d+)/k\$1/g" pro Datei, danach pruefen dass keine Nicht-Ticket-#-Zahlen getroffen wurden (Ports, HTTP-Codes haben kein #). Kein t/-Fixture mit echtem #NN-Vertrag brechen.
+
+TEILFORTSCHRITT 2026-09-02 (ocp-doc-writer, main-agent verifiziert). Named scope des Bodies ERLEDIGT: docs/adr/*.md (23 Dateien, voller per-Datei-Sweep), Changes (63 Zeilen, ganzer {{$NEXT}}-Block), .pm/bin/robocop/share/Rexfile-Kommentare+POD (30 Dateien). 56 files, +362/-340. Verifiziert: nur noch Upstream-Forge-Refs offen (rancher/rke2#4940 in ADR 0022, NVIDIA/gpu-operator#1794 in Versions.pm) - korrekt bewahrt, kein karr-Ticket. Keine Markdown-Header getroffen, perl -c auf angefasste Dateien OK.
+BEWUSST als #NN gelassen (Streitfall, Maintainer-Entscheidung): 4 Output-/Daten-String-Literale, KEINE Kommentare, daher ausserhalb der .pm-Kommentar-Guardrail und behavior-relevant: OCP/Drift.pm:132 (message 'obsolete pre-#23...'), OCP/Cmd/Destroy.pm:67 (print 'fix for karr #98'), share/Rexfile:1083/1093/1105 (desc/say). Terminal-Output, KEIN Markdown -> nicht schaedlich; Aenderung waere Verhaltensaenderung (Output-Text) und braeuchte eigene Lane + Test-Check. Belassen.
+NOCH OFFEN (Titel sagt repo-wide): t/ traegt #NN in Kommentaren + Test-Beschreibungslabels (43 Dateien). Wird an ocp-test-writer delegiert (t/ ist delegations-gelockt), mit Vertragsschutz: Destroy.pm gibt weiter 'karr #98' aus -> Output-asserts nicht umschreiben.
+
+2026-09-02 01:46 SWEEP KOMPLETT (repo-wide), in Review. 103 Dateien, +540/-518, ueber 3 Lanes: docs/adr (23) + Changes (63 Zeilen) + lib/bin/share-Kommentare+POD (ocp-doc-writer); t/ (43 Dateien, 202 Stellen, 737 Tests gruen, ocp-test-writer); share/robocop/*.yaml (5 Kommentare, ocp-infra-worker); Makefile:60 (main-agent). Verifiziert: kein verbleibendes #NN ausser den bewusst gelassenen; kein 'karr kNN'-Ausreisser (t/129 'karr k129' ist HEAD-Altbestand, nie #NN, out-of-scope wie 'ticket k1'). Upstream-Forge-Refs korrekt bewahrt: rancher/rke2#4940, NVIDIA/gpu-operator#1794 (Versions.pm + t/65), kubernetes-sigs/dra-driver-nvidia-gpu#1115.
+OFFENE MAINTAINER-ENTSCHEIDUNG (warum noch nicht done): 5 Output-/Daten-String-Literale bewusst als #NN belassen, weil behavior-relevant (User-facing Ausgabe, kein Kommentar) und NICHT schaedlich (Terminal, kein Markdown): OCP/Cmd/Destroy.pm:67 (print 'fix for karr #98'), OCP/Drift.pm:132 (message 'pre-#23'), share/Rexfile:1083/1093/1105 (desc/say 'pre-#23' / 'before karr #23'). Umschreiben = Output-Verhaltensaenderung, braucht Go + Test-Check. Bis Entscheidung: belassen. NICHT committet (Hausregel: nur auf Ansage).
+
+ABGESCHLOSSEN 2026-09-02. Maintainer-Entscheidung: die 5 Output-Strings MITZIEHEN - erledigt ueber die korrekten Lanes (Destroy.pm k98 / ocp-destroy-worker; Drift.pm pre-k23 / ocp-state-worker; Rexfile 3x pre-k23+before-k23 / ocp-infra-worker), jeweils verifiziert dass KEIN Test die exakte Ausgabe asserted, betroffene Tests gruen. FINAL: kein Ticket-#NN mehr im Repo (nur Upstream owner/repo#NN bewahrt: rancher/rke2#4940, NVIDIA/gpu-operator#1794, kubernetes-sigs/dra-driver-nvidia-gpu#1115). t/129 'karr k129' ist HEAD-Altbestand ohne # und ausserhalb der Mechanik (wie 'ticket k1'). Committet auf Branch k128-k130-notation-and-skill: 6363b11 (k128, 101 Dateien, 503/503). k130 separat: f62299e.
