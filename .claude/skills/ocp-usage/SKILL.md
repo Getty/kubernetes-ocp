@@ -11,6 +11,10 @@ Docker image (not `--help` text or source inspection alone — see the note on
 dash/underscore flags below, where `--help` output alone would have been actively
 misleading).
 
+Not on CPAN: `dist.ini` sets `no_cpan = 1`, so `cpanm OCP` finds nothing. Run `ocp` via
+the Docker image (`docker pull raudssus/ocp`) or a git checkout with
+`cpanm --installdeps .` — see `README.md` for both paths.
+
 ## Standard Workflow
 
 ```bash
@@ -25,9 +29,12 @@ ocp destroy                 # tear down cluster (real servers!)
 `ocp apply` deploys robocop itself when `robocop` is enabled and workers exist;
 if robocop isn't ready within 60s, apply falls back to CLI-side reconcile via
 `OCP::Node`. `ocp deploy-robocop` still exists as a manual/standalone step.
-`ocp inject-key` is **disabled** — it dies with an explanation (the old
-kubectl port-forward path was removed; pending reimplementation via
-Kubernetes::REST port_forward).
+`ocp inject-key` no longer exists as a command (dropped in k59/728cb14, no
+`OCP::Cmd::InjectKey`, no alias in `OCP.pm`) — the robocop credential story
+today is `robocop.security_level`: `secret` (default) | `secret_approved` |
+`inject`, with `inject` accepted by config but refused cleanly in
+`OCP::Cmd::DeployRobocop` ("robocop.security_level 'inject' is not yet
+available (k2)").
 
 ## Command Reference
 
@@ -70,7 +77,6 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp version` — versions (needs the ocpVersion stamp for "deployed")
 - `ocp ssh --node <name|ip>` — SSH to nodes (admin-key, PIN2)
 - `ocp deploy-robocop` — robocop + CRDs standalone
-- `ocp inject-key` — disabled (dies with explanation)
 - `ocp hetzner [--list] [--label KEY=VAL]` — Hetzner debugging
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--nowait]`
@@ -165,7 +171,9 @@ gpu:
 - **keys.yaml** two tiers and only two: **robo-ssh** (automation) age-only, no
   PIN2; **admin-ssh** (everything a human triggers) age + PIN2.
 - robo-key cannot reach control planes — by convention; currently it is never
-  deployed at all (inject-key disabled).
+  deployed at all (`robocop.security_level: inject`, the only mode that would
+  deploy it, is refused cleanly by `OCP::Cmd::DeployRobocop`, "not yet
+  available (k2)").
 - **The admin key opens every machine, on every provider.** Hetzner gets it
   through the API before the server exists; a `provider: ssh` machine gets it
   from a human (`ocp keys show --purpose admin` → `authorized_keys`). The
@@ -209,8 +217,11 @@ by dropping the bootstrap key, and neither is covered anywhere else.
   its public half into any `authorized_keys`: `OCP::ClusterKey` only ever
   selects the bootstrap key (dev mode) or the admin key (secure mode), and
   the Hetzner worker path uploads the admin key's name too (`ssh_key_name`
-  ← `admin_ssh_key_name`). Deploying the robo key anywhere is `ocp
-  inject-key`, currently disabled. So PIN1 alone opens no SSH door at all.
+  ← `admin_ssh_key_name`). Deploying the robo key anywhere would need
+  `robocop.security_level: inject`, which `OCP::Cmd::DeployRobocop` refuses
+  cleanly today ("not yet available (k2)") — there is no `ocp inject-key`
+  command any more (dropped in k59/728cb14). So PIN1 alone opens no SSH door
+  at all.
 - **No rotation command exists.** `ocp keys` has only `show`
   (`OCP::Cmd::Keys` dispatches to `Show` alone); `ocp init`, even
   `--force`, skips key generation entirely whenever an automation-purpose
