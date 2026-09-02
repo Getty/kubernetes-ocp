@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-09-02T01:27:39Z
+created: 2026-09-01T19:50:57Z
+id: 130
+priority: medium
+started: 2026-09-02T01:27:39Z
+status: done
+tags:
+- docs
+- skill
+- ocp-usage
+title: 'ocp-usage Skill veraltet: inject-key entfernt + CPAN-Install falsch'
+updated: 2026-09-02T01:27:39Z
+---
+
+Beim README-Neuschrieb (2026-09-01) gefunden: der ocp-usage-Skill (shared manage-skills-HARDLINK) enthaelt zwei falsche Aussagen, die jede KI in die Irre fuehren, die ihn liest:
+
+1. ocp inject-key wird als "disabled - dies with an explanation" beschrieben. STALE: das Kommando ist komplett entfernt (Commit 728cb14, kein OCP::Cmd::InjectKey, kein Alias in OCP.pm). Heute ist es schlicht ein unbekanntes Kommando. Die robocop-Credential-Story ist jetzt robocop.security_level (secret|secret_approved|inject, k129) - inject wird in DeployRobocop mit "not yet available (k2)" abgewiesen. Der Skill muss darauf zeigen statt auf inject-key.
+2. CPAN-Install (cpanm OCP) erwaehnt/impliziert. FALSCH: dist.ini hat no_cpan = 1, die Distribution ist nicht auf CPAN. Install ist Docker (raudssus/ocp) oder git-checkout.
+
+WICHTIG: ocp-usage ist ein Hardlink (manage-skills). NICHT mit Edit/Write bearbeiten - per cat > datei, und die Aenderung propagiert an alle verlinkten Repos (manage-skills sync). Skill manage-skills / getty-skill-library beachten.
+
+Lane: ocp-doc-writer (manage-skills-bewusst). Ref: README-Neuschrieb committet in dieser Session; k129 (security_level), k59 (tote Kommandos entfernt).
+
+ERLEDIGT 2026-09-02 (ocp-doc-writer, main-agent verifiziert). ocp-usage/SKILL.md korrigiert: (1) vier veraltete 'ocp inject-key disabled'-Stellen entfernt bzw. auf die aktuelle robocop.security_level-Story (secret|secret_approved|inject, inject wird in DeployRobocop mit 'not yet available (k2)' abgewiesen) umgestellt; (2) Install-Hinweis ergaenzt: no_cpan=1, also Docker (raudssus/ocp) oder git-checkout statt cpanm OCP. BEFUND: ocp-usage ist manage-skills-OWNED von diesem Repo (source of truth, kein Downstream-Hardlink) - link-count 1 ist kein Drift, keine Propagierung noetig. Aussagen am Code verifiziert (kein OCP::Cmd::InjectKey seit k59/728cb14; DeployRobocop.pm:36-41; Config.pm:193-218; dist.ini no_cpan).
