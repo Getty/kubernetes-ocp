@@ -253,8 +253,8 @@ subtest 'OCP writes no containerd configuration for the GPU' => sub {
         'nothing claims to configure RKE2 while running under k3s';
 
     # Both paths do appear in the Rexfile again, but only in
-    # cleanup_legacy_containerd_template, which REMOVES the template a pre-#23
-    # OCP left behind on hosts that are never destroyed (karr #45). The claim
+    # cleanup_legacy_containerd_template, which REMOVES the template a pre-k23
+    # OCP left behind on hosts that are never destroyed (k45). The claim
     # of this subtest is unchanged — OCP writes no containerd config — so it is
     # asserted against everything except that task, which also pins the
     # mentions to it: no future writer can hide behind the exception.

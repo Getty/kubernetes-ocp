@@ -21,7 +21,7 @@ use OCP::SSH;
 with 'OCP::Role::Cmd';
 
 # The K8s Secret DeployRobocop populates so the controller can reach the
-# cluster. Worker R's deployment.yaml only references it (karr #129).
+# cluster. Worker R's deployment.yaml only references it (k129).
 my $CREDENTIALS_SECRET = 'robocop-credentials';
 my $ROBOCOP_NAMESPACE  = 'ocp-system';
 
@@ -34,7 +34,7 @@ sub execute {
     my $config  = OCP::Config->new(file => $file);
 
     # Decide the key-delivery model before touching the cluster. inject is
-    # config-accepted but not yet built (karr #2), so it dies here, clean,
+    # config-accepted but not yet built (k2), so it dies here, clean,
     # before any credential is decrypted or any resource applied.
     my $level = $config->robocop_security_level;
     die "robocop.security_level 'inject' is not yet available (k2)\n"
@@ -84,13 +84,13 @@ sub execute {
 
 # Write the robocop-credentials Secret according to security_level.
 #
-# Three keys go in, and only three (karr #129, Weg A):
+# Three keys go in, and only three (k129, Weg A):
 #   robo-ssh-key   the decrypted PRIVATE robo (automation) key
 #   server-url     the RKE2 join URL
 #   rke2-token     the node-join token, read off the control-plane disk over SSH
 #
 # The token lives ONLY as a file on the control plane (no K8s Secret holds it —
-# verified for karr #129), so it has to be read over SSH. Reaching the control
+# verified for k129), so it has to be read over SSH. Reaching the control
 # plane needs the key its machines trust: the admin key (PIN2) in secure mode,
 # the bootstrap key in --nopassword dev mode. secret_approved unlocks that admin
 # key as its explicit approval and reuses it for the SSH read, so a single PIN2
@@ -139,7 +139,7 @@ sub _apply_credentials_secret {
 }
 
 # Host + private key for reaching the control plane. This is the deploy-path
-# STOP the coordinator asked for (karr #129): when there is no address, or no
+# STOP the coordinator asked for (k129): when there is no address, or no
 # key can be had, the token cannot be read at all and there is nothing to fall
 # back to, so it dies with a message naming what was missing.
 #
@@ -265,13 +265,13 @@ OCP::Cmd::DeployRobocop - Deploy robocop controller to the cluster
     ocp deploy-robocop
 
 Before the manifests, populates the C<robocop-credentials> Secret in
-C<ocp-system> that the controller mounts (karr #129). Per
+C<ocp-system> that the controller mounts (k129). Per
 C<robocop.security_level> it writes three keys: C<robo-ssh-key> (the decrypted
 private robo key), C<server-url> (the RKE2 join URL) and C<rke2-token> (the
 node-join token, read off the control-plane disk over SSH). C<secret> gates the
 write behind PIN1 for the age key and whatever key reaches the control plane;
 C<secret_approved> additionally requires an explicit PIN2 admin approval, reused
-for the SSH read; C<inject> is deferred (karr #2) and refused cleanly.
+for the SSH read; C<inject> is deferred (k2) and refused cleanly.
 
 Then reads manifests from the OCP share directory (C<share/robocop/>), applies
 CRDs first and then remaining resources (skipping C<kustomization.yaml>) via

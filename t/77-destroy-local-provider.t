@@ -10,7 +10,7 @@ use OCP::Cmd::Destroy;
 use OCP::Config;
 
 #
-# karr #116: `ocp destroy` left the local-provider node running. Two halves of
+# k116: `ocp destroy` left the local-provider node running. Two halves of
 # the same drop -- both are missed by `eq 'ssh'`:
 #
 #   1. The fallback node list (no .ocp/status.yaml) hard-coded
@@ -191,7 +191,7 @@ subtest 'fallback path: a local worker pool reaches the delete loop' => sub {
 
 subtest 'delete dispatch: local and ssh share the same role and the same branch' => sub {
     # The loop has one branch for clouds (Hetzner) and one for existing-host
-    # providers (ssh, local). Before karr #116 the second branch literally
+    # providers (ssh, local). Before k116 the second branch literally
     # checked for 'ssh', so 'local' silently fell through -- the same way a
     # future provider type would silently fall through today.
     my $src = path('lib/OCP/Cmd/Destroy.pm')->slurp;
@@ -210,7 +210,7 @@ subtest 'delete dispatch: local and ssh share the same role and the same branch'
 };
 
 subtest 'regression: the gate is known_type(), not an eq on the literal' => sub {
-    # Same shape karr #103 used in six other places. If anyone re-hardcodes
+    # Same shape k103 used in six other places. If anyone re-hardcodes
     # the `eq 'ssh'` form here, the next provider type OCP adds (the only
     # list in OCP::Provider->types) will be silently dropped again.
     my $src = path('lib/OCP/Cmd/Destroy.pm')->slurp;

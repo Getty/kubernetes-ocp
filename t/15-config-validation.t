@@ -140,7 +140,7 @@ my $tmpdir = tempdir(CLEANUP => 1);
 }
 
 #
-# Worker pool provider is validated against OCP::Provider->types (karr #115):
+# Worker pool provider is validated against OCP::Provider->types (k115):
 # `local` is a real type and must be accepted; an unknown type must be
 # rejected with a message that names the valid ones, mirroring the
 # control-plane check above.

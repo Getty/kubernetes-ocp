@@ -20,9 +20,9 @@ spec:
     spec:
       serviceAccountName: robocop
       # Pin to the control-plane node: robocop only ever needs to run where
-      # the CP server lives (always amd64 in this project — see karr #10).
+      # the CP server lives (always amd64 in this project — see k10).
       # Workers may be a different arch (e.g. arm64 GB10/DGX Spark, karr
-      # #25), which is irrelevant if robocop never lands there.
+      # k25), which is irrelevant if robocop never lands there.
       #
       # RKE2 applies node-role.kubernetes.io/control-plane AND
       # node-role.kubernetes.io/master (label + NoSchedule taint) to server
@@ -65,7 +65,7 @@ spec:
         # Credentials the controller needs (OCP::Robocop::Controller::from_env
         # reads them as required env vars). All three are delivered through the
         # robocop-credentials Secret that `ocp deploy-robocop` writes at deploy
-        # time (karr #129, Weg A). The RKE2 join token is NOT readable in-cluster
+        # time (k129, Weg A). The RKE2 join token is NOT readable in-cluster
         # via the K8s API -- it is a file on the CP disk that also encrypts the
         # datastore bootstrap data -- so it travels here as the rke2-token Secret
         # key rather than being read from the cluster.

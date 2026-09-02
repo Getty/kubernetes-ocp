@@ -194,7 +194,7 @@ subtest 'requires --host for ssh provider' => sub {
     like $@, qr/--host.*required.*ssh/i, 'ssh requires --host';
 };
 
-subtest 'accepts every type OCP::Provider knows (karr #121)' => sub {
+subtest 'accepts every type OCP::Provider knows (k121)' => sub {
     # The if/elsif/elsif chain hand-coded 'hetzner'/'ssh'/'local' and only
     # used OCP::Provider->types in the unknown branch — so adding a fourth
     # provider to the factory sent it straight to "Unknown provider type",
@@ -225,7 +225,7 @@ subtest 'accepts every type OCP::Provider knows (karr #121)' => sub {
     }
 };
 
-subtest 'the unknown branch lists every type the factory knows (karr #121)' => sub {
+subtest 'the unknown branch lists every type the factory knows (k121)' => sub {
     # The other half of the same fix: the rejection must name the values
     # that would have worked, read from OCP::Provider->types. A test that
     # omits 'local' (or whatever else the factory has) from the listing
@@ -429,7 +429,7 @@ subtest 'cr spec omits optional fields when not provided' => sub {
 #
 # Both wait paths -- the one where robocop does the work and the one where this
 # command does it -- can sit here for a quarter of an hour (OCP::Node's
-# READY_TIMEOUT, and the sum of waits it is made of, karr #109). They used to do
+# READY_TIMEOUT, and the sum of waits it is made of, k109). They used to do
 # it in silence, and answer a budget that ran out with a bare "did not reach
 # Ready state" plus an SSH-key hint, which is the wrong diagnosis for a machine
 # that is merely still installing.
@@ -475,7 +475,7 @@ subtest 'the wait says what it is waiting for, once per phase' => sub {
     # _cli_reconcile is skipped, no SSH is opened, and OCP::Node is driven
     # with no join token. Tests that need a CP IP set cluster_status and/or
     # control_planes to whatever shape they want; the regression test for
-    # karr #120 sets BOTH with different IPs so a wrong read is impossible
+    # k120 sets BOTH with different IPs so a wrong read is impossible
     # to mistake for a correct one.
     package FakeAddConfig;
     sub new {
@@ -584,7 +584,7 @@ subtest 'explicit --provider overrides implicit resolution' => sub {
 # wrong source for `ocp node add` -- the SSH call to read the join token
 # needs the address that is reachable right now, and on a cluster whose CP
 # IP drifted since the last apply the spec IP is the one that does not
-# work (karr #120, sibling of karr #98).
+# work (k120, sibling of k98).
 #
 # These tests pin where _cli_reconcile reads the IP from. The plumbing
 # beyond that (OCP::SSH->new, cluster_ssh_key, the run that fetches the
@@ -657,7 +657,7 @@ subtest 'CP IP comes from status, not spec' => sub {
     # Spec and status disagree on a CP whose IP drifted since the last
     # `ocp apply`. The SSH call must follow status -- the address that is
     # actually reachable -- not the spec entry the operator typed when the
-    # cluster was built (karr #120). Both sources are populated with
+    # cluster was built (k120). Both sources are populated with
     # different IPs so a wrong read is unambiguous.
     my $r = cli_reconcile_for_ip(
         cluster_status => { public_ip => '192.168.1.1', name => 'cp-1' },

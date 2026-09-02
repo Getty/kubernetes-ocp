@@ -13,7 +13,7 @@ own version of something the distribution generates.
 resolves. k3s already ships a Corefile with a `hosts /etc/coredns/NodeHosts`
 plugin. CoreDNS allows the plugin once per server block, so cluster DNS died:
 `plugin/hosts: this plugin can only be used once per Server Block`, CoreDNS in
-CrashLoopBackOff (karr #15). RKE2's Corefile has no `NodeHosts` block, so the
+CrashLoopBackOff (k15). RKE2's Corefile has no `NodeHosts` block, so the
 bug was invisible on the distribution the smoke test used.
 
 **containerd.** OCP wrote `config.toml.tmpl` to configure the NVIDIA runtime.
@@ -22,7 +22,7 @@ a silent no-op; the machine worked only because k3s finds the runtime itself.
 The larger finding was in the template: it had no `{{ template "base" . }}`.
 k3s and RKE2 render a template *instead of* their generated config, so on an
 RKE2 GPU node that file would have discarded the registry mirrors, the sandbox
-image and the CNI settings (karr #23).
+image and the CNI settings (k23).
 
 Both distributions scan `$PATH` for `nvidia-container-runtime` at service start
 — with `/usr/local/nvidia/toolkit` and `/opt/kwasm/bin` prepended, exactly where
@@ -79,7 +79,7 @@ it, or does nothing at all.
   (ADR 0018) and the drift is self-healing.
 - The window between the upgrade and the next apply stays open, deliberately.
   It is reported rather than closed by a second, upgrade-durable mechanism;
-  see ADR 0022 for the measurements behind that (karr #19).
+  see ADR 0022 for the measurements behind that (k19).
 - The ConfigMap has to be looked up under both names, because RKE2's is
   Helm-mangled (`rke2-coredns-rke2-coredns`). That list is shared between the
   writer and the drift reader so they cannot diverge — and so is

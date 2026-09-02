@@ -81,7 +81,7 @@ other component's verdict reaches it as a return value.
 - **`force: false`** — a hand-edited field would then block convergence
   silently; OCP is the declared owner of what it applies and says so.
 - **Carrying the hash as an annotation on the object instead of in a local
-  file** — the larger of the two directions weighed in karr #43, rejected
+  file** — the larger of the two directions weighed in k43, rejected
   2026-08-15. An annotation's whole value is that it dies with the object; but
   it dies only with *the* object it hangs on. A hash annotated on the
   `ocp-system` Namespace survives the deletion of a Deployment inside it
@@ -110,13 +110,13 @@ other component's verdict reaches it as a return value.
   that whatever consults `_load_deployed_hashes` also asks the cluster — but it
   reads `OCP::Cmd::Apply` and `OCP::Cmd::Apply::Drift` only. The readers that
   moved into `Registry` and `Workloads` during the Phase 8 extraction satisfy
-  the invariant and are not currently scanned for it (karr #68).
+  the invariant and are not currently scanned for it (k68).
 - A second reader of the hash file is a second judge with less evidence, and it
   is wrong in one specific direction. The reconcile path used to form the GPU
   operator's verdict itself, by diffing `.ocp/deployed.yaml` before and after
   the step; that comparison cannot see `restored` at all, so an operator gone
   from the cluster and put back at an unchanged hash reported as "up to date".
-  Closed in karr #46 — the outcome vocabulary is now the whole interface
+  Closed in k46 — the outcome vocabulary is now the whole interface
   between a setup step and whoever called it.
 - `.ocp/deployed.yaml` is disposable (ADR 0004): losing it costs one full
   redeploy, not correctness. Keeping it past the cluster it describes costs
@@ -135,7 +135,7 @@ Until this date the third Consequence read:
 
 It was already only half true when it was written — NFD, the GPU operator and
 cert-manager asked the cluster before skipping, the registry was the one that
-did not — and karr #43 is what the other half cost. `ocp destroy` left
+did not — and k43 is what the other half cost. `ocp destroy` left
 `.ocp/deployed.yaml` behind; the next `ocp apply`, against a cluster built from
 scratch, matched the old hash, announced "Registry already deployed (up to
 date)" over an empty `ocp-system`, and pointed CoreDNS at a registry that had
@@ -146,7 +146,7 @@ luck — the other three carry distribution-dependent values whose hash changed
 with the k3s → RKE2 switch. On the same distribution, destroy + apply would
 have skipped everything.
 
-karr #43 closed the gap in the registry, gave the hash file one definition
+k43 closed the gap in the registry, gave the hash file one definition
 (`OCP::Config->deployed_file`, removed by `ocp destroy` together with
 `status.yaml` — ADR 0004), and rejected the annotation variant recorded above.
 `t/47-deployed-state.t` holds the general form.
@@ -154,4 +154,4 @@ karr #43 closed the gap in the registry, gave the hash file one definition
 The decision itself did not change. Convergence is still hash-gated, and the
 hash is still the reason the frequently-run reconcile path stays cheap
 (ADR 0018). What changed is its standing as evidence — which it never had on
-its own. Recorded under karr #47.
+its own. Recorded under k47.

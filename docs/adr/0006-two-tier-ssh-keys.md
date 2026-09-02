@@ -84,11 +84,11 @@ By intent, the robo-key does not reach control planes.
 - **Keys outside the repository** — see ADR 0005; the project would stop being
   self-contained.
 - **Keeping the decrypted admin key on disk so the non-interactive paths can
-  read it without PIN2** — the third way karr #87 weighed. It removes the second
+  read it without PIN2** — the third way k87 weighed. It removes the second
   factor while leaving its name in place: the artefact it produces is precisely
   the one the password layer exists to prevent.
 - **Leaving `ocp update`, `ocp node add` and drift remediation unusable on
-  secure-mode clusters and documenting that** — the interim state karr #87
+  secure-mode clusters and documenting that** — the interim state k87
   recorded. It makes the most security-conscious configuration the least
   operable one, which is a reliable way to get people to stop choosing it.
 
@@ -99,7 +99,7 @@ By intent, the robo-key does not reach control planes.
   someone authorising the robo-key on a control plane.
 - The robo-key is currently never deployed at all: `ocp inject-key` is
   disabled because it needs a port-forward that the Kubernetes client does not
-  provide (karr #2, and ADR 0021). The two-tier model is therefore in force
+  provide (k2, and ADR 0021). The two-tier model is therefore in force
   in the key store and not yet in the cluster.
 - Two encryption paths mean two decryption paths, and a key's type must be
   detected rather than assumed — `decrypt_key` sniffs the envelope.
@@ -127,7 +127,7 @@ By intent, the robo-key does not reach control planes.
 - `ocp ssh` and `ocp apply`'s first-deploy prompt sit outside the rules above:
   both reach for the admin key unconditionally, in every mode and on every
   provider. In `--nopassword` dev mode there is no admin key to find, so
-  `ocp ssh` cannot work there at all. Tracked as karr #94, and largely dissolved
+  `ocp ssh` cannot work there at all. Tracked as k94, and largely dissolved
   by ADR 0027 — once the admin key is the only secure-mode credential,
   unconditional is the right behaviour for secure mode and only dev mode is left
   to handle.
@@ -150,7 +150,7 @@ because they never got that far. All three handed Rex
 `$config->ssh_private_key_path` — `.ocp/id_ed25519` — as the key to log in with.
 On a machine OCP created, that key was never distributed: the admin public key
 goes up through the provider API before the server exists, and `ocp init` does
-not create a bootstrap key for that combination at all (karr #85). So on a
+not create a bootstrap key for that combination at all (k85). So on a
 secure-mode Hetzner cluster `ocp update` died with "cannot read SSH key",
 `ocp node add` could not fetch the join token, and drift remediation declined
 every finding it made. The missing prompt was breakage, and this ADR recorded it
@@ -158,10 +158,10 @@ as policy — which is the specific failure the record exists to prevent, becaus
 "these commands need no second factor" reads as a licence to keep them that way.
 
 Nothing about the decision moved, and this is not a reversal. `OCP::ClusterKey`
-(karr #87) gathered the question into one place and made the decision apply
+(k87) gathered the question into one place and made the decision apply
 consistently, so three commands now prompt where they used to fail — the
 decision doing its work rather than a change of mind. The particular selection
-rule #87 arrived at, *who created the machine decides which key it trusts*, was
+rule k87 arrived at, *who created the machine decides which key it trusts*, was
 itself short-lived and is settled instead by ADR 0027, which removes the
 unencrypted third credential the rule existed to choose.
 
@@ -179,8 +179,8 @@ PIN1 paragraph gained the distinction between access and identity — possessing
 the repository still yields no access, but it does yield the recipient that
 every SOPS file names in plaintext. That is not a weakening of the outer gate;
 it is the fact `ocp init` failed to consult when it minted a fresh age key over
-a clone's committed material and orphaned it (karr #86). Recorded under karr #87
-and #86.
+a clone's committed material and orphaned it (k86). Recorded under k87
+and k86.
 
 This ADR keeps `Status: accepted`. Its decision — two keys in `keys.yaml`, two
 encryption strengths, two threat models — is untouched by ADR 0027; what 0027

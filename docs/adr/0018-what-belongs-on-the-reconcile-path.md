@@ -54,7 +54,7 @@ a node it named differently from the way bootstrap named it.
 ## Consequences
 
 - Adding a worker to `ocp.yaml` and running `ocp apply` on an existing cluster
-  does nothing: no CR, no server, no message (karr #26). The gap is named, not
+  does nothing: no CR, no server, no message (k26). The gap is named, not
   accidental. The shape of the eventual fix — write the CRs and let robocop
   drive, an explicit `--workers` flag, or `ocp node add` staying the only way —
   is undecided.

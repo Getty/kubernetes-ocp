@@ -12,7 +12,7 @@ use OCP::Keys;
 use OCP::Secrets;
 use File::SOPS;
 
-# karr #86 — `ocp init` on a fresh clone used to destroy the project.
+# k86 — `ocp init` on a fresh clone used to destroy the project.
 #
 # .ocp/ is gitignored (ADR 0004), the encrypted files are not: a colleague who
 # clones the repo has keys.yaml, secrets.yaml and age.key.enc, but no
@@ -387,16 +387,16 @@ subtest 'project_has_age_key answers for the project, not for this machine' => s
         'and it reports which recipient it is bound to';
 };
 
-# ----------------------------------------------------------- karr #118
+# ----------------------------------------------------------- k118
 
 subtest 'read paths use the same recipient guard as the write paths' => sub {
-    # karr #86 wired _assert_key_matches_project into the WRITE paths
+    # k86 wired _assert_key_matches_project into the WRITE paths
     # (decrypt_age_key_with_password, restore_age_recipient). The READ
     # paths (read_all_secrets, read_kubeconfig, decrypt_file) used to
     # skip the guard and surface File::SOPS's opaque "could not decrypt
     # data key with any of the provided identities" line. The fix:
     # every read calls the same guard with the identity it is about to
-    # hand to SOPS, so the user sees the karr #86 message — with both
+    # hand to SOPS, so the user sees the k86 message — with both
     # recipients named — instead.
     my $origin = run_init()->{dir};
     my $clone  = clone_project($origin);
@@ -431,7 +431,7 @@ subtest 'read paths use the same recipient guard as the write paths' => sub {
     );
     $clone->child('kubeconfig.yaml')->spew($sops_kube);
 
-    # Each read path must croak with the karr #86 message, not the
+    # Each read path must croak with the k86 message, not the
     # SOPS opaque "could not decrypt data key" line.
     my @cases = (
         [ 'read_all_secrets' => sub { $secrets->read_all_secrets } ],
@@ -444,7 +444,7 @@ subtest 'read paths use the same recipient guard as the write paths' => sub {
         my $err = do { local $@; eval { $code->() }; $@ };
         ok $err, "$name: refused to decrypt with the wrong key";
         like $err, qr/does not belong to this project/,
-            "$name: croaks with the karr #86 message, not the SOPS line";
+            "$name: croaks with the k86 message, not the SOPS line";
         like $err, qr/keys\.yaml needs:\s+age1/,
             "$name: names which recipient the project really needs";
         unlike $err, qr/could not decrypt data key/i,

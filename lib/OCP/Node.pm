@@ -27,8 +27,8 @@ has verbose       => (is => 'ro', default => 0);
 # OCPNode CR -- they are the same for every node of a provider, and robocop
 # never sees ocp.yaml, so `ocp apply` copies them onto the OCPNodeProvider CR
 # and the caller reads them back with OCP::Provider->gpu_flags_from_cr and
-# hands them here (karr #31). Both stay undef when the provider CR predates the
-# field, which is what keeps a worker's install identical to the pre-#31
+# hands them here (k31). Both stay undef when the provider CR predates the
+# field, which is what keeps a worker's install identical to the pre-k31
 # baseline: _install_kubernetes then leaves the Rex parameter out and lets
 # OCP::Rex's own default win. gpu_enabled is 0/1; gpu_driver is 'host' or
 # 'operator'.
@@ -44,7 +44,7 @@ has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
 # It used to be a bare File::Temp holding the private half, which left every
 # worker install pointing REX_PUBLIC_KEY at a file nobody had written:
 # OCP::Rex sets it to key_file . '.pub' unconditionally, and nothing here put
-# anything there (karr #93, the worker-path twin of #87). OCP::TempKeyPair
+# anything there (k93, the worker-path twin of k87). OCP::TempKeyPair
 # writes both halves and owns both.
 #
 # The public half is DERIVED from `ssh_key` rather than passed in, and that is
@@ -67,14 +67,14 @@ sub _build_ssh_key_file {
 # that duplication is the point rather than an accident: a CLI that does not
 # check its own --role hands the typo to the API server, and the operator is
 # shown a Kubernetes 422 about a schema instead of a sentence about what they
-# typed (karr #103). Reading the CRD at flag-check time would mean parsing a
+# typed (k103). Reading the CRD at flag-check time would mean parsing a
 # share file on every `ocp node add` -- and the CRD installed in the cluster
 # is not necessarily the one in this share dir anyway.
 #
 # So: two spellings, held together by a test.
 # t/75-unknown-input-lists-choices.t reads the enum out of
 # share/robocop/crds/ocpnode.yaml and asserts it against this list, which is
-# the honest version of "one source" here (karr #102, #109).
+# the honest version of "one source" here (k102, k109).
 #
 # It lives on OCP::Node and not in the command because the set is a fact
 # about a node, not about a CLI flag -- this class is trigger-neutral and
@@ -256,7 +256,7 @@ sub _provision {
     # node is actually waiting on. _install_kubernetes resolves what is missing
     # on the next pass -- that is the phase where the address is needed, and it
     # is re-enterable, whereas a wait here would hold the lease with the
-    # provider id not yet written down (karr #99).
+    # provider id not yet written down (k99).
     my $ip = $result->{ip} // $result->{ipv4};
     $ip = undef unless defined $ip && length $ip;
 
@@ -286,7 +286,7 @@ sub _provision {
 #   2. spec.host        -- the ssh/local providers; the user typed it
 #   3. the provider     -- the server exists but has not been given an address
 #
-# Only step 3 is new (karr #99). It is a completion of the same lookup, not a
+# Only step 3 is new (k99). It is a completion of the same lookup, not a
 # new lifecycle step: `Installing` already means "the server exists, Kubernetes
 # is going onto it", and finding out where the machine is belongs to getting
 # onto it, exactly like the wait_for_ssh below. A phase of its own would have
@@ -317,7 +317,7 @@ sub _resolve_host {
     # path makes in OCP::Cmd::Apply::Bootstrap, so it takes the same number
     # from the provider that owns the operation
     # ($OCP::Provider::Hetzner::ADDRESS_TIMEOUT, 120 s). Naming our own used
-    # to disagree with what Bootstrap spent (karr #112).
+    # to disagree with what Bootstrap spent (k112).
     my $ok = eval { $provider->wait_for_running($info); 1 };
     unless ($ok) {
         my $err = $@ // '';
@@ -365,7 +365,7 @@ sub _install_kubernetes {
     # of freshly created machine the control-plane path does, so it takes the
     # same number from the module that owns the operation
     # ($OCP::SSH::WAIT_TIMEOUT, 120s). It used to name 60 -- half of what
-    # Bootstrap spends -- and the failure below is terminal (karr #109).
+    # Bootstrap spends -- and the failure below is terminal (k109).
     eval { $ssh->wait_for_ssh };
     if ($@) {
         $self->_patch_status(phase => 'Failed', message => "SSH not reachable: $@");
@@ -395,18 +395,18 @@ sub _install_kubernetes {
     );
 
     # Two GPU inputs meet here. spec.gpu on the OCPNode is per-node: `ocp node
-    # add --gpu` writes it as a JSON boolean (karr #50), and OCP::Rex and the
-    # Rexfile have always honoured a `gpu` parameter (karr #13) -- but this
+    # add --gpu` writes it as a JSON boolean (k50), and OCP::Rex and the
+    # Rexfile have always honoured a `gpu` parameter (k13) -- but this
     # method built its own %params without it, so the CR flag was decoration
-    # until karr #70 threaded it through. gpu_enabled / gpu_driver are
+    # until k70 threaded it through. gpu_enabled / gpu_driver are
     # cluster-wide, from ocp.yaml's gpu: block, carried on the OCPNodeProvider
     # CR because robocop never sees ocp.yaml; the caller read them off that CR
-    # with OCP::Provider->gpu_flags_from_cr and handed them in (karr #31).
+    # with OCP::Provider->gpu_flags_from_cr and handed them in (k31).
     #
     # gpu.enabled: false is a cluster kill switch -- "no detection on any node"
     # -- so it wins over a per-node spec.gpu that says yes: a worker robocop
     # joins must not come up running GPU detection on a cluster configured to
-    # skip it. Otherwise the per-node flag decides, exactly as karr #70 left
+    # skip it. Otherwise the per-node flag decides, exactly as k70 left
     # it. Only when neither is set is the parameter left out, so OCP::Rex's
     # // 1 default stays in charge -- the documented baseline.
     my $cr_gpu      = $self->cr->{spec}{gpu};
@@ -514,8 +514,8 @@ sub _refresh {
 # lines are ceilings this distribution sets itself:
 #
 #   provision: create_server + the status writes            ~10 s
-#   address:   $OCP::Provider::Hetzner::ADDRESS_TIMEOUT  <= 120 s   (karr #99, #112)
-#   ssh:       $OCP::SSH::WAIT_TIMEOUT                    <= 120 s   (karr #109)
+#   address:   $OCP::Provider::Hetzner::ADDRESS_TIMEOUT  <= 120 s   (k99, k112)
+#   ssh:       $OCP::SSH::WAIT_TIMEOUT                    <= 120 s   (k109)
 #   install:   prepare_node (apt refresh, chrony,
 #              locale-gen) + get.rke2.io download,
 #              install, service start                      ~300 s
@@ -527,7 +527,7 @@ sub _refresh {
 #
 # The first three numbers are exact; the last three are what a slow-but-healthy
 # machine costs, and nothing caps them -- they are a mirror, an image and a
-# network away from this code. 600 was already short of that sum, and karr #109
+# network away from this code. 600 was already short of that sum, and k109
 # added 60 s of it by giving the worker the same SSH budget as the control
 # plane. Hence 900.
 #
@@ -548,7 +548,7 @@ our $READY_TIMEOUT = 900;
 # These are facts about how RKE2 and K3s lay their files out, not facts about
 # OCP, but they have to live in one place: the literal was duplicated between
 # OCP::Cmd::Node::Add and OCP::Cmd::Apply::CR, and bumping one without the
-# other meant the two commands disagreed on which file to read (karr #122).
+# other meant the two commands disagreed on which file to read (k122).
 # OCP::Node already owns the analogous `our` constant for the ready budget,
 # and both call sites already `use OCP::Node`, so the same shape applies.
 #
@@ -636,8 +636,8 @@ sub teardown {
 # Everything else is a real failure that used to disappear into a bare eval:
 # robocop's ClusterRole had no `delete` on core nodes, so the Node delete came
 # back 403 and teardown still returned 1 -- the OCPNode CR gone, the Node
-# object left behind as NotReady, nothing in the log (karr #35, same shape as
-# the api-version defect in karr #21). Warn the way the provider delete above
+# object left behind as NotReady, nothing in the log (k35, same shape as
+# the api-version defect in k21). Warn the way the provider delete above
 # warns; the caller keeps going either way.
 sub _delete_object {
     my ($self, $kind, $name, @args) = @_;
@@ -748,7 +748,7 @@ C<$OCP::SSH::WAIT_TIMEOUT> — see L<OCP::SSH/Waiting for a machine to come up>.
 Neither budget is named here: a worker and a control plane wait for the same
 kind of freshly created machine, and when this class named its own number it
 drifted to half of what L<OCP::Cmd::Apply::Bootstrap> spends, on the one of the
-two paths where running out is terminal (karr #109).
+two paths where running out is terminal (k109).
 
 Waiting there rather than in C<_provision> is deliberate.  C<Installing> is
 re-enterable and the provider id is already in status by the time the wait
@@ -822,7 +822,7 @@ L<OCP::Provider/gpu_flags_from_cr> and passes them here.  C<gpu_enabled> is 0/1
 and acts as a cluster kill switch: false forces C<gpu =E<gt> 0> at install even
 when the OCPNode's own C<spec.gpu> is true.  C<gpu_driver> is C<'host'> or
 C<'operator'>.  Both unset (a provider CR predating the field) leaves
-L<OCP::Rex>'s own defaults in charge — the pre-karr-#31 baseline.
+L<OCP::Rex>'s own defaults in charge — the pre-k31 baseline.
 
 =item reconciler_id
 
@@ -841,7 +841,7 @@ The values C<spec.role> may take, in the order the OCPNode CRD lists them.
 The single source for the set on the Perl side: C<ocp node add> checks
 C<--role> against it before touching the API, so a typo is answered by OCP
 naming the two roles rather than by a raw Kubernetes 422 about an enum
-(karr #103).
+(k103).
 
 The CRD in F<share/robocop/crds/ocpnode.yaml> spells the same set a second
 time -- it has to, nothing in a YAML schema can call Perl.  A test reads the

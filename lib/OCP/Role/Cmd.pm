@@ -20,7 +20,7 @@ my $NO_PROVIDERS = "No OCPNodeProvider exists in this cluster.\n"
 # `ocp init --provider` and spec.type speak provider TYPES. Naming the type
 # (`--provider ssh` for the CR `ssh-default` that `ocp apply` writes) is the
 # mistake people actually make, and it cost a SPIKE iteration before the
-# rejection said anything useful (karr #89). So every command that rejects a
+# rejection said anything useful (k89). So every command that rejects a
 # provider name does it from here, in the shape `ocp typo` answers in
 # (OCP::_resolve_commands): name the word, then say what would have worked.
 #
@@ -175,9 +175,9 @@ sub rex_prober {
 # reached by method dispatch on $self rather than by a bareword `sleep`
 # sitting in whatever file the calling code happens to live in this week.
 #
-# That distinction is the point (karr #102): OCP::Cmd::Apply's reconciliation
+# That distinction is the point (k102): OCP::Cmd::Apply's reconciliation
 # steps live across half a dozen Apply::* modules after the phase-8
-# extraction (#55), and a test that localised `*OCP::Cmd::Apply::sleep` to
+# extraction (k55), and a test that localised `*OCP::Cmd::Apply::sleep` to
 # stub the retry delay had stopped mocking anything the moment those `sleep`
 # calls moved into Apply::Network, Apply::CR, and friends — CORE::sleep
 # never dispatches through the package that calls it, so the glob it

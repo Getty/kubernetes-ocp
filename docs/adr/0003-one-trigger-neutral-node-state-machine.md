@@ -51,7 +51,7 @@ nobody managed to read.
 ## Consequences
 
 - A bug in the state machine is a bug in both drivers at once. That is the
-  point, and it cut both ways: karr #21 found seven broken `Kubernetes::REST`
+  point, and it cut both ways: k21 found seven broken `Kubernetes::REST`
   calls and a dead dispatch branch — `_provision` wrote `Installing`, but
   `Installing` dispatched to `_wait_ready`, so `_install_kubernetes` was
   reachable only from a phase nobody ever wrote. No agent would ever have been
@@ -60,7 +60,7 @@ nobody managed to read.
   (`_get_cr` / `_put_cr` / `_struct`), and the class no longer knows an
   API version at all — there is nothing left to pass as the wrong argument.
 - The 409-collision behaviour has never been observed against a real API
-  server; the optimistic concurrency is unverified (karr #29).
+  server; the optimistic concurrency is unverified (k29).
 - `reconciler` in the status is load-bearing, not decoration: it is how
   "apply wrote the control plane's status, robocop owns workers" (ADR 0009) is
   visible after the fact.

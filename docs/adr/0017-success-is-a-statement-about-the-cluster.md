@@ -7,7 +7,7 @@ Status: accepted
 
 `ocp apply` printed `CONTROL PLANE DEPLOYED SUCCESSFULLY!` and exited 0 on a
 cluster whose CoreDNS was in CrashLoopBackOff and whose five GPU operator pods
-were in `Init:ImagePullBackOff` (karr #18). Every step had returned without an
+were in `Init:ImagePullBackOff` (k18). Every step had returned without an
 error, so the banner was true about the *procedure* and false about the thing
 the procedure exists to produce.
 
@@ -53,7 +53,7 @@ degrades to a warning rather than killing an otherwise successful run.
 
 One verdict, one banner, one exit code: both the bootstrap path and the
 reconcile path end in `_finish_apply`, which is the only caller of
-`_check_cluster_health` (karr #22). The failure mode was a path quietly walking
+`_check_cluster_health` (k22). The failure mode was a path quietly walking
 past the check, so there is exactly one place it can be walked past.
 
 Correspondingly, `ocp apply` does not stamp `status.ocpVersion` when it could

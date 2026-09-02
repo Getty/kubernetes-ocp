@@ -10,7 +10,7 @@ use OCP::Config;
 use OCP::Cmd::Apply::Network;
 
 #
-# karr #127: on a multi-node cluster with a separate high-speed fabric, the
+# k127: on a multi-node cluster with a separate high-speed fabric, the
 # LB-IPAM path built two objects that were both wrong:
 #
 #   * CiliumLoadBalancerIPPool default-pool used "$node_ip/32" — the control
@@ -122,7 +122,7 @@ my $multi  = { control_planes => { provider => 'hetzner', server_type => 'cx32',
 }
 
 #
-# The built-in interface regexes are anchored on both ends (karr #127 minimum).
+# The built-in interface regexes are anchored on both ends (k127 minimum).
 #
 {
     my $config = config_for($single, 'single-anchor');

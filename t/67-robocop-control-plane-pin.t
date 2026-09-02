@@ -6,14 +6,14 @@ use Path::Tiny qw(path);
 use YAML::XS ();
 
 #
-# karr #10 (commit 03dec2e, "Pin robocop to the control-plane node"): robocop
+# k10 (commit 03dec2e, "Pin robocop to the control-plane node"): robocop
 # only ever needs to run where the CP server lives, which is always amd64 in
-# this project. Workers may be arm64 (GB10/DGX Spark, karr #25) -- irrelevant
+# this project. Workers may be arm64 (GB10/DGX Spark, k25) -- irrelevant
 # once robocop can't land there. That commit added a toleration + nodeAffinity
 # pair to share/robocop/deployment.yaml with no test of its own.
 #
 # It matters here specifically because this pin is part of why t/66 doesn't
-# check for a --platform/multi-arch guard (karr #41): robocop only ever runs
+# check for a --platform/multi-arch guard (k41): robocop only ever runs
 # on the control-plane node, which is always amd64 in this project, so there
 # is no architecture list for such a guard to compare against. Without a test
 # of its own, that pin could regress silently and take t/66's reasoning with
@@ -42,7 +42,7 @@ ok $dep, 'share/robocop/deployment.yaml parses and carries a Deployment named ro
 my $pod_spec = $dep->{spec}{template}{spec};
 
 subtest 'controller creds arrive via the robocop-credentials Secret' => sub {
-    # karr #129 (Weg A, deploy-time Secret): OCP::Robocop::Controller::from_env
+    # k129 (Weg A, deploy-time Secret): OCP::Robocop::Controller::from_env
     # requires ROBO_SSH_KEY, RKE2_SERVER_URL and RKE2_TOKEN. All three are
     # delivered through the robocop-credentials Secret that `ocp deploy-robocop`
     # writes -- the RKE2 join token included, because it is not readable
@@ -116,7 +116,7 @@ subtest 'requires a control-plane node via nodeAffinity' => sub {
     ok scalar(@matches) >= 1,
         'at least one nodeSelectorTerm requires node-role.kubernetes.io/control-plane (operator: Exists)'
         or diag 'this is the hard requirement -- without it robocop is schedulable anywhere, '
-               . 'including an arm64 worker, which is exactly what karr #10 ruled out';
+               . 'including an arm64 worker, which is exactly what k10 ruled out';
 };
 
 done_testing;

@@ -78,7 +78,7 @@ There is no key normalisation and there are no camelCase aliases:
 - Every locally held fact about the cluster owes an entry in destroy's cleanup
   loop, and a missing entry fails silently by construction: what is left behind
   is not wrong-looking, it is stale, and the next apply reads it as truth about
-  a cluster that no longer exists (karr #43, ADR 0008). A second file therefore
+  a cluster that no longer exists (k43, ADR 0008). A second file therefore
   costs a line in that loop, not a second mechanism.
 - A new file has to be classified in both places that carry the classification:
   ADR 0005's table decides whether it is plaintext and gets gitignored, this ADR
@@ -92,10 +92,10 @@ There is no key normalisation and there are no camelCase aliases:
 `.ocp/status.yaml` was written down under it. `ocp destroy` removed the file
 that was named and left the file that was not, and the next `ocp apply` on a
 freshly built cluster reported components it had never rolled out — the karr
-#43 bug on cortex, described in full in ADR 0008.
+k43 bug on cortex, described in full in ADR 0008.
 
 The rule did not change and nothing here is reversed. The file it always
 applied to is now named where a reader looks for it, and the paragraph
 separating cluster status from decrypted key material under the same directory
 was added in the same pass, because "it is under `.ocp/`" was the reasoning
-that made the omission look harmless. Recorded under karr #47.
+that made the omission look harmless. Recorded under k47.

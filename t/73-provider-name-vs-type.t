@@ -17,7 +17,7 @@ use OCP::Cmd::Provider::Rm;
 #
 # is the mistake that actually happens: the CR `ocp apply` writes is called
 # `ssh-default`. The old answer was "Provider 'ssh' not found" — a correct
-# rejection that helped with nothing, and it cost a SPIKE iteration (karr #89).
+# rejection that helped with nothing, and it cost a SPIKE iteration (k89).
 #
 # What is tested here: a refused provider name says what would have worked —
 # every existing provider with BOTH its name and its type, because the type is
@@ -28,7 +28,7 @@ use OCP::Cmd::Provider::Rm;
 # What is NOT wanted, and asserted to stay that way: 'ssh' resolving to
 # 'ssh-default'. That would open a second namespace next to the CR names, and
 # nothing stops anyone from naming a provider 'ssh'. Input we do not understand
-# is refused and explained (karr #67, #37, #73).
+# is refused and explained (k67, k37, k73).
 #
 
 {
@@ -245,7 +245,7 @@ subtest 'the rejection goes to STDERR and exits non-zero' => sub {
         'no Perl location leaks into the operator-facing message';
 };
 
-subtest 'same shape as an unknown command word (karr #67)' => sub {
+subtest 'same shape as an unknown command word (k67)' => sub {
     my $cmd_err = do {
         my @argv = ('quatschkommando');
         eval { OCP::_resolve_commands('OCP', \@argv) };

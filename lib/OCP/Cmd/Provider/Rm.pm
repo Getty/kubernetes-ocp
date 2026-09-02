@@ -52,7 +52,7 @@ sub execute {
     die "Usage: ocp provider rm NAME\n" unless $name;
 
     # Names the providers that exist, with their types — same wording as
-    # `ocp node add --provider`, one place: OCP::Role::Cmd (karr #89).
+    # `ocp node add --provider`, one place: OCP::Role::Cmd (k89).
     $self->provider_cr($api, $name, namespace => $ns);
 
     my $nodes_list = $api->list('OCPNode', namespace => $ns);

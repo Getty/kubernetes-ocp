@@ -122,7 +122,7 @@ sub dist_label {
 #
 # Which key that is, and why, lives in OCP::ClusterKey — the same question is
 # asked by `ocp update`, `ocp node add` and the reconcile path's Rex remedy,
-# and four separate answers to it is what karr #87 was. The short version: the
+# and four separate answers to it is what k87 was. The short version: the
 # MODE decides. Secure mode reaches every machine with the admin key, on every
 # provider — Hetzner uploads it through the API before the server exists, an
 # ssh-provider machine gets it from a human with `ocp keys show --purpose
@@ -149,7 +149,7 @@ sub setup_ssh_key {
 # exists. The admin key is always present, under $config->admin_ssh_key_name;
 # the robo public follows, under $config->robo_ssh_key_name, whenever secure
 # mode holds an automation key. See the upload block in bootstrap_control_plane
-# for why robocop needs it (karr #101).
+# for why robocop needs it (k101).
 sub _cluster_ssh_key_uploads {
     my ($config, $secrets, $admin_key) = @_;
 
@@ -206,7 +206,7 @@ sub bootstrap_control_plane {
     # the inline key selection below; OCP::ClusterKey derives the same fact
     # from the absence of keys.yaml, which is where every other caller reads
     # it from too. Accepting the option and ignoring it would be the silently
-    # swallowed flag this repo keeps having to fix (karr #67, #37, #85), so
+    # swallowed flag this repo keeps having to fix (k67, k37, k85), so
     # OCP::Cmd::Apply stops passing it.
 
     # Resolve control plane identity (RoboCop naming for Hetzner, host
@@ -258,12 +258,12 @@ sub bootstrap_control_plane {
     # The admin key always: it is what every human command reaches a machine
     # with, and its name is derived, not spelled out here, because the worker
     # path references the same key later off the OCPNodeProvider CR that
-    # OCP::Cmd::Apply::CR writes from the same derivation (karr #92).
+    # OCP::Cmd::Apply::CR writes from the same derivation (k92).
     #
     # The robo (automation) public key too, when secure mode has one: robocop
     # holds the robo key, never the admin one, so a Hetzner worker it
     # provisions needs the robo public in authorized_keys or its install can
-    # never connect and the node goes Failed (karr #101, variant a). Only the
+    # never connect and the node goes Failed (k101, variant a). Only the
     # PUBLIC half travels to the provider and it sits behind the age layer
     # alone, so this costs no PIN2 -- the age-encrypted robo tier ADR 0006/0027
     # keep, not the unencrypted bootstrap key their "upload both keys"
@@ -292,7 +292,7 @@ sub bootstrap_control_plane {
         print "  [ok] Server created: " . ($server_info->{id} // 'n/a') . "\n";
         print "  [..] Waiting for server to be running...\n";
         # Takes the module's default; naming our own 120 used to silently
-        # disagree with what workers spent (karr #112).
+        # disagree with what workers spent (k112).
         $prov->wait_for_running($server_info);
         print "  [ok] Server running: $server_info->{ip}\n";
     } else {
@@ -323,7 +323,7 @@ sub bootstrap_control_plane {
 
     # The 120s this has always spent, now taken from $OCP::SSH::WAIT_TIMEOUT
     # rather than restated here -- OCP::Node does the same wait on a worker and
-    # had drifted to half of it (karr #109).
+    # had drifted to half of it (k109).
     eval { $ssh->wait_for_ssh };
     if ($@) {
         # The one failure that is usually not a network problem: an existing

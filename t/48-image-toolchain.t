@@ -10,7 +10,7 @@ use Path::Tiny qw(path);
 # 366s on `cpan -i App::cpanminus App::cpm && cpanm --n Net::SSLeay && cpanm
 # LWP::Protocol::https` — the last of which ran the full test suite of every
 # dependency it dragged in. Both layers ran before a single line of cpanfile
-# was read, and in CI they ran once per architecture (karr #48).
+# was read, and in CI they ran once per architecture (k48).
 #
 # The official perl image already carries perl, cpanm, cpm and a working
 # Net::SSLeay, so both layers went away. This suite keeps them from growing

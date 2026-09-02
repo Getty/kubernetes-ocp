@@ -55,7 +55,7 @@ use OCP::Provider::Local;
 
 {
     # Unchanged claim, stronger assertion: an unbuildable provider type is
-    # refused. Since karr #103 the refusal also names the buildable ones.
+    # refused. Since k103 the refusal also names the buildable ones.
     eval { OCP::Provider->for_spec({ provider => 'aws' }) };
     like($@, qr/^Unknown provider type 'aws'\./, 'invalid provider dies');
 }
@@ -171,7 +171,7 @@ use OCP::Provider::Local;
 # passes `spec => $cr->{spec}` and names no options at all, so create_server
 # used to fall through to its own defaults on every field -- and to
 # `ssh_keys => []`, which produces a Hetzner server with an empty
-# authorized_keys: running, billed, and unreachable for OCP forever (karr #92).
+# authorized_keys: running, billed, and unreachable for OCP forever (k92).
 #
 # The cloud client is faked so nothing here talks to Hetzner. `cloud` is a
 # lazy attribute, so passing it in replaces the builder outright.
@@ -293,7 +293,7 @@ subtest 'defaults still apply when neither option nor spec says anything' => sub
 
 #
 # The four ranks, asserted as an order rather than four separate facts -- karr
-# #100.
+# k100.
 #
 # The provider's own defaults were the missing rung. spec.hetzner.location,
 # .serverType and .image existed on the OCPNodeProvider CR, `ocp provider add`
@@ -476,7 +476,7 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
                 tokenSecretRef => { name => 'ocp-provider-hetzner-a-token', key => 'token' },
                 # The CRD spelling, camelCase. This fixture used to say
                 # `server_type`, which nothing has ever read under any name --
-                # the field was write-only until karr #100 and a misspelt one
+                # the field was write-only until k100 and a misspelt one
                 # was indistinguishable from a correct one.
                 location   => 'fsn1',
                 serverType => 'cx32',
@@ -505,12 +505,12 @@ subtest 'from_cr dispatches hetzner with token from Secret' => sub {
     # That claim was the bug written down: metadata.name is what
     # ensure_provider_cr writes as "<type>-default", so it labelled every
     # worker's server ocp-cluster=hetzner-default and `ocp destroy` never
-    # found one again (karr #98).
+    # found one again (k98).
     is $prov->cluster_name, 'cortex', 'cluster_name comes from spec.clusterName';
     isnt $prov->cluster_name, $cr->{metadata}{name},
         'and never from the provider CR name';
 
-    # Same shape of claim, and the one karr #100 was about: these three were
+    # Same shape of claim, and the one k100 was about: these three were
     # written onto the CR and printed by `ocp provider ls` and read by nobody,
     # so `ocp provider add --location nbg1` produced servers in fsn1.
     is $prov->default_location,    'fsn1', 'spec.hetzner.location reaches the adapter';

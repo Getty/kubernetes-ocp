@@ -70,7 +70,7 @@ has verbose => (
 # so a missing one is fatal here -- croaked, which reaches STDERR -- rather than
 # surfacing as an obscure failure deep in the first reconcile. namespace mirrors
 # the deployment's NAMESPACE fieldRef; distribution is optional and defaults to
-# rke2. Secret wiring in the Deployment is a separate lane (karr #33 / #101).
+# rke2. Secret wiring in the Deployment is a separate lane (k33 / k101).
 #
 sub from_env {
     my ($class, %overrides) = @_;
@@ -203,7 +203,7 @@ sub _async_resource_map {
 #
 # Main loop: watch OCPNode and reconcile on every event
 #
-# This replaces the former while(1)+sleep poll (karr #1, the #33 follow-up). A
+# This replaces the former while(1)+sleep poll (k1, the k33 follow-up). A
 # fresh watch with no resourceVersion replays a synthetic ADDED for every
 # existing OCPNode before it streams changes, so nodes already in the cluster
 # are reconciled at startup exactly as the initial poll pass used to do.
@@ -281,7 +281,7 @@ sub _reconcile_cr {
 # Every path that fails before OCP::Node takes over MUST patch the OCPNode's
 # status to Failed with the reason: an OCPNode that the controller saw but
 # could not start reconciling used to stay Pending forever, with no message
-# and no diagnostic outside robocop's pod logs (karr #123). The status write
+# and no diagnostic outside robocop's pod logs (k123). The status write
 # goes to /status because the CRD enables that subresource, and it goes
 # through OCP::K8s->patch_status because that is the only place in OCP that
 # writes it correctly. Anything that can fail before OCP::Node owns the CR
@@ -323,7 +323,7 @@ sub _on_node_event {
     # The cluster-wide gpu.enabled / gpu.driver from ocp.yaml live nowhere
     # robocop can see them except the provider CR -- `ocp apply` copies them
     # there, and this is the whole reason they can reach a worker robocop joins
-    # (karr #31). Read them off the same CR from_cr just consumed and hand them
+    # (k31). Read them off the same CR from_cr just consumed and hand them
     # to OCP::Node; absent from a CR that predates the field means OCP::Node
     # keeps OCP::Rex's default.
     my %gpu_flags = OCP::Provider->gpu_flags_from_cr($provider_cr);

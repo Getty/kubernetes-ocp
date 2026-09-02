@@ -9,10 +9,10 @@ use Cwd qw(getcwd);
 use OCP;
 use OCP::Cmd::Apply;
 
-# karr #90 — the dev-mode apply branch hit the same age-key trap #86
+# k90 — the dev-mode apply branch hit the same age-key trap k86
 # closed for `ocp init`. The dev-mode branch in OCP::Cmd::Apply checks
 # `has_age_key` ("is there one on this machine"), sees no, and asks
-# OCP::Secrets::generate_age_key to mint a fresh pair. Once #86 put
+# OCP::Secrets::generate_age_key to mint a fresh pair. Once k86 put
 # the safety net inside generate_age_key, that call croaks for any
 # project that is already bound to an age recipient — and a --nopassword
 # project can absolutely be bound, if it carries an encrypted
@@ -118,7 +118,7 @@ subtest 'dev-mode apply refuses when the project is bound to an age recipient' =
     like $r->{err}, qr/Restore\s+\.ocp\/age\.key/,
         'and tells the user what to do — restore .ocp/age.key';
 
-    # The advice #86's generic croak gave — "unlock with PIN1" — does
+    # The advice k86's generic croak gave — "unlock with PIN1" — does
     # not exist on this branch. If it slips back in, a dev-mode user
     # would be told to type a PIN that has nowhere to go.
     unlike $r->{err}, qr/\bRun\s+['"]?ocp init\b/,

@@ -36,7 +36,7 @@ sub run_issuers {
     };
     local *OCP::Cmd::Apply::_k8s_api = sub { FakeApi->new };
     # Keep the test fast: the retry path waits between attempts via
-    # OCP::Role::Cmd::wait_seconds (karr #102). That method is the one seam
+    # OCP::Role::Cmd::wait_seconds (k102). That method is the one seam
     # every Apply::* module's retry/poll delay goes through, reached by
     # dispatch on $self — mocking it here works regardless of which module
     # under lib/OCP/Cmd/Apply/ actually calls it. A `local *OCP::Cmd::Apply::

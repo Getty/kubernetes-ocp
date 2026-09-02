@@ -83,9 +83,9 @@ subtest 'ssh without a host names every way out' => sub {
     like $out, qr/the default provider/,   'offers the hetzner default';
 };
 
-# karr #124: the five option blocks declared `is => 'ro'` with `format => 's'`
+# k124: the five option blocks declared `is => 'ro'` with `format => 's'`
 # and no enum check, so a typo reached apply, write_spec or the SSH bootstrap
-# copy step. The discipline is the same one karr #67, #89 and #103 settled:
+# copy step. The discipline is the same one k67, k89 and k103 settled:
 # the rejection names the input and what would have worked.
 subtest 'unknown --provider is rejected with the valid types' => sub {
     plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');

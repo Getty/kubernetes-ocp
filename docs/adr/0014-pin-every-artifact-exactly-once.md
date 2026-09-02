@@ -17,7 +17,7 @@ definition. They were, until the upstream validator repository stopped at
 v25.3.4 while the operator kept moving. The ClusterPolicy then pointed at
 `nvcr.io/nvidia/cloud-native/gpu-operator-validator:v26.3.3`, which does not
 exist on any architecture, and every GPU cluster went into Init:ImagePullBackOff
-(karr #11).
+(k11).
 
 The reflex fix — pin the validator to a version that exists — would have kept
 the second pin and the trap with it.
@@ -34,7 +34,7 @@ A pin may carry a *floor* with the reason attached. The device plugin must stay
 at or above v0.17.4: GB10 (Grace Blackwell, unified memory) has no dedicated
 framebuffer, `nvmlDeviceGetMemoryInfo` answers "Not Supported", and plugins
 before v0.17.4 treat that as fatal — the pod crashes and the node reports zero
-GPUs while the GPU works fine (karr #25). A downgrade below the floor is a
+GPUs while the GPU works fine (k25). A downgrade below the floor is a
 silent regression on that hardware.
 
 Comments at a pin say why it is what it is, not what it is. `gateway_api` is

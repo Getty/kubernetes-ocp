@@ -113,7 +113,7 @@ sub project_age_recipients {
 # Does this PROJECT already have an age key — even one this checkout does not
 # hold? .ocp/ is gitignored (ADR 0004), so a clone has age.key.enc and the
 # encrypted files but never .ocp/age.key. Asking has_age_key there and
-# generating on "no" is what karr #86 was: a fresh key written over
+# generating on "no" is what k86 was: a fresh key written over
 # .ocp/age.pub, and keys.yaml bound to a recipient nobody has any more.
 sub project_has_age_key {
     my ($self) = @_;
@@ -143,7 +143,7 @@ sub generate_age_key {
     my $key_file = $self->age_key_file;
     my $pub_file = $self->age_recipient_file;
 
-    # The safety net for karr #86, placed here rather than in the caller so it
+    # The safety net for k86, placed here rather than in the caller so it
     # holds for any path to generation — present or added later. A generated
     # keypair is always new, so it can never be the recipient the committed
     # files already name; writing .ocp/age.pub from it is therefore always the
@@ -376,7 +376,7 @@ sub read_all_secrets {
     chomp $identity;
     # The same guard the write paths use: a foreign key in .ocp/age.key
     # must surface as the named-recipients error, not as File::SOPS's
-    # opaque "could not decrypt data key" line (karr #118).
+    # opaque "could not decrypt data key" line (k118).
     $self->_assert_key_matches_project($identity);
 
     my $encrypted = $self->secrets_file->slurp;
@@ -494,7 +494,7 @@ sub read_kubeconfig {
 
     my $identity = $self->age_key_file->slurp;
     chomp $identity;
-    # Same guard as the write paths — karr #118.
+    # Same guard as the write paths — k118.
     $self->_assert_key_matches_project($identity);
 
     my $encrypted = $self->kubeconfig_file->slurp;
@@ -557,7 +557,7 @@ sub decrypt_file {
 
     my $identity = $self->age_key_file->slurp;
     chomp $identity;
-    # Same guard as the write paths — karr #118.
+    # Same guard as the write paths — k118.
     $self->_assert_key_matches_project($identity);
 
     my $encrypted = $file_path->slurp;
@@ -609,7 +609,7 @@ F<.ocp/> is gitignored; F<keys.yaml>, F<secrets.yaml>, F<kubeconfig.yaml> and
 F<age.key.enc> are committed. So "is there an age key on this machine" and
 "does this project have an age key" are B<different questions>, and a checkout
 that confuses them mints a new key over F<.ocp/age.pub> and orphans everything
-the project ever encrypted (karr #86).
+the project ever encrypted (k86).
 
 =over 4
 

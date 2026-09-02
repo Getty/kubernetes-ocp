@@ -21,7 +21,7 @@ use OCP::Kubernetes;
 #   * list_nodes returned [] for "the object I got back is not the shape I
 #     expected", which reads exactly like "the cluster has no nodes". `ocp
 #     status` prints that as a successful reading of an empty cluster and
-#     returns 0. Same failure shape as karr #21 and #35: the call failed, the
+#     returns 0. Same failure shape as k21 and k35: the call failed, the
 #     operation reported success.
 #   * register_resource_providers returned early, and the Cilium/CertManager/
 #     GatewayAPI Kinds were simply never registered -- surfacing much later,

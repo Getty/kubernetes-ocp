@@ -156,7 +156,7 @@ subtest 'from_cr with missing tokenSecretRef dies with a useful message' => sub 
 # Unknown provider type dies loud — both entry points
 #
 
-# Same claim as before karr #103 — one dispatch, so both entry points refuse
+# Same claim as before k103 — one dispatch, so both entry points refuse
 # an unbuildable type with ONE message. Only the wording changed: it now also
 # says which types _build does know, from OCP::Provider->types.
 subtest 'for_spec dies loud on unknown type' => sub {
@@ -186,7 +186,7 @@ subtest 'for_spec and from_cr reach the same adapter when given the same args' =
     # The CR is deliberately NOT named after the cluster. It used to be
     # ("shared" both times), and that is why this test watched from_cr take
     # metadata.name for the cluster name for as long as it did: the two values
-    # were equal in the fixture and nowhere else (karr #98). `ocp apply` names
+    # were equal in the fixture and nowhere else (k98). `ocp apply` names
     # the CR "<type>-default", so the fixture now does too.
     my $via_spec = OCP::Provider->for_spec(
         { provider => 'hetzner' },
@@ -216,7 +216,7 @@ subtest 'for_spec and from_cr reach the same adapter when given the same args' =
     # — from_cr can fill them, for_spec has no CR to fill them from — so
     # equivalent inputs means a CR that names none of them. Both adapters then
     # carry nothing and both fall through to the code default, which is what
-    # keeps the bootstrap path identical to what it was before karr #100.
+    # keeps the bootstrap path identical to what it was before k100.
     is $via_spec->default_server_type, $via_cr->default_server_type,
         'neither entry point invents a server type';
     is $via_spec->default_image,       $via_cr->default_image,

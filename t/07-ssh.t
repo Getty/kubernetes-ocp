@@ -202,7 +202,7 @@ use OCP::SSH;
 
 #
 # Test: is_reachable takes no timeout -- SSH's ConnectTimeout is the only
-# ceiling on a probe (karr #112). The argument used to be there, defaulted to
+# ceiling on a probe (k112). The argument used to be there, defaulted to
 # 5, and was never read: a caller thinking "give it 10s" got one probe with a
 # 10s ConnectTimeout, and the parameter told it its number mattered.
 #

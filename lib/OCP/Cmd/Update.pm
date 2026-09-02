@@ -72,7 +72,7 @@ sub execute {
         # something the operator typed. So the hint is always true here: the
         # only way to reach this line is an OCP.pm bumped without a matching
         # entry in OCP::Versions, and saying so is more use than saying the
-        # version is unknown (karr #103).
+        # version is unknown (k103).
         die OCP::Choices::unknown('OCP version', $target_version,
             [ OCP::Versions->known_versions ],
             hint => "This OCP reports version $target_version, and"
@@ -87,11 +87,11 @@ sub execute {
     my @updates;
     my $selected = $self->component;
 
-    # karr #113: --component TYPO used to skip every iteration of the loop
+    # k113: --component TYPO used to skip every iteration of the loop
     # below, fall through with @updates empty, and reach the
     # "All components up to date" branch as if nothing had happened. Refuse
-    # here instead — same shape `ocp quatschkommando` answers in (karr #67,
-    # #103). Without this guard, a typo is indistinguishable from a real
+    # here instead — same shape `ocp quatschkommando` answers in (k67,
+    # k103). Without this guard, a typo is indistinguishable from a real
     # no-op: same line, same exit 0.
     die OCP::Choices::unknown('component', $selected, [ sort keys %$target_comps ])
         if $selected && !exists $target_comps->{$selected};
@@ -224,7 +224,7 @@ sub _update_component {
 # `ocp init` does not even create a bootstrap key there — so `ocp update` on a
 # secure cluster could not work at all. OCP::ClusterKey answers the question
 # properly; cluster_ssh_key caches it so a multi-component update prompts for
-# PIN2 once. karr #87.
+# PIN2 once. k87.
 sub _update_via_rex {
     my ($self, $config, $component, $version, $task) = @_;
 

@@ -54,7 +54,7 @@ our $INTERACTIVE;
 # which is where the ownership rules live now. Three places open-coded that
 # dance before — OCP::Cmd::Apply::Bootstrap and OCP::Cmd::SSH leaked at least
 # the public half (and, in setup_ssh_key's case with UNLINK => 0, the private
-# half too), OCP::Node never wrote the public half at all (karr #93).
+# half too), OCP::Node never wrote the public half at all (k93).
 #
 # Why here and not in OCP::Keys: OCP::Keys is the key *store* — it answers
 # "decrypt the key called X". This is *selection* policy — "which key does
@@ -220,7 +220,7 @@ sub _admin_key {
     # over this key points at a path that does not exist. Writing that pair
     # and owning it is OCP::TempKeyPair's whole job — it was open-coded here
     # until OCP::Node needed the identical dance for its worker keys and
-    # copying it a fourth time was the wrong answer (karr #93).
+    # copying it a fourth time was the wrong answer (k93).
     my $pair = OCP::TempKeyPair->for_private_key(
         $admin_key->{private},
         public => $admin_key->{public},

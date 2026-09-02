@@ -58,11 +58,11 @@ reconciling the worker CRs itself, through the same state machine (ADR 0003).
 
 - Two entry points (`bin/ocp`, `bin/robocop`), two Dockerfiles, two release
   artifacts. A published image that exists only for amd64 makes robocop
-  undeployable on an arm64 cluster while the CLI is unaffected (karr #10) — the
+  undeployable on an arm64 cluster while the CLI is unaffected (k10) — the
   split turns one packaging gap into a partial outage rather than a total one.
 - The worker path only ever runs where robocop runs. That is why seven broken
   calls and a dead dispatch branch survived in `OCP::Node` for months
-  (karr #21): nobody had provisioned a real worker (karr #29).
+  (k21): nobody had provisioned a real worker (k29).
 - `ocp apply` has to be able to do robocop's job as a fallback, so the
   reconcile logic cannot live in the controller. See ADR 0003.
 - Anything the controller needs must be reachable from inside the cluster: the

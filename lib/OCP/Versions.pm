@@ -42,7 +42,7 @@ our $VERSIONS = {
             # dedicated framebuffer, Unified Memory) as fatal, crashes, and
             # the node silently reports 0 GPUs. Fixed upstream in v0.17.4
             # (NVIDIA/gpu-operator#1794). Do not downgrade below it — see
-            # karr #25 and t/65-gpu-device-plugin-floor.t.
+            # k25 and t/65-gpu-device-plugin-floor.t.
             nvidia_device_plugin => 'v0.19.3',
             dcgm_exporter        => '4.5.3-4.8.2-distroless',
             nvidia_dcgm          => '4.5.2-1-ubuntu22.04',
@@ -64,7 +64,7 @@ sub _ocp_version {
 # Every OCP version this manifest carries, sorted.
 #
 # Derived from $VERSIONS itself rather than written out beside it, so a
-# rejection can never offer a version the manifest does not have (karr #103).
+# rejection can never offer a version the manifest does not have (k103).
 sub known_versions {
     my ($class) = @_;
     return sort keys %$VERSIONS;

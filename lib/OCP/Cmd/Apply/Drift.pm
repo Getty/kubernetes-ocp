@@ -81,7 +81,7 @@ sub reconcile_components {
     # apart from $updated because the closing summary has to be able to tell
     # "nothing was wrong" from "something was wrong and is still wrong" —
     # printing "All N component(s) up to date" over a Rex task that declined
-    # to run is the same class of untruth as #43/#46, where a step that never
+    # to run is the same class of untruth as k43/k46, where a step that never
     # looked reported success.
     my @unresolved;
 
@@ -374,7 +374,7 @@ sub dry_run_report {
 # It used to read $config->ssh_private_key_path directly, which on a Hetzner
 # control plane names a file that was never distributed to the machine and,
 # in secure mode, is not even created — so this always took the "missing"
-# branch and no drift with a Rex remedy could ever be repaired there. karr #87.
+# branch and no drift with a Rex remedy could ever be repaired there. k87.
 sub run_remedy {
     my ($self, $config, $entry) = @_;
 

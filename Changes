@@ -77,18 +77,18 @@ Revision history for OCP
       the unchanged OCP::Node state machine (lease check and _on_node_event /
       _mark_failed error handling intact) on each event. Deployment Secret wiring
       of those env vars is a separate lane (k101).
-    - `ocp node add --gpu` now reaches the worker install (karr #70). The flag
-      was a JSON boolean on the OCPNode CR since #50; nothing on the CLI
+    - `ocp node add --gpu` now reaches the worker install (k70). The flag
+      was a JSON boolean on the OCPNode CR since k50; nothing on the CLI
       path read it, so the field was decoration. `OCP::Node->
       _install_kubernetes` now threads `spec.gpu` into the Rex params
       (`gpu => 1` for true, `gpu => 0` for false; absent leaves OCP::Rex's
       `// 1` default in charge -- what every worker does today -- and
-      flipping that default is a wider decision that belongs to karr #31,
+      flipping that default is a wider decision that belongs to k31,
       robocop side). t/70-gpu-flag.t asserts the field reaches the Rex
       call on both rke2 and k3s paths, and that `gpu_driver` stays out of
       the params (the CRD has no `spec.gpu.driver`; that source lands
-      with #31).
-    - Perl baseline pinned across image and snapshot (ADR 0025, karr #125).
+      with k31).
+    - Perl baseline pinned across image and snapshot (ADR 0025, k125).
       Dockerfile and Makefile:snapshot both name `perl:5.42.3-slim-trixie`, so
       the snapshot is resolved by the same Perl the image runs. `cpanfile`
       gains a floor too, but a lower one: `perl 5.040001`, the system Perl of
@@ -98,7 +98,7 @@ Revision history for OCP
       `make test-host` and `dzil build` below the distribution's own baseline.
       What catches a dependency demanding a *newer* Perl is not the floor but
       the pinned tag the snapshot is regenerated in.
-    - `OCP::Provider->from_cr` no longer reads `spec.ssh.keyPath` (karr #111).
+    - `OCP::Provider->from_cr` no longer reads `spec.ssh.keyPath` (k111).
       The OCPNodeProvider CRD never declared that field; the API server
       stripped it on the way past, and every provider CR was read back with
       an empty path. The ssh branch of `from_cr` is gone -- ssh reads no
@@ -111,20 +111,20 @@ Revision history for OCP
       the ssh fixture from `keyPath => '/k'` to `user => 'root'` (what
       the CR writer actually produces) and still exercises the factory.
     - robocop's ClusterRole no longer asks for `events` create/patch
-      (karr #72). No Event writer exists in lib/ or bin/; the rule was a
+      (k72). No Event writer exists in lib/ or bin/; the rule was a
       no-op grant against a nonexistent caller. The three other rules stay
       -- ocpnodeproviders/status, secrets list/watch and the existing
       CR reads are judgement calls, not the unambiguous dead grant this
       one was.
     - `OCP::Config::validate` now accepts `local` as a worker-pool
       provider and rejects unknown ones with a message that lists the
-      valid types (karr #115). The check routes through
+      valid types (k115). The check routes through
       `OCP::Provider->known_type` / `OCP::Provider->types`, so the
       worker list and the control-plane list share one source -- the
       fourth hand-kept `hetzner|ssh` regex is gone. New subtests in
       t/15-config-validation.t cover both directions.
     - `OCP::Drift::distribution_drift` no longer swallows API failures into
-      "no drift" (karr #119). The bare `eval { ... } or return` collapsed every
+      "no drift" (k119). The bare `eval { ... } or return` collapsed every
       list('Node') failure -- revoked token, RBAC denial, TLS, apiserver 5xx --
       into a silent undef, so `ocp status` printed a green drift summary with
       no warning, no log, and no entry while the actual reason nothing was
@@ -138,16 +138,16 @@ Revision history for OCP
     - The RKE2/K3s join-token path now lives in one place
       (`$OCP::Node::K3S_TOKEN_PATH` / `$OCP::Node::RKE2_TOKEN_PATH`) and
       `OCP::Cmd::Node::Add` and `OCP::Cmd::Apply::CR` read it from there
-      (karr #122). The two paths were spelled as literals in both files,
+      (k122). The two paths were spelled as literals in both files,
       and bumping one without the other meant `ocp node add` and
       `ocp apply` disagreed on which file to `cat` -- one came back with
       an empty join token and died. The constants sit alongside
       `$OCP::Node::READY_TIMEOUT` so the pattern matches the one karr
-      #109/#112 settled on for the address and SSH budgets, and a new
+      k109/k112 settled on for the address and SSH budgets, and a new
       subtest in t/16-node.t asserts both call sites reference the
       constants instead of spelling the literals.
     - `ocp destroy` no longer strands a local-provider node running and
-      billing (karr #116). The fallback node list hard-coded
+      billing (k116). The fallback node list hard-coded
       `$cp->{provider} // 'ssh'` and `$w->{provider} eq 'ssh'` -- the
       second silently dropped every local worker pool, the first relabelled
       a local CP as ssh; the delete loop's `elsif ($node->{provider} eq 'ssh')`
@@ -155,14 +155,14 @@ Revision history for OCP
       the list (via `.ocp/status.yaml`) fell through with nothing while the
       teardown announced "Cluster destroyed.". The literals are replaced
       with `OCP::Provider->known_type(...)` checks, the same shape karr
-      #103 settled on for six other input gates; ssh and local both consume
+      k103 settled on for six other input gates; ssh and local both consume
       `OCP::Role::Provider::ExistingHost`, so the delete call is identical,
       and only ssh still needs the cluster key (local IS the host). New
       subtests in t/77-destroy-local-provider.t cover the status.yaml path,
       both halves of the spec fallback, and a regression that fails if the
       `eq 'ssh'` and `// 'ssh'` literals come back.
     - `ocp node add` flag validation no longer hand-codes the provider
-      types it knows (karr #121). The old if/elsif chain spelled out
+      types it knows (k121). The old if/elsif chain spelled out
       `hetzner`/`ssh`/`local` and only used `OCP::Provider->types` for
       the unknown branch — so a fourth provider added to the factory
       was accepted by `OCP::Provider` but rejected here as "Unknown
@@ -179,22 +179,22 @@ Revision history for OCP
       it, and the unknown branch's listing matches what
       `OCP::Provider->types` produces (so a regression to a hand-coded
       copy of three words is caught at `make test`).
-    - `OCP::Secrets` read paths now run the karr #86 recipient guard
+    - `OCP::Secrets` read paths now run the k86 recipient guard
       (`_assert_key_matches_project`) before handing `.ocp/age.key` to
       `File::SOPS->decrypt`. `read_all_secrets`, `read_kubeconfig` and
       `decrypt_file` used to skip the guard: a foreign key sitting in
       `.ocp/age.key` produced `Could not decrypt data key with any of
       the provided identities` from wherever `ocp` happened to reach
       first, with the broken recipient never named. All three now
-      croak with the karr #86 message — both recipients listed, and
+      croak with the k86 message — both recipients listed, and
       the file that needs the unlocked one. The guard's last line went
       from "Nothing was written" to "Nothing was done" so it reads
       correctly on either side. New subtest in t/70-init-age-key-
       preserved.t cycles a foreign key through every read path and
-      asserts the named-recipients error, the karr #86 fallout file,
+      asserts the named-recipients error, the k86 fallout file,
       and that the right key still decrypts once it's back.
     - `ocp ssh --node` no longer crashes on multi-CP clusters with
-      'Not a HASH reference' (karr #117). The dispatch read
+      'Not a HASH reference' (k117). The dispatch read
       `$spec->{control_planes}->{provider}` directly, but
       OCP::Config stores multi-CP `control_planes` as an arrayref,
       so the moment a project had more than one control plane the
@@ -212,11 +212,11 @@ Revision history for OCP
       matching CP (not the first one) decides provider dispatch,
       and that an empty `provider` field no longer throws either.
     - `ocp node add` now reads the control plane IP from
-      `OCP::Config::cluster_status` instead of `control_planes` (karr #120).
+      `OCP::Config::cluster_status` instead of `control_planes` (k120).
       The spec (ocp.yaml) is what the operator wants; the status
       (.ocp/status.yaml) is what the cluster actually has. On a cluster
       whose CP IP drifted since the last `ocp apply` -- the same shape
-      karr #98 fixed for the bootstrap path -- reading the spec made the
+      k98 fixed for the bootstrap path -- reading the spec made the
       CLI's SSH call go to a machine that no longer existed. The same
       helper is used by `ocp update` and the drift reconcile, so the
       status IP is now the single source of truth across every path that
@@ -225,7 +225,7 @@ Revision history for OCP
       when status is empty (the first-ever `ocp node add`), and that no
       SSH is attempted when neither names a CP.
     - robocop's controller now marks the OCPNode `Failed` on every error
-      path that fires before OCP::Node takes over (karr #123). A CR with a
+      path that fires before OCP::Node takes over (k123). A CR with a
       missing `spec.providerRef`, an unloadable `OCPNodeProvider`, or a
       provider that dies in `OCP::Provider->from_cr` used to be left
       `Pending` with no `message`, and the only diagnostic was robocop's
@@ -237,7 +237,7 @@ Revision history for OCP
       taking the controller down on a single bad CR. New subtests in
       t/45-robocop-kube.t cover the four failure paths and the
       status-patch-itself-fails branch.
-    - `ocp init` options reject typos at the option boundary (karr #124).
+    - `ocp init` options reject typos at the option boundary (k124).
       Five option blocks (`--dist`, `--provider`, `--service`, `--ssh-key`,
       `--host`) declared `is => 'ro'` with `format => 's'` and no enum check,
       so `ocp init --dist rke3` reached `write_spec`, `ocp init --provider
@@ -245,14 +245,14 @@ Revision history for OCP
       --host foo --provider hetzner` silently dropped `--host`, and `ocp
       init --ssh-key ~/.ssh/id_ed25519.pub` copied the public half into
       the private slot. Each invalid value now dies with the same shape
-      `ocp quatschkommando` answers in (karr #67, #89, #103): the rejection
+      `ocp quatschkommando` answers in (k67, k89, k103): the rejection
       names the input and lists what would have worked. `--host` and
       `--ssh-key` use the hint form (no second valid value, only a shape);
       `--provider` reads from `OCP::Provider->types`. New subtests in
       t/41-init-scaffold.t assert each rejection, the rejection shape, and
       that no spec was written on the way out.
     - `ocp destroy` now removes `.ocp/status.yaml` and `.ocp/deployed.yaml`
-      even when the early-return path fires (karr #78). A project whose
+      even when the early-return path fires (k78). A project whose
       cluster was torn down out of band left both files describing a
       cluster that no longer existed; the next `ocp apply` then compared
       a fresh cluster against the hashes of one that was gone and
@@ -264,7 +264,7 @@ Revision history for OCP
       t/47-deployed-state.t assert the files are gone on the
       empty-nodes/spec-stripped shape cortex was in.
     - The GPU ClusterPolicy now writes spec.cdi.enabled explicitly
-      (karr #76). The #23 decision -- "OCP does not make the nvidia
+      (k76). The k23 decision -- "OCP does not make the nvidia
       runtime the node's default runtime" -- rests on the operator
       writing NVIDIA_RUNTIME_SET_AS_DEFAULT=false into the toolkit env,
       and that write is gated on config.CDI.IsEnabled(). IsEnabled() was
@@ -284,8 +284,8 @@ Revision history for OCP
       OCP::Versions was silently skipped on the reconcile path -- only
       OCP::Drift, which reads the running image from the cluster, caught
       it. Registry, NFD and the GPU operator already used this equality
-      shape; cert-manager is now consistent with them (karr #69).
-    - The OCPNodeProvider CRD enum finally knows `local` (karr #110). The
+      shape; cert-manager is now consistent with them (k69).
+    - The OCPNodeProvider CRD enum finally knows `local` (k110). The
       schema declared `spec.type: [hetzner, ssh]` while OCP::Provider had
       carried `local` since the day OCP::Provider::Local existed, so
       `ocp provider add --type local` cleared CLI validation and then
@@ -300,9 +300,9 @@ Revision history for OCP
       uses), and the two callers — `OCP::Cmd::Apply::Bootstrap` for the
       control plane and `OCP::Node::_resolve_host` for every worker —
       take the module's default. Naming their own number was the
-      asymmetry karr #109 just killed for SSH; the address wait had it
+      asymmetry k109 just killed for SSH; the address wait had it
       too, with three 120s that would have drifted the moment one of
-      them moved (karr #112). The single-source-of-truth test that
+      them moved (k112). The single-source-of-truth test that
       pinned it is the same shape as the SSH one — a budget comparison,
       not a literal number per side.
     - `OCP::SSH::is_reachable` no longer takes a `$timeout` it never read.
@@ -321,7 +321,7 @@ Revision history for OCP
       fix for. The dynamic derivation also catches log/port_forward/exec/
       attach/watch and the object-shaped update/create/update_status/
       ensure_all/ensure_only, which the static list never did; OCP::Node's
-      own _delete_object wrapper (added in #35) is still joined in by a
+      own _delete_object wrapper (added in k35) is still joined in by a
       small explicit list, since it is OCP code rather than Kubernetes::REST
       code. The regex's "what kind of literal counts as an api-version"
       half is unchanged -- broadening it caught ->scp_to('/local/file'),
@@ -332,7 +332,7 @@ Revision history for OCP
       names Kubernetes::REST 1.107 already exposed.
     - dist.ini now sets `version_finder = :MainModule` + `:ExecFiles`
       so the single-source claim from 4aa92cf is true in the build,
-      not just in the repo (karr #74). The Author::GETTY bundle
+      not just in the repo (k74). The Author::GETTY bundle
       reads `version_finder` from its own payload (lines 326-331 of
       PluginBundle/Author/GETTY) and forwards it to PkgVersion,
       RewriteVersion::Transitional and BumpVersionAfterRelease;
@@ -479,7 +479,7 @@ Revision history for OCP
       any provider, and its `provider: ssh` report now prints the ADMIN
       public key as the one to put in authorized_keys; `ocp ssh` picks its
       key the same way as every other command and no longer demands PIN2 in
-      a dev-mode project that has no admin key to unlock (karr #94 dissolves
+      a dev-mode project that has no admin key to unlock (k94 dissolves
       with the premise); `--ssh-key` is reported as not applicable in secure
       mode rather than silently honoured. An existing .ocp/id_ed25519 is
       still never regenerated and never deleted — it is reported as legacy.
@@ -506,7 +506,7 @@ Revision history for OCP
       per run however many machines are unreachable. It stays a diagnosis
       after the fact: nothing checks in advance which key a machine accepts,
       nothing falls back to the bootstrap key, and a worker that did not come
-      up still fails with the same exit code (karr #97).
+      up still fails with the same exit code (k97).
     - `ocp destroy` no longer strands paid servers when it cannot get an SSH
       key. Its ssh-node branch needs the PIN2-protected admin key now, which
       means a lookup that can fail — a wrong PIN, no terminal, no keys.yaml.
@@ -518,10 +518,10 @@ Revision history for OCP
       through the API. An unreachable host during the uninstall is also
       reported as a warning instead of being announced as a success.
     - `ocp update`, `ocp node add` and drift remediation work on a
-      secure-mode Hetzner cluster (karr #87). All three reached for
+      secure-mode Hetzner cluster (k87). All three reached for
       .ocp/id_ed25519 as the key to log in with, but a Hetzner machine was
       never given that key: OCP uploads the ADMIN public key through the
-      provider API before the server exists, and since #85 `ocp init` does
+      provider API before the server exists, and since k85 `ocp init` does
       not create a bootstrap key there at all. So `ocp update` died with
       "cannot read SSH key", `ocp node add` could not fetch the join token,
       and the reconcile path's Rex remedy declined every drift it found —
@@ -538,10 +538,10 @@ Revision history for OCP
       never ask because they never open an SSH connection at all. Without a
       terminal — a piped or scheduled run — the admin key is refused with a
       message naming what it wanted, instead of blocking on an invisible
-      password prompt. `ocp destroy` was left alone by #87 and is covered by
+      password prompt. `ocp destroy` was left alone by k87 and is covered by
       the teardown entry above instead.
     - The decrypted admin key no longer outlives the command that needed
-      it, and no longer disappears while it is still in use (karr #87). The
+      it, and no longer disappears while it is still in use (k87). The
       temp file pair OCP wrote for it had no owner: one path created it with
       UNLINK => 0 and left a readable private key in /tmp, another tied it
       to a lexical that went out of scope when the sub returned — so on a
@@ -552,12 +552,12 @@ Revision history for OCP
       command object, and removes them when it goes away — including while
       Perl unwinds out of a die.
     - Worker installs no longer point Rex at a public key file that was
-      never written (karr #93). OCP::Node wrote the private key to a temp
+      never written (k93). OCP::Node wrote the private key to a temp
       file and handed Rex the path; OCP::Rex sets REX_PUBLIC_KEY to that
       path plus ".pub" unconditionally, and nothing put a file there — so
       every worker install, robocop's as much as `ocp node add`'s, ran with
       REX_PUBLIC_KEY naming something that did not exist. The same defect
-      was fixed for the control plane by #87; the worker path was outside
+      was fixed for the control plane by k87; the worker path was outside
       that ticket. Both halves are now written and owned together by the new
       OCP::TempKeyPair, which OCP::ClusterKey uses as well. The public half
       is read out of the private key material itself rather than passed in
@@ -570,7 +570,7 @@ Revision history for OCP
       remedy declined to run is now counted and named, and the run says it
       did not bring the cluster back to spec.
     - `ocp init` no longer destroys a project it was run in for the first
-      time (karr #86). .ocp/ is gitignored while keys.yaml, secrets.yaml and
+      time (k86). .ocp/ is gitignored while keys.yaml, secrets.yaml and
       age.key.enc are committed on purpose, so the second person to clone the
       repo had all the encrypted material and no .ocp/age.key. Init checked
       `has_age_key` — "is there one on this machine" — heard no, and
@@ -589,12 +589,12 @@ Revision history for OCP
       anything is bound to a recipient, so it holds for any other path to
       generation as well.
     - `ocp apply` in dev mode (`ocp init --nopassword`) no longer mints over a
-      committed binding (karr #90). The dev-mode branch used the
-      `has_age_key`-on-this-machine check `ocp init` had before #86, and once
-      #86 put the safety net inside `OCP::Secrets::generate_age_key` that
+      committed binding (k90). The dev-mode branch used the
+      `has_age_key`-on-this-machine check `ocp init` had before k86, and once
+      k86 put the safety net inside `OCP::Secrets::generate_age_key` that
       branch hit the generic "Unlock the existing key with PIN1 (age.key.enc)"
       croak — advice that has nowhere to go on a path without a PIN. The
-      check is now `project_has_age_key` (added in #86): nothing committed,
+      check is now `project_has_age_key` (added in k86): nothing committed,
       generate as before; project bound to a recipient and `.ocp/age.key`
       missing, abort with the dev-mode-specific answer (the key has to come
       back from a backup or from the machine that created the project —
@@ -603,7 +603,7 @@ Revision history for OCP
       unchanged and now sits below a check that gives the user the right
       diagnosis for this branch.
     - `ocp init` creates the bootstrap key .ocp/id_ed25519 for
-      `provider: ssh` in secure mode, not only under --nopassword (karr #85).
+      `provider: ssh` in secure mode, not only under --nopassword (k85).
       OCP::Cmd::Apply::Bootstrap picks exactly that file when
       `$no_password_mode || $provider eq 'ssh'`, so a secure-mode SSH project
       had no key at all and `ocp apply` died with "SSH not reachable on HOST
@@ -622,7 +622,7 @@ Revision history for OCP
       `ocp init --provider ssh` also prints the public key to distribute,
       which it previously left out entirely because the only file it knew how
       to print did not exist.
-    - `ocp init --ssh-key` is evaluated in secure mode (karr #85). It was
+    - `ocp init --ssh-key` is evaluated in secure mode (k85). It was
       declared, documented, and read only on the --nopassword branch, so in
       secure mode it was accepted and silently dropped. Where it cannot be
       honoured it now says so instead: against an existing bootstrap key
@@ -630,12 +630,12 @@ Revision history for OCP
       machines already trust, and against a provider that has no bootstrap
       key it reports that the flag does not apply.
     - New `ocp keys show [--purpose admin|--name NAME]` prints the public
-      half of a key in keys.yaml (karr #84). After `ocp init` there was no
+      half of a key in keys.yaml (k84). After `ocp init` there was no
       way to see the admin public key, which is what `ocp node add` and
       manual distribution both need. It asks for PIN1 at most: the public
       field sits behind the age layer only, the PIN2 layer covers `private`.
       Only the key goes to stdout, so it pipes into authorized_keys.
-    - OCP::Keys::decrypt_all_to_disk is removed (karr #84). It had no caller
+    - OCP::Keys::decrypt_all_to_disk is removed (k84). It had no caller
       anywhere in lib/ or bin/, but its POD promised a .ocp/keys/ layout
       that documentation and deploy plans then assumed existed. As a way to
       read a public key it was also the wrong shape — it wrote every
@@ -652,7 +652,7 @@ Revision history for OCP
       `ocp apply` could not stamp the control-plane CR. The call now uses the
       client's own form.
     - An unknown subcommand now fails instead of quietly resolving to the
-      root (karr #67). `ocp quatschkommando --help` printed the root usage
+      root (k67). `ocp quatschkommando --help` printed the root usage
       and exited 0; MooX::Cmd looks for the first word it recognises
       anywhere in the argument vector and lets the rest fall on the floor,
       so a command a given build does not have was indistinguishable from
@@ -662,12 +662,12 @@ Revision history for OCP
       it: `ocp typo apply` used to run apply, `ocp node typo --help`
       returned 0, and an alias behind an option (`ocp -v deploy-image`)
       was not resolved at all.
-    - `ocp node add --gpu` writes `spec.gpu` as a JSON boolean (karr #50).
+    - `ocp node add --gpu` writes `spec.gpu` as a JSON boolean (k50).
       The CRD declares it boolean and rejected the Perl integer with a
       422, so the flag could not be used at all — the CR was never
-      written. Note that nothing reads the field yet (karr #70).
+      written. Note that nothing reads the field yet (k70).
     - `ocp node add --nowait` replaces `--no_wait`; the old spelling keeps
-      working as an alias (karr #37). `--no-wait` was never possible:
+      working as an alias (k37). `--no-wait` was never possible:
       MooX::Options strips a literal `no-` as a negation marker before it
       substitutes dashes for underscores, so it was read as "negate the
       option `wait`", which does not exist. Negative flags in this CLI are
@@ -681,13 +681,13 @@ Revision history for OCP
       unchanged: do not wait, do restart.
     - `ocp init --hetzner` now asks for the location and the server type
       instead of silently writing the hardcoded cpx21/fsn1 defaults (karr
-      #27). The catalogue comes from the Hetzner API with the token that
+      k27). The catalogue comes from the Hetzner API with the token that
       was just entered, pressing Enter keeps the previous default, and a
       run without a TTY, without a token or with an unreachable catalogue
       stays on the defaults instead of blocking.
     - The GPU Operator's ClusterPolicy no longer sets
       `CONTAINERD_SET_AS_DEFAULT` or `CONTAINERD_RUNTIME_CLASS` (karr
-      #30). Both come from the archived 22.9-era recipe.
+      k30). Both come from the archived 22.9-era recipe.
       `CONTAINERD_RUNTIME_CLASS` is overwritten by the operator before it
       reaches the DaemonSet, and `CONTAINERD_SET_AS_DEFAULT=1` asked for
       the opposite of OCP's own decision not to make the NVIDIA runtime
@@ -696,14 +696,14 @@ Revision history for OCP
       `CONTAINERD_SOCKET` stay; they are the input the operator derives
       its runtime paths and mounts from. This changes the manifest hash,
       so the next `ocp apply` on a GPU cluster redeploys the GPU stack.
-    - robocop may delete Kubernetes Nodes (karr #35). `OCP::Node::teardown`
+    - robocop may delete Kubernetes Nodes (k35). `OCP::Node::teardown`
       deletes the Node object, but the ClusterRole granted only get and
       patch, so under robocop the call would have failed with a 403 inside
       an eval that discarded the answer — the CR gone, the Node left
       behind as NotReady, teardown reporting success. A failing delete now
       warns and names the object; an already-absent object stays quiet.
     - A new Rex task removes the obsolete containerd `config.toml.tmpl`
-      that OCP wrote before it stopped configuring containerd (karr #45).
+      that OCP wrote before it stopped configuring containerd (k45).
       RKE2 and k3s render their config from such a template instead of
       their own generated one on every service start, so a host
       bootstrapped by an older OCP kept running from a two-line stub
@@ -712,7 +712,7 @@ Revision history for OCP
       and the cleanup runs on bootstrap and on agent installs, not on the
       reconcile path.
     - `ocp apply --dry-run` no longer writes to a cluster that already
-      exists (karr #52). The flag was checked in exactly one place, and
+      exists (k52). The flag was checked in exactly one place, and
       that place sat behind the "cluster already exists" branch, so a
       reconcile ran every server-side apply, every CRD ensure and every
       Rex remedy a real run runs — harmless only because those writes
@@ -722,7 +722,7 @@ Revision history for OCP
       path already printed. It stamps no version and gives no health
       verdict, because it changed nothing.
     - `ocp status` now reports drift for NFD and the GPU Operator (karr
-      #32). Both are pinned in OCP::Versions and were never compared
+      k32). Both are pinned in OCP::Versions and were never compared
       against the cluster, so a version bump was rolled out silently and
       never named. Neither carries a Rex remedy — their version lives in
       a manifest `ocp apply` regenerates — so reconcile reports them
@@ -732,14 +732,14 @@ Revision history for OCP
       driver) stay unprobed on purpose; they live in the ClusterPolicy,
       not in a workload OCP writes.
     - The GPU Operator now reports what actually happened during
-      reconcile instead of guessing from `.ocp/deployed.yaml` (karr #46).
+      reconcile instead of guessing from `.ocp/deployed.yaml` (k46).
       An operator that had gone missing from the cluster and was rolled
       out again at an unchanged manifest hash used to be announced as
       "up to date"; it now says "redeployed (was gone from the cluster)",
       alongside the deployed/updated/unchanged wording registry and NFD
       already used, plus "skipped" for a cluster with no GPU.
     - `ocp deploy-image` now accepts a single `--image REF` shorthand in
-      addition to the existing `--repo` + `--tag` pair (karr #66). The
+      addition to the existing `--repo` + `--tag` pair (k66). The
       shorthand parses either `REPO:TAG` (e.g. `ghcr.io/foo/bar:v1.2.3`,
       with implicit Docker Hub for the bare `foo/bar:v1.2.3` form) or the
       digest form `REPO@sha256:<64hex>` for content-addressable rollouts.
@@ -780,7 +780,7 @@ Revision history for OCP
       (build) and 2 (push) name the command that actually failed instead
       of being recovered from a captured error stream.
     - New `share/bin/ocp-build-image` script and `make build-image`
-      target for building and pushing `raudssus/ocp` images (karr #64).
+      target for building and pushing `raudssus/ocp` images (k64).
       The script runs standalone (no `make`, no Perl, no network) and
       is idempotent / CI-friendly. Builds for the architecture of the
       machine running it, tags `latest` + `$VERSION` (from `./VERSION`
@@ -928,11 +928,11 @@ Revision history for OCP
         the listing; t/26-cli-dispatch.t exercises both
     - Drop OCP::Cmd::InjectKey
       - sub execute died with a TODO message instead of doing anything;
-        reimplementation is tracked on the board (karr #2) and will land as
+        reimplementation is tracked on the board (k2) and will land as
         a fresh command, not a resurrection of the dead one
       - the 'inject-key' alias and the corresponding entry in bin/ocp's help
         and the OCP.pm POD list went with it; the WORKFLOW section in
-        OCP::Robocop now points at karr #2 instead
+        OCP::Robocop now points at k2 instead
     - Take share/ from the tree the code came from, not from the image
       - OCP::Rex and both share-dir lookups in the command modules searched
         /opt/ocp/src/share first, so inside a container the image always won

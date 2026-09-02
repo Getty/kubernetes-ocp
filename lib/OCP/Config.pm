@@ -85,7 +85,7 @@ sub name { shift->spec->{name} // 'mycluster' }
 # and every server created for the cluster afterwards has to reference the
 # very same one -- a Hetzner worker created with a different name, or with
 # none, boots with an empty authorized_keys and is unreachable for good
-# (karr #92).
+# (k92).
 #
 # It lives here because OCP::Config is the only place that knows the cluster
 # name in both modes: secure mode uploads the PIN2-protected admin key,
@@ -99,7 +99,7 @@ sub admin_ssh_key_name { 'ocp-' . shift->name . '-admin' }
 # half beside the admin one so that every Hetzner machine trusts the key
 # robocop holds -- otherwise a worker robocop provisions has only the admin key
 # in authorized_keys and refuses the robo key, so its install never connects
-# and the node goes Failed (karr #101, variant a). Only the PUBLIC half travels
+# and the node goes Failed (k101, variant a). Only the PUBLIC half travels
 # to the provider, and it sits behind the age layer alone, so no PIN2 is
 # involved -- the age-encrypted robo tier ADR 0006/0027 deliberately keep.
 #
@@ -190,13 +190,13 @@ sub robocop_enabled {
     return 0;
 }
 
-# How the private robo (automation) SSH key reaches the cluster (karr #129),
+# How the private robo (automation) SSH key reaches the cluster (k129),
 # read from `robocop.security_level` (the mapping form of the robocop key):
 #
 #   secret           `ocp deploy-robocop` decrypts the robo key with PIN1 and
 #                    writes it into a K8s Secret; a pod restart self-heals.
 #   secret_approved  as secret, but writing the Secret is gated behind PIN2.
-#   inject           in-memory, never persisted (karr #2) — deferred; the
+#   inject           in-memory, never persisted (k2) — deferred; the
 #                    config accepts it, the deploy path refuses it cleanly.
 #
 # Default secret: an automation controller must survive pod restarts
@@ -253,7 +253,7 @@ sub has_external_cache   { shift->registry_cache ne '' }
 sub has_external_upstream { shift->registry_upstream ne '' }
 
 # Network configuration — the Cilium LB-IPAM pool and L2 announcement policy
-# (karr #127). All optional; a cluster that sets nothing keeps the historical
+# (k127). All optional; a cluster that sets nothing keeps the historical
 # single-node behaviour (pool = node IP /32, announce on every node).
 #
 #   network:
@@ -468,7 +468,7 @@ sub validate {
 
         # The wording this rejection has always had; the SET behind it now
         # comes from the factory that builds those providers instead of being
-        # spelled out a second time here (karr #103). Same three words, one
+        # spelled out a second time here (k103). Same three words, one
         # source -- a fourth provider type appears in this message the moment
         # OCP::Provider can construct it.
         unless (OCP::Provider->known_type($prov)) {
@@ -491,7 +491,7 @@ sub validate {
 
     push @errors, $self->_validate_network;
 
-    # robocop.security_level, report-only (karr #129). The accessor croaks; here
+    # robocop.security_level, report-only (k129). The accessor croaks; here
     # we collect one line so `ocp apply` lists it with every other config error.
     my $rl = $self->_raw_robocop_security_level;
     if (defined $rl && !grep { $_ eq $rl } @ROBOCOP_SECURITY_LEVELS) {
@@ -506,8 +506,8 @@ sub validate {
             push @errors, "worker pool '$w->{name}': provider required";
         } elsif (!OCP::Provider->known_type($wprov)) {
             # Same set, same source as the control-plane check above --
-            # spelling the regex here again is what karr #103 deleted for
-            # the control planes and what karr #110 made stale (karr #115).
+            # spelling the regex here again is what k103 deleted for
+            # the control planes and what k110 made stale (k115).
             push @errors, "worker pool '$w->{name}': invalid provider '$wprov' (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
@@ -516,7 +516,7 @@ sub validate {
     return @errors;
 }
 
-# network.lb_pool / network.l2 validation (karr #127). Report-only: returns a
+# network.lb_pool / network.l2 validation (k127). Report-only: returns a
 # list of human-readable errors, same contract as validate() itself.
 sub _validate_network {
     my ($self) = @_;

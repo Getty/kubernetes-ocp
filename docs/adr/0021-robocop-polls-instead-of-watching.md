@@ -35,7 +35,7 @@ does not change if a watch replaces the trigger later.
 
 Record the dependency as debt with an expiry rather than as architecture: either
 implement the watch loop and `port_forward` — redeeming `ocp inject-key` with it
-— or drop `Net::Async::Kubernetes` from `cpanfile` (karr #1, karr #2). Do not
+— or drop `Net::Async::Kubernetes` from `cpanfile` (k1, k2). Do not
 build anything further on the assumption that it is wired up.
 
 ### Alternatives rejected

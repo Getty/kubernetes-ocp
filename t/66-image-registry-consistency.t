@@ -5,15 +5,15 @@ use Test::More;
 use Path::Tiny qw(path);
 
 #
-# karr #41, following on from #10: for months the robocop manifests pointed
+# k41, following on from k10: for months the robocop manifests pointed
 # at ghcr.io/getty/ocp while the (now-deleted) CI publish workflow pushed
 # raudssus/ocp, and nothing ever compared the two -- the mismatch was only
-# visible once someone actually pulled the image. #10 fixed the drift and
+# visible once someone actually pulled the image. k10 fixed the drift and
 # consolidated everything on raudssus/ocp; this file is the missing
 # comparison that would have caught it, kept alive as a standing guard.
 #
 # There is no CI publish workflow any more (.github/workflows/docker-publish.yml
-# was deleted along with CI auto-publish -- see #10's history and the #41
+# was deleted along with CI auto-publish -- see k10's history and the k41
 # addendum). The place that now actually builds and pushes the image is
 # share/bin/ocp-build-image, and the name every other Make target defers to
 # is the Makefile's IMAGE variable. So the comparison this file makes is:
@@ -21,10 +21,10 @@ use Path::Tiny qw(path);
 # variable, and with ocp-build-image's own default.
 #
 # Two code-side carriers of the same string get the same treatment, per
-# maintainer decision on #41: OCP::Cmd::DeployImage's $DEFAULT_REPO (what
+# maintainer decision on k41: OCP::Cmd::DeployImage's $DEFAULT_REPO (what
 # `ocp deploy-image` rolls onto the cluster when nobody overrides --repo)
 # and xt/smoke.sh's default IMAGE. Both would drift silently the same way
-# the manifests did in #10 -- they're read once at the top of their files
+# the manifests did in k10 -- they're read once at the top of their files
 # and nothing else in the codebase would notice a registry rename.
 #
 # README.md deliberately stays OUT of this comparison. Its prose gets
@@ -35,10 +35,10 @@ use Path::Tiny qw(path);
 #
 # What this deliberately does NOT check: an architecture guard. The image is
 # built for the architecture of the machine that builds it, so there is no
-# platform list here for a guard to compare against. #41 originally proposed
+# platform list here for a guard to compare against. k41 originally proposed
 # one aimed at the CI workflow, which no longer exists, and robocop has been
 # pinned to the (always-amd64) control-plane node via nodeSelector/toleration
-# since #10 (commit 03dec2e). See karr #41's addendum for the maintainer's
+# since k10 (commit 03dec2e). See k41's addendum for the maintainer's
 # call on this.
 #
 
@@ -73,7 +73,7 @@ my $deployment_repo = defined($deployment_image) ? _repo_only($deployment_image)
 # Deployment's image repo, or it silently no-ops: kustomize does not error
 # on an unmatched image name, it just leaves the base image alone, and the
 # dev overlay quietly deploys the public raudssus/ocp image instead of the
-# local one. That silent-no-op failure mode is exactly the shape of bug #10
+# local one. That silent-no-op failure mode is exactly the shape of bug k10
 # was about, just in the opposite direction (dev tooling instead of prod).
 my ($overlay_match_name) = $dev_overlay->slurp_utf8
     =~ /^images:\s*\n-\s*name:\s*(\S+)\s*$/m;
@@ -130,7 +130,7 @@ subtest 'every image reference under share/, the Makefile, and the two code-side
     is $deployment_repo, $makefile_image,
         'share/robocop/deployment.yaml image repo matches the Makefile IMAGE variable'
         or diag "deployment.yaml: $deployment_repo vs Makefile IMAGE: $makefile_image -- "
-               . 'karr #41/#10: these drifting apart is exactly the bug #10 fixed.';
+               . 'k41/k10: these drifting apart is exactly the bug k10 fixed.';
 
     is $overlay_match_name, $makefile_image,
         'the dev overlay images: transformer name: matches the Makefile IMAGE variable '

@@ -14,7 +14,7 @@ use OCP::Secrets;
 use OCP::Cmd::SSH;
 
 #
-# Regression test for karr #117.
+# Regression test for k117.
 #
 # OCP::Cmd::SSH died with 'Not a HASH reference' when ocp.yaml's
 # control_planes was a list (mixed hetzner+ssh is the canonical case).
@@ -56,7 +56,7 @@ subtest 'multi-CP ssh+hetzner: ocp ssh --node police1 no longer crashes' => sub 
     # it returns, and the caller can hand the undef to _unknown_node_error.
     my $resolved = eval { $ssh->_resolve_target_host($config, $secrets, 'police1') };
 
-    is $@, '', 'no crash on multi-CP control_planes (karr #117)';
+    is $@, '', 'no crash on multi-CP control_planes (k117)';
     is $resolved, undef,
         'a CP-like name without a reachable kubeconfig is left undefined'
         . ' so _unknown_node_error can run';

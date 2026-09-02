@@ -207,14 +207,14 @@ subtest 'expand_class resolves the registered CRDs but not an api-version' => su
 # so when Kubernetes::REST grows patch_status - or anything after it - the
 # next day the scan knows about it too. The list is then extended with the
 # OCP-internal wrappers that forward a literal Kind straight to a raw k8s
-# call (today only _delete_object in OCP::Node, added in #35 -- see
+# call (today only _delete_object in OCP::Node, added in k35 -- see
 # t/55-robocop-rbac.t). New wrappers of that shape are rare enough that a
 # static list is fine; the rest of the test sweeps the repo-wide surface
 # regardless of which method names appear.
 #
 # What this used to do (kept here as the cautionary tale): hard-code
 # `(get|delete|patch|list|ensure|_delete_object)`. That dropped _delete_object
-# silently for every PR that touched it before #35, and would drop the next
+# silently for every PR that touched it before k35, and would drop the next
 # new Kubernetes::REST method (patch_status, update_status, watch, ...) the
 # same way. Going purely on Kind-shaped literals - i.e. dropping the
 # alternation entirely - was tried and rejected: it catches real
@@ -281,7 +281,7 @@ subtest 'no call site in lib/ passes an api-version as argument 0' => sub {
 };
 
 #
-# Regression for karr #75: the alternation used to be a hand-kept list of
+# Regression for k75: the alternation used to be a hand-kept list of
 # method names. Demonstrating that the dynamic derivation is in effect --
 # i.e. the alternation knows about methods that did NOT exist as literals
 # in the old regex. If this fails, something has re-hardcoded the method
@@ -292,7 +292,7 @@ subtest 'the kind-bearing method list is derived from Kubernetes::REST, not hand
     ok scalar @methods, 'introspection found methods';
 
     # patch_status and watch are part of Kubernetes::REST's API but were
-    # not in the hand-kept alternation before karr #75. If either is
+    # not in the hand-kept alternation before k75. If either is
     # missing from the introspection list, the dynamic derivation has
     # regressed to a static allow-list.
     ok( (scalar grep { $_ eq 'patch_status' } @methods),
@@ -301,7 +301,7 @@ subtest 'the kind-bearing method list is derived from Kubernetes::REST, not hand
         'watch is covered' );
 
     # _delete_object is the one OCP-internal forwarding wrapper at the
-    # time of karr #75; the subtest above joins it back in. The full
+    # time of k75; the subtest above joins it back in. The full
     # alternation the scan actually used is therefore a superset of the
     # old hand-kept list, which is the whole point of the ticket.
     my @combined = (@methods, @OCP_KIND_FIRST_WRAPPERS);

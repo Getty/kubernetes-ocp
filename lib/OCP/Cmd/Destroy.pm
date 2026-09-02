@@ -26,7 +26,7 @@ option keep_status => (
 
 # Servers this project paid for but which are not labelled with its name.
 #
-# Until karr #98, OCP::Provider::from_cr took the provider CR's OWN name for
+# Until k98, OCP::Provider::from_cr took the provider CR's OWN name for
 # the cluster name, and `ocp apply` writes that CR as "<type>-default". So
 # every worker brought up by `ocp node add` or robocop was labelled
 # ocp-cluster=hetzner-default while the control plane carried the real cluster
@@ -64,7 +64,7 @@ sub _report_mislabelled_servers {
         printf "[!!] %d Hetzner server(s) carry the label ocp-cluster=%s and were\n",
                scalar @$servers, $label;
         print  "     NOT deleted. They are this cluster's, mislabelled before the\n";
-        print  "     fix for karr #98 — they keep running and keep billing.\n";
+        print  "     fix for k98 — they keep running and keep billing.\n";
         for my $s (@$servers) {
             printf "       - %s (id %s, %s)\n",
                    eval { $s->name } // '?',
@@ -123,11 +123,11 @@ sub execute {
     #
     # Both gates use OCP::Provider->known_type rather than `eq 'ssh'`, so a
     # CP/worker carrying `provider: local` reaches the destroy loop instead
-    # of being dropped on the floor -- the same seam karr #103 found in six
+    # of being dropped on the floor -- the same seam k103 found in six
     # other input checks. A missing or unknown provider is skipped rather
     # than relabelled ssh: a literal `// 'ssh'` would put an unsupported node
     # on the destruction list and let the loop's ssh-only branch hit a host
-    # that was never an ssh target (karr #116).
+    # that was never an ssh target (k116).
     if (!@$nodes) {
         my $cps = $config->control_planes;
         my $idx = 0;
@@ -156,7 +156,7 @@ sub execute {
 
     unless (@$nodes) {
         print "No nodes to destroy.\n";
-        # karr #78: this early-return used to skip the cleanup that runs at
+        # k78: this early-return used to skip the cleanup that runs at
         # the bottom of execute(). It is exactly the shape a project takes
         # after a cluster was torn down out of band — status.yaml with
         # `nodes: []`, the spec slimmed down, no orphans at Hetzner — and
@@ -296,7 +296,7 @@ sub execute {
     # Clear status + kubeconfig. Pulled into a helper so the early-return
     # path above ("no nodes to destroy") and the main path land at the same
     # code; the early-return bypass used to leave .ocp/deployed.yaml behind
-    # when a cluster was torn down out of band (karr #78).
+    # when a cluster was torn down out of band (k78).
     $self->_cleanup_project_state($config);
 
     # Last, so it is the thing left on screen: a teardown that reported success
@@ -312,7 +312,7 @@ sub execute {
 # paths through execute() -- the early "no nodes to destroy" return and the
 # "nodes deleted, now tidy up" tail -- call this, so the local state dies with
 # the cluster it described regardless of whether anything was actually torn
-# down on the wire (karr #78).
+# down on the wire (k78).
 #
 # deployed.yaml goes with status.yaml, and for the same reason: both describe
 # the cluster that was just deleted (ADR 0004). Leaving the manifest hashes
@@ -385,7 +385,7 @@ API — those cost money, an uninstall script does not.
 Before the final line the teardown looks once more, under the C<ocp-cluster>
 labels C<ocp apply> would have written a provider CR as
 (C<< <type>-default >>), and B<names> anything still running there.  Those are
-servers created before the fix for C<karr #98>, when the worker path took the
+servers created before the fix for C<k98>, when the worker path took the
 provider CR's own name for the cluster name: they belong to this cluster but
 carry a label no teardown searches.  They are reported, never deleted — the
 label is generic, so a match can belong to another OCP cluster in the same
@@ -404,7 +404,7 @@ is deleted.  Leaving C<deployed.yaml> behind was the bug behind C<ADR 0004>:
 a fresh C<ocp apply> compared a brand-new cluster against the hash file of
 the previous one and announced every component as "up to date" against a
 registry that was never rolled out.  Cleanup runs even when no nodes were
-found to delete (C<karr #78>) — a teardown that discovers nothing on the
+found to delete (C<k78>) — a teardown that discovers nothing on the
 wire is exactly the shape a project directory takes after a cluster was
 torn down out of band.
 

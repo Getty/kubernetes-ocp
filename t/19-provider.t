@@ -199,7 +199,7 @@ subtest 'add hetzner provider writes Secret + CR' => sub {
 subtest 'a flag that is not given writes no field' => sub {
     # "This provider does not care" is a real answer and has to stay
     # expressible, because OCP::Provider::Hetzner ranks the provider's default
-    # ABOVE its own code default (karr #100). A CR that carried a value for
+    # ABOVE its own code default (k100). A CR that carried a value for
     # every flag would make the code default unreachable and pin every node of
     # the provider to whatever `provider add` guessed.
     my $tfile = Path::Tiny->tempfile;
@@ -222,7 +222,7 @@ subtest 'a flag that is not given writes no field' => sub {
 };
 
 #
-# The OCPNodeProvider CRD, read as a document -- karr #100.
+# The OCPNodeProvider CRD, read as a document -- k100.
 #
 # Two claims, and both are about the same three fields being a RANK rather
 # than a value.
@@ -300,7 +300,7 @@ subtest 'the OCPNodeProvider CRD leaves the hetzner defaults unset' => sub {
 
 subtest 'add hetzner writes the SSH key name onto the CR' => sub {
     # A provider CR without sshKeyName produces servers with an empty
-    # authorized_keys once `ocp node add` reaches it (karr #92). With no
+    # authorized_keys once `ocp node add` reaches it (k92). With no
     # project on disk there is nothing to derive from -- the field is then
     # left off rather than guessed, and --ssh-key-name is the way in.
     my $tfile = Path::Tiny->tempfile;
@@ -324,7 +324,7 @@ subtest 'add hetzner writes the SSH key name onto the CR' => sub {
 #
 # A hand-added provider has to agree with the project about the cluster name,
 # or the servers it creates land under a different ocp-cluster label than the
-# control plane's and `ocp destroy` walks straight past them (karr #98). There
+# control plane's and `ocp destroy` walks straight past them (k98). There
 # is deliberately no flag: the cluster has one name and it is in ocp.yaml.
 #
 
@@ -518,7 +518,7 @@ subtest 'rm errors on unknown provider' => sub {
 
     # The rejection has to say what would have worked, with the type next to
     # the name — naming the type instead of the CR is the mistake that gets
-    # made (karr #89, full coverage in t/73-provider-name-vs-type.t).
+    # made (k89, full coverage in t/73-provider-name-vs-type.t).
     my $stocked = FakeK8sP->new(
         providers => [{ metadata => { name => 'ssh-default' }, spec => { type => 'ssh' } }],
         nodes     => [],

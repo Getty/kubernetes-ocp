@@ -18,7 +18,7 @@ use OCP::Keys;
 # THE DECISION THIS FILE NOW ENCODES: secure mode has two key tiers and only
 # two — robo (automation, no PIN2) and admin (age + PIN2). The bootstrap key
 # .ocp/id_ed25519 is dev mode's single credential and exists nowhere else. It
-# used to be created for `provider: ssh` in both modes (karr #85), on the
+# used to be created for `provider: ssh` in both modes (k85), on the
 # theory that a pre-existing machine can only trust what a human put there by
 # hand. That theory was wrong about which key the human puts there: the admin
 # public key is printable (`ocp keys show --purpose admin`), so a human can
@@ -40,7 +40,7 @@ use OCP::Keys;
 # anything locally. OCP::Secrets::generate_ssh_key unlinks before it
 # generates, so "don't touch an existing key" has to be asserted, not assumed.
 #
-# The other half of the file is karr #84: `ocp keys show`, the command that
+# The other half of the file is k84: `ocp keys show`, the command that
 # makes the admin public key printable at all. Before it, the only code that
 # could surface a public key was OCP::Keys::decrypt_all_to_disk, which had no
 # caller and would have written every PRIVATE key to .ocp/keys/ in plaintext
@@ -259,8 +259,8 @@ subtest '--ssh-key is honoured in dev mode, where the key it names is used' => s
 };
 
 subtest '--ssh-key in secure mode is refused out loud, on every provider' => sub {
-    # Silently ignored options are a repeat offender in this repo (karr #67,
-    # #37). The flag was once honoured for secure + ssh, because that
+    # Silently ignored options are a repeat offender in this repo (k67,
+    # k37). The flag was once honoured for secure + ssh, because that
     # combination had a bootstrap key; now nothing in secure mode reads one,
     # so the rule is the other rule this repo keeps: evaluate the option or
     # say it does not apply. Never accept it and do nothing.
@@ -362,7 +362,7 @@ subtest 'what init tells the operator to install is what Bootstrap presents' => 
         'whose public half is exactly what init told the operator to install';
 };
 
-# ---------------------------------------------------------------- karr #84
+# ---------------------------------------------------------------- k84
 
 subtest 'ocp keys show prints the admin public key' => sub {
     my $r = run_init();
@@ -434,7 +434,7 @@ subtest 'ocp keys show selects by purpose and by name' => sub {
     is $by_name, $robo->{public} . "\n", '--name picks the same key';
 
     # Both claims are the ones this test always made — an unknown purpose and
-    # an unknown name are errors, not empty output. karr #103 kept them and
+    # an unknown name are errors, not empty output. k103 kept them and
     # added the second half of the house shape: the rejection now also says
     # what would have worked. Against a REAL keys.yaml here, so the listing
     # is the project's actual keys rather than a fixture's.
@@ -450,7 +450,7 @@ subtest 'ocp keys show selects by purpose and by name' => sub {
         'and names the keys that exist, with their purpose';
 
     # The listing must never carry key material: this command's contract is
-    # that STDOUT is the key and nothing else (karr #84), and a rejection is
+    # that STDOUT is the key and nothing else (k84), and a rejection is
     # not the place to break it.
     unlike $unnamed, qr/\Q$robo->{public}\E/, 'no public half in the listing';
     unlike $unnamed, qr/ssh-ed25519|ssh-rsa|BEGIN [A-Z ]*PRIVATE KEY/,

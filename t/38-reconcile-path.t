@@ -27,7 +27,7 @@ use OCP::Secrets;
 #
 # The reconcile path was also missing every step that repairs cluster state it
 # does not own. registry.local had been dropped from the Corefile by k3s' addon
-# manager, and the "self-healing on the next apply" that ticket #19 assumes
+# manager, and the "self-healing on the next apply" that ticket k19 assumes
 # never happened, because _configure_registry_dns lived only in the deploy
 # path. Same for the control-plane OCPNode: a cluster bootstrapped by an older
 # OCP kept a CR with no status, so `ocp node ls` showed Pending forever.
@@ -89,7 +89,7 @@ subtest 'the banner is not printed anywhere but the finisher' => sub {
 subtest 'reconcile repairs the things it does not own' => sub {
     my ($reconcile) = $drift_src =~ /^sub reconcile_components \{\n(.*?)\n\}$/ms;
 
-    # #19 assumes this heals on the next apply; that is only true if the
+    # k19 assumes this heals on the next apply; that is only true if the
     # reconcile path runs it.
     like $reconcile, qr/_configure_registry_dns/,
         'registry.local DNS is reconciled';

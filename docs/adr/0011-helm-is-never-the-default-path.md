@@ -23,7 +23,7 @@ against a cluster whose CNI is already Cilium-owned. Every resource OCP shares
 with a Helm release is a resource with two owners (ADR 0016).
 
 *Rationale partly reconstructed:* the collisions above are documented in the
-code and in karr #15 and #23. The original decision to avoid Helm is recorded
+code and in k15 and k23. The original decision to avoid Helm is recorded
 in the project's own documentation as a fact, with no commit or ticket stating
 the reasoning.
 
@@ -53,7 +53,7 @@ Helm is not forbidden; it is simply never how OCP itself installs something.
   why an enabled ClusterPolicy component without an explicit image pin is an
   ImagePullBackOff rather than a sane default (ADR 0014), and why the
   `toolkit.env` block is still the recipe from an archived operator version
-  (karr #30).
+  (k30).
 - Chart defaults have to be mirrored deliberately when they matter, with a
   comment saying that is what is happening.
 - Where a distribution *does* own a resource through Helm, OCP has to find the

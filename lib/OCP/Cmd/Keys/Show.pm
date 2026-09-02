@@ -74,7 +74,7 @@ sub execute {
         my $key = $keys->get_key($name);
 
         # NAMES AND PURPOSES ONLY, never a key. This command's whole contract
-        # is that STDOUT carries key material and nothing else (karr #84);
+        # is that STDOUT carries key material and nothing else (k84);
         # a listing that showed so much as a public half would put key
         # material on the diagnostic stream, into the scrollback of every
         # terminal that ever mistyped a name.

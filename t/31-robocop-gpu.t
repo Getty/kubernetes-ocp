@@ -7,11 +7,11 @@ use JSON::PP ();
 use lib 'lib';
 
 #
-# karr #31 -- robocop-joined workers must honour the cluster-wide GPU switches.
+# k31 -- robocop-joined workers must honour the cluster-wide GPU switches.
 #
 # The per-node spec.gpu flag on the OCPNode CR is already threaded through
-# (#70, t/70-gpu-flag.t): `ocp node add --gpu` writes it and
-# OCP::Node::_install_kubernetes forwards it as gpu => 1/0. What #70 left open
+# (k70, t/70-gpu-flag.t): `ocp node add --gpu` writes it and
+# OCP::Node::_install_kubernetes forwards it as gpu => 1/0. What k70 left open
 # is everything robocop cannot see: robocop only watches the OCPNode /
 # OCPNodeProvider CRs, never ocp.yaml, so the cluster-wide gpu.enabled /
 # gpu.driver from ocp.yaml never reached a worker it joined -- and neither did
@@ -194,11 +194,11 @@ subtest 'per-node spec.gpu=false still opts a node out under an enabled cluster'
 
 subtest 'no cluster flags -> nothing added, OCP::Rex defaults win (baseline)' => sub {
     # A provider CR that predates the field passes neither flag. OCP::Node must
-    # then behave exactly as before #31: spec.gpu still forwarded (#70), but no
+    # then behave exactly as before k31: spec.gpu still forwarded (k70), but no
     # gpu_driver invented and no cluster kill switch applied.
     my $call = installing_node_call(spec => { gpu => JSON::PP::true });
     return unless $call;
-    is $call->[1]{gpu}, 1, 'per-node spec.gpu still forwarded (#70 untouched)';
+    is $call->[1]{gpu}, 1, 'per-node spec.gpu still forwarded (k70 untouched)';
     ok !exists $call->[1]{gpu_driver},
         'no gpu_driver without a cluster flag -- OCP::Rex keeps its host default';
 };

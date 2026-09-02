@@ -43,7 +43,7 @@ There is no project-local `.kube/`: `ocp kubeconfig -e` merges into
   pattern is a permanent leak; here a missed pattern is at worst an
   inconvenience.
 - **Asserting the `.gitignore` text in tests** — an over-broad pattern of a
-  shape nobody predicted still passes. karr #7 asserts on `git check-ignore`
+  shape nobody predicted still passes. k7 asserts on `git check-ignore`
   instead: the four encrypted names must produce no match, `.ocp/age.key` must.
 
 ## Consequences

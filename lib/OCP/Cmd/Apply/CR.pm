@@ -112,7 +112,7 @@ sub ensure_provider_cr {
     # "<type>-default" and says nothing about the cluster, so from_cr reading
     # metadata.name gave every worker's server the label
     # ocp-cluster=hetzner-default — invisible to `ocp destroy`, invisible to
-    # server_exists, and billed for either way (karr #98).
+    # server_exists, and billed for either way (k98).
     my $spec = { type => $type, clusterName => $config->name };
 
     # Cluster-wide GPU switches ride on the provider CR, outside the per-type
@@ -120,11 +120,11 @@ sub ensure_provider_cr {
     # cluster, not the backend, and robocop -- which never sees ocp.yaml -- has
     # no other channel to learn them. Without this a worker robocop joins runs
     # the Rexfile's "missing means yes" defaults and comes up doing GPU
-    # detection even on a cluster configured gpu.enabled: false (karr #31).
+    # detection even on a cluster configured gpu.enabled: false (k31).
     # OCP::Provider->gpu_flags_from_cr reads them back. enabled goes out as a
     # JSON boolean because the CRD field is `type: boolean` and a bare Perl 1
     # serialises as an integer the API rejects (same reason `ocp node add
-    # --gpu` uses JSON::PP::true, karr #50).
+    # --gpu` uses JSON::PP::true, k50).
     $spec->{gpu} = {
         enabled => $config->gpu_enabled ? JSON::PP::true : JSON::PP::false,
         driver  => $config->gpu_driver,
@@ -152,7 +152,7 @@ sub ensure_provider_cr {
         # is trigger-neutral and carries no cluster identity, and robocop has
         # none either — so the provider CR is the only thing that can tell a
         # Hetzner worker which uploaded key to boot with. This is the same
-        # derivation bootstrap uses when it uploads it (karr #92).
+        # derivation bootstrap uses when it uploads it (k92).
         $spec->{hetzner} = {
             tokenSecretRef => { name => $secret_name, key => 'token' },
             sshKeyName     => $config->admin_ssh_key_name,
@@ -526,7 +526,7 @@ sub cli_reconcile_workers {
     # OCP::Node learns none of this. It is the same class robocop runs in the
     # cluster, where `ocp keys show` is not a command anyone can type; robocop
     # also joins with the robo key, so its failure is a different one
-    # (karr #97, ADR 0027).
+    # (k97, ADR 0027).
     my $key  = $self->cluster_ssh_key_if_known($config);
     my $hint = $key ? $key->migration_hint : '';
 
@@ -600,7 +600,7 @@ sub cli_reconcile_workers {
         # robocop feeds them (OCP::Robocop::Controller): off the provider CR, so
         # the CLI reconcile path and the controller honour the switch
         # identically. Absent from a CR that predates the field means absent
-        # here, and OCP::Node keeps OCP::Rex's default (karr #31).
+        # here, and OCP::Node keeps OCP::Rex's default (k31).
         my %gpu_flags = OCP::Provider->gpu_flags_from_cr($prov_struct);
 
         my $node = OCP::Node->from_cr($hash,
@@ -618,7 +618,7 @@ sub cli_reconcile_workers {
         # other, so poll less often); the budget is not. It is the same
         # question `ocp node add` asks, and OCP::Node answers it once, in
         # $OCP::Node::READY_TIMEOUT -- the 600 named here was a third copy of a
-        # number that no longer covered the waits underneath it (karr #109).
+        # number that no longer covered the waits underneath it (k109).
         my $ok = eval { $node->reconcile_until_ready(interval => 10) };
         my $phase = $ok ? 'Ready' : ($node->phase || 'Failed');
 

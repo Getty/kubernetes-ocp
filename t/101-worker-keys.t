@@ -11,7 +11,7 @@ use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::Bootstrap;
 
 #
-# karr #101, variant a: robocop must be able to reach the Hetzner workers it
+# k101, variant a: robocop must be able to reach the Hetzner workers it
 # provisions, and it holds the ROBO key, never the admin key. So every Hetzner
 # machine of a secure-mode cluster has to trust BOTH public keys — the admin
 # key a human uses and the robo key automation uses.

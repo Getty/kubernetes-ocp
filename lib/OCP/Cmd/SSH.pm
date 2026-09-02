@@ -24,12 +24,12 @@ option node => (
 # This command used to unlock the admin key by hand and demand PIN2
 # unconditionally — including in a --nopassword project, which has no
 # keys.yaml at all and where the prompt could only ever end in "Wrong PIN2 or
-# no admin-key found". karr #94 filed the mirror image of that: at the time,
+# no admin-key found". k94 filed the mirror image of that: at the time,
 # `provider: ssh` machines trusted the bootstrap key, so PIN2 bought a key the
 # machine did not know.
 #
 # Both disappear into OCP::ClusterKey. Secure mode reaches every machine with
-# the admin key on every provider, so #94's premise is gone: PIN2 here is
+# the admin key on every provider, so k94's premise is gone: PIN2 here is
 # correct, not theatre. Dev mode has one key and no PIN, so this connects
 # without prompting, as everything else in dev mode does.
 sub execute {
@@ -133,7 +133,7 @@ sub _node_names {
 # mixed hetzner+ssh) store it as an arrayref. The previous dispatch read
 # $cp_spec->{provider} unconditionally, which threw 'Not a HASH reference'
 # the moment a project had more than one control plane -- bypassing
-# _unknown_node_error entirely (karr #117).
+# _unknown_node_error entirely (k117).
 #
 # Hetzner CPs follow the RoboCop naming (police1, police2, ...), ssh CPs
 # are named after their host's first label. The walk below matches the
@@ -184,7 +184,7 @@ sub _resolve_target_host {
 #
 # Two different truths, so two different sentences. A name nothing answers to
 # gets the house rejection — name the word, then say what would have worked
-# (karr #67, #89, #103). A name that DOES match a node the API knows is not a
+# (k67, k89, k103). A name that DOES match a node the API knows is not a
 # typo at all: that node simply has no address recorded, and calling it
 # unknown would be false. The same rule as the type hint in
 # OCP::Role::Cmd::provider_cr — a claim about the input is made only where it

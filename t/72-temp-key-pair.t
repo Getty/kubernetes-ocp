@@ -16,8 +16,8 @@ use OCP::TempKeyPair;
 #     $ENV{REX_PUBLIC_KEY} = $self->key_file . '.pub';
 #
 # unconditionally, so anything handing Rex a private key in a temp file owes a
-# .pub beside it. OCP::Cmd::Apply::Bootstrap got that wrong (karr #87) and
-# OCP::Node got it wrong the same way on the worker path (karr #93). This is
+# .pub beside it. OCP::Cmd::Apply::Bootstrap got that wrong (k87) and
+# OCP::Node got it wrong the same way on the worker path (k93). This is
 # the one place that dance lives now.
 #
 # The claims split in two:

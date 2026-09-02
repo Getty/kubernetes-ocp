@@ -516,7 +516,7 @@ subtest 'real drift still surfaces behind a DNS name' => sub {
 # LB-IPAM derived the same address a second time.
 #
 # _setup_lb_ipam carried its own inet_aton copy of "configured host ->
-# address", which is the duplication #19 was about, in a second place. What it
+# address", which is the duplication k19 was about, in a second place. What it
 # also carries — and what a naive merge would have thrown away — is a fallback
 # that is NOT name resolution: a loopback address is useless as a
 # load-balancer pool, so it asks the cluster what else the node has. That

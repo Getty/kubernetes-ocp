@@ -26,7 +26,7 @@ use OCP::Config;
 # reached with the admin key. The bootstrap key .ocp/id_ed25519 belongs to
 # --nopassword dev mode alone.
 #
-# That reverses one half of karr #87 while keeping the other. #87 fixed four
+# That reverses one half of k87 while keeping the other. k87 fixed four
 # places that answered "$config->ssh_private_key_path" for machines that had
 # never seen that key:
 #
@@ -66,7 +66,7 @@ my $PROMPTS = 0;
 # defaults to on even for secure + hetzner, where `ocp init` would not create
 # one: a leftover from an older init, or a file someone dropped in by hand,
 # must not be able to win over the admin key. Cases that need the realistic
-# post-#85 layout pass bootstrap_key => 0.
+# post-k85 layout pass bootstrap_key => 0.
 sub project {
     my (%args) = @_;
 
@@ -171,7 +171,7 @@ subtest 'secure mode + hetzner reaches the admin key, never .ocp/id_ed25519' => 
         'the operator is told why a password is suddenly wanted';
 };
 
-subtest 'the realistic post-#85 layout: no bootstrap key on disk at all' => sub {
+subtest 'the realistic post-k85 layout: no bootstrap key on disk at all' => sub {
     # This is what a secure Hetzner project actually looks like today. The
     # old code died here with "cannot read SSH key"; nothing should now.
     my $config = project(provider => 'hetzner', bootstrap_key => 0);
@@ -714,7 +714,7 @@ subtest 'ocp node add in dev mode is unchanged' => sub {
 
 # ------------------------------------ a worker that will not answer, explained
 #
-# The gap karr #97 names. ADR 0027 took the bootstrap key out of secure mode,
+# The gap k97 names. ADR 0027 took the bootstrap key out of secure mode,
 # so a machine authorised before that carries the bootstrap PUBLIC key and
 # refuses the admin key OCP now offers. `ocp apply`, `ocp ssh`, `ocp destroy`
 # and the join-token step of `ocp node add` all say so; the WORKER never did,
@@ -975,7 +975,7 @@ subtest 'no terminal: the remedy declines out loud instead of hanging' => sub {
 
 subtest 'a run with nothing to repair never asks for anything' => sub {
     # The price of the late lookup, stated as a test: `ocp apply` against a
-    # healthy cluster must stay exactly as promptless as it was before #87.
+    # healthy cluster must stay exactly as promptless as it was before k87.
     my $config = project(provider => 'hetzner');
     my $apply  = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
 
@@ -991,12 +991,12 @@ subtest 'a run with nothing to repair never asks for anything' => sub {
 
 # ----------------------------------------------------------------- ocp ssh
 #
-# karr #94 was the mirror image of #87: `ocp ssh` demanded PIN2 and used the
+# k94 was the mirror image of k87: `ocp ssh` demanded PIN2 and used the
 # admin key unconditionally, which was wrong for `provider: ssh` machines
 # because they trusted the bootstrap key. The two-tier decision dissolves the
 # ticket by making the premise false — those machines trust the admin key now
 # — but the command still has to go through OCP::ClusterKey rather than
-# hand-rolling the unlock, because the OTHER half of #94 was real: in a
+# hand-rolling the unlock, because the OTHER half of k94 was real: in a
 # --nopassword project there is no keys.yaml, so the PIN2 prompt could only
 # ever end in "Wrong PIN2 or no admin-key found".
 
@@ -1033,7 +1033,7 @@ sub run_ocp_ssh {
 }
 
 subtest 'ocp ssh on a secure ssh-provider cluster uses the admin key' => sub {
-    # The #94 resolution: PIN2 here is no longer theatre, because the machine
+    # The k94 resolution: PIN2 here is no longer theatre, because the machine
     # really does trust that key.
     my $config = project(provider => 'ssh');
 
@@ -1198,9 +1198,9 @@ subtest 'destroy in dev mode is unchanged' => sub {
 # ------------------------------------------------- `ocp status` stays read-only
 
 subtest 'the read-only paths cannot acquire a key, so they cannot prompt' => sub {
-    # karr #71 gave the read paths a second, SSH-side detection mode, so they
+    # k71 gave the read paths a second, SSH-side detection mode, so they
     # are no longer "Kubernetes API only". What must stay true is narrower and
-    # is the whole point of #87: they never PROMPT -- a read command that asks
+    # is the whole point of k87: they never PROMPT -- a read command that asks
     # for a password is a read command that gets avoided. OCP::Drift does not
     # open SSH itself (it calls an injected prober), and Status builds that
     # prober through OCP::Role::Cmd::rex_prober, which is non-prompting by
@@ -1239,7 +1239,7 @@ subtest 'the read-only paths cannot acquire a key, so they cannot prompt' => sub
 # --------------------------------------- an unrepaired finding is not silence
 
 subtest 'a declined remedy is not summarised as "up to date"' => sub {
-    # The #43/#46 failure mode, in the place #87 makes reachable: drift is
+    # The k43/k46 failure mode, in the place k87 makes reachable: drift is
     # detected, the repair cannot run, and the closing line speaks for the
     # whole run anyway.
     my $config = project(provider => 'hetzner', bootstrap_key => 0);

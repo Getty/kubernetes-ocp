@@ -19,18 +19,18 @@ Every part of that broke on the first unusual machine — an NVIDIA DGX Spark
   is always older than the newest card. It printed `Device [10de:2e12]`. Adding
   GB10 to the list would not have helped. Meanwhile NFD — already deployed by
   OCP, into the same cluster — labelled the node correctly from
-  `pci-0300_10de`. Two detectors, two answers (karr #17).
+  `pci-0300_10de`. Two detectors, two answers (k17).
 - `nvidia-driver-535` on Ubuntu 24.04 is a transitional package that pulls 580,
   so the pin never pinned anything, on any architecture. And no single package
   name is correct across architecture *and* GPU generation: Grace Hopper and
   Blackwell run only with the open kernel modules, Maxwell through Volta only
   with the proprietary ones, and open-vs-proprietary is part of the package
-  name (karr #12).
+  name (k12).
 - `linux-headers-generic` tracks the generic kernel flavour, which on a vendor
   kernel is the wrong kernel.
 - The machine already had a working vendor driver and container toolkit.
   Installing over them would have broken it. The only thing that saved it was
-  the whitelist failing first (karr #24).
+  the whitelist failing first (k24).
 
 ## Decision
 
@@ -88,7 +88,7 @@ a VM with a passed-through card has both, and there the card decides.
 - A bare arm64 Ubuntu host with an NVIDIA GPU and no driver has never been
   tested, and that is stated rather than assumed: whether `ubuntu-drivers`
   works on SBSA, and whether it picks the `-open` branch on Blackwell, is
-  unverified (karr #12). The protection is that it dies rather than guesses.
+  unverified (k12). The protection is that it dies rather than guesses.
 - Hosts that ship a working stack (DGX OS and friends) are left alone by
   default, and NVIDIA's guidance for them is expressible in `ocp.yaml`:
   `gpu.enabled`, `gpu.driver: host|operator`, `gpu.toolkit`. `gpu.driver`
@@ -96,7 +96,7 @@ a VM with a passed-through card has both, and there the card decides.
   otherwise leave an operator-configured cluster with no driver at all.
 - Auto-detecting host state *into* the ClusterPolicy was deliberately not built:
   `OCP::Cmd::Apply` talks to the API, not to the host, and there is no channel
-  from Rex back into it (karr #24).
+  from Rex back into it (k24).
 - Better detection is still only a better prediction. The proof that the GPU
   stack works is `nvidia.com/gpu` in the capacity — which is why ADR 0017
   matters more than this one.

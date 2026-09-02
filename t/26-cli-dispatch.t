@@ -138,7 +138,7 @@ for my $cmd (@COMMANDS) {
 
 # --provider takes the NAME of an OCPNodeProvider CR, and `ocp apply` names
 # those <type>-default. The help said "OCPNodeProvider name", which is correct
-# and still let `--provider ssh` look right (karr #89) — so it shows the
+# and still let `--provider ssh` look right (k89) — so it shows the
 # difference now. The message that answers the wrong name lives in
 # t/73-provider-name-vs-type.t.
 {

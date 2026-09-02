@@ -141,7 +141,7 @@ sub _validate_flags {
     # rejection names the CR that carries it — telling the operator a word
     # they never typed is invalid explains nothing about where to go and
     # fix it. known_type is the same source OCP::Choices::unknown reads
-    # below via OCP::Provider->types (karr #121): a fourth provider added
+    # below via OCP::Provider->types (k121): a fourth provider added
     # to OCP::Provider is accepted here, not classified as unknown.
     die OCP::Choices::unknown('provider type', $provider_type,
         [ OCP::Provider->types ],
@@ -285,7 +285,7 @@ sub _cli_reconcile {
     # drifted since the last `ocp apply` (or never had an `ocp apply`) is
     # still reached. Reading control_planes straight, as this used to, gave
     # back the spec address and SSH'd to a machine that may not exist
-    # (karr #120, sibling of karr #98).
+    # (k120, sibling of k98).
     my $cp_ip = $config->cluster_status->{public_ip};
 
     # $key outlives the block on purpose: the failure it explains happens at
@@ -298,7 +298,7 @@ sub _cli_reconcile {
         # straight was right for dev mode and wrong for every secure-mode
         # cluster, where machines trust the admin key and that file is not
         # even created — `ocp node add` died with "Cannot read SSH key" on the
-        # one path it was most needed. karr #87.
+        # one path it was most needed. k87.
         #
         # The same key goes on to OCP::Node as ssh_key, which is what the
         # deploy path does too (OCP::Cmd::Apply::CR::cli_reconcile_workers
@@ -372,7 +372,7 @@ sub _cli_reconcile {
     #
     # It is said HERE and not in OCP::Node, which is trigger-neutral: the same
     # class runs inside robocop, where `ocp keys show` is not a command anyone
-    # can type and nobody reads the output (karr #97).
+    # can type and nobody reads the output (k97).
     #
     # Diagnosis, not preflight — nothing looked ahead to see which key this
     # machine accepts, and the hint's own wording says so. Nothing falls back
@@ -399,7 +399,7 @@ sub execute {
     # worker]`, so an unchecked typo used to travel all the way to the API
     # server and come back as a raw 422 about a schema the operator never
     # wrote: the CLI explained Kubernetes instead of explaining the input
-    # (karr #103). The set is OCP::Node's, held against the CRD by a test.
+    # (k103). The set is OCP::Node's, held against the CRD by a test.
     die OCP::Choices::unknown('role', $self->role, [ OCP::Node->roles ])
         unless OCP::Node->known_role($self->role);
 

@@ -317,7 +317,7 @@ package MockTransport {
         push @{ $self->{seen} }, { method => $req->method, path => $path, body => $req->content };
 
         # PATCH is the status-subresource write the controller now uses to
-        # record Failed transitions (karr #123). No caller in this file reads
+        # record Failed transitions (k123). No caller in this file reads
         # the response body, so answering 200 with the echoed payload is the
         # minimum that keeps the request from dying.
         if ($req->method eq 'PATCH') {
@@ -416,7 +416,7 @@ subtest '_on_node_event loads the provider CR and drives OCP::Node' => sub {
 
 subtest '_on_node_event without a providerRef marks the CR Failed' => sub {
     # A CR with no providerRef used to be left Pending with no message, and
-    # the only diagnostic was robocop's pod log (karr #123). The CR is now
+    # the only diagnostic was robocop's pod log (k123). The CR is now
     # marked Failed with a message that names what was missing.
     my ($api, $t) = strict_k8s();
 
@@ -493,7 +493,7 @@ subtest '_on_node_event marks Failed when the provider cannot be constructed' =>
     # clusterName, missing tokenSecretRef.name -- OCP/Provider.pm:59,68,80,108).
     # The exception used to propagate out of _on_node_event and be caught
     # only by run(), which logged to STDOUT and left the CR Pending (karr
-    # #123). The CR now carries the failure itself.
+    # k123). The CR now carries the failure itself.
     my ($api, $t) = strict_k8s(
         '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodeproviders/p1' => {
             apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',

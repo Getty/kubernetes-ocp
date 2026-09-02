@@ -249,10 +249,10 @@ subtest 'reconcile reports what happened, not what the file suggested' => sub {
 
 subtest 'no component trusts the hash file on its own' => sub {
     # A directory scan, not a hardcoded pair of files: the Phase 8 extraction
-    # (#55) moved the Registry/NFD/GPU-operator hash readers out of Apply.pm
+    # (k55) moved the Registry/NFD/GPU-operator hash readers out of Apply.pm
     # into Apply/Registry.pm and Apply/Workloads.pm, and this subtest kept
     # looking only at Apply.pm + Apply/Drift.pm -- it kept reporting a pass
-    # for coverage it no longer had (#68). Whatever module the next extraction
+    # for coverage it no longer had (k68). Whatever module the next extraction
     # lands a component in gets picked up here automatically.
     my @files = (
         path('lib/OCP/Cmd/Apply.pm'),
@@ -270,7 +270,7 @@ subtest 'no component trusts the hash file on its own' => sub {
     @files = grep { $_->basename ne 'DeployedHash.pm' } @files;
 
     ok scalar(@files) > 2,
-        'scanning more than the two files #68 found the blind spot in';
+        'scanning more than the two files k68 found the blind spot in';
 
     # Per-file: name -> body, and per-file: which subs read the hash record.
     # Kept scoped to one file at a time, not merged into one global map --
@@ -278,7 +278,7 @@ subtest 'no component trusts the hash file on its own' => sub {
     # running() rather than asking directly, and that indirection is resolved
     # by walking calls to *other subs in the same file*, not by hardcoding
     # "running" as a magic name (that would be exactly the brittle, file-list
-    # style fix #68 is about). Resolving across files would let two unrelated
+    # style fix k68 is about). Resolving across files would let two unrelated
     # modules' same-named helpers shadow each other.
     my (@readers, %asks_cluster);
 
@@ -385,7 +385,7 @@ subtest 'reconcile forms no verdict of its own' => sub {
 };
 
 #
-# karr #69: cert-manager's reconcile gate used to test presence, not
+# k69: cert-manager's reconcile gate used to test presence, not
 # equality, against OCP::Versions->get_component_version('cert_manager').
 # A version bump in OCP::Versions would never be reconciled on this path --
 # the gate read "entry exists, deployment is running" and skipped. Asserted
@@ -497,7 +497,7 @@ YAML
     };
 }
 
-subtest 'reconcile gates cert-manager on version equality, not presence (karr #69)' => sub {
+subtest 'reconcile gates cert-manager on version equality, not presence (k69)' => sub {
 
     # Recorded equals canonical -> skipped. A version that already matches
     # OCP::Versions must not be rolled out again on every reconcile.
@@ -626,7 +626,7 @@ YAML
 };
 
 #
-# karr #78: destroy used to return at "No nodes to destroy." and skip the
+# k78: destroy used to return at "No nodes to destroy." and skip the
 # cleanup, so a project whose cluster was torn down out of band kept its
 # .ocp/deployed.yaml. The next `ocp apply` then compared a fresh cluster
 # against the hashes of one that was gone. The early-return path now runs

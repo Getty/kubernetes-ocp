@@ -49,7 +49,7 @@ rules:
 # `delete` was missing, and the failure is silent by construction: the call
 # sits in an eval whose result teardown ignores, so a 403 left the OCPNode CR
 # deleted and the Node object behind as NotReady while teardown reported
-# success -- the same shape of bug as the api-version defect in karr #21.
+# success -- the same shape of bug as the api-version defect in k21.
 - apiGroups:
   - ""
   resources:

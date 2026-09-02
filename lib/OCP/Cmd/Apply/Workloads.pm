@@ -574,7 +574,7 @@ sub generate_gpu_operator_manifest {
 
     # Deliberately NOT set: CONTAINERD_SET_AS_DEFAULT and
     # CONTAINERD_RUNTIME_CLASS, the other half of the archived 22.9 recipe
-    # (karr #30). The two above are the whole input the operator wants.
+    # (k30). The two above are the whole input the operator wants.
     #
     # CONTAINERD_RUNTIME_CLASS was only ever a restatement of the default:
     # transformForRuntime() overwrites whatever the ClusterPolicy puts there
@@ -582,7 +582,7 @@ sub generate_gpu_operator_manifest {
     # otherwise. Removing it changes the rendered DaemonSet by nothing.
     #
     # CONTAINERD_SET_AS_DEFAULT is the one that matters, and it was never dead
-    # code — it is a back door that happens to stand behind a shut door. #23
+    # code — it is a back door that happens to stand behind a shut door. k23
     # decided OCP does not make the nvidia runtime the node default, not even
     # sideways: management pods get it through RuntimeClass, everything else
     # keeps runc. Sending 1 here IS the sideways route. The toolkit still reads
@@ -779,7 +779,7 @@ sub generate_gpu_operator_manifest {
         # driver.enabled follows gpu.driver — see above
         # nfd.enabled: false — we deploy NFD ourselves
         # gfd.enabled: false — NFD handles GPU feature discovery
-        # cdi.enabled: true — keep runc the default runtime (karr #76, decision #23)
+        # cdi.enabled: true — keep runc the default runtime (k76, decision k23)
         {
             apiVersion => 'nvidia.com/v1',
             kind       => 'ClusterPolicy',
@@ -790,12 +790,12 @@ sub generate_gpu_operator_manifest {
                 },
                 # CDI is the operator gate that writes
                 # NVIDIA_RUNTIME_SET_AS_DEFAULT=false into the toolkit env, which
-                # is what outvotes CONTAINERD_SET_AS_DEFAULT=1 (deleted in karr
-                # #30) and keeps runc as defaultRuntimeName. The CRD's
+                # is what outvotes CONTAINERD_SET_AS_DEFAULT=1 (deleted in k30)
+                # and keeps runc as defaultRuntimeName. The CRD's
                 # kubebuilder default makes the field true when OCP leaves it
                 # out, so today this works by accident; set it explicitly so
-                # the #23 decision does not ride on an upstream default OCP has
-                # not pinned (karr #76).
+                # the k23 decision does not ride on an upstream default OCP has
+                # not pinned (k76).
                 cdi => {
                     enabled => JSON::PP::true,
                 },

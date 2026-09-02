@@ -164,7 +164,7 @@ package FakeSSH {
     sub new { my ($c, %a) = @_; bless { %a }, $c }
     # Records what the caller ASKED for, which is not the same as what it got:
     # undef means it named no budget and takes OCP::SSH's, and that is the
-    # whole of karr #109.
+    # whole of k109.
     sub wait_for_ssh {
         my ($s, $n) = @_;
         push @_waits, $n;
@@ -194,7 +194,7 @@ package FakeHetznerServers {
     sub new { my ($c, %a) = @_; bless { created => [], waited => [], %a }, $c }
     sub list_by_label { $_[0]{existing} // [] }
     # A freshly created server has an id and no address -- that is the real
-    # shape, and the whole of karr #99.
+    # shape, and the whole of k99.
     sub create {
         my ($self, %params) = @_;
         push @{ $self->{created} }, \%params;
@@ -434,7 +434,7 @@ subtest '_provision through the real Hetzner adapter gives the server an SSH key
     # none of the provider options and passes `spec => $cr->{spec}` instead,
     # so a create_server that reads only its options fell through to
     # `ssh_keys => []` -- a Hetzner worker with an empty authorized_keys, up
-    # and billing and unreachable for good (karr #92, the Hetzner half of #51).
+    # and billing and unreachable for good (k92, the Hetzner half of k51).
     #
     # So the adapter here is the real one, with only the cloud client faked.
     my $cloud = FakeHetznerCloud->new;
@@ -497,7 +497,7 @@ subtest '_provision refuses a keyless Hetzner worker instead of creating it' => 
 };
 
 #
-# The address a Hetzner worker does not have yet (karr #99).
+# The address a Hetzner worker does not have yet (k99).
 #
 # create_server returns `ip => undef` for a fresh server: Hetzner allocates the
 # IP when the machine reaches `running`, and only wait_for_running reads it
@@ -564,7 +564,7 @@ subtest '_provision writes no publicIP when the server has none yet' => sub {
 };
 
 subtest 'the Installing pass asks the provider for the address and installs on it' => sub {
-    # THE assertion of karr #99: a Hetzner worker that goes through _provision
+    # THE assertion of k99: a Hetzner worker that goes through _provision
     # ends up with a publicIP in status, and the install runs against it.
     @FakeRex::_instances = ();
     my ($prov, $cloud) = hetzner_provider();
@@ -783,14 +783,14 @@ subtest '_install_kubernetes uses k3s task when distribution=k3s' => sub {
 };
 
 #
-# The key files OCP::Node hands to Rex (karr #93).
+# The key files OCP::Node hands to Rex (k93).
 #
 # OCP::Rex sets REX_PUBLIC_KEY to key_file . '.pub' unconditionally and never
 # looks to see whether anything is there. _build_ssh_key_file wrote a bare
 # File::Temp with the private half and nothing else, so on EVERY worker
 # install — robocop's as much as the CLI's — Rex was pointed at a path that
 # did not exist. The identical defect was fixed in OCP::Cmd::Apply::Bootstrap
-# by karr #87; the worker path was outside that ticket and stayed broken.
+# by k87; the worker path was outside that ticket and stayed broken.
 #
 # These assertions are made where the defect lived: at the arguments Rex is
 # actually constructed with.
@@ -1044,8 +1044,8 @@ subtest 'teardown drains, deletes the server, and deletes both objects' => sub {
 # either. robocop's ClusterRole granted core `nodes` no `delete`, so the Node
 # delete came back 403 and the bare eval around it threw the answer away:
 # teardown returned 1, the OCPNode CR was gone, and the Node object stayed in
-# the cluster as NotReady with nothing in the log to say so (karr #35, the same
-# shape as the api-version defect in karr #21). The RBAC fix is in
+# the cluster as NotReady with nothing in the log to say so (k35, the same
+# shape as the api-version defect in k21). The RBAC fix is in
 # share/robocop/rbac.yaml and asserted in t/55-robocop-rbac.t; this is the
 # other half -- the next time a delete is refused for some other reason, it
 # says so.
@@ -1130,7 +1130,7 @@ subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
 # 120s to answer on SSH (OCP::Cmd::Apply::Bootstrap), a worker got 60 -- and on
 # the worker side running out is TERMINAL (phase => Failed, which nothing
 # retries), so a machine whose sshd needed 70s was lost for good while its bill
-# kept running. Nobody had noticed, because before karr #99 a Hetzner worker
+# kept running. Nobody had noticed, because before k99 a Hetzner worker
 # died one step earlier, at "No host IP in status or spec".
 #
 # The assertions below are about the seam, not about either number: two numbers
@@ -1142,7 +1142,7 @@ subtest 'reconcile returns 0 on Terminating phase (terminal)' => sub {
 # The address budget had the same shape before this test landed: a Hetzner
 # control-plane wait, a Hetzner worker wait, and a number in $OCP::Node that
 # neither was allowed to differ from. The defect was the same -- three numbers
-# for one question (karr #112). The provider now owns the constant, and the
+# for one question (k112). The provider now owns the constant, and the
 # two callers name no budget of their own.
 subtest 'the address wait is one budget, not one per caller' => sub {
     # The budget a call site actually spends: the timeout argument it names,
@@ -1243,7 +1243,7 @@ subtest 'the worker install names no SSH budget of its own' => sub {
 # One budget has to cover everything between "there is a CR" and "there is a
 # Ready node": the address wait, the SSH wait, the whole Rex install and the
 # join. Three callers named 600 for it, and the sum underneath had grown past
-# that -- karr #109 alone added 60s of it. The number lives in OCP::Node now,
+# that -- k109 alone added 60s of it. The number lives in OCP::Node now,
 # with the arithmetic written next to it.
 #
 subtest 'reconcile_until_ready has one budget for every caller' => sub {
@@ -1307,7 +1307,7 @@ subtest 'reconcile_until_ready reports each phase once, and only when asked' => 
 # nothing in OCP::Node pulls those packages in. _install_kubernetes then calls
 # ->new on them by name and dies with "Can't locate object method new via
 # package OCP::Rex" — but only on a real reconcile against a real host, which
-# is exactly the path no test drives (karr #29).
+# is exactly the path no test drives (k29).
 #
 # This has to run in its own interpreter. In-process the check would pass as
 # soon as any other module in the same run happens to load OCP::Rex, which is
@@ -1324,7 +1324,7 @@ subtest 'default ssh_class and rex_class are loaded by OCP::Node alone' => sub {
 # The join-token path is a fact about how RKE2 and K3s lay their files out,
 # not about OCP, but it has to live in one place: the literal was duplicated
 # between OCP::Cmd::Node::Add and OCP::Cmd::Apply::CR, and bumping one without
-# the other meant the two commands read different files (karr #122). The
+# the other meant the two commands read different files (k122). The
 # constants live on OCP::Node alongside $READY_TIMEOUT, and both call sites
 # already `use OCP::Node` -- the seam is the lockstep between the two files.
 subtest 'the join-token path is one constant, not one per caller' => sub {

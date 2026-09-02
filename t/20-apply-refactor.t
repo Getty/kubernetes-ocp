@@ -215,7 +215,7 @@ subtest '_ensure_providers writes Namespace + hetzner Secret/Provider + ssh Prov
     # The provider CR is the only place a worker can learn which uploaded SSH
     # key to boot with -- OCP::Node is trigger-neutral and robocop never sees
     # the cluster name. Without this field OCP::Provider::Hetzner creates a
-    # server with an empty authorized_keys (karr #92), so the name has to
+    # server with an empty authorized_keys (k92), so the name has to
     # match what bootstrap uploads, not merely be present.
     my ($hz) = grep { $_->[1] eq 'OCPNodeProvider' && $_->[2] eq 'hetzner-default' }
                     @ensured;
@@ -227,7 +227,7 @@ subtest '_ensure_providers writes Namespace + hetzner Secret/Provider + ssh Prov
     # The CR is named after the TYPE, so a reader that takes metadata.name for
     # the cluster labels every worker's server ocp-cluster=hetzner-default --
     # invisible to `ocp destroy`, invisible to server_exists, billed either way
-    # (karr #98). clusterName is written outside the per-type branch, so an ssh
+    # (k98). clusterName is written outside the per-type branch, so an ssh
     # provider carries it too and no future type can be forgotten.
     is $hz->[3]{spec}{clusterName}, $config->name,
         'hetzner provider CR names the cluster it serves';

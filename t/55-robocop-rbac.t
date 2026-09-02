@@ -13,7 +13,7 @@ use YAML::XS ();
 # back 403 -- and because it sat in a bare eval whose result nobody looked at,
 # teardown returned 1 anyway: the OCPNode CR gone, the Node object left behind
 # as NotReady, nothing in the log. The same shape as the api-version defect in
-# karr #21, one layer further out (karr #35).
+# k21, one layer further out (k35).
 #
 # So this file is deliberately not a restatement of the YAML. The verbs
 # required on core `nodes` are DERIVED from lib/OCP/Node.pm: every call whose

@@ -20,9 +20,9 @@ use OCP::Provider;
 use OCP::Versions;
 
 #
-# THE HOUSE RULE, THIRD ROUND. karr #67 gave unknown SUBCOMMANDS an answer
-# ("Unknown command 'x'. Available: ..."), #89 gave unknown PROVIDER NAMES the
-# same one. #103 collected six more rejections that only ever said no:
+# THE HOUSE RULE, THIRD ROUND. k67 gave unknown SUBCOMMANDS an answer
+# ("Unknown command 'x'. Available: ..."), k89 gave unknown PROVIDER NAMES the
+# same one. k103 collected six more rejections that only ever said no:
 #
 #   ocp node rm NAME        -> "Node 'x' not found"
 #   ocp ssh --node X        -> "Could not determine host for node: X"
@@ -46,7 +46,7 @@ use OCP::Versions;
 # manifests) and, where a second spelling is unavoidable, against that
 # spelling: the OCPNode CRD enum is read off disk and compared. A test that
 # wrote the values out again would be the seventh copy of the drift that
-# karr #102, #109, #110 and #112 record.
+# k102, k109, k110 and k112 record.
 #
 
 {
@@ -216,7 +216,7 @@ subtest 'ocp ssh with no readable node list says so' => sub {
 # 3. ocp keys show --name / --purpose
 #
 # The one case with a second rule on top: NAMES AND PURPOSES ONLY. This
-# command puts key material on STDOUT and nothing else (karr #84); a listing
+# command puts key material on STDOUT and nothing else (k84); a listing
 # that leaked a key would put it on the diagnostic stream of every terminal
 # that ever mistyped a name.
 # -------------------------------------------------------------------------
@@ -360,11 +360,11 @@ subtest 'known_versions comes from the manifest itself' => sub {
 };
 
 subtest 'ocp update --component TYPO names the components it would have run' => sub {
-    # The same shape as the karr #103 case above, for the input karr #103
+    # The same shape as the k103 case above, for the input k103
     # deliberately left alone: --component. A typo here used to skip every
     # iteration of the loop, leave @updates empty, and reach the
     # "All components up to date" branch as if nothing had happened — same
-    # line, same exit 0 as a real no-op (karr #113).
+    # line, same exit 0 as a real no-op (k113).
     my $dir = path(tempdir(CLEANUP => 1));
     $dir->child('.ocp')->mkpath;
     $dir->child('ocp.yaml')->spew("name: t\n");
@@ -405,7 +405,7 @@ subtest 'ocp update --component TYPO names the components it would have run' => 
 };
 
 # -------------------------------------------------------------------------
-# 5. Provider types — the mirror image of karr #89
+# 5. Provider types — the mirror image of k89
 # -------------------------------------------------------------------------
 
 subtest 'an unbuildable provider type lists the buildable ones' => sub {
@@ -544,7 +544,7 @@ subtest 'the CLI roles and the OCPNode CRD enum are the same set' => sub {
     # Two spellings of one set, because nothing in a YAML schema can call
     # Perl. This is what keeps them honest: the CLI may not refuse a role the
     # API would accept, and may not accept one the API would refuse with a
-    # 422 (karr #103; the same seam #110 records for provider types, where
+    # 422 (k103; the same seam k110 records for provider types, where
     # the CRD enum is the side that is short one value).
     is_deeply [ sort @$enum ], [ sort OCP::Node->roles ],
         'OCP::Node->roles is exactly the CRD enum';
@@ -563,7 +563,7 @@ subtest 'the CLI provider types and the OCPNodeProvider CRD enum are the same se
     # validation and only then fail at the API server with a 422 about the
     # schema, because the CRD enum was [hetzner, ssh] while the factory had
     # been carrying `local` since the day OCP::Provider::Local existed (karr
-    # #110). Same discipline: nothing in a YAML schema can call Perl, so the
+    # k110). Same discipline: nothing in a YAML schema can call Perl, so the
     # test reads the enum off disk and compares.
     is_deeply [ sort @$enum ], [ sort OCP::Provider->types ],
         'OCP::Provider->types is exactly the CRD enum';
@@ -617,8 +617,8 @@ subtest 'every rejection has the shape ocp quatschkommando answers in' => sub {
 
 subtest 'OCP::Choices knows no sets of its own' => sub {
     # The point of the module: it is handed the valid values and stores none.
-    # A set written down here would be the copy that drifts (karr #102, #109,
-    # #110, #112 are all one number or list in two places).
+    # A set written down here would be the copy that drifts (k102, k109,
+    # k110, k112 are all one number or list in two places).
     my $source = path('lib/OCP/Choices.pm')->slurp_utf8;
     $source =~ s/^__END__.*//ms;   # POD
     $source =~ s/^\s*#.*$//mg;     # comments — they may quote examples

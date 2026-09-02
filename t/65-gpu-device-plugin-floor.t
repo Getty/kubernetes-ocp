@@ -7,7 +7,7 @@ use version;
 use OCP::Versions;
 
 #
-# karr #25 (protection ticket, not a bugfix): GB10/DGX Spark (Grace Blackwell)
+# k25 (protection ticket, not a bugfix): GB10/DGX Spark (Grace Blackwell)
 # has a Unified Memory Architecture -- CPU and GPU share the 128 GB LPDDR5x
 # pool, there is no dedicated framebuffer, and nvmlDeviceGetMemoryInfo answers
 # "Not Supported". device-plugin builds before v0.17.4 treat that answer as
@@ -52,14 +52,14 @@ subtest 'the comparison helper does real version arithmetic, not string compare'
     ok _ver_ge('1.0.0', '0.17.4'),  '1.0.0 >= 0.17.4 (sanity: a major bump still passes)';
 };
 
-subtest 'nvidia_device_plugin pin stays >= v0.17.4 (karr #25, GB10/DGX Spark UMA)' => sub {
+subtest 'nvidia_device_plugin pin stays >= v0.17.4 (k25, GB10/DGX Spark UMA)' => sub {
     my $pin = OCP::Versions->get_component_version('nvidia_device_plugin');
     ok defined $pin && length $pin, 'nvidia_device_plugin is pinned in OCP::Versions'
-        or diag 'nvidia_device_plugin has no pin at all -- see karr #25 before adding one below v0.17.4';
+        or diag 'nvidia_device_plugin has no pin at all -- see k25 before adding one below v0.17.4';
 
     ok _ver_ge($pin, $MIN_DEVICE_PLUGIN), "nvidia_device_plugin ($pin) >= $MIN_DEVICE_PLUGIN"
         or diag <<"DIAG";
-karr #25: nvidia_device_plugin dropped below v0.17.4 (currently: $pin).
+k25: nvidia_device_plugin dropped below v0.17.4 (currently: $pin).
 
 GB10/DGX Spark has Unified Memory -- there is no dedicated framebuffer, so
 nvmlDeviceGetMemoryInfo answers "Not Supported". device-plugin builds before
@@ -85,9 +85,9 @@ subtest 'every OCP release that pins nvidia_device_plugin stays >= the floor' =>
         my $pin = $OCP::Versions::VERSIONS->{$ocp_version}{components}{nvidia_device_plugin};
         ok _ver_ge($pin, $MIN_DEVICE_PLUGIN),
             "OCP $ocp_version: nvidia_device_plugin ($pin) >= $MIN_DEVICE_PLUGIN"
-            or diag "karr #25: OCP $ocp_version pins nvidia_device_plugin $pin, "
+            or diag "k25: OCP $ocp_version pins nvidia_device_plugin $pin, "
                    . "below the GB10/DGX Spark UMA floor of $MIN_DEVICE_PLUGIN "
-                   . "-- see karr #25 for why that silently zeroes GPU counts.";
+                   . "-- see k25 for why that silently zeroes GPU counts.";
     }
 };
 
@@ -96,7 +96,7 @@ subtest 'the DRA driver has the same UMA bug and is still unfixed upstream -- OC
     # Supported" crash, still open. OCP does not use the DRA driver. If a
     # component matching this name ever shows up in OCP::Versions it needs
     # the same floor-or-avoid treatment as nvidia_device_plugin above, not
-    # a blind pin -- see karr #25.
+    # a blind pin -- see k25.
     my @components = OCP::Versions->list_components();
     ok !(grep { /dra.?driver/i } @components),
         'no dra-driver-nvidia-gpu (or similarly named) component is pinned in OCP::Versions';

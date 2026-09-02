@@ -108,9 +108,9 @@ sub execute {
 
     # Validate enum-shaped options before any side effect. The doc strings on
     # these options already advertise the valid set; refusing a typo at the
-    # option boundary is the same discipline karr #67, #89 and #103 applied
+    # option boundary is the same discipline k67, k89 and k103 applied
     # elsewhere -- the rejection names what would have worked. A typo here
-    # used to sail through CLI parsing and die far downstream (karr #124):
+    # used to sail through CLI parsing and die far downstream (k124):
     # `ocp init --dist rke3` reached write_spec, `ocp init --provider
     # hetzner-cloud` wrote a spec with no control_planes block, and
     # `ocp init --ssh-key ~/.ssh/id_ed25519.pub` copied the public half into
@@ -141,7 +141,7 @@ sub execute {
 
     # --host is only meaningful with --provider ssh. The converse -- ssh
     # without --host -- is the existing check further down; this one is the
-    # silent counterpart karr #124 flagged: --host with any non-ssh provider
+    # silent counterpart k124 flagged: --host with any non-ssh provider
     # is dropped on the floor by write_spec (only the ssh branch reads it).
     if (defined $self->host && $self->_provider ne 'ssh') {
         die OCP::Choices::unknown('--host target', $self->host, [],
@@ -667,7 +667,7 @@ sub _effective_provider {
 # has_age_key, hear "no", and generate a fresh keypair over .ocp/age.pub — and
 # from that point keys.yaml was bound to a recipient whose private half no
 # longer existed anywhere. `ocp init`, the documented first command, was how
-# you lost the project (karr #86).
+# you lost the project (k86).
 #
 # The question is whether this PROJECT already has a key. age.key.enc and the
 # plaintext `sops: age: - recipient:` block of the committed files answer it

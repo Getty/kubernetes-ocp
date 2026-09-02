@@ -224,7 +224,7 @@ subtest 'the containerd config follows the distribution' => sub {
 
 #
 # The absence of CONTAINERD_SET_AS_DEFAULT is an assertion, not an accident
-# (karr #30). #23 decided that OCP does not make the nvidia runtime the node's
+# (k30). k23 decided that OCP does not make the nvidia runtime the node's
 # default runtime, not even sideways — management pods reach it through
 # RuntimeClass, every other container keeps runc. Setting the variable to 1 is
 # exactly that sideways route.
@@ -236,7 +236,7 @@ subtest 'the containerd config follows the distribution' => sub {
 # inert on cortex — crictl reported defaultRuntimeName runc while OCP was
 # sending 1. So the variable is not dead, only outvoted, and what stands in the
 # ClusterPolicy is what OCP is asking for: put it back and OCP asks for the
-# opposite of the #23 decision, and gets it the day the operator stops shadowing
+# opposite of the k23 decision, and gets it the day the operator stops shadowing
 # it. That is why the assertion names the variable instead of only listing what
 # is allowed.
 #
@@ -257,7 +257,7 @@ subtest 'the toolkit env is the operator input and nothing else' => sub {
 
         ok !exists $env->{CONTAINERD_SET_AS_DEFAULT},
             "$distribution: nvidia is never made the node's default runtime through "
-          . 'the toolkit env (karr #30, decision from #23) — the toolkit still reads '
+          . 'the toolkit env (k30, decision from k23) — the toolkit still reads '
           . 'this variable, it is only outvoted while cdi.enabled is true';
         ok !exists $env->{CONTAINERD_RUNTIME_CLASS},
             "$distribution: the operator sets the runtime class itself";
@@ -279,13 +279,13 @@ subtest 'the retired half of the 22.9 recipe is gone from the whole manifest' =>
 };
 
 #
-# cdi.enabled is the field the #23 decision rides on. The toolkit defaults
+# cdi.enabled is the field the k23 decision rides on. The toolkit defaults
 # --set-as-default to true, and the operator only writes
 # NVIDIA_RUNTIME_SET_AS_DEFAULT=false ahead of it when config.CDI.IsEnabled()
 # returns true. The CRD's kubebuilder default makes that true for nil, which is
 # what kept runc as defaultRuntimeName on cortex — but OCP had no pin and no
 # test for it. An operator release that flips the CRD default silently undoes
-# #23 and makes nvidia the node's default runtime (karr #76). The field has to
+# k23 and makes nvidia the node's default runtime (k76). The field has to
 # be present in the spec so OCP stops leaning on a default it does not own.
 #
 
@@ -300,7 +300,7 @@ subtest 'cdi.enabled is set explicitly in the ClusterPolicy spec' => sub {
         ok $cdi->{enabled},
             "$distribution: cdi.enabled is true — the operator only writes "
           . 'NVIDIA_RUNTIME_SET_AS_DEFAULT=false when IsEnabled() is true, and '
-          . 'that is what keeps runc as defaultRuntimeName (karr #76, decision #23)';
+          . 'that is what keeps runc as defaultRuntimeName (k76, decision k23)';
     }
 };
 

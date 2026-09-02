@@ -75,7 +75,7 @@ ADR here.
 | [0023](0023-resolve-share-directory-next-to-running-code.md) | Resolve the share directory next to the running code, and reject overrides that do not point at a directory |
 | [0024](0024-register-io-k8s-resource-providers-defensively.md) | Register IO::K8s resource providers defensively, and live with raw YAML where they are absent |
 | [0025](0025-pin-perl-baseline-across-image-and-snapshot.md) | Pin the same Perl patch release in image, snapshot and runtime |
-| [0026](0026-robocop-is-a-criu-and-tcp-9999-stub-pending-ticket-1.md) | Robocop is a CRIU / TCP-9999 key-injection stub pending ticket #1 |
+| [0026](0026-robocop-is-a-criu-and-tcp-9999-stub-pending-ticket-1.md) | Robocop is a CRIU / TCP-9999 key-injection stub pending ticket k1 |
 | [0027](0027-one-admin-key-reaches-every-machine.md) | Reach every machine with the admin key, and keep the bootstrap key to dev mode |
 
 ## Provenance
@@ -87,24 +87,24 @@ including the alternatives that were tested and refuted. 0022 is the first ADR
 written alongside its decision rather than after it.
 
 0023–0025 are also backfills — decisions in the code or the toolchain that
-were not yet written down — driven by karr #63. 0026 is a snapshot, not a
+were not yet written down — driven by k63. 0026 is a snapshot, not a
 decision: it records what `OCP::Robocop` currently ships (CRIU checkpoint,
 TCP-9999 key injection, `sleep(60)` in place of reconciliation) and names
-karr #1 / ticket #1 as the work that supersedes it. 0020 was tightened against
+k1 / ticket k1 as the work that supersedes it. 0020 was tightened against
 reality in the same pass — the "Where first-class" / "Where not yet" split is
-the kind of precision karr #62 demanded (karr #10 and #58).
+the kind of precision k62 demanded (k10 and k58).
 
-0004 and 0008 were amended on 2026-08-15 under karr #47 — the first use of the
+0004 and 0008 were amended on 2026-08-15 under k47 — the first use of the
 amendment form described above, and the reason it is written down. Neither
 decision moved. What moved was 0008's account of what the manifest hash proves:
-karr #43 found `ocp destroy` leaving `.ocp/deployed.yaml` behind, and the next
+k43 found `ocp destroy` leaving `.ocp/deployed.yaml` behind, and the next
 apply announcing a registry it had never rolled out. The registry has since
 gained the existence check the other three components already had, which makes
 0008's old consequence false and shows that 0004 named `.ocp/status.yaml` but
 not `.ocp/deployed.yaml`, a file obeying the same rule. Both files carry an
 `## Amendment 2026-08-15` section quoting what they used to claim.
 
-0006 was amended on 2026-08-15 under karr #87. The decision did not move; its
+0006 was amended on 2026-08-15 under k87. The decision did not move; its
 enumeration of where PIN2 is prompted did. Three of the commands it listed as
 "do not prompt" did not prompt because they reached for a key that never
 existed on the machines in question — the ADR had written breakage down as
@@ -112,15 +112,15 @@ policy. `OCP::ClusterKey` makes the same decision apply consistently, so those
 commands now prompt where they used to fail. The amendment quotes the old
 sentence and separates what was corrected from what was added alongside it (the
 point-of-use / once-per-command / no-terminal rules, and the
-access-versus-identity distinction under PIN1 that karr #86 forced).
+access-versus-identity distinction under PIN1 that k86 forced).
 
 0027 is the second ADR written alongside its decision rather than after it, and
 the first written *ahead* of the code: the maintainer decided on 2026-08-15 to
 drop the unencrypted bootstrap key from secure mode, leaving two tiers — robo
 for unattended automation, admin behind PIN2 for everything a human does. It is
 not a supersession of 0006, and 0006 keeps its status: what 0027 removes was
-never 0006's decision but a third credential that accumulated under karr #85 and
-#87 without one. It carries a migration that had to be written down before a
+never 0006's decision but a third credential that accumulated under k85 and
+k87 without one. It carries a migration that had to be written down before a
 running cluster met it — every existing `provider: ssh` machine holds the
 bootstrap public key and must be handed the admin public key *first* — and it
 names, as consequences rather than as solved cases, the teardown loop in
@@ -142,6 +142,6 @@ today" and "where not yet", so the verification obligation and the artifact
 claim do not get averaged into a smooth-sounding "support".
 
 One area is deliberately absent: how robocop is constructed and reaches its
-credentials in-cluster. 0026 names the ticket (karr #1, "ticket #1" in
+credentials in-cluster. 0026 names the ticket (k1, "ticket k1" in
 upstream language) that will redesign that surface; until it lands, the stub
 is the snapshot and the snapshot is not the goal.

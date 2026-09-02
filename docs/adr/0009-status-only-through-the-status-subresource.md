@@ -10,7 +10,7 @@ server **silently discards** the `status` stanza of every write aimed at the
 main resource endpoint — create, update, merge-patch and server-side apply
 alike — and answers 2xx. Nothing looks wrong at the call site.
 
-That is not a theory. On a real cluster (karr #16), `ocp apply` printed
+That is not a theory. On a real cluster (k16), `ocp apply` printed
 `ensured OCPNode/cortex (control-plane, Ready)` while the stored CR had no
 `status` key at all, and `ocp node ls` correctly reported `Pending` with an
 empty IP. Three views of one node disagreed, and the one telling the truth

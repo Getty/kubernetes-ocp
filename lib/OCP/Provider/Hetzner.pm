@@ -236,7 +236,7 @@ sub create_server {
     # OCP::Node::_provision passes the OCPNode spec rather than these options,
     # so reading only the options silently threw away every serverType,
     # location and image a user typed into `ocp node add`. Same defect and
-    # same fix as OCP::Provider::SSH::resolve_host (karr #51, #92).
+    # same fix as OCP::Provider::SSH::resolve_host (k51, k92).
     my $spec = ref $opts{spec} eq 'HASH' ? $opts{spec} : {};
 
     # An explicitly passed key wins, then the cluster key this provider was
@@ -255,7 +255,7 @@ sub create_server {
 
     # The order in each _first_set below IS the contract, so read it as one:
     # named option, then the node's own spec, then this provider's default,
-    # then the constant. Rank 3 is the one karr #100 added -- the provider CR
+    # then the constant. Rank 3 is the one k100 added -- the provider CR
     # carried these three fields from the beginning, `ocp provider add` wrote
     # them and `ocp provider ls` printed them, and nothing read them, so
     # `--location nbg1` moved no server.
@@ -308,7 +308,7 @@ Both paths call this. L<OCP::Cmd::Apply::Bootstrap> calls it right after
 C<create_server> for the control plane, and L<OCP::Node/_resolve_host>
 calls it for a worker whose C<status.publicIP> is still empty. The line
 that used to stand here — "robocop never does, its node has the IP
-already" — was the assumption behind karr #99: a worker created through an
+already" — was the assumption behind k99: a worker created through an
 OCPNode CR has no address at all until this method has run, and the install
 failed with "No host IP" before it ever tried to connect.
 
@@ -319,7 +319,7 @@ failed with "No host IP" before it ever tried to connect.
 # budget on the same wait; neither names its own number, so a region that is
 # slow enough to make `ocp apply` sit there is fast enough for a worker to give
 # up. The number lives in the module that owns the wait -- the same shape
-# L<OCP::SSH::WAIT_TIMEOUT> uses for the SSH equivalent (karr #109). `our` so
+# L<OCP::SSH::WAIT_TIMEOUT> uses for the SSH equivalent (k109). `our` so
 # a test can shorten it without timing the real thing.
 our $ADDRESS_TIMEOUT = 120;
 
@@ -450,7 +450,7 @@ label. Set by the factory from C<OCP::Provider/for_spec>'s
 C<cluster_name> arg or C<OCP::Provider/from_cr>'s
 C<spec.clusterName> — B<not> the CR's own name, which is C<< <type>-default >>
 and labelled every worker into a cluster C<ocp destroy> could not find
-(karr #98).
+(k98).
 
 =seealso
 

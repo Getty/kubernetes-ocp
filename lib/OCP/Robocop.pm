@@ -240,7 +240,7 @@ B<Security Model:>
     ocp deploy-robocop
 
     # 2. Inject robo-key (requires PIN2)
-    #    — currently disabled; see karr #2 for the reactivation plan
+    #    — currently disabled; see k2 for the reactivation plan
 
     # 3. Robocop creates CRIU checkpoint
     # 4. Robocop provisions workers via CRDs

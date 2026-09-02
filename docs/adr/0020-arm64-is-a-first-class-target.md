@@ -66,7 +66,7 @@ for the architecture of the machine doing the build (`make build`,
 the control-plane node: `share/robocop/deployment.yaml` requires
 `node-role.kubernetes.io/control-plane` and tolerates it alongside
 `node-role.kubernetes.io/master`, so robocop cannot land on a worker at all
-(karr #10, commit 03dec2e). The control plane is amd64 in this project; arm64
+(k10, commit 03dec2e). The control plane is amd64 in this project; arm64
 shows up on the workers, and the workers never run robocop. The CLI is
 unaffected either way — it runs outside the cluster (ADR 0013). The bound this
 leaves is exact and worth naming: an arm64 control plane needs an image built
@@ -113,7 +113,7 @@ The second column is what is asserted rather than verified.
 - **No cross-architecture CI for the full reconcile path.** *Amended
   2026-08-17 — see below.* The arm64 verification was a single k3s end-to-end
   run; the RKE2 arm64 fix that started the work has never been re-verified
-  against a running RKE2 cluster (karr #9). Static checks replaced the live
+  against a running RKE2 cluster (k9). Static checks replaced the live
   run because the live run would have re-bootstrapped a real machine.
 - **No `xt/smoke.sh` on aarch64.** `make smoke` is amd64-only (`xt/smoke.sh`
   needs `SMOKE_HOST`); an aarch64 smoke would need an aarch64 runner with the
@@ -126,8 +126,8 @@ The second column is what is asserted rather than verified.
   carry an arm64 entry, and a new download URL must go through `_node_arch`. No
   new literal arch strings anywhere.
 - The third pass this section used to wait for has happened, and it landed
-  differently than expected. karr #58 removed `Dockerfile.robocop`, so the "one
-  image" claim has no exception written anywhere. karr #10 settled the
+  differently than expected. k58 removed `Dockerfile.robocop`, so the "one
+  image" claim has no exception written anywhere. k10 settled the
   robocop-on-arm64 question by pinning robocop to the control-plane node rather
   than by widening the image. What remains in the "Where not yet" column is
   verification and nothing else — cross-architecture CI and an aarch64 smoke —
@@ -150,20 +150,20 @@ Cilium 1.20.0 (the CLI resolved `linux-arm64` correctly), registry, NFD,
 cert-manager, Cilium Gateway, and the GPU stack reporting `nvidia.com/gpu: 1`
 with a successful CUDA workload validation. The run went over k3s, whose
 install script self-detects, which is why the RKE2 arm64 path is still only
-statically checked (karr #9). *Amended 2026-08-17 — see below: RKE2 on
+statically checked (k9). *Amended 2026-08-17 — see below: RKE2 on
 arm64 has since been verified end-to-end (RKE2 v1.36.3+rke2r1, cortex,
 2026-08-12); the caveat no longer holds.*
 
-## Amendment 2026-08-17 (karr #83)
+## Amendment 2026-08-17 (k83)
 
 Two sentences in this ADR claimed that the RKE2 arm64 path has "never been
 re-verified against a running RKE2 cluster" and is "still only statically
-checked" (karr #9). The first sentence lived under *Where arm64 is NOT yet
+checked" (k9). The first sentence lived under *Where arm64 is NOT yet
 first-class*; the second was the closing note of *Verified end-to-end*. Both
 are wrong as written, and they were already wrong when the ADR was filed.
 
-What the ticket #9 record actually contains: after the multi-arch work landed
-in the working tree and the Rexfile-mount bug (#42) was fixed, a full RKE2
+What the ticket k9 record actually contains: after the multi-arch work landed
+in the working tree and the Rexfile-mount bug (k42) was fixed, a full RKE2
 1.36.3+rke2r1 deployment on cortex (NVIDIA DGX Spark, GB10, aarch64) ran
 end-to-end on 2026-08-12. Tarball 36 693 999 bytes, `[ok] RKE2 server
 installed`, `Node architecture: arm64`, the complete stack (Cilium, registry,
@@ -178,7 +178,7 @@ than when the ADR was written: `.github/workflows/` no longer exists at all,
 so there is no CI for **any** architecture, and the "first-class" claim rests
 on the historical run plus the static checks that substituted for it (the
 "No cross-architecture CI" bullet carries that strengthening — see also
-#10).
+k10).
 
 Two adjacent claims were deliberately left alone. The `dpkg --print-architecture`
 rationale for the kubectl bullet (line 91) still calibrates against the

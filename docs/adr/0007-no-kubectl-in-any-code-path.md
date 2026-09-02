@@ -57,7 +57,7 @@ kubeconfig yet.
   `cpanfile`.
 - Behaviour that "everyone knows" from `kubectl` has to be verified against the
   client instead of assumed. The controller carried a comment claiming
-  in-cluster config was automatic; it was not, in any version (karr #28).
+  in-cluster config was automatic; it was not, in any version (k28).
 - Errors are typed and testable, which is what makes ADR 0019 possible: a mock
   transport under the real client checks verb and path, which no `kubectl`
   wrapper could.

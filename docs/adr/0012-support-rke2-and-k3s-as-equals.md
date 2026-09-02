@@ -51,9 +51,9 @@ Neither distribution is the "real" one that the other is patched into.
 - Every new node-touching feature has to be verified on both, and the cost is
   real. The week that produced these ADRs found three bugs that existed only
   because the smoke test ran RKE2 while the live machine ran k3s:
-  a second `hosts` plugin killing CoreDNS on k3s (karr #15), a containerd
-  template written to the RKE2 path on a k3s host (karr #23), and progress
-  output hardcoded to "RKE2" during a k3s install (karr #18).
+  a second `hosts` plugin killing CoreDNS on k3s (k15), a containerd
+  template written to the RKE2 path on a k3s host (k23), and progress
+  output hardcoded to "RKE2" during a k3s install (k18).
 - A one-distribution smoke test is not coverage. `xt/smoke.sh` takes
   `SMOKE_DIST`, and a run on one of them says nothing about the other.
 - Conversely, a fix verified on one distribution must say so. The RKE2 branch

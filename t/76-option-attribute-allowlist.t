@@ -5,7 +5,7 @@ use Test::More;
 use Path::Tiny qw(path);
 
 #
-# karr #73 — `is_bool => 1` is not a MooX::Options attribute and was
+# k73 — `is_bool => 1` is not a MooX::Options attribute and was
 # silently dropped by _filter_attributes. Three sites carried it
 # (Provider::Add `default`, Node::Add `gpu`, Node::Add `nowait`) and
 # they were harmless today only because they are positive-only flags
@@ -129,7 +129,7 @@ sub keys_in_block {
 subtest 'the allow-list tracks MooX::Options @OPTIONS_ATTRIBUTES' => sub {
     # Reading the source is the only way to be sure — VERSION numbers
     # drift, the array literal does not. Anything not in the array is
-    # forwarded to Moo and quietly ignored (karr #73, what `is_bool`
+    # forwarded to Moo and quietly ignored (k73, what `is_bool`
     # proved).
     require MooX::Options;
     my $moox_file = $INC{'MooX/Options.pm'};
@@ -206,10 +206,10 @@ subtest 'every option() key in lib/OCP/Cmd/ is one MooX::Options or Moo understa
 };
 
 # ---------------------------------------------------------------------------
-# 3. The known phantom keys from karr #73 are gone.
+# 3. The known phantom keys from k73 are gone.
 # ---------------------------------------------------------------------------
 
-subtest 'the three phantom is_bool sites from karr #73 are gone' => sub {
+subtest 'the three phantom is_bool sites from k73 are gone' => sub {
     for my $file (
         'lib/OCP/Cmd/Provider/Add.pm',
         'lib/OCP/Cmd/Node/Add.pm',

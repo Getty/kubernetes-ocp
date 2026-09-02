@@ -188,7 +188,7 @@ YAML
 
 #
 # Test: a skip_if that names a method OCP::Config does not have is a
-# programmer error and dies loudly. Before karr #106 the missing method made
+# programmer error and dies loudly. Before k106 the missing method made
 # the can() probe fall through and the probe ran as if no skip_if was set --
 # a cluster with `nocert: true` would then be reported as cert-manager-
 # drifting after someone renamed or removed OCP::Config::no_cert.
@@ -325,7 +325,7 @@ YAML
 }
 
 #
-# Test: a list('Node') that throws must be surfaced, not swallowed (karr #119).
+# Test: a list('Node') that throws must be surfaced, not swallowed (k119).
 #
 # Before the fix: `my $list = eval { ... } or return` collapsed every API
 # failure -- revoked token, RBAC denial, TLS, apiserver 5xx -- into a silent

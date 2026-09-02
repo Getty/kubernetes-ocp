@@ -15,7 +15,7 @@ mis-address the request — it dies with *argument is not a module name*. Seven
 call sites were broken this way, `update()` was being handed plain hashrefs it
 cannot take, and the state machine had a dead dispatch branch that made agent
 installation unreachable. Worker provisioning could never have worked on a real
-cluster (karr #21).
+cluster (k21).
 
 There was even a regression test guarding this. It asserted that no call used
 `path =>`, by checking that argument zero was a string without a reference —
@@ -72,7 +72,7 @@ lives in `xt/smoke.sh` and is destructive and human-triggered.
 - Mocks still cannot show that an agent comes up, that a node registers under
   the expected name, that teardown really removes the machine, or that two
   reconcilers collide with a 409. Those remain unverified and are recorded as
-  such (karr #29) rather than implied by a green suite.
+  such (k29) rather than implied by a green suite.
 - **A real client under the test does not make the fixtures real.** The
   `registry.local` drift probe (ADR 0022) derived the expected address itself
   while the writer put the same value through `Socket::inet_aton` first. Eight

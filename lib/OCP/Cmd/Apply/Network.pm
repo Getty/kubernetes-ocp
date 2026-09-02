@@ -263,7 +263,7 @@ sub setup_cilium_gateway {
 # The pool range comes from network.lb_pool when the user set it; otherwise the
 # node IP as a /32. That /32 is a single-node convenience — the node is the
 # whole cluster — but on a multi-node cluster it hands the LoadBalancer an
-# address that already belongs to a node (karr #127). So without a configured
+# address that already belongs to a node (k127). So without a configured
 # pool we build the /32 only when the cluster has exactly one node, and die
 # otherwise rather than announce a node's own IP.
 #
@@ -328,7 +328,7 @@ sub setup_lb_ipam {
 
     # Name to address, through the one derivation there is. This used to be a
     # second inline inet_aton copy, and a second copy of that step is what
-    # produced #19: writer and reader derived the same address separately, one
+    # produced k19: writer and reader derived the same address separately, one
     # resolved and the other did not, and `ocp status` reported drift on a
     # correctly configured cluster forever.
     $node_ip = OCP::Drift::resolve_address($node_ip)
@@ -340,7 +340,7 @@ sub setup_lb_ipam {
     # "this address is useless as a load-balancer pool, what else does this node
     # have?". Folding it in would give resolve_address an API dependency, and it
     # would change what the registry.local writer and OCP::Drift's probe agree
-    # on, which is the exact invariant #19 established. LB-IPAM-specific, so it
+    # on, which is the exact invariant k19 established. LB-IPAM-specific, so it
     # runs where LB-IPAM is set up.
     if ($node_ip =~ /^127\./) {
         my $nodes = eval { $api->list('Node') };

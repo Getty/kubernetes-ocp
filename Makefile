@@ -57,7 +57,7 @@ test-v: build
 # the perl nor the module versions that ship. On 2026-08-15 this run went from
 # green to red between morning and evening without a line of the repo
 # changing, because a newer Kubernetes::REST than the snapshot pins had been
-# installed on the host (karr #79). The reverse is worse and silent: a host
+# installed on the host (k79). The reverse is worse and silent: a host
 # that stays on an old version keeps this green while the image is broken.
 test-host:
 	prove -l $(TESTS)

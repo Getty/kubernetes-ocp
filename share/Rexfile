@@ -1030,13 +1030,13 @@ sub _configure_nvidia_runtime_path {
 # The containerd config template OCP used to write, byte for byte.
 #
 # _configure_nvidia_containerd wrote exactly these two lines (56 bytes) to
-# /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl. karr #23 deleted
+# /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl. k23 deleted
 # the code; nothing removes the file. RKE2 and k3s render config.toml from such
 # a template on every service start, *instead of* the config they generate
 # themselves, so a host bootstrapped before that fix keeps running containerd
 # off this two-liner forever -- no registry mirrors, no sandbox image, no CNI
 # settings -- and upgrading OCP does not help, because the damage is a file and
-# not code. Measured on cortex (karr #45).
+# not code. Measured on cortex (k45).
 #
 # `ocp destroy` takes /var/lib/rancher with it, so the host this matters for is
 # the one that gets bootstrapped once and only ever upgraded afterwards.
@@ -1080,7 +1080,7 @@ sub _legacy_containerd_template_paths {
 # line per legacy template still present; silence means clean. The marker string
 # is the one OCP::Drift matches ($OCP::Drift::REX_DRIFT_MARKER) -- keep the two
 # in step.
-desc "Report whether the obsolete pre-#23 containerd config template is still present (read-only)";
+desc "Report whether the obsolete pre-k23 containerd config template is still present (read-only)";
 task "detect_legacy_containerd_template", sub {
     for my $path (_legacy_containerd_template_paths()) {
         next unless is_file($path);
@@ -1090,7 +1090,7 @@ task "detect_legacy_containerd_template", sub {
     }
 };
 
-desc "Remove the obsolete containerd config template OCP wrote before karr #23";
+desc "Remove the obsolete containerd config template OCP wrote before k23";
 task "cleanup_legacy_containerd_template", sub {
     for my $path (_legacy_containerd_template_paths()) {
         next unless is_file($path);
@@ -1102,7 +1102,7 @@ task "cleanup_legacy_containerd_template", sub {
         }
 
         unlink $path;
-        say "Removed obsolete containerd template $path -- it was OCP's pre-#23 "
+        say "Removed obsolete containerd template $path -- it was OCP's pre-k23 "
           . "two-liner and was overriding the generated containerd config; "
           . "the next service start renders that config again";
     }

@@ -9,7 +9,7 @@ use Path::Tiny qw(path);
 use lib 'lib';
 
 #
-# The ocp-cluster label a Hetzner server is born with — karr #98.
+# The ocp-cluster label a Hetzner server is born with — k98.
 #
 # One value, written by two different code paths, and for a long time they did
 # not agree. Bootstrap builds its adapter through OCP::Provider::for_spec and
@@ -194,7 +194,7 @@ my $CLUSTER = 'cortex';
 # Every attribute the factory can set has to be copied across, or the rebuilt
 # adapter is a weaker thing than the real one and the seam test quietly stops
 # covering whatever was dropped. It happened: the three provider defaults
-# arrived in karr #100 and this copy would have left them behind.
+# arrived in k100 and this copy would have left them behind.
 sub rebuild_with_fake_cloud {
     my ($prov, $cloud) = @_;
     return OCP::Provider::Hetzner->new(
@@ -376,7 +376,7 @@ subtest 'a provider CR from before the field refuses rather than mislabelling' =
 };
 
 #
-# The same seam, for the three fields that were write-only until karr #100.
+# The same seam, for the three fields that were write-only until k100.
 #
 # spec.hetzner.location/.serverType/.image were written by `ocp provider add`,
 # printed by `ocp provider ls`, and read by no one: `--location nbg1` produced

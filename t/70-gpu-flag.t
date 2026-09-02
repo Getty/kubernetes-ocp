@@ -8,8 +8,8 @@ use lib 'lib';
 
 #
 # spec.gpu was set on the OCPNode CR by `ocp node add --gpu` (a JSON boolean
-# after karr #50) and never read anywhere. OCP::Rex has had a `gpu` parameter
-# since gpu_enabled was wired through (#13): install_agent / install_server
+# after k50) and never read anywhere. OCP::Rex has had a `gpu` parameter
+# since gpu_enabled was wired through (k13): install_agent / install_server
 # read it, _maybe_detect_gpu in the Rexfile honours it, and Apply/Bootstrap
 # passes it from OCP::Config. OCP::Node->_install_kubernetes is the seam that
 # nobody closed -- it builds its own little %params for run_task and omits the
@@ -27,7 +27,7 @@ use lib 'lib';
 # gpu_driver is intentionally NOT threaded here. The CRD declares spec.gpu as
 # a bare boolean (no spec.gpu.driver field), and the only knob for gpu_driver
 # today is ocp.yaml gpu.driver, which OCP::Node has no view of. The per-node
-# driver question is what karr #31 will answer for the robocop side; here we
+# driver question is what k31 will answer for the robocop side; here we
 # keep the seam narrow and leave OCP::Rex's default ('host') in charge.
 #
 
@@ -129,7 +129,7 @@ sub installing_node_call {
 
 subtest 'spec.gpu=true is forwarded as gpu=1 to install_rke2_agent' => sub {
     # The point of the ticket: `ocp node add --gpu` writes spec.gpu as a JSON
-    # boolean into the CR (karr #50), and OCP::Node never reads it. Today this
+    # boolean into the CR (k50), and OCP::Node never reads it. Today this
     # test asserts the seam is closed.
     my $call = installing_node_call(spec => { gpu => JSON::PP->new->true });
     return unless $call;
@@ -156,7 +156,7 @@ subtest 'absent spec.gpu is left out of the params (OCP::Rex default wins)' => s
     # absent case keeps OCP::Rex's default ('do the GPU work' = // 1) -- which
     # is what every worker does today, the documented baseline. Threading the
     # flag through is what fixes the disconnected case; flipping the default
-    # is a separate, wider decision (karr #31, robocop side).
+    # is a separate, wider decision (k31, robocop side).
     my $call = installing_node_call();
     return unless $call;
 
@@ -182,7 +182,7 @@ subtest 'gpu_driver is not pulled out of thin air' => sub {
     # ocp.yaml. OCP::Node has no view of ocp.yaml, and inventing a default
     # here would silently change the behaviour of every worker. The right
     # place to plumb the project-wide driver through is the same %params list
-    # we're touching here, once karr #31 lands the provider-CR shape that
+    # we're touching here, once k31 lands the provider-CR shape that
     # robocop also needs.
     my $call = installing_node_call(spec => { gpu => JSON::PP->new->true });
     return unless $call;

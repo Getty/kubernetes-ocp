@@ -14,7 +14,7 @@ use OCP::Robocop::Controller;
 # The Deployment starts this as `robocop controller` (share/robocop/deployment.yaml).
 # That argument used to fall on the floor: bin/robocop ran OCP::Robocop->run
 # unconditionally, which blocks on the disabled port-9999 key-injection stub and
-# never reaches the reconciliation controller (karr #33). Read @ARGV and route
+# never reaches the reconciliation controller (k33). Read @ARGV and route
 # the `controller` subcommand to OCP::Robocop::Controller, built from the
 # environment; every other invocation keeps the legacy OCP::Robocop behaviour.
 if (@ARGV && $ARGV[0] eq 'controller') {
@@ -59,7 +59,7 @@ reconciling each through L<OCP::Node>. This is the command the Deployment runs
 
 The legacy L<OCP::Robocop> path: waits for robo-ssh key injection, keeps the key
 in memory only, and CRIU-checkpoints itself. The injector (C<ocp inject-key>)
-needs C<port_forward> and is currently disabled (see karr #2), so this path
+needs C<port_forward> and is currently disabled (see k2), so this path
 blocks until that is redeemed or removed.
 
 =back

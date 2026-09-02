@@ -11,9 +11,9 @@ decided: `.ocp/id_ed25519`, the *bootstrap key* — unencrypted, no second facto
 created by `ocp init` and used by `ocp apply` to reach a machine before the
 cluster exists.
 
-It arrived as plumbing, not as policy. karr #85 made `ocp init` create it for
+It arrived as plumbing, not as policy. k85 made `ocp init` create it for
 `provider: ssh` in secure mode too, because a secure-mode ssh project otherwise
-had nothing to authenticate with; karr #87 then wrote the resulting rule into
+had nothing to authenticate with; k87 then wrote the resulting rule into
 `OCP::ClusterKey` — *who created the machine decides which key it trusts*, with
 `provider: ssh` overriding the mode rather than following it. Both changes were
 right about the bug in front of them. Together they made the key model three
@@ -29,7 +29,7 @@ Looking at what the code actually does dissolves most of the justification:
 - **On the ssh provider the only difference is which public key a human pastes.**
   OCP cannot write `authorized_keys` on a pre-existing machine either way —
   `upload_ssh_key` is implemented for Hetzner and is a no-op everywhere else. The
-  operator copies a line by hand, and since karr #84 `ocp keys show --purpose
+  operator copies a line by hand, and since k84 `ocp keys show --purpose
   admin` prints exactly that line.
 - **Bootstrapping is rare, interactive and human-triggered.** It is not the
   unattended path; robocop joining a worker is. A PIN2 prompt during a bootstrap
@@ -50,7 +50,7 @@ Two tiers, and only two, in secure mode:
 
 `.ocp/id_ed25519` is removed from secure mode. `ocp init` stops creating it there,
 and `OCP::ClusterKey` stops selecting it there — which retires the
-"who created the machine decides" rule karr #87 introduced. Which key a machine
+"who created the machine decides" rule k87 introduced. Which key a machine
 trusts no longer depends on its provider; in secure mode it is the admin key,
 everywhere.
 
@@ -59,7 +59,7 @@ case: dev mode has no `keys.yaml`, therefore no robo key and no admin key, so
 `.ocp/id_ed25519` is not a third tier there but the *only* key material there is.
 That is a different mode, not an exception to this one.
 
-The PIN2 policy this relies on is the one karr #87 already built (ADR 0006): the
+The PIN2 policy this relies on is the one k87 already built (ADR 0006): the
 key is obtained **at the point of use**, so a reconcile with nothing to repair
 never prompts; **once per command**, because `OCP::Role::Cmd::cluster_ssh_key`
 caches it; and **never where nobody can answer** — without a terminal the key is
@@ -76,11 +76,11 @@ making.
   that sits unencrypted on the operator's disk into root access on every node in
   the cluster, which is precisely what the PIN2 layer exists to prevent. Rejected
   outright.
-- **Keep the third tier and document it** — the status quo after karr #85/#87. It
+- **Keep the third tier and document it** — the status quo after k85/k87. It
   leaves the most security-conscious configuration with an unprotected key that
   opens its machines, and leaves two rules ("who created the machine" and "which
   mode am I in") to be kept in agreement by hand at every new call site. Four call
-  sites had already fallen out of agreement once; that was karr #87.
+  sites had already fallen out of agreement once; that was k87.
 - **Give the bootstrap key its own weaker second factor** — a third secret to
   hold, remember and rotate, protecting a key whose entire purpose was to need no
   prompt. It would keep the tier and lose its only advantage.
@@ -104,7 +104,7 @@ making.
   decision therefore owes a diagnosis. An unmigrated machine refuses the admin key
   like any other stranger: an SSH authentication timeout, a network-shaped message
   for what is really "that machine has never heard of this key". This is exactly
-  the illegibility karr #85 removed in the other direction. A bootstrap key still
+  the illegibility k85 removed in the other direction. A bootstrap key still
   lying in a secure-mode project is the recognisable signature of a cluster
   authorised before this decision, and OCP has to say so by name when a connection
   fails. Note what that is and is not: a hint after the fact, not a preflight —
@@ -138,7 +138,7 @@ making.
   local operation.
 - **`ocp keys show --purpose admin` becomes load-bearing.** It is no longer a
   convenience; it is the only supported way to make a pre-existing machine
-  reachable. karr #84 is a dependency of this decision, not an unrelated nicety.
+  reachable. k84 is a dependency of this decision, not an unrelated nicety.
 - **A dev-mode project cannot become a secure-mode project by itself.** Its
   machines trust `.ocp/id_ed25519` and there is no path that hands them the admin
   key — the same manual distribution, with no command that performs it.

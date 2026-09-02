@@ -117,11 +117,11 @@ our $REGISTRY_HOSTNAME = 'registry.local';
 # with its writer.
 our $REX_DRIFT_MARKER = 'OCP-DRIFT-PRESENT';
 our @REX_PROBES = (
-    # The obsolete pre-#23 containerd config template (share/Rexfile's
+    # The obsolete pre-k23 containerd config template (share/Rexfile's
     # cleanup_legacy_containerd_template removes it). Reachable via install-only
     # tasks, so an already-bootstrapped, only-ever-upgraded cluster never runs
     # the cleanup on the reconcile path -- which is precisely the host that has
-    # it (karr #45/#71). The detection task is read-only so `ocp status` can run
+    # it (k45/k71). The detection task is read-only so `ocp status` can run
     # it without touching the host.
     {
         component      => 'legacy_containerd_template',
@@ -129,7 +129,7 @@ our @REX_PROBES = (
         host_selector  => 'control_planes',
         detection_task => 'detect_legacy_containerd_template',
         remedy_task    => 'cleanup_legacy_containerd_template',
-        message        => 'obsolete pre-#23 containerd config template present; ocp apply removes it',
+        message        => 'obsolete pre-k23 containerd config template present; ocp apply removes it',
     },
 );
 
@@ -290,7 +290,7 @@ sub distribution_drift {
         # entirely: a revoked token, an RBAC denial, a TLS error, an apiserver
         # 5xx -- any of them made `ocp status` print a green drift summary
         # saying nothing was drifted, with no warning, no log, and no entry
-        # in the drift table (karr #119). Surface it as a drift entry of its
+        # in the drift table (k119). Surface it as a drift entry of its
         # own kind and carp it to stderr, the same way OCP::Cmd::Status
         # handles its `list_nodes` failure.
         my $err = $@;
@@ -703,7 +703,7 @@ If the C<list('Node')> call fails (revoked token, RBAC denial, TLS, apiserver
 5xx), the sub returns one C<kind =E<gt> 'error'> entry naming the distribution
 and the underlying exception, and carps the same exception to stderr. The
 silent return that used to leave C<ocp status> printing a green drift summary
-on a cluster it could not actually query is gone (karr #119).
+on a cluster it could not actually query is gone (k119).
 
 =head2 registry_dns_drift
 
@@ -726,7 +726,7 @@ Needs L</rex_prober>; without it, nothing is probed. A probe that throws --
 host unreachable, no key, timeout -- is carped to stderr and skipped, never an
 exception and never drift, so a single unreachable machine cannot block
 C<detect> or make C<ocp status> a no-go. The first probe is the obsolete
-pre-#23 containerd config template on the control planes (karr #45/#71).
+pre-k23 containerd config template on the control planes (k45/k71).
 
 =head2 resolve_address
 

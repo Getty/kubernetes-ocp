@@ -11,7 +11,7 @@ use OCP::Choices;
 # This is the ONE place the set is written down. Everything that needs it
 # asks here: OCP::Config::validate, `ocp provider add --type`, `ocp node
 # add`'s flag check, and OCP::Role::Cmd's name-vs-type hint all used to spell
-# it out again, four hand-maintained copies of three words (karr #103).
+# it out again, four hand-maintained copies of three words (k103).
 #
 # It sits with the factory because the factory decides: a type OCP supports
 # is exactly a type _build knows how to construct, and nothing else. To keep
@@ -21,7 +21,7 @@ use OCP::Choices;
 #
 # The one reader that cannot call Perl is the CRD enum in
 # share/robocop/crds/ocpnodeprovider.yaml, which today lists two of these
-# three -- see karr #110, which will need this list to compare against.
+# three -- see k110, which will need this list to compare against.
 my @TYPES = qw(hetzner ssh local);
 
 sub types { return @TYPES }
@@ -36,8 +36,8 @@ sub known_type {
 #
 # They ride on the provider CR rather than the OCPNode CR because robocop
 # never sees ocp.yaml: the provider CR is the one channel through which the
-# cluster-wide gpu.enabled / gpu.driver reach a worker robocop joins (karr
-# #31). `ocp apply` writes them there (OCP::Cmd::Apply::CR::ensure_provider_cr);
+# cluster-wide gpu.enabled / gpu.driver reach a worker robocop joins (k31).
+# `ocp apply` writes them there (OCP::Cmd::Apply::CR::ensure_provider_cr);
 # from_cr's two callers -- OCP::Robocop::Controller and the CLI reconcile path
 # -- read them back here and hand them to OCP::Node as gpu_enabled / gpu_driver.
 #
@@ -125,12 +125,12 @@ sub from_cr {
         # saw those machines — they keep running and keep billing while the
         # teardown reports success — and server_exists searched the same wrong
         # label pair, so a second provisioning pass created a SECOND server
-        # instead of recognising the one already standing there (karr #98).
+        # instead of recognising the one already standing there (k98).
         #
         # The CR is the carrier because nothing else can be: OCP::Node is
         # trigger-neutral, and robocop has no cluster identity beyond what is
         # stored in the cluster. Exactly the reason sshKeyName lives here too
-        # (karr #92), and the reason a label on the CR was rejected in its
+        # (k92), and the reason a label on the CR was rejected in its
         # favour — metadata is shared ground that kustomize, kubectl and other
         # controllers rewrite, and this value decides which paid servers a
         # teardown finds.
@@ -153,19 +153,19 @@ sub from_cr {
         # knows: OCP::Node is trigger-neutral, and robocop -- the other
         # caller of create_server -- never learns the cluster name. Absent
         # here means create_server refuses rather than building a machine
-        # with an empty authorized_keys (karr #92).
+        # with an empty authorized_keys (k92).
         $args{ssh_key_name} = $hspec->{sshKeyName};
 
         # What every node of this provider gets when it names nothing itself.
         # These three were written by `ocp provider add` and shown by `ocp
         # provider ls` since the beginning and read by NOBODY, so
-        # `--location nbg1` moved no server (karr #100). They land at rank 3 of
+        # `--location nbg1` moved no server (k100). They land at rank 3 of
         # OCP::Provider::Hetzner::create_server's four: below the node's own
         # spec, above the code default.
         #
         # They stay under spec.hetzner, unlike clusterName, because that is
         # what they are: Hetzner backend configuration. clusterName went
-        # top-level in karr #98 for the opposite reason -- it names the cluster,
+        # top-level in k98 for the opposite reason -- it names the cluster,
         # not the backend, and every provider type has one.
         #
         # Only from_cr fills them. for_spec is the bootstrap path and there is
@@ -179,7 +179,7 @@ sub from_cr {
     # 'ssh' reads no extra args from the CR today: spec.ssh declares only
     # user + keySecretRef (share/robocop/crds/ocpnodeprovider.yaml), and the
     # SSH private key travels through OCP::ClusterKey / the CLI pipeline, not
-    # the CR (ADR 0027, karr #111).
+    # the CR (ADR 0027, k111).
     # 'local' needs no extra args from the CR.
 
     return $class->_build(\%args);
@@ -293,7 +293,7 @@ single private C<_build> method. Add a fourth provider in exactly one place.
 
 The provider types OCP can build, in declaration order.  The single source
 for the set: every rejection that lists valid provider types reads it from
-here rather than spelling out three words again (karr #103).
+here rather than spelling out three words again (k103).
 
 It lives with the factory because the factory decides -- a supported type is
 exactly a type L</_build> knows how to construct.
@@ -312,8 +312,8 @@ True if C<$type> is one of L</types>.  C<undef> is not.
 The cluster-wide GPU switches read off an C<OCPNodeProvider> CR, ready to
 splat into C<< OCP::Node->from_cr >>.  They live on the provider CR because
 robocop never sees F<ocp.yaml>: this is the only channel through which the
-cluster's C<gpu.enabled> / C<gpu.driver> reach a worker robocop joins (karr
-#31).  C<ocp apply> copies them there from F<ocp.yaml>
+cluster's C<gpu.enabled> / C<gpu.driver> reach a worker robocop joins (k31).
+C<ocp apply> copies them there from F<ocp.yaml>
 (L<OCP::Cmd::Apply::CR/ensure_provider_cr>), and both callers of L</from_cr>
 read them back with this method.
 
@@ -351,7 +351,7 @@ C<< <type>-default >>, so taking C<metadata.name> labelled every worker
 C<ocp-cluster=hetzner-default> while the control plane carried the real
 cluster name.  Those workers survived C<ocp destroy> and kept billing, and
 C<server_exists> could never match one, so a repeat provisioning run built a
-second server next to the first (karr #98).
+second server next to the first (k98).
 
 A CR without C<spec.clusterName> makes C<from_cr> die rather than build an
 adapter that would create unfindable machines; one C<ocp apply> rewrites it.
@@ -368,7 +368,7 @@ L</default_location> — what a node of this provider gets when its own OCPNode
 spec names none.  They sit at rank 3 of the four
 L<OCP::Provider::Hetzner/create_server> resolves: below the node's own spec,
 above the code default.  Written since the beginning by C<ocp provider add>
-and read by nobody until karr #100, which is why C<--location nbg1> used to
+and read by nobody until k100, which is why C<--location nbg1> used to
 move no server at all.
 
 C<for_spec> sets none of them, and that is the point rather than an omission:

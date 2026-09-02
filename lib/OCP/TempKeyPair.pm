@@ -22,8 +22,8 @@ use Path::Tiny ();
 #
 # So every caller that writes a private key to a temp file owes a .pub beside
 # it. Three places open-coded that dance and two of them got it wrong --
-# OCP::Cmd::Apply::Bootstrap and OCP::Cmd::SSH leaked the public half (karr
-# #87), OCP::Node never wrote one at all (karr #93). This is the fourth
+# OCP::Cmd::Apply::Bootstrap and OCP::Cmd::SSH leaked the public half
+# (k87), OCP::Node never wrote one at all (k93). This is the fourth
 # attempt and the last one, because now there is only one.
 #
 # THE OWNERSHIP RULE, which is the subtle part and the reason this is a class

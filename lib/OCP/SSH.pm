@@ -165,7 +165,7 @@ sub scp_from {
 # wait -- so any number the caller passed in would have been cosmetic. The
 # parameter used to be there, set with `$timeout //= 5` and never read: a
 # caller thinking "give it 10 seconds" actually got one probe with a 10 s
-# ConnectTimeout, and was told its number meant something (karr #112).
+# ConnectTimeout, and was told its number meant something (k112).
 sub is_reachable {
     my ($self) = @_;
 
@@ -181,7 +181,7 @@ sub is_reachable {
 # this module's default themselves: 120 there, 60 here. Nothing justified the
 # half budget, and it was the terminal one: OCP::Node marks the node Failed,
 # which is final, so a server whose sshd needed 70s was lost for good and kept
-# billing (karr #109). The worker was the outlier; 120 is what the
+# billing (k109). The worker was the outlier; 120 is what the
 # control-plane path has always spent on exactly this wait.
 #
 # Waiting for a boot means passing nothing and taking this. A caller asking a
@@ -267,7 +267,7 @@ C<$OCP::SSH::WAIT_TIMEOUT> (120 s). That is the budget for the same wait
 everywhere it happens: L<OCP::Cmd::Apply::Bootstrap> after the control-plane
 server reaches C<running>, and L<OCP::Node> after a worker does. Neither names
 a number of its own — they used to, with 120 and 60, and the worker's half
-budget failed nodes that were merely slow to boot (karr #109).
+budget failed nodes that were merely slow to boot (k109).
 
 An explicit argument is for a different question. L<OCP::Provider::SSH>'s
 C<is_reachable> passes 10: it probes a host that is supposed to be up already

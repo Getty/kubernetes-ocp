@@ -5,15 +5,15 @@ use Test::More;
 use Path::Tiny qw(path);
 
 #
-# The pre-#23 containerd config template, and the Rex task that removes it.
+# The pre-k23 containerd config template, and the Rex task that removes it.
 #
 # OCP used to write /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl
 # with two lines in it: an imports line pointing at /etc/containerd/conf.d and
-# `version = 2`. karr #23 deleted the code. It did not delete the file, and
+# `version = 2`. k23 deleted the code. It did not delete the file, and
 # nothing else does either -- RKE2 and k3s render config.toml from a template
 # they find on every service start, INSTEAD of the config they generate
 # themselves, so a host bootstrapped before that fix keeps running containerd
-# off the two-liner no matter how often OCP is upgraded (karr #45, measured on
+# off the two-liner no matter how often OCP is upgraded (k45, measured on
 # cortex before its teardown).
 #
 # The task therefore removes by CONTENT, never by path: somebody may have put
@@ -61,7 +61,7 @@ subtest 'the known content is exactly what OCP used to write' => sub {
     is $known, qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n},
         'byte for byte the content of the deleted _configure_nvidia_containerd';
     is length($known), 56,
-        'and 56 bytes -- the size measured on cortex in karr #45';
+        'and 56 bytes -- the size measured on cortex in k45';
 };
 
 subtest 'only that exact content is recognised' => sub {

@@ -107,7 +107,7 @@ Concretely:
   5–20) was written against an earlier version of this decision; it is the
   in-code companion to this ADR and is not duplicated here.
 
-## Amendment 2026-08-17 (karr #125)
+## Amendment 2026-08-17 (k125)
 
 Two things here did not survive review: what the `cpanfile` floor mechanically
 does, and the value it was set to. The decision — one Perl for the image and the

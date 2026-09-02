@@ -124,8 +124,8 @@ sub _validate_flags {
 # Which uploaded key servers created through this provider boot with.
 #
 # Without it the provider is written, `ocp node add` reaches
-# OCP::Provider::Hetzner::create_server with no key, and that refuses (karr
-# #92) — so the default matters. It is derived from the project config,
+# OCP::Provider::Hetzner::create_server with no key, and that refuses (k92)
+# — so the default matters. It is derived from the project config,
 # which is the same source bootstrap uploads the key from
 # (OCP::Config::admin_ssh_key_name); --ssh-key-name overrides it for a
 # Hetzner project whose key was uploaded under some other name.
@@ -151,7 +151,7 @@ sub _resolve_ssh_key_name {
 # Same source and same reason as the key name above: the project config is
 # what `ocp apply` labels its own servers from, so a provider added by hand
 # has to agree with it or its servers land under a different ocp-cluster label
-# than the control plane's and `ocp destroy` walks past them (karr #98).
+# than the control plane's and `ocp destroy` walks past them (k98).
 #
 # No flag overrides this. The cluster has exactly one name and it is in
 # ocp.yaml; an override would only be a way to get it wrong. With no project
@@ -332,7 +332,7 @@ this provider gets when its own OCPNode spec names none.  That is rank 3 of
 the four L<OCP::Provider::Hetzner/create_server> resolves — a node's own
 C<ocp node add --location> still wins, and with none of them given the code
 default applies.  A provider named C<hetzner-nbg1> is worth having for
-exactly this reason; until karr #100 the fields were written here and read
+exactly this reason; until k100 the fields were written here and read
 nowhere, so C<--location nbg1> changed no server.
 
 Each is written only when the flag is given.  Leaving one out is a real

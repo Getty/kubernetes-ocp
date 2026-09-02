@@ -10,7 +10,7 @@ use lib 'lib';
 #
 # robocop's controller lane, tested the way t/16-node.t tests OCP::Node: a REAL
 # Kubernetes::REST with a recording transport bolted underneath, never a
-# hand-written stand-in and never a live cluster. See karr #33.
+# hand-written stand-in and never a live cluster. See k33.
 #
 # The bug this file guards against had two halves. First, bin/robocop never read
 # @ARGV: `robocop controller` fell through to OCP::Robocop->run, which blocks on
