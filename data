@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-09-04T04:06:55Z
+created: 2026-09-04T03:14:50Z
+id: 132
+priority: medium
+started: 2026-09-04T03:28:46Z
+status: done
+tags:
+- crd
+- testing
+title: 'CRD-Umstellung absichern: OCP gegen neue IO::K8s-CRD-Unterstuetzung verifizieren
+  (OCP-Seite von io-k8s k98/D18)'
+updated: 2026-09-04T04:08:10Z
+---
+
+kubernetes-ocp ist echter CRD-Konsument, daher muss die io-k8s CRD-Umstellung (D1-D18) hier abgesichert werden, bevor sie als sicher gilt.
+
+Betroffene CRD-Nutzung in diesem Repo:
+- Eigene CRDs OCPNode / OCPNodeProvider (Schema in share/robocop/crds), angewandt via OCP::Cmd::Apply::CR::ensure_crds.
+- Fremd-CRD-Provider ueber OCP::Kubernetes::register_resource_providers ($api->k8s->add(@RESOURCE_PROVIDERS)).
+- Typisierte CR-Objekte via IO::K8s (Robocop-Controller, Apply/Reconcile-Pfad).
+
+Zu verifizieren, dass die Umstellung nichts bricht:
+- OCPNode / OCPNodeProvider Round-Trip (Inflation + Serialisierung) gegen die neue IO::K8s-CRD-Ebene.
+- ensure_crds wendet die ausgelieferten CRD-YAMLs weiter korrekt an (add_crd/ensure_crd, Established-Wait).
+- Provider-Registrierung liefert weiterhin dieselben Klassen (vgl. k131: spaeter with => [...]).
+- Unbekannte Kinds/Unstructured und preferred-version-Aufloesung im Apply-Pfad.
+
+Bezug: io-k8s k98 (D18) ist der gemeinsame Live-Test minikube -> OCP-Cluster; dies ist die OCP-Seite davon. Design: ~/dev/io-k8s-p5/docs/superpowers/specs/2026-09-03-crd-design.md.
+Verwandt: k131 (register_resource_providers -> Kubernetes::REST with => [...]).
+
+Abgesichert (Commit a080642). Befund: OCP brach gegen IO::K8s / Kubernetes::REST 1.108 im Provider-Registrierungs-Pfad -- das fluechtige api-k8s-add() ging beim k8s-Rebuild verloren (Cilium/CertManager/GatewayAPI-Kinds fielen auf fabrizierte IO-K8s-Kind-Namen zurueck), plus ein Moo with-Keyword-Shadowing crashte die Test-Fakes. Fix: register_resource_providers registriert durable auf der Kubernetes::REST with-Liste (Design D12), ein gemeinsamer Pfad fuer OCP::Kubernetes und OCP::Cmd::Apply::K8s. Regressionstest t/79-resource-providers.t. Volle Suite gruen gegen Host-1.108 (prove -l t/, 1292 Tests). k131 mitgeschlossen. Abgedeckt: OCPNode/OCPNodeProvider Round-Trip (t/16, t/33), ensure_crds/Apply-Pfad (t/54, Apply::CR), Provider-Registrierung ueberlebt Rebuild (t/79, t/10). Ausserhalb OCP (Bibliotheks-Interna): unknown-Kind zu Unstructured (D16) und preferred-version (D17). Snapshot-Bump auf 1.108 fuer die bindende Docker-Suite -> k133 (blockiert auf CPAN-Release der Siblings).
