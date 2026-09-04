@@ -1,6 +1,22 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - SimpiCI build entry point: `.cicd/linux+container+cicd.sh` (k134). SimpiCI
+      checks out one exact revision and invokes one repository-owned script;
+      this is kubernetes-ocp's. It builds the OCP image via the existing
+      `share/bin/ocp-build-image` and publishes it to BOTH registries so the
+      artifact survives one being offline -- ghcr.io (the promoted source) and
+      the Forgejo registry on src.ci (the always-available fallback). Each
+      registry is attempted independently: a GitHub outage does not stop the
+      src.ci publish. Per-registry credentials arrive as scoped env from the
+      SimpiCI dispatcher (`OCP_GHCR_*` / `OCP_SRCCI_*`), never on the command
+      line, and a registry with no credentials is skipped. Maps onto SimpiCI's
+      exit contract (0 success, 78 nothing to publish, non-zero a real
+      failure) and supports `OCP_CICD_DRY_RUN=1` for credential-free local
+      verification. The GitHub-side workflow is deliberately out of scope here
+      (handled separately). Registry repo paths default to `ghcr.io/getty/ocp`
+      / `src.ci/getty/ocp` and are overridable -- to be confirmed once the
+      registries exist.
     - CRD provider registration survives IO::K8s / Kubernetes::REST 1.108
       (k132, closing k131). Since 1.108 the `resource_map` / `with`
       configuration lives on the Kubernetes::REST instance and the inner
