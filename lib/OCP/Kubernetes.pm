@@ -63,16 +63,18 @@ sub _build_api {
 }
 
 # The resource-map providers for the Kinds OCP addresses by name. All three
-# ship inside IO::K8s itself, which cpanfile pins to 1.107, and IO::K8s::add
-# loads each one for us.
+# ship inside IO::K8s itself (cpanfile requires 1.108), and Kubernetes::REST
+# loads each one when it merges the `with` list into its inner IO::K8s.
 #
-# Nothing here is probed or eval'd any more. The old body asked
-# $api->can('k8s'), skipped a provider whose require failed, and swallowed the
-# result of add(): three ways to end up with an api that answers every call
-# but has no idea what a CiliumNetworkPolicy is, and no way to hear about it
-# until an untyped lookup fails somewhere else entirely. The pin is the
-# promise that these classes are there; a second, quieter promise at runtime
-# only gives it somewhere to drift to.
+# Registered through the Kubernetes::REST `with` list, NOT a one-shot
+# $api->k8s->add(). Since 1.108 resource_map/with live on the Kubernetes::REST
+# instance and the inner IO::K8s is a lazy, rebuildable cache: any discovery- or
+# openapi-spec invalidation (ensure_crd calls invalidate_discovery) clears it,
+# and the next access rebuilds it from `with` via IO::K8s::BUILD -> add(). A
+# runtime add() on that inner instance is lost on the first rebuild, after which
+# CiliumNetworkPolicy and friends fall back to fabricated IO::K8s::<Kind> names
+# that die at load time. `with` survives every rebuild because the builder
+# re-applies it (design D12; k131/k132).
 my @RESOURCE_PROVIDERS = qw(
     IO::K8s::Cilium
     IO::K8s::CertManager
@@ -82,7 +84,16 @@ my @RESOURCE_PROVIDERS = qw(
 sub register_resource_providers {
     my ($self, $api) = @_;
 
-    $api->k8s->add(@RESOURCE_PROVIDERS);
+    # Mutate the arrayref the accessor returns -- the same durable-registration
+    # pattern OCP::K8s::register uses on $api->resource_map -- skipping any
+    # provider a caller already listed. In the common path (called straight from
+    # _build_api) the inner IO::K8s has not been built yet, so `with` is read for
+    # the first time only once these are in place; drop an already-built instance
+    # so a caller that hands over a used $api still gets the providers.
+    my %present = map { $_ => 1 } @{ $api->with };
+    push @{ $api->with }, grep { !$present{$_} } @RESOURCE_PROVIDERS;
+    $api->_clear_k8s if $api->can('_clear_k8s') && $api->can('_has_k8s')
+        && $api->_has_k8s;
 
     return $api;
 }
@@ -263,16 +274,24 @@ being run.
 
 =method register_resource_providers
 
-    $k8s->register_resource_providers($api);
+    OCP::Kubernetes->register_resource_providers($api);
 
-Adds the typed IO::K8s classes OCP relies on (C<IO::K8s::Cilium>,
-C<IO::K8s::CertManager>, C<IO::K8s::GatewayAPI>) to C<$api->k8s>.  Called
-automatically from the C<api> builder; exposed for callers that already
-hold an API object.
+Registers the typed IO::K8s classes OCP relies on (C<IO::K8s::Cilium>,
+C<IO::K8s::CertManager>, C<IO::K8s::GatewayAPI>) on C<$api>'s C<with> list, so
+they survive a rebuild of the inner L<IO::K8s> cache.  Called automatically from
+the C<api> builder; also usable as a class method by callers that already hold a
+L<Kubernetes::REST> — L<OCP::Cmd::Apply::K8s> registers the same providers this
+way.
 
-Requires a real L<Kubernetes::REST> — an C<$api> without C<k8s>, or an
-IO::K8s install missing one of the three providers, dies here rather than
-leaving the Kinds unregistered for a later lookup to trip over.
+Since L<Kubernetes::REST> 1.108 the C<resource_map>/C<with> configuration lives
+on the L<Kubernetes::REST> instance and its C<k8s> attribute is a lazy,
+rebuildable L<IO::K8s>.  A one-shot C<< $api->k8s->add(...) >> is discarded the
+first time the discovery or OpenAPI cache is invalidated (C<ensure_crd> does
+this), after which the provider Kinds fall back to fabricated
+C<< IO::K8s::<Kind> >> names.  Registering on C<with> is durable: the C<k8s>
+builder re-applies it on every rebuild (design D12).  Call this before the first
+use of C<< $api->k8s >>; an already-built inner instance is cleared so the next
+access picks the providers up.
 
 =method list_nodes
 

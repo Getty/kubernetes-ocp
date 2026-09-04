@@ -1,6 +1,22 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - CRD provider registration survives IO::K8s / Kubernetes::REST 1.108
+      (k132, closing k131). Since 1.108 the `resource_map` / `with`
+      configuration lives on the Kubernetes::REST instance and the inner
+      IO::K8s is a lazy, rebuildable cache that ensure_crd's discovery
+      invalidation clears; the old one-shot `$api->k8s->add(...)` was silently
+      lost on the first rebuild, after which CiliumNetworkPolicy and friends
+      fell back to fabricated `IO::K8s::<Kind>` names that died at load.
+      `OCP::Kubernetes->register_resource_providers` now registers the three
+      providers (Cilium, CertManager, GatewayAPI) durably on the `with` list
+      (design D12); `OCP::Cmd::Apply::K8s` shares the one registration path
+      instead of its own `->k8s->add`. New t/79-resource-providers.t asserts
+      the Kinds survive an `invalidate_discovery` rebuild. cpanfile already
+      requires 1.108; the binding `make test` (Docker, against
+      cpanfile.snapshot's 1.107 pin) stays green until 1.108 ships to CPAN and
+      the snapshot is bumped -- this was verified against host 1.108 via
+      `prove -l t/` (full suite green).
     - robocop's controller credentials reach the pod, configurably (k129,
       completing k33's second half). `ocp deploy-robocop` now writes a
       `robocop-credentials` Secret (ocp-system) that the Deployment mounts as

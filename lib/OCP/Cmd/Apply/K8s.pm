@@ -11,6 +11,7 @@ use Path::Tiny qw(path);
 use YAML::XS ();
 
 use OCP::K8s;
+use OCP::Kubernetes ();
 
 =head1 SYNOPSIS
 
@@ -46,12 +47,11 @@ sub api {
             kubeconfig_path => $kc_fh->filename,
         )->api;
 
-        # Register CRD providers for typed access
-        $self->{_k8s_api}->k8s->add(
-            'IO::K8s::Cilium',
-            'IO::K8s::CertManager',
-            'IO::K8s::GatewayAPI',
-        );
+        # Register CRD providers for typed access via the Kubernetes::REST
+        # `with` list (not a runtime $api->k8s->add), so they survive a rebuild
+        # of the inner IO::K8s cache — see
+        # OCP::Kubernetes::register_resource_providers (design D12, k131/k132).
+        OCP::Kubernetes->register_resource_providers($self->{_k8s_api});
 
         # Register OCP's own CRD classes (OCPNode, OCPNodeProvider).
         OCP::K8s->register($self->{_k8s_api});

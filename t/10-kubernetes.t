@@ -372,12 +372,15 @@ subtest 'the typed CRD providers are registered, or nothing is' => sub {
         'IO::K8s::GatewayAPI is registered';
 
     # The probe this replaced returned early here and left every Kind above
-    # unregistered, which only showed up at the first untyped lookup.
+    # unregistered, which only showed up at the first untyped lookup. Since the
+    # D12 migration the providers ride on the Kubernetes::REST `with` list, so a
+    # non-client dies naming `with` rather than `k8s` — still loud, still at
+    # registration time (k132).
     my $k = OCP::Kubernetes->new(kubeconfig_path => 'dummy');
     local $@;
     ok !eval { $k->register_resource_providers(bless {}, 'Local::NotAClient'); 1 },
-        'an api without k8s dies here';
-    like $@, qr/k8s/, '... naming the method it needed';
+        'an api without the with accessor dies here';
+    like $@, qr/with/, '... naming the method it needed';
 };
 
 done_testing;

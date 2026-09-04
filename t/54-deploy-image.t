@@ -37,6 +37,11 @@ package FakeOCP {
 
 # A Kubernetes::REST-compatible transport. Records every call, returns
 # whatever the `respond` callback says.
+#
+# A PATCH response must be a full Deployment (respond with deployment()), not an
+# empty {}: Kubernetes::REST::patch inflates the response body into a typed
+# object, and IO::K8s 1.108 makes Deployment.spec required, so {} dies on
+# inflation (k132). A real cluster returns the patched object anyway.
 package FakeTransport {
     sub new {
         my ($c, %a) = @_;
@@ -186,7 +191,7 @@ subtest 'happy path: --tag v1.2.3 patches image and triggers restart' => sub {
         respond => sub {
             my ($m, $p) = @_;
             return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -217,7 +222,7 @@ subtest '--no_restart skips the rollout restart' => sub {
         respond => sub {
             my ($m, $p) = @_;
             return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -250,7 +255,7 @@ subtest '--wait returns 0 once deployment reports Ready' => sub {
                 }
                 return (200, deployment());
             }
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -276,7 +281,7 @@ subtest '--wait --timeout 1 times out when pods never become Ready' => sub {
                     generation         => 2,
                 ));
             }
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -335,7 +340,7 @@ subtest '--repo overrides the default image repository' => sub {
         respond => sub {
             my ($m, $p) = @_;
             return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -356,7 +361,7 @@ subtest 'OCP_IMAGE_REPO env var overrides the default' => sub {
         respond => sub {
             my ($m, $p) = @_;
             return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -375,7 +380,7 @@ subtest '--namespace is respected for every request' => sub {
             my ($m, $p) = @_;
             return (200, deployment(namespace => 'custom-ns'))
                 if $m eq 'GET' && $p eq deployment_path('custom-ns');
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );
@@ -490,7 +495,7 @@ subtest '--image ghcr.io/foo/bar:v1.2.3 patches that exact string' => sub {
         respond => sub {
             my ($m, $p) = @_;
             return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
-            return (200, {}) if $m eq 'PATCH';
+            return (200, deployment()) if $m eq 'PATCH';
             return (404, { message => "unexpected $m $p" });
         },
     );

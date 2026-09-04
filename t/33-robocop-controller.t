@@ -79,6 +79,11 @@ package StrictK8s {
     use Moo;
     use OCP::K8s;
     extends 'Kubernetes::REST';
+    # Kubernetes::REST 1.108 grew a `with` attribute, and its k8s builder reads
+    # $self->with. `use Moo` installs Moo's own `with` keyword into this package,
+    # shadowing the inherited accessor, so without this clean $self->with tries
+    # to compose $self as a role and dies "is not a module name" (k132).
+    use namespace::clean;
 
     has requests    => (is => 'ro', default => sub { [] });
     has cr          => (is => 'rw');
