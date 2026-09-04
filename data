@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-09-04T04:06:26Z
+created: 2026-09-03T01:26:47Z
+id: 131
+priority: low
+started: 2026-09-04T04:06:26Z
+status: done
+tags:
+- k8s
+- crd
+title: Replace register_resource_providers with Kubernetes::REST with => [...] once
+  step 6 lands
+updated: 2026-09-04T04:06:26Z
+---
+
+Design: ~/dev/io-k8s-p5/docs/superpowers/specs/2026-09-03-crd-design.md (D12). Kubernetes::REST ticket 24 adds a with => [...] constructor argument that mirrors IO::K8s and passes the cluster OpenAPI spec through. OCP::Kubernetes::register_resource_providers ($api->k8s->add(@RESOURCE_PROVIDERS)) then becomes a with => [qw(IO::K8s::Cilium IO::K8s::CertManager IO::K8s::GatewayAPI)] at construction; the comment above @RESOURCE_PROVIDERS describes exactly the hole that closes. Bump the cpanfile pins to the releases that ship it. Depends on: kubernetes-rest 24.
+
+Erledigt im Zuge von k132 (Commit a080642): register_resource_providers stellt die drei Provider jetzt ueber die durable Kubernetes::REST with-Liste (1.108/D12-Modell) statt ueber das fluechtige $api->k8s->add() bereit; OCP::Cmd::Apply::K8s teilt denselben Pfad. Der externe Blocker (kubernetes-rest with-Konstruktor) war mit 1.108 bereits erfuellt.
