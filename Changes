@@ -1,22 +1,62 @@
 Revision history for OCP
 
 {{$NEXT}}
-    - SimpiCI build entry point: `.cicd/linux+container+cicd.sh` (k134). SimpiCI
-      checks out one exact revision and invokes one repository-owned script;
-      this is kubernetes-ocp's. It builds the OCP image via the existing
-      `share/bin/ocp-build-image` and publishes it to BOTH registries so the
-      artifact survives one being offline -- ghcr.io (the promoted source) and
-      the Forgejo registry on src.ci (the always-available fallback). Each
-      registry is attempted independently: a GitHub outage does not stop the
-      src.ci publish. Per-registry credentials arrive as scoped env from the
-      SimpiCI dispatcher (`OCP_GHCR_*` / `OCP_SRCCI_*`), never on the command
-      line, and a registry with no credentials is skipped. Maps onto SimpiCI's
-      exit contract (0 success, 78 nothing to publish, non-zero a real
-      failure) and supports `OCP_CICD_DRY_RUN=1` for credential-free local
-      verification. The GitHub-side workflow is deliberately out of scope here
-      (handled separately). Registry repo paths default to `ghcr.io/getty/ocp`
-      / `src.ci/getty/ocp` and are overridable -- to be confirmed once the
-      registries exist.
+    - CI publishes the image again, to Docker Hub and GHCR (k134). SimpiCI
+      checks out one exact revision and runs the repository's own `.cicd/`
+      jobs, and it reads the plan off their FILE NAMES: this repo now carries
+      `.cicd/docker+29+build.image.sh` and `.cicd/docker+29+publish.image.sh`,
+      both running in docker.io/library/docker:29, in the `build` and `publish`
+      phases. Phases are ordered (prepare build test package publish deploy)
+      and a phase starts only once the previous one passed, so nothing
+      publishes an image that failed to build. Neither script reimplements the
+      build: both delegate to `share/bin/ocp-build-image`, which keeps the
+      latest/version/git-sha tag triple in one place.
+      Publish policy lives in the scripts, not in workflow YAML: `main` and
+      tags publish, everything else builds and pushes nothing, reporting exit
+      78 (SimpiCI counts that as a skip, not a failure). Missing credentials on
+      a revision that would otherwise publish are a skip too, on stderr --
+      runner configuration must never turn a green build red. Credentials go to
+      `docker login` via --password-stdin, never on a command line and never
+      logged.
+      Two Alpine details the official docker image forces: it ships no bash and
+      `ocp-build-image` is a bash script, so each job installs bash first; and
+      the read-only bind-mounted workspace is owned by another uid, so git
+      needs an explicit `safe.directory` or the image is quietly tagged
+      develop/unknown.
+      This replaces `.cicd/linux+container+cicd.sh`, whose name the current
+      SimpiCI cannot parse -- it rejects the whole run with exit 64 before
+      anything executes.
+    - GitHub workflow: `.github/workflows/ci.yml` (k134), with ONE JOB PER
+      REGISTRY. SimpiCI hands each `.cicd` container exactly one
+      CICD_REGISTRY/_USER/_PASSWORD triple and only a fixed set of CICD_*
+      variables crosses into it, so a single run publishes to a single registry
+      and an arbitrary secret cannot be smuggled in beside it. The workflow
+      therefore defines two independent jobs: `dockerhub` pushes
+      `raudssus/ocp` -- the primary home, and the name the Makefile,
+      `OCP::Cmd::DeployImage`, the robocop manifests and xt/smoke.sh already
+      agree on under t/66's guard -- using the repository secrets
+      DOCKERHUB_USER / DOCKERHUB_TOKEN; `ghcr` pushes
+      `ghcr.io/getty/kubernetes-ocp` with the run's own GITHUB_TOKEN and needs
+      no secret at all. Either job failing or lacking secrets leaves the other
+      untouched; the cost is that the image is built once per runner. The GHCR
+      name follows the repository name because a package created by a
+      repository's own GITHUB_TOKEN is linked to that repository
+      automatically, while any other name must be granted access by hand first.
+    - README reworked into a step-by-step guide (k134). It now opens with what
+      an `ocp apply` actually puts on the cluster -- RKE2/K3s, the registry
+      cache and local registry, NFD, the GPU stack, cert-manager, Cilium, the
+      CRDs and robocop, in dependency order -- and what OCP takes care of on
+      your behalf (pinned versions, drift, spec-in-git, encrypted committable
+      secrets, idempotent apply, no kubectl). Then ten numbered steps from an
+      empty directory to a torn-down cluster: setting up the `docker run`
+      alias with every flag explained, `ocp init`, the spec, `ocp apply`,
+      `ocp status`, the kubeconfig, a first workload from `eg/`, and -- new in
+      the guide rather than buried in a task list -- `ocp node add` and
+      `ocp node rm`. Reference material moved out to docs/ and is linked, not
+      deleted: docs/configuration.md (the full `ocp.yaml` schema and provider
+      modes), docs/security.md (PIN1/PIN2, key layout, what belongs in git),
+      docs/robocop.md (the in-cluster controller) and docs/development.md
+      (Docker-first toolchain, output channels, CI, releasing).
     - CRD provider registration survives IO::K8s / Kubernetes::REST 1.108
       (k132, closing k131). Since 1.108 the `resource_map` / `with`
       configuration lives on the Kubernetes::REST instance and the inner

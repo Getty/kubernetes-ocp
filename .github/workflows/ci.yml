@@ -1,0 +1,66 @@
+# GitHub CI for kubernetes-ocp — runs this repository's own .cicd jobs through
+# SimpiCI's action.
+#
+# SimpiCI derives the plan from the .cicd file names: docker+29+build.image.sh
+# builds, docker+29+publish.image.sh publishes, both in docker.io/library/
+# docker:29, and the publish phase starts only after the build phase passed.
+# Which registries exist, and that only main and tags publish at all, is
+# decided in those scripts — in this repository, under review. Not here.
+#
+# ONE JOB PER REGISTRY, and that is not an accident. SimpiCI hands each .cicd
+# container exactly one CICD_REGISTRY / _USER / _PASSWORD triple, so a single
+# run publishes to a single registry. We want the image in two places, so there
+# are two jobs. They are independent: Docker Hub going down, or its secrets
+# being absent, does not stop the GHCR publish. The cost is that the image is
+# built twice, once per runner.
+#
+# Required repository secrets (Settings → Secrets and variables → Actions):
+#   DOCKERHUB_USER    Docker Hub account with push rights on raudssus/ocp
+#   DOCKERHUB_TOKEN   a Docker Hub access token, not the account password
+# Without them the dockerhub job still builds and simply skips its publish
+# (exit 78, which SimpiCI counts as a skip). GHCR needs no secret at all — the
+# run's own GITHUB_TOKEN is enough.
+#
+# The GHCR image name follows the repository name on purpose: a GHCR package
+# created by a repository's own GITHUB_TOKEN is linked to that repository
+# automatically, while any other name has to be granted access by hand in the
+# package settings ("Manage Actions access") before the token may push to it.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Primary home. raudssus/ocp is the name the Makefile, OCP::Cmd::DeployImage,
+  # the robocop manifests and xt/smoke.sh already agree on (t/66 guards it), so
+  # it is what the README tells people to pull.
+  dockerhub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Getty/simpici/action@main
+        env:
+          CICD_REGISTRY: docker.io
+          CICD_REGISTRY_USER: ${{ secrets.DOCKERHUB_USER }}
+          CICD_REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+          CICD_IMAGE_REPOSITORY: raudssus/ocp
+          CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
+
+  # Second location for the same image, so one registry being unreachable never
+  # costs us the artifact.
+  ghcr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: Getty/simpici/action@main
+        env:
+          CICD_REGISTRY: ghcr.io
+          CICD_REGISTRY_USER: ${{ github.actor }}
+          CICD_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          CICD_IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
+          CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}
