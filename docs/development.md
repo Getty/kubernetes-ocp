@@ -124,7 +124,7 @@ two independent jobs:
 
 | Job | Registry | Image | Credentials |
 |---|---|---|---|
-| `dockerhub` | `docker.io` | `raudssus/ocp` | repo secrets `DOCKERHUB_USER` / `DOCKERHUB_TOKEN` |
+| `dockerhub` | `docker.io` | `raudssus/ocp` | repo variable `DOCKERHUB_USER` + secret `DOCKERHUB_TOKEN` |
 | `ghcr` | `ghcr.io` | `ghcr.io/getty/kubernetes-ocp` | the run's own `GITHUB_TOKEN`, no secret needed |
 
 Docker Hub is primary because `raudssus/ocp` is the name the rest of the

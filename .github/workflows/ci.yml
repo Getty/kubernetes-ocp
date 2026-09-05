@@ -46,7 +46,7 @@ jobs:
       - uses: Getty/simpici/action@main
         env:
           CICD_REGISTRY: docker.io
-          CICD_REGISTRY_USER: ${{ secrets.DOCKERHUB_USER }}
+          CICD_REGISTRY_USER: ${{ vars.DOCKERHUB_USER }}
           CICD_REGISTRY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
           CICD_IMAGE_REPOSITORY: raudssus/ocp
           CICD_PUBLISH_IMAGE: ${{ github.event_name != 'pull_request' }}

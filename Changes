@@ -34,8 +34,10 @@ Revision history for OCP
       therefore defines two independent jobs: `dockerhub` pushes
       `raudssus/ocp` -- the primary home, and the name the Makefile,
       `OCP::Cmd::DeployImage`, the robocop manifests and xt/smoke.sh already
-      agree on under t/66's guard -- using the repository secrets
-      DOCKERHUB_USER / DOCKERHUB_TOKEN; `ghcr` pushes
+      agree on under t/66's guard -- using the repository variable
+      DOCKERHUB_USER and the secret DOCKERHUB_TOKEN (the account name is not
+      confidential and sits in plain sight beside the image repository, so
+      only the token is a secret); `ghcr` pushes
       `ghcr.io/getty/kubernetes-ocp` with the run's own GITHUB_TOKEN and needs
       no secret at all. Either job failing or lacking secrets leaves the other
       untouched; the cost is that the image is built once per runner. The GHCR
