@@ -20,7 +20,12 @@ requires 'MooX::Singleton';
 requires 'YAML::XS';
 requires 'Path::Tiny';
 requires 'namespace::clean';
-requires 'WWW::Hetzner', '0.101';
+# 0.100, not 0.101: 0.101 exists only in that distribution's working tree and
+# carries no code change -- its diff against 0.100 is $VERSION lines and
+# nothing else. A floor states what OCP needs, not what happens to be
+# installed on the machine that last touched this file; a host carrying 0.101
+# satisfies 0.100 anyway.
+requires 'WWW::Hetzner', '0.100';
 # WWW::Hetzner reaches api.hetzner.cloud through LWP::UserAgent, and LWP only
 # speaks https once this protocol handler is installed. It used to be cpanm'd
 # into the system perl by the Dockerfile, which made the one module standing
