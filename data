@@ -1,0 +1,126 @@
+---
+claimed_at: 2026-09-09T06:27:50Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-09T06:27:50Z
+created: 2026-09-06T01:21:01Z
+id: 136
+priority: high
+started: 2026-09-09T06:27:50Z
+status: done
+tags:
+- docs
+- release
+- changelog
+title: Changes ist als Fortschreibung geschrieben, nicht als Erst-Release -- und OCP
+  hatte nie ein Release
+updated: 2026-09-09T06:27:50Z
+---
+
+Der Skill getty-git-commit-style sagt es klar, und der Maintainer hat es
+bestaetigt: eine Board-Id gehoert NICHT in ein Changelog. Ein Changelog wird von
+Leuten gelesen, die den Workspace nie sehen -- fuer die ist "k134" kein Verweis,
+sondern Rauschen. In eine Commit-Message darf sie, in Changes nicht; dort nennt
+man die Aenderung statt der Nummer.
+
+Die k128-Migration von #NN nach kNN (commit 6363b11) hat den Fehler BESSER
+gemacht, aber nicht beseitigt: #134 war aktiv falsch, weil GitHub es gegen sein
+eigenes Issue 134 aufloest -- ein toter oder, schlimmer, fremder Link. kNN ist
+wenigstens ehrlich unaufloesbar. Es bleibt trotzdem eine Referenz, die der Leser
+nicht einloesen kann.
+
+AUSMASS, gemessen 2026-09-06
+  83 kNN-Vorkommen auf 77 Zeilen, bei 1367 Zeilen Changes gesamt.
+  ALLE 83 stehen im {{$NEXT}}-Block. In der veroeffentlichten Historie darunter
+  ist kein einziges.
+
+Das ist der Grund fuer prioritaet high trotz reiner Prosa: der unreleased-Block
+ist genau das, was beim naechsten Release nach CPAN geht. Solange nichts
+released ist, kostet die Korrektur nichts. Danach steht es unaenderbar im
+Tarball.
+
+ZU TUN
+Jede Referenz ersetzen durch das, was sie meint -- die Aenderung benennen statt
+sie zu nummerieren. Nicht stumpf loeschen: mehrere Bullets tragen die Nummer als
+einzige Angabe, worum es ging, da muss der Satz umgeschrieben werden.
+
+Dabei gleich mitpruefen, weil derselbe Skill es fordert und der Block es
+grossflaechig verletzt:
+- ZIEL STATT WEG. Kein "used to", kein "previously", keine Mechanik-Fuehrung.
+  Der Leser hat das alte Verhalten nie gesehen.
+- EIN THEMA, EIN EINTRAG. Der Block ist wochenlang offen gewesen und mehrfach
+  ueberschrieben worden -- da stehen mit hoher Wahrscheinlichkeit mehrere
+  Bullets zum selben Thema nebeneinander.
+- LAENGE. Der Skill nennt ein bis drei Zeilen pro Eintrag als Richtwert. Der
+  Block hat Eintraege von 25+ Zeilen (der k134-CI-Eintrag etwa). Zum Vergleich
+  aus dem Skill: eine reife Getty-Distribution traegt 320 Releases in 348
+  Zeilen Changes.
+
+NICHT IN DIESEM TICKET
+docs/adr/* referenzieren ebenfalls kNN. ADRs sind interne
+Entscheidungsdokumente, keine Changelogs -- die Skill-Regel zielt auf Changelog
+und Commit-Message. Falls das anders gesehen wird, eigenes Ticket.
+
+PRAEZEDENZ: der Eintrag zum WWW::Hetzner-Pin in diesem Block ist bereits nach
+der Regel geschrieben (drei Zeilen, keine Id, Ziel statt Weg) -- als Muster
+brauchbar.
+
+UMFORMULIERT 2026-09-06 nach einem Einwand des Maintainers, der den eigentlichen
+Befund freigelegt hat. Die karr-Ids waren das Symptom, nicht die Krankheit.
+
+DER BEFUND
+OCP ist NIE RELEASED WORDEN. In Changes existiert kein einziger
+veroeffentlichter Versionsblock -- die kompletten 1367 Zeilen sind ein einziger
+{{}}. dist.ini traegt no_cpan = 1.
+
+Ein Changelog beschreibt die Differenz zwischen dem letzten Release und dem
+naechsten. Es gibt kein letztes Release. Der Block IST das erste. Damit hat
+JEDER Eintrag, der eine Korrektur an frueherem Verhalten beschreibt, keinen
+Adressaten: der Leser hat das alte Verhalten nie gesehen, weil es nie
+ausgeliefert wurde. Er liest die Entwicklungsgeschichte eines Programms, das er
+zum ersten Mal in die Hand nimmt.
+
+AUSMASS, gemessen 2026-09-06
+  152 Bullets im Block, 1367 Zeilen.
+  94 Zeilen tragen eine rueckblickende Formulierung:
+    no longer 39, instead of 36, rather than 12, used to 8, is gone 6,
+    previously 5, stops 3.
+  83 karr-Ids auf 77 Zeilen -- alle im Block, keine in veroeffentlichter
+  Historie, weil es keine gibt.
+Nicht jede der 94 ist automatisch falsch (manche beschreiben Upstream-Verhalten
+oder einen echten Kontrast). Es ist die Kandidatenliste, nicht die Fehlerliste
+-- jede will einzeln angesehen werden.
+
+DER TEST, den jeder Eintrag bestehen muss
+Nicht "habe ich eine Datei geaendert?", sondern: "macht ein Nutzer, der OCP
+zum ersten Mal installiert, deswegen etwas anders?" Wo die Antwort nein ist,
+faellt der Eintrag ersatzlos weg -- er beschreibt eine Bewegung zwischen zwei
+unveroeffentlichten Commits.
+
+PRAEZEDENZFALL, an dem es aufgefallen ist
+Ich hatte fuer den WWW::Hetzner-Pin (0.101 -> 0.100) einen Eintrag geschrieben.
+Der Maintainer hat ihn zu Recht kassiert: der kaputte Pin wurde am 2026-09-01
+eingefuehrt und am 2026-09-05 entfernt, beides unveroeffentlicht. Kein Mensch
+konnte OCP je damit installieren. Der Eintrag haette einen Defekt dokumentiert,
+den es aus Nutzersicht nie gab. Der Eintrag ist geloescht; die cpanfile-Aenderung
+steht ohne Changes-Eintrag da, und das ist der richtige Zustand.
+
+Mein Fehler dabei war reflexhaft und lohnt das Festhalten: "Datei geaendert,
+also Changes-Eintrag". Das ist der falsche Ausloeser.
+
+ZU TUN, in dieser Reihenfolge
+1. Jeden der 152 Bullets gegen den Test oben pruefen. Erwartung: ein
+   erheblicher Teil faellt ersatzlos weg.
+2. Was bleibt, auf Ziel-statt-Weg umschreiben und auf ein bis drei Zeilen
+   bringen (Skill-Richtwert). Der Block hat Eintraege von 25+ Zeilen.
+3. Ein Thema, ein Eintrag -- der Block war wochenlang offen, Dubletten sind zu
+   erwarten.
+4. Die karr-Ids fallen dabei von selbst weg. Was uebrig bleibt, benennt die
+   Aenderung statt sie zu nummerieren.
+Zum Massstab, aus dem Skill: eine reife Getty-Distribution traegt 320 Releases
+in 348 Zeilen Changes. Hier stehen 1367 Zeilen fuer null Releases.
+
+DRINGLICHKEIT unveraendert hoch: solange nichts released ist, kostet das nichts.
+Mit dem ersten Release steht es unaenderbar im Tarball.
+
+2026-09-09 06:27 Rewrote Changes as a first-release changelog. OCP has never been released (dist.ini no_cpan, the whole block was one unreleased section), so every bullet describing a fix between two unreleased commits fails the first-time-installer test and was dropped, together with all karr-id references. What remains: 43 lines of goal-first capability entries (down from 1364), one topic per entry, no ids. make test-host green (Changes is not test-covered): 81 files, 1292 tests. Commit 3b6e9e3. The editorial curation is substantial and open to maintainer adjustment; ADR docs still carry kNN and are explicitly out of scope per this ticket.
