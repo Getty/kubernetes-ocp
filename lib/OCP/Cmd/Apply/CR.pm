@@ -241,6 +241,55 @@ sub ensure_cp_ocpnode {
     }
 }
 
+# Write one Pending OCPNode CR (role: control-plane) per ADDITIONAL control
+# plane -- police2, police3, ... (k8). police1 is bootstrapped imperatively
+# and gets its observational Ready CR from ensure_cp_ocpnode above; this covers
+# control_planes[1..], the entries OCP::Config already expands from `nodes: N`
+# or the array form. Each is then driven to Ready by the same OCP::Node state
+# machine that drives workers -- OCP::Node installs a control-plane role as an
+# RKE2 server that joins police1's embedded etcd, so the CR carries every
+# provider hint a worker CR does (serverType/location/image, or host for ssh).
+# The police{N} names extend the RoboCop naming cp_identity gives police1.
+#
+# RKE2-only by decision: k3s HA is out of scope, so a k3s cluster writes no
+# join CRs here and only police1 is built -- the honest guard in
+# OCP::Cmd::Apply::_announce_control_planes says so on STDERR.
+sub ensure_control_plane_ocpnodes {
+    my ($self, $api, $config) = @_;
+    return () unless ($config->distribution || 'rke2') eq 'rke2';
+
+    my $cps = $config->control_planes;
+    return () unless @$cps > 1;
+
+    my $ns = 'ocp-system';
+    my @crs;
+    for my $i (1 .. $#$cps) {
+        my $cp   = $cps->[$i];
+        my $name = 'police' . ($i + 1);
+        my $type = $cp->{provider} // 'hetzner';
+
+        my $spec = {
+            role        => 'control-plane',
+            providerRef => "$type-default",
+        };
+        $spec->{host}       = $cp->{host}        if $cp->{host};
+        $spec->{serverType} = $cp->{server_type} if $cp->{server_type};
+        $spec->{image}      = $cp->{image}       if $cp->{image};
+        $spec->{location}   = $cp->{location}    if $cp->{location};
+
+        my $cr = {
+            apiVersion => 'ocp.internal/v1',
+            kind       => 'OCPNode',
+            metadata   => { name => $name, namespace => $ns },
+            spec       => $spec,
+        };
+        $api->ensure($cr);
+        print "  [ok] ensured OCPNode/$name (control-plane, Pending)\n";
+        push @crs, $cr;
+    }
+    return @crs;
+}
+
 # For each k8s Node not yet tracked by an OCPNode CR, synthesize an
 # observational OCPNode CR with phase=Ready and providerRef=legacy.
 # Safe to run on every apply — already-synthesized CRs are no-ops via ensure.
@@ -643,10 +692,11 @@ sub cli_reconcile_workers {
 }
 
 sub print_worker_status {
-    my ($self, $results) = @_;
+    my ($self, $results, $label) = @_;
+    $label //= 'Worker';
     return unless $results && @$results;
     print "\n";
-    print "  Worker status:\n";
+    print "  $label status:\n";
     for my $r (@$results) {
         my $tag = $r->{phase} eq 'Ready'  ? '[ok]'
                 : $r->{phase} eq 'Failed' ? '[!!]'

@@ -564,6 +564,13 @@ task "install_rke2_server", sub {
     my $version = $params->{version} || '';
     my $tls_san = $params->{tls_san} || '';
     my $node_name = $params->{node_name} || '';
+    # Optional server-join mode (k8): when a supervisor URL is passed, this
+    # node joins the EXISTING embedded-etcd cluster as an additional
+    # control-plane server instead of initialising a new one. Absent (police1),
+    # the config carries no server: line and RKE2 does cluster-init exactly as
+    # before. Like the agent join, the URL and token arrive through
+    # REX_TASK_PARAMS, never on the command line where `ps` would leak them.
+    my $server = $params->{server} || '';
 
     do_task "prepare_node", {
         hostname => $params->{hostname} || '',
@@ -576,6 +583,7 @@ task "install_rke2_server", sub {
 
     # Create RKE2 config
     my $config = "cni: none\ndisable-kube-proxy: true\n";
+    $config .= "server: $server\n" if $server;
     $config .= "token: $token\n";
     $config .= "node-name: $node_name\n" if $node_name;
     $config .= "tls-san:\n  - $tls_san\n" if $tls_san;

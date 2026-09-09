@@ -381,9 +381,34 @@ sub _install_kubernetes {
 
     my $rke2_version = OCP::Versions->get_component_version('rke2');
 
-    my $task = $self->distribution eq 'k3s'
-        ? 'install_k3s_agent'
-        : 'install_rke2_agent';
+    # Which install this node gets is a function of its ROLE, not just the
+    # distribution. A worker joins as an AGENT; an additional control plane
+    # joins the existing embedded-etcd cluster as another SERVER (server: +
+    # token: in the RKE2 config, written by the install_rke2_server task). Both
+    # use the very same join machinery -- server_url is police1's supervisor
+    # URL, join_token its node-token -- so the only thing that changes is the
+    # Rex task name.
+    #
+    # This is also where a latent gap closes: spec.role has always accepted
+    # control-plane (OCP::Node->roles, the OCPNode CRD enum), and `ocp node add
+    # --role control-plane` writes exactly that, but this method installed every
+    # role as an agent. So a control-plane OCPNode was silently brought up as a
+    # worker.
+    #
+    # Multi-control-plane is RKE2-only by decision (k8): k3s HA is out of
+    # scope, there is no k3s server-join task, and a control-plane OCPNode on a
+    # k3s cluster is a configuration error rather than something to bring up as
+    # a worker behind the operator's back.
+    my $is_cp = $role eq 'control-plane';
+    if ($is_cp && $self->distribution eq 'k3s') {
+        $self->_patch_status(phase => 'Failed',
+            message => 'control-plane join is RKE2-only; k3s HA is not supported (k8)');
+        return;
+    }
+
+    my $task = $is_cp
+        ? 'install_rke2_server'
+        : ($self->distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent');
 
     my %params = (
         server    => $self->server_url,
@@ -433,7 +458,8 @@ sub _install_kubernetes {
     }
 
     $self->_patch_status(phase => 'Joining',
-        message => 'RKE2 agent installed, waiting for node registration');
+        message => ($is_cp ? 'RKE2 server' : 'RKE2 agent')
+            . ' installed, waiting for node registration');
 }
 
 sub _wait_ready {

@@ -254,30 +254,31 @@ sub execute {
 # Announce the control-plane deploy step, honestly.
 #
 # OCP::Config normalises `control_planes` (array form, or a single entry with
-# `nodes: N`) into an N-element arrayref, but `ocp apply` bootstraps only the
-# first entry — police1. Multi-CP deployment is not built yet (tracked as a
-# separate feature; when it lands it is RKE2-only with embedded etcd). Until
-# then a spec asking for more than one control plane would print "Count: N" and
-# quietly deploy one — the silent contradiction k8 is about.
-#
-# So warn loudly on STDERR when more than one is configured (diagnosis is a
-# STDERR concern, never the STDOUT progress channel), and keep the STDOUT
-# banner from implying that N are deployed. The single-CP path is unchanged.
+# `nodes: N`) into an N-element arrayref. For RKE2, `ocp apply` now bootstraps
+# police1 and joins police2+ to its embedded-etcd cluster (k8), so all N are
+# deployed and the banner says so. For k3s, multi-CP HA is out of scope by
+# decision: only police1 is built, and more than one configured control plane
+# is a loud STDERR warning (diagnosis is a STDERR concern, never the STDOUT
+# progress channel) rather than a silent "Count: N" that deploys one. The
+# single-CP path is unchanged for both.
 sub _announce_control_planes {
     my ($self, $config, $deploy_step) = @_;
 
     my $cps      = $config->control_planes;
     my $num      = scalar @$cps;
     my $provider = ($cps->[0] // {})->{provider} // 'hetzner';
+    my $dist     = $config->distribution || 'rke2';
+    my $ha_ok    = $dist eq 'rke2';
 
-    if ($num > 1) {
+    if ($num > 1 && !$ha_ok) {
         warn "WARNING: $num control planes configured, but only the first "
-           . "(police1) is deployed — multi-CP is not yet supported (k8).\n";
+           . "(police1) is deployed — multi-control-plane HA is RKE2-only, "
+           . "not supported for $dist (k8).\n";
     }
 
     print "Step $deploy_step: Deploy control plane(s)\n";
     print "        Provider: $provider\n";
-    print $num > 1
+    print $num > 1 && !$ha_ok
         ? "        Control planes: $num configured, deploying 1 (police1)\n\n"
         : "        Count: $num\n\n";
 
@@ -537,6 +538,11 @@ sub _ensure_cp_ocpnode {
     return OCP::Cmd::Apply::CR::ensure_cp_ocpnode($self, $api, $cp_info);
 }
 
+sub _ensure_control_plane_ocpnodes {
+    my ($self, $api, $config) = @_;
+    return OCP::Cmd::Apply::CR::ensure_control_plane_ocpnodes($self, $api, $config);
+}
+
 sub _migrate_legacy_nodes {
     my ($self, $api) = @_;
     return OCP::Cmd::Apply::CR::migrate_legacy_nodes($self, $api);
@@ -573,8 +579,8 @@ sub _cli_reconcile_workers {
 }
 
 sub _print_worker_status {
-    my ($self, $results) = @_;
-    return OCP::Cmd::Apply::CR::print_worker_status($self, $results);
+    my ($self, $results, $label) = @_;
+    return OCP::Cmd::Apply::CR::print_worker_status($self, $results, $label);
 }
 
 #

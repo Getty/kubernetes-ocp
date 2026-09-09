@@ -186,6 +186,30 @@ sub deploy {
         host     => $cp_ip,
     });
 
+    # Additional control planes (police2+) join police1's embedded-etcd cluster
+    # as RKE2 servers (k8). police1 was bootstrapped imperatively above and its
+    # bootstrap is deliberately unchanged; these are provisioned and installed
+    # through the same OCP::Node machinery workers use, which brings a
+    # control-plane role up as a server-join. RKE2-only: for k3s, or a lone
+    # control plane, ensure_control_plane_ocpnodes writes nothing and this is a
+    # no-op. Runs before the worker step so the HA control plane exists first.
+    # Gated by --only exactly like the worker step: `--only workers` neither
+    # writes nor drives the join CRs, so it cannot provision a control plane.
+    if (!$self->only || $self->only eq 'control-planes') {
+        my @cp_crs = $self->_ensure_control_plane_ocpnodes($api, $config);
+        if (@cp_crs) {
+            my @cp_names = map { $_->{metadata}{name} } @cp_crs;
+            print "  [..] Joining " . scalar(@cp_names)
+                . " additional control plane(s) to the cluster...\n";
+            my @cp_results = $self->_cli_reconcile_workers($api, $config, \@cp_names, {
+                ssh_key_path => $ssh_key_path,
+                cp_ip        => $cp_ip,
+                secrets      => $secrets,
+            });
+            $self->_print_worker_status(\@cp_results, 'Control plane');
+        }
+    }
+
     my $worker_step = @$workers && (!$self->only || $self->only eq 'workers');
     if ($worker_step) {
         print "\n";
