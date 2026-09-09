@@ -32,7 +32,16 @@ requires 'WWW::Hetzner', '0.100';
 # between OCP and every Hetzner API call the one module the snapshot did not
 # describe.
 requires 'LWP::Protocol::https';
-requires 'Crypt::Age', '0.003';
+# 0.004, not 0.003: 0.004 caps the recipient-stanza count in an age header
+# (CVE-2026-85783) -- every stanza costs an X25519 scalar multiplication before
+# the header authenticates, and 0.003 has no cap. Do not lower it to the
+# released 0.003 to make a build resolve; like the 1.108 siblings it is pinned
+# ahead of its CPAN release, so the binding make test waits on it. OCP's own
+# Crypt::Age->decrypt calls read single-recipient material it wrote itself, so
+# the 128-stanza default is never reached and no explicit max_stanzas is
+# needed; the third-party decrypt surface is inside File::SOPS, fixed on its
+# own board.
+requires 'Crypt::Age', '0.004';
 requires 'File::SOPS', '0.003';
 requires 'Rex';
 requires 'Rex::Interface::Connection::LibSSH', '0.002';
