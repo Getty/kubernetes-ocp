@@ -1,0 +1,46 @@
+---
+claimed_at: 2026-09-09T07:04:07Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-09T07:03:20Z
+created: 2026-08-12T04:27:20Z
+id: 8
+priority: medium
+started: 2026-09-01T05:05:06Z
+status: done
+tags:
+- apply
+- feature
+title: 'Multi-CP nicht implementiert: apply deployed nur control_planes[0]'
+updated: 2026-09-09T07:04:07Z
+---
+
+Apply.pm:182-198, kein CP-Loop — police2+ existiert nur im Naming-Schema. control_planes mit nodes>1 oder Array-Form suggeriert mehr, als apply liefert.
+## TODO for foundation (sofort machbar, kein Blocker)
+
+Body identifiziert die Stelle: Apply.pm:182-198, kein CP-Loop. control_planes mit nodes>1 oder Array-Form suggeriert mehr als apply liefert; police2+ existiert nur im Naming-Schema.
+
+Cross-Refs: keiner (eigenstaendiges Feature-Ticket, nicht blockiert).
+
+### Aufgaben
+
+- [ ] Lane: ocp-apply-worker. Apply.pm:182-198 patchen: Schleife ueber control_planes, nicht ueber control_planes[0]. Naming-Schema (police{N}) konsequent fuer jeden Eintrag anwenden
+- [ ] ocp.yaml-Schema klären: ist control_planes ein Array (mehrere Eintraege mit eigener Replica-Zahl) oder eine Liste mit replicas-Key (ein Eintrag, mehrfach hoch)? Heute ist es unklar - das Schema selbst ist das Problem
+- [ ] Reihenfolge mit #26 abgleichen: workers-Lookup repraesentiert eine parallele Schleife ueber Maschinen, die hier vorbereitet wird (gleiche Bewegung)
+- [ ] Test: t/08-multi-cp.t (an t/08-apply-bootstrap.t oder t/16-node.t) verifiziert, dass die Schleife ueber N>1 CP-Eintraege tatsaechlich N K8s-Knoten produziert. Mock-K8s, weil es um die Aufrufe geht, nicht um die echte Maschine
+- [ ] Doku: ocp.yaml-Schema-Beispiel mit zwei CP-Eintraegen, das heute fehlt
+
+Interim-Guard gelandet als Commit 1e8769a (main-agent, 2026-09-01): apply warnt jetzt laut auf STDERR bei >1 control_plane und deployt ehrlich nur police1, statt still Count:N zu behaupten. Der SILENT LIE ist weg; das FEATURE (echtes Multi-CP) bleibt offen -> dieses Ticket zurueck in den Backlog, neu gefasst als das volle Feature.
+
+BEFUND des Workers (verifiziert): Config-Seite ist fertig - OCP::Config::control_planes liefert ein Arrayref und expandiert nodes:N. Was FEHLT ist der Join-Pfad fuer einen 2. Control-Plane: install_rke2_server/install_k3s_server sind cluster-init-only (kein server:-/--server-/--cluster-init), OCP::Node::_install_kubernetes installiert immer als AGENT. Ein Loop wuerde N getrennte Cluster bauen.
+
+Maintainer-Entscheidung 2026-09-01: volles Multi-CP ist RKE2-only (embedded etcd Default, CP1-Bootstrap unveraendert); k3s-HA NICHT im Scope.
+
+KOORDINIERTER PLAN (3 Lanes) fuer das Feature:
+1. infra (share/Rexfile): optionales server:+Token in install_rke2_server, damit CP2+ dem bestehenden embedded-etcd-Cluster joinen; CP1 bleibt init.
+2. state (OCP::Node/OCP::Rex): ein Control-Plane-Join-Install (server-join, nicht agent).
+3. apply: Loop ueber control_planes, [0] als init bootstrappen, [1..] als police{N} joinen, Join-Token von police1 ziehen, per-CP role:control-plane OCPNode-CRs, t/08-multi-cp.t.
+
+2026-09-09 07:03 Volles Multi-Control-Plane fuer RKE2 gebaut (Commit ac40991, Branch finish-open-tickets), 3 Lanes wie im Plan: (1) share/Rexfile install_rke2_server bekommt optionalen server-join (server: nur wenn Param, police1 bleibt cluster-init byte-fuer-byte); (2) OCP::Node._install_kubernetes installiert eine control-plane-Rolle als RKE2-Server-Join statt als Agent und lehnt k3s-control-plane als Failed ab (schliesst nebenbei einen latenten Bug: control-plane-OCPNodes kamen still als Worker hoch); (3) OCP::Cmd::Apply loopt control_planes, police2+ werden ueber denselben cli_reconcile_workers-Pfad getrieben, ensure_control_plane_ocpnodes schreibt je additional CP eine Pending control-plane-OCPNode-CR, _announce_control_planes deployt fuer RKE2 alle N. Join-URL ist join_url(police1) auf Supervisor-Port 9345, Token aus RKE2_TOKEN_PATH. k3s-HA an drei Stellen abgelehnt (nicht im Scope). Der Interim-Guard-Test t/08-multi-cp-guard.t ist durch t/08-multi-cp.t ersetzt (13 Subtests). make test-host gruen: 81 Dateien, 1303 Tests, PASS (selbst nachverifiziert). GRENZE: das ist Mock-verifiziert (Call-Shapes), NICHT dass real ein zweiter etcd-Member gesund joint. Reale Verifikation ist smoke k29. Code-seitige HA-Vollstaendigkeit (tls-san, Client-HA-Endpoint) ist neues Ticket k137. Diff committet, aber nicht gepusht, fuer Maintainer-Review vor Merge.
+
+2026-09-09 07:04 Korrektur Commit-Hash: der k8-Commit ist 628efea (der zuvor genannte ac40991 wurde amendet, um alle geaenderten Dateien plus den neuen Test einzuschliessen). Inhalt unveraendert. Branch finish-open-tickets.
