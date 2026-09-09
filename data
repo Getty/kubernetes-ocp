@@ -1,0 +1,43 @@
+---
+claimed_at: 2026-09-09T06:27:25Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-09T06:27:25Z
+created: 2026-09-04T21:07:12Z
+id: 135
+priority: medium
+started: 2026-09-09T06:27:25Z
+status: done
+tags:
+- security
+- cve
+- upstream
+title: 'CVE-2026-85783 (Crypt::Age): pull the pin, check decrypt paths for third-party
+  input'
+updated: 2026-09-09T06:27:25Z
+---
+
+Upstream CVE in Crypt::Age (CPANSec, reported 2026-09-04, publication planned
+for 2026-09-18). The fix is tracked there as k45; File::SOPS has k192.
+
+PROBLEM
+Crypt::Age did not bound the stanza count in an age header. Every stanza costs
+an X25519 scalar multiplication before the header can be authenticated.
+Measured on 0.003: 4000 stanzas = 15.7 s of CPU, then rejection.
+
+RELEVANCE HERE -- not yet assessed, and that is the actual task
+OCP/Keys.pm and OCP/Secrets.pm call Crypt::Age->decrypt. The DoS only reaches
+paths that decrypt ciphertext somebody else wrote. For self-generated key
+layers the risk is small. To settle: whether any path decrypts third-party
+input (secrets from a cluster, from a repository, from an API response).
+
+TO DO
+1. Walk the decrypt calls and answer who writes the ciphertext in each case.
+2. Raise the cpanfile pin to Crypt::Age 0.004, which carries the cap.
+3. If any path takes third-party input: Crypt::Age gained max_stanzas
+   (default 128) -- set it deliberately there rather than inheriting the
+   default.
+
+No edits from p5-crypt-age; this ticket is the handover.
+
+2026-09-09 06:27 Audit done: OCP has exactly two Crypt::Age decrypt calls (OCP::Keys, self-generated single-recipient key material); neither takes third-party input. The real third-party decrypt surface is inside File::SOPS (its own board). cpanfile pin raised from 0.003 to Crypt::Age 0.004, which carries the CVE-2026-85783 recipient-stanza cap. Default cap 128 is safe for OCP so no explicit max_stanzas set (not speculative). No Changes entry (never-released dist). make test-host green: 81 files, 1292 tests. Commit 6cc4a79. Note: 0.004 is pinned ahead of its CPAN release, so the binding Docker make test waits on it, same class as the 1.108 siblings in k133.
