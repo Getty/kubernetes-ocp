@@ -31,6 +31,30 @@ DOCKER_PROVE = docker run --rm -v $(CURDIR):/src:ro -w /src \
 .PHONY: all build test test-v test-host clean docker-test docker-push docker-release \
         snapshot smoke build-image
 
+# ─── TEMP (k133): vendored sibling dists ─────────────────────────────────────
+# IO::K8s 1.108, Kubernetes::REST 1.108 and Net::Async::Kubernetes 0.008 are
+# required by cpanfile but are not on CPAN yet (only 1.107/0.007 are), so a
+# build from cpanfile.snapshot alone dies at "FAIL resolve" (k133). This builds
+# the three from their local checkouts (SIBLINGS_DIR, default ../) into vendor/
+# in dependency order; the Dockerfile installs them ahead of the snapshot pass.
+#
+# THROWAWAY. Remove this target, the vendor/ block in the Dockerfile and the
+# vendor/ exception in .dockerignore once the three are released and
+# cpanfile.snapshot is regenerated (`make snapshot`).
+SIBLINGS_DIR ?= ..
+.PHONY: vendor
+vendor:
+	@rm -rf $(CURDIR)/vendor && mkdir -p $(CURDIR)/vendor
+	@set -e; for s in io-k8s-p5 kubernetes-rest p5-net-async-kubernetes; do \
+	  d="$(SIBLINGS_DIR)/$$s"; \
+	  echo "[vendor] dzil build $$s"; \
+	  ( cd "$$d" && rm -f *.tar.gz && rm -rf .build && dzil build ); \
+	  tgz="$$(cd "$$d" && ls *.tar.gz)"; \
+	  mv "$$d/$$tgz" "$(CURDIR)/vendor/"; \
+	  rm -rf "$$d/$${tgz%.tar.gz}"; \
+	done
+	@echo "[vendor] built:"; ls -1 $(CURDIR)/vendor/
+
 all: build
 
 # Build Docker image for the architecture of this machine

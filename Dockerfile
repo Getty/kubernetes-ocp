@@ -93,6 +93,35 @@ ENV PERL_CARTON_PATH="$OCP_ROOT/install/perl5"
 COPY --chown=ocp:ocp ./cpanfile $OCP_ROOT/src
 COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 
+# ─── TEMP (k133): vendored sibling dists ─────────────────────────────────────
+# IO::K8s 1.108, Kubernetes::REST 1.108 and Net::Async::Kubernetes 0.008 are
+# required by cpanfile but not yet on CPAN (only 1.107/0.007 are), so the
+# snapshot install below cannot resolve them ("FAIL resolve", k133). `make
+# vendor` builds the three from their local checkouts into vendor/; we install
+# them into the same contained local-lib FIRST, in dependency order (each needs
+# its predecessor at 1.108), so the snapshot pass finds the requirement already
+# satisfied and skips it instead of resolving against the stale snapshot.
+#
+# Their own dependencies resolve from cpanfile.snapshot (--resolver snapshot),
+# with MetaDB only as a fallback, so the vendored dists pull the exact same,
+# known-good versions as the rest of the image rather than whatever MetaDB calls
+# latest. Without this a freshly released transitive dep that has not reached
+# the mirrors yet 404s the build (hit with Cpanel::JSON::XS 4.52; the snapshot
+# pins the fetchable 4.40).
+#
+# REMOVE this block once the three are released and cpanfile.snapshot is
+# regenerated — together with the vendor/ exception in .dockerignore and the
+# `vendor` target in the Makefile.
+COPY --chown=ocp:ocp ./vendor/ $OCP_ROOT/src/vendor/
+RUN cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/IO-K8s-*.tar.gz \
+ && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Kubernetes-REST-*.tar.gz \
+ && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Net-Async-Kubernetes-*.tar.gz \
+ && rm -rf ~/.perl-cpm/ /tmp/*
+# ─── end TEMP (k133) ─────────────────────────────────────────────────────────
+
 # Install all dependencies from CPAN
 RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \

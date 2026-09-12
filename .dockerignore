@@ -56,3 +56,10 @@ local/
 
 # Node modules (if any)
 node_modules/
+
+# ─── TEMP (k133): keep vendored sibling tarballs in the build context ────────
+# The *.tar.gz rule above excludes them everywhere; re-include the ones under
+# vendor/. Remove together with the vendoring (Dockerfile vendor/ block,
+# Makefile `vendor` target).
+!vendor/
+!vendor/*.tar.gz
