@@ -38,12 +38,18 @@ sub run_task {
     # A private, writable copy of the shipped Rexfile — see _runtime_rexfile.
     my $rexfile = $self->_runtime_rexfile;
 
+    # OCP_REX_DEBUG makes a long task observable: rex runs with its own -d
+    # debug output, and run() below streams that output live instead of
+    # buffering it until the task ends (see the run/tee block).
+    my $debug = $ENV{OCP_REX_DEBUG};
+
     my @cmd = (
         'rex',
         '-f', $rexfile,
         '-H', $self->host,
         '-u', $self->user,
     );
+    push @cmd, '-d' if $debug;
 
     # Pass SSH keys via environment variables (Rex way)
     # Must NOT use 'local' as it doesn't propagate to subprocesses!
@@ -71,19 +77,37 @@ sub run_task {
     print "Running Rex task: $task\n";
     print "Command: ", join(' ', @cmd), "\n" if $self->verbose;
 
-    my ($out, $err);
-    my $success = run \@cmd, \undef, \$out, \$err;
+    my ($out, $err) = ('', '');
+    my $success;
+    if ($debug) {
+        # Tee each chunk: print it to STDERR the moment it arrives, and keep
+        # collecting it for the return value. Buffering the whole task showed
+        # the operator nothing until it finished -- and when install_rke2_server
+        # brought up Cilium and the CNI cut the network mid-task, that meant a
+        # frozen terminal with no output at all, right when they most needed to
+        # see where it stopped. IPC::Run's coderef sinks give live + collected.
+        $success = run \@cmd, \undef,
+            '>',  sub { my $c = shift; print STDERR $c; $out .= $c },
+            '2>', sub { my $c = shift; print STDERR $c; $err .= $c };
+    } else {
+        $success = run \@cmd, \undef, \$out, \$err;
+    }
 
     # Restore ENV
     if (defined $old_private_key) { $ENV{REX_PRIVATE_KEY} = $old_private_key; } else { delete $ENV{REX_PRIVATE_KEY}; }
     if (defined $old_public_key) { $ENV{REX_PUBLIC_KEY} = $old_public_key; } else { delete $ENV{REX_PUBLIC_KEY}; }
     if (defined $old_params) { $ENV{REX_TASK_PARAMS} = $old_params; } else { delete $ENV{REX_TASK_PARAMS}; }
 
-    # Always show Rex output for debugging
-    print "--- Rex Output ---\n";
-    print $out if $out;
-    print $err if $err;
-    print "--- End Rex Output ---\n";
+    # Rex output is diagnosis, so it goes to STDERR -- STDOUT is reserved for the
+    # payload and the apply progress narrative a parser may read (house rule:
+    # output channels). In debug mode it already streamed live above; don't
+    # print it a second time.
+    print STDERR "--- Rex Output ---\n";
+    unless ($debug) {
+        print STDERR $out if length $out;
+        print STDERR $err if length $err;
+    }
+    print STDERR "--- End Rex Output ---\n";
 
     if (!$success) {
         croak "Rex task '$task' failed: $err";

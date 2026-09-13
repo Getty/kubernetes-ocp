@@ -8,6 +8,11 @@ use Path::Tiny qw(path);
 
 use OCP::Rex;
 
+# This file mocks OCP::Rex::run with a fixed 4-arg (\@cmd,\undef,\$out,\$err)
+# signature -- the non-debug call shape. OCP_REX_DEBUG switches run_task to a
+# coderef-tee shape, so keep it off here regardless of the ambient environment.
+delete local $ENV{OCP_REX_DEBUG};
+
 #
 # Task parameters reach the Rexfile through REX_TASK_PARAMS, never through
 # the command line. This went unnoticed for a long time: OCP::Rex encoded the
