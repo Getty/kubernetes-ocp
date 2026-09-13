@@ -576,6 +576,67 @@ sub execute {
         }
     }
 
+    # Local provider: OCP still installs the control plane over SSH, it just
+    # connects to 127.0.0.1 (self-ssh-local). So the SAME one key has to sit in
+    # THIS machine's own authorized_keys, or `ocp apply` cannot open the local
+    # connection and fails as "SSH not reachable" against localhost -- exactly
+    # the pikachu stumble. Which key follows the mode, like the ssh block above:
+    # secure distributes the admin key (`ocp keys show --purpose admin`), dev the
+    # bootstrap key that is the only credential a --nopassword project has.
+    if ($init_provider eq 'local') {
+        my ($pubkey, $label);
+        if ($self->nopassword) {
+            my $pubkey_path = path('.ocp/id_ed25519.pub');
+            if (-f $pubkey_path) {
+                $pubkey = $pubkey_path->slurp;
+                $label  = 'bootstrap';
+            }
+        }
+        else {
+            $pubkey = eval {
+                my ($admin) = grep { ($_->{purpose} // '') eq 'admin' && !$_->{deprecated} }
+                              @{ $keys_mgr->list_keys };
+                $admin && $admin->{public};
+            };
+            $label = 'admin';
+        }
+        chomp $pubkey if defined $pubkey;
+
+        print "\n";
+        print "!" x 50, "\n";
+        print "LOCAL PROVIDER - Self-SSH Setup Required\n";
+        print "!" x 50, "\n\n";
+
+        print "OCP installs the control plane over SSH to 127.0.0.1, so the\n";
+        print "$label public key must be in THIS machine's own authorized_keys\n";
+        print "(self-ssh-local) for `ocp apply` to reach localhost.\n\n";
+
+        print "Add the $label public key to root's authorized_keys:\n\n";
+        if (defined $pubkey && length $pubkey) {
+            print "  $pubkey\n\n";
+        }
+        else {
+            print "  ocp keys show --purpose admin\n\n";
+        }
+
+        print "Commands to run as root on this machine:\n";
+        print "  mkdir -p ~/.ssh\n";
+        print "  echo '"
+            . (defined $pubkey && length $pubkey ? $pubkey : '<the key above>')
+            . "' >> ~/.ssh/authorized_keys\n";
+        print "  chmod 700 ~/.ssh\n";
+        print "  chmod 600 ~/.ssh/authorized_keys\n";
+
+        unless ($self->nopassword) {
+            print "\n";
+            print "Print it again any time with:\n";
+            print "  ocp keys show --purpose admin\n";
+            print "\n";
+            print "Nothing checks this in advance. `ocp apply` is what finds out\n";
+            print "whether self-ssh to 127.0.0.1 works.\n";
+        }
+    }
+
     # Hetzner is the default provider, so a bare `ocp init` can land here
     # without the user ever having been asked for a token. Say so now rather
     # than letting `ocp apply` be the one to find out.
@@ -1107,8 +1168,11 @@ C<ocp destroy>, C<ocp ssh>). Print the admin public key with C<ocp keys show
 The admin key is what every machine of the cluster trusts, on every provider.
 On Hetzner OCP uploads it through the API before the server exists; with
 C<provider: ssh> the operator pastes it into F<authorized_keys>, and the
-report at the end of C<ocp init> prints it for exactly that. The provider
-decides who distributes the key, not which key gets distributed.
+report at the end of C<ocp init> prints it for exactly that. C<provider: local>
+is the same paste, into I<this> machine's own F<authorized_keys>: OCP installs
+the control plane over SSH to C<127.0.0.1> (self-ssh-local), so the report
+prints the key for the local box too. The provider decides who distributes the
+key, not which key gets distributed.
 
 The B<bootstrap key> F<.ocp/id_ed25519> therefore exists only under
 C<--nopassword>, where there is no F<keys.yaml> and it is the single piece of

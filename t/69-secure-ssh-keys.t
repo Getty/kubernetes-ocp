@@ -130,6 +130,44 @@ subtest 'secure + ssh writes no bootstrap key and hands out the admin key' => su
         'the bootstrap key is not mentioned at all — it does not exist here';
 };
 
+subtest 'secure + local tells the operator to self-authorize the admin key' => sub {
+    # The pikachu stumble (k138): `ocp init --provider local` said nothing about
+    # authorized_keys, so `ocp apply` could not self-ssh to 127.0.0.1 and failed
+    # as "SSH not reachable" against localhost. The report must now name the
+    # admin key, the address, and where the key goes -- the same admin key the
+    # ssh branch hands out, because self-ssh-local reaches the machine the very
+    # same way.
+    my $r = run_init(provider => 'local');
+    is $r->{err}, '', 'secure init with provider local completed' or diag $r->{out};
+
+    my $keys = OCP::Keys->new(project_dir => $r->{dir});
+    my ($admin) = grep { ($_->{purpose} // '') eq 'admin' } @{ $keys->list_keys };
+    ok $admin, 'there is an admin key';
+
+    like $r->{out}, qr/authorized_keys/, 'names authorized_keys';
+    like $r->{out}, qr/self-ssh/i, 'frames it as self-ssh to localhost';
+    like $r->{out}, qr/127\.0\.0\.1/, 'names the address apply connects to';
+    like $r->{out}, qr/ocp keys show --purpose admin/,
+        'points at the command that prints the admin key';
+    like $r->{out}, qr/\Q$admin->{public}\E/,
+        'and prints the admin key itself, ready to paste';
+};
+
+subtest 'dev + local names the bootstrap key for self-ssh' => sub {
+    # Dev mode has no admin key; the credential is the bootstrap key, and it is
+    # what has to be self-authorized. Same hint, the other tier.
+    my $r = run_init(provider => 'local', nopassword => 1);
+    is $r->{err}, '', 'dev init with provider local completed' or diag $r->{out};
+
+    my $pub = $r->{dir}->child('.ocp', 'id_ed25519.pub')->slurp;
+    chomp $pub;
+
+    like $r->{out}, qr/authorized_keys/, 'still names authorized_keys';
+    like $r->{out}, qr/self-ssh/i, 'still frames it as self-ssh';
+    like $r->{out}, qr/\Q$pub\E/,
+        'and prints the bootstrap public key dev mode actually uses';
+};
+
 subtest 'the bootstrap key is created only under --nopassword' => sub {
     # The gate is now the mode alone, matching OCP::ClusterKey: dev mode
     # reaches for this file on every provider, secure mode never does.
