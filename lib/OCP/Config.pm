@@ -689,9 +689,6 @@ sub write_spec {
             if ($opts{service} && $opts{service} ne 'none') {
                 $cp->{service} = $opts{service};
             }
-            if ($opts{network_interface}) {
-                $cp->{network_interface} = $opts{network_interface};
-            }
             $spec->{control_planes} = $cp;
         }
     }
