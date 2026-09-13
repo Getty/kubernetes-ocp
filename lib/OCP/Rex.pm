@@ -17,6 +17,17 @@ has host => (
     required => 1,
 );
 
+# Where the API server tells the world it lives -- the tls-san and the kubeconfig
+# `server` endpoint -- as opposed to `host`, which is only where Rex/SSH connect.
+# Defaults to `host`, so every caller that does not distinguish the two (Hetzner,
+# SSH: reached at the same address they advertise) is unchanged. The local
+# provider is the one that sets it apart: transport 127.0.0.1, advertised the
+# machine's routable IP (k138). See OCP::Cmd::Apply::Bootstrap.
+has advertised_host => (
+    is      => 'lazy',
+    builder => sub { $_[0]->host },
+);
+
 has user => (
     is      => 'ro',
     default => 'root',
@@ -159,7 +170,7 @@ sub install_server {
     my $distribution = $opts{distribution} || 'rke2';
     my $version = $opts{version} || '';
     my $token = $opts{token} || $self->_generate_token();
-    my $tls_san = $opts{tls_san} || $self->host;
+    my $tls_san = $opts{tls_san} || $self->advertised_host;
     my $node_name = $opts{node_name} || '';
 
     my $registry_cache    = $opts{registry_cache}    || '';
@@ -242,10 +253,14 @@ sub fetch_kubeconfig_ssh {
 
     my $kubeconfig = $result->{stdout};
 
-    # Replace localhost/127.0.0.1 with actual host
-    my $host = $self->host;
-    $kubeconfig =~ s/127\.0\.0\.1/$host/g;
-    $kubeconfig =~ s/localhost/$host/g;
+    # Point the kubeconfig `server` at the advertised address, not the transport.
+    # The file is fetched over SSH to $self->host (127.0.0.1 for the local
+    # provider), but a kubeconfig pinned to 127.0.0.1 only works from the machine
+    # itself. advertised_host defaults to host, so this is a no-op everywhere
+    # except the local provider, where it is the routable IP (k138).
+    my $advertised = $self->advertised_host;
+    $kubeconfig =~ s/127\.0\.0\.1/$advertised/g;
+    $kubeconfig =~ s/localhost/$advertised/g;
 
     # Remove certificate-authority-data and add insecure-skip-tls-verify
     # (TLS cert only valid for short hostname, not FQDN)
@@ -309,10 +324,12 @@ sub get_kubeconfig {
 
     my $kubeconfig = $result->{stdout};
 
-    # Replace localhost/127.0.0.1 with actual host
-    my $host = $self->host;
-    $kubeconfig =~ s/127\.0\.0\.1/$host/g;
-    $kubeconfig =~ s/localhost/$host/g;
+    # Point the kubeconfig `server` at the advertised address, not the transport
+    # (see fetch_kubeconfig_ssh). advertised_host defaults to host, so this is a
+    # no-op except on the local provider (k138).
+    my $advertised = $self->advertised_host;
+    $kubeconfig =~ s/127\.0\.0\.1/$advertised/g;
+    $kubeconfig =~ s/localhost/$advertised/g;
 
     # Remove certificate-authority-data and add insecure-skip-tls-verify
     # (TLS cert only valid for short hostname, not FQDN)

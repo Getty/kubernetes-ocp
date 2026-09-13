@@ -302,6 +302,19 @@ sub bootstrap_control_plane {
     $cp_ip = $server_info->{ip};
     $cp_host = $cp_ip;
 
+    # Two addresses, kept apart from here on. $cp_host is the TRANSPORT: where
+    # Rex and OCP::SSH connect. $advertised is what the cluster tells the world
+    # -- the tls-san, the kubeconfig server endpoint, and the cp_ip every
+    # downstream deploy step (registry DNS, LB-IPAM, join_url) addresses the CP
+    # by. For every provider but one they are the same value; the local provider
+    # reaches localhost over 127.0.0.1 but must advertise a routable IP, or the
+    # saved kubeconfig is useless from anywhere but the machine (k138, pikachu).
+    # Providers that do not model the distinction (Hetzner) advertise the very
+    # IP they just handed back.
+    my $advertised = $prov->can('advertised_host')
+        ? $prov->advertised_host(host => $cp_ip)
+        : $cp_ip;
+
     # Wait for SSH
     print "  [..] Waiting for SSH to be ready...\n";
 
@@ -342,10 +355,11 @@ sub bootstrap_control_plane {
     print "  [..] Installing $dist_label server...\n";
 
     my $rex = OCP::Rex->new(
-        host     => $cp_host,
-        key_file => $ssh_key_path,
-        user     => 'root',
-        verbose  => $verbose,
+        host            => $cp_host,      # transport: where Rex connects
+        advertised_host => $advertised,   # tls-san + kubeconfig server endpoint
+        key_file        => $ssh_key_path,
+        user            => 'root',
+        verbose         => $verbose,
     );
 
     # Fall back to the version manifest, not to '' — an empty version makes the
@@ -459,7 +473,11 @@ sub bootstrap_control_plane {
         cp_name   => $cp_name,
         cp_hostname => $cp_hostname,
         cp_domain => $cp_domain,
-        cp_ip     => $cp_ip,
+        # The ADVERTISED address, not the transport. Downstream (registry DNS,
+        # LB-IPAM, the worker join_url, the CP OCPNode host field) needs the
+        # address other machines and the operator's kubeconfig reach the cluster
+        # at. Same as $cp_host for every provider but local (k138).
+        cp_ip     => $advertised,
         provider  => $provider,
         ssh_key_path => $ssh_key_path,
     };

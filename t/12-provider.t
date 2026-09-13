@@ -827,4 +827,65 @@ package FakeExistingHost {
     ok($ok, 'delete_server without id is a no-op (no API call)');
 }
 
+#
+# Test: advertised_host -- the address the cluster is reached at, kept apart
+# from the transport target. k138 (pikachu self-ssh-local).
+#
+# For a host OCP does not create, the two are the same: advertise exactly what
+# we reach it at. The local provider is the exception -- transport 127.0.0.1,
+# advertised the routable IP -- because a kubeconfig pinned to 127.0.0.1 is
+# useless from anywhere but the machine itself.
+#
+
+# The role default, proven through the same stand-in the lifecycle tests use.
+{
+    my $p = FakeExistingHost->new;
+    is($p->advertised_host(host => '10.0.0.9'), '10.0.0.9',
+        'ExistingHost advertises the resolved host by default');
+}
+
+# A valid autodetected IPv4 becomes the advertised address, and it is NOT the
+# transport. Detection is isolated in _default_route_source_ip so this runs
+# without depending on a routing table.
+{
+    no warnings 'redefine';
+    local *OCP::Provider::Local::_default_route_source_ip = sub { '10.5.10.5' };
+
+    my $local = OCP::Provider::Local->new;
+    is($local->advertised_host, '10.5.10.5',
+        'local advertises the default-route source IP when it is a valid IPv4');
+    is($local->resolve_host, '127.0.0.1',
+        'while the transport target stays 127.0.0.1');
+    isnt($local->advertised_host, $local->resolve_host,
+        'advertised and transport are different addresses');
+    is($local->create_server->{ip}, '127.0.0.1',
+        'create_server still reports the transport IP (127.0.0.1)');
+}
+
+# Invalid autodetect (no route, a non-address, no `ip` binary) falls back to
+# resolve_host -- never worse than the 127.0.0.1 status quo.
+{
+    no warnings 'redefine';
+    for my $bad (undef, '', 'not-an-ip', '999.1.1.1', '10.5.10') {
+        local *OCP::Provider::Local::_default_route_source_ip = sub { $bad };
+        my $local = OCP::Provider::Local->new;
+        is($local->advertised_host, '127.0.0.1',
+            'invalid autodetect (' . (defined $bad ? "'$bad'" : 'undef')
+            . ') falls back to 127.0.0.1');
+    }
+}
+
+# _is_ipv4 is the gate the fallback hinges on: a non-address parsed out of
+# unexpected `ip` output must not become the endpoint the cluster is addressed by.
+{
+    my $local = OCP::Provider::Local->new;
+    ok( $local->_is_ipv4('10.5.10.5'), 'a normal private IPv4 is valid');
+    ok( $local->_is_ipv4('1.2.3.4'),   'so is a routable one');
+    ok(!$local->_is_ipv4('999.1.1.1'), 'an octet over 255 is not');
+    ok(!$local->_is_ipv4('10.5.10'),   'three octets is not an IPv4');
+    ok(!$local->_is_ipv4('1.2.3.4.5'), 'five is not either');
+    ok(!$local->_is_ipv4('nope'),      'and neither is a word');
+    ok(!$local->_is_ipv4(undef),       'undef is not an IPv4');
+}
+
 done_testing;

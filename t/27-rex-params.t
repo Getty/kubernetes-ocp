@@ -159,4 +159,75 @@ subtest 'the Rexfile picks the parameters back up' => sub {
     ok $helpers > 0, "$helpers task(s) go through task_params()";
 };
 
+#
+# advertised_host vs the transport host. The tls-san the install task receives
+# and the kubeconfig `server` endpoint both take the ADVERTISED address, while
+# rex/ssh still connect to `host`. advertised_host defaults to host, so only the
+# local provider (127.0.0.1 transport, routable advertised) sees them diverge.
+# k138 (pikachu self-ssh-local).
+#
+
+subtest 'advertised_host defaults to the transport host' => sub {
+    my $rex = OCP::Rex->new(host => '1.2.3.4', key_file => $key->stringify);
+    is $rex->advertised_host, '1.2.3.4',
+        'a caller that names only host advertises that same host';
+};
+
+subtest 'the install task tls-san is the advertised address, not the transport' => sub {
+    my @tasks;
+    no warnings 'redefine';
+    # install_server also fetches the kubeconfig over SSH; stub that out so the
+    # test never opens a connection.
+    local *OCP::Rex::fetch_kubeconfig_ssh = sub { "stub-kubeconfig\n" };
+    local *OCP::Rex::run_task = sub {
+        my ($self, $task, %params) = @_;
+        push @tasks, { task => $task, %params };
+        return { stdout => '', stderr => '', exit => 0 };
+    };
+
+    OCP::Rex->new(
+        host            => '127.0.0.1',
+        advertised_host => '10.5.10.5',
+        key_file        => $key->stringify,
+    )->install_server(distribution => 'rke2', node_name => 'police1');
+
+    my ($install) = grep { $_->{task} eq 'install_rke2_server' } @tasks;
+    ok $install, 'the install task ran';
+    is $install->{tls_san}, '10.5.10.5',
+        'tls-san is the advertised address, not the 127.0.0.1 transport';
+};
+
+subtest 'the kubeconfig server endpoint takes the advertised address' => sub {
+    my @ssh_hosts;
+    no warnings 'redefine';
+    # Fake OCP::SSH: capture which host it was told to connect to, and hand back
+    # an rke2.yaml pinned to 127.0.0.1, as the real one ships.
+    local *OCP::SSH::new = sub {
+        my ($class, %args) = @_;
+        push @ssh_hosts, $args{host};
+        return bless { %args }, $class;
+    };
+    local *OCP::SSH::run = sub {
+        return {
+            stdout => "apiVersion: v1\nclusters:\n- cluster:\n"
+                    . "    server: https://127.0.0.1:6443\n",
+            stderr => '',
+            exit   => 0,
+        };
+    };
+
+    my $kubeconfig = OCP::Rex->new(
+        host            => '127.0.0.1',
+        advertised_host => '10.5.10.5',
+        key_file        => $key->stringify,
+    )->fetch_kubeconfig_ssh('rke2');
+
+    like $kubeconfig, qr{server: https://10\.5\.10\.5:6443},
+        'the kubeconfig server points at the advertised address';
+    unlike $kubeconfig, qr{https://127\.0\.0\.1:6443},
+        'and no longer at the 127.0.0.1 transport';
+    is $ssh_hosts[0], '127.0.0.1',
+        'yet the kubeconfig was fetched over SSH to the transport host';
+};
+
 done_testing;

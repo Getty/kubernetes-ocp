@@ -46,6 +46,31 @@ sub upload_ssh_key          { return }
 sub cleanup_on_failure      { return }
 sub list_servers_by_cluster { return [] }
 
+=method advertised_host
+
+    my $host = $p->advertised_host(host => '10.0.0.5');
+
+The address other machines and the operator's kubeconfig should use to reach
+this host: the kube-apiserver's C<tls-san>, the kubeconfig C<server> endpoint,
+and the C<cp_ip> every downstream deploy step addresses the control plane by.
+
+Defaults to C<resolve_host> -- for a host OCP does not create, the address we
+advertise IS the address we reach it at. It is a method rather than a plain
+attribute for the same reason C<resolve_host> is: SSH reads the host out of the
+options at call time, so there is nothing to build eagerly.
+
+L<OCP::Provider::Local> is the one consumer that overrides it. It reaches
+localhost over C<127.0.0.1> (self-ssh-local), which is useless as a kubeconfig
+endpoint from anywhere but the machine itself, so it advertises the machine's
+routable IP instead while the transport target stays C<127.0.0.1>.
+
+=cut
+
+sub advertised_host {
+    my ($self, %opts) = @_;
+    return $self->resolve_host(%opts);
+}
+
 =method server_exists
 
     my $info = $p->server_exists($node_name, host => '10.0.0.5');
