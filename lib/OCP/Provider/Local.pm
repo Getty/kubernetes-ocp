@@ -2,10 +2,17 @@ package OCP::Provider::Local;
 # ABSTRACT: Local infrastructure provider (localhost)
 
 use Moo;
-use IPC::Open3 qw(open3);
-use Symbol qw(gensym);
+use OCP::Exec qw(capture_command);
 
 with 'OCP::Role::Provider::ExistingHost';
+
+# How long a local command may run before it is killed -- see the same
+# attribute on OCP::SSH. The uninstall this provider runs is short; the bound
+# just stops a wedged child from hanging the caller forever.
+has command_timeout => (
+    is      => 'ro',
+    default => 600,
+);
 
 # The machine OCP itself runs on. Kept as an IP rather than 'localhost' so
 # the value can be handed to SSH-based code paths unchanged.
@@ -42,24 +49,8 @@ hashref shape as L<OCP::SSH/run>: C<< { stdout, stderr, exit } >>.
 
 sub run_command {
     my ($self, $host, $command) = @_;
-
-    my $err = gensym;
-    my $pid = open3(my $in, my $out, $err, 'sh', '-c', $command);
-    close $in;
-
-    my $stdout = do { local $/; <$out> };
-    my $stderr = do { local $/; <$err> };
-
-    close $out;
-    close $err;
-
-    waitpid($pid, 0);
-
-    return {
-        stdout => $stdout // '',
-        stderr => $stderr // '',
-        exit   => $? >> 8,
-    };
+    return capture_command(['sh', '-c', $command],
+        timeout => $self->command_timeout);
 }
 
 1;

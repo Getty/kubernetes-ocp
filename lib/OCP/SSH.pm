@@ -3,8 +3,7 @@ package OCP::SSH;
 
 use Moo;
 use Carp qw(croak);
-use IPC::Open3 qw(open3);
-use Symbol qw(gensym);
+use OCP::Exec qw(capture_command);
 
 has host => (
     is       => 'ro',
@@ -29,6 +28,16 @@ has key_file => (
 has connect_timeout => (
     is      => 'ro',
     default => 10,
+);
+
+# How long a single remote command may run before it is killed. Bounds a
+# wedged child so it can't hang `ocp apply` forever; generous because the
+# commands that go through here are short (a probe, a `cat`, the uninstall
+# script) -- the minutes-long installs run through OCP::Rex, not this path.
+# `our`-backed default so a test can shorten it without waiting the real thing.
+has command_timeout => (
+    is      => 'ro',
+    default => 600,
 );
 
 # Central SSH options - ignore user config, use only our key
@@ -74,55 +83,18 @@ sub run {
     my ($self, $command) = @_;
 
     my @ssh_cmd = $self->_build_ssh_cmd($command);
-
-    my $err = gensym;
-    my $pid = open3(my $in, my $out, $err, @ssh_cmd);
-
-    close $in;
-
-    my $stdout = do { local $/; <$out> };
-    my $stderr = do { local $/; <$err> };
-
-    close $out;
-    close $err;
-
-    waitpid($pid, 0);
-    my $exit = $? >> 8;
-
-    return {
-        stdout => $stdout // '',
-        stderr => $stderr // '',
-        exit   => $exit,
-    };
+    return capture_command(\@ssh_cmd, timeout => $self->command_timeout);
 }
 
 sub run_script {
     my ($self, $script) = @_;
 
-    # Use bash -s to read script from stdin
+    # bash -s reads the script from stdin.
     my @ssh_cmd = $self->_build_ssh_cmd('bash', '-s');
-
-    my $err = gensym;
-    my $pid = open3(my $in, my $out, $err, @ssh_cmd);
-
-    # Send script to stdin
-    print $in $script;
-    close $in;
-
-    my $stdout = do { local $/; <$out> };
-    my $stderr = do { local $/; <$err> };
-
-    close $out;
-    close $err;
-
-    waitpid($pid, 0);
-    my $exit = $? >> 8;
-
-    return {
-        stdout => $stdout // '',
-        stderr => $stderr // '',
-        exit   => $exit,
-    };
+    return capture_command(\@ssh_cmd,
+        stdin   => $script,
+        timeout => $self->command_timeout,
+    );
 }
 
 # Interactive SSH session (replaces current process via exec)

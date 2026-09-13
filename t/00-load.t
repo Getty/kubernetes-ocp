@@ -11,6 +11,7 @@ use_ok('OCP::Keys');
 use_ok('OCP::Share');
 use_ok('OCP::Choices');
 use_ok('OCP::SSH');
+use_ok('OCP::Exec');
 use_ok('OCP::Versions');
 use_ok('OCP::Password');
 use_ok('OCP::Kubeconfig');
