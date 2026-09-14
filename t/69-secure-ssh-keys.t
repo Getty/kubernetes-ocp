@@ -168,6 +168,39 @@ subtest 'dev + local names the bootstrap key for self-ssh' => sub {
         'and prints the bootstrap public key dev mode actually uses';
 };
 
+subtest 'dev + local with no bootstrap pubkey stays silent, not misleading' => sub {
+    # The dev-mode edge Fix 2 (k141) closes. --ssh-key names a PRIVATE key with
+    # no .pub beside it, so _ensure_bootstrap_key copies the private half and
+    # finds no public half to copy — .ocp/id_ed25519.pub never exists. The
+    # local block then had $label/$pubkey undef and printed "Add the  public
+    # key" (empty label) plus an `ocp keys show --purpose admin` fallback a
+    # --nopassword project has no keys.yaml to answer. The ssh sibling already
+    # guards exactly this with `!nopassword || defined $pubkey`; the local block
+    # now does too, so it says nothing rather than nonsense.
+    my $ext = path(tempdir(CLEANUP => 1));
+    $ext->child('privonly')->spew("PRIVATE KEY, NO PUBLIC HALF\n");
+    ok !-f $ext->child('privonly.pub'), 'the supplied key has no .pub — the premise';
+
+    my $r = run_init(
+        provider   => 'local',
+        nopassword => 1,
+        ssh_key    => $ext->child('privonly')->stringify,
+    );
+    is $r->{err}, '', 'init completed' or diag $r->{out};
+
+    ok  -f $r->{dir}->child('.ocp', 'id_ed25519'),
+        'the private half became the bootstrap key';
+    ok !-f $r->{dir}->child('.ocp', 'id_ed25519.pub'),
+        'but there is no public half — this is the edge the guard is for';
+
+    unlike $r->{out}, qr/LOCAL PROVIDER - Self-SSH Setup Required/,
+        'the local instructions block is suppressed, not printed with an empty label';
+    unlike $r->{out}, qr/Add the\s+public key/,
+        'no "Add the  public key" line with the label missing';
+    unlike $r->{out}, qr/ocp keys show --purpose admin/,
+        'and no admin-key fallback a --nopassword project cannot honour';
+};
+
 subtest 'the bootstrap key is created only under --nopassword' => sub {
     # The gate is now the mode alone, matching OCP::ClusterKey: dev mode
     # reaches for this file on every provider, secure mode never does.

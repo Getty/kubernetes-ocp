@@ -338,9 +338,13 @@ sub execute {
             print "\n";
             print "Hetzner Cloud API Token required.\n";
             print "Get one at: https://console.hetzner.cloud/ -> Project -> Security -> API tokens\n\n";
-            print "Enter Hetzner API token: ";
-            my $input = <STDIN>;
-            chomp $input;
+            # A credential — read it the way every PIN is read
+            # (OCP::Password::prompt_password): echo OFF, prompt on STDERR.
+            # A bare <STDIN> echoed the token into scrollback / tmux / a
+            # `script` capture (k141) — the one secret in this file that was
+            # not hidden, and the most powerful of them (it creates and
+            # deletes paid servers and reads the whole Hetzner project).
+            my $input = OCP::Password::prompt_password("Enter Hetzner API token: ");
 
             if ($input) {
                 $secrets->set_hetzner_token($input);
@@ -602,38 +606,48 @@ sub execute {
         }
         chomp $pubkey if defined $pubkey;
 
-        print "\n";
-        print "!" x 50, "\n";
-        print "LOCAL PROVIDER - Self-SSH Setup Required\n";
-        print "!" x 50, "\n\n";
-
-        print "OCP installs the control plane over SSH to 127.0.0.1, so the\n";
-        print "$label public key must be in THIS machine's own authorized_keys\n";
-        print "(self-ssh-local) for `ocp apply` to reach localhost.\n\n";
-
-        print "Add the $label public key to root's authorized_keys:\n\n";
-        if (defined $pubkey && length $pubkey) {
-            print "  $pubkey\n\n";
-        }
-        else {
-            print "  ocp keys show --purpose admin\n\n";
-        }
-
-        print "Commands to run as root on this machine:\n";
-        print "  mkdir -p ~/.ssh\n";
-        print "  echo '"
-            . (defined $pubkey && length $pubkey ? $pubkey : '<the key above>')
-            . "' >> ~/.ssh/authorized_keys\n";
-        print "  chmod 700 ~/.ssh\n";
-        print "  chmod 600 ~/.ssh/authorized_keys\n";
-
-        unless ($self->nopassword) {
+        # The same guard the ssh block above uses. In dev mode a project can
+        # have no .ocp/id_ed25519.pub (e.g. --ssh-key named a private key with
+        # no public half), which leaves $label/$pubkey undef. Printing then
+        # produced "Add the  public key" with an empty label and an
+        # `ocp keys show --purpose admin` fallback a --nopassword project has no
+        # keys.yaml to answer. Stay silent instead (k141), exactly as the ssh
+        # sibling does. Secure mode always has an admin key, so the guard is
+        # only ever false in that dev-mode edge.
+        if (!$self->nopassword || defined $pubkey) {
             print "\n";
-            print "Print it again any time with:\n";
-            print "  ocp keys show --purpose admin\n";
-            print "\n";
-            print "Nothing checks this in advance. `ocp apply` is what finds out\n";
-            print "whether self-ssh to 127.0.0.1 works.\n";
+            print "!" x 50, "\n";
+            print "LOCAL PROVIDER - Self-SSH Setup Required\n";
+            print "!" x 50, "\n\n";
+
+            print "OCP installs the control plane over SSH to 127.0.0.1, so the\n";
+            print "$label public key must be in THIS machine's own authorized_keys\n";
+            print "(self-ssh-local) for `ocp apply` to reach localhost.\n\n";
+
+            print "Add the $label public key to root's authorized_keys:\n\n";
+            if (defined $pubkey && length $pubkey) {
+                print "  $pubkey\n\n";
+            }
+            else {
+                print "  ocp keys show --purpose admin\n\n";
+            }
+
+            print "Commands to run as root on this machine:\n";
+            print "  mkdir -p ~/.ssh\n";
+            print "  echo '"
+                . (defined $pubkey && length $pubkey ? $pubkey : '<the key above>')
+                . "' >> ~/.ssh/authorized_keys\n";
+            print "  chmod 700 ~/.ssh\n";
+            print "  chmod 600 ~/.ssh/authorized_keys\n";
+
+            unless ($self->nopassword) {
+                print "\n";
+                print "Print it again any time with:\n";
+                print "  ocp keys show --purpose admin\n";
+                print "\n";
+                print "Nothing checks this in advance. `ocp apply` is what finds out\n";
+                print "whether self-ssh to 127.0.0.1 works.\n";
+            }
         }
     }
 

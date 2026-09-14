@@ -7,9 +7,11 @@ use Path::Tiny qw(path);
 use Cwd qw(getcwd);
 use FindBin;
 
+use OCP;
 use OCP::Cmd::Init;
 use OCP::Config;
 use OCP::Hetzner::Picker;
+use OCP::Secrets;
 
 # `ocp init` is the one command that has to work before anything else does,
 # and it is the one command no test ever ran. Three things had drifted:
@@ -409,6 +411,67 @@ subtest 'ocp init --hetzner does not stop for a picker in a batch run' => sub {
     my $spec = path($dir)->child('ocp.yaml')->slurp;
     like $spec, qr/server_type: cpx21/, 'server_type stays at the default';
     like $spec, qr/location: fsn1/,     'location stays at the default';
+};
+
+# k141 — the Hetzner API token is a credential and must be read the way every
+# PIN in this codebase is: OCP::Password::prompt_password (echo OFF, prompt on
+# STDERR). It used to be read with a bare `<STDIN>`, echoing the token — more
+# powerful than any PIN — into scrollback / tmux / a `script` capture.
+#
+# Dev mode is the clean probe: --nopassword sets no PINs, so the token is the
+# ONLY thing prompt_password can be asked for. STDIN is scripted with a
+# DIFFERENT value, so a regression back to <STDIN> would store that instead —
+# which is exactly what the last two assertions catch.
+subtest 'the Hetzner API token is read with echo off, not off the terminal' => sub {
+    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
+
+    my $dir = tempdir(CLEANUP => 1);
+    my $cwd = getcwd();
+
+    my $init = OCP::Cmd::Init->new(
+        command_chain => [OCP->new],
+        nogit         => 1,
+        name          => 'tok',
+        hetzner       => 1,
+        nopassword    => 1,
+        _interactive  => 0,
+    );
+
+    local $ENV{HETZNER_API_TOKEN} = '';    # force the prompt path, not the env
+
+    chdir $dir or die "chdir: $!";
+    my @prompts;
+    my $out = '';
+    my $err = eval {
+        no warnings 'redefine';
+        local *OCP::Password::prompt_password = sub {
+            push @prompts, $_[0];
+            return 'token-from-prompt-password';
+        };
+        my $stdin = "token-from-stdin\n";       # a bare <STDIN> would read THIS
+        open my $in, '<', \$stdin or die "stdin: $!";
+        open my $fh, '>', \$out   or die "capture: $!";
+        my $old = select $fh;
+        local *STDIN = $in;
+        eval { $init->execute([], []) };
+        my $e = $@;
+        select $old;
+        close $fh;
+        $e;
+    };
+    chdir $cwd or die "chdir back: $!";
+
+    is $err, '', 'init --hetzner completed' or diag $out;
+
+    is scalar(@prompts), 1, 'exactly one hidden-input prompt in dev mode';
+    is $prompts[0], 'Enter Hetzner API token: ',
+        'and it is the token, routed through prompt_password (noecho, STDERR)';
+
+    my $token = OCP::Secrets->new(project_dir => path($dir))->hetzner_token;
+    is $token, 'token-from-prompt-password',
+        'the stored token is the one prompt_password returned';
+    isnt $token, 'token-from-stdin',
+        'never the value a bare <STDIN> would have echoed off the terminal';
 };
 
 sub _have {
