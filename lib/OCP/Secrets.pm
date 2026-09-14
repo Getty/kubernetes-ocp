@@ -6,6 +6,7 @@ use OCP;
 use OCP::Password;
 use Path::Tiny qw(path);
 use Carp qw(croak);
+use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 use Crypt::Age;
 use Crypt::Age::Keys;
 use File::SOPS;
@@ -44,6 +45,38 @@ has age_key_enc_file => (
     is      => 'lazy',
     builder => sub { shift->project_dir->child('age.key.enc') },
 );
+
+#
+# Secure file write
+#
+
+# Write private key material / a decrypted kubeconfig to $path, created 0600
+# before a single byte lands. Path::Tiny's spew is not usable here: it stages
+# the content through a sibling temp file opened at the umask default (~0644,
+# and .ocp/ is mkpath'd ~0755) and only then renames it into place — so a
+# `spew` followed by `chmod 0600` leaves a real, if brief, world-readable
+# window on the inode that ends up as the key. Create-then-write is what
+# OCP::TempKeyPair and OCP::ClusterKey already do (via File::Temp, which opens
+# 0600 with O_EXCL); this is the same pattern for a named file.
+sub _spew_secure {
+    my ($self, $path, $content) = @_;
+
+    $path = path($path);
+    $path->remove;    # clear the way for an O_EXCL create (no-op if absent)
+
+    sysopen my $fh, $path->stringify, O_WRONLY | O_CREAT | O_EXCL, 0600
+        or croak "Cannot create ".$path." securely: ".$!;
+    print {$fh} $content
+        or do { my $err = $!; close $fh; croak "Cannot write ".$path.": ".$err };
+    close $fh
+        or croak "Cannot write ".$path.": ".$!;
+
+    # Force the exact mode: sysopen's 0600 is masked by umask, which cannot add
+    # bits but a pathological umask could clear the owner ones.
+    $path->chmod(0600);
+
+    return;
+}
 
 #
 # Age key management
@@ -165,9 +198,9 @@ sub generate_age_key {
     # Generate key using Crypt::Age
     my ($public_key, $secret_key) = Crypt::Age->generate_keypair;
 
-    # Write files
-    $key_file->spew($secret_key . "\n");
-    $key_file->chmod(0600);
+    # Write files. The secret half is created 0600 from the start (see
+    # _spew_secure); the public half is public, so plain spew is fine.
+    $self->_spew_secure($key_file, $secret_key . "\n");
 
     $pub_file->spew($public_key . "\n");
 
@@ -299,9 +332,9 @@ sub decrypt_age_key_with_password {
     # and every later run would fail at the SOPS layer instead of here.
     $self->_assert_key_matches_project($age_key);
 
-    # Write to .ocp/age.key (cached)
-    $self->age_key_file->spew($age_key);
-    $self->age_key_file->chmod(0600);
+    # Write to .ocp/age.key (cached), created 0600 without a world-readable
+    # staging file (see _spew_secure).
+    $self->_spew_secure($self->age_key_file, $age_key);
 
     # ...and the recipient half, which a clone has no other source for.
     $self->restore_age_recipient;
@@ -421,13 +454,14 @@ sub generate_ssh_key {
     unlink $key_path->stringify if -f $key_path;
     unlink $pub_path->stringify if -f $pub_path;
 
-    # Generate ED25519 key
-    my $cmd = "ssh-keygen -t ed25519 -N '' -f '$key_path' -C 'ocp-cluster-key'";
-    system($cmd);
-
-    if ($? != 0) {
-        croak "Failed to generate SSH key";
-    }
+    # Generate ED25519 key. List-form exec, not a shell string: a project_dir
+    # whose absolute path carries a single quote or a shell metacharacter would
+    # break out of the quotes in an interpolated command line and write the key
+    # somewhere else (or run whatever the path spells). Same failure-report
+    # shape as the other exec sites, e.g. OCP::SSH's scp helpers.
+    system('ssh-keygen', '-t', 'ed25519', '-N', '', '-f', $key_path->stringify,
+        '-C', 'ocp-cluster-key') == 0
+        or croak "Failed to generate SSH key: $?";
 
     $key_path->chmod(0600);
 
@@ -518,8 +552,7 @@ sub decrypt_kubeconfig_to_file {
     my $target = path($target_file);
     $target->parent->mkpath;
 
-    $target->spew($kubeconfig);
-    $target->chmod(0600);
+    $self->_spew_secure($target, $kubeconfig);
 
     return $target->stringify;
 }

@@ -125,8 +125,13 @@ sub _random_bytes {
     my ($len) = @_;
     open my $fh, '<', '/dev/urandom' or croak "Can't open /dev/urandom: $!";
     my $bytes;
-    read $fh, $bytes, $len;
+    my $got = read $fh, $bytes, $len;
     close $fh;
+    # A short read from the CSPRNG would silently weaken the salt/nonce it
+    # feeds, so it is a hard failure, not a value to use as-is.
+    croak "Short read from /dev/urandom: wanted $len bytes, got "
+        . (defined $got ? $got : 'undef')
+        unless defined $got && $got == $len;
     return $bytes;
 }
 
