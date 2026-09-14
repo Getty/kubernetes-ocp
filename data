@@ -1,0 +1,35 @@
+---
+claimed_at: 2026-09-14T19:45:43Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-14T19:45:43Z
+created: 2026-09-14T03:09:49Z
+id: 143
+priority: medium
+started: 2026-09-14T17:26:35Z
+status: done
+tags:
+- deps
+- versions
+- security
+title: 'Version-Currency 2026-09-14: cert-manager-Patch faellig, rke2/k3s/nfd Minor,
+  Cilium/GPU bewusst HOLD'
+updated: 2026-09-14T19:45:43Z
+---
+
+Web-Audit aller OCP::Versions-Pins, Stand 2026-09-14. KEINE SECURITY-URGENT-Punkte.
+
+- cert_manager v1.21.1 -> v1.21.2: transitive Go-CVE-Fixes ("all users should upgrade") + Haertung (ACME/Vault-Issuer kopieren keine untrusted HTTP-Response-Bodies mehr in Status/Events). Hoechste Prioritaet unter den sicheren Bumps. SAFE-MINOR-BUMP.
+- rke2 v1.36.3 -> v1.36.4+rke2r1, k3s analog: reiner Patch, kein neues Breaking (ingress->traefik-Default-Switch war schon v1.36.0). SAFE-MINOR.
+- cilium 1.20.0 -> 1.20.1 existiert, aber KEINE der drei 2026er-Advisories trifft 1.20.0 (alle kappen bei 1.19.x); wegen der laufenden Datapath-Untersuchung (Cilium-single-NIC-Card) bewusst HOLD.
+- gateway_api v1.6.1 = genau was Cilium 1.20 verlangt -> CURRENT, an Cilium gekoppelt lassen.
+- GPU-Bundle: gpu_operator v26.3.3 (Top der 26.3-Linie) -> v26.7.0 ist frisches .0 (opt-in DRA, braucht K8s>=1.34.2 + Treiber>=580, beides erfuellt). HOLD bis 26.7.1; dann toolkit/driver/device-plugin/dcgm/nfd KOORDINIERT auf das nachziehen was der Operator-Release bundelt. nfd v0.18.3 -> v0.19.0 und nvidia_dcgm -> evtl 4.5.3-1 mit diesem Bundle-Move.
+- nvidia_toolkit/driver/device_plugin/dcgm_exporter aktuell (CURRENT).
+
+Empfehlung: nur cert_manager (+ optional rke2/k3s) jetzt bumpen und gegen Testcluster verifizieren; Rest halten. Lane: ocp-infra-worker (OCP::Versions/Rexfile). Quelle: Version-Recherche 2026-09-14.
+
+2026-09-14 17:26 cert-manager v1.21.1->v1.21.2 umgesetzt in c3d8c22 (Versions.pm-Pin + 4 mittrackende Test-Fixtures). Kein Re-Vendoring: cert-manager.yaml wird live aus dem GitHub-Release gezogen (URL aus dem Pin gebaut), Drift-Remedy upgrade_cert_manager greift dynamisch. Binding make test PASS (Files=86, Tests=1367). NUR cert_manager; cilium/gateway/GPU/rke2/k3s bewusst gehalten (der rke2/k3s-Rest bleibt als Rest-Scope offen). UNIT-verifiziert, NICHT cluster-verifiziert -- echte Rollout-Prüfung ist der Maintainer-Schritt.
+
+2026-09-14 19:24 rke2 v1.36.3->v1.36.4+rke2r1 + k3s v1.36.3->v1.36.4+k3s1 committet in 99c080d (Pins + t/06-versions.t-Assertions). Upstream-Tags via gh api bestaetigt (rke2 publ. 2026-08-28, k3s 2026-08-27; je einziger Non-Prerelease der .4-Linie). Kein Rexfile-Pin, kein Drift-Remedy noetig (Distribution-Drift ist per Design report-only). binding make test PASS. Vorbug am Rande gefunden -> k148 (OCP::Node dist/version-mismatch). Naechster Schritt: Testcluster-Deploy auf ocp-police1 zur Cluster-Verifikation, bleibt bis dahin in review.
+
+2026-09-14 19:45 CLUSTER-VERIFIZIERT auf ocp-police1 (provider=local, k143-test-Image, 2026-09-14): frischer Bootstrap -> Node police1 Ready auf rke2 v1.36.4+rke2r1, Cilium 1.20 up, ocp-cache/ocp-registry ready, cert-manager v1.21.2 deployt, Cilium Gateway + CRDs + OCPNode/OCPNodeProvider ensured, 19 Running/5 Completed/0 ungesund, Result=success. Beide sicheren Bumps (cert-manager c3d8c22, rke2/k3s 99c080d) auf echtem Cluster bestätigt, apply idempotent. Erster Apply trippte einen zu engen NFD-Readiness-Timeout (kalter Image-Pull 2m31s > 120s) -> ausgelagert nach k149 (kein Bump-Regress). HOLD-Items bleiben bewusst deferred: cilium 1.20.1 (Datapath-Untersuchung), gpu-bundle 26.7.x (wartet auf .1), nfd v0.19 (an GPU-Bundle-Move gekoppelt), gateway_api (an cilium gekoppelt). Schließe: sichere Bumps erledigt+verifiziert, Rest sind dokumentierte Entscheidungen.
