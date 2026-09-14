@@ -121,8 +121,11 @@ subtest 'destroy: a clean run keeps STDERR empty' => sub {
 
 subtest 'destroy: a delete failure is diagnosed on STDERR, not STDOUT' => sub {
     # A hetzner node recorded in status.yaml whose delete_server dies. The
-    # progress narrative ("Deleting ...", "Cluster destroyed.") stays on
-    # STDOUT; the "Warning:" diagnosis moves to STDERR.
+    # progress narrative ("Deleting ...") stays on STDOUT; both the "Warning:"
+    # diagnosis and the "teardown INCOMPLETE" summary move to STDERR -- a
+    # failed teardown's result line is a diagnosis, not payload. There is no
+    # "Cluster destroyed." here: that line is printed only on a clean run
+    # (k140), and pushing it out over a failed delete was the money-losing bug.
     my $config = project('prod', '', '.ocp/status.yaml' => <<'YAML');
 nodes:
   - name: police1
@@ -144,11 +147,14 @@ YAML
     is $r->{ex}, '', 'ran without dying (a failed delete is a warning, not fatal)';
 
     like $r->{out}, qr/Deleting police1/,   'the delete step is announced on STDOUT';
-    like $r->{out}, qr/Cluster destroyed/,  'the result line is on STDOUT';
+    unlike $r->{out}, qr/Cluster destroyed/, 'no false success line on STDOUT';
     unlike $r->{out}, qr/Warning/,          'the warning does NOT pollute STDOUT';
+    unlike $r->{out}, qr/INCOMPLETE/,       'the incompleteness diagnosis stays off STDOUT';
 
     like $r->{err}, qr/Warning:.*hetzner delete failed/s,
         'the failure diagnosis is on STDERR';
+    like $r->{err}, qr/INCOMPLETE/,
+        'the "teardown incomplete" summary is on STDERR too';
 };
 
 subtest 'destroy: mislabelled-server report is a STDERR diagnosis' => sub {

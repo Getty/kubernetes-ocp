@@ -238,7 +238,19 @@ sub execute {
 
     # Delete nodes. $hinted keeps the migration diagnosis to one appearance
     # per run: six unreachable machines are six warnings, not six essays.
+    #
+    # @undeleted records the nodes whose PROVIDER delete failed -- a paid
+    # server the API did not remove. It gates the cleanup below: status.yaml
+    # is the only local record of a Hetzner server's providerId, so throwing
+    # it away while the server is still running strands a billing machine with
+    # no handle to find it by. That is the money-losing failure the ssh-key
+    # block above guards against, in the one delete path that was not. An
+    # existing-host (ssh/local) uninstall that fails is deliberately NOT
+    # counted here: the machine is pre-existing, OCP never provisioned or
+    # billed it, and the k116 branch below already treats "host already gone"
+    # as a recoverable warning, not a stranded resource.
     my $hinted = 0;
+    my @undeleted;
     for my $node (@$nodes) {
         print "Deleting $node->{name}...\n";
 
@@ -246,6 +258,7 @@ sub execute {
             eval { $hetzner_prov->delete_server($node->{providerId}) };
             if ($@) {
                 print STDERR "  Warning: $@\n";
+                push @undeleted, $node;
             }
         }
         # An existing-host node (ssh, local): the machine survives, so what we
@@ -297,11 +310,40 @@ sub execute {
     # path above ("no nodes to destroy") and the main path land at the same
     # code; the early-return bypass used to leave .ocp/deployed.yaml behind
     # when a cluster was torn down out of band (k78).
-    $self->_cleanup_project_state($config);
+    #
+    # Skipped entirely when a provider delete failed (k140): the local state
+    # is the only record of the surviving server's providerId, and removing it
+    # would leave a paid machine running with nothing to find it by. Keeping
+    # status.yaml (and deployed.yaml, and the kubeconfig that still reaches the
+    # live cluster) intact lets a re-run pick up exactly where this one
+    # stopped once the cause is fixed.
+    unless (@undeleted) {
+        $self->_cleanup_project_state($config);
+    }
 
     # Last, so it is the thing left on screen: a teardown that reported success
     # while paid machines kept running is the failure mode this is here for.
     $self->_report_mislabelled_servers($config, $hetzner_prov);
+
+    # A failed provider delete is the money-losing case: say so plainly, name
+    # the survivors, and exit non-zero so callers and CI do not read this as a
+    # clean teardown. Diagnosis on STDERR, per the output-channel rule (k105);
+    # the "Cluster destroyed." payload below is only ever printed when the run
+    # really did tear everything down.
+    if (@undeleted) {
+        print STDERR "\n";
+        printf STDERR "[!!] Teardown INCOMPLETE: %d node(s) could not be deleted and\n",
+               scalar @undeleted;
+        print  STDERR "     are still running (and, at Hetzner, still billing):\n";
+        for my $node (@undeleted) {
+            printf STDERR "       - %s (%s, id %s)\n",
+                   $node->{name}, $node->{provider},
+                   $node->{providerId} // $node->{public_ip} // '?';
+        }
+        print  STDERR "     .ocp/status.yaml is kept so a re-run can find them by\n";
+        print  STDERR "     providerId: fix the cause, then run `ocp destroy` again.\n";
+        return 1;
+    }
 
     print "\nCluster destroyed.\n";
 
@@ -406,7 +448,10 @@ the previous one and announced every component as "up to date" against a
 registry that was never rolled out.  Cleanup runs even when no nodes were
 found to delete (C<k78>) — a teardown that discovers nothing on the
 wire is exactly the shape a project directory takes after a cluster was
-torn down out of band.
+torn down out of band.  It is B<skipped>, though, when any provider delete
+failed: the survivor is still running (and still billing) and
+C<status.yaml> is the only local record of its C<providerId>, so keeping it
+is what lets a re-run finish the job (C<k140>).
 
 =opt force
 
@@ -429,9 +474,13 @@ spec and you want the reconcile path to start from a known-good hash set.
     $cmd->execute($args, $chain)
 
 Lists the candidate nodes, prompts for confirmation (unless C<--force>),
-deletes each via its provider, removes the encrypted kubeconfig, and
-returns 0.  Prints a warning and continues when a single Hetzner or SSH
-delete fails.
+deletes each via its provider and, on a clean run, removes the local state
+and the encrypted kubeconfig and returns 0.  A failed SSH/local uninstall is
+a best-effort warning that does not stop the run.  A failed B<provider>
+delete — a Hetzner server the API did not remove — is different: the local
+state is B<kept> so a re-run can find the survivor by its C<providerId>, the
+teardown is reported B<incomplete> on STDERR, and the command returns
+non-zero (C<k140>).
 
 =seealso
 
