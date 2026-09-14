@@ -43,7 +43,7 @@ sub deployment {
 sub matching_cluster {
     return (
         'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.20.0'),
-        'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.1'),
+        'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.2'),
         'Deployment/node-feature-discovery/nfd-master'
             => deployment('registry.k8s.io/nfd/node-feature-discovery:v0.18.3'),
     );
@@ -147,7 +147,7 @@ YAML
         objects => {
             # manifest says v1.20.0, version manifest says 1.20.0
             'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.20.0'),
-            'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:1.21.1'),
+            'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:1.21.2'),
         },
     );
 
@@ -254,7 +254,7 @@ YAML
     my $config = write_config(spec => $BASE_SPEC);
     my $api = FakeApi->new(objects => {
         'Deployment/kube-system/cilium-operator' => deployment('quay.io/cilium/operator-generic:v1.20.0'),
-        'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.1'),
+        'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.2'),
     });
 
     my ($drift) = grep { $_->{component} eq 'nfd' }

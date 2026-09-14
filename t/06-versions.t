@@ -44,7 +44,7 @@ use OCP::Versions;
     is(OCP::Versions->get_component_version('rke2'), 'v1.36.3+rke2r1', 'rke2 version');
     is(OCP::Versions->get_component_version('k3s'), 'v1.36.3+k3s1', 'k3s version');
     is(OCP::Versions->get_component_version('cilium_cli'), 'v0.19.7', 'cilium_cli version');
-    is(OCP::Versions->get_component_version('cert_manager'), 'v1.21.1', 'cert_manager version');
+    is(OCP::Versions->get_component_version('cert_manager'), 'v1.21.2', 'cert_manager version');
     is(OCP::Versions->get_component_version('traefik'), undef, 'traefik gone (replaced by Cilium Gateway API)');
 }
 

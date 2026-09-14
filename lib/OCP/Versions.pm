@@ -22,7 +22,7 @@ our $VERSIONS = {
             gateway_api => 'v1.6.1',
 
             # Ingress and SSL (ingress is Cilium Gateway API, versioned with cilium)
-            cert_manager => 'v1.21.1',
+            cert_manager => 'v1.21.2',
 
             # GPU stack (versions kept in sync with gpu-operator's bundled
             # values.yaml). No validator pin: the standalone
