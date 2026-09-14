@@ -84,6 +84,23 @@ subtest 'R2: a child past its deadline is killed, promptly, as a failure' => sub
     ok $r->{timed_out},   'timed_out flag is set';
     ok $r->{exit} != 0,   'a timeout is a non-zero exit, not success';
     is $r->{exit}, $OCP::Exec::TIMEOUT_EXIT, 'timeout uses the conventional 124';
+    is $r->{signal}, 0,   'a timeout reports no signal, though we TERM/KILLed it';
+    ok $elapsed < 10, "returned promptly (${elapsed}s), did not wait out the 30s child";
+};
+
+subtest 'R2b: a child that closes both pipes then lingers still honours the deadline' => sub {
+    # The read loop drains to EOF the moment the child closes stdout+stderr, but
+    # the child is still alive and sleeping. The reap after the loop must respect
+    # the same deadline instead of blocking forever on an unbounded waitpid.
+    my $start = time;
+    my $r = capture_command(
+        [ 'sh', '-c', 'exec 1>&- 2>&-; sleep 30' ], timeout => 1
+    );
+    my $elapsed = time - $start;
+
+    ok $r->{timed_out},   'timed_out flag is set even though both pipes hit EOF first';
+    is $r->{exit}, $OCP::Exec::TIMEOUT_EXIT, 'timeout uses the conventional 124';
+    is $r->{signal}, 0,   'no signal reported on the timeout';
     ok $elapsed < 10, "returned promptly (${elapsed}s), did not wait out the 30s child";
 };
 

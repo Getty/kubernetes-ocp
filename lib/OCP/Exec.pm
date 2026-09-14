@@ -4,6 +4,7 @@ package OCP::Exec;
 use strict;
 use warnings;
 use Carp qw(croak);
+use Errno qw(EINTR);
 use Exporter qw(import);
 use IPC::Open3 qw(open3);
 use IO::Select;
@@ -72,7 +73,15 @@ sub capture_command {
         for my $fh (@ready) {
             my $chunk = '';
             my $n = sysread($fh, $chunk, 65536);
-            if (!defined $n || $n == 0) {   # error or EOF: this pipe is done
+            if (!defined $n) {
+                # Interrupted mid-read (a caller's signal handler, e.g. the
+                # $SIG{INT} wait_for_ssh installs): retry, keep the fd. Only a
+                # real read error ends the pipe. Mirrors the can_read handling.
+                next if $! == EINTR;
+                $sel->remove($fh);
+                next;
+            }
+            if ($n == 0) {   # EOF: this pipe is done
                 $sel->remove($fh);
                 next;
             }
@@ -85,11 +94,27 @@ sub capture_command {
 
     if ($timed_out) {
         _terminate($pid);
+    } elsif (defined $deadline) {
+        # The read loop can exit with time to spare: a child that closes both
+        # pipes but keeps running hits EOF here while still alive. Reap against
+        # the SAME deadline rather than blocking forever on waitpid($pid, 0);
+        # if it outlives the deadline, kill it down the timeout path.
+        while (waitpid($pid, WNOHANG) != $pid) {
+            if (time >= $deadline) {
+                $timed_out = 1;
+                _terminate($pid);
+                last;
+            }
+            select undef, undef, undef, 0.1;
+        }
     } else {
         waitpid($pid, 0);
     }
 
     my $signal = $? & 127;
+    # A timeout means we sent TERM/KILL, so $? carries signal 15/9 -- our doing,
+    # not the child dying by a signal of its own. Report no signal (exit is 124).
+    $signal = 0 if $timed_out;
     my $exit
         = $timed_out ? $TIMEOUT_EXIT
         : $signal    ? 128 + $signal
