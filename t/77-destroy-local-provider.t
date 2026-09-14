@@ -55,6 +55,18 @@ use OCP::Config;
         };
         return { stdout => '', stderr => '', exit => 0 };
     }
+    # The real Local/SSH adapters resolve their target through this before
+    # delete_server runs (OCP::Role::Provider::ExistingHost). A faithful double
+    # mirrors the two contracts `ocp destroy` leans on: Local ignores the host
+    # and always answers 127.0.0.1; SSH needs one and dies without it.
+    sub resolve_host {
+        my ($self, %opts) = @_;
+        return '127.0.0.1' if $self->{type} eq 'local';
+        my $host = $opts{host};
+        die "SSH provider requires 'host'\n"
+            unless defined $host && length $host;
+        return $host;
+    }
 }
 
 # Project fixture. The default shape is provider: local in control_planes;
@@ -65,12 +77,15 @@ sub project {
     my $dir = path(tempdir(CLEANUP => 1));
     $dir->child('.ocp')->mkpath;
 
-    my $yaml = <<'YAML';
-name: localtest
-control_planes:
-  provider: local
-  host: 127.0.0.1
-YAML
+    # control_planes default to `provider: local` with a pinned host. A test
+    # can pick another provider (cp_provider) or drop the host line entirely
+    # (cp_no_host) to reproduce the spec-fallback shape, where a node with no
+    # host in ocp.yaml is reconstructed with public_ip '-'.
+    my $cp_provider = $args{cp_provider} // 'local';
+    my $yaml = "name: localtest\n"
+             . "control_planes:\n"
+             . "  provider: $cp_provider\n";
+    $yaml .= "  host: 127.0.0.1\n" unless $args{cp_no_host};
 
     if ($args{workers}) {
         $yaml .= <<'YAML';
@@ -187,6 +202,53 @@ subtest 'fallback path: a local worker pool reaches the delete loop' => sub {
 
     my ($local) = grep { $_->{type} eq 'local' } @{ $r->{deleted} };
     ok $local, 'the worker pool was destroyed through the local provider';
+};
+
+subtest 'k146: a spec-fallback local CP with no host still uninstalls on the box' => sub {
+    # No status.yaml and no `host:` in ocp.yaml, so the CP is reconstructed
+    # from spec with public_ip '-'. The delete loop gated the on-box uninstall
+    # on `public_ip ne '-'`, so the local node was named in the plan and then
+    # quietly skipped -- RKE2 stayed installed while the run reported success.
+    # OCP::Provider::Local ignores the host (resolve_host is a constant
+    # 127.0.0.1), so the uninstall can and must still run.
+    my $config = project(cp_no_host => 1);
+
+    my $r = run_destroy($config);
+    is $r->{err}, '', 'ran clean' or diag $r->{out};
+
+    my ($local) = grep { $_->{type} eq 'local' } @{ $r->{deleted} };
+    ok $local, 'the local provider was still asked to uninstall'
+        or diag $r->{out};
+    is $local->{host}, '127.0.0.1',
+        'on 127.0.0.1, resolved by the provider rather than the absent public_ip';
+};
+
+subtest 'k146: a hetzner node with no host gets no existing-host uninstall' => sub {
+    # The relaxation is only for providers that resolve their own host. A
+    # hetzner CP reconstructed from spec with no host (public_ip '-') and no
+    # token has nothing to delete here: it must never fall into the
+    # existing-host branch and be handed an SSH/local uninstall.
+    my $config = project(cp_provider => 'hetzner', cp_no_host => 1);
+
+    my $r = run_destroy($config);
+    is $r->{err}, '', 'ran clean' or diag $r->{out};
+
+    ok !@{ $r->{deleted} },
+        'no existing-host uninstall ran for a hostless hetzner node';
+};
+
+subtest 'k146: an ssh node with no host is still skipped, no SSH uninstall' => sub {
+    # ssh is the existing-host provider that DOES need a host. Reconstructed
+    # from spec with no host (public_ip '-'), its resolve_host dies and the
+    # node is skipped -- exactly as before the local relaxation. This is the
+    # guard that the widened gate did not start SSHing to a hostless node.
+    my $config = project(cp_provider => 'ssh', cp_no_host => 1);
+
+    my $r = run_destroy($config);
+    is $r->{err}, '', 'ran clean' or diag $r->{out};
+
+    ok !(grep { $_->{type} eq 'ssh' } @{ $r->{deleted} }),
+        'the ssh provider was not asked to uninstall a hostless node';
 };
 
 subtest 'delete dispatch: local and ssh share the same role and the same branch' => sub {

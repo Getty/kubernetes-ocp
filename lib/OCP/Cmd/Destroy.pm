@@ -269,39 +269,60 @@ sub execute {
         # delete call is identical; only ssh needs the key (the cluster
         # key comes from above, resolved or already known to be unavailable
         # -- nothing in this branch may die).
+        #
+        # The uninstall target is the provider's OWN resolve_host, not the
+        # node's public_ip -- so which nodes can be cleaned up is the provider's
+        # call, expressed through the ExistingHost contract, rather than a
+        # string test on the provider name here. A spec-fallback node with no
+        # `host` in ocp.yaml arrives with public_ip '-'; that is passed through
+        # as "no host". ssh has nowhere to go without one -- resolve_host dies
+        # and the node is skipped, exactly as before -- while the local
+        # provider ignores the host entirely (resolve_host is a constant
+        # 127.0.0.1) and still tears the box down. That last case is the bug
+        # this closes: a `provider: local` cluster discovered only via the spec
+        # fallback used to keep RKE2 installed after `ocp destroy` because the
+        # old `public_ip ne '-'` gate dropped it (k146).
         elsif (OCP::Provider->known_type($node->{provider} // q())
-               && $node->{provider} ne 'hetzner'
-               && $node->{public_ip} && $node->{public_ip} ne '-') {
+               && $node->{provider} ne 'hetzner') {
+            my $host_prov = OCP::Provider->for_spec(
+                { provider => $node->{provider} },
+                ($node->{provider} eq 'ssh' && $ssh_key
+                    ? (ssh_key_path => $ssh_key->path)
+                    : ()),
+            );
+
+            # '-' is the spec-fallback marker for "no host was recorded"; hand
+            # the provider undef in that case so ssh's resolve_host dies rather
+            # than treating '-' as a literal target, while local ignores it.
+            my $ip = ($node->{public_ip} && $node->{public_ip} ne '-')
+                ? $node->{public_ip} : undef;
+            my $target = eval { $host_prov->resolve_host(host => $ip) };
+            next unless defined $target && length $target;
+
             if ($node->{provider} eq 'ssh') {
                 unless ($ssh_key) {
-                    print STDERR "  Skipped: no SSH key, $node->{public_ip} keeps its RKE2/K3s install.\n";
+                    print STDERR "  Skipped: no SSH key, $target keeps its RKE2/K3s install.\n";
                     next;
                 }
             }
 
-            print "  Uninstalling RKE2 on $node->{public_ip}...\n";
-            my $host_prov = OCP::Provider->for_spec(
-                { provider => $node->{provider} },
-                ($node->{provider} eq 'ssh'
-                    ? (ssh_key_path => $ssh_key->path)
-                    : ()),
-            );
+            print "  Uninstalling RKE2 on $target...\n";
             my $result = eval {
-                $host_prov->delete_server(undef, host => $node->{public_ip})
+                $host_prov->delete_server(undef, host => $target)
             };
             # OCP::SSH::run reports a failed connection as a non-zero exit
             # rather than an exception, so an unreachable host used to be
             # announced as a successful uninstall. Both shapes are a warning.
             my $failed = $@ || !ref $result || ($result->{exit} // 0) != 0;
             if ($failed) {
-                print STDERR "  Warning: Could not uninstall on $node->{public_ip} (may already be down).\n";
+                print STDERR "  Warning: Could not uninstall on $target (may already be down).\n";
                 # The migration hint names the bootstrap-vs-admin key story,
                 # which is ssh-only. A local uninstall has no key.
                 if ($node->{provider} eq 'ssh' && !$hinted++) {
                     print STDERR $ssh_key->migration_hint;
                 }
             } else {
-                print "  RKE2/K3s uninstalled on $node->{public_ip}.\n";
+                print "  RKE2/K3s uninstalled on $target.\n";
             }
         }
     }

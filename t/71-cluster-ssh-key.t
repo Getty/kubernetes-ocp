@@ -480,6 +480,17 @@ subtest 'an already-unlocked admin key skips the prompt entirely' => sub {
     package FakeProvider;
     sub new { my ($class, %args) = @_; bless {%args}, $class }
     sub list_servers_by_cluster { [] }
+    # The destroy loop asks the existing-host provider to resolve its target
+    # before uninstalling (OCP::Role::Provider::ExistingHost). The ssh nodes
+    # in these fixtures always carry a real host, so mirror the SSH contract:
+    # return the given host, die without one.
+    sub resolve_host {
+        my ($self, %opts) = @_;
+        my $host = $opts{host};
+        die "SSH provider requires 'host'\n"
+            unless defined $host && length $host;
+        return $host;
+    }
     sub delete_server {
         my ($self, $id, %opts) = @_;
         push @{ $self->{deleted} }, {
