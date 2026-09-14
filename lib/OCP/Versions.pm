@@ -10,8 +10,8 @@ our $VERSIONS = {
     '0.001' => {
         components => {
             # Kubernetes distributions
-            rke2 => 'v1.36.3+rke2r1',
-            k3s  => 'v1.36.3+k3s1',
+            rke2 => 'v1.36.4+rke2r1',
+            k3s  => 'v1.36.4+k3s1',
 
             # CNI and networking
             cilium     => '1.20.0',
