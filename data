@@ -1,0 +1,42 @@
+---
+claimed_at: 2026-09-14T17:21:39Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-14T17:21:39Z
+created: 2026-09-14T03:09:55Z
+id: 144
+priority: medium
+started: 2026-09-14T06:03:04Z
+status: done
+tags:
+- cilium
+- networking
+- rexfile
+- capture
+title: 'Cilium single-NIC net-kill: kontrollierter Root-Cause-Capture + Tier-Entscheidung'
+updated: 2026-09-14T17:21:39Z
+---
+
+Verallgemeinert die bisherigen Ticket-Kandidaten aus der Nachtanalyse zu einer echten Karte. Symptom (urspr. 2026-09-13 frueh): nach ocp apply auf single-NIC-VM (10.5.10.5) verlor der Laptop SSH (Broken pipe -> No route to host), obwohl die VM lief.
+
+NEUE BEFUNDE 2026-09-14 (read-only Journal-Mine auf ocp-police1/10.5.10.5, persistent journal seit Boot Sep 2):
+- KEIN eth0 carrier-loss / link-down / addr-delete / route-delete in ALLEN Boots; eth0 nur normal beim Boot konfiguriert. -> falls Kill, dann Datapath-BLACKHOLE, keine Deconfiguration (stuetzt Tier-2).
+- NetworkManager inactive, systemd-networkd active -> Tier-1 NM-Stomp-Hypothese RAUS.
+- Spaeterer Lauf Sep 13 ~16:52 (Cilium via rke2-Helm-Addon) lief danach STUNDENLANG gesund (etcd-Snapshots 18:17-19:29), dann manuell gestoppt 19:32 -> KEIN Netz-Kill; Cilium 1.20 kam auf genau dieser single-NIC-Box sauber hoch.
+- Einziges "no route to host": Sep 13 02:18 ein OUTBOUND Image-Pull (10.5.10.5 -> 13.226.155.4:443 CloudFront) scheitert und loest rke2-Shutdown aus.
+
+BEWERTUNG: Die Cilium-kills-single-NIC-Hypothese ist durch die spaetere gesunde Laufzeit NICHT bestaetigt. Kandidat: intermittierender First-Start-Blackhole ODER Fehlattribution (teils transientes Outbound/Image-Pull). Braucht EINEN kontrollierten Capture zum Entscheiden.
+
+CAPTURE-HARNESS vorbereitet (Session-Scratchpad, noch nicht im Repo): ocp-netguard.sh (dual ip -ts monitor + journal + 5s-Snapshots, Deadman-Watchdog ping-gw -> disable-rke2 -> reboot -f, selbst-heilend) + CAPTURE-RUNBOOK.md. Entscheidungsbaum: addr/route weg -> Deconfig-Fix; addr/route intakt aber tot -> --set bpf.hostLegacyRouting=true in share/Rexfile (Tier-2); neue ip-rules -> policy-routing. NICHT blind committen; Fix in share/Rexfile via ocp-infra-worker mit Capture als Beleg. WARTET auf: User-Go fuer den destruktiven Capture-Lauf (ocp-police1 oder dedizierte Wegwerf-VM).
+
+2026-09-14 03:13 Review k138 (2026-09-14) finding 2 [NEEDS-DECISION], konkurrierende/ergaenzende Ursache fuer das Netz-weg-Symptom: seit advertised_host (91c5926) baut Bootstrap.pm:412 den in-process K8s-Client aus der auf die ROUTBARE IP umgeschriebenen kubeconfig (Rex.pm:261-263). Fuer provider=local laeuft ocp AUF der Box (self-ssh 127.0.0.1), d.h. der in-bootstrap-Client + wait-Ready-Schleife (Bootstrap:417-469) + alle Folge-Deploys haengen am Hairpin zur eigenen externen IP (10.5.10.5:6443) statt loopback -- exakt die Adresse die beim CNI-Bringup als gekappt erschien. Transport/advertised-Split sollte evtl. bis _k8s_api reichen: connect via loopback, save advertised. Maintainer-Entscheidung.
+
+2026-09-14 05:49 CAPTURE-ERGEBNIS 2026-09-14 05:40-05:46 (ocp-police1, Image k133-vendored = EXAKT das Original-Netz-Kill-Setup, provider=local): Bootstrap LIEF SAUBER DURCH, KEIN Netz-Kill. apply Result=success/exit0, Cluster gesund (OCPNode/police1 Ready, all pods healthy, API 127.0.0.1:6443). netguard triggerte nie, Box durchgehend erreichbar. ip-monitor-Capture (540 Events) waehrend install_cilium: die einzigen Deletes sind Cilium-INTERN (cilium@lxc_health, tmp/lxc-veths, fe80/multicast auf lxc-Interfaces) + der bekannte momentane [RULE]Deleted 0 from all lookup local (Cilium verschiebt die local-Table-Rule, sofort neu gesetzt). eth0-Addr (10.5.10.5), Default-Route (via 10.5.8.2) und eth0-Link UNANGETASTET; GW 10.5.8.2 durchgehend NEIGH REACHABLE. FAZIT: Cilium-kills-single-NIC-Hypothese WIDERLEGT fuer dieses Setup -- Cilium 1.20 bootstrappt clean auf single-NIC. Urspruenglicher Kill vermutlich transient/fehlattribuiert (vgl 02:18 Outbound-Image-Pull no-route-to-host). OFFEN bleibt nur finding 2 (k138 advertised_host: in-Bootstrap-Client auf routbarer IP statt loopback); k133 nutzte loopback (127.0.0.1:6443, safe) -> separat mit k138-Image testen. Capture-Logs auf Box unter /root/ocp-capture/20260914-054012/.
+
+2026-09-14 06:02 finding-2-TEST 2026-09-14 06:00 (k138-debug Image, provider=local, OCP_REX_DEBUG=1): das Image HAT advertised_host (Local.pm, 3x; transport bleibt 127.0.0.1, advertised fuer kubeconfig/tls-san/cp_ip). Bootstrap Result=success/exit0, KEIN Hang, KEIN Netz-Kill, Cluster gesund (police1 Ready, all pods healthy). Capture wieder nur Cilium-interne lxc/tmp-Deletes; eth0/Default-Route unangetastet. Cilium-Install: --set k8sServiceHost=localhost (loopback, unschuldig). Angezeigter Endpoint 127.0.0.1:6443. FAZIT finding 2: der in-Bootstrap-Client verursacht auf single-NIC KEIN beobachtbares Problem -- wait-Ready + alle Deploys liefen durch. Der defensive loopback-Vorschlag (in-process-Client explizit via 127.0.0.1) bleibt optionale Code-Klarheit/Robustheit fuer den Maintainer, aber KEIN nachgewiesener Bug. GESAMT-FAZIT k144: sowohl Cilium-single-NIC-Kill als auch finding 2 sind EMPIRISCH WIDERLEGT auf ocp-police1 (k133 UND k138 je clean bootstrap, Cluster gesund). Kein Rexfile-Fix noetig.
+
+2026-09-14 06:03 Capture-Untersuchung abgeschlossen: Netz-Kill nicht reproduzierbar (k133+k138), finding 2 harmlos. Empfehlung: schliessen; optionales Rest-Ticket nur fuer den defensiven loopback-Vorschlag, falls gewuenscht. Maintainer entscheidet Disposition.
+
+2026-09-14 13:09 PRISTINE-RUN 2026-09-14 13:02 (Box VOR dem Lauf rebootet -> ip-rules nur Standard local/main/default, kein Cilium-Rest; frisches Projekt capture3, k138-Image): Bootstrap Result=success, Cluster gesund (police1 Ready, all pods healthy). Praezise Capture-Pruefung: [ROUTE]Deleted default=0, Deleted-Zeilen mit eth0=0, 10.5.10.5/22-Addr-Deletes=0 -> Host-Netz NIE dekonfiguriert. Dritter unabhaengiger clean-Lauf, jetzt auf jungfraeulicher Box -> Netz-Kill endgueltig ausgeschlossen. NEBENFUND: rke2-uninstall.sh flusht Ciliums ip-rules (fwmark 0x200 lookup 2004, local@100) NICHT -> bleiben nach uninstall bis zum Reboot liegen; Kandidat fuer ExistingHost-UNINSTALL (ip rule flush) oder einen Reboot-Hinweis in der Doku.
+
+2026-09-14 17:21 PRISTINE bestätigt: 3 unabhängige clean-Läufe (k133 + k138 + jungfräulich rebootete Box), Host-Netz nachweislich 0/0/0 dekonfiguriert. Cilium-single-NIC-net-kill endgültig WIDERLEGT, finding 2 (advertised_host) empirisch harmlos. Kein Rexfile-Fix nötig. Nebenfund (ip-rule-flush bei uninstall) ausgelagert nach k147. Schließe.
