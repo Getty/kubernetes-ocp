@@ -227,6 +227,7 @@ package main;
 
 use Path::Tiny ();
 use OCP::Node;
+use OCP::Versions;
 use OCP::Provider::Hetzner;
 # Loaded by OCP::Node anyway; named here because the budget assertions below
 # read $OCP::SSH::WAIT_TIMEOUT straight out of it.
@@ -785,6 +786,50 @@ subtest '_install_kubernetes uses k3s task when distribution=k3s' => sub {
     $node->_install_kubernetes;
     my ($call) = @{ $FakeRex::_instances[0]{calls} };
     is $call->[0], 'install_k3s_agent', 'k3s task when distribution=k3s';
+};
+
+#
+# The version tag handed to the Rex install follows the distribution, it is
+# not always RKE2's (k148).
+#
+# _install_kubernetes read get_component_version('rke2') unconditionally and
+# passed it as the `version` param regardless of which install task it chose.
+# For a k3s agent that param becomes INSTALL_K3S_VERSION, so a k3s worker was
+# told INSTALL_K3S_VERSION=v1.36.4+rke2r1 -- an RKE2 tag no k3s release
+# publishes. The two pins differ by construction (+rke2rN vs +k3sN), which is
+# what makes the choice observable; this asserts each agent gets its own pin
+# and, specifically, that the k3s agent is never handed the rke2 tag.
+#
+subtest 'the install version follows the distribution, not always rke2 (k148)' => sub {
+    my $rke2_pin = OCP::Versions->get_component_version('rke2');
+    my $k3s_pin  = OCP::Versions->get_component_version('k3s');
+    isnt $rke2_pin, $k3s_pin,
+        'the two distribution pins differ, so the choice is observable';
+
+    my %version_for;
+    for my $dist (qw( rke2 k3s )) {
+        @FakeRex::_instances = ();
+        my $k = StrictK8s::build(cr => ocpnode(
+            metadata => { name => "v-$dist", namespace => 'ocp-system' },
+            status   => { phase => 'Installing', publicIP => '1.2.3.4' },
+        ));
+        my $node = OCP::Node->from_cr($k->cr, k8s => $k,
+            provider => FakeProvider->new, ssh_key => 'K',
+            server_url => 'U', join_token => 'T',
+            distribution => $dist,
+            ssh_class => 'FakeSSH', rex_class => 'FakeRex',
+        );
+        $node->_install_kubernetes;
+        my ($call) = @{ $FakeRex::_instances[0]{calls} };
+        $version_for{$dist} = $call->[1]{version};
+    }
+
+    is $version_for{rke2}, $rke2_pin, 'the rke2 agent is pinned to the rke2 tag';
+    is $version_for{k3s},  $k3s_pin,  'the k3s agent is pinned to the k3s tag';
+    isnt $version_for{k3s}, $rke2_pin,
+        'and the k3s agent is NOT handed the rke2 tag -- the k148 defect';
+    unlike $version_for{k3s}, qr/rke2/,
+        'the k3s INSTALL_K3S_VERSION carries no rke2 marker';
 };
 
 #

@@ -379,7 +379,14 @@ sub _install_kubernetes {
         verbose  => $self->verbose,
     );
 
-    my $rke2_version = OCP::Versions->get_component_version('rke2');
+    # The install tag is the distribution's own pin: an RKE2 release tags as
+    # +rke2rN, a k3s release as +k3sN, and the two are not interchangeable.
+    # Handing a k3s agent the RKE2 tag sets INSTALL_K3S_VERSION to a value no
+    # k3s release answers to (k148). A control-plane is always RKE2 -- a k3s
+    # control-plane is rejected just below -- so the same distribution test
+    # that picks the Rex task picks the version to pin.
+    my $version = OCP::Versions->get_component_version(
+        $self->distribution eq 'k3s' ? 'k3s' : 'rke2');
 
     # Which install this node gets is a function of its ROLE, not just the
     # distribution. A worker joins as an AGENT; an additional control plane
@@ -413,7 +420,7 @@ sub _install_kubernetes {
     my %params = (
         server    => $self->server_url,
         token     => $self->join_token,
-        version   => $rke2_version,
+        version   => $version,
         node_name => $name,
         hostname  => $name,
         ntp       => 1,
