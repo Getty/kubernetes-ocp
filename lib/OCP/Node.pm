@@ -23,6 +23,16 @@ has distribution  => (is => 'ro', default => sub { 'rke2' });
 has registry_cfg  => (is => 'ro');
 has verbose       => (is => 'ro', default => 0);
 
+# The apiserver tls-san entries an additional control plane must advertise: the
+# full set of control-plane addresses, so TLS holds against every server and not
+# just police1 (k137, point 1). An arrayref, assembled by the caller from
+# OCP::Cmd::Apply::Bootstrap::cp_tls_sans -- OCP::Node is trigger-neutral and has
+# no ocp.yaml, so the set has to arrive from outside, the same way server_url and
+# join_token do. Only a control-plane role uses it (a worker joins as an agent
+# and advertises nothing); this node's own resolved address is folded in at
+# install time so a fresh cloud CP always advertises at least itself and police1.
+has tls_san       => (is => 'ro');
+
 # Cluster-wide GPU switches, from ocp.yaml's gpu: block. They are not on the
 # OCPNode CR -- they are the same for every node of a provider, and robocop
 # never sees ocp.yaml, so `ocp apply` copies them onto the OCPNodeProvider CR
@@ -456,6 +466,20 @@ sub _install_kubernetes {
     # when gpu is off, so passing it alongside gpu => 0 is harmless.
     my $gpu_driver = $self->gpu_driver;
     $params{gpu_driver} = $gpu_driver if defined $gpu_driver && length $gpu_driver;
+
+    # tls-san is a control-plane concern only: an additional server has to carry
+    # every control-plane address in its apiserver cert or TLS against it fails
+    # (k137). The caller assembled the set from the config; this node's own
+    # resolved address ($host) is folded in here, because a fresh cloud CP's
+    # address is not knowable until now -- so even without a passed list a joined
+    # control plane advertises at least itself. A worker takes none: it joins as
+    # an agent and advertises nothing.
+    if ($is_cp) {
+        my %seen;
+        my @sans = sort grep { defined && length && !$seen{$_}++ }
+                        (@{ $self->tls_san // [] }, $host);
+        $params{tls_san} = \@sans if @sans;
+    }
 
     my $ok = eval { $rex->run_task($task, %params) };
     if (!$ok || $@) {

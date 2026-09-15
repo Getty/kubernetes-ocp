@@ -9,6 +9,7 @@ use MIME::Base64 ();
 use Path::Tiny qw(path);
 use YAML::XS ();
 
+use OCP::Cmd::Apply::Bootstrap;
 use OCP::K8s;
 use OCP::Node;
 use OCP::Provider;
@@ -561,6 +562,14 @@ sub cli_reconcile_workers {
     my $secrets      = $deps->{secrets};
     my $distribution = $config->distribution || 'rke2';
 
+    # The apiserver tls-san set every joining control plane must advertise: all
+    # control-plane addresses, so TLS holds against any server and not just
+    # police1 (k137). cp_ip (police1's advertised address) folds in for the
+    # fresh-Hetzner case where the spec pins no CP addresses yet. Assembled once
+    # and passed only to control-plane role nodes below -- a worker joins as an
+    # agent and advertises nothing.
+    my @cp_sans = OCP::Cmd::Apply::Bootstrap::cp_tls_sans($config, $cp_ip);
+
     # What a machine that will not answer probably means, ready to print.
     #
     # $deps carries only the key's PATH, but the OCP::ClusterKey it came from
@@ -663,6 +672,8 @@ sub cli_reconcile_workers {
             join_token   => $join_token,
             distribution => $distribution,
             verbose      => $self->ocp->verbose,
+            (($hash->{spec}{role} // '') eq 'control-plane'
+                ? (tls_san => \@cp_sans) : ()),
             %gpu_flags,
         );
 

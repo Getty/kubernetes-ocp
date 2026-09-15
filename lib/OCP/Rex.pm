@@ -170,7 +170,14 @@ sub install_server {
     my $distribution = $opts{distribution} || 'rke2';
     my $version = $opts{version} || '';
     my $token = $opts{token} || $self->_generate_token();
-    my $tls_san = $opts{tls_san} || $self->advertised_host;
+    # tls_san may be a LIST (every control-plane address, for HA -- k137) or a
+    # single value; both travel through run_task's JSON blob unchanged, and the
+    # Rexfile emits one "  - <addr>" line per entry. Absent (or an empty list)
+    # falls back to the single advertised address, so a lone control plane is
+    # exactly as before.
+    my $tls_san = $opts{tls_san};
+    $tls_san = undef if ref $tls_san eq 'ARRAY' && !@$tls_san;
+    $tls_san ||= $self->advertised_host;
     my $node_name = $opts{node_name} || '';
 
     my $registry_cache    = $opts{registry_cache}    || '';

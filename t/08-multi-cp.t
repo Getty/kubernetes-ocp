@@ -411,4 +411,142 @@ subtest '_announce_control_planes: a single control plane stays silent' => sub {
     like $out, qr/Step 2: Deploy control plane/, 'the banner still prints';
 };
 
+# ---------------------------------------------------------------------------
+# k137, point 1: every control plane advertises EVERY control-plane address in
+# its apiserver tls-san -- not just its own, and not just police1. police1 is
+# bootstrapped through OCP::Rex::install_server; police2+ join through OCP::Node.
+# The RKE2 config each generates must therefore carry ALL CP addresses, or TLS
+# against any server other than police1 fails -- the joined servers' serving
+# certs would omit the very addresses clients reach them at.
+#
+# This is the code half of k137. Point 2 -- a client-facing HA endpoint
+# (LB / VIP / DNS round-robin) -- is a separate, still-undecided design and is
+# deliberately NOT asserted here: only the individual per-CP addresses, which
+# are correct no matter how that endpoint eventually lands.
+#
+# A call-shape test, like the rest of this file: the addresses come from three
+# ssh control planes whose hosts are pinned in ocp.yaml, so the full set is
+# knowable without provisioning a single machine.
+# ---------------------------------------------------------------------------
+
+my $RKE2_3CP_SSH = <<'YAML';
+name: mycluster
+kubernetes:
+  dist: rke2
+control_planes:
+  - provider: ssh
+    host: 10.0.0.1
+  - provider: ssh
+    host: 10.0.0.2
+  - provider: ssh
+    host: 10.0.0.3
+YAML
+
+subtest 'cp_tls_sans collects EVERY control-plane address, deduped' => sub {
+    my $config = config_for($RKE2_3CP_SSH);
+
+    my @sans = OCP::Cmd::Apply::Bootstrap::cp_tls_sans($config);
+    is_deeply \@sans, ['10.0.0.1', '10.0.0.2', '10.0.0.3'],
+        'all three configured control-plane hosts -- not just the first';
+
+    # Runtime addresses a caller already holds (police1's advertised IP, say)
+    # fold in, and an address already in the spec does not appear twice.
+    my @with_extra = OCP::Cmd::Apply::Bootstrap::cp_tls_sans(
+        $config, '10.0.0.1', '203.0.113.9');
+    is_deeply \@with_extra,
+        ['10.0.0.1', '10.0.0.2', '10.0.0.3', '203.0.113.9'],
+        'extra runtime addresses fold in; duplicates collapse';
+};
+
+subtest 'police1 (install_server) advertises all CP addresses as a tls-san list' => sub {
+    my @calls;
+    no warnings 'redefine';
+    local *OCP::Rex::run_task = sub { my ($s, $task, %p) = @_; push @calls, [$task, \%p]; 1 };
+    local *OCP::Rex::fetch_kubeconfig_ssh = sub { "apiVersion: v1\n" };
+
+    my $config = config_for($RKE2_3CP_SSH);
+    my @sans   = OCP::Cmd::Apply::Bootstrap::cp_tls_sans($config, '10.0.0.1');
+
+    my $tmp = path(tempdir(CLEANUP => 1));
+    my $key = $tmp->child('id'); $key->spew('k'); path("$key.pub")->spew('k');
+    OCP::Rex->new(host => '10.0.0.1', key_file => $key->stringify)->install_server(
+        distribution => 'rke2', version => 'v1.36.4+rke2r1',
+        node_name => 'police1', tls_san => \@sans);
+
+    my ($server_call) = grep { $_->[0] eq 'install_rke2_server' } @calls;
+    ok $server_call, 'install_server ran the server task';
+    is ref $server_call->[1]{tls_san}, 'ARRAY',
+        'tls-san travels as a LIST, not a single value';
+    is_deeply [sort @{ $server_call->[1]{tls_san} }],
+        ['10.0.0.1', '10.0.0.2', '10.0.0.3'],
+        'police1 advertises every CP address, not only its own';
+};
+
+subtest 'police2 (OCP::Node join) advertises all CP addresses as a tls-san list' => sub {
+    @FakeRex::_instances = ();
+    my $api    = FakeApi->new;
+    my $config = config_for($RKE2_3CP_SSH);
+    my @sans   = OCP::Cmd::Apply::Bootstrap::cp_tls_sans($config, '10.0.0.1');
+
+    # police2's OCPNode: control-plane role, own address 10.0.0.2 in status.
+    my $node = OCP::Node->from_cr(
+        cp_ocpnode(status => { phase => 'Installing', publicIP => '10.0.0.2' }),
+        k8s => $api, provider => undef,
+        ssh_key => 'K', server_url => 'https://10.0.0.1:9345', join_token => 'T',
+        tls_san => \@sans,
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex',
+    );
+
+    $node->_install_kubernetes;
+
+    my ($call) = @{ $FakeRex::_instances[0]{calls} };
+    is $call->[0], 'install_rke2_server',
+        'a control-plane join installs as a server';
+    is ref $call->[1]{tls_san}, 'ARRAY',
+        'the join install carries a tls-san LIST (today it carries none)';
+    is_deeply [sort @{ $call->[1]{tls_san} }],
+        ['10.0.0.1', '10.0.0.2', '10.0.0.3'],
+        'police2 advertises every CP address -- not just police1, not just its own';
+};
+
+subtest 'a joined worker carries no tls-san (guard: CP-only)' => sub {
+    @FakeRex::_instances = ();
+    my $api = FakeApi->new;
+    my $cr  = cp_ocpnode(
+        metadata => { name => 'worker-1', namespace => 'ocp-system' },
+        spec     => { role => 'worker', providerRef => 'hetzner-default' },
+        status   => { phase => 'Installing', publicIP => '10.0.0.9' },
+    );
+    my $node = OCP::Node->from_cr($cr, k8s => $api, provider => undef,
+        ssh_key => 'K', server_url => 'https://10.0.0.1:9345', join_token => 'T',
+        tls_san => ['10.0.0.1', '10.0.0.2'],
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->_install_kubernetes;
+
+    my ($call) = @{ $FakeRex::_instances[0]{calls} };
+    is $call->[0], 'install_rke2_agent', 'worker still installs as an agent';
+    ok !exists $call->[1]{tls_san},
+        'a worker never gets a tls-san -- only control planes advertise one';
+};
+
+subtest 'the Rexfile emits one tls-san entry per address (list-aware)' => sub {
+    my $shipped = path('share/Rexfile');
+    plan skip_all => 'share/Rexfile not found' unless -f $shipped;
+    my ($body) = $shipped->slurp_utf8
+        =~ /task\s+"install_rke2_server",\s*sub\s*\{(.*?)\n\};/ms;
+    ok defined $body, 'install_rke2_server task body found';
+
+    # tls_san arrives as a JSON array (the list form) or, for a hand-run
+    # `rex ... --tls_san=1.2.3.4`, as a bare scalar. Either way the generated
+    # config gets one "  - <addr>" line per address, so the task iterates
+    # rather than interpolating a single value.
+    like $body, qr/ref\s+\$tls_san\s+eq\s+['"]ARRAY['"]/,
+        'the task treats tls_san as possibly a list';
+    like $body, qr/"\s*-\s*\$\w+\\n"\s+for\b/,
+        'one "  - <addr>" line per address (a loop, not a single interpolation)';
+    unlike $body, qr/"tls-san:\\n\s*-\s*\$tls_san\\n"/,
+        'the old single-line "  - $tls_san" emission is gone';
+};
+
 done_testing;

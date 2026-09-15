@@ -106,6 +106,31 @@ sub cp_identity {
     };
 }
 
+# The apiserver tls-san set every control plane must advertise: one entry per
+# control-plane address, so a TLS handshake holds against ANY control plane and
+# not just police1 (k137, point 1). Without it a joined server's serving cert
+# carries only its own SAN, and a client that reaches it by another CP's address
+# is rejected.
+#
+# The addresses come from two places, folded together and deduplicated: each
+# configured control plane's known address (public_ip, else host -- set for the
+# ssh/local providers up front, pinned back by a prior apply for Hetzner), plus
+# @extra, the runtime addresses a caller already holds (police1's advertised IP
+# at bootstrap; the join URL's host on the CR path). A fresh Hetzner deploy has
+# no addresses in the spec yet, so the list is whatever @extra carries plus each
+# joiner's own resolved address, which OCP::Node folds in itself at install time.
+#
+# Sorted for a deterministic config. The client-facing HA endpoint (LB / VIP /
+# DNS) is a separate, undecided design (k137, point 2) and is deliberately NOT
+# one of these entries.
+sub cp_tls_sans {
+    my ($config, @extra) = @_;
+    my @addrs = map { $_->{public_ip} // $_->{host} } @{ $config->control_planes };
+    push @addrs, @extra;
+    my %seen;
+    return sort grep { defined && length && !$seen{$_}++ } @addrs;
+}
+
 # Display name for a distribution id. Apply hardcoded "RKE2" in its
 # progress lines, so a `dist: k3s` cluster was announced as "Installing
 # RKE2 server..." while install_k3s_server was the task actually
@@ -372,11 +397,18 @@ sub bootstrap_control_plane {
         || OCP::Versions->get_component_version($distribution)
         || '';
 
+    # Every control-plane address goes into police1's tls-san, not just its own,
+    # so TLS holds against any server once police2+ join the HA cluster (k137).
+    # $advertised is folded in for the fresh-Hetzner case, where the spec pins no
+    # addresses yet and police1's is the only one known at this point.
+    my @tls_sans = cp_tls_sans($config, $advertised);
+
     my $result;
     eval {
         $result = $rex->install_server(
             distribution      => $distribution,
             version           => $version,
+            tls_san           => \@tls_sans,
             node_name         => $cp_name,
             registry_cache    => $config->registry_cache,
             registry_upstream => $config->registry_upstream,

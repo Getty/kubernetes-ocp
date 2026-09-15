@@ -562,7 +562,14 @@ task "install_rke2_server", sub {
     my $params = task_params(shift);
     my $token = $params->{token} || _generate_token();
     my $version = $params->{version} || '';
-    my $tls_san = $params->{tls_san} || '';
+    # tls-san carries EVERY control-plane address, not just this node's, so TLS
+    # holds against any server in an HA cluster and not only police1 (k137). It
+    # arrives as a JSON array (the list OCP::Rex/OCP::Node build) or, for a
+    # hand-run `rex ... --tls_san=1.2.3.4`, as a bare scalar -- accept both.
+    my $tls_san = $params->{tls_san};
+    my @tls_sans = ref $tls_san eq 'ARRAY' ? @$tls_san
+                 : (defined $tls_san && length $tls_san) ? ($tls_san)
+                 : ();
     my $node_name = $params->{node_name} || '';
     # Optional server-join mode (k8): when a supervisor URL is passed, this
     # node joins the EXISTING embedded-etcd cluster as an additional
@@ -586,7 +593,10 @@ task "install_rke2_server", sub {
     $config .= "server: $server\n" if $server;
     $config .= "token: $token\n";
     $config .= "node-name: $node_name\n" if $node_name;
-    $config .= "tls-san:\n  - $tls_san\n" if $tls_san;
+    if (@tls_sans) {
+        $config .= "tls-san:\n";
+        $config .= "  - $_\n" for @tls_sans;
+    }
     # Disable every bundled ingress controller — Cilium Gateway API is the
     # ingress here. RKE2 v1.36 added Traefik on top of ingress-nginx, and its
     # helm-install job CrashLoopBackOffs against a Cilium-owned cluster
