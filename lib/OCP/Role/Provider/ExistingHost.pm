@@ -19,9 +19,32 @@ our @LEFTOVER_PATHS = qw(
     /run/k3s
 );
 
+# rke2-uninstall.sh / k3s-uninstall.sh tear down the distribution but leave
+# Cilium's policy-routing ip rules in place: the fwmark rules that point at
+# Cilium's dedicated proxy route tables (2004 to-proxy, 2005 from-proxy) and
+# the local-table lookup Cilium relocates from priority 0 to priority 100.
+# Those tables and rules are OCP/Cilium's own, nothing else uses the magic
+# table ids. They are harmless on a fresh box — the reboot before a first
+# bootstrap clears them — but on the ExistingHost path we uninstall a host we
+# will NOT reboot before re-provisioning, so they accumulate as ballast. This
+# is the one uninstall path that runs on such a host, so it flushes them here.
+our @LEFTOVER_IP_TABLES = (2004, 2005);
+
+# Every statement below is defensive: draining a table that holds no rules, or
+# deleting a rule that is not there, exits non-zero and is swallowed, so an
+# already-clean host — or one without `ip` on PATH — is a no-op, never a failed
+# uninstall. The relocated local rule is handled last and only ever removed
+# once a priority-0 local lookup is back in place, so the host can never end up
+# with no local-table rule at all.
 our $UNINSTALL_CMD = join ' ; ',
     'rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true',
-    'rm -rf ' . join(' ', @LEFTOVER_PATHS) . ' 2>/dev/null || true';
+    'rm -rf ' . join(' ', @LEFTOVER_PATHS) . ' 2>/dev/null || true',
+    'for t in ' . join(' ', @LEFTOVER_IP_TABLES)
+        . '; do while ip rule del lookup $t 2>/dev/null; do :; done; done',
+    'ip rule list 2>/dev/null | grep -qE "^0:[[:space:]].*lookup local"'
+        . ' || ip rule add from all lookup local priority 0 2>/dev/null || true',
+    'ip rule list 2>/dev/null | grep -qE "^0:[[:space:]].*lookup local"'
+        . ' && ip rule del from all lookup local priority 100 2>/dev/null || true';
 
 # A consumer only has to say which host it talks to, how to check that the
 # host is there, and how to run a command on it. Everything else is the same
@@ -97,7 +120,10 @@ No-op: the host was running before we got here. Returns its argument.
 
     $p->delete_server(undef, host => '10.0.0.5');
 
-Runs the RKE2/K3s uninstall script on the host. C<$server_id> is ignored
+Runs the RKE2/K3s uninstall script on the host, then removes the leftovers the
+vendor uninstallers stand: OCP-installed paths (see C<@LEFTOVER_PATHS>) and
+Cilium's residual policy-routing ip rules (see C<@LEFTOVER_IP_TABLES>), which
+matter on this reboot-less re-provisioning path. C<$server_id> is ignored
 (the machine does not belong to OCP); C<host> is read through C<resolve_host>.
 
 =cut

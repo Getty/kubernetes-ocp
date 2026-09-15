@@ -133,6 +133,30 @@ subtest 'delete_server runs uninstall on the host, not the machine' => sub {
         'also cleans up OCP-installed leftovers';
 };
 
+subtest 'delete_server flushes Cilium leftover policy-routing ip rules (k147)' => sub {
+    # rke2/k3s-uninstall.sh leave Cilium's fwmark policy-routing rules behind
+    # (tables 2004/2005 plus the local lookup relocated to priority 100). On
+    # the ExistingHost path the host is re-provisioned without a reboot, so the
+    # uninstall command has to clear them itself.
+    my $p = FakeHostAdapter->new;
+    $p->delete_server(undef, host => '10.0.0.5');
+    my $cmd = $p->commands->[0][1];
+
+    like $cmd, qr/for t in 2004 2005/,
+        'iterates Cilium proxy route tables (2004 to-proxy, 2005 from-proxy)';
+    like $cmd, qr/ip rule del lookup \$t/,
+        'drains every rule pointing at each leftover table';
+    like $cmd, qr/from all lookup local priority 0/,
+        'restores the default priority-0 local lookup';
+    like $cmd, qr/from all lookup local priority 100/,
+        'removes the local rule Cilium relocated to priority 100';
+
+    # Defensive by construction: an already-clean host (or one without `ip`)
+    # must be a no-op, not a failed uninstall.
+    like $cmd, qr{2>/dev/null},   'ip-rule cleanup is silenced';
+    like $cmd, qr/\|\| true/,     'ip-rule cleanup cannot fail the uninstall';
+};
+
 subtest 'delete_server without a host does nothing' => sub {
     my $p = FakeHostAdapter->new(fixed_host => '');
     $p->delete_server(undef);   # resolve_host dies -> swallowed -> no-op
