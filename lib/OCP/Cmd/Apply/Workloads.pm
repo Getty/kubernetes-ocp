@@ -40,6 +40,16 @@ L<OCP::Cmd::Apply> re-exports these as thin forwarders so the test surface
 
 =cut
 
+# Readiness budget for nfd-master, in seconds. The first apply on a fresh
+# cluster pulls the NFD image cold through the pull-through cache: measured at
+# ~2m31s for the 83 MB image on ocp-police1 (k149), which overran the old 120s
+# gate and killed the very first apply with "nfd-master not ready" — the image
+# was still downloading, not stuck. The poll returns the instant the deployment
+# reports an available replica, so a warm cluster still clears in one cycle;
+# this only lifts the ceiling for the cold-pull first run, with headroom for a
+# slow or flaky external registry (cf. k144).
+sub nfd_ready_timeout { 300 }
+
 sub setup_nfd {
     my ($self, $config) = @_;
 
@@ -88,9 +98,10 @@ sub setup_nfd {
     $self->_apply_yaml_string($api, $manifest);
 
     # Wait for nfd-master
+    my $nfd_timeout = nfd_ready_timeout();
     print "      Waiting for nfd-master...\n";
-    $self->_poll_deployment_ready($api, 'nfd-master', 'node-feature-discovery', 120)
-        or die "nfd-master not ready within 120s\n";
+    $self->_poll_deployment_ready($api, 'nfd-master', 'node-feature-discovery', $nfd_timeout)
+        or die "nfd-master not ready within ${nfd_timeout}s\n";
 
     # Wait for nfd-worker DaemonSet
     print "      Waiting for nfd-worker...\n";
