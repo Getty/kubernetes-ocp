@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-09-18T05:47:58Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:47:58Z
+created: 2026-09-14T03:13:02Z
+id: 145
+priority: high
+started: 2026-09-14T03:13:39Z
+status: done
+tags:
+- exec
+- robustness
+- timeout
+title: 'OCP::Exec: waitpid nach Timeout unbounded (R2-Loch), EINTR als EOF, irrefuehrender
+  signal-Wert'
+updated: 2026-09-18T05:47:58Z
+---
+
+Review k138 2026-09-14 (empirisch bestaetigt). Drei Punkte im neuen OCP::Exec (Flagship-Safety-Mechanismus dieses Branch, geht morgen aufs Blech):
+
+(1) MEDIUM Exec.pm:83-90: der Deadline steuert NUR die IO::Select-Read-Schleife. Schliesst das Kind beide Pipes waehrend es noch lebt (z.B. exec 1>&- 2>&-, oder es daemonisiert/backgroundet etwas das stdio schliesst), verlaesst die Schleife mit timed_out=0 und faellt auf das UNBOUNDED waitpid($pid,0) bei :89 -> blockiert ewig, timeout wird ignoriert. Bestaetigt: capture_command mit einem Kind das beide Pipes schliesst und dann 20s schlaeft, timeout=>2, kam unter 8s-OS-Guard NICHT zurueck (kill 137); dasselbe Kind mit offenen Pipes kehrt korrekt bei 2s mit exit=124/timed_out=1 zurueck. Fix: nach der Schleife im nicht-timed-out-Zweig mit bounded waitpid(...,WNOHANG) gegen dieselbe Deadline reapen, _terminate bei Ablauf. t/81 hat die zwei Proben als fertige Assertions.
+
+(2) LOW Exec.pm:74-78: sysread liefert undef bei EINTR -> wird mit n==0 zu EOF zusammengefasst und der fd entfernt -> stiller Output-Truncate/Pipe-Drop. wait_for_ssh installiert einen SIG{INT}-Handler um genau diesen Pfad. Fix: nicht-definiertes n mit EINTR -> retry, getrennt von echtem EOF/Fehler (konsistent zum EINTR-toleranten select direkt darueber).
+
+(3) LOW Exec.pm:92-104: bei Timeout reapt _terminate das Kind nach TERM/KILL, also ist der Wait-Status-Signalteil 15/9 und landet im signal-Feld -> widerspricht dem POD (signal=0 wenn keins). exit=124/timed_out=1 sind korrekt, kein Caller liest signal -> kosmetisch aber irrefuehrend. Fix: signal=0 erzwingen wenn timed_out.
+
+Lane: ocp-provider-worker (Exec.pm underpinnt Local/SSH run_command). [SAFE-TO-FIX-WITH-TEST]
+
+2026-09-14 04:40 Implementiert + committed (abfdd68), t/81 R2b red->green (close-both-pipes-then-linger jetzt am Timeout gekillt). waitpid(WNOHANG) gegen Deadline, EINTR-Retry, signal=0 bei Timeout. Wartet auf Docker-make-test + Review.
+
+2026-09-18 05:47 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
