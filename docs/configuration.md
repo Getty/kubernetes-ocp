@@ -21,8 +21,8 @@ kubernetes:
 
 control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
   provider: hetzner            # CPs), or an Array of hashes (mixed).
-  server_type: cx32            # NOTE: today only the FIRST entry is ever
-  location: fsn1               # deployed — see "Limits" in the README.
+  server_type: cx32            # rke2 deploys every entry; k3s only the first.
+  location: fsn1               # No HA client endpoint yet — see "Limits" in README.
   image: debian-13
 
 workers:                       # optional pools; each becomes Pending OCPNode

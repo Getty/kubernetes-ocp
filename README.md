@@ -400,10 +400,16 @@ ocp version
 
 Stated plainly, so nothing surprises you halfway through:
 
-- **Only the first control plane is deployed.** `ocp.yaml` can express several
-  (`nodes: N`, or an array), but `ocp apply` bootstraps only the first and
-  prints a loud warning if more are configured. Multi-control-plane is planned,
-  not built.
+- **RKE2 deploys every control plane, but there is no HA client endpoint
+  yet.** `ocp apply` bootstraps all of them (embedded-etcd join: the first as
+  cluster-init, the rest joining as servers), and every control plane's
+  address is in every control plane's TLS SANs — so etcd quorum survives one
+  going down. What's still missing is a load balancer, VIP or DNS name in
+  front of them: the kubeconfig and every other client keeps pointing at the
+  first control plane's address, so losing that one machine still costs you
+  API access even though the rest of the cluster is fine.
+- **k3s does not support multiple control planes at all.** Configure more than
+  one and `ocp apply` prints a loud warning and bootstraps only the first.
 - **`robocop.security_level: inject` is not implemented.** The config accepts
   it; `ocp deploy-robocop` refuses to run with it. Use `secret` or
   `secret_approved`.
