@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-09-18T05:47:46Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:47:46Z
+created: 2026-09-14T03:09:44Z
+id: 142
+priority: medium
+started: 2026-09-14T03:13:34Z
+status: done
+tags:
+- secrets
+- keys
+- hardening
+title: 'Secrets/Keys-Haertung: ssh-keygen Shell-Interpolation, Key-Perm-Race, ungepruefter
+  urandom-Read'
+updated: 2026-09-18T05:47:46Z
+---
+
+Drei gehaertete Kleinfixes aus dem Audit 2026-09-14.
+
+(1) MEDIUM Secrets.pm:425-426 generate_ssh_key baut "ssh-keygen -t ed25519 -N ... -f QUOTE$key_pathQUOTE ..." als String und ruft system(SCALAR) -- der EINZIGE String-Shell-Out in lib/+bin/ (alle anderen list-form). Ein project_dir dessen absoluter Pfad ein Single-Quote/Shell-Metazeichen enthaelt bricht aus. $name ist datumsbasiert (nicht User-Input), der reale Vektor ist der operator-kontrollierte Pfad -> daher medium. Fix: list-form system(ssh-keygen,-t,ed25519,-N,LEER,-f,"$key_path",-C,ocp-cluster-key). TDD: temp project_dir mit einem Quote im Pfad beweist Bruch, list-form gruen.
+
+(2) LOW Secrets.pm:169-171 (generate_age_key), :303-304, :521-523 (decrypt kubeconfig) schreiben age.key + entschluesselte kubeconfig via ->spew (umask, ~0644) und narrowen erst danach auf 0600 -> sub-ms world-readable Fenster fuer lokale User die .ocp/ (mkpath ~0755) traversieren. Muster von TempKeyPair/ClusterKey uebernehmen: 0600 vorab (O_CREAT|O_EXCL,0600 oder chmod der leeren Datei vor Inhalt).
+
+(3) LOW Keys.pm:415-422, Password.pm:124-131: read $fh,$bytes,$len ignoriert den Returnwert. Auf Linux/urandom bei <=48 Byte theoretisch, aber ein stiller Short-Read schwaecht PBKDF2-Salt/Nonce/AES-Key. Fix: Laenge pruefen (== $len) sonst croak. Rex.pm:355-366 hat dieselbe Stelle, gehoert aber in die Provider-Lane -> separat.
+
+Lane: ocp-secrets-worker (Secrets/Keys/Password). [SAFE-TO-FIX-WITH-TEST]
+
+2026-09-14 04:40 Implementiert + committed (ef567ef), lane-verifiziert: t/82 (17 Tests, 6 red vorher) + t/01/05/08 gruen. _spew_secure O_CREAT|O_EXCL 0600, ssh-keygen list-form, urandom short-read croak. Wartet auf bindende Docker-make-test (CI) + Maintainer-Review.
+
+2026-09-18 05:47 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
