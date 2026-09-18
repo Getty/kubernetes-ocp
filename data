@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-09-18T05:47:35Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:47:35Z
+created: 2026-09-14T03:09:39Z
+id: 141
+priority: high
+started: 2026-09-14T03:13:28Z
+status: done
+tags:
+- init
+- secrets
+- security
+title: 'init: Hetzner-API-Token wird mit Terminal-Echo abgefragt'
+updated: 2026-09-18T05:47:35Z
+---
+
+Haertungs-Audit 2026-09-14. Init.pm:341-343 liest den Hetzner-API-Token per plain <STDIN> (Echo AN), statt via OCP::Password::prompt_password (noecho, Term::ReadKey), wie es alle PINs tun (Init.pm:237/290, Apply.pm:191, ClusterKey.pm:282). Der Token ist maechtiger als jede PIN (erzeugt/loescht bezahlte Server, liest das ganze Hetzner-Projekt) und landet so sichtbar in Scrollback, tmux/script-Capture und Screen-Recordings.
+
+Fix: Token via OCP::Password::prompt_password("Enter Hetzner API token: ") lesen (prompt geht dann korrekt auf STDERR). Test: prompt_password mocken, pruefen dass kein plain <STDIN> mehr auf dem Pfad liegt. Lane: ocp-apply-worker (Init.pm) mit OCP::Password. [SAFE-TO-FIX-WITH-TEST]
+
+2026-09-14 03:13 Scope erweitert um Review-k138-finding 6 [LOW]: Init.pm:586-628 (local-Block) fehlt der have-a-key-Guard des ssh-Blocks (:528, Bedingung nicht-nopassword ODER defined pubkey). Im dev-mode-Edge ohne .ocp/id_ed25519.pub druckt er Add the [leeres Label] public key + falschen keys-show-purpose-admin-Fallback. Beide Init.pm-Fixes zusammen in einem Durchgang.
+
+2026-09-14 04:40 Implementiert + committed (2471e85), t/41 + t/69 red->green. Token via prompt_password (kein Echo, STDERR), local-Block mit have-a-key-Guard wie ssh-Block. Wartet auf Docker-make-test + Review.
+
+2026-09-18 05:47 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
