@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-09-18T05:48:22Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:48:22Z
+created: 2026-09-14T17:21:28Z
+id: 147
+priority: low
+started: 2026-09-15T00:17:43Z
+status: done
+tags:
+- cilium
+- rexfile
+- cleanup
+- uninstall
+title: 'rke2-uninstall lässt Ciliums ip-rules stehen: ExistingHost-UNINSTALL flusht
+  sie nicht'
+updated: 2026-09-18T05:48:22Z
+---
+
+Nebenfund aus k144 (pristine-Capture 2026-09-14 13:02). rke2-uninstall.sh entfernt Ciliums policy-routing-ip-rules NICHT (fwmark 0x200 lookup 2004, local@100). Sie bleiben nach dem Uninstall bis zum Reboot liegen. Harmlos bei frischer Box (Reboot davor), aber Ballast beim Re-Provisionieren eines bestehenden Hosts ohne Reboot.
+
+Fix-Optionen: (a) ExistingHost-UNINSTALL-Pfad in share/Rexfile um ein `ip rule flush` der Cilium-Rules ergänzen, oder (b) Reboot-Hinweis in der Uninstall-Doku. Lane: ocp-infra-worker (share/Rexfile). Kein Behavior-Bug an sich, reine Aufräum-/Robustheit. Quelle: k144, siehe dortige Capture-Notiz.
+
+2026-09-15 00:17 Fix landed 09002ff on k138-consolidate-all. NOTE: uninstall path is Perl (OCP::Role::Provider::ExistingHost $UNINSTALL_CMD), NOT share/Rexfile as the card assumed. Flushes Cilium tables 2004/2005 + restores/relocates local rule, double-guarded. Regression test t/50-existing-host-role.t (asserts command string).
+
+2026-09-18 05:48 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
