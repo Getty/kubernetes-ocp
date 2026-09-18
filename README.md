@@ -1,5 +1,7 @@
 # OCP — Omni Control Plane
 
+![OCP — Omni Control Plane: come quietly, or there will be reconciliation](assets/github.jpg)
+
 **One command, one config file, a complete Kubernetes cluster.**
 
 OCP is a CLI that builds and looks after Kubernetes clusters — on Hetzner Cloud
