@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-09-18T05:47:23Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:47:23Z
+created: 2026-09-14T03:09:34Z
+id: 140
+priority: high
+started: 2026-09-14T03:13:23Z
+status: done
+tags:
+- destroy
+- safety
+- reliability
+title: 'destroy: Erfolg gemeldet & State geloescht trotz fehlgeschlagenem Hetzner-Delete'
+updated: 2026-09-18T05:47:23Z
+---
+
+Haertungs-Audit 2026-09-14. Destroy.pm:245-250 evalt den Hetzner-Delete und degradiert jeden Fehler zu einer STDERR-Warnung, laeuft weiter. _cleanup_project_state (:300) loescht status.yaml/deployed.yaml/kubeconfig.yaml UNBEDINGT; Abschluss "Cluster destroyed." + return 0 (:306-308), kein Aggregat-Erfolgsflag, kein Nicht-Null-Exit bei Teilfehler.
+
+Szenario: ein Server-Delete scheitert (Rate-Limit, transientes 5xx, gesperrter/transitioning Server, reduziertes Token-Scope). Der Server laeuft weiter (kostet), aber status.yaml -- die einzige lokale providerId-Spur -- ist geloescht, kubeconfig weg, Exit 0, Ausgabe "Cluster destroyed." Ein CI-Wrapper/Operator glaubt, der Teardown sei fertig. Recovery existiert nur solange secrets.yaml/Token leben UND das Label zu config->name passt; der k98-Fall (fehl-gelabelte Server) wird nur gemeldet, nie neu versucht. Widerspricht dem Modul-eigenen Prinzip :187-189 (nie einen Cleanup-Schritt jemandem Geld kosten lassen).
+
+Fix: per-Node-Delete-Fehlerflag; status.yaml + providerId der fehlgeschlagenen Nodes behalten; Exit != 0 + Abschlussmeldung qualifizieren, wenn irgendetwas fehlschlug. Test: FakeProvider dessen delete_server fuer einen Node stirbt -> State bleibt erhalten, Exit != 0. Lane: ocp-destroy-worker. [SAFE-TO-FIX-WITH-TEST]
+
+2026-09-14 03:13 Review k138 (2026-09-14) fand nebenbei finding 5 [LOW, pre-existing]: Destroy.pm:137-141 + Gate :261 -- ein local-Node der nur ueber den Spec-Fallback kommt hat public_ip gleich Bindestrich, daher laeuft der on-box rke2/k3s-uninstall NICHT, obwohl Local::resolve_host eh 127.0.0.1 targetet. Separat/spaeter fixen (beruehrt Provider-Semantik); NICHT Teil des HIGH-Fixes dieser Karte.
+
+2026-09-14 04:40 Implementiert + committed (a025f2d), t/108 red->green + t/107 angepasst (nur die bug-kodierende Assertion ersetzt, Kanal-Behauptung erhalten). @undeleted gated Cleanup, INCOMPLETE->STDERR, exit!=0, Happy-Path unveraendert. Finding 5 (local spec-fallback uninstall-Gate) bewusst separat offen (Notiz auf Karte). Wartet auf Docker-make-test + Review.
+
+2026-09-18 05:47 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
