@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-18T05:48:11Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:48:11Z
+created: 2026-09-14T05:42:32Z
+id: 146
+priority: medium
+started: 2026-09-14T05:42:39Z
+status: done
+tags:
+- destroy
+- local
+- cleanup
+title: 'destroy(local): on-box Uninstall wird bei Spec-Fallback-Node uebersprungen'
+updated: 2026-09-18T05:48:11Z
+---
+
+Follow-up zu k140 (k138-Review finding 5). Destroy.pm:137-141 + Gate ~:261: ein provider=local Control-Plane-Node, der nur ueber den Spec-Fallback kommt (kein host in ocp.yaml), hat public_ip="-"; der Uninstall-Zweig verlangt public_ip ne "-", also laeuft der on-box rke2/k3s-uninstall NICHT -- obwohl Local::resolve_host host ignoriert und immer 127.0.0.1 targetet, der Uninstall also laufen KOENNTE. Project-State-Cleanup laeuft weiter; nur der on-box-Uninstall fehlt -> ocp destroy laesst bei local rke2 installiert liegen. Fix: fuer den local-Provider den Uninstall auch bei public_ip="-" fahren (via resolve_host/127.0.0.1); hetzner/ssh-Gates unveraendert. TDD: FakeProvider/local spec-fallback -> uninstall laeuft; hetzner mit "-" -> weiterhin KEIN ssh-uninstall. Lane: ocp-destroy-worker. [SAFE-TO-FIX-WITH-TEST]
+
+2026-09-14 05:52 EMPIRISCH BESTAETIGT auf echter Infra (2026-09-14, ocp-police1, k133-Image): ocp destroy --force auf dem local-Cluster meldete "Cluster destroyed." und raeumte status.yaml/deployed.yaml/kubeconfig -- ABER rke2-server lief danach WEITER und /var/lib/rancher/rke2 + /etc/rancher/rke2 waren noch da (Node war "capture1-cp-1 (local, -)", public_ip "-"). Der on-box-Uninstall wurde also uebersprungen, genau wie vorhergesagt. Manuelles rke2-uninstall.sh war noetig. Der Fix (diese Karte) schliesst genau diese Luecke.
+
+2026-09-14 05:54 Implementiert + committed (fb1bd5b), lane-verifiziert (t/77/t/71/t/29/t/108/t/107 gruen, 65). Zusaetzlich EMPIRISCH auf echter Infra bestaetigt: k133-destroy liess rke2 auf der local-Box laufen; der Fix raeumt es via resolve_host(127.0.0.1). Wartet auf Docker-make-test + Review.
+
+2026-09-18 05:48 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
