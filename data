@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-09-18T05:48:46Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:48:46Z
+created: 2026-09-14T19:45:31Z
+id: 149
+priority: medium
+started: 2026-09-15T00:17:33Z
+status: done
+tags:
+- apply
+- nfd
+- timeout
+- robustness
+title: 'ocp apply: NFD-Readiness-Wait (120s) kürzer als kalter NFD-Image-Pull (~2m31s)
+  -> erster Apply scheitert'
+updated: 2026-09-18T05:48:46Z
+---
+
+Gefunden bei der k143-Cluster-Verifikation auf ocp-police1 (2026-09-14, rke2 v1.36.4). Erster `ocp apply` auf JUNGFRÄULICHEM Cluster brach mit exit 1 ab: "nfd-master not ready within 120s". Root-Cause (K8s-Events): das NFD-Image registry.k8s.io/nfd/node-feature-discovery:v0.18.3 (83 MB) wurde beim ersten Mal in 2m31s extern (via ocp-cache Pull-Through, kalt) gezogen -- länger als das 120s-Readiness-Budget (vgl. OCP::Cmd::Apply::Health.pm:121 default 120; auch ocp-cache/ocp-registry nutzen 120, Registry.pm:86-93). Cluster war danach voll gesund; ein zweiter apply lief sofort grün (Image gecacht) -> Result=success, all pods healthy. Also KEIN Bump-Regress, sondern zu enges Timeout ggü. kaltem externen Pull.
+
+Fix-Optionen (Maintainer/apply-Lane): (a) NFD-Wait-Budget anheben bzw. an Image-Pull-Dauer koppeln, (b) condition-based statt fixer 120s (vgl. superpowers condition-based-waiting), (c) NFD-Image vor dem Readiness-Wait vorwärmen/pre-pullen. Betrifft potentiell jeden Erst-Apply hinter langsamem/instabilem externen Registry-Zugang (vgl. k144 CloudFront no-route-to-host). Lane: ocp-apply-worker. Beleg: /root/verify143/apply.log (fail) + apply2.log (success) auf ocp-police1.
+
+2026-09-15 00:17 Fix landed 6106509 on k138-consolidate-all: nfd_ready_timeout 120->300s (poll is already condition-based; only budget too small vs ~2m31s cold pull). Regression test t/83-nfd-readiness-budget.t (virtual clock, no wall-clock).
+
+2026-09-18 05:48 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
