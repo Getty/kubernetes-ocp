@@ -1,0 +1,41 @@
+---
+claimed_at: 2026-09-18T05:48:57Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:48:57Z
+created: 2026-09-13T22:03:18Z
+id: 138
+priority: high
+started: 2026-09-18T05:48:57Z
+status: done
+tags:
+- integration
+- debug
+- image
+title: Alle offene Arbeit auf einen Integrations-Branch buendeln + Nachtanalyse-Debug-Fixes
+  einloesen
+updated: 2026-09-18T05:48:57Z
+---
+
+Ziel: EIN Branch mit ALLEM was wir haben, damit ein frisches Image (via CI-Publish-Policy: main+Tags) auf echter Hardware getestet werden kann. Nicht auf main gehen.
+
+Zu buendeln (Inventar, verifiziert git cherry / diff):
+- k134 (CICD + k133-Vendoring): 965fdba + 13dc161
+- finish-open-tickets: k8 Multi-CP RKE2 (628efea), k135 Crypt::Age/CVE-Pin (6cc4a79), k136 Changes (3b6e9e3)
+- claude/backlog-105-126: k105 destroy/ssh->STDERR + k126 tote CRD-Felder -- echt un-gemergt aber 13 hinter main, braucht sorgfaeltiges Reapply (kein Blind-Merge)
+- Nachtanalyse-Fixes (NIE committet, [[ocp-optimization-findings]]): Rex-Debug-Live-Streaming (OCP_REX_DEBUG), run_command-Robustheit (Local+SSH Timeout/Deadlock), libssh-Cleanup 0.002->0.003, advertised_host-Seam + init-local-Key-Hinweis.
+
+BEWUSST DRAUSSEN: Cilium single-NIC Root-Cause-Fix -- braucht das reale Live-Capture, das das Debug-Streaming erst liefert. Nicht blind committen.
+Ballast (nichts einzigartig, git cherry alles -): backup/pre-merge-fix, pickup-tip-safety -> am Ende loeschen.
+
+Done = ein Branch, make test gruen, Image baubar; Cilium-Fix separat nach Capture.
+
+2026-09-13 22:29 Integrations-Branch k138-consolidate-all steht. Drin (verifiziert, je Tests gruen): k134+fot vereinigt (k8/k135/k136/Vendoring); Rex-Live-Streaming OCP_REX_DEBUG (fbb8de6); run_command-Robustheit via neuem OCP::Exec (06b048b); k126 CRD reverse-check (4247677); k105 destroy/ssh->STDERR (f375de6). Laeuft noch: advertised_host-Seam + init-local-Key-Hinweis. libssh-Cleanup verschoben (Sandbox kann make snapshot nicht, siehe neue Karte). Danach: make test-host, Git-Tag k138-debug -> CI published raudssus/ocp:k138-debug.
+
+2026-09-13 22:50 Fertig auf k138-consolidate-all: gesamte Code-Arbeit + advertised_host (91c5926), network_interface-delete (20547db), init-local-Key-Hinweis (6c19328). Eigener make test-host: Files=84 Tests=1342 PASS. patch-id-Check bestaetigt: k134+fot vollstaendig drin. Branch + annotated Tag k138-debug nach origin gepusht -> CI baut & published raudssus/ocp:k138-debug (Docker Hub + GHCR). Lokaler make build in Sandbox nicht moeglich (kein CPAN-Netz fuer Crypt::Age/File::SOPS) -> CI baut mit Netz. Cilium-Fix bewusst drausssen (wartet auf Live-Capture), libssh -> k139.
+
+2026-09-13 23:20 Image raudssus/ocp:k138-debug LOKAL gebaut & verifiziert (make build TAG=k138-debug, EXIT 0). Alle 6 lokalen Siblings vendored: Crypt::Age 0.004, File::SOPS 0.004, IO::K8s 1.108, Kubernetes::REST 1.108, Net::Async::Kubernetes 0.008, WWW::Hetzner 0.101. Verifiziert im Image: ocp --help/version, OCP::Exec (capture_command), OCP_REX_DEBUG. Build-Fix committet (6fcaab6): make vendor + Dockerfile decken jetzt alle 6 lokalen Siblings. CI-Weg NICHT gangbar (frischer Checkout hat keine Sibling-Checkouts -> vendor/ leer), daher lokal gebaut wie k133-vendored. OFFEN: Push nach Docker Hub muss der User machen (Sandbox blockt Registry-Push), dann podman pull auf pikachu.
+
+2026-09-14 04:40 2026-09-14 autonome Nacht-Session: Audit + Fixes auf k138-consolidate-all gelandet (lokal committed, NICHT gepusht). (a) Haertungs-Audit -> k142 Secrets (ef567ef), k140 destroy-Teilfehler/Geld-Leck (a025f2d), k141 init-Token-Echo+Guard (2471e85). (b) k138-Diff-Review fand k145 OCP::Exec Timeout-Loch (unbounded waitpid), gefixt (abfdd68). Alle vier je Lane-verifiziert (make test-host je Lane gruen) + full-suite Chunk1 (553 Tests) gruen. Die VOLLE make test-host lief in der Sandbox NICHT durch (Session-Speicherdeckel, OOM); bindend ist ohnehin Docker-make-test -> CI/morgen. (c) Version-Audit -> k143: cert-manager 1.21.2 einziger sinnvoller Bump, KEIN Sicherheits-Notstand, Cilium/GPU bewusst HOLD. (d) Cilium-Neubewertung -> k144: Journal-Mine auf ocp-police1 zeigt eth0 nie down + spaeteren gesunden Lauf; NM inactive/networkd active (Tier-1 raus); konkurrierende Ursache = in-bootstrap-Client auf routbarer IP statt loopback (Review-finding 2). Ballast-Branches backup/pre-merge-fix + pickup-tip-safety als loeschbar bestaetigt (cherry all -), aber NICHT geloescht -> User-OK abwarten. Changes unangetastet (unreleased, First-Release-Changelog).
+
+2026-09-18 05:48 Integrations-Branch gelandet: 37 Commits per ff-merge auf main (735f093..ead1cab), origin/main gepusht. Docker make test gruen (1378). README+configuration.md Multi-CP-Doku korrigiert, Social-Preview-Banner ergaenzt.
