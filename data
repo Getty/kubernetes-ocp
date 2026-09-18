@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-18T05:48:34Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-18T05:48:34Z
+created: 2026-09-14T19:24:27Z
+id: 148
+priority: medium
+started: 2026-09-15T00:17:14Z
+status: done
+tags:
+- bug
+- state
+- node
+- k3s
+title: 'OCP::Node: k3s-Agent bekommt rke2-Versionstag als INSTALL_K3S_VERSION'
+updated: 2026-09-18T05:48:34Z
+---
+
+Gefunden beim rke2/k3s-Bump (k143), unabhaengig vom Bump. lib/OCP/Node.pm:382 liest get_component_version("rke2") UNBEDINGT und reicht es als version-Param weiter -- auch wenn die gewaehlte Task install_k3s_agent ist (Node.pm:411). Ein k3s-Worker bekaeme damit INSTALL_K3S_VERSION=v1.36.4+rke2r1, ein fuer k3s ungueltiger Tag. Fix: die Version passend zur dist waehlen (rke2- vs k3s-Pin) statt hart rke2. Lane: ocp-state-worker. Trifft nur den k3s-WORKER-Pfad (Agent), der selbst noch end-to-end unverifiziert ist (siehe k29) -- daher kein Blocker, aber echte Korrektheitsluecke.
+
+2026-09-15 00:17 Fix landed 5c96e46 on k138-consolidate-all: _install_kubernetes pins by distribution (k3s->k3s tag). Regression test t/16-node.t (red-green verified).
+
+2026-09-18 05:48 Docker make test gruen (Files=87, Tests=1378, Result: PASS); gelandet auf main via ff-merge von k138-consolidate-all (tip ead1cab), gepusht.
