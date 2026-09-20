@@ -105,6 +105,31 @@ sub ensure_providers {
 sub ensure_provider_cr {
     my ($self, $api, $type, $ns, $config, $secrets) = @_;
 
+    # A `local` provider gets no auto-created OCPNodeProvider CR here.
+    #
+    # `local` is the machine `ocp` runs on: the control plane is bootstrapped
+    # in place, and ensure_cp_ocpnode writes its OCPNode status directly and
+    # observationally -- no reconcile loop reads it back, because there is no
+    # local provider *controller* that provisions or manages a node the way the
+    # hetzner and ssh paths do. A `local-default` CR would carry a type nothing
+    # in the cluster consumes.
+    #
+    # It also aborted the run. apply server-side-applies the CRDs one step
+    # earlier, but a cluster whose OCPNodeProvider CRD predates `local` in the
+    # enum (k110) rejects the create with a 422, and "Step 3: Ensure CRDs and
+    # provider CRs" dies BEFORE the worker-reconcile phase and the
+    # status.ocpVersion stamp that both follow it -- so no worker could ever
+    # join a local-CP cluster (k151). Skipping the write makes apply correct
+    # regardless of the deployed CRD's enum.
+    #
+    # This is only the auto-creation apply does for the CP. A deliberate
+    # `ocp provider add --type local` still writes its own CR through
+    # OCP::Cmd::Provider::Add, which the k110 CRD enum accepts.
+    if ($type eq 'local') {
+        print "  [skip] local provider is observational; no OCPNodeProvider CR\n";
+        return;
+    }
+
     my $name = "$type-default";
 
     # clusterName sits OUTSIDE the per-type branch on purpose: it is the
