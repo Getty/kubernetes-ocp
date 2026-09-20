@@ -1,0 +1,49 @@
+---
+claimed_at: 2026-09-20T15:12:50Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-20T15:12:50Z
+created: 2026-09-19T20:57:36Z
+id: 150
+priority: high
+started: 2026-09-20T14:29:38Z
+status: done
+tags:
+- bug
+- rke2
+- secrets
+- apply
+title: RKE2-Bootstrap-Token von `ocp apply` rotiert → Datastore-Reconcile bricht beim
+  nächsten Restart
+updated: 2026-09-20T15:12:50Z
+---
+
+SYMPTOM
+Nach einem Neustart crash-loopt rke2-server mit:
+  level=fatal msg="failed to bootstrap cluster data: failed to reconcile with local datastore: bootstrap data already found and encrypted with different token"
+Der (single-node) Cluster ist ohne Reset nicht mehr startbar.
+
+BEOBACHTET AN (2026-09-19, pichu / ocp-police1)
+- /var/lib/rancher/rke2/server/token mtime = 2026-09-17 18:28; node-token/agent-token sind nur Symlinks darauf.
+- Zeitgleich (mtime 2026-09-17 18:28) entstand /var/lib/rancher/rke2/server/manifests/ -> Signatur eines ocp apply/deploy.
+- etcd-Datastore-Bootstrap stammt aber von der Cluster-Erstellung 2026-09-14 19:35 und ist mit dem DAMALIGEN Token versiegelt.
+- Zusätzlich: config.yaml token != on-disk server/token (DIFFERENT).
+=> Ein Apply hat den RKE2-Token rotiert, ohne den Datastore neu zu verschlüsseln. RKE2 prüft das Reconcile nur beim Start, daher lief der Cluster bis zum nächsten Neustart weiter und knallte dann.
+
+IMPACT
+Latente Landmine: jeder Apply, der den Token rotiert, bewaffnet ein Cluster-Down beim nächsten Restart. Recovery = Datastore wegwerfen + neu bootstrappen (Datenverlust-nah).
+
+WAHRSCHEINLICHE STELLE (zu verifizieren, Lane ocp-secrets-worker / ocp-apply-worker)
+Token-Erzeugung/-Persistenz im Apply/Bootstrap-Pfad (OCP::Secrets / OCP::ClusterKey / RKE2-config-Templating in share/ + Rex). Entweder ist die Token-Generierung nicht idempotent, oder Apply schreibt config.yaml/token neu, ohne den bestehenden Cluster-Token zu respektieren.
+
+REPRO
+1) single-node RKE2 via OCP bootstrappen. 2) erneut ocp apply (Token-Datei-Rewrite beobachten). 3) rke2-server neu starten -> fatal.
+
+DONE
+- ocp apply ist idempotent bzgl. RKE2-Token (rotiert einen bestehenden Cluster-Token NICHT) ODER re-keyt den Datastore beim Rotieren.
+- Regressionstest, der Token-Stabilität über zwei Applies + Restart prüft.
+- Offen: bestätigen, dass es OCP war (vs. manueller Eingriff) — das manifests/+token-Ko-Timestamp ist aber die Apply-Signatur.
+
+2026-09-20 14:44 2026-09-20 FIX committet (Branch bugfixes-k150-152-153, 5ccfb19). Root-Cause: OCP::Rex::install_server wuerfelte bei jedem Bootstrap ohne token= einen neuen Token (Bootstrap ruft ohne token auf); Re-Apply schrieb anderen Token in config.yaml waehrend etcd-Datastore mit dem alten versiegelt blieb -> fatal beim naechsten Restart. Fix: install_server liest zuerst on-disk server/token (neu: _existing_server_token, SSH-Mirror von fetch_kubeconfig_ssh, deckt local self-ssh + ssh/hetzner ab), generiert nur wenn keiner da. Regressionstest t/84 (rot-vor-gruen), t/08/t/27 auf undef gestubbt; Host-Tests gruen. OFFEN: (a) bindende Docker make test steht noch aus (gebuendelt mit k152/k153); (b) Rexfile-Residual-Twin als eigene Karte angelegt; (c) nicht auf echter HW bestaetigt (kein smoke).
+
+2026-09-20 15:12 2026-09-20 auf lokalem main gelandet (ff-merge, tip 79d9518). Bindende Docker make test gruen: 91 Dateien / 1410 Tests, PASS. Push nach origin steht noch aus (Maintainer-Entscheidung).
