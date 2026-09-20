@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-09-20T15:13:02Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-20T15:13:02Z
+created: 2026-09-20T02:43:08Z
+id: 152
+priority: medium
+started: 2026-09-20T14:44:53Z
+status: done
+tags:
+- bug
+- apply
+- local
+title: 'local-CP: apply pinnt die CP-Adresse nicht -> ''No control plane address known'',
+  manuelles public_ip noetig'
+updated: 2026-09-20T15:13:02Z
+---
+
+Bei provider:local ermittelt ocp apply die CP-Adresse nicht:
+  [!!] No control plane address known, cannot run upgrade_cert_manager.
+  Control Plane: police1 ()
+und OCP::Cmd::Apply::Health.pm ~Zeile 221: "Use of uninitialized value $args{cp_ip}".
+Die CP-OCPNode traegt die IP (ensure_cp_ocpnode schrieb police1 = 10.5.10.5), aber der Drift/Health-Pfad bekommt ein leeres cp_ip. Folge: Version-Drift-Remedies (z.B. upgrade_cert_manager) laufen nicht, und der ssh-Worker-Join haengt am bekannten CP-Endpoint.
+WORKAROUND (cihq 2026-09-20): control_planes.public_ip manuell in ocp.yaml gesetzt.
+DONE: local-CP pinnt seine Adresse selbst (resolve_host / CP-OCPNode-IP), sodass Drift-Upgrades und die Worker-Server-URL ohne manuelles public_ip funktionieren. Regressionstest.
+Beobachtet mit dem k151-Build auf cihq (provider local, dev-mode).
+
+2026-09-20 14:56 2026-09-20 FIX committet (2cd33d6, Branch bugfixes-k150-152-153). Root-Cause: OCP::Config::cluster_status leitete die CP-Adresse nur aus status.yaml (kein Schreiber) oder spec public_ip/host ab -> bei local beides leer -> {} -> jeder Leser (Drift-Remedies, node add Join-URL, update, deploy-robocop) meldete 'No control plane address known'. Fix: eine local-only-gegatete Zeile - wenn nichts gepinnt UND provider=local -> advertised_host (routbare IP wie tls-san/kubeconfig/CP-OCPNode, k138), Fallback 127.0.0.1. ssh/hetzner unberuehrt. Regressionstest t/152 (4 subtests, rot-vor-gruen; subtest 4 = ssh/hetzner-Guard passt in BEIDEN Zustaenden). Host-Regression 253 Tests gruen. Minor: cluster_status shellt fuer local-unpinned 'ip route get' aus (gated, kein Paket). Bindende Docker-Suite steht noch aus (gebuendelt).
+
+2026-09-20 15:12 2026-09-20 auf lokalem main gelandet (ff-merge, tip 79d9518). Bindende Docker make test gruen: 91 Dateien / 1410 Tests, PASS. Push nach origin steht noch aus (Maintainer-Entscheidung).
