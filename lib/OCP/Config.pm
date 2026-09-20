@@ -395,6 +395,20 @@ sub cluster_status {
     my $cp = $self->control_planes->[0] // {};
     my $ip = $cp->{public_ip} // $cp->{host};
 
+    # A local control plane resolves its own address rather than the operator
+    # pinning it. The machine ocp runs on IS the control plane, so its provider
+    # reports the routable IP bootstrap already advertised in the tls-san, the
+    # kubeconfig server endpoint and the CP OCPNode (advertised_host, k138) --
+    # falling back to 127.0.0.1 when no route can be found. Without this a local
+    # cluster returned no address here, and every reader -- the reconcile-path
+    # drift remedies, `ocp node add`'s worker join URL, `ocp update`, `ocp
+    # deploy-robocop` -- reported "no control plane address known" unless
+    # control_planes.public_ip was set by hand (k152). ssh pins host and hetzner
+    # pins public_ip in the spec, so neither ever reaches this branch.
+    if (!(defined $ip && length $ip) && ($cp->{provider} // '') eq 'local') {
+        $ip = OCP::Provider->for_spec($cp)->advertised_host;
+    }
+
     return {} unless defined $ip && length $ip;
     return { name => $cp->{name} // 'cp-1', public_ip => $ip };
 }
