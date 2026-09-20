@@ -34,15 +34,17 @@ requires 'WWW::Hetzner', '0.100';
 requires 'LWP::Protocol::https';
 # 0.004, not 0.003: 0.004 caps the recipient-stanza count in an age header
 # (CVE-2026-85783) -- every stanza costs an X25519 scalar multiplication before
-# the header authenticates, and 0.003 has no cap. Do not lower it to the
-# released 0.003 to make a build resolve; like the 1.108 siblings it is pinned
-# ahead of its CPAN release, so the binding make test waits on it. OCP's own
+# the header authenticates, and 0.003 has no cap. 0.004 is now released on CPAN.
+# OCP's own
 # Crypt::Age->decrypt calls read single-recipient material it wrote itself, so
 # the 128-stanza default is never reached and no explicit max_stanzas is
 # needed; the third-party decrypt surface is inside File::SOPS, fixed on its
 # own board.
 requires 'Crypt::Age', '0.004';
-requires 'File::SOPS', '0.003';
+# 0.004, not 0.003: 0.004 writes the sops:lastmodified metadata as a quoted
+# scalar (0.003 emitted it bare, which sops rejects -- k153; OCP also normalizes
+# it on write for files older tools produced). Now released on CPAN.
+requires 'File::SOPS', '0.004';
 requires 'Rex';
 requires 'Rex::Interface::Connection::LibSSH', '0.002';
 requires 'IPC::Run';
