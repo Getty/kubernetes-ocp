@@ -458,7 +458,7 @@ sub _write_keys_file_encrypted {
         format     => 'yaml',
     );
 
-    $self->keys_file->spew($encrypted);
+    $self->keys_file->spew($self->ocp->quote_sops_lastmodified($encrypted));
     return 1;
 }
 

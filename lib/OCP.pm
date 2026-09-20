@@ -49,6 +49,38 @@ sub load_file {
     return YAML::XS::LoadFile("$file");
 }
 
+# Quote the `lastmodified` timestamp in a SOPS document's metadata.
+#
+# File::SOPS before 0.004 emits the `sops:` block's `lastmodified` as a bare
+# YAML scalar. gopkg.in/yaml.v3 resolves a bare RFC3339 scalar to a Go
+# time.Time, where sops's own decoder wants a string -- so `sops` refuses such
+# a document at exit 1, and File::SOPS carps once on every decrypt (k153),
+# which is noise on every ocp command that reads an encrypted file. Every SOPS
+# file OCP writes is normalized through here so the committed material always
+# quotes the timestamp and stays sops-compatible whatever File::SOPS version
+# produced it.
+#
+# Quoting is a pure YAML representation change: the scalar's string value is
+# identical, and lastmodified is the AAD of the metadata MAC as that string, so
+# the MAC still verifies and the document round-trips. The pattern only matches
+# a bare RFC3339 scalar (an encrypted value is `ENC[...]`, never that shape),
+# and skips one already quoted, so it is idempotent and touches nothing else.
+sub quote_sops_lastmodified {
+    my ($self, $yaml) = @_;
+
+    $yaml =~ s{
+        ^ ( \s+ lastmodified: [ \t]+ )          # the metadata key, any indent
+        (?! ["'] )                              # not already quoted
+        ( \d{4}-\d{2}-\d{2}T                    # RFC3339 date
+          \d{1,2}:\d{2}:\d{2}                   # time
+          (?: [.,]\d+ )?                        # optional fractional seconds
+          (?: Z | [+-]\d{2}:\d{2} ) )           # zone
+        [ \t]* $
+    }{$1"$2"}mgx;
+
+    return $yaml;
+}
+
 option verbose => (
     is      => 'ro',
     short   => 'v',

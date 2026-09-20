@@ -387,7 +387,7 @@ sub create_secrets {
         format     => 'yaml',
     );
 
-    $self->secrets_file->spew($encrypted);
+    $self->secrets_file->spew($self->ocp->quote_sops_lastmodified($encrypted));
     return 1;
 }
 
@@ -517,7 +517,7 @@ sub save_kubeconfig {
         format     => 'yaml',
     );
 
-    $self->kubeconfig_file->spew($encrypted);
+    $self->kubeconfig_file->spew($self->ocp->quote_sops_lastmodified($encrypted));
     return 1;
 }
 
@@ -577,7 +577,7 @@ sub encrypt_file {
     );
 
     my $file_path = $self->project_dir->child($file);
-    $file_path->spew($encrypted);
+    $file_path->spew($self->ocp->quote_sops_lastmodified($encrypted));
 
     return 1;
 }
