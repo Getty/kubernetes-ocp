@@ -1,0 +1,51 @@
+---
+claimed_at: 2026-09-20T02:43:03Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-20T02:43:03Z
+created: 2026-09-20T02:00:27Z
+id: 151
+priority: high
+started: 2026-09-20T02:14:20Z
+status: done
+tags:
+- bug
+- apply
+- crd
+- provider
+title: '`ocp apply` mit provider:local scheitert an OCPNodeProvider-CRD (type ''local''
+  nicht erlaubt) → Worker-Phase unerreichbar'
+updated: 2026-09-20T02:43:03Z
+---
+
+SYMPTOM
+`ocp apply` mit control_planes.provider: local deployt die CP sauber (RKE2+Cilium+Registry+NFD+cert-manager, Node Ready), bricht dann aber ab:
+  Error: Kubernetes API error (create OCP::K8s::OCPNodeProvider): 422
+  OCPNodeProvider.ocp.internal "local-default" is invalid:
+  spec.type: Unsupported value: "local": supported values: "hetzner", "ssh"
+apply endet mit EXIT 1 in "Step 3: Ensure CRDs and provider CRs".
+
+IMPACT (schlimmer als kosmetisch)
+Der Worker-Reconcile-Teil (OCPNode-Pools Pending->Ready) läuft im apply-Flow ERST NACH "Step 3". Da Step 3 abbricht, wird die Worker-Phase NIE erreicht. Folge: an einem local-CP-Cluster lässt sich per `ocp apply` kein Worker joinen. OCPNodeProviders/OCPNodes bleiben leer. status.ocpVersion wird nicht gestampt (apply erreicht das Ende nicht) -> ocp update/version sehen "not deployed".
+
+BEOBACHTET 2026-09-20, Cluster cihq (pichu, provider local, dev-mode, RKE2).
+
+URSACHE (Hypothese)
+Apply erzeugt für den local-CP-Provider eine OCPNodeProvider-CR vom Typ "local", aber die CRD-Enum erlaubt nur hetzner/ssh (kein local-Provider-Controller existiert, weil ein local-Node nicht gemanagt/erzeugt wird).
+
+MÖGLICHE FIXES (Lane ocp-apply-worker / ocp-infra-worker[CRD] / ocp-state-worker)
+- Apply für einen local-CP GAR KEINE OCPNodeProvider-CR anlegen (die CP ist nur observational), ODER
+- die OCPNodeProvider-CRD um type "local" erweitern (observational, kein Reconcile), ODER
+- die Provider-CR-Erzeugung so fehlertolerant machen, dass sie den restlichen apply (inkl. Worker-Phase) nicht abwuergt.
+
+REPRO
+ocp init --provider local --name X --dist rke2 --nopassword; ocp apply -> 422 auf local-default, exit 1.
+
+DONE
+- apply mit provider:local laeuft fehlerfrei durch (exit 0), erreicht die Worker-Phase, stampt status.ocpVersion.
+- ssh-Worker an einem local-CP-Cluster joinbar.
+- Regressionstest fuer den local-CP-apply-Pfad.
+
+2026-09-20 02:14 Fundstelle: OCP::Cmd::Apply::CR::ensure_provider_cr legt <type>-default an; local->local-default wird von OCPNodeProvider-CRD (enum hetzner/ssh) mit 422 abgelehnt. Fix delegiert an ocp-apply-worker.
+
+2026-09-20 02:42 Fix auf Branch fix/k151-local-provider-apply (a00fbe2): ensure_provider_cr early-return fuer local. Docker 'make test' gruen (1381 Tests). LIVE verifiziert: ocp apply auf cihq skippt jetzt die local-Provider-CR, laeuft durch (exit 0), CP-OCPNode/police1 angelegt; Worker raichu joined Ready.
