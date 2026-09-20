@@ -169,7 +169,16 @@ sub install_server {
 
     my $distribution = $opts{distribution} || 'rke2';
     my $version = $opts{version} || '';
-    my $token = $opts{token} || $self->_generate_token();
+    # Never rotate the token a control plane is already sealed with. RKE2/K3s
+    # derive the datastore encryption key from this token at bootstrap and only
+    # re-check it at the NEXT start, so minting a fresh one into config.yaml on a
+    # re-apply arms a fatal "bootstrap data already found and encrypted with
+    # different token" the next time the server restarts -- a latent cluster-down
+    # that stays invisible until the reboot (k150). Reuse what the machine
+    # already carries; generate only for a server that has none yet.
+    my $token = $opts{token}
+        || $self->_existing_server_token($distribution)
+        || $self->_generate_token();
     # tls_san may be a LIST (every control-plane address, for HA -- k137) or a
     # single value; both travel through run_task's JSON blob unchanged, and the
     # Rexfile emits one "  - <addr>" line per entry. Absent (or an empty list)
@@ -359,6 +368,40 @@ sub get_token {
     return $token;
 }
 
+# The cluster token a control plane is already sealed with, read straight off
+# the machine, or undef when there is none. install_server reuses this instead
+# of minting a new token so a re-apply against an existing cluster never rotates
+# it (k150) -- see the comment there for why a rotation is a latent cluster-down.
+# A brand-new server has no such file: `cat` exits non-zero, this returns undef,
+# and the caller generates a token exactly as before. Wrapped in eval and
+# tolerant of an unreachable host on purpose -- a failed read must degrade to
+# "no existing token", never abort the install with the token half-decided.
+#
+# The file is read verbatim (only trailing whitespace trimmed): RKE2/K3s write
+# the very value they seal the datastore with here, so handing it back as the
+# config `token:` reproduces the same encryption key.
+sub _existing_server_token {
+    my ($self, $distribution) = @_;
+    $distribution ||= 'rke2';
+
+    my $path = $distribution eq 'k3s'
+        ? '/var/lib/rancher/k3s/server/token'
+        : '/var/lib/rancher/rke2/server/token';
+
+    my $ssh = OCP::SSH->new(
+        host     => $self->host,
+        user     => $self->user,
+        key_file => $self->key_file,
+    );
+
+    my $result = eval { $ssh->run("cat $path") };
+    return undef unless $result && !$result->{exit};
+
+    my $token = $result->{stdout} // '';
+    $token =~ s/\s+\z//;
+    return length $token ? $token : undef;
+}
+
 sub _generate_token {
     my ($self) = @_;
 
@@ -423,7 +466,7 @@ Execute a Rex task with parameters.
     my $result = $rex->install_server(
         distribution => 'rke2',  # or 'k3s'
         version      => '',      # empty = latest
-        token        => '...',   # auto-generated if not provided
+        token        => '...',   # see below if omitted
         gpu          => 1,       # 0 skips GPU detection entirely
         gpu_driver   => 'host',  # 'operator' leaves the host driver alone
     );
@@ -431,6 +474,12 @@ Execute a Rex task with parameters.
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
 driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
 C<operator>.
+
+When C<token> is omitted, an existing cluster's token is B<reused> rather than
+regenerated: the machine's on-disk C<server/token> is read first, and a fresh
+token is minted only when there is none. RKE2/K3s seal the datastore with this
+token at bootstrap and re-check it at the next start, so rotating it on a
+re-apply would arm a fatal reconcile failure on the following restart (k150).
 
 Returns hashref with C<token> and C<kubeconfig>.
 

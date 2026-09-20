@@ -252,6 +252,8 @@ subtest 'OCP::Rex::install_server does cluster-init: no server param ([0])' => s
     no warnings 'redefine';
     local *OCP::Rex::run_task = sub { my ($s, $task, %p) = @_; push @calls, [$task, \%p]; 1 };
     local *OCP::Rex::fetch_kubeconfig_ssh = sub { "apiVersion: v1\n" };
+    # Fresh cluster-init: no machine to read a prior token from (k150).
+    local *OCP::Rex::_existing_server_token = sub { undef };
 
     my $tmp = path(tempdir(CLEANUP => 1));
     my $key = $tmp->child('id'); $key->spew('k'); path("$key.pub")->spew('k');
@@ -463,6 +465,8 @@ subtest 'police1 (install_server) advertises all CP addresses as a tls-san list'
     no warnings 'redefine';
     local *OCP::Rex::run_task = sub { my ($s, $task, %p) = @_; push @calls, [$task, \%p]; 1 };
     local *OCP::Rex::fetch_kubeconfig_ssh = sub { "apiVersion: v1\n" };
+    # Fresh cluster-init: no machine to read a prior token from (k150).
+    local *OCP::Rex::_existing_server_token = sub { undef };
 
     my $config = config_for($RKE2_3CP_SSH);
     my @sans   = OCP::Cmd::Apply::Bootstrap::cp_tls_sans($config, '10.0.0.1');

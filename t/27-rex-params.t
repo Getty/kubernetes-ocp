@@ -177,8 +177,10 @@ subtest 'the install task tls-san is the advertised address, not the transport' 
     my @tasks;
     no warnings 'redefine';
     # install_server also fetches the kubeconfig over SSH; stub that out so the
-    # test never opens a connection.
+    # test never opens a connection. Same for the on-disk token probe (k150) --
+    # this is a fresh install, so there is no prior token to reuse.
     local *OCP::Rex::fetch_kubeconfig_ssh = sub { "stub-kubeconfig\n" };
+    local *OCP::Rex::_existing_server_token = sub { undef };
     local *OCP::Rex::run_task = sub {
         my ($self, $task, %params) = @_;
         push @tasks, { task => $task, %params };
