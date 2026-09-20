@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-20T15:13:13Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-20T15:13:13Z
+created: 2026-09-20T02:43:14Z
+id: 153
+priority: low
+started: 2026-09-20T14:56:51Z
+status: done
+tags:
+- polish
+- secrets
+title: SOPS lastmodified-Warnung bei jedem ocp-Kommando (kosmetisch)
+updated: 2026-09-20T15:13:13Z
+---
+
+Jedes ocp-Kommando gibt eine mehrzeilige SOPS-Diagnose aus:
+  sops:lastmodified: ... written as a PLAIN scalar ... expected type string, got time.Time ... OCP::Secrets.pm line 536.
+Harmlos (Werte + MAC werden korrekt gelesen), aber Rauschen auf jedem Aufruf.
+DONE: OCP::Secrets schreibt den lastmodified-Timestamp als gequoteten Scalar (oder der Reader toleriert das bare RFC3339), sodass die Warnung verschwindet.
+
+2026-09-20 15:09 2026-09-20 FIX committet (79d9518, Branch bugfixes-k150-152-153). Root-Cause: File::SOPS <0.004 schrieb sops:lastmodified als bare RFC3339-Scalar; File::SOPS carpt bei jedem decrypt (yaml.v3 liest bare als time.Time, sops will string). Fix: neue OCP::quote_sops_lastmodified normalisiert JEDE von OCP geschriebene SOPS-Datei (idempotente Regex, nur die eine Zeile), an allen 4 Schreibstellen (Secrets create_secrets/save_kubeconfig/encrypt_file, Keys _write_keys_file_encrypted). MAC unberuehrt (reine Repraesentation, verifiziert). Altdateien heilen beim naechsten Rewrite. carp ist STDERR (kein STDOUT-Leck). Regressionstest t/153 (18 subtests, rot-vor-gruen). Host-Regression 186 Tests gruen. Docker-Image hat File::SOPS 0.004 aus vendor/. Bindende Docker make test laeuft jetzt.
+
+2026-09-20 15:13 2026-09-20 auf lokalem main gelandet (ff-merge, tip 79d9518). Bindende Docker make test gruen: 91 Dateien / 1410 Tests, PASS. Push nach origin steht noch aus (Maintainer-Entscheidung).
