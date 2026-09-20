@@ -560,7 +560,15 @@ sub _verify_nvidia {
 desc "Install RKE2 server (control plane)";
 task "install_rke2_server", sub {
     my $params = task_params(shift);
-    my $token = $params->{token} || _generate_token();
+    # Never rotate the token a control plane is already sealed with. RKE2 derives
+    # the datastore encryption key from this token at bootstrap and only re-checks
+    # it at the NEXT start, so a bare hand-run of this task (no token= param) on a
+    # machine that already carries a cluster would write a fresh token into
+    # config.yaml and arm a fatal "bootstrap data already found and encrypted with
+    # different token" on the next rke2-server restart (k154, the Rexfile twin of
+    # k150). Reuse the on-disk server/token; generate only for a fresh server. A
+    # passed token still wins, so the ocp-apply path (always sends one) is unchanged.
+    my $token = $params->{token} || _existing_server_token('rke2') || _generate_token();
     my $version = $params->{version} || '';
     # tls-san carries EVERY control-plane address, not just this node's, so TLS
     # holds against any server in an HA cluster and not only police1 (k137). It
@@ -869,7 +877,11 @@ task "get_rke2_token", sub {
 desc "Install K3s server (control plane)";
 task "install_k3s_server", sub {
     my $params = task_params(shift);
-    my $token = $params->{token} || _generate_token();
+    # Reuse an existing cluster's token rather than rotating it -- see
+    # install_rke2_server for why a fresh token on a sealed datastore is a latent
+    # cluster-down (k154). k3s seals its datastore the same way; a passed token
+    # still wins, on-disk is the fallback before generating (k3s file path below).
+    my $token = $params->{token} || _existing_server_token('k3s') || _generate_token();
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
 
@@ -979,6 +991,35 @@ task "untaint_control_plane", sub {
 #
 # Helpers
 #
+
+# The cluster token a control plane is already sealed with, read straight off
+# the target machine, or undef when there is none. install_{rke2,k3s}_server
+# reuse this instead of minting a new token, so a bare `rex ... install_*_server`
+# without a token= param never rotates an existing cluster's token (k154). This
+# runs INSIDE the task, on the node itself: is_file/cat operate on the target
+# filesystem over the Rex connection, not on the controller.
+#
+# A fresh server has no such file -- is_file is false and this returns undef, so
+# the caller generates a token exactly as before. The read is wrapped in eval and
+# stays tolerant of any failure on purpose: a missing or unreadable file must
+# degrade to "no existing token", never abort the install with the token
+# half-decided. The value is returned verbatim (only trailing whitespace
+# trimmed): RKE2/k3s write the exact value they seal the datastore with here, so
+# handing it back as the config token reproduces the same encryption key.
+sub _existing_server_token {
+    my ($distribution) = @_;
+    $distribution ||= 'rke2';
+
+    my $path = $distribution eq 'k3s'
+        ? '/var/lib/rancher/k3s/server/token'
+        : '/var/lib/rancher/rke2/server/token';
+
+    return undef unless is_file($path);
+    my $token = eval { cat $path };
+    return undef unless defined $token;
+    $token =~ s/\s+\z//;
+    return length $token ? $token : undef;
+}
 
 sub _generate_token {
     my $token = run "head -c 48 /dev/urandom | base64 | tr -d '\\n+/='";
