@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-09-20T16:33:35Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-20T16:33:35Z
+created: 2026-09-20T14:44:35Z
+id: 154
+priority: low
+started: 2026-09-20T16:19:44Z
+status: done
+tags:
+- rke2
+- rexfile
+- cleanup
+title: 'share/Rexfile: install_{rke2,k3s}_server rotieren Token bei barem rex-Handlauf
+  ohne token='
+updated: 2026-09-20T16:33:35Z
+---
+
+Nach k150 ist der ocp-apply-Pfad safe (install_server reicht immer einen Token durch, reused on-disk). ABER share/Rexfile install_rke2_server (~563) / install_k3s_server (~872) machen weiter $params->{token} || _generate_token(): ein BARER `rex -f Rexfile install_rke2_server` von Hand ohne token auf einer bestehenden Maschine wuerde den Token weiter rotieren -> dieselbe Datastore-Landmine wie k150. Defense-in-depth: die Tasks sollen cat /var/lib/rancher/.../server/token vor dem Generieren wiederverwenden. Lane: ocp-infra-worker. Gefunden beim k150-Fix (5ccfb19).
+
+2026-09-20 16:33 2026-09-20 FIX committet (c278c4f) + auf origin/main. Rexfile-Twin von k150: install_{rke2,k3s}_server lesen jetzt on-disk server/token (neuer Helper _existing_server_token, is_file+eval{cat}, per Distribution, sealing server/token NICHT node-token) vor dem Generieren; passed token gewinnt weiter (ocp-apply-Pfad unveraendert). Regressionstest t/85 (12 subtests, rot-vor-gruen). Bindende Docker make test gruen: 92 Dateien / 1422 Tests, PASS.
