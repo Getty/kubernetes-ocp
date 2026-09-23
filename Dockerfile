@@ -98,13 +98,6 @@ RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \
   --show-build-log-on-failure && rm -rf ~/.perl-cpm/ /tmp/*
 
-# Apply local patches over installed CPAN modules.
-# TODO: drop this once Rex::Interface::Connection::LibSSH 0.004 is released
-# and pinned in cpanfile + snapshot. Until then this overlays our local fix
-# for the env-handling bug in Rex::Interface::Exec::LibSSH (3-arg signature
-# + shell-based env wrapping) directly into the installed module path.
-COPY --chown=ocp:ocp ./share/patches/ $PERL_LOCAL_LIB_ROOT/lib/perl5/
-
 # Generate VERSION ------------------------------------------------------------
 
 RUN echo -n $VERSION >VERSION
