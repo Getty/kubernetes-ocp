@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-23T01:48:44Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-23T01:48:44Z
+created: 2026-09-13T22:29:05Z
+id: 139
+priority: medium
+started: 2026-09-23T01:48:44Z
+status: done
+tags:
+- build
+- deps
+- cleanup
+title: 'libssh-Patch-Cleanup: Rex-LibSSH 0.002->0.003, share/patches + Dockerfile-Overlay
+  entfernen'
+updated: 2026-09-23T01:48:44Z
+---
+
+Aus Nachtanalyse ([[ocp-optimization-findings]]). share/patches/Rex/Interface/Exec/LibSSH.pm ist byte-identisch mit released Rex-LibSSH 0.003 (CPAN); Snapshot/cpanfile pinnen noch 0.002, Dockerfile:130-135 overlayed den Patch (TODO jagt Phantom-0.004). Fix: cpanfile 0.002->0.003, make snapshot, share/patches/ loeschen, Dockerfile-COPY-Block droppen. 0.003 bringt zusaetzlich Security-Fix (NUL/Shell-Metazeichen).
+
+Warum verschoben (2026-09-14): braucht make snapshot zur Snapshot-Regenerierung; die Claude-Sandbox kann make build/snapshot nicht ausfuehren (cpm fetcht Crypt::Age/File::SOPS nicht, nur 3 Siblings in vendor/). Halb gemacht = cpanfile/snapshot inkonsistent = kaputter Build. Auf einer Maschine mit Netz/vendor machen. Build-Lane, kein Behavior.
+
+2026-09-23 01:48 Befund: cpanfile pinnt bereits Rex::LibSSH 0.004 (nicht mehr 0.002 wie im urspruenglichen Ticket-Text -- der war seit dem 0.004-Bump veraltet). share/patches/Rex/Interface/Exec/LibSSH.pm byte-fuer-byte gegen die released Source (fastapi.metacpan.org/source/GETTY/Rex-LibSSH-0.004/lib/Rex/Interface/Exec/LibSSH.pm) diff't: Code (bis '1;') identisch, einzige Differenz ist generiertes PodWeaver-POD (NAME/VERSION/SUPPORT/CONTRIBUTING/AUTHOR/COPYRIGHT), das die lokale Quelldatei naturgemaess nicht hat. Env-Handling-Fix (3-Arg-Signatur + Shell-Env-Wrapping) ist vollstaendig upstream. share/patches/ komplett entfernt (git rm -r), Dockerfile-COPY-Block ('Apply local patches over installed CPAN modules') gedroppt. Commit d9878da. Docker-Build/make test noch nicht verifiziert -- uebernimmt der orchestrierende Agent als gemeinsamen Check mit k133.
