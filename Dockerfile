@@ -93,43 +93,6 @@ ENV PERL_CARTON_PATH="$OCP_ROOT/install/perl5"
 COPY --chown=ocp:ocp ./cpanfile $OCP_ROOT/src
 COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 
-# ─── TEMP (k133/k135): vendored sibling dists ────────────────────────────────
-# Every Getty sibling OCP uses is pinned in cpanfile ahead of its CPAN release
-# (IO::K8s/Kubernetes::REST 1.108, Net::Async::Kubernetes 0.008 — k133;
-# Crypt::Age 0.004 for the CVE-2026-85783 stanza cap — k135; File::SOPS 0.004
-# and WWW::Hetzner 0.101 track their own local fixes ahead of release), so the
-# snapshot install below cannot resolve them ("FAIL resolve"). `make vendor`
-# dzil-builds all six from their local checkouts into vendor/, newest local
-# version of each; we install them into the same contained local-lib FIRST, in
-# dependency order, so the snapshot pass finds each requirement already
-# satisfied and skips it instead of resolving against the stale snapshot.
-# Crypt::Age → File::SOPS (needs Crypt::Age), then the K8s three (each needs its
-# predecessor at 1.108), then WWW::Hetzner.
-#
-# Their own dependencies resolve from cpanfile.snapshot (--resolver snapshot),
-# with MetaDB only as a fallback, so the vendored dists pull the exact same,
-# known-good versions as the rest of the image rather than whatever MetaDB calls
-# latest.
-#
-# REMOVE this block once the siblings are released and cpanfile.snapshot is
-# regenerated — together with the vendor/ exception in .dockerignore and the
-# `vendor` target in the Makefile.
-COPY --chown=ocp:ocp ./vendor/ $OCP_ROOT/src/vendor/
-RUN cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
-      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Crypt-Age-*.tar.gz \
- && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
-      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/File-SOPS-*.tar.gz \
- && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
-      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/IO-K8s-*.tar.gz \
- && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
-      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Kubernetes-REST-*.tar.gz \
- && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
-      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Net-Async-Kubernetes-*.tar.gz \
- && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
-      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/WWW-Hetzner-*.tar.gz \
- && rm -rf ~/.perl-cpm/ /tmp/*
-# ─── end TEMP (k133/k135) ────────────────────────────────────────────────────
-
 # Install all dependencies from CPAN
 RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \
