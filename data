@@ -1,0 +1,42 @@
+---
+claimed_at: 2026-09-23T19:25:43Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-09T07:02:32Z
+id: 137
+priority: medium
+started: 2026-09-15T17:00:45Z
+status: backlog
+tags:
+- apply
+- multi-cp
+- ha
+title: 'Multi-CP HA join-only: kein tls-san, kein Client-HA-Endpoint (Follow-up k8)'
+updated: 2026-09-23T19:25:43Z
+---
+
+k8 hat Multi-Control-Plane fuer RKE2 gebaut: police1 init, police2+ joinen das embedded-etcd als zusaetzliche RKE2-Server (Commit ac40991, Branch finish-open-tickets). Der Join-Pfad ist bewusst minimal und spiegelt den Worker-Agent-Pfad. Was fuer echte HA noch fehlt und im Mock nicht sichtbar ist:
+
+1. tls-san: der Join-Install pusht keine per-CP-IPs in die apiserver-Cert-SANs. Fuer echtes HA gehoert jede CP-Adresse in die SANs, sonst schlaegt TLS gegen einen anderen als police1 fehl.
+2. Client-HA-Endpoint: es gibt keinen client-seitigen HA-Endpunkt (LB oder VIP). Die kubeconfig zeigt weiter nur auf police1; faellt police1 aus, erreichen Clients die CP-Menge nicht mehr. Design-Frage (LB vs VIP vs DNS-RR), daher eigenes Ticket.
+3. Cilium/kubeconfig auf gejointen CPs: der Join-Pfad re-runnt install_cilium nicht und holt keine kubeconfig (police1 ist autoritativ, Cilium ist cluster-weiter DaemonSet). Das SOLL passen, ist aber unverifiziert.
+4. registries.yaml auf gejointen CPs: wie der Worker-Pfad laesst der Install registry_-Params weg, faellt also auf die Rexfile-Default-Mirror-Endpoints zurueck.
+
+Reine Verhaltensbeweise (joint ein zweiter etcd-Member gesund, bleibt der Cluster quorat) gehoeren zu k29 (smoke). Dieses Ticket ist der Code-Teil: tls-san-SANs je CP + ein client-facing HA-Endpoint, plus eine Maintainer-Entscheidung zur Endpoint-Form. Lane: ocp-apply-worker + ocp-infra-worker (Rexfile).
+
+2026-09-09 07:04 Korrektur: k8-Commit ist 628efea (nicht ac40991, amendet).
+
+2026-09-15 17:00 tls-san-Teil (Punkt 1) wird jetzt gebaut auf k138-consolidate-all: alle CP-advertised_hosts in jede CP-tls-san-Liste, Bootstrap+Join+Rexfile. Punkt 2 (Client-HA-Endpoint) bleibt offen (Design-Entscheidung). Delegiert an ocp-apply-worker, TDD.
+
+2026-09-15 17:16 Punkt 1 (tls-san) GELANDET auf k138-consolidate-all, commit 2e60196 (unpushed). Alle CP-advertised-Adressen gehen jetzt in JEDE CP-tls-san-Liste: neuer Helper cp_tls_sans (Bootstrap), police1 via install_server, police2+ via neues OCP::Node->tls_san (eigene Adresse self-folded), CR.pm nur fuer control-plane-Rolle, Rex/Rexfile list-aware (rueckwaertskompatibel, Skalar-Fallback). Docker-Gate gruen: t/08-multi-cp.t (19) + t/27-rex-params.t + Chunk Node/Apply/CR/Rexfile (98). TDD, rot-vor-gruen belegt.
+
+OFFEN (Design-Entscheidung Maintainer, gehoert zusammen mit Punkt 2):
+- Punkt 2 Client-HA-Endpoint (LB vs VIP vs DNS-RR) unveraendert offen.
+- Fresh-Hetzner-Luecke: police1 wird gebootet bevor police2/3 existieren -> seine tls-san kennt police2/3 erst, wenn deren IPs in spec.control_planes stehen. Fuer ssh/local + manuell gepinnte Hetzner-Spec gibt es sofort volle mutual-SANs. Voll auf fresh-Hetzner braucht (a) apply pinnt CP-public_ips zurueck in die Spec + zweiter apply (fuettert auch OCP::Drift, liest schon public_ip), oder (b) two-phase provision-all-then-install-all.
+- Verhaltensbeweis (etcd-join gesund, Cluster quorat) bleibt k29 (smoke).
+
+2026-09-18 05:49 tls-san (Punkt 1) auf main gelandet (2e60196, ff-merge k138-consolidate-all). README + docs/configuration.md dokumentieren die Multi-CP-Realitaet jetzt korrekt (RKE2 deployt alle CPs; HA-Client-Endpoint fehlt). OFFEN und bleibt in review: Punkt 2 Client-HA-Endpoint (LB/VIP/DNS-RR, Maintainer-Design-Entscheidung) + fresh-Hetzner mutual-SAN-Luecke. Verhaltensbeweis -> k29 (smoke).
+
+2026-09-20 14:14 2026-09-20: Verifiziert: main a00fbe2 baut zu Image 270ec4dad754 = raudssus/ocp:k151/:latest (das installierte Image), kein Drift. Punkt 1 (tls-san) erledigt/auf main. NICHT abschliessbar: Punkt 2 Client-HA-Endpoint (LB vs VIP vs DNS-RR) offene Maintainer-Design-Entscheidung + fresh-Hetzner mutual-SAN-Luecke.
+
+2026-09-23 19:25 Geparkt: aktuell kein Hetzner-Cluster und kein Multi-CP im Einsatz, OCP laeuft nur Single-Node. Fokus liegt auf Stabilisierung. Punkt 1 (tls-san) bleibt auf main; Client-HA-Endpoint und fresh-Hetzner-SAN-Luecke werden erst entschieden, wenn Multi-CP real gebraucht wird.
