@@ -109,9 +109,7 @@ COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 # Their own dependencies resolve from cpanfile.snapshot (--resolver snapshot),
 # with MetaDB only as a fallback, so the vendored dists pull the exact same,
 # known-good versions as the rest of the image rather than whatever MetaDB calls
-# latest. Without this a freshly released transitive dep that has not reached
-# the mirrors yet 404s the build (hit with Cpanel::JSON::XS 4.52; the snapshot
-# pins the fetchable 4.40).
+# latest.
 #
 # REMOVE this block once the siblings are released and cpanfile.snapshot is
 # regenerated — together with the vendor/ exception in .dockerignore and the
