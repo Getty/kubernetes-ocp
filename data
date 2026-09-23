@@ -1,0 +1,140 @@
+---
+claimed_at: 2026-09-23T01:48:26Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-23T01:48:26Z
+created: 2026-09-04T04:05:59Z
+id: 133
+priority: high
+started: 2026-09-23T01:48:26Z
+status: done
+tags:
+- crd
+- toolchain
+- cpan
+- needs:io-k8s-p5#128
+- needs:kubernetes-rest#26
+- needs:p5-net-async-kubernetes#29
+title: Drei Sibling-Releases fehlen auf CPAN -- Image-Build aus frischem Checkout
+  unmoeglich
+updated: 2026-09-23T01:48:26Z
+---
+
+Das OCP-Docker-Image laesst sich aus einem frischen Checkout derzeit
+UEBERHAUPT NICHT bauen -- nicht in CI, und lokal nur, solange ein altes Image
+bzw. der Layer-Cache aushilft.
+
+cpm install --cpanfile --snapshot bricht mit "FAIL resolve" ab, weil das
+cpanfile Versionen verlangt, die es auf CPAN nicht gibt, und der Snapshot nur
+die veroeffentlichten kennt:
+
+  Modul                    cpanfile   snapshot   CPAN (2026-09-05)
+  IO::K8s                  1.108      1.107      1.107  (2026-08-15)
+  Kubernetes::REST         1.108      1.107      1.107  (2026-08-15)
+  Net::Async::Kubernetes   0.008      0.007      0.007  (2026-04-15)
+  WWW::Hetzner             0.101      0.100      0.100  (2026-02-12)
+
+BELEG
+Erster echter CI-Lauf, GitHub Actions run 33928559437 (2026-09-04, Branch
+k134-cicd-simpici-script). Die CI-Kette selbst funktioniert Ende-zu-Ende --
+gescheitert ist der Image-Build an genau diesem cpm install. k134 ist damit auf
+dieses Ticket blockiert, nicht auf sich selbst.
+
+WOHER
+k125 (commit 7fb412b, 2026-09-01) hat die Sibling-Versionen im cpanfile auf die
+Staende gehoben, die auf dem Entwicklungsrechner installiert waren, mit dem
+ausdruecklichen Vermerk "Installed on the development host; snapshot
+regeneration (make snapshot/test in Docker) waits on their CPAN release".
+Genau diese Releases sind gemeint. Crypt::Age 0.003 und File::SOPS 0.003 aus
+demselben Bump sind released und in Ordnung.
+
+Der Changes-Eintrag zu k132 ist an einer Stelle zu optimistisch: er sagt, die
+bindende make test bleibe gruen, bis 1.108 auf CPAN ist. Das stimmt nur fuer ein
+bereits gebautes Image; ein frischer make build kann seit dem cpanfile-Bump
+nicht mehr durchlaufen.
+
+DIE KETTE -- die Reihenfolge ist echt, nicht kosmetisch
+Jedes Glied verlangt sein Vorgaenger-Release im eigenen cpanfile:
+
+  1. io-k8s-p5 k128              IO::K8s 1.108              Wurzel, keine Sibling-Deps
+  2. kubernetes-rest k26         Kubernetes::REST 1.108     requires IO::K8s 1.108
+  3. p5-net-async-kubernetes k29 N::A::K 0.008              requires beide 1.108
+  4. p5-www-hetzner k1           WWW::Hetzner 0.101         unabhaengig, siehe unten
+  5. HIER                        make snapshot + make test
+
+Alle drei inhaltlich echten Dists sind am 2026-09-05 auf dem Host gruen
+gegengeprueft: IO::K8s 94 Dateien/8643 Tests, Kubernetes::REST 43/638,
+N::A::K 21/169, jeweils Result PASS.
+
+SONDERFALL WWW::Hetzner -- ENTSCHEIDUNG STEHT AUS
+Dort gibt es nichts zu releasen. Der Diff 0.100..HEAD sind 144 Dateien,
+ausschliesslich \$VERSION-Zeilen; Changes {{\$NEXT}} ist leer. Der Pin auf 0.101
+kam nur aus "was auf dem Dev-Rechner installiert war".
+  A) EMPFOHLEN: hier im cpanfile zurueck auf requires WWW::Hetzner 0.100.
+     Eine Zeile, kein CPAN-Release. 0.100 ist erfuellt, auch wenn lokal 0.101
+     installiert ist. Dann schliesst p5-www-hetzner k1 als "nicht noetig".
+  B) 0.101 leer releasen. Dann braucht Changes dort einen Eintrag ueber nichts.
+
+WAS HIER ZU TUN IST, sobald die Siblings auf CPAN sind
+- ggf. Weg A: cpanfile WWW::Hetzner 0.101 -> 0.100
+- make snapshot (Docker) regeneriert cpanfile.snapshot auf die neuen Staende
+- make test (bindende Docker-Suite) gegen den neuen Snapshot -- das ist die
+  Verifikation, die in dieser Umgebung bisher nicht moeglich war
+- danach k134 wieder aufnehmen (CI-Publish)
+
+BEZUG
+k132 (commit a080642) / k131 -- der Code ist gegen 1.108 abgesichert und
+host-gruen (1292 Tests). k134 -- CI/CD, blockiert hierauf. k1 --
+Net::Async::Kubernetes, Maintainer-Entscheidung "fixen, nicht werfen".
+io-k8s k98/D18 -- gemeinsamer Live-Test der CRD-Unterstuetzung.
+
+NICHT Teil dieses Tickets: die zweite Release-Kette um CVE-2026-85783
+(Crypt::Age 0.004, File::SOPS) -- die haengt an k135 und blockiert den
+Image-Build nicht.
+
+WWW::HETZNER ERLEDIGT 2026-09-05 -- Weg A gewaehlt. cpanfile: requires WWW::Hetzner 0.100 statt 0.101, mit Kommentar, warum nicht 0.101 (sonst hebt es beim naechsten Mal wieder jemand an). Kein CPAN-Release noetig. Damit sind es nur noch DREI Blocker, nicht vier; needs p5-www-hetzner#1 ist entfernt, die Karte dort geschlossen.
+
+Gegengeprueft: Module::CPANfile parst sauber, runtime-requires WWW::Hetzner 0.100 -- deckungsgleich mit cpanfile.snapshot (WWW-Hetzner-0.100) und mit CPAN. make test-host komplett gruen: 81 Dateien, 1292 Tests, Result PASS.
+
+Die drei uebrigen sind alle release-fertig vorbereitet, gemergt, gruen und GEPUSHT (Stand 2026-09-05):
+  io-k8s-p5 k128            master f84f5b2a   8643 Tests PASS   review
+  kubernetes-rest k26       master 2a4518d     638 Tests PASS   review
+  p5-net-async-kubernetes k29  main 9ebc3d7    169 Tests PASS   review, blocked
+Es fehlt bei allen dreien nur noch der Upload nach CPAN durch den Maintainer, in dieser Reihenfolge.
+
+NOCH NICHT COMMITTET: cpanfile und Changes liegen als Aenderung im Arbeitsbaum von Branch k134-cicd-simpici-script.
+
+INTEGRATIONSNACHWEIS NACHGEHOLT 2026-09-06 -- auf Nachfrage des Maintainers, und die Nachfrage war berechtigt.
+
+LUECKE, die bestand: alle bisher gemeldeten gruenen Laeufe der Siblings kamen aus 'prove -l t/' gegen das jeweils eigene lib/. Korrekt fuer die Dists selbst. Aber OCPs 1292 Tests liefen gegen die auf dem Host INSTALLIERTEN Kopien, und die waren veraltet:
+  IO::K8s                installiert 2026-09-04 03:07  -- 3 Commits hinterher
+  Kubernetes::REST       installiert 2026-09-04 05:02  -- 3 Commits hinterher
+  Net::Async::Kubernetes installiert 2026-08-23 20:30  -- zwei Wochen alt, vor dem
+                         gesamten 0.008-Inhalt
+Jedes 'gruen' fuer OCP war damit gegen etwas anderes gemessen als das, was released werden soll.
+
+NACHGEHOLT, in Abhaengigkeitsreihenfolge, mit dzil install (kein Upload):
+  1. IO::K8s 1.108            Building and testing ... OK
+  2. Kubernetes::REST 1.108   dito -- gebaut und getestet GEGEN installiertes IO::K8s 1.108
+  3. N::A::K 0.008            dito -- gegen beide installierten 1.108
+Damit ist die Kette bottom-up verifiziert, nicht nur jedes Glied fuer sich.
+
+  4. OCP make test-host gegen alle drei: 81 Dateien, 1292 Tests, Result PASS.
+
+Gegengeprueft, dass der echte Inhalt in den installierten Kopien liegt (ein roher diff gegen lib/ differiert immer, weil dzil das GEBAUTE Dist installiert und PodWeaver die inline-=attr in einen generierten Block zieht): build_path-POD aus 30fd873 vorhanden, IO::K8s::Unstructured vorhanden, PortForwardSession als eigene Datei vorhanden, N::A::K rest/new_object beide da.
+
+WAS DAMIT IMMER NOCH NICHT VERIFIZIERT IST -- und nicht verifizierbar ist, bis die Uploads laufen: die BINDENDE Suite, make test in Docker gegen cpanfile.snapshot. Die loest aus CPAN auf, und genau die drei fehlenden Versionen sind der Grund, warum sie nicht faehrt. Diese Zirkularitaet ist nicht aufloesbar; der Host-Install ist der naechstbeste Nachweis und jetzt erbracht.
+
+HINWEIS zur Hausregel 'Toolchain ist Docker-first, nie auf dem Host installieren': der Host trug diese Module bereits (k125 hat die Pins genau daraus abgeleitet). Der Install hat den Zustand nicht neu verschmutzt, sondern von veraltet auf release-gleich gebracht. make test-host ist ohnehin der ausdruecklich nicht-bindende Pfad.
+
+2026-09-08 14:55 HINWEIS vom kubernetes-rest-Board: die drei Release-Tickets io-k8s-p5#128, kubernetes-rest#26 und p5-net-async-kubernetes#29 sind auf Maintainer-Anweisung geschlossen. Tickets für CPAN-Uploads gibt es nicht mehr, ein Release ist eine Maintainer-Entscheidung und keine Agentenarbeit. Die needs-Links hier zeigen damit auf geschlossene Tickets. Ob dieses Ticket weiter auf die Uploads wartet oder OCP die Pins zurücknimmt, ist eine Entscheidung auf diesem Board.
+
+2026-09-09 06:29 Hinweis (k135 gelandet): cpanfile pinnt jetzt Crypt::Age 0.004 statt 0.003 (Commit 6cc4a79). Damit ist die zweite Release-Kette (CVE-2026-85783) im cpanfile aktiv: der bindende Docker-Build wartet nun zusaetzlich zu den drei 1.108-Siblings auch auf das CPAN-Release von Crypt::Age 0.004 (Embargo). Fuer OCP selbst nur Hygiene (Audit in k135: keine third-party-Decrypt-Pfade in OCPs eigenem Code; die reale Flaeche ist File::SOPS). File::SOPS-Pin unveraendert bei 0.003.
+
+2026-09-15 17:02 CPAN-Blocker laut Maintainer aufgeloest (Sibling-Releases verfuegbar); Vendoring bleibt bewusst der Weg (make vendor + Dockerfile, alle 6 Siblings, 496b1b4/6fcaab6). Offen fuer sauberen Abschluss: snapshot-Regeneration, damit ein frischer CI-Checkout OHNE vendorte Siblings baubar ist -- braucht eine Maschine mit 'make snapshot' (Sandbox kann das nicht; geteilter Blocker mit k139). Falls Vendoring dauerhaft bleibt: 'THROWAWAY/TEMP'-Kommentare in Makefile/Dockerfile anpassen (Maintainer-Entscheidung).
+
+2026-09-20 14:21 2026-09-20 live gegen CPAN (fastapi.metacpan.org) verifiziert: von den 6 OCP-Siblings fehlen GENAU 3 auf CPAN -> IO::K8s 1.108 (CPAN 1.107), Kubernetes::REST 1.108 (CPAN 1.107), Net::Async::Kubernetes 0.008 (CPAN 0.007). Release-Kette: IO::K8s -> Kubernetes::REST -> Net::Async::Kubernetes. Bereits ok: Crypt::Age 0.004 (rel. 2026-09-17), File::SOPS 0.003, WWW::Hetzner 0.100. k133/k134 reduziert sich auf diese 3 dzil-releases in den Sibling-Repos.
+
+2026-09-20 16:14 2026-09-20 File::SOPS 0.004 ist jetzt auf CPAN released (war noch 0.003 im cpanfile); cpanfile-Floor auf 0.004 gehoben (Commit folgt auf main). Crypt::Age 0.004 + File::SOPS 0.004 damit BEIDE released. Verbleibende CPAN-Blocker fuer den Snapshot-Regen: nur noch IO::K8s 1.108, Kubernetes::REST 1.108, Net::Async::Kubernetes 0.008 (Maintainer released der Reihe nach, wartet auf IO::K8s). Danach: make snapshot (Docker) zieht alle neuen Versionen, dann vendor/-Cleanup (k133) + k139 (Rex-LibSSH 0.002->0.003) im selben Aufwasch.
+
+2026-09-23 01:48 Snapshot regeneriert (80f3b36, IO::K8s/Kubernetes::REST 1.108, Net::Async::Kubernetes 0.008 jetzt auf CPAN). Vendoring-Workaround entfernt: Dockerfile TEMP-Block (vendor/ COPY + 6x cpm install), Makefile 'vendor'-Target inkl. SIBLINGS_DIR, .dockerignore !vendor/-Ausnahme, vendor/*.tar.gz geloescht (untracked). Commit 6ea1068. Docker-Build/make test noch nicht verifiziert -- uebernimmt der orchestrierende Agent als gemeinsamen Check mit k139.
