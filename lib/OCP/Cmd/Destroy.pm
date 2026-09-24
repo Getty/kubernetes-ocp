@@ -450,8 +450,16 @@ sub execute {
     # counted here: the machine is pre-existing, OCP never provisioned or
     # billed it, and the k116 branch below already treats "host already gone"
     # as a recoverable warning, not a stranded resource.
+    #
+    # Those go to @still_installed instead, as [ host, reason ]: the machines
+    # that keep their RKE2/K3s install. They do not hold the cleanup back --
+    # nothing in the local state is needed to reach them again, and a host
+    # that is already gone would otherwise make the project impossible to tear
+    # down -- but they do make the run incomplete: named at the end, exit 1
+    # (k180).
     my $hinted = 0;
     my @undeleted;
+    my @still_installed;
     for my $node (@$nodes) {
         print "Deleting $node->{name}...\n";
 
@@ -509,6 +517,7 @@ sub execute {
             if ($node->{provider} eq 'ssh') {
                 unless ($ssh_key) {
                     print STDERR "  Skipped: no SSH key, $target keeps its RKE2/K3s install.\n";
+                    push @still_installed, [ $target, 'no SSH key' ];
                     next;
                 }
             }
@@ -517,12 +526,24 @@ sub execute {
             my $result = eval {
                 $host_prov->delete_server(undef, host => $target)
             };
-            # OCP::SSH::run reports a failed connection as a non-zero exit
-            # rather than an exception, so an unreachable host used to be
-            # announced as a successful uninstall. Both shapes are a warning.
-            my $failed = $@ || !ref $result || ($result->{exit} // 0) != 0;
-            if ($failed) {
-                print STDERR "  Warning: Could not uninstall on $target (may already be down).\n";
+            # ExistingHost::delete_server dies with the host, the exit code and
+            # the uninstaller's stderr (k175); a provider that returns a
+            # non-zero exit instead is the same failure. Either way the reason
+            # is what gets printed -- a fixed "may already be down" threw it
+            # away and left the operator guessing (k180).
+            my $why = $@;
+            if (!$why && (!ref $result || ($result->{exit} // 0) != 0)) {
+                my $exit   = ref $result ? $result->{exit} : '?';
+                my $stderr = ref $result ? $result->{stderr} // '' : '';
+                $stderr =~ s/\s+\z//;
+                $why = "Uninstall of RKE2/K3s on $target failed (exit $exit)"
+                     . (length $stderr ? ": $stderr" : '');
+            }
+            if ($why) {
+                chomp $why;
+                print STDERR "  Warning: could not uninstall on $target:\n";
+                print STDERR join('', map { "    $_\n" } split /\n/, $why);
+                push @still_installed, [ $target, $why ];
                 # The migration hint names the bootstrap-vs-admin key story,
                 # which is ssh-only. A local uninstall has no key.
                 if ($node->{provider} eq 'ssh' && !$hinted++) {
@@ -570,8 +591,26 @@ sub execute {
         }
         print  STDERR "     .ocp/status.yaml is kept so a re-run can find them by\n";
         print  STDERR "     providerId: fix the cause, then run `ocp destroy` again.\n";
-        return 1;
     }
+
+    # The machines that are not billed but not clean either (k180). The same
+    # exit code as above: a caller needs to know "not everything is gone",
+    # and the STDERR list says which kind of leftover it is.
+    if (@still_installed) {
+        print STDERR "\n";
+        printf STDERR "[!!] Teardown INCOMPLETE: %d machine(s) keep their RKE2/K3s install:\n",
+               scalar @still_installed;
+        for my $left (@still_installed) {
+            my ($host, $why) = @$left;
+            my ($first) = split /\n/, $why;
+            print STDERR "       - $host: $first\n";
+        }
+        print  STDERR "     Nothing is billed for them through OCP. Once they are\n";
+        print  STDERR "     reachable, run on each of them:\n";
+        print  STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh\n";
+    }
+
+    return 1 if @undeleted || @still_installed;
 
     print "\nCluster destroyed.\n";
 
@@ -638,9 +677,14 @@ project uploaded is left in place and may be re-used by a later C<ocp apply>.
 
 =item *
 
-SSH — the RKE2/K3s uninstaller is run on the host.  Failures here are
-best-effort: a host that is already gone is logged as a warning and the
-tear-down continues.
+SSH / local — the RKE2/K3s uninstaller is run on the host.  A failure here
+does not stop the tear-down: the reason the uninstaller gave (host, exit
+code, its stderr) is printed on STDERR and the next machine is tried.  At
+the end every machine that kept its install is listed with its reason and
+the command returns 1 (C<k180>).  The local state is still removed — the
+machine is not billed through OCP and nothing in C<status.yaml> is needed to
+reach it again, while holding the cleanup back would make a project whose
+host is already gone impossible to tear down.
 
 =back
 
@@ -715,8 +759,10 @@ spec and you want the reconcile path to start from a known-good hash set.
 
 Lists the candidate nodes, prompts for confirmation (unless C<--force>),
 deletes each via its provider and, on a clean run, removes the local state
-and the encrypted kubeconfig and returns 0.  A failed SSH/local uninstall is
-a best-effort warning that does not stop the run.  A failed B<provider>
+and the encrypted kubeconfig and returns 0.  A failed or skipped SSH/local
+uninstall does not stop the run and does not keep the local state, but it is
+named with its reason at the end and the command returns 1 (C<k180>).  A
+failed B<provider>
 delete — a Hetzner server the API did not remove — is different: the local
 state is B<kept> so a re-run can find the survivor by its C<providerId>, the
 teardown is reported B<incomplete> on STDERR, and the command returns
