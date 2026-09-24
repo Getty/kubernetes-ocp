@@ -91,6 +91,32 @@ package MockTransport {
             return (200, {});
         }
 
+        # Drain (k175): the eviction subresource. `evict` answers per pod name
+        # with an HTTP status (default 201, the pod then leaves the node unless
+        # `linger` keeps it there as Terminating); 429 is a PodDisruptionBudget
+        # refusing, which is what a drain must wait on and not ignore.
+        if ($method eq 'POST' && $path =~ m{^/api/v1/namespaces/([^/]+)/pods/([^/]+)/eviction$}) {
+            my ($ns, $pod) = ($1, $2);
+            my $code = ($api->evict // {})->{$pod} // 201;
+            $code = $code->() if ref $code eq 'CODE';
+            if ($code < 300) {
+                if ($api->linger) {
+                    $_->{metadata}{deletionTimestamp} = '2026-09-24T00:00:00Z'
+                        for grep { $_->{metadata}{name} eq $pod } @{ $api->pods };
+                } else {
+                    $api->pods([ grep { $_->{metadata}{name} ne $pod } @{ $api->pods } ]);
+                }
+                return ($code, { kind => 'Status', status => 'Success' });
+            }
+            return ($code, { kind => 'Status', message => "injected eviction answer $code" });
+        }
+
+        if ($method eq 'GET' && $path =~ m{^/api/v1/pods\?fieldSelector=spec\.nodeName=(.+)$}) {
+            my $node = $1;
+            return (200, { kind => 'PodList', apiVersion => 'v1', items => [
+                grep { ($_->{spec}{nodeName} // '') eq $node } @{ $api->pods } ] });
+        }
+
         if ($api->read_fails && $api->reads_ok_first <= 0) {
             return ($api->read_fails, { message => 'injected read failure' });
         }
@@ -124,6 +150,9 @@ package StrictK8s {
     has read_fails     => (is => 'rw', default => 0);  # HTTP status to inject on reads
     has reads_ok_first => (is => 'rw', default => 0);  # let this many reads through first
     has delete_fails   => (is => 'rw', default => 0);  # HTTP status to inject on deletes
+    has pods           => (is => 'rw', default => sub { [] });  # pods the drain sees
+    has evict          => (is => 'rw');                  # pod name -> status (or coderef)
+    has linger         => (is => 'rw', default => 0);   # evicted pods stay, Terminating
 
     sub build {
         my (%args) = @_;
@@ -198,6 +227,12 @@ package FakeHetznerServer {
 package FakeHetznerServers {
     sub new { my ($c, %a) = @_; bless { created => [], waited => [], %a }, $c }
     sub list_by_label { $_[0]{existing} // [] }
+    sub delete {
+        my ($self, $id) = @_;
+        die "injected Hetzner API failure\n" if $self->{delete_fails};
+        push @{ $self->{deleted} }, $id;
+        return 1;
+    }
     # A freshly created server has an id and no address -- that is the real
     # shape, and the whole of k99.
     sub create {
@@ -1157,6 +1192,234 @@ subtest 'a delete that 404s stays quiet -- the object is already gone' => sub {
         'nothing is warned: a node that never registered, or a CR someone '
       . 'already removed, is the normal outcome here'
         or diag "unexpected warnings:\n@warnings";
+};
+
+#
+# k175: `ocp node rm` on an ssh worker printed "removed" while rke2-agent kept
+# running on the machine. Two gaps behind it. Teardown only cordoned -- nothing
+# was drained. And a provider delete that failed was one `warn` among the
+# output, after which the Node and the OCPNode were deleted anyway, so the one
+# object that could have said "this machine still runs Kubernetes" was gone.
+#
+
+sub pod {
+    my ($name, %extra) = @_;
+    return {
+        apiVersion => 'v1', kind => 'Pod',
+        metadata   => { name => $name, namespace => $extra{namespace} // 'default',
+                        %{ $extra{metadata} // {} } },
+        spec       => { nodeName => $extra{node} // 'd1',
+                        containers => [ { name => 'c', image => 'i' } ] },
+    };
+}
+
+sub teardown_node {
+    my (%args) = @_;
+    my $prov = delete $args{provider} // FakeProvider->new;
+    my $k = StrictK8s::build(
+        cr => ocpnode(
+            metadata => { name => 'd1', namespace => 'ocp-system' },
+            status   => { phase => 'Ready', kubernetesNodeName => 'd1',
+                          publicIP => '10.0.0.7' }),
+        node => ready_node('d1', 'True'),
+        %args,
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    return ($k, $node);
+}
+
+sub status_writes {
+    my ($k) = @_;
+    return map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+           grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+}
+
+subtest 'teardown drains the node: evicts its pods before removing anything' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my $deleted = 0;
+    my $prov = FakeProvider->new(delete_cb => sub { $deleted++; 1 });
+    my ($k, $node) = teardown_node(
+        provider => $prov,
+        pods => [
+            pod('web-1', namespace => 'apps'),
+            pod('ds-1', metadata => { ownerReferences => [
+                { apiVersion => 'apps/v1', kind => 'DaemonSet', name => 'cilium', uid => 'u1' } ] }),
+            pod('static-1', metadata => { annotations => {
+                'kubernetes.io/config.mirror' => 'abc' } }),
+            pod('elsewhere', node => 'other'),
+        ],
+    );
+
+    is $node->teardown, 1, 'teardown succeeds';
+
+    my ($cordon) = grep { $_->{path} eq '/api/v1/nodes/d1' } $k->reqs('PATCH');
+    ok $cordon, 'node cordoned';
+    like $cordon->{body}, qr/"unschedulable":true/, 'cordon sets unschedulable';
+
+    my ($list) = grep { $_->{path} =~ m{^/api/v1/pods\?fieldSelector=spec\.nodeName=d1$} }
+                 $k->reqs('GET');
+    ok $list, 'the pods are found by spec.nodeName (Kubernetes::REST, no kubectl)';
+
+    my @evictions = $k->reqs('POST');
+    is_deeply [ map { $_->{path} } @evictions ],
+        [ '/api/v1/namespaces/apps/pods/web-1/eviction' ],
+        'exactly the workload pod is evicted -- not the DaemonSet pod, not the '
+      . 'mirror pod, not a pod on another node';
+    my $body = JSON::MaybeXS::decode_json($evictions[0]{body});
+    is $body->{kind},       'Eviction',  'through the Eviction API, which honours PodDisruptionBudgets';
+    is $body->{apiVersion}, 'policy/v1', 'policy/v1';
+    is_deeply $body->{metadata}, { name => 'web-1', namespace => 'apps' }, 'naming the pod';
+
+    is $deleted, 1, 'the provider delete ran';
+    ok scalar(grep { $_->{path} eq '/api/v1/nodes/d1' } $k->reqs('DELETE')),
+        'and the Node object is deleted afterwards';
+};
+
+subtest 'a drain a PodDisruptionBudget keeps refusing times out, and nothing is removed' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    local $OCP::Node::DRAIN_TIMEOUT  = 1;
+    my $deleted = 0;
+    my ($k, $node) = teardown_node(
+        provider => FakeProvider->new(delete_cb => sub { $deleted++; 1 }),
+        pods     => [ pod('db-0', namespace => 'data') ],
+        evict    => { 'db-0' => 429 },
+    );
+
+    my $started = time;
+    my $ok  = eval { $node->teardown; 1 };
+    my $err = $@;
+    ok !$ok, 'teardown fails';
+    ok time - $started < 10, 'within its timeout -- it does not hang';
+    like $err, qr{drain}i,               'the error says the drain failed';
+    like $err, qr{data/db-0},            'names the pod that would not leave';
+    like $err, qr{PodDisruptionBudget},  'and why (429 = a budget refuses the eviction)';
+
+    is $deleted, 0, 'the machine is not touched';
+    is_deeply [ $k->reqs('DELETE') ], [], 'neither the Node nor the OCPNode is deleted';
+
+    my ($last) = reverse status_writes($k);
+    is $last->{phase}, 'Failed', 'the OCPNode is left Failed ...';
+    like $last->{message}, qr{data/db-0}, '... with the reason on it, where ocp node ls shows it';
+};
+
+subtest 'evicted pods still terminating at the deadline do not block removal' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    local $OCP::Node::DRAIN_TIMEOUT  = 1;
+    my ($k, $node) = teardown_node(
+        pods   => [ pod('slow-1') ],
+        linger => 1,
+    );
+
+    my @warnings;
+    my $ok = do {
+        local $SIG{__WARN__} = sub { push @warnings, $_[0] };
+        $node->teardown;
+    };
+    is $ok, 1, 'teardown completes -- every eviction was accepted, only the wait ran out';
+    like join('', @warnings), qr{default/slow-1}, 'the still-terminating pod is named';
+    is scalar(grep { $_->{path} =~ /eviction$/ } $k->reqs('POST')), 1,
+        'an accepted eviction is not repeated';
+    ok scalar(grep { $_->{path} eq '/api/v1/nodes/d1' } $k->reqs('DELETE')),
+        'the Node is removed';
+};
+
+subtest 'a pod gone before its eviction (404) is fine' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my ($k, $node) = teardown_node(pods => [ pod('gone-1') ]);
+    my $calls = 0;
+    # 404 leaves the fake's list untouched; empty it the way the API would be.
+    $k->evict({ 'gone-1' => sub { $k->pods([]); $calls++; 404 } });
+
+    is $node->teardown, 1, 'teardown completes';
+    is $calls, 1, 'the eviction was attempted once';
+};
+
+subtest 'an eviction refused for any other reason fails teardown at once' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my $deleted = 0;
+    my ($k, $node) = teardown_node(
+        provider => FakeProvider->new(delete_cb => sub { $deleted++; 1 }),
+        pods     => [ pod('p1') ],
+        evict    => { p1 => 403 },
+    );
+    my $ok = eval { $node->teardown; 1 };
+    ok !$ok, 'teardown fails';
+    like $@, qr{\b403\b}, 'with the status that explains it';
+    is $deleted, 0, 'the machine is not touched';
+    is_deeply [ $k->reqs('DELETE') ], [], 'nothing is deleted';
+};
+
+subtest 'a failed provider delete keeps the OCPNode, Failed, and teardown dies' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my ($k, $node) = teardown_node(
+        provider => FakeProvider->new(delete_cb => sub {
+            die "Uninstall on 10.0.0.7 failed (exit 255): Permission denied (publickey).\n";
+        }),
+    );
+
+    my $ok  = eval { $node->teardown; 1 };
+    my $err = $@;
+    ok !$ok, 'teardown dies instead of reporting success';
+    like $err, qr{\bd1\b},             'naming the node';
+    like $err, qr{Permission denied},  "and carrying the provider's diagnosis";
+
+    is_deeply [ $k->reqs('DELETE') ], [],
+        'neither the Node nor the OCPNode is deleted: the machine still runs '
+      . 'Kubernetes, and its kubelet would register a deleted Node again';
+
+    my ($last) = reverse status_writes($k);
+    is $last->{phase}, 'Failed',                  'the OCPNode is Failed';
+    like $last->{message}, qr{Permission denied}, 'with the reason';
+    like $last->{message}, qr{ocp node rm d1},    'and how to retry';
+};
+
+# The Hetzner path through the same teardown, on the real adapter with only
+# the cloud client faked: the server is deleted by the id in status, and its
+# host key leaves OCP's known_hosts with it (k168).
+subtest 'hetzner: teardown deletes the server and forgets its host key' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my $dir  = Path::Tiny->tempdir;
+    my $file = $dir->child('known_hosts');
+    $file->spew("10.0.0.7 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb2\n"
+              . "10.0.0.8 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGb2\n");
+    local $ENV{OCP_KNOWN_HOSTS} = "$file";
+
+    my $cloud = FakeHetznerCloud->new;
+    my $prov  = OCP::Provider::Hetzner->new(token => 'x', cloud => $cloud);
+    my $k = StrictK8s::build(
+        cr => ocpnode(
+            metadata => { name => 'd1', namespace => 'ocp-system' },
+            status   => { phase => 'Ready', kubernetesNodeName => 'd1',
+                          publicIP => '10.0.0.7', providerId => '4711' }),
+        node => ready_node('d1', 'True'),
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov);
+
+    is $node->teardown, 1, 'teardown succeeds';
+    is_deeply $cloud->servers->{deleted}, ['4711'], 'the server is deleted by its id';
+    unlike $file->slurp, qr/^10\.0\.0\.7 /m, "the deleted server's host key is forgotten";
+    like   $file->slurp, qr/^10\.0\.0\.8 /m, 'other entries stay';
+    ok scalar(grep { $_->{path} eq '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/d1' }
+              $k->reqs('DELETE')), 'the OCPNode is deleted';
+};
+
+subtest 'hetzner: a refused server delete keeps the OCPNode and its providerId' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my $cloud = FakeHetznerCloud->new(delete_fails => 1);
+    my $prov  = OCP::Provider::Hetzner->new(token => 'x', cloud => $cloud);
+    my $k = StrictK8s::build(
+        cr => ocpnode(
+            metadata => { name => 'd1', namespace => 'ocp-system' },
+            status   => { phase => 'Ready', kubernetesNodeName => 'd1',
+                          publicIP => '10.0.0.7', providerId => '4711' }),
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov);
+
+    ok !eval { $node->teardown; 1 }, 'teardown dies';
+    like $@, qr/injected Hetzner API failure/, 'with the API answer';
+    is_deeply [ $k->reqs('DELETE') ], [],
+        'the OCPNode -- the record of a server that still bills -- is kept';
 };
 
 subtest 'reconcile returns 0 on Failed phase (terminal)' => sub {

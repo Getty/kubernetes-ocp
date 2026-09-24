@@ -102,6 +102,22 @@ subtest 'from_cr dispatches each type' => sub {
     }
 };
 
+# k175: the CR carries no SSH key (ADR 0027), so a caller that has one --
+# `ocp node rm` holding the cluster key -- hands it in, the way for_spec takes
+# it. Without it the ssh adapter ran with no identity at all and every
+# uninstall was refused at the login.
+subtest 'from_cr(ssh) takes the key path from the caller' => sub {
+    my $cr = { metadata => { name => 's', namespace => 'ocp-system' },
+               spec     => { type => 'ssh' } };
+
+    my $p = OCP::Provider->from_cr($cr, k8s => $dispatch_k8s,
+        ssh_key_path => '/tmp/cluster-key');
+    is $p->ssh_key_path, '/tmp/cluster-key', 'the key path reaches the adapter';
+
+    my $bare = OCP::Provider->from_cr($cr, k8s => $dispatch_k8s);
+    is $bare->ssh_key_path, undef, 'and stays absent when none is given';
+};
+
 #
 # Default provider is hetzner (spec without provider => hetzner)
 #

@@ -44,7 +44,13 @@ our $UNINSTALL_CMD = join ' ; ',
     'ip rule list 2>/dev/null | grep -qE "^0:[[:space:]].*lookup local"'
         . ' || ip rule add from all lookup local priority 0 2>/dev/null || true',
     'ip rule list 2>/dev/null | grep -qE "^0:[[:space:]].*lookup local"'
-        . ' && ip rule del from all lookup local priority 100 2>/dev/null || true';
+        . ' && ip rule del from all lookup local priority 100 2>/dev/null || true',
+    # Everything above is guarded, so without this the chain exited 0 whatever
+    # happened -- a missing or failing uninstaller left rke2 in place and read
+    # as a clean uninstall (k175). The outcome is what gets checked, not the
+    # steps: the command fails when a distribution binary is still on PATH.
+    'if command -v rke2 >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1;'
+        . ' then echo "RKE2/K3s is still installed after the uninstall" >&2; exit 1; fi';
 
 # A consumer only has to say which host it talks to, how to check that the
 # host is there, and how to run a command on it. Everything else is the same
@@ -126,6 +132,15 @@ Cilium's residual policy-routing ip rules (see C<@LEFTOVER_IP_TABLES>), which
 matter on this reboot-less re-provisioning path. C<$server_id> is ignored
 (the machine does not belong to OCP); C<host> is read through C<resolve_host>.
 
+The command ends by checking its own outcome: it fails when C<rke2> or C<k3s>
+is still on C<PATH>.  B<A failed uninstall dies> — a refused SSH login, a
+command that exits non-zero — with the exit status and the remote side's
+stderr in the message.  Returns the C<run_command> result on success.  A host
+that cannot be resolved is still a no-op: there is nowhere to uninstall from.
+
+This is the one uninstall implementation; L<OCP::Node/Teardown>
+(C<ocp node rm>) and L<OCP::Cmd::Destroy> both reach the machine through it.
+
 =cut
 
 sub server_exists {
@@ -163,7 +178,20 @@ sub delete_server {
     my $host = eval { $self->resolve_host(%opts) };
     return unless defined $host && length $host;
 
-    return $self->run_command($host, $UNINSTALL_CMD);
+    my $result = $self->run_command($host, $UNINSTALL_CMD);
+
+    # run_command reports a refused login or a failed step as a non-zero exit,
+    # not as an exception -- and OCP::Node::teardown, which only listens for
+    # exceptions, deleted the Node and the OCPNode of a worker that kept
+    # running rke2-agent (k175). Say it the way every caller already hears.
+    my $exit = ref $result eq 'HASH' ? $result->{exit} // 0 : 1;
+    if ($exit) {
+        my $why = ref $result eq 'HASH' ? $result->{stderr} // '' : '';
+        $why =~ s/\s+\z//;
+        die "Uninstall of RKE2/K3s on $host failed (exit $exit)"
+          . (length $why ? ": $why" : '') . "\n";
+    }
+    return $result;
 }
 
 1;

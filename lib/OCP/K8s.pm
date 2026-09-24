@@ -74,6 +74,36 @@ sub patch_status {
     return $response;
 }
 
+# Evict one pod through the policy/v1 Eviction subresource -- what
+# `kubectl drain` does, without kubectl. Kubernetes::REST has no verb for it,
+# so the request is built from its public request seam (build_path /
+# prepare_request / io->call) rather than from _request.
+#
+# Hands back the HTTP status instead of croaking on 4xx, because the caller
+# must tell the answers apart: 429 is a PodDisruptionBudget saying "not now"
+# and is retried, 404 is a pod that already left, anything else is a failure.
+sub evict {
+    my ($class, $api, %args) = @_;
+
+    my $name = $args{name}      or croak "evict: 'name' required";
+    my $ns   = $args{namespace} or croak "evict: 'namespace' required";
+
+    my $path = $api->build_path($api->expand_class('Pod'),
+        name        => $name,
+        namespace   => $ns,
+        subresource => 'eviction',
+    );
+    my $response = $api->io->call($api->prepare_request('POST', $path,
+        body => {
+            apiVersion => 'policy/v1',
+            kind       => 'Eviction',
+            metadata   => { name => $name, namespace => $ns },
+        },
+    ));
+
+    return ($response->status, $response->content);
+}
+
 1;
 
 __END__
@@ -133,6 +163,22 @@ back to a hand-built C</status> request for older clients. The two paths return
 different things — an inflated object versus the raw response — so the return
 value is deliberately not part of this method's contract: it either writes the
 status or it dies.
+
+=head2 evict
+
+    my ($status, $body) = OCP::K8s->evict($api,
+        name      => 'web-1',
+        namespace => 'apps',
+    );
+
+Asks the API server to evict one pod through the C<policy/v1> Eviction
+subresource, the call C<kubectl drain> makes.  Unlike a plain delete, an
+eviction honours PodDisruptionBudgets.
+
+Returns the HTTP status and the raw response body and does B<not> die on a 4xx:
+the caller has to tell C<429> (a budget refuses for now; try again), C<404>
+(the pod is already gone) and everything else apart.  Used by
+L<OCP::Node/Teardown> to drain a node.
 
 =head1 SEE ALSO
 

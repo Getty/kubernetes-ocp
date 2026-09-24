@@ -149,4 +149,129 @@ subtest 'rm proceeds without provider when providerRef missing' => sub {
     like $out, qr/orphan-1.*removed/i, 'prints removed message';
 };
 
+#
+# k175: `ocp node rm` on an ssh worker said "removed" while rke2-agent kept
+# running. The ssh adapter was built from the CR alone, and the CR carries no
+# key (ADR 0027): its ssh ran with no identity, the login was refused, and
+# the refusal came back as an exit code nobody read.
+#
+
+{
+    package FakeClusterKey;
+    sub new  { bless { path => $_[1] }, $_[0] }
+    sub path { $_[0]{path} }
+}
+
+my $ssh_worker_cr = {
+    metadata => { name => 'ssh-w', namespace => 'ocp-system' },
+    spec     => { role => 'worker', providerRef => 'ssh-default', host => 'w.vm' },
+    status   => { phase => 'Ready', publicIP => 'w.vm' },
+};
+my $ssh_provider_cr = {
+    metadata => { name => 'ssh-default', namespace => 'ocp-system' },
+    spec     => { type => 'ssh', clusterName => 'c' },
+};
+
+sub rm_for {
+    my (%args) = @_;
+    my $k8s = FakeK8sRm->new(
+        nodes     => { 'worker-1' => $worker_cr, 'ssh-w' => $ssh_worker_cr },
+        providers => { 'hetzner-a' => $hetzner_provider_cr,
+                       'ssh-default' => $ssh_provider_cr },
+    );
+    return OCP::Cmd::Node::Rm->new(k8s => $k8s, _config => bless({}, 'FakeConfig'), %args);
+}
+
+subtest 'an ssh worker is torn down with the cluster key' => sub {
+    my (@key_asks, %from_cr_opts);
+    no warnings 'redefine';
+    local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub {
+        my ($self, $config, %opt) = @_;
+        push @key_asks, \%opt;
+        return FakeClusterKey->new('/tmp/cluster-key');
+    };
+    local *OCP::Provider::from_cr = sub {
+        my ($class, $cr, %opts) = @_;
+        %from_cr_opts = %opts;
+        return bless {}, 'FakeProvider';
+    };
+    my $torn = 0;
+    local *OCP::Node::teardown = sub { $torn++; 1 };
+
+    my $out = capture_stdout { rm_for(name => 'ssh-w')->execute([], []) };
+
+    is scalar @key_asks, 1, 'the cluster key is obtained';
+    is $key_asks[0]{provider}, 'ssh', 'for the ssh provider';
+    is $from_cr_opts{ssh_key_path}, '/tmp/cluster-key',
+        'and its path is what the ssh adapter logs in with';
+    is $torn, 1, 'teardown ran';
+    like $out, qr/ssh-w.*removed/i, 'removed is reported after it succeeded';
+};
+
+subtest 'a hetzner worker asks for no SSH key' => sub {
+    my $asked = 0;
+    no warnings 'redefine';
+    local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub { $asked++; FakeClusterKey->new('/x') };
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
+    local *OCP::Node::teardown = sub { 1 };
+
+    capture_stdout { rm_for(name => 'worker-1')->execute([], []) };
+    is $asked, 0, 'no key, so no PIN2 prompt, for a node deleted through the API';
+};
+
+subtest 'no key for an ssh worker: nothing is torn down' => sub {
+    my $torn = 0;
+    no warnings 'redefine';
+    local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub { die "Wrong PIN2.\n" };
+    local *OCP::Node::teardown = sub { $torn++; 1 };
+
+    my $out = '';
+    my $ok = eval { $out = capture_stdout { rm_for(name => 'ssh-w')->execute([], []) }; 1 };
+    ok !$ok, 'rm fails';
+    like $@, qr/Wrong PIN2/, 'with the reason';
+    is $torn, 0, 'before anything was touched';
+    unlike $out, qr/removed/i, 'and says nothing was removed';
+};
+
+subtest 'a failed teardown fails the command' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub { FakeClusterKey->new('/tmp/k') };
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
+    local *OCP::Node::teardown = sub {
+        die "Teardown of node ssh-w failed: Uninstall of RKE2/K3s on w.vm failed (exit 255)\n";
+    };
+
+    my $out = '';
+    my $ok = eval { $out = capture_stdout { rm_for(name => 'ssh-w')->execute([], []) }; 1 };
+    ok !$ok, 'rm dies -- bin/ocp turns that into STDERR and exit 1';
+    like $@, qr/exit 255/, 'carrying the diagnosis';
+    unlike $out, qr/removed/i, '"removed" is not printed';
+};
+
+subtest 'a provider that cannot be built stops rm before teardown' => sub {
+    my $torn = 0;
+    no warnings 'redefine';
+    local *OCP::Provider::from_cr = sub { die "from_cr: Secret 'hetzner-api-token' has no key 'token'\n" };
+    local *OCP::Node::teardown = sub { $torn++; 1 };
+
+    my $ok = eval { capture_stdout { rm_for(name => 'worker-1')->execute([], []) }; 1 };
+    ok !$ok, 'rm fails';
+    like $@, qr/hetzner-a/, 'naming the provider';
+    like $@, qr/has no key 'token'/, 'and why it could not be built';
+    is $torn, 0, 'without removing the node and leaving its server behind';
+};
+
+subtest 'a providerRef that names no provider stops rm before teardown' => sub {
+    my $torn = 0;
+    no warnings 'redefine';
+    local *OCP::Node::teardown = sub { $torn++; 1 };
+    my $k8s = FakeK8sRm->new(nodes => { 'worker-1' => $worker_cr });   # no providers
+
+    my $rm = OCP::Cmd::Node::Rm->new(k8s => $k8s, name => 'worker-1');
+    my $ok = eval { capture_stdout { $rm->execute([], []) }; 1 };
+    ok !$ok, 'rm fails';
+    like $@, qr/OCPNodeProvider.*hetzner-a/, 'naming the missing provider';
+    is $torn, 0, 'nothing is torn down';
+};
+
 done_testing;

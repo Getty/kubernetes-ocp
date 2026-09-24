@@ -102,4 +102,28 @@ subtest 'a failing uninstaller does not abort the cleanup' => sub {
         'the Cilium ip-rule flush still runs after the uninstaller failed';
 };
 
+subtest 'a distribution still installed afterwards fails the command (k175)' => sub {
+    # Every step above is guarded, so the chain used to exit 0 whatever
+    # happened -- an uninstaller that was missing or failed left rke2 running
+    # and reported success. The last statement checks the outcome instead.
+    plan skip_all => 'needs a POSIX /bin/sh' unless -x '/bin/sh';
+
+    my $dir  = Path::Tiny->tempdir;
+    my $stub = $dir->child('bin');
+    $stub->mkpath;
+    for my $name (qw( rke2-uninstall.sh k3s-uninstall.sh rm ip grep rke2 )) {
+        my $f = $stub->child($name);
+        $f->spew_utf8("#!/bin/sh\nexit 1\n");
+        $f->chmod(0755);
+    }
+
+    my $err = $dir->child('stderr');
+    my $status = do {
+        local $ENV{PATH} = "$stub";
+        system('/bin/sh', '-c', $cmd . ' 2>' . $err);
+    };
+    isnt $status, 0, 'rke2 still on PATH after the uninstall: the command fails';
+    like $err->slurp, qr/still installed/, 'and says why on stderr';
+};
+
 done_testing;

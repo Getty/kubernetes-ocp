@@ -32,6 +32,7 @@ package FakeHostAdapter {
     has commands  => (is => 'ro', default => sub { [] });
     has reachable => (is => 'rw', default => 1);
     has fixed_host => (is => 'ro');   # when set, resolve_host ignores %opts
+    has result     => (is => 'ro', default => sub { { stdout => '', stderr => '', exit => 0 } });
 
     sub resolve_host {
         my ($self, %opts) = @_;
@@ -46,7 +47,7 @@ package FakeHostAdapter {
     sub run_command {
         my ($self, $host, $command) = @_;
         push @{ $self->commands }, [$host, $command];
-        return { stdout => '', stderr => '', exit => 0 };
+        return $self->result;
     }
 }
 
@@ -162,6 +163,35 @@ subtest 'delete_server without a host does nothing' => sub {
     $p->delete_server(undef);   # resolve_host dies -> swallowed -> no-op
     is scalar @{ $p->commands }, 0,
         'no command issued when the host cannot be resolved';
+};
+
+#
+# k175: `ocp node rm` on an ssh worker reported success while rke2-agent kept
+# running. OCP::SSH::run reports a refused login as exit 255, not as an
+# exception, and delete_server handed that result back to a caller
+# (OCP::Node::teardown) that only looked for exceptions. An uninstall that
+# did not complete is now an exception, with ssh's own words in it -- the one
+# failure shape every caller already handles.
+#
+
+subtest 'delete_server dies when the uninstall does not complete' => sub {
+    my $p = FakeHostAdapter->new(result => {
+        stdout => '',
+        stderr => "root\@10.0.0.5: Permission denied (publickey).\n",
+        exit   => 255,
+    });
+    my $ok = eval { $p->delete_server(undef, host => '10.0.0.5'); 1 };
+    my $err = $@;
+    ok !$ok, 'a non-zero exit is an exception, not a return value';
+    like $err, qr/10\.0\.0\.5/,           'naming the host';
+    like $err, qr/\bexit 255\b/,          'the exit status';
+    like $err, qr/Permission denied/,     "and the remote side's diagnosis";
+};
+
+subtest 'delete_server returns the result when the uninstall completes' => sub {
+    my $p = FakeHostAdapter->new;
+    my $res = $p->delete_server(undef, host => '10.0.0.5');
+    is $res->{exit}, 0, 'the run_command result is handed back';
 };
 
 #

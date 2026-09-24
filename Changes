@@ -71,6 +71,10 @@ Revision history for OCP
       into the cluster over the API, and `ocp kubeconfig -e` merges access into
       ~/.kube/config.
     - `ocp destroy` tears a cluster down and deletes the paid servers it created.
+    - `ocp node rm` drains the node through the Eviction API, honouring
+      PodDisruptionBudgets within a five-minute bound, then deletes its server
+      or uninstalls RKE2/K3s from an ssh/local machine, the way `ocp destroy`
+      does. A node it cannot clean up stays as Failed with the reason, exit 1.
     - Invalid input is refused at the boundary with a message that names what
       was given and lists what would have worked, and errors carry no Perl stack
       trace unless `--verbose` is set. Multi-word options take either

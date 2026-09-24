@@ -643,31 +643,70 @@ sub reconcile_until_ready {
     return 0;
 }
 
+# How long a drain may take, and how often it looks again.
+#
+# kubectl drain waits forever by default. A teardown must not: `ocp node rm`
+# has an operator in front of it and a PodDisruptionBudget that never allows a
+# disruption would hold the command for good. Five minutes is what a rolling
+# restart of a healthy Deployment needs; running out is loud, not silent (see
+# _drain). `our` so a test can shorten both without waiting the real thing.
+our $DRAIN_TIMEOUT  = 300;
+our $DRAIN_INTERVAL = 5;
+
+# Take the node out of the cluster, then off the machine, then out of the API.
+#
+# The order is the point, and every step before the last two is allowed to
+# stop the rest (k175):
+#
+#   1. cordon  -- nothing new lands on the node while it is drained
+#   2. drain   -- evict its pods through the Eviction API
+#   3. provider delete -- delete the server (hetzner) or uninstall RKE2/K3s
+#                 from it (ssh/local, OCP::Role::Provider::ExistingHost)
+#   4. delete the k8s Node and the OCPNode
+#
+# A failure in 1-3 leaves the OCPNode in place, phase Failed with the reason,
+# and dies. Deleting the objects anyway -- which is what this did while the
+# provider delete was a warn -- is how `ocp node rm` reported "removed" for an
+# ssh worker whose rke2-agent kept running: the one record that said the
+# machine still ran Kubernetes was the thing deleted. It would not even stay
+# deleted -- a running kubelet registers its Node again. A Failed OCPNode is
+# visible in `ocp node ls`, is left alone by every reconciler, and
+# `ocp node rm` on it simply runs this again.
 sub teardown {
     my $self = shift;
     $self->_patch_status(phase => 'Terminating', message => 'Teardown initiated');
 
     my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $self->name;
-    eval {
-        $self->k8s->patch(
-            'Node',
-            name  => $k8s_name,
-            patch => { spec => { unschedulable => \1 } },
-        );
-    };
 
-    if ($self->provider) {
-        # Providers take the id they handed out at creation time; the
-        # host-based ones need the address instead. Pass both.
-        my $status = $self->cr->{status} // {};
-        eval {
+    my $ok = eval {
+        $self->_drain($k8s_name) if $self->_cordon($k8s_name);
+
+        if ($self->provider) {
+            # Providers take the id they handed out at creation time; the
+            # host-based ones need the address instead. Pass both. A provider
+            # reports failure by dying -- Hetzner when the API refuses,
+            # ExistingHost when the uninstall does not complete.
+            my $status = $self->cr->{status} // {};
             $self->provider->delete_server(
                 $status->{providerId},
                 name => $self->name,
                 host => $status->{publicIP} // $self->cr->{spec}{host},
             );
-            1;
-        } or warn "[node] provider delete failed for @{[ $self->name ]}: $@";
+        }
+        1;
+    };
+    unless ($ok) {
+        my $err = $@ || "unknown error\n";
+        chomp $err;
+        my $message = 'Teardown failed: ' . $err
+            . "\nThe node is kept; fix the cause and run 'ocp node rm "
+            . $self->name . "' again.";
+        eval { $self->_patch_status(phase => 'Failed', message => $message); 1 }
+            or warn '[node] could not record the failed teardown of '
+                  . $self->name . ": $@";
+        die 'Teardown of node ' . $self->name . " failed: $err\n"
+          . "The node is kept (phase Failed); fix the cause and run 'ocp node rm "
+          . $self->name . "' again.\n";
     }
 
     # Both deletes are Kind-first. They used to lead with an api-version
@@ -706,6 +745,101 @@ sub _delete_object {
 
     warn "[node] delete of $kind/$name failed: $err";
     return 0;
+}
+
+# Mark the Node unschedulable. False when there is no Node object -- a worker
+# that never registered has nothing to cordon and nothing to drain. Any other
+# failure stops the teardown: draining a node that still takes new pods chases
+# its own tail.
+sub _cordon {
+    my ($self, $k8s_name) = @_;
+
+    return 1 if eval {
+        $self->k8s->patch(
+            'Node',
+            name  => $k8s_name,
+            patch => { spec => { unschedulable => \1 } },
+        );
+        1;
+    };
+
+    my $err = $@;
+    return 0 if $err =~ /\b404\b/;
+    die "cordon of Node/$k8s_name failed: $err";
+}
+
+# Evict every pod a drain moves, the way `kubectl drain --ignore-daemonsets`
+# does, through the Eviction API so PodDisruptionBudgets are honoured.
+#
+# Bounded by $DRAIN_TIMEOUT, and what running out means depends on why:
+#
+#   * an eviction still refused (429, a PodDisruptionBudget) -- die. Removing
+#     the node now would be exactly the disruption the budget forbids.
+#   * every eviction accepted, some pods still terminating -- warn and go on.
+#     Their controllers have already been told to replace them; what is left
+#     is a grace period, or a kubelet that is not answering any more, which is
+#     the usual reason to remove a node in the first place.
+#
+# Any other refusal (403 without RBAC, 5xx) dies at once: waiting would not
+# change it.
+sub _drain {
+    my ($self, $k8s_name) = @_;
+
+    my $deadline = time + $DRAIN_TIMEOUT;
+    my %accepted;
+
+    while (1) {
+        my @pods = $self->_pods_to_drain($k8s_name);
+        return 1 unless @pods;
+
+        my @refused;
+        for my $pod (@pods) {
+            my $meta = $pod->{metadata};
+            my $key  = $meta->{namespace} . '/' . $meta->{name};
+            next if $accepted{$key} || $meta->{deletionTimestamp};
+
+            my ($code, $body) = OCP::K8s->evict($self->k8s,
+                name      => $meta->{name},
+                namespace => $meta->{namespace},
+            );
+            if ($code < 300 || $code == 404) { $accepted{$key} = 1; next }
+            if ($code == 429)                { push @refused, $key; next }
+
+            die "drain of Node/$k8s_name failed: eviction of pod $key answered "
+              . $code . ': ' . ($body // '') . "\n";
+        }
+
+        if (time >= $deadline) {
+            die "drain of Node/$k8s_name timed out after ${DRAIN_TIMEOUT}s:"
+              . ' a PodDisruptionBudget still refuses to evict '
+              . join(', ', @refused) . "\n"
+                if @refused;
+
+            warn "[node] drain of $k8s_name: evicted, but still terminating after "
+               . "${DRAIN_TIMEOUT}s: "
+               . join(', ', map { $_->{metadata}{namespace} . '/' . $_->{metadata}{name} } @pods)
+               . "; removing the node anyway\n";
+            return 1;
+        }
+
+        sleep $DRAIN_INTERVAL;
+    }
+}
+
+# The pods on this node a drain has to move. DaemonSet pods are left: their
+# controller ignores unschedulable and would put them straight back, and the
+# node going away takes them with it. Mirror pods (static pods the kubelet
+# reflects into the API) cannot be evicted at all.
+sub _pods_to_drain {
+    my ($self, $k8s_name) = @_;
+
+    my $list = $self->k8s->list('Pod', fieldSelector => 'spec.nodeName=' . $k8s_name);
+
+    return grep {
+        my $meta = $_->{metadata} // {};
+        !($meta->{annotations} // {})->{'kubernetes.io/config.mirror'}
+            && !grep { ($_->{kind} // '') eq 'DaemonSet' } @{ $meta->{ownerReferences} // [] };
+    } map { $self->_struct($_) } @{ $list->items // [] };
 }
 
 sub _verify {
@@ -764,7 +898,8 @@ OCP::Node - Trigger-neutral node reconcile state machine
         print "  [..] $phase\n";
     });
 
-    # Drain + delete provider server + delete CRs
+    # Cordon + drain, delete or uninstall the server, delete the objects;
+    # dies (OCPNode kept, phase Failed) when the machine could not be cleaned
     $node->teardown;
 
 =head1 DESCRIPTION
@@ -840,6 +975,41 @@ C<on_phase> is an optional coderef, called with C<($phase, $message)> the first
 time each phase is seen — including the C<Ready> or C<Failed> the loop returns
 on.  It exists because this class must not print: C<ocp node add> has an
 operator waiting and passes a sink, Robocop passes none.
+
+=head2 Teardown
+
+    $node->teardown;   # 1, or dies
+
+Takes the node out of the cluster and off its machine, in this order:
+
+=over 4
+
+=item 1. mark the OCPNode C<Terminating> and cordon the Kubernetes Node
+
+=item 2. drain it: every pod on the node except DaemonSet and mirror pods is
+evicted through the C<policy/v1> Eviction API (L<OCP::K8s/evict>), which
+honours PodDisruptionBudgets
+
+=item 3. C<< provider->delete_server >>: delete the server (Hetzner, which
+also forgets its host key) or uninstall RKE2/K3s from it (C<ssh>/C<local>,
+L<OCP::Role::Provider::ExistingHost/delete_server>)
+
+=item 4. delete the Kubernetes Node and the OCPNode
+
+=back
+
+The drain is bounded by C<$OCP::Node::DRAIN_TIMEOUT> (300 s).  An eviction a
+PodDisruptionBudget still refuses when it runs out fails the teardown; pods
+whose eviction was accepted but which are still terminating are named in a
+warning and do not hold it up.
+
+B<A failure in steps 1-3 dies and removes nothing.>  The OCPNode is patched to
+C<Failed> with the reason and a retry hint as its message, and the Node is
+left cordoned.  Deleting the objects of a machine that still runs Kubernetes
+would drop the only record of it (and a running kubelet registers its Node
+again anyway); a C<Failed> OCPNode is left alone by every reconciler, and
+calling C<teardown> on it again retries.  A refused delete in step 4 is
+warned about and does not fail the teardown; a 404 there is silent.
 
 =head2 Lease Mechanics
 

@@ -180,6 +180,14 @@ sub from_cr {
     # spec.ssh fields at all (the dead user + keySecretRef declarations were
     # removed in k126), and the SSH private key travels through
     # OCP::ClusterKey / the CLI pipeline, not the CR (ADR 0027, k111).
+    #
+    # So the caller that holds the key hands its path in, exactly as for_spec
+    # takes it. `ocp node rm` did not, and the adapter ran ssh with no identity
+    # at all: every uninstall was refused at the login, and nothing said so
+    # (k175).
+    elsif ($type eq 'ssh') {
+        $args{ssh_key_path} = $opts{ssh_key_path} if $opts{ssh_key_path};
+    }
     # 'local' needs no extra args from the CR.
 
     return $class->_build(\%args);
@@ -342,6 +350,14 @@ named arguments carry the credentials.
 In-cluster entry point.  C<$cr> is an C<OCPNodeProvider> resource as a hash;
 C<k8s> is a L<Kubernetes::REST> client, required when C<spec.type> is
 C<hetzner> (the token is fetched from the referenced Secret).
+
+    my $prov = OCP::Provider->from_cr($cr, k8s => $api,
+        ssh_key_path => $key->path);
+
+For C<ssh>, C<ssh_key_path> is the private key the adapter logs in with.  The
+CR carries no key (ADR 0027), so the caller that holds one passes it, as
+C<ocp node rm> does with the cluster key; without it the adapter's ssh runs
+with no identity and every login is refused.
 
 For C<hetzner>, C<spec.clusterName> becomes the adapter's
 L<OCP::Provider::Hetzner/cluster_name> — the value of the C<ocp-cluster>
