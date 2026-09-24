@@ -206,6 +206,22 @@ sub spec_drift {
 # Component drift: target versions vs. what runs in the cluster
 #
 
+# The params a component's upgrade task runs with: the target version, the
+# distribution (the tasks pick kubectl and kubeconfig by it and fall back to
+# RKE2's) and the probe's remedy_pins. `ocp update` drives the same tasks and
+# builds its params here too, so the two paths cannot drift apart (k163).
+# Callable on the class: update has a config, not a drift detector.
+sub remedy_params {
+    my ( $self, $config, $component, $version ) = @_;
+    my ($probe) = grep { $_->{component} eq $component } @COMPONENT_PROBES;
+    my $pins = $probe ? $probe->{remedy_pins} // {} : {};
+    return {
+        version      => $version,
+        distribution => $config->distribution,
+        map { $_ => OCP::Versions->get_component_version($pins->{$_}) } keys %$pins
+    };
+}
+
 sub component_drift {
     my ($self) = @_;
 
@@ -272,13 +288,7 @@ sub component_drift {
             remedy    => $probe->{remedy} ? {
                 type   => 'rex',
                 task   => $probe->{remedy},
-                params => {
-                    version      => $expected,
-                    distribution => $config->distribution,
-                    map {
-                        $_ => OCP::Versions->get_component_version($probe->{remedy_pins}{$_})
-                    } keys %{ $probe->{remedy_pins} // {} },
-                },
+                params => $self->remedy_params($config, $probe->{component}, $expected),
             } : undef,
             ($probe->{self_healing} ? (self_healing => 1) : ()),
         };
@@ -707,6 +717,16 @@ Absence of the GPU operator is not reported: it only belongs on a cluster with
 an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
 upgrades them — their version lives in a generated manifest that C<ocp apply>
 re-applies, which is what C<self_healing> on those entries says.
+
+=head2 remedy_params
+
+    my $params = OCP::Drift->remedy_params($config, 'cert_manager', $version);
+
+The params a component's upgrade task runs with: C<version>, the config's
+C<distribution> and the probe's C<remedy_pins> resolved from
+L<OCP::Versions>. Callable on the class. Both a drift remedy and
+L<OCP::Cmd::Update> build their Rex params here, so the two paths drive a
+task the same way.
 
 =head2 distribution_drift
 

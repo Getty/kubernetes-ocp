@@ -16,6 +16,7 @@ use OCP::Cmd::Node::Add;
 use OCP::Cmd::SSH;
 use OCP::Cmd::Update;
 use OCP::Config;
+use OCP::Drift;
 use OCP::Versions;
 
 #
@@ -79,11 +80,13 @@ sub project {
     $dir->child('.ocp')->mkpath;
 
     my $addr = $provider eq 'ssh' ? "  host: 1.2.3.4\n" : "  public_ip: 1.2.3.4\n";
+    my $dist = $args{dist} ? "kubernetes:\n  dist: $args{dist}\n" : '';
     $dir->child('ocp.yaml')->spew_utf8(<<"YAML");
 name: keytest
 control_planes:
   provider: $provider
 $addr
+$dist
 YAML
 
     $dir->child('keys.yaml')->spew_utf8("keys: []\n") if $secure;
@@ -566,6 +569,37 @@ subtest 'ocp update on secure + hetzner drives Rex with the admin key' => sub {
     is $calls->[0]{gateway_api_version}, OCP::Versions->get_component_version('gateway_api'),
         'cilium: the Gateway API pin';
     is $calls->[0]{distribution}, $config->distribution, 'cilium: the distribution';
+};
+
+subtest 'ocp update on k3s hands every Rex task the drift remedy params (k163)' => sub {
+    my $config = project(provider => 'hetzner', secure => 0, dist => 'k3s');
+    is $config->distribution, 'k3s', 'the fixture is a k3s cluster';
+    my $update = OCP::Cmd::Update->new(command_chain => [ FakeOcp->new ]);
+
+    my %task = (cilium => 'upgrade_cilium', cert_manager => 'upgrade_cert_manager');
+    for my $comp (sort keys %task) {
+        my $version = OCP::Versions->get_component_version($comp);
+        my ($out, $err, $calls) = capture(sub {
+            with_key_store(sub {
+                with_rex(sub {
+                    $update->_update_component($config,
+                        { component => $comp, from => 'old', to => $version });
+                });
+            });
+        });
+        is $err, '', "$comp: ran" or diag $out;
+        is scalar @$calls, 1, "$comp: one Rex task";
+        my %got = %{ $calls->[0] };
+        is delete $got{task}, $task{$comp}, "$comp: the upgrade task";
+        delete @got{qw( key material host )};
+
+        # Without distribution the task falls back to RKE2's kubectl and
+        # kubeconfig, which do not exist on k3s. The drift remedy is the
+        # reference: both paths must drive the task the same way.
+        is $got{distribution}, 'k3s', "$comp: the distribution";
+        is_deeply \%got, OCP::Drift->remedy_params($config, $comp, $version),
+            "$comp: exactly what the drift remedy passes";
+    }
 };
 
 subtest 'ocp update on secure + ssh now takes the admin key too' => sub {

@@ -6,6 +6,7 @@ use MooX::Cmd;
 use MooX::Options;
 use OCP::Choices;
 use OCP::Config;
+use OCP::Drift;
 use OCP::Versions;
 use OCP::Rex;
 use OCP;
@@ -236,8 +237,10 @@ sub _update_via_rex {
         key_file => $self->cluster_ssh_key($config, reason => 'ocp update')->path,
     );
 
+    # Same params the drift remedy passes for this task (k163): before, only
+    # the version travelled, so cert-manager on k3s ran RKE2's kubectl.
     $rex->run_task($task,
-        version => $version,
+        %{ OCP::Drift->remedy_params($config, $component, $version) },
     );
 }
 
@@ -246,24 +249,9 @@ sub _update_via_rex {
 
 sub _update_cilium {
     my ($self, $config, $version) = @_;
-
-    # Cilium updates need special handling (CLI + cluster upgrade)
-    my $cp_status = $config->cluster_status;
-    my $host = $cp_status->{public_ip} or die "No control plane IP found\n";
-
-    my $rex = OCP::Rex->new(
-        host     => $host,
-        key_file => $self->cluster_ssh_key($config, reason => 'ocp update')->path,
-    );
-
-    # The CLI and the Gateway API CRDs move with Cilium, and the task picks
-    # kubectl and kubeconfig by distribution (k160).
-    $rex->run_task('upgrade_cilium',
-        version             => $version,
-        distribution        => $config->distribution,
-        cli_version         => OCP::Versions->get_component_version('cilium_cli'),
-        gateway_api_version => OCP::Versions->get_component_version('gateway_api'),
-    );
+    # The CLI and the Gateway API CRDs move with Cilium (k160); their pins
+    # come with the drift remedy params.
+    $self->_update_via_rex($config, 'cilium', $version, 'upgrade_cilium');
 }
 
 sub _update_cert_manager {
