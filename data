@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-24T17:40:14Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:40:14Z
+created: 2026-09-24T16:39:40Z
+id: 176
+priority: medium
+started: 2026-09-24T17:40:14Z
+status: done
+tags:
+- robocop
+- logging
+title: robocop loggt Reconcile-Fehler der Kindprozesse nicht
+updated: 2026-09-24T17:40:14Z
+---
+
+Live-Fund 2026-09-24: OCPNode ging auf Failed ("SSH not reachable on ocpt-w.vm after 120s", Hostname im Pod nicht aufloesbar), robocop-Log enthielt dazu keine Zeile - nur status.message. Erfolgreiche Reconciles loggen dagegen Rex-Output. Done: jeder Child-Reconcile loggt Start (node, phase), Ergebnis (neue Phase) und Fehler mit Grund auf STDERR; Test. Optional: Failed ist terminal - Hinweis im Log/Status, wie man neu anstoesst (OCPNode loeschen + node add, oder Annotation?).
+
+2026-09-24 16:46 Implemented on branch worktree-agent-a839ada9dc703714f (see commit subject k176): child logs start (node, phase) + result (before -> after) on STDOUT; Failed read back from OCP::Node's status -> reason on STDERR + retry hint (ocp node rm NAME, ocp node add NAME); hint appended to status.message via message-only patch (OCP::Node untouched); _mark_failed carries hint, error lines to STDERR; already-Failed skipped in one line; child autoflush. t/156 new (incl. real fork), t/45 asserts on STDERR. make test (Docker) green: 108 files, 1893 tests.
+
+2026-09-24 16:58 Review ok, ff nach main (ee0c820), gepusht. Voller Docker-Lauf auf kombiniertem Stand gruen.
+
+2026-09-24 17:40 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
