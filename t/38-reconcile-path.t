@@ -374,6 +374,7 @@ my @WRITERS = qw(
     _ensure_providers
     _migrate_legacy_nodes
     _ensure_cp_ocpnode
+    _ensure_robocop_credentials
     _ensure_robocop
 );
 
@@ -741,6 +742,13 @@ subtest 'k26: robocop drives the new worker when it is enabled' => sub {
 
     ok touched($r, '_ensure_robocop'),     'robocop is ensured';
     ok touched($r, '_wait_robocop_ready'), 'and waited for';
+
+    # k169: its credentials Secret first -- the Deployment mounts it, and a
+    # pod started without it never runs. What the Secret carries, and when it
+    # costs a key, is t/169's business; here only the order.
+    my @order = grep { /^_ensure_robocop/ } @{ $r->{touched} };
+    is_deeply \@order, [ '_ensure_robocop_credentials', '_ensure_robocop' ],
+        'the credentials Secret is ensured before the Deployment';
     ok $r->{driven}[0]{robocop_ready}, 'the drive polls robocop instead of the CLI';
     ok !$r->{key_asked}, 'no SSH key needed when robocop does the work';
 };

@@ -42,6 +42,9 @@ use OCP::Cmd::Apply::Registry;
 use OCP::Cmd::Apply::Workloads;
 
 with 'OCP::Role::Cmd';
+# robocop's credentials Secret, written before its Deployment wherever apply
+# rolls robocop out -- the same code as `ocp deploy-robocop` (k169).
+with 'OCP::Role::Cmd::RobocopCredentials';
 
 has _ssh_key_path => (is => 'rw');
 

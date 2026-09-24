@@ -532,17 +532,21 @@ sub ensure_robocop {
     }
 }
 
+# Looks at least once, so a timeout of 0 is "is it ready right now" -- what
+# the inject level asks (k169): its pod is Ready only once a key was injected,
+# which no amount of waiting inside this apply brings about.
 sub wait_robocop_ready {
     my ($self, $api, $timeout) = @_;
     $timeout //= 60;
 
     my $deadline = time + $timeout;
-    while (time < $deadline) {
+    while (1) {
         my $dep = eval { $api->get('Deployment', 'robocop', namespace => 'ocp-system') };
         if ($dep) {
             my $ready = eval { $dep->status->readyReplicas } // 0;
             return 1 if $ready && $ready >= 1;
         }
+        last if time >= $deadline;
         $self->wait_seconds(5);
     }
     return 0;

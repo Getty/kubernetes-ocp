@@ -251,11 +251,45 @@ sub worker_step {
 
     my $robocop_ready = 0;
     if ($config->robocop_enabled) {
+        my $level = $config->robocop_security_level;
         print "  [..] Deploying robocop controller...\n";
-        eval { $self->_ensure_robocop($api, $config->robocop_security_level) };
-        if ($@) {
-            print "  [WARN] robocop deploy failed: $@\n";
-        } else {
+
+        # The credentials Secret BEFORE the Deployment that mounts it: without
+        # it the pod sits in CreateContainerConfigError, and apply used to wait
+        # 60s on it for nothing (k169). Same code as `ocp deploy-robocop`
+        # (OCP::Role::Cmd::RobocopCredentials); skipped when the Secret is
+        # already current, so a re-apply costs no SSH read and no PIN2. When
+        # it cannot be written, the Deployment is not rolled out either -- a
+        # pod that cannot start is no controller -- and the CLI takes over.
+        my $deployed = eval {
+            $self->_ensure_robocop_credentials($api, $config, $deps->{secrets},
+                $level, host => $deps->{cp_ip});
+            $self->_ensure_robocop($api, $level);
+            1;
+        };
+        # A failure, so STDERR -- now mostly a credentials problem (refused
+        # PIN2, unreadable join token) the operator has to act on.
+        unless ($deployed) {
+            my $err = $@ || "unknown error\n";
+            $err .= "\n" unless $err =~ /\n\z/;
+            print STDERR "  [!!] robocop deploy failed, the CLI brings the workers up: $err";
+        }
+
+        if ($deployed && $level eq 'inject') {
+            # inject: the pod turns Ready only once `ocp inject-key` handed it
+            # the robo key, which nothing in this run does. Look once -- a pod
+            # injected on an earlier run is Ready and drives -- and otherwise
+            # say so and let the CLI bring the workers up now, instead of
+            # waiting 60s for a key that cannot arrive.
+            $robocop_ready = $self->_wait_robocop_ready($api, 0);
+            if ($robocop_ready) {
+                print "  [ok] robocop ready (key injected)\n";
+            } else {
+                print "  [..] robocop waits for its SSH key (security_level inject):\n"
+                    . "       run 'ocp inject-key' once the pod is running. This run\n"
+                    . "       brings the workers up from the CLI.\n";
+            }
+        } elsif ($deployed) {
             $robocop_ready = $self->_wait_robocop_ready($api, 60);
             if ($robocop_ready) {
                 print "  [ok] robocop ready — grace period (5s)\n";
