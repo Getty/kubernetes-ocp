@@ -5,6 +5,9 @@ use Test::More;
 use File::Temp qw(tempdir);
 use Path::Tiny qw(path);
 
+use lib 't/lib';
+use OCPTest::Rexfile;
+
 use OCP;
 use OCP::Config;
 use OCP::Cmd::Apply;
@@ -38,7 +41,7 @@ no warnings 'once';   # the stub package is filled by a string eval
 #      join URL and the unit's last journal lines.
 #
 # Network-free: bootstrap runs with every machine-touching layer faked (t/101),
-# the Rexfile helpers are lifted out and run against stubs (t/86, t/178).
+# the Rexfile runs against recorders (t/lib/OCPTest/Rexfile.pm).
 # Whether a real k3s agent now joins is a live question, NOT claimed here.
 #
 
@@ -168,103 +171,53 @@ subtest 'bootstrap: no public_ip -> cp_ip stays the advertised host' => sub {
 };
 
 # --- 2 + 3. the Rexfile agent tasks -------------------------------------------
+#
+# Since k155 both agent tasks go through Rex::Rancher::Agent::install_agent,
+# which starts the unit with --no-block (k3s: installer with
+# INSTALL_K3S_SKIP_START, then restart --no-block) and waits at most 10
+# minutes, dying with the unit's state and journal. Those guarantees are held
+# against the real library in t/155-rex-libraries.t; here: that both tasks use
+# it, and that a failed join still names the address it tried.
 
-my $rexfile = path(__FILE__)->parent->parent->child('share/Rexfile');
-my $src = $rexfile->slurp_utf8;
+for my $t ([ install_k3s_agent => 'k3s' ], [ install_rke2_agent => 'rke2' ]) {
+    my ($task, $dist) = @$t;
+    subtest "$task joins through Rex::Rancher::Agent::install_agent" => sub {
+        OCPTest::Rexfile->reset;
+        OCPTest::Rexfile->run_task($task,
+            { server => 'https://10.5.10.20:6443', token => 'K10tok', node_name => 'w1', version => 'v1' });
+        my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Agent::install_agent');
+        ok $o, 'install_agent called' or return;
+        is $o->{distribution}, $dist, 'distribution';
+        is $o->{server}, 'https://10.5.10.20:6443', 'the join URL as given';
+        is $o->{node_name}, 'w1', 'node name';
+        ok !(grep { /systemctl (?:start|restart) (?:k3s|rke2)-agent\b/ } OCPTest::Rexfile->commands),
+            'no blocking start of a Type=notify unit of its own';
+    };
 
-my @subs;
-for my $name (qw( _k3s_install_cmd _wait_for_agent )) {
-    my ($body) = $src =~ /^(sub \Q$name\E \{.*?^\})/ms;
-    ok defined $body, "share/Rexfile defines $name"
-        or BAIL_OUT("k185 fix absent: $name is not in the Rexfile");
-    push @subs, $body;
-}
+    subtest "$task: a join that never comes up names the join URL" => sub {
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Agent::install_agent'} =
+            "$dist-agent.service did not become active within 600s (last state: activating)\n"
+          . "--- journalctl -u $dist-agent.service -n 50 ---\nlevel=error msg=\"failed to get CA certs\"\n";
+        my $ok = eval {
+            OCPTest::Rexfile->run_task($task, { server => 'https://ocpt-cp.vm:6443', token => 'K10tok' });
+            1;
+        };
+        my $err = $@;
+        ok !$ok, 'dies';
+        like $err, qr/$dist-agent/, 'names the unit (the library\'s message)';
+        like $err, qr/activating/, 'says the state it was stuck in';
+        like $err, qr/failed to get CA certs/, 'carries the journal';
+        like $err, qr{via https://ocpt-cp\.vm:6443 -- check that this node can reach that address},
+            'and names the join URL (rex-rancher k44)';
+    };
 
-my $stubs = <<'PERL';
-package RexfileAgentWait;
-use constant { TRUE => 1, FALSE => 0 };
-our (@RUNS, @STATES, $JOURNAL);
-sub run {
-    my ($cmd, %o) = @_;
-    push @RUNS, [ $cmd, \%o ];
-    return (@STATES ? shift @STATES : 'activating') . "\n" if $cmd =~ /is-active/;
-    return $JOURNAL // '' if $cmd =~ /journalctl/;
-    return '';
-}
-sub say { }
-PERL
-
-ok eval("$stubs\n" . join("\n", @subs) . "\n1;"),
-    'the lifted helpers compile against stubs'
-    or BAIL_OUT("cannot compile the lifted helpers: $@");
-
-my $cmd  = RexfileAgentWait->can('_k3s_install_cmd');
-my $wait = RexfileAgentWait->can('_wait_for_agent');
-
-subtest 'the k3s agent installer does not start the unit itself' => sub {
-    my $c = $cmd->(role => 'agent', server => 'https://10.5.10.20:6443', node_name => 'w1');
-    like $c, qr/\bINSTALL_K3S_SKIP_START=true /, 'INSTALL_K3S_SKIP_START=true';
-    like $c, qr/K3S_URL=https:\/\/10\.5\.10\.20:6443 /, 'K3S_URL as given';
-    like $c, qr/\bsh -s - agent$/, 'still the explicit agent argument';
-
-    my $s = $cmd->(role => 'server', node_name => 'police1');
-    unlike $s, qr/SKIP_START/, 'the server install is unchanged';
-};
-
-sub task_body {
-    my ($name) = @_;
-    my ($body) = $src =~ /^task "\Q$name\E", sub \{\n(.*?)\n\};$/ms;
-    return $body;
-}
-
-for my $t ([ install_k3s_agent => 'k3s-agent' ], [ install_rke2_agent => 'rke2-agent' ]) {
-    my ($task, $unit) = @$t;
-    subtest "$task starts $unit without blocking, then waits bounded" => sub {
-        my $body = task_body($task);
-        ok defined $body, 'task found' or return;
-        like $body, qr/systemctl (?:start|restart) --no-block $unit/,
-            'the unit is started with --no-block';
-        unlike $body, qr/systemctl (?:start|restart) $unit/,
-            'no blocking start of a Type=notify unit';
-        like $body, qr/_wait_for_agent\(\s*unit\s*=>\s*'$unit'/, 'then _wait_for_agent on it';
-        like $body, qr/server\s*=>\s*\$server/, 'which knows the join URL for its message';
+    subtest "$task refuses to start without server or token" => sub {
+        OCPTest::Rexfile->reset;
+        ok !eval { OCPTest::Rexfile->run_task($task, { token => 't' }); 1 }, 'no server: dies';
+        ok !eval { OCPTest::Rexfile->run_task($task, { server => 'https://x:6443' }); 1 }, 'no token: dies';
+        is scalar(OCPTest::Rexfile->calls('do_task')), 0, 'before the node is touched';
     };
 }
-
-subtest '_wait_for_agent returns once the unit is active' => sub {
-    @RexfileAgentWait::RUNS   = ();
-    @RexfileAgentWait::STATES = qw( activating activating active );
-    ok $wait->(unit => 'k3s-agent', server => 'https://10.5.10.20:6443',
-               minutes => 1, interval => 0), 'returns true';
-    my @polls = grep { $_->[0] =~ /is-active/ } @RexfileAgentWait::RUNS;
-    is scalar(@polls), 3, 'polled until active';
-    like $polls[0][0], qr/systemctl is-active k3s-agent\b/, 'asks systemd about the unit';
-    ok $polls[0][1]{timeout}, 'every poll carries its own timeout';
-    ok !grep({ $_->[0] =~ /journalctl/ } @RexfileAgentWait::RUNS), 'no journal read on success';
-};
-
-subtest '_wait_for_agent dies loudly when the unit never comes up' => sub {
-    @RexfileAgentWait::RUNS   = ();
-    @RexfileAgentWait::STATES = ();
-    $RexfileAgentWait::JOURNAL = "level=error msg=\"failed to get CA certs\"\n";
-    my $ok = eval {
-        $wait->(unit => 'k3s-agent', server => 'https://ocpt-cp.vm:6443',
-                minutes => 0, interval => 0);
-        1;
-    };
-    my $err = $@;
-    ok !$ok, 'dies';
-    like $err, qr/k3s-agent/, 'names the unit';
-    like $err, qr/activating/, 'says the state it was stuck in';
-    like $err, qr{https://ocpt-cp\.vm:6443}, 'names the join URL';
-    like $err, qr/failed to get CA certs/, 'carries the last journal lines';
-    my ($j) = grep { $_->[0] =~ /journalctl/ } @RexfileAgentWait::RUNS;
-    like $j->[0], qr/journalctl -u k3s-agent -n \d+ --no-pager/, 'reads the unit journal';
-};
-
-subtest '_wait_for_agent refuses a nonsense duration' => sub {
-    ok !eval { $wait->(unit => 'k3s-agent', minutes => '10m'); 1 }, 'dies';
-    like $@, qr/minutes/, 'and says why';
-};
 
 done_testing;

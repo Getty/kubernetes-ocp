@@ -7,6 +7,8 @@ use File::Temp qw(tempdir);
 use YAML::XS ();
 
 use lib 'lib';
+use lib 't/lib';
+use OCPTest::Rexfile;
 use OCP;
 use OCP::Config;
 use OCP::Drift;
@@ -34,7 +36,7 @@ no warnings 'once';   # the stub package is filled by a string eval
 #      the ocp.yaml value -- a running cluster is never reconfigured;
 #   5. a pool that differs from ocp.yaml is reported as drift, with no remedy.
 #
-# Network-free: Rexfile helpers are lifted and run against stubs (t/178).
+# Network-free: the Rexfile runs against recorders (t/lib/OCPTest/Rexfile.pm).
 #
 
 my $ocp    = OCP->new;
@@ -127,116 +129,135 @@ subtest 'bad pod CIDRs are refused with a reason' => sub {
 };
 
 # --- 3 + 4. the Rexfile -------------------------------------------------------
+#
+# Since k155 the Rexfile hands the install to Rex::Rancher; the claims hold
+# against what the tasks hand the library and write themselves, with the
+# Rexfile loaded against recorders (t/lib/OCPTest/Rexfile.pm).
 
 my $root = path(__FILE__)->parent->parent;
-my $src  = $root->child('share/Rexfile')->slurp_utf8;
 
-my @subs;
-for my $name (qw( _default_pod_cidr _k3s_server_config _cilium_install_args
-                  _cilium_pool_args _live_cilium_pool )) {
-    my ($body) = $src =~ /^(sub \Q$name\E \{[^\n]*\})$/m;
-    ($body) = $src =~ /^(sub \Q$name\E \{.*?^\})/ms unless defined $body;
-    ok defined $body, "share/Rexfile defines $name"
-        or BAIL_OUT("k182 fix absent: $name is not in the Rexfile");
-    push @subs, $body;
+my $KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n";
+
+# A node whose Cilium is $live: undef (none yet), or { ipam, pool, host }.
+sub cilium_node {
+    my ($live) = @_;
+    return sub {
+        my ($cmd) = @_;
+        return ($KUBECONFIG, 0) if $cmd =~ /^cat \S+\.yaml$/;
+        if ($cmd =~ /get configmap cilium-config/) {
+            return ('Error from server (NotFound): configmaps "cilium-config" not found', 1)
+                unless $live;
+            return (($live->{ipam} // '') . '|' . join(' ', @{ $live->{pool} // [] }), 0);
+        }
+        return (($live && $live->{host}) // '', 0) if $cmd =~ /get daemonset cilium/;
+        return ('', 0);
+    };
 }
 
-my $stubs = <<'PERL';
-package RexfilePodCidr;
-use constant { TRUE => 1, FALSE => 0 };
-our (@RUNS, $EXIT, $OUT);
-sub run {
-    my ($cmd, %o) = @_;
-    push @RUNS, [ $cmd, \%o ];
-    $? = $EXIT // 0;
-    return $OUT // '';
-}
-sub say { }
-PERL
+my %PINS = (version => '1.20.0', cli_version => 'v0.19.7', gateway_api_version => 'v1.6.1');
 
-ok eval("$stubs\n" . join("\n", @subs) . "\n1;"),
-    'the lifted helpers compile against stubs'
-    or BAIL_OUT("cannot compile the lifted helpers: $@");
-
-sub task_body {
-    my ($name) = @_;
-    my ($body) = $src =~ /^task "\Q$name\E", sub \{\n(.*?)\n\};$/ms;
-    return $body;
+sub cilium_opts_after {
+    my ($task, $live, %params) = @_;
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = cilium_node($live);
+    OCPTest::Rexfile->run_task($task, { %PINS, %params });
+    my $fn = $task eq 'upgrade_cilium' ? 'upgrade_cilium' : 'install_cilium';
+    return OCPTest::Rexfile->lib_opts("Rex::Rancher::Cilium::$fn");
 }
 
 subtest 'the Rexfile fallback is OCP::Config\'s default' => sub {
-    is RexfilePodCidr::_default_pod_cidr(), $OCP::Config::DEFAULT_POD_CIDR, 'one value';
+    is(OCPTest::Rexfile->helper('_default_pod_cidr')->(), $OCP::Config::DEFAULT_POD_CIDR, 'one value');
 };
 
-subtest 'k3s server config.yaml: cluster-cidr from pod_cidr' => sub {
-    my $c = YAML::XS::Load(RexfilePodCidr::_k3s_server_config(token => 't', pod_cidr => '172.20.0.0/16'));
-    is $c->{'cluster-cidr'}, '172.20.0.0/16', 'passed value';
-    $c = YAML::XS::Load(RexfilePodCidr::_k3s_server_config(token => 't'));
-    is $c->{'cluster-cidr'}, '10.42.0.0/16', 'fallback';
+subtest 'a fresh server writes cluster-cidr from pod_cidr, on both distributions' => sub {
+    for my $dist (qw( rke2 k3s )) {
+        for my $case ([ '172.20.0.0/16', '172.20.0.0/16' ], [ undef, '10.42.0.0/16' ]) {
+            my ($given, $want) = @$case;
+            OCPTest::Rexfile->reset;
+            OCPTest::Rexfile->run_task("install_${dist}_server",
+                { token => 't', (defined $given ? (pod_cidr => $given) : ()) });
+
+            my ($file) = grep { $_->{args}[0] =~ /cluster-cidr/ } OCPTest::Rexfile->calls('file');
+            ok $file, "$dist: a cluster-cidr file" or next;
+            is $file->{args}[0], "/etc/rancher/$dist/config.yaml.d/50-ocp-cluster-cidr.yaml",
+                "$dist: a config.yaml.d drop-in, which wins over config.yaml (rex-rancher k41)";
+            is $file->{args}[1]{content}, "cluster-cidr: $want\n",
+                "$dist: " . (defined $given ? 'the passed value' : 'the fallback');
+
+            my $written = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'file' && $_->{args}[0] =~ /cluster-cidr/ });
+            my $install = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Server::install_server' });
+            ok $written >= 0 && $install > $written, "$dist: written before the server starts";
+        }
+    }
 };
 
-subtest 'install_rke2_server writes cluster-cidr' => sub {
-    my $body = task_body('install_rke2_server');
-    ok defined $body, 'task found' or return;
-    like $body, qr/cluster-cidr: /, 'cluster-cidr line';
-    like $body, qr/\$params->\{pod_cidr\}\s*\|\|\s*_default_pod_cidr\(\)/,
-        'from the pod_cidr parameter, falling back to the default';
+subtest 'a pod CIDR that is no CIDR never reaches a node' => sub {
+    OCPTest::Rexfile->reset;
+    ok !eval { OCPTest::Rexfile->run_task('install_rke2_server', { token => 't', pod_cidr => '10.42.0.0/16; rm -rf /' }); 1 },
+        'dies';
+    like $@, qr/not an IPv4 CIDR/, 'and says why';
+    is scalar(OCPTest::Rexfile->calls('Rex::Rancher::Server::install_server')), 0, 'before the install';
 };
 
-subtest 'Cilium install flags carry the pool on both distributions' => sub {
-    my $rke2 = RexfilePodCidr::_cilium_install_args(distribution => 'rke2', pod_cidr => '172.20.0.0/16');
-    like $rke2, qr/--set ipam\.operator\.clusterPoolIPv4PodCIDRList=172\.20\.0\.0\/16\b/,
-        'rke2: no longer Cilium\'s 10.0.0.0/8 default';
-    like $rke2, qr/k8sServiceHost=localhost /, 'rke2 still localhost';
+subtest 'a fresh Cilium gets the pool on both distributions' => sub {
+    my $rke2 = cilium_opts_after('install_cilium', undef, distribution => 'rke2', pod_cidr => '172.20.0.0/16');
+    is_deeply $rke2->{helm_values}{ipam},
+        { mode => 'cluster-pool', operator => { clusterPoolIPv4PodCIDRList => ['172.20.0.0/16'] } },
+        'rke2: cluster-pool on pod_cidr -- no longer Cilium\'s 10.0.0.0/8, nor the library\'s kubernetes mode';
 
-    my $k3s = RexfilePodCidr::_cilium_install_args(distribution => 'k3s',
+    my $k3s = cilium_opts_after('install_cilium', undef, distribution => 'k3s',
         k8s_service_host => '203.0.113.7', pod_cidr => '172.20.0.0/16');
-    like $k3s, qr/clusterPoolIPv4PodCIDRList=172\.20\.0\.0\/16\b/, 'k3s: the same value';
+    is_deeply $k3s->{helm_values}{ipam}{operator}{clusterPoolIPv4PodCIDRList}, ['172.20.0.0/16'],
+        'k3s: the same value';
 
-    like RexfilePodCidr::_cilium_install_args(distribution => 'rke2'),
-        qr/clusterPoolIPv4PodCIDRList=10\.42\.0\.0\/16\b/, 'fallback on a hand-run';
+    my $hand = cilium_opts_after('install_cilium', undef, distribution => 'rke2');
+    is_deeply $hand->{helm_values}{ipam}{operator}{clusterPoolIPv4PodCIDRList}, ['10.42.0.0/16'],
+        'fallback on a hand-run';
 };
 
-subtest '_live_cilium_pool reads cilium-config, read-only' => sub {
-    local @RexfilePodCidr::RUNS = ();
-    local $RexfilePodCidr::EXIT = 0;
-    local $RexfilePodCidr::OUT  = "10.0.0.0/8\n";
-    is_deeply [ RexfilePodCidr::_live_cilium_pool(kubectl => 'K', kubeconfig => '/k') ],
-        [ '10.0.0.0/8' ], 'one CIDR';
-    my $cmd = $RexfilePodCidr::RUNS[0][0];
-    like $cmd, qr/^K -n kube-system get configmap cilium-config -o jsonpath=/, 'a get, nothing else';
-    like $cmd, qr/cluster-pool-ipv4-cidr/, 'the pool key';
-    is $RexfilePodCidr::RUNS[0][1]{env}{KUBECONFIG}, '/k', 'kubeconfig';
+subtest '_live_cilium reads cilium-config and the DaemonSet, read-only' => sub {
+    my $live = OCPTest::Rexfile->helper('_live_cilium');
 
-    local $RexfilePodCidr::OUT = "10.0.0.0/8 172.30.0.0/16";
-    is_deeply [ RexfilePodCidr::_live_cilium_pool(kubectl => 'K', kubeconfig => '/k') ],
-        [ '10.0.0.0/8', '172.30.0.0/16' ], 'a list is space-separated';
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = cilium_node({ ipam => 'cluster-pool', pool => ['10.0.0.0/8'], host => 'localhost' });
+    is_deeply $live->(kubectl => 'K', kubeconfig => '/k'),
+        { ipam => 'cluster-pool', pool => ['10.0.0.0/8'], k8s_service_host => 'localhost' }, 'mode, pool, API address';
+    my @cmds = OCPTest::Rexfile->commands;
+    like $cmds[0], qr/^K -n kube-system get configmap cilium-config -o jsonpath=/, 'a get';
+    like $cmds[0], qr/\{\.data\.ipam\}.*cluster-pool-ipv4-cidr/, 'mode and pool keys';
+    like $cmds[1], qr/^K -n kube-system get daemonset cilium -o jsonpath=.*KUBERNETES_SERVICE_HOST/, 'a get';
+    ok !(grep { !/ get / } @cmds), 'nothing but gets';
+    is( (OCPTest::Rexfile->calls('run'))[0]{args}[1]{env}{KUBECONFIG}, '/k', 'kubeconfig');
 
-    local $RexfilePodCidr::EXIT = 1;
-    local $RexfilePodCidr::OUT  = 'Error from server (NotFound)';
-    is_deeply [ RexfilePodCidr::_live_cilium_pool(kubectl => 'K', kubeconfig => '/k') ], [],
-        'unreadable: nothing, not the error text';
-};
+    local $OCPTest::Rexfile::RUN = cilium_node({ ipam => 'cluster-pool', pool => ['10.0.0.0/8', '172.30.0.0/16'] });
+    is_deeply $live->(kubectl => 'K', kubeconfig => '/k')->{pool}, ['10.0.0.0/8', '172.30.0.0/16'],
+        'a list is space-separated';
 
-subtest '_cilium_pool_args keeps the live pool' => sub {
-    is RexfilePodCidr::_cilium_pool_args('10.0.0.0/8'),
-        '--set ipam.operator.clusterPoolIPv4PodCIDRList=10.0.0.0/8', 'one CIDR';
-    is RexfilePodCidr::_cilium_pool_args('10.0.0.0/8', '172.30.0.0/16'),
-        "--set 'ipam.operator.clusterPoolIPv4PodCIDRList={10.0.0.0/8,172.30.0.0/16}'",
-        'several: a helm list';
-    is RexfilePodCidr::_cilium_pool_args(), '', 'nothing known: no flag, the release keeps its value';
+    local $OCPTest::Rexfile::RUN = cilium_node(undef);
+    is $live->(kubectl => 'K', kubeconfig => '/k'), undef, 'no cilium-config: no Cilium';
+
+    local $OCPTest::Rexfile::RUN = sub { ('The connection to the server was refused', 1) };
+    ok !eval { $live->(kubectl => 'K', kubeconfig => '/k'); 1 }, 'unreadable for another reason: dies';
+    like $@, qr/Cannot read the running Cilium's configuration/, 'rather than guess an IPAM mode';
 };
 
 subtest 'an upgrade never moves the pool to ocp.yaml\'s value' => sub {
+    my $live = { ipam => 'cluster-pool', pool => ['10.0.0.0/8'], host => '203.0.113.7' };
     for my $task (qw( upgrade_cilium install_cilium )) {
-        my $body = task_body($task);
-        ok defined $body, "$task found" or next;
-        my ($upgrade) = $body =~ /(run\s+(?:"|')cilium upgrade[^;]*;)/s;
-        ok $upgrade, "$task runs cilium upgrade" or next;
-        like $upgrade, qr/_cilium_pool_args\(\s*_live_cilium_pool\(/,
-            "$task: the upgrade passes the LIVE pool";
-        unlike $upgrade, qr/pod_cidr/, "$task: never the configured one";
+        my $o = cilium_opts_after($task, $live, distribution => 'rke2', pod_cidr => '172.20.0.0/16');
+        ok $o, "$task calls the library" or next;
+        is_deeply $o->{helm_values}{ipam},
+            { mode => 'cluster-pool', operator => { clusterPoolIPv4PodCIDRList => ['10.0.0.0/8'] } },
+            "$task: the LIVE pool, never the configured one";
     }
+
+    my $o = cilium_opts_after('upgrade_cilium', { ipam => 'kubernetes' }, distribution => 'rke2');
+    is_deeply $o->{helm_values}{ipam}, { mode => 'kubernetes' }, 'a running IPAM mode is kept too';
+
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = cilium_node(undef);
+    ok !eval { OCPTest::Rexfile->run_task('upgrade_cilium', { %PINS }); 1 }, 'no Cilium: upgrade_cilium dies';
+    is scalar(OCPTest::Rexfile->calls('Rex::Rancher::Cilium::upgrade_cilium')), 0, 'without upgrading anything';
 };
 
 # --- OCP::Rex and the bootstrap thread the value through -----------------------

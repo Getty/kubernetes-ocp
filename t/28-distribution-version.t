@@ -6,6 +6,9 @@ use Path::Tiny qw(path);
 
 use OCP::Versions;
 
+use lib 't/lib';
+use OCPTest::Rexfile;
+
 #
 # Three places answer "which distribution version?" — the installer
 # (OCP::Cmd::Apply), the worker join (OCP::Node) and the drift check
@@ -73,7 +76,7 @@ subtest 'the Rexfile reads Cilium versions from task_params, not from constants'
         'no Cilium version constants remain in the Rexfile (every pin lives in OCP::Versions)'
         or diag "Constants still present: @cst";
 
-    like $src, qr/my \$cilium_version_target = \$params->\{version\} \/\/ \$ENV\{OCP_CILIUM_VERSION\}/,
+    like $src, qr/my \$version = \$params->\{version\} \/\/ \$ENV\{OCP_CILIUM_VERSION\}/,
         'install_cilium takes Cilium from task_params, with an ENV fallback for hand-runs';
     like $src, qr/my \$cli_version = \$params->\{cli_version\} \/\/ \$ENV\{OCP_CILIUM_CLI_VERSION\}/,
         'the Cilium CLI version has the same shape';
@@ -104,9 +107,12 @@ subtest 'Gateway API travels with Cilium' => sub {
 
     unlike $rex, qr{gateway-api/releases/download/v\d+\.\d+\.\d+/},
         'the CRD URLs no longer hardcode a version';
-    like $rex, qr/_apply_gateway_api_crds\(.*?version\s*=>\s*\$gateway_api_version/s,
+    # Since k155 install_cilium hands it to Rex::Rancher::Cilium, which builds
+    # the bundle URL from it (t/90, t/155); update_gateway_api's own apply
+    # still builds one here.
+    like $rex, qr/gateway_api_version\s*=>\s*\$gateway_api_version/s,
         'install_cilium hands the passed version to the CRD apply';
-    like $rex, qr{\$version/standard-install\.yaml},
+    like $rex, qr{\$version/"\s*\.\s*_gateway_api_channel\(\)\s*\.\s*"-install\.yaml},
         'which puts it into the bundle URL';
     # One channel only, standard -- since Gateway API v1.5 it carries the
     # TLSRoute v1 Cilium 1.20 requires, and experimental over standard is
@@ -114,16 +120,15 @@ subtest 'Gateway API travels with Cilium' => sub {
 };
 
 subtest 'every bundled ingress controller is disabled' => sub {
-    my $rexfile = path(__FILE__)->parent->parent->child('share/Rexfile');
-    plan skip_all => 'share/Rexfile not found' unless -f $rexfile;
-
-    my $rex = $rexfile->slurp_utf8;
-
     # RKE2 v1.36 added Traefik; its helm-install job crashes on a
-    # Cilium-owned cluster and leaves two pods in CrashLoopBackOff.
-    for my $chart (qw( rke2-ingress-nginx rke2-traefik rke2-traefik-crd )) {
-        like $rex, qr/^\s*\Q$chart\E$/m, "$chart is disabled in the RKE2 config";
-    }
+    # Cilium-owned cluster and leaves two pods in CrashLoopBackOff. Since k155
+    # the list is Rex::Rancher::Server's default for rke2 (held against the
+    # real library in t/155-rex-libraries.t); OCP must leave that default in
+    # charge rather than hand over a list of its own.
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server', { token => 't' });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    ok $o && !exists $o->{disable}, 'install_rke2_server leaves the disable list to the library default';
 };
 
 subtest 'the manifest actually carries a version per distribution' => sub {

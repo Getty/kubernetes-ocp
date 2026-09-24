@@ -6,7 +6,24 @@ use Rex::Commands::File;
 use Rex::Commands::Service;
 use Rex::Commands::Pkg;
 use Rex::Commands::Host;
+use File::Temp ();
 use JSON::MaybeXS;
+
+# The install itself lives in Rex::Rancher and Rex::GPU, which exist for OCP
+# (k155): node preparation, the RKE2/K3s server and agent installs, Cilium with
+# the Gateway API CRDs, and the NVIDIA driver and container toolkit. This file
+# keeps what is OCP's own -- the parameter hand-over, the pod network, GPU
+# detection from sysfs, the legacy-template cleanup, the waits OCP insists on
+# -- and every piece the libraries cannot yet express, each marked with the
+# card on the library's board that would move it there.
+#
+# Loaded without imports: every call below names its library, so no library
+# function can shadow a task of the same name (install_cilium, prepare_node).
+use Rex::Rancher::Node ();
+use Rex::Rancher::Server ();
+use Rex::Rancher::Agent ();
+use Rex::Rancher::Cilium ();
+use Rex::GPU::NVIDIA ();
 
 # Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
 # Pure libssh in-process: no ssh client subprocess, no SFTP subsystem,
@@ -68,29 +85,12 @@ sub check_os {
     }
 }
 
-# Helper: Go/Kubernetes architecture name of the target node
-#
-# Every upstream release artifact OCP downloads by hand — the RKE2 tarball,
-# its checksum file, the Cilium CLI — is named after Go's GOARCH, not after
-# `uname -m`. The mapping used to be inlined at the two Cilium call sites and
-# was missing entirely at the RKE2 one, which hardcoded amd64 and therefore
-# 404'd on every aarch64 node.
-#
-# Unknown machines fall through unmapped on purpose: a wrong-but-plausible
-# guess would produce a 404 far from here, the raw name at least names itself
-# in the failing URL.
-sub _node_arch {
-    my $raw = run "uname -m";
-    chomp $raw if defined $raw;
-
-    my %goarch = (
-        x86_64  => 'amd64',
-        amd64   => 'amd64',
-        aarch64 => 'arm64',
-        arm64   => 'arm64',
-    );
-
-    return $goarch{$raw} // $raw;
+# Where each distribution keeps its kubectl and its admin kubeconfig on the node.
+sub _kube {
+    my ($distribution) = @_;
+    return $distribution eq 'k3s'
+        ? ('kubectl', '/etc/rancher/k3s/k3s.yaml')
+        : ('/var/lib/rancher/rke2/bin/kubectl', '/etc/rancher/rke2/rke2.yaml');
 }
 
 #
@@ -108,99 +108,32 @@ task "prepare_node", sub {
 
     check_os();
 
-    # Refresh apt cache before any package install — on fresh Debian images
-    # the cache is often stale, and the first real `apt-get install` will
-    # silently fail. (curl/ca-certificates are already present so they
-    # wouldn't trigger this, but chrony might.)
-    say "Refreshing package database...";
-    eval { update_package_db; 1 } or say "  update_package_db warning: $@";
+    # Rex::Rancher: apt refresh (with the apt timers stopped that hold its lock
+    # on a fresh boot), curl + ca-certificates, hostname, timezone, locale,
+    # swap off, br_netfilter/overlay, the Kubernetes sysctls. NTP is OCP's
+    # own below, so the library is told to leave it alone.
+    Rex::Rancher::Node::prepare_node(
+        ($hostname ? (hostname => $hostname) : ()),
+        ($domain   ? (domain   => $domain)   : ()),
+        timezone => $timezone,
+        locale   => $locale,
+        ntp      => 0,
+    );
 
-    # Ensure required packages are installed
-    pkg ["curl", "ca-certificates"], ensure => "present";
-
-    # === Hostname ===
-    if ($hostname) {
-        say "Configuring hostname: $hostname" . ($domain ? ".$domain" : "");
-        my $fqdn = $domain ? "$hostname.$domain" : $hostname;
-
-        # hostnamectl (systemd) - fallback to /etc/hostname
-        my $hc_out = run "which hostnamectl >/dev/null 2>&1 && hostnamectl set-hostname $hostname 2>&1", auto_die => FALSE;
-        if ($? != 0) {
-            file "/etc/hostname", content => "$hostname\n";
-            run "hostname $hostname", auto_die => FALSE;
-        }
-
-        # /etc/hosts entry
-        host_entry $fqdn,
+    # Rex::Rancher writes the /etc/hosts entry only with a domain; OCP knows
+    # none, robocop's joins neither, and the node still resolves its own name
+    # (rex-rancher k42).
+    if ($hostname && !$domain) {
+        host_entry $hostname,
             ensure  => "present",
             ip      => "127.0.1.1",
             aliases => [$hostname];
     }
 
-    # === Timezone ===
-    say "Configuring timezone: $timezone";
-    my $tz_out = run "which timedatectl >/dev/null 2>&1 && timedatectl set-timezone $timezone 2>&1", auto_die => FALSE;
-    if ($? != 0) {
-        run "ln -sf /usr/share/zoneinfo/$timezone /etc/localtime", auto_die => FALSE;
-        file "/etc/timezone", content => "$timezone\n";
-    }
-
-    # === Locale ===
-    say "Configuring locale: $locale";
-    run "which localectl >/dev/null 2>&1 && localectl set-locale LANG=$locale 2>&1", auto_die => FALSE;
-    if ($? != 0) {
-        file "/etc/default/locale", content => "LANG=$locale\n";
-    }
+    # The library sets LANG but does not generate the locale (rex-rancher k42).
     run "locale-gen $locale >/dev/null 2>&1", auto_die => FALSE;
 
-    # === NTP ===
-    # etcd/kube-apiserver need clock sync. Prefer what's already running:
-    #   1. If timedatectl says "System clock synchronized: yes" → done
-    #   2. Otherwise try chrony (best-effort, don't die — systemd-timesyncd
-    #      may be active even if not yet "synchronized" from timedatectl's POV)
-    if ($ntp) {
-        my $tdc = run "timedatectl show --property=NTPSynchronized --value 2>/dev/null", auto_die => FALSE;
-        chomp $tdc if defined $tdc;
-        if (defined $tdc && $tdc eq 'yes') {
-            say "NTP already synchronized (skipping chrony install)";
-        } else {
-            say "Ensuring NTP (chrony)...";
-            eval { pkg ["chrony"], ensure => "present"; 1 };
-            if (my $err = $@) {
-                say "  chrony install failed: $err";
-                say "  Checking systemd-timesyncd as fallback...";
-                my $ts_active = run "systemctl is-active systemd-timesyncd 2>/dev/null", auto_die => FALSE;
-                chomp $ts_active if defined $ts_active;
-                if (defined $ts_active && $ts_active eq 'active') {
-                    say "  [ok] systemd-timesyncd is active — using that";
-                } else {
-                    run "systemctl enable --now systemd-timesyncd 2>&1", auto_die => FALSE;
-                    say "  (best-effort: started systemd-timesyncd)";
-                }
-            } else {
-                run "systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null", auto_die => FALSE;
-            }
-        }
-    }
-
-    # === Kubernetes preparation ===
-
-    # Disable swap
-    run "swapoff -a", auto_die => FALSE;
-    delete_lines_matching "/etc/fstab", matching => qr/swap/;
-
-    # Load kernel modules
-    run "modprobe br_netfilter", auto_die => FALSE;
-    run "modprobe overlay", auto_die => FALSE;
-
-    file "/etc/modules-load.d/kubernetes.conf",
-        content => "br_netfilter\noverlay\n";
-
-    # Sysctl settings
-    file "/etc/sysctl.d/99-kubernetes.conf",
-        content => "net.bridge.bridge-nf-call-iptables = 1\nnet.bridge.bridge-nf-call-ip6tables = 1\nnet.ipv4.ip_forward = 1\n";
-
-    run "sysctl --system > /dev/null 2>&1";
+    _ensure_ntp() if $ntp;
 
     # Every install task comes through here, for both distributions and both
     # roles, and it runs before the service is (re)started -- which is exactly
@@ -209,6 +142,50 @@ task "prepare_node", sub {
     # is a content check and not an unlink.
     do_task "cleanup_legacy_containerd_template";
 };
+
+# etcd/kube-apiserver need clock sync. Prefer what's already running:
+#   1. If timedatectl says "System clock synchronized: yes" → done
+#   2. Otherwise try chrony (best-effort, don't die — systemd-timesyncd
+#      may be active even if not yet "synchronized" from timedatectl's POV)
+# Rex::Rancher installs chrony unconditionally and dies when that fails, so
+# this stays here until rex-rancher k42.
+sub _ensure_ntp {
+    my $tdc = run "timedatectl show --property=NTPSynchronized --value 2>/dev/null", auto_die => FALSE;
+    chomp $tdc if defined $tdc;
+    if (defined $tdc && $tdc eq 'yes') {
+        say "NTP already synchronized (skipping chrony install)";
+        return;
+    }
+
+    say "Ensuring NTP (chrony)...";
+    eval { pkg ["chrony"], ensure => "present"; 1 };
+    if (my $err = $@) {
+        say "  chrony install failed: $err";
+        say "  Checking systemd-timesyncd as fallback...";
+        my $ts_active = run "systemctl is-active systemd-timesyncd 2>/dev/null", auto_die => FALSE;
+        chomp $ts_active if defined $ts_active;
+        if (defined $ts_active && $ts_active eq 'active') {
+            say "  [ok] systemd-timesyncd is active — using that";
+        } else {
+            run "systemctl enable --now systemd-timesyncd 2>&1", auto_die => FALSE;
+            say "  (best-effort: started systemd-timesyncd)";
+        }
+    } else {
+        run "systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null", auto_die => FALSE;
+    }
+}
+
+# The prepare_node parameters out of an install task's parameters.
+sub _node_params {
+    my ($params) = @_;
+    return {
+        hostname => $params->{hostname} || '',
+        domain   => $params->{domain}   || '',
+        timezone => $params->{timezone} || 'UTC',
+        locale   => $params->{locale}   || 'en_US.UTF-8',
+        ntp      => $params->{ntp}      // 1,
+    };
+}
 
 # Should this node get the host-side GPU treatment at all?
 #
@@ -340,91 +317,76 @@ sub _pci_display_devices {
     return @devices;
 }
 
+# The NVIDIA cards among the display devices, in the shape
+# Rex::GPU::NVIDIA::install_driver takes from a caller that finds its GPUs
+# without lspci (rex-gpu k42): device_id as exactly four hex digits, and a
+# name for its messages -- sysfs has none, so the PCI ID stands in. A device
+# ID sysfs would not give is left out rather than guessed: the library then
+# treats the card as one it does not know.
+sub _nvidia_gpus {
+    my (@display) = @_;
+    return map {
+        +{
+            name => "NVIDIA GPU [10de:$_->{device}]",
+            ($_->{device} =~ /^[0-9a-f]{4}$/ ? (device_id => $_->{device}) : ()),
+        }
+    } grep { $_->{vendor} eq '10de' } @display;
+}
+
 desc "Install NVIDIA GPU drivers and container toolkit";
 task "install_nvidia", sub {
     say "Installing NVIDIA GPU drivers and container toolkit...";
 
     my $os = operating_system();
-    my $running_kernel = run "uname -r";
-    chomp $running_kernel;
-    say "  OS: $os, Kernel: $running_kernel";
 
-    # 1. Install kernel headers + driver packages
+    # 1. The driver.
     #
-    # …unless the host already has a working one. Vendor appliances (NVIDIA
-    # DGX and friends) ship with a driver matched to their kernel and their
-    # silicon, often newer than anything in the distribution archive. Letting
-    # apt pull some other branch over that downgrades a working machine into
-    # a broken one, and on a fresh GPU generation there is no going back
-    # without the vendor's image. A driver that answers `nvidia-smi` and
-    # provides libcuda is the driver we want; OCP only needs the container
-    # toolkit on top of it.
-    if (_nvidia_driver_present()) {
-        say "  Host driver already present and working — skipping driver install";
-        say "  (OCP only adds the container toolkit on top of it)";
-    } elsif ($os eq 'Debian') {
-        # The kernel meta-package is named after the *Debian* architecture
-        # (linux-headers-amd64, linux-headers-arm64, …), so ask dpkg rather
-        # than assuming. GOARCH happens to agree for these two, but this is
-        # dpkg's namespace, not Go's.
-        my $deb_arch = run "dpkg --print-architecture";
-        chomp $deb_arch if defined $deb_arch;
-        $deb_arch ||= _node_arch();
-
-        my @driver_packages = (
-            "linux-headers-$running_kernel",  # DKMS builds for running kernel
-            "linux-headers-$deb_arch",        # Meta for latest kernel
-            "nvidia-driver",                  # Driver meta-package (pulls dkms)
-            "nvidia-smi",                     # nvidia-smi tool
-            "libcuda1",                       # CUDA driver library (needed by container runtime!)
-        );
-
-        say "  Installing driver packages...";
-        update_package_db;
-        pkg \@driver_packages, ensure => "present";
-    } elsif ($os eq 'Ubuntu') {
-        _install_nvidia_driver_ubuntu($running_kernel);
+    # Rex::GPU::NVIDIA::install_driver leaves a working driver alone (nvidia-smi
+    # lists a GPU and libcuda is in the linker cache -- vendor appliances such
+    # as a DGX ship one matched to their kernel and silicon, and apt pulling
+    # another branch over it breaks the machine), picks the driver by GPU
+    # generation from the device IDs, installs only the running kernel's
+    # headers, and verifies the result.
+    #
+    # Ubuntu stays OCP's own until rex-gpu k69: the library installs
+    # linux-headers-generic there -- headers for a different kernel on a
+    # vendor kernel like a DGX Spark's -- and picks the driver package by
+    # apt-cache search instead of letting ubuntu-drivers decide.
+    if ($os eq 'Ubuntu') {
+        if (_nvidia_driver_present()) {
+            say "  Host driver already present and working — skipping driver install";
+            say "  (OCP only adds the container toolkit on top of it)";
+        } else {
+            my $running_kernel = run "uname -r";
+            chomp $running_kernel;
+            _install_nvidia_driver_ubuntu($running_kernel);
+        }
+        run "modprobe nvidia", auto_die => FALSE;
     } else {
-        die "Unsupported OS for NVIDIA: $os\n";
+        Rex::GPU::NVIDIA::install_driver(gpus => [ _nvidia_gpus(_pci_display_devices()) ]);
     }
 
-    # 2. Add NVIDIA container toolkit repo and install
+    # 2. The container toolkit.
     #
-    # Same argument as the driver, one layer up: a vendor image already has the
-    # toolkit — on a DGX Spark, /usr/bin/nvidia-container-runtime and nvidia-ctk
-    # are there before OCP is. Adding NVIDIA's apt source to such a host changes
-    # where its packages come from for everything that follows, for no gain, so
-    # the presence of a working runtime ends this step too.
+    # A vendor image already has it — on a DGX Spark, /usr/bin/nvidia-container-runtime
+    # and nvidia-ctk are there before OCP is. Adding NVIDIA's apt source to such
+    # a host changes where its packages come from for everything that follows,
+    # for no gain, so the presence of a working runtime ends this step. OCP asks
+    # for the binaries the CRI execs; the library's own skip additionally wants
+    # the dpkg package, which a runtime installed any other way does not have.
     if (_nvidia_toolkit_present()) {
         say "  Container toolkit already present — leaving the host's apt sources alone";
     } else {
-        say "  Adding NVIDIA container toolkit repository...";
-        pkg ["curl", "gnupg"], ensure => "present";
-
-        # Download and dearmor GPG key (modern signed-by approach, not deprecated apt-key)
-        run "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null",
-            auto_die => FALSE;
-
-        # Write sources.list directly (not curl|sed pipeline)
-        file "/etc/apt/sources.list.d/nvidia-container-toolkit.list",
-            content => "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/\$(ARCH) /\n";
-
-        update_package_db;
-
-        say "  Installing nvidia-container-toolkit...";
-        pkg ["nvidia-container-toolkit"], ensure => "present";
+        Rex::GPU::NVIDIA::install_container_toolkit();
     }
 
-    # 3. Load nvidia kernel module
-    run "modprobe nvidia", auto_die => FALSE;
-
-    # 4. Verify everything
-    _verify_nvidia();
+    # 3. Verify everything; warns, never dies (a reboot may still be due).
+    Rex::GPU::NVIDIA::verify_nvidia();
 
     say "NVIDIA GPU installation complete";
 };
 
-# Ubuntu: let `ubuntu-drivers` choose the driver package.
+# Ubuntu: let `ubuntu-drivers` choose the driver package (rex-gpu k69).
 #
 # Three questions decide which package is correct here, and OCP can answer none
 # of them from the outside:
@@ -479,7 +441,8 @@ sub _install_nvidia_driver_ubuntu {
     }
 }
 
-# Is a working NVIDIA driver already installed on this host?
+# Is a working NVIDIA driver already installed on this host? (Ubuntu path only;
+# Rex::GPU asks the same question itself.)
 #
 # "Working" is deliberately defined by what the container stack consumes, not
 # by package state: nvidia-smi enumerates GPUs, and libcuda.so is in the
@@ -516,361 +479,19 @@ sub _nvidia_toolkit_present {
     return 1;
 }
 
-sub _verify_nvidia {
-    say "  Verifying NVIDIA installation...";
-    my $ok = 1;
-
-    # Check kernel module loaded
-    my $lsmod = run "lsmod | grep '^nvidia '", auto_die => FALSE;
-    if ($? != 0 || !$lsmod) {
-        say "  [WARN] nvidia kernel module not loaded (reboot may be needed)";
-        my $dkms = run "dkms status 2>&1 | grep nvidia", auto_die => FALSE;
-        say "         DKMS: $dkms" if $dkms;
-        $ok = 0;
-    } else {
-        say "  [ok] nvidia kernel module loaded";
-    }
-
-    # Check nvidia-smi
-    my $smi = run "nvidia-smi -L 2>&1", auto_die => FALSE;
-    chomp $smi if defined $smi;
-    if (defined $smi && $smi =~ /GPU \d+:/) {
-        say "  [ok] $smi";
-    } else {
-        say "  [WARN] nvidia-smi not working: " . ($smi // 'no output');
-        $ok = 0;
-    }
-
-    # Check libcuda
-    my $libcuda = run "ldconfig -p | grep 'libcuda.so '", auto_die => FALSE;
-    if ($? == 0 && $libcuda) {
-        say "  [ok] libcuda available";
-    } else {
-        say "  [WARN] libcuda.so not found";
-        $ok = 0;
-    }
-
-    # Check container toolkit
-    if (can_run("nvidia-ctk")) {
-        say "  [ok] nvidia-container-toolkit installed";
-    } else {
-        say "  [WARN] nvidia-container-toolkit not found";
-        $ok = 0;
-    }
-
-    unless ($ok) {
-        say "  [WARN] GPU verification incomplete - some features may not work until reboot";
-    }
-}
-
 #
-# RKE2 Tasks
+# RKE2 / K3s Tasks
 #
 
 desc "Install RKE2 server (control plane)";
 task "install_rke2_server", sub {
-    my $params = task_params(shift);
-    # Never rotate the token a control plane is already sealed with. RKE2 derives
-    # the datastore encryption key from this token at bootstrap and only re-checks
-    # it at the NEXT start, so a bare hand-run of this task (no token= param) on a
-    # machine that already carries a cluster would write a fresh token into
-    # config.yaml and arm a fatal "bootstrap data already found and encrypted with
-    # different token" on the next rke2-server restart (k154, the Rexfile twin of
-    # k150). Reuse the on-disk server/token; generate only for a fresh server. A
-    # passed token still wins, so the ocp-apply path (always sends one) is unchanged.
-    my $token = $params->{token} || _existing_server_token('rke2') || _generate_token();
-    my $version = $params->{version} || '';
-    # tls-san carries EVERY control-plane address, not just this node's, so TLS
-    # holds against any server in an HA cluster and not only police1 (k137). It
-    # arrives as a JSON array (the list OCP::Rex/OCP::Node build) or, for a
-    # hand-run `rex ... --tls_san=1.2.3.4`, as a bare scalar -- accept both.
-    my $tls_san = $params->{tls_san};
-    my @tls_sans = ref $tls_san eq 'ARRAY' ? @$tls_san
-                 : (defined $tls_san && length $tls_san) ? ($tls_san)
-                 : ();
-    my $node_name = $params->{node_name} || '';
-    # Optional server-join mode (k8): when a supervisor URL is passed, this
-    # node joins the EXISTING embedded-etcd cluster as an additional
-    # control-plane server instead of initialising a new one. Absent (police1),
-    # the config carries no server: line and RKE2 does cluster-init exactly as
-    # before. Like the agent join, the URL and token arrive through
-    # REX_TASK_PARAMS, never on the command line where `ps` would leak them.
-    my $server = $params->{server} || '';
-
-    do_task "prepare_node", {
-        hostname => $params->{hostname} || '',
-        domain   => $params->{domain}   || '',
-        timezone => $params->{timezone} || 'UTC',
-        locale   => $params->{locale}   || 'en_US.UTF-8',
-        ntp      => $params->{ntp}      // 1,
-    };
-    _maybe_detect_gpu($params);
-
-    # Create RKE2 config
-    my $config = "cni: none\ndisable-kube-proxy: true\n";
-    $config .= "server: $server\n" if $server;
-    $config .= "token: $token\n";
-    $config .= "node-name: $node_name\n" if $node_name;
-    if (@tls_sans) {
-        $config .= "tls-san:\n";
-        $config .= "  - $_\n" for @tls_sans;
-    }
-    # RKE2's own default, spelled out so it is the same value Cilium's pool
-    # gets (k182). A joining server must carry its first server's value --
-    # RKE2 refuses a mismatch -- and robocop's joins only have the fallback.
-    $config .= "cluster-cidr: " . ($params->{pod_cidr} || _default_pod_cidr()) . "\n";
-    # Disable every bundled ingress controller — Cilium Gateway API is the
-    # ingress here. RKE2 v1.36 added Traefik on top of ingress-nginx, and its
-    # helm-install job CrashLoopBackOffs against a Cilium-owned cluster
-    # ("Required CRDs are missing"), so name both plus the CRD chart.
-    $config .= "disable:\n";
-    $config .= "  - $_\n" for qw(
-        rke2-ingress-nginx
-        rke2-traefik
-        rke2-traefik-crd
-    );
-
-    file "/etc/rancher/rke2", ensure => 'directory';
-    _write_secret_file("/etc/rancher/rke2/config.yaml", $config);
-
-    # Configure registry mirrors (pull-through cache + internal registry name)
-    my $registries = _generate_registries_yaml(
-        registry_cache    => $params->{registry_cache}    || '',
-        registry_upstream => $params->{registry_upstream}  || '',
-        registry_name     => $params->{registry_name}      || 'ocp.internal',
-    );
-    file "/etc/rancher/rke2/registries.yaml", content => $registries;
-
-    # RKE2 looks for alternative container runtimes on the service PATH, and
-    # its unit sets none. Must happen before the service starts: the scan runs
-    # at startup only.
-    _configure_nvidia_runtime_path('rke2-server');
-
-    # Install RKE2
-    say "[1/5] Installing RKE2...";
-
-    # Pre-flight: verify connectivity to GitHub releases
-    say "      Checking connectivity...";
-    my $head_check = run "curl -sfI https://github.com/rancher/rke2/releases 2>&1 | head -1", auto_die => FALSE;
-    chomp $head_check;
-    say "      GitHub releases: $head_check";
-    unless ($head_check =~ /200|301|302/) {
-        die "Cannot reach GitHub releases - check network/DNS: $head_check";
-    }
-
-    # Download install script
-    say "      Downloading install script...";
-    run "curl -fL https://get.rke2.io -o /tmp/rke2-install.sh 2>&1", auto_die => FALSE;
-    my $dl_size = run "wc -c < /tmp/rke2-install.sh 2>/dev/null || echo 0", auto_die => FALSE;
-    chomp $dl_size;
-    say "      Install script: $dl_size bytes";
-    if ($dl_size < 1000) {
-        die "Install script too small ($dl_size bytes) - download failed?";
-    }
-
-    # Pre-download RKE2 tarball (the install script uses curl -s which
-    # produces no output, causing Rex to kill the SSH channel on timeout)
-    say "      Detecting latest RKE2 version...";
-    my $rke2_version = $version;
-    if (!$rke2_version) {
-        # Primary: channel server redirect (same method as official install script)
-        $rke2_version = run "curl -sfL -w '%{url_effective}' -o /dev/null https://update.rke2.io/v1-release/channels/stable | sed 's|.*/||'",
-            auto_die => FALSE;
-        chomp $rke2_version if $rke2_version;
-
-        # Fallback: parse JSON from channel server
-        if (!$rke2_version) {
-            say "      Channel redirect failed, trying JSON parse...";
-            $rke2_version = run "curl -sfL https://update.rke2.io/v1-release/channels/stable 2>/dev/null | grep -oP '\"latest\"\\s*:\\s*\"\\K[^\"]+' || true",
-                auto_die => FALSE;
-            chomp $rke2_version if $rke2_version;
-        }
-
-        # Fallback 2: GitHub API
-        if (!$rke2_version) {
-            say "      Channel server unreachable, trying GitHub API...";
-            $rke2_version = run "curl -sfL https://api.github.com/repos/rancher/rke2/releases/latest 2>/dev/null | grep -oP '\"tag_name\"\\s*:\\s*\"\\K[^\"]+' || true",
-                auto_die => FALSE;
-            chomp $rke2_version if $rke2_version;
-        }
-    }
-    say "      RKE2 version: $rke2_version";
-
-    if (!$rke2_version) {
-        die "Could not detect RKE2 version - check DNS/network for update.rke2.io and api.github.com on this node";
-    }
-
-    my $version_url = $rke2_version;
-    $version_url =~ s/\+/%2B/g;
-
-    # The install script names its artifacts by GOARCH and refuses anything
-    # else in INSTALL_RKE2_ARTIFACT_PATH — the tarball and the checksum file
-    # must carry the node's own architecture, not the build host's.
-    my $arch = _node_arch();
-    say "      Node architecture: $arch";
-
-    my $tarball_name  = "rke2.linux-$arch.tar.gz";
-    my $checksum_name = "sha256sum-$arch.txt";
-    my $tarball_url = "https://github.com/rancher/rke2/releases/download/$version_url/$tarball_name";
-    my $checksum_url = "https://github.com/rancher/rke2/releases/download/$version_url/$checksum_name";
-
-    say "      Downloading RKE2 tarball (~60MB, this takes a moment)...";
-    run "mkdir -p /tmp/rke2-artifacts", auto_die => FALSE;
-
-    # Download with progress-bar so Rex sees output and doesn't kill the channel
-    run "curl -fL --progress-bar -o /tmp/rke2-artifacts/$tarball_name '$tarball_url' 2>&1",
-        auto_die => FALSE, timeout => 600;
-    run "curl -fsSL -o /tmp/rke2-artifacts/$checksum_name '$checksum_url' 2>&1",
-        auto_die => FALSE;
-
-    # Verify download
-    my $tarball_size = run "wc -c < /tmp/rke2-artifacts/$tarball_name 2>/dev/null || echo 0", auto_die => FALSE;
-    chomp $tarball_size;
-    say "      Tarball size: $tarball_size bytes";
-    if ($tarball_size < 1000000) {
-        die "RKE2 tarball too small ($tarball_size bytes) - download failed.\n" .
-            "URL was: $tarball_url\n" .
-            "If that 404s, RKE2 $rke2_version publishes no build for '$arch'.\n";
-    }
-
-    # Run install script pointing to our pre-downloaded artifacts
-    say "      Running install script...";
-    my $install_cmd = "INSTALL_RKE2_ARTIFACT_PATH=/tmp/rke2-artifacts ";
-    $install_cmd .= "INSTALL_RKE2_VERSION=$rke2_version " if $rke2_version;
-    $install_cmd .= "sh /tmp/rke2-install.sh 2>&1; echo RKE2_EXIT_CODE=\$?";
-
-    my $install_result = run $install_cmd, auto_die => FALSE, timeout => 120;
-    say $install_result if $install_result;
-
-    # Check explicit exit code from output
-    my ($exit_code) = ($install_result || '') =~ /RKE2_EXIT_CODE=(\d+)/;
-    $exit_code //= -1;
-    say "      Install script exit code: $exit_code";
-
-    # Verify installation - check multiple possible locations
-    say "[2/5] Verifying RKE2 binary...";
-    my $rke2_path = can_run("rke2");
-
-    if (!$rke2_path) {
-        # Check common paths explicitly
-        my $search = run "ls -la /usr/local/bin/rke2* /usr/bin/rke2* /opt/rke2/bin/rke2* 2>&1 || true";
-        say "=== Searching for RKE2 files ===";
-        say $search;
-        say "=== Install Output (if any) ===";
-        say $install_result if $install_result;
-        die "RKE2 binary missing - install may have failed";
-    }
-    say "RKE2 found at: $rke2_path";
-
-    # Start service
-    say "[3/5] Enabling and starting RKE2 service...";
-    run "systemctl enable rke2-server.service 2>&1", auto_die => FALSE;
-    run "systemctl start rke2-server.service 2>&1", auto_die => FALSE;
-
-    # Wait for service to become active (up to 600s - VMs/slow machines need more time)
-    say "[4/5] Waiting for RKE2 service to become active (up to 10 min)...";
-    my $status;
-    for my $i (1..60) {
-        $status = run "systemctl is-active rke2-server.service", auto_die => FALSE;
-        chomp $status;
-        if ($status eq 'active') {
-            say "      RKE2 service is active after ~" . ($i * 10) . "s";
-            last;
-        }
-        if ($status eq 'failed' || $status eq 'inactive') {
-            say "ERROR: rke2-server.service is $status!";
-            my $journal = run "journalctl -u rke2-server.service -n 50 --no-pager || true";
-            say $journal;
-            die "RKE2 server failed to start";
-        }
-        say "      ... still $status (${i}/60, " . ($i * 10) . "s)" if $i % 3 == 0;
-        sleep 10;
-    }
-
-    if ($status ne 'active') {
-        say "ERROR: rke2-server.service is not active after 600s! Status: $status";
-        say "=== Service Status ===";
-        my $full_status = run "systemctl status rke2-server.service --no-pager || true";
-        say $full_status;
-        say "=== Journal Logs (last 50 lines) ===";
-        my $journal = run "journalctl -u rke2-server.service -n 50 --no-pager || true";
-        say $journal;
-        say "=== End Logs ===";
-        die "RKE2 server failed to start";
-    }
-
-    # Wait for kubeconfig to exist (max 60s)
-    say "[5/5] Waiting for Kubernetes to initialize...";
-    run "timeout 60 bash -c 'while [ ! -f /etc/rancher/rke2/rke2.yaml ]; do sleep 2; done' || true";
-
-    # Check if it exists now
-    if (!is_file("/etc/rancher/rke2/rke2.yaml")) {
-        say "ERROR: kubeconfig not found after 60s!";
-        say "=== Directory listing ===";
-        my $ls = run "ls -la /etc/rancher/rke2/ || true";
-        say $ls;
-        say "=== Journal Logs ===";
-        my $journal = run "journalctl -u rke2-server.service -n 100 --no-pager";
-        say $journal;
-        die "RKE2 kubeconfig not created";
-    }
-
-    # Wait for API to respond
-    run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
-
+    _install_server('rke2', task_params(shift));
     say "RKE2 cluster ready";
 };
 
 desc "Install RKE2 agent (worker)";
 task "install_rke2_agent", sub {
-    my $params = task_params(shift);
-    my $server = $params->{server} or die "server URL required";
-    my $token = $params->{token} or die "token required";
-    my $version = $params->{version} || '';
-    my $node_name = $params->{node_name} || '';
-
-    do_task "prepare_node", {
-        hostname => $params->{hostname} || '',
-        domain   => $params->{domain}   || '',
-        timezone => $params->{timezone} || 'UTC',
-        locale   => $params->{locale}   || 'en_US.UTF-8',
-        ntp      => $params->{ntp}      // 1,
-    };
-    _maybe_detect_gpu($params);
-
-    # Create RKE2 agent config
-    my $config = "server: $server\ntoken: $token\n";
-    $config .= "node-name: $node_name\n" if $node_name;
-
-    file "/etc/rancher/rke2", ensure => 'directory';
-    _write_secret_file("/etc/rancher/rke2/config.yaml", $config);
-
-    # Configure registry mirrors (pull-through cache + internal registry name)
-    my $registries = _generate_registries_yaml(
-        registry_cache    => $params->{registry_cache}    || '',
-        registry_upstream => $params->{registry_upstream}  || '',
-        registry_name     => $params->{registry_name}      || 'ocp.internal',
-    );
-    file "/etc/rancher/rke2/registries.yaml", content => $registries;
-
-    # See install_rke2_server: the runtime scan happens at service startup, so
-    # the PATH has to be in place before the agent is installed.
-    _configure_nvidia_runtime_path('rke2-agent');
-
-    # Install RKE2 agent
-    my $install_cmd = "curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent ";
-    $install_cmd .= "INSTALL_RKE2_VERSION=$version " if $version;
-    $install_cmd .= "sh -";
-
-    run $install_cmd;
-
-    # rke2-agent is Type=notify: a plain start returns only once the agent has
-    # joined, and one that cannot reach $server never does -- the Rex task and
-    # `ocp apply` hung with it (k185). Start without waiting, then wait bounded.
-    run "systemctl enable rke2-agent.service";
-    run "systemctl start --no-block rke2-agent.service";
-    _wait_for_agent(unit => 'rke2-agent', server => $server, minutes => 10);
-
+    _install_agent('rke2', task_params(shift));
     say "RKE2 agent joined cluster";
 };
 
@@ -887,90 +508,15 @@ task "get_rke2_token", sub {
     return $token;
 };
 
-#
-# K3s Tasks
-#
-
 desc "Install K3s server (control plane)";
 task "install_k3s_server", sub {
-    my $params = task_params(shift);
-    # Reuse an existing cluster's token rather than rotating it -- see
-    # install_rke2_server for why a fresh token on a sealed datastore is a latent
-    # cluster-down (k154). k3s seals its datastore the same way; a passed token
-    # still wins, on-disk is the fallback before generating (k3s file path below).
-    my $token = $params->{token} || _existing_server_token('k3s') || _generate_token();
-    my $version = $params->{version} || '';
-    my $node_name = $params->{node_name} || '';
-    # Same shape as install_rke2_server: a JSON array from OCP::Rex, or a bare
-    # scalar from a hand-run.
-    my $tls_san = $params->{tls_san};
-    my @tls_sans = ref $tls_san eq 'ARRAY' ? @$tls_san
-                 : (defined $tls_san && length $tls_san) ? ($tls_san)
-                 : ();
-
-    do_task "prepare_node", {
-        hostname => $params->{hostname} || '',
-        domain   => $params->{domain}   || '',
-        timezone => $params->{timezone} || 'UTC',
-        locale   => $params->{locale}   || 'en_US.UTF-8',
-        ntp      => $params->{ntp}      // 1,
-    };
-    _maybe_detect_gpu($params);
-
-    # The whole server configuration lives in config.yaml: the token because
-    # the installer line shows in ps and lands in the unit's service.env
-    # (k156), the CNI switches because they must hold from the very first
-    # start (k178). Written before the installer runs.
-    my $config = _k3s_server_config(
-        token     => $token,
-        node_name => $node_name,
-        tls_sans  => \@tls_sans,
-        pod_cidr  => $params->{pod_cidr},
-    );
-    file "/etc/rancher/k3s", ensure => 'directory';
-    _write_secret_file("/etc/rancher/k3s/config.yaml", $config);
-
-    # Install K3s
-    run _k3s_install_cmd(role => 'server', version => $version, node_name => $node_name);
-
-    # Wait for ready
-    say "Waiting for K3s to be ready...";
-    run "while ! kubectl get nodes 2>/dev/null; do sleep 5; done", timeout => 300;
-
+    _install_server('k3s', task_params(shift));
     say "K3s server ready";
 };
 
 desc "Install K3s agent (worker)";
 task "install_k3s_agent", sub {
-    my $params = task_params(shift);
-    my $server = $params->{server} or die "server URL required";
-    my $token = $params->{token} or die "token required";
-    my $version = $params->{version} || '';
-    my $node_name = $params->{node_name} || '';
-
-    do_task "prepare_node", {
-        hostname => $params->{hostname} || '',
-        domain   => $params->{domain}   || '',
-        timezone => $params->{timezone} || 'UTC',
-        locale   => $params->{locale}   || 'en_US.UTF-8',
-        ntp      => $params->{ntp}      // 1,
-    };
-    _maybe_detect_gpu($params);
-
-    # Token via config.yaml only, as in install_k3s_server (k156). Nothing
-    # CNI-related here: flannel-backend, disable-network-policy and
-    # disable-kube-proxy are server settings k3s hands its agents (k178).
-    file "/etc/rancher/k3s", ensure => 'directory';
-    _write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n");
-
-    # Install K3s agent. The installer only installs and enables it
-    # (INSTALL_K3S_SKIP_START): its own `systemctl restart` of the Type=notify
-    # unit blocked until the agent had joined, forever for one that cannot
-    # reach $server (k185). Restarted without waiting, then waited on bounded.
-    run _k3s_install_cmd(role => 'agent', server => $server, version => $version, node_name => $node_name);
-    run "systemctl restart --no-block k3s-agent";
-    _wait_for_agent(unit => 'k3s-agent', server => $server, minutes => 10);
-
+    _install_agent('k3s', task_params(shift));
     say "K3s agent joined cluster";
 };
 
@@ -987,9 +533,76 @@ task "get_k3s_token", sub {
     return $token;
 };
 
+# A control plane: the first server (cluster-init), or with `server` another
+# one joining its embedded etcd (k8, RKE2 only -- OCP::Node refuses a k3s one).
 #
-# Single-Node Tasks
+# What Rex::Rancher::Server::install_server guarantees, and OCP relies on:
+#   - the token goes into config.yaml only, never onto the installer line or
+#     into its environment, and config.yaml is 0600 root:root (k156);
+#   - without a token it reuses the one the server is already sealed with
+#     (/var/lib/rancher/<dist>/server/token) and only mints one for a fresh
+#     server -- a rotated token arms a fatal "bootstrap data already found and
+#     encrypted with different token" on the next restart (k150, k154). OCP::Rex
+#     always passes one; a bare hand-run passes none;
+#   - Cilium is the only CNI: rke2 gets cni: none + disable-kube-proxy, k3s
+#     flannel-backend: none, disable-network-policy, disable-kube-proxy (k178);
+#     the bundled ingress (rke2-ingress-nginx, rke2-traefik(-crd); k3s traefik,
+#     servicelb) is disabled by its default list;
+#   - every tls-san entry lands in config.yaml, one per address, so TLS holds
+#     against every server of an HA cluster (k137);
+#   - the service is started with --no-block and waited on for at most 10
+#     minutes, dying with its journal; a pinned version is verified against the
+#     installed binary.
 #
+# RKE2 comes from its checksum-verified release tarball when a version is
+# pinned (always, through OCP::Rex and OCP::Node): the old reason for the
+# pre-download was that the install script's silent `curl -s` looked like a
+# hung channel. K3s keeps the install script, as before.
+sub _install_server {
+    my ($distribution, $params) = @_;
+
+    # tls-san arrives as a JSON array (the list OCP::Rex/OCP::Node build) or,
+    # for a hand-run `rex ... --tls_san=1.2.3.4`, as a bare scalar.
+    my $tls_san = $params->{tls_san};
+    my @tls_sans = ref $tls_san eq 'ARRAY' ? @$tls_san
+                 : (defined $tls_san && length $tls_san) ? ($tls_san)
+                 : ();
+
+    do_task "prepare_node", _node_params($params);
+    _maybe_detect_gpu($params);
+
+    _write_cluster_cidr($distribution, $params->{pod_cidr} || _default_pod_cidr());
+
+    Rex::Rancher::Server::install_server(_server_opts($distribution, $params, \@tls_sans));
+
+    _wait_for_api($distribution);
+}
+
+# The install_server options for OCP's task parameters. Empty values become
+# undef, never '': the library takes a defined token as given, and an empty
+# one would be written into config.yaml instead of the sealed one being reused.
+sub _server_opts {
+    my ($distribution, $params, $tls_sans) = @_;
+    my $version = $params->{version} || undef;
+
+    return (
+        distribution        => $distribution,
+        token               => $params->{token}     || undef,
+        # Join an existing embedded-etcd cluster (k8). Like the token it arrives
+        # through REX_TASK_PARAMS, never on a command line.
+        server              => $params->{server}    || undef,
+        node_name           => $params->{node_name} || undef,
+        version             => $version,
+        install_method      => ($distribution eq 'rke2' && $version ? 'artifact' : 'script'),
+        (@$tls_sans ? (tls_san => [ @$tls_sans ]) : ()),
+        # K3s never got registry mirrors from OCP; that stays as it was.
+        ($distribution eq 'rke2' ? (registries => _registries($params)) : ()),
+        # RKE2's unit sets no PATH, and it looks for the NVIDIA runtime only when
+        # the service starts: /etc/default/rke2-server gets one, before the
+        # install, if a host toolkit is there. No effect on k3s.
+        nvidia_runtime_path => 1,
+    );
+}
 
 desc "Untaint control plane (allow workloads)";
 task "untaint_control_plane", sub {
@@ -1027,53 +640,46 @@ task "untaint_control_plane", sub {
 # Helpers
 #
 
-# The cluster token a control plane is already sealed with, read straight off
-# the target machine, or undef when there is none. install_{rke2,k3s}_server
-# reuse this instead of minting a new token, so a bare `rex ... install_*_server`
-# without a token= param never rotates an existing cluster's token (k154). This
-# runs INSIDE the task, on the node itself: is_file/cat operate on the target
-# filesystem over the Rex connection, not on the controller.
+# A worker joining the cluster at `server` with the node token.
 #
-# A fresh server has no such file -- is_file is false and this returns undef, so
-# the caller generates a token exactly as before. The read is wrapped in eval and
-# stays tolerant of any failure on purpose: a missing or unreadable file must
-# degrade to "no existing token", never abort the install with the token
-# half-decided. The value is returned verbatim (only trailing whitespace
-# trimmed): RKE2/k3s write the exact value they seal the datastore with here, so
-# handing it back as the config token reproduces the same encryption key.
-sub _existing_server_token {
-    my ($distribution) = @_;
-    $distribution ||= 'rke2';
+# Rex::Rancher::Agent::install_agent writes server + token into config.yaml
+# only (0600, k156), starts the unit with --no-block and waits at most 10
+# minutes for it to turn active, dying with its journal (k185: a Type=notify
+# agent that cannot reach its server used to hang the task and `ocp apply`
+# with it). The library's message does not say where the agent was trying to
+# go; the likeliest reason is exactly that address, so OCP adds it (rex-rancher
+# k44).
+sub _install_agent {
+    my ($distribution, $params) = @_;
+    my $server = $params->{server} or die "server URL required\n";
+    my $token  = $params->{token}  or die "token required\n";
 
-    my $path = $distribution eq 'k3s'
-        ? '/var/lib/rancher/k3s/server/token'
-        : '/var/lib/rancher/rke2/server/token';
+    do_task "prepare_node", _node_params($params);
+    _maybe_detect_gpu($params);
 
-    return undef unless is_file($path);
-    my $token = eval { cat $path };
-    return undef unless defined $token;
-    $token =~ s/\s+\z//;
-    return length $token ? $token : undef;
+    my $ok = eval {
+        Rex::Rancher::Agent::install_agent(_agent_opts($distribution, $params));
+        1;
+    };
+    return 1 if $ok;
+
+    my $err = $@ || "install_agent failed\n";
+    $err .= "\n" unless $err =~ /\n\z/;
+    die $err
+      . "It joins the cluster via $server -- check that this node can reach that address.\n";
 }
 
-# The k3s installer line. It carries no token (k156): the tasks write that into
-# /etc/rancher/k3s/config.yaml first, since anything here is visible in ps and
-# the installer copies every K3S_* variable into k3s(.agent).service.env. The
-# role is always passed explicitly -- with K3S_URL set and no K3S_TOKEN, the
-# installer's own default would otherwise refuse to guess agent mode.
-sub _k3s_install_cmd {
-    my (%args) = @_;
-    my $role = $args{role} // '';
-    die "_k3s_install_cmd: role must be server or agent, got '$role'\n"
-        unless $role eq 'server' || $role eq 'agent';
-
-    my $cmd = "curl -sfL https://get.k3s.io | ";
-    $cmd .= "INSTALL_K3S_VERSION=$args{version} " if $args{version};
-    $cmd .= "INSTALL_K3S_SKIP_START=true " if $role eq 'agent';
-    $cmd .= "K3S_URL=$args{server} " if $role eq 'agent' && $args{server};
-    $cmd .= "K3S_NODE_NAME=$args{node_name} " if $args{node_name};
-    $cmd .= "sh -s - $role";
-    return $cmd;
+sub _agent_opts {
+    my ($distribution, $params) = @_;
+    return (
+        distribution        => $distribution,
+        server              => $params->{server},
+        token               => $params->{token},
+        version             => $params->{version}   || undef,
+        node_name           => $params->{node_name} || undef,
+        ($distribution eq 'rke2' ? (registries => _registries($params)) : ()),
+        nvidia_runtime_path => 1,
+    );
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and
@@ -1085,113 +691,57 @@ sub _k3s_install_cmd {
 # and the built-in cluster-cidr of RKE2 and k3s alike.
 sub _default_pod_cidr { '10.42.0.0/16' }
 
-# /etc/rancher/k3s/config.yaml for a k3s server. Out of the box k3s starts
-# Flannel, its kube-router network policy controller and kube-proxy; next to
-# them Cilium (kube-proxy replacement) manages no pod and never gets ready
-# (k178). What used to be installer flags lives here as well, so this file is
-# the one description of the server.
-sub _k3s_server_config {
-    my (%args) = @_;
-
-    my $config = "token: $args{token}\n";
-    $config .= "node-name: $args{node_name}\n" if $args{node_name};
-    if (my @sans = @{ $args{tls_sans} // [] }) {
-        $config .= "tls-san:\n";
-        $config .= "  - $_\n" for @sans;
-    }
-    $config .= "write-kubeconfig-mode: \"0644\"\n";
-    $config .= "flannel-backend: none\n";
-    $config .= "disable-network-policy: true\n";
-    $config .= "disable-kube-proxy: true\n";
-    $config .= "cluster-cidr: " . ($args{pod_cidr} || _default_pod_cidr()) . "\n";
-    # Cilium Gateway API and LB-IPAM take over ingress and LoadBalancers.
-    $config .= "disable:\n";
-    $config .= "  - $_\n" for qw( traefik servicelb );
-    return $config;
-}
-
-# config.yaml carries the join token, so it ends up 0600 root:root (k156, the
-# Rex::Rancher pattern). Rex's `file` writes content to a ".rex.tmp.<name>"
-# sibling, renames it over the target and only chmods afterwards -- the tmp file
-# would sit at umask mode (0644) in between. Pre-creating that tmp name 0600
-# closes the window: `cat >` and SFTP open-truncate both keep an existing
-# inode's mode, and the rename carries it to the target. The chmod afterwards
-# fixes an existing 0644 file whose content is unchanged (Rex then drops the tmp
-# file and never touches the target), and fails loudly.
-sub _write_secret_file {
-    my ($path, $content) = @_;
-
-    my $tmp = Rex::Commands::File::get_tmp_file_name($path);
-    run "install -m 600 -o root -g root /dev/null $tmp", auto_die => 1;
-
-    file $path, content => $content;
-
-    run "chown root:root $path && chmod 600 $path", auto_die => 1;
-}
-
-sub _generate_token {
-    my $token = run "head -c 48 /dev/urandom | base64 | tr -d '\\n+/='";
-    chomp $token;
-    return substr($token, 0, 48);
-}
-
-sub _generate_registries_yaml {
-    my (%opts) = @_;
-    my $cache_endpoint    = $opts{registry_cache}    || 'http://localhost:30500';
-    my $upstream_endpoint = $opts{registry_upstream}  || 'http://localhost:30501';
-    my $registry_name     = $opts{registry_name}      || 'ocp.internal';
-
-    return <<"YAML";
-mirrors:
-  docker.io:
-    endpoint:
-      - $cache_endpoint
-  registry.local:
-    endpoint:
-      - $upstream_endpoint
-  $registry_name:
-    endpoint:
-      - $upstream_endpoint
-YAML
-}
-
-# Let RKE2 find the NVIDIA container runtime.
+# cluster-cidr for the server, as a config.yaml.d drop-in.
 #
-# OCP writes no containerd configuration for the GPU any more, and nothing
-# calls this for k3s. Both distributions run the same agent code: at startup it
-# scans PATH for `nvidia-container-runtime` (with /usr/local/nvidia/toolkit and
-# /opt/kwasm/bin prepended unconditionally, which is where the GPU Operator's
-# toolkit DaemonSet installs), writes every runtime it finds into its own
-# containerd config, and k3s additionally ships the matching RuntimeClass
-# objects. Verified on a DGX Spark running k3s: the runtime and the `nvidia`
-# RuntimeClass were both there with no help from OCP.
-#
-# What RKE2 does not do is give its unit a PATH — rke2-server.service carries
-# no Environment= line at all — so the RKE2 docs (docs.rke2.io/add-ons/
-# gpu_operators) tell you to put one in the EnvironmentFile. That is the only
-# thing left for OCP to write, and it touches nothing but that one variable.
-#
-# It replaces a containerd config *template*: that one wrote RKE2 paths
-# unconditionally, so under k3s it silently did nothing, and its content was
-# `imports = [...]` plus `version = 2` with no `{{ template "base" . }}`.
-# k3s/RKE2 render such a template *instead of* their generated config, so on an
-# RKE2 GPU node it would have thrown away the registry mirrors, the sandbox
-# image and the CNI settings along with everything else.
-sub _configure_nvidia_runtime_path {
-    my ($unit) = @_;
-    return unless can_run("nvidia-container-runtime");
+# Rex::Rancher::Server has no option for it (rex-rancher k41): on k3s it writes
+# 10.42.0.0/16 into config.yaml itself, on rke2 nothing. RKE2 and k3s read
+# config.yaml first and then config.yaml.d/*.yaml in order, the last value of a
+# key winning -- so this file decides on both, whatever config.yaml says. A
+# server joining an existing RKE2 cluster must carry its first server's value,
+# RKE2 refuses a mismatch. Written before install_server starts the service.
+sub _write_cluster_cidr {
+    my ($distribution, $cidr) = @_;
+    die "_write_cluster_cidr: '$cidr' is not an IPv4 CIDR\n"
+        unless $cidr =~ m{^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$};
 
-    my $env_file = "/etc/default/$unit";
-    say "Making the NVIDIA container runtime visible to $unit...";
+    my $dir = "/etc/rancher/$distribution/config.yaml.d";
+    run "mkdir -p $dir", auto_die => TRUE;
+    file "$dir/50-ocp-cluster-cidr.yaml", content => "cluster-cidr: $cidr\n";
+}
 
-    # A fixed list, not the SSH session's PATH: this becomes the environment of
-    # a service running as root. These are systemd's own default directories.
-    file $env_file, content => '' unless is_file($env_file);
-    append_if_no_such_line $env_file,
-        line   => 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        regexp => qr{^PATH=};
+# registries.yaml as Rex::Rancher takes it: docker.io through ocp-cache, the
+# internal registry under both of its names through ocp-registry. External
+# endpoints from ocp.yaml replace the NodePorts.
+sub _registries {
+    my ($params) = @_;
+    my $cache_endpoint    = $params->{registry_cache}    || 'http://localhost:30500';
+    my $upstream_endpoint = $params->{registry_upstream} || 'http://localhost:30501';
+    my $registry_name     = $params->{registry_name}     || 'ocp.internal';
 
-    say "  [ok] $env_file carries a PATH for the runtime lookup";
+    return {
+        mirrors => {
+            'docker.io'      => { endpoint => [$cache_endpoint] },
+            'registry.local' => { endpoint => [$upstream_endpoint] },
+            $registry_name   => { endpoint => [$upstream_endpoint] },
+        },
+    };
+}
+
+# Waits for the API server to answer on the node, and dies when it does not.
+# install_server returns once the service is active and the kubeconfig
+# written; everything after this (Cilium, the kubeconfig OCP fetches) needs
+# the API itself.
+sub _wait_for_api {
+    my ($distribution) = @_;
+    my ($kubectl, $kubeconfig) = _kube($distribution);
+
+    say "Waiting for the Kubernetes API...";
+    run "until $kubectl --kubeconfig $kubeconfig get nodes >/dev/null 2>&1; do sleep 5; done",
+        auto_die => FALSE, timeout => 300;
+    return 1 if $? == 0;
+
+    die "The Kubernetes API did not answer within 5 minutes.\n"
+      . "Check on the node: $kubectl --kubeconfig $kubeconfig get nodes\n";
 }
 
 # The containerd config template OCP used to write, byte for byte.
@@ -1293,6 +843,14 @@ task "cleanup_legacy_containerd_template", sub {
 # or v1beta1, and the operator then refuses to start its Gateway
 # controller at all — Gateway and GatewayClass sit at Accepted=Unknown.
 # Bumping the pin means bumping both together.
+#
+# install_cilium and upgrade_cilium go through Rex::Rancher::Cilium. It reads
+# the Helm release through the API (install, upgrade, purge a stale release, or
+# nothing), applies the Gateway API CRDs before Cilium and dies when that
+# fails, and skips them when the cluster already carries the bundle version and
+# channel (the same annotations OCP::Drift reads, k164). It talks to the API
+# from this machine, through a kubeconfig _local_kubeconfig fetches from the
+# node.
 
 # Gateway API CRDs come from exactly one channel: standard. Never both, and
 # never experimental on top of standard -- from Gateway API v1.5 both bundles
@@ -1300,7 +858,8 @@ task "cleanup_legacy_containerd_template", sub {
 # which refuses experimental CRDs over standard ones (standard over
 # experimental stays allowed). OCP used to apply standard and then
 # experimental with auto_die off; under the v1.6.1 pin the second apply was
-# denied and nobody noticed (k157).
+# denied and nobody noticed (k157). Rex::Rancher defaults to experimental, so
+# the channel is always passed.
 #
 # Standard is enough: from v1.5 it carries TLSRoute v1 and BackendTLSPolicy
 # v1, which Cilium 1.20 requires, and from v1.6 TCPRoute and UDPRoute too.
@@ -1309,17 +868,150 @@ task "cleanup_legacy_containerd_template", sub {
 # was refused), older ones on experimental may move to standard. Switching a
 # cluster to experimental means deleting the safe-upgrades policy by hand --
 # and the next `ocp apply` of this task moves it back to standard.
+sub _gateway_api_channel { 'standard' }
+
+# The Rex::Rancher::Cilium options for OCP.
 #
-# Server-side, because the httproutes CRD alone comes within a few KiB of the
+# The pool and IPAM mode are always stated. Rex::Rancher's rke2 default is
+# ipam.mode kubernetes, and it only refuses a mode change the Helm release set
+# explicitly -- every OCP cluster runs the chart's default cluster-pool without
+# saying so, so leaving ipam out would switch a running cluster's IPAM mode
+# under its pods (rex-rancher k43). `ipam` is the mode a running Cilium has;
+# a fresh install is cluster-pool on the cluster-cidr (k178, k182).
+#
+# k3s needs the control plane's address for kube-proxy replacement: its agents
+# serve the API on 127.0.0.1:6444, so no localhost port works on every node
+# (k178). RKE2 must not get one -- Rex::Rancher uses 127.0.0.1:6443 there,
+# which RKE2 servers and agents both serve, and refuses the option.
+sub _cilium_opts {
+    my (%o) = @_;
+    my $distribution = $o{distribution} || 'rke2';
+    my $mode = $o{ipam} || 'cluster-pool';
+    my @pool = @{ $o{pool} // [] };
+
+    my %ipam = (mode => $mode);
+    $ipam{operator} = { clusterPoolIPv4PodCIDRList => [@pool] }
+        if $mode eq 'cluster-pool' && @pool;
+
+    my %opts = (
+        distribution        => $distribution,
+        version             => $o{version},
+        cli_version         => $o{cli_version},
+        kubeconfig          => $o{kubeconfig},
+        gateway_api         => 1,
+        gateway_api_version => $o{gateway_api_version},
+        gateway_api_channel => _gateway_api_channel(),
+        helm_values         => { ipam => \%ipam },
+    );
+
+    if ($distribution eq 'k3s') {
+        $opts{k8s_service_host} = $o{k8s_service_host}
+            or die "install_cilium on k3s needs k8s_service_host (the control plane address)\n";
+    }
+
+    return %opts;
+}
+
+# A kubeconfig on this machine for the cluster on the node Rex is connected
+# to, as a File::Temp object (0600, gone when it goes out of scope).
+#
+# Rex::Rancher::Cilium reads the Helm release and applies the Gateway API
+# CRDs through Kubernetes::REST, from here. The admin kubeconfig is read off
+# the node and pointed at the address Rex reaches the node on -- the one
+# OCP::Rex connects to, which is where OCP reaches the API as well.
+sub _local_kubeconfig {
+    my ($distribution) = @_;
+    my (undef, $kubeconfig) = _kube($distribution);
+
+    my $content = run "cat $kubeconfig", auto_die => FALSE;
+    die "Cannot read $kubeconfig on the node -- is $distribution running?\n"
+        if $? != 0 || !defined $content || !length $content;
+
+    my $fh = File::Temp->new(TEMPLATE => 'ocp-kubeconfig-XXXXXX', SUFFIX => '.yaml', TMPDIR => 1);
+    print {$fh} _external_kubeconfig($content, "" . connection->server);
+    close $fh or die "Cannot write the local kubeconfig: $!\n";
+    return $fh;
+}
+
+# The node's kubeconfig as seen from outside: `server` at $host instead of
+# 127.0.0.1, the CA dropped for insecure-skip-tls-verify. The same rewrite
+# OCP::Rex::fetch_kubeconfig_ssh makes for every kubeconfig OCP uses.
+sub _external_kubeconfig {
+    my ($content, $host) = @_;
+    $content =~ s/127\.0\.0\.1/$host/g;
+    $content =~ s/localhost/$host/g;
+    $content =~ s/^\s*certificate-authority-data:.*\n//mg;
+    $content =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
+    return $content;
+}
+
+# What a running Cilium has, read on the node: its IPAM mode and pool from the
+# cilium-config ConfigMap, and the API server address its agents use
+# (KUBERNETES_SERVICE_HOST on the DaemonSet, i.e. k8sServiceHost). undef when
+# there is no Cilium yet (no cilium-config). Anything else that keeps the
+# ConfigMap from being read dies: guessing the IPAM mode of a running cluster
+# is how its pods lose their addresses. Read-only.
+sub _live_cilium {
+    my (%o) = @_;
+    my $env = { KUBECONFIG => $o{kubeconfig} };
+
+    my $out = run "$o{kubectl} -n kube-system get configmap cilium-config"
+        . " -o jsonpath='{.data.ipam}|{.data.cluster-pool-ipv4-cidr}' 2>&1",
+        env => $env, auto_die => FALSE;
+    if ($? != 0) {
+        return undef if ($out // '') =~ /NotFound|not found/;
+        die "Cannot read the running Cilium's configuration (kube-system/cilium-config):\n"
+          . ($out // '(no output)') . "\n";
+    }
+
+    my ($ipam, $cidrs) = split /\|/, ($out // ''), 2;
+    my $host = run "$o{kubectl} -n kube-system get daemonset cilium -o jsonpath="
+        . q{'{.spec.template.spec.containers[0].env[?(@.name=="KUBERNETES_SERVICE_HOST")].value}'}
+        . " 2>/dev/null",
+        env => $env, auto_die => FALSE;
+    $host = undef if $? != 0;
+    s/\s+\z// for grep { defined } $ipam, $cidrs, $host;
+
+    return {
+        ipam             => (length($ipam // '') ? $ipam : undef),
+        pool             => [ grep { m{^[0-9.]+/[0-9]+$} } split ' ', ($cidrs // '') ],
+        k8s_service_host => (length($host // '') ? $host : undef),
+    };
+}
+
+# Waits for Cilium and dies when it does not get there. Rex's run does not
+# die on a non-zero exit by itself, so a Cilium that never became ready used
+# to cost the full wait and then report success (k178). Rex::Rancher does not
+# wait for readiness at all (rex-rancher k43).
+sub _wait_for_cilium {
+    my (%o) = @_;
+    my ($minutes) = $o{duration} =~ /^(\d+)m$/
+        or die "_wait_for_cilium: duration must be minutes like '10m', got '$o{duration}'\n";
+
+    my $out = run "cilium status --wait --wait-duration=$o{duration} 2>&1",
+        env      => { KUBECONFIG => $o{kubeconfig} },
+        timeout  => $minutes * 60 + 60,
+        auto_die => FALSE;
+    return 1 if $? == 0;
+
+    die "Cilium did not become ready within $o{duration}.\n"
+      . "Check on the node: KUBECONFIG=$o{kubeconfig} cilium status\n"
+      . "cilium status said:\n" . ($out // '(no output)') . "\n";
+}
+
+# The Gateway API CRDs alone, for update_gateway_api. Rex::Rancher::Cilium has
+# the same step but keeps it private (rex-rancher k43), so this one stays:
+# server-side, because the httproutes CRD alone comes within a few KiB of the
 # 256 KiB last-applied-configuration annotation a client-side apply writes;
 # --force-conflicts takes over the fields an earlier client-side apply owned.
+# Standard channel only (see _gateway_api_channel), and a failure dies.
 sub _apply_gateway_api_crds {
     my (%o) = @_;
     my $version = $o{version}
         or die "_apply_gateway_api_crds: version is required\n";
 
     my $url = "https://github.com/kubernetes-sigs/gateway-api/releases/download/"
-        . "$version/standard-install.yaml";
+        . "$version/" . _gateway_api_channel() . "-install.yaml";
     say "Installing Gateway API CRDs $version (standard channel)...";
 
     my $out = run "$o{kubectl} apply --server-side --force-conflicts --field-manager=ocp -f $url 2>&1",
@@ -1349,105 +1041,6 @@ sub _restart_cilium_operator {
     }
 }
 
-# The `cilium install` flags. kubeProxyReplacement needs an API server address
-# that works before any Service does, on every node Cilium runs on. RKE2: its
-# agents proxy the API on localhost:6443 just like the servers serve it there.
-# k3s: agents proxy it on 127.0.0.1:6444 instead, so no localhost port fits
-# both roles -- Cilium gets the control plane's own address (k3s runs a single
-# server here, k8). The IPAM pool is the cluster-cidr on both distributions
-# (k178 for k3s, k182 for RKE2, which ran Cilium's 10.0.0.0/8 before).
-sub _cilium_install_args {
-    my (%o) = @_;
-    my $distribution = $o{distribution} || 'rke2';
-
-    my $host = 'localhost';
-    if ($distribution eq 'k3s') {
-        $host = $o{k8s_service_host}
-            or die "install_cilium on k3s needs k8s_service_host (the control plane address)\n";
-    }
-
-    return join ' ',
-        '--set kubeProxyReplacement=true',
-        "--set k8sServiceHost=$host",
-        '--set k8sServicePort=6443',
-        _cilium_pool_args($o{pod_cidr} || _default_pod_cidr()),
-        '--set gatewayAPI.enabled=true';
-}
-
-# The pool a running Cilium hands out, from its cilium-config ConfigMap
-# (space-separated when several). Empty when it cannot be read or Cilium runs
-# another IPAM mode. Read-only.
-sub _live_cilium_pool {
-    my (%o) = @_;
-    my $out = run "$o{kubectl} -n kube-system get configmap cilium-config"
-        . " -o jsonpath='{.data.cluster-pool-ipv4-cidr}' 2>/dev/null",
-        env      => { KUBECONFIG => $o{kubeconfig} },
-        auto_die => FALSE;
-    return () if $? != 0 || !defined $out;
-    return grep { m{^[0-9.]+/[0-9]+$} } split ' ', $out;
-}
-
-# The --set for Cilium's cluster pool, or nothing when no pool is given.
-sub _cilium_pool_args {
-    my (@cidrs) = @_;
-    return '' unless @cidrs;
-    return "--set ipam.operator.clusterPoolIPv4PodCIDRList=$cidrs[0]" if @cidrs == 1;
-    return "--set 'ipam.operator.clusterPoolIPv4PodCIDRList={" . join(',', @cidrs) . "}'";
-}
-
-# Waits for an agent unit (k3s-agent, rke2-agent) to become active and dies
-# when it does not. Both are Type=notify and turn active only once the agent
-# has joined, so "active" is the join, and "activating" past the deadline is
-# an agent that cannot reach its server -- the k185 hang, now with a name, the
-# join URL and the unit's own last words. Every poll has its own timeout, so a
-# stuck systemctl cannot stretch the wait either.
-sub _wait_for_agent {
-    my (%o) = @_;
-    my $unit     = $o{unit};
-    my $minutes  = $o{minutes} // '';
-    my $interval = $o{interval} // 5;
-    die "_wait_for_agent: minutes must be a whole number, got '$minutes'\n"
-        unless $minutes =~ /^\d+$/;
-
-    say "Waiting for $unit to join (up to ${minutes}m)...";
-    my $deadline = time + $minutes * 60;
-    my $state;
-    while (1) {
-        $state = run "systemctl is-active $unit 2>&1", auto_die => FALSE, timeout => 30;
-        $state = defined $state ? $state =~ s/\s+\z//r : '';
-        return 1 if $state eq 'active';
-        last if time >= $deadline;
-        sleep $interval if $interval;
-    }
-
-    my $journal = run "journalctl -u $unit -n 30 --no-pager 2>&1",
-        auto_die => FALSE, timeout => 30;
-    die "$unit did not become active within ${minutes}m (state: "
-      . (length $state ? $state : 'unknown') . ").\n"
-      . ($o{server} ? "It joins the cluster via $o{server} -- check that this node can reach that address.\n" : '')
-      . "Check on the node: journalctl -u $unit\n"
-      . "Last journal lines:\n" . ($journal // '(no output)') . "\n";
-}
-
-# Waits for Cilium and dies when it does not get there. Rex's run does not
-# die on a non-zero exit by itself, so a Cilium that never became ready used
-# to cost the full wait and then report success (k178).
-sub _wait_for_cilium {
-    my (%o) = @_;
-    my ($minutes) = $o{duration} =~ /^(\d+)m$/
-        or die "_wait_for_cilium: duration must be minutes like '10m', got '$o{duration}'\n";
-
-    my $out = run "cilium status --wait --wait-duration=$o{duration} 2>&1",
-        env      => { KUBECONFIG => $o{kubeconfig} },
-        timeout  => $minutes * 60 + 60,
-        auto_die => FALSE;
-    return 1 if $? == 0;
-
-    die "Cilium did not become ready within $o{duration}.\n"
-      . "Check on the node: KUBECONFIG=$o{kubeconfig} cilium status\n"
-      . "cilium status said:\n" . ($out // '(no output)') . "\n";
-}
-
 # The Gateway API CRDs alone, for a cluster whose Cilium is at its pin but
 # whose bundle is not: the gateway_api pin moved, the CRDs came from the
 # experimental channel, or they are gone. OCP::Drift names this task as the
@@ -1462,8 +1055,7 @@ task "update_gateway_api", sub {
         or die "OCP_GATEWAY_API_VERSION (or task_params version=...) is required\n";
     my $distribution = $params->{distribution} || 'rke2';
 
-    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
-    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+    my ($kubectl, $kubeconfig) = _kube($distribution);
 
     _apply_gateway_api_crds(
         kubectl    => $kubectl,
@@ -1483,112 +1075,37 @@ task "install_cilium", sub {
     my $params = task_params(shift);
     my $distribution = $params->{distribution} || 'rke2';
 
-    say "Installing Cilium CNI...";
-
-    # Determine kubectl path
-    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
-    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
-
-    # Detect OS and Architecture
-    my $os_raw = run "uname -s";
-    chomp $os_raw;
-    my $os = lc($os_raw);  # linux, darwin
-
-    my $arch = _node_arch();
-
-    # Install Cilium CLI (skip if already installed with correct version)
+    # Every pin first: nothing touches the node without all three.
+    my $version = $params->{version} // $ENV{OCP_CILIUM_VERSION}
+        or die "OCP_CILIUM_VERSION (or task_params version=...) is required\n";
     my $cli_version = $params->{cli_version} // $ENV{OCP_CILIUM_CLI_VERSION}
         or die "OCP_CILIUM_CLI_VERSION (or task_params cli_version=...) is required\n";
-    my $existing_cli = run "cilium version --client 2>/dev/null | head -1", auto_die => FALSE;
-    chomp $existing_cli if defined $existing_cli;
-
-    if ($existing_cli && $existing_cli =~ /\Q$cli_version\E/) {
-        say "Cilium CLI $cli_version already installed";
-    } else {
-        say "Installing Cilium CLI $cli_version for $os-$arch...";
-        my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
-        run "curl -fL $cli_url -o /tmp/cilium-cli.tar.gz 2>&1", auto_die => FALSE, timeout => 120;
-        # Extract to /tmp first, then mv (atomic, avoids "Text file busy")
-        run "tar xz -C /tmp -f /tmp/cilium-cli.tar.gz && mv -f /tmp/cilium /usr/local/bin/cilium && chmod +x /usr/local/bin/cilium", auto_die => FALSE;
-        sleep 1;  # Let filesystem settle
-        my $cli_installed = run "cilium version --client 2>&1 | head -1", auto_die => FALSE;
-        say "Cilium CLI installed: $cli_installed";
-    }
-
-    # Install Gateway API CRDs BEFORE Cilium (required!)
     my $gateway_api_version = $params->{gateway_api_version} // $ENV{OCP_GATEWAY_API_VERSION}
         or die "OCP_GATEWAY_API_VERSION (or task_params gateway_api_version=...) is required\n";
-    _apply_gateway_api_crds(
-        kubectl    => $kubectl,
-        kubeconfig => $kubeconfig,
-        version    => $gateway_api_version,
-    );
 
-    _restart_cilium_operator(
-        kubectl    => $kubectl,
-        kubeconfig => $kubeconfig,
-    );
+    say "Installing Cilium CNI...";
 
-    # Install Cilium with Gateway API + LoadBalancer support (skip if already running with correct version)
-    # NOTE: do NOT pipe to "head" — the version line ("Helm chart version: ...")
-    # comes well below the status header. With head -5 the version check would
-    # always be false on a healthy cluster, falsely triggering an upgrade run.
-    my $cilium_version_target = $params->{version} // $ENV{OCP_CILIUM_VERSION}
-        or die "OCP_CILIUM_VERSION (or task_params version=...) is required\n";
-    my $cilium_status = run "cilium status 2>&1",
-        env => { KUBECONFIG => $kubeconfig },
-        auto_die => FALSE;
+    my ($kubectl, $kubeconfig) = _kube($distribution);
+    my $local = _local_kubeconfig($distribution);
 
-    my $cilium_running = ($cilium_status =~ /Cilium.*OK/);
-    my $cilium_version_ok = ($cilium_status =~ /\Q$cilium_version_target\E/);
+    # A Cilium that already runs keeps its IPAM mode, pool and API address
+    # whatever pod_cidr says (k182) -- moving them under running pods is a
+    # migration, not an install. Only a fresh one gets pod_cidr.
+    my $live = _live_cilium(kubectl => $kubectl, kubeconfig => $kubeconfig);
 
-    if ($cilium_running && $cilium_version_ok) {
-        say "Cilium $cilium_version_target already running, skipping install";
-    } elsif ($cilium_running && !$cilium_version_ok) {
-        say "Cilium running but different version, upgrading to $cilium_version_target...";
-        # A running Cilium keeps the pool it hands out, whatever pod_cidr
-        # says (k182) -- see upgrade_cilium.
-        run 'cilium upgrade --version ' . $cilium_version_target . ' '
-            . _cilium_pool_args(_live_cilium_pool(kubectl => $kubectl, kubeconfig => $kubeconfig)),
-            env => { KUBECONFIG => $kubeconfig };
-    } else {
-        # cilium_running is false: either nothing installed OR a half-broken
-        # state from a previous failed run. Clean any stale Helm release
-        # record first, otherwise `cilium install` will silently exit 0
-        # without doing anything because the CLI thinks the release exists.
-        say "Cleaning any stale Cilium release before fresh install...";
-        run "cilium uninstall --wait=false 2>&1",
-            env => { KUBECONFIG => $kubeconfig },
-            auto_die => FALSE;
-        run "$kubectl -n kube-system delete secret -l name=cilium 2>&1",
-            env => { KUBECONFIG => $kubeconfig },
-            auto_die => FALSE;
+    Rex::Rancher::Cilium::install_cilium(_cilium_opts(
+        distribution        => $distribution,
+        version             => $version,
+        cli_version         => $cli_version,
+        gateway_api_version => $gateway_api_version,
+        kubeconfig          => "$local",
+        ipam                => ($live ? $live->{ipam} : undef),
+        pool                => ($live ? $live->{pool}
+                                      : [ $params->{pod_cidr} || _default_pod_cidr() ]),
+        k8s_service_host    => $params->{k8s_service_host}
+                               // ($live ? $live->{k8s_service_host} : undef),
+    ));
 
-        say "Installing Cilium $cilium_version_target with Gateway API...";
-        run 'cilium install --version ' . $cilium_version_target . ' ' .
-            _cilium_install_args(
-                distribution     => $distribution,
-                k8s_service_host => $params->{k8s_service_host},
-                pod_cidr         => $params->{pod_cidr},
-            ),
-            env => { KUBECONFIG => $kubeconfig };
-
-        # The cilium CLI is known to silently exit 0 in some failure modes
-        # (e.g. stale Helm release records, version mismatches). Verify the
-        # DaemonSet was actually created instead of trusting the exit code.
-        say "Verifying Cilium DaemonSet was created...";
-        my $ds_check = run "$kubectl -n kube-system get daemonset cilium -o name 2>&1",
-            env => { KUBECONFIG => $kubeconfig },
-            auto_die => FALSE;
-        unless ($ds_check && $ds_check =~ m{daemonset\.apps/cilium}) {
-            die "cilium install reported success but DaemonSet was not created.\n" .
-                "kubectl output: " . ($ds_check // '(empty)') . "\n" .
-                "Run 'cilium status' on the node to investigate.\n";
-        }
-        say "Cilium DaemonSet present: $ds_check";
-    }
-
-    # Wait for Cilium to be ready
     say "Waiting for Cilium to be ready...";
     _wait_for_cilium(kubeconfig => $kubeconfig, duration => '10m');
 
@@ -1608,53 +1125,36 @@ task "upgrade_cilium", sub {
     # halfway for want of a pin must not start.
     my $gateway_api_version = $params->{gateway_api_version} // $ENV{OCP_GATEWAY_API_VERSION}
         or die "OCP_GATEWAY_API_VERSION (or task_params gateway_api_version=...) is required\n";
+    my $cli_version = $params->{cli_version} // $ENV{OCP_CILIUM_CLI_VERSION}
+        or die "OCP_CILIUM_CLI_VERSION (or task_params cli_version=...) is required\n";
 
     say "Upgrading Cilium to $version...";
 
-    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
-    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+    my ($kubectl, $kubeconfig) = _kube($distribution);
+    my $local = _local_kubeconfig($distribution);
 
-    # Update Cilium CLI (might be needed for newer versions)
-    my $os_raw = run "uname -s";
-    chomp $os_raw;
-    my $os = lc($os_raw);
+    # The pool stays what the cluster runs (k182): moving it under running pods
+    # is a migration, not an upgrade, and an RKE2 cluster installed before k182
+    # runs 10.0.0.0/8. OCP::Drift reports a pool that differs from ocp.yaml --
+    # this task never acts on network.pod_cidr. The same goes for the IPAM mode
+    # and, on k3s, the API server address the agents use.
+    my $live = _live_cilium(kubectl => $kubectl, kubeconfig => $kubeconfig)
+        or die "upgrade_cilium: no Cilium on this cluster (kube-system/cilium-config is missing)\n";
 
-    my $arch = _node_arch();
+    # The CLI, the Gateway API CRDs (they travel with Cilium, k160: the new
+    # Cilium must find its bundle in place when it starts, or it runs without a
+    # Gateway controller) and the Helm upgrade, in that order.
+    Rex::Rancher::Cilium::upgrade_cilium(_cilium_opts(
+        distribution        => $distribution,
+        version             => $version,
+        cli_version         => $cli_version,
+        gateway_api_version => $gateway_api_version,
+        kubeconfig          => "$local",
+        ipam                => $live->{ipam},
+        pool                => $live->{pool},
+        k8s_service_host    => $params->{k8s_service_host} // $live->{k8s_service_host},
+    ));
 
-    my $cli_version = $params->{cli_version} // $ENV{OCP_CILIUM_CLI_VERSION}
-        or die "OCP_CILIUM_CLI_VERSION (or task_params cli_version=...) is required\n";
-    my $cli_url = "https://github.com/cilium/cilium-cli/releases/download/$cli_version/cilium-$os-$arch.tar.gz";
-
-    say "Updating Cilium CLI to $cli_version...";
-    run "curl -sfL $cli_url | tar xz -C /usr/local/bin";
-    run "chmod +x /usr/local/bin/cilium";
-
-    # The Gateway API CRDs travel with Cilium (see the pin note above): the
-    # new Cilium must find its bundle in place when it starts, or it runs
-    # without a Gateway controller. Before k160 only install_cilium applied
-    # them, so a bump through this remedy kept the CRDs the cluster was
-    # installed with. No cilium-operator bounce here, unlike install_cilium:
-    # this task runs for a version change, which rolls the operator pods onto
-    # the new image, and those read the new CRD schemas at startup.
-    _apply_gateway_api_crds(
-        kubectl    => $kubectl,
-        kubeconfig => $kubeconfig,
-        version    => $gateway_api_version,
-    );
-
-    # Upgrade Cilium in cluster. The pool stays what the cluster runs (k182):
-    # moving it under running pods is a migration, not an upgrade, and an RKE2
-    # cluster installed before k182 runs 10.0.0.0/8. `cilium upgrade` resets
-    # to the chart's defaults and then reuses the release's values, so a pool
-    # the release never recorded would follow the chart's default; passing
-    # the live one pins it. OCP::Drift reports a pool that differs from
-    # ocp.yaml -- this task never acts on network.pod_cidr.
-    say "Upgrading Cilium in cluster to $version...";
-    run "cilium upgrade --version $version "
-        . _cilium_pool_args(_live_cilium_pool(kubectl => $kubectl, kubeconfig => $kubeconfig)),
-        env => { KUBECONFIG => $kubeconfig };
-
-    # Wait for rollout
     say "Waiting for Cilium rollout...";
     _wait_for_cilium(kubeconfig => $kubeconfig, duration => '5m');
 

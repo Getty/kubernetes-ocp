@@ -2,7 +2,9 @@
 use strict;
 use warnings;
 use Test::More;
-use Path::Tiny qw(path);
+
+use lib 't/lib';
+use OCPTest::Rexfile;
 
 #
 # k157: the Gateway API CRDs come from exactly ONE channel, and a failed apply
@@ -23,39 +25,17 @@ use Path::Tiny qw(path);
 # experimental may move to standard -- the policy only refuses the other
 # direction.
 #
-# Network-free and Rex-session-free, following t/68, t/85 and t/86: the helper
-# is lifted out of the Rexfile and run against a `run` stub that sets $?.
-# Whether the apply succeeds against a live v1.6.1 cluster is NOT claimed here.
+# Since k155 install_cilium and upgrade_cilium apply the CRDs through
+# Rex::Rancher::Cilium (before Cilium, dying on failure -- held against the
+# real library in t/155-rex-libraries.t), whose default channel is
+# experimental; so the claim here is that OCP always hands it `standard`. The
+# CRD-only remedy update_gateway_api keeps OCP's own server-side kubectl apply
+# (rex-rancher k43), whose helper is exercised directly. The Rexfile runs
+# against recorders (t/lib/OCPTest/Rexfile.pm). Whether the apply succeeds
+# against a live v1.6.1 cluster is NOT claimed here.
 #
 
-my $root    = path(__FILE__)->parent->parent;
-my $rexfile = $root->child('share/Rexfile');
-
-plan skip_all => 'share/Rexfile not found' unless -f $rexfile;
-
-my $src = $rexfile->slurp_utf8;
-
-my ($helper) = $src =~ /^(sub _apply_gateway_api_crds \{.*?^\})/ms;
-ok defined $helper, 'share/Rexfile defines _apply_gateway_api_crds'
-    or BAIL_OUT('k157 fix absent: _apply_gateway_api_crds is not in the Rexfile');
-
-my $stubs = <<'PERL';
-package RexfileGatewayApi;
-use constant { TRUE => 1, FALSE => 0 };
-our (@RUNS, $EXIT, $OUT);
-sub run {
-    my ($cmd, %o) = @_;
-    push @RUNS, [ $cmd, \%o ];
-    $? = $EXIT << 8;
-    return $OUT;
-}
-sub say { }
-PERL
-
-ok eval("$stubs\n$helper\n1;"), 'the lifted helper compiles against a run stub'
-    or BAIL_OUT("cannot compile the lifted helper: $@");
-
-my $apply = RexfileGatewayApi->can('_apply_gateway_api_crds');
+my $apply = OCPTest::Rexfile->helper('_apply_gateway_api_crds');
 
 my %args = (
     kubectl    => '/var/lib/rancher/rke2/bin/kubectl',
@@ -64,15 +44,16 @@ my %args = (
 );
 
 subtest 'exactly one apply, of the standard channel' => sub {
-    local @RexfileGatewayApi::RUNS = ();
-    local $RexfileGatewayApi::EXIT = 0;
-    local $RexfileGatewayApi::OUT  = "customresourcedefinition.apiextensions.k8s.io/gateways.gateway.networking.k8s.io serverside-applied\n";
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = sub {
+        ("customresourcedefinition.apiextensions.k8s.io/gateways.gateway.networking.k8s.io serverside-applied\n", 0)
+    };
 
     ok eval { $apply->(%args); 1 }, 'succeeds when kubectl does' or diag $@;
 
-    my @runs = @RexfileGatewayApi::RUNS;
-    is scalar(@runs), 1, 'one kubectl call' or diag explain \@runs;
-    my ($cmd, $o) = @{ $runs[0] };
+    my @runs = OCPTest::Rexfile->calls('run');
+    is scalar(@runs), 1, 'one kubectl call';
+    my ($cmd, $o) = @{ $runs[0]{args} };
 
     like $cmd, qr{^/var/lib/rancher/rke2/bin/kubectl apply },
         'the node kubectl applies it';
@@ -88,10 +69,11 @@ subtest 'exactly one apply, of the standard channel' => sub {
 };
 
 subtest 'a failed apply dies with kubectl output' => sub {
-    local @RexfileGatewayApi::RUNS = ();
-    local $RexfileGatewayApi::EXIT = 1;
-    local $RexfileGatewayApi::OUT  = 'The customresourcedefinitions "tlsroutes.gateway.networking.k8s.io" is invalid: '
-        . 'ValidatingAdmissionPolicy safe-upgrades.gateway.networking.k8s.io denied request';
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = sub {
+        ('The customresourcedefinitions "tlsroutes.gateway.networking.k8s.io" is invalid: '
+         . 'ValidatingAdmissionPolicy safe-upgrades.gateway.networking.k8s.io denied request', 1)
+    };
 
     ok !eval { $apply->(%args); 1 }, 'dies';
     like $@, qr/Gateway API/, 'names what failed';
@@ -100,24 +82,40 @@ subtest 'a failed apply dies with kubectl output' => sub {
 };
 
 subtest 'a missing version is refused, not guessed' => sub {
-    local @RexfileGatewayApi::RUNS = ();
+    OCPTest::Rexfile->reset;
     ok !eval { $apply->(%args, version => ''); 1 }, 'dies';
-    is scalar(@RexfileGatewayApi::RUNS), 0, 'before running anything';
+    is scalar(OCPTest::Rexfile->calls('run')), 0, 'before running anything';
 };
 
-# --- the task wires it ------------------------------------------------------
+# --- install_cilium and upgrade_cilium hand the library the standard channel ----
 
-(my $code = $src) =~ s/^\s*#.*\n//mg;   # comments may name it; code may not
+my $KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n";
 
-my ($task) = $code =~ /^task "install_cilium", sub \{\n(.*?)\n\};$/ms;
-ok defined $task, 'install_cilium task found';
+for my $task (qw( install_cilium upgrade_cilium )) {
+    subtest "$task: Rex::Rancher applies the pinned standard bundle" => sub {
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::RUN = sub {
+            my ($cmd) = @_;
+            return ($KUBECONFIG, 0) if $cmd =~ /^cat /;
+            return ('cluster-pool|10.42.0.0/16', 0) if $cmd =~ /configmap cilium-config/;
+            return ('', 0);
+        };
+        OCPTest::Rexfile->run_task($task, {
+            distribution => 'rke2', version => '1.20.0', cli_version => 'v0.19.7',
+            gateway_api_version => 'v1.6.1',
+        });
+        my $o = OCPTest::Rexfile->lib_opts("Rex::Rancher::Cilium::$task");
+        ok $o, "Rex::Rancher::Cilium::$task called" or return;
+        ok $o->{gateway_api}, 'the CRDs are applied (before Cilium, by the library)';
+        is $o->{gateway_api_version}, 'v1.6.1', 'at the pinned version';
+        is $o->{gateway_api_channel}, 'standard', 'standard -- never the library default, experimental';
+        ok !(grep { /-install\.yaml/ } OCPTest::Rexfile->commands),
+            'and the Rexfile applies no bundle of its own on top';
+    };
+}
 
-like $task, qr/_apply_gateway_api_crds\(/, 'install_cilium applies the CRDs through the helper';
-unlike $code, qr/experimental-install\.yaml/, 'no experimental bundle anywhere in the Rexfile code';
+(my $code = OCPTest::Rexfile->rexfile->slurp_utf8) =~ s/^\s*#.*\n//mg;   # comments may name it
+unlike $code, qr/experimental/, 'no experimental channel anywhere in the Rexfile code';
 is scalar(() = $code =~ /-install\.yaml/g), 1, 'exactly one Gateway API bundle URL in the Rexfile code';
-
-my $helper_at = index $task, '_apply_gateway_api_crds(';
-my $cilium_at = index $task, 'cilium install';
-ok $helper_at >= 0 && $cilium_at > $helper_at, 'the CRDs are applied BEFORE cilium install';
 
 done_testing;

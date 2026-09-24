@@ -4,6 +4,9 @@ use warnings;
 use Test::More;
 use Path::Tiny qw(path);
 
+use lib 't/lib';
+use OCPTest::Rexfile;
+
 #
 # The pre-k23 containerd config template, and the Rex task that removes it.
 #
@@ -141,20 +144,24 @@ subtest 'both outcomes end up in the log' => sub {
 subtest 'every bootstrap runs it, for both distributions and both roles' => sub {
     # prepare_node is the one task all four install tasks call first, and it
     # runs before the service is (re)started -- the only moment at which an
-    # inherited template can still be thrown away instead of rendered.
-    my ($prepare) = $src =~ /^task "prepare_node", sub \{\n(.*?)\n\};$/ms;
-    ok defined $prepare, 'prepare_node found';
-    like $prepare, qr/do_task "cleanup_legacy_containerd_template"/,
-        'prepare_node runs the cleanup';
+    # inherited template can still be thrown away instead of rendered. Run
+    # against recorders (t/lib/OCPTest/Rexfile.pm), since k155 moved the
+    # install bodies into shared helpers.
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('prepare_node', {});
+    ok((grep { $_->{args}[0] eq 'cleanup_legacy_containerd_template' } OCPTest::Rexfile->calls('do_task')),
+        'prepare_node runs the cleanup');
 
     for my $install (qw(
         install_rke2_server install_rke2_agent
         install_k3s_server  install_k3s_agent
     )) {
-        my ($body) = $src =~ /^task "\Q$install\E", sub \{\n(.*?)\n\};$/ms;
-        ok defined $body, "$install found" or next;
-        like $body, qr/do_task "prepare_node"/,
-            "$install goes through prepare_node, so it inherits the cleanup";
+        OCPTest::Rexfile->reset;
+        OCPTest::Rexfile->run_task($install, { token => 't', server => 'https://x:9345' });
+        my $prep = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'do_task' && $_->{args}[0] eq 'prepare_node' });
+        my $inst = OCPTest::Rexfile->index_of(sub { $_->{name} =~ /^Rex::Rancher::(?:Server|Agent)::/ });
+        ok $prep >= 0 && $inst > $prep,
+            "$install goes through prepare_node before the service starts, so it inherits the cleanup";
     }
 };
 

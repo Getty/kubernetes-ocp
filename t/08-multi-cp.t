@@ -6,6 +6,8 @@ use Path::Tiny qw(path);
 use JSON::MaybeXS ();
 
 use lib 'lib';
+use lib 't/lib';
+use OCPTest::Rexfile;
 
 use OCP::Config;
 use OCP::Node;
@@ -228,23 +230,24 @@ subtest 'a k3s control-plane refuses to build HA (RKE2-only decision)' => sub {
 # Lane 1: the Rexfile makes the server: line optional (police1 = cluster-init)
 # ---------------------------------------------------------------------------
 
+# Since k155 the task hands its parameters to Rex::Rancher::Server::install_server,
+# which writes config.yaml; the claim is now about what the task hands over
+# (t/lib/OCPTest/Rexfile.pm runs it against recorders). That the library writes
+# `server:` only when given one is pinned against the real library in
+# t/155-rex-libraries.t.
 subtest 'the Rexfile gives install_rke2_server an optional server-join' => sub {
-    my $shipped = path('share/Rexfile');
-    plan skip_all => 'share/Rexfile not found' unless -f $shipped;
-    my $src = $shipped->slurp_utf8;
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server', { token => 't0k3n' });
+    my $init = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    ok $init, 'install_server is called';
+    ok !defined $init->{server}, 'police1 (no server param) hands over NO server -- cluster-init';
 
-    my ($body) = $src =~ /task\s+"install_rke2_server",\s*sub\s*\{(.*?)\n\};/ms;
-    ok defined $body, 'install_rke2_server task body found';
-
-    like $body, qr/\$server\s*=\s*\$params->\{server\}/,
-        'the task reads a server parameter';
-    like $body, qr/\$config\s*\.=\s*"server: \$server\\n"\s+if\s+\$server/,
-        'the server: line is CONDITIONAL -- present only when a URL is passed';
-
-    # The init contract: police1 gets no server param, so no server: line, so
-    # RKE2 does cluster-init exactly as before.
-    unlike $body, qr/\$config\s*\.=\s*"server:[^"]*"\s*;\s*$/m,
-        'the server: line is never written unconditionally';
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server',
+        { token => 't0k3n', server => 'https://10.0.0.1:9345' });
+    my $join = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    is $join->{server}, 'https://10.0.0.1:9345', 'a passed server URL is handed over (join)';
+    is $join->{token}, 't0k3n', 'with the token';
 };
 
 subtest 'OCP::Rex::install_server does cluster-init: no server param ([0])' => sub {
@@ -564,22 +567,25 @@ subtest 'k184: a control-plane join repeats the cluster pod CIDR, a worker does 
 };
 
 subtest 'the Rexfile emits one tls-san entry per address (list-aware)' => sub {
-    my $shipped = path('share/Rexfile');
-    plan skip_all => 'share/Rexfile not found' unless -f $shipped;
-    my ($body) = $shipped->slurp_utf8
-        =~ /task\s+"install_rke2_server",\s*sub\s*\{(.*?)\n\};/ms;
-    ok defined $body, 'install_rke2_server task body found';
-
     # tls_san arrives as a JSON array (the list form) or, for a hand-run
-    # `rex ... --tls_san=1.2.3.4`, as a bare scalar. Either way the generated
-    # config gets one "  - <addr>" line per address, so the task iterates
-    # rather than interpolating a single value.
-    like $body, qr/ref\s+\$tls_san\s+eq\s+['"]ARRAY['"]/,
-        'the task treats tls_san as possibly a list';
-    like $body, qr/"\s*-\s*\$\w+\\n"\s+for\b/,
-        'one "  - <addr>" line per address (a loop, not a single interpolation)';
-    unlike $body, qr/"tls-san:\\n\s*-\s*\$tls_san\\n"/,
-        'the old single-line "  - $tls_san" emission is gone';
+    # `rex ... --tls_san=1.2.3.4`, as a bare scalar. Either way the library
+    # gets a list, one entry per address (it writes one tls-san line each).
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server',
+        { token => 't', tls_san => [ '10.0.0.1', '10.0.0.2', 'cp.example.com' ] });
+    my $opts = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    is_deeply $opts->{tls_san}, [ '10.0.0.1', '10.0.0.2', 'cp.example.com' ],
+        'a list stays a list, in order';
+
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server', { token => 't', tls_san => '10.0.0.1' });
+    $opts = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    is_deeply $opts->{tls_san}, [ '10.0.0.1' ], 'a bare scalar becomes a one-entry list';
+
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server', { token => 't' });
+    $opts = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    ok !exists $opts->{tls_san}, 'no tls_san, no tls_san option';
 };
 
 done_testing;

@@ -84,6 +84,12 @@ Revision history for OCP
       ClusterPolicy, RuntimeClass, device plugin, DCGM -- installs only where
       NFD reports a CUDA-capable card, and `gpu.enabled` / `gpu.driver` in
       `ocp.yaml` govern it cluster-wide.
+    - Node preparation, the RKE2/K3s server and agent installs, Cilium with its
+      Gateway API CRDs and the NVIDIA driver (except on Ubuntu, where
+      ubuntu-drivers picks it) and container toolkit come from Rex::Rancher and
+      Rex::GPU. RKE2 installs from its checksum-verified release tarball, and a
+      pinned version is checked against the installed binary. The machine
+      running `ocp` reaches the cluster API and GitHub while Cilium installs.
     - The LoadBalancer pool and L2 announcement are configurable through
       `network.lb_pool` and `network.l2`, so a multi-node cluster hands out
       external IPs from a real pool instead of a node's own address.

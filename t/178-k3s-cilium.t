@@ -4,12 +4,11 @@ use warnings;
 use Test::More;
 use Path::Tiny qw(path);
 use File::Temp qw(tempdir);
-use YAML::XS ();
 
 use lib 'lib';
+use lib 't/lib';
 use OCP::Rex;
-
-no warnings 'once';   # the stub package is filled by a string eval
+use OCPTest::Rexfile;
 
 #
 # k178: a k3s cluster came up with Flannel and kube-proxy next to Cilium.
@@ -22,184 +21,181 @@ no warnings 'once';   # the stub package is filled by a string eval
 # ran its full 10 minutes. Rex's `run` does not die on a non-zero exit without
 # auto_die, so the apply then printed "Cilium installed successfully".
 #
-# The claims here:
-#   1. the k3s server config.yaml carries the whole server configuration --
-#      token, flannel-backend: none, disable-network-policy, disable-kube-proxy,
-#      the packaged traefik/servicelb switched off, the kubeconfig mode, the
-#      node name and tls-san -- and the installer line is bare;
+# Since k155 the server config and the Cilium install are Rex::Rancher's
+# (rex-rancher k36 took over exactly the configuration verified live here). The
+# claims split accordingly:
+#   1. install_k3s_server hands Rex::Rancher::Server::install_server a k3s
+#      server with Cilium as its CNI (the library's default; that it writes
+#      flannel-backend: none, disable-network-policy, disable-kube-proxy and
+#      disables traefik/servicelb is held against the real library in
+#      t/155-rex-libraries.t), with node name and every tls-san address;
 #   2. Cilium on k3s is pointed at an API server address that exists on every
 #      node (the control plane's, not localhost: k3s agents proxy the API on
 #      127.0.0.1:6444, not 6443), and its IPAM pool matches k3s' cluster-cidr;
 #   3. Cilium never becoming ready fails the task, loudly and by name.
 #
-# Network-free and Rex-session-free, like t/86, t/90 and t/93: helpers are
-# lifted out of the Rexfile and run against stubs. Whether a real k3s node now
-# runs without Flannel is a live question and is NOT claimed here.
+# Network-free: the Rexfile runs against recorders (t/lib/OCPTest/Rexfile.pm).
+# Whether a real k3s node now runs without Flannel is a live question and is
+# NOT claimed here.
 #
-
-my $root    = path(__FILE__)->parent->parent;
-my $rexfile = $root->child('share/Rexfile');
-
-plan skip_all => 'share/Rexfile not found' unless -f $rexfile;
-
-my $src = $rexfile->slurp_utf8;
 
 my $TOKEN = 'K10deadbeef::server:s3cr3t-token-value-0123456789';
 
-my @subs;
-for my $name (qw( _default_pod_cidr _k3s_server_config _k3s_install_cmd
-                  _cilium_install_args _cilium_pool_args _wait_for_cilium )) {
-    # one-liners first, or the block pattern runs on to the next sub's brace
-    my ($body) = $src =~ /^(sub \Q$name\E \{[^\n]*\})$/m;
-    ($body) = $src =~ /^(sub \Q$name\E \{.*?^\})/ms unless defined $body;
-    ok defined $body, "share/Rexfile defines $name"
-        or BAIL_OUT("k178 fix absent: $name is not in the Rexfile");
-    push @subs, $body;
+my $KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n";
+my %PINS = (version => '1.20.0', cli_version => 'v0.19.7', gateway_api_version => 'v1.6.1');
+
+# A node with no Cilium yet; the admin kubeconfig readable.
+sub fresh_node {
+    my ($cmd) = @_;
+    return ($KUBECONFIG, 0) if $cmd =~ /^cat /;
+    return ('Error from server (NotFound): configmaps "cilium-config" not found', 1)
+        if $cmd =~ /configmap cilium-config/;
+    return ('', 0);
 }
 
-my $stubs = <<'PERL';
-package RexfileK3sCilium;
-use constant { TRUE => 1, FALSE => 0 };
-our (@RUNS, $EXIT, $OUT);
-sub run {
-    my ($cmd, %o) = @_;
-    push @RUNS, [ $cmd, \%o ];
-    $? = $EXIT // 0;
-    return $OUT // '';
-}
-sub say { }
-PERL
+# --- 1. the server --------------------------------------------------------------
 
-ok eval("$stubs\n" . join("\n", @subs) . "\n1;"),
-    'the lifted helpers compile against stubs'
-    or BAIL_OUT("cannot compile the lifted helpers: $@");
-
-my $config_for = RexfileK3sCilium->can('_k3s_server_config');
-my $cmd        = RexfileK3sCilium->can('_k3s_install_cmd');
-my $args_for   = RexfileK3sCilium->can('_cilium_install_args');
-my $wait       = RexfileK3sCilium->can('_wait_for_cilium');
-
-# --- 1. the server config.yaml ----------------------------------------------
-
-subtest 'k3s server config.yaml hands CNI, policy and kube-proxy to Cilium' => sub {
-    my $yaml = $config_for->(
+subtest 'install_k3s_server hands the library a Cilium-only k3s server' => sub {
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_k3s_server', {
         token     => $TOKEN,
         node_name => 'police1',
-        tls_sans  => [ '203.0.113.7', 'cp.example.com' ],
-    );
-    my $c = eval { YAML::XS::Load($yaml) };
-    ok $c, 'parses as YAML' or return diag "$@\n$yaml";
-
-    is $c->{token}, $TOKEN, 'token';
-    is $c->{'flannel-backend'}, 'none', 'flannel-backend: none -- no Flannel';
-    ok $c->{'disable-network-policy'}, 'disable-network-policy: true -- Cilium enforces policy';
-    ok $c->{'disable-kube-proxy'}, 'disable-kube-proxy: true -- Cilium replaces kube-proxy';
-    is_deeply [ sort @{ $c->{disable} // [] } ], [qw( servicelb traefik )],
-        'disable: traefik, servicelb (were installer flags)';
-    is $c->{'write-kubeconfig-mode'}, '0644',
-        'write-kubeconfig-mode stays a quoted string, not an octal-looking number';
-    like $yaml, qr/^write-kubeconfig-mode: "0644"$/m, 'written quoted';
-    is $c->{'node-name'}, 'police1', 'node-name';
-    is_deeply $c->{'tls-san'}, [ '203.0.113.7', 'cp.example.com' ], 'tls-san, one entry per address';
-    is $c->{'cluster-cidr'}, '10.42.0.0/16', 'cluster-cidr spelled out (matches Cilium IPAM)';
+        tls_san   => [ '203.0.113.7', 'cp.example.com' ],
+        version   => 'v1.36.4+k3s1',
+    });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    ok $o, 'install_server called' or return;
+    is $o->{distribution}, 'k3s', 'k3s';
+    is $o->{token}, $TOKEN, 'token';
+    is $o->{node_name}, 'police1', 'node-name';
+    is_deeply $o->{tls_san}, [ '203.0.113.7', 'cp.example.com' ], 'tls-san, one entry per address';
+    is $o->{version}, 'v1.36.4+k3s1', 'version pin';
+    ok !exists $o->{cilium}, 'cilium left at the library default (on): Cilium is the only CNI';
+    ok !exists $o->{disable}, 'disable left at the library default (traefik, servicelb)';
 };
 
 subtest 'optional keys stay out when not given' => sub {
-    my $c = YAML::XS::Load($config_for->(token => $TOKEN));
-    ok !exists $c->{'node-name'}, 'no node-name';
-    ok !exists $c->{'tls-san'},   'no tls-san';
-    is $c->{'flannel-backend'}, 'none', 'the CNI switches are unconditional';
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_k3s_server', { token => $TOKEN });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+    ok !defined $o->{node_name}, 'no node-name';
+    ok !exists $o->{tls_san}, 'no tls-san';
 };
 
-subtest 'the k3s server installer line is bare' => sub {
-    my $c = $cmd->(role => 'server', version => 'v1.36.4+k3s1', node_name => 'police1');
-    like   $c, qr/\bsh -s - server$/, 'ends in the explicit server argument';
-    unlike $c, qr/--/, 'no flags left on the line -- config.yaml has them';
-    unlike $c, qr/\Q$TOKEN\E|K3S_TOKEN/, 'and still no token (k156)';
+subtest 'install_k3s_server waits for the API before it reports ready' => sub {
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_k3s_server', { token => $TOKEN });
+    my $install = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Server::install_server' });
+    my $wait    = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'run' && $_->{args}[0] =~ /kubectl .*get nodes/ });
+    ok $install >= 0 && $wait > $install, 'kubectl get nodes, after the install';
+
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = sub { $_[0] =~ /get nodes/ ? ('', 1) : ('', 0) };
+    ok !eval { OCPTest::Rexfile->run_task('install_k3s_server', { token => $TOKEN }); 1 },
+        'an API that never answers fails the task';
+    like $@, qr/did not answer/, 'and says so';
 };
 
-sub task_body {
-    my ($name) = @_;
-    my ($body) = $src =~ /^task "\Q$name\E", sub \{\n(.*?)\n\};$/ms;
-    return $body;
-}
+# --- 2. Cilium install options -----------------------------------------------------
 
-subtest 'install_k3s_server writes the built config before installing' => sub {
-    my $body = task_body('install_k3s_server');
-    ok defined $body, 'task found' or return;
-    like $body, qr/_k3s_server_config\(/, 'builds config.yaml with _k3s_server_config';
-    like $body, qr/tls_san/, 'reads the tls_san parameter';
-    my $write_at = index $body, '_write_secret_file("/etc/rancher/k3s/config.yaml", $config)';
-    my $run_at   = index $body, 'run _k3s_install_cmd(';
-    ok $write_at >= 0, 'through the 0600 writer';
-    ok $write_at >= 0 && $run_at > $write_at, 'before the installer runs';
-};
-
-# --- 2. Cilium install flags --------------------------------------------------
-
-subtest 'rke2: Cilium flags' => sub {
-    my $a = $args_for->(distribution => 'rke2');
-    like   $a, qr/--set kubeProxyReplacement=true/, 'kube-proxy replacement';
-    like   $a, qr/--set k8sServiceHost=localhost /, 'localhost (the RKE2 agent LB listens on 6443)';
-    like   $a, qr/--set k8sServicePort=6443\b/, 'port 6443';
-    like   $a, qr/--set gatewayAPI\.enabled=true/, 'Gateway API';
-    # k182: RKE2 gets the same pool as k3s now, not Cilium's 10.0.0.0/8
-    like   $a, qr/--set ipam\.operator\.clusterPoolIPv4PodCIDRList=10\.42\.0\.0\/16\b/,
+subtest 'rke2: Cilium options' => sub {
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = \&fresh_node;
+    OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'rke2' });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium');
+    ok $o, 'install_cilium called' or return;
+    is $o->{distribution}, 'rke2', 'rke2';
+    ok !exists $o->{k8s_service_host},
+        'no k8s_service_host: the library uses 127.0.0.1:6443, which every RKE2 node serves';
+    ok $o->{gateway_api}, 'Gateway API';
+    is_deeply $o->{helm_values}{ipam},
+        { mode => 'cluster-pool', operator => { clusterPoolIPv4PodCIDRList => ['10.42.0.0/16'] } },
         'IPAM pool = cluster-cidr (k182)';
 };
 
 subtest 'k3s: Cilium reaches the API server at the control plane address' => sub {
-    my $a = $args_for->(distribution => 'k3s', k8s_service_host => '203.0.113.7');
-    like   $a, qr/--set kubeProxyReplacement=true/, 'kube-proxy replacement';
-    like   $a, qr/--set k8sServiceHost=203\.0\.113\.7 /, 'control plane address';
-    like   $a, qr/--set k8sServicePort=6443\b/, 'port 6443';
-    unlike $a, qr/k8sServiceHost=localhost/, 'not localhost -- a k3s agent has no 6443 there';
-    like   $a, qr/--set ipam\.operator\.clusterPoolIPv4PodCIDRList=10\.42\.0\.0\/16\b/,
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = \&fresh_node;
+    OCPTest::Rexfile->run_task('install_cilium',
+        { %PINS, distribution => 'k3s', k8s_service_host => '203.0.113.7' });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium');
+    ok $o, 'install_cilium called' or return;
+    is $o->{k8s_service_host}, '203.0.113.7', 'control plane address';
+    is_deeply $o->{helm_values}{ipam}{operator}{clusterPoolIPv4PodCIDRList}, ['10.42.0.0/16'],
         'IPAM pool = k3s cluster-cidr';
-    like   $a, qr/--set gatewayAPI\.enabled=true/, 'Gateway API';
+    ok $o->{gateway_api}, 'Gateway API';
 };
 
 subtest 'k3s without an API server address is refused, not guessed' => sub {
-    ok !eval { $args_for->(distribution => 'k3s'); 1 }, 'dies';
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = \&fresh_node;
+    ok !eval { OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'k3s' }); 1 }, 'dies';
     like $@, qr/k8s_service_host/, 'and names the missing parameter';
+    is scalar(OCPTest::Rexfile->calls('Rex::Rancher::Cilium::install_cilium')), 0, 'before installing';
 };
 
-subtest 'install_cilium uses the helpers' => sub {
-    my $body = task_body('install_cilium');
-    ok defined $body, 'task found' or return;
-    like $body, qr/_cilium_install_args\(/, 'install flags from _cilium_install_args';
-    like $body, qr/k8s_service_host/, 'passes k8s_service_host through';
-    like $body, qr/_wait_for_cilium\(/, 'waits through _wait_for_cilium';
-    unlike $body, qr/run 'cilium status --wait/, 'no bare, unchecked status wait left';
-    like task_body('upgrade_cilium'), qr/_wait_for_cilium\(/,
-        'upgrade_cilium waits the same checked way';
+subtest 'the library talks to the API through a kubeconfig pointed at the node' => sub {
+    my $ext = OCPTest::Rexfile->helper('_external_kubeconfig')->(
+        "clusters:\n- cluster:\n    certificate-authority-data: QUJD\n    server: https://127.0.0.1:6443\n",
+        '203.0.113.7');
+    like $ext, qr{server: https://203\.0\.113\.7:6443}, 'server at the Rex host';
+    unlike $ext, qr/certificate-authority-data/, 'CA dropped';
+    like $ext, qr/insecure-skip-tls-verify: true/, 'as for every kubeconfig OCP uses';
+
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = \&fresh_node;
+    OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'rke2' });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium');
+    ok $o->{kubeconfig} && $o->{kubeconfig} =~ /ocp-kubeconfig-\w+\.yaml$/, 'a local temp file';
+    ok !-e $o->{kubeconfig}, 'gone again once the task is done';
+    ok((grep { $_ eq 'cat /etc/rancher/rke2/rke2.yaml' } OCPTest::Rexfile->commands),
+        'read off the node');
 };
 
 # --- 3. a Cilium that never gets ready fails the task -------------------------
 
+my $wait = OCPTest::Rexfile->helper('_wait_for_cilium');
+
 subtest '_wait_for_cilium: ready passes' => sub {
-    local @RexfileK3sCilium::RUNS = ();
-    local $RexfileK3sCilium::EXIT = 0;
+    OCPTest::Rexfile->reset;
     ok eval { $wait->(kubeconfig => '/etc/rancher/k3s/k3s.yaml', duration => '10m'); 1 },
         'no exception' or diag $@;
-    like $RexfileK3sCilium::RUNS[0][0], qr/^cilium status --wait --wait-duration=10m/, 'waits';
-    is $RexfileK3sCilium::RUNS[0][1]{env}{KUBECONFIG}, '/etc/rancher/k3s/k3s.yaml', 'kubeconfig';
+    my ($run) = OCPTest::Rexfile->calls('run');
+    like $run->{args}[0], qr/^cilium status --wait --wait-duration=10m/, 'waits';
+    is $run->{args}[1]{env}{KUBECONFIG}, '/etc/rancher/k3s/k3s.yaml', 'kubeconfig';
 };
 
 subtest '_wait_for_cilium: not ready dies and says so' => sub {
-    local @RexfileK3sCilium::RUNS = ();
-    local $RexfileK3sCilium::EXIT = 1;
-    local $RexfileK3sCilium::OUT  = "Cluster Pods: 0/5 managed by Cilium\n";
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = sub { ("Cluster Pods: 0/5 managed by Cilium\n", 1) };
     ok !eval { $wait->(kubeconfig => '/k', duration => '10m'); 1 }, 'dies';
     like $@, qr/Cilium did not become ready within 10m/, 'names the failure and the wait';
     like $@, qr{0/5 managed by Cilium}, 'carries the status output';
 };
 
 subtest '_wait_for_cilium: a Rex timeout dies too' => sub {
-    local @RexfileK3sCilium::RUNS = ();
-    local $RexfileK3sCilium::EXIT = 300;
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = sub { ('', 300) };
     ok !eval { $wait->(kubeconfig => '/k', duration => '5m'); 1 }, 'dies';
     like $@, qr/within 5m/, 'with the duration';
+};
+
+subtest 'install_cilium and upgrade_cilium wait the checked way, after the library' => sub {
+    for my $t ([ install_cilium => '10m' ], [ upgrade_cilium => '5m' ]) {
+        my ($task, $d) = @$t;
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::RUN = sub {
+            my ($cmd) = @_;
+            return ($KUBECONFIG, 0) if $cmd =~ /^cat /;
+            return ('cluster-pool|10.42.0.0/16', 0) if $cmd =~ /configmap cilium-config/;
+            return ('', 0);
+        };
+        OCPTest::Rexfile->run_task($task, { %PINS, distribution => 'rke2' });
+        my $lib  = OCPTest::Rexfile->index_of(sub { $_->{name} =~ /^Rex::Rancher::Cilium::/ });
+        my $wait = OCPTest::Rexfile->index_of(sub {
+            $_->{name} eq 'run' && $_->{args}[0] =~ /^cilium status --wait --wait-duration=\Q$d\E/ });
+        ok $lib >= 0 && $wait > $lib, "$task: cilium status --wait $d after the library call";
+    }
 };
 
 # --- OCP::Rex hands install_cilium the control plane address -------------------
