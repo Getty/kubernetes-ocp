@@ -99,7 +99,8 @@ robocop's reconcile is triggered by a watch on `OCPNode`, through
 - **Reconcile starts on events, not on a timer.** Reconcile latency is event
   latency, not up to `poll_interval`. There is no longer a full `OCPNode` list
   every ten seconds.
-- **Nothing retries on a schedule.** Reconcile runs only when an event arrives,
+- **Nothing retries on a schedule.** *(amended 2026-09-24, see below)*
+  Reconcile runs only when an event arrives,
   and a resumed watch does not replay unchanged objects. A CR whose problem is
   outside the cluster is not tried again until something writes to it. Examples
   are a provider that was unreachable or an SSH port that was not open yet.
@@ -107,7 +108,8 @@ robocop's reconcile is triggered by a watch on `OCPNode`, through
   "wait and try again" behaviour needs an explicit trigger. k2 shows the pattern:
   when a key is injected, it schedules `_reconcile_all`, because nodes that were
   held back get no new event.
-- **A long reconcile blocks the whole loop.** The loop is shared, and reconcile
+- **A long reconcile blocks the whole loop.** *(amended 2026-09-24, see below)*
+  The loop is shared, and reconcile
   is synchronous. While a reconcile runs, no other watch event is handled, and
   the `inject` key listener (ADR 0028) does not answer. An `ocp inject-key` sent
   during a long install can hit its timeout. Making reconcile async would fix
@@ -124,3 +126,32 @@ robocop's reconcile is triggered by a watch on `OCPNode`, through
 - **The CLI path still does not use the watch.** `ocp apply` without a Ready
   robocop still reconciles workers itself, one-shot, through `OCP::Node`
   (ADR 0003).
+
+## Amendment 2026-09-24 (k159)
+
+Two consequences above described the state right after the watch landed and
+no longer hold. The decision itself -- the watch is the trigger, `OCP::Node`
+stays synchronous and unchanged -- still stands.
+
+- "**A long reconcile blocks the whole loop.** [...] Making reconcile async
+  would fix this." It was fixed without making reconcile async. The loop now
+  only enqueues; each reconcile runs in a child forked with
+  `IO::Async::Loop->fork`, so watch events and the `inject` listener are
+  handled while an install runs. A Future-based reconcile was rejected:
+  `OCP::Node`, `OCP::SSH` and `OCP::Rex` are synchronous, Rex keeps
+  per-process global state, and `OCP::Node` is shared with the CLI. A fork
+  keeps all of that as it is, and the child inherits the robo key from memory
+  -- the `inject` level gains no new place the key is written. The child
+  leaves through `POSIX::_exit`, so it never shuts down the parent's sockets.
+  The controller now also owns two rules the lease never covered, because
+  every robocop reconcile holds the lease as `robocop`: never two reconciles
+  of the same `OCPNode` at once (events meanwhile collapse into one rerun),
+  and at most `ROBOCOP_MAX_RECONCILES` (default 2) children at a time. The
+  child reads the CR again before it reconciles, so a stale event copy never
+  reaches `OCP::Node`.
+- "**Nothing retries on a schedule.**" A resync timer now enqueues every
+  `ROBOCOP_RESYNC_INTERVAL` seconds (default 60) the `OCPNode`s in `Pending`,
+  `Provisioning`, `Installing` or `Joining` that are not being reconciled.
+  `Failed` stays terminal, as before; `Ready` and `Terminating` are left
+  alone. This also covers a `Joining` node, which writes nothing while it
+  waits for its kubelet and so used to wait for an unrelated write.

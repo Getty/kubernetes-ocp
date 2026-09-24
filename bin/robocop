@@ -94,6 +94,16 @@ C<metadata.namespace> in the Deployment.
 
 C<rke2> (default) or C<k3s>.
 
+=item B<ROBOCOP_RESYNC_INTERVAL> (optional)
+
+Seconds between two passes that enqueue every OCPNode still on its way to
+Ready again; default C<60>.
+
+=item B<ROBOCOP_MAX_RECONCILES> (optional)
+
+How many OCPNodes are reconciled at the same time, each in its own process;
+default C<2>.
+
 =back
 
 A missing required variable is fatal, with the offending name reported on

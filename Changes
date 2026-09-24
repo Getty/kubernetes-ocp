@@ -14,8 +14,11 @@ Revision history for OCP
       have no OCPNode yet, and leaves the ones that have one alone.
     - `ocp` drives the control plane from a laptop or CI; `robocop` runs inside
       the cluster and reconciles worker nodes through the OCPNode and
-      OCPNodeProvider CRDs, so nodes come and go on their own. `ocp node add`
-      and `ocp node rm` drive the same objects by hand.
+      OCPNodeProvider CRDs, so nodes come and go on their own. Each node is
+      reconciled in its own process, a few at a time, and a node still on its
+      way to Ready is looked at again every minute (`ROBOCOP_RESYNC_INTERVAL`,
+      `ROBOCOP_MAX_RECONCILES`). `ocp node add` and `ocp node rm` drive the
+      same objects by hand.
     - Spec and status stay separate: `ocp.yaml` (committed, snake_case) is what
       you want, `.ocp/status.yaml` is what the cluster has. `ocp status` reports
       the drift between them and against the pinned versions, and `ocp update`

@@ -5,6 +5,8 @@ use Moo;
 use Carp qw(croak);
 use File::Temp ();
 use IO::Async::Loop;
+use IO::Async::Timer::Periodic;
+use IO::Handle ();
 use Path::Tiny ();
 use IO::K8s;
 use Net::Async::Kubernetes;
@@ -94,6 +96,30 @@ has verbose => (
     default => 0,
 );
 
+# How many OCPNodes may be reconciled at the same time (k159). Each one is a
+# forked process that may run a Rex install for minutes, inside the pod's
+# memory limit, so the default stays small.
+has max_reconciles => (
+    is      => 'ro',
+    default => 2,
+);
+
+# Seconds between two resync passes (k159): every OCPNode still on its way to
+# Ready that is not being reconciled right now is enqueued again, because
+# nothing else would look at it before the next write to its CR.
+has resync_interval => (
+    is      => 'ro',
+    default => 60,
+);
+
+# Scheduler state (k159). _inflight: node key => Future of the running child.
+# _pending: node key => the latest CR copy of a node waiting for its turn --
+# queued, or due for one rerun once its running reconcile ends. _queue: the
+# keys waiting for a free slot, oldest first.
+has _inflight => ( is => 'ro', default => sub { {} } );
+has _pending  => ( is => 'ro', default => sub { {} } );
+has _queue    => ( is => 'ro', default => sub { [] } );
+
 sub BUILD {
     my ($self) = @_;
     croak "robocop controller: ssh_key is required unless security_level is 'inject'"
@@ -147,6 +173,19 @@ sub from_env {
         if defined $ENV{NAMESPACE} && length $ENV{NAMESPACE};
     $args{distribution} = $ENV{OCP_DISTRIBUTION}
         if defined $ENV{OCP_DISTRIBUTION} && length $ENV{OCP_DISTRIBUTION};
+
+    my %count_of = (
+        resync_interval => 'ROBOCOP_RESYNC_INTERVAL',
+        max_reconciles  => 'ROBOCOP_MAX_RECONCILES',
+    );
+    for my $attr (sort keys %count_of) {
+        my $val = $ENV{ $count_of{$attr} };
+        next unless defined $val && length $val;
+        croak "robocop controller: " . $count_of{$attr}
+            . " must be a positive whole number, got '" . $val . "'"
+            unless $val =~ /\A[0-9]+\z/ && $val > 0;
+        $args{$attr} = $val;
+    }
 
     return $class->new(%args, %overrides);
 }
@@ -257,12 +296,11 @@ sub _async_resource_map {
 # existing OCPNode before it streams changes, so nodes already in the cluster
 # are reconciled at startup exactly as the initial poll pass used to do.
 #
-# Reconciliation stays synchronous on purpose: the lease check and the whole
-# OCP::Node state machine run inside the callback, on the sync `kube`, precisely
-# as they did under the poll. Only the trigger changed -- from a timer to a
-# watch event -- so the tested error handling (_on_node_event / _mark_failed) is
-# untouched. A long-running reconcile blocks the loop for its duration, the same
-# way it blocked the poll; making reconcile itself async is a separate step.
+# The loop itself never reconciles (k159). A watch event, the resync timer and
+# an injected key only enqueue the node; the reconcile -- lease check and the
+# whole OCP::Node state machine, synchronous as ever -- runs in a forked child
+# (see "Scheduler" below). So a Rex install that takes minutes no longer holds
+# up other watch events or the inject listener.
 #
 sub run {
     my ($self) = @_;
@@ -271,12 +309,20 @@ sub run {
     $self->log("Server URL:   " . $self->server_url);
     $self->log("Distribution: " . $self->distribution);
     $self->log("Watching OCPNode via Net::Async::Kubernetes");
+    $self->log("Reconciling at most " . $self->max_reconciles . " node(s) at once, "
+        . "resync every " . $self->resync_interval . "s");
 
     my $loop = $self->loop;
     my $kube = $self->async_kube;
     $loop->add($kube);
 
+    # Built once here so every forked reconcile inherits the client instead of
+    # rebuilding it. It keeps no connection open (LWP without keep-alive), so
+    # parent and children never share a socket.
+    $self->kube;
+
     $self->_start_key_injection if $self->is_inject;
+    $self->_start_resync;
 
     weaken(my $wself = $self);
 
@@ -295,6 +341,169 @@ sub run {
     );
 
     $loop->run;
+}
+
+#
+# Scheduler (k159)
+#
+# One forked child per reconcile. Why a process and not a Future-based
+# reconcile: OCP::Node, OCP::SSH and OCP::Rex are synchronous through and
+# through (Rex keeps per-process global state, so two installs could not even
+# share one interpreter), and OCP::Node is shared with the CLI. A fork keeps
+# every line of that unchanged and inherits the robo key from memory --
+# nothing is written for it beyond the TempKeyPair OCP::Node already makes.
+# IO::Async's fork leaves the child through POSIX::_exit, so the child never
+# runs the destructors that would shut down the parent's watch and listener
+# sockets.
+#
+# Two rules the scheduler keeps:
+#
+#   * Never two reconciles of the same OCPNode at once. OCP::Node's lease does
+#     not cover this: every robocop reconcile holds it as 'robocop', so a
+#     second robocop child would find the lease "mine" and provision again.
+#     Events for a node that is running are collapsed into its pending copy
+#     and give exactly one rerun when it ends.
+#   * At most max_reconciles children at once; the rest wait in order.
+#
+# The child re-reads the CR before reconciling (_reconcile_child): the copy an
+# event carried can be older than what the previous child wrote, and a stale
+# Pending handed to OCP::Node would provision a second server.
+#
+
+sub _node_key {
+    my ($self, $cr) = @_;
+    return ($cr->{metadata}{namespace} // $self->namespace) . '/'
+         . ($cr->{metadata}{name} // '?');
+}
+
+sub reconciling {
+    my ($self, $cr) = @_;
+    return exists $self->_inflight->{ $self->_node_key($cr) } ? 1 : 0;
+}
+
+sub enqueue {
+    my ($self, $cr) = @_;
+    my $key = $self->_node_key($cr);
+
+    my $running = exists $self->_inflight->{$key};
+    my $queued  = !$running && exists $self->_pending->{$key};
+
+    $self->_pending->{$key} = $cr;
+    push @{ $self->_queue }, $key unless $running || $queued;
+    $self->_start_next;
+    return;
+}
+
+sub _start_next {
+    my ($self) = @_;
+    my $queue = $self->_queue;
+    while (@$queue && keys %{ $self->_inflight } < $self->max_reconciles) {
+        my $key = shift @$queue;
+        $self->_launch($key, delete $self->_pending->{$key});
+    }
+    return;
+}
+
+sub _launch {
+    my ($self, $key, $cr) = @_;
+    weaken(my $wself = $self);
+    my $f = $self->_spawn($cr);
+    $self->_inflight->{$key} = $f;
+    $f->on_ready(sub { $wself->_finished($key, $_[0]) if $wself });
+    return;
+}
+
+sub _finished {
+    my ($self, $key, $f) = @_;
+    delete $self->_inflight->{$key};
+
+    my $status = $f->is_done ? ($f->result // 0) : -1;
+    $self->log("reconcile of $key ended abnormally (exit code " . ($status >> 8)
+        . ", wait status $status); the next event or resync retries it")
+        if $status;
+
+    push @{ $self->_queue }, $key if exists $self->_pending->{$key};
+    $self->_start_next;
+    return;
+}
+
+# The process boundary: resolves to the child's wait status once it exits.
+sub _spawn {
+    my ($self, $cr) = @_;
+    my $f = $self->loop->new_future;
+    $self->loop->fork(
+        code => sub {
+            $self->_reconcile_child($cr);
+            # _exit skips the stdio flush; the log lines must not be lost.
+            STDOUT->flush;
+            STDERR->flush;
+            return 0;
+        },
+        on_exit => sub { $f->done($_[1]) },
+    );
+    return $f;
+}
+
+# Runs in the child: the CR as stored now, through the same guarded path the
+# event handler always used. A CR deleted meanwhile is simply done; a read that
+# fails otherwise is left for the next event or resync rather than reconciled
+# from a copy that may be stale.
+sub _reconcile_child {
+    my ($self, $cr) = @_;
+    my $name = $cr->{metadata}{name} // '?';
+    my $ns   = $cr->{metadata}{namespace} // $self->namespace;
+
+    my $obj = eval { $self->kube->get('OCPNode', name => $name, namespace => $ns) };
+    if (my $err = $@) {
+        chomp $err;
+        $self->log($err =~ /\b404\b/ ? "$name: gone, nothing to reconcile"
+            : "ERROR re-reading $name before reconcile, retried later: $err");
+        return;
+    }
+    return unless $obj;
+
+    $self->_reconcile_cr($self->kube->k8s->object_to_struct($obj));
+    return;
+}
+
+#
+# Periodic resync (k159)
+#
+# A watch only reports changes. A node waiting on something outside the
+# cluster (an SSH port, the provider) or a Joining node waiting for its kubelet
+# writes nothing and so gets no event. Every resync_interval the nodes still on
+# their way to Ready are enqueued again. Ready (steady state), Failed
+# (terminal, by OCP::Node's decision) and Terminating are left alone.
+#
+
+my %RESYNC = map { $_ => 1 } qw( Pending Provisioning Installing Joining );
+
+sub _start_resync {
+    my ($self) = @_;
+    weaken(my $wself = $self);
+    my $timer = IO::Async::Timer::Periodic->new(
+        interval => $self->resync_interval,
+        on_tick  => sub { $wself->_resync if $wself },
+    );
+    $self->loop->add($timer);
+    $timer->start;
+    $self->{_resync_timer} = $timer;
+    return;
+}
+
+sub _resync {
+    my ($self) = @_;
+    my $crs = eval { $self->list_ocp_nodes };
+    unless ($crs) {
+        $self->log("ERROR listing OCPNodes for resync: $@");
+        return;
+    }
+    for my $cr (@$crs) {
+        next unless $RESYNC{ $cr->{status}{phase} // 'Pending' };
+        next if $self->reconciling($cr);
+        $self->enqueue($cr);
+    }
+    return;
 }
 
 #
@@ -333,9 +542,9 @@ sub _start_key_injection {
 
 # The key is in (already validated by OCP::Robocop::KeyInjection). Hold it,
 # mark the pod ready, and go over every OCPNode again -- the held ones got no
-# further event. The pass is scheduled rather than run here: reconcile is
-# synchronous and can take minutes, and the injector is still waiting for its
-# answer on the connection this is called from.
+# further event. The pass is scheduled rather than run here: the injector is
+# still waiting for its answer on the connection this is called from, and the
+# pass lists the nodes over the API before it enqueues them.
 sub accept_key {
     my ($self, $material, $fingerprint) = @_;
 
@@ -355,7 +564,7 @@ sub _reconcile_all {
         $self->log("ERROR listing OCPNodes after key injection: $@");
         return;
     }
-    $self->_reconcile_cr($_) for @$crs;
+    $self->enqueue($_) for @$crs;
 }
 
 # The phases whose next step needs SSH to the machine (OCP::Node::reconcile:
@@ -423,15 +632,15 @@ sub _set_key_condition {
 
 # The watcher hands its callbacks an inflated IO::K8s object; the rest of the
 # controller (and OCP::Node) speaks the plain struct _on_node_event expects, so
-# convert once here at the boundary and hand it to the shared reconcile path.
+# convert once here at the boundary and hand it to the scheduler.
 sub _handle_watch_object {
     my ($self, $obj) = @_;
     return unless $obj;
-    my $cr = $self->kube->k8s->object_to_struct($obj);
-    $self->_reconcile_cr($cr);
+    $self->enqueue($self->kube->k8s->object_to_struct($obj));
 }
 
 # One CR through the state machine, with the same guard the poll loop had.
+# Runs in the reconcile child (_reconcile_child).
 sub _reconcile_cr {
     my ($self, $cr) = @_;
 
@@ -636,18 +845,47 @@ Watches OCPNode custom resources over L<Net::Async::Kubernetes> and dispatches
 each event to L<OCP::Node> for reconciliation. The state machine lives entirely
 in C<OCP::Node>.
 
-The watch stream runs on an async L<Net::Async::Kubernetes> client, while
-reconciliation itself stays synchronous on the L<Kubernetes::REST> C<kube>
-client: each event triggers the lease check and the C<OCP::Node> state machine
-inline. A fresh watch replays existing OCPNodes as C<ADDED> events, so nodes
-already in the cluster are reconciled on startup.
+The watch stream runs on an async L<Net::Async::Kubernetes> client. The loop
+never reconciles itself: an event only enqueues the node, and each reconcile
+-- the lease check and the synchronous C<OCP::Node> state machine on the
+L<Kubernetes::REST> C<kube> client -- runs in a forked child. The loop stays
+free for further events and the key-injection listener while an install runs.
+A fresh watch replays existing OCPNodes as C<ADDED> events, so nodes already in
+the cluster are reconciled on startup.
+
+=head2 Scheduling
+
+Never two reconciles of the same OCPNode run at once: events for a node that is
+being reconciled collapse into one rerun after it ends. At most
+C<max_reconciles> children run at the same time (C<ROBOCOP_MAX_RECONCILES>,
+default 2); the rest wait in order. The child reads the OCPNode again before it
+reconciles, so it never acts on an older copy than the one stored.
+
+Every C<resync_interval> seconds (C<ROBOCOP_RESYNC_INTERVAL>, default 60) the
+OCPNodes in C<Pending>, C<Provisioning>, C<Installing> or C<Joining> that are
+not being reconciled are enqueued again, because a node waiting on something
+outside the cluster gets no watch event. C<Ready>, C<Failed> and
+C<Terminating> are left alone.
+
+=head2 enqueue
+
+    $controller->enqueue($ocpnode_struct);
+
+Schedules a reconcile of one OCPNode (plain struct).
+
+=head2 reconciling
+
+    $controller->reconciling($ocpnode_struct);   # 1 or 0
+
+True while a reconcile of that OCPNode is running.
 
 =head2 from_env
 
 Class method. Builds a controller from the environment C<bin/robocop> runs in:
 C<ROBO_SSH_KEY>, C<RKE2_SERVER_URL> and C<RKE2_TOKEN> are required (a missing one
-is fatal), C<NAMESPACE> and C<OCP_DISTRIBUTION> are optional. Extra arguments
-override the environment-derived ones.
+is fatal), C<NAMESPACE>, C<OCP_DISTRIBUTION>, C<ROBOCOP_RESYNC_INTERVAL> and
+C<ROBOCOP_MAX_RECONCILES> are optional (the last two must be positive whole
+numbers). Extra arguments override the environment-derived ones.
 
 With C<ROBOCOP_SECURITY_LEVEL=inject> the private key must B<not> be in the
 environment (a set C<ROBO_SSH_KEY> is fatal); C<ROBO_SSH_PUBLIC_KEY>, the robo

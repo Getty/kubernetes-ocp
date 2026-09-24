@@ -118,7 +118,21 @@ package StrictK8s {
 
 package main;
 
+use Future;
 use OCP::Robocop::Controller;
+
+# k159: robocop reconciles in a forked child, where this recording transport
+# would never see the requests. Run the child's body in-process instead: the
+# whole watch -> enqueue -> re-read -> _reconcile_cr path, minus the fork.
+# The fork itself is t/92-robocop-async-reconcile.t's business.
+{
+    no warnings 'redefine';
+    *OCP::Robocop::Controller::_spawn = sub {
+        my ($self, $cr) = @_;
+        $self->_reconcile_child($cr);
+        return Future->done(0);
+    };
+}
 
 sub ocpnode {
     my (%over) = @_;
