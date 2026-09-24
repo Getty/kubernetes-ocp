@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-09-24T15:01:06Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T15:01:06Z
+created: 2026-09-24T14:44:49Z
+id: 165
+priority: high
+started: 2026-09-24T14:52:25Z
+status: done
+tags:
+- update
+title: 'ocp update: Fallback-Tasks fehlen, falscher Distributions-Updater, --force
+  scheitert immer'
+updated: 2026-09-24T15:01:06Z
+---
+
+Aus k163-Audit (nur Code gelesen): (1) Komponenten ohne _update_* fallen auf Rex-Task update_<comp> zurueck, den es im Rexfile fuer keine gibt (cilium_cli, gateway_api, nfd, gpu_operator, nvidia_*, dcgm*) -> jeder Pin-Bump dort bricht ocp update. (2) Komponentenschleife ignoriert die Distribution: _update_rke2 laeuft auch auf k3s (und umgekehrt) und stirbt. (3) ocp update --force laeuft alle Komponenten ab und stirbt daher immer an _update_k3s/_update_rke2. Done: pro Komponente klar: eigener Updater, bewusst "nur via apply/drift" mit sauberer Meldung, oder uebersprungen wenn fuer die Distribution irrelevant; --force funktioniert; Tests. gateway_api-Remedy kommt mit k164.
+
+2026-09-24 14:59 Implemented on branch worktree-agent-a4a7766cbd7cee9d0, commit 79a7bc9. OCP::Cmd::Update plans every component first (_plan_component): rex (cilium->upgrade_cilium, cert_manager->upgrade_cert_manager, gateway_api->update_gateway_api unless cilium in the run), skip with STDOUT reason (cilium_cli moves with cilium, other distribution, nocert, GPU stack off, dist pin unchanged or pinned via kubernetes.version), apply (nfd + GPU stack: ocp apply re-applies the manifests; named at the end), refuse on STDERR before any change (own distribution pin moved without kubernetes.version; unknown component). _update_rke2/_update_k3s and the update_<comp> fallback removed. Rex failure message moved to STDERR. Test t/94 (red first against old code). Docker make test green 101/1566. Not live-verified.
+
+2026-09-24 15:00 Review ok, ff nach main (79a7bc9), gepusht. Docker 101/1566 gruen (Worker). Zur Maintainer-Pruefung: Ablehnung einer Komponente stoppt den ganzen Lauf; Ausweg bei Distributions-Pin-Bump = kubernetes.version in ocp.yaml; NFD/GPU an ocp apply delegiert, update stempelt trotzdem.
