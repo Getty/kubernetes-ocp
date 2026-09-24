@@ -74,6 +74,9 @@ Revision history for OCP
       into the cluster over the API, and `ocp kubeconfig -e` merges access into
       ~/.kube/config.
     - `ocp destroy` tears a cluster down and deletes the paid servers it created.
+      It stops robocop, then removes every worker -- read from the cluster's
+      OCPNodes while the API answers, and from ocp.yaml's host lists -- before
+      the control planes.
     - `ocp node rm` drains the node through the Eviction API, honouring
       PodDisruptionBudgets within a five-minute bound, then deletes its server
       or uninstalls RKE2/K3s from an ssh/local machine, the way `ocp destroy`

@@ -4,10 +4,13 @@ package OCP::Cmd::Destroy;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use File::Temp ();
+use Kubernetes::REST::Kubeconfig;
 use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Config;
+use OCP::K8s;
 use OCP::Provider;
 use OCP::Secrets;
 
@@ -23,6 +26,14 @@ option keep_status => (
     is  => 'ro',
     doc => 'Keep the local cluster state (.ocp/status.yaml, .ocp/deployed.yaml)',
 );
+
+# The cluster API. Built from the encrypted kubeconfig on first use; tests
+# hand in a double.
+has k8s => (is => 'rw');
+
+# Set once the API failed to answer, so the teardown does not wait out a
+# second timeout on it.
+has _api_down => (is => 'rw');
 
 # Servers this project paid for but which are not labelled with its name.
 #
@@ -79,6 +90,242 @@ sub _report_mislabelled_servers {
     }
 }
 
+# The cluster API, or undef when there is none to ask. Nothing here may die:
+# a teardown has to run on a project whose kubeconfig is already gone, whose
+# age key is missing, or whose control plane is half down -- that is when
+# people run it. Whether the API really answers is only known at the first
+# call; _ocpnode_entries makes that call and says so when it fails.
+sub _cluster_api {
+    my ($self, $config) = @_;
+    return $self->k8s if $self->k8s;
+
+    my $api = eval {
+        my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+        my $kc      = $secrets->read_kubeconfig or return;
+
+        my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
+        print {$kc_fh} $kc;
+        close $kc_fh;
+        # Anchored on the instance: File::Temp unlinks on destruction.
+        $self->{_kc_temp} = $kc_fh;
+
+        my $api = Kubernetes::REST::Kubeconfig->new(
+            kubeconfig_path => $kc_fh->filename,
+        )->api;
+        OCP::K8s->register($api);
+        $api;
+    };
+    return $self->k8s($api) if $api;
+    return;
+}
+
+# Every machine this cluster has, one entry each, workers first (k177).
+#
+# status.yaml records the control planes -- nothing else. Workers robocop
+# brought up exist only as OCPNodes, so while the API answers those are read
+# as the source of truth; the Hetzner label search and the ocp.yaml worker
+# pools are merged in on every run, not only when status.yaml is empty, so a
+# worker is still found when the API is already gone. The control-plane
+# guess from ocp.yaml stays a last resort: its names are made up
+# ("<cluster>-cp-N") and would never match a recorded node.
+#
+# Workers go first because a control plane torn down first takes the API --
+# and with it the only record of the workers -- along.
+sub _collect_nodes {
+    my ($self, $config, $hetzner_prov, $api) = @_;
+
+    my (@nodes, %by_key);
+    my $add = sub {
+        my ($node, @aliases) = @_;
+        my @keys = $self->_node_keys($node, @aliases);
+        my ($have) = grep { defined } @by_key{@keys};
+        if ($have) {
+            # The same machine from a second source: fill in what the first
+            # did not know (a role, a providerId), never overwrite it.
+            $have->{$_} //= $node->{$_} for keys %$node;
+            $by_key{$_} = $have for @keys;
+            return 0;
+        }
+        push @nodes, $node;
+        $by_key{$_} = $node for @keys;
+        return 1;
+    };
+
+    $add->({ %$_ }) for @{ $config->nodes_status };
+
+    $add->(@$_) for $self->_ocpnode_entries($api);
+
+    # Hetzner servers carrying this cluster's label that no other source knew.
+    if ($hetzner_prov) {
+        my $servers = eval { $hetzner_prov->list_servers_by_cluster($config->name) } || [];
+        my $announced;
+        for my $s (@$servers) {
+            my $new = $add->({
+                name       => $s->name,
+                provider   => 'hetzner',
+                providerId => $s->id,
+                public_ip  => $s->ipv4 // '-',
+            });
+            next unless $new;
+            print "Found orphaned servers at Hetzner (not in status):\n"
+                unless $announced++;
+            print '  - '.$s->name."\n";
+        }
+    }
+
+    $add->(@$_) for $self->_spec_worker_entries($config);
+
+    # Last resort: the control planes as ocp.yaml describes them.
+    #
+    # The gate uses OCP::Provider->known_type rather than `eq 'ssh'`, so a
+    # CP carrying `provider: local` reaches the destroy loop instead of being
+    # dropped on the floor -- the same seam k103 found in six other input
+    # checks. A missing or unknown provider is skipped rather than relabelled
+    # ssh: a literal `// 'ssh'` would put an unsupported node on the
+    # destruction list (k116).
+    unless (@nodes) {
+        my $idx = 0;
+        for my $cp (@{ $config->control_planes }) {
+            next unless OCP::Provider->known_type($cp->{provider} // q());
+            $idx++;
+            $add->({
+                name      => $cp->{host} // ($config->name . "-cp-$idx"),
+                provider  => $cp->{provider},
+                role      => 'control-plane',
+                public_ip => $cp->{host} // $cp->{public_ip} // '-',
+            });
+        }
+    }
+
+    my @workers = grep { ($_->{role} // '') eq 'worker' } @nodes;
+    my @rest    = grep { ($_->{role} // '') ne 'worker' } @nodes;
+    return [ @workers, @rest ];
+}
+
+# What identifies a machine across the sources: its name, its address, its
+# provider id -- any one of them matching is the same machine. A name is
+# compared by its first label, the way `ocp apply` names an ssh worker's
+# OCPNode after its host (OCP::Cmd::Apply::CR::worker_ocpnodes).
+sub _node_keys {
+    my ($self, $node, @aliases) = @_;
+    my @keys;
+    if (defined $node->{name} && length $node->{name}) {
+        my ($short) = split /\./, lc $node->{name}, 2;
+        push @keys, 'name:'.$short;
+    }
+    for my $host ($node->{public_ip}, @aliases) {
+        next unless defined $host && length $host && $host ne '-';
+        push @keys, 'host:'.lc $host;
+    }
+    push @keys, 'id:'.$node->{providerId}
+        if defined $node->{providerId} && length $node->{providerId};
+    return @keys;
+}
+
+# Every OCPNode, every role, as [ node entry, alias addresses ]. The provider
+# TYPE comes from the OCPNodeProvider the node names; failing that from the
+# "<type>-default" name `ocp apply` gives the CRs it writes (the derivation
+# _report_mislabelled_servers relies on). A node neither answers is named on
+# STDERR: it keeps running, and saying nothing about it is the bug this
+# closes.
+sub _ocpnode_entries {
+    my ($self, $api) = @_;
+    return unless $api;
+
+    my $list = eval { $api->list('OCPNode', namespace => 'ocp-system') };
+    unless ($list) {
+        $self->_api_down(1);
+        my $why = $@ || "no answer\n";
+        chomp $why;
+        print STDERR "[!!] Could not read the OCPNodes from the cluster API:\n";
+        print STDERR "     $why\n";
+        print STDERR "     Workers come from .ocp/status.yaml, Hetzner labels and\n";
+        print STDERR "     ocp.yaml only; a worker added with `ocp node add` may be\n";
+        print STDERR "     missed and keep running.\n";
+        return;
+    }
+
+    my %type = map { ($_->{metadata}{name} => $_->{spec}{type}) }
+               $self->provider_crs($api);
+
+    my @entries;
+    for my $cr (map { $api->k8s->object_to_struct($_) } @{ $list->items // [] }) {
+        my $name   = $cr->{metadata}{name};
+        my $spec   = $cr->{spec}   // {};
+        my $status = $cr->{status} // {};
+        my $ref    = $spec->{providerRef} // q();
+
+        my $type = $type{$ref};
+        ($type) = $ref =~ /\A(\w+)-default\z/ unless defined $type;
+        unless (defined $type && OCP::Provider->known_type($type)) {
+            print STDERR "[!!] OCPNode $name: provider '$ref' is unknown here;"
+                       . " it is NOT torn down.\n";
+            next;
+        }
+
+        push @entries, [ {
+            name      => $name,
+            provider  => $type,
+            role      => $spec->{role} // 'worker',
+            public_ip => $spec->{host} // $status->{publicIP} // '-',
+            (defined $status->{providerId}
+                ? (providerId => $status->{providerId}) : ()),
+        }, grep { defined } $status->{publicIP}, $spec->{host} ];
+    }
+    return @entries;
+}
+
+# The worker machines ocp.yaml names by host -- `nodes: [host, ...]` and the
+# single-host `host:` form alike -- as [ node entry ]. A pool that gives a
+# count (`nodes: 2`) names no machine; its servers are found by label or by
+# OCPNode, not here.
+sub _spec_worker_entries {
+    my ($self, $config) = @_;
+    my @entries;
+    for my $w (@{ $config->workers }) {
+        next unless OCP::Provider->known_type($w->{provider} // q());
+        my @hosts = ref $w->{nodes} eq 'ARRAY'
+            ? map { ref $_ ? $_->{host} : $_ } @{ $w->{nodes} }
+            : ($w->{host} // ());
+        for my $host (grep { defined && length } @hosts) {
+            push @entries, [ {
+                name      => $host,
+                provider  => $w->{provider},
+                role      => 'worker',
+                public_ip => $host,
+            } ];
+        }
+    }
+    return @entries;
+}
+
+# robocop reconciles OCPNodes: left running, it would see a worker vanish
+# under it and provision a replacement -- a new paid server, created after the
+# label search, that nothing is left to delete. Scaled to zero before the
+# first delete. Best-effort: a cluster without robocop answers 404.
+sub _stop_robocop {
+    my ($self, $api) = @_;
+    return if !$api || $self->_api_down;
+    my $ok = eval {
+        $api->patch('Deployment', 'robocop',
+            namespace => 'ocp-system',
+            patch     => { spec => { replicas => 0 } },
+            type      => 'merge',
+        );
+        1;
+    };
+    if ($ok) {
+        print "robocop stopped.\n";
+        return 1;
+    }
+    my $why = $@ // q();
+    return if $why =~ /\b404\b/;
+    chomp $why;
+    print STDERR "  Warning: could not stop robocop ($why);"
+               . " it may re-provision a worker.\n";
+    return;
+}
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -90,8 +337,6 @@ sub execute {
 
     my $config = OCP::Config->new(file => $file);
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-    my $nodes = $config->nodes_status;
-
     # Initialize Hetzner provider if token available
     my $hetzner_token = $secrets->hetzner_token;
     my $hetzner_prov;
@@ -103,56 +348,10 @@ sub execute {
         );
     }
 
-    # If no nodes in status, check Hetzner directly for orphaned servers
-    if (!@$nodes && $hetzner_prov) {
-        my $servers = $hetzner_prov->list_servers_by_cluster($config->name);
-        if (@$servers) {
-            print "Found orphaned servers at Hetzner (not in status):\n";
-            for my $s (@$servers) {
-                push @$nodes, {
-                    name       => $s->name,
-                    provider   => 'hetzner',
-                    providerId => $s->id,
-                    public_ip => $s->ipv4 // '-',
-                };
-            }
-        }
-    }
-
-    # Fall back to spec (control planes + workers) if still no nodes.
-    #
-    # Both gates use OCP::Provider->known_type rather than `eq 'ssh'`, so a
-    # CP/worker carrying `provider: local` reaches the destroy loop instead
-    # of being dropped on the floor -- the same seam k103 found in six
-    # other input checks. A missing or unknown provider is skipped rather
-    # than relabelled ssh: a literal `// 'ssh'` would put an unsupported node
-    # on the destruction list and let the loop's ssh-only branch hit a host
-    # that was never an ssh target (k116).
-    if (!@$nodes) {
-        my $cps = $config->control_planes;
-        my $idx = 0;
-        for my $cp (@$cps) {
-            next unless OCP::Provider->known_type($cp->{provider} // q());
-            $idx++;
-            push @$nodes, {
-                name     => $cp->{host} // ($config->name . "-cp-$idx"),
-                provider => $cp->{provider},
-                public_ip => $cp->{host} // $cp->{public_ip} // '-',
-            };
-        }
-        for my $w (@{$config->workers}) {
-            next unless OCP::Provider->known_type($w->{provider} // q());
-            next unless $w->{nodes};
-            for my $h (@{$w->{nodes}}) {
-                my $host = ref $h ? $h->{host} : $h;
-                push @$nodes, {
-                    name     => $host,
-                    provider => $w->{provider},
-                    public_ip => $host,
-                };
-            }
-        }
-    }
+    # The cluster API, if it still answers: its OCPNodes are the only record
+    # of the workers robocop brought up (k177).
+    my $api   = $self->_cluster_api($config);
+    my $nodes = $self->_collect_nodes($config, $hetzner_prov, $api);
 
     unless (@$nodes) {
         print "No nodes to destroy.\n";
@@ -183,6 +382,8 @@ sub execute {
             return;
         }
     }
+
+    $self->_stop_robocop($api);
 
     # The key for the ssh-provider nodes: fetched ONCE, BEFORE the loop, in an
     # eval of its own. Three decisions in one block, and all three are about
@@ -255,7 +456,13 @@ sub execute {
         print "Deleting $node->{name}...\n";
 
         if ($node->{provider} eq 'hetzner' && $node->{providerId} && $hetzner_prov) {
-            eval { $hetzner_prov->delete_server($node->{providerId}) };
+            # The address goes along so its host key leaves known_hosts with
+            # the machine (k168).
+            my $ip = ($node->{public_ip} // '-') ne '-' ? $node->{public_ip} : undef;
+            eval {
+                $hetzner_prov->delete_server($node->{providerId},
+                    ($ip ? (host => $ip) : ()));
+            };
             if ($@) {
                 print STDERR "  Warning: $@\n";
                 push @undeleted, $node;
@@ -456,10 +663,22 @@ Hetzner project.  The printed C<hcloud> selector is the way to inspect and
 remove them by hand, and it is also the way to find servers under a provider
 that was added with C<ocp provider add --name> rather than by C<ocp apply>.
 
-Sources for the node list, in order: C<.ocp/status.yaml>, the Hetzner
-project (orphans that C<status.yaml> did not record, picked up via
-L<OCP::Provider::Hetzner/list_servers_by_cluster>), and finally the
-C<control_planes> and C<workers> sections of C<ocp.yaml> as a last resort.
+The node list is merged from every source, one entry per machine
+(matched by name, address or provider id): C<.ocp/status.yaml> (the
+control planes); every OCPNode in the cluster, all roles, while the
+cluster API answers (the only record of the workers robocop or
+C<ocp node add> brought up); the Hetzner servers carrying this cluster's
+label (L<OCP::Provider::Hetzner/list_servers_by_cluster>); and the worker
+pools of C<ocp.yaml> that name their machines, in the C<nodes: [...]> and the
+single C<host:> form.  The C<control_planes> section of C<ocp.yaml> is a last
+resort, used only when nothing else found a node.  An API that does not
+answer is reported on STDERR and the teardown continues from the other
+sources (C<k177>).
+
+Workers are torn down before the control planes, and robocop is scaled to
+zero first so it does not provision a replacement for a worker it sees
+disappear.  A Hetzner server is deleted together with its known_hosts
+entries (C<k168>).
 
 After the run, both C<.ocp/status.yaml> and C<.ocp/deployed.yaml> are
 removed (unless C<--keep_status> is set) and the encrypted C<kubeconfig.yaml>
