@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T18:19:38Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T18:19:38Z
+created: 2026-09-24T17:05:06Z
+id: 182
+priority: high
+started: 2026-09-24T17:05:48Z
+status: done
+tags:
+- cilium
+- rke2
+- network
+title: 'RKE2: Cilium-Pod-CIDR 10.0.0.0/8 ueberlappt Host-Netze (z. B. 10.5.x)'
+updated: 2026-09-24T18:19:38Z
+---
+
+Aus k178: auf RKE2 laesst OCP Cilium mit dem Default-Pool clusterPoolIPv4PodCIDRList=10.0.0.0/8 laufen. Das ueberlappt typische LANs (cihq 10.5.8.0/22 u. a.) -> Pods koennen Hosts im LAN nicht erreichen bzw. Routing-Konflikte. k3s nutzt seit k178 10.42.0.0/16. Done: fester, nicht-ueberlappender Pod-CIDR auch fuer RKE2 (gleich wie k3s oder RKE2-Default 10.42.0.0/16 + cluster-cidr in config.yaml), konfigurierbar in ocp.yaml (network.pod_cidr, Choices-Validierung), Drift-Hinweis fuer Bestandscluster (CIDR-Wechsel auf laufendem Cluster ist nicht trivial - nur melden, nicht automatisch aendern); Tests. Bestandscluster cihq pruefen.
+
+2026-09-24 17:19 Implemented on branch worktree-agent-a9216d6945dea08c7, commit f3689ae (on main 0bd5262). network.pod_cidr (default 10.42.0.0/16) -> RKE2/k3s cluster-cidr + Cilium clusterPoolIPv4PodCIDRList on both distributions. Validation: IPv4 CIDR, no host bits, prefix < /24, no overlap with service 10.43.0.0/16, CP/worker IPv4 addresses, lb_pool. Existing clusters: re-apply takes the reconcile path (install_server never reruns); upgrade_cilium + install_cilium upgrade branch pass the LIVE pool from cilium-config, never ocp.yaml. OCP::Drift pod_cidr_drift: report-only spec entry + manual_step (10.0.0.0/8 overlaps the service net -> only rebuild; other pools -> state it in ocp.yaml). make test (Docker): 111 files, 1963 tests PASS. Open: robocop CP joins carry no pod_cidr (Rexfile fallback 10.42/16) -> a custom pod_cidr + robocop control-plane join would fail RKE2's critical-config check. Check cihq read-only: kubectl -n kube-system get configmap cilium-config -o jsonpath='{.data.cluster-pool-ipv4-cidr}'
+
+2026-09-24 17:28 Review ok, rebased+ff nach main (4241ab1). Pod-CIDR default 10.42.0.0/16 fuer RKE2+k3s, Bestandspool bleibt, report-only Drift.
+
+2026-09-24 18:19 LIVE VERIFIZIERT 2026-09-24, finaler RKE2-Durchlauf auf ocpt (main 2588109): RKE2 cluster-cidr + Cilium-Pool 10.42.0.0/16
