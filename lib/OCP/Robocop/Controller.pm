@@ -22,6 +22,7 @@ use OCP::Node;
 use OCP::Provider;
 use OCP::Robocop::KeyInjection;
 use OCP::Robocop::Manifest;
+use OCP::TempKeyPair;
 
 #
 # Configuration
@@ -583,7 +584,9 @@ sub _reconcile_child {
 # cluster (an SSH port, the provider) or a Joining node waiting for its kubelet
 # writes nothing and so gets no event. Every resync_interval the nodes still on
 # their way to Ready are enqueued again. Ready (steady state), Failed
-# (terminal, by OCP::Node's decision) and Terminating are left alone.
+# (terminal, by OCP::Node's decision) and Terminating are left alone -- except
+# on an OCPNode that was deleted: its teardown is retried on every pass until
+# it succeeds (k179).
 #
 
 my %RESYNC = map { $_ => 1 } qw( Pending Provisioning Installing Joining );
@@ -609,7 +612,8 @@ sub _resync {
         return;
     }
     for my $cr (@$crs) {
-        next unless $RESYNC{ $cr->{status}{phase} // 'Pending' };
+        next unless $RESYNC{ $cr->{status}{phase} // 'Pending' }
+            || $cr->{metadata}{deletionTimestamp};
         next if $self->reconciling($cr);
         $self->enqueue($cr);
     }
@@ -756,6 +760,19 @@ sub _reconcile_cr {
     my $name  = $cr->{metadata}{name} // '?';
     my $phase = ($cr->{status} // {})->{phase} // 'Pending';
 
+    # A deleted OCPNode is torn down whatever its phase -- a Failed install
+    # still has a machine behind it (k179).
+    if ($cr->{metadata}{deletionTimestamp}) {
+        try {
+            $self->_on_node_deleted($cr);
+        } catch {
+            $self->log_error("ERROR tearing down $name: $_");
+        };
+        return;
+    }
+
+    $self->_ensure_finalizer($cr);
+
     # Failed is terminal: OCP::Node::reconcile would return without a step,
     # and the resync leaves it alone. Said once per event, without the hint --
     # the hint went out with the failure and sits in status.message.
@@ -777,6 +794,186 @@ sub _reconcile_cr {
         # Failed so the failure is visible without the logs.
         $self->_mark_failed($cr, $_);
     };
+}
+
+#
+# Teardown (k179)
+#
+# A worker OCPNode carries OCP::Node::TEARDOWN_FINALIZER, so deleting it only
+# sets deletionTimestamp. robocop answers that with OCP::Node::teardown --
+# cordon, drain, provider delete, and the finalizer off as the last step -- in
+# the same forked child and under the same per-node rule as every reconcile.
+#
+# `ocp node rm` runs the same teardown itself and never deletes first: it
+# takes the finalizer off before its delete, so robocop is not involved. The
+# two are kept apart by OCP::Node's lease: whichever tears down holds it, and
+# the other one does not start.
+#
+# CRs created before k179 have no finalizer; robocop adds it the first time it
+# reconciles one. Not to a Terminating one -- that is `ocp node rm` at work,
+# about to take it off again.
+#
+
+sub _ensure_finalizer {
+    my ($self, $cr) = @_;
+    return unless OCP::Node->wants_finalizer($cr);
+    return if OCP::Node->has_finalizer($cr);
+    return if (($cr->{status} // {})->{phase} // '') eq 'Terminating';
+
+    my $name = $cr->{metadata}{name} // '?';
+    my @finalizers = (@{ $cr->{metadata}{finalizers} // [] },
+                      OCP::Node::TEARDOWN_FINALIZER);
+    eval {
+        # Merge patch with the resourceVersion read in this child: a CR that
+        # changed meanwhile answers 409 instead of losing someone else's
+        # finalizer to this list. The next event tries again.
+        $self->kube->patch('OCPNode', $name,
+            namespace => $cr->{metadata}{namespace} // $self->namespace,
+            type      => 'merge',
+            patch     => { metadata => {
+                finalizers => \@finalizers,
+                (defined $cr->{metadata}{resourceVersion}
+                    ? (resourceVersion => $cr->{metadata}{resourceVersion}) : ()),
+            } },
+        );
+        1;
+    } or do {
+        my $err = $@;
+        chomp $err;
+        $self->log_error("ERROR adding the teardown finalizer to $name, retried "
+            . "on its next event: $err");
+        return;
+    };
+    $cr->{metadata}{finalizers} = \@finalizers;
+    $self->log("$name: teardown finalizer added");
+    return;
+}
+
+sub _on_node_deleted {
+    my ($self, $cr) = @_;
+    my $name  = $cr->{metadata}{name} // '?';
+    my $ns    = $cr->{metadata}{namespace} // $self->namespace;
+    my $phase = ($cr->{status} // {})->{phase} // 'Pending';
+
+    unless (OCP::Node->has_finalizer($cr)) {
+        $self->log("$name: deleted, no teardown finalizer -- nothing to tear down");
+        return;
+    }
+    unless (OCP::Node->wants_finalizer($cr)) {
+        $self->log_error("$name: deleted and carries " . OCP::Node::TEARDOWN_FINALIZER
+            . ", but robocop only tears down workers OCP brought up. Remove the "
+            . "finalizer by hand once the machine is dealt with.");
+        return;
+    }
+
+    # A teardown that failed is retried by the resync, not by the status
+    # write it failed with -- that write comes back as an event at once.
+    if ($phase eq 'Failed' && $self->_failed_just_now($cr->{status}{lastReconcileTime})) {
+        $self->log("$name: deleted, last teardown failed; retried on the next resync");
+        return;
+    }
+
+    my $provider_name = $cr->{spec}{providerRef};
+    my $provider_cr = eval {
+        die "spec.providerRef is missing\n" unless $provider_name;
+        $self->kube->k8s->object_to_struct($self->kube->get('OCPNodeProvider',
+            name => $provider_name, namespace => $ns))
+            // die "not found\n";
+    };
+    unless ($provider_cr) {
+        $self->_teardown_blocked($cr, 'cannot load OCPNodeProvider/'
+            . ($provider_name // '(none)') . ": $@");
+        return;
+    }
+
+    # A Hetzner server is deleted through the API; every other provider
+    # uninstalls over SSH and needs the robo key -- which an inject robocop
+    # may not hold. Then it waits, and says so, as a Pending node does.
+    my $needs_key = ($provider_cr->{spec}{type} // 'hetzner') ne 'hetzner';
+    my $has_key   = defined $self->ssh_key && length $self->ssh_key;
+    if ($self->is_inject && $needs_key) {
+        $self->_set_key_condition($cr, $has_key);
+        return unless $has_key;
+    }
+
+    # The provider takes the key as a file. Written here, in the child, and
+    # removed when this sub returns -- before the child exits.
+    my $keypair = $needs_key && $has_key
+        ? OCP::TempKeyPair->for_private_key($self->ssh_key) : undef;
+
+    my $provider = eval {
+        OCP::Provider->from_cr($provider_cr, k8s => $self->kube,
+            ($keypair ? (ssh_key_path => $keypair->path) : ()));
+    };
+    unless ($provider) {
+        $self->_teardown_blocked($cr,
+            "cannot build provider from OCPNodeProvider/$provider_name: $@");
+        return;
+    }
+
+    my $node = OCP::Node->from_cr($cr,
+        k8s           => $self->kube,
+        provider      => $provider,
+        ssh_key       => $self->ssh_key,
+        distribution  => $self->distribution,
+        verbose       => $self->verbose,
+        reconciler_id => 'robocop',
+    );
+
+    $self->log("$name: deleted, tearing down (phase $phase)");
+    if (eval { $node->teardown; 1 }) {
+        $self->log("$name: torn down, finalizer removed");
+        return;
+    }
+    my $err = $@;
+    chomp $err;
+    if ($err =~ /not started, nothing was touched: lease held/) {
+        $self->log("$name: teardown left to the reconciler holding the lease, "
+            . "looked at again on the next resync: $err");
+        return;
+    }
+    # OCP::Node has already written phase Failed and the reason.
+    $self->log_error("$name: teardown failed, retried every "
+        . $self->resync_interval . "s: $err");
+    return;
+}
+
+# Something robocop needs before it can start a teardown is missing. Recorded
+# like a failed teardown -- phase Failed with the reason -- so the resync
+# retries it and `ocp node ls` shows why the OCPNode stays.
+sub _teardown_blocked {
+    my ($self, $cr, $message) = @_;
+    my $name = $cr->{metadata}{name} // '?';
+    chomp $message;
+    $message = "Teardown not started: $message -- robocop retries every "
+        . $self->resync_interval . 's';
+    $self->log_error("$name: $message");
+    eval {
+        OCP::K8s->patch_status(
+            $self->kube,
+            kind      => 'OCPNode',
+            name      => $name,
+            namespace => $cr->{metadata}{namespace} // $self->namespace,
+            status    => {
+                phase             => 'Failed',
+                message           => $message,
+                lastReconcileTime => Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ'),
+                reconciler        => 'robocop',
+            },
+        );
+        1;
+    } or $self->log_error("ERROR patching status for $name: $@");
+    return;
+}
+
+# Written less than half a resync interval ago: the event of that very write,
+# not a resync -- which comes a full interval after the last one.
+sub _failed_just_now {
+    my ($self, $ts) = @_;
+    return 0 unless defined $ts && length $ts;
+    my $t = eval { Time::Piece->strptime($ts, '%Y-%m-%dT%H:%M:%SZ')->epoch };
+    return 0 unless defined $t;
+    return (time - $t) < $self->resync_interval / 2 ? 1 : 0;
 }
 
 #
@@ -1059,7 +1256,44 @@ Every C<resync_interval> seconds (C<ROBOCOP_RESYNC_INTERVAL>, default 60) the
 OCPNodes in C<Pending>, C<Provisioning>, C<Installing> or C<Joining> that are
 not being reconciled are enqueued again, because a node waiting on something
 outside the cluster gets no watch event. C<Ready>, C<Failed> and
-C<Terminating> are left alone.
+C<Terminating> are left alone -- unless the OCPNode was deleted, see
+L</Teardown>.
+
+=head2 Teardown
+
+Worker OCPNodes carry the finalizer C<ocp.internal/teardown>
+(L<OCP::Node/The teardown finalizer>); robocop adds it to a worker that has
+none the first time it reconciles it, except while the node is
+C<Terminating>. Deleting such an OCPNode only sets its C<deletionTimestamp>.
+robocop answers with L<OCP::Node/Teardown> in the node's reconcile child --
+whatever the phase, a C<Failed> install still has a machine -- and the
+teardown removes the finalizer as its last step.
+
+=over 4
+
+=item * An C<ssh> or C<local> provider uninstalls over SSH: the held robo key
+is written to a L<OCP::TempKeyPair> for the provider and removed before the
+child exits. A Hetzner server is deleted through the API without it.
+
+=item * In C<inject> mode without a key, an OCPNode that needs one is not torn
+down; it gets C<SSHKeyAvailable=False> as a C<Pending> node does, and keeps
+its finalizer.
+
+=item * A teardown that fails leaves the OCPNode C<Failed> with the reason and
+the finalizer on; the resync retries it (not the event of its own status
+write). So does one that could not start (provider CR missing), with
+C<Teardown not started: ...> as the message.
+
+=item * A teardown under another reconciler's live lease -- C<ocp node rm> at
+work -- is not started; the next resync looks again.
+
+=item * A deleted control-plane OCPNode is never torn down by robocop.
+
+=back
+
+C<ocp node rm> runs the same teardown itself and takes the finalizer off
+before it deletes the OCPNode, so robocop never sees a deletion from it; the
+lease keeps both from working on one node at once.
 
 =head2 enqueue
 

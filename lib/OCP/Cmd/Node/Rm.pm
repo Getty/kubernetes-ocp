@@ -189,6 +189,14 @@ uninstall fails, the command says why on STDERR and exits 1.  The OCPNode is
 kept with phase C<Failed> and the reason as its message (C<ocp node ls>
 shows it); running C<ocp node rm> again retries.
 
+B<robocop and this command.>  Deleting a worker OCPNode through the API
+(C<ocp.internal/teardown> finalizer) leaves the teardown to robocop; this
+command does the teardown itself, whether or not robocop runs, and removes
+the finalizer before it deletes the OCPNode.  Both hold the node's lease
+while they work, so while robocop tears a node down (or provisions it) this
+command refuses with the lease holder named and touches nothing -- run it
+again once that is done.
+
 A name that matches no OCPNode is refused with the ones that exist, and
 nothing is torn down:
 

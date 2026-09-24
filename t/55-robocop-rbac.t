@@ -112,6 +112,14 @@ subtest 'the rest of the robocop call path is covered too' => sub {
             'Controller::_on_node_event loads the provider CR' ],
         [ '/secrets', 'get',
             'OCP::Provider::from_cr reads the Hetzner token secret' ],
+        # k179: robocop runs OCP::Node::teardown on a deleted OCPNode.
+        [ '/pods', 'list',
+            'OCP::Node::_pods_to_drain lists the pods on the node' ],
+        [ '/pods/eviction', 'create',
+            'OCP::Node::_drain evicts through OCP::K8s::evict' ],
+        [ 'ocp.internal/ocpnodes', 'patch',
+            'Controller::_ensure_finalizer adds the teardown finalizer' ],
+        [ '/nodes', 'patch', 'OCP::Node::_cordon' ],
     );
 
     granted_ok(@$_) for @required;

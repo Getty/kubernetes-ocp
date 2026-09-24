@@ -99,6 +99,32 @@ sub known_role {
     return scalar grep { $_ eq $role } @ROLES;
 }
 
+# The finalizer that keeps a worker's OCPNode in the API until its machine is
+# cleaned up (k179). Deleting an OCPNode used to be the end of it: robocop
+# ignored the DELETED event, and a Hetzner server kept running and billing with
+# no record left. With the finalizer a delete only sets deletionTimestamp;
+# robocop sees that, runs teardown, and teardown removes the finalizer as its
+# last step before the objects go -- whoever runs it, robocop or `ocp node rm`.
+#
+# Only on workers OCP brought up. A control plane never gets one: robocop must
+# not take a server of the cluster it runs in off its machine. Nor do the
+# observational OCPNodes `ocp apply` synthesizes for nodes it found already
+# joined (providerRef legacy): OCP did not install those machines.
+use constant TEARDOWN_FINALIZER => 'ocp.internal/teardown';
+
+sub wants_finalizer {
+    my ($class, $cr) = @_;
+    return 0 unless ($cr->{spec}{role} // '') eq 'worker';
+    return 0 if ($cr->{metadata}{annotations} // {})->{'ocp.internal/synthetic'};
+    return 1;
+}
+
+sub has_finalizer {
+    my ($class, $cr) = @_;
+    return scalar grep { $_ eq TEARDOWN_FINALIZER }
+        @{ $cr->{metadata}{finalizers} // [] };
+}
+
 sub name      { $_[0]->cr->{metadata}{name} }
 sub role      { $_[0]->cr->{spec}{role} }
 sub phase     { $_[0]->cr->{status}{phase} // 'Pending' }
@@ -674,12 +700,30 @@ our $DRAIN_INTERVAL = 5;
 # `ocp node rm` on it simply runs this again.
 sub teardown {
     my $self = shift;
+
+    # The lease first, before anything is touched (k179). robocop tears down a
+    # deleted OCPNode and `ocp node rm` tears down the one it is pointed at;
+    # the lease is what keeps the two from draining and deleting the same
+    # machine at once -- or from tearing down a node the other is provisioning.
+    eval { $self->_acquire_lease; 1 } or do {
+        my $err = $@;
+        chomp $err;
+        die 'Teardown of node ' . $self->name . " not started, nothing was touched: $err\n"
+          . ($err =~ /^lease held/
+              ? "Another reconciler is working on it (robocop tears down an OCPNode that\n"
+              . "was deleted); try again once its lease has been released or has expired.\n"
+              : '');
+    };
+
     $self->_patch_status(phase => 'Terminating', message => 'Teardown initiated');
 
     my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $self->name;
 
     my $ok = eval {
         $self->_drain($k8s_name) if $self->_cordon($k8s_name);
+
+        # Renewed: the drain alone may take as long as the lease lives.
+        $self->_acquire_lease;
 
         if ($self->provider) {
             # Providers take the id they handed out at creation time; the
@@ -704,6 +748,9 @@ sub teardown {
         eval { $self->_patch_status(phase => 'Failed', message => $message); 1 }
             or warn '[node] could not record the failed teardown of '
                   . $self->name . ": $@";
+        # Best-effort: a lease left behind only holds off the next attempt
+        # until its TTL runs out.
+        eval { $self->_release_lease };
         die 'Teardown of node ' . $self->name . " failed: $err\n"
           . "The node is kept (phase Failed); fix the cause and run 'ocp node rm "
           . $self->name . "' again.\n";
@@ -716,6 +763,11 @@ sub teardown {
     #
     # The eval is still there, because a node that is already gone is a normal
     # outcome here, but it no longer swallows the answer: see _delete_object.
+    #
+    # The finalizer goes before the OCPNode delete: with it still on, the
+    # delete would only mark the CR deleted, and robocop would tear the
+    # machine down a second time.
+    $self->_release_finalizer;
     $self->_delete_object('Node', $k8s_name);
     $self->_delete_object($self->_kind, $self->name, namespace => $self->namespace);
 
@@ -744,6 +796,34 @@ sub _delete_object {
     return 1 if $err =~ /\b404\b/;
 
     warn "[node] delete of $kind/$name failed: $err";
+    return 0;
+}
+
+# Remove TEARDOWN_FINALIZER and the lease in one write, from the CR as stored
+# now. On an OCPNode that was deleted this is what lets it go. A CR that is
+# already gone is fine; any other failure is warned about the way a refused
+# delete is -- the machine is clean by now, and the OCPNode left behind says
+# so in its status.
+sub _release_finalizer {
+    my $self = shift;
+
+    my $ok = eval {
+        my $cr = $self->_get_cr or return 1;
+        my $meta = $cr->{metadata};
+        delete $meta->{annotations}{'ocp.internal/reconciler-lease'}
+            if $meta->{annotations};
+        $meta->{finalizers} = [
+            grep { $_ ne TEARDOWN_FINALIZER } @{ $meta->{finalizers} // [] }
+        ];
+        $self->_put_cr($cr);
+        1;
+    };
+    return 1 if $ok;
+
+    my $err = $@;
+    return 1 if $err =~ /\b404\b/;
+    warn '[node] could not remove the teardown finalizer from OCPNode/'
+       . $self->name . ": $err";
     return 0;
 }
 
@@ -984,6 +1064,9 @@ Takes the node out of the cluster and off its machine, in this order:
 
 =over 4
 
+=item 0. take the reconciler lease (see L</Lease Mechanics>); held by someone
+else, teardown dies before touching anything
+
 =item 1. mark the OCPNode C<Terminating> and cordon the Kubernetes Node
 
 =item 2. drain it: every pod on the node except DaemonSet and mirror pods is
@@ -994,9 +1077,24 @@ honours PodDisruptionBudgets
 also forgets its host key) or uninstall RKE2/K3s from it (C<ssh>/C<local>,
 L<OCP::Role::Provider::ExistingHost/delete_server>)
 
-=item 4. delete the Kubernetes Node and the OCPNode
+=item 4. remove the C<ocp.internal/teardown> finalizer (and the lease), then
+delete the Kubernetes Node and the OCPNode
 
 =back
+
+=head2 The teardown finalizer
+
+    OCP::Node::TEARDOWN_FINALIZER            # 'ocp.internal/teardown'
+    OCP::Node->wants_finalizer($cr);         # worker, not synthesized
+    OCP::Node->has_finalizer($cr);
+
+Worker OCPNodes carry the finalizer C<ocp.internal/teardown> from creation
+(C<ocp apply>, C<ocp node add>; robocop adds it to older ones), so deleting
+one through the API only marks it deleted and robocop runs this teardown on
+it.  Control-plane OCPNodes and the observational ones C<ocp apply>
+synthesizes for nodes it found already joined never get it.  Whoever runs
+the teardown -- robocop or C<ocp node rm> -- removes the finalizer in step 4,
+before the OCPNode delete; the lease keeps the two from running at once.
 
 The drain is bounded by C<$OCP::Node::DRAIN_TIMEOUT> (300 s).  An eviction a
 PodDisruptionBudget still refuses when it runs out fails the teardown; pods
@@ -1019,6 +1117,10 @@ annotation encodes the holder id, timestamp, and TTL (300 s).  A second
 reconciler will refuse to proceed while a live lease is held by a
 different C<reconciler_id>.  The lease is released after the phase
 transition is written to status.
+
+C<teardown> takes the same lease before it starts and renews it after the
+drain, so C<ocp node rm> and robocop never tear down the same node at once,
+nor one the other is provisioning.
 
 =head2 Key Attributes
 

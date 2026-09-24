@@ -90,6 +90,10 @@ Revision history for OCP
       PodDisruptionBudgets within a five-minute bound, then deletes its server
       or uninstalls RKE2/K3s from an ssh/local machine, the way `ocp destroy`
       does. A node it cannot clean up stays as Failed with the reason, exit 1.
+      Deleting a worker OCPNode through the API does the same: its
+      `ocp.internal/teardown` finalizer holds it until robocop has cleaned the
+      machine, retried every resync on failure. A lease keeps robocop and
+      `ocp node rm` off the same node; control planes are never torn down.
     - Invalid input is refused at the boundary with a message that names what
       was given and lists what would have worked, and errors carry no Perl stack
       trace unless `--verbose` is set. Multi-word options take either

@@ -62,6 +62,24 @@ rules:
   - update
   - delete
 
+# Pods, for the drain in OCP::Node::teardown (k179): robocop tears down a
+# deleted worker OCPNode, and the drain lists the node's pods (list, by
+# spec.nodeName) and evicts them through the Eviction API -- a create on the
+# pods/eviction subresource, which is what honours PodDisruptionBudgets.
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - list
+
+- apiGroups:
+  - ""
+  resources:
+  - pods/eviction
+  verbs:
+  - create
+
 # Secrets (for provider credentials, SSH keys)
 - apiGroups:
   - ""

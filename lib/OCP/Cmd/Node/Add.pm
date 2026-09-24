@@ -196,7 +196,14 @@ sub _build_cr {
     return {
         apiVersion => 'ocp.internal/v1',
         kind       => 'OCPNode',
-        metadata   => { name => $self->name, namespace => 'ocp-system' },
+        metadata   => {
+            name      => $self->name,
+            namespace => 'ocp-system',
+            # A worker's machine is torn down when its OCPNode is deleted
+            # (k179); a control plane never is.
+            ($self->role eq 'worker'
+                ? (finalizers => [ OCP::Node::TEARDOWN_FINALIZER ]) : ()),
+        },
         spec       => \%spec,
     };
 }

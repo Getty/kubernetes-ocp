@@ -452,10 +452,13 @@ sub worker_ocpnodes {
             $spec->{image}      = $pool->{image}            if $pool->{image};
             $spec->{location}   = $pool->{location}         if $pool->{location};
 
+            # The finalizer from the start (k179): deleting the OCPNode then
+            # leaves its machine to robocop's teardown instead of orphaning it.
             push @crs, {
                 apiVersion => 'ocp.internal/v1',
                 kind       => 'OCPNode',
-                metadata   => { name => $w_name, namespace => $ns },
+                metadata   => { name => $w_name, namespace => $ns,
+                                finalizers => [ OCP::Node::TEARDOWN_FINALIZER ] },
                 spec       => $spec,
             };
         }

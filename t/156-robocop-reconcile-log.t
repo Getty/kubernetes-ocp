@@ -56,6 +56,8 @@ package FakeKube {
                  spec => { type => 'ssh' } };
     }
     sub k8s { bless {}, 'FakeIOK8s' }
+    # The teardown finalizer robocop adds to a worker that has none (k179).
+    sub patch { 1 }
     sub patch_status {
         my ($self, $kind, %a) = @_;
         push @{ $self->{patches} }, $a{patch}{status};
