@@ -2,6 +2,7 @@ package OCP::Provider::Hetzner;
 # ABSTRACT: Hetzner Cloud infrastructure provider
 
 use Moo;
+use OCP::KnownHosts;
 use WWW::Hetzner::Cloud;
 
 =attr token
@@ -301,6 +302,10 @@ C<$timeout> defaults to C<$OCP::Provider::Hetzner::ADDRESS_TIMEOUT>
 (120 s), and a server that does not get there in time makes this die rather
 than return an C<$info> with no C<ip>.
 
+Any host key OCP's known_hosts (L<OCP::KnownHosts>) still holds for that
+address is removed: nothing has connected to this server yet, so a recorded
+key belongs to a previous machine Hetzner gave the address to (k168).
+
 Only C<id> is read out of C<$info>, so a caller that holds nothing but the
 server id can build one: C<< { id => $id } >>.
 
@@ -332,6 +337,14 @@ sub wait_for_running {
     );
 
     $server_info->{ip} = $server->ipv4;
+
+    # Hetzner hands addresses out again. This is the moment OCP learns which
+    # address the server has, so no connection to it has been made yet, and
+    # any key known_hosts holds for that address belongs to a machine that
+    # had it before -- it would fail the first contact as "changed" (k168).
+    OCP::KnownHosts->new->forget($server_info->{ip})
+        if defined $server_info->{ip} && length $server_info->{ip};
+
     return $server_info;
 }
 
@@ -356,7 +369,9 @@ sub get_server_ip {
 
 Deletes the Hetzner server with the given id. C<$server_id> is the only
 load-bearing argument; C<name> and C<host> are accepted because
-L<OCP::Node/teardown> passes them through but are not used here. A
+L<OCP::Node/teardown> passes them through. C<host>, when given, has its
+entries removed from OCP's known_hosts (L<OCP::KnownHosts>) -- the machine
+behind that key is gone. A
 C<delete_server(undef)> is a no-op — empty ids never call the API, so a
 teardown on an already-gone node does not cost a round trip.
 
@@ -366,6 +381,11 @@ sub delete_server {
     my ($self, $server_id, %opts) = @_;
     return unless defined $server_id && length $server_id;
     $self->cloud->servers->delete($server_id);
+
+    # The machine is gone; its host key goes with it (k168).
+    OCP::KnownHosts->new->forget($opts{host})
+        if defined $opts{host} && length $opts{host};
+    return;
 }
 
 =method cleanup_on_failure

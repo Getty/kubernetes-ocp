@@ -27,6 +27,12 @@ path("$key.pub")->spew('fake pub key');
 
 my $rexfile = path($tmp)->child('Rexfile');
 $rexfile->spew("# stub\n");
+
+# A host whose key is already recorded goes straight to rex; an unknown one
+# would first be contacted over SSH to record it (k168, t/168-host-key-tofu.t).
+my $known_hosts = path($tmp)->child('known_hosts');
+$known_hosts->spew("psyduck.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tr\n");
+$ENV{OCP_KNOWN_HOSTS} = $known_hosts->stringify;
 {
     no warnings 'redefine';
     *OCP::Rex::_find_rexfile = sub { $rexfile->stringify };

@@ -49,8 +49,10 @@ use OCP::SSH;
     # Must have -F /dev/null to ignore user config
     my $opts_str = join(' ', @opts);
     like($opts_str, qr/-F\s+\/dev\/null/, '_ssh_opts includes -F /dev/null');
-    like($opts_str, qr/StrictHostKeyChecking=no/, '_ssh_opts includes StrictHostKeyChecking=no');
-    like($opts_str, qr/UserKnownHostsFile=\/dev\/null/, '_ssh_opts includes UserKnownHostsFile=/dev/null');
+    # Host keys are trusted on first use and verified afterwards (k168) --
+    # t/168-host-key-tofu.t covers the model.
+    like($opts_str, qr/StrictHostKeyChecking=accept-new/, '_ssh_opts trusts host keys on first use');
+    unlike($opts_str, qr/UserKnownHostsFile=\/dev\/null/, '_ssh_opts keeps the recorded host keys');
     like($opts_str, qr/IdentitiesOnly=yes/, '_ssh_opts includes IdentitiesOnly=yes');
     like($opts_str, qr/ConnectTimeout=10/, '_ssh_opts includes ConnectTimeout');
 }

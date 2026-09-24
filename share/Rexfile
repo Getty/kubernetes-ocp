@@ -10,10 +10,20 @@ use JSON::MaybeXS;
 
 # Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
 # Pure libssh in-process: no ssh client subprocess, no SFTP subsystem,
-# no ControlMaster sockets, no parsing of ~/.ssh/config. Host key checking
-# is disabled inside the connection module itself.
+# no ControlMaster sockets, no parsing of ~/.ssh/config.
 set connection => 'LibSSH';
 parallelism 1;
+
+# Host keys (k168). Rex::LibSSH 0.004 verifies the server's host key and
+# refuses one it cannot find. OCP::Rex hands over OCP's own known_hosts file as
+# OCP_KNOWN_HOSTS, after making sure the host is in it (OCP::SSH records the key
+# on first contact) -- so the check stays on, against that file, and a changed
+# key fails the connection. Run by hand without the variable, libssh checks
+# ~/.ssh/known_hosts, strict as well.
+if ($ENV{OCP_KNOWN_HOSTS}) {
+    Rex::Config->set_openssh_opt(StrictHostKeyChecking => 'yes',
+        UserKnownHostsFile => $ENV{OCP_KNOWN_HOSTS});
+}
 
 # SSH key from environment
 if ($ENV{REX_PRIVATE_KEY}) {

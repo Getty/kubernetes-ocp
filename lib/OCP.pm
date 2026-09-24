@@ -5,6 +5,8 @@ use Moo;
 with 'MooX::Singleton';
 use MooX::Cmd;
 use MooX::Options;
+use OCP::KnownHosts;
+use Path::Tiny ();
 use YAML::XS ();
 use JSON::PP ();
 
@@ -20,9 +22,29 @@ our $VERSION = '0.001';
 
 # Register MooX::Cmd-created instance as singleton
 sub BUILD {
-    my ($self) = @_;
-    no strict 'refs';
-    ${"OCP::_instance"} //= $self;
+    my ($self, $args) = @_;
+    {
+        no strict 'refs';
+        ${"OCP::_instance"} //= $self;
+    }
+
+    # The project's known_hosts file, for everything this run connects to
+    # (k168): OCP::SSH records a machine's key there on first contact, and the
+    # Rex children verify against it. Exported rather than threaded through
+    # every OCP::SSH/OCP::Rex constructor, the way OCP_SSH_KEY already is; an
+    # explicit OCP_KNOWN_HOSTS from the caller wins.
+    #
+    # Here and not in run_cli, because MooX::Cmd runs the command inside
+    # new_with_cmd -- this is the last point between knowing --config and the
+    # command executing. Only for that construction (command_chain is its
+    # mark): an OCP->instance made by library code is not a CLI run in a
+    # project directory, and must not point SSH at ./.ocp/.
+    if (exists $args->{command_chain}
+        && !(defined $ENV{OCP_KNOWN_HOSTS} && length $ENV{OCP_KNOWN_HOSTS})) {
+        $ENV{OCP_KNOWN_HOSTS} =
+            OCP::KnownHosts->project_file(Path::Tiny::path($self->config)->parent);
+    }
+    return;
 }
 
 #
@@ -199,6 +221,10 @@ sub run_cli {
     my ($class) = @_;
 
     my $verbose = grep { $_ eq '-v' || $_ eq '--verbose' } @ARGV;
+
+    # BUILD exports the project's known_hosts file for this run; scoped here so
+    # it ends with the run (k168).
+    local $ENV{OCP_KNOWN_HOSTS} = $ENV{OCP_KNOWN_HOSTS};
 
     my $root = eval {
         _resolve_commands($class, \@ARGV);

@@ -8,6 +8,7 @@ use JSON::MaybeXS;
 use MIME::Base64;
 use Path::Tiny qw(path);
 use File::Temp ();
+use OCP::KnownHosts;
 use OCP::Share;
 use OCP::SSH;
 use OCP::Versions;
@@ -43,8 +44,43 @@ has verbose => (
     default => 0,
 );
 
+# The known_hosts file Rex::LibSSH verifies the host against -- the same one
+# OCP::SSH records into (k168). Reaches the rex child as OCP_KNOWN_HOSTS, which
+# the Rexfile turns into UserKnownHostsFile.
+has known_hosts => (
+    is      => 'lazy',
+    builder => sub { OCP::KnownHosts->default_file },
+);
+
+# Every SSH call this class makes itself, on the same host, key and
+# known_hosts file as the Rex run.
+sub _ssh {
+    my ($self) = @_;
+    return OCP::SSH->new(
+        host        => $self->host,
+        user        => $self->user,
+        key_file    => $self->key_file,
+        known_hosts => $self->known_hosts,
+    );
+}
+
+# Rex::LibSSH (0.004) refuses a host whose key is not in known_hosts and has
+# no way to record one: libssh verifies, it does not trust on first use. So a
+# host the file does not know yet is contacted once through OCP::SSH, whose
+# accept-new records the key, and only then handed to Rex. A known host goes
+# straight to Rex, and libssh does the verifying.
+sub _ensure_host_key {
+    my ($self) = @_;
+    my $kh = OCP::KnownHosts->new(file => $self->known_hosts);
+    return if $kh->knows($self->host);
+    $self->_ssh->learn_host_key;
+    return;
+}
+
 sub run_task {
     my ($self, $task, %params) = @_;
+
+    $self->_ensure_host_key;
 
     # A private, writable copy of the shipped Rexfile — see _runtime_rexfile.
     my $rexfile = $self->_runtime_rexfile;
@@ -67,6 +103,9 @@ sub run_task {
     my $old_private_key = $ENV{REX_PRIVATE_KEY};
     my $old_public_key = $ENV{REX_PUBLIC_KEY};
     my $old_params = $ENV{REX_TASK_PARAMS};
+    my $old_known_hosts = $ENV{OCP_KNOWN_HOSTS};
+
+    $ENV{OCP_KNOWN_HOSTS} = $self->known_hosts;
 
     if ($self->key_file) {
         $ENV{REX_PRIVATE_KEY} = $self->key_file;
@@ -108,6 +147,7 @@ sub run_task {
     if (defined $old_private_key) { $ENV{REX_PRIVATE_KEY} = $old_private_key; } else { delete $ENV{REX_PRIVATE_KEY}; }
     if (defined $old_public_key) { $ENV{REX_PUBLIC_KEY} = $old_public_key; } else { delete $ENV{REX_PUBLIC_KEY}; }
     if (defined $old_params) { $ENV{REX_TASK_PARAMS} = $old_params; } else { delete $ENV{REX_TASK_PARAMS}; }
+    if (defined $old_known_hosts) { $ENV{OCP_KNOWN_HOSTS} = $old_known_hosts; } else { delete $ENV{OCP_KNOWN_HOSTS}; }
 
     # Rex output is diagnosis, so it goes to STDERR -- STDOUT is reserved for the
     # payload and the apply progress narrative a parser may read (house rule:
@@ -121,7 +161,16 @@ sub run_task {
     print STDERR "--- End Rex Output ---\n";
 
     if (!$success) {
-        croak "Rex task '$task' failed: $err";
+        # libssh's refusal of a key that differs from the recorded one: it
+        # names the danger but not the way out once the machine is known to
+        # have been rebuilt (k168). OCP::SSH says the same for its own calls.
+        my $hint = "$out$err" =~ /host key (?:has changed|type differs)/
+            ? "\nThe host key of " . $self->host . ' does not match the one recorded in '
+              . $self->known_hosts . ". If the machine was rebuilt on purpose,\n"
+              . "remove the stale entry and run again:\n  "
+              . OCP::KnownHosts->new(file => $self->known_hosts)->remove_hint($self->host) . "\n"
+            : '';
+        croak "Rex task '$task' failed: $err$hint";
     }
 
     return {
@@ -253,13 +302,7 @@ sub fetch_kubeconfig_ssh {
 
     my $path = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 
-    my $ssh = OCP::SSH->new(
-        host     => $self->host,
-        user     => $self->user,
-        key_file => $self->key_file,
-    );
-
-    my $result = $ssh->run("cat $path");
+    my $result = $self->_ssh->run("cat $path");
 
     if ($result->{exit}) {
         die "Failed to fetch kubeconfig from $path on ${\$self->host}\n" .
@@ -388,13 +431,7 @@ sub _existing_server_token {
         ? '/var/lib/rancher/k3s/server/token'
         : '/var/lib/rancher/rke2/server/token';
 
-    my $ssh = OCP::SSH->new(
-        host     => $self->host,
-        user     => $self->user,
-        key_file => $self->key_file,
-    );
-
-    my $result = eval { $ssh->run("cat $path") };
+    my $result = eval { $self->_ssh->run("cat $path") };
     return undef unless $result && !$result->{exit};
 
     my $token = $result->{stdout} // '';
@@ -452,6 +489,17 @@ OCP::Rex - Rex task executor wrapper
 
 OCP::Rex wraps Rex tasks defined in the Rexfile, providing a clean Perl API
 for Kubernetes cluster bootstrapping.
+
+=head2 Host keys
+
+Rex connects through Rex::LibSSH, which verifies the host key against
+C<known_hosts> (default: L<OCP::KnownHosts/default_file>, the same file
+L<OCP::SSH> uses) and refuses a host it cannot find there. libssh cannot record
+a key itself, so C<run_task> first contacts a host the file does not know yet
+through L<OCP::SSH/learn_host_key>, which trusts it on first use; a known host
+goes straight to Rex. The file reaches the Rexfile as C<OCP_KNOWN_HOSTS>. A
+refused changed key fails the task with the C<ssh-keygen -R> command that
+removes the stale entry (k168).
 
 =head1 METHODS
 
