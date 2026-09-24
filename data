@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T13:41:53Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T13:41:53Z
+created: 2026-09-24T04:53:30Z
+id: 156
+priority: high
+started: 2026-09-24T13:34:52Z
+status: done
+tags:
+- security
+- k3s
+- escalated-from:rex-rancher#12
+title: K3S_TOKEN auf der Installer-Kommandozeile (sichtbar in ps)
+updated: 2026-09-24T13:41:53Z
+---
+
+share/Rexfile Z.900 (Server) und Z.933 (Agent) setzen K3S_TOKEN=$token in den curl|sh-Aufruf -> Token in ps/Prozessliste und in der vom Installer geschriebenen k3s(.agent).service.env. Rex::Rancher (Commits f361cff, 3c515c4) schreibt das Token nur noch nach config.yaml (0600 root:root) und laesst K3S_TOKEN weg; mit explizitem 'server'/'agent'-Argument greift die K3S_URL-ohne-Token-Pruefung des Installers nicht. Erledigt sich mit #155 (Umzug nach Rex::Rancher); bis dahin gleiches Muster hier.
+
+2026-09-24 13:35 Maintainer-Go 2026-09-24: vorab-Fix im Rexfile nach Rex::Rancher-Muster (Token nur in config.yaml 0600, kein K3S_TOKEN env). Delegiert an ocp-infra-worker.
+
+2026-09-24 13:41 Fix on worktree branch worktree-agent-ab48a21119f2d32e8, commit 602b2b0 (rebased on main 93b6815): K3S_TOKEN removed from k3s server+agent installer lines, token only in /etc/rancher/k3s/config.yaml via new _write_secret_file (0600 root:root, Rex tmp pre-created 0600); installer gets explicit server/agent. RKE2 config.yaml (already carried the token, but umask 0644) now also via _write_secret_file. k154 reuse unchanged. t/86-rexfile-token-off-cmdline.t added. make test (Docker) green: 93 files, 1443 tests. Not verified on a real host. Not merged.
+
+2026-09-24 13:41 Review main-agent ok, ff-gemerged nach main (602b2b0, nicht gepusht). Docker make test 93 Dateien/1443 Tests gruen (Worker-Lauf). Zusaetzlich: RKE2 config.yaml jetzt ebenfalls 0600. Unverifiziert: k3s-Join nur mit config.yaml-Token auf echtem Host; k3s-Server ueberschreibt jetzt /etc/rancher/k3s/config.yaml.
