@@ -617,7 +617,7 @@ task "install_rke2_server", sub {
     );
 
     file "/etc/rancher/rke2", ensure => 'directory';
-    file "/etc/rancher/rke2/config.yaml", content => $config;
+    _write_secret_file("/etc/rancher/rke2/config.yaml", $config);
 
     # Configure registry mirrors (pull-through cache + internal registry name)
     my $registries = _generate_registries_yaml(
@@ -829,7 +829,7 @@ task "install_rke2_agent", sub {
     $config .= "node-name: $node_name\n" if $node_name;
 
     file "/etc/rancher/rke2", ensure => 'directory';
-    file "/etc/rancher/rke2/config.yaml", content => $config;
+    _write_secret_file("/etc/rancher/rke2/config.yaml", $config);
 
     # Configure registry mirrors (pull-through cache + internal registry name)
     my $registries = _generate_registries_yaml(
@@ -894,14 +894,15 @@ task "install_k3s_server", sub {
     };
     _maybe_detect_gpu($params);
 
-    # Install K3s
-    my $install_cmd = "curl -sfL https://get.k3s.io | ";
-    $install_cmd .= "INSTALL_K3S_VERSION=$version " if $version;
-    $install_cmd .= "K3S_TOKEN=$token ";
-    $install_cmd .= "K3S_NODE_NAME=$node_name " if $node_name;
-    $install_cmd .= "sh -s - server --disable=traefik --disable=servicelb --write-kubeconfig-mode=644";
+    # The token reaches k3s through config.yaml only -- never the installer
+    # line, where ps shows it and the installer copies it into the unit's
+    # service.env (k156). Written before the installer so the first start
+    # already reads it.
+    file "/etc/rancher/k3s", ensure => 'directory';
+    _write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n");
 
-    run $install_cmd;
+    # Install K3s
+    run _k3s_install_cmd(role => 'server', version => $version, node_name => $node_name);
 
     # Wait for ready
     say "Waiting for K3s to be ready...";
@@ -927,14 +928,12 @@ task "install_k3s_agent", sub {
     };
     _maybe_detect_gpu($params);
 
-    # Install K3s agent
-    my $install_cmd = "curl -sfL https://get.k3s.io | ";
-    $install_cmd .= "INSTALL_K3S_VERSION=$version " if $version;
-    $install_cmd .= "K3S_URL=$server K3S_TOKEN=$token ";
-    $install_cmd .= "K3S_NODE_NAME=$node_name " if $node_name;
-    $install_cmd .= "sh -s - agent";
+    # Token via config.yaml only, as in install_k3s_server (k156).
+    file "/etc/rancher/k3s", ensure => 'directory';
+    _write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n");
 
-    run $install_cmd;
+    # Install K3s agent
+    run _k3s_install_cmd(role => 'agent', server => $server, version => $version, node_name => $node_name);
 
     say "K3s agent joined cluster";
 };
@@ -1019,6 +1018,46 @@ sub _existing_server_token {
     return undef unless defined $token;
     $token =~ s/\s+\z//;
     return length $token ? $token : undef;
+}
+
+# The k3s installer line. It carries no token (k156): the tasks write that into
+# /etc/rancher/k3s/config.yaml first, since anything here is visible in ps and
+# the installer copies every K3S_* variable into k3s(.agent).service.env. The
+# role is always passed explicitly -- with K3S_URL set and no K3S_TOKEN, the
+# installer's own default would otherwise refuse to guess agent mode.
+sub _k3s_install_cmd {
+    my (%args) = @_;
+    my $role = $args{role} // '';
+    die "_k3s_install_cmd: role must be server or agent, got '$role'\n"
+        unless $role eq 'server' || $role eq 'agent';
+
+    my $cmd = "curl -sfL https://get.k3s.io | ";
+    $cmd .= "INSTALL_K3S_VERSION=$args{version} " if $args{version};
+    $cmd .= "K3S_URL=$args{server} " if $role eq 'agent' && $args{server};
+    $cmd .= "K3S_NODE_NAME=$args{node_name} " if $args{node_name};
+    $cmd .= $role eq 'server'
+        ? "sh -s - server --disable=traefik --disable=servicelb --write-kubeconfig-mode=644"
+        : "sh -s - agent";
+    return $cmd;
+}
+
+# config.yaml carries the join token, so it ends up 0600 root:root (k156, the
+# Rex::Rancher pattern). Rex's `file` writes content to a ".rex.tmp.<name>"
+# sibling, renames it over the target and only chmods afterwards -- the tmp file
+# would sit at umask mode (0644) in between. Pre-creating that tmp name 0600
+# closes the window: `cat >` and SFTP open-truncate both keep an existing
+# inode's mode, and the rename carries it to the target. The chmod afterwards
+# fixes an existing 0644 file whose content is unchanged (Rex then drops the tmp
+# file and never touches the target), and fails loudly.
+sub _write_secret_file {
+    my ($path, $content) = @_;
+
+    my $tmp = Rex::Commands::File::get_tmp_file_name($path);
+    run "install -m 600 -o root -g root /dev/null $tmp", auto_die => 1;
+
+    file $path, content => $content;
+
+    run "chown root:root $path && chmod 600 $path", auto_die => 1;
 }
 
 sub _generate_token {

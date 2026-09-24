@@ -28,6 +28,9 @@ Revision history for OCP
       PIN1 unlocks the age layer, PIN2 a per-key password layer. Secure mode
       keeps a PIN2 admin key for anything a human triggers and an unattended
       automation key for robocop; `ocp init --nopassword` is a keyless dev mode.
+    - The RKE2/K3s cluster token reaches a node only through its config.yaml,
+      written 0600 root:root; it never appears on an installer command line or
+      in the service environment file.
     - The NVIDIA GPU stack -- driver, container toolkit, GPU Operator and its
       ClusterPolicy, RuntimeClass, device plugin, DCGM -- installs only where
       NFD reports a CUDA-capable card, and `gpu.enabled` / `gpu.driver` in
