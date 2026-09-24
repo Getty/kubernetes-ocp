@@ -2801,6 +2801,7 @@ DISTRIBUTIONS
       IPC::Run::Win32Pump 20260402.0
     requirements:
       ExtUtils::MakeMaker 0
+      IO::Pty 1.25
       Test::More 0.47
   Import-Into-1.002005
     pathname: H/HA/HAARG/Import-Into-1.002005.tar.gz
@@ -3932,6 +3933,28 @@ DISTRIBUTIONS
       vars 0
       version 0
       warnings 0
+  Rex-GPU-0.002
+    pathname: G/GE/GETTY/Rex-GPU-0.002.tar.gz
+    provides:
+      Rex::GPU 0.002
+      Rex::GPU::Detect 0.002
+      Rex::GPU::NVIDIA 0.002
+      Rex::GPU::NVIDIA::Requirement 0.002
+      Rex::GPU::NVIDIA::Setup 0.002
+      Rex::GPU::NVIDIA::Setup::Apt 0.002
+      Rex::GPU::NVIDIA::Setup::Debian 0.002
+      Rex::GPU::NVIDIA::Setup::RHEL 0.002
+      Rex::GPU::NVIDIA::Setup::Rpm 0.002
+      Rex::GPU::NVIDIA::Setup::SUSE 0.002
+      Rex::GPU::NVIDIA::Setup::Ubuntu 0.002
+      Rex::GPU::NVIDIA::VGPU 0.002
+    requirements:
+      ExtUtils::MakeMaker 0
+      Module::Runtime 0
+      Moo 0
+      Rex v1.14.0
+      namespace::autoclean 0
+      perl 5.014004
   Rex-LibSSH-0.004
     pathname: G/GE/GETTY/Rex-LibSSH-0.004.tar.gz
     provides:
@@ -3944,6 +3967,25 @@ DISTRIBUTIONS
       ExtUtils::MakeMaker 0
       Net::LibSSH 0.004
       Rex v1.16.0
+  Rex-Rancher-0.002
+    pathname: G/GE/GETTY/Rex-Rancher-0.002.tar.gz
+    provides:
+      Rex::Rancher 0.002
+      Rex::Rancher::Agent 0.002
+      Rex::Rancher::Cilium 0.002
+      Rex::Rancher::K8s 0.002
+      Rex::Rancher::Node 0.002
+      Rex::Rancher::Server 0.002
+    requirements:
+      ExtUtils::MakeMaker 0
+      HTTP::Tiny 0
+      IO::K8s 1.108
+      IO::Socket::SSL 0
+      JSON::MaybeXS 0
+      Kubernetes::REST 1.108
+      Rex v1.14.0
+      YAML::PP 0
+      perl 5.014004
   Role-Tiny-2.002004
     pathname: H/HA/HAARG/Role-Tiny-2.002004.tar.gz
     provides:
