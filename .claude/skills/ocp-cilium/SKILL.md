@@ -46,9 +46,29 @@ my $gateway = {
 };
 ```
 
-Gateway API CRDs (v1.1.0) are installed BEFORE Cilium in the Rexfile:
-- standard-install.yaml (HTTPRoute, Gateway, GatewayClass)
-- experimental-install.yaml (TCPRoute, UDPRoute, TLSRoute)
+Gateway API CRDs are pinned in `OCP::Versions` (`gateway_api`, currently
+v1.6.1 — version-locked to Cilium, bump both together) and applied BEFORE
+Cilium by `_apply_gateway_api_crds` in `share/Rexfile`, called from
+`install_cilium`. **Standard channel only — never experimental on top of
+it.** From Gateway API v1.5, both bundles ship the
+`safe-upgrades.gateway.networking.k8s.io` ValidatingAdmissionPolicy, which
+refuses experimental CRDs applied over standard ones (the reverse stays
+allowed). OCP used to apply standard and then experimental with errors
+swallowed; under the v1.6.1 pin the experimental apply was silently denied
+and nobody noticed (k157). Standard alone is enough: from v1.5 it carries
+TLSRoute v1 and BackendTLSPolicy v1, and from v1.6 also TCPRoute and
+UDPRoute — everything Cilium 1.20 needs.
+
+The apply is server-side and forced (`kubectl apply --server-side
+--force-conflicts --field-manager=ocp`) — the httproutes CRD alone comes
+within a few KiB of the 256 KiB last-applied-configuration annotation a
+client-side apply writes. A failed apply now `die`s and aborts
+`install_cilium`; it is no longer a best-effort step with errors swallowed.
+
+Caveat: RKE2 >= v1.37 ships its own `rke2-gateway-api-crd` Helm chart, which
+would fight this apply. Today's RKE2 pin is v1.36, so it's dormant; the
+chart needs disabling (or OCP's apply needs dropping) when RKE2 is bumped
+past that (k161, backlog).
 
 ## LB-IPAM (LoadBalancer IP Address Management)
 
@@ -92,8 +112,20 @@ for my $i (1..30) {
 
 ## Cilium Versions
 
-Managed in `OCP::Versions` and Rexfile constants:
-- Cilium: 1.17.0
-- Cilium CLI: v0.16.23
+Single source of truth: `OCP::Versions` (`components`, current OCP version):
+- Cilium: 1.20.0
+- Cilium CLI: v0.19.7
+- Gateway API CRDs: v1.6.1 (version-locked to Cilium — bump together)
 
-Rexfile has its own constants (`CILIUM_VERSION`, `CILIUM_CLI_VERSION`) — keep in sync with OCP::Versions.
+The Rexfile carries no version constants of its own to drift out of sync.
+`OCP::Rex` (`install_control_plane`) passes all three explicitly into the
+`install_cilium` task params — the Rexfile's env var fallback
+(`OCP_CILIUM_VERSION`, `OCP_CILIUM_CLI_VERSION`, `OCP_GATEWAY_API_VERSION`)
+is only for hand-runs outside that path.
+
+Note: `upgrade_cilium` upgrades the Cilium CLI and the Helm release, but
+does not currently re-apply the Gateway API CRDs — only `install_cilium`
+does. A Cilium version bump on an existing cluster can leave the old CRD
+bundle behind, which matters because Cilium's minor version is tied to a
+specific CRD bundle (k160, in progress: `upgrade_cilium` is to call
+`_apply_gateway_api_crds` before upgrading).
