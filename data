@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T17:40:33Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:40:33Z
+created: 2026-09-24T16:42:47Z
+id: 177
+priority: high
+started: 2026-09-24T17:40:33Z
+status: done
+tags:
+- destroy
+- workers
+- ssh
+title: 'ocp destroy ignoriert Worker aus OCPNodes: ssh-Worker laufen weiter'
+updated: 2026-09-24T17:40:33Z
+---
+
+Live-Fund 2026-09-24 (ocpt, ssh-Provider, Worker ocpt-w von robocop per OCPNode installiert): ocp destroy --force raeumte nur den CP ab ("Cluster destroyed"), rke2-agent auf ocpt-w lief weiter. Destroy nimmt die Node-Liste aus status.yaml (nur CP), Hetzner-Label-Suche nur als Fallback bei leerer Liste, Spec-Fallback nur bei leerer Liste und nur fuer Pools mit nodes: [...] (host:-Form fehlt). Done: solange der Cluster erreichbar ist, OCPNodes (alle Rollen) als Quelle der Wahrheit lesen und vereinigen mit status + Spec (dedupliziert); Worker vor CP abbauen; ssh-Worker per Uninstall (gemeinsame Implementierung mit k175), Hetzner per delete_server; Spec-Fallback auch fuer host:-Pools; Tests.
+
+2026-09-24 16:50 Implemented on branch worktree-agent-a66be008061b90fe4 (bcf3bb5): Destroy merges status.yaml + all OCPNodes (API) + Hetzner labels + spec worker pools (nodes:[...] and host:), dedup by name/host/providerId; robocop scaled to 0 first; workers before CPs; Hetzner delete_server gets host => ip (known_hosts forget). ssh workers use destroy's existing uninstall path (ExistingHost delete_server). Converge with k175: Destroy's per-node dispatch and OCP::Node::teardown provider->delete_server should share one uninstall entry point. make test green (1892). t/177-destroy-ocpnode-workers.t.
+
+2026-09-24 16:58 Review ok, ff nach main (ee0c820), gepusht. Voller Docker-Lauf auf kombiniertem Stand gruen.
+
+2026-09-24 17:40 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
