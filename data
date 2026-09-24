@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-09-24T16:21:13Z
+id: 174
+priority: low
+status: backlog
+tags:
+- state
+- ocpnode
+title: OCPNode status.publicIP zeigt bei ssh-Workern den Hostnamen
+updated: 2026-09-24T16:21:13Z
+---
+
+Aus Live-Test/k169: OCPNode ocpt-w (ssh-Provider) zeigt IP-Spalte = ocpt-w.vm. OCP::Node fuellt status.publicIP aus spec.host (bewusst: Verbindungs-/Teardown-Adresse). CRD nennt es "Public IP address". Done: IP nach Ready aus K8s-Node-Adresse fuellen (wie ensure_cp_ocpnode via k8s_node_ip) oder eigenes Feld (status.address vs status.publicIP) - ohne SSH/Teardown-Ziel zu aendern.
