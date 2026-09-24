@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T17:39:55Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:39:55Z
+created: 2026-09-24T16:08:31Z
+id: 169
+priority: high
+started: 2026-09-24T17:39:55Z
+status: done
+tags:
+- apply
+- robocop
+- regression
+title: 'ocp apply rollt robocop ohne robocop-credentials-Secret aus: Pod startet nie'
+updated: 2026-09-24T17:39:55Z
+---
+
+Live-Fund 2026-09-24 (ocpt-Testcluster, main 925b2f9, robocop: true, ssh-Provider): apply deployt Deployment/robocop, aber nur ocp deploy-robocop schreibt das Secret robocop-credentials -> Pod CreateContainerConfigError "secret robocop-credentials not found", apply wartet 60s und faellt auf CLI zurueck. Damit laeuft robocop nach jedem apply-only-Setup nie. Done: apply schreibt das Secret gemaess robocop.security_level genauso wie deploy-robocop (eine gemeinsame Implementierung, kein Duplikat); secret_approved -> PIN2-Gate wie in deploy-robocop; inject -> nur Public-Key + Hinweis auf ocp inject-key. Tests. Nebenbei: OCPNode ocpt-w zeigt IP-Spalte = Hostname ocpt-w.vm statt IP (pruefen, ob status.ip bei ssh-Provider aufgeloest werden soll).
+
+2026-09-24 16:20 ocp-apply-worker: committed b07997f on worktree-agent-add75d2d63486bd32 (not merged). New OCP::Role::Cmd::RobocopCredentials (moved out of DeployRobocop, consumed by DeployRobocop + Apply). worker_step (fresh deploy + reconcile of missing workers) ensures Secret before Deployment; skips write when Secret current (key set, robo key, join URL, non-empty token; token value not compared -> no SSH/PIN2 on re-apply). secret_approved: a PIN2 already given in this run (admin key held) counts as approval, else one prompt reused for the token read. inject: public key only, one readiness look, STDOUT note to run ocp inject-key, no 60s wait. Credentials failure -> no Deployment, STDERR, CLI fallback. Docker make test: 105 files / 1866 tests PASS. Side note IP column: status.publicIP = spec.host for ssh provider by design of OCP::Node (connection address, teardown), not changed -- see report. Gap: reconcile with no missing workers still never touches robocop (existing broken cluster needs one ocp deploy-robocop).
+
+2026-09-24 16:20 Review ok, ff nach main (128a914), gepusht. Docker 105/1866 gruen (Worker). Gemeinsame Rolle OCP::Role::Cmd::RobocopCredentials. Live-Verifikation mit neuem Image folgt.
+
+2026-09-24 17:39 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
