@@ -4,6 +4,7 @@ package OCP::Robocop::Controller;
 use Moo;
 use Carp qw(croak);
 use File::Temp ();
+use Future;
 use IO::Async::Loop;
 use IO::Async::Timer::Periodic;
 use IO::Handle ();
@@ -14,6 +15,7 @@ use Scalar::Util qw(weaken);
 use Time::Piece ();
 use Try::Tiny;
 
+use OCP ();
 use OCP::K8s;
 use OCP::Kubernetes;
 use OCP::Node;
@@ -94,6 +96,20 @@ has watch_timeout => (
 has verbose => (
     is      => 'ro',
     default => 0,
+);
+
+# The watch client's API check (k170): how long one may take, and how many
+# failed checks in a row end the process. Net::Async::Kubernetes::Watcher
+# retries a failed watch request every second without telling anyone, so these
+# checks are the only way a broken watch transport becomes visible.
+has api_check_timeout => (
+    is      => 'ro',
+    default => 30,
+);
+
+has max_api_check_failures => (
+    is      => 'ro',
+    default => 3,
 );
 
 # How many OCPNodes may be reconciled at the same time (k159). Each one is a
@@ -305,9 +321,17 @@ sub _async_resource_map {
 sub run {
     my ($self) = @_;
 
-    $self->log("Robocop controller starting (namespace=" . $self->namespace . ")");
+    # In the pod STDOUT is a pipe, so it is block-buffered: the startup lines
+    # sat in the buffer of a process that never wrote enough to flush it, and
+    # the pod log stayed empty (k170).
+    STDOUT->autoflush(1);
+    STDERR->autoflush(1);
+
+    $self->log("robocop " . ($OCP::VERSION // 'unknown') . " starting: "
+        . "security_level=" . ($self->security_level // 'secret')
+        . " namespace=" . $self->namespace
+        . " distribution=" . $self->distribution);
     $self->log("Server URL:   " . $self->server_url);
-    $self->log("Distribution: " . $self->distribution);
     $self->log("Watching OCPNode via Net::Async::Kubernetes");
     $self->log("Reconciling at most " . $self->max_reconciles . " node(s) at once, "
         . "resync every " . $self->resync_interval . "s");
@@ -316,6 +340,15 @@ sub run {
     my $kube = $self->async_kube;
     $loop->add($kube);
 
+    # The watch client has to reach the API before anything else starts. The
+    # watcher itself would retry a failing request forever without a word --
+    # a missing IO::Async::SSL left robocop silent in every cluster (k170).
+    my $check = $self->_check_api;
+    $loop->await($check);
+    my $err = $check->failure;
+    $self->_fatal("the Kubernetes API is not reachable over the watch client: "
+        . $err) if defined $err;
+
     # Built once here so every forked reconcile inherits the client instead of
     # rebuilding it. It keeps no connection open (LWP without keep-alive), so
     # parent and children never share a socket.
@@ -323,6 +356,7 @@ sub run {
 
     $self->_start_key_injection if $self->is_inject;
     $self->_start_resync;
+    $self->_start_api_checks;
 
     weaken(my $wself = $self);
 
@@ -336,11 +370,82 @@ sub run {
             return unless $wself;
             my $msg = ref $status eq 'HASH' ? ($status->{message} // 'unknown')
                     : (defined $status ? $status : 'unknown');
-            $wself->log("watch ERROR: " . $msg);
+            $wself->log_error("watch ERROR: " . $msg);
         },
     );
 
     $loop->run;
+
+    # Nothing stops the loop except a fatal API check (_check_api_tick).
+    $self->_fatal($self->{_fatal} // 'the event loop stopped unexpectedly');
+}
+
+# One list call over the watch client -- the same client, TLS stack and
+# credentials the watch uses -- bounded by api_check_timeout. The Future fails
+# with the reason, and is done otherwise; a client that dies instead of
+# returning a failed Future (no server configured) counts as a failure too.
+sub _check_api {
+    my ($self) = @_;
+    my $loop = $self->loop;
+    return Future->wait_any(
+        Future->call(sub {
+            $self->async_kube->list('OCPNode', namespace => $self->namespace);
+        }),
+        $loop->delay_future(after => $self->api_check_timeout)
+            ->then_fail('no answer within ' . $self->api_check_timeout . 's'),
+    );
+}
+
+# While running, the API check repeats every resync_interval. Each failure is
+# logged; max_api_check_failures in a row stop the loop, and run() dies -- a
+# pod that exits is restarted and shows up as CrashLoopBackOff, a pod that
+# silently retries shows up as nothing.
+sub _start_api_checks {
+    my ($self) = @_;
+    weaken(my $wself = $self);
+    my $timer = IO::Async::Timer::Periodic->new(
+        interval => $self->resync_interval,
+        on_tick  => sub { $wself->_check_api_tick if $wself },
+    );
+    $self->loop->add($timer);
+    $timer->start;
+    $self->{_api_check_timer} = $timer;
+    return;
+}
+
+sub _check_api_tick {
+    my ($self) = @_;
+    return if $self->{_api_check};   # the previous check is still running
+    weaken(my $wself = $self);
+    # Held before on_ready is attached: an answer that is already there runs
+    # the callback at once, and its delete must find the check to clear.
+    my $check = $self->{_api_check} = $self->_check_api;
+    $check->on_ready(sub {
+        my ($f) = @_;
+        return unless $wself;
+        delete $wself->{_api_check};
+        my $err = $f->failure;
+        unless (defined $err) {
+            $wself->{_api_check_failures} = 0;
+            return;
+        }
+        my $n = ++$wself->{_api_check_failures};
+        chomp $err;
+        $wself->log_error("ERROR: API check over the watch client failed ("
+            . $n . "/" . $wself->max_api_check_failures . "): " . $err);
+        return if $n < $wself->max_api_check_failures;
+        $wself->{_fatal} = "the Kubernetes API is not reachable over the "
+            . "watch client (" . $n . " checks in a row): " . $err;
+        $wself->loop->stop;
+    });
+    return;
+}
+
+sub _fatal {
+    my ($self, $msg) = @_;
+    chomp $msg;
+    $self->log_error("FATAL: " . $msg);
+    croak "robocop controller: " . $msg;
 }
 
 #
@@ -805,6 +910,13 @@ sub log {
     print "[$ts] $msg\n";
 }
 
+# What went wrong goes to STDERR (house rule: STDOUT vs STDERR).
+sub log_error {
+    my ($self, $msg) = @_;
+    my $ts = scalar localtime;
+    print STDERR "[$ts] $msg\n";
+}
+
 1;
 
 __END__
@@ -852,6 +964,19 @@ L<Kubernetes::REST> C<kube> client -- runs in a forked child. The loop stays
 free for further events and the key-injection listener while an install runs.
 A fresh watch replays existing OCPNodes as C<ADDED> events, so nodes already in
 the cluster are reconciled on startup.
+
+=head2 Startup and API checks
+
+C<run> first logs one line with the OCP version, C<security_level>,
+namespace and distribution, with STDOUT unbuffered, so a running pod always
+has a log. It then lists OCPNodes once over the watch client -- the same
+client, TLS stack and credentials the watch uses -- and dies with the reason
+if that fails or takes longer than C<api_check_timeout> seconds (default 30).
+The watch client itself retries a failing watch request forever without
+reporting it, so this check repeats every C<resync_interval> seconds while
+the controller runs: each failure is logged to STDERR, and
+C<max_api_check_failures> failures in a row (default 3) end C<run> with an
+exception. L<robocop> turns that into exit status 1.
 
 =head2 Scheduling
 

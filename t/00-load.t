@@ -61,4 +61,9 @@ use_ok('OCP::Robocop::Manifest');
 use_ok('OCP::Robocop::KeyInjection');
 use_ok('OCP::Robocop::Manifest');
 
+# Loaded by Net::Async::HTTP / Net::Async::WebSocket only when a request uses
+# TLS, so nothing above would notice it missing (k170; the request path
+# itself: t/154-tls-transport.t).
+use_ok('IO::Async::SSL');
+
 done_testing;

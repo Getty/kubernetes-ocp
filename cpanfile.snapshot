@@ -789,6 +789,20 @@ DISTRIBUTIONS
       Struct::Dumb 0
       Time::HiRes 0
       perl 5.014
+  IO-Async-SSL-0.25
+    pathname: P/PE/PEVANS/IO-Async-SSL-0.25.tar.gz
+    provides:
+      IO::Async::SSL 0.25
+      IO::Async::SSLStream 0.25
+    requirements:
+      Future 0.33
+      IO::Async::Handle 0.29
+      IO::Async::Loop 0.66
+      IO::Async::Protocol::Stream 0
+      IO::Async::Stream 0.59
+      IO::Socket::SSL 2.003
+      Module::Build 0.4004
+      perl 5.014
   IO-HTML-1.004
     pathname: C/CJ/CJM/IO-HTML-1.004.tar.gz
     provides:

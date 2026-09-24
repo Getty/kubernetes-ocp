@@ -5,6 +5,7 @@ requires 'CryptX', '0.091';
 requires 'File::ShareDir';
 requires 'File::SOPS', '0.004';
 requires 'IO::Async';
+requires 'IO::Async::SSL';
 requires 'IO::K8s', '1.108';
 requires 'IPC::Run';
 requires 'JSON::MaybeXS';
