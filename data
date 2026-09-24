@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T17:40:52Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:40:52Z
+created: 2026-09-24T16:54:25Z
+id: 178
+priority: critical
+started: 2026-09-24T17:40:52Z
+status: done
+tags:
+- k3s
+- cilium
+- rexfile
+title: k3s-Pfad installiert Flannel und kube-proxy neben Cilium
+updated: 2026-09-24T17:40:52Z
+---
+
+Live-Fund 2026-09-24 (ocpt, dist k3s, main 1ac39b2): install_k3s_server startet k3s ohne flannel-backend=none / disable-network-policy / disable-kube-proxy. Auf dem Node: flannel.1 + cni0, Pods mit 10.42.x (Flannel), "Cluster Pods: 0/5 managed by Cilium", Cilium-Endpoint not ready, cilium status --wait laeuft 10 min ins Timeout. RKE2-Pfad schreibt dagegen cni: none + disable-kube-proxy: true (Rexfile ~610). Auch vor k156 schon so -> k3s+Cilium hat vermutlich nie funktioniert. Done: k3s-Server-config.yaml (seit k156 schreibt OCP sie, 0600) bekommt flannel-backend: none, disable-network-policy: true, disable-kube-proxy: true, disable: [traefik, servicelb], write-kubeconfig-mode; Installer-Flags dorthin verschieben; Agent-Seite pruefen; Cilium-Install-Parameter fuer k3s (k8sServiceHost/Port, Cluster-CIDR 10.42.0.0/16?) gegen Rex::Rancher abgleichen (read-only ~/dev/rex-rancher, siehe auch k155); Tests. Live-Nachtest folgt durch Main-Agent.
+
+2026-09-24 17:04 Implemented on branch worktree-agent-afeff0ebe29583f4e, commit 3e30729. k3s server config.yaml now: token, node-name, tls-san, write-kubeconfig-mode "0644", flannel-backend: none, disable-network-policy: true, disable-kube-proxy: true, cluster-cidr: 10.42.0.0/16, disable: [traefik, servicelb]; installer line bare (sh -s - server). Agent: unchanged (token only; those settings are server-side, handed to agents). Cilium on k3s: k8sServiceHost = advertised_host (k3s agents proxy the API on 127.0.0.1:6444, so localhost:6443 only works on the server), port 6443, ipam.operator.clusterPoolIPv4PodCIDRList=10.42.0.0/16. cilium status --wait now dies with status output (Rex run had no auto_die, failure was silent) in install_cilium and upgrade_cilium. make test (Docker): 108 files, 1925 tests, PASS. Live re-test pending (main agent).
+
+2026-09-24 17:04 Review ok, rebased+ff nach main (0bd5262). Live-Nachtest folgt.
+
+2026-09-24 17:40 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
