@@ -130,6 +130,8 @@ subtest 'delete_server runs uninstall on the host, not the machine' => sub {
         'covers rke2';
     like $p->commands->[0][1], qr/k3s-uninstall\.sh/,
         'covers k3s (we do not know which distribution)';
+    like $p->commands->[0][1], qr/k3s-agent-uninstall\.sh/,
+        'covers a k3s agent, whose uninstaller has its own name (k183)';
     like $p->commands->[0][1], qr/cilium|\/opt\/cni|\/run\/k3s/,
         'also cleans up OCP-installed leftovers';
 };

@@ -36,8 +36,23 @@ our @LEFTOVER_IP_TABLES = (2004, 2005);
 # uninstall. The relocated local rule is handled last and only ever removed
 # once a priority-0 local lookup is back in place, so the host can never end up
 # with no local-table rule at all.
+#
+# The vendor uninstallers themselves: RKE2's installer ships rke2-uninstall.sh
+# for server and agent alike, K3s names it after the service it set up --
+# k3s-uninstall.sh on a server, k3s-agent-uninstall.sh on an agent, and a k3s
+# worker has only the latter (k183). Every one that is on the host runs, and a
+# failing one does not keep the next from running: the outcome check at the
+# end is what decides whether the uninstall worked.
+our @UNINSTALLERS = qw(
+    rke2-uninstall.sh
+    k3s-uninstall.sh
+    k3s-agent-uninstall.sh
+);
+
 our $UNINSTALL_CMD = join ' ; ',
-    'rke2-uninstall.sh 2>/dev/null || k3s-uninstall.sh 2>/dev/null || true',
+    'for u in ' . join(' ', @UNINSTALLERS) . '; do'
+        . ' if command -v $u >/dev/null 2>&1; then $u 2>/dev/null || true; fi;'
+        . ' done',
     'rm -rf ' . join(' ', @LEFTOVER_PATHS) . ' 2>/dev/null || true',
     'for t in ' . join(' ', @LEFTOVER_IP_TABLES)
         . '; do while ip rule del lookup $t 2>/dev/null; do :; done; done',
@@ -126,7 +141,10 @@ No-op: the host was running before we got here. Returns its argument.
 
     $p->delete_server(undef, host => '10.0.0.5');
 
-Runs the RKE2/K3s uninstall script on the host, then removes the leftovers the
+Runs every RKE2/K3s uninstall script present on the host (see
+C<@UNINSTALLERS>: C<rke2-uninstall.sh> for both RKE2 roles,
+C<k3s-uninstall.sh> on a K3s server, C<k3s-agent-uninstall.sh> on a K3s
+agent), then removes the leftovers the
 vendor uninstallers stand: OCP-installed paths (see C<@LEFTOVER_PATHS>) and
 Cilium's residual policy-routing ip rules (see C<@LEFTOVER_IP_TABLES>), which
 matter on this reboot-less re-provisioning path. C<$server_id> is ignored

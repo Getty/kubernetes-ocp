@@ -21,6 +21,8 @@ my $cmd = $OCP::Role::Provider::ExistingHost::UNINSTALL_CMD;
 subtest 'both distributions are still uninstalled' => sub {
     like $cmd, qr/rke2-uninstall\.sh/,  'rke2 uninstaller is called';
     like $cmd, qr/k3s-uninstall\.sh/,   'k3s uninstaller is called';
+    like $cmd, qr/k3s-agent-uninstall\.sh/,
+        'k3s agent uninstaller is called -- a k3s worker has only this one (k183)';
 };
 
 subtest 'what OCP installed on top is removed too' => sub {
@@ -124,6 +126,55 @@ subtest 'a distribution still installed afterwards fails the command (k175)' => 
     };
     isnt $status, 0, 'rke2 still on PATH after the uninstall: the command fails';
     like $err->slurp, qr/still installed/, 'and says why on stderr';
+};
+
+# A k3s agent's installer names its uninstaller after the service:
+# k3s-agent-uninstall.sh, and no k3s-uninstall.sh. The chain only knew the
+# server name, so on a k3s worker nothing ran and the k175 check failed the
+# destroy (k183). RKE2 ships rke2-uninstall.sh for both roles.
+sub run_with_stubs {
+    my (%stubs) = @_;
+    my $dir  = Path::Tiny->tempdir;
+    my $stub = $dir->child('bin');
+    $stub->mkpath;
+    my $log  = $dir->child('log');
+    for my $name (sort keys %stubs) {
+        my $f = $stub->child($name);
+        $f->spew_utf8("#!/bin/sh\necho $name >> \"\$OCP_STUB_LOG\"\n".$stubs{$name});
+        $f->chmod(0755);
+    }
+    my $status = do {
+        local $ENV{PATH}         = "$stub";
+        local $ENV{OCP_STUB_LOG} = "$log";
+        local $ENV{OCP_STUB_BIN} = "$stub";
+        system('/bin/sh', '-c', $cmd . ' 2>/dev/null');
+    };
+    return ($status, $log->exists ? $log->slurp : '');
+}
+
+subtest 'a k3s agent is uninstalled through k3s-agent-uninstall.sh (k183)' => sub {
+    plan skip_all => 'needs a POSIX /bin/sh and /bin/rm'
+      unless -x '/bin/sh' && -x '/bin/rm';
+
+    my ($status, $ran) = run_with_stubs(
+        'k3s'                    => "exit 0\n",
+        'k3s-agent-uninstall.sh' =>
+            "/bin/rm -f \"\$OCP_STUB_BIN/k3s\" \"\$0\"\nexit 0\n",
+    );
+    like $ran, qr/^k3s-agent-uninstall\.sh$/m, 'the agent uninstaller ran';
+    is $status, 0, 'k3s is gone afterwards: the uninstall succeeds';
+};
+
+subtest 'every uninstaller present runs, a failing one does not stop the next' => sub {
+    plan skip_all => 'needs a POSIX /bin/sh' unless -x '/bin/sh';
+
+    my ($status, $ran) = run_with_stubs(
+        map { $_ => "exit 1\n" }
+          qw( rke2-uninstall.sh k3s-uninstall.sh k3s-agent-uninstall.sh )
+    );
+    like $ran, qr/^rke2-uninstall\.sh$/m,      'rke2 uninstaller attempted';
+    like $ran, qr/^k3s-uninstall\.sh$/m,       'k3s uninstaller attempted';
+    like $ran, qr/^k3s-agent-uninstall\.sh$/m, 'k3s agent uninstaller attempted';
 };
 
 done_testing;

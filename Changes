@@ -84,8 +84,9 @@ Revision history for OCP
       the control planes. Each Hetzner server is deleted with the token of the
       provider that created it, read from the cluster when `secrets.yaml` has
       none; a server no token reaches stops the run before anything is
-      deleted. A machine it could not clean is named at the end with the
-      reason on STDERR, and the run exits 1.
+      deleted. An ssh/local machine gets whichever RKE2 or K3s uninstaller it
+      carries, server or agent. A machine it could not clean is named at the
+      end with the reason on STDERR, and the run exits 1.
     - `ocp node rm` drains the node through the Eviction API, honouring
       PodDisruptionBudgets within a five-minute bound, then deletes its server
       or uninstalls RKE2/K3s from an ssh/local machine, the way `ocp destroy`
