@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-24T16:14:33Z
+id: 171
+priority: low
+status: backlog
+tags:
+- robocop
+- ssh
+- security
+title: 'robocop: Host-Key-Fingerprints in OCPNode-Status pinnen'
+updated: 2026-09-24T16:14:33Z
+---
+
+Aus k168: robocop macht TOFU pro Pod (/tmp/ocp-known_hosts-<uid>, emptyDir). Nach Reschedule vertraut ein neuer Pod erneut. Done: Fingerprint beim ersten Kontakt in OCPNode status (z. B. status.hostKey) schreiben, spaeter dagegen verifizieren; CLI kann denselben Wert nutzen. Optional OCP_KNOWN_HOSTS explizit im deployment.yaml.
