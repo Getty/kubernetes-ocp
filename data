@@ -1,0 +1,39 @@
+---
+claimed_at: 2026-09-24T23:01:16Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T23:01:16Z
+created: 2026-09-23T20:02:59Z
+id: 155
+priority: medium
+started: 2026-09-24T21:38:30Z
+status: done
+tags:
+- rex
+- rexfile
+- gpu
+- refactor
+- needs:rex-rancher#10
+- needs:rex-gpu#42
+title: RKE2/K3s-Install und GPU-Treiber aus der Rexfile nach Rex::Rancher / Rex::GPU
+  verlagern
+updated: 2026-09-24T23:01:16Z
+---
+
+Rex::Rancher und Rex::GPU existieren fuer OCP. Ziel: share/Rexfile wird zu duennen Wrappern, die Logik lebt in den Libraries. Heute (2026-09-23) nicht moeglich, weil beide Libraries OCP-Garantien nicht abdecken; Luecken stehen auf den Library-Karten (needs).
+
+Reihenfolge nach Library-Releases:
+1. Agent-Pfad (install_rke2_agent / k3s agent) -> Rex::Rancher install_agent (kleinste Luecke).
+2. Server-Pfad (install_rke2_server inkl. Multi-CP-Join, tls-san-Liste) -> install_server.
+3. Cilium -> Rex::Rancher::Cilium.
+4. Treiberzweig in install_nvidia (nur gpu.driver: host) -> Rex::GPU::NVIDIA::install_driver. NICHT gpu_setup/configure_containerd/generate_cdi_specs: containerd- und CDI-Konfiguration bleiben beim GPU Operator.
+
+OCP-seitig: JSON-Param-Uebergabe (REX_TASK_PARAMS, Token nicht in ps) bleibt im Rexfile; _generate_registries_yaml wird Hash-Builder; die quelltext-basierten Tests (t/08, t/28, t/35, t/44, t/64, t/85 greppen share/Rexfile) auf Verhaltenstests der Wrapper umstellen, Garantien duerfen dabei nicht verloren gehen.
+
+2026-09-24 04:53 Rex::Rancher-Seite (rex-rancher #10) erledigt und gepusht (main a5abac9, unreleased, NICHT live getestet): install_server version/node_name/disable, Token-Reuse + K3s-Token nur via config.yaml (0600), install_method artifact + Service-Wait mit Journal + Versionscheck, Cilium release-aware + gateway_api/helm_values/cilium_*, gpu_setup/gpu_device_plugin-Schalter, nvidia_runtime_path, kubeconfig_server existierte schon. Neuer rke2-disable-Default inkl. rke2-traefik(-crd); mit gateway_api zusaetzlich rke2-gateway-api-crd.
+
+2026-09-24 21:38 2026-09-24 Rex::Rancher 0.002 auf CPAN, Rex::GPU 0.002 getaggt (CPAN-Index laeuft). rex-rancher k10-15, k36 und rex-gpu k42 done. Blocker weg; Umstellung startet (ocp-infra-worker).
+
+2026-09-24 22:13 Umstellung auf Branch worktree-agent-aa6d283d734847745 (9d06bc0 cpanfile+snapshot Rex::Rancher/Rex::GPU 0.002, 6e420c8 Rexfile-Wrapper + Tests, 2844d2a Skills). make test (Docker) gruen. Uebernommen: prepare_node (ntp=>0), install_server/install_agent (rke2+k3s, RKE2 mit Pin als artifact), Cilium install/upgrade (standard channel, lokale Kubeconfig vom Node, IPAM-Modus+Pool immer explizit, live Werte bei laufendem Cilium), install_driver/install_container_toolkit/verify_nvidia ausser Ubuntu. Bei OCP geblieben (Karten): rex-rancher k41 cluster_cidr (OCP: config.yaml.d-Drop-in), k42 prepare_node NTP//etc/hosts/locale-gen, k43 Cilium (IPAM-Default kubernetes gefaehrlich, CRD-only-Funktion fuer update_gateway_api, Ready-Wait, Live-Werte), k44 Agent-Fehler ohne Join-URL; rex-gpu k69 Ubuntu (linux-headers-generic, ubuntu-drivers). Live-Checks auf RKE2+k3s VMs stehen aus.
+
+2026-09-24 23:01 LIVE VERIFIZIERT 2026-09-25: (1) cihq-Generalprobe k151->live-2844d2a: apply laesst Cilium-IPAM/Pool/Image/config.yaml unveraendert, node rm/add ueber Rex::Rancher ok; (2) frischer secure RKE2-Bootstrap mit Worker: Artefakt sha256 verified, config 0600, Drop-in cluster-cidr, cluster-pool 10.42.0.0/16, kpr=true, Gateway API v1.6.1 standard, GatewayClass accepted, Worker Ready. Nebenfund k190 (eBPF-Reste nach Uninstall ohne Reboot). k3s mit k155 noch nicht live.
