@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-24T23:13:23Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T23:13:23Z
+created: 2026-09-24T22:50:48Z
+id: 190
+priority: high
+started: 2026-09-24T23:13:23Z
+status: done
+tags:
+- teardown
+- cilium
+- destroy
+title: 'Uninstall laesst Cilium-eBPF zurueck: Neuinstallation ohne Reboot haengt bei
+  jedem Image-Pull'
+updated: 2026-09-24T23:13:23Z
+---
+
+Live-Fund 2026-09-25 (ocpt-cp, destroy + frischer RKE2-Bootstrap ohne Reboot dazwischen): nach rke2-uninstall bleiben /sys/fs/bpf/cilium, /sys/fs/bpf/tc/globals/cilium_*, /run/cilium/cgroupv2 (gemountet) und Ciliums cgroup-Socket-LB-Programme am Root-cgroup. Der alte NodePort 30500 (ocp-cache) laesst connect() haengen statt refused -> containerd probiert den registries.yaml-Mirror http://localhost:30500 und wartet pro Pull ~2,5 min -> RKE2 bekommt etcd/pause nicht rechtzeitig, install_server laeuft in den 10-min-Timeout. Nach einem Reboot geht alles. Done: Uninstall-Pfad (ExistingHost $UNINSTALL_CMD, gemeinsam fuer destroy/node rm/robocop teardown) raeumt Cilium-Zustand ab (cgroup-BPF-Programme detachen, gepinnte Maps entfernen, /run/cilium/cgroupv2 aushaengen, cilium_*-Interfaces loeschen; Werkzeug waehlen: bpftool ist nicht auf dem Host) ODER erkennt die Reste und verlangt laut einen Reboot; zusaetzlich prueft der Install-Pfad vor install_server auf Reste und bricht mit klarer Meldung ab statt 10 min zu haengen. Tests.
+
+2026-09-24 23:04 Implemented on branch worktree-agent-a7d33d9322419a1ae, commit ec1e76b. Uninstall (ExistingHost $UNINSTALL_CMD) now removes /sys/fs/bpf/cilium + tc/globals/cilium_* (unpinning the bpf_links = detach of socket-LB/tcx programs, kernel>=5.7), legacy tc clsact with cil_ programs, cilium_* links, CILIUM_* iptables chains (iptables-restore --noflush per table, all backends), umounts /run/cilium/cgroupv2, rm --one-file-system /run/cilium; outcome check fails with 'reboot the host' if /sys/fs/bpf/cilium, the cgroupv2 mount or cilium_host survive. Rexfile _install_server/_install_agent refuse (before prepare_node) a host with those signals but no rke2/k3s binary or active unit. make test (Docker) green, 2027 tests. Needs live check on a test VM.
+
+2026-09-24 23:13 LIVE VERIFIZIERT 2026-09-25 (ocpt, main ec1e76b): destroy ohne Reboot -> keine Pins/Mount/cilium_host/CILIUM-Regeln, Port 30500 sofort refused; sofortiger Neu-Bootstrap CP+Worker in 423s ok; Install-Sperre mit Fake-cilium_host bricht nach 3s mit Reboot-Hinweis ab, nichts installiert.
