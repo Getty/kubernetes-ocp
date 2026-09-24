@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-09-24T15:54:07Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T15:54:07Z
+created: 2026-09-24T15:40:41Z
+id: 166
+priority: medium
+started: 2026-09-24T15:54:07Z
+status: done
+tags:
+- secrets
+- cli
+- automation
+title: PINs nicht-interaktiv per --pins-stdin
+updated: 2026-09-24T15:54:07Z
+---
+
+Maintainer-Idee 2026-09-24. Globales Flag --pins-stdin (OCP::Role::Cmd): jeder PIN-Prompt in OCP::Password liest statt Term::ReadKey die naechste Zeile von STDIN (Reihenfolge = Prompt-Reihenfolge, PIN1 vor PIN2). Kein PIN per argv/env (ps, /proc/environ, History; vgl. k156). Fehlende Zeile/EOF -> laut sterben (STDERR), kein Fallback auf TTY. Bestaetigungs-Prompts (neuen PIN zweimal eingeben bei init) ebenfalls zeilenweise. Nutzung: ocp apply --pins-stdin < <(pass show ocp/x). Done: Flag + Tests + POD/ocp-usage-Hinweis.
+
+2026-09-24 15:52 Implemented on branch worktree-agent-a4c7d354deef61c6f, commit 925b2f9. Option pins_stdin in OCP::Role::Cmd (after the command word, all 22 role consumers), its trigger sets $OCP::Password::PINS_STDIN, and prompt_password then reads the next STDIN line (only the newline is stripped, prompt still on STDERR, EOF dies naming the prompt, Term::ReadKey never called). The OCP::ClusterKey no-terminal guard accepts the flag. The Hetzner token prompt shares the path, so it is the next line after the PINs. Version.pm now uses MooX::Options (the role requires it). t/95-pins-stdin.t added. Docker make test green: 102 files, 1576 tests. Still open: ocp-usage skill text (another lane).
+
+2026-09-24 15:53 Review ok, ff nach main (925b2f9), gepusht. Docker 102/1576 gruen (Worker). Offen fuer Doku: ocp-usage-Abschnitt --pins-stdin (Text im Worker-Report).
