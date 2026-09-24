@@ -540,7 +540,7 @@ subtest 'ocp update on secure + hetzner drives Rex with the admin key' => sub {
     my ($out, $err, $calls) = capture(sub {
         with_key_store(sub {
             with_rex(sub {
-                $update->_update_cilium($config, '1.19.2');
+                $update->_update_via_rex($config, 'cilium', '1.19.2', 'upgrade_cilium');
                 $update->_update_via_rex($config, 'cert_manager', '1.16.0',
                     'upgrade_cert_manager');
             });
@@ -608,7 +608,7 @@ subtest 'ocp update on secure + ssh now takes the admin key too' => sub {
 
     my ($out, $err, $calls) = capture(sub {
         with_key_store(sub {
-            with_rex(sub { $update->_update_cilium($config, '1.19.2') });
+            with_rex(sub { $update->_update_via_rex($config, 'cilium', '1.19.2', 'upgrade_cilium') });
         });
     });
     is $err, '', 'secure + ssh: ran' or diag $out;
@@ -625,7 +625,7 @@ subtest 'ocp update in dev mode is unchanged' => sub {
 
         my ($out, $err, $calls) = capture(sub {
             with_key_store(sub {
-                with_rex(sub { $update->_update_cilium($config, '1.19.2') });
+                with_rex(sub { $update->_update_via_rex($config, 'cilium', '1.19.2', 'upgrade_cilium') });
             });
         });
         is $err, '', "dev + $provider: ran" or diag $out;
@@ -643,7 +643,7 @@ subtest 'the update temp key is gone when the command object is' => sub {
         my $update = OCP::Cmd::Update->new(command_chain => [ FakeOcp->new ]);
         my ($out, $err, $calls) = capture(sub {
             with_key_store(sub {
-                with_rex(sub { $update->_update_cilium($config, '1.19.2') });
+                with_rex(sub { $update->_update_via_rex($config, 'cilium', '1.19.2', 'upgrade_cilium') });
             });
         });
         $used = $calls->[0]{key};

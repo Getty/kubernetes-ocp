@@ -118,13 +118,19 @@ sub execute {
         return 0;
     }
 
+    # Decide every component's outcome before anything runs (k165), so the
+    # plan printed below, a --dry-run and a refusal all tell the same story.
+    my %planned = map { $_->{component} => 1 } @updates;
+    $_->{plan} = $self->_plan_component($config, $_, \%planned) for @updates;
+
     # Show update plan
     print "Updates planned:\n";
     for my $update (@updates) {
-        printf("  %-20s %s -> %s\n",
+        printf("  %-20s %s -> %s  (%s)\n",
             $update->{component},
             $update->{from},
-            colored($update->{to}, 'green')
+            colored($update->{to}, 'green'),
+            $self->_plan_label($update->{plan}),
         );
     }
     print "\n";
@@ -147,6 +153,17 @@ sub execute {
             print colored("  - $step\n", 'yellow');
         }
         print "\n";
+    }
+
+    # A refusal stops the run before anything changes: half an update plus an
+    # unstamped status is harder to reason about than none. Every refusal
+    # says what to do instead, and --component still reaches the rest.
+    my @refused = grep { $_->{plan}{action} eq 'refuse' } @updates;
+    if (@refused) {
+        print STDERR colored("✗ $_->{component}: ", 'red').$_->{plan}{note} for @refused;
+        print STDERR "Nothing was changed. 'ocp update --component NAME' updates"
+                   . " the other components on their own.\n";
+        return 1;
     }
 
     # Dry-run exit
@@ -175,7 +192,7 @@ sub execute {
             $self->_update_component($config, $update);
         };
         if ($@) {
-            print colored("✗ Failed to update $update->{component}: $@\n", 'red');
+            print STDERR colored("✗ Failed to update $update->{component}: $@", 'red');
             return 1;
         }
     }
@@ -188,7 +205,108 @@ sub execute {
     print colored("✓ All updates completed successfully.\n", 'green bold');
     print "Cluster is now at OCP version $target_version.\n";
 
+    my @by_apply = map { $_->{component} }
+                   grep { $_->{plan}{action} eq 'apply' } @updates;
+    print "Run 'ocp apply' to roll out: ".join(', ', @by_apply).".\n"
+        if @by_apply;
+
     return 0;
+}
+
+# Components whose version lives in a manifest `ocp apply` generates and
+# re-applies: a pin bump changes the manifest hash and apply rolls it out
+# (OCP::Drift marks NFD and the GPU operator self_healing for the same
+# reason). No Rex task upgrades them, so ocp update leaves them to apply.
+our %APPLIED_BY_APPLY = map { $_ => 1 } qw(
+    nfd gpu_operator nvidia_toolkit nvidia_driver
+    nvidia_device_plugin dcgm_exporter nvidia_dcgm
+);
+
+our %DIST_UPGRADE_DOCS = (
+    rke2 => 'https://docs.rke2.io/upgrade/basic_upgrade',
+    k3s  => 'https://docs.k3s.io/upgrades',
+);
+
+# What ocp update does with one component of the plan (k165). Before, a
+# component without an _update_<comp> method fell back to a Rex task
+# update_<comp> the Rexfile mostly did not have, and the distribution
+# updaters ran whatever the cluster's distribution was. Now every component
+# gets one of
+#
+#   { action => 'rex',    task => ... }  run that Rex task on the control plane
+#   { action => 'skip',   note => ... }  nothing to do here, and why
+#   { action => 'apply',  note => ... }  `ocp apply` rolls the new pin out
+#   { action => 'refuse', note => ... }  ocp update will not do this, and what
+#                                        to do instead (ends in a newline)
+#
+# $planned holds the components in this run: what moves with Cilium needs to
+# know whether Cilium moves.
+sub _plan_component {
+    my ( $self, $config, $update, $planned ) = @_;
+    my $comp = $update->{component};
+    my $dist = $config->distribution;
+
+    if ($DIST_UPGRADE_DOCS{$comp}) {
+        return { action => 'skip', note => 'not relevant for '.$dist }
+            unless $comp eq $dist;
+        # OCP::Drift::distribution_drift measures against the same value: an
+        # explicit version in ocp.yaml wins over the manifest pin.
+        return { action => 'skip',
+                 note   => 'ocp.yaml pins kubernetes.version ('.$config->version.')' }
+            if length $config->version;
+        return { action => 'skip', note => 'pin unchanged; ocp update does not reinstall '.$comp }
+            if $update->{from} eq $update->{to};
+        return { action => 'refuse', note =>
+            'the pin moved '.$update->{from}.' -> '.$update->{to}.', and ocp update'
+          . " does not upgrade the Kubernetes distribution in place:\n"
+          . "  that is a node-by-node upgrade. Upgrade the nodes by hand ("
+          . $DIST_UPGRADE_DOCS{$comp}.")\n"
+          . "  and record the version they run as kubernetes.version in ocp.yaml,"
+          . " then run 'ocp update' again.\n" };
+    }
+
+    return { action => 'rex', task => 'upgrade_cilium' } if $comp eq 'cilium';
+
+    # upgrade_cilium installs the CLI (remedy_pins), and there is no task
+    # that installs it alone.
+    if ($comp eq 'cilium_cli') {
+        return { action => 'skip', note => 'installed with cilium' } if $planned->{cilium};
+        return { action => 'skip', note =>
+            "moves with cilium; 'ocp update --component cilium --force' refreshes it" };
+    }
+
+    # upgrade_cilium applies the CRD bundle as well (k160); running
+    # update_gateway_api after it would only bounce the operator again.
+    if ($comp eq 'gateway_api') {
+        return { action => 'skip', note => 'applied with cilium' } if $planned->{cilium};
+        return { action => 'rex', task => 'update_gateway_api' };
+    }
+
+    if ($comp eq 'cert_manager') {
+        return { action => 'skip', note => 'cert-manager is disabled (nocert)' }
+            if $config->no_cert;
+        return { action => 'rex', task => 'upgrade_cert_manager' };
+    }
+
+    if ($APPLIED_BY_APPLY{$comp}) {
+        return { action => 'skip', note => 'GPU stack is off (gpu.enabled: false)' }
+            if $comp ne 'nfd' && !$config->gpu_enabled;
+        return { action => 'apply', note => "rolled out by 'ocp apply' (it re-applies the manifest)" };
+    }
+
+    # A component added to OCP::Versions without a line here: refuse rather
+    # than guess a task name.
+    return { action => 'refuse', note =>
+        "ocp update has no updater for this component.\n"
+      . "  Run 'ocp apply', which reconciles what it can, and check 'ocp status'.\n" };
+}
+
+sub _plan_label {
+    my ( $self, $plan ) = @_;
+    return $plan->{action} eq 'rex'    ? 'via '.$plan->{task}
+         : $plan->{action} eq 'apply'  ? 'via ocp apply'
+         : $plan->{action} eq 'refuse' ? 'refused, see below'
+         :                               'skip: '.$plan->{note};
 }
 
 sub _update_component {
@@ -196,20 +314,19 @@ sub _update_component {
 
     my $comp = $update->{component};
     my $version = $update->{to};
+    my $plan = $update->{plan}
+        // $self->_plan_component($config, $update, { $comp => 1 });
+
+    unless ($plan->{action} eq 'rex') {
+        # execute stops on refusals before this runs; a direct caller gets
+        # one as the error it is.
+        die $plan->{note} if $plan->{action} eq 'refuse';
+        print "- $comp: $plan->{note}\n";
+        return;
+    }
 
     print "Updating $comp to $version...\n";
-
-    # Map component to update method
-    my $method = "_update_$comp";
-    $method =~ s/-/_/g;  # cert-manager -> _update_cert_manager
-
-    if ($self->can($method)) {
-        $self->$method($config, $version);
-    } else {
-        # Generic update via Rex if task exists
-        my $task = "update_$comp";
-        $self->_update_via_rex($config, $comp, $version, $task);
-    }
+    $self->_update_via_rex($config, $comp, $version, $plan->{task});
 
     # Track in status
     $config->status->{components} //= {};
@@ -244,36 +361,6 @@ sub _update_via_rex {
     );
 }
 
-# Component-specific update methods
-# These can be overridden for special handling
-
-sub _update_cilium {
-    my ($self, $config, $version) = @_;
-    # The CLI and the Gateway API CRDs move with Cilium (k160); their pins
-    # come with the drift remedy params.
-    $self->_update_via_rex($config, 'cilium', $version, 'upgrade_cilium');
-}
-
-sub _update_cert_manager {
-    my ($self, $config, $version) = @_;
-    $self->_update_via_rex($config, 'cert_manager', $version, 'upgrade_cert_manager');
-}
-
-# RKE2/K3s updates are more complex - just show warning for now
-sub _update_rke2 {
-    my ($self, $config, $version) = @_;
-    print colored("⚠️  RKE2 updates require manual intervention.\n", 'yellow');
-    print "See: https://docs.rke2.io/upgrade/basic_upgrade\n";
-    die "RKE2 update not implemented yet\n";
-}
-
-sub _update_k3s {
-    my ($self, $config, $version) = @_;
-    print colored("⚠️  K3s updates require manual intervention.\n", 'yellow');
-    print "See: https://docs.k3s.io/upgrades\n";
-    die "K3s update not implemented yet\n";
-}
-
 1;
 
 __END__
@@ -298,15 +385,17 @@ OCP::Cmd::Update - Update cluster components to current OCP version
 
 =head1 DESCRIPTION
 
-Updates cluster components (Cilium, cert-manager) to the versions
-bundled with the current OCP CLI version.
+Updates cluster components to the versions bundled with the current OCP CLI
+version.
 
 The update process:
 
 1. Compares installed versions with target versions
-2. Shows breaking changes and manual steps if any
-3. Performs updates via Rex tasks
-4. Tracks updated versions in status.yaml
+2. Plans an outcome per component (see L</COMPONENT-SPECIFIC UPDATES>)
+3. Shows breaking changes and manual steps if any
+4. Stops on STDERR, before any change, if a component is refused
+5. Performs updates via Rex tasks
+6. Tracks updated versions in status.yaml
 
 =head1 SSH ACCESS
 
@@ -347,16 +436,35 @@ Force update even if versions already match.
 
 =head1 COMPONENT-SPECIFIC UPDATES
 
-Some components require special handling:
+Every component in the version manifest has one outcome, shown in the plan:
 
 =over 4
 
-=item * B<Cilium> - Updates both CLI and cluster installation
+=item * B<cilium> - Rex task C<upgrade_cilium>, which also installs the
+pinned Cilium CLI and applies the pinned Gateway API CRDs.
 
-=item * B<cert-manager> - Updates manifests
+=item * B<cilium_cli> - moves with cilium. On its own it is skipped;
+C<ocp update --component cilium --force> refreshes it.
 
-=item * B<RKE2/K3s> - Requires manual intervention (not automated)
+=item * B<gateway_api> - applied with cilium when cilium is updated too,
+otherwise Rex task C<update_gateway_api>.
+
+=item * B<cert_manager> - Rex task C<upgrade_cert_manager>; skipped with
+C<nocert>.
+
+=item * B<nfd> and the GPU stack (C<gpu_operator>, C<nvidia_*>, C<dcgm_*>) -
+their versions live in manifests C<ocp apply> re-applies, so C<ocp update>
+leaves them to it and names them at the end. The GPU stack is skipped when
+C<gpu.enabled> is false.
+
+=item * B<rke2>/B<k3s> - the other distribution is skipped. A moved pin of
+the cluster's own distribution is refused before anything changes: that is a
+node-by-node upgrade done by hand. Recording the running version as
+C<kubernetes.version> in F<ocp.yaml> makes the manifest pin irrelevant, and
+the next C<ocp update> skips it.
 
 =back
+
+A component C<ocp update> does not know is refused, never guessed at.
 
 =cut

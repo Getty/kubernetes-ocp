@@ -22,7 +22,9 @@ Revision history for OCP
     - Spec and status stay separate: `ocp.yaml` (committed, snake_case) is what
       you want, `.ocp/status.yaml` is what the cluster has. `ocp status` reports
       the drift between them and against the pinned versions, and `ocp update`
-      closes the gap for what moves in place.
+      closes the gap for what moves in place. Its plan gives every pinned
+      component an outcome: upgraded, left to `ocp apply`, skipped with the
+      reason, or -- for a new RKE2/K3s pin -- refused before anything changes.
     - Every component version is pinned once and printed by `ocp version`;
       pieces that must move together, like Cilium and its Gateway API CRDs, are
       pinned together.
