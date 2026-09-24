@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-09-24T18:20:16Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T18:20:16Z
+created: 2026-09-24T17:39:08Z
+id: 186
+priority: critical
+started: 2026-09-24T18:20:16Z
+status: done
+tags:
+- robocop
+- k3s
+title: 'robocop kennt die Distribution nicht: auf k3s wuerde es RKE2-Worker installieren'
+updated: 2026-09-24T18:20:16Z
+---
+
+Live-Fund 2026-09-24 (ocpt, k3s): robocop-Banner "distribution=rke2" auf einem k3s-Cluster. OCP::Robocop::Controller liest OCP_DISTRIBUTION aus der Umgebung (Default rke2), aber weder share/robocop/deployment.yaml noch OCP::Robocop::Manifest setzen sie. Folge: robocop wuerde auf k3s neue Worker mit install_rke2_agent aufsetzen (und server-url/Token passen dann nicht). Teardown ist distributionsneutral (k183) und lief deshalb live. Done: Distribution in den robocop-Pod bringen (Manifest-Transform aus config, oder ueber robocop-credentials Secret / OCPNodeProvider-CR - eine Quelle waehlen und begruenden; k184 pod_cidr braucht denselben Transportweg), robocop stirbt laut bei unbekanntem/fehlendem Wert statt still rke2 anzunehmen; Tests. Live-Nachtest durch Main-Agent.
+
+2026-09-24 17:42 Zusatz: OCP::Node meldet auch bei k3s 'RKE2 agent installed' (ocp node add auf k3s-Cluster) - distributionsneutral formulieren.
+
+2026-09-24 17:52 Implemented in dd23efb (branch worktree-agent-af057d92004724db9): OCP_DISTRIBUTION + OCP_POD_CIDR as plain env on the robocop Deployment, written from ocp.yaml by OCP::Robocop::Manifest->for_config on both deploy paths. No default: missing/unknown -> from_env croaks, exit 1, CrashLoopBackOff with 'run ocp apply or ocp deploy-robocop'. Live check: after apply the banner shows distribution=k3s pod_cidr=... Note: ocp deploy-image only patches the image, so a new image under an old Deployment crashes until apply/deploy-robocop (documented in docs/robocop.md).
+
+2026-09-24 17:56 Review ok, ff nach main (2588109), gepusht. Docker 116/2021 gruen. Live-Nachtest folgt (RKE2-Durchlauf).
+
+2026-09-24 18:20 LIVE VERIFIZIERT 2026-09-24, finaler RKE2-Durchlauf auf ocpt (main 2588109): Deployment traegt OCP_DISTRIBUTION/OCP_POD_CIDR, robocop setzt RKE2-Worker korrekt auf
