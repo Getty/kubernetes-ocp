@@ -1,0 +1,42 @@
+---
+claimed_at: 2026-09-24T04:03:49Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T04:03:49Z
+created: 2026-08-12T03:56:07Z
+id: 1
+priority: medium
+started: 2026-09-24T04:03:49Z
+status: done
+tags:
+- robocop
+- deps
+title: Net::Async::Kubernetes einlösen oder aus cpanfile werfen
+updated: 2026-09-24T04:03:49Z
+---
+
+Deklariert (0.007) aber ungenutzt: robocop pollt in einer Schleife statt zu watchen. Entweder Watch-Loop umsetzen oder Dependency droppen. Siehe ocp-core Skill, 'Known debt'.
+ENTSCHEIDUNG DES MAINTAINERS (2026-08-12): Net::Async::Kubernetes wird gefixt, nicht geworfen. Er arbeitet selbst daran — die Distribution ist alt und braucht Ueberarbeitung.
+
+Damit ist die Reihenfolge fuer den gesamten robocop-Komplex festgelegt: erst N::A::K, dann robocop komplett neu denken. Bis dahin keine Architekturarbeit an robocop.
+
+Abhaengig davon und deshalb blockiert: #33 (nichts konstruiert den Controller), #26 (apply provisioniert keine Worker), #2 (inject-key braucht port_forward), #29 (Worker-Pfad end-to-end unverifiziert), #31 (robocop-gejointe Worker ignorieren gpu.enabled).
+
+Reparaturen an robocop, die NICHT auf N::A::K warten muessen, weil sie unabhaengig kaputt sind: #34 (SA-Token wird gecacht statt neu gelesen) und #35 (RBAC ohne delete auf nodes, Deployment zieht ein nicht existierendes Image).
+## Status (vom Main-Agent, 2026-08-17)
+
+Dieses Ticket ist der Blocker fuer #2, #26, #29, #31, #33. Maintainer arbeitet selbst an der Distribution.
+
+Was Foundation NICHT anfassen sollte, solange Maintainer das treibt: nichts.
+
+### Aufgaben NACH Loesung von N::A::K
+
+- [ ] sobald watch_loop() in Net::Async::Kubernetes existiert: robocop pollt heute alle 5-10s die CRs. Watch-Loop einbauen (OCP::Robocop nutzt es dann, sobald #33 abgearbeitet ist)
+- [ ] cpanfile: Version-Bump auf geloeste Version, Snapshot regenerieren (make snapshot, Docker)
+- [ ] Cross-checks: alle robocop-Tickets (#2, #26, #29, #31, #33) werden erst dann realisierbar
+
+Blockierte Tickets sollten dieses Ticket als 'depends_on' fuehren - bei #33 schon so, die anderen nur per Kommentar.
+
+STAND 2026-09-01 (main-agent): Die Reihenfolge ist EINGELOEST. N::A::K 0.008 ist am Host installiert und in Nutzung - der Watch-Loop in OCP::Robocop::Controller ist gebaut (k33/ce6dacd, Poll->Watch). Der ganze robocop-Komplex, hier als blockiert gefuehrt, ist GEBAUT: k33 (Controller+Watch), k31 (GPU-Flags), k101 (Hetzner-Key), k129 (Creds-Secret) - alle DONE. Die Referenzen Blocker fuer k31/k33 sind hinfaellig. OFFEN an DIESEM Ticket nur noch das RELEASE: die ueberarbeiteten Siblings (Net::Async::Kubernetes 0.008, Kubernetes::REST/IO::K8s 1.108, Crypt::Age/File::SOPS 0.003) muessen auf CPAN, DANN make snapshot (Docker) regenerieren und make test gruen ziehen. Bis dahin laeuft die bindende Suite nur am Host (prove), nicht in Docker. Abhaengige Tickets k2/k26/k29 sind NICHT mehr durch robocop-Architektur blockiert, nur noch durchs CPAN-Release bzw. eigene Maintainer-Entscheidungen.
+
+2026-09-24 04:03 Erledigt: N::A::K 0.008 auf CPAN, in cpanfile (Z.18) gepinnt und in cpanfile.snapshot (80f3b36); robocop nutzt es fuer den Watch-Loop (OCP::Robocop::Controller). Docker make test auf HEAD d9878da gruen: 92 Dateien / 1422 Tests.
