@@ -1,7 +1,7 @@
 # 0021. Keep robocop polling, and hold the watch dependency as dated debt
 
 Date: 2026-08-12
-Status: accepted
+Status: superseded by [ADR 0029](0029-robocop-watches-ocpnode-through-net-async-kubernetes.md) (2026-09-24, k158)
 
 ## Context
 

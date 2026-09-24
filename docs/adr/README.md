@@ -70,7 +70,7 @@ ADR here.
 | [0018](0018-what-belongs-on-the-reconcile-path.md) | Admit only drift-capable, idempotent, cheap work into the reconcile path |
 | [0019](0019-test-against-the-shipped-client.md) | Test against the shipped client, never against a permissive double |
 | [0020](0020-arm64-is-a-first-class-target.md) | Treat arm64 as a first-class target |
-| [0021](0021-robocop-polls-instead-of-watching.md) | Keep robocop polling, and hold the watch dependency as dated debt |
+| [0021](0021-robocop-polls-instead-of-watching.md) | Keep robocop polling, and hold the watch dependency as dated debt *(superseded by 0029)* |
 | [0022](0022-report-the-gap-instead-of-a-second-mechanism.md) | Report the gap instead of building a second mechanism to close it |
 | [0023](0023-resolve-share-directory-next-to-running-code.md) | Resolve the share directory next to the running code, and reject overrides that do not point at a directory |
 | [0024](0024-register-io-k8s-resource-providers-defensively.md) | Register IO::K8s resource providers defensively, and live with raw YAML where they are absent |
@@ -78,6 +78,7 @@ ADR here.
 | [0026](0026-robocop-is-a-criu-and-tcp-9999-stub-pending-ticket-1.md) | Robocop is a CRIU / TCP-9999 key-injection stub pending ticket k1 *(superseded by 0028)* |
 | [0027](0027-one-admin-key-reaches-every-machine.md) | Reach every machine with the admin key, and keep the bootstrap key to dev mode |
 | [0028](0028-inject-the-robo-key-in-memory-over-a-port-forward.md) | Inject the robo key into robocop in memory over a port-forward, and make a restart ask for it again |
+| [0029](0029-robocop-watches-ocpnode-through-net-async-kubernetes.md) | Trigger robocop's reconcile from an OCPNode watch through Net::Async::Kubernetes |
 
 ## Provenance
 
