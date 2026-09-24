@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-24T20:23:15Z
+id: 189
+priority: low
+status: backlog
+tags:
+- status
+- drift
+- output
+title: ocp status oeffnet SSH (Legacy-containerd-Probe) und zeigt Rex-Output
+updated: 2026-09-24T20:23:15Z
+---
+
+Live 2026-09-24: ocp status laeuft detect_legacy_containerd_template per Rex/SSH (k71-Host-Probe) und druckt Rex-Output; Skill ocp-usage sagt, Read-only-Pfade oeffnen kein SSH. Im secure mode: fragt es dann PIN2? Done: klaeren, ob status SSH darf (sonst Probe nur in apply), Rex-Output unterdruecken, Skill/Doku angleichen.
