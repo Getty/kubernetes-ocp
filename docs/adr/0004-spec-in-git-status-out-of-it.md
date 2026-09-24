@@ -41,7 +41,7 @@ is gitignored for a different reason (ADR 0005: commit the ciphertext, ignore
 the plaintext copy) and has to *outlive* the cluster: the age key is what
 decrypts the committed files that remain after it. `ocp destroy` therefore
 removes `status.yaml` and `deployed.yaml` and touches nothing else in there.
-The rule is "cluster status is transient", not "everything under `.ocp/` is".
+The rule is "cluster status is transient", not "everything under `.ocp/` is". *(amended 2026-09-24, see below)*
 
 `OCP::Drift` is the consequence of the split, not an addition to it: it compares
 the pinned spec values against recorded and live state. A pinned `public_ip`
@@ -79,7 +79,8 @@ There is no key normalisation and there are no camelCase aliases:
   loop, and a missing entry fails silently by construction: what is left behind
   is not wrong-looking, it is stale, and the next apply reads it as truth about
   a cluster that no longer exists (k43, ADR 0008). A second file therefore
-  costs a line in that loop, not a second mechanism.
+  costs a line in that loop, not a second mechanism. *(amended
+  2026-09-24, see below)*
 - A new file has to be classified in both places that carry the classification:
   ADR 0005's table decides whether it is plaintext and gets gitignored, this ADR
   decides whether it is cluster status and therefore dies with the cluster.
@@ -99,3 +100,37 @@ applied to is now named where a reader looks for it, and the paragraph
 separating cluster status from decrypted key material under the same directory
 was added in the same pass, because "it is under `.ocp/`" was the reasoning
 that made the omission look harmless. Recorded under k47.
+
+## Amendment 2026-09-24
+
+`.ocp/known_hosts` (ADR 0030, k168) is a third file under `.ocp/` that is
+gitignored and not committed, and it is the first one that `ocp destroy`
+deliberately does *not* remove. Two sentences above read as though they cover
+it:
+
+> The rule is "cluster status is transient", not "everything under `.ocp/` is".
+
+> Every locally held fact about the cluster owes an entry in destroy's cleanup
+> loop […] A second file therefore costs a line in that loop, not a second
+> mechanism.
+
+Neither sentence was wrong, and the decision here does not move. What they left
+unsaid is that "local and not committed" and "dies with the cluster" are two
+separate classifications. A host key passes the first test: the user could not
+have set it, so it stays out of the spec and out of git. It fails the second:
+it is a fact about a machine behind an address, not about the cluster, and
+machines and addresses live on their own schedules. A `provider: ssh` host
+survives the destroy with the same key. A Hetzner address is cleared by
+`OCP::Provider::Hetzner` at the moment a server receives it and when a server
+is deleted through `OCP::Node`. So `.ocp/known_hosts` is managed per machine,
+and adding it to destroy's loop would be the second mechanism that the
+consequence above warns against.
+
+A new file under `.ocp/` therefore has to answer three questions, not two:
+
+- Is it plaintext (ADR 0005)?
+- Is it something the user could have set (this ADR)?
+- Does it describe the cluster, and therefore die with it, or does it describe
+  something that outlives the cluster?
+
+Recorded under k172.

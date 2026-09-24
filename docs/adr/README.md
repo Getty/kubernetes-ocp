@@ -79,6 +79,7 @@ ADR here.
 | [0027](0027-one-admin-key-reaches-every-machine.md) | Reach every machine with the admin key, and keep the bootstrap key to dev mode |
 | [0028](0028-inject-the-robo-key-in-memory-over-a-port-forward.md) | Inject the robo key into robocop in memory over a port-forward, and make a restart ask for it again |
 | [0029](0029-robocop-watches-ocpnode-through-net-async-kubernetes.md) | Trigger robocop's reconcile from an OCPNode watch through Net::Async::Kubernetes |
+| [0030](0030-trust-machine-host-keys-on-first-use.md) | Trust a machine's host key on first use, record it in a local known_hosts, and verify it on every later connection |
 
 ## Provenance
 
@@ -128,6 +129,13 @@ bootstrap public key and must be handed the admin public key *first* — and it
 names, as consequences rather than as solved cases, the teardown loop in
 `ocp destroy`, the `ocp init` output that still prints the wrong key to paste,
 and the absence of any preflight that would make a skipped migration legible.
+
+0030 records the host-key trust model from k168. The model was forced by an
+upstream security fix: `Rex::LibSSH` / `Net::LibSSH` 0.004 (CWE-322, snapshot
+bump 80f3b36) made libssh refuse unknown host keys. The same pass amended 0004
+under k172: `.ocp/known_hosts` is local and not committed, but `ocp destroy`
+deliberately leaves it in place, and 0004 now says that these are two separate
+classifications.
 
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
