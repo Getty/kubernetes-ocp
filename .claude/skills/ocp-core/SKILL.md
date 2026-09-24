@@ -49,10 +49,6 @@ auto-true when any hetzner provider is configured.
 3. **cpanfile is the source of truth** for dependencies. Getty-authored deps
    are pinned (WWW::Hetzner, Crypt::Age, File::SOPS, IO::K8s,
    Kubernetes::REST, Net::Async::Kubernetes, Rex::Interface::Connection::LibSSH).
-4. **Known debt:** `Net::Async::Kubernetes` is declared but unused — robocop
-   polls in a loop instead of watching, and `ocp inject-key` (needs
-   `port_forward`) is disabled. Either redeem or drop; don't silently build on
-   the assumption it is wired up.
 
 ## Spec vs Status separation
 
@@ -100,6 +96,9 @@ robocop: true     # optional; default false, auto-true with a hetzner provider
 | `OCP::Node` | trigger-neutral node reconcile state machine, used by both `ocp apply` (one-shot) and robocop (watch loop); owns lease mechanics |
 | `OCP::K8s` (+ `::OCPNode`, `::OCPNodeProvider`) | registers the CRDs as IO::K8s typed classes on a Kubernetes::REST api |
 | `OCP::Robocop` (+ `::Controller`) | in-cluster controller + reconciliation logic |
+| `OCP::Robocop::KeyInjection` | OCP-INJECT-KEY protocol over a port-forward: robocop's in-memory key listener + the CLI's sender, for `robocop.security_level: inject` |
+| `OCP::Robocop::Manifest` | shapes the shipped robocop Deployment per `robocop.security_level` (the `inject` variant: no private key, tmpfs `/tmp`, readiness probe on the key-held file) |
+| `OCP::Cmd::InjectKey` | `ocp inject-key` — hands the robo private key to a running robocop pod (PIN1 + PIN2) |
 
 ## CRDs (ocp.internal/v1, namespace ocp-system)
 

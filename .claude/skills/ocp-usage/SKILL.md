@@ -29,12 +29,17 @@ ocp destroy                 # tear down cluster (real servers!)
 `ocp apply` deploys robocop itself when `robocop` is enabled and workers exist;
 if robocop isn't ready within 60s, apply falls back to CLI-side reconcile via
 `OCP::Node`. `ocp deploy-robocop` still exists as a manual/standalone step.
-`ocp inject-key` no longer exists as a command (dropped in k59/728cb14, no
-`OCP::Cmd::InjectKey`, no alias in `OCP.pm`) — the robocop credential story
-today is `robocop.security_level`: `secret` (default) | `secret_approved` |
-`inject`, with `inject` accepted by config but refused cleanly in
-`OCP::Cmd::DeployRobocop` ("robocop.security_level 'inject' is not yet
-available (k2)").
+
+The robocop credential story is `robocop.security_level`: `secret` (default) |
+`secret_approved` | `inject`. Under `inject`, the private robo key is never
+stored in the cluster — `ocp deploy-robocop` writes only its public half into
+the Secret, and `ocp inject-key [--timeout N]` (`OCP::Cmd::InjectKey`; PIN1 to
+decrypt, PIN2 as the admin approval) sends the private key over a Kubernetes
+port-forward straight into the running robocop pod's memory
+(`OCP::Robocop::KeyInjection`). Nothing is checkpointed: after a pod restart
+the key is gone, robocop is not Ready, and every OCPNode in `Pending`,
+`Provisioning` or `Installing` carries condition `SSHKeyAvailable=False`
+(reason `KeyInjectionRequired`) until `ocp inject-key` runs again.
 
 ## Command Reference
 
@@ -77,6 +82,9 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp version` — versions (needs the ocpVersion stamp for "deployed")
 - `ocp ssh --node <name|ip>` — SSH to nodes (admin-key, PIN2)
 - `ocp deploy-robocop` — robocop + CRDs standalone
+- `ocp inject-key [--timeout SECONDS]` — hand the robo private key to a
+  running robocop pod for `robocop.security_level: inject` (PIN1 + PIN2;
+  default timeout 30s)
 - `ocp hetzner [--list] [--label KEY=VAL]` — Hetzner debugging
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--nowait]`
@@ -170,18 +178,28 @@ gpu:
 - **age.key** master key, encrypted with PIN1 → `age.key.enc`.
 - **keys.yaml** two tiers and only two: **robo-ssh** (automation) age-only, no
   PIN2; **admin-ssh** (everything a human triggers) age + PIN2.
-- robo-key cannot reach control planes — by convention; currently it is never
-  deployed at all (`robocop.security_level: inject`, the only mode that would
-  deploy it, is refused cleanly by `OCP::Cmd::DeployRobocop`, "not yet
-  available (k2)").
+- The robo key's deployment path depends on `robocop.security_level`:
+  `secret`/`secret_approved` put the private key into the
+  `robocop-credentials` Secret (self-heals across pod restarts;
+  `secret_approved` gates the write with PIN2); `inject` keeps only the
+  public half in the Secret and hands the private key to a running robocop
+  pod's memory over a Kubernetes port-forward via `ocp inject-key` (PIN1 +
+  PIN2) — never on disk, lost again on every pod restart. It still never
+  opens a control plane: `OCP::ClusterKey` always picks the admin key there,
+  on every provider.
+- The robo key's public half reaches Hetzner-provisioned workers
+  automatically, uploaded under `ocp-<name>-robo`
+  (`OCP::Config::robo_ssh_key_name`, k101); `ssh`-provider operators must
+  add it to `authorized_keys` themselves — nothing does that for them.
 - **The admin key opens every machine, on every provider.** Hetzner gets it
   through the API before the server exists; a `provider: ssh` machine gets it
   from a human (`ocp keys show --purpose admin` → `authorized_keys`). The
   provider decides who distributes it, not which key.
-- **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`, and
-  `ocp destroy` when the node list contains an ssh machine. PIN1 prompts
-  whenever only `age.key.enc` exists. Read-only paths (`ocp status`, drift
-  detection, `--dry-run`) never prompt — they open no SSH connection.
+- **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`,
+  `ocp inject-key`, and `ocp destroy` when the node list contains an ssh
+  machine. PIN1 prompts whenever only `age.key.enc` exists. Read-only paths
+  (`ocp status`, drift detection, `--dry-run`) never prompt — they open no
+  SSH connection.
 - **Dev mode (`--nopassword`)**: single unencrypted key `.ocp/id_ed25519`, no
   PIN prompts — but a plain age.key is still generated and
   **kubeconfig.yaml stays encrypted even in dev mode**. Apply detects dev
@@ -212,16 +230,15 @@ by dropping the bootstrap key, and neither is covered anywhere else.
   not a command — OCP has nothing left it can reach the machine with.
 - **`.ocp/age.key` deleted** → not lost. `git clone` + PIN1 regenerates it
   from the committed `age.key.enc` (`ensure_age_key`/`restore_age_recipient`).
-- **robo-ssh key ≠ a second door.** PIN1 alone decrypts it
-  (`OCP::Keys::get_automation_key`, no PIN2 ever), but nothing in OCP puts
-  its public half into any `authorized_keys`: `OCP::ClusterKey` only ever
-  selects the bootstrap key (dev mode) or the admin key (secure mode), and
-  the Hetzner worker path uploads the admin key's name too (`ssh_key_name`
-  ← `admin_ssh_key_name`). Deploying the robo key anywhere would need
-  `robocop.security_level: inject`, which `OCP::Cmd::DeployRobocop` refuses
-  cleanly today ("not yet available (k2)") — there is no `ocp inject-key`
-  command any more (dropped in k59/728cb14). So PIN1 alone opens no SSH door
-  at all.
+- **robo-ssh key ≠ a second door for a locked-out admin.** PIN1 alone
+  decrypts it (`OCP::Keys::get_automation_key`, no PIN2 ever), but
+  `OCP::ClusterKey` never selects it for a human login — that picks only
+  the bootstrap key (dev mode) or the admin key (secure mode), on every
+  provider. Its public half does reach machines (Hetzner workers
+  automatically under `ocp-<name>-robo`, k101; a running robocop's memory
+  via `ocp inject-key` under `security_level: inject`), but none of that
+  gives PIN1 alone a route into a control plane or an `ssh`-provider node.
+  So losing PIN2 still means out-of-band recovery, not a command.
 - **No rotation command exists.** `ocp keys` has only `show`
   (`OCP::Cmd::Keys` dispatches to `Show` alone); `ocp init`, even
   `--force`, skips key generation entirely whenever an automation-purpose
