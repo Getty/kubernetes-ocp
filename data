@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-09-24T14:32:44Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:32:44Z
+created: 2026-09-24T14:24:21Z
+id: 160
+priority: medium
+started: 2026-09-24T14:25:06Z
+status: done
+tags:
+- cilium
+- gateway-api
+- drift
+title: upgrade_cilium re-applied die Gateway-API-CRDs nicht
+updated: 2026-09-24T14:32:44Z
+---
+
+Aus k157: der Drift-Remedy upgrade_cilium ruft _apply_gateway_api_crds nicht. Ein Cilium-Bump auf einem Bestandscluster kann CRDs zuruecklassen, mit denen das neue Cilium nicht startet (z. B. TLSRoute v1/BackendTLSPolicy v1 fuer 1.20). Done: upgrade_cilium wendet vor dem Upgrade die gepinnten Gateway-API-CRDs an + Test.
+
+2026-09-24 14:30 Implemented on branch worktree-agent-a0fc00d80a089b849, commit cec4402: upgrade_cilium applies the pinned Gateway API CRDs (standard, via _apply_gateway_api_crds) before cilium upgrade, pin read first (dies before touching the node). OCP::Drift cilium remedy and ocp update now pass cli_version + gateway_api_version + distribution -- before, both passed only version, so upgrade_cilium died on the missing CLI pin unless OCP_CILIUM_CLI_VERSION was set, and k3s got RKE2 paths. No operator bounce (version change rolls it). Docker make test green 98/1513. Not live-verified. Not done: Gateway-API-only bump (Cilium unchanged) is not detected as drift -- would need a CRD annotation probe (gateway.networking.k8s.io/bundle-version), not an image probe. ocp update cert_manager (_update_via_rex) still passes no distribution.
+
+2026-09-24 14:31 Review ok, ff nach main (bb76cd7), gepusht. Docker 98/1513 gruen (Worker). Mitgefixt: Cilium-Drift-Remedy und ocp update gaben nur version mit -> upgrade_cilium starb immer an fehlendem CLI-Pin, k3s bekam RKE2-Pfade.
