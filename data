@@ -1,0 +1,21 @@
+---
+claimed_at: 2026-09-24T14:22:00Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:22:00Z
+created: 2026-09-24T14:19:40Z
+id: 158
+priority: low
+started: 2026-09-24T14:22:00Z
+status: done
+tags:
+- adr
+- robocop
+- docs
+title: 'ADR 0021 durch neues ADR ersetzen: robocop watcht seit k1'
+updated: 2026-09-24T14:22:00Z
+---
+
+ADR 0021 entscheidet "robocop pollt". Seit k1 nutzt OCP::Robocop::Controller::run aber $kube->watcher("OCPNode", ...). Das ist eine Supersession, keine Amendment. 0021 traegt seit 7e4d024 (k2) eine Amendment, die das ausdruecklich offen laesst. Done: neues ADR (Watch-Loop, Warum aus k1/N::A::K 0.008), 0021 auf superseded, README-Index.
+
+2026-09-24 14:21 ADR 0029 (watch loop via Net::Async::Kubernetes 0.008, WHY from k1 maintainer decision 2026-08-12 + ce6dacd) written, ADR 0021 set to superseded by 0029, README index updated. Commit 31f7943 on main, not pushed.
