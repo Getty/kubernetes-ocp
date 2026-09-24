@@ -570,7 +570,7 @@ sub execute {
             print STDERR "     that costs money is deleted through the provider API\n";
             print STDERR "     and is unaffected.\n";
             print STDERR "     To clean those machines up later, run on each of them:\n";
-            print STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh\n";
+            print STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh / k3s-agent-uninstall.sh\n";
             print STDERR "\n";
         }
     }
@@ -662,7 +662,7 @@ sub execute {
                 }
             }
 
-            print "  Uninstalling RKE2 on $target...\n";
+            print "  Uninstalling RKE2/K3s on $target...\n";
             my $result = eval {
                 $host_prov->delete_server(undef, host => $target)
             };
@@ -748,7 +748,7 @@ sub execute {
         }
         print  STDERR "     Nothing is billed for them through OCP. Once they are\n";
         print  STDERR "     reachable, run on each of them:\n";
-        print  STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh\n";
+        print  STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh / k3s-agent-uninstall.sh\n";
     }
 
     return 1 if @undeleted || @still_installed;
