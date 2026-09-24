@@ -81,8 +81,11 @@ Revision history for OCP
     - `ocp destroy` tears a cluster down and deletes the paid servers it created.
       It stops robocop, then removes every worker -- read from the cluster's
       OCPNodes while the API answers, and from ocp.yaml's host lists -- before
-      the control planes. A machine it could not clean is named at the end
-      with the reason on STDERR, and the run exits 1.
+      the control planes. Each Hetzner server is deleted with the token of the
+      provider that created it, read from the cluster when `secrets.yaml` has
+      none; a server no token reaches stops the run before anything is
+      deleted. A machine it could not clean is named at the end with the
+      reason on STDERR, and the run exits 1.
     - `ocp node rm` drains the node through the Eviction API, honouring
       PodDisruptionBudgets within a five-minute bound, then deletes its server
       or uninstalls RKE2/K3s from an ssh/local machine, the way `ocp destroy`

@@ -35,6 +35,17 @@ has k8s => (is => 'rw');
 # second timeout on it.
 has _api_down => (is => 'rw');
 
+# The OCPNodeProvider CRs as _ocpnode_entries read them, by name.
+has _provider_crs => (is => 'rw', default => sub { {} });
+
+# The Hetzner adapters built from those CRs, by CR name, and why a CR gave
+# none (k181). Filled while the API answers, before anything is deleted.
+has _cr_hetzner       => (is => 'ro', default => sub { {} });
+has _cr_hetzner_error => (is => 'ro', default => sub { {} });
+
+# The adapter built from the local token, if there is one.
+has _local_hetzner => (is => 'rw');
+
 # Servers this project paid for but which are not labelled with its name.
 #
 # Until k98, OCP::Provider::from_cr took the provider CR's OWN name for
@@ -155,16 +166,25 @@ sub _collect_nodes {
 
     $add->(@$_) for $self->_ocpnode_entries($api);
 
-    # Hetzner servers carrying this cluster's label that no other source knew.
-    if ($hetzner_prov) {
-        my $servers = eval { $hetzner_prov->list_servers_by_cluster($config->name) } || [];
-        my $announced;
+    # The tokens the provider CRs hold, read now: the API goes with the
+    # control planes (k181).
+    $self->_build_cr_hetzner($config, $api);
+
+    # Hetzner servers carrying this cluster's label that no other source knew
+    # -- searched under every distinct token, since a provider CR can point at
+    # another Hetzner project than the local token does. A find remembers the
+    # CR whose token found it, so the same token deletes it.
+    my $announced;
+    for my $source ($self->_hetzner_sources($hetzner_prov)) {
+        my ($ref, $prov) = @$source;
+        my $servers = eval { $prov->list_servers_by_cluster($config->name) } || [];
         for my $s (@$servers) {
             my $new = $add->({
                 name       => $s->name,
                 provider   => 'hetzner',
                 providerId => $s->id,
                 public_ip  => $s->ipv4 // '-',
+                (defined $ref ? (provider_ref => $ref) : ()),
             });
             next unless $new;
             print "Found orphaned servers at Hetzner (not in status):\n"
@@ -245,8 +265,9 @@ sub _ocpnode_entries {
         return;
     }
 
-    my %type = map { ($_->{metadata}{name} => $_->{spec}{type}) }
-               $self->provider_crs($api);
+    my %cr   = map { ($_->{metadata}{name} => $_) } $self->provider_crs($api);
+    my %type = map { ($_ => $cr{$_}{spec}{type}) } keys %cr;
+    $self->_provider_crs(\%cr);
 
     my @entries;
     for my $cr (map { $api->k8s->object_to_struct($_) } @{ $list->items // [] }) {
@@ -270,9 +291,99 @@ sub _ocpnode_entries {
             public_ip => $spec->{host} // $status->{publicIP} // '-',
             (defined $status->{providerId}
                 ? (providerId => $status->{providerId}) : ()),
+            # Which provider -- and so which token -- created it (k181).
+            (length $ref ? (provider_ref => $ref) : ()),
         }, grep { defined } $status->{publicIP}, $spec->{host} ];
     }
     return @entries;
+}
+
+# A Hetzner adapter for every hetzner-type OCPNodeProvider, built through the
+# factory from the CR's token Secret (k181). A CR that gives none -- Secret
+# gone, key missing -- is remembered with the reason, which is only printed
+# if a server then has no token at all.
+#
+# A CR from before k98 carries no spec.clusterName, and from_cr refuses it:
+# that guard is for CREATING servers, which would come out unfindable. Here
+# servers are deleted by id and searched by the cluster name passed in
+# explicitly, and a provider CR in this cluster's ocp-system serves this
+# cluster -- so the name is filled in rather than the token thrown away.
+sub _build_cr_hetzner {
+    my ($self, $config, $api) = @_;
+    my $crs = $self->_provider_crs;
+    for my $name (sort keys %$crs) {
+        my $cr = $crs->{$name};
+        next unless ($cr->{spec}{type} // '') eq 'hetzner';
+
+        my $spec = { %{ $cr->{spec} } };
+        $spec->{clusterName} = $config->name
+            unless length($spec->{clusterName} // '');
+
+        my $prov = eval {
+            OCP::Provider->from_cr({ %$cr, spec => $spec }, k8s => $api);
+        };
+        if ($prov) {
+            $self->_cr_hetzner->{$name} = $prov;
+            next;
+        }
+        my $why = $@ || "no adapter\n";
+        chomp $why;
+        $self->_cr_hetzner_error->{$name} = $why;
+    }
+}
+
+# Every distinct Hetzner token as [ CR name or undef, adapter ], the local
+# one first. Two CRs holding one token are one source: the same project,
+# searched once.
+sub _hetzner_sources {
+    my ($self, $local) = @_;
+    my (@sources, %seen);
+    for my $source ([ undef, $local ],
+                    map { [ $_, $self->_cr_hetzner->{$_} ] }
+                        sort keys %{ $self->_cr_hetzner }) {
+        my $prov = $source->[1] or next;
+        my $token = eval { $prov->token } // "$prov";
+        next if $seen{$token}++;
+        push @sources, $source;
+    }
+    return @sources;
+}
+
+# The adapter that deletes this Hetzner node, or undef (k181). A node that
+# names its provider is deleted with that provider's token -- the one that
+# created it; the local token may belong to another Hetzner project, where
+# the id means nothing. Failing that, the local token. A node that names no
+# provider (a control plane from status.yaml) takes the local token, else
+# the one `ocp apply` wrote into hetzner-default, else the only hetzner CR
+# there is. Never a guess among several: a wrong token fails the delete only
+# after the control plane -- and with it the record -- may be gone.
+sub _hetzner_for {
+    my ($self, $node) = @_;
+    my $crs = $self->_cr_hetzner;
+    my $ref = $node->{provider_ref};
+
+    return $crs->{$ref} if defined $ref && $crs->{$ref};
+    return $self->_local_hetzner if $self->_local_hetzner;
+    return if defined $ref;
+
+    return $crs->{'hetzner-default'} if $crs->{'hetzner-default'};
+    my @all = values %$crs;
+    return @all == 1 ? $all[0] : undef;
+}
+
+# Why no adapter reaches this node, in one line for the refusal.
+sub _no_token_reason {
+    my ($self, $node) = @_;
+    my $ref = $node->{provider_ref};
+    my $err = defined $ref ? $self->_cr_hetzner_error->{$ref} : undef;
+    return "no local Hetzner token, and OCPNodeProvider/$ref gave none: $err"
+        if defined $err;
+    return "no local Hetzner token, and no OCPNodeProvider/$ref in the cluster"
+        if defined $ref;
+    return 'no local Hetzner token, and no OCPNodeProvider token'
+         . ($self->_api_down || !keys %{ $self->_provider_crs }
+            ? ' (cluster API not reachable or no hetzner provider CR)'
+            : ' that could stand in for it');
 }
 
 # The worker machines ocp.yaml names by host -- `nodes: [host, ...]` and the
@@ -347,11 +458,38 @@ sub execute {
             cluster_name => $config->name,
         );
     }
+    $self->_local_hetzner($hetzner_prov);
 
     # The cluster API, if it still answers: its OCPNodes are the only record
-    # of the workers robocop brought up (k177).
+    # of the workers robocop brought up (k177), its provider CRs hold the
+    # tokens a worker was created with (k181).
     my $api   = $self->_cluster_api($config);
     my $nodes = $self->_collect_nodes($config, $hetzner_prov, $api);
+
+    # A paid server no token reaches is refused BEFORE anything is deleted
+    # (k181). It used to be skipped without a word and the run ended on
+    # "Cluster destroyed." while it kept billing. Going on with the rest
+    # would be worse than stopping: the control planes take the API along,
+    # and with it the OCPNode and the Secret -- the only record of that
+    # server and the only token that could still delete it.
+    my @no_token = grep {
+        $_->{provider} eq 'hetzner' && $_->{providerId}
+            && !$self->_hetzner_for($_)
+    } @$nodes;
+    if (@no_token) {
+        print STDERR "[!!] Nothing was deleted: no Hetzner API token reaches these\n";
+        print STDERR "     servers. They keep running and keep billing:\n";
+        for my $node (@no_token) {
+            printf STDERR "       - %s (id %s, %s)\n",
+                   $node->{name}, $node->{providerId}, $node->{public_ip} // '-';
+            print  STDERR "         ".$self->_no_token_reason($node)."\n";
+        }
+        print STDERR "     Put the project's Hetzner token into secrets.yaml (or\n";
+        print STDERR "     restore the provider's Secret in ocp-system), then run\n";
+        print STDERR "     `ocp destroy` again -- or delete them by hand:\n";
+        print STDERR "       hcloud server delete <id>\n";
+        return 1;
+    }
 
     unless (@$nodes) {
         print "No nodes to destroy.\n";
@@ -463,12 +601,14 @@ sub execute {
     for my $node (@$nodes) {
         print "Deleting $node->{name}...\n";
 
-        if ($node->{provider} eq 'hetzner' && $node->{providerId} && $hetzner_prov) {
+        # Every such node has an adapter: the refusal above saw to it (k181).
+        if ($node->{provider} eq 'hetzner' && $node->{providerId}) {
+            my $prov = $self->_hetzner_for($node);
             # The address goes along so its host key leaves known_hosts with
             # the machine (k168).
             my $ip = ($node->{public_ip} // '-') ne '-' ? $node->{public_ip} : undef;
             eval {
-                $hetzner_prov->delete_server($node->{providerId},
+                $prov->delete_server($node->{providerId},
                     ($ip ? (host => $ip) : ()));
             };
             if ($@) {
@@ -572,7 +712,8 @@ sub execute {
 
     # Last, so it is the thing left on screen: a teardown that reported success
     # while paid machines kept running is the failure mode this is here for.
-    $self->_report_mislabelled_servers($config, $hetzner_prov);
+    $self->_report_mislabelled_servers($config,
+        $hetzner_prov // $self->_hetzner_for({}));
 
     # A failed provider delete is the money-losing case: say so plainly, name
     # the survivors, and exit non-zero so callers and CI do not read this as a
@@ -674,6 +815,17 @@ across both providers:
 Hetzner — each node carrying a C<providerId> is deleted via
 L<OCP::Provider::Hetzner/delete_server>; the encrypted SSH key the
 project uploaded is left in place and may be re-used by a later C<ocp apply>.
+
+The token comes from where the server came from (C<k181>).  A node whose
+OCPNode names an C<OCPNodeProvider> is deleted with the token in that
+provider's Secret, read while the cluster API answers; a node that names
+none (a control plane from C<status.yaml>) with the local token from
+C<secrets.yaml>, else the one in C<hetzner-default>.  The label search runs
+under every distinct token.  A server that no token reaches stops the
+teardown B<before anything is deleted>: its name, id and address and the
+reason are printed on STDERR and the command returns 1.  Going on without it
+would take the control plane down, and with it the OCPNode and the Secret —
+the only record of that server and the only token that could delete it.
 
 =item *
 
