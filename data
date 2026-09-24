@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-09-24T14:24:26Z
+id: 161
+priority: low
+status: backlog
+tags:
+- rke2
+- gateway-api
+title: 'RKE2 >= v1.37: rke2-gateway-api-crd-Chart in die Disable-Liste'
+updated: 2026-09-24T14:24:26Z
+---
+
+Aus k157: RKE2 v1.37+ bringt ein eigenes rke2-gateway-api-crd-Chart, das die von OCP angewandten Gateway-API-CRDs ueberschreiben wuerde. Heute Pin v1.36 -> noch kein Problem. Done: beim RKE2-Bump auf >= v1.37 das Chart per disable abschalten (oder bewusst RKE2 die CRDs ueberlassen und OCPs Apply streichen) + Test.
