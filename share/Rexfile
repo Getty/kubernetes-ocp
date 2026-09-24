@@ -1225,6 +1225,44 @@ task "cleanup_legacy_containerd_template", sub {
 # controller at all — Gateway and GatewayClass sit at Accepted=Unknown.
 # Bumping the pin means bumping both together.
 
+# Gateway API CRDs come from exactly one channel: standard. Never both, and
+# never experimental on top of standard -- from Gateway API v1.5 both bundles
+# ship the ValidatingAdmissionPolicy safe-upgrades.gateway.networking.k8s.io,
+# which refuses experimental CRDs over standard ones (standard over
+# experimental stays allowed). OCP used to apply standard and then
+# experimental with auto_die off; under the v1.6.1 pin the second apply was
+# denied and nobody noticed (k157).
+#
+# Standard is enough: from v1.5 it carries TLSRoute v1 and BackendTLSPolicy
+# v1, which Cilium 1.20 requires, and from v1.6 TCPRoute and UDPRoute too.
+# It is also the only channel every existing OCP cluster re-applies cleanly:
+# clusters installed under the v1.6.1 pin are standard already (experimental
+# was refused), older ones on experimental may move to standard. Switching a
+# cluster to experimental means deleting the safe-upgrades policy by hand --
+# and the next `ocp apply` of this task moves it back to standard.
+#
+# Server-side, because the httproutes CRD alone comes within a few KiB of the
+# 256 KiB last-applied-configuration annotation a client-side apply writes;
+# --force-conflicts takes over the fields an earlier client-side apply owned.
+sub _apply_gateway_api_crds {
+    my (%o) = @_;
+    my $version = $o{version}
+        or die "_apply_gateway_api_crds: version is required\n";
+
+    my $url = "https://github.com/kubernetes-sigs/gateway-api/releases/download/"
+        . "$version/standard-install.yaml";
+    say "Installing Gateway API CRDs $version (standard channel)...";
+
+    my $out = run "$o{kubectl} apply --server-side --force-conflicts --field-manager=ocp -f $url 2>&1",
+        env      => { KUBECONFIG => $o{kubeconfig} },
+        auto_die => FALSE;
+    if ($? != 0) {
+        die "Applying the Gateway API CRDs $version (standard channel) failed:\n"
+          . ($out // '') . "\n";
+    }
+    return $out;
+}
+
 desc "Install Cilium CNI";
 task "install_cilium", sub {
     my $params = task_params(shift);
@@ -1263,18 +1301,13 @@ task "install_cilium", sub {
     }
 
     # Install Gateway API CRDs BEFORE Cilium (required!)
-    # The experimental channel is required, not optional: TLSRoute lives
-    # only there, and Cilium lists it among the required resources.
     my $gateway_api_version = $params->{gateway_api_version} // $ENV{OCP_GATEWAY_API_VERSION}
         or die "OCP_GATEWAY_API_VERSION (or task_params gateway_api_version=...) is required\n";
-    say "Installing Gateway API CRDs $gateway_api_version...";
-    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$gateway_api_version/standard-install.yaml",
-        env => { KUBECONFIG => $kubeconfig };
-
-    # Also install experimental CRDs (TCPRoute, UDPRoute, TLSRoute)
-    run "$kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$gateway_api_version/experimental-install.yaml",
-        env => { KUBECONFIG => $kubeconfig },
-        auto_die => FALSE;
+    _apply_gateway_api_crds(
+        kubectl    => $kubectl,
+        kubeconfig => $kubeconfig,
+        version    => $gateway_api_version,
+    );
 
     # Bounce cilium-operator if already running so it picks up the new CRD
     # schema (controller-runtime caches CRD schemas at startup; updating

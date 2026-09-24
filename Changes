@@ -23,6 +23,9 @@ Revision history for OCP
     - Every component version is pinned once and printed by `ocp version`;
       pieces that must move together, like Cilium and its Gateway API CRDs, are
       pinned together.
+    - The Gateway API CRDs come from one channel, standard, which carries
+      everything the pinned Cilium needs; a failed CRD apply stops the install
+      instead of passing unnoticed.
     - Secrets, keys and kubeconfig are age/SOPS-encrypted in pure Perl, with no
       external tools, and are committed to the project. Two PINs stand in front:
       PIN1 unlocks the age layer, PIN2 a per-key password layer. Secure mode

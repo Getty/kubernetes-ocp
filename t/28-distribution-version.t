@@ -104,10 +104,13 @@ subtest 'Gateway API travels with Cilium' => sub {
 
     unlike $rex, qr{gateway-api/releases/download/v\d+\.\d+\.\d+/},
         'the CRD URLs no longer hardcode a version';
-    like $rex, qr/\$gateway_api_version.*standard-install\.yaml/,
-        'standard channel uses the passed version';
-    like $rex, qr/\$gateway_api_version.*experimental-install\.yaml/,
-        'experimental channel too — TLSRoute only exists there, and Cilium requires it';
+    like $rex, qr/_apply_gateway_api_crds\(.*?version\s*=>\s*\$gateway_api_version/s,
+        'install_cilium hands the passed version to the CRD apply';
+    like $rex, qr{\$version/standard-install\.yaml},
+        'which puts it into the bundle URL';
+    # One channel only, standard -- since Gateway API v1.5 it carries the
+    # TLSRoute v1 Cilium 1.20 requires, and experimental over standard is
+    # refused by the bundle's safe-upgrades policy. See t/90 (k157).
 };
 
 subtest 'every bundled ingress controller is disabled' => sub {
