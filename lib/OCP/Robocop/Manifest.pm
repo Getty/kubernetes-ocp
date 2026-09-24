@@ -103,10 +103,9 @@ sub for_security_level {
     my $doc = OCP::Robocop::Manifest->for_config($doc, $config);
 
 L</for_security_level> for C<< $config->robocop_security_level >>, and on the
-robocop C<Deployment> the controller's C<OCP_DISTRIBUTION> and C<OCP_POD_CIDR>
-set to C<< $config->distribution >> and C<< $config->pod_cidr >>, replacing
-any value already there. Croaks when the config has either empty. Any other
-document comes back as the level shapes it.
+robocop C<Deployment> the controller's env entries from L</cluster_env>,
+replacing any value already there. Any other document comes back as the
+level shapes it.
 
 =cut
 
@@ -117,21 +116,45 @@ sub for_config {
 
     my $ctr = $class->_controller($doc) or return $doc;
 
+    my $env = $class->cluster_env($config);
+    my %set = map { $_->{name} => 1 } @$env;
+
+    $ctr->{env} = [
+        (grep { !$set{ $_->{name} // '' } } @{ $ctr->{env} // [] }),
+        @$env
+    ];
+
+    return $doc;
+}
+
+=method cluster_env
+
+    my $env = OCP::Robocop::Manifest->cluster_env($config);
+    # [ { name => 'OCP_DISTRIBUTION', value => 'k3s' },
+    #   { name => 'OCP_POD_CIDR',     value => '10.42.0.0/16' } ]
+
+The controller's env entries for what robocop has to know about the cluster:
+C<OCP_DISTRIBUTION> from C<< $config->distribution >> and C<OCP_POD_CIDR>
+from C<< $config->pod_cidr >>, sorted by name. Croaks when the config has
+either empty. L</for_config> writes them into a full manifest;
+C<ocp deploy-image> sends them in its image patch (k187), so a Deployment
+written before robocop needed them gets them together with the new image.
+
+=cut
+
+sub cluster_env {
+    my ($class, $config) = @_;
+
     my %value = (
         OCP_DISTRIBUTION => $config->distribution,
         OCP_POD_CIDR     => $config->pod_cidr,
     );
     for my $name (sort keys %value) {
-        croak __PACKAGE__.'->for_config: no value for '.$name
+        croak __PACKAGE__.'->cluster_env: no value for '.$name
             unless defined $value{$name} && length $value{$name};
     }
 
-    $ctr->{env} = [
-        (grep { !exists $value{ $_->{name} // '' } } @{ $ctr->{env} // [] }),
-        (map { { name => $_, value => $value{$_} } } sort keys %value)
-    ];
-
-    return $doc;
+    return [ map { { name => $_, value => $value{$_} } } sort keys %value ];
 }
 
 # The robocop Deployment's controller container; nothing for any other

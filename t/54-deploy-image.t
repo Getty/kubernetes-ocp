@@ -17,6 +17,7 @@ use lib 'lib';
 use Kubernetes::REST ();
 use OCP::K8s ();
 use OCP::Cmd::DeployImage ();
+use OCP::Config ();
 
 # Centralised JSON encoder; matches the house rule (canonical, utf8).
 our $JSON = JSON::MaybeXS->new(
@@ -541,6 +542,61 @@ subtest 'the boolean flags parse from the command line, both ways' => sub {
         my $cmd = $parse->('--tag', 'v1.2.3', $spelling);
         is($cmd->restart, 0, "$spelling actually reaches the attribute");
     }
+};
+
+# k187: since k186 robocop refuses to start without OCP_DISTRIBUTION and
+# OCP_POD_CIDR, and only `ocp apply` / `ocp deploy-robocop` wrote them. A
+# Deployment from before that took the new image through deploy-image and
+# crash-looped until one of those ran. deploy-image now carries both values
+# from ocp.yaml in the image patch itself: one write, one rollout, and the
+# strategic merge on env (keyed by name) leaves every other variable alone.
+sub image_patch_env {
+    my ($r) = @_;
+    my ($img) = grep { $_->{method} eq 'PATCH' && $_->{body} =~ /"image"/ }
+        @{ $r->{transport}->requests };
+    return unless $img;
+    my $body = $JSON->decode($img->{body});
+    my ($ctr) = grep { $_->{name} eq 'controller' }
+        @{ $body->{spec}{template}{spec}{containers} // [] };
+    return { map { $_->{name} => $_ } @{ $ctr->{env} // [] } };
+}
+
+my $ok_respond = sub {
+    my ($m, $p) = @_;
+    return (200, deployment()) if $m eq 'GET' && $p eq deployment_path('ocp-system');
+    return (200, deployment()) if $m eq 'PATCH';
+    return (404, { message => "unexpected $m $p" });
+};
+
+subtest 'the image patch carries the cluster settings from ocp.yaml (k187)' => sub {
+    my $r = run_cmd(
+        tag     => 'v1.2.3',
+        restart => 0,
+        dir     => make_project(extra_yaml =>
+            "kubernetes:\n  dist: k3s\nnetwork:\n  pod_cidr: 10.44.0.0/16\n"),
+        respond => $ok_respond,
+    );
+
+    is($r->{error}, '', 'execute did not die');
+    my @patches = grep { $_->{method} eq 'PATCH' } @{ $r->{transport}->requests };
+    is(scalar @patches, 1, 'still one write: image and env together');
+
+    my $env = image_patch_env($r);
+    is_deeply([ sort keys %$env ], [qw( OCP_DISTRIBUTION OCP_POD_CIDR )],
+        'exactly the two cluster settings, nothing else of the env is touched');
+    is($env->{OCP_DISTRIBUTION}{value}, 'k3s',          'distribution from kubernetes.dist');
+    is($env->{OCP_POD_CIDR}{value},     '10.44.0.0/16', 'pod CIDR from network.pod_cidr');
+};
+
+subtest 'the image patch writes the config defaults when ocp.yaml sets nothing (k187)' => sub {
+    my $dir = make_project();
+    my $r   = run_cmd(tag => 'v1.2.3', restart => 0, dir => $dir, respond => $ok_respond);
+
+    is($r->{error}, '', 'execute did not die');
+    my $config = OCP::Config->new(file => "$dir/ocp.yaml");
+    my $env    = image_patch_env($r);
+    is($env->{OCP_DISTRIBUTION}{value}, $config->distribution, 'distribution: the config default');
+    is($env->{OCP_POD_CIDR}{value},     $config->pod_cidr,     'pod CIDR: the config default');
 };
 
 done_testing;

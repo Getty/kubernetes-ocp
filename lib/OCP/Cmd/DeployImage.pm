@@ -12,6 +12,7 @@ use Time::Piece ();
 use OCP;
 use OCP::Config;
 use OCP::K8s;
+use OCP::Robocop::Manifest;
 use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
@@ -187,7 +188,7 @@ has _poll_interval => (
     $cmd->execute($args, $chain)
 
 Reads the encrypted C<kubeconfig.yaml>, patches the robocop Deployment's
-container image, optionally restarts the pods via the
+container image and cluster settings, optionally restarts the pods via the
 C<kubectl.kubernetes.io/restartedAt> annotation, and optionally waits until
 all robocop pods are Ready.
 
@@ -247,6 +248,12 @@ sub execute {
     my $cluster = $self->_resolve_cluster($config);
     my $ns      = $self->namespace // $DEFAULT_NAMESPACE;
 
+    # What robocop has to know about the cluster (k186) travels in the same
+    # patch as the image (k187): a Deployment written before robocop needed
+    # it would otherwise crash-loop on the new image until `ocp apply` or
+    # `ocp deploy-robocop` ran. Read before anything is printed or sent.
+    my $env = OCP::Robocop::Manifest->cluster_env($config);
+
     print "Cluster:  $cluster\n";
     print "Namespace: $ns\n";
     print "Image:    $image\n";
@@ -262,7 +269,7 @@ sub execute {
       . "Run 'ocp deploy-robocop' first.\n"
         unless $existing;
 
-    $self->_patch_image($api, $ns, $image);
+    $self->_patch_image($api, $ns, $image, $env);
 
     if ($self->restart) {
         $self->_patch_restart($api, $ns);
@@ -428,9 +435,13 @@ sub _build_api {
 
 # Strategic merge by container name: addresses the controller container in
 # place, leaves siblings and unrelated fields alone. Matches what `kubectl
-# set image deployment/robocop controller=...` does on the wire.
+# set image deployment/robocop controller=...` does on the wire. env merges
+# by name too, so the cluster settings are set or replaced and every other
+# variable (ROBO_SSH_KEY, the inject level's entries) stays as it is. One
+# patch, so the image and the env it needs arrive in one pod template: no
+# rollout of the new image without them.
 sub _patch_image {
-    my ($self, $api, $ns, $image) = @_;
+    my ($self, $api, $ns, $image, $env) = @_;
 
     $api->patch(
         'Deployment', 'robocop',
@@ -440,7 +451,7 @@ sub _patch_image {
                 template => {
                     spec => {
                         containers => [
-                            { name => 'controller', image => $image },
+                            { name => 'controller', image => $image, env => $env },
                         ],
                     },
                 },
@@ -450,6 +461,7 @@ sub _patch_image {
     );
 
     print "[ok] image patched to $image\n";
+    print '[ok] '.join(' ', map { $_->{name}.'='.$_->{value} } @$env)."\n";
 }
 
 # kubectl rollout restart's wire form: a strategic merge that adds/updates
@@ -542,8 +554,12 @@ are issued against the live Deployment:
 =item 1.
 
 A strategic-merge patch that addresses the C<controller> container by name
-and updates only its C<image> field. Sibling containers and the rest of the
-pod template are left untouched.
+and updates its C<image> field together with the C<OCP_DISTRIBUTION> and
+C<OCP_POD_CIDR> env entries from C<ocp.yaml> (see
+L<OCP::Robocop::Manifest/cluster_env>). A robocop that needs them and a
+Deployment written before it did would otherwise meet in a crash loop; in
+one patch they roll out together. Other env entries, sibling containers and
+the rest of the pod template are left untouched.
 
 =item 2.
 

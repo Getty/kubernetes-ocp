@@ -90,9 +90,9 @@ the reason on STDERR — the pod goes into `CrashLoopBackOff` — rather than
 join nodes with a guessed distribution or pod network. The shipped
 `share/robocop/deployment.yaml` carries neither, so a Deployment applied any
 other way than through `ocp` fails the same way. The fix is always to roll
-the Deployment out again with `ocp apply` or `ocp deploy-robocop`. Changing
-either setting in `ocp.yaml` changes the pod template, so the next apply
-restarts robocop with the new value.
+the Deployment out again with `ocp apply`, `ocp deploy-robocop` or
+`ocp deploy-image`. Changing either setting in `ocp.yaml` changes the pod
+template, so the next apply restarts robocop with the new value.
 
 The startup line in the pod log names both:
 
@@ -106,10 +106,16 @@ robocop 0.001 starting: security_level=secret namespace=ocp-system distribution=
 ocp deploy-image --tag v1.2.3
 ```
 
-Replaces robocop's container image without a full `ocp apply`. It changes
-only the image: a Deployment written by an OCP that did not yet set
-`OCP_DISTRIBUTION` and `OCP_POD_CIDR` makes the new image exit at startup
-until `ocp apply` or `ocp deploy-robocop` rewrites it.
+Replaces robocop's container image without a full `ocp apply`. The same
+patch sets `OCP_DISTRIBUTION` and `OCP_POD_CIDR` from `ocp.yaml`, so image
+and settings reach the pod in one rollout and every other part of the
+Deployment stays as it is.
+
+**Upgrading a cluster from before these variables:** its Deployment has
+neither, and a robocop image that needs them exits at startup. Roll the new
+image with `ocp deploy-image` (or `ocp apply` / `ocp deploy-robocop`) rather
+than letting the pod pull `:latest` on a restart — until one of them has run,
+the pod stays in `CrashLoopBackOff` with the reason in its log.
 
 ## See also
 
