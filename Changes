@@ -20,6 +20,9 @@ Revision history for OCP
       `ROBOCOP_MAX_RECONCILES`). robocop logs a startup line with its version,
       security level and namespace, and exits with the reason on STDERR --
       CrashLoopBackOff, not silence -- when its watch cannot reach the API.
+      Each reconcile logs the node, its phase and the phase it reached; a
+      node that fails logs the reason on STDERR, and its log line and
+      `status.message` say how to retry it (`ocp node rm`, `ocp node add`).
       `ocp node add` and `ocp node rm` drive the same objects by hand.
     - Spec and status stay separate: `ocp.yaml` (committed, snake_case) is what
       you want, `.ocp/status.yaml` is what the cluster has. `ocp status` reports

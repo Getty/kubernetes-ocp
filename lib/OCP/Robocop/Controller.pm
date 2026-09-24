@@ -538,6 +538,10 @@ sub _spawn {
     my $f = $self->loop->new_future;
     $self->loop->fork(
         code => sub {
+            # Unbuffered from the first line: whatever the child prints before
+            # a crash must be in the pod log, not in a buffer _exit throws away.
+            STDOUT->autoflush(1);
+            STDERR->autoflush(1);
             $self->_reconcile_child($cr);
             # _exit skips the stdio flush; the log lines must not be lost.
             STDOUT->flush;
@@ -561,8 +565,9 @@ sub _reconcile_child {
     my $obj = eval { $self->kube->get('OCPNode', name => $name, namespace => $ns) };
     if (my $err = $@) {
         chomp $err;
-        $self->log($err =~ /\b404\b/ ? "$name: gone, nothing to reconcile"
-            : "ERROR re-reading $name before reconcile, retried later: $err");
+        $err =~ /\b404\b/
+            ? $self->log("$name: gone, nothing to reconcile")
+            : $self->log_error("ERROR re-reading $name before reconcile, retried later: $err");
         return;
     }
     return unless $obj;
@@ -748,12 +753,22 @@ sub _handle_watch_object {
 # Runs in the reconcile child (_reconcile_child).
 sub _reconcile_cr {
     my ($self, $cr) = @_;
+    my $name  = $cr->{metadata}{name} // '?';
+    my $phase = ($cr->{status} // {})->{phase} // 'Pending';
+
+    # Failed is terminal: OCP::Node::reconcile would return without a step,
+    # and the resync leaves it alone. Said once per event, without the hint --
+    # the hint went out with the failure and sits in status.message.
+    if ($phase eq 'Failed') {
+        $self->log("$name: phase Failed is terminal, not reconciled");
+        return;
+    }
+    $self->log("$name: reconciling (phase $phase)");
 
     try {
         $self->_on_node_event($cr);
     } catch {
-        my $name = $cr->{metadata}{name} // '?';
-        $self->log("ERROR reconciling $name: $_");
+        $self->log_error("ERROR reconciling $name: $_");
         # Defense in depth: _on_node_event already patches status on every
         # failure it knows about, but a crash past those paths (a transport
         # exception in the middle of a status patch, a croak from a test stub)
@@ -844,7 +859,59 @@ sub _on_node_event {
         return;
     }
 
+    my $before = $node->phase;
     $node->reconcile;
+    $self->_report_result($node, $before);
+}
+
+# The result of one reconcile, in the pod log (k176). OCP::Node records most
+# failures into status (phase Failed + message) and returns normally, so the
+# reason reached status.message and nothing else -- the log had no line about
+# it. Read back what the state machine wrote and say it.
+sub _report_result {
+    my ($self, $node, $before) = @_;
+    my $name  = $node->name;
+    my $after = $node->phase;
+
+    unless ($after eq 'Failed') {
+        $self->log("$name: reconciled, phase $before -> $after");
+        return;
+    }
+
+    my $message = $node->cr->{status}{message} // 'no reason recorded';
+    chomp $message;
+    $self->log_error("$name: reconcile failed, phase $before -> Failed: $message");
+    $self->log_error("$name: " . $self->retry_hint($name));
+
+    # The same hint into status.message, where `ocp node ls` shows it. Only
+    # the message: the phase OCP::Node wrote stands as it is.
+    return if index($message, $self->retry_hint($name)) >= 0;
+    eval {
+        OCP::K8s->patch_status(
+            $self->kube,
+            kind      => 'OCPNode',
+            name      => $name,
+            namespace => $node->namespace,
+            status    => { message => $self->_with_hint($name, $message) },
+        );
+        1;
+    } or $self->log_error("ERROR patching status for $name: $@");
+    return;
+}
+
+# Failed is terminal: nothing retries a failed node on its own. Removing it
+# with `ocp node rm` also tears down whatever was provisioned for it.
+sub retry_hint {
+    my ($self, $name) = @_;
+    return 'Failed is terminal; to retry, remove it with `ocp node rm '
+        . $name . '` and add it again with `ocp node add ' . $name . '`';
+}
+
+sub _with_hint {
+    my ($self, $name, $message) = @_;
+    chomp $message;
+    my $hint = $self->retry_hint($name);
+    return index($message, $hint) >= 0 ? $message : $message . ' -- ' . $hint;
 }
 
 # Patches the OCPNode's status to Failed with the given message, and logs.
@@ -866,11 +933,13 @@ sub _mark_failed {
     my $name = $cr->{metadata}{name}     // '?';
     my $ns   = $cr->{metadata}{namespace} // $self->namespace;
 
-    $self->log("marking $name Failed: $message");
+    chomp $message;
+    $self->log_error("marking $name Failed: $message");
+    $self->log_error("$name: " . $self->retry_hint($name));
 
     my $status = {
         phase             => 'Failed',
-        message           => $message,
+        message           => $self->_with_hint($name, $message),
         lastReconcileTime => Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ'),
         reconciler        => 'robocop',
     };
@@ -884,7 +953,7 @@ sub _mark_failed {
             status    => $status,
         );
         1;
-    } or $self->log("ERROR patching status for $name: $@");
+    } or $self->log_error("ERROR patching status for $name: $@");
 }
 
 #
@@ -1049,5 +1118,19 @@ waiting conditions flip to C<SSHKeyAvailable=True> (reason C<KeyInjected>).
 
     Pending → Provisioning → Installing → Joining → Ready
                      └──────────────┴──────────→ Failed
+
+Every reconcile logs its start (node and phase) and its result (the phase it
+reached) on STDOUT. A reconcile that ends in C<Failed> -- whether OCP::Node
+recorded the failure into the status or the controller did -- logs the reason
+on STDERR, followed by L</retry_hint>, and appends the same hint to
+C<status.message> unless it is already there. C<Failed> is terminal: robocop
+never reconciles such a node again on its own.
+
+=head2 retry_hint
+
+    my $hint = $controller->retry_hint($name);
+
+The one-line instruction for retrying a C<Failed> OCPNode: remove it with
+C<ocp node rm> and add it again with C<ocp node add>.
 
 =cut

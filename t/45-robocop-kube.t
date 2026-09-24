@@ -398,10 +398,12 @@ subtest '_on_node_event loads the provider CR and drives OCP::Node' => sub {
         },
     );
 
-    my $out = '';
+    my ($out, $err) = ('', '');
     {
-        open my $fh, '>', \$out or die $!;
+        open my $fh,  '>', \$out or die $!;
+        open my $efh, '>', \$err or die $!;
         local *STDOUT = $fh;
+        local *STDERR = $efh;
         controller(kube => $api)->_on_node_event(ocpnode_cr());
     }
 
@@ -411,7 +413,9 @@ subtest '_on_node_event loads the provider CR and drives OCP::Node' => sub {
     } @paths), 'the provider named in spec.providerRef is read by Kind and name';
     ok scalar(grep { $_ eq 'GET /api/v1/nodes/w1' } @paths),
         'and the CR reached OCP::Node, which verified the Kubernetes Node';
-    is $out, '', 'nothing was logged: no step failed';
+    is $err, '', 'no error was logged: no step failed';
+    like $out, qr/w1: reconciled, phase Ready -> Ready/,
+        'only the result line, on STDOUT (k176)';
 };
 
 subtest '_on_node_event without a providerRef marks the CR Failed' => sub {
@@ -423,7 +427,7 @@ subtest '_on_node_event without a providerRef marks the CR Failed' => sub {
     my $out = '';
     {
         open my $fh, '>', \$out or die $!;
-        local *STDOUT = $fh;
+        local *STDERR = $fh;
         controller(kube => $api)->_on_node_event(
             ocpnode_cr(spec => { role => 'worker' }));
     }
@@ -460,7 +464,7 @@ subtest '_on_node_event marks Failed when the provider CR cannot be loaded' => s
         my $out = '';
         {
             open my $fh, '>', \$out or die $!;
-            local *STDOUT = $fh;
+            local *STDERR = $fh;
             controller(kube => $api)->_on_node_event(ocpnode_cr());
         }
 
@@ -470,7 +474,7 @@ subtest '_on_node_event marks Failed when the provider CR cannot be loaded' => s
         is $sent->{status}{phase}, 'Failed';
         like $sent->{status}{message}, qr/connection refused/,
             'the underlying error is in the message';
-        like $out, qr/marking w1 Failed/, 'and in the pod log';
+        like $out, qr/marking w1 Failed/, 'and in the pod log, on STDERR';
     };
 
     subtest 'provider CR absent is recorded on the CR' => sub {
@@ -526,7 +530,7 @@ subtest '_mark_failed survives a status patch that itself fails' => sub {
     my $out = '';
     {
         open my $fh, '>', \$out or die $!;
-        local *STDOUT = $fh;
+        local *STDERR = $fh;
         # An OCPNode with no providerRef is the cheapest path that reaches
         # _mark_failed; the controller must NOT throw on a patch failure.
         eval { controller(kube => $api)->_on_node_event(
