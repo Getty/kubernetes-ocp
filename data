@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-09-24T16:33:51Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T16:33:51Z
+created: 2026-09-24T16:21:06Z
+id: 173
+priority: medium
+started: 2026-09-24T16:33:51Z
+status: done
+tags:
+- apply
+- robocop
+title: Reconcile stellt robocop nicht sicher, wenn keine Worker fehlen
+updated: 2026-09-24T16:33:51Z
+---
+
+Aus k169: apply rollt robocop nur im worker_step aus (Bootstrap mit Workern oder Reconcile mit fehlenden Workern). robocop: true ohne Worker in ocp.yaml bekommt nie robocop; ein Cluster mit dem alten k169-Bug wird von apply nie repariert (Secret fehlt weiter). Entscheidung Main-Agent: robocop.enabled heisst "robocop laeuft" -> jeder apply (Bootstrap + Reconcile) stellt Secret + Deployment sicher, unabhaengig von Workern; Secret-Current-Check aus k169 verhindert PIN2-Prompts. Done + Tests.
+
+2026-09-24 16:31 ocp-apply-worker: committed 0e97599 on worktree-agent-ac000fd4cf08096d8 (not merged). New Deploy::robocop_step = single place apply rolls robocop out (Secret via k169 role, then Deployment, one readiness look, returns {state ready|pending|failed, changed}); runs on fresh deploy (own step between CP joins and workers) and every reconcile (after CR block), independent of workers. worker_step no longer rolls robocop out, takes robocop_step's answer (pending+non-inject -> 60s wait, inject -> CLI). Gate: worker gate (--only workers yes, --only control-planes no). --dry-run: names missing/outdated Secret and missing Deployment, no writes (new _robocop_credentials_state). Disabled -> no teardown. Docker make test: 105 files / 1878 tests PASS.
+
+2026-09-24 16:33 Review ok, rebased auf k170 + ff nach main (1ac39b2), gepusht. Docker 105/1878 gruen (Worker, vor Rebase). robocop_step als einzige Rollout-Stelle.
