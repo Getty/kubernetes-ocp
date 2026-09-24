@@ -14,6 +14,7 @@ use OCP::Config;
 use OCP::Keys;
 use OCP::Node ();      # for the join-token file paths ($RKE2_TOKEN_PATH etc.)
 use OCP::Password;
+use OCP::Robocop::Manifest;
 use OCP::Secrets;
 use OCP::Share;
 use OCP::SSH;
@@ -33,12 +34,9 @@ sub execute {
 
     my $config  = OCP::Config->new(file => $file);
 
-    # Decide the key-delivery model before touching the cluster. inject is
-    # config-accepted but not yet built (k2), so it dies here, clean,
-    # before any credential is decrypted or any resource applied.
+    # The key-delivery model decides what goes into the Secret and which
+    # Deployment variant is applied (inject: no private key in either, k2).
     my $level = $config->robocop_security_level;
-    die "robocop.security_level 'inject' is not yet available (k2)\n"
-        if $level eq 'inject';
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
@@ -59,6 +57,20 @@ sub execute {
     # pods start; a pod that races ahead restarts and self-heals.
     $self->_apply_credentials_secret($api, $config, $secrets, $level);
 
+    $self->_apply_manifests($api, $level);
+
+    print "Robocop deployed.\n";
+    print "robocop holds no SSH key yet (security_level inject): run "
+        . "'ocp inject-key' once the pod is running.\n"
+        if $level eq 'inject';
+    return 0;
+}
+
+# CRDs first, then the rest of share/robocop/ (skipping kustomization.yaml),
+# each document shaped for the security level (OCP::Robocop::Manifest).
+sub _apply_manifests {
+    my ($self, $api, $level) = @_;
+
     my $share_dir = $self->_find_share_dir;
     my $robocop_dir = $share_dir->child('robocop');
     die "Robocop manifests not found under $robocop_dir\n" unless -d $robocop_dir;
@@ -73,13 +85,11 @@ sub execute {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
             my $kind = $doc->{kind};
             my $name = $doc->{metadata}{name};
-            $api->ensure($doc);
+            $api->ensure(OCP::Robocop::Manifest->for_security_level($doc, $level));
             print "  [ok] ensured $kind/$name\n";
         }
     }
-
-    print "Robocop deployed.\n";
-    return 0;
+    return;
 }
 
 # Write the robocop-credentials Secret according to security_level.
@@ -113,7 +123,7 @@ sub _apply_credentials_secret {
     my ($host, $key) = $self->_cp_ssh_access($config, $admin);
     my $token = $self->_read_join_token($config, $host, $key->path);
 
-    my $creds = $self->_robocop_credentials($config, $host, $token);
+    my $creds = $self->_robocop_credentials($config, $host, $token, $level);
 
     # The namespace has to exist before the Secret can land in it. Idempotent;
     # the robocop manifests re-apply it a moment later.
@@ -197,8 +207,13 @@ sub _read_join_token {
 
 # The three values for the Secret. Only ever the PRIVATE robo key — never the
 # admin key that reached the control plane, only the token it fetched.
+#
+# inject (k2) swaps the private key for its PUBLIC half: robocop checks an
+# injected key against it, and the private key reaches the pod only through
+# `ocp inject-key`. The Secret is replaced as a whole (ensure is a PUT), so a
+# robo-ssh-key left from an earlier secret-level deploy is removed with it.
 sub _robocop_credentials {
-    my ($self, $config, $host, $token) = @_;
+    my ($self, $config, $host, $token, $level) = @_;
 
     my $keys = OCP::Keys->new(project_dir => $config->project_dir);
 
@@ -208,43 +223,35 @@ sub _robocop_credentials {
              . "       'ocp init' creates it in secure mode; robocop needs it "
              . "to reach the workers it joins.\n";
 
+    my %common = (
+        'server-url' => $config->join_url($host),
+        'rke2-token' => $token,
+    );
+
+    if (($level // '') eq 'inject') {
+        my $public = $robo->{public};
+        die "ERROR: The robo key carries no public half in keys.yaml; "
+          . "robocop could not check an injected key against it.\n"
+            unless defined $public && length $public;
+        return { %common, 'robo-ssh-public-key' => $public };
+    }
+
     my $private = $robo->{private};
     die "ERROR: The robo key carries no private material.\n"
         unless defined $private && length $private;
 
-    return {
-        'robo-ssh-key' => $private,
-        'server-url'   => $config->join_url($host),
-        'rke2-token'   => $token,
-    };
+    return { %common, 'robo-ssh-key' => $private };
 }
 
-# The PIN2 approval gate for secret_approved. Unlocking the admin key is both
-# the proof that a human holding PIN2 approved the write AND the key that
-# reaches the control plane for the token read — so it is RETURNED for reuse,
-# not thrown away. A wrong or absent PIN2 dies before anything is written.
+# The PIN2 approval gate for secret_approved (OCP::Role::Cmd, shared with
+# `ocp inject-key`). The admin key it unlocks is also what reaches the control
+# plane for the token read, so it is returned for reuse. A wrong or absent
+# PIN2 dies before anything is written.
 sub _require_pin2_approval {
     my ($self, $config) = @_;
-
-    print STDERR
-        "  robocop.security_level 'secret_approved': writing the "
-      . "$CREDENTIALS_SECRET\n"
-      . "  Secret is admin-gated and needs PIN2 approval.\n";
-
-    my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin approval): ");
-    die "ERROR: No PIN2 given; refusing to write $CREDENTIALS_SECRET.\n"
-        unless defined $pin2 && length $pin2;
-
-    # A wrong PIN2 makes the double-decrypt die ("AES-GCM authentication
-    # failed"); catch it so the refusal reads as a PIN2 problem rather than a
-    # crypto-internals leak, and so nothing downstream mistakes it for success.
-    my $keys  = OCP::Keys->new(project_dir => $config->project_dir);
-    my $admin = eval { $keys->get_admin_key($pin2) };
-    die "ERROR: Wrong PIN2 or no admin key; refusing to write "
-      . "$CREDENTIALS_SECRET.\n"
-        unless $admin;
-
-    return $admin;
+    return $self->require_admin_approval($config,
+        "robocop.security_level 'secret_approved': writing the "
+      . "$CREDENTIALS_SECRET Secret");
 }
 
 sub _find_share_dir {
@@ -271,7 +278,9 @@ private robo key), C<server-url> (the RKE2 join URL) and C<rke2-token> (the
 node-join token, read off the control-plane disk over SSH). C<secret> gates the
 write behind PIN1 for the age key and whatever key reaches the control plane;
 C<secret_approved> additionally requires an explicit PIN2 admin approval, reused
-for the SSH read; C<inject> is deferred (k2) and refused cleanly.
+for the SSH read. C<inject> writes C<robo-ssh-public-key> (the public half)
+instead of C<robo-ssh-key>, applies the inject variant of the Deployment (see
+L<OCP::Robocop::Manifest>) and leaves the private key to C<ocp inject-key>.
 
 Then reads manifests from the OCP share directory (C<share/robocop/>), applies
 CRDs first and then remaining resources (skipping C<kustomization.yaml>) via

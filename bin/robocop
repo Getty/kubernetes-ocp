@@ -8,22 +8,23 @@ use FindBin;
 use lib "$FindBin::Bin/../lib";
 
 our $VERSION = '0.001';
-use OCP::Robocop;
 use OCP::Robocop::Controller;
 
 # The Deployment starts this as `robocop controller` (share/robocop/deployment.yaml).
-# That argument used to fall on the floor: bin/robocop ran OCP::Robocop->run
-# unconditionally, which blocks on the disabled port-9999 key-injection stub and
-# never reaches the reconciliation controller (k33). Read @ARGV and route
-# the `controller` subcommand to OCP::Robocop::Controller, built from the
-# environment; every other invocation keeps the legacy OCP::Robocop behaviour.
+# That is the only mode. The argument-less path used to run a CRIU-checkpoint
+# stub that listened on port 9999 for a key nobody sent (k33, k2); in-memory
+# key delivery is now part of the controller itself (security_level inject),
+# so anything else is a usage error, reported on STDERR.
 if (@ARGV && $ARGV[0] eq 'controller') {
     my $controller = OCP::Robocop::Controller->from_env;
     $controller->run;
-} else {
-    my $robocop = OCP::Robocop->new;
-    $robocop->run;
+    exit 0;
 }
+
+print STDERR "usage: robocop controller\n"
+    . "  Runs the OCP in-cluster controller; configured from the environment\n"
+    . "  (see 'perldoc robocop').\n";
+exit 2;
 
 __END__
 
@@ -36,15 +37,10 @@ robocop - OCP Kubernetes controller for worker management
     # Reconciliation controller (how the Deployment starts it)
     robocop controller
 
-    # Legacy key-injection entry point (no subcommand)
-    robocop
-
 =head1 DESCRIPTION
 
 Robocop is the in-cluster controller that manages worker nodes automatically.
 This script is the entry point for the robocop Deployment in Kubernetes.
-
-The first argument selects the mode:
 
 =over 4
 
@@ -55,14 +51,9 @@ C<< OCP::Robocop::Controller->from_env >>) and watches OCPNode custom resources,
 reconciling each through L<OCP::Node>. This is the command the Deployment runs
 (C<share/robocop/deployment.yaml>).
 
-=item I<(no argument)>
-
-The legacy L<OCP::Robocop> path: waits for robo-ssh key injection, keeps the key
-in memory only, and CRIU-checkpoints itself. The injector (C<ocp inject-key>)
-needs C<port_forward> and is currently disabled (see k2), so this path
-blocks until that is redeemed or removed.
-
 =back
+
+Any other invocation prints the usage to STDERR and exits 2.
 
 =head1 ENVIRONMENT
 
@@ -70,9 +61,21 @@ The B<controller> subcommand reads its configuration from the environment:
 
 =over 4
 
-=item B<ROBO_SSH_KEY> (required)
+=item B<ROBOCOP_SECURITY_LEVEL> (optional)
+
+C<inject> switches to in-memory key delivery: robocop starts without a key and
+waits for C<ocp inject-key> (see L<OCP::Robocop::Controller/Key injection
+(security_level inject)>). Any other value, or none, means the key comes from
+C<ROBO_SSH_KEY>.
+
+=item B<ROBO_SSH_KEY> (required, except with inject)
 
 The robo-key private key material, used to reach freshly provisioned workers.
+Must not be set with C<ROBOCOP_SECURITY_LEVEL=inject>.
+
+=item B<ROBO_SSH_PUBLIC_KEY> (required with inject)
+
+The robo key's public half. An injected key is accepted only if it matches.
 
 =item B<RKE2_SERVER_URL> (required)
 
@@ -91,10 +94,6 @@ C<metadata.namespace> in the Deployment.
 
 C<rke2> (default) or C<k3s>.
 
-=item B<CHECKPOINT_DIR>
-
-Legacy path only: directory for CRIU checkpoints (default: /dev/shm/robocop).
-
 =back
 
 A missing required variable is fatal, with the offending name reported on
@@ -102,6 +101,6 @@ STDERR.
 
 =head1 SEE ALSO
 
-L<OCP::Robocop::Controller>, L<OCP::Robocop>
+L<OCP::Robocop::Controller>, L<OCP::Robocop::KeyInjection>, L<OCP::Robocop>
 
 =cut

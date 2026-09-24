@@ -69,6 +69,11 @@ spec:
         # via the K8s API -- it is a file on the CP disk that also encrypts the
         # datastore bootstrap data -- so it travels here as the rke2-token Secret
         # key rather than being read from the cluster.
+        #
+        # This is the `secret` variant. For robocop.security_level inject (k2)
+        # both deploy paths rewrite it through OCP::Robocop::Manifest: no
+        # ROBO_SSH_KEY, ROBO_SSH_PUBLIC_KEY + ROBOCOP_SECURITY_LEVEL instead,
+        # /tmp on tmpfs, and a readinessProbe on the key-held file.
         - name: ROBO_SSH_KEY
           valueFrom:
             secretKeyRef:

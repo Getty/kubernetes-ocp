@@ -105,6 +105,7 @@ option verbose => (
 our %COMMAND_ALIASES = (
     'deploy-image'   => 'deployimage',
     'deploy-robocop' => 'deployrobocop',
+    'inject-key'     => 'injectkey',
 );
 
 # MooX::Cmd resolves a word it does not recognise by quietly falling back to

@@ -196,8 +196,10 @@ sub robocop_enabled {
 #   secret           `ocp deploy-robocop` decrypts the robo key with PIN1 and
 #                    writes it into a K8s Secret; a pod restart self-heals.
 #   secret_approved  as secret, but writing the Secret is gated behind PIN2.
-#   inject           in-memory, never persisted (k2) — deferred; the
-#                    config accepts it, the deploy path refuses it cleanly.
+#   inject           in-memory, never persisted (k2): the Secret carries only
+#                    the public half; `ocp inject-key` (PIN2) hands the private
+#                    key to the running pod over a port-forward, and a pod
+#                    restart needs a new injection.
 #
 # Default secret: an automation controller must survive pod restarts
 # unattended, so the key has to rest in the cluster.

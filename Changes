@@ -28,6 +28,11 @@ Revision history for OCP
       PIN1 unlocks the age layer, PIN2 a per-key password layer. Secure mode
       keeps a PIN2 admin key for anything a human triggers and an unattended
       automation key for robocop; `ocp init --nopassword` is a keyless dev mode.
+    - `robocop.security_level` decides how robocop gets that key: from a
+      Secret (`secret`, or `secret_approved` behind PIN2), or `inject`, where
+      `ocp inject-key` hands it over a port-forward into the pod's memory and
+      nothing stores it; after a pod restart robocop stays not Ready and marks
+      waiting OCPNodes `SSHKeyAvailable=False` until the next injection.
     - The RKE2/K3s cluster token reaches a node only through its config.yaml,
       written 0600 root:root; it never appears on an installer command line or
       in the service environment file.

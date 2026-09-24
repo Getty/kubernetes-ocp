@@ -33,6 +33,8 @@ use_ok('OCP::Cmd::SSH');
 use_ok('OCP::Cmd::Keys');
 use_ok('OCP::Cmd::Keys::Show');
 use_ok('OCP::Cmd::DeployRobocop');
+use_ok('OCP::Cmd::InjectKey');
+use_ok('OCP::Cmd::InjectKey');
 use_ok('OCP::Cmd::DeployImage');
 use_ok('OCP::Cmd::Hetzner');
 use_ok('OCP::Cmd::Hetzner::List');
@@ -54,5 +56,9 @@ use_ok('OCP::Kubernetes');
 # Robocop controller
 use_ok('OCP::Robocop');
 use_ok('OCP::Robocop::Controller');
+use_ok('OCP::Robocop::KeyInjection');
+use_ok('OCP::Robocop::Manifest');
+use_ok('OCP::Robocop::KeyInjection');
+use_ok('OCP::Robocop::Manifest');
 
 done_testing;

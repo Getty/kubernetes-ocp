@@ -26,7 +26,7 @@ sub ocp {
 
 my @COMMANDS = qw(
     init apply status destroy kubeconfig version update ssh
-    node provider hetzner deployrobocop keys
+    node provider hetzner deployrobocop keys injectkey
 );
 
 for my $cmd (@COMMANDS) {
@@ -80,6 +80,13 @@ for my $cmd (@COMMANDS) {
 {
     my ($out) = ocp('deploy-robocop');
     unlike($out, qr/Usage: ocp <command>/, "'ocp deploy-robocop' is accepted");
+}
+
+{
+    my ($out) = ocp('inject-key');
+    unlike($out, qr/Usage: ocp <command>/, "'ocp inject-key' is accepted");
+    like($out, qr/Config file 'ocp\.yaml' not found/,
+        "'ocp inject-key' reaches the command body");
 }
 
 # A node name may be positional

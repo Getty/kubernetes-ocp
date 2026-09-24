@@ -252,7 +252,7 @@ sub worker_step {
     my $robocop_ready = 0;
     if ($config->robocop_enabled) {
         print "  [..] Deploying robocop controller...\n";
-        eval { $self->_ensure_robocop($api) };
+        eval { $self->_ensure_robocop($api, $config->robocop_security_level) };
         if ($@) {
             print "  [WARN] robocop deploy failed: $@\n";
         } else {

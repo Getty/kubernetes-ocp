@@ -47,11 +47,26 @@ robocop:
   restart self-heals from that Secret.
 - **`secret_approved`** — same as `secret`, but writing the Secret
   additionally requires an explicit PIN2 approval prompt.
-- **`inject`** — **not available yet.** The config accepts the value, but
-  `ocp deploy-robocop` refuses to run with it:
-  `robocop.security_level 'inject' is not yet available (k2)`. The intent is
-  in-memory-only delivery with nothing ever persisted to a Secret; it is
-  deferred until that work lands.
+- **`inject`** — the private robo key is never stored in the cluster.
+  `ocp deploy-robocop` writes only the join URL, the token and the key's
+  *public* half into the Secret; then you hand robocop the private key:
+
+  ```bash
+  ocp inject-key     # PIN1 if needed, then PIN2 as the admin approval
+  ```
+
+  It travels through a Kubernetes port-forward straight into the running
+  pod's memory (robocop listens on `127.0.0.1:9999` inside the pod and only
+  accepts the key whose public half it was deployed with). robocop's `/tmp`,
+  where the key is handed to the installer, is a tmpfs.
+
+  There is no checkpoint: **after a pod restart the key is gone** and you run
+  `ocp inject-key` again. Until then robocop says so instead of pretending —
+  the pod is not Ready, and every OCPNode that needs SSH (`Pending`,
+  `Provisioning`, `Installing`) keeps its phase and carries the condition
+  `SSHKeyAvailable=False` (reason `KeyInjectionRequired`). Nothing is
+  provisioned without the key. `ocp apply` sees a not-Ready robocop and
+  reconciles the workers from the CLI instead.
 
 ## Rolling out a new image
 

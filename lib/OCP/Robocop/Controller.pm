@@ -5,6 +5,7 @@ use Moo;
 use Carp qw(croak);
 use File::Temp ();
 use IO::Async::Loop;
+use Path::Tiny ();
 use IO::K8s;
 use Net::Async::Kubernetes;
 use Scalar::Util qw(weaken);
@@ -15,6 +16,8 @@ use OCP::K8s;
 use OCP::Kubernetes;
 use OCP::Node;
 use OCP::Provider;
+use OCP::Robocop::KeyInjection;
+use OCP::Robocop::Manifest;
 
 #
 # Configuration
@@ -30,10 +33,38 @@ has kubeconfig => (
     doc => 'Kubeconfig content or file path (for out-of-cluster testing)',
 );
 
+# The robo key. From the environment in the secret levels; in `inject` (k2)
+# it starts empty and is set at runtime by accept_key, which is why this is
+# the one attribute with a writer -- a private one.
 has ssh_key => (
-    is       => 'ro',
-    required => 1,
-    doc      => 'SSH private key content (robo-key)',
+    is  => 'rwp',
+    doc => 'SSH private key content (robo-key), held in memory only',
+);
+
+# robocop.security_level as the Deployment hands it over (ROBOCOP_SECURITY_LEVEL).
+# Only `inject` changes anything here: no key at start, a key-injection
+# listener, and OCPNodes held until the key arrives.
+has security_level => (
+    is      => 'ro',
+    default => 'secret',
+);
+
+# The robo key's public half, for checking an injected key (inject only).
+has expected_public_key => (
+    is => 'ro',
+);
+
+# What the Deployment's readinessProbe checks in inject mode: present exactly
+# while a key is held. It carries no key material. On the Memory-backed /tmp
+# emptyDir it survives a container restart, so a restart removes it first.
+has ready_file => (
+    is      => 'ro',
+    default => OCP::Robocop::Manifest::READY_FILE,
+);
+
+has key_injection => (
+    is      => 'lazy',
+    builder => '_build_key_injection',
 );
 
 has server_url => (
@@ -63,6 +94,14 @@ has verbose => (
     default => 0,
 );
 
+sub BUILD {
+    my ($self) = @_;
+    croak "robocop controller: ssh_key is required unless security_level is 'inject'"
+        unless $self->is_inject || (defined $self->ssh_key && length $self->ssh_key);
+}
+
+sub is_inject { ($_[0]->security_level // '') eq 'inject' }
+
 #
 # Construction from the environment (how bin/robocop builds the controller)
 #
@@ -75,10 +114,19 @@ has verbose => (
 sub from_env {
     my ($class, %overrides) = @_;
 
+    # inject (k2): the private key must NOT come from the environment -- it is
+    # handed over at runtime -- and the public half it is checked against must.
+    my $inject = ($ENV{ROBOCOP_SECURITY_LEVEL} // '') eq 'inject';
+
+    croak "robocop controller: ROBO_SSH_KEY is set, but ROBOCOP_SECURITY_LEVEL "
+        . "is inject -- in inject mode the key is never put in the environment"
+        if $inject && defined $ENV{ROBO_SSH_KEY} && length $ENV{ROBO_SSH_KEY};
+
     my %env_of = (
-        ssh_key    => 'ROBO_SSH_KEY',
         server_url => 'RKE2_SERVER_URL',
         join_token => 'RKE2_TOKEN',
+        ($inject ? (expected_public_key => 'ROBO_SSH_PUBLIC_KEY')
+                 : (ssh_key             => 'ROBO_SSH_KEY')),
     );
 
     my %args;
@@ -94,6 +142,7 @@ sub from_env {
         . join(', ', @missing)
         if @missing;
 
+    $args{security_level} = 'inject' if $inject;
     $args{namespace} = $ENV{NAMESPACE}
         if defined $ENV{NAMESPACE} && length $ENV{NAMESPACE};
     $args{distribution} = $ENV{OCP_DISTRIBUTION}
@@ -227,6 +276,8 @@ sub run {
     my $kube = $self->async_kube;
     $loop->add($kube);
 
+    $self->_start_key_injection if $self->is_inject;
+
     weaken(my $wself = $self);
 
     $self->{_watcher} = $kube->watcher('OCPNode',
@@ -244,6 +295,130 @@ sub run {
     );
 
     $loop->run;
+}
+
+#
+# Key injection (security_level inject, k2)
+#
+# No checkpoint, no restore: a robocop that starts in inject mode holds no key
+# until `ocp inject-key` delivers one, and says so -- in the log, in the
+# readiness probe (no ready file) and on every OCPNode that is waiting for it.
+#
+
+sub _build_key_injection {
+    my ($self) = @_;
+    weaken(my $wself = $self);
+    return OCP::Robocop::KeyInjection->new(
+        expected_public_key => $self->expected_public_key,
+        on_key    => sub {
+            die "robocop is shutting down\n" unless $wself;   # never ack an unheld key
+            $wself->accept_key(@_);
+        },
+        on_reject => sub { $wself->log("key injection refused: $_[0]") if $wself },
+    );
+}
+
+sub _start_key_injection {
+    my ($self) = @_;
+
+    # A ready file from before a container restart would claim a key this
+    # process does not have.
+    unlink $self->ready_file if -e $self->ready_file;
+
+    $self->key_injection->start($self->loop)->get;
+    $self->log("security_level inject: holding NO SSH key. Waiting for "
+        . "'ocp inject-key' (port-forward to 127.0.0.1:"
+        . OCP::Robocop::KeyInjection::PORT . "); OCPNodes that need SSH are held");
+}
+
+# The key is in (already validated by OCP::Robocop::KeyInjection). Hold it,
+# mark the pod ready, and go over every OCPNode again -- the held ones got no
+# further event. The pass is scheduled rather than run here: reconcile is
+# synchronous and can take minutes, and the injector is still waiting for its
+# answer on the connection this is called from.
+sub accept_key {
+    my ($self, $material, $fingerprint) = @_;
+
+    $self->_set_ssh_key($material);
+    Path::Tiny::path($self->ready_file)->spew("key held\n");
+    $self->log("SSH key injected (" . ($fingerprint // '?') . "), held in memory");
+
+    weaken(my $wself = $self);
+    $self->loop->later(sub { $wself->_reconcile_all if $wself });
+    return;
+}
+
+sub _reconcile_all {
+    my ($self) = @_;
+    my $crs = eval { $self->list_ocp_nodes };
+    unless ($crs) {
+        $self->log("ERROR listing OCPNodes after key injection: $@");
+        return;
+    }
+    $self->_reconcile_cr($_) for @$crs;
+}
+
+# The phases whose next step needs SSH to the machine (OCP::Node::reconcile:
+# Pending provisions, Provisioning/Installing install over Rex). Joining, Ready,
+# Failed and Terminating do not touch the key and run as usual.
+my %NEEDS_KEY = map { $_ => 1 } qw( Pending Provisioning Installing );
+
+sub _needs_key {
+    my ($self, $cr) = @_;
+    return $NEEDS_KEY{ $cr->{status}{phase} // 'Pending' } ? 1 : 0;
+}
+
+# Write SSHKeyAvailable onto an OCPNode -- only when it changes, because every
+# status write comes back as a watch event and an unconditional write would
+# loop. The phase is left alone: the node is neither failed nor progressing,
+# it is waiting, and the condition says on what.
+sub _set_key_condition {
+    my ($self, $cr, $available) = @_;
+
+    my @conds = @{ $cr->{status}{conditions} // [] };
+    my ($cur) = grep { ($_->{type} // '') eq 'SSHKeyAvailable' } @conds;
+    my $want = $available ? 'True' : 'False';
+
+    return if $cur && ($cur->{status} // '') eq $want;
+    return if !$cur && $available;   # never held, nothing to clear
+
+    my $now = Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ');
+    my $msg = $available
+        ? 'robocop holds the injected SSH key'
+        : "robocop holds no SSH key (robocop.security_level inject; a pod "
+        . "restart loses it). Run 'ocp inject-key' to continue.";
+
+    my %status = (
+        conditions => [
+            (grep { ($_->{type} // '') ne 'SSHKeyAvailable' } @conds),
+            {
+                type               => 'SSHKeyAvailable',
+                status             => $want,
+                reason             => $available ? 'KeyInjected' : 'KeyInjectionRequired',
+                message            => $msg,
+                lastTransitionTime => $now,
+            },
+        ],
+        lastReconcileTime => $now,
+        reconciler        => 'robocop',
+        ($available ? () : (message => "Waiting for SSH key: run 'ocp inject-key'")),
+    );
+
+    my $name = $cr->{metadata}{name} // '?';
+    $self->log($available ? "$name: SSH key available again"
+                          : "$name: held, waiting for 'ocp inject-key'");
+
+    eval {
+        OCP::K8s->patch_status(
+            $self->kube,
+            kind      => 'OCPNode',
+            name      => $name,
+            namespace => $cr->{metadata}{namespace} // $self->namespace,
+            status    => \%status,
+        );
+        1;
+    } or $self->log("ERROR patching key condition for $name: $@");
+    return;
 }
 
 # The watcher hands its callbacks an inflated IO::K8s object; the rest of the
@@ -290,6 +465,13 @@ sub _reconcile_cr {
 
 sub _on_node_event {
     my ($self, $cr) = @_;
+
+    # inject mode: nothing that needs SSH runs without the key.
+    if ($self->is_inject && $self->_needs_key($cr)) {
+        my $has_key = defined $self->ssh_key && length $self->ssh_key;
+        $self->_set_key_condition($cr, $has_key);
+        return unless $has_key;
+    }
 
     my $provider_name = $cr->{spec}{providerRef};
     unless ($provider_name) {
@@ -435,6 +617,14 @@ OCP::Robocop::Controller - Kubernetes controller for OCP nodes
         distribution => 'rke2',
     );
 
+    # security_level inject: no key yet, `ocp inject-key` delivers it
+    my $controller = OCP::Robocop::Controller->new(
+        security_level      => 'inject',
+        expected_public_key => $robo_public_key,
+        server_url          => 'https://192.168.122.1:9345',
+        join_token          => $token,
+    );
+
     # Or, the way bin/robocop builds it, from the environment:
     my $controller = OCP::Robocop::Controller->from_env;
 
@@ -458,6 +648,39 @@ Class method. Builds a controller from the environment C<bin/robocop> runs in:
 C<ROBO_SSH_KEY>, C<RKE2_SERVER_URL> and C<RKE2_TOKEN> are required (a missing one
 is fatal), C<NAMESPACE> and C<OCP_DISTRIBUTION> are optional. Extra arguments
 override the environment-derived ones.
+
+With C<ROBOCOP_SECURITY_LEVEL=inject> the private key must B<not> be in the
+environment (a set C<ROBO_SSH_KEY> is fatal); C<ROBO_SSH_PUBLIC_KEY>, the robo
+key's public half, is required instead.
+
+=head2 Key injection (security_level inject)
+
+In inject mode the controller starts without a key and listens on
+C<127.0.0.1:9999> for C<ocp inject-key>, which reaches it through a Kubernetes
+port-forward (protocol: L<OCP::Robocop::KeyInjection>). The key is held in
+memory only. A pod restart loses it and the admin injects again; nothing is
+checkpointed. Until a key is held:
+
+=over 4
+
+=item * OCPNodes in C<Pending>, C<Provisioning> or C<Installing> -- the phases
+whose next step needs SSH -- are not handed to L<OCP::Node>. They keep their
+phase and carry the condition C<SSHKeyAvailable=False> (reason
+C<KeyInjectionRequired>) plus a C<status.message> naming C<ocp inject-key>.
+Other phases reconcile as usual.
+
+=item * The ready file (C</tmp/robocop-key-ready>) is absent, so the
+Deployment's readiness probe keeps the pod not Ready.
+
+=back
+
+=head2 accept_key
+
+    $controller->accept_key($material, $fingerprint);
+
+Called by the injection listener with an already validated key: holds it,
+writes the ready file, and schedules a pass over every OCPNode, in which the
+waiting conditions flip to C<SSHKeyAvailable=True> (reason C<KeyInjected>).
 
 =head2 Reconciliation state machine
 

@@ -412,9 +412,10 @@ Stated plainly, so nothing surprises you halfway through:
   API access even though the rest of the cluster is fine.
 - **k3s does not support multiple control planes at all.** Configure more than
   one and `ocp apply` prints a loud warning and bootstraps only the first.
-- **`robocop.security_level: inject` is not implemented.** The config accepts
-  it; `ocp deploy-robocop` refuses to run with it. Use `secret` or
-  `secret_approved`.
+- **`robocop.security_level: inject` does not survive a pod restart.** The
+  key lives only in robocop's memory; after a restart robocop is not Ready
+  and holds back the OCPNodes that need SSH until you run `ocp inject-key`
+  again. Use `secret` or `secret_approved` if workers must come up unattended.
 - **A dev-mode project cannot move to secure mode.** Choose at `ocp init`.
 - **Not on CPAN, ever.** This distribution builds with `no_cpan = 1`. Docker
   image or git checkout.

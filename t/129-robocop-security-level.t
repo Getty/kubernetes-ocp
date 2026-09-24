@@ -294,10 +294,137 @@ subtest 'no control-plane address: die before any prompt or SSH' => sub {
 };
 
 # ==========================================================================
-# inject: accepted by config, refused by the deploy path
+# inject (k2): no private key anywhere in the cluster's stored state
 # ==========================================================================
+#
+# The earlier claim of this section was "inject is accepted by config but
+# refused by the deploy path". k2 replaces it: inject deploys, and what it
+# must never do is put the private robo key into a Secret or the pod spec.
 
-subtest 'inject: execute dies cleanly, touches no cluster' => sub {
+subtest 'inject: the Secret carries no private key, only its public half' => sub {
+    my $dir = make_project(level => 'inject');
+    my $r   = apply_credentials(dir => $dir);
+
+    is $r->{error}, '', 'no error';
+    my $secret = secret_of($r->{api});
+    ok $secret, 'the credentials Secret is still written (join URL + token)';
+
+    is_deeply [ sort keys %{ $secret->{stringData} } ],
+        [ 'rke2-token', 'robo-ssh-public-key', 'server-url' ],
+        'server-url, rke2-token and the PUBLIC robo key -- nothing else';
+    ok !exists $secret->{stringData}{'robo-ssh-key'}, 'no robo-ssh-key';
+    is $secret->{stringData}{'robo-ssh-public-key'}, 'ssh-ed25519 AAAArobo robo',
+        'the public half robocop checks an injected key against';
+    unlike join("\n", values %{ $secret->{stringData} }), qr/PRIVATE KEY/,
+        'no private key material in any value';
+};
+
+use OCP::Robocop::Manifest;
+use OCP::Robocop::Controller;
+use OCP::Cmd::Apply::CR;
+use YAML::XS ();
+
+my $DEPLOYMENT_FILE = 'share/robocop/deployment.yaml';
+
+sub deployment_doc {
+    my ($doc) = grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'Deployment' }
+        YAML::XS::LoadFile($DEPLOYMENT_FILE);
+    return $doc;
+}
+
+sub container_of { $_[0]{spec}{template}{spec}{containers}[0] }
+
+sub env_of {
+    my ($doc) = @_;
+    return { map { $_->{name} => $_ } @{ container_of($doc)->{env} } };
+}
+
+# Does any hash anywhere in $data carry key => $key (a secretKeyRef)?
+sub mentions_key {
+    my ($data, $key) = @_;
+    return 0 unless ref $data;
+    if (ref $data eq 'HASH') {
+        return 1 if ($data->{key} // '') eq $key;
+        return scalar grep { mentions_key($_, $key) } values %$data;
+    }
+    return scalar grep { mentions_key($_, $key) } @$data if ref $data eq 'ARRAY';
+    return 0;
+}
+
+subtest 'inject: the Deployment variant has no secretKeyRef to the private key' => sub {
+    my $doc = OCP::Robocop::Manifest->for_security_level(deployment_doc(), 'inject');
+    my $env = env_of($doc);
+
+    ok !exists $env->{ROBO_SSH_KEY}, 'no ROBO_SSH_KEY in the environment';
+    ok !mentions_key($doc, 'robo-ssh-key'), 'robo-ssh-key referenced nowhere';
+    is $env->{ROBOCOP_SECURITY_LEVEL}{value}, 'inject', 'the controller is told it is inject';
+    is $env->{ROBO_SSH_PUBLIC_KEY}{valueFrom}{secretKeyRef}{key}, 'robo-ssh-public-key',
+        'the public half comes from the Secret';
+    is $env->{RKE2_TOKEN}{valueFrom}{secretKeyRef}{key}, 'rke2-token', 'token still from the Secret';
+    is $env->{RKE2_SERVER_URL}{valueFrom}{secretKeyRef}{key}, 'server-url', 'server-url too';
+
+    my ($tmp) = grep { $_->{name} eq 'tmp' } @{ $doc->{spec}{template}{spec}{volumes} };
+    is $tmp->{emptyDir}{medium}, 'Memory',
+        '/tmp -- where OCP::Node writes the key file for Rex -- is tmpfs, not disk';
+
+    my $ready = OCP::Robocop::Controller->new(
+        security_level => 'inject', server_url => 'U', join_token => 'T',
+    )->ready_file;
+    is_deeply container_of($doc)->{readinessProbe}{exec}{command}, [ 'test', '-f', $ready ],
+        'readiness is the key-held file the controller writes';
+};
+
+subtest 'secret levels: the Deployment is left exactly as shipped' => sub {
+    for my $level (qw(secret secret_approved)) {
+        is_deeply(OCP::Robocop::Manifest->for_security_level(deployment_doc(), $level),
+            deployment_doc(), "$level: unchanged");
+    }
+    my $rbac = { kind => 'ServiceAccount', metadata => { name => 'robocop' } };
+    is_deeply(OCP::Robocop::Manifest->for_security_level({ %$rbac }, q(inject)), $rbac,
+        q(inject: other kinds unchanged));
+};
+
+package FakeShareCmd {
+    sub new             { bless {}, shift }
+    sub _find_share_dir { Path::Tiny::path('share') }
+}
+
+package main;
+
+subtest 'both deploy paths apply the inject variant' => sub {
+    my $sink = '';
+    open my $out_fh, '>', \$sink or die $!;
+
+    my $api = FakeApi->new;
+    {
+        local *STDOUT = $out_fh;
+        OCP::Cmd::DeployRobocop->new(command_chain => [ FakeOCP->new ])
+            ->_apply_manifests($api, 'inject');
+    }
+    my ($dep) = grep { $_->{kind} eq 'Deployment' } @{ $api->ensured };
+    ok $dep, 'deploy-robocop ensured the Deployment';
+    ok !mentions_key($dep, 'robo-ssh-key'), 'deploy-robocop: inject variant';
+
+    my $api2 = FakeApi->new;
+    {
+        local *STDOUT = $out_fh;
+        OCP::Cmd::Apply::CR::ensure_robocop(FakeShareCmd->new, $api2, 'inject');
+    }
+    my ($dep2) = grep { $_->{kind} eq 'Deployment' } @{ $api2->ensured };
+    ok $dep2, 'ocp apply ensured the Deployment';
+    ok !mentions_key($dep2, 'robo-ssh-key'),
+        'ocp apply: inject variant too -- an apply must not undo inject';
+
+    my $api3 = FakeApi->new;
+    {
+        local *STDOUT = $out_fh;
+        OCP::Cmd::Apply::CR::ensure_robocop(FakeShareCmd->new, $api3);
+    }
+    my ($dep3) = grep { $_->{kind} eq 'Deployment' } @{ $api3->ensured };
+    ok mentions_key($dep3, 'robo-ssh-key'), 'without a level: the shipped (secret) manifest';
+};
+
+subtest 'inject: execute no longer refuses the level' => sub {
     my $dir = make_project(level => 'inject');
 
     my $cmd = OCP::Cmd::DeployRobocop->new(
@@ -307,9 +434,9 @@ subtest 'inject: execute dies cleanly, touches no cluster' => sub {
     my $err = '';
     eval { $cmd->execute(undef, []); 1 } or $err = $@;
 
-    ok $err, 'execute dies for inject';
-    like $err, qr/\Qrobocop.security_level 'inject' is not yet available (k2)\E/,
-        'with the exact k2 message';
+    unlike $err, qr/not yet available/, 'the k2 refusal is gone';
+    like $err, qr/kubeconfig/i,
+        'it gets as far as the cluster credentials (none in this fixture)';
 };
 
 done_testing;

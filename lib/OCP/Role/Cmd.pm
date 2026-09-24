@@ -4,6 +4,8 @@ package OCP::Role::Cmd;
 use Moo::Role;
 
 use OCP::Choices;
+use OCP::Keys;
+use OCP::Password;
 use OCP::Provider;
 
 sub ocp { $_[0]->command_chain->[0] }
@@ -211,6 +213,31 @@ sub wait_seconds {
 # for diagnostics (a verbose summary line, a slow-run report) — nothing reads
 # it today, but it is the reason wait_seconds is more than a mock point.
 sub wait_seconds_total { $_[0]->{_wait_seconds_total} // 0 }
+
+# The PIN2 approval gate for an admin-gated action (secret_approved's Secret
+# write, `ocp inject-key`). Unlocking the admin key is both the proof that a
+# human holding PIN2 approved AND a key the caller may reuse -- deploy-robocop
+# reaches the control plane with it -- so it is RETURNED, not thrown away. A
+# wrong or absent PIN2 dies before the caller does anything.
+sub require_admin_approval {
+    my ($self, $config, $action) = @_;
+
+    print STDERR "  $action is admin-gated and needs PIN2 approval.\n";
+
+    my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin approval): ");
+    die "ERROR: No PIN2 given; $action refused.\n"
+        unless defined $pin2 && length $pin2;
+
+    # A wrong PIN2 makes the double-decrypt die ("AES-GCM authentication
+    # failed"); catch it so the refusal reads as a PIN2 problem rather than a
+    # crypto-internals leak, and so nothing downstream mistakes it for success.
+    my $keys  = OCP::Keys->new(project_dir => $config->project_dir);
+    my $admin = eval { $keys->get_admin_key($pin2) };
+    die "ERROR: Wrong PIN2 or no admin key; $action refused.\n"
+        unless $admin;
+
+    return $admin;
+}
 
 1;
 

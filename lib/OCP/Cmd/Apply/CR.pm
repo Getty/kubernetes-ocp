@@ -13,6 +13,7 @@ use OCP::Cmd::Apply::Bootstrap;
 use OCP::K8s;
 use OCP::Node;
 use OCP::Provider;
+use OCP::Robocop::Manifest;
 use OCP::SSH;
 
 =head1 SYNOPSIS
@@ -510,9 +511,11 @@ sub ensure_worker_ocpnodes {
 
 # Apply RBAC + Deployment for robocop. CRDs were already applied in
 # ensure_crds. Mirrors OCP::Cmd::DeployRobocop's loop but scoped to the
-# non-CRD files under share/robocop/.
+# non-CRD files under share/robocop/. $level is robocop.security_level: an
+# apply must put the same Deployment variant in place as deploy-robocop did,
+# or it would hand an inject cluster the secret variant back (k2).
 sub ensure_robocop {
-    my ($self, $api) = @_;
+    my ($self, $api, $level) = @_;
     my $share_dir   = $self->_find_share_dir;
     my $robocop_dir = $share_dir->child('robocop');
 
@@ -523,7 +526,7 @@ sub ensure_robocop {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
-            $api->ensure($doc);
+            $api->ensure(OCP::Robocop::Manifest->for_security_level($doc, $level));
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
     }

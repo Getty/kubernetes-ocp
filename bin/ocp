@@ -47,6 +47,7 @@ ocp - Omni Control Plane CLI
 
     # Controller
     ocp deploy-robocop                    # deploy robocop and its CRDs
+    ocp inject-key                        # hand robocop its key (security_level inject)
 
 =head1 DESCRIPTION
 
