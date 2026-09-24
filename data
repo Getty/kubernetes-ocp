@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-09-24T17:43:39Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:41:30Z
+created: 2026-09-24T17:06:40Z
+id: 183
+priority: high
+started: 2026-09-24T17:41:30Z
+status: done
+tags:
+- k3s
+- teardown
+- destroy
+title: 'Uninstall-Kette kennt k3s-agent-uninstall.sh nicht: k3s-Worker bleiben installiert'
+updated: 2026-09-24T17:43:39Z
+---
+
+Live-Fund 2026-09-24 (ocpt, k3s, main 0bd5262): destroy auf ssh-k3s-Worker -> "Could not uninstall on ocpt-w.vm". Auf dem Agent liegt nur /usr/local/bin/k3s-agent-uninstall.sh; $UNINSTALL_CMD (OCP::Role::Provider::ExistingHost) probiert nur rke2-uninstall.sh || k3s-uninstall.sh. Seit k175 scheitert es laut (gut), vorher still. Ausserdem gibt destroy "Uninstalling RKE2 on ..." auch bei k3s aus. Done: Kette um k3s-agent-uninstall.sh (und rke2 agent-Variante pruefen) erweitern, Meldung distributionsneutral oder korrekt; Test.
+
+2026-09-24 17:10 Fix on branch worktree-agent-a70523d0784ac60eb (da770e8): @UNINSTALLERS in OCP::Role::Provider::ExistingHost (rke2-uninstall.sh, k3s-uninstall.sh, k3s-agent-uninstall.sh), each run if present, failures ignored, k175 PATH check decides. Tests t/29 (stubbed shell run) + t/50. make test 1936 green. OFFEN: Meldung 'Uninstalling RKE2 on' steht in lib/OCP/Cmd/Destroy.pm:516 (+ Hinweis Z.435 nennt nur rke2/k3s-uninstall.sh) -- nicht angefasst wegen k180/k181 in Destroy.pm.
+
+2026-09-24 17:18 Review ok, rebased (Changes-Konflikt geloest) + ff nach main (207c39d). Offen: Destroy.pm Meldung 'Uninstalling RKE2' + manueller Hinweis ohne k3s-agent.
+
+2026-09-24 17:41 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
+
+2026-09-24 17:43 Live 2026-09-24 k3s-destroy mit Worker: Worker vor CP, k3s-agent-uninstall.sh greift, Meldungen RKE2/K3s, Exit 0. Fehlerpfad (Grund + Exit 1) nur per Tests.
