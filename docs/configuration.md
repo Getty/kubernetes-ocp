@@ -39,6 +39,11 @@ robocop: true                  # optional; default false, auto-true when any
                                # control plane or worker pool uses hetzner
 
 network:                       # optional; Cilium LB-IPAM + L2 announcement
+  pod_cidr: 10.42.0.0/16       # default; cluster-cidr + Cilium pod pool, set at
+                               # install only (a running cluster keeps its pool;
+                               # ocp status reports a difference). Must be /23 or
+                               # wider and stay clear of 10.43.0.0/16 (services),
+                               # node addresses and lb_pool
   lb_pool:
     cidr: 10.0.0.240/28        # or: start / stop
   l2:

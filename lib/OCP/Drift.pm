@@ -5,6 +5,7 @@ use Moo;
 use Socket;
 use Carp qw(croak carp);
 use OCP::Versions;
+use OCP::Config ();
 
 has config => (is => 'ro', required => 1);
 
@@ -179,6 +180,7 @@ sub detect {
     if ($self->api) {
         push @drift, $self->component_drift;
         push @drift, $self->registry_dns_drift;
+        push @drift, $self->pod_cidr_drift;
     }
     push @drift, $self->rex_probe_drift if $self->rex_prober;
 
@@ -503,6 +505,60 @@ sub registry_dns_drift {
 }
 
 #
+# Pod CIDR drift (k182): the pool Cilium hands out vs. network.pod_cidr.
+#
+# OCP writes the pod CIDR once, at install: into the server's cluster-cidr and
+# into Cilium's cluster pool. Moving it on a running cluster is a migration --
+# every pod holds an address from the old pool, every CiliumNode a /24 of it --
+# so there is no remedy, and upgrade_cilium deliberately keeps the live pool.
+# The typical finding is an RKE2 cluster installed before k182, which runs
+# Cilium's own default 10.0.0.0/8 and overlaps most 10.x host LANs. The human
+# either states the running pool in ocp.yaml or rebuilds the cluster.
+#
+# Read from the cilium-config ConfigMap Cilium renders its values into; no
+# ConfigMap or no cluster-pool key (another IPAM mode) is nothing to compare.
+sub pod_cidr_drift {
+    my ($self) = @_;
+
+    my $cm = eval {
+        $self->api->get('ConfigMap', name => 'cilium-config', namespace => 'kube-system');
+    } or return;
+    my $live = _dig($cm, qw(data cluster-pool-ipv4-cidr));
+    return unless defined $live && $live =~ /\S/;
+
+    my $actual   = join ' ', split ' ', $live;
+    my $config   = $self->config;
+    my $expected = $config->pod_cidr;
+    return if $actual eq $expected;
+
+    # Offer to state the running pool in ocp.yaml only where validation would
+    # take it. Cilium's 10.0.0.0/8 contains the service network, so a cluster
+    # that runs it has one way out, and the step says so.
+    my $rebuild = "Moving to $expected means rebuilding the cluster"
+                . " (pods and nodes hold addresses from the running pool)";
+    my $service = $OCP::Config::SERVICE_CIDR;
+    my $clashes = grep { OCP::Config::_looks_like_cidr($_)
+                         && OCP::Config::_cidrs_overlap($_, $service) } split ' ', $actual;
+    my $manual = $clashes
+        ? "The running pool overlaps the service network $service, so ocp.yaml cannot"
+          . " state it. $rebuild"
+        : "Keep the running pool: set network.pod_cidr: $actual in ocp.yaml. $rebuild";
+
+    my $source = $config->pod_cidr_is_set ? 'network.pod_cidr' : 'default';
+    return {
+        kind        => 'spec',
+        component   => 'pod_cidr',
+        label       => 'Pod CIDR',
+        expected    => $expected,
+        actual      => $actual,
+        message     => "Pod CIDR: Cilium pod pool is $actual, ocp.yaml expects $expected ($source);"
+                     . " the pod network of a running cluster is not changed automatically",
+        manual_step => $manual,
+        remedy      => undef,
+    };
+}
+
+#
 # Host-side drift: state on the machine that no Kubernetes query can see
 #
 # This is the SSH-side detection mode. Where component_drift asks the apiserver,
@@ -665,10 +721,14 @@ sub _dig {
     return $value;
 }
 
-# One line per drift entry, ready to print.
+# One line per drift entry, ready to print, plus an indented second line for
+# an entry that names its manual step.
 sub format_lines {
     my ($class, $drift) = @_;
-    return map { "  [drift] $_->{message}" } @$drift;
+    return map {
+        ("  [drift] $_->{message}",
+         ($_->{manual_step} ? "          $_->{manual_step}" : ()))
+    } @$drift;
 }
 
 1;
@@ -726,6 +786,10 @@ when no automatic fix exists
 =item * B<self_healing> - present and true when a plain C<ocp apply> re-applies
 this component and thereby closes the entry. The reconcile path uses it to not
 point the user at a manual step it is about to take itself.
+
+=item * B<manual_step> - optional; what the human does about an entry without a
+remedy, where C<ocp update> is not the answer either. The reconcile path prints
+it instead of its generic hint.
 
 =back
 
@@ -812,6 +876,14 @@ an address that is not the control plane's. Both distributions own that
 ConfigMap themselves and reset it on an upgrade or a restart, taking the record
 with them; C<ocp apply> writes it back, so the entry reports the window in
 between rather than a permanent fault, and carries no remedy of its own.
+
+=head2 pod_cidr_drift
+
+Compares the pool in Cilium's C<cilium-config> ConfigMap
+(C<cluster-pool-ipv4-cidr>) with C<network.pod_cidr> (default
+C<10.42.0.0/16>). A difference is a C<spec> entry with no remedy and a
+C<manual_step>: the pod network of a running cluster is never moved
+automatically, and C<upgrade_cilium> keeps the live pool.
 
 =head2 rex_probe_drift
 

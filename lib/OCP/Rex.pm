@@ -252,6 +252,10 @@ sub install_server {
     my $gpu        = $opts{gpu}        // 1;
     my $gpu_driver = $opts{gpu_driver} || 'host';
 
+    # network.pod_cidr (k182): the server's cluster-cidr and Cilium's pool,
+    # both from this one value. Empty leaves the Rexfile's fallback in charge.
+    my $pod_cidr = $opts{pod_cidr} || '';
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
@@ -269,6 +273,7 @@ sub install_server {
         ntp               => $ntp,
         gpu               => $gpu ? 1 : 0,
         gpu_driver        => $gpu_driver,
+        pod_cidr          => $pod_cidr,
     );
 
     # Get kubeconfig directly via SSH (more reliable than parsing Rex output)
@@ -284,6 +289,7 @@ sub install_server {
         # Where Cilium reaches the API server on k3s, which has no localhost
         # port common to server and agents (k178). RKE2 ignores it.
         k8s_service_host => $self->advertised_host,
+        pod_cidr         => $pod_cidr,
         version      => $opts{cilium_version}
             || OCP::Versions->get_component_version('cilium') || '',
         cli_version  => $opts{cilium_cli_version}
@@ -520,11 +526,16 @@ Execute a Rex task with parameters.
         token        => '...',   # see below if omitted
         gpu          => 1,       # 0 skips GPU detection entirely
         gpu_driver   => 'host',  # 'operator' leaves the host driver alone
+        pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
     );
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
 driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
 C<operator>.
+
+C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
+is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to
+C<10.42.0.0/16>. A Cilium that already runs keeps the pool it has.
 
 When C<token> is omitted, an existing cluster's token is B<reused> rather than
 regenerated: the machine's on-disk C<server/token> is read first, and a fresh

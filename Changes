@@ -66,6 +66,13 @@ Revision history for OCP
       Cilium reaches the API server at the control plane's address with its
       pod pool on K3s' cluster CIDR. A Cilium that does not become ready stops
       the apply with its status instead of passing for installed.
+    - RKE2 and K3s share one pod network, `network.pod_cidr` (default
+      10.42.0.0/16): it becomes the server's cluster-cidr and Cilium's pod
+      pool, where RKE2 used to run Cilium's own 10.0.0.0/8 across most host
+      LANs. `ocp apply` refuses a pod CIDR that overlaps the service network,
+      a node address or the LoadBalancer pool. A running cluster keeps its
+      pool through Cilium upgrades; `ocp status` reports one that differs
+      from `ocp.yaml` and what moving it would take, and never moves it.
     - The NVIDIA GPU stack -- driver, container toolkit, GPU Operator and its
       ClusterPolicy, RuntimeClass, device plugin, DCGM -- installs only where
       NFD reports a CUDA-capable card, and `gpu.enabled` / `gpu.driver` in

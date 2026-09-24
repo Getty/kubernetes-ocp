@@ -33,10 +33,13 @@ my $src = $rexfile->slurp_utf8;
 my ($helper) = $src =~ /^(sub _apply_gateway_api_crds \{.*?^\})/ms;
 my ($arch)   = $src =~ /^(sub _node_arch \{.*?^\})/ms;
 my ($wait)   = $src =~ /^(sub _wait_for_cilium \{.*?^\})/ms;
+my ($live)   = $src =~ /^(sub _live_cilium_pool \{.*?^\})/ms;
+my ($pool)   = $src =~ /^(sub _cilium_pool_args \{.*?^\})/ms;
 my ($task)   = $src =~ /^(task "upgrade_cilium", sub \{\n.*?\n\};)$/ms;
 ok defined $helper, 'share/Rexfile defines _apply_gateway_api_crds';
 ok defined $arch,   'share/Rexfile defines _node_arch';
 ok defined $wait,   q{share/Rexfile defines _wait_for_cilium (k178)};
+ok defined $live && defined $pool, q{share/Rexfile defines the live-pool helpers (k182)};
 ok defined $task,   'share/Rexfile defines the upgrade_cilium task'
     or BAIL_OUT('upgrade_cilium not found in the Rexfile');
 
@@ -57,7 +60,7 @@ sub task { my ($name, $code) = @_; $TASKS{$name} = $code }
 sub task_params { my ($p) = @_; return $p }
 PERL
 
-ok eval("$stubs\n$helper\n$arch\n$wait\n$task\n1;"), 'the lifted task compiles against a run stub'
+ok eval("$stubs\n$helper\n$arch\n$wait\n$live\n$pool\n$task\n1;"), 'the lifted task compiles against a run stub'
     or BAIL_OUT("cannot compile the lifted task: $@");
 
 my $upgrade = $RexfileUpgradeCilium::TASKS{upgrade_cilium}
@@ -147,6 +150,27 @@ subtest 'a failed CRD apply stops the upgrade' => sub {
     like $@, qr/Gateway API/, 'with the helper\'s error';
     is index_of(\@RexfileUpgradeCilium::RUNS, qr/^cilium upgrade/), -1,
         'cilium upgrade never runs';
+};
+
+# k182: the pool a running Cilium hands out survives the upgrade; the task
+# reads it off cilium-config and passes it back, never a configured one.
+subtest 'the running pod pool is passed through the upgrade' => sub {
+    local @RexfileUpgradeCilium::RUNS = ();
+    no warnings 'redefine';
+    local *RexfileUpgradeCilium::run = sub {
+        my ($cmd, %o) = @_;
+        push @RexfileUpgradeCilium::RUNS, [ $cmd, \%o ];
+        $? = 0;
+        return "10.0.0.0/8" if $cmd =~ /cluster-pool-ipv4-cidr/;
+        return "Linux\n";
+    };
+    ok eval { $upgrade->({%params}); 1 }, 'the task succeeds' or diag $@;
+    my $up = index_of(\@RexfileUpgradeCilium::RUNS, qr/^cilium upgrade/);
+    like $RexfileUpgradeCilium::RUNS[$up][0],
+        qr/--set ipam\.operator\.clusterPoolIPv4PodCIDRList=10\.0\.0\.0\/8\b/,
+        'cilium upgrade keeps 10.0.0.0/8';
+    cmp_ok index_of(\@RexfileUpgradeCilium::RUNS, qr/cluster-pool-ipv4-cidr/), '<', $up,
+        'read before the upgrade';
 };
 
 done_testing;

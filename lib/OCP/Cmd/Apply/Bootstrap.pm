@@ -420,6 +420,7 @@ sub bootstrap_control_plane {
             ntp               => $config->ntp_enabled,
             gpu               => $config->gpu_enabled,
             gpu_driver        => $config->gpu_driver,
+            pod_cidr          => $config->pod_cidr,
         );
     };
     if ($@) {

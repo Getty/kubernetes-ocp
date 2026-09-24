@@ -47,8 +47,8 @@ my $src = $rexfile->slurp_utf8;
 my $TOKEN = 'K10deadbeef::server:s3cr3t-token-value-0123456789';
 
 my @subs;
-for my $name (qw( _k3s_cluster_cidr _k3s_server_config _k3s_install_cmd
-                  _cilium_install_args _wait_for_cilium )) {
+for my $name (qw( _default_pod_cidr _k3s_server_config _k3s_install_cmd
+                  _cilium_install_args _cilium_pool_args _wait_for_cilium )) {
     # one-liners first, or the block pattern runs on to the next sub's brace
     my ($body) = $src =~ /^(sub \Q$name\E \{[^\n]*\})$/m;
     ($body) = $src =~ /^(sub \Q$name\E \{.*?^\})/ms unless defined $body;
@@ -137,13 +137,15 @@ subtest 'install_k3s_server writes the built config before installing' => sub {
 
 # --- 2. Cilium install flags --------------------------------------------------
 
-subtest 'rke2: Cilium flags unchanged' => sub {
+subtest 'rke2: Cilium flags' => sub {
     my $a = $args_for->(distribution => 'rke2');
     like   $a, qr/--set kubeProxyReplacement=true/, 'kube-proxy replacement';
     like   $a, qr/--set k8sServiceHost=localhost /, 'localhost (the RKE2 agent LB listens on 6443)';
     like   $a, qr/--set k8sServicePort=6443\b/, 'port 6443';
     like   $a, qr/--set gatewayAPI\.enabled=true/, 'Gateway API';
-    unlike $a, qr/clusterPoolIPv4PodCIDRList/, 'no IPAM override';
+    # k182: RKE2 gets the same pool as k3s now, not Cilium's 10.0.0.0/8
+    like   $a, qr/--set ipam\.operator\.clusterPoolIPv4PodCIDRList=10\.42\.0\.0\/16\b/,
+        'IPAM pool = cluster-cidr (k182)';
 };
 
 subtest 'k3s: Cilium reaches the API server at the control plane address' => sub {

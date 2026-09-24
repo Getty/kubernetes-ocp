@@ -136,8 +136,13 @@ sub reconcile_components {
                 # manifest, so the hash changes and the component rolls out
                 # two blocks further down. Only what neither covers
                 # (distribution upgrades, moved IPs) needs a human.
-                print "        No automatic step for this — see 'ocp update'\n"
-                    unless $entry->{kind} eq 'missing' || $entry->{self_healing};
+                if ($entry->{manual_step}) {
+                    print "        $entry->{manual_step}\n";
+                }
+                else {
+                    print "        No automatic step for this — see 'ocp update'\n"
+                        unless $entry->{kind} eq 'missing' || $entry->{self_healing};
+                }
                 next;
             }
 

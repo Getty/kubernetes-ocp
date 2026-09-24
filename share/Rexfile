@@ -615,6 +615,10 @@ task "install_rke2_server", sub {
         $config .= "tls-san:\n";
         $config .= "  - $_\n" for @tls_sans;
     }
+    # RKE2's own default, spelled out so it is the same value Cilium's pool
+    # gets (k182). A joining server must carry its first server's value --
+    # RKE2 refuses a mismatch -- and robocop's joins only have the fallback.
+    $config .= "cluster-cidr: " . ($params->{pod_cidr} || _default_pod_cidr()) . "\n";
     # Disable every bundled ingress controller — Cilium Gateway API is the
     # ingress here. RKE2 v1.36 added Traefik on top of ingress-nginx, and its
     # helm-install job CrashLoopBackOffs against a Cilium-owned cluster
@@ -918,6 +922,7 @@ task "install_k3s_server", sub {
         token     => $token,
         node_name => $node_name,
         tls_sans  => \@tls_sans,
+        pod_cidr  => $params->{pod_cidr},
     );
     file "/etc/rancher/k3s", ensure => 'directory';
     _write_secret_file("/etc/rancher/k3s/config.yaml", $config);
@@ -1062,10 +1067,14 @@ sub _k3s_install_cmd {
     return $cmd;
 }
 
-# k3s' pod network, stated on both sides: the server's cluster-cidr and
+# The pod network, stated on both sides: the server's cluster-cidr and
 # Cilium's cluster-pool IPAM must agree, and Cilium's own default (10.0.0.0/8)
-# does not (k178).
-sub _k3s_cluster_cidr { '10.42.0.0/16' }
+# neither does nor stays clear of host LANs (k178, k182). OCP::Rex passes
+# network.pod_cidr from ocp.yaml as pod_cidr; this is the fallback for
+# hand-runs and for robocop's control-plane joins, which never see ocp.yaml.
+# Same value as $OCP::Config::DEFAULT_POD_CIDR (t/182 holds them together),
+# and the built-in cluster-cidr of RKE2 and k3s alike.
+sub _default_pod_cidr { '10.42.0.0/16' }
 
 # /etc/rancher/k3s/config.yaml for a k3s server. Out of the box k3s starts
 # Flannel, its kube-router network policy controller and kube-proxy; next to
@@ -1085,7 +1094,7 @@ sub _k3s_server_config {
     $config .= "flannel-backend: none\n";
     $config .= "disable-network-policy: true\n";
     $config .= "disable-kube-proxy: true\n";
-    $config .= "cluster-cidr: " . _k3s_cluster_cidr() . "\n";
+    $config .= "cluster-cidr: " . ($args{pod_cidr} || _default_pod_cidr()) . "\n";
     # Cilium Gateway API and LB-IPAM take over ingress and LoadBalancers.
     $config .= "disable:\n";
     $config .= "  - $_\n" for qw( traefik servicelb );
@@ -1336,24 +1345,45 @@ sub _restart_cilium_operator {
 # agents proxy the API on localhost:6443 just like the servers serve it there.
 # k3s: agents proxy it on 127.0.0.1:6444 instead, so no localhost port fits
 # both roles -- Cilium gets the control plane's own address (k3s runs a single
-# server here, k8). Its IPAM pool follows k3s' cluster-cidr (k178).
+# server here, k8). The IPAM pool is the cluster-cidr on both distributions
+# (k178 for k3s, k182 for RKE2, which ran Cilium's 10.0.0.0/8 before).
 sub _cilium_install_args {
     my (%o) = @_;
     my $distribution = $o{distribution} || 'rke2';
 
-    my ($host, @extra) = ('localhost');
+    my $host = 'localhost';
     if ($distribution eq 'k3s') {
         $host = $o{k8s_service_host}
             or die "install_cilium on k3s needs k8s_service_host (the control plane address)\n";
-        push @extra, '--set ipam.operator.clusterPoolIPv4PodCIDRList=' . _k3s_cluster_cidr();
     }
 
     return join ' ',
         '--set kubeProxyReplacement=true',
         "--set k8sServiceHost=$host",
         '--set k8sServicePort=6443',
-        @extra,
+        _cilium_pool_args($o{pod_cidr} || _default_pod_cidr()),
         '--set gatewayAPI.enabled=true';
+}
+
+# The pool a running Cilium hands out, from its cilium-config ConfigMap
+# (space-separated when several). Empty when it cannot be read or Cilium runs
+# another IPAM mode. Read-only.
+sub _live_cilium_pool {
+    my (%o) = @_;
+    my $out = run "$o{kubectl} -n kube-system get configmap cilium-config"
+        . " -o jsonpath='{.data.cluster-pool-ipv4-cidr}' 2>/dev/null",
+        env      => { KUBECONFIG => $o{kubeconfig} },
+        auto_die => FALSE;
+    return () if $? != 0 || !defined $out;
+    return grep { m{^[0-9.]+/[0-9]+$} } split ' ', $out;
+}
+
+# The --set for Cilium's cluster pool, or nothing when no pool is given.
+sub _cilium_pool_args {
+    my (@cidrs) = @_;
+    return '' unless @cidrs;
+    return "--set ipam.operator.clusterPoolIPv4PodCIDRList=$cidrs[0]" if @cidrs == 1;
+    return "--set 'ipam.operator.clusterPoolIPv4PodCIDRList={" . join(',', @cidrs) . "}'";
 }
 
 # Waits for Cilium and dies when it does not get there. Rex's run does not
@@ -1473,7 +1503,10 @@ task "install_cilium", sub {
         say "Cilium $cilium_version_target already running, skipping install";
     } elsif ($cilium_running && !$cilium_version_ok) {
         say "Cilium running but different version, upgrading to $cilium_version_target...";
-        run 'cilium upgrade --version ' . $cilium_version_target,
+        # A running Cilium keeps the pool it hands out, whatever pod_cidr
+        # says (k182) -- see upgrade_cilium.
+        run 'cilium upgrade --version ' . $cilium_version_target . ' '
+            . _cilium_pool_args(_live_cilium_pool(kubectl => $kubectl, kubeconfig => $kubeconfig)),
             env => { KUBECONFIG => $kubeconfig };
     } else {
         # cilium_running is false: either nothing installed OR a half-broken
@@ -1493,6 +1526,7 @@ task "install_cilium", sub {
             _cilium_install_args(
                 distribution     => $distribution,
                 k8s_service_host => $params->{k8s_service_host},
+                pod_cidr         => $params->{pod_cidr},
             ),
             env => { KUBECONFIG => $kubeconfig };
 
@@ -1565,9 +1599,16 @@ task "upgrade_cilium", sub {
         version    => $gateway_api_version,
     );
 
-    # Upgrade Cilium in cluster
+    # Upgrade Cilium in cluster. The pool stays what the cluster runs (k182):
+    # moving it under running pods is a migration, not an upgrade, and an RKE2
+    # cluster installed before k182 runs 10.0.0.0/8. `cilium upgrade` resets
+    # to the chart's defaults and then reuses the release's values, so a pool
+    # the release never recorded would follow the chart's default; passing
+    # the live one pins it. OCP::Drift reports a pool that differs from
+    # ocp.yaml -- this task never acts on network.pod_cidr.
     say "Upgrading Cilium in cluster to $version...";
-    run "cilium upgrade --version $version",
+    run "cilium upgrade --version $version "
+        . _cilium_pool_args(_live_cilium_pool(kubectl => $kubectl, kubeconfig => $kubeconfig)),
         env => { KUBECONFIG => $kubeconfig };
 
     # Wait for rollout

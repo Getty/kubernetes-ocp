@@ -283,6 +283,24 @@ sub lb_pool_blocks {
     return [{ start => $p->{start}, stop => $p->{stop} }];
 }
 
+# The pod network (k182): the cluster-cidr RKE2/k3s are installed with and
+# the cluster pool Cilium's IPAM hands out, which must agree. The default is
+# the built-in cluster-cidr of both distributions; Cilium's own default,
+# 10.0.0.0/8, overlaps most host LANs and is what an RKE2 cluster ran before.
+# Only read at install time: a running cluster keeps its pool, and OCP::Drift
+# reports a difference instead of moving it.
+#
+#   network:
+#     pod_cidr: 10.42.0.0/16
+our $DEFAULT_POD_CIDR = '10.42.0.0/16';
+
+# The service network OCP never changes: RKE2's and k3s' built-in
+# service-cidr. The pod CIDR must stay clear of it.
+our $SERVICE_CIDR = '10.43.0.0/16';
+
+sub pod_cidr        { shift->network_config->{pod_cidr} // $DEFAULT_POD_CIDR }
+sub pod_cidr_is_set { defined shift->network_config->{pod_cidr} }
+
 sub l2_config        { shift->network_config->{l2} // {} }
 sub l2_node_selector { shift->l2_config->{node_selector} // {} }
 
@@ -506,6 +524,8 @@ sub validate {
     }
 
     push @errors, $self->_validate_network;
+    push @errors, $self->_validate_pod_cidr(
+        ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {});
 
     # robocop.security_level, report-only (k129). The accessor croaks; here
     # we collect one line so `ocp apply` lists it with every other config error.
@@ -600,6 +620,87 @@ sub _validate_network {
     }
 
     return @errors;
+}
+
+# network.pod_cidr (k182). Checked whether set or not: the default can
+# collide with a node address just as well, and then the error has to say it
+# was the default that did.
+sub _validate_pod_cidr {
+    my ($self, $net) = @_;
+    my $set  = defined $net->{pod_cidr};
+    my $cidr = $set ? $net->{pod_cidr} : $DEFAULT_POD_CIDR;
+    my $what = $set ? "network.pod_cidr: '$cidr'" : "network.pod_cidr (default $cidr)";
+
+    return ("network.pod_cidr: '" . (ref $cidr ? 'a ' . lc(ref $cidr) : $cidr)
+        . "' is not an IPv4 CIDR (e.g. 10.42.0.0/16)")
+        unless _looks_like_cidr($cidr);
+
+    my ($net_ip, $bits) = _cidr_range($cidr);
+    my $canonical = _int_to_ipv4($net_ip) . "/$bits";
+    return ("$what has host bits set; the network address is $canonical")
+        unless $cidr eq $canonical;
+
+    # Cilium's cluster pool gives every node a /24 out of this.
+    return ("$what is too small: Cilium gives every node a /24 of it, "
+        . "so the pod CIDR needs a shorter prefix than /24 (e.g. /16)")
+        if $bits >= 24;
+
+    my @taken = ([ "the service network $SERVICE_CIDR", $SERVICE_CIDR ]);
+    my $cps = $self->control_planes;
+    for my $i (0 .. $#$cps) {
+        for my $key (qw( host public_ip private_ip )) {
+            my $addr = $cps->[$i]{$key};
+            push @taken, [ "control_planes[" . ($i + 1) . "].$key $addr", "$addr/32" ]
+                if _looks_like_ipv4($addr);
+        }
+    }
+    for my $pool (@{ $self->workers }) {
+        next unless ref $pool eq 'HASH';
+        my @hosts = ($pool->{host},
+            map { ref $_ eq 'HASH' ? $_->{host} : $_ } @{ ref $pool->{nodes} eq 'ARRAY' ? $pool->{nodes} : [] });
+        my $name = $pool->{name} // '?';
+        push @taken, map { [ "worker pool '$name' host $_", "$_/32" ] } grep { _looks_like_ipv4($_) } @hosts;
+    }
+    if (ref(my $lb = $net->{lb_pool}) eq 'HASH') {
+        push @taken, [ "network.lb_pool $lb->{cidr}", $lb->{cidr} ] if _looks_like_cidr($lb->{cidr});
+        for my $key (qw( start stop )) {
+            push @taken, [ "network.lb_pool.$key $lb->{$key}", "$lb->{$key}/32" ]
+                if _looks_like_ipv4($lb->{$key});
+        }
+    }
+
+    my $hint = $set ? '' : ' -- set network.pod_cidr to a range nothing else uses';
+    my @errors;
+    for my $t (@taken) {
+        push @errors, "$what overlaps $t->[0]$hint"
+            if _cidrs_overlap($cidr, $t->[1]);
+    }
+    return @errors;
+}
+
+# (network address as an integer, prefix length) of a valid IPv4 CIDR.
+sub _cidr_range {
+    my ($ip, $bits) = split m{/}, shift;
+    my $n = 0;
+    $n = $n * 256 + $_ for split /\./, $ip;
+    my $mask = $bits ? (0xFFFFFFFF << (32 - $bits)) & 0xFFFFFFFF : 0;
+    return ($n & $mask, $bits);
+}
+
+sub _int_to_ipv4 {
+    my $n = shift;
+    return join '.', map { ($n >> $_) & 255 } 24, 16, 8, 0;
+}
+
+# Two blocks overlap when one contains the other's network address under the
+# shorter of the two prefixes.
+sub _cidrs_overlap {
+    my ($a, $b) = @_;
+    my ($an, $ab) = _cidr_range($a);
+    my ($bn, $bb) = _cidr_range($b);
+    my $bits = $ab < $bb ? $ab : $bb;
+    my $mask = $bits ? (0xFFFFFFFF << (32 - $bits)) & 0xFFFFFFFF : 0;
+    return (($an & $mask) == ($bn & $mask)) ? 1 : 0;
 }
 
 sub _looks_like_ipv4 {
