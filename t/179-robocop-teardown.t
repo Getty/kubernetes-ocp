@@ -182,7 +182,8 @@ sub provider_cr {
 sub ctrl {
     my (%o) = @_;
     return OCP::Robocop::Controller->new(
-        ssh_key => "ROBO-KEY\n", server_url => 'U', join_token => 'T', %o);
+        ssh_key => "ROBO-KEY\n", server_url => 'U', join_token => 'T',
+        distribution => 'rke2', pod_cidr => '10.42.0.0/16', %o);
 }
 
 sub capture_std {

@@ -106,9 +106,19 @@ The node join token.
 Namespace to watch; defaults to C<ocp-system>. Set from the pod's
 C<metadata.namespace> in the Deployment.
 
-=item B<OCP_DISTRIBUTION> (optional)
+=item B<OCP_DISTRIBUTION> (required)
 
-C<rke2> (default) or C<k3s>.
+C<rke2> or C<k3s>: which agent robocop installs. There is no default -- a
+missing or unknown value is fatal.
+
+=item B<OCP_POD_CIDR> (required)
+
+The cluster's C<network.pod_cidr>, e.g. C<10.42.0.0/16>, which an additional
+control plane joining the cluster must repeat. No default either.
+
+C<ocp apply> and C<ocp deploy-robocop> set both in the Deployment from
+F<ocp.yaml>; a Deployment without them was not written by them and has to be
+rolled out again.
 
 =item B<ROBOCOP_RESYNC_INTERVAL> (optional)
 

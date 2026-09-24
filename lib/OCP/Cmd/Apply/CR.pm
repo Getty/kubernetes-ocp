@@ -25,7 +25,7 @@ use OCP::SSH;
     my @crs     = OCP::Cmd::Apply::CR::worker_ocpnodes($config);
     my @missing = OCP::Cmd::Apply::CR::missing_worker_ocpnodes($apply, $api, $config);
     OCP::Cmd::Apply::CR::migrate_legacy_nodes($apply, $api);
-    OCP::Cmd::Apply::CR::ensure_robocop($apply, $api);
+    OCP::Cmd::Apply::CR::ensure_robocop($apply, $api, $config);
     OCP::Cmd::Apply::CR::wait_robocop_ready($apply, $api, $timeout);
     OCP::Cmd::Apply::CR::drive_workers($apply, $api, $config, $deps);
     OCP::Cmd::Apply::CR::print_worker_status($apply, $results);
@@ -514,11 +514,13 @@ sub ensure_worker_ocpnodes {
 
 # Apply RBAC + Deployment for robocop. CRDs were already applied in
 # ensure_crds. Mirrors OCP::Cmd::DeployRobocop's loop but scoped to the
-# non-CRD files under share/robocop/. $level is robocop.security_level: an
-# apply must put the same Deployment variant in place as deploy-robocop did,
-# or it would hand an inject cluster the secret variant back (k2).
+# non-CRD files under share/robocop/. Shaped from $config the way
+# deploy-robocop shapes it (OCP::Robocop::Manifest->for_config): the same
+# Deployment variant for robocop.security_level, or an apply would hand an
+# inject cluster the secret variant back (k2), and the distribution and pod
+# CIDR robocop refuses to start without (k186, k184).
 sub ensure_robocop {
-    my ($self, $api, $level) = @_;
+    my ($self, $api, $config) = @_;
     my $share_dir   = $self->_find_share_dir;
     my $robocop_dir = $share_dir->child('robocop');
 
@@ -529,7 +531,7 @@ sub ensure_robocop {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
-            $api->ensure(OCP::Robocop::Manifest->for_security_level($doc, $level));
+            $api->ensure(OCP::Robocop::Manifest->for_config($doc, $config));
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
     }
@@ -732,7 +734,7 @@ sub cli_reconcile_workers {
             distribution => $distribution,
             verbose      => $self->ocp->verbose,
             (($hash->{spec}{role} // '') eq 'control-plane'
-                ? (tls_san => \@cp_sans) : ()),
+                ? (tls_san => \@cp_sans, pod_cidr => $config->pod_cidr) : ()),
             %gpu_flags,
         );
 

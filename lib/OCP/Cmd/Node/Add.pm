@@ -343,6 +343,7 @@ sub _cli_reconcile {
         ($server_url   ? (server_url => $server_url) : ()),
         ($join_token   ? (join_token => $join_token) : ()),
         distribution  => ($config->distribution || 'rke2'),
+        pod_cidr      => $config->pod_cidr,   # a control-plane join repeats it (k184)
         reconciler_id => 'cli',
     );
 

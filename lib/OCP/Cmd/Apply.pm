@@ -557,8 +557,8 @@ sub _ensure_worker_ocpnodes {
 }
 
 sub _ensure_robocop {
-    my ($self, $api, $level) = @_;
-    return OCP::Cmd::Apply::CR::ensure_robocop($self, $api, $level);
+    my ($self, $api, $config) = @_;
+    return OCP::Cmd::Apply::CR::ensure_robocop($self, $api, $config);
 }
 
 sub _wait_robocop_ready {

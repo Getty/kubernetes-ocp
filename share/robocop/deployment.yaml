@@ -74,6 +74,11 @@ spec:
         # both deploy paths rewrite it through OCP::Robocop::Manifest: no
         # ROBO_SSH_KEY, ROBO_SSH_PUBLIC_KEY + ROBOCOP_SECURITY_LEVEL instead,
         # /tmp on tmpfs, and a readinessProbe on the key-held file.
+        #
+        # OCP_DISTRIBUTION and OCP_POD_CIDR are deliberately NOT here: both
+        # deploy paths add them from ocp.yaml (OCP::Robocop::Manifest->for_config,
+        # k186/k184), and a value in this file would be a guess robocop acts
+        # on. Applied without them, robocop exits at startup and says why.
         - name: ROBO_SSH_KEY
           valueFrom:
             secretKeyRef:

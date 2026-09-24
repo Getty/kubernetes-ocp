@@ -74,6 +74,8 @@ sub controller {
         ssh_key     => "PRIVATE-KEY\n",
         server_url  => 'https://police1:9345',
         join_token  => 'JOIN-TOKEN',
+        distribution => 'rke2',
+        pod_cidr    => '10.42.0.0/16',
         namespace   => 'ocp-test',
         loop        => IO::Async::Loop->new,
         kube        => FakeKube->new,
@@ -171,6 +173,8 @@ subtest 'bin/robocop controller exits 1 with the reason on STDERR' => sub {
         $ENV{ROBO_SSH_KEY}    = "PRIVATE-KEY\n";
         $ENV{RKE2_SERVER_URL} = 'https://police1:9345';
         $ENV{RKE2_TOKEN}      = 'JOIN-TOKEN';
+        $ENV{OCP_DISTRIBUTION} = 'rke2';
+        $ENV{OCP_POD_CIDR}     = '10.42.0.0/16';
         open STDOUT, '>', $out->filename or die $!;
         open STDERR, '>', $err->filename or die $!;
         exec $^X, '-Ilib', 'bin/robocop', 'controller';

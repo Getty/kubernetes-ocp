@@ -305,7 +305,7 @@ sub robocop_step {
     my $deployed = eval {
         $secret = $self->_ensure_robocop_credentials($api, $config, $deps->{secrets},
             $level, host => $deps->{cp_ip});
-        $self->_ensure_robocop($api, $level);
+        $self->_ensure_robocop($api, $config);
         1;
     };
     # A failure, so STDERR -- mostly a credentials problem (refused PIN2,

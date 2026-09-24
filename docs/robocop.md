@@ -74,13 +74,42 @@ robocop:
   provisioned without the key. `ocp apply` sees a not-Ready robocop and
   reconciles the workers from the CLI instead.
 
+## What it knows about the cluster
+
+robocop never reads `ocp.yaml`. The two cluster-wide settings it cannot do
+without travel in its Deployment, as plain environment variables that
+`ocp apply` and `ocp deploy-robocop` write from `ocp.yaml` on every run:
+
+| Variable           | From                   | Used for                                          |
+|--------------------|------------------------|---------------------------------------------------|
+| `OCP_DISTRIBUTION` | `kubernetes.dist`      | which agent it installs (`rke2` or `k3s`)         |
+| `OCP_POD_CIDR`     | `network.pod_cidr`     | the `cluster-cidr` a joining control plane repeats |
+
+Neither has a default. A robocop that finds one missing or unknown exits with
+the reason on STDERR — the pod goes into `CrashLoopBackOff` — rather than
+join nodes with a guessed distribution or pod network. The shipped
+`share/robocop/deployment.yaml` carries neither, so a Deployment applied any
+other way than through `ocp` fails the same way. The fix is always to roll
+the Deployment out again with `ocp apply` or `ocp deploy-robocop`. Changing
+either setting in `ocp.yaml` changes the pod template, so the next apply
+restarts robocop with the new value.
+
+The startup line in the pod log names both:
+
+```
+robocop 0.001 starting: security_level=secret namespace=ocp-system distribution=k3s pod_cidr=10.42.0.0/16
+```
+
 ## Rolling out a new image
 
 ```bash
 ocp deploy-image --tag v1.2.3
 ```
 
-Replaces robocop's container image without a full `ocp apply`.
+Replaces robocop's container image without a full `ocp apply`. It changes
+only the image: a Deployment written by an OCP that did not yet set
+`OCP_DISTRIBUTION` and `OCP_POD_CIDR` makes the new image exit at startup
+until `ocp apply` or `ocp deploy-robocop` rewrites it.
 
 ## See also
 

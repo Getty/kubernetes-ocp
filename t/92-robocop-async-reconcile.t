@@ -65,6 +65,8 @@ sub ctrl {
         ssh_key    => 'K',
         server_url => 'U',
         join_token => 'T',
+        distribution => 'rke2',
+        pod_cidr   => '10.42.0.0/16',
         %over,
     );
 }
@@ -239,6 +241,8 @@ subtest 'from_env: resync interval and concurrency limit, with defaults' => sub 
     $ENV{ROBO_SSH_KEY}    = 'K';
     $ENV{RKE2_SERVER_URL} = 'U';
     $ENV{RKE2_TOKEN}      = 'T';
+    $ENV{OCP_DISTRIBUTION} = 'rke2';
+    $ENV{OCP_POD_CIDR}     = '10.42.0.0/16';
     delete @ENV{qw(ROBOCOP_RESYNC_INTERVAL ROBOCOP_MAX_RECONCILES ROBOCOP_SECURITY_LEVEL)};
 
     my $c = OCP::Robocop::Controller->from_env;
@@ -276,6 +280,8 @@ subtest 'the inject listener answers while a reconcile is running' => sub {
         expected_public_key => $ROBO_PUB,
         server_url          => 'U',
         join_token          => 'T',
+        distribution        => 'rke2',
+        pod_cidr            => '10.42.0.0/16',
         loop                => $loop,
         key_injection       => $srv,
         ready_file          => $dir->child('ready')->stringify,

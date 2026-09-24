@@ -158,6 +158,7 @@ subtest 'from_env builds the controller from the environment' => sub {
     $ENV{RKE2_TOKEN}      = 'JOIN-TOKEN';
     $ENV{NAMESPACE}       = 'ocp-custom';
     $ENV{OCP_DISTRIBUTION} = 'k3s';
+    $ENV{OCP_POD_CIDR}     = '10.44.0.0/16';
 
     my $ctrl = OCP::Robocop::Controller->from_env;
 
@@ -167,18 +168,22 @@ subtest 'from_env builds the controller from the environment' => sub {
     is $ctrl->join_token,   'JOIN-TOKEN',           'join_token from RKE2_TOKEN';
     is $ctrl->namespace,    'ocp-custom',           'namespace from NAMESPACE';
     is $ctrl->distribution, 'k3s',                  'distribution from OCP_DISTRIBUTION';
+    is $ctrl->pod_cidr,     '10.44.0.0/16',         'pod_cidr from OCP_POD_CIDR';
 };
 
-subtest 'from_env defaults namespace and distribution when unset' => sub {
+subtest 'from_env defaults namespace when unset -- and nothing else' => sub {
+    # distribution used to default to rke2 here, which is how robocop came to
+    # join RKE2 agents to a k3s cluster (k186). t/186 pins that it is required.
     local %ENV = %ENV;
-    $ENV{ROBO_SSH_KEY}    = 'K';
-    $ENV{RKE2_SERVER_URL} = 'U';
-    $ENV{RKE2_TOKEN}      = 'T';
-    delete @ENV{qw(NAMESPACE OCP_DISTRIBUTION)};
+    $ENV{ROBO_SSH_KEY}     = 'K';
+    $ENV{RKE2_SERVER_URL}  = 'U';
+    $ENV{RKE2_TOKEN}       = 'T';
+    $ENV{OCP_DISTRIBUTION} = 'rke2';
+    $ENV{OCP_POD_CIDR}     = '10.42.0.0/16';
+    delete $ENV{NAMESPACE};
 
     my $ctrl = OCP::Robocop::Controller->from_env;
-    is $ctrl->namespace,    'ocp-system', 'namespace default kept';
-    is $ctrl->distribution, 'rke2',       'distribution default kept';
+    is $ctrl->namespace, 'ocp-system', 'namespace default kept';
 };
 
 subtest 'from_env dies naming every missing required variable' => sub {
@@ -187,6 +192,8 @@ subtest 'from_env dies naming every missing required variable' => sub {
         $ENV{ROBO_SSH_KEY}    = 'K';
         $ENV{RKE2_SERVER_URL} = 'U';
         $ENV{RKE2_TOKEN}      = 'T';
+        $ENV{OCP_DISTRIBUTION} = 'rke2';
+        $ENV{OCP_POD_CIDR}     = '10.42.0.0/16';
         delete $ENV{$var};
 
         my $err = do { local $@; eval { OCP::Robocop::Controller->from_env }; $@ };
@@ -205,7 +212,8 @@ subtest 'a watch event with no providerRef is marked Failed via the status subre
         spec     => { role => 'worker' },   # no providerRef
     ));
     my $ctrl = OCP::Robocop::Controller->new(
-        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T');
+        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T',
+        distribution => 'rke2', pod_cidr => '10.42.0.0/16');
 
     # The inflated IO::K8s object is exactly what the watcher hands its callbacks.
     my $obj = $k->get('OCPNode', name => 'w1', namespace => 'ocp-system');
@@ -232,7 +240,8 @@ subtest 'a watch event whose provider cannot be loaded reaches _on_node_event' =
         provider_cr => undef,   # 404 on GET OCPNodeProvider
     );
     my $ctrl = OCP::Robocop::Controller->new(
-        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T');
+        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T',
+        distribution => 'rke2', pod_cidr => '10.42.0.0/16');
 
     my $obj = $k->get('OCPNode', name => 'w2', namespace => 'ocp-system');
     $ctrl->_handle_watch_object($obj);
@@ -242,6 +251,37 @@ subtest 'a watch event whose provider cannot be loaded reaches _on_node_event' =
     is $sent->{phase}, 'Failed', 'phase Failed';
     like $sent->{message}, qr/OCPNodeProvider/,
         'the message names the provider that could not be loaded';
+};
+
+subtest 'k186/k184: the controller hands its distribution and pod CIDR to OCP::Node' => sub {
+    my $k = StrictK8s::build(
+        cr          => ocpnode(metadata =>
+            { name => 'w3', namespace => 'ocp-system', resourceVersion => '1' }),
+        provider_cr => {
+            apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
+            metadata   => { name => 'hetzner-a', namespace => 'ocp-system' },
+            spec       => { type => 'ssh' },
+        },
+    );
+    my $ctrl = OCP::Robocop::Controller->new(
+        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T',
+        distribution => 'k3s', pod_cidr => '10.44.0.0/16');
+
+    my %got;
+    {
+        no warnings 'redefine';
+        local *OCP::Provider::from_cr = sub { bless {}, 'FakeProviderObj' };
+        local *OCP::Node::from_cr = sub {
+            my ($class, $cr, %args) = @_;
+            %got = %args;
+            die "stop here\n";
+        };
+        my $obj = $k->get('OCPNode', name => 'w3', namespace => 'ocp-system');
+        $ctrl->_handle_watch_object($obj);
+    }
+
+    is $got{distribution}, 'k3s',          'distribution reaches OCP::Node';
+    is $got{pod_cidr},     '10.44.0.0/16', 'pod_cidr reaches OCP::Node';
 };
 
 # ---------------------------------------------------------------------------
@@ -258,7 +298,7 @@ sub run_robocop {
     defined $pid or die "fork: $!";
     if ($pid == 0) {
         delete @ENV{qw(RKE2_SERVER_URL RKE2_TOKEN ROBO_SSH_KEY
-                       NAMESPACE OCP_DISTRIBUTION CHECKPOINT_DIR)};
+                       NAMESPACE OCP_DISTRIBUTION OCP_POD_CIDR CHECKPOINT_DIR)};
         $ENV{$_} = $env{$_} for keys %env;
         open STDOUT, '>', $out->filename or die "reopen stdout: $!";
         open STDERR, '>', $err->filename or die "reopen stderr: $!";

@@ -77,6 +77,8 @@ sub ctrl {
         ssh_key    => 'K',
         server_url => 'U',
         join_token => 'T',
+        distribution => 'rke2',
+        pod_cidr   => '10.42.0.0/16',
         %over,
     );
 }

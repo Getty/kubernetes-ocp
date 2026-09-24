@@ -4,6 +4,8 @@ package OCP::Robocop::Manifest;
 use strict;
 use warnings;
 
+use Carp qw( croak );
+
 #
 # share/robocop/deployment.yaml is the `secret` Deployment: ROBO_SSH_KEY comes
 # from the robocop-credentials Secret. `inject` (k2) must not reference the
@@ -23,6 +25,26 @@ use warnings;
 #     without a key is not Ready
 #
 # Everything else passes through unchanged.
+#
+# for_config wraps that and adds what robocop has to know about the cluster
+# and can learn nowhere else (k186, k184): the distribution and the pod CIDR,
+# as plain values from ocp.yaml. The shipped deployment.yaml carries neither,
+# so a Deployment that did not come through here has no value to guess from,
+# and the controller refuses to start without them.
+#
+# Why the Deployment's env and not the robocop-credentials Secret or the
+# OCPNodeProvider CR:
+#
+#   - both deploy paths write the Deployment on every run, unconditionally;
+#     the Secret is skipped while current, and rewriting it costs an SSH
+#     read of the join token (PIN2 in secure mode)
+#   - a changed value changes the pod template, so the Deployment rolls and
+#     robocop restarts with it; a changed Secret key reaches a running pod
+#     only on its next restart
+#   - it is there at startup, where a missing value can end the process;
+#     a provider CR is read per OCPNode event, is per provider rather than
+#     per cluster, and `ocp deploy-robocop` does not write it
+#   - neither value is a secret
 #
 
 # The file the controller keeps while it holds a key; OCP::Robocop::Controller's
@@ -76,12 +98,60 @@ sub for_security_level {
     return $doc;
 }
 
+=method for_config
+
+    my $doc = OCP::Robocop::Manifest->for_config($doc, $config);
+
+L</for_security_level> for C<< $config->robocop_security_level >>, and on the
+robocop C<Deployment> the controller's C<OCP_DISTRIBUTION> and C<OCP_POD_CIDR>
+set to C<< $config->distribution >> and C<< $config->pod_cidr >>, replacing
+any value already there. Croaks when the config has either empty. Any other
+document comes back as the level shapes it.
+
+=cut
+
+sub for_config {
+    my ($class, $doc, $config) = @_;
+
+    $doc = $class->for_security_level($doc, $config->robocop_security_level);
+
+    my $ctr = $class->_controller($doc) or return $doc;
+
+    my %value = (
+        OCP_DISTRIBUTION => $config->distribution,
+        OCP_POD_CIDR     => $config->pod_cidr,
+    );
+    for my $name (sort keys %value) {
+        croak __PACKAGE__.'->for_config: no value for '.$name
+            unless defined $value{$name} && length $value{$name};
+    }
+
+    $ctr->{env} = [
+        (grep { !exists $value{ $_->{name} // '' } } @{ $ctr->{env} // [] }),
+        (map { { name => $_, value => $value{$_} } } sort keys %value)
+    ];
+
+    return $doc;
+}
+
+# The robocop Deployment's controller container; nothing for any other
+# document.
+sub _controller {
+    my ($class, $doc) = @_;
+    return unless ref $doc eq 'HASH'
+        && ($doc->{kind} // '') eq 'Deployment'
+        && ($doc->{metadata}{name} // '') eq 'robocop';
+    my ($ctr) = grep { ($_->{name} // '') eq 'controller' }
+        @{ $doc->{spec}{template}{spec}{containers} // [] };
+    return $ctr;
+}
+
 1;
 
 =head1 SYNOPSIS
 
     for my $doc (YAML::XS::LoadFile($file)) {
-        $api->ensure(OCP::Robocop::Manifest->for_security_level($doc, $level));
+        $api->ensure(OCP::Robocop::Manifest->for_config($doc, $config));
     }
 
 =head1 SEE ALSO

@@ -52,7 +52,7 @@ sub execute {
     # pods start; a pod that races ahead restarts and self-heals.
     $self->_apply_credentials_secret($api, $config, $secrets, $level);
 
-    $self->_apply_manifests($api, $level);
+    $self->_apply_manifests($api, $config);
 
     print "Robocop deployed.\n";
     print "robocop holds no SSH key yet (security_level inject): run "
@@ -62,9 +62,11 @@ sub execute {
 }
 
 # CRDs first, then the rest of share/robocop/ (skipping kustomization.yaml),
-# each document shaped for the security level (OCP::Robocop::Manifest).
+# each document shaped from the config (OCP::Robocop::Manifest->for_config):
+# the security level's variant, plus the distribution and pod CIDR robocop
+# refuses to start without (k186, k184).
 sub _apply_manifests {
-    my ($self, $api, $level) = @_;
+    my ($self, $api, $config) = @_;
 
     my $share_dir = $self->_find_share_dir;
     my $robocop_dir = $share_dir->child('robocop');
@@ -80,7 +82,7 @@ sub _apply_manifests {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
             my $kind = $doc->{kind};
             my $name = $doc->{metadata}{name};
-            $api->ensure(OCP::Robocop::Manifest->for_security_level($doc, $level));
+            $api->ensure(OCP::Robocop::Manifest->for_config($doc, $config));
             print "  [ok] ensured $kind/$name\n";
         }
     }
@@ -119,6 +121,8 @@ L<OCP::Robocop::Manifest>) and leaves the private key to C<ocp inject-key>.
 Then reads manifests from the OCP share directory (C<share/robocop/>), applies
 CRDs first and then remaining resources (skipping C<kustomization.yaml>) via
 L<Kubernetes::REST/ensure> against the encrypted kubeconfig for the current
-project.
+project. The Deployment carries the cluster's distribution and pod CIDR from
+F<ocp.yaml> (C<OCP_DISTRIBUTION>, C<OCP_POD_CIDR>); robocop does not start
+without them.
 
 =cut

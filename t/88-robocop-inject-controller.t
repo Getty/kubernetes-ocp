@@ -157,6 +157,8 @@ sub inject_ctrl {
         expected_public_key => $ROBO_PUB,
         server_url          => 'U',
         join_token          => 'T',
+        distribution        => 'rke2',
+        pod_cidr            => '10.42.0.0/16',
         ready_file          => $dir->child('robocop-key-ready')->stringify,
         %over,
     );
@@ -179,6 +181,8 @@ subtest 'from_env in inject mode needs no private key, but the public one' => su
     $ENV{ROBO_SSH_PUBLIC_KEY}    = $ROBO_PUB;
     $ENV{RKE2_SERVER_URL}        = 'https://police1:9345';
     $ENV{RKE2_TOKEN}             = 'T';
+    $ENV{OCP_DISTRIBUTION}       = 'rke2';
+    $ENV{OCP_POD_CIDR}           = '10.42.0.0/16';
 
     my $ctrl = OCP::Robocop::Controller->from_env;
     is $ctrl->security_level, 'inject', 'security_level from ROBOCOP_SECURITY_LEVEL';
@@ -198,7 +202,8 @@ subtest 'from_env in inject mode needs no private key, but the public one' => su
 
 subtest 'outside inject mode the key is still required' => sub {
     my $err = do { local $@; eval {
-        OCP::Robocop::Controller->new(kube => StrictK8s::build(), server_url => 'U', join_token => 'T');
+        OCP::Robocop::Controller->new(kube => StrictK8s::build(), server_url => 'U', join_token => 'T',
+            distribution => 'rke2', pod_cidr => '10.42.0.0/16');
     }; $@ };
     like $err, qr/ssh_key/, 'secret mode without ssh_key dies';
 };

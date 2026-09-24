@@ -488,6 +488,7 @@ subtest 'the wait says what it is waiting for, once per phase' => sub {
     sub cluster_status  { $_[0]->{cluster_status} }
     sub control_planes  { $_[0]->{control_planes} }
     sub distribution    { 'rke2' }
+    sub pod_cidr        { '10.42.0.0/16' }
     sub join_url        { my ($s, $host) = @_; "https://$host:9345" }
 }
 

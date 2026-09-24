@@ -534,6 +534,35 @@ subtest 'a joined worker carries no tls-san (guard: CP-only)' => sub {
         'a worker never gets a tls-san -- only control planes advertise one';
 };
 
+subtest 'k184: a control-plane join repeats the cluster pod CIDR, a worker does not' => sub {
+    # RKE2 refuses a joining server whose cluster-cidr differs from the first
+    # server's. robocop's joins used to carry none, so the Rexfile's
+    # 10.42.0.0/16 fallback broke every join on a cluster with its own
+    # network.pod_cidr.
+    for my $case (
+        [ 'control-plane', 'install_rke2_server', '10.44.0.0/16' ],
+        [ 'worker',        'install_rke2_agent',  undef          ],
+    ) {
+        my ($role, $task, $want) = @$case;
+        @FakeRex::_instances = ();
+        my $node = OCP::Node->from_cr(
+            cp_ocpnode(
+                spec   => { role => $role, providerRef => 'hetzner-default' },
+                status => { phase => 'Installing', publicIP => '10.0.0.2' }),
+            k8s => FakeApi->new, provider => undef,
+            ssh_key => 'K', server_url => 'https://10.0.0.1:9345', join_token => 'T',
+            pod_cidr => '10.44.0.0/16',
+            ssh_class => 'FakeSSH', rex_class => 'FakeRex',
+        );
+        $node->_install_kubernetes;
+
+        my ($call) = @{ $FakeRex::_instances[0]{calls} };
+        is $call->[0], $task, "$role installs via $task";
+        is $call->[1]{pod_cidr}, $want,
+            $want ? "$role: pod_cidr reaches the join" : "$role: no pod_cidr";
+    }
+};
+
 subtest 'the Rexfile emits one tls-san entry per address (list-aware)' => sub {
     my $shipped = path('share/Rexfile');
     plan skip_all => 'share/Rexfile not found' unless -f $shipped;

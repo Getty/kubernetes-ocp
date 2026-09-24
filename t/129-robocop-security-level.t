@@ -369,6 +369,7 @@ subtest 'inject: the Deployment variant has no secretKeyRef to the private key' 
 
     my $ready = OCP::Robocop::Controller->new(
         security_level => 'inject', server_url => 'U', join_token => 'T',
+        distribution => 'rke2', pod_cidr => '10.42.0.0/16',
     )->ready_file;
     is_deeply container_of($doc)->{readinessProbe}{exec}{command}, [ 'test', '-f', $ready ],
         'readiness is the key-held file the controller writes';
@@ -392,6 +393,10 @@ package FakeShareCmd {
 package main;
 
 subtest 'both deploy paths apply the inject variant' => sub {
+    my $inject_dir = make_project(level => 'inject');
+    my $inject     = config_for($inject_dir);
+    my $plain_dir  = make_project();
+    my $plain      = config_for($plain_dir);
     my $sink = '';
     open my $out_fh, '>', \$sink or die $!;
 
@@ -399,7 +404,7 @@ subtest 'both deploy paths apply the inject variant' => sub {
     {
         local *STDOUT = $out_fh;
         OCP::Cmd::DeployRobocop->new(command_chain => [ FakeOCP->new ])
-            ->_apply_manifests($api, 'inject');
+            ->_apply_manifests($api, $inject);
     }
     my ($dep) = grep { $_->{kind} eq 'Deployment' } @{ $api->ensured };
     ok $dep, 'deploy-robocop ensured the Deployment';
@@ -408,7 +413,7 @@ subtest 'both deploy paths apply the inject variant' => sub {
     my $api2 = FakeApi->new;
     {
         local *STDOUT = $out_fh;
-        OCP::Cmd::Apply::CR::ensure_robocop(FakeShareCmd->new, $api2, 'inject');
+        OCP::Cmd::Apply::CR::ensure_robocop(FakeShareCmd->new, $api2, $inject);
     }
     my ($dep2) = grep { $_->{kind} eq 'Deployment' } @{ $api2->ensured };
     ok $dep2, 'ocp apply ensured the Deployment';
@@ -418,10 +423,10 @@ subtest 'both deploy paths apply the inject variant' => sub {
     my $api3 = FakeApi->new;
     {
         local *STDOUT = $out_fh;
-        OCP::Cmd::Apply::CR::ensure_robocop(FakeShareCmd->new, $api3);
+        OCP::Cmd::Apply::CR::ensure_robocop(FakeShareCmd->new, $api3, $plain);
     }
     my ($dep3) = grep { $_->{kind} eq 'Deployment' } @{ $api3->ensured };
-    ok mentions_key($dep3, 'robo-ssh-key'), 'without a level: the shipped (secret) manifest';
+    ok mentions_key($dep3, 'robo-ssh-key'), 'the default level: the shipped (secret) manifest';
 };
 
 subtest 'inject: execute no longer refuses the level' => sub {

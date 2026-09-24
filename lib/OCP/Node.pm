@@ -33,6 +33,12 @@ has verbose       => (is => 'ro', default => 0);
 # install time so a fresh cloud CP always advertises at least itself and police1.
 has tls_san       => (is => 'ro');
 
+# network.pod_cidr of the cluster (k184). A control plane joining as another
+# RKE2 server must repeat the first server's cluster-cidr -- RKE2 refuses a
+# mismatch -- so, like tls_san, it arrives from outside. Unset leaves the
+# Rexfile's own fallback in charge. A worker takes none.
+has pod_cidr      => (is => 'ro');
+
 # Cluster-wide GPU switches, from ocp.yaml's gpu: block. They are not on the
 # OCPNode CR -- they are the same for every node of a provider, and robocop
 # never sees ocp.yaml, so `ocp apply` copies them onto the OCPNodeProvider CR
@@ -505,6 +511,9 @@ sub _install_kubernetes {
         my @sans = sort grep { defined && length && !$seen{$_}++ }
                         (@{ $self->tls_san // [] }, $host);
         $params{tls_san} = \@sans if @sans;
+
+        my $pod_cidr = $self->pod_cidr;
+        $params{pod_cidr} = $pod_cidr if defined $pod_cidr && length $pod_cidr;
     }
 
     my $ok = eval { $rex->run_task($task, %params) };
@@ -1152,6 +1161,12 @@ and acts as a cluster kill switch: false forces C<gpu =E<gt> 0> at install even
 when the OCPNode's own C<spec.gpu> is true.  C<gpu_driver> is C<'host'> or
 C<'operator'>.  Both unset (a provider CR predating the field) leaves
 L<OCP::Rex>'s own defaults in charge — the pre-k31 baseline.
+
+=item pod_cidr
+
+The cluster's C<network.pod_cidr>. Only a control-plane join uses it: an
+additional RKE2 server must carry the first server's C<cluster-cidr>. Unset
+leaves the Rexfile's fallback in charge.
 
 =item reconciler_id
 

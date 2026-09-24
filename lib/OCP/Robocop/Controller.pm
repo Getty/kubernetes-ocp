@@ -84,10 +84,22 @@ has join_token => (
     doc      => 'RKE2 node join token',
 );
 
+# The cluster's distribution and pod CIDR (k186, k184). No default: a guessed
+# rke2 joined RKE2 agents to a k3s cluster, a guessed pod CIDR makes a
+# control-plane join fail RKE2's critical-config check. The Deployment carries
+# both from ocp.yaml (OCP::Robocop::Manifest->for_config); BUILD checks them.
 has distribution => (
-    is      => 'ro',
-    default => 'rke2',
+    is       => 'ro',
+    required => 1,
 );
+
+has pod_cidr => (
+    is       => 'ro',
+    required => 1,
+);
+
+# What robocop can install. Anything else is refused at construction.
+my %DISTRIBUTIONS = map { $_ => 1 } qw( rke2 k3s );
 
 has watch_timeout => (
     is      => 'ro',
@@ -141,6 +153,16 @@ sub BUILD {
     my ($self) = @_;
     croak "robocop controller: ssh_key is required unless security_level is 'inject'"
         unless $self->is_inject || (defined $self->ssh_key && length $self->ssh_key);
+
+    my $dist = $self->distribution // '';
+    croak "robocop controller: unknown distribution '" . $dist
+        . "' (OCP_DISTRIBUTION) -- robocop installs " . join(' or ', sort keys %DISTRIBUTIONS)
+        unless $DISTRIBUTIONS{$dist};
+
+    my $cidr = $self->pod_cidr // '';
+    croak "robocop controller: '" . $cidr . "' (OCP_POD_CIDR) is no IPv4 CIDR "
+        . "like 10.42.0.0/16"
+        unless $cidr =~ m{\A[0-9]{1,3}(?:\.[0-9]{1,3}){3}/[0-9]{1,2}\z};
 }
 
 sub is_inject { ($_[0]->security_level // '') eq 'inject' }
@@ -148,11 +170,13 @@ sub is_inject { ($_[0]->security_level // '') eq 'inject' }
 #
 # Construction from the environment (how bin/robocop builds the controller)
 #
-# The three required values have no default and no other source inside the pod,
+# The required values have no default and no other source inside the pod,
 # so a missing one is fatal here -- croaked, which reaches STDERR -- rather than
 # surfacing as an obscure failure deep in the first reconcile. namespace mirrors
-# the deployment's NAMESPACE fieldRef; distribution is optional and defaults to
-# rke2. Secret wiring in the Deployment is a separate lane (k33 / k101).
+# the deployment's NAMESPACE fieldRef. distribution and pod_cidr are required
+# too (k186, k184): the silent rke2 default this used to have joined RKE2
+# agents to a k3s cluster. Secret wiring in the Deployment is a separate lane
+# (k33 / k101).
 #
 sub from_env {
     my ($class, %overrides) = @_;
@@ -185,11 +209,29 @@ sub from_env {
         . join(', ', @missing)
         if @missing;
 
+    # The cluster settings come from the Deployment itself, not the Secret
+    # (k186, k184). Missing means a Deployment no `ocp apply` / `ocp
+    # deploy-robocop` of this version wrote -- typically an image updated
+    # under an older Deployment -- and the fix is to roll it out again.
+    my %cluster_env = (
+        distribution => 'OCP_DISTRIBUTION',
+        pod_cidr     => 'OCP_POD_CIDR',
+    );
+    my @unset;
+    for my $attr (sort keys %cluster_env) {
+        my $val = $ENV{ $cluster_env{$attr} };
+        if (defined $val && length $val) { $args{$attr} = $val }
+        else                             { push @unset, $cluster_env{$attr} }
+    }
+    croak "robocop controller: missing required environment variable(s): "
+        . join(', ', @unset) . " -- robocop does not guess the cluster's "
+        . "distribution or pod CIDR. The Deployment was not written by this "
+        . "version of OCP: run 'ocp apply' or 'ocp deploy-robocop'"
+        if @unset;
+
     $args{security_level} = 'inject' if $inject;
     $args{namespace} = $ENV{NAMESPACE}
         if defined $ENV{NAMESPACE} && length $ENV{NAMESPACE};
-    $args{distribution} = $ENV{OCP_DISTRIBUTION}
-        if defined $ENV{OCP_DISTRIBUTION} && length $ENV{OCP_DISTRIBUTION};
 
     my %count_of = (
         resync_interval => 'ROBOCOP_RESYNC_INTERVAL',
@@ -331,7 +373,8 @@ sub run {
     $self->log("robocop " . ($OCP::VERSION // 'unknown') . " starting: "
         . "security_level=" . ($self->security_level // 'secret')
         . " namespace=" . $self->namespace
-        . " distribution=" . $self->distribution);
+        . " distribution=" . $self->distribution
+        . " pod_cidr=" . $self->pod_cidr);
     $self->log("Server URL:   " . $self->server_url);
     $self->log("Watching OCPNode via Net::Async::Kubernetes");
     $self->log("Reconciling at most " . $self->max_reconciles . " node(s) at once, "
@@ -1045,6 +1088,7 @@ sub _on_node_event {
             server_url    => $self->server_url,
             join_token    => $self->join_token,
             distribution  => $self->distribution,
+            pod_cidr      => $self->pod_cidr,
             verbose       => $self->verbose,
             reconciler_id => 'robocop',
             %gpu_flags,
@@ -1201,7 +1245,8 @@ OCP::Robocop::Controller - Kubernetes controller for OCP nodes
         ssh_key      => $robo_key_content,
         server_url   => 'https://192.168.122.1:9345',
         join_token   => $token,
-        distribution => 'rke2',
+        distribution => 'rke2',          # required: rke2 or k3s
+        pod_cidr     => '10.42.0.0/16',  # required: network.pod_cidr
     );
 
     # security_level inject: no key yet, `ocp inject-key` delivers it
@@ -1210,6 +1255,8 @@ OCP::Robocop::Controller - Kubernetes controller for OCP nodes
         expected_public_key => $robo_public_key,
         server_url          => 'https://192.168.122.1:9345',
         join_token          => $token,
+        distribution        => 'k3s',
+        pod_cidr            => '10.42.0.0/16',
     );
 
     # Or, the way bin/robocop builds it, from the environment:
@@ -1234,7 +1281,7 @@ the cluster are reconciled on startup.
 =head2 Startup and API checks
 
 C<run> first logs one line with the OCP version, C<security_level>,
-namespace and distribution, with STDOUT unbuffered, so a running pod always
+namespace, distribution and pod CIDR, with STDOUT unbuffered, so a running pod always
 has a log. It then lists OCPNodes once over the watch client -- the same
 client, TLS stack and credentials the watch uses -- and dies with the reason
 if that fails or takes longer than C<api_check_timeout> seconds (default 30).
@@ -1311,7 +1358,13 @@ True while a reconcile of that OCPNode is running.
 
 Class method. Builds a controller from the environment C<bin/robocop> runs in:
 C<ROBO_SSH_KEY>, C<RKE2_SERVER_URL> and C<RKE2_TOKEN> are required (a missing one
-is fatal), C<NAMESPACE>, C<OCP_DISTRIBUTION>, C<ROBOCOP_RESYNC_INTERVAL> and
+is fatal), and so are C<OCP_DISTRIBUTION> (C<rke2> or C<k3s>) and
+C<OCP_POD_CIDR> (the cluster's C<network.pod_cidr>, which a control-plane join
+must repeat). Those two come from the Deployment that C<ocp apply> and
+C<ocp deploy-robocop> write; there is no default, so a Deployment written
+before them -- a newer image under an older Deployment -- ends robocop with an
+error that says to roll it out again, instead of joining nodes with a guessed
+distribution. C<NAMESPACE>, C<ROBOCOP_RESYNC_INTERVAL> and
 C<ROBOCOP_MAX_RECONCILES> are optional (the last two must be positive whole
 numbers). Extra arguments override the environment-derived ones.
 

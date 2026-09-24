@@ -128,6 +128,8 @@ sub controller {
         ssh_key    => 'ROBO-KEY',
         server_url => 'https://cp:9345',
         join_token => 'JOIN',
+        distribution => 'rke2',
+        pod_cidr   => '10.42.0.0/16',
         %a,
     );
 }
