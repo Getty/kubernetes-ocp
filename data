@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T18:19:19Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T18:19:19Z
+created: 2026-09-24T16:39:34Z
+id: 175
+priority: medium
+started: 2026-09-24T18:19:19Z
+status: done
+tags:
+- node
+- teardown
+- ssh
+title: ocp node rm laesst rke2-agent auf ssh-Worker laufen
+updated: 2026-09-24T18:19:19Z
+---
+
+Live-Fund 2026-09-24 (ocpt, main e84f362): ocp node rm ocpt-w (ssh-default, host ocpt-w.vm, CLI mit known_hosts) meldete "Node removed", k8s-Node + OCPNode weg, aber auf der Maschine lief rke2-agent weiter, /usr/local/bin/rke2 vorhanden. OCP::Node::teardown ruft provider->delete_server(host=>...) in eval mit warn - entweder kein provider-Objekt im node-rm-Pfad, oder SSH-Provider-delete_server uninstalliert nicht, oder warn ging unter. Ausserdem: teardown cordoned nur, drain fehlt (Skill sagt "drain + remove"). Done: Ursache, ssh-Worker wird per rke2-uninstall.sh||k3s-uninstall.sh sauber abgeraeumt (wie destroy), Fehler laut (STDERR + Exit != 0 statt warn), drain vor delete; Tests.
+
+2026-09-24 16:52 Fixed on branch worktree-agent-a64b7ebe451800956 commit 2cd8fe9. Root cause: Cmd::Node::Rm built the ssh provider via from_cr without a key (CR carries none, ADR 0027), so OCP::SSH ran with IdentitiesOnly and no identity; login refused = exit 255 in the result hash; ExistingHost::delete_server returned it, Node::teardown only watched for exceptions -> Node+OCPNode deleted, machine untouched. Fix: rm fetches cluster key (provider=>ssh) and passes ssh_key_path; delete_server dies on non-zero exit, uninstall cmd fails if rke2/k3s still on PATH; teardown cordon+drain (Eviction API, 300s, PDB 429 at deadline = fail) then provider delete; any failure -> OCPNode kept phase Failed + message, die (exit 1). make test green 1906. Open: robocop has no teardown path for Terminating OCPNodes (and no pods/eviction RBAC); destroy still prints its fixed warning without the delete_server reason.
+
+2026-09-24 16:57 Review ok, ff nach main (ee0c820), gepusht. Voller Docker-Lauf auf kombiniertem Stand gruen.
+
+2026-09-24 18:19 LIVE VERIFIZIERT 2026-09-24, finaler RKE2-Durchlauf auf ocpt (main 2588109): node rm mit laufendem robocop: drain+Uninstall ok, Node+OCPNode weg
