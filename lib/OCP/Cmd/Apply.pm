@@ -549,8 +549,8 @@ sub _migrate_legacy_nodes {
 }
 
 sub _ensure_worker_ocpnodes {
-    my ($self, $api, $config) = @_;
-    return OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($self, $api, $config);
+    my ($self, $api, $config, $names) = @_;
+    return OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($self, $api, $config, $names);
 }
 
 sub _ensure_robocop {

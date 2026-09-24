@@ -9,7 +9,9 @@ Revision history for OCP
       RKE2/K3s, a docker.io pull-through cache and a local registry, Node
       Feature Discovery, the NVIDIA GPU stack, cert-manager, Cilium (eBPF CNI
       with kube-proxy replaced, Gateway API, LB-IPAM), and the CRDs with
-      robocop. It is idempotent and ends on a real cluster-health verdict.
+      robocop. It is idempotent and ends on a real cluster-health verdict. On
+      an existing cluster it also brings up workers added to `ocp.yaml` that
+      have no OCPNode yet, and leaves the ones that have one alone.
     - `ocp` drives the control plane from a laptop or CI; `robocop` runs inside
       the cluster and reconciles worker nodes through the OCPNode and
       OCPNodeProvider CRDs, so nodes come and go on their own. `ocp node add`

@@ -103,16 +103,21 @@ subtest 'reconcile repairs the things it does not own' => sub {
     like $reconcile, qr/_setup_lb_ipam/,        'LB-IPAM is reconciled';
 };
 
-subtest 'reconcile stays out of bootstrap and provisioning' => sub {
+subtest 'reconcile stays out of control-plane bootstrap' => sub {
     my ($reconcile) = $drift_src =~ /^sub reconcile_components \{\n(.*?)\n\}$/ms;
 
-    # Reconcile is the cheap, frequently-run path. Creating servers and
-    # waiting on them is a one-time bootstrap step, not convergence.
-    unlike $reconcile, qr/_drive_workers|_ensure_worker_ocpnodes/,
-        'no worker provisioning';
-    unlike $reconcile, qr/install_server|_ensure_robocop/,
-        'no control-plane install, no robocop rollout';
-    unlike $reconcile, qr/reconcile_until_ready/, 'no long wait loops';
+    # Installing the control plane is a one-time bootstrap step, not
+    # convergence.
+    #
+    # This subtest used to claim more: that the body named none of
+    # _drive_workers, _ensure_worker_ocpnodes, _ensure_robocop or
+    # reconcile_until_ready — "reconcile never provisions workers". k26
+    # replaced that claim on purpose (maintainer decision 2026-09-24): the
+    # OCPNode is the reflection of desired state, so a worker listed in
+    # ocp.yaml without one is created by reconcile too, and workers that have
+    # one are left alone. That is asserted behaviourally further down ("k26:
+    # ..."), not by grepping the source.
+    unlike $reconcile, qr/install_server/, 'no control-plane install';
 };
 
 #
@@ -369,6 +374,7 @@ my @WRITERS = qw(
     _ensure_providers
     _migrate_legacy_nodes
     _ensure_cp_ocpnode
+    _ensure_robocop
 );
 
 # What each stub hands back so the reconcile path keeps running realistically:
@@ -406,11 +412,25 @@ package DryRunApi {
         return $obj;
     }
 
+    # OCPNodes live in $self->{ocpnodes} (name => struct) so the worker step
+    # can be watched: ensure() is the write, list() is what it reads.
     sub list {
         my ($self, $kind) = @_;
         push @{ $self->{reads} }, "LIST $kind";
-        return { items => [] };
+        return FakeList->new([ map { $self->{ocpnodes}{$_} }
+            sort keys %{ $self->{ocpnodes} } ]) if $kind eq 'OCPNode';
+        return FakeList->new([]);
     }
+
+    sub ensure {
+        my ($self, $obj) = @_;
+        push @{ $self->{writes} }, "ENSURE $obj->{kind}/$obj->{metadata}{name}";
+        $self->{ocpnodes}{ $obj->{metadata}{name} } = $obj if $obj->{kind} eq 'OCPNode';
+        return $obj;
+    }
+
+    sub k8s              { $_[0] }
+    sub object_to_struct { $_[1] }
 
     sub expand_class { undef }
 
@@ -444,11 +464,38 @@ package main;
     }
 }
 
+# The worker step's expensive ends, recorded instead of run: the robocop wait,
+# the drive (a 600s poll or an SSH install per worker) and the key lookup that
+# can cost a PIN2 prompt. $ROBOCOP_READY, $DRIVE_PHASE and $KEY_FAILS steer
+# them per test; @driven and $key_asked say what was reached.
+our ($ROBOCOP_READY, $DRIVE_PHASE, $KEY_FAILS) = (0, 'Ready', 0);
+my (@driven, $key_asked);
+{
+    no warnings qw( redefine once );
+    *OCP::Cmd::Apply::_wait_robocop_ready = sub {
+        push @touched, '_wait_robocop_ready';
+        return $ROBOCOP_READY;
+    };
+    *OCP::Cmd::Apply::_drive_workers = sub {
+        my ($self, $api, $config, $deps) = @_;
+        push @touched, '_drive_workers';
+        push @driven, { %$deps };
+        return map { { name => $_, phase => $DRIVE_PHASE, message => '' } }
+            @{ $deps->{names} };
+    };
+    *OCP::Cmd::Apply::cluster_ssh_key = sub {
+        $key_asked++;
+        die "no key for you\n" if $KEY_FAILS;
+        return bless { path => '/nonexistent/cluster-key' }, 'FakeClusterKey';
+    };
+    *FakeClusterKey::path = sub { $_[0]{path} };
+}
+
 sub reconcile {
     my (%opt) = @_;
 
     my $dir = path(tempdir(CLEANUP => 1));
-    $dir->child('ocp.yaml')->spew(<<'YAML');
+    $dir->child('ocp.yaml')->spew(<<'YAML' . ($opt{yaml} // ''));
 name: cortex
 kubernetes:
   dist: k3s
@@ -469,20 +516,43 @@ YAML
     my $apply  = OCP::Cmd::Apply->new(
         command_chain => [ ReconcileOcp->new ],
         dry_run       => $opt{dry_run} ? 1 : 0,
+        ($opt{only} ? (only => $opt{only}) : ()),
     );
-    $apply->{_k8s_api} = DryRunApi->new(objects => $opt{objects} // {});
+    $apply->{_k8s_api} = DryRunApi->new(
+        objects  => $opt{objects} // {},
+        ocpnodes => { map { $_ => {
+            apiVersion => 'ocp.internal/v1',
+            kind       => 'OCPNode',
+            metadata   => { name => $_, namespace => 'ocp-system' },
+            spec       => { role => 'worker', providerRef => 'ssh-default' },
+            status     => { phase => 'Ready' },
+        } } @{ $opt{ocpnodes} // [] } },
+    );
 
     @touched = ();
-    my ($out, $result) = capture_stdout { $apply->_reconcile_components($config) };
+    @driven  = ();
+    $key_asked = 0;
+    my $err = '';
+    my ($out, $result);
+    {
+        open my $efh, '>', \$err or die $!;
+        local *STDERR = $efh;
+        ($out, $result) = capture_stdout { $apply->_reconcile_components($config) };
+    }
 
     return {
-        out     => $out,
-        result  => $result,
-        writes  => $apply->{_k8s_api}{writes},
-        reads   => $apply->{_k8s_api}{reads},
-        touched => [@touched],
+        out       => $out,
+        err       => $err,
+        result    => $result,
+        writes    => $apply->{_k8s_api}{writes},
+        reads     => $apply->{_k8s_api}{reads},
+        touched   => [@touched],
+        driven    => [@driven],
+        key_asked => $key_asked,
     };
 }
+
+sub touched { my ($r, $step) = @_; scalar grep { $_ eq $step } @{ $r->{touched} } }
 
 subtest 'a dry run against an existing cluster writes nothing' => sub {
     my $r = reconcile(dry_run => 1);
@@ -550,6 +620,137 @@ subtest 'a difference this run closes is not sent to ocp update' => sub {
     like $r->{out}, qr/\[drift\] NFD runs v0\.17\.0/, 'the outdated NFD is reported';
     unlike $r->{out}, qr/ocp update/,
         'and not handed to a command that would not fix it';
+};
+
+#
+# k26: workers on a cluster that already exists.
+#
+# The reconcile path used to leave workers out entirely, so a worker added to
+# ocp.yaml after bootstrap got no OCPNode, no machine and no message — on
+# cortex, `ocp apply --only workers` printed "All 8 component(s) up to date"
+# over a `brain` entry it had silently ignored. Maintainer decision
+# 2026-09-24: the OCPNode is the reflection of desired state and goes hand in
+# hand with the k8s Node. A worker in ocp.yaml without one is created on this
+# path too, through the same CR-driven worker step the fresh deploy runs.
+# Workers that already have one are not driven again — re-driving means
+# re-provisioning and a 600s wait each — and when nothing is missing the path
+# costs nothing beyond one list.
+#
+
+# nocert keeps cert-manager (never "up to date" against this fake cluster)
+# out of the summary counts these tests read.
+my $TWO_SSH_WORKERS = <<'YAML';
+nocert: true
+workers:
+  - name: gpu
+    provider: ssh
+    nodes:
+      - brain.ocp.invalid
+      - pinky.ocp.invalid
+YAML
+
+subtest 'k26: a worker without an OCPNode is created, the others are left alone' => sub {
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    ok scalar(grep { $_ eq 'ENSURE OCPNode/pinky' } @{ $r->{writes} }),
+        'the missing worker gets its OCPNode';
+    ok !scalar(grep { $_ eq 'ENSURE OCPNode/brain' } @{ $r->{writes} }),
+        'the existing worker\'s OCPNode is not rewritten';
+
+    is scalar @{ $r->{driven} }, 1, 'the worker step is driven once';
+    is_deeply $r->{driven}[0]{names}, ['pinky'],
+        'and only for the missing worker — brain is not re-driven';
+    is $r->{driven}[0]{cp_ip}, '10.230.30.155',
+        'workers join the control plane the status file names';
+
+    like $r->{out}, qr/pinky/, 'progress names the worker being created';
+    like $r->{out}, qr/1 component\(s\) updated/,
+        'a worker brought up counts as an update in the summary';
+    is $r->{err}, '', 'nothing went wrong, nothing on STDERR';
+};
+
+subtest 'k26: nothing missing means no worker step at all' => sub {
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky']);
+
+    ok !scalar(grep { /^ENSURE OCPNode/ } @{ $r->{writes} }), 'no OCPNode written';
+    ok !touched($r, '_drive_workers'),      'no worker driven';
+    ok !touched($r, '_ensure_robocop'),     'no robocop rollout';
+    ok !touched($r, '_wait_robocop_ready'), 'no robocop wait';
+    ok !$r->{key_asked}, 'and no key asked for (no PIN2 prompt)';
+    like $r->{out}, qr/All \d+ component\(s\) up to date/, 'the summary stays clean';
+};
+
+subtest 'k26: no workers in ocp.yaml, path unchanged' => sub {
+    my $r = reconcile();
+
+    ok !scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }),
+        'OCPNodes are not even listed';
+    ok !touched($r, '_drive_workers') && !touched($r, '_ensure_robocop')
+        && !touched($r, '_wait_robocop_ready'), 'no worker step';
+    unlike $r->{out}, qr/worker/i, 'and no worker line in the output';
+};
+
+subtest 'k26: robocop drives the new worker when it is enabled' => sub {
+    local $ROBOCOP_READY = 1;
+    my $r = reconcile(yaml => "robocop: true\n" . $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    ok touched($r, '_ensure_robocop'),     'robocop is ensured';
+    ok touched($r, '_wait_robocop_ready'), 'and waited for';
+    ok $r->{driven}[0]{robocop_ready}, 'the drive polls robocop instead of the CLI';
+    ok !$r->{key_asked}, 'no SSH key needed when robocop does the work';
+};
+
+subtest 'k26: the CLI fallback gets the cluster key only when it needs it' => sub {
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    ok !$r->{driven}[0]{robocop_ready}, 'robocop off: CLI fallback';
+    is $r->{key_asked}, 1, 'the key is asked for once';
+    is $r->{driven}[0]{ssh_key_path}, '/nonexistent/cluster-key',
+        'and handed to the drive as a path';
+
+    local $KEY_FAILS = 1;
+    my $nokey = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    ok !touched($nokey, '_drive_workers'), 'no key, no drive';
+    like $nokey->{err}, qr/pinky/,        'the failure names the worker on STDERR';
+    like $nokey->{err}, qr/no key for you/, 'with the diagnosis';
+    like $nokey->{out}, qr/did NOT bring the cluster back to spec/,
+        'and the summary does not claim success';
+};
+
+subtest 'k26: a worker that does not come up is not reported as up to date' => sub {
+    local $DRIVE_PHASE = 'Failed';
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'no clean summary';
+    like $r->{out}, qr/left as they were: .*pinky/, 'the worker is named as unresolved';
+};
+
+subtest 'k26: --dry-run names the worker it would create and creates nothing' => sub {
+    my $r = reconcile(dry_run => 1, yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    is_deeply $r->{writes}, [], 'nothing written';
+    is_deeply $r->{touched}, [], 'no step reached, no robocop, no drive';
+    ok !$r->{key_asked}, 'no key asked for';
+    like $r->{out}, qr/would create OCPNode\/pinky/, 'the missing worker is named';
+    unlike $r->{out}, qr/OCPNode\/brain/, 'the existing one is not';
+    like $r->{out}, qr/\[Dry run - no changes made\]/, 'still a dry run';
+};
+
+subtest 'k26: --only gates the worker step the way the deploy path does' => sub {
+    my $cp = reconcile(only => 'control-planes',
+        yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    ok !scalar(grep { /^ENSURE OCPNode/ } @{ $cp->{writes} }),
+        '--only control-planes creates no worker';
+    ok !touched($cp, '_drive_workers'), 'and drives none';
+
+    my $w = reconcile(only => 'workers',
+        yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    ok scalar(grep { $_ eq 'ENSURE OCPNode/pinky' } @{ $w->{writes} }),
+        '--only workers creates the missing one';
+
+    my $dry = reconcile(dry_run => 1, only => 'control-planes',
+        yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    unlike $dry->{out}, qr/would create OCPNode/, 'and the dry run agrees';
 };
 
 done_testing;

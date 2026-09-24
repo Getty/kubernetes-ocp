@@ -23,6 +23,14 @@ use OCP::Versions;
         deploy_step    => $deploy_step,    # step counter so messages stay ordered
     });
 
+    # The worker step alone, as the reconcile path runs it (k26):
+    my @results = OCP::Cmd::Apply::Deploy::worker_step($apply, $api, $config, {
+        names        => \@missing,         # omit to cover every worker
+        ssh_key_path => sub { ... },       # a path, or a code ref run lazily
+        cp_ip        => $cp_ip,
+        secrets      => $secrets,
+    });
+
 =head1 DESCRIPTION
 
 The "the cluster is up, now put the stack on it" half of `ocp apply`.
@@ -214,35 +222,81 @@ sub deploy {
     if ($worker_step) {
         print "\n";
         print "Step " . ($deploy_step + 2) . ": Deploy workers (CR-driven)\n";
-        $self->_ensure_worker_ocpnodes($api, $config);
-
-        my $robocop_ready = 0;
-        if ($config->robocop_enabled) {
-            print "  [..] Deploying robocop controller...\n";
-            eval { $self->_ensure_robocop($api) };
-            if ($@) {
-                print "  [WARN] robocop deploy failed: $@\n";
-            } else {
-                $robocop_ready = $self->_wait_robocop_ready($api, 60);
-                if ($robocop_ready) {
-                    print "  [ok] robocop ready — grace period (5s)\n";
-                    $self->wait_seconds(5);
-                } else {
-                    print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
-                }
-            }
-        }
-
-        my @results = $self->_drive_workers($api, $config, {
-            robocop_ready => $robocop_ready,
-            ssh_key_path  => $ssh_key_path,
-            cp_ip         => $cp_ip,
-            secrets       => $secrets,
+        worker_step($self, $api, $config, {
+            ssh_key_path => $ssh_key_path,
+            cp_ip        => $cp_ip,
+            secrets      => $secrets,
         });
-        $self->_print_worker_status(\@results);
     }
 
     return $deploy_step + 2 + ($worker_step ? 1 : 0);
+}
+
+# The CR-driven worker step, shared by the fresh deploy (every worker) and
+# the reconcile path of an existing cluster (only the workers that have no
+# OCPNode yet, k26): write the Pending OCPNodes, bring robocop up if it is
+# enabled, then let robocop drive them or fall back to the CLI reconcile.
+# Returns the per-worker results ({ name, phase, message }).
+#
+# $deps->{names} limits the step to those workers; left out, it covers all
+# of ocp.yaml. $deps->{ssh_key_path} is a path, or a code ref returning one:
+# the reconcile path has no key in hand and obtaining it can cost a PIN2
+# prompt, so it is asked for only when the CLI fallback is actually taken --
+# never when robocop does the work.
+sub worker_step {
+    my ($self, $api, $config, $deps) = @_;
+    my $names = $deps->{names};
+
+    $self->_ensure_worker_ocpnodes($api, $config, $names);
+
+    my $robocop_ready = 0;
+    if ($config->robocop_enabled) {
+        print "  [..] Deploying robocop controller...\n";
+        eval { $self->_ensure_robocop($api) };
+        if ($@) {
+            print "  [WARN] robocop deploy failed: $@\n";
+        } else {
+            $robocop_ready = $self->_wait_robocop_ready($api, 60);
+            if ($robocop_ready) {
+                print "  [ok] robocop ready — grace period (5s)\n";
+                $self->wait_seconds(5);
+            } else {
+                print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
+            }
+        }
+    }
+
+    my $ssh_key_path = $deps->{ssh_key_path};
+    if (!$robocop_ready && ref $ssh_key_path eq 'CODE') {
+        $ssh_key_path = eval { $ssh_key_path->() };
+        unless ($ssh_key_path) {
+            my $why = $@ || "no usable SSH key for the cluster\n";
+            my @which = $names ? @$names
+                : map { $_->{metadata}{name} } OCP::Cmd::Apply::CR::worker_ocpnodes($config);
+            print STDERR "  [!!] Bringing up worker(s) " . join(', ', @which)
+                . " needs SSH access to the cluster and\n"
+                . "       could not get a key for it. Their OCPNodes are written,\n"
+                . "       the machines are NOT set up.\n";
+            print STDERR "       $_\n" for split /\n/, $why;
+            my @failed = map { {
+                name    => $_,
+                phase   => 'Failed',
+                message => 'no SSH key for the CLI reconcile',
+            } } @which;
+            $self->_print_worker_status(\@failed);
+            return @failed;
+        }
+    }
+
+    my @results = $self->_drive_workers($api, $config, {
+        robocop_ready => $robocop_ready,
+        ssh_key_path  => $ssh_key_path,
+        cp_ip         => $deps->{cp_ip},
+        secrets       => $deps->{secrets},
+        ($names ? (names => $names) : ()),
+    });
+    $self->_print_worker_status(\@results);
+    return @results;
 }
 
 1;

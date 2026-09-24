@@ -4,6 +4,8 @@ package OCP::Cmd::Apply::Drift;
 use strict;
 use warnings;
 
+use OCP::Cmd::Apply::CR;
+use OCP::Cmd::Apply::Deploy;
 use OCP::Drift;
 use OCP::Rex;
 use OCP::Secrets;
@@ -21,8 +23,20 @@ The "cluster already exists" branch of `ocp apply`: read the kubeconfig, run
 OCP::Drift, then walk every component the deploy path owns and undo any
 drift that has a remedy. Cluster-truth checks are unchanged from the deploy
 path; the only structural difference is which steps we tolerate leaving
-out (server provisioning, control-plane install, robocop rollout, long
-waits) — those are one-time, not convergence.
+out (control-plane install and the other one-time bootstrap steps).
+
+Workers are converged the way the OCPNode layer defines them: the OCPNode is
+the reflection of desired state and goes hand in hand with the k8s Node. A
+worker listed in F<ocp.yaml> that has no OCPNode is created on this path
+too, through L<OCP::Cmd::Apply::Deploy/worker_step> — the same CR-driven
+step the fresh deploy runs (Pending OCPNode, robocop rollout when enabled,
+CLI fallback otherwise). Workers that already have an OCPNode are never
+driven from here, whatever their phase: that would re-provision machines
+and wait on each of them on every apply. When nothing is missing, the whole
+worker check is one OCPNode list — no robocop wait, no SSH key, no PIN2
+prompt. C<--only control-planes> skips it, as it skips the worker step of
+the fresh deploy; C<--dry-run> names the workers it would create and
+creates none.
 
 Under C<--dry-run> the walk is replaced by C<dry_run_report>: the detector
 runs, its findings are printed, and not one write leaves the process.
@@ -39,11 +53,14 @@ closing summary then says the run did not bring the cluster back to spec
 rather than "all components up to date".
 
 The shape of reconcile is forced by t/38 in OCP::Cmd::Apply::Drift's
-source: it regex-extraps _reconcile_components and checks the body for
+source: it regex-extracts reconcile_components and checks the body for
 the steps it must run (_configure_registry_dns, _ensure_cp_ocpnode,
-_setup_cilium_gateway, _setup_lb_ipam, ...) and the steps it must NOT
-(_drive_workers, install_server, reconcile_until_ready). Moving the
-function but not the body would be a regression.
+_setup_cilium_gateway, _setup_lb_ipam, ...) and the one it must NOT
+(install_server). Moving the function but not the body would be a
+regression. The worker behaviour — missing workers are created, existing
+ones left alone, nothing at all when none is missing — is asserted by
+running the path against a fake API in the same test (k26), not by the
+source regex that used to forbid _drive_workers here.
 
 L<OCP::Cmd::Apply> re-exports both helpers as thin forwarders so the
 existing test surface (t/20, t/38) keeps working.
@@ -286,6 +303,47 @@ sub reconcile_components {
         } or print "  [WARN] node CR reconcile failed: $@";
     }
 
+    # Workers (k26). The OCPNode is the reflection of desired state: a worker
+    # in ocp.yaml without one is created here, through the same CR-driven
+    # step the fresh deploy runs. Workers that have one are left alone —
+    # re-driving them would re-provision machines and wait on each. When none
+    # is missing this costs one list and nothing else: no robocop rollout, no
+    # wait, no key. Runs after the CR block, which put the CRDs and provider
+    # CRs the new OCPNodes need in place, and gated by --only like Deploy.pm.
+    if (@{ $config->workers } && worker_step_wanted($self)) {
+        $checked++;
+        print "  [..] Checking worker OCPNodes...\n";
+        my $api = $self->_k8s_api;
+        my @missing = eval {
+            OCP::Cmd::Apply::CR::missing_worker_ocpnodes($self, $api, $config);
+        };
+        if (my $err = $@) {
+            print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $err";
+            push @unresolved, 'workers';
+        } elsif (!@missing) {
+            print "  [ok] Every worker in ocp.yaml has an OCPNode\n";
+        } else {
+            my @names = map { $_->{metadata}{name} } @missing;
+            print "  [..] Creating " . scalar(@names) . " worker(s) without an OCPNode: "
+                . join(', ', @names) . "\n";
+            my @results = OCP::Cmd::Apply::Deploy::worker_step($self, $api, $config, {
+                names        => \@names,
+                cp_ip        => $cp_ip,
+                secrets      => $secrets,
+                ssh_key_path => sub {
+                    $self->cluster_ssh_key($config, reason => 'ocp apply')->path;
+                },
+            });
+            for my $r (@results) {
+                if ($r->{phase} eq 'Ready') {
+                    $updated++;
+                } else {
+                    push @unresolved, "worker $r->{name}";
+                }
+            }
+        }
+    }
+
     # Summary
     print "\n";
     if ($updated) {
@@ -348,14 +406,35 @@ sub dry_run_report {
         print "          would run $entry->{remedy}{task}\n" if $entry->{remedy};
     }
 
+    # Workers without an OCPNode (k26): named, not created. The list is the
+    # same read the real run makes; nothing past it is reached.
+    my @missing;
+    if (@{ $config->workers } && worker_step_wanted($self)) {
+        @missing = eval {
+            OCP::Cmd::Apply::CR::missing_worker_ocpnodes($self, $self->_k8s_api, $config);
+        };
+        print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $@"
+            if $@;
+        print "  [workers] $_->{metadata}{name} has no OCPNode\n"
+            . "          would create OCPNode/$_->{metadata}{name} and bring the worker up\n"
+            for @missing;
+    }
+
     print "\n";
-    print '  ', scalar @$drift, " difference(s) a real run would act on.\n";
+    print '  ', scalar(@$drift) + scalar(@missing), " difference(s) a real run would act on.\n";
     print "  It would also re-apply any component whose manifest changed at an\n";
     print "  unchanged version — the one difference a read-only pass cannot see.\n";
     print "\n";
     print "[Dry run - no changes made]\n";
 
     return;
+}
+
+# Whether --only lets the worker step run: no --only, or --only workers.
+# The same gate OCP::Cmd::Apply::Deploy puts in front of its worker step.
+sub worker_step_wanted {
+    my ($self) = @_;
+    return !$self->only || $self->only eq 'workers';
 }
 
 # Run the step a drift entry asks for. Returns true when it ran, false when

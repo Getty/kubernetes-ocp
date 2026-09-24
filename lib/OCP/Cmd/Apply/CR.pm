@@ -20,7 +20,9 @@ use OCP::SSH;
     OCP::Cmd::Apply::CR::ensure_crds($apply, $api);
     OCP::Cmd::Apply::CR::ensure_providers($apply, $api, $config, $secrets);
     OCP::Cmd::Apply::CR::ensure_cp_ocpnode($apply, $api, $cp_info);
-    OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($apply, $api, $config);
+    OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($apply, $api, $config, \@names);
+    my @crs     = OCP::Cmd::Apply::CR::worker_ocpnodes($config);
+    my @missing = OCP::Cmd::Apply::CR::missing_worker_ocpnodes($apply, $api, $config);
     OCP::Cmd::Apply::CR::migrate_legacy_nodes($apply, $api);
     OCP::Cmd::Apply::CR::ensure_robocop($apply, $api);
     OCP::Cmd::Apply::CR::wait_robocop_ready($apply, $api, $timeout);
@@ -406,11 +408,13 @@ sub migrate_legacy_nodes {
     }
 }
 
-# Write one Pending OCPNode CR per worker entry. If role/provider/etc. on
-# the CR already differs in the cluster, the ensure preserves status
-# (patch semantics are owned by the controller/CLI later).
-sub ensure_worker_ocpnodes {
-    my ($self, $api, $config) = @_;
+# The OCPNode CRs ocp.yaml asks for, one per worker, in pool order. Pure: it
+# reads the config and touches nothing. The one place the worker naming lives
+# ("<pool>-<i>" for machines OCP creates, the first host label for ssh), so
+# writing the CRs, driving them and asking which are missing (k26) cannot
+# disagree about what a worker is called.
+sub worker_ocpnodes {
+    my ($config) = @_;
     my $ns = 'ocp-system';
     my @crs;
 
@@ -447,16 +451,59 @@ sub ensure_worker_ocpnodes {
             $spec->{image}      = $pool->{image}            if $pool->{image};
             $spec->{location}   = $pool->{location}         if $pool->{location};
 
-            my $cr = {
+            push @crs, {
                 apiVersion => 'ocp.internal/v1',
                 kind       => 'OCPNode',
                 metadata   => { name => $w_name, namespace => $ns },
                 spec       => $spec,
             };
-            $api->ensure($cr);
-            print "  [ok] ensured OCPNode/$w_name (worker, Pending)\n";
-            push @crs, $cr;
         }
+    }
+    return @crs;
+}
+
+# The workers from ocp.yaml that have no OCPNode yet -- the ones `ocp apply`
+# on an existing cluster has to create (k26). Read-only: one OCPNode list.
+#
+# A worker that has an OCPNode is left out whatever its phase. The OCPNode is
+# the reflection of desired state; bringing it to Ready is robocop's job (or
+# `ocp node`'s), and re-driving it from here would re-provision a machine and
+# wait up to 600s on it on every apply.
+#
+# Dies when the list fails. "Could not look" must read neither as "nothing is
+# missing" nor as "everything is missing" -- the caller would then provision
+# every worker a second time.
+sub missing_worker_ocpnodes {
+    my ($self, $api, $config) = @_;
+
+    my @wanted = worker_ocpnodes($config);
+    return () unless @wanted;
+
+    my $list = $api->list('OCPNode', namespace => 'ocp-system');
+    my %have = map {
+        ($api->k8s->object_to_struct($_)->{metadata}{name} => 1)
+    } @{ $list->items // [] };
+
+    return grep { !$have{ $_->{metadata}{name} } } @wanted;
+}
+
+# Write one Pending OCPNode CR per worker entry. If role/provider/etc. on
+# the CR already differs in the cluster, the ensure preserves status
+# (patch semantics are owned by the controller/CLI later).
+#
+# $names, when given, limits the write to those workers: the reconcile path
+# creates only the missing ones and leaves every existing OCPNode as it is.
+sub ensure_worker_ocpnodes {
+    my ($self, $api, $config, $names) = @_;
+    my %only = map { $_ => 1 } @{ $names // [] };
+
+    my @crs;
+    for my $cr (worker_ocpnodes($config)) {
+        my $w_name = $cr->{metadata}{name};
+        next if $names && !$only{$w_name};
+        $api->ensure($cr);
+        print "  [ok] ensured OCPNode/$w_name (worker, Pending)\n";
+        push @crs, $cr;
     }
     return @crs;
 }
@@ -504,35 +551,12 @@ sub wait_robocop_ready {
 sub drive_workers {
     my ($self, $api, $config, $deps) = @_;
 
-    my $ns      = 'ocp-system';
-    my $workers = $config->workers;
-    my @names;
-
-    my $pool_idx = 0;
-    for my $pool (@$workers) {
-        my $pool_name = $pool->{name} // 'pool' . ++$pool_idx;
-        my $type      = $pool->{provider} // 'hetzner';
-        my $count     = $pool->{nodes} // 1;
-
-        my @hosts;
-        if ($type eq 'ssh') {
-            if (ref $pool->{nodes} eq 'ARRAY') {
-                @hosts = map { ref $_ ? $_->{host} : $_ } @{$pool->{nodes}};
-            } elsif ($pool->{host}) {
-                @hosts = ($pool->{host});
-            }
-            $count = scalar @hosts || 1;
-        }
-
-        for my $i (1 .. $count) {
-            my $w_name = "$pool_name-$i";
-            if ($type eq 'ssh') {
-                my $host = $hosts[$i - 1] // next;
-                ($w_name) = split(/\./, $host, 2);
-            }
-            push @names, $w_name;
-        }
-    }
+    # $deps->{names} narrows the drive to the workers this run created (the
+    # reconcile path, k26); the fresh deploy leaves it out and drives every
+    # worker in ocp.yaml.
+    my @names = $deps->{names}
+        ? @{ $deps->{names} }
+        : map { $_->{metadata}{name} } worker_ocpnodes($config);
 
     if ($deps->{robocop_ready}) {
         return poll_nodes_until_terminal($self, $api, \@names, 600);
