@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-24T18:19:56Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T18:19:56Z
+created: 2026-09-24T17:32:26Z
+id: 185
+priority: high
+started: 2026-09-24T18:19:56Z
+status: done
+tags:
+- k3s
+- workers
+- join
+title: k3s-Agent joint ueber CP-Hostnamen statt public_ip, und haengt ohne Timeout
+updated: 2026-09-24T18:19:56Z
+---
+
+Live-Fund 2026-09-24 (ocpt, k3s, main 0bd5262): CP host: ocpt-cp.vm, public_ip: 10.5.10.20. RKE2-Worker joint korrekt ueber https://10.5.10.20:9345 (public_ip), der k3s-Worker bekommt K3S_URL=https://ocpt-cp.vm:6443 (Hostname) -> "Failed to validate connection ... failed to get CA certs", Endlosschleife. Ausserdem blockiert "systemctl restart k3s-agent" (Type=notify) im Rex-Task ohne Timeout -> ocp apply haengt >20 min ohne Ausgabe, OCPNode steht auf Installing. Done: k3s-Join-URL aus derselben Quelle wie RKE2 (public_ip // host, gemeinsamer Helper), Agent-Start mit Timeout (systemctl --no-block + eigene Ready-Wartezeit mit klarer Fehlermeldung, analog _wait_for_cilium), Tests.
+
+2026-09-24 17:40 Implemented on branch worktree-agent-afae32bd028f12b76 (0df764a). Cause: not k3s-specific -- bootstrap (first apply) handed the provider's advertised host (ssh: host) downstream as cp_ip, the reconcile path used public_ip // host; join_url's port was already right per distribution. Fix: OCP::Config::join_host (public_ip // advertised) used for Bootstrap's cp_ip, so join URL, robocop Secret server-url, LB-IPAM and registry DNS agree. Rexfile: k3s installer INSTALL_K3S_SKIP_START + restart --no-block; rke2-agent start --no-block; both then _wait_for_agent (10m, dies with unit, join URL, journal tail). t/185. make test green: 115 files, 2007 tests. Not claimed: live join on ocpt. Not touched: k3s SERVER installer still does its own blocking restart.
+
+2026-09-24 17:42 Review ok, rebased+ff nach main (0df764a). Ursache: Bootstrap gab advertised host als cp_ip weiter; join_host() nun einheitlich. Agents starten --no-block mit 10-min-Wartezeit.
+
+2026-09-24 18:19 LIVE VERIFIZIERT 2026-09-24, finaler RKE2-Durchlauf auf ocpt (main 2588109): robocop-Worker joint ueber https://10.5.10.20:9345 ohne hosts-Eintrag; k3s-Agent-Start --no-block
