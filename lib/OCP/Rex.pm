@@ -281,6 +281,9 @@ sub install_server {
     # against its own manifest.
     $self->run_task('install_cilium',
         distribution => $distribution,
+        # Where Cilium reaches the API server on k3s, which has no localhost
+        # port common to server and agents (k178). RKE2 ignores it.
+        k8s_service_host => $self->advertised_host,
         version      => $opts{cilium_version}
             || OCP::Versions->get_component_version('cilium') || '',
         cli_version  => $opts{cilium_cli_version}

@@ -81,8 +81,8 @@ subtest 'k3s server install command: no token, explicit server' => sub {
     like   $c, qr/\bsh -s - server\b/, 'explicit server argument to the installer';
     like   $c, qr/INSTALL_K3S_VERSION=v1\.33\.1\+k3s1 /, 'version pin kept';
     like   $c, qr/K3S_NODE_NAME=police1 /, 'node name kept';
-    like   $c, qr/--disable=traefik --disable=servicelb --write-kubeconfig-mode=644/,
-        'server flags kept';
+    # k178 moved the server flags into config.yaml (t/178 asserts them there).
+    unlike $c, qr/--/, 'no server flags on the line';
     unlike $c, qr/K3S_URL/, 'no K3S_URL on a server install';
 };
 
@@ -136,7 +136,13 @@ for my $role (qw( server agent )) {
         my $body = task_body("install_k3s_$role");
         ok defined $body, 'task found' or return;
 
-        my $write_at = index $body, '_write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n")';
+        # The agent writes the token alone; the server writes the full config
+        # built by _k3s_server_config, which starts with the token (k178).
+        my $write_at = index $body, $role eq 'agent'
+            ? '_write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n")'
+            : '_write_secret_file("/etc/rancher/k3s/config.yaml", $config)';
+        like $body, qr/_k3s_server_config\(\s*token\s*=>\s*\$token/, 'server config carries the token'
+            if $role eq 'server';
         my $run_at   = index $body, 'run _k3s_install_cmd(';
         ok $write_at >= 0, 'token goes to /etc/rancher/k3s/config.yaml through the 0600 writer';
         ok $run_at   >= 0, "installer command comes from _k3s_install_cmd(role => '$role')";

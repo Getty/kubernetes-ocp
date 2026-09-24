@@ -61,6 +61,11 @@ Revision history for OCP
     - The RKE2/K3s cluster token reaches a node only through its config.yaml,
       written 0600 root:root; it never appears on an installer command line or
       in the service environment file.
+    - On K3s, Cilium is the only network stack: the server's config.yaml turns
+      off Flannel, the built-in network policy controller and kube-proxy, and
+      Cilium reaches the API server at the control plane's address with its
+      pod pool on K3s' cluster CIDR. A Cilium that does not become ready stops
+      the apply with its status instead of passing for installed.
     - The NVIDIA GPU stack -- driver, container toolkit, GPU Operator and its
       ClusterPolicy, RuntimeClass, device plugin, DCGM -- installs only where
       NFD reports a CUDA-capable card, and `gpu.enabled` / `gpu.driver` in

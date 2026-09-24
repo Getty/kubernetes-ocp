@@ -894,6 +894,12 @@ task "install_k3s_server", sub {
     my $token = $params->{token} || _existing_server_token('k3s') || _generate_token();
     my $version = $params->{version} || '';
     my $node_name = $params->{node_name} || '';
+    # Same shape as install_rke2_server: a JSON array from OCP::Rex, or a bare
+    # scalar from a hand-run.
+    my $tls_san = $params->{tls_san};
+    my @tls_sans = ref $tls_san eq 'ARRAY' ? @$tls_san
+                 : (defined $tls_san && length $tls_san) ? ($tls_san)
+                 : ();
 
     do_task "prepare_node", {
         hostname => $params->{hostname} || '',
@@ -904,12 +910,17 @@ task "install_k3s_server", sub {
     };
     _maybe_detect_gpu($params);
 
-    # The token reaches k3s through config.yaml only -- never the installer
-    # line, where ps shows it and the installer copies it into the unit's
-    # service.env (k156). Written before the installer so the first start
-    # already reads it.
+    # The whole server configuration lives in config.yaml: the token because
+    # the installer line shows in ps and lands in the unit's service.env
+    # (k156), the CNI switches because they must hold from the very first
+    # start (k178). Written before the installer runs.
+    my $config = _k3s_server_config(
+        token     => $token,
+        node_name => $node_name,
+        tls_sans  => \@tls_sans,
+    );
     file "/etc/rancher/k3s", ensure => 'directory';
-    _write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n");
+    _write_secret_file("/etc/rancher/k3s/config.yaml", $config);
 
     # Install K3s
     run _k3s_install_cmd(role => 'server', version => $version, node_name => $node_name);
@@ -938,7 +949,9 @@ task "install_k3s_agent", sub {
     };
     _maybe_detect_gpu($params);
 
-    # Token via config.yaml only, as in install_k3s_server (k156).
+    # Token via config.yaml only, as in install_k3s_server (k156). Nothing
+    # CNI-related here: flannel-backend, disable-network-policy and
+    # disable-kube-proxy are server settings k3s hands its agents (k178).
     file "/etc/rancher/k3s", ensure => 'directory';
     _write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n");
 
@@ -1045,10 +1058,38 @@ sub _k3s_install_cmd {
     $cmd .= "INSTALL_K3S_VERSION=$args{version} " if $args{version};
     $cmd .= "K3S_URL=$args{server} " if $role eq 'agent' && $args{server};
     $cmd .= "K3S_NODE_NAME=$args{node_name} " if $args{node_name};
-    $cmd .= $role eq 'server'
-        ? "sh -s - server --disable=traefik --disable=servicelb --write-kubeconfig-mode=644"
-        : "sh -s - agent";
+    $cmd .= "sh -s - $role";
     return $cmd;
+}
+
+# k3s' pod network, stated on both sides: the server's cluster-cidr and
+# Cilium's cluster-pool IPAM must agree, and Cilium's own default (10.0.0.0/8)
+# does not (k178).
+sub _k3s_cluster_cidr { '10.42.0.0/16' }
+
+# /etc/rancher/k3s/config.yaml for a k3s server. Out of the box k3s starts
+# Flannel, its kube-router network policy controller and kube-proxy; next to
+# them Cilium (kube-proxy replacement) manages no pod and never gets ready
+# (k178). What used to be installer flags lives here as well, so this file is
+# the one description of the server.
+sub _k3s_server_config {
+    my (%args) = @_;
+
+    my $config = "token: $args{token}\n";
+    $config .= "node-name: $args{node_name}\n" if $args{node_name};
+    if (my @sans = @{ $args{tls_sans} // [] }) {
+        $config .= "tls-san:\n";
+        $config .= "  - $_\n" for @sans;
+    }
+    $config .= "write-kubeconfig-mode: \"0644\"\n";
+    $config .= "flannel-backend: none\n";
+    $config .= "disable-network-policy: true\n";
+    $config .= "disable-kube-proxy: true\n";
+    $config .= "cluster-cidr: " . _k3s_cluster_cidr() . "\n";
+    # Cilium Gateway API and LB-IPAM take over ingress and LoadBalancers.
+    $config .= "disable:\n";
+    $config .= "  - $_\n" for qw( traefik servicelb );
+    return $config;
 }
 
 # config.yaml carries the join token, so it ends up 0600 root:root (k156, the
@@ -1290,6 +1331,50 @@ sub _restart_cilium_operator {
     }
 }
 
+# The `cilium install` flags. kubeProxyReplacement needs an API server address
+# that works before any Service does, on every node Cilium runs on. RKE2: its
+# agents proxy the API on localhost:6443 just like the servers serve it there.
+# k3s: agents proxy it on 127.0.0.1:6444 instead, so no localhost port fits
+# both roles -- Cilium gets the control plane's own address (k3s runs a single
+# server here, k8). Its IPAM pool follows k3s' cluster-cidr (k178).
+sub _cilium_install_args {
+    my (%o) = @_;
+    my $distribution = $o{distribution} || 'rke2';
+
+    my ($host, @extra) = ('localhost');
+    if ($distribution eq 'k3s') {
+        $host = $o{k8s_service_host}
+            or die "install_cilium on k3s needs k8s_service_host (the control plane address)\n";
+        push @extra, '--set ipam.operator.clusterPoolIPv4PodCIDRList=' . _k3s_cluster_cidr();
+    }
+
+    return join ' ',
+        '--set kubeProxyReplacement=true',
+        "--set k8sServiceHost=$host",
+        '--set k8sServicePort=6443',
+        @extra,
+        '--set gatewayAPI.enabled=true';
+}
+
+# Waits for Cilium and dies when it does not get there. Rex's run does not
+# die on a non-zero exit by itself, so a Cilium that never became ready used
+# to cost the full wait and then report success (k178).
+sub _wait_for_cilium {
+    my (%o) = @_;
+    my ($minutes) = $o{duration} =~ /^(\d+)m$/
+        or die "_wait_for_cilium: duration must be minutes like '10m', got '$o{duration}'\n";
+
+    my $out = run "cilium status --wait --wait-duration=$o{duration} 2>&1",
+        env      => { KUBECONFIG => $o{kubeconfig} },
+        timeout  => $minutes * 60 + 60,
+        auto_die => FALSE;
+    return 1 if $? == 0;
+
+    die "Cilium did not become ready within $o{duration}.\n"
+      . "Check on the node: KUBECONFIG=$o{kubeconfig} cilium status\n"
+      . "cilium status said:\n" . ($out // '(no output)') . "\n";
+}
+
 # The Gateway API CRDs alone, for a cluster whose Cilium is at its pin but
 # whose bundle is not: the gateway_api pin moved, the CRDs came from the
 # experimental channel, or they are gone. OCP::Drift names this task as the
@@ -1405,10 +1490,10 @@ task "install_cilium", sub {
 
         say "Installing Cilium $cilium_version_target with Gateway API...";
         run 'cilium install --version ' . $cilium_version_target . ' ' .
-            '--set kubeProxyReplacement=true ' .
-            '--set k8sServiceHost=localhost ' .
-            '--set k8sServicePort=6443 ' .
-            '--set gatewayAPI.enabled=true',
+            _cilium_install_args(
+                distribution     => $distribution,
+                k8s_service_host => $params->{k8s_service_host},
+            ),
             env => { KUBECONFIG => $kubeconfig };
 
         # The cilium CLI is known to silently exit 0 in some failure modes
@@ -1428,9 +1513,7 @@ task "install_cilium", sub {
 
     # Wait for Cilium to be ready
     say "Waiting for Cilium to be ready...";
-    run 'cilium status --wait --wait-duration=10m',
-        env => { KUBECONFIG => $kubeconfig },
-        timeout => 660;
+    _wait_for_cilium(kubeconfig => $kubeconfig, duration => '10m');
 
     say "Cilium installed successfully";
 };
@@ -1489,9 +1572,7 @@ task "upgrade_cilium", sub {
 
     # Wait for rollout
     say "Waiting for Cilium rollout...";
-    run 'cilium status --wait --wait-duration=5m',
-        env => { KUBECONFIG => $kubeconfig },
-        timeout => 360;
+    _wait_for_cilium(kubeconfig => $kubeconfig, duration => '5m');
 
     say "Cilium upgraded successfully to $version";
 };

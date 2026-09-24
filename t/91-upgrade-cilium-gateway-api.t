@@ -32,9 +32,11 @@ my $src = $rexfile->slurp_utf8;
 
 my ($helper) = $src =~ /^(sub _apply_gateway_api_crds \{.*?^\})/ms;
 my ($arch)   = $src =~ /^(sub _node_arch \{.*?^\})/ms;
+my ($wait)   = $src =~ /^(sub _wait_for_cilium \{.*?^\})/ms;
 my ($task)   = $src =~ /^(task "upgrade_cilium", sub \{\n.*?\n\};)$/ms;
 ok defined $helper, 'share/Rexfile defines _apply_gateway_api_crds';
 ok defined $arch,   'share/Rexfile defines _node_arch';
+ok defined $wait,   q{share/Rexfile defines _wait_for_cilium (k178)};
 ok defined $task,   'share/Rexfile defines the upgrade_cilium task'
     or BAIL_OUT('upgrade_cilium not found in the Rexfile');
 
@@ -55,7 +57,7 @@ sub task { my ($name, $code) = @_; $TASKS{$name} = $code }
 sub task_params { my ($p) = @_; return $p }
 PERL
 
-ok eval("$stubs\n$helper\n$arch\n$task\n1;"), 'the lifted task compiles against a run stub'
+ok eval("$stubs\n$helper\n$arch\n$wait\n$task\n1;"), 'the lifted task compiles against a run stub'
     or BAIL_OUT("cannot compile the lifted task: $@");
 
 my $upgrade = $RexfileUpgradeCilium::TASKS{upgrade_cilium}
