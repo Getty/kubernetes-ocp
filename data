@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-24T17:41:12Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:41:12Z
+created: 2026-09-24T16:55:14Z
+id: 179
+priority: medium
+started: 2026-09-24T16:55:54Z
+status: done
+tags:
+- robocop
+- teardown
+title: robocop hat keinen Teardown-Pfad (Terminating/DELETED)
+updated: 2026-09-24T17:41:12Z
+---
+
+Aus k175: robocop ruft OCP::Node::teardown nie auf - Terminating wird uebersprungen, kein Finalizer, DELETED-Events ignoriert. Wer eine OCPNode loescht, hinterlaesst die Maschine (Hetzner: zahlt weiter). Voraussetzungen: Provider via from_cr braucht ssh_key_path (robocop haelt Key als Inhalt -> TempKeyPair), ClusterRole braucht pods list + pods/eviction create. Done: Finalizer ocp.internal/teardown auf Worker-OCPNodes, robocop fuehrt teardown aus und entfernt den Finalizer; RBAC; Tests. Abstimmen mit ocp node rm (CLI) - wer macht was, wenn beide laufen.
+
+2026-09-24 17:09 Implemented on branch worktree-agent-a5513657c7525a649 commit 1d16ddb. Finalizer ocp.internal/teardown (OCP::Node::TEARDOWN_FINALIZER) on worker OCPNodes: set at creation by ocp apply (worker_ocpnodes) and ocp node add (role worker); robocop adds it to older workers (not while Terminating). Never on control-plane or synthetic legacy CRs. robocop: deletionTimestamp + finalizer -> OCP::Node::teardown in the reconcile child (any phase, Failed included); ssh/local get the robo key as TempKeyPair (gone before child exit), hetzner none; inject w/o key + non-hetzner -> SSHKeyAvailable=False, finalizer kept; failure -> Failed + reason, finalizer kept, retried by resync (event of own write skipped: lastReconcileTime < resync/2); resync now includes deleted CRs. CLI/robocop split: ocp node rm still does its own teardown, removes finalizer before deleting the OCPNode, so robocop never sees it; OCP::Node::teardown now takes the reconciler lease first (dies untouched if held, renews after drain, releases on failure) -> the two never tear down one node at once. RBAC: pods list, pods/eviction create. Docker make test green: 110 files, 1931 tests. Not live-tested.
+
+2026-09-24 17:17 Review ok, rebased+ff nach main (6680da1).
+
+2026-09-24 17:40 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
