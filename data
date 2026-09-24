@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-09-24T16:17:05Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T16:17:05Z
+created: 2026-09-24T16:14:38Z
+id: 172
+priority: medium
+started: 2026-09-24T16:17:05Z
+status: done
+tags:
+- adr
+- ssh
+title: 'ADR: Host-Key-Vertrauensmodell (TOFU, .ocp/known_hosts)'
+updated: 2026-09-24T16:17:05Z
+---
+
+Aus k168. Entscheidung festhalten: TOFU, OpenSSH schreibt (accept-new), libssh verifiziert; Datei .ocp/known_hosts lokal, nicht committed (Begruendung: Hetzner-IP-Reuse, CI-Drift, ADR 0004); Eintraege pro Maschine gepflegt (Hetzner create/delete), nicht im destroy-Cleanup (bewusste Abweichung von ADR 0004); robocop TOFU pro Pod. Ursache 80f3b36 (Rex-LibSSH 0.004 CWE-322).
+
+2026-09-24 16:16 ADR 0030 (docs/adr/0030-trust-machine-host-keys-on-first-use.md) + ADR 0004 amendment 2026-09-24 + README index, commit da7ff5a on main (not pushed).
