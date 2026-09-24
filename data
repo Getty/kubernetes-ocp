@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-09-24T14:52:17Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:52:17Z
+created: 2026-09-24T14:34:29Z
+id: 164
+priority: low
+started: 2026-09-24T14:52:17Z
+status: done
+tags:
+- drift
+- gateway-api
+title: 'Drift: Gateway-API-Pin-Bump allein wird nicht erkannt'
+updated: 2026-09-24T14:52:17Z
+---
+
+Aus k160: Drift liest Versionen aus Deployment-Images. Ein Bump nur von gateway_api (Cilium gleich) bleibt unentdeckt. Idee: CRD gateways.gateway.networking.k8s.io lesen, Annotation gateway.networking.k8s.io/bundle-version gegen Pin; Remedy = _apply_gateway_api_crds (eigener Rex-Task o. upgrade_cilium ohne Cilium-Bump). Done: Probe + Remedy + Tests.
+
+2026-09-24 14:51 Implemented on branch worktree-agent-a4aa130510fb73c94, commit 9e6ecbf (on main 6a75035). New gateway_api probe in OCP::Drift reads the CRD gateways.gateway.networking.k8s.io through Kubernetes::REST (typed IO::K8s CRD, inflates fine with 1.108) and compares the annotation gateway.networking.k8s.io/bundle-version with the pin. It also expects gateway.networking.k8s.io/channel=standard; annotation names checked against the v1.6.1 standard-install.yaml. A missing CRD is drift and carries the remedy (remedy_if_missing). Remedy: new Rex task update_gateway_api, which runs _apply_gateway_api_crds and then _restart_cilium_operator (now shared with install_cilium); params come from remedy_params. ocp update --component gateway_api reaches the same task through the update_<comp> fallback. ocp status prints it generically. Docker make test green 100/1554. Not live-verified. When Cilium and the bundle drift together, both remedies run: an idempotent re-apply plus an extra operator restart.
+
+2026-09-24 14:52 Review ok, ff nach main (9e6ecbf), gepusht. Docker 100/1554 gruen (Worker). Rex-Task update_gateway_api passt auf den update_<comp>-Fallback (k165).
