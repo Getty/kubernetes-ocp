@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-09-24T16:42:00Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T16:42:00Z
+created: 2026-09-24T16:12:09Z
+id: 170
+priority: critical
+started: 2026-09-24T16:42:00Z
+status: done
+tags:
+- deps
+- robocop
+- build
+title: 'IO::Async::SSL fehlt im Image: robocop-Watch und inject-key koennen kein https/wss'
+updated: 2026-09-24T16:42:00Z
+---
+
+Live-Fund 2026-09-24 (ocpt-Testcluster): ocp inject-key -> "Cant locate IO/Async/SSL.pm". Im robocop-Pod (docker.io raudssus/ocp:latest) ebenso: perl -MIO::Async::SSL scheitert; robocop controller laeuft ohne jede Log-Ausgabe und schreibt keine Conditions -> robocop hat in-cluster vermutlich nie funktioniert (erklaert "robocop not ready -> CLI fallback"). Net::Async::Kubernetes deklariert nur IO::Socket::SSL; Net::Async::HTTP/WebSocket::Client brauchen IO::Async::SSL fuer https/wss (nur recommends). Done: requires IO::Async::SSL in cpanfile, make snapshot (Docker), Test der beweist, dass der TLS-Pfad ladbar ist (ohne Netz), und klaeren, warum robocop den Fehler still schluckt statt laut zu sterben (Fehler muss ins Log + Pod nicht Ready/CrashLoop). Cross-Board: N::A::K sollte IO::Async::SSL selbst requiren.
+
+2026-09-24 16:12 Cross-Board: p5-net-async-kubernetes k32 (IO::Async::SSL requiren). Hier trotzdem direkt in cpanfile aufnehmen. Delegiert an ocp-robocop-worker.
+
+2026-09-24 16:25 Implemented on branch worktree-agent-add6ef7e937b1ab4f, commit 4920654 (rebased on main da7ff5a): cpanfile requires IO::Async::SSL, snapshot +IO-Async-SSL-0.25 only. Root cause of silence: N::A::K::Watcher on_fail retries every 1s forever without any callback (the SSL require fails as a failed Future), plus block-buffered STDOUT in the pod swallowed even the startup lines. Fix: run() banner + autoflush, API check over the watch client at startup (fatal) and every resync_interval (3 failures in a row fatal), errors to STDERR, bin/robocop exit 1. Tests t/154-tls-transport.t, t/155-robocop-loud-failure.t, t/00-load. make test (Docker) green: 106 files, 1868 tests. Suggest N::A::K card: Watcher should surface transport failures (on_error/on_fail callback).
+
+2026-09-24 16:25 Review ok, ff nach main (e84f362), gepusht. Docker 106/1868 gruen (Worker). Snapshot +IO-Async-SSL-0.25. Stille-Ursache: N::A::K Watcher on_fail retryt endlos ohne on_error + STDOUT-Pufferung. Live-Verifikation folgt.
+
+2026-09-24 16:41 LIVE VERIFIZIERT 2026-09-24 auf ocpt (pikachu-VMs .20/.21, RKE2 v1.36.4, Image von main e84f362): Banner + Logs sichtbar, Watch arbeitet, inject-key ueber wss ok.
