@@ -64,6 +64,7 @@ Revision history for OCP
     - `ocp destroy` tears a cluster down and deletes the paid servers it created.
     - Invalid input is refused at the boundary with a message that names what
       was given and lists what would have worked, and errors carry no Perl stack
-      trace unless `--verbose` is set.
+      trace unless `--verbose` is set. Multi-word options take either
+      spelling, `--pins-stdin` or `--pins_stdin`, in any position.
     - Ships as a Docker image on a Docker-first toolchain, with CI that builds
       the image and publishes it to Docker Hub and GHCR.

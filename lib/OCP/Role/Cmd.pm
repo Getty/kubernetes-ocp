@@ -24,6 +24,72 @@ option pins_stdin => (
     trigger => sub { $OCP::Password::PINS_STDIN = 1 if $_[1] },
 );
 
+# Both spellings of a multi-word option, --pins-stdin and --pins_stdin,
+# wherever it stands (k167). MooX::Options (4.103) means to accept both: its
+# _options_fix_argv rewrites the dashes. But that loop takes the argument
+# after EVERY known option as the option's value, a boolean's included, and
+# passes it on without rewriting it -- so `--force --pins-stdin` reached
+# Getopt::Long as "pins-stdin" and died "Unknown option", while the same
+# option alone, or after one that takes a value, went through.
+#
+# So the spelling is settled here, before MooX::Options sees the vector: an
+# argument is rewritten only when its underscored name IS an option of this
+# command, and the value after an option that takes one is left alone. An
+# unknown dashed name therefore still reaches Getopt::Long and is refused.
+# parse_options, not new_with_options: that is where MooX::Options reads
+# @ARGV, and MooX::Cmd reaches it for every command in the chain.
+around parse_options => sub {
+    my ($orig, $class, @params) = @_;
+
+    local @ARGV = $class->_option_argv_spelled(@ARGV);
+    return $class->$orig(@params);
+};
+
+sub _option_argv_spelled {
+    my ($class, @argv) = @_;
+
+    my %data = $class->_options_data;
+    my @spelled;
+
+    while (@argv) {
+        my $arg = shift @argv;
+
+        if ($arg eq '--') {
+            push @spelled, $arg, @argv;
+            last;
+        }
+
+        my ($neg, $word, $value) = $arg =~ /\A--(no-)?([^=]+)(=.*)?\z/s;
+        unless (defined $word) {
+            push @spelled, $arg;
+            next;
+        }
+
+        (my $name = $word) =~ tr/-/_/;
+
+        # `--no-wait` is a negation only for a negatable option; any other
+        # --no-... is left exactly as typed.
+        if (defined $neg && $data{$name} && $data{$name}{negatable}) {
+            push @spelled, '--no-' . $name . ($value // '');
+            next;
+        }
+
+        (my $whole = ($neg // '') . $word) =~ tr/-/_/;
+        unless ($data{$whole}) {
+            push @spelled, $arg;
+            next;
+        }
+
+        push @spelled, '--' . $whole . ($value // '');
+
+        # The value of `--host x` is data, not an option to spell.
+        push @spelled, shift @argv
+            if !defined $value && defined $data{$whole}{format} && @argv;
+    }
+
+    return @spelled;
+}
+
 sub ocp { $_[0]->command_chain->[0] }
 
 # What to say instead of a listing when the cluster has no OCPNodeProvider at
