@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-09-24T14:38:59Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:38:59Z
+created: 2026-09-24T14:22:05Z
+id: 159
+priority: medium
+started: 2026-09-24T14:25:13Z
+status: done
+tags:
+- robocop
+- async
+title: 'robocop: synchroner Reconcile blockiert Watch-Loop und inject-Listener; kein
+  periodischer Resync'
+updated: 2026-09-24T14:38:59Z
+---
+
+Aus ADR 0029 (k158): reconcile laeuft synchron auf dem geteilten IO::Async-Loop. Ein langer Install haelt andere Watch-Events und den inject-Listener (k2, Port 9999) auf -> ocp inject-key kann in seinen 30s-Timeout laufen. Ausserdem kein Resync nach Zeitplan: ein Node mit externem Problem wartet, bis jemand die OCPNode anfasst. Done: Reconcile async (Future) oder in eigenem Prozess/Worker, plus periodischer Resync (Watch-Relist oder Timer); Tests fuer inject waehrend laufendem Reconcile.
+
+2026-09-24 14:34 Implemented on branch worktree-agent-ac61ce2020d6dff4a commit 73f9e3d: reconcile in forked child per node (IO::Async::Loop->fork), per-node serialization + coalesced rerun, max 2 concurrent (ROBOCOP_MAX_RECONCILES), child re-reads CR, resync timer 60s (ROBOCOP_RESYNC_INTERVAL) for Pending/Provisioning/Installing/Joining. ADR 0029 amended. make test green (98 files, 1510 tests). Unverified on a real cluster: memory under 256Mi limit with 2 concurrent installs.
+
+2026-09-24 14:38 Review ok; Test t/91 -> t/92 umbenannt (Kollision mit k160). ff nach main (1a222eb), gepusht. Voller Docker-Lauf auf kombiniertem Stand: 99 Dateien/1522 Tests gruen. Unverifiziert: Speicher 2 parallele Fork-Installs unter 256Mi; OOM-gekillter Child wird nur geloggt.
