@@ -61,6 +61,10 @@ Revision history for OCP
     - The RKE2/K3s cluster token reaches a node only through its config.yaml,
       written 0600 root:root; it never appears on an installer command line or
       in the service environment file.
+    - Workers join the control plane at its `public_ip` when `ocp.yaml` pins
+      one, else at its host, on every apply path and for RKE2 and K3s alike.
+      An agent that has not joined within ten minutes stops the install with
+      its join URL and the last lines of its journal.
     - On K3s, Cilium is the only network stack: the server's config.yaml turns
       off Flannel, the built-in network policy controller and kube-proxy, and
       Cilium reaches the API server at the control plane's address with its

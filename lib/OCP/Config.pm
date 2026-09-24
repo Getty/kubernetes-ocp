@@ -155,6 +155,18 @@ sub version {
 # is pointed at the wrong one never joins.
 sub supervisor_port { shift->distribution eq 'k3s' ? 6443 : 9345 }
 
+# The address workers join the control plane at: the public_ip ocp.yaml pins,
+# else the host the provider advertised. The reconcile path has always read
+# public_ip // host (cluster_status); bootstrap handed the advertised host on,
+# which for the ssh provider is `host` -- so a CP with `host: cp.vm` and a
+# public_ip had its first-apply workers join via a hostname they could not use,
+# and its later ones via the IP (k185).
+sub join_host {
+    my ($self, $advertised) = @_;
+    my $ip = ($self->control_planes->[0] // {})->{public_ip};
+    return defined $ip && length $ip ? $ip : $advertised;
+}
+
 sub join_url {
     my ($self, $host) = @_;
     return sprintf 'https://%s:%d', $host, $self->supervisor_port;

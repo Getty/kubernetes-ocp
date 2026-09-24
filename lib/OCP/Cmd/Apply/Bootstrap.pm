@@ -509,8 +509,10 @@ sub bootstrap_control_plane {
         # The ADVERTISED address, not the transport. Downstream (registry DNS,
         # LB-IPAM, the worker join_url, the CP OCPNode host field) needs the
         # address other machines and the operator's kubeconfig reach the cluster
-        # at. Same as $cp_host for every provider but local (k138).
-        cp_ip     => $advertised,
+        # at. Same as $cp_host for every provider but local (k138). A pinned
+        # public_ip wins over it, as on the reconcile path: the ssh provider
+        # advertises `host`, which may be a name the workers cannot use (k185).
+        cp_ip     => $config->join_host($advertised),
         provider  => $provider,
         ssh_key_path => $ssh_key_path,
     };

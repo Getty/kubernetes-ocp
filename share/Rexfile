@@ -864,9 +864,12 @@ task "install_rke2_agent", sub {
 
     run $install_cmd;
 
-    # Start service
+    # rke2-agent is Type=notify: a plain start returns only once the agent has
+    # joined, and one that cannot reach $server never does -- the Rex task and
+    # `ocp apply` hung with it (k185). Start without waiting, then wait bounded.
     run "systemctl enable rke2-agent.service";
-    run "systemctl start rke2-agent.service";
+    run "systemctl start --no-block rke2-agent.service";
+    _wait_for_agent(unit => 'rke2-agent', server => $server, minutes => 10);
 
     say "RKE2 agent joined cluster";
 };
@@ -960,8 +963,13 @@ task "install_k3s_agent", sub {
     file "/etc/rancher/k3s", ensure => 'directory';
     _write_secret_file("/etc/rancher/k3s/config.yaml", "token: $token\n");
 
-    # Install K3s agent
+    # Install K3s agent. The installer only installs and enables it
+    # (INSTALL_K3S_SKIP_START): its own `systemctl restart` of the Type=notify
+    # unit blocked until the agent had joined, forever for one that cannot
+    # reach $server (k185). Restarted without waiting, then waited on bounded.
     run _k3s_install_cmd(role => 'agent', server => $server, version => $version, node_name => $node_name);
+    run "systemctl restart --no-block k3s-agent";
+    _wait_for_agent(unit => 'k3s-agent', server => $server, minutes => 10);
 
     say "K3s agent joined cluster";
 };
@@ -1061,6 +1069,7 @@ sub _k3s_install_cmd {
 
     my $cmd = "curl -sfL https://get.k3s.io | ";
     $cmd .= "INSTALL_K3S_VERSION=$args{version} " if $args{version};
+    $cmd .= "INSTALL_K3S_SKIP_START=true " if $role eq 'agent';
     $cmd .= "K3S_URL=$args{server} " if $role eq 'agent' && $args{server};
     $cmd .= "K3S_NODE_NAME=$args{node_name} " if $args{node_name};
     $cmd .= "sh -s - $role";
@@ -1384,6 +1393,40 @@ sub _cilium_pool_args {
     return '' unless @cidrs;
     return "--set ipam.operator.clusterPoolIPv4PodCIDRList=$cidrs[0]" if @cidrs == 1;
     return "--set 'ipam.operator.clusterPoolIPv4PodCIDRList={" . join(',', @cidrs) . "}'";
+}
+
+# Waits for an agent unit (k3s-agent, rke2-agent) to become active and dies
+# when it does not. Both are Type=notify and turn active only once the agent
+# has joined, so "active" is the join, and "activating" past the deadline is
+# an agent that cannot reach its server -- the k185 hang, now with a name, the
+# join URL and the unit's own last words. Every poll has its own timeout, so a
+# stuck systemctl cannot stretch the wait either.
+sub _wait_for_agent {
+    my (%o) = @_;
+    my $unit     = $o{unit};
+    my $minutes  = $o{minutes} // '';
+    my $interval = $o{interval} // 5;
+    die "_wait_for_agent: minutes must be a whole number, got '$minutes'\n"
+        unless $minutes =~ /^\d+$/;
+
+    say "Waiting for $unit to join (up to ${minutes}m)...";
+    my $deadline = time + $minutes * 60;
+    my $state;
+    while (1) {
+        $state = run "systemctl is-active $unit 2>&1", auto_die => FALSE, timeout => 30;
+        $state = defined $state ? $state =~ s/\s+\z//r : '';
+        return 1 if $state eq 'active';
+        last if time >= $deadline;
+        sleep $interval if $interval;
+    }
+
+    my $journal = run "journalctl -u $unit -n 30 --no-pager 2>&1",
+        auto_die => FALSE, timeout => 30;
+    die "$unit did not become active within ${minutes}m (state: "
+      . (length $state ? $state : 'unknown') . ").\n"
+      . ($o{server} ? "It joins the cluster via $o{server} -- check that this node can reach that address.\n" : '')
+      . "Check on the node: journalctl -u $unit\n"
+      . "Last journal lines:\n" . ($journal // '(no output)') . "\n";
 }
 
 # Waits for Cilium and dies when it does not get there. Rex's run does not
