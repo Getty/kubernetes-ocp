@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-09-24T17:39:37Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:39:37Z
+created: 2026-09-24T15:56:36Z
+id: 168
+priority: high
+started: 2026-09-24T17:39:37Z
+status: done
+tags:
+- rex
+- ssh
+- provider
+- regression
+title: 'Rex LibSSH bricht bei unbekanntem Host-Key ab: ssh-Provider installiert nicht
+  mehr'
+updated: 2026-09-24T17:39:37Z
+---
+
+Live-Fund 2026-09-24, Image von main 925b2f9, frisches ssh-Provider-Projekt: OCP::SSH-Readiness ok, dann Rex install_rke2_server: "LibSSH: cannot connect to ocpt-cp.vm: host key is not in known_hosts and strict_hostkeycheck is on" -> apply bricht ab. Wahrscheinlich Regression aus k139 (lokales Rex::Interface::Exec::LibSSH-Overlay entfernt, Upstream prueft strikt). Im Container gibt es keine known_hosts (--rm). Betrifft jede Maschine, die OCP per Rex anfasst (CP, Worker via CLI-Fallback, robocop im Pod!). Done: sauberes Host-Key-Modell statt blindem Abschalten, z. B. TOFU: beim ersten Kontakt (SSH-Readiness) Key erfassen und projektlokal persistieren (.ocp/known_hosts? oder verschluesselt/committed, Abwaegung), Rex/OCP::SSH nutzen dieselbe Datei; robocop-Pfad bedenken (Pod hat kein Projektverzeichnis); Host-Key-Wechsel -> laute Fehlermeldung mit Hinweis. Tests.
+
+2026-09-24 16:13 Implemented on branch worktree-agent-a379b40345c38cb43, commit 78e57ba. Cause: 80f3b36 (snapshot bump Rex-LibSSH/Net-LibSSH 0.002->0.004, CWE-322 fix, strict host key check by default), not the k139 overlay removal. Model: TOFU. OCP::SSH uses StrictHostKeyChecking=accept-new + UserKnownHostsFile=.ocp/known_hosts (CLI exports OCP_KNOWN_HOSTS); OCP::Rex learns unknown hosts over OCP::SSH first, Rexfile points Rex::LibSSH at the same file strict. Changed key -> loud die with ssh-keygen -R hint. robocop: per-pod /tmp/ocp-known_hosts-<uid> (emptyDir), fingerprint logged on first contact. Hetzner: key forgotten on wait_for_running (new address) and delete_server(host). make test green (103 files, 1592 tests); real e2e in image against throwaway sshd: TOFU, verify, changed key refused, recover after hint. Follow-ups: persist robocop fingerprints in OCPNode status; ADR for the host-key trust model.
+
+2026-09-24 16:14 Review ok, rebased+ff nach main (b658a13), gepusht. Docker 103/1592 gruen (Worker, vor Rebase auf k167). Ursache korrigiert: 80f3b36 (Rex-LibSSH/Net-LibSSH 0.004, CWE-322), nicht k139. Live-Verifikation folgt mit neuem Image.
+
+2026-09-24 16:41 LIVE VERIFIZIERT 2026-09-24 auf ocpt (pikachu-VMs .20/.21, RKE2 v1.36.4, Image von main e84f362): robocop TOFU im Pod: Fingerprint geloggt, Rex-Install ok. CLI-TOFU folgt im k3s-Lauf.
+
+2026-09-24 17:39 LIVE VERIFIZIERT 2026-09-24 auf ocpt (k3s-Durchlauf, Image main 4241ab1).
