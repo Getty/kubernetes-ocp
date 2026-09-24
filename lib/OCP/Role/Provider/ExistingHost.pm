@@ -49,11 +49,88 @@ our @UNINSTALLERS = qw(
     k3s-agent-uninstall.sh
 );
 
+# Cilium's datapath outlives the uninstallers (k190). rke2-uninstall.sh stops
+# the agent but not what the agent attached to the kernel: the socket-LB
+# programs on the root cgroup (through /run/cilium/cgroupv2), the tc/tcx
+# programs on the host's devices, the maps and links pinned in bpffs, the
+# cilium_* devices and the CILIUM_* iptables chains. Until a reboot the
+# socket LB keeps translating the old cluster's service addresses to pods that
+# are gone, so connect() to e.g. localhost:30500 -- the registry mirror every
+# node's containerd is pointed at -- hangs instead of being refused, every
+# image pull waits minutes for it, and a fresh RKE2 on the host never gets
+# etcd up within its start bound. Measured on ocpt-cp.
+#
+# This clears it the way Cilium's own post-uninstall cleanup does, without
+# bpftool (not on the hosts) and without the agent's image:
+#
+#   - pinned objects: Cilium attaches its cgroup and tcx programs as bpf_links
+#     (kernel 5.7+) and pins the links under /sys/fs/bpf/cilium, precisely so
+#     they survive the agent. Unpinning the last reference -- the agent is
+#     gone -- releases the link, and the kernel detaches the program. So the
+#     rm IS the detach. (Only a pre-5.7 kernel attaches without links; Cilium
+#     1.20 does not run there.)
+#   - legacy tc attachments (kernel without tcx): the clsact qdisc of every
+#     device that carries a Cilium program goes, and its filters with it;
+#   - Cilium's devices, and its iptables chains in every backend present:
+#     jumps into them deleted, then flushed and removed, in one restore
+#     transaction per table;
+#   - the cgroup2 mount, then Cilium's runtime dir -- with --one-file-system,
+#     so a mount that refused to go is never recursed into.
+our @CILIUM_PINS = qw(
+    /sys/fs/bpf/cilium
+    /sys/fs/bpf/tc/globals/cilium_*
+);
+our $CILIUM_CGROUP_ROOT = '/run/cilium/cgroupv2';
+our $CILIUM_RUN_DIR     = '/run/cilium';
+our @CILIUM_LINKS = qw(
+    cilium_host
+    cilium_net
+    cilium_vxlan
+    cilium_geneve
+    cilium_wg0
+);
+our @IPTABLES = qw(
+    iptables ip6tables
+    iptables-legacy ip6tables-legacy
+    iptables-nft ip6tables-nft
+);
+
+# What still being there means the datapath outlived the cleanup. The install
+# path refuses a host that shows any of these without a distribution on it
+# (share/Rexfile, _cilium_leftovers) -- keep the two in step, t/190 checks.
+our @CILIUM_RESIDUE = (
+    [ '[ -e /sys/fs/bpf/cilium ]', '/sys/fs/bpf/cilium' ],
+    [ 'grep -qs " ' . $CILIUM_CGROUP_ROOT . ' " /proc/mounts', $CILIUM_CGROUP_ROOT ],
+    [ 'ip link show dev cilium_host >/dev/null 2>&1', 'cilium_host' ],
+);
+
+our $CILIUM_CLEANUP_CMD = join ' ; ',
+    'for d in /sys/class/net/*; do d=${d##*/};'
+        . ' if tc filter show dev $d ingress 2>/dev/null | grep -qE "cil_|bpf_(netdev|host|overlay|lxc)"'
+        . ' || tc filter show dev $d egress 2>/dev/null | grep -qE "cil_|bpf_(netdev|host|overlay|lxc)";'
+        . ' then tc qdisc del dev $d clsact 2>/dev/null || true; fi; done',
+    'rm -rf ' . join(' ', @CILIUM_PINS) . ' 2>/dev/null || true',
+    'for l in ' . join(' ', @CILIUM_LINKS) . '; do ip link del dev $l 2>/dev/null || true; done',
+    'for ipt in ' . join(' ', @IPTABLES) . '; do'
+        . ' command -v $ipt-save >/dev/null 2>&1 && command -v $ipt-restore >/dev/null 2>&1 || continue;'
+        . ' for tb in filter nat mangle raw; do'
+        . ' s=$($ipt-save -t $tb 2>/dev/null) || continue;'
+        . ' printf "%s\n" "$s" | grep -qE "^:(OLD_)?CILIUM_" || continue;'
+        . ' { echo "*$tb";'
+        . ' printf "%s\n" "$s" | grep -E "^-A " | grep -vE "^-A (OLD_)?CILIUM_" | grep -E -- "-j (OLD_)?CILIUM_" | sed "s/^-A /-D /";'
+        . ' printf "%s\n" "$s" | sed -nE "s/^:((OLD_)?CILIUM_[^ ]*) .*/-F \1/p";'
+        . ' printf "%s\n" "$s" | sed -nE "s/^:((OLD_)?CILIUM_[^ ]*) .*/-X \1/p";'
+        . ' echo COMMIT; } | $ipt-restore --noflush 2>/dev/null || true;'
+        . ' done; done',
+    "umount $CILIUM_CGROUP_ROOT 2>/dev/null || umount -l $CILIUM_CGROUP_ROOT 2>/dev/null || true",
+    "rm -rf --one-file-system $CILIUM_RUN_DIR 2>/dev/null || true";
+
 our $UNINSTALL_CMD = join ' ; ',
     'for u in ' . join(' ', @UNINSTALLERS) . '; do'
         . ' if command -v $u >/dev/null 2>&1; then $u 2>/dev/null || true; fi;'
         . ' done',
     'rm -rf ' . join(' ', @LEFTOVER_PATHS) . ' 2>/dev/null || true',
+    $CILIUM_CLEANUP_CMD,
     'for t in ' . join(' ', @LEFTOVER_IP_TABLES)
         . '; do while ip rule del lookup $t 2>/dev/null; do :; done; done',
     'ip rule list 2>/dev/null | grep -qE "^0:[[:space:]].*lookup local"'
@@ -65,7 +142,13 @@ our $UNINSTALL_CMD = join ' ; ',
     # as a clean uninstall (k175). The outcome is what gets checked, not the
     # steps: the command fails when a distribution binary is still on PATH.
     'if command -v rke2 >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1;'
-        . ' then echo "RKE2/K3s is still installed after the uninstall" >&2; exit 1; fi';
+        . ' then echo "RKE2/K3s is still installed after the uninstall" >&2; exit 1; fi',
+    # And the datapath (k190): a host whose Cilium state survived is not clean,
+    # the next bootstrap on it would hang. Only a reboot clears what is left.
+    'left=""',
+    ( map { $_->[0] . ' && left="$left ' . $_->[1] . '"' } @CILIUM_RESIDUE ),
+    'if [ -n "$left" ]; then echo "Cilium datapath state is still on the host after the uninstall:$left'
+        . ' -- reboot the host before it is bootstrapped again" >&2; exit 1; fi';
 
 # A consumer only has to say which host it talks to, how to check that the
 # host is there, and how to run a command on it. Everything else is the same
@@ -147,11 +230,18 @@ C<k3s-uninstall.sh> on a K3s server, C<k3s-agent-uninstall.sh> on a K3s
 agent), then removes the leftovers the
 vendor uninstallers stand: OCP-installed paths (see C<@LEFTOVER_PATHS>) and
 Cilium's residual policy-routing ip rules (see C<@LEFTOVER_IP_TABLES>), which
-matter on this reboot-less re-provisioning path. C<$server_id> is ignored
-(the machine does not belong to OCP); C<host> is read through C<resolve_host>.
+matter on this reboot-less re-provisioning path. It also clears Cilium's
+datapath, which outlives the agent (see C<$CILIUM_CLEANUP_CMD>): the bpf_links
+and maps pinned under F</sys/fs/bpf> (unpinning is what detaches the socket-LB
+and tcx programs), legacy tc attachments, the C<cilium_*> devices, the
+C<CILIUM_*> iptables chains, the F</run/cilium/cgroupv2> mount and
+F</run/cilium>. C<$server_id> is ignored (the machine does not belong to OCP);
+C<host> is read through C<resolve_host>.
 
 The command ends by checking its own outcome: it fails when C<rke2> or C<k3s>
-is still on C<PATH>.  B<A failed uninstall dies> — a refused SSH login, a
+is still on C<PATH>, and when Cilium state survived the cleanup
+(C<@CILIUM_RESIDUE>) -- a host in that state hangs the next bootstrap on it
+until it is rebooted, and the message says so.  B<A failed uninstall dies> — a refused SSH login, a
 command that exits non-zero — with the exit status and the remote side's
 stderr in the message.  Returns the C<run_command> result on success.  A host
 that cannot be resolved is still a no-op: there is nowhere to uninstall from.

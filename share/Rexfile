@@ -568,6 +568,8 @@ sub _install_server {
                  : (defined $tls_san && length $tls_san) ? ($tls_san)
                  : ();
 
+    _refuse_cilium_leftovers($distribution);
+
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
 
@@ -654,6 +656,8 @@ sub _install_agent {
     my $server = $params->{server} or die "server URL required\n";
     my $token  = $params->{token}  or die "token required\n";
 
+    _refuse_cilium_leftovers($distribution);
+
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
 
@@ -680,6 +684,57 @@ sub _agent_opts {
         ($distribution eq 'rke2' ? (registries => _registries($params)) : ()),
         nvidia_runtime_path => 1,
     );
+}
+
+# Cilium datapath state from a previous cluster (k190).
+#
+# An uninstall that leaves Cilium's eBPF behind -- a vendor uninstaller run by
+# hand, or an OCP from before the uninstall cleared it -- leaves the socket
+# load balancer on the root cgroup translating the old cluster's service
+# addresses to pods that no longer exist. connect() to them hangs instead of
+# being refused; one of them is the registry mirror containerd is pointed at
+# (localhost:30500), so every image pull of the new install stalls for minutes
+# and RKE2 misses its 10-minute start bound without saying why. Measured on
+# ocpt-cp, cleared by a reboot.
+#
+# So a host that carries Cilium's pins, its cgroup2 mount or its cilium_host
+# device but no RKE2/K3s -- binary or running unit -- is refused before
+# anything is installed. With a distribution there the state belongs to the
+# running cluster (a re-apply, an upgrade) and the guard stays out of the way.
+# The signals are the ones OCP::Role::Provider::ExistingHost checks after its
+# uninstall (@CILIUM_RESIDUE); t/190 keeps the two in step.
+sub _cilium_leftover_probe {
+    return 'if command -v rke2 >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1'
+         . ' || systemctl is-active --quiet rke2-server rke2-agent k3s k3s-agent 2>/dev/null;'
+         . ' then :; else'
+         . ' [ -e /sys/fs/bpf/cilium ] && echo /sys/fs/bpf/cilium;'
+         . ' grep -qs " /run/cilium/cgroupv2 " /proc/mounts && echo /run/cilium/cgroupv2;'
+         . ' ip link show dev cilium_host >/dev/null 2>&1 && echo cilium_host;'
+         . ' fi; true';
+}
+
+# What the probe found, one item per element; empty on a clean host. Only the
+# probe's own tokens count -- anything else on the channel (a login banner, a
+# shell's complaint) is not evidence of Cilium state.
+sub _cilium_leftover_signals { qw( /sys/fs/bpf/cilium /run/cilium/cgroupv2 cilium_host ) }
+
+sub _cilium_leftovers {
+    my $out = run _cilium_leftover_probe(), auto_die => FALSE;
+    my %signal = map { $_ => 1 } _cilium_leftover_signals();
+    return grep { $signal{$_} } map { s/^\s+|\s+$//gr } split /\n/, $out // '';
+}
+
+sub _refuse_cilium_leftovers {
+    my ($distribution) = @_;
+    my @left = _cilium_leftovers();
+    return 1 unless @left;
+
+    die "This host still carries Cilium datapath state from a previous cluster ("
+      . join(', ', @left) . "), and no RKE2/K3s is installed on it.\n"
+      . "Cilium's socket load balancer would keep intercepting connections to the old\n"
+      . "cluster's service addresses -- the registry mirror on localhost:30500 among\n"
+      . "them -- and every image pull of the new $distribution would stall until the\n"
+      . "install times out. Reboot the host, then run the install again.\n";
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and

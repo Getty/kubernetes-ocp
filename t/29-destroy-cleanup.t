@@ -122,7 +122,7 @@ subtest 'a distribution still installed afterwards fails the command (k175)' => 
     my $err = $dir->child('stderr');
     my $status = do {
         local $ENV{PATH} = "$stub";
-        system('/bin/sh', '-c', $cmd . ' 2>' . $err);
+        system('/bin/sh', '-c', '{ ' . $cmd . ' ; } 2>' . $err);
     };
     isnt $status, 0, 'rke2 still on PATH after the uninstall: the command fails';
     like $err->slurp, qr/still installed/, 'and says why on stderr';

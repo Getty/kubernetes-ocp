@@ -105,8 +105,13 @@ Revision history for OCP
       provider that created it, read from the cluster when `secrets.yaml` has
       none; a server no token reaches stops the run before anything is
       deleted. An ssh/local machine gets whichever RKE2 or K3s uninstaller it
-      carries, server or agent. A machine it could not clean is named at the
-      end with the reason on STDERR, and the run exits 1.
+      carries, server or agent, and then loses the Cilium eBPF datapath the
+      uninstallers leave behind, so it can be bootstrapped again without a
+      reboot; state that survives fails the uninstall with a request to reboot.
+      A machine it could not clean is named at the end with the reason on
+      STDERR, and the run exits 1. An install onto a host that still carries a
+      previous cluster's Cilium state stops at once and says to reboot it,
+      instead of stalling every image pull until RKE2 times out.
     - `ocp node rm` drains the node through the Eviction API, honouring
       PodDisruptionBudgets within a five-minute bound, then deletes its server
       or uninstalls RKE2/K3s from an ssh/local machine, the way `ocp destroy`
