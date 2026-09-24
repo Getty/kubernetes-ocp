@@ -16,6 +16,7 @@ use OCP::Cmd::Node::Add;
 use OCP::Cmd::SSH;
 use OCP::Cmd::Update;
 use OCP::Config;
+use OCP::Versions;
 
 #
 # Which private key reaches this cluster's machines?
@@ -556,6 +557,15 @@ subtest 'ocp update on secure + hetzner drives Rex with the admin key' => sub {
         'one PIN2 for the whole update, not one per component';
 
     is $calls->[0]{host}, '1.2.3.4', 'against the control plane';
+
+    # k160: upgrade_cilium dies without the CLI and Gateway API pins, and
+    # picks kubectl/kubeconfig paths from the distribution.
+    is $calls->[0]{version}, '1.19.2', 'cilium: the requested version';
+    is $calls->[0]{cli_version}, OCP::Versions->get_component_version('cilium_cli'),
+        'cilium: the CLI pin';
+    is $calls->[0]{gateway_api_version}, OCP::Versions->get_component_version('gateway_api'),
+        'cilium: the Gateway API pin';
+    is $calls->[0]{distribution}, $config->distribution, 'cilium: the distribution';
 };
 
 subtest 'ocp update on secure + ssh now takes the admin key too' => sub {

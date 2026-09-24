@@ -1396,9 +1396,14 @@ task "upgrade_cilium", sub {
     my $params = task_params(shift);
     my $version = $params->{version} or die "version parameter required\n";
     my $distribution = $params->{distribution} || 'rke2';
+    # Read before anything touches the node: an upgrade that would stop
+    # halfway for want of a pin must not start.
+    my $gateway_api_version = $params->{gateway_api_version} // $ENV{OCP_GATEWAY_API_VERSION}
+        or die "OCP_GATEWAY_API_VERSION (or task_params gateway_api_version=...) is required\n";
 
     say "Upgrading Cilium to $version...";
 
+    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
     my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 
     # Update Cilium CLI (might be needed for newer versions)
@@ -1415,6 +1420,19 @@ task "upgrade_cilium", sub {
     say "Updating Cilium CLI to $cli_version...";
     run "curl -sfL $cli_url | tar xz -C /usr/local/bin";
     run "chmod +x /usr/local/bin/cilium";
+
+    # The Gateway API CRDs travel with Cilium (see the pin note above): the
+    # new Cilium must find its bundle in place when it starts, or it runs
+    # without a Gateway controller. Before k160 only install_cilium applied
+    # them, so a bump through this remedy kept the CRDs the cluster was
+    # installed with. No cilium-operator bounce here, unlike install_cilium:
+    # this task runs for a version change, which rolls the operator pods onto
+    # the new image, and those read the new CRD schemas at startup.
+    _apply_gateway_api_crds(
+        kubectl    => $kubectl,
+        kubeconfig => $kubeconfig,
+        version    => $gateway_api_version,
+    );
 
     # Upgrade Cilium in cluster
     say "Upgrading Cilium in cluster to $version...";

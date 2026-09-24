@@ -24,6 +24,9 @@ has rex_prober => (is => 'ro');
 #
 #   remedy       the Rex task that brings the cluster back to the target, or
 #                undef when nothing upgrades this in place
+#   remedy_pins  further OCP::Versions pins the remedy task needs, as
+#                { task param => component }; the target version and the
+#                distribution always travel
 #   skip_if      config predicate: this cluster asked not to have the thing
 #   optional     absence is not drift — the component only exists on some
 #                clusters, so "not deployed" is a normal state and not a fault
@@ -50,6 +53,12 @@ our @COMPONENT_PROBES = (
         name      => 'cilium-operator',
         namespace => 'kube-system',
         remedy    => 'upgrade_cilium',
+        # Cilium's CLI and the Gateway API CRDs move with it (k160): the
+        # task refreshes both, and dies without the pins.
+        remedy_pins => {
+            cli_version         => 'cilium_cli',
+            gateway_api_version => 'gateway_api',
+        },
     },
     {
         component => 'cert_manager',
@@ -263,7 +272,13 @@ sub component_drift {
             remedy    => $probe->{remedy} ? {
                 type   => 'rex',
                 task   => $probe->{remedy},
-                params => { version => $expected },
+                params => {
+                    version      => $expected,
+                    distribution => $config->distribution,
+                    map {
+                        $_ => OCP::Versions->get_component_version($probe->{remedy_pins}{$_})
+                    } keys %{ $probe->{remedy_pins} // {} },
+                },
             } : undef,
             ($probe->{self_healing} ? (self_healing => 1) : ()),
         };

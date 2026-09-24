@@ -8,6 +8,7 @@ use Path::Tiny qw(path);
 use OCP;
 use OCP::Config;
 use OCP::Drift;
+use OCP::Versions;
 
 #
 # Fake Kubernetes API: hands back plain hashrefs, like the real client does
@@ -134,6 +135,14 @@ YAML
     is($drift->[0]{expected}, '1.20.0', 'target version, as written in the manifest');
     is($drift->[0]{remedy}{task}, 'upgrade_cilium', 'remedy is the Rex upgrade task');
     is($drift->[0]{remedy}{params}{version}, '1.20.0', 'remedy carries the target version');
+    # k160: upgrade_cilium re-applies the Gateway API CRDs and refreshes the
+    # CLI, so the remedy has to carry those pins too -- and the distribution,
+    # or a k3s cluster gets RKE2's kubectl and kubeconfig paths.
+    is($drift->[0]{remedy}{params}{cli_version},
+        OCP::Versions->get_component_version('cilium_cli'), 'remedy carries the CLI pin');
+    is($drift->[0]{remedy}{params}{gateway_api_version},
+        OCP::Versions->get_component_version('gateway_api'), 'remedy carries the Gateway API pin');
+    is($drift->[0]{remedy}{params}{distribution}, 'rke2', 'remedy carries the distribution');
     like($drift->[0]{message}, qr/Cilium runs v1\.17\.0, expected 1\.20\.0/, 'readable message');
 }
 

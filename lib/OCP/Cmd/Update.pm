@@ -256,9 +256,13 @@ sub _update_cilium {
         key_file => $self->cluster_ssh_key($config, reason => 'ocp update')->path,
     );
 
-    # Use Rex task for cilium upgrade
+    # The CLI and the Gateway API CRDs move with Cilium, and the task picks
+    # kubectl and kubeconfig by distribution (k160).
     $rex->run_task('upgrade_cilium',
-        version => $version,
+        version             => $version,
+        distribution        => $config->distribution,
+        cli_version         => OCP::Versions->get_component_version('cilium_cli'),
+        gateway_api_version => OCP::Versions->get_component_version('gateway_api'),
     );
 }
 

@@ -94,8 +94,8 @@ subtest 'install_cilium actually fails loud when both channels are empty' => sub
 
 subtest 'OCP::Rex::install_server is the only thing that has to send the pins' => sub {
     # Installing the cluster is the one path that has to land a Cilium on
-    # a node. The drift remedy is an upgrade task and ends with the same
-    # `version` parameter it already required. Each component version
+    # a node. The drift remedy and `ocp update` carry their pins too (k160,
+    # asserted in t/25 and t/71). Each component version
     # travels through $opts{cilium_*} || OCP::Versions->get_component_version(...)
     # in install_server, and the slug in get_component_version is what
     # names the pin. If any of these slugs changes, Versions.pm and the
