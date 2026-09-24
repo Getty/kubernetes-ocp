@@ -6,12 +6,17 @@ use Test::More;
 use OCP::Role::Cmd;
 
 #
-# Test: Role can be composed into a Moo class
+# Test: Role can be composed into a command class
+#
+# A command class is Moo + MooX::Options: the role declares an option of its
+# own (--pins-stdin, k166), and a MooX::Options role composes only into a
+# class that has the options machinery. Every OCP::Cmd::* consumer does.
 #
 
 {
     package TestCmd;
     use Moo;
+    use MooX::Options;
     with 'OCP::Role::Cmd';
 
     # Simulate MooX::Cmd's command_chain attribute
@@ -42,6 +47,7 @@ use OCP::Role::Cmd;
 {
     package TestCmdWithFakeOCP;
     use Moo;
+    use MooX::Options;
     with 'OCP::Role::Cmd';
 
     has command_chain => (

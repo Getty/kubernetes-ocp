@@ -39,6 +39,8 @@ Revision history for OCP
       PIN1 unlocks the age layer, PIN2 a per-key password layer. Secure mode
       keeps a PIN2 admin key for anything a human triggers and an unattended
       automation key for robocop; `ocp init --nopassword` is a keyless dev mode.
+      With `--pins-stdin` every command answers its PIN prompts, in order, from
+      lines on STDIN instead of the terminal, and dies naming a missing one.
     - `robocop.security_level` decides how robocop gets that key: from a
       Secret (`secret`, or `secret_approved` behind PIN2), or `inject`, where
       `ocp inject-key` hands it over a port-forward into the pod's memory and

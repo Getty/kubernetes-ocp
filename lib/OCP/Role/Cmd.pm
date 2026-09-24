@@ -2,11 +2,27 @@ package OCP::Role::Cmd;
 # ABSTRACT: Base role for OCP commands
 
 use Moo::Role;
+use MooX::Options;
 
 use OCP::Choices;
 use OCP::Keys;
 use OCP::Password;
 use OCP::Provider;
+
+# --pins-stdin (k166): every PIN prompt of this run reads the next line of
+# STDIN instead of the terminal -- `ocp apply --pins-stdin < <(pass show x)`.
+# Declared here so every command has it after its own name, where the
+# orchestrating scripts put it; the root options (-v, -c) only parse before
+# the command word.
+#
+# The trigger hands the switch to OCP::Password, where the prompts are. The
+# option records that it was given; OCP::Password::$PINS_STDIN is what the
+# prompts read (see there for why it is a process-wide switch).
+option pins_stdin => (
+    is      => 'ro',
+    doc     => 'Read PINs from STDIN, one line per prompt in prompt order',
+    trigger => sub { $OCP::Password::PINS_STDIN = 1 if $_[1] },
+);
 
 sub ocp { $_[0]->command_chain->[0] }
 
@@ -265,6 +281,27 @@ configuration without each command having to thread it through.
 L<MooX::Cmd> composes commands into a chain (root, sub-command, sub-sub).
 The root is always the first element; C<ocp> returns it directly, so
 commands at any depth see the same C<OCP> instance.
+
+=opt pins_stdin
+
+    ocp apply --pins-stdin < pins.txt
+    ocp inject-key --pins-stdin < <(pass show ocp/mycluster)
+
+Every command takes C<--pins-stdin>, after the command word.  Each PIN prompt
+of the run -- PIN1, PIN2, and the new PIN plus its confirmation during
+C<ocp init> -- then reads the next line of STDIN instead of the terminal, in
+the order the prompts come.  Only the trailing newline is stripped.  The
+prompt text still goes to STDERR, so STDOUT carries the same payload as
+without the flag.
+
+When STDIN has no line left for a prompt the command dies, naming the PIN it
+expected; it never falls back to the terminal.  A secure-mode C<ocp init>
+reads four lines (PIN1, PIN1 again, PIN2, PIN2 again); C<ocp init --hetzner>
+without a stored token reads the API token as the next line after them, since
+that prompt goes through the same hidden-input path.
+
+There is deliberately no way to pass a PIN in argv or the environment, where
+C<ps>, F</proc/PID/environ> and shell history would show it.
 
 =method ocp
 

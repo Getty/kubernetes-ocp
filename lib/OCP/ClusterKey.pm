@@ -146,7 +146,9 @@ second time for the same key would be a bug, not extra safety.
 C<interactive> overrides the C<< -t STDIN >> check that guards the prompt (as
 does C<$OCP::ClusterKey::INTERACTIVE> for a whole dynamic scope). Without a
 terminal, this dies instead of prompting — a piped or scheduled run must fail
-with a message, not block on a password nobody can see. C<pin2> supplies the
+with a message, not block on a password nobody can see. C<--pins-stdin>
+(C<$OCP::Password::PINS_STDIN>) counts as a terminal here: the PIN2 is the
+next line of STDIN, and a missing one dies by name. C<pin2> supplies the
 passphrase directly and skips both the check and the prompt.
 
 =cut
@@ -254,9 +256,13 @@ sub _unlock_admin_key {
     # named failure, and the callers that can carry on without the key
     # (OCP::Cmd::Apply::Drift's remedy) turn this back into a skip they can
     # report. Overridable so tests can drive the prompt path deliberately.
+    #
+    # --pins-stdin (k166) is someone to ask: the operator put the answer on
+    # STDIN up front, and OCP::Password dies naming the PIN if it is missing
+    # rather than blocking, which is the failure this guard exists to avoid.
     my $interactive = exists $opt{interactive} ? $opt{interactive}
                     : defined $INTERACTIVE     ? $INTERACTIVE
-                    :                            -t STDIN;
+                    :   $OCP::Password::PINS_STDIN || -t STDIN;
     unless ($interactive || defined $opt{pin2}) {
         die "ERROR: This cluster's machines trust the admin key (secure mode, "
           . "provider '$provider'),\n"

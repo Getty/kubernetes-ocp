@@ -3,6 +3,7 @@ package OCP::Cmd::Version;
 
 use Moo;
 use MooX::Cmd;
+use MooX::Options;
 use OCP::Config;
 use OCP::Versions;
 use OCP;
