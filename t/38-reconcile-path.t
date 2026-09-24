@@ -806,4 +806,205 @@ subtest 'k26: --only gates the worker step the way the deploy path does' => sub 
     unlike $dry->{out}, qr/would create OCPNode/, 'and the dry run agrees';
 };
 
+#
+# k173: robocop is made sure of on every apply, workers or not.
+#
+# robocop used to be rolled out only inside the worker step, which the
+# reconcile path reaches only for a missing worker. So `robocop: true` without
+# workers never got a robocop, and a cluster left with the Deployment but no
+# credentials Secret (k169) was never repaired by apply. Maintainer decision:
+# `robocop.enabled` means robocop runs -- every apply ensures Secret and
+# Deployment, once per run, behind the worker gate of --only. What the Secret
+# carries and when writing it costs a key is t/169's business; here only
+# whether and how often the step is reached.
+#
+
+sub robocop_steps { [ grep { /^_ensure_robocop/ } @{ $_[0]{touched} } ] }
+
+subtest 'k173: robocop without workers is ensured on reconcile' => sub {
+    my $r = reconcile(yaml => "robocop: true\nnocert: true\n");
+
+    is_deeply robocop_steps($r), [ '_ensure_robocop_credentials', '_ensure_robocop' ],
+        'Secret, then Deployment';
+    is touched($r, '_wait_robocop_ready'), 1, 'readiness looked at once, not waited for';
+    ok !touched($r, '_drive_workers'), 'no worker driven';
+    ok !$r->{key_asked}, 'no cluster key asked for (no PIN2 prompt)';
+    like $r->{out}, qr/Checking robocop/, 'the step is named in the progress';
+    like $r->{out}, qr/1 component\(s\) updated/,
+        'a Deployment that was not there counts as an update';
+    is $r->{err}, '', 'nothing on STDERR';
+};
+
+subtest 'k173: a running robocop with nothing to write is up to date' => sub {
+    local $ROBOCOP_READY = 1;
+    my $r = reconcile(yaml => "robocop: true\nnocert: true\n",
+        objects => { 'Deployment/ocp-system/robocop' => { kind => 'Deployment' } });
+
+    is scalar @{ robocop_steps($r) }, 2, 'still re-applied, like every component';
+    like $r->{out}, qr/robocop ready/, 'reported ready';
+    like $r->{out}, qr/All \d+ component\(s\) up to date/, 'and not counted as a change';
+};
+
+subtest 'k173: nothing missing among the workers -- robocop still ensured' => sub {
+    my $r = reconcile(yaml => "robocop: true\n" . $TWO_SSH_WORKERS,
+        ocpnodes => ['brain', 'pinky']);
+
+    is_deeply robocop_steps($r), [ '_ensure_robocop_credentials', '_ensure_robocop' ],
+        'robocop is ensured';
+    ok !touched($r, '_drive_workers'), 'no worker driven';
+    is touched($r, '_wait_robocop_ready'), 1, 'and no 60s wait -- nothing for it to drive';
+};
+
+subtest 'k173: with a missing worker robocop is ensured once, not twice' => sub {
+    my $r = reconcile(yaml => "robocop: true\n" . $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    is_deeply robocop_steps($r), [ '_ensure_robocop_credentials', '_ensure_robocop' ],
+        'one rollout per run';
+    my @deploying = $r->{out} =~ /Deploying robocop controller/g;
+    is scalar @deploying, 1, 'and one progress line for it';
+    is touched($r, '_wait_robocop_ready'), 2,
+        'one look, then the wait the worker step needs to decide who drives';
+    ok !$r->{driven}[0]{robocop_ready}, 'not ready: the CLI drives';
+};
+
+subtest 'k173: a robocop that cannot be deployed is unresolved, workers go to the CLI' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_ensure_robocop_credentials = sub {
+        push @touched, '_ensure_robocop_credentials';
+        die "Wrong PIN2\n";
+    };
+    my $r = reconcile(yaml => "robocop: true\n" . $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+
+    ok !touched($r, '_ensure_robocop'), 'no Deployment without its Secret';
+    like $r->{err}, qr/robocop deploy failed: Wrong PIN2/, 'STDERR, with the reason';
+    ok !touched($r, '_wait_robocop_ready'), 'nothing waited for';
+    ok !$r->{driven}[0]{robocop_ready}, 'the CLI drives the missing worker';
+    like $r->{out}, qr/left as they were: robocop/, 'robocop is named as unresolved';
+};
+
+subtest 'k173: robocop disabled -- not rolled out, not torn down' => sub {
+    my $r = reconcile(yaml => "robocop: false\nnocert: true\n",
+        objects => { 'Deployment/ocp-system/robocop' => { kind => 'Deployment' } });
+
+    is_deeply robocop_steps($r), [], 'no robocop step';
+    unlike $r->{out}, qr/robocop/i, 'and no robocop line';
+    ok !scalar(grep { /DELETE/ } @{ $r->{writes} }), 'nothing deleted';
+};
+
+subtest 'k173: robocop sits behind the worker gate of --only' => sub {
+    my $cp = reconcile(only => 'control-planes', yaml => "robocop: true\n");
+    is_deeply robocop_steps($cp), [], '--only control-planes leaves robocop alone';
+
+    my $w = reconcile(only => 'workers', yaml => "robocop: true\n");
+    is scalar @{ robocop_steps($w) }, 2, '--only workers ensures it';
+};
+
+subtest 'k173: --dry-run names what robocop is missing and writes nothing' => sub {
+    my $r = reconcile(dry_run => 1, yaml => "robocop: true\n");
+
+    is_deeply $r->{writes},  [], 'nothing written';
+    is_deeply $r->{touched}, [], 'no step reached';
+    ok !$r->{key_asked}, 'no key asked for';
+    like $r->{out}, qr{Secret/robocop-credentials is missing\s+would write it \(secret\)},
+        'the missing Secret is named';
+    like $r->{out}, qr{Deployment/robocop is missing\s+would roll it out},
+        'the missing Deployment too';
+
+    my $cp = reconcile(dry_run => 1, only => 'control-planes', yaml => "robocop: true\n");
+    unlike $cp->{out}, qr/robocop/, '--only control-planes: not even reported';
+};
+
+subtest 'k173: --dry-run on the k169 leftover -- Deployment there, Secret not' => sub {
+    my $r = reconcile(dry_run => 1, yaml => "robocop: true\n",
+        objects => { 'Deployment/ocp-system/robocop' => { kind => 'Deployment' } });
+
+    like $r->{out}, qr{Secret/robocop-credentials is missing}, 'the Secret is named';
+    unlike $r->{out}, qr{Deployment/robocop is missing}, 'the Deployment is not';
+};
+
+#
+# k173 on the fresh deploy: robocop gets a step of its own, workers or not,
+# between the control-plane joins and the workers.
+#
+
+sub deploy {
+    my (%opt) = @_;
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML' . ($opt{yaml} // ''));
+name: cortex
+kubernetes:
+  dist: k3s
+control_planes:
+  provider: ssh
+  host: cortex.ocp.invalid
+nocert: true
+YAML
+    my $config = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
+    my $apply  = OCP::Cmd::Apply->new(
+        command_chain => [ ReconcileOcp->new ],
+        ($opt{only} ? (only => $opt{only}) : ()),
+    );
+    my $api = DryRunApi->new(objects => {});
+    $apply->{_k8s_api} = $api;
+
+    @touched = ();
+    @driven  = ();
+    my ($out, $step);
+    {
+        my $err = '';
+        open my $efh, '>', \$err or die $!;
+        local *STDERR = $efh;
+        ($out, $step) = capture_stdout {
+            OCP::Cmd::Apply::Deploy::deploy($apply, {
+                config       => $config,
+                secrets      => OCP::Secrets->new(project_dir => $dir),
+                api          => $api,
+                cp_name      => 'cortex',
+                cp_ip        => '10.230.30.155',
+                provider     => 'ssh',
+                ssh_key_path => '/nonexistent/key',
+                deploy_step  => 2,
+            });
+        };
+    }
+    return { out => $out, step => $step, touched => [@touched], driven => [@driven] };
+}
+
+subtest 'k173: fresh deploy without workers rolls robocop out' => sub {
+    my $r = deploy(yaml => "robocop: true\n");
+
+    is_deeply robocop_steps($r), [ '_ensure_robocop_credentials', '_ensure_robocop' ],
+        'Secret, then Deployment';
+    like $r->{out}, qr/Step 4: Deploy robocop controller/, 'in a step of its own';
+    unlike $r->{out}, qr/Deploy workers/, 'no worker step';
+    is $r->{step}, 5, 'the health gate follows as step 5';
+    ok !touched($r, '_drive_workers'), 'nothing driven';
+};
+
+subtest 'k173: fresh deploy with workers rolls robocop out once, before them' => sub {
+    local $ROBOCOP_READY = 1;
+    my $r = deploy(yaml => "robocop: true\n" . <<'YAML');
+workers:
+  - name: gpu
+    provider: ssh
+    nodes:
+      - brain.ocp.invalid
+YAML
+
+    is scalar @{ robocop_steps($r) }, 2, 'ensured once';
+    like $r->{out}, qr/Step 4: Deploy robocop controller.*Step 5: Deploy workers/s,
+        'robocop first, then the workers';
+    is $r->{step}, 6, 'the health gate follows as step 6';
+    ok $r->{driven}[0]{robocop_ready}, 'the ready robocop drives';
+};
+
+subtest 'k173: fresh deploy, robocop off or gated away: no robocop step' => sub {
+    my $off = deploy();
+    is_deeply robocop_steps($off), [], 'robocop disabled: nothing';
+    is $off->{step}, 4, 'step count as before';
+
+    my $cp = deploy(yaml => "robocop: true\n", only => 'control-planes');
+    is_deeply robocop_steps($cp), [], '--only control-planes: nothing';
+};
+
 done_testing;

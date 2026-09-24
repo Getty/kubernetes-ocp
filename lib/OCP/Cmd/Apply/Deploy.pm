@@ -23,8 +23,15 @@ use OCP::Versions;
         deploy_step    => $deploy_step,    # step counter so messages stay ordered
     });
 
-    # The worker step alone, as the reconcile path runs it (k26):
+    # robocop and the worker step, as the reconcile path runs them. robocop
+    # comes first and on its own (k173); the worker step only uses its answer:
+    my $robocop = OCP::Cmd::Apply::Deploy::robocop_step($apply, $api, $config, {
+        cp_ip   => $cp_ip,
+        secrets => $secrets,
+    });
     my @results = OCP::Cmd::Apply::Deploy::worker_step($apply, $api, $config, {
+        robocop      => $robocop,
+        # k26:
         names        => \@missing,         # omit to cover every worker
         ssh_key_path => sub { ... },       # a path, or a code ref run lazily
         cp_ip        => $cp_ip,
@@ -74,7 +81,12 @@ without workers.
 
 =item *
 
-Worker OCPNodes + robocop rollout + CLI reconcile fallback.
+robocop rollout (credentials Secret + Deployment) whenever
+C<robocop.enabled> -- with or without workers (k173).
+
+=item *
+
+Worker OCPNodes, driven by robocop or the CLI reconcile fallback.
 
 =back
 
@@ -178,10 +190,11 @@ sub deploy {
     #      CP CR + any future node tooling can work.
     #   2. Ensure OCPNodeProvider + Secret CRs for every provider referenced.
     #   3. Write CP OCPNode CR (phase=Ready, observational).
-    #   4. Write Pending OCPNode CR for each worker pool entry.
-    #   5. If robocop_enabled: deploy robocop, wait briefly, let it drive.
-    #   6. Else (or robocop didn't come up): drive worker reconcile from CLI
-    #      via OCP::Node.
+    #   4. If robocop_enabled: deploy robocop -- with or without workers.
+    #   5. Write Pending OCPNode CR for each worker pool entry.
+    #   6. Workers: let a ready robocop drive them (waiting briefly for one
+    #      that is still starting), else drive them from the CLI via
+    #      OCP::Node.
     my $workers = $config->workers;
     print "\n";
     print "Step " . ($deploy_step + 1) . ": Ensure CRDs and provider CRs\n";
@@ -218,25 +231,117 @@ sub deploy {
         }
     }
 
-    my $worker_step = @$workers && (!$self->only || $self->only eq 'workers');
-    if ($worker_step) {
+    # robocop is a component of its own (k173): `robocop.enabled` means robocop
+    # runs, so it is rolled out whether or not ocp.yaml lists a worker -- it
+    # also picks up the OCPNodes `ocp node add` writes later. After the
+    # control-plane joins, which the CLI drives and robocop must not race,
+    # and before the workers, which it may drive. Its gate is the worker gate:
+    # robocop provisions workers and nothing else, so `--only control-planes`
+    # leaves it alone and `--only workers` includes it.
+    my $step = $deploy_step + 2;
+    my $robocop;
+    if ($config->robocop_enabled && worker_gate($self)) {
         print "\n";
-        print "Step " . ($deploy_step + 2) . ": Deploy workers (CR-driven)\n";
+        print "Step $step: Deploy robocop controller\n";
+        $step++;
+        $robocop = robocop_step($self, $api, $config, {
+            cp_ip   => $cp_ip,
+            secrets => $secrets,
+        });
+    }
+
+    if (@$workers && worker_gate($self)) {
+        print "\n";
+        print "Step $step: Deploy workers (CR-driven)\n";
+        $step++;
         worker_step($self, $api, $config, {
             ssh_key_path => $ssh_key_path,
             cp_ip        => $cp_ip,
             secrets      => $secrets,
+            robocop      => $robocop,
         });
     }
 
-    return $deploy_step + 2 + ($worker_step ? 1 : 0);
+    return $step;
+}
+
+# Whether --only lets the worker side run -- robocop and the worker step: no
+# --only, or --only workers. Both apply paths put it in front of the same
+# steps (OCP::Cmd::Apply::Drift).
+sub worker_gate {
+    my ($self) = @_;
+    return !$self->only || $self->only eq 'workers';
+}
+
+# Make robocop run: its credentials Secret, then its Deployment, shaped for
+# robocop.security_level. The one place `ocp apply` rolls robocop out, on the
+# fresh deploy and on every reconcile alike (k173) -- so a cluster that got
+# the Deployment without the Secret (k169) is repaired by the next apply.
+#
+# The Secret comes BEFORE the Deployment that mounts it: without it the pod
+# sits in CreateContainerConfigError (k169). Same code as `ocp deploy-robocop`
+# (OCP::Role::Cmd::RobocopCredentials); a Secret that is already current is
+# left alone, so a reconcile costs no SSH read and no PIN2. When it cannot be
+# written the Deployment is not rolled out either -- a pod that cannot start
+# is no controller.
+#
+# Readiness is looked at once, not waited for: only a worker step that wants
+# robocop to drive has a reason to wait, and worker_step does.
+#
+# Returns { state => 'ready' | 'pending' | 'failed', changed => 0|1 } --
+# changed when the Secret was written or the Deployment was not there before.
+# worker_step takes it as $deps->{robocop}.
+sub robocop_step {
+    my ($self, $api, $config, $deps) = @_;
+    my $level = $config->robocop_security_level;
+
+    print "  [..] Deploying robocop controller ($level)...\n";
+
+    my $had_deployment = eval {
+        $api->get('Deployment', 'robocop', namespace => 'ocp-system');
+    } ? 1 : 0;
+
+    my $secret;
+    my $deployed = eval {
+        $secret = $self->_ensure_robocop_credentials($api, $config, $deps->{secrets},
+            $level, host => $deps->{cp_ip});
+        $self->_ensure_robocop($api, $level);
+        1;
+    };
+    # A failure, so STDERR -- mostly a credentials problem (refused PIN2,
+    # unreadable join token) the operator has to act on.
+    unless ($deployed) {
+        my $err = $@ || "unknown error\n";
+        $err .= "\n" unless $err =~ /\n\z/;
+        print STDERR "  [!!] robocop deploy failed: $err";
+        return { state => 'failed', changed => 0 };
+    }
+
+    my $changed = (($secret // '') eq 'written' || !$had_deployment) ? 1 : 0;
+
+    if ($self->_wait_robocop_ready($api, 0)) {
+        print "  [ok] robocop ready\n";
+        return { state => 'ready', changed => $changed };
+    }
+
+    # inject: the pod turns Ready only once `ocp inject-key` handed it the
+    # robo key, which nothing in this run does.
+    print $level eq 'inject'
+        ? "  [..] robocop waits for its SSH key (security_level inject):\n"
+        . "       run 'ocp inject-key' once the pod is running.\n"
+        : "  [..] robocop rolled out, not ready yet\n";
+    return { state => 'pending', changed => $changed };
 }
 
 # The CR-driven worker step, shared by the fresh deploy (every worker) and
 # the reconcile path of an existing cluster (only the workers that have no
-# OCPNode yet, k26): write the Pending OCPNodes, bring robocop up if it is
-# enabled, then let robocop drive them or fall back to the CLI reconcile.
-# Returns the per-worker results ({ name, phase, message }).
+# OCPNode yet, k26): write the Pending OCPNodes, then let robocop drive them
+# or fall back to the CLI reconcile. Returns the per-worker results
+# ({ name, phase, message }).
+#
+# robocop is not rolled out here (k173): the caller runs robocop_step first
+# and hands its answer in as $deps->{robocop}. Left out -- robocop disabled,
+# or not rolled out in this run -- the CLI drives the workers.
 #
 # $deps->{names} limits the step to those workers; left out, it covers all
 # of ocp.yaml. $deps->{ssh_key_path} is a path, or a code ref returning one:
@@ -245,59 +350,27 @@ sub deploy {
 # never when robocop does the work.
 sub worker_step {
     my ($self, $api, $config, $deps) = @_;
-    my $names = $deps->{names};
+    my $names   = $deps->{names};
+    my $robocop = ($deps->{robocop} // {})->{state} // 'absent';
 
     $self->_ensure_worker_ocpnodes($api, $config, $names);
 
-    my $robocop_ready = 0;
-    if ($config->robocop_enabled) {
-        my $level = $config->robocop_security_level;
-        print "  [..] Deploying robocop controller...\n";
-
-        # The credentials Secret BEFORE the Deployment that mounts it: without
-        # it the pod sits in CreateContainerConfigError, and apply used to wait
-        # 60s on it for nothing (k169). Same code as `ocp deploy-robocop`
-        # (OCP::Role::Cmd::RobocopCredentials); skipped when the Secret is
-        # already current, so a re-apply costs no SSH read and no PIN2. When
-        # it cannot be written, the Deployment is not rolled out either -- a
-        # pod that cannot start is no controller -- and the CLI takes over.
-        my $deployed = eval {
-            $self->_ensure_robocop_credentials($api, $config, $deps->{secrets},
-                $level, host => $deps->{cp_ip});
-            $self->_ensure_robocop($api, $level);
-            1;
-        };
-        # A failure, so STDERR -- now mostly a credentials problem (refused
-        # PIN2, unreadable join token) the operator has to act on.
-        unless ($deployed) {
-            my $err = $@ || "unknown error\n";
-            $err .= "\n" unless $err =~ /\n\z/;
-            print STDERR "  [!!] robocop deploy failed, the CLI brings the workers up: $err";
+    my $robocop_ready = $robocop eq 'ready' ? 1 : 0;
+    if ($robocop eq 'pending' && $config->robocop_security_level eq 'inject') {
+        # A key that cannot arrive in this run is not waited for; a pod
+        # injected on an earlier run was Ready in robocop_step already.
+        print "  [..] robocop holds no SSH key yet: this run brings the\n"
+            . "       workers up from the CLI.\n";
+    } elsif ($robocop eq 'pending') {
+        $robocop_ready = $self->_wait_robocop_ready($api, 60);
+        if ($robocop_ready) {
+            print "  [ok] robocop ready — grace period (5s)\n";
+            $self->wait_seconds(5);
+        } else {
+            print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
         }
-
-        if ($deployed && $level eq 'inject') {
-            # inject: the pod turns Ready only once `ocp inject-key` handed it
-            # the robo key, which nothing in this run does. Look once -- a pod
-            # injected on an earlier run is Ready and drives -- and otherwise
-            # say so and let the CLI bring the workers up now, instead of
-            # waiting 60s for a key that cannot arrive.
-            $robocop_ready = $self->_wait_robocop_ready($api, 0);
-            if ($robocop_ready) {
-                print "  [ok] robocop ready (key injected)\n";
-            } else {
-                print "  [..] robocop waits for its SSH key (security_level inject):\n"
-                    . "       run 'ocp inject-key' once the pod is running. This run\n"
-                    . "       brings the workers up from the CLI.\n";
-            }
-        } elsif ($deployed) {
-            $robocop_ready = $self->_wait_robocop_ready($api, 60);
-            if ($robocop_ready) {
-                print "  [ok] robocop ready — grace period (5s)\n";
-                $self->wait_seconds(5);
-            } else {
-                print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
-            }
-        }
+    } elsif ($robocop eq 'failed') {
+        print "  [..] robocop is not running: the CLI brings the workers up\n";
     }
 
     my $ssh_key_path = $deps->{ssh_key_path};

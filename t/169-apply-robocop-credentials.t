@@ -4,8 +4,9 @@
 # Live finding: apply deployed Deployment/robocop but only `ocp deploy-robocop`
 # wrote Secret robocop-credentials, so the pod sat in CreateContainerConfigError
 # ("secret robocop-credentials not found") and apply fell back to the CLI after
-# 60s. The claim here: the worker step -- the one place both apply paths (fresh
-# deploy and reconcile) roll robocop out -- writes the Secret per
+# 60s. The claim here: the robocop step -- the one place both apply paths (fresh
+# deploy and reconcile) roll robocop out, since k173 on its own ahead of the
+# worker step -- writes the Secret per
 # robocop.security_level BEFORE the Deployment, through the same code
 # deploy-robocop uses (OCP::Role::Cmd::RobocopCredentials), without a second
 # PIN2 when this run already has one, and without re-writing a Secret that is
@@ -193,10 +194,18 @@ sub run_step {
         open my $efh, '>', \$err or die $!;
         local *STDOUT = $ofh;
         local *STDERR = $efh;
+        # robocop first, on its own, then the worker step with its answer --
+        # the order both apply paths run them in (k173).
+        my $secrets = OCP::Secrets->new(project_dir => $dir);
+        my $robocop = OCP::Cmd::Apply::Deploy::robocop_step($apply, $api, $cfg, {
+            cp_ip   => $CP_IP,
+            secrets => $secrets,
+        });
         OCP::Cmd::Apply::Deploy::worker_step($apply, $api, $cfg, {
             ssh_key_path => '/nonexistent/key',
             cp_ip        => $CP_IP,
-            secrets      => OCP::Secrets->new(project_dir => $dir),
+            secrets      => $secrets,
+            robocop      => $robocop,
         });
     }
 
@@ -239,7 +248,8 @@ subtest 'secret: apply writes the Secret, and before the Deployment' => sub {
 
     is $r->{prompts}, 1,
         'secure mode, nothing unlocked yet: ONE PIN2 for the key that reads the token';
-    is_deeply $r->{waits}, [60], 'readiness is waited for as before';
+    is_deeply $r->{waits}, [0, 60],
+        'one look when rolled out, then the 60s wait the worker step needs';
     is $r->{err}, '', 'nothing on STDERR';
 };
 

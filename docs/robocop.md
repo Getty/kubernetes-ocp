@@ -20,8 +20,14 @@ The default is `false`, but it flips to `true` automatically whenever any
 control plane or worker pool uses the `hetzner` provider — because that is the
 case where nodes appear and disappear without a human present.
 
-`ocp apply` deploys it when it is enabled. You can also deploy or redeploy it
-on its own:
+`ocp apply` deploys it when it is enabled — on every run, on a fresh cluster
+and an existing one alike, whether or not `ocp.yaml` lists workers: its
+credentials Secret first (left alone when already current, so a re-apply asks
+for no PIN2), then its Deployment. It counts as part of the worker side:
+`ocp apply --only workers` includes it, `--only control-planes` leaves it
+alone, and `--dry-run` names a missing or outdated Secret and a missing
+Deployment. Turning robocop off does not remove a robocop already running.
+You can also deploy or redeploy it on its own:
 
 ```bash
 ocp deploy-robocop

@@ -48,8 +48,9 @@ Revision history for OCP
       `ocp inject-key` hands it over a port-forward into the pod's memory and
       nothing stores it; after a pod restart robocop stays not Ready and marks
       waiting OCPNodes `SSHKeyAvailable=False` until the next injection.
-      `ocp apply` writes robocop's credentials Secret before its Deployment,
-      as `ocp deploy-robocop` does, and leaves a current one alone.
+      With robocop enabled, every `ocp apply` -- fresh or reconcile, with or
+      without workers -- makes sure it runs: the credentials Secret before the
+      Deployment, as `ocp deploy-robocop` does, a current one left alone.
     - Machine host keys are trusted on first contact and verified on every
       later one, over ssh and Rex alike, against `.ocp/known_hosts` (robocop:
       a file in its pod). A changed key stops the run and names the command

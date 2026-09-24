@@ -15,7 +15,7 @@ use OCP::Versions;
 
     my $result = OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);
     my $ran    = OCP::Cmd::Apply::Drift::run_remedy($apply, $config, $entry);
-    OCP::Cmd::Apply::Drift::dry_run_report($apply, $config);   # --dry-run
+    OCP::Cmd::Apply::Drift::dry_run_report($apply, $config, $cp_ip);   # --dry-run
 
 =head1 DESCRIPTION
 
@@ -29,14 +29,22 @@ Workers are converged the way the OCPNode layer defines them: the OCPNode is
 the reflection of desired state and goes hand in hand with the k8s Node. A
 worker listed in F<ocp.yaml> that has no OCPNode is created on this path
 too, through L<OCP::Cmd::Apply::Deploy/worker_step> — the same CR-driven
-step the fresh deploy runs (Pending OCPNode, robocop rollout when enabled,
-CLI fallback otherwise). Workers that already have an OCPNode are never
+step the fresh deploy runs (Pending OCPNode, driven by robocop when it is
+ready, from the CLI otherwise). Workers that already have an OCPNode are never
 driven from here, whatever their phase: that would re-provision machines
 and wait on each of them on every apply. When nothing is missing, the whole
 worker check is one OCPNode list — no robocop wait, no SSH key, no PIN2
 prompt. C<--only control-planes> skips it, as it skips the worker step of
 the fresh deploy; C<--dry-run> names the workers it would create and
 creates none.
+
+robocop is made sure of on every reconcile when C<robocop.enabled> is set,
+whether or not a worker is missing or listed (k173), through
+L<OCP::Cmd::Apply::Deploy/robocop_step>: its credentials Secret is written
+when missing or outdated, its Deployment re-applied. A current Secret costs no
+SSH read and no PIN2. It sits behind the same C<--only> gate as the workers,
+and C<--dry-run> names a missing or outdated Secret and a missing Deployment
+without writing either. Disabling robocop does not remove it.
 
 Under C<--dry-run> the walk is replaced by C<dry_run_report>: the detector
 runs, its findings are printed, and not one write leaves the process.
@@ -89,7 +97,7 @@ sub reconcile_components {
 
     # --dry-run stops here. Everything below this line writes — see
     # dry_run_report for why that is the whole list and what it costs.
-    return dry_run_report($self, $config) if $self->dry_run;
+    return dry_run_report($self, $config, $cp_ip) if $self->dry_run;
 
     my $updated = 0;
     my $checked = 0;
@@ -303,13 +311,39 @@ sub reconcile_components {
         } or print "  [WARN] node CR reconcile failed: $@";
     }
 
+    # robocop (k173). `robocop.enabled` means robocop runs, so every reconcile
+    # makes sure of it -- whether or not a worker is missing, whether or not
+    # ocp.yaml lists one. That is what repairs a cluster left with the
+    # Deployment but without its credentials Secret (k169), and what brings
+    # robocop to a cluster that enabled it after bootstrap. A current Secret
+    # is left alone, so this costs no SSH read and no PIN2; the Deployment is
+    # re-applied like every other component here. After the CR block (it
+    # needs the CRDs), before the workers (it may drive them), behind the
+    # worker gate. Turning robocop off does not remove it -- nothing here
+    # tears a component down.
+    my $robocop;
+    if ($config->robocop_enabled && worker_step_wanted($self)) {
+        $checked++;
+        print "  [..] Checking robocop...\n";
+        $robocop = OCP::Cmd::Apply::Deploy::robocop_step($self, $self->_k8s_api, $config, {
+            cp_ip   => $cp_ip,
+            secrets => $secrets,
+        });
+        if ($robocop->{state} eq 'failed') {
+            push @unresolved, 'robocop';
+        } elsif ($robocop->{changed}) {
+            $updated++;
+        }
+    }
+
     # Workers (k26). The OCPNode is the reflection of desired state: a worker
     # in ocp.yaml without one is created here, through the same CR-driven
     # step the fresh deploy runs. Workers that have one are left alone —
     # re-driving them would re-provision machines and wait on each. When none
-    # is missing this costs one list and nothing else: no robocop rollout, no
-    # wait, no key. Runs after the CR block, which put the CRDs and provider
-    # CRs the new OCPNodes need in place, and gated by --only like Deploy.pm.
+    # is missing this costs one list and nothing else: no robocop wait, no
+    # key (robocop itself is the block above). Runs after the CR block, which
+    # put the CRDs and provider CRs the new OCPNodes need in place, and gated
+    # by --only like Deploy.pm.
     if (@{ $config->workers } && worker_step_wanted($self)) {
         $checked++;
         print "  [..] Checking worker OCPNodes...\n";
@@ -328,6 +362,7 @@ sub reconcile_components {
                 . join(', ', @names) . "\n";
             my @results = OCP::Cmd::Apply::Deploy::worker_step($self, $api, $config, {
                 names        => \@names,
+                robocop      => $robocop,
                 cp_ip        => $cp_ip,
                 secrets      => $secrets,
                 ssh_key_path => sub {
@@ -389,7 +424,7 @@ sub reconcile_components {
 # only place that knows is the deploy step, and asking it means deploying.
 # Printed as a caveat rather than left for the user to find out.
 sub dry_run_report {
-    my ($self, $config) = @_;
+    my ($self, $config, $cp_ip) = @_;
 
     print "  [..] Checking for drift (read-only)...\n";
 
@@ -420,8 +455,16 @@ sub dry_run_report {
             for @missing;
     }
 
+    # robocop (k173): what the real run's robocop step would write. Reads
+    # only -- the credentials check is the same one that keeps a real
+    # reconcile PIN2-free.
+    my @robocop = $config->robocop_enabled && worker_step_wanted($self)
+        ? robocop_dry_run($self, $config, $cp_ip)
+        : ();
+
     print "\n";
-    print '  ', scalar(@$drift) + scalar(@missing), " difference(s) a real run would act on.\n";
+    print '  ', scalar(@$drift) + scalar(@missing) + scalar(@robocop),
+        " difference(s) a real run would act on.\n";
     print "  It would also re-apply any component whose manifest changed at an\n";
     print "  unchanged version — the one difference a read-only pass cannot see.\n";
     print "\n";
@@ -430,11 +473,40 @@ sub dry_run_report {
     return;
 }
 
-# Whether --only lets the worker step run: no --only, or --only workers.
-# The same gate OCP::Cmd::Apply::Deploy puts in front of its worker step.
+# The robocop half of the dry run: prints what robocop_step would write and
+# returns one entry per difference. A Deployment that is there is not
+# compared -- a real run re-applies it anyway, like every other manifest.
+sub robocop_dry_run {
+    my ($self, $config, $cp_ip) = @_;
+    my $api   = $self->_k8s_api;
+    my $level = $config->robocop_security_level;
+    my @found;
+
+    my $secret = eval {
+        $self->_robocop_credentials_state($api, $config, undef, $level, host => $cp_ip);
+    } // 'outdated';
+    if ($secret ne 'current') {
+        print "  [robocop] Secret/robocop-credentials is $secret\n"
+            . "          would " . ($secret eq 'missing' ? 'write' : 'rewrite')
+            . " it ($level)\n";
+        push @found, 'robocop-credentials';
+    }
+
+    unless (eval { $api->get('Deployment', 'robocop', namespace => 'ocp-system'); 1 }) {
+        print "  [robocop] Deployment/robocop is missing\n"
+            . "          would roll it out ($level)\n";
+        push @found, 'robocop';
+    }
+
+    return @found;
+}
+
+# Whether --only lets the worker side -- robocop and the worker step -- run:
+# no --only, or --only workers. The gate OCP::Cmd::Apply::Deploy puts in front
+# of the same steps.
 sub worker_step_wanted {
     my ($self) = @_;
-    return !$self->only || $self->only eq 'workers';
+    return OCP::Cmd::Apply::Deploy::worker_gate($self);
 }
 
 # Run the step a drift entry asks for. Returns true when it ran, false when

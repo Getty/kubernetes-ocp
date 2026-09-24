@@ -137,23 +137,33 @@ sub _robocop_admin_approval {
 
 # Does the Secret in the cluster already carry what a write would put there?
 # See _ensure_robocop_credentials for what is compared and why the token is not.
-# Any failure to tell -- no Secret, a read error, no host -- is a "no": the
-# write that follows then fails loud with the real reason, instead of a skip
-# hiding it.
 sub _robocop_credentials_current {
+    my ($self, @args) = @_;
+    return $self->_robocop_credentials_state(@args) eq 'current' ? 1 : 0;
+}
+
+# 'current', 'missing' (no Secret to read) or 'outdated' (a Secret that says
+# something else than a write would). Read-only -- `ocp apply --dry-run`
+# reports it as is (k173). Any other failure to tell -- a read error, no host,
+# no robo key -- is 'outdated': the write that follows then fails loud with the
+# real reason, instead of a skip hiding it.
+sub _robocop_credentials_state {
     my ($self, $api, $config, $secrets, $level, %opt) = @_;
 
+    my $obj = eval {
+        $api->get('Secret', $CREDENTIALS_SECRET, namespace => $ROBOCOP_NAMESPACE);
+    } or return 'missing';
+
     my $data = eval {
-        my $obj = $api->get('Secret', $CREDENTIALS_SECRET,
-            namespace => $ROBOCOP_NAMESPACE);
         my $s = ref $obj eq 'HASH' ? $obj : $api->k8s->object_to_struct($obj);
         _secret_values($s);
-    } or return 0;
+    } or return 'outdated';
 
-    my $host = eval { $self->_cp_host($config, $opt{host}) } or return 0;
+    my $host = eval { $self->_cp_host($config, $opt{host}) } or return 'outdated';
 
+    $secrets //= OCP::Secrets->new(project_dir => $config->project_dir);
     $secrets->ensure_age_key;
-    my %key = eval { $self->_robo_key_entry($config, $level) } or return 0;
+    my %key = eval { $self->_robo_key_entry($config, $level) } or return 'outdated';
 
     my %want = (
         %key,
@@ -161,12 +171,12 @@ sub _robocop_credentials_current {
     );
 
     my @have = sort grep { $_ ne 'rke2-token' } keys %$data;
-    return 0 unless join("\0", @have) eq join("\0", sort keys %want);
-    return 0 unless length($data->{'rke2-token'} // '');
+    return 'outdated' unless join("\0", @have) eq join("\0", sort keys %want);
+    return 'outdated' unless length($data->{'rke2-token'} // '');
     for my $k (keys %want) {
-        return 0 unless ($data->{$k} // '') eq $want{$k};
+        return 'outdated' unless ($data->{$k} // '') eq $want{$k};
     }
-    return 1;
+    return 'current';
 }
 
 # A Secret's values as plain strings. The API server hands back `data`,
