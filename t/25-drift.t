@@ -9,6 +9,7 @@ use OCP;
 use OCP::Config;
 use OCP::Drift;
 use OCP::Versions;
+use IO::K8s;
 
 #
 # Fake Kubernetes API: hands back plain hashrefs, like the real client does
@@ -38,6 +39,37 @@ sub deployment {
     return { spec => { template => { spec => { containers => [ { image => $image } ] } } } };
 }
 
+# The Gateway API bundle stamps its version and channel on every CRD it
+# ships; OCP::Drift reads them off the gateways CRD (k164). Built through
+# IO::K8s because the real client hands back a typed object, not a hashref.
+my $GATEWAY_CRD_KEY = 'CustomResourceDefinition//gateways.gateway.networking.k8s.io';
+
+sub gateway_crd {
+    my (%annotations) = @_;
+    return IO::K8s->new->struct_to_object('CustomResourceDefinition', {
+        apiVersion => 'apiextensions.k8s.io/v1',
+        kind       => 'CustomResourceDefinition',
+        metadata   => {
+            name        => 'gateways.gateway.networking.k8s.io',
+            annotations => \%annotations,
+        },
+        spec => {
+            group    => 'gateway.networking.k8s.io',
+            scope    => 'Namespaced',
+            names    => { kind => 'Gateway', plural => 'gateways' },
+            versions => [],
+        },
+    });
+}
+
+sub gateway_bundle {
+    my ($version, $channel) = @_;
+    return gateway_crd(
+        'gateway.networking.k8s.io/bundle-version' => $version,
+        'gateway.networking.k8s.io/channel'        => $channel // 'standard',
+    );
+}
+
 # Every probed component, at the version the manifest pins. A fixture that
 # leaves one out is a cluster missing that component, not a matching one — so
 # this is what "no drift" has to be measured against.
@@ -47,6 +79,7 @@ sub matching_cluster {
         'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.2'),
         'Deployment/node-feature-discovery/nfd-master'
             => deployment('registry.k8s.io/nfd/node-feature-discovery:v0.18.3'),
+        $GATEWAY_CRD_KEY => gateway_bundle(OCP::Versions->get_component_version('gateway_api')),
     );
 }
 
@@ -308,6 +341,97 @@ YAML
 
     ok(!$probed{$_}, "$_ is left unprobed — its version lives in the ClusterPolicy")
         for qw(nvidia_toolkit nvidia_device_plugin dcgm_exporter nvidia_dcgm nvidia_driver);
+}
+
+#
+# Test: the Gateway API CRD bundle (k164)
+#
+# Every other probe reads a version off a workload image, and the Gateway API
+# CRDs have none: a bump of only the gateway_api pin (Cilium unchanged) went
+# unnoticed, and existing clusters kept the bundle they were installed with.
+# The bundle stamps gateway.networking.k8s.io/bundle-version and .../channel
+# on each CRD it ships (verified against the v1.6.1 standard-install.yaml);
+# the gateways CRD stands for the bundle.
+#
+
+sub gateway_drift {
+    my (%objects) = @_;
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => { matching_cluster(), %objects });
+    return grep { $_->{component} eq 'gateway_api' }
+        OCP::Drift->new(config => $config, api => $api)->component_drift;
+}
+
+{
+    my @drift = gateway_drift($GATEWAY_CRD_KEY => gateway_bundle('v1.5.0'));
+    is(scalar @drift, 1, 'a bundle behind the pin is drift');
+    my ($d) = @drift;
+    is($d->{kind}, 'version', 'classified as version drift');
+    is($d->{actual}, 'v1.5.0', 'the bundle-version the CRD carries');
+    is($d->{expected}, OCP::Versions->get_component_version('gateway_api'), 'the pin');
+    is($d->{remedy}{task}, 'update_gateway_api', 'remedy is the Gateway API Rex task');
+    is($d->{remedy}{params}{version}, OCP::Versions->get_component_version('gateway_api'),
+        'remedy carries the pinned bundle version');
+    is($d->{remedy}{params}{distribution}, 'rke2',
+        'and the distribution, for the node kubectl and kubeconfig');
+    ok(!$d->{self_healing}, 'nothing else in ocp apply re-applies the bundle');
+    like($d->{message}, qr/^Gateway API CRD bundle runs v1\.5\.0, expected v1\.6\.1$/,
+        'readable message');
+}
+
+{
+    my @drift = gateway_drift($GATEWAY_CRD_KEY => gateway_bundle('v1.6.1', 'experimental'));
+    is(scalar @drift, 1, 'the right version from the wrong channel is drift');
+    is($drift[0]{message},
+        'Gateway API CRD bundle runs v1.6.1; gateway.networking.k8s.io/channel is experimental, expected standard',
+        'the message names the channel it found and the one it expects');
+    is($drift[0]{remedy}{task}, 'update_gateway_api',
+        'the remedy re-applies standard, which safe-upgrades allows over experimental');
+}
+
+{
+    is_deeply([ gateway_drift($GATEWAY_CRD_KEY => gateway_bundle('1.6.1')) ], [],
+        'a missing leading v is not a difference');
+}
+
+{
+    # A CRD someone installed without the bundle's stamps: nothing to compare
+    # against, and guessing would be the kind of claim the image probes refuse
+    # to make for an untagged image.
+    is_deeply([ gateway_drift($GATEWAY_CRD_KEY => gateway_crd()) ], [],
+        'a CRD without the bundle annotation is not called drifted');
+}
+
+{
+    my $config = write_config(spec => $BASE_SPEC);
+    my %cluster = matching_cluster();
+    delete $cluster{$GATEWAY_CRD_KEY};
+    my $api = FakeApi->new(objects => \%cluster);
+
+    my ($d) = grep { $_->{component} eq 'gateway_api' }
+              OCP::Drift->new(config => $config, api => $api)->component_drift;
+    ok($d, 'a cluster without the Gateway API CRDs is drifted: Cilium always wants them');
+    is($d->{kind}, 'missing', 'classified as missing');
+    is($d->{remedy}{task}, 'update_gateway_api',
+        'and, unlike a missing Deployment, carries the remedy -- the task installs from nothing');
+}
+
+{
+    # The CRD is cluster-scoped: asking for it with a namespace builds a path
+    # the apiserver answers with 404, which would read as "missing".
+    my @asked;
+    no warnings 'redefine';
+    local *FakeApi::get = sub {
+        my ($self, $kind, %args) = @_;
+        push @asked, { kind => $kind, %args } if $kind eq 'CustomResourceDefinition';
+        my $obj = $self->{objects}{ join '/', $kind, $args{namespace} // '', $args{name} // '' };
+        die "not found\n" unless $obj;
+        return $obj;
+    };
+    gateway_drift();
+    is_deeply(\@asked, [ { kind => 'CustomResourceDefinition',
+                           name => 'gateways.gateway.networking.k8s.io' } ],
+        'the CRD is fetched by name alone, no namespace');
 }
 
 #

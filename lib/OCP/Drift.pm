@@ -20,13 +20,26 @@ has api => (is => 'ro');
 # missing `api` gives spec-only detection. Built by OCP::Role::Cmd::rex_prober.
 has rex_prober => (is => 'ro');
 
-# Components whose running version can be read off a workload image.
+# Components whose running version can be read off one object in the cluster:
+# by default the first container image of a workload, or an annotation for
+# objects that run nothing (a CRD bundle).
 #
+#   kind/name/namespace  the object to GET; no namespace for cluster-scoped
+#                kinds, which is then left out of the request entirely
+#   version_annotation  read the running version from this metadata
+#                annotation instead of a container image. An object without
+#                it is not compared, the same as an untagged image.
+#   expect_annotations  { annotation => value } that must also hold; a
+#                mismatch is drift at the right version too. An absent
+#                annotation is not compared.
 #   remedy       the Rex task that brings the cluster back to the target, or
 #                undef when nothing upgrades this in place
 #   remedy_pins  further OCP::Versions pins the remedy task needs, as
 #                { task param => component }; the target version and the
 #                distribution always travel
+#   remedy_if_missing  the remedy installs from nothing too, so a 'missing'
+#                entry carries it. Without this a missing component waits for
+#                a full deploy, which reconcile never runs.
 #   skip_if      config predicate: this cluster asked not to have the thing
 #   optional     absence is not drift — the component only exists on some
 #                clusters, so "not deployed" is a normal state and not a fault
@@ -59,6 +72,23 @@ our @COMPONENT_PROBES = (
             cli_version         => 'cilium_cli',
             gateway_api_version => 'gateway_api',
         },
+    },
+    # The Gateway API CRDs run no image, and a bump of only their pin (Cilium
+    # unchanged) never showed on the cilium probe (k164). The bundle stamps
+    # its version and channel on every CRD it ships; the gateways CRD stands
+    # for the bundle. Standard is the only channel OCP applies (k157).
+    # Cilium is on every cluster and always wants the CRDs, so absence is
+    # drift -- and the task that refreshes them installs them from nothing.
+    # Not self_healing: install_cilium applies them, reconcile never runs it.
+    {
+        component          => 'gateway_api',
+        label              => 'Gateway API CRD bundle',
+        kind               => 'CustomResourceDefinition',
+        name               => 'gateways.gateway.networking.k8s.io',
+        version_annotation => 'gateway.networking.k8s.io/bundle-version',
+        expect_annotations => { 'gateway.networking.k8s.io/channel' => 'standard' },
+        remedy             => 'update_gateway_api',
+        remedy_if_missing  => 1,
     },
     {
         component => 'cert_manager',
@@ -247,8 +277,8 @@ sub component_drift {
 
         my $object = eval {
             $self->api->get($probe->{kind},
-                name      => $probe->{name},
-                namespace => $probe->{namespace},
+                name => $probe->{name},
+                (defined $probe->{namespace} ? (namespace => $probe->{namespace}) : ()),
             );
         };
 
@@ -265,18 +295,36 @@ sub component_drift {
                 expected  => $expected,
                 actual    => undef,
                 message   => "$probe->{label} is not deployed (expected $expected)",
-                remedy    => undef,   # a full deploy handles this, not an upgrade
+                # A full deploy handles this, not an upgrade -- unless the
+                # remedy is one that installs from nothing.
+                remedy    => $probe->{remedy_if_missing}
+                    ? $self->_probe_remedy($probe, $expected) : undef,
                 ($probe->{self_healing} ? (self_healing => 1) : ()),
             };
             next;
         }
 
-        my $image = _dig($object, qw(spec template spec containers)) || [];
-        $image = ref $image eq 'ARRAY' ? _dig($image->[0], 'image') : undef;
-        my $actual = image_version($image);
+        my $actual;
+        if (my $annotation = $probe->{version_annotation}) {
+            $actual = _dig($object, qw(metadata annotations), $annotation) // '';
+        } else {
+            my $image = _dig($object, qw(spec template spec containers)) || [];
+            $image = ref $image eq 'ARRAY' ? _dig($image->[0], 'image') : undef;
+            $actual = image_version($image);
+        }
 
         next unless length $actual;
-        next if _same_version($actual, $expected);
+
+        my @wrong;
+        my $want = $probe->{expect_annotations} // {};
+        for my $annotation (sort keys %$want) {
+            my $have = _dig($object, qw(metadata annotations), $annotation);
+            push @wrong, "$annotation is $have, expected $want->{$annotation}"
+                if defined $have && $have ne $want->{$annotation};
+        }
+
+        my $same = _same_version($actual, $expected);
+        next if $same && !@wrong;
 
         push @drift, {
             kind      => 'version',
@@ -284,12 +332,10 @@ sub component_drift {
             label     => $probe->{label},
             expected  => $expected,
             actual    => $actual,
-            message   => "$probe->{label} runs $actual, expected $expected",
-            remedy    => $probe->{remedy} ? {
-                type   => 'rex',
-                task   => $probe->{remedy},
-                params => $self->remedy_params($config, $probe->{component}, $expected),
-            } : undef,
+            message   => "$probe->{label} runs $actual"
+                . ($same ? '' : ", expected $expected")
+                . join('', map { "; $_" } @wrong),
+            remedy    => $self->_probe_remedy($probe, $expected),
             ($probe->{self_healing} ? (self_healing => 1) : ()),
         };
     }
@@ -297,6 +343,19 @@ sub component_drift {
     push @drift, $self->distribution_drift;
 
     return @drift;
+}
+
+# The Rex remedy a probe names, its params built by remedy_params; undef when
+# the probe names none. One place for the version and the missing entry.
+sub _probe_remedy {
+    my ($self, $probe, $expected) = @_;
+    return undef unless $probe->{remedy};
+
+    return {
+        type   => 'rex',
+        task   => $probe->{remedy},
+        params => $self->remedy_params($self->config, $probe->{component}, $expected),
+    };
 }
 
 # The Kubernetes distribution itself. Upgrading it is a node-by-node dance,
@@ -708,7 +767,13 @@ Running component versions that differ from the version manifest, plus
 components that should be deployed but are missing.
 
 Probed are Cilium, cert-manager, NFD and the GPU operator: the four whose
-running version can be read off a workload OCP writes itself. The remaining
+running version can be read off a workload OCP writes itself. Beside them the
+Gateway API CRD bundle, which runs no image: its version is the
+C<gateway.networking.k8s.io/bundle-version> annotation on the C<gateways> CRD,
+and a C<gateway.networking.k8s.io/channel> other than C<standard> is drift too.
+Its remedy, the Rex task C<update_gateway_api>, re-applies the pinned bundle
+and restarts C<cilium-operator>; it installs from nothing as well, so a
+missing bundle carries the remedy too (k164). The remaining
 GPU pins (toolkit, device plugin, DCGM, DCGM exporter, driver) go into the
 C<ClusterPolicy> the operator reconciles, not into a Deployment of OCP's, and
 are deliberately not guessed at — see the comment on C<@COMPONENT_PROBES>.

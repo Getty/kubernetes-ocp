@@ -28,7 +28,10 @@ Revision history for OCP
       pinned together.
     - The Gateway API CRDs come from one channel, standard, which carries
       everything the pinned Cilium needs. Installs and Cilium upgrades apply
-      them before Cilium moves; a failed apply stops either one.
+      them before Cilium moves; a failed apply stops either one. Drift reads
+      the bundle version and channel off the CRDs, so a Gateway API pin bump
+      alone, a non-standard channel or missing CRDs are reported and `ocp
+      apply` re-applies the bundle and restarts cilium-operator.
     - Secrets, keys and kubeconfig are age/SOPS-encrypted in pure Perl, with no
       external tools, and are committed to the project. Two PINs stand in front:
       PIN1 unlocks the age layer, PIN2 a per-key password layer. Secure mode

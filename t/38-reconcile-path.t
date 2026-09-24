@@ -449,6 +449,20 @@ package ReconcileOcp {
 
 package main;
 
+use OCP::Versions;
+
+# The CRD OCP::Drift reads the Gateway API bundle version off (k164).
+# Cluster-scoped, hence the '-' DryRunApi files a namespace-less GET under.
+my $GATEWAY_CRD_KEY = 'CustomResourceDefinition/-/gateways.gateway.networking.k8s.io';
+
+sub gateway_bundle {
+    my ($version) = @_;
+    return { metadata => { annotations => {
+        'gateway.networking.k8s.io/bundle-version' => $version,
+        'gateway.networking.k8s.io/channel'        => 'standard',
+    } } };
+}
+
 # Permanent for the rest of this file — everything above has already run.
 {
     no strict 'refs';
@@ -519,7 +533,12 @@ YAML
         ($opt{only} ? (only => $opt{only}) : ()),
     );
     $apply->{_k8s_api} = DryRunApi->new(
-        objects  => $opt{objects} // {},
+        # The Gateway API CRDs at the pin, as install_cilium leaves them: a
+        # cluster without them is drifted with a Rex remedy (k164), which
+        # every test here would otherwise count as unresolved.
+        objects  => { $GATEWAY_CRD_KEY => gateway_bundle(
+                          OCP::Versions->get_component_version('gateway_api')),
+                      %{ $opt{objects} // {} } },
         ocpnodes => { map { $_ => {
             apiVersion => 'ocp.internal/v1',
             kind       => 'OCPNode',
@@ -620,6 +639,32 @@ subtest 'a difference this run closes is not sent to ocp update' => sub {
     like $r->{out}, qr/\[drift\] NFD runs v0\.17\.0/, 'the outdated NFD is reported';
     unlike $r->{out}, qr/ocp update/,
         'and not handed to a command that would not fix it';
+};
+
+#
+# k164: a bump of only the Gateway API pin used to be invisible — every probe
+# read an image, and the CRD bundle has none. The drift entry it now gets
+# carries a Rex remedy, so the reconcile path runs it like the Cilium upgrade,
+# and a dry run names it without running it.
+#
+subtest 'k164: an outdated Gateway API bundle is repaired through its Rex task' => sub {
+    my $old = { $GATEWAY_CRD_KEY => gateway_bundle('v1.2.0') };
+
+    my $r = reconcile(objects => $old);
+    like $r->{out}, qr/\[drift\] Gateway API CRD bundle runs v1\.2\.0, expected v1\.6\.1/,
+        'the outdated bundle is reported';
+    like $r->{out}, qr/Running update_gateway_api/, 'and its task is run';
+    ok touched($r, '_run_remedy'), 'through the remedy step';
+
+    my $dry = reconcile(objects => $old, dry_run => 1);
+    like $dry->{out}, qr/would run update_gateway_api/, 'a dry run names the task';
+    ok !touched($dry, '_run_remedy'), 'and does not run it';
+};
+
+subtest 'k164: a bundle at the pin is left alone' => sub {
+    my $r = reconcile();
+    unlike $r->{out}, qr/Gateway API CRD bundle/, 'no finding';
+    ok !touched($r, '_run_remedy'), 'no remedy';
 };
 
 #

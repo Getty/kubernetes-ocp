@@ -1263,6 +1263,53 @@ sub _apply_gateway_api_crds {
     return $out;
 }
 
+# Bounce cilium-operator if already running so it picks up the new CRD
+# schema (controller-runtime caches CRD schemas at startup; updating
+# Gateway API CRDs from v1.1 → v1.2 requires a restart for the
+# supportedFeatures object/string schema change to take effect).
+sub _restart_cilium_operator {
+    my (%o) = @_;
+    my $op_running = run "$o{kubectl} -n kube-system get deployment cilium-operator -o name 2>/dev/null",
+        env => { KUBECONFIG => $o{kubeconfig} },
+        auto_die => FALSE;
+    if ($op_running && $op_running =~ /cilium-operator/) {
+        say "Restarting cilium-operator to pick up updated CRD schema...";
+        run "$o{kubectl} -n kube-system rollout restart deployment cilium-operator",
+            env => { KUBECONFIG => $o{kubeconfig} },
+            auto_die => FALSE;
+    }
+}
+
+# The Gateway API CRDs alone, for a cluster whose Cilium is at its pin but
+# whose bundle is not: the gateway_api pin moved, the CRDs came from the
+# experimental channel, or they are gone. OCP::Drift names this task as the
+# remedy (k164); the name is `ocp update`'s update_<component> fallback, so
+# `ocp update --component gateway_api` reaches it as well. Unlike
+# upgrade_cilium no new operator image follows the apply, so the operator is
+# bounced here, as install_cilium does, to read the new schemas.
+desc "Apply the pinned Gateway API CRDs (standard channel) and restart cilium-operator";
+task "update_gateway_api", sub {
+    my $params = task_params(shift);
+    my $version = $params->{version} // $ENV{OCP_GATEWAY_API_VERSION}
+        or die "OCP_GATEWAY_API_VERSION (or task_params version=...) is required\n";
+    my $distribution = $params->{distribution} || 'rke2';
+
+    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
+    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+
+    _apply_gateway_api_crds(
+        kubectl    => $kubectl,
+        kubeconfig => $kubeconfig,
+        version    => $version,
+    );
+    _restart_cilium_operator(
+        kubectl    => $kubectl,
+        kubeconfig => $kubeconfig,
+    );
+
+    say "Gateway API CRDs at $version (standard channel)";
+};
+
 desc "Install Cilium CNI";
 task "install_cilium", sub {
     my $params = task_params(shift);
@@ -1309,19 +1356,10 @@ task "install_cilium", sub {
         version    => $gateway_api_version,
     );
 
-    # Bounce cilium-operator if already running so it picks up the new CRD
-    # schema (controller-runtime caches CRD schemas at startup; updating
-    # Gateway API CRDs from v1.1 → v1.2 requires a restart for the
-    # supportedFeatures object/string schema change to take effect).
-    my $op_running = run "$kubectl -n kube-system get deployment cilium-operator -o name 2>/dev/null",
-        env => { KUBECONFIG => $kubeconfig },
-        auto_die => FALSE;
-    if ($op_running && $op_running =~ /cilium-operator/) {
-        say "Restarting cilium-operator to pick up updated CRD schema...";
-        run "$kubectl -n kube-system rollout restart deployment cilium-operator",
-            env => { KUBECONFIG => $kubeconfig },
-            auto_die => FALSE;
-    }
+    _restart_cilium_operator(
+        kubectl    => $kubectl,
+        kubeconfig => $kubeconfig,
+    );
 
     # Install Cilium with Gateway API + LoadBalancer support (skip if already running with correct version)
     # NOTE: do NOT pipe to "head" — the version line ("Helm chart version: ...")
