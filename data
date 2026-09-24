@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-24T14:24:14Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:24:14Z
+created: 2026-09-24T04:53:36Z
+id: 157
+priority: medium
+started: 2026-09-24T14:16:48Z
+status: done
+tags:
+- cilium
+- gateway-api
+- escalated-from:rex-rancher#14
+title: 'Gateway API v1.5+: experimental-install ueber standard wird von safe-upgrades-Policy
+  abgelehnt, Fehler still geschluckt'
+updated: 2026-09-24T14:24:14Z
+---
+
+share/Rexfile Z.1232-1238: erst standard-install.yaml, dann experimental-install.yaml mit auto_die => FALSE. Ab Gateway API v1.5 liefert das Bundle die ValidatingAdmissionPolicy 'safe-upgrades', die experimental-CRDs ueber standard-CRDs ablehnt -> mit v1.5+/v1.6.1 schlaegt der experimental-Schritt vermutlich fehl, ohne dass es auffaellt (TCPRoute/UDPRoute fehlen dann bei v1.5). Ausserdem: v1.5 hat TLSRoute v1 im standard-Channel, v1.6 auch TCP/UDPRoute; Cilium 1.17-1.19 brauchen TLSRoute nur optional, 1.20 TLSRoute v1 + BackendTLSPolicy v1. Vorschlag: genau EIN Channel anwenden (Rex::Rancher: gateway_api_channel, Default experimental), Fehler nicht schlucken. Rex::Rancher-Implementierung: lib/Rex/Rancher/Cilium.pm _ensure_gateway_api_crds (b0b2299, dc9e768). Nicht live verifiziert.
+
+2026-09-24 14:23 Implemented on branch worktree-agent-a0784e98ed2d0b42e, commit d08f53e: install_cilium applies ONLY standard-install.yaml (server-side, --force-conflicts, field-manager ocp) via _apply_gateway_api_crds, dies on failure. Channel standard, not experimental like Rex::Rancher's default: v1.6.1 standard has TLSRoute v1 + BackendTLSPolicy v1 (Cilium 1.20 needs) + TCP/UDPRoute; safe-upgrades VAP (checked in v1.6.1 bundle) denies experimental-over-standard only, so clusters already on v1.6.1 (de facto standard, experimental was refused) re-apply cleanly and older experimental clusters may move to standard. v1alpha2 stays listed (served false) so storedVersions survive. No ocp.yaml knob. Tests t/90 new, t/28 adjusted; Docker make test green 1501 tests. Not live-verified. Follow-ups: upgrade_cilium never re-applies Gateway API CRDs (Cilium bump without CRD bump); RKE2 v1.37+ ships rke2-gateway-api-crd chart, not in disable list (pin is v1.36); ocp-cilium skill still says standard+experimental v1.1.0.
+
+2026-09-24 14:24 Review main-agent ok, rebased+ff nach main (89c70df), gepusht. Docker 97/1501 gruen (Worker). Standard-Channel statt experimental begruendet (v1.6.1 standard hat alles fuer Cilium 1.20; safe-upgrades erlaubt standard ueber experimental). Unverifiziert: SSA --force-conflicts auf echtem Bestandscluster.
