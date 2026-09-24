@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-24T17:43:51Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T17:43:51Z
+created: 2026-09-24T16:55:20Z
+id: 180
+priority: low
+started: 2026-09-24T16:56:00Z
+status: done
+tags:
+- destroy
+- output
+title: ocp destroy verschluckt den Grund eines fehlgeschlagenen Uninstalls
+updated: 2026-09-24T17:43:51Z
+---
+
+Aus k175/k177: seit k175 stirbt ExistingHost::delete_server mit Host, Exit-Code und stderr. Destroy faengt das per eval und gibt fix "Could not uninstall on X (may already be down)" aus -> Grund geht verloren. Done: Grund auf STDERR ausgeben; Exit-Code != 0 wenn eine Maschine nicht abgeraeumt werden konnte (bewusst entscheiden); Test.
+
+2026-09-24 17:05 Implemented on branch worktree-agent-a1e1826d145c7990c (46813c2): reason from delete_server on STDERR; failed or key-skipped uninstalls listed at end, exit 1; local state still removed (existing hosts not billed, a dead host must not block teardown; k140 gate stays for paid servers). t/180-destroy-uninstall-reason.t. make test green (1927).
+
+2026-09-24 17:07 Review ok, rebased+ff nach main (6534a43). Docker 111/1927 gruen (Worker, vor Rebase auf k178).
+
+2026-09-24 17:43 Live 2026-09-24 k3s-destroy mit Worker: Worker vor CP, k3s-agent-uninstall.sh greift, Meldungen RKE2/K3s, Exit 0. Fehlerpfad (Grund + Exit 1) nur per Tests.
