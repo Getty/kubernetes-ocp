@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-24T20:23:09Z
+id: 188
+priority: low
+status: backlog
+tags:
+- drift
+- output
+title: apply --dry-run zaehlt report-only-Drift als 'difference a real run would act
+  on'
+updated: 2026-09-24T20:23:09Z
+---
+
+Live 2026-09-24 (Upgrade-Probe): Pod-CIDR-Drift (k182, report-only) erscheint im Dry-Run als "1 difference(s) a real run would act on", obwohl apply sie nie anfasst. Done: report-only-Eintraege separat zaehlen/benennen.
