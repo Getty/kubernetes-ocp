@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-09-24T14:28:37Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:28:37Z
+created: 2026-09-24T14:24:32Z
+id: 162
+priority: low
+started: 2026-09-24T14:28:37Z
+status: done
+tags:
+- docs
+- cilium
+title: 'Skill ocp-cilium: Gateway API nur standard-Channel, Version aktuell'
+updated: 2026-09-24T14:28:37Z
+---
+
+Aus k157: ocp-cilium SKILL.md beschreibt noch standard+experimental bei v1.1.0. Seit k157: nur standard, gepinnte Version aus OCP::Versions, server-side apply, Fehler bricht ab. Linkcount 1 (nicht hardlinked).
+
+2026-09-24 14:28 e4ee8e9
