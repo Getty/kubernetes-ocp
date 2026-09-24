@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-09-24T14:44:31Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T14:44:31Z
+created: 2026-09-24T14:33:59Z
+id: 163
+priority: medium
+started: 2026-09-24T14:44:31Z
+status: done
+tags:
+- update
+- k3s
+- cert-manager
+title: 'ocp update cert-manager: keine distribution -> k3s bekommt RKE2-Pfade'
+updated: 2026-09-24T14:44:31Z
+---
+
+Aus k160: OCP::Cmd::Update::_update_via_rex (cert-manager) reicht distribution nicht an upgrade_cert_manager -> auf k3s falscher kubectl/kubeconfig. Drift-Remedy hat es seit k160. Done: alle _update_*-Rex-Aufrufe geben distribution (und noetige Pins) mit + Test; pruefen, ob weitere Update-Pfade dieselbe Luecke haben.
+
+2026-09-24 14:43 Implemented on branch worktree-agent-a4cc19a9595a6f068, commit 6a75035: OCP::Drift->remedy_params is the one param builder (version + distribution + remedy_pins); drift remedies and every ocp update Rex call use it. Broken before: _update_via_rex (cert_manager) passed only version -> k3s got RKE2 kubectl/kubeconfig. Cilium already fixed in k160, now shares the builder. Test t/71 (k3s project, both components == remedy params). Docker make test green 99/1523. Not live-verified. Audit leftovers (NOT fixed, separate cards needed): generic fallback update_<comp> Rex tasks do not exist in share/Rexfile (cilium_cli, gateway_api, nfd, gpu_operator, nvidia_* would die with unknown task once their pin changes or with --force); _update_rke2 dies on any rke2 pin change even on a k3s cluster (and _update_k3s on rke2); ocp update --force therefore always fails.
+
+2026-09-24 14:44 Review ok, ff nach main (6a75035), gepusht. Docker 99/1523 gruen (Worker). Drift::remedy_params = eine Quelle fuer Remedy- und Update-Params.
