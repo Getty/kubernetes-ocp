@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-09-24T16:08:09Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-24T16:08:09Z
+created: 2026-09-24T15:55:58Z
+id: 167
+priority: medium
+started: 2026-09-24T16:08:09Z
+status: done
+tags:
+- cli
+- options
+title: Option pins-stdin mit Bindestrich wird abgelehnt, nur pins_stdin geht
+updated: 2026-09-24T16:08:09Z
+---
+
+Live-Fund 2026-09-24 (Image von main 925b2f9): "ocp init ... --pins-stdin" -> "Unknown option: pins-stdin"; --help listet --pins_stdin, das funktioniert. Skill ocp-usage behauptet, MooX::Options normalisiere Bindestriche fuer alle Optionen. Vermutung: gilt nicht fuer Optionen aus einer Rolle (OCP::Role::Cmd) oder generell nicht wie dokumentiert. Done: Ursache klaeren, beide Schreibweisen funktionieren fuer pins-stdin und alle anderen Mehrwort-Optionen (Test ueber alle Commands), Skill-Aussage ggf. korrigieren (Text fuer Doc-Lane im Report).
+
+2026-09-24 16:03 Root cause: MooX::Options 4.103 _options_fix_argv takes the arg after EVERY known option (booleans too) as its value and passes it through without dash->underscore rewriting. So --pins-stdin alone works, after a value option works, but after a boolean (--force --pins-stdin, --dry-run after --pins_stdin, destroy --force --keep-status) Getopt::Long sees 'pins-stdin' -> Unknown option. Fix: around parse_options in OCP::Role::Cmd rewrites known option names to underscores first (values after format options untouched, --no-X kept for negatable, unknown names left for GLD to reject). t/96-option-spellings.t derives every command/option from the classes: 35 red before, green after. Docker make test: 103 files / 1842 tests PASS. Commit 22fd0d7 on branch worktree-agent-af8b3b1049f846f44.
+
+2026-09-24 16:04 Correction: the commit is 6fad7d7, not 22fd0d7.
+
+2026-09-24 16:07 Review ok, ff nach main (6fad7d7), gepusht. Docker 103/1842 gruen (Worker). Ursache MooX::Options 4.103 _options_fix_argv nach Boolean-Option.
