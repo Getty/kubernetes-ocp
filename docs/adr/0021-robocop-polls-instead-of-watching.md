@@ -56,9 +56,28 @@ build anything further on the assumption that it is wired up.
 - Every pass costs a full list of `OCPNode` CRs in the namespace. That scales
   with node count, and would not at watch-sized clusters.
 - `ocp inject-key` stays disabled and dies with an explanation, so the robo-key
-  is never actually delivered into the cluster (ADR 0006).
+  is never actually delivered into the cluster (ADR 0006) *(amended 2026-09-24,
+  see below)*.
 - `cpanfile` claims a capability the code does not have. Anyone reading the
   dependency list to infer the architecture will infer wrongly, which is
   precisely why this is written down.
 - The choice is reversible at low cost: only the trigger changes, not
   `OCP::Node`.
+
+## Amendment 2026-09-24
+
+This ADR said under `## Consequences`:
+
+> `ocp inject-key` stays disabled and dies with an explanation, so the robo-key
+> is never actually delivered into the cluster (ADR 0006).
+
+That is no longer true. k129 delivers the robo key through the
+`robocop-credentials` Secret (`robocop.security_level` `secret` /
+`secret_approved`). k2 rebuilt `ocp inject-key` on `Net::Async::Kubernetes`
+`port_forward` for the `inject` level. ADR 0028 records that design.
+`port_forward` was the half of the dated debt that was wanted for
+`ocp inject-key`, and it is now paid.
+
+This amendment covers only that consequence. Whether this ADR's own decision,
+to keep the poll loop, still stands after k1 wired up the watch driver is a
+separate question and is not settled here.

@@ -100,7 +100,8 @@ By intent, the robo-key does not reach control planes.
 - The robo-key is currently never deployed at all: `ocp inject-key` is
   disabled because it needs a port-forward that the Kubernetes client does not
   provide (k2, and ADR 0021). The two-tier model is therefore in force
-  in the key store and not yet in the cluster.
+  in the key store and not yet in the cluster *(amended 2026-09-24, see
+  below)*.
 - Two encryption paths mean two decryption paths, and a key's type must be
   detected rather than assumed — `decrypt_key` sniffs the envelope.
 - Losing PIN2 costs the admin key; losing PIN1 costs everything (ADR 0005).
@@ -186,3 +187,25 @@ This ADR keeps `Status: accepted`. Its decision — two keys in `keys.yaml`, two
 encryption strengths, two threat models — is untouched by ADR 0027; what 0027
 removes is the unencrypted third credential that had grown up beside those two
 without ever being decided here.
+
+## Amendment 2026-09-24
+
+This ADR said under `## Consequences`:
+
+> The robo-key is currently never deployed at all: `ocp inject-key` is
+> disabled because it needs a port-forward that the Kubernetes client does not
+> provide (k2, and ADR 0021). The two-tier model is therefore in force
+> in the key store and not yet in the cluster.
+
+That is no longer true. The robo key now reaches robocop in one of three ways,
+chosen by `robocop.security_level`:
+
+- `secret` (k129): through the `robocop-credentials` Secret, decrypted with
+  PIN1.
+- `secret_approved` (k129): the same, with the Secret write gated behind PIN2.
+- `inject` (k2, ADR 0028): through `ocp inject-key` over a port-forward. The
+  key is held in memory only, is checked against its public half, and the
+  command is gated behind PIN1 and PIN2.
+
+So the two-tier model is now in force in the cluster as well. The decision of
+this ADR is unchanged. Only its report of the deployment state was out of date.

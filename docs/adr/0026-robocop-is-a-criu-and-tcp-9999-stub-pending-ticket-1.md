@@ -1,7 +1,7 @@
 # 0026. Robocop is a CRIU / TCP-9999 key-injection stub pending ticket k1
 
 Date: 2026-08-14
-Status: snapshot
+Status: superseded by [ADR 0028](0028-inject-the-robo-key-in-memory-over-a-port-forward.md) (2026-09-24, k2)
 
 > This is a snapshot, not a decision. The architecture this ADR names — CRIU
 > checkpointing with a TCP-9999 key-injection listener, an in-memory only key,

@@ -75,8 +75,9 @@ ADR here.
 | [0023](0023-resolve-share-directory-next-to-running-code.md) | Resolve the share directory next to the running code, and reject overrides that do not point at a directory |
 | [0024](0024-register-io-k8s-resource-providers-defensively.md) | Register IO::K8s resource providers defensively, and live with raw YAML where they are absent |
 | [0025](0025-pin-perl-baseline-across-image-and-snapshot.md) | Pin the same Perl patch release in image, snapshot and runtime |
-| [0026](0026-robocop-is-a-criu-and-tcp-9999-stub-pending-ticket-1.md) | Robocop is a CRIU / TCP-9999 key-injection stub pending ticket k1 |
+| [0026](0026-robocop-is-a-criu-and-tcp-9999-stub-pending-ticket-1.md) | Robocop is a CRIU / TCP-9999 key-injection stub pending ticket k1 *(superseded by 0028)* |
 | [0027](0027-one-admin-key-reaches-every-machine.md) | Reach every machine with the admin key, and keep the bootstrap key to dev mode |
+| [0028](0028-inject-the-robo-key-in-memory-over-a-port-forward.md) | Inject the robo key into robocop in memory over a port-forward, and make a restart ask for it again |
 
 ## Provenance
 
