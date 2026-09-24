@@ -82,9 +82,17 @@ everything before it is a prediction.
 
 ## Host Driver Install (`install_nvidia`)
 
-- **Debian**: `linux-headers-$(uname -r)`, `linux-headers-$(dpkg
-  --print-architecture)`, `nvidia-driver`, `nvidia-smi`, `libcuda1`.
-- **Ubuntu**: `linux-headers-$(uname -r)` plus `ubuntu-drivers install`. No
+- **Everything but Ubuntu** (k155): `Rex::GPU::NVIDIA::install_driver(gpus =>
+  [...])`, handed the sysfs cards as `{ device_id => '2e12', name => ... }` (no
+  lspci). It skips a working driver (nvidia-smi + libcuda.so.1), picks the
+  branch/module by GPU generation (Debian: non-free `nvidia-driver nvidia-smi
+  libcuda1`, Blackwell from NVIDIA's CUDA repo), installs only the running
+  kernel's headers, and dies before touching the host for Kepler or
+  incompatible GPU mixes. The toolkit is `install_container_toolkit`, unless
+  OCP's own binary check (`nvidia-container-runtime` + `nvidia-ctk`) finds one.
+- **Ubuntu** stays OCP's own until rex-gpu k69 (the library adds
+  `linux-headers-generic` and picks packages by apt-cache search):
+  `linux-headers-$(uname -r)` plus `ubuntu-drivers install`. No
   branch number is hardcoded, on purpose — the branch, the open-vs-proprietary
   flavour and the architecture are three separate questions and all three are
   part of the package *name*:
@@ -121,8 +129,9 @@ ships the matching RuntimeClass objects. Verified on a DGX Spark: runtime and
   `{{ template "base" . }}`.** Both render the template *instead of* their
   generated config, so a partial template silently drops the registry mirrors,
   the sandbox image and the CNI settings. OCP used to ship exactly that.
-- RKE2's unit sets no `PATH` at all, so `_configure_nvidia_runtime_path` writes
-  one into `/etc/default/rke2-{server,agent}` (docs.rke2.io/add-ons/gpu_operators).
+- RKE2's unit sets no `PATH` at all, so Rex::Rancher writes one into
+  `/etc/default/rke2-{server,agent}` (`nvidia_runtime_path => 1`, which OCP
+  always passes; only when the runtime is on the host; docs.rke2.io/add-ons/gpu_operators).
   k3s needs nothing.
 
 ## ocp.yaml switches

@@ -48,8 +48,9 @@ my $gateway = {
 
 Gateway API CRDs are pinned in `OCP::Versions` (`gateway_api`, currently
 v1.6.1 — version-locked to Cilium, bump both together) and applied BEFORE
-Cilium by `_apply_gateway_api_crds` in `share/Rexfile`, called from
-`install_cilium`. **Standard channel only — never experimental on top of
+Cilium by `Rex::Rancher::Cilium` (`install_cilium`/`upgrade_cilium` with
+`gateway_api => 1, gateway_api_channel => 'standard'` — the library defaults to
+experimental, so OCP always passes the channel; k155). **Standard channel only — never experimental on top of
 it.** From Gateway API v1.5, both bundles ship the
 `safe-upgrades.gateway.networking.k8s.io` ValidatingAdmissionPolicy, which
 refuses experimental CRDs applied over standard ones (the reverse stays
@@ -59,11 +60,22 @@ and nobody noticed (k157). Standard alone is enough: from v1.5 it carries
 TLSRoute v1 and BackendTLSPolicy v1, and from v1.6 also TCPRoute and
 UDPRoute — everything Cilium 1.20 needs.
 
-The apply is server-side and forced (`kubectl apply --server-side
---force-conflicts --field-manager=ocp`) — the httproutes CRD alone comes
-within a few KiB of the 256 KiB last-applied-configuration annotation a
-client-side apply writes. A failed apply now `die`s and aborts
-`install_cilium`; it is no longer a best-effort step with errors swallowed.
+The library applies through Kubernetes::REST from the machine running `ocp`
+(a kubeconfig the Rexfile fetches off the node, pointed at the Rex host) —
+no last-applied annotation, so the 256 KiB limit a client-side apply hits is
+moot; it skips the apply when the CRDs' bundle-version/channel annotations
+already match (the same ones OCP::Drift reads, k164) and dies on failure.
+The CRD-only drift remedy `update_gateway_api` keeps OCP's own server-side
+kubectl apply (`_apply_gateway_api_crds`, `--force-conflicts
+--field-manager=ocp`), because the library keeps that step private
+(rex-rancher k43).
+
+IPAM: Rex::Rancher's rke2 default is `ipam.mode: kubernetes`, and it only
+refuses a mode change the release set explicitly. OCP therefore always passes
+`helm_values => { ipam => ... }`: cluster-pool on `pod_cidr` for a fresh
+Cilium, the live mode and pool (read from `kube-system/cilium-config`) for a
+running one; an unreadable cilium-config aborts rather than guess
+(rex-rancher k43). Readiness is OCP's `cilium status --wait` after the call.
 
 Caveat: RKE2 >= v1.37 ships its own `rke2-gateway-api-crd` Helm chart, which
 would fight this apply. Today's RKE2 pin is v1.36, so it's dormant; the
@@ -123,9 +135,5 @@ The Rexfile carries no version constants of its own to drift out of sync.
 (`OCP_CILIUM_VERSION`, `OCP_CILIUM_CLI_VERSION`, `OCP_GATEWAY_API_VERSION`)
 is only for hand-runs outside that path.
 
-Note: `upgrade_cilium` upgrades the Cilium CLI and the Helm release, but
-does not currently re-apply the Gateway API CRDs — only `install_cilium`
-does. A Cilium version bump on an existing cluster can leave the old CRD
-bundle behind, which matters because Cilium's minor version is tied to a
-specific CRD bundle (k160, in progress: `upgrade_cilium` is to call
-`_apply_gateway_api_crds` before upgrading).
+`upgrade_cilium` re-applies the Gateway API CRDs before the Helm upgrade
+(k160), through the library like `install_cilium`.
