@@ -31,6 +31,29 @@ DOCKER_PROVE = docker run --rm -v $(CURDIR):/src:ro -w /src \
 .PHONY: all build test test-v test-host clean docker-test docker-push docker-release \
         snapshot smoke build-image
 
+# ─── TEMP: vendored Rex::GPU / Rex::Rancher 0.003 ────────────────────────────
+# cpanfile pins both at 0.003 ahead of their CPAN release, so a build from
+# cpanfile.snapshot alone dies at "FAIL resolve". This dzil-builds them from
+# their local checkouts (SIBLINGS_DIR, default ../) into vendor/; the
+# Dockerfile installs them ahead of the snapshot pass. Same pattern as k133.
+#
+# THROWAWAY. Remove this target, the vendor/ block in the Dockerfile and the
+# vendor/ exception in .dockerignore once both are on CPAN and
+# cpanfile.snapshot is regenerated (`make snapshot`).
+SIBLINGS_DIR ?= ..
+.PHONY: vendor
+vendor:
+	@rm -rf $(CURDIR)/vendor && mkdir -p $(CURDIR)/vendor
+	@set -e; for s in rex-gpu rex-rancher; do \
+	  d="$(SIBLINGS_DIR)/$$s"; \
+	  echo "[vendor] dzil build $$s"; \
+	  ( cd "$$d" && rm -f *.tar.gz && rm -rf .build && dzil build ); \
+	  tgz="$$(cd "$$d" && ls *.tar.gz)"; \
+	  mv "$$d/$$tgz" "$(CURDIR)/vendor/"; \
+	  rm -rf "$$d/$${tgz%.tar.gz}"; \
+	done
+	@echo "[vendor] built:"; ls -1 $(CURDIR)/vendor/
+
 all: build
 
 # Build Docker image for the architecture of this machine

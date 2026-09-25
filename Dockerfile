@@ -93,6 +93,21 @@ ENV PERL_CARTON_PATH="$OCP_ROOT/install/perl5"
 COPY --chown=ocp:ocp ./cpanfile $OCP_ROOT/src
 COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 
+# ─── TEMP: vendored Rex::GPU / Rex::Rancher 0.003 ────────────────────────────
+# Pinned in cpanfile ahead of their CPAN release; `make vendor` dzil-builds
+# them into vendor/. Installed into the same contained local-lib FIRST
+# (Rex::GPU before Rex::Rancher, which recommends it), so the snapshot pass
+# finds both already satisfied. Their own dependencies resolve from
+# cpanfile.snapshot, MetaDB only as fallback. REMOVE with the Makefile
+# `vendor` target and the .dockerignore exception once both are released.
+COPY --chown=ocp:ocp ./vendor/ $OCP_ROOT/src/vendor/
+RUN cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Rex-GPU-*.tar.gz \
+ && cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+      --local-lib-contained=$PERL_LOCAL_LIB_ROOT ./vendor/Rex-Rancher-*.tar.gz \
+ && rm -rf ~/.perl-cpm/ /tmp/*
+# ─── end TEMP ────────────────────────────────────────────────────────────────
+
 # Install all dependencies from CPAN
 RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \
