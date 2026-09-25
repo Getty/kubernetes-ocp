@@ -1,0 +1,75 @@
+---
+block_reason: wartet auf simpici#4 (Runner) + Repo-Secrets DOCKERHUB_USER/TOKEN; k133
+  ist done
+blocked: true
+claimed_at: 2026-09-25T00:43:27Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-04T04:50:20Z
+id: 134
+priority: medium
+started: 2026-09-04T05:09:34Z
+status: review
+tags:
+- ci
+- docker
+- needs:simpici#4
+- needs:simpici#2
+title: 'repo-eigenes .cicd-Build-Script: OCP-Docker-Image bauen und pushen (fuer simpici
+  und GitHub Action)'
+updated: 2026-09-25T00:43:27Z
+---
+
+Ein ausfuehrbares Script nach simpici-Konvention (.cicd/<platform>+<feature>+cicd.sh -- exakte Benennung final noch offen, TODO simpici), das das OCP-Docker-Image baut (ueber das vorhandene make build / share/bin/ocp-build-image) und in die Ziel-Registry pusht. Push-Credentials kommen als gescopte Environment-Variablen: von simpicid aus der Dispatcher-Config (simpici k2) bzw. von GitHub-Action-Secrets (simpici k5). Dasselbe Script wird von beiden Ausfuehrungsorten aufgerufen. Exit 0 = success, 78 = skip, sonst failure (simpici-Kontrakt).
+
+OFFEN / zu bestaetigen: Upload-Ziel -- Forgejo-Container-Registry auf src.ci und/oder ghcr.io und/oder Docker Hub; und ob src.ci nur Artefakt-Ziel oder zusaetzlich zweite Git-Quelle ist (dann Repo auf src.ci anlegen, simpici k3).
+
+Abhaengig von: simpici k4 (Runner auf isolierter VM) + simpici k2 (Secrets-Modell).
+House-Rule (ocp-rules): docker-push / docker-release brauchen Maintainer-Freigabe -- ein automatischer Push aus der CI ist eine bewusste Policy-Entscheidung, die hier explizit getroffen werden muss.
+
+Script fertig und committet (Branch k134-cicd-simpici-script, Commit 7377064): .cicd/linux+container+cicd.sh. Baut via share/bin/ocp-build-image und publisht unabhaengig nach ghcr.io plus src.ci Forgejo. Fallback: eine Registry down stoppt die andere nicht. Gescopte Registry-Secrets als OCP_GHCR_ und OCP_SRCCI_ Env, SimpiCI-Exit-Contract erfuellt, dry-run-verifiziert fuer beide, keine und eine Registry. Bewusst NUR der simpicid-Runner-Pfad; der GitHub-Workflow kommt separat per Plugin. Offen bis end-to-end gruen: echter Build und Push brauchen den Runner (simpici k4), angelegte Registries plus Credentials, und einen funktionierenden Docker-Build. Registry-Repo-Pfade sind Annahme, via OCP_GHCR_REPO bzw OCP_SRCCI_REPO ueberschreibbar.
+
+GitHub-Workflow ergaenzt und Registry-Prioritaet korrigiert. Docker Hub (raudssus/ocp) ist primaer, nicht ghcr: das ist der Name auf den Makefile IMAGE, OCP::Cmd::DeployImage $DEFAULT_REPO, die robocop-Manifeste und xt/smoke.sh sich schon geeinigt haben und den t/66 bewacht. ghcr.io/getty/kubernetes-ocp und src.ci sind zusaetzliche Locations desselben Images; jede Registry wird unabhaengig versucht, fehlende Credentials werden uebersprungen statt zu failen.
+
+.github/workflows/ci.yml ist SimpiCIs Standard-Integration bewusst KOPIERT statt per uses: aufgerufen -- ein reusable workflow kann die repo-eigenen Secrets nicht durchreichen, und Docker Hub als primaeres Ziel braucht sie. GHCR laeuft ueber den GITHUB_TOKEN des Laufs (kein Secret noetig), Docker Hub ueber die Repo-Secrets DOCKERHUB_USER/DOCKERHUB_TOKEN; fehlen sie, publisht der Lauf trotzdem nach GHCR.
+
+Publish-Policy liegt im Script, nicht im YAML: nur main und Tags publishen, PRs und Feature-Branches bauen nur und exiten 0 (Build ist der Test). Exit 78 heisst jetzt nur noch: publishen war dran, keine Registry konfiguriert. Alle neun Pfade per OCP_CICD_DRY_RUN=1 verifiziert, inkl. Ausfall einer Registry (andere laeuft weiter, exit 1).
+
+OFFEN bis end-to-end gruen: (1) Repo-Secrets DOCKERHUB_USER/DOCKERHUB_TOKEN in GitHub anlegen -- nur der Maintainer kann das; (2) erster Lauf auf main; (3) src.ci-Registry existiert noch nicht, Pfad bleibt Annahme via OCP_SRCCI_REPO. Bindender make test war hier nicht fahrbar (Docker-Build scheitert an cgroup-Permission der Sandbox); make test-host komplett gruen, 81 Dateien / 1292 Tests, inkl. t/66.
+
+Ausserdem in diesem Branch: README als Schritt-fuer-Schritt-Anleitung neu gefasst, Referenzmaterial nach docs/{configuration,security,robocop,development}.md ausgelagert.
+
+An das neue simpici-Modell angepasst (simpici d388e73/eee63dd 'execute CI jobs in container phases'). Das alte .cicd/linux+container+cicd.sh ist geloescht: der Name ist im neuen Kontrakt ungueltig, simpicis Parser bricht den GANZEN Lauf mit exit 64 ab, bevor irgendwas laeuft -- lokal gegengeprueft.
+
+Neu, ein Script pro Phase, Plan kommt aus dem Dateinamen:
+  .cicd/docker+29+build.image.sh    -> docker.io/library/docker:29, Phase build, Job image
+  .cicd/docker+29+publish.image.sh  -> dieselbe Image, Phase publish
+Verifiziert mit simpicis eigenem Parser via SIMPICI_PLAN_ONLY=true. Phasen sind geordnet (prepare build test package publish deploy), publish startet erst nach gruenem build -- ein Image das nicht baut wird nie gepusht. Beide delegieren weiter an share/bin/ocp-build-image, das Tag-Tripel bleibt an einer Stelle.
+
+WICHTIG, Aenderung gegenueber vorher: simpici reicht nur eine feste Whitelist von CICD_* in den Container. Das ganze OCP_DOCKERHUB_/OCP_GHCR_/OCP_SRCCI_-Env-Modell ist damit tot -- die Variablen kaemen dort nie an. Es gibt genau ein CICD_REGISTRY/_USER/_PASSWORD-Tripel pro Lauf, also eine Registry pro Lauf. Mehrere Registries = mehrere Jobs: .github/workflows/ci.yml hat jetzt job dockerhub (raudssus/ocp, Secrets DOCKERHUB_USER/DOCKERHUB_TOKEN) und job ghcr (ghcr.io/getty/kubernetes-ocp, GITHUB_TOKEN, kein Secret noetig). Unabhaengig voneinander; Preis ist ein Build pro Runner.
+
+Zwei Alpine-Stolpersteine im offiziellen docker-Image, beide im Script geloest: kein bash (ocp-build-image ist bash) -> apk add bash; und der read-only gemountete Workspace gehoert einer anderen uid, git verweigert ihn als 'dubious ownership' -> safe.directory, sonst waere das Image still als develop/unknown getaggt.
+
+Alle Gate-Pfade gegen Stubs durchgespielt: main+Secrets, Tag, PR, Feature-Branch, fehlende Credentials (alle skip via exit 78), und Push-Fehler (exit durchgereicht, logout laeuft trotzdem).
+
+OFFEN: (1) Repo-Secrets DOCKERHUB_USER/DOCKERHUB_TOKEN anlegen -- nur Maintainer; (2) erster Lauf auf main; (3) src.ci faellt vorerst raus, weil eine Registry pro Lauf -- entweder dritter Job oder ein simpici-Ticket fuer mehrere Registry-Tripel; (4) Restrisiko unverifiziert: ocp-build-image nutzt --cache-from type=registry, das braucht buildx mit passendem Driver auf dem Runner.
+
+Erster echter CI-Lauf: GitHub Actions run 33928559437 auf Branch k134-cicd-simpici-script (push, 2026-09-04). Branch ist nicht main, also griff das Publish-Gate wie vorgesehen -- gebaut, nichts gepusht.
+
+Die CI-Kette selbst funktioniert Ende-zu-Ende: beide Jobs (dockerhub, ghcr) starteten, SimpiCI las den Plan aus den .cicd-Dateinamen, startete den docker:29-Container, ocp-build-image lief an, docker build arbeitete das Dockerfile bis Schritt 15 ab. Kein Problem mit bash/apk, safe.directory, Docker-Socket oder Env -- die Annahmen aus dem Umbau haben alle gehalten.
+
+Gescheitert ist der OCP-Image-Build selbst, an cpm install: cpanfile verlangt IO::K8s 1.108, Kubernetes::REST 1.108, Net::Async::Kubernetes 0.008 und WWW::Hetzner 0.101, die es auf CPAN nicht gibt. Siehe k133, dort ausfuehrlich belegt. k134 ist damit blockiert auf k133, nicht auf sich selbst.
+
+Nebenbefund, nicht fatal: 'failed to configure registry cache importer: docker.io/raudssus/ocp:cache: not found'. Das ist ocp-build-images --cache-from type=registry, das beim allerersten Lauf ins Leere zeigt. buildx warnt und baut weiter; wird von selbst still, sobald einmal ein :cache-Tag existiert -- oder man laesst --cache-from weg, wenn das Tag fehlt (eigenes Ticket, share/ ist behavior-relevant).
+
+2026-09-15 17:02 Code-Inhalt vollstaendig in k138-consolidate-all (patch-identisch, git cherry alle '-'): CICD-Build-Script (share/bin/ocp-build-image, Makefile-Target build-image) + k133-Vendoring (496b1b4/6fcaab6, alle 6 Siblings). Branch k134-cicd-simpici-script damit ueberfluessig; Prune wartet auf Permission fuer destruktives git (Auto-Mode-Classifier blockt branch -D). Finale Verifikation reitet auf dem k138-CI-/Hardware-Image.
+
+2026-09-15 19:59 Branch k134-cicd-simpici-script jetzt geloescht (war 13dc161, patch-identisch in k138). Worktree finish-open-tickets ebenfalls entfernt. Baum aufgeraeumt: nur noch k138-consolidate-all + main.
+
+2026-09-18 05:49 cicd-Build-Script auf main gelandet (ff-merge k138-consolidate-all; Branch k134-cicd-simpici-script war patch-identisch, geloescht). Bleibt in review: cross-board needs simpici#2/#4 (simpici-Seite) noch offen.
+
+2026-09-20 14:15 2026-09-20: cicd-Scripts sind auf main. Manueller Push-Pfad steht bereit (docker push raudssus/ocp:latest vom Maintainer-Host). CI-Auto-Push bleibt blockiert: k133 (4 Siblings nicht auf CPAN, vendor/ nicht committet -> fresh checkout baut nicht) + simpici#2/#4 + Repo-Secrets DOCKERHUB_USER/TOKEN. Bleibt in review.
+
+2026-09-23 19:25 k133 done. CI auf main seit 2026-09-18 rot an '/vendor: not found' (Run 35692604890) = altes k133-Vendoring; Fix 6ea1068 lokal, noch nicht gepusht. simpici k2 done, k4 backlog.
+
+2026-09-25 00:43 2026-09-25 Image manuell gepusht (Maintainer-Go): raudssus/ocp:latest + :ec1e76b = main ec1e76b (k155 Rex::Rancher/Rex::GPU 0.002, k190), digest sha256:b0e7a3fd...6a50. CI-Auto-Push weiter offen (simpici k4).
