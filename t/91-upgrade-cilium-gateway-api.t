@@ -38,8 +38,6 @@ my $KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127
 sub node {
     my ($cmd) = @_;
     return ($KUBECONFIG, 0) if $cmd =~ /^cat /;
-    return ('cluster-pool|10.0.0.0/8', 0) if $cmd =~ /configmap cilium-config/;
-    return ('203.0.113.7', 0) if $cmd =~ /daemonset cilium/;
     return ('', 0);
 }
 
@@ -71,8 +69,8 @@ subtest 'k3s: its own kubeconfig, and the API address the agents already use' =>
     my ($ok, $err, $o) = upgrade(%params, distribution => 'k3s');
     ok $ok, 'the task succeeds' or diag $err;
     is $o->{distribution}, 'k3s', 'k3s';
-    is $o->{k8s_service_host}, '203.0.113.7',
-        'k8sServiceHost read off the running DaemonSet, not reset';
+    ok !exists $o->{k8s_service_host},
+        'no k8sServiceHost passed: the library reads the running DaemonSet\'s (t/155-rex-libraries.t)';
     ok((grep { $_ eq 'cat /etc/rancher/k3s/k3s.yaml' } OCPTest::Rexfile->commands),
         'the k3s admin kubeconfig');
 };
@@ -99,27 +97,24 @@ subtest 'OCP_GATEWAY_API_VERSION serves hand-runs' => sub {
     is $o->{gateway_api_version}, 'v1.6.1', 'the env pin is applied';
 };
 
-subtest 'a failed upgrade (e.g. the CRD apply) stops the task before the wait' => sub {
+subtest 'a failed upgrade (e.g. the CRD apply) fails the task' => sub {
     OCPTest::Rexfile->reset;
     local $OCPTest::Rexfile::RUN = \&node;
     local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Cilium::upgrade_cilium'} =
         "denied by safe-upgrades.gateway.networking.k8s.io\n";
     ok !eval { OCPTest::Rexfile->run_task('upgrade_cilium', {%params}); 1 }, 'dies';
     like $@, qr/safe-upgrades/, 'with the library\'s error';
-    ok !(grep { /cilium status --wait/ } OCPTest::Rexfile->commands), 'no readiness wait after it';
+    ok !(grep { /^cilium / } OCPTest::Rexfile->commands), 'and runs no cilium command of its own';
 };
 
-# k182: the pool a running Cilium hands out survives the upgrade; the task
-# reads it off cilium-config and passes it back, never a configured one.
-subtest 'the running pod pool is passed through the upgrade' => sub {
+# k182: the pool a running Cilium hands out survives the upgrade. Rex::Rancher
+# reads it off cilium-config through the API and keeps it (t/155-rex-libraries.t);
+# the task hands it neither a pool nor pod_cidr to override it with.
+subtest 'the running pod pool is not overridden by the upgrade' => sub {
     my ($ok, $err, $o) = upgrade(%params, pod_cidr => '172.20.0.0/16');
     ok $ok, 'the task succeeds' or diag $err;
-    is_deeply $o->{helm_values}{ipam},
-        { mode => 'cluster-pool', operator => { clusterPoolIPv4PodCIDRList => ['10.0.0.0/8'] } },
-        'the upgrade keeps 10.0.0.0/8 and the cluster-pool mode';
-    my $read = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'run' && $_->{args}[0] =~ /cilium-config/ });
-    my $up   = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Cilium::upgrade_cilium' });
-    ok $read >= 0 && $read < $up, 'read before the upgrade';
+    is_deeply $o->{helm_values}{ipam}, { mode => 'cluster-pool' }, 'the mode stated, no pool';
+    ok !exists $o->{cluster_cidr}, 'no cluster_cidr: pod_cidr does not reach the upgrade';
 };
 
 done_testing;

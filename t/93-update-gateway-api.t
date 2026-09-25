@@ -12,104 +12,88 @@ use OCPTest::Rexfile;
 # channel, or missing.
 #
 # It does what install_cilium does for the CRDs and nothing else: apply the
-# pinned standard bundle through _apply_gateway_api_crds, with the node's
-# kubectl and kubeconfig for the distribution, then bounce a running
-# cilium-operator so it reads the new schemas (controller-runtime caches CRD
-# schemas at startup, and unlike upgrade_cilium no new image rolls the pods).
-# The name follows `ocp update`'s update_<component> fallback, so
-# `ocp update --component gateway_api` reaches the same task.
+# pinned standard bundle and bounce a running cilium-operator so it reads the
+# new schemas (controller-runtime caches CRD schemas at startup, and unlike
+# upgrade_cilium no new image rolls the pods). The name follows `ocp update`'s
+# update_<component> fallback, so `ocp update --component gateway_api`
+# reaches the same task.
 #
-# It stays OCP's own after k155: Rex::Rancher::Cilium applies the CRDs only as
-# part of install/upgrade and keeps that step private (rex-rancher k43). The
-# Rexfile runs against recorders (t/lib/OCPTest/Rexfile.pm). What a live
-# operator does with the new CRDs is NOT claimed here.
+# Since Rex::Rancher 0.003 that is Rex::Rancher::Cilium::ensure_gateway_api_crds
+# (rex-rancher k43): the standard bundle through the API from this machine,
+# skipped when version and channel already match, the operator restarted only
+# when it was applied, a failure dying before the restart -- held against the
+# real library in t/155-rex-libraries.t. Held here: OCP asks for exactly that,
+# through a kubeconfig fetched off the node, and nothing else. The Rexfile runs
+# against recorders (t/lib/OCPTest/Rexfile.pm). What a live operator does with
+# the new CRDs is NOT claimed here.
 #
 
-# A node whose cilium-operator runs (or not); a CRD apply that fails on demand.
-sub runs_for {
+my $KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n";
+
+sub update {
     my (%p) = @_;
-    my $operator = delete $p{operator} // 1;
-    my $fail     = delete $p{fail_apply};
+    my $keep_env = delete $p{keep_env};
+    my $lib_die  = delete $p{lib_die};
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub {
-        my ($cmd) = @_;
-        return ('denied by safe-upgrades', 1) if $fail && $cmd =~ /standard-install/;
-        return ($operator ? "deployment.apps/cilium-operator\n" : '', $operator ? 0 : 1)
-            if $cmd =~ /get deployment cilium-operator/;
-        return ("ok\n", 0);
-    };
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Cilium::ensure_gateway_api_crds'} = $lib_die;
+    local $OCPTest::Rexfile::RUN = sub { $_[0] =~ /^cat / ? ($KUBECONFIG, 0) : ('', 0) };
     local %ENV = %ENV;
-    delete $ENV{OCP_GATEWAY_API_VERSION} unless delete $p{keep_env};
-    my $ok  = eval { OCPTest::Rexfile->run_task('update_gateway_api', {%p}); 1 };
-    my $err = $@;
-    return ($ok, $err, [ OCPTest::Rexfile->calls('run') ]);
+    delete $ENV{OCP_GATEWAY_API_VERSION} unless $keep_env;
+    my $out;
+    my $ok  = eval { $out = OCPTest::Rexfile->run_task('update_gateway_api', {%p}); 1 };
+    return ($ok, $@, OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::ensure_gateway_api_crds'), $out);
 }
 
-sub index_of {
-    my ($runs, $re) = @_;
-    for my $i (0 .. $#$runs) { return $i if $runs->[$i]{args}[0] =~ $re }
-    return -1;
-}
-
-subtest 'rke2: the pinned standard bundle, then the operator bounce' => sub {
-    my ($ok, $err, $runs) = runs_for(version => 'v1.6.1');
+subtest 'rke2: the pinned standard bundle, through the library' => sub {
+    my ($ok, $err, $o) = update(version => 'v1.6.1');
     ok $ok, 'the task succeeds' or diag $err;
-
-    my $crds = index_of($runs, qr{gateway-api/releases/download/v1\.6\.1/standard-install\.yaml});
-    my $bounce = index_of($runs, qr/rollout restart deployment cilium-operator/);
-    cmp_ok $crds, '>=', 0, 'the bundle of the passed version is applied';
-    cmp_ok $bounce, '>', $crds, 'and cilium-operator is restarted after it';
-
-    my ($cmd, $o) = @{ $runs->[$crds]{args} };
-    like $cmd, qr{^/var/lib/rancher/rke2/bin/kubectl apply --server-side\b},
-        'through the RKE2 node kubectl, server-side';
-    is_deeply $o->{env}, { KUBECONFIG => '/etc/rancher/rke2/rke2.yaml' },
-        'against the RKE2 kubeconfig';
-    is_deeply $runs->[$bounce]{args}[1]{env}, { KUBECONFIG => '/etc/rancher/rke2/rke2.yaml' },
-        'the restart too';
-    is index_of($runs, qr/^cilium /), -1, 'Cilium itself is not touched';
-    is scalar(grep { $_->{name} =~ /^Rex::Rancher::Cilium::/ } @OCPTest::Rexfile::CALLS), 0,
-        'nor through the library';
+    ok $o, 'ensure_gateway_api_crds called' or return;
+    is $o->{version}, 'v1.6.1', 'the passed version';
+    is $o->{channel}, 'standard', 'standard channel';
+    like $o->{kubeconfig}, qr/ocp-kubeconfig-\w+\.yaml$/, 'through a local kubeconfig';
+    ok((grep { $_ eq 'cat /etc/rancher/rke2/rke2.yaml' } OCPTest::Rexfile->commands),
+        'fetched off the node: the RKE2 admin kubeconfig');
+    is scalar(grep { $_->{name} =~ /^Rex::Rancher::Cilium::(?:install|upgrade)_cilium$/ } @OCPTest::Rexfile::CALLS), 0,
+        'Cilium itself is not touched';
+    ok !(grep { !/^cat / } OCPTest::Rexfile->commands), 'and nothing is run on the node but that read';
 };
 
-subtest 'k3s uses its own kubectl and kubeconfig' => sub {
-    my ($ok, $err, $runs) = runs_for(version => 'v1.6.1', distribution => 'k3s');
+subtest 'k3s uses its own kubeconfig' => sub {
+    my ($ok, $err) = update(version => 'v1.6.1', distribution => 'k3s');
     ok $ok, 'the task succeeds' or diag $err;
-
-    my $crds = index_of($runs, qr/standard-install\.yaml/);
-    my ($cmd, $o) = @{ $runs->[$crds]{args} };
-    like $cmd, qr{^kubectl apply }, 'plain kubectl on k3s';
-    is_deeply $o->{env}, { KUBECONFIG => '/etc/rancher/k3s/k3s.yaml' },
-        'against the k3s kubeconfig';
+    ok((grep { $_ eq 'cat /etc/rancher/k3s/k3s.yaml' } OCPTest::Rexfile->commands),
+        'the k3s admin kubeconfig');
 };
 
-subtest 'no cilium-operator running: nothing to restart' => sub {
-    my ($ok, $err, $runs) = runs_for(version => 'v1.6.1', operator => 0);
-    ok $ok, 'the task succeeds' or diag $err;
-    cmp_ok index_of($runs, qr/standard-install\.yaml/), '>=', 0, 'CRDs applied';
-    is index_of($runs, qr/rollout restart/), -1, 'no restart of an operator that is not there';
+subtest 'it says whether it applied anything' => sub {
+    my (undef, undef, undef, $out) = update(version => 'v1.6.1');
+    like $out, qr/Gateway API CRDs at v1\.6\.1 \(standard channel\)/, 'applied';
+
+    no warnings qw( redefine once );
+    local *Rex::Rancher::Cilium::ensure_gateway_api_crds = sub { 0 };
+    (undef, undef, undef, $out) = update(version => 'v1.6.1');
+    like $out, qr/already at v1\.6\.1 .*nothing applied/, 'already current';
 };
 
 subtest 'no version: refused before anything runs' => sub {
-    my ($ok, $err, $runs) = runs_for();
+    my ($ok, $err) = update();
     ok !$ok, 'dies';
     like $err, qr/OCP_GATEWAY_API_VERSION.*required/, 'names the missing pin';
-    is scalar(@$runs), 0, 'before touching the node';
+    is scalar(@OCPTest::Rexfile::CALLS), 0, 'before touching the node';
 };
 
 subtest 'OCP_GATEWAY_API_VERSION serves hand-runs' => sub {
     local $ENV{OCP_GATEWAY_API_VERSION} = 'v1.6.1';
-    my ($ok, $err, $runs) = runs_for(keep_env => 1);
+    my ($ok, $err, $o) = update(keep_env => 1);
     ok $ok, 'the task succeeds' or diag $err;
-    cmp_ok index_of($runs, qr/v1\.6\.1\/standard-install\.yaml/), '>=', 0, 'the env pin is applied';
+    is $o->{version}, 'v1.6.1', 'the env pin is applied';
 };
 
-subtest 'a failed CRD apply stops before the restart' => sub {
-    my ($ok, $err, $runs) = runs_for(version => 'v1.6.1', fail_apply => 1);
+subtest 'a failed CRD apply fails the task' => sub {
+    my ($ok, $err) = update(version => 'v1.6.1', lib_die =>
+        "Kubernetes API error (PATCH ...): 422 denied by safe-upgrades.gateway.networking.k8s.io\n");
     ok !$ok, 'dies';
-    like $err, qr/Gateway API/, 'with the helper\'s error';
-    is index_of($runs, qr/rollout restart/), -1,
-        'the operator is not bounced onto a half-applied bundle';
+    like $err, qr/safe-upgrades/, 'with the library\'s error';
 };
 
 done_testing;

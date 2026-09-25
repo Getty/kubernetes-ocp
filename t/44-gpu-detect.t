@@ -194,18 +194,11 @@ subtest 'the model whitelist is gone for good' => sub {
 subtest 'no branch number and no kernel flavour is guessed' => sub {
     unlike $code, qr/nvidia-driver-\d/,
         'no hardcoded driver branch — it decides open vs proprietary too, and that is per GPU';
-    unlike $code, qr/linux-headers-generic/,
-        'no headers for a kernel the node may not be running';
-
-    my ($ubuntu) = $code =~ /^(sub _install_nvidia_driver_ubuntu \{.*?^\})/ms;
-    ok $ubuntu, 'Ubuntu has a driver install of its own';
-
-    like $ubuntu, qr/linux-headers-\$running_kernel/,
-        'headers are for the running kernel, which is the one DKMS builds against';
-    like $ubuntu, qr/ubuntu-drivers install/,
-        'the package choice is delegated to ubuntu-drivers, which asks the PCI modalias';
-    like $ubuntu, qr/\bdie\b/,
-        'and a failure dies instead of falling back to a guessed package name';
+    unlike $code, qr/linux-headers-/,
+        'no kernel headers named at all -- Rex::GPU installs the running kernel\'s, never '
+        . 'linux-headers-generic (t/155-rex-libraries.t)';
+    unlike $code, qr/ubuntu-drivers (?:install|list)/,
+        'and no ubuntu-drivers call of its own';
 };
 
 #
@@ -248,7 +241,7 @@ subtest 'a host that already has the toolkit keeps its apt sources' => sub {
 };
 
 #
-# The driver itself, outside Ubuntu, is Rex::GPU's since k155. It gets the
+# The driver itself is Rex::GPU's since k155 (Ubuntu since k191). It gets the
 # GPUs OCP found in sysfs, in the shape Rex::GPU takes from a caller without
 # lspci (rex-gpu k42): device_id as four hex digits, and a name.
 #
@@ -277,15 +270,28 @@ subtest 'a device ID sysfs does not give is left out, not guessed' => sub {
     ok !exists $o->{gpus}[0]{device_id}, 'without a device_id: an unknown GPU to the library';
 };
 
-subtest 'Ubuntu keeps OCP\'s own driver install (rex-gpu k69)' => sub {
+#
+# Ubuntu (k191, rex-gpu k69): the same install_driver, with the setup that has
+# ubuntu-drivers name the package. That it installs only the running kernel's
+# headers, never runs `ubuntu-drivers install`, and dies instead of guessing a
+# package when ubuntu-drivers cannot name one is held against the real
+# Rex::GPU in t/155-rex-libraries.t.
+#
+
+subtest 'Ubuntu: Rex::GPU installs the driver, ubuntu-drivers naming the package' => sub {
     install_nvidia_on(os => 'Ubuntu');
-    is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_driver')), 0, 'not Rex::GPU\'s';
-    ok((grep { /^ubuntu-drivers install/ } OCPTest::Rexfile->commands), 'ubuntu-drivers install');
-    my @pkgs = map { @{ $_->{args}[0] } } OCPTest::Rexfile->calls('pkg');
-    ok !(grep { $_ eq 'linux-headers-generic' } @pkgs), 'no linux-headers-generic';
-    ok((grep { /^linux-headers-/ } @pkgs), 'the running kernel\'s headers');
+    my $o = OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver');
+    ok $o, 'install_driver called' or return;
+    is $o->{setup}, 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers', 'with Setup::UbuntuDrivers';
+    is_deeply [ map { $_->{device_id} } @{ $o->{gpus} } ], [ '2e12' ], 'for the GPUs sysfs found';
+    is_deeply [ OCPTest::Rexfile->calls('pkg') ], [], 'no package of OCP\'s own';
+    ok !(grep { /ubuntu-drivers|modprobe/ } OCPTest::Rexfile->commands), 'no command of its own';
     is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_container_toolkit')), 1,
         'the toolkit still comes from Rex::GPU';
+
+    install_nvidia_on(os => 'Debian');
+    ok !exists OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver')->{setup},
+        'elsewhere the setup for the OS, as Rex::GPU picks it';
 };
 
 #

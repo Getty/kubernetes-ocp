@@ -176,8 +176,9 @@ subtest 'bootstrap: no public_ip -> cp_ip stays the advertised host' => sub {
 # which starts the unit with --no-block (k3s: installer with
 # INSTALL_K3S_SKIP_START, then restart --no-block) and waits at most 10
 # minutes, dying with the unit's state and journal. Those guarantees are held
-# against the real library in t/155-rex-libraries.t; here: that both tasks use
-# it, and that a failed join still names the address it tried.
+# against the real library in t/155-rex-libraries.t, and since Rex::Rancher
+# 0.003 (rex-rancher k44) so is the join address in its error; here: that both
+# tasks use it, and that its error reaches the caller as it is.
 
 for my $t ([ install_k3s_agent => 'k3s' ], [ install_rke2_agent => 'rke2' ]) {
     my ($task, $dist) = @$t;
@@ -194,11 +195,12 @@ for my $t ([ install_k3s_agent => 'k3s' ], [ install_rke2_agent => 'rke2' ]) {
             'no blocking start of a Type=notify unit of its own';
     };
 
-    subtest "$task: a join that never comes up names the join URL" => sub {
+    subtest "$task: a join that never comes up fails with the library's message" => sub {
         OCPTest::Rexfile->reset;
-        local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Agent::install_agent'} =
-            "$dist-agent.service did not become active within 600s (last state: activating)\n"
+        my $msg = "$dist-agent.service did not become active within 600s (last state: activating)\n"
+          . "It joins the cluster via https://ocpt-cp.vm:6443 -- check that this node can reach that address\n"
           . "--- journalctl -u $dist-agent.service -n 50 ---\nlevel=error msg=\"failed to get CA certs\"\n";
+        local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Agent::install_agent'} = $msg;
         my $ok = eval {
             OCPTest::Rexfile->run_task($task, { server => 'https://ocpt-cp.vm:6443', token => 'K10tok' });
             1;
@@ -210,6 +212,7 @@ for my $t ([ install_k3s_agent => 'k3s' ], [ install_rke2_agent => 'rke2' ]) {
         like $err, qr/failed to get CA certs/, 'carries the journal';
         like $err, qr{via https://ocpt-cp\.vm:6443 -- check that this node can reach that address},
             'and names the join URL (rex-rancher k44)';
+        is $err, $msg, 'exactly as the library said it: OCP adds nothing, no second hint';
     };
 
     subtest "$task refuses to start without server or token" => sub {

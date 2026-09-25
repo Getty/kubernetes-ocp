@@ -46,10 +46,11 @@ subtest 'a pinned RKE2 server installs from the release artifact for the node' =
 #
 # A DGX Spark arrives with a vendor driver matched to its kernel and its
 # silicon. install_nvidia once ran apt at it unconditionally, which on Ubuntu
-# meant pulling nvidia-driver-535 over a working Blackwell driver. On Ubuntu
-# the check is OCP's own (rex-gpu k69); elsewhere Rex::GPU's install_driver
-# makes the same check (nvidia-smi lists a GPU and libcuda is in the linker
-# cache) before it installs anything.
+# meant pulling nvidia-driver-535 over a working Blackwell driver. Since k191
+# the check is Rex::GPU's on every OS, Ubuntu included: install_driver asks
+# whether nvidia-smi lists a GPU and libcuda is in the linker cache before it
+# installs anything (held against the real library in t/155-rex-libraries.t).
+# Held here: on Ubuntu OCP goes through it and does nothing of its own first.
 #
 subtest 'an existing working driver is respected, not overwritten (Ubuntu)' => sub {
     OCPTest::Rexfile->reset;
@@ -61,12 +62,12 @@ subtest 'an existing working driver is respected, not overwritten (Ubuntu)' => s
             if $cmd =~ /libcuda/;
         return ('', 0);
     };
-    my $out = OCPTest::Rexfile->run_task('install_nvidia');
-    like $out, qr/skipping driver install/i, 'says so instead of silently doing nothing';
-    ok !(grep { /ubuntu-drivers install/ } OCPTest::Rexfile->commands), 'no ubuntu-drivers install';
+    OCPTest::Rexfile->run_task('install_nvidia');
+    ok !(grep { /ubuntu-drivers|apt/ } OCPTest::Rexfile->commands), 'no ubuntu-drivers or apt of its own';
     is scalar(OCPTest::Rexfile->calls('pkg')), 0, 'no package installed';
-    is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_driver')), 0,
-        'and Rex::GPU\'s driver install is not asked either';
+    my $o = OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver');
+    ok $o, 'Rex::GPU\'s install_driver decides, which leaves a working driver alone' or return;
+    is $o->{setup}, 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers', 'with the Ubuntu setup OCP picks';
 };
 
 subtest 'the image ships a kubectl that runs on the image' => sub {

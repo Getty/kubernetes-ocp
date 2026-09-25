@@ -32,7 +32,11 @@ use OCPTest::Rexfile;
 #   2. Cilium on k3s is pointed at an API server address that exists on every
 #      node (the control plane's, not localhost: k3s agents proxy the API on
 #      127.0.0.1:6444, not 6443), and its IPAM pool matches k3s' cluster-cidr;
-#   3. Cilium never becoming ready fails the task, loudly and by name.
+#   3. Cilium never becoming ready fails the task, loudly and by name: OCP asks
+#      Rex::Rancher to wait (0.003, rex-rancher k43), which dies naming the
+#      DaemonSet's and the operator's state -- held against the real library
+#      in t/155-rex-libraries.t, like the k3s address it reads off a running
+#      Cilium and the refusal when there is none.
 #
 # Network-free: the Rexfile runs against recorders (t/lib/OCPTest/Rexfile.pm).
 # Whether a real k3s node now runs without Flannel is a live question and is
@@ -44,12 +48,10 @@ my $TOKEN = 'K10deadbeef::server:s3cr3t-token-value-0123456789';
 my $KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n";
 my %PINS = (version => '1.20.0', cli_version => 'v0.19.7', gateway_api_version => 'v1.6.1');
 
-# A node with no Cilium yet; the admin kubeconfig readable.
+# A node with its admin kubeconfig readable.
 sub fresh_node {
     my ($cmd) = @_;
     return ($KUBECONFIG, 0) if $cmd =~ /^cat /;
-    return ('Error from server (NotFound): configmaps "cilium-config" not found', 1)
-        if $cmd =~ /configmap cilium-config/;
     return ('', 0);
 }
 
@@ -108,9 +110,8 @@ subtest 'rke2: Cilium options' => sub {
     ok !exists $o->{k8s_service_host},
         'no k8s_service_host: the library uses 127.0.0.1:6443, which every RKE2 node serves';
     ok $o->{gateway_api}, 'Gateway API';
-    is_deeply $o->{helm_values}{ipam},
-        { mode => 'cluster-pool', operator => { clusterPoolIPv4PodCIDRList => ['10.42.0.0/16'] } },
-        'IPAM pool = cluster-cidr (k182)';
+    is_deeply $o->{helm_values}{ipam}, { mode => 'cluster-pool' }, 'cluster-pool IPAM';
+    is $o->{cluster_cidr}, '10.42.0.0/16', 'its pool = cluster-cidr (k182)';
 };
 
 subtest 'k3s: Cilium reaches the API server at the control plane address' => sub {
@@ -121,17 +122,22 @@ subtest 'k3s: Cilium reaches the API server at the control plane address' => sub
     my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium');
     ok $o, 'install_cilium called' or return;
     is $o->{k8s_service_host}, '203.0.113.7', 'control plane address';
-    is_deeply $o->{helm_values}{ipam}{operator}{clusterPoolIPv4PodCIDRList}, ['10.42.0.0/16'],
-        'IPAM pool = k3s cluster-cidr';
+    is $o->{cluster_cidr}, '10.42.0.0/16', 'IPAM pool = k3s cluster-cidr';
     ok $o->{gateway_api}, 'Gateway API';
 };
 
-subtest 'k3s without an API server address is refused, not guessed' => sub {
+subtest 'k3s without an API server address: nothing guessed' => sub {
     OCPTest::Rexfile->reset;
     local $OCPTest::Rexfile::RUN = \&fresh_node;
-    ok !eval { OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'k3s' }); 1 }, 'dies';
-    like $@, qr/k8s_service_host/, 'and names the missing parameter';
-    is scalar(OCPTest::Rexfile->calls('Rex::Rancher::Cilium::install_cilium')), 0, 'before installing';
+    OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'k3s' });
+    my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium');
+    ok !exists $o->{k8s_service_host},
+        'none passed: the library takes the running Cilium\'s, or dies before the node is touched';
+
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'k3s', k8s_service_host => '' });
+    ok !exists OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium')->{k8s_service_host},
+        'an empty one is none';
 };
 
 subtest 'the library talks to the API through a kubeconfig pointed at the node' => sub {
@@ -154,48 +160,27 @@ subtest 'the library talks to the API through a kubeconfig pointed at the node' 
 
 # --- 3. a Cilium that never gets ready fails the task -------------------------
 
-my $wait = OCPTest::Rexfile->helper('_wait_for_cilium');
-
-subtest '_wait_for_cilium: ready passes' => sub {
-    OCPTest::Rexfile->reset;
-    ok eval { $wait->(kubeconfig => '/etc/rancher/k3s/k3s.yaml', duration => '10m'); 1 },
-        'no exception' or diag $@;
-    my ($run) = OCPTest::Rexfile->calls('run');
-    like $run->{args}[0], qr/^cilium status --wait --wait-duration=10m/, 'waits';
-    is $run->{args}[1]{env}{KUBECONFIG}, '/etc/rancher/k3s/k3s.yaml', 'kubeconfig';
-};
-
-subtest '_wait_for_cilium: not ready dies and says so' => sub {
-    OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub { ("Cluster Pods: 0/5 managed by Cilium\n", 1) };
-    ok !eval { $wait->(kubeconfig => '/k', duration => '10m'); 1 }, 'dies';
-    like $@, qr/Cilium did not become ready within 10m/, 'names the failure and the wait';
-    like $@, qr{0/5 managed by Cilium}, 'carries the status output';
-};
-
-subtest '_wait_for_cilium: a Rex timeout dies too' => sub {
-    OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub { ('', 300) };
-    ok !eval { $wait->(kubeconfig => '/k', duration => '5m'); 1 }, 'dies';
-    like $@, qr/within 5m/, 'with the duration';
-};
-
-subtest 'install_cilium and upgrade_cilium wait the checked way, after the library' => sub {
-    for my $t ([ install_cilium => '10m' ], [ upgrade_cilium => '5m' ]) {
-        my ($task, $d) = @$t;
+subtest 'install_cilium and upgrade_cilium have the library wait, bounded' => sub {
+    for my $t ([ install_cilium => 600 ], [ upgrade_cilium => 300 ]) {
+        my ($task, $secs) = @$t;
         OCPTest::Rexfile->reset;
-        local $OCPTest::Rexfile::RUN = sub {
-            my ($cmd) = @_;
-            return ($KUBECONFIG, 0) if $cmd =~ /^cat /;
-            return ('cluster-pool|10.42.0.0/16', 0) if $cmd =~ /configmap cilium-config/;
-            return ('', 0);
-        };
+        local $OCPTest::Rexfile::RUN = \&fresh_node;
         OCPTest::Rexfile->run_task($task, { %PINS, distribution => 'rke2' });
-        my $lib  = OCPTest::Rexfile->index_of(sub { $_->{name} =~ /^Rex::Rancher::Cilium::/ });
-        my $wait = OCPTest::Rexfile->index_of(sub {
-            $_->{name} eq 'run' && $_->{args}[0] =~ /^cilium status --wait --wait-duration=\Q$d\E/ });
-        ok $lib >= 0 && $wait > $lib, "$task: cilium status --wait $d after the library call";
+        my $o = OCPTest::Rexfile->lib_opts("Rex::Rancher::Cilium::$task");
+        ok $o->{wait}, "$task: wait";
+        is $o->{wait_duration}, $secs, "$task: at most ${secs}s";
+        ok !(grep { /^cilium / } OCPTest::Rexfile->commands), "$task: no cilium status of its own";
     }
+};
+
+subtest 'a Cilium that is not ready fails the task with the library\'s message' => sub {
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::RUN = \&fresh_node;
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Cilium::install_cilium'} =
+        "Cilium was not ready within 600s: cilium 0/5 ready, 5/5 updated\n";
+    ok !eval { OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'k3s',
+        k8s_service_host => '203.0.113.7' }); 1 }, 'dies';
+    like $@, qr{not ready within 600s: cilium 0/5 ready}, 'naming the state';
 };
 
 # --- OCP::Rex hands install_cilium the control plane address -------------------

@@ -108,12 +108,12 @@ subtest 'Gateway API travels with Cilium' => sub {
     unlike $rex, qr{gateway-api/releases/download/v\d+\.\d+\.\d+/},
         'the CRD URLs no longer hardcode a version';
     # Since k155 install_cilium hands it to Rex::Rancher::Cilium, which builds
-    # the bundle URL from it (t/90, t/155); update_gateway_api's own apply
-    # still builds one here.
+    # the bundle URL from it (t/90, t/155); since Rex::Rancher 0.003
+    # update_gateway_api does the same through ensure_gateway_api_crds.
     like $rex, qr/gateway_api_version\s*=>\s*\$gateway_api_version/s,
         'install_cilium hands the passed version to the CRD apply';
-    like $rex, qr{\$version/"\s*\.\s*_gateway_api_channel\(\)\s*\.\s*"-install\.yaml},
-        'which puts it into the bundle URL';
+    like $rex, qr/ensure_gateway_api_crds\(.*?version\s*=>\s*\$version/s,
+        'update_gateway_api hands its version to the library, which puts it into the bundle URL';
     # One channel only, standard -- since Gateway API v1.5 it carries the
     # TLSRoute v1 Cilium 1.20 requires, and experimental over standard is
     # refused by the bundle's safe-upgrades policy. See t/90 (k157).

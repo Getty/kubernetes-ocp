@@ -4,8 +4,6 @@ use Rex::Commands::Run;
 use Rex::Commands::Fs;
 use Rex::Commands::File;
 use Rex::Commands::Service;
-use Rex::Commands::Pkg;
-use Rex::Commands::Host;
 use File::Temp ();
 use JSON::MaybeXS;
 
@@ -13,9 +11,9 @@ use JSON::MaybeXS;
 # (k155): node preparation, the RKE2/K3s server and agent installs, Cilium with
 # the Gateway API CRDs, and the NVIDIA driver and container toolkit. This file
 # keeps what is OCP's own -- the parameter hand-over, the pod network, GPU
-# detection from sysfs, the legacy-template cleanup, the waits OCP insists on
-# -- and every piece the libraries cannot yet express, each marked with the
-# card on the library's board that would move it there.
+# detection from sysfs, the legacy-file cleanups, the API wait -- and every
+# piece the libraries cannot yet express, each marked with the card on the
+# library's board that would move it there.
 #
 # Loaded without imports: every call below names its library, so no library
 # function can shadow a task of the same name (install_cilium, prepare_node).
@@ -108,32 +106,29 @@ task "prepare_node", sub {
 
     check_os();
 
-    # Rex::Rancher: apt refresh (with the apt timers stopped that hold its lock
-    # on a fresh boot), curl + ca-certificates, hostname, timezone, locale,
-    # swap off, br_netfilter/overlay, the Kubernetes sysctls. NTP is OCP's
-    # own below, so the library is told to leave it alone.
+    # Rex::Rancher (0.003, rex-rancher k42): apt refresh (with the apt timers
+    # stopped that hold its lock on a fresh boot), curl + ca-certificates,
+    # hostname, and without a domain `127.0.1.1 hostname` in /etc/hosts unless a
+    # line names the host already; the timezone, the locale enabled in
+    # /etc/locale.gen and generated before it is set; NTP, swap off,
+    # br_netfilter/overlay, the Kubernetes sysctls.
+    #
+    # NTP is the library's with OCP's semantics (etcd and kube-apiserver need a
+    # synchronised clock, a node without one still works): a clock timedatectl
+    # already reports as NTP-synchronised is left alone, otherwise chrony; a
+    # failed chrony install falls back to systemd-timesyncd, and without either
+    # the library warns instead of dying.
+    #
+    # A locale not shaped like en_US.UTF-8 or a timezone not shaped like a
+    # zoneinfo name (Europe/Berlin, UTC) dies here, before the host is touched:
+    # both end up in shell commands.
     Rex::Rancher::Node::prepare_node(
         ($hostname ? (hostname => $hostname) : ()),
         ($domain   ? (domain   => $domain)   : ()),
         timezone => $timezone,
         locale   => $locale,
-        ntp      => 0,
+        ntp      => $ntp,
     );
-
-    # Rex::Rancher writes the /etc/hosts entry only with a domain; OCP knows
-    # none, robocop's joins neither, and the node still resolves its own name
-    # (rex-rancher k42).
-    if ($hostname && !$domain) {
-        host_entry $hostname,
-            ensure  => "present",
-            ip      => "127.0.1.1",
-            aliases => [$hostname];
-    }
-
-    # The library sets LANG but does not generate the locale (rex-rancher k42).
-    run "locale-gen $locale >/dev/null 2>&1", auto_die => FALSE;
-
-    _ensure_ntp() if $ntp;
 
     # Every install task comes through here, for both distributions and both
     # roles, and it runs before the service is (re)started -- which is exactly
@@ -142,38 +137,6 @@ task "prepare_node", sub {
     # is a content check and not an unlink.
     do_task "cleanup_legacy_containerd_template";
 };
-
-# etcd/kube-apiserver need clock sync. Prefer what's already running:
-#   1. If timedatectl says "System clock synchronized: yes" → done
-#   2. Otherwise try chrony (best-effort, don't die — systemd-timesyncd
-#      may be active even if not yet "synchronized" from timedatectl's POV)
-# Rex::Rancher installs chrony unconditionally and dies when that fails, so
-# this stays here until rex-rancher k42.
-sub _ensure_ntp {
-    my $tdc = run "timedatectl show --property=NTPSynchronized --value 2>/dev/null", auto_die => FALSE;
-    chomp $tdc if defined $tdc;
-    if (defined $tdc && $tdc eq 'yes') {
-        say "NTP already synchronized (skipping chrony install)";
-        return;
-    }
-
-    say "Ensuring NTP (chrony)...";
-    eval { pkg ["chrony"], ensure => "present"; 1 };
-    if (my $err = $@) {
-        say "  chrony install failed: $err";
-        say "  Checking systemd-timesyncd as fallback...";
-        my $ts_active = run "systemctl is-active systemd-timesyncd 2>/dev/null", auto_die => FALSE;
-        chomp $ts_active if defined $ts_active;
-        if (defined $ts_active && $ts_active eq 'active') {
-            say "  [ok] systemd-timesyncd is active — using that";
-        } else {
-            run "systemctl enable --now systemd-timesyncd 2>&1", auto_die => FALSE;
-            say "  (best-effort: started systemd-timesyncd)";
-        }
-    } else {
-        run "systemctl enable --now chronyd 2>/dev/null || systemctl enable --now chrony 2>/dev/null", auto_die => FALSE;
-    }
-}
 
 # The prepare_node parameters out of an install task's parameters.
 sub _node_params {
@@ -346,25 +309,26 @@ task "install_nvidia", sub {
     # as a DGX ship one matched to their kernel and silicon, and apt pulling
     # another branch over it breaks the machine), picks the driver by GPU
     # generation from the device IDs, installs only the running kernel's
-    # headers, and verifies the result.
+    # headers -- never linux-headers-generic, which on a vendor kernel such as
+    # a DGX Spark's (6.17.0-1029-nvidia) is a different kernel --, loads the
+    # module and verifies the result.
     #
-    # Ubuntu stays OCP's own until rex-gpu k69: the library installs
-    # linux-headers-generic there -- headers for a different kernel on a
-    # vendor kernel like a DGX Spark's -- and picks the driver package by
-    # apt-cache search instead of letting ubuntu-drivers decide.
-    if ($os eq 'Ubuntu') {
-        if (_nvidia_driver_present()) {
-            say "  Host driver already present and working — skipping driver install";
-            say "  (OCP only adds the container toolkit on top of it)";
-        } else {
-            my $running_kernel = run "uname -r";
-            chomp $running_kernel;
-            _install_nvidia_driver_ubuntu($running_kernel);
-        }
-        run "modprobe nvidia", auto_die => FALSE;
-    } else {
-        Rex::GPU::NVIDIA::install_driver(gpus => [ _nvidia_gpus(_pci_display_devices()) ]);
-    }
+    # Ubuntu (k191, rex-gpu k69): Setup::UbuntuDrivers has `ubuntu-drivers list
+    # --gpgpu` name the package, installs it with apt-get and verifies it with
+    # dpkg. No package name is guessed: ubuntu-drivers missing, failing or
+    # naming nothing for the card dies before any driver package goes in.
+    # Deliberately different from OCP's own path before it (ADR 0015):
+    # ubuntu-drivers now picks only the branch, within the kernel-module flavour
+    # Rex::GPU derives from the device IDs -- open for Blackwell (GB10 among
+    # them), proprietary where its table asks for nothing (Turing to Hopper),
+    # and for Maxwell, Pascal and Volta the 580-server branch without asking
+    # ubuntu-drivers at all. In return a package that cannot drive the card
+    # (proprietary on a Blackwell) is refused. The packages are the -server
+    # ones; `ubuntu-drivers install` is never run.
+    Rex::GPU::NVIDIA::install_driver(
+        gpus => [ _nvidia_gpus(_pci_display_devices()) ],
+        ($os eq 'Ubuntu' ? (setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers') : ()),
+    );
 
     # 2. The container toolkit.
     #
@@ -386,92 +350,12 @@ task "install_nvidia", sub {
     say "NVIDIA GPU installation complete";
 };
 
-# Ubuntu: let `ubuntu-drivers` choose the driver package (rex-gpu k69).
-#
-# Three questions decide which package is correct here, and OCP can answer none
-# of them from the outside:
-#
-#   branch   `nvidia-driver-535` used to be hardcoded. R535 reached end of life
-#            in June 2026, and on Ubuntu 24.04 the name now survives only as a
-#            transitional package that pulls 580 — so the pin pinned nothing,
-#            on amd64 just as much as on arm64.
-#   flavour  Grace Hopper and Blackwell run *only* the open kernel modules; the
-#            proprietary driver is unsupported on them (NVIDIA, "NVIDIA
-#            Transitions Fully Towards Open-Source GPU Kernel Modules"). Maxwell,
-#            Pascal and Volta are the other way round. `-open` is part of the
-#            package name, so this is a naming decision, not a flag.
-#   arch     amd64 and arm64 do not carry the same names, and on arm64 the
-#            packages come from the ports archive.
-#
-# `ubuntu-drivers` answers all three from the card's PCI modalias — the same
-# evidence NFD labels the node from — and it is what Ubuntu documents as the
-# recommended installation path. It structurally cannot select a package that
-# does not claim this card, which is the guarantee a literal package name never
-# gives. A guessed name is how a working machine becomes a broken one, so OCP
-# does not guess: if the tool is missing or fails, this dies and says so.
-sub _install_nvidia_driver_ubuntu {
-    my ($running_kernel) = @_;
-
-    update_package_db;
-
-    # Headers for the *running* kernel, and only those. `linux-headers-generic`
-    # used to be in this list; it tracks the generic flavour, which on a vendor
-    # kernel (a DGX Spark runs 6.17.0-1029-nvidia) is a different kernel
-    # altogether — DKMS would build against headers the machine does not run.
-    say "  Installing kernel headers for $running_kernel...";
-    pkg ["linux-headers-$running_kernel"], ensure => "present";
-
-    pkg ["ubuntu-drivers-common"], ensure => "present";
-
-    my $listed = run "ubuntu-drivers list 2>&1", auto_die => FALSE;
-    say "  ubuntu-drivers list:";
-    say "    $_" for grep { length } split /\n/, ($listed // '(no output)');
-
-    say "  Installing the recommended driver...";
-    my $out = run "ubuntu-drivers install 2>&1", auto_die => FALSE;
-    my $rc  = $?;
-    say "    $_" for grep { length } split /\n/, ($out // '');
-
-    if ($rc != 0) {
-        die "ubuntu-drivers could not install a driver on this host.\n"
-          . "OCP does not fall back to a guessed package name — the wrong branch\n"
-          . "or the wrong kernel-module flavour breaks the machine. Install the\n"
-          . "driver NVIDIA documents for this GPU and this kernel by hand, then\n"
-          . "re-run: OCP skips the driver install once nvidia-smi answers.\n";
-    }
-}
-
-# Is a working NVIDIA driver already installed on this host? (Ubuntu path only;
-# Rex::GPU asks the same question itself.)
-#
-# "Working" is deliberately defined by what the container stack consumes, not
-# by package state: nvidia-smi enumerates GPUs, and libcuda.so is in the
-# linker cache. Package state would be the wrong question — vendor appliances
-# install their driver outside the distribution's package namespace, so apt
-# happily reports "not installed" for a machine that is running one.
-sub _nvidia_driver_present {
-    my $smi = run "nvidia-smi -L 2>&1", auto_die => FALSE;
-    return 0 unless defined $smi && $smi =~ /GPU \d+:/;
-
-    my $libcuda = run "ldconfig -p | grep 'libcuda.so '", auto_die => FALSE;
-    unless (defined $libcuda && length $libcuda) {
-        say "  nvidia-smi answers but libcuda.so is missing — driver is incomplete";
-        return 0;
-    }
-
-    my $ver = run "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1",
-        auto_die => FALSE;
-    chomp $ver if defined $ver;
-    say "  Existing NVIDIA driver detected" . (($ver) ? " (version $ver)" : '');
-
-    return 1;
-}
-
 # Is a usable NVIDIA container runtime already on this host?
 #
-# Same reasoning as _nvidia_driver_present: ask for the binaries the CRI
-# actually execs, not for a package name. A DGX image installs both, and k3s
-# and RKE2 find nvidia-container-runtime on PATH by themselves.
+# Ask for the binaries the CRI actually execs, not for a package name: vendor
+# appliances install outside the distribution's package namespace. A DGX image
+# installs both, and k3s and RKE2 find nvidia-container-runtime on PATH by
+# themselves.
 sub _nvidia_toolkit_present {
     return 0 unless can_run("nvidia-container-runtime");
     return 0 unless can_run("nvidia-ctk");
@@ -550,6 +434,12 @@ task "get_k3s_token", sub {
 #     servicelb) is disabled by its default list;
 #   - every tls-san entry lands in config.yaml, one per address, so TLS holds
 #     against every server of an HA cluster (k137);
+#   - cluster_cidr lands in config.yaml as cluster-cidr on rke2 and k3s alike
+#     (rex-rancher k41), and anything but one IPv4 CIDR dies before the host is
+#     touched;
+#   - a running rke2 server is restarted when its config.yaml(.d),
+#     registries.yaml or /etc/default file changed since it started, and only
+#     then (rex-rancher k49); k3s is restarted on every run;
 #   - the service is started with --no-block and waited on for at most 10
 #     minutes, dying with its journal; a pinned version is verified against the
 #     installed binary.
@@ -573,9 +463,13 @@ sub _install_server {
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
 
-    _write_cluster_cidr($distribution, $params->{pod_cidr} || _default_pod_cidr());
+    my $cluster_cidr = $params->{pod_cidr} || _default_pod_cidr();
+    _remove_legacy_cluster_cidr_dropin($distribution, $cluster_cidr);
 
-    Rex::Rancher::Server::install_server(_server_opts($distribution, $params, \@tls_sans));
+    Rex::Rancher::Server::install_server(
+        _server_opts($distribution, $params, \@tls_sans),
+        cluster_cidr => $cluster_cidr,
+    );
 
     _wait_for_api($distribution);
 }
@@ -648,29 +542,19 @@ task "untaint_control_plane", sub {
 # only (0600, k156), starts the unit with --no-block and waits at most 10
 # minutes for it to turn active, dying with its journal (k185: a Type=notify
 # agent that cannot reach its server used to hang the task and `ocp apply`
-# with it). The library's message does not say where the agent was trying to
-# go; the likeliest reason is exactly that address, so OCP adds it (rex-rancher
-# k44).
+# with it). The message names the server the agent joins through, the
+# likeliest reason it never gets there (rex-rancher k44).
 sub _install_agent {
     my ($distribution, $params) = @_;
-    my $server = $params->{server} or die "server URL required\n";
-    my $token  = $params->{token}  or die "token required\n";
+    $params->{server} or die "server URL required\n";
+    $params->{token}  or die "token required\n";
 
     _refuse_cilium_leftovers($distribution);
 
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
 
-    my $ok = eval {
-        Rex::Rancher::Agent::install_agent(_agent_opts($distribution, $params));
-        1;
-    };
-    return 1 if $ok;
-
-    my $err = $@ || "install_agent failed\n";
-    $err .= "\n" unless $err =~ /\n\z/;
-    die $err
-      . "It joins the cluster via $server -- check that this node can reach that address.\n";
+    Rex::Rancher::Agent::install_agent(_agent_opts($distribution, $params));
 }
 
 sub _agent_opts {
@@ -746,22 +630,40 @@ sub _refuse_cilium_leftovers {
 # and the built-in cluster-cidr of RKE2 and k3s alike.
 sub _default_pod_cidr { '10.42.0.0/16' }
 
-# cluster-cidr for the server, as a config.yaml.d drop-in.
+# The config.yaml.d drop-in OCP wrote cluster-cidr to while Rex::Rancher had
+# no option for it (up to 0.002, rex-rancher k41). install_server now writes
+# cluster-cidr into config.yaml itself; the drop-in, read after config.yaml,
+# would keep overriding it on every node set up before.
 #
-# Rex::Rancher::Server has no option for it (rex-rancher k41): on k3s it writes
-# 10.42.0.0/16 into config.yaml itself, on rke2 nothing. RKE2 and k3s read
-# config.yaml first and then config.yaml.d/*.yaml in order, the last value of a
-# key winning -- so this file decides on both, whatever config.yaml says. A
-# server joining an existing RKE2 cluster must carry its first server's value,
-# RKE2 refuses a mismatch. Written before install_server starts the service.
-sub _write_cluster_cidr {
-    my ($distribution, $cidr) = @_;
-    die "_write_cluster_cidr: '$cidr' is not an IPv4 CIDR\n"
-        unless $cidr =~ m{^\d{1,3}(?:\.\d{1,3}){3}/\d{1,2}$};
+# Removed by content, like the legacy containerd template: only a file that
+# says exactly `cluster-cidr: <the value passed now>` goes -- it states nothing
+# config.yaml does not, so nothing changes for the server. Any other content
+# is not left over but in force: a cluster's cluster-cidr cannot change, and
+# a drop-in that disagrees is what the server runs on, so it stays and says so.
+# Removing it changes config.yaml.d, which restarts a running rke2 server
+# (rex-rancher k49) -- on the same run whose new cluster-cidr line in
+# config.yaml restarts it anyway.
+sub _legacy_cluster_cidr_dropin {
+    my ($distribution) = @_;
+    return "/etc/rancher/$distribution/config.yaml.d/50-ocp-cluster-cidr.yaml";
+}
 
-    my $dir = "/etc/rancher/$distribution/config.yaml.d";
-    run "mkdir -p $dir", auto_die => TRUE;
-    file "$dir/50-ocp-cluster-cidr.yaml", content => "cluster-cidr: $cidr\n";
+sub _remove_legacy_cluster_cidr_dropin {
+    my ($distribution, $cidr) = @_;
+    my $path = _legacy_cluster_cidr_dropin($distribution);
+    return 0 unless is_file($path);
+
+    my $content = eval { cat $path } // '';
+    my ($stated) = $content =~ /\A\s*cluster-cidr:\s*(\S+)\s*\z/;
+    unless (defined $stated && $stated eq $cidr) {
+        say "Keeping $path: it does not say cluster-cidr: $cidr, and as a drop-in it "
+          . "overrides the cluster-cidr in config.yaml -- the cluster runs on what it says";
+        return 0;
+    }
+
+    unlink $path;
+    say "Removed $path: config.yaml carries cluster-cidr $cidr itself now";
+    return 1;
 }
 
 # registries.yaml as Rex::Rancher takes it: docker.io through ocp-cache, the
@@ -899,13 +801,23 @@ task "cleanup_legacy_containerd_template", sub {
 # controller at all — Gateway and GatewayClass sit at Accepted=Unknown.
 # Bumping the pin means bumping both together.
 #
-# install_cilium and upgrade_cilium go through Rex::Rancher::Cilium. It reads
-# the Helm release through the API (install, upgrade, purge a stale release, or
-# nothing), applies the Gateway API CRDs before Cilium and dies when that
-# fails, and skips them when the cluster already carries the bundle version and
-# channel (the same annotations OCP::Drift reads, k164). It talks to the API
-# from this machine, through a kubeconfig _local_kubeconfig fetches from the
-# node.
+# install_cilium, upgrade_cilium and update_gateway_api go through
+# Rex::Rancher::Cilium. It talks to the API from this machine, through a
+# kubeconfig _local_kubeconfig fetches from the node, and it:
+#   - reads the Helm release (install, upgrade, purge a stale release, or
+#     nothing);
+#   - reads what a running Cilium uses before anything touches the node -- IPAM
+#     mode and pool from kube-system/cilium-config, on k3s the API server
+#     address from the cilium DaemonSet, the operator's replicas -- and keeps
+#     it (k182); an API error other than a 404 there dies instead of falling
+#     back to a default;
+#   - applies the Gateway API CRDs before Cilium and dies when that fails, and
+#     skips them when the cluster already carries the bundle version and
+#     channel (the same annotations OCP::Drift reads, k164);
+#   - with wait, returns only once the cilium DaemonSet and cilium-operator are
+#     rolled out and ready, and dies naming their state otherwise (k178: a
+#     Cilium that never became ready used to cost the full wait and then report
+#     success).
 
 # Gateway API CRDs come from exactly one channel: standard. Never both, and
 # never experimental on top of standard -- from Gateway API v1.5 both bundles
@@ -927,28 +839,31 @@ sub _gateway_api_channel { 'standard' }
 
 # The Rex::Rancher::Cilium options for OCP.
 #
-# The pool and IPAM mode are always stated. Rex::Rancher's rke2 default is
-# ipam.mode kubernetes, and it only refuses a mode change the Helm release set
-# explicitly -- every OCP cluster runs the chart's default cluster-pool without
-# saying so, so leaving ipam out would switch a running cluster's IPAM mode
-# under its pods (rex-rancher k43). `ipam` is the mode a running Cilium has;
-# a fresh install is cluster-pool on the cluster-cidr (k178, k182).
+# The IPAM mode is always stated: cluster-pool, which every OCP cluster runs
+# (the chart's default before k155, stated since). Rex::Rancher's rke2 default
+# is ipam.mode kubernetes, so a fresh RKE2 cluster would get that without it.
+# Stated, it is also checked: a running Cilium in another mode makes the
+# library die before the node is touched (Cilium cannot change the mode under
+# running pods) -- where OCP up to 0.002 read the running mode and kept it.
+# The library knows no "mode for a fresh install" that gives way to a running
+# one, as cluster_cidr does for the pool.
+#
+# The pool is not stated: cluster_cidr is the pool of a fresh install only, a
+# running cluster-pool keeps its own (k182, with a warning when it differs --
+# an RKE2 cluster from before k182 runs 10.0.0.0/8, which OCP::Drift reports).
 #
 # k3s needs the control plane's address for kube-proxy replacement: its agents
 # serve the API on 127.0.0.1:6444, so no localhost port works on every node
-# (k178). RKE2 must not get one -- Rex::Rancher uses 127.0.0.1:6443 there,
-# which RKE2 servers and agents both serve, and refuses the option.
+# (k178). Without one the library takes the running Cilium's and dies when
+# there is none, before the node is touched. RKE2 must not get one --
+# Rex::Rancher uses 127.0.0.1:6443 there, which RKE2 servers and agents both
+# serve, and refuses the option.
 sub _cilium_opts {
     my (%o) = @_;
     my $distribution = $o{distribution} || 'rke2';
-    my $mode = $o{ipam} || 'cluster-pool';
-    my @pool = @{ $o{pool} // [] };
+    my $host = $o{k8s_service_host};
 
-    my %ipam = (mode => $mode);
-    $ipam{operator} = { clusterPoolIPv4PodCIDRList => [@pool] }
-        if $mode eq 'cluster-pool' && @pool;
-
-    my %opts = (
+    return (
         distribution        => $distribution,
         version             => $o{version},
         cli_version         => $o{cli_version},
@@ -956,15 +871,13 @@ sub _cilium_opts {
         gateway_api         => 1,
         gateway_api_version => $o{gateway_api_version},
         gateway_api_channel => _gateway_api_channel(),
-        helm_values         => { ipam => \%ipam },
+        helm_values         => { ipam => { mode => 'cluster-pool' } },
+        (defined $o{cluster_cidr} ? (cluster_cidr => $o{cluster_cidr}) : ()),
+        ($distribution eq 'k3s' && defined $host && length $host
+            ? (k8s_service_host => $host) : ()),
+        wait                => 1,
+        wait_duration       => $o{wait_duration},
     );
-
-    if ($distribution eq 'k3s') {
-        $opts{k8s_service_host} = $o{k8s_service_host}
-            or die "install_cilium on k3s needs k8s_service_host (the control plane address)\n";
-    }
-
-    return %opts;
 }
 
 # A kubeconfig on this machine for the cluster on the node Rex is connected
@@ -1000,109 +913,17 @@ sub _external_kubeconfig {
     return $content;
 }
 
-# What a running Cilium has, read on the node: its IPAM mode and pool from the
-# cilium-config ConfigMap, and the API server address its agents use
-# (KUBERNETES_SERVICE_HOST on the DaemonSet, i.e. k8sServiceHost). undef when
-# there is no Cilium yet (no cilium-config). Anything else that keeps the
-# ConfigMap from being read dies: guessing the IPAM mode of a running cluster
-# is how its pods lose their addresses. Read-only.
-sub _live_cilium {
-    my (%o) = @_;
-    my $env = { KUBECONFIG => $o{kubeconfig} };
-
-    my $out = run "$o{kubectl} -n kube-system get configmap cilium-config"
-        . " -o jsonpath='{.data.ipam}|{.data.cluster-pool-ipv4-cidr}' 2>&1",
-        env => $env, auto_die => FALSE;
-    if ($? != 0) {
-        return undef if ($out // '') =~ /NotFound|not found/;
-        die "Cannot read the running Cilium's configuration (kube-system/cilium-config):\n"
-          . ($out // '(no output)') . "\n";
-    }
-
-    my ($ipam, $cidrs) = split /\|/, ($out // ''), 2;
-    my $host = run "$o{kubectl} -n kube-system get daemonset cilium -o jsonpath="
-        . q{'{.spec.template.spec.containers[0].env[?(@.name=="KUBERNETES_SERVICE_HOST")].value}'}
-        . " 2>/dev/null",
-        env => $env, auto_die => FALSE;
-    $host = undef if $? != 0;
-    s/\s+\z// for grep { defined } $ipam, $cidrs, $host;
-
-    return {
-        ipam             => (length($ipam // '') ? $ipam : undef),
-        pool             => [ grep { m{^[0-9.]+/[0-9]+$} } split ' ', ($cidrs // '') ],
-        k8s_service_host => (length($host // '') ? $host : undef),
-    };
-}
-
-# Waits for Cilium and dies when it does not get there. Rex's run does not
-# die on a non-zero exit by itself, so a Cilium that never became ready used
-# to cost the full wait and then report success (k178). Rex::Rancher does not
-# wait for readiness at all (rex-rancher k43).
-sub _wait_for_cilium {
-    my (%o) = @_;
-    my ($minutes) = $o{duration} =~ /^(\d+)m$/
-        or die "_wait_for_cilium: duration must be minutes like '10m', got '$o{duration}'\n";
-
-    my $out = run "cilium status --wait --wait-duration=$o{duration} 2>&1",
-        env      => { KUBECONFIG => $o{kubeconfig} },
-        timeout  => $minutes * 60 + 60,
-        auto_die => FALSE;
-    return 1 if $? == 0;
-
-    die "Cilium did not become ready within $o{duration}.\n"
-      . "Check on the node: KUBECONFIG=$o{kubeconfig} cilium status\n"
-      . "cilium status said:\n" . ($out // '(no output)') . "\n";
-}
-
-# The Gateway API CRDs alone, for update_gateway_api. Rex::Rancher::Cilium has
-# the same step but keeps it private (rex-rancher k43), so this one stays:
-# server-side, because the httproutes CRD alone comes within a few KiB of the
-# 256 KiB last-applied-configuration annotation a client-side apply writes;
-# --force-conflicts takes over the fields an earlier client-side apply owned.
-# Standard channel only (see _gateway_api_channel), and a failure dies.
-sub _apply_gateway_api_crds {
-    my (%o) = @_;
-    my $version = $o{version}
-        or die "_apply_gateway_api_crds: version is required\n";
-
-    my $url = "https://github.com/kubernetes-sigs/gateway-api/releases/download/"
-        . "$version/" . _gateway_api_channel() . "-install.yaml";
-    say "Installing Gateway API CRDs $version (standard channel)...";
-
-    my $out = run "$o{kubectl} apply --server-side --force-conflicts --field-manager=ocp -f $url 2>&1",
-        env      => { KUBECONFIG => $o{kubeconfig} },
-        auto_die => FALSE;
-    if ($? != 0) {
-        die "Applying the Gateway API CRDs $version (standard channel) failed:\n"
-          . ($out // '') . "\n";
-    }
-    return $out;
-}
-
-# Bounce cilium-operator if already running so it picks up the new CRD
-# schema (controller-runtime caches CRD schemas at startup; updating
-# Gateway API CRDs from v1.1 → v1.2 requires a restart for the
-# supportedFeatures object/string schema change to take effect).
-sub _restart_cilium_operator {
-    my (%o) = @_;
-    my $op_running = run "$o{kubectl} -n kube-system get deployment cilium-operator -o name 2>/dev/null",
-        env => { KUBECONFIG => $o{kubeconfig} },
-        auto_die => FALSE;
-    if ($op_running && $op_running =~ /cilium-operator/) {
-        say "Restarting cilium-operator to pick up updated CRD schema...";
-        run "$o{kubectl} -n kube-system rollout restart deployment cilium-operator",
-            env => { KUBECONFIG => $o{kubeconfig} },
-            auto_die => FALSE;
-    }
-}
-
 # The Gateway API CRDs alone, for a cluster whose Cilium is at its pin but
 # whose bundle is not: the gateway_api pin moved, the CRDs came from the
 # experimental channel, or they are gone. OCP::Drift names this task as the
 # remedy (k164); the name is `ocp update`'s update_<component> fallback, so
-# `ocp update --component gateway_api` reaches it as well. Unlike
-# upgrade_cilium no new operator image follows the apply, so the operator is
-# bounced here, as install_cilium does, to read the new schemas.
+# `ocp update --component gateway_api` reaches it as well.
+#
+# Rex::Rancher::Cilium::ensure_gateway_api_crds applies the standard bundle as
+# install_cilium does (skipped when version and channel already match, dying on
+# failure) and, when it applied it, restarts a running cilium-operator: unlike
+# upgrade_cilium no new operator image follows, and controller-runtime caches
+# CRD schemas at startup. Cilium itself is not touched.
 desc "Apply the pinned Gateway API CRDs (standard channel) and restart cilium-operator";
 task "update_gateway_api", sub {
     my $params = task_params(shift);
@@ -1110,19 +931,17 @@ task "update_gateway_api", sub {
         or die "OCP_GATEWAY_API_VERSION (or task_params version=...) is required\n";
     my $distribution = $params->{distribution} || 'rke2';
 
-    my ($kubectl, $kubeconfig) = _kube($distribution);
+    my $local = _local_kubeconfig($distribution);
 
-    _apply_gateway_api_crds(
-        kubectl    => $kubectl,
-        kubeconfig => $kubeconfig,
+    my $applied = Rex::Rancher::Cilium::ensure_gateway_api_crds(
+        kubeconfig => "$local",
         version    => $version,
-    );
-    _restart_cilium_operator(
-        kubectl    => $kubectl,
-        kubeconfig => $kubeconfig,
+        channel    => _gateway_api_channel(),
     );
 
-    say "Gateway API CRDs at $version (standard channel)";
+    say $applied
+        ? "Gateway API CRDs at $version (standard channel)"
+        : "Gateway API CRDs already at $version (standard channel), nothing applied";
 };
 
 desc "Install Cilium CNI";
@@ -1140,29 +959,21 @@ task "install_cilium", sub {
 
     say "Installing Cilium CNI...";
 
-    my ($kubectl, $kubeconfig) = _kube($distribution);
     my $local = _local_kubeconfig($distribution);
 
-    # A Cilium that already runs keeps its IPAM mode, pool and API address
-    # whatever pod_cidr says (k182) -- moving them under running pods is a
-    # migration, not an install. Only a fresh one gets pod_cidr.
-    my $live = _live_cilium(kubectl => $kubectl, kubeconfig => $kubeconfig);
-
+    # pod_cidr is the pool of a fresh Cilium only: one that already runs keeps
+    # its pool and API address whatever pod_cidr says (k182) -- moving them
+    # under running pods is a migration, not an install.
     Rex::Rancher::Cilium::install_cilium(_cilium_opts(
         distribution        => $distribution,
         version             => $version,
         cli_version         => $cli_version,
         gateway_api_version => $gateway_api_version,
         kubeconfig          => "$local",
-        ipam                => ($live ? $live->{ipam} : undef),
-        pool                => ($live ? $live->{pool}
-                                      : [ $params->{pod_cidr} || _default_pod_cidr() ]),
-        k8s_service_host    => $params->{k8s_service_host}
-                               // ($live ? $live->{k8s_service_host} : undef),
+        cluster_cidr        => $params->{pod_cidr} || _default_pod_cidr(),
+        k8s_service_host    => $params->{k8s_service_host},
+        wait_duration       => 600,
     ));
-
-    say "Waiting for Cilium to be ready...";
-    _wait_for_cilium(kubeconfig => $kubeconfig, duration => '10m');
 
     say "Cilium installed successfully";
 };
@@ -1185,33 +996,22 @@ task "upgrade_cilium", sub {
 
     say "Upgrading Cilium to $version...";
 
-    my ($kubectl, $kubeconfig) = _kube($distribution);
     my $local = _local_kubeconfig($distribution);
-
-    # The pool stays what the cluster runs (k182): moving it under running pods
-    # is a migration, not an upgrade, and an RKE2 cluster installed before k182
-    # runs 10.0.0.0/8. OCP::Drift reports a pool that differs from ocp.yaml --
-    # this task never acts on network.pod_cidr. The same goes for the IPAM mode
-    # and, on k3s, the API server address the agents use.
-    my $live = _live_cilium(kubectl => $kubectl, kubeconfig => $kubeconfig)
-        or die "upgrade_cilium: no Cilium on this cluster (kube-system/cilium-config is missing)\n";
 
     # The CLI, the Gateway API CRDs (they travel with Cilium, k160: the new
     # Cilium must find its bundle in place when it starts, or it runs without a
-    # Gateway controller) and the Helm upgrade, in that order.
+    # Gateway controller) and the Helm upgrade, in that order. No cluster_cidr:
+    # the pool stays what the cluster runs (k182), as do the API address on k3s
+    # and the operator's replicas; this task never acts on network.pod_cidr.
     Rex::Rancher::Cilium::upgrade_cilium(_cilium_opts(
         distribution        => $distribution,
         version             => $version,
         cli_version         => $cli_version,
         gateway_api_version => $gateway_api_version,
         kubeconfig          => "$local",
-        ipam                => $live->{ipam},
-        pool                => $live->{pool},
-        k8s_service_host    => $params->{k8s_service_host} // $live->{k8s_service_host},
+        k8s_service_host    => $params->{k8s_service_host},
+        wait_duration       => 300,
     ));
-
-    say "Waiting for Cilium rollout...";
-    _wait_for_cilium(kubeconfig => $kubeconfig, duration => '5m');
 
     say "Cilium upgraded successfully to $version";
 };
