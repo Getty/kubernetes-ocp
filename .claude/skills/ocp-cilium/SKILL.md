@@ -65,17 +65,38 @@ The library applies through Kubernetes::REST from the machine running `ocp`
 no last-applied annotation, so the 256 KiB limit a client-side apply hits is
 moot; it skips the apply when the CRDs' bundle-version/channel annotations
 already match (the same ones OCP::Drift reads, k164) and dies on failure.
-The CRD-only drift remedy `update_gateway_api` keeps OCP's own server-side
-kubectl apply (`_apply_gateway_api_crds`, `--force-conflicts
---field-manager=ocp`), because the library keeps that step private
+Since Rex::Rancher 0.003 the CRD-only drift remedy `update_gateway_api` goes
+through the library too:
+`Rex::Rancher::Cilium::ensure_gateway_api_crds` applies the same standard
+bundle (skipped when version and channel already match, dying on failure)
+and, only when it actually applied it, restarts a running `cilium-operator` —
+unlike `upgrade_cilium` no new operator image follows, and controller-runtime
+caches CRD schemas at startup. Cilium itself is not touched. There is no
+kubectl apply and no `_apply_gateway_api_crds` left in the Rexfile any more
 (rex-rancher k43).
 
-IPAM: Rex::Rancher's rke2 default is `ipam.mode: kubernetes`, and it only
-refuses a mode change the release set explicitly. OCP therefore always passes
-`helm_values => { ipam => ... }`: cluster-pool on `pod_cidr` for a fresh
-Cilium, the live mode and pool (read from `kube-system/cilium-config`) for a
-running one; an unreadable cilium-config aborts rather than guess
-(rex-rancher k43). Readiness is OCP's `cilium status --wait` after the call.
+IPAM: OCP always states `helm_values => { ipam => { mode => 'cluster-pool' }
+}` — Rex::Rancher's rke2 default is `ipam.mode: kubernetes`, so a fresh RKE2
+cluster would get that without it. Stated, it is also enforced: the library
+dies before touching the host when a running Cilium is in a different mode
+(Cilium cannot change IPAM under running pods; open: a running Cilium in a
+mode other than cluster-pool blocks install/upgrade outright, rex-rancher
+k64). The **pool** is not stated by OCP at all: `cluster_cidr` (passed next to
+`helm_values`) is only the pool of a *fresh* install — a running cluster-pool
+keeps its own, which the library reads off `kube-system/cilium-config`
+through the API itself and warns about when it differs from `cluster_cidr`
+(k182; an RKE2 cluster from before k182 runs `10.0.0.0/8`, which
+`OCP::Drift` reports). On k3s, when OCP passes no `k8s_service_host` the
+library takes the running Cilium's DaemonSet address instead of failing
+outright, and only dies when neither is available, before the node is
+touched.
+
+Readiness is the library's own since 0.003: `wait => 1, wait_duration => ...`
+(600s on `install_cilium`, 300s on `upgrade_cilium`) — it returns only once
+the `cilium` DaemonSet and `cilium-operator` are rolled out and ready, and
+dies naming their state otherwise (k178: a Cilium that never became ready
+used to cost the full wait and then report success). There is no `cilium
+status --wait` and no kubectl on the node for any of this any more.
 
 Caveat: RKE2 >= v1.37 ships its own `rke2-gateway-api-crd` Helm chart, which
 would fight this apply. Today's RKE2 pin is v1.36, so it's dormant; the

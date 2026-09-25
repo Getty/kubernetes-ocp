@@ -86,26 +86,49 @@ registry:
 ## Installation Flow (Rex)
 
 Since k155 the Rexfile tasks are thin wrappers around **Rex::Rancher** and
-**Rex::GPU** (pinned 0.002 in cpanfile); what stays in the Rexfile is OCP's own,
-each gap marked with the library card that would move it.
+**Rex::GPU** (pinned 0.003 in cpanfile, still unreleased/vendored); what stays
+in the Rexfile is OCP's own, each gap marked with the library card that would
+move it.
 
-1. `prepare_node` — `Rex::Rancher::Node::prepare_node` (apt refresh, hostname,
-   timezone, locale, swap, modules, sysctl) with `ntp => 0`; OCP adds NTP
-   (skip when synced, chrony failure not fatal), `/etc/hosts` without a domain
-   and `locale-gen` (rex-rancher k42), then `cleanup_legacy_containerd_template`.
+1. `prepare_node` — since Rex::Rancher 0.003 (rex-rancher k42) this is just
+   `Rex::Rancher::Node::prepare_node(hostname, domain, timezone, locale, ntp
+   => $ntp)`, then `cleanup_legacy_containerd_template`. OCP hands the library
+   its parameters and does nothing of the library's steps itself any more:
+   the library does the apt refresh, hostname, the `/etc/hosts` entry without
+   a domain (only when no line names the host already), timezone, the locale
+   enabled in `/etc/locale.gen` and generated before it is set, swap off,
+   `br_netfilter`/overlay, the Kubernetes sysctls, **and** NTP — a clock
+   `timedatectl` already reports synchronised is left alone, otherwise
+   chrony, falling back to systemd-timesyncd on a failed chrony install, and
+   warning (not dying) when neither is available. `ntp` defaults on; OCP
+   passes `ntp => 0` only to skip it entirely.
 2. `detect_gpu` — sysfs detection (OCP's own); `install_nvidia` calls
-   `Rex::GPU::NVIDIA::install_driver(gpus => ...)`, except on Ubuntu, which keeps
-   `ubuntu-drivers install` (rex-gpu k69); toolkit via `install_container_toolkit`
-   unless the runtime binaries exist.
-3. `install_{rke2,k3s}_server` — writes `config.yaml.d/50-ocp-cluster-cidr.yaml`
-   (pod_cidr; rex-rancher k41), then `Rex::Rancher::Server::install_server`
-   (config.yaml 0600, token reuse, Cilium-only CNI keys, default disable list,
-   `nvidia_runtime_path`, bounded service wait with journal; RKE2 with a pin
-   uses `install_method => 'artifact'`), then OCP waits for the API.
-   `install_{rke2,k3s}_agent` — `Rex::Rancher::Agent::install_agent`; OCP adds
-   the join URL to a failure (rex-rancher k44).
+   `Rex::GPU::NVIDIA::install_driver(gpus => ..., setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers')`
+   on Ubuntu (since k191, rex-gpu k69), plain `install_driver(gpus => ...)`
+   elsewhere; toolkit via `install_container_toolkit` unless the runtime
+   binaries exist. See skill `ocp-gpu` for the Ubuntu setup's package choice.
+3. `install_{rke2,k3s}_server` — `cluster_cidr` is passed straight into
+   `Rex::Rancher::Server::install_server`, which writes it as config.yaml's
+   own `cluster-cidr` (rex-rancher k41; both distributions). The
+   `config.yaml.d/50-ocp-cluster-cidr.yaml` drop-in OCP used to write itself
+   is no longer created — a leftover from before 0.003 is removed only when
+   its content states exactly the `cluster_cidr` now passed (it would
+   otherwise keep overriding config.yaml on every node set up before); a
+   drop-in that disagrees is kept, with a message, because the cluster is
+   running on what it says. `install_server` also carries config.yaml 0600,
+   token reuse, Cilium-only CNI keys, the default disable list,
+   `nvidia_runtime_path`, and a bounded service wait with journal (RKE2 with
+   a pin uses `install_method => 'artifact'`; a running rke2 server restarts
+   only when its config actually changed, rex-rancher k49) — then OCP waits
+   for the API. `install_{rke2,k3s}_agent` — plain
+   `Rex::Rancher::Agent::install_agent`; the join URL in a failed join's error
+   is the library's own since 0.003 (rex-rancher k44), OCP adds nothing to it.
 4. `install_cilium` / `upgrade_cilium` — `Rex::Rancher::Cilium` with a local
-   kubeconfig fetched off the node, `gateway_api_channel => 'standard'`, IPAM
-   mode + pool always stated (live values on a running Cilium, rex-rancher
-   k43), then OCP's `cilium status --wait`. `update_gateway_api` stays OCP's
-   kubectl server-side apply (rex-rancher k43).
+   kubeconfig fetched off the node, `gateway_api_channel => 'standard'`,
+   `cluster_cidr` passed only on a fresh install (the pool of a running
+   Cilium is the library's to keep), IPAM mode always stated as
+   `cluster-pool`, and `wait => 1, wait_duration => 600|300` — the library's
+   own readiness wait since 0.003 (rex-rancher k43), replacing OCP's `cilium
+   status --wait`. `update_gateway_api` goes through the library too
+   (`Rex::Rancher::Cilium::ensure_gateway_api_crds`), so there is no kubectl
+   apply left in the Rexfile. See skill `ocp-cilium` for the detail.

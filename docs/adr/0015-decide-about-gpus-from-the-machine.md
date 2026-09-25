@@ -54,7 +54,7 @@ question: *does this host need an NVIDIA driver?*
   evidence NFD uses — and structurally cannot pick a package that does not claim
   the card. Headers are `linux-headers-$(uname -r)`, as NVIDIA documents.
   **If it fails, the task dies with an explanation.** It does not fall back to a
-  guessed package name.
+  guessed package name. *(amended 2026-09-26, see below)*
 
 Compute capability is not asked before the cluster at all.
 
@@ -100,3 +100,53 @@ a VM with a passed-through card has both, and there the card decides.
 - Better detection is still only a better prediction. The proof that the GPU
   stack works is `nvidia.com/gpu` in the capacity — which is why ADR 0017
   matters more than this one.
+
+## Amendment 2026-09-26
+
+This ADR said under `## Decision`:
+
+> *Which driver package?* Not OCP's decision. `ubuntu-drivers install` resolves
+> branch, flavour and architecture from the card's PCI modalias — the same
+> evidence NFD uses — and structurally cannot pick a package that does not claim
+> the card. Headers are `linux-headers-$(uname -r)`, as NVIDIA documents.
+> **If it fails, the task dies with an explanation.** It does not fall back to a
+> guessed package name.
+
+That is no longer how the package is chosen, on Ubuntu or anywhere else.
+Rex::GPU 0.003 (k191, rex-gpu k69) folded the Ubuntu path into the same
+`Rex::GPU::NVIDIA::install_driver` every other OS already went through since
+k155 — via a new `Rex::GPU::NVIDIA::Setup::UbuntuDrivers`, not OCP's own
+`ubuntu-drivers install`. Inside it, `ubuntu-drivers` answers only one of the
+three questions this ADR listed: the branch. The kernel-module flavour — open
+or proprietary — comes from the same device-ID table Rex::GPU already used
+for every non-Ubuntu OS since k155: open for Blackwell (GB10 included),
+proprietary where the table names nothing (Turing through Hopper), and for
+Maxwell, Pascal and Volta the `580-server` branch is installed directly,
+without consulting `ubuntu-drivers` at all. `ubuntu-drivers list --gpgpu` only
+*names* candidate packages for that flavour; `apt-get` installs the chosen
+one, and `ubuntu-drivers install` is never run. A package that cannot drive
+the card — proprietary offered for a Blackwell, say — is refused rather than
+"structurally" impossible: the guarantee moved from *ubuntu-drivers cannot
+pick a mismatched package* to *Rex::GPU is asked for a package matching what
+it already decided, and refuses when the list gives it nothing suitable*.
+Headers are still exactly `linux-headers-$(uname -r)` — never
+`linux-headers-generic` — and a failure to name any package still dies before
+touching the host rather than falling back to a guess.
+
+The Rexfile names this what it is: a deliberate departure from this ADR's own
+"not OCP's decision" for the flavour question specifically — the library now
+carries a small model (GPU generation → kernel-module flavour) rather than
+asking the machine for that one answer. It is not a reversal of the ADR's
+decision: hardware *presence* detection still asks the machine (sysfs, no
+whitelist, no name-matching), and the running-driver and running-toolkit
+checks are untouched. What moved is narrower than the ADR's title suggests at
+first read — only "which package" — but the ADR's own bullet claimed
+`ubuntu-drivers` alone resolved all three questions, and that stopped being
+true the moment flavour became the library's table instead, first for every
+other OS at k155 and now for Ubuntu too.
+
+Known gap, not yet closed: GB200/GH200 (Grace Hopper generation) is not yet in
+Rex::GPU's table the way GB10 (Grace Blackwell) is, so it would currently get
+the proprietary branch — the wrong one for that generation, per this ADR's own
+Context (Grace Hopper and Blackwell run only the open kernel modules).
+Tracked as rex-gpu k72, open at the time of this amendment.

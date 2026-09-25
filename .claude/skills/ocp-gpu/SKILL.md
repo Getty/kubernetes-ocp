@@ -82,30 +82,43 @@ everything before it is a prediction.
 
 ## Host Driver Install (`install_nvidia`)
 
-- **Everything but Ubuntu** (k155): `Rex::GPU::NVIDIA::install_driver(gpus =>
-  [...])`, handed the sysfs cards as `{ device_id => '2e12', name => ... }` (no
-  lspci). It skips a working driver (nvidia-smi + libcuda.so.1), picks the
-  branch/module by GPU generation (Debian: non-free `nvidia-driver nvidia-smi
-  libcuda1`, Blackwell from NVIDIA's CUDA repo), installs only the running
-  kernel's headers, and dies before touching the host for Kepler or
-  incompatible GPU mixes. The toolkit is `install_container_toolkit`, unless
-  OCP's own binary check (`nvidia-container-runtime` + `nvidia-ctk`) finds one.
-- **Ubuntu** stays OCP's own until rex-gpu k69 (the library adds
-  `linux-headers-generic` and picks packages by apt-cache search):
-  `linux-headers-$(uname -r)` plus `ubuntu-drivers install`. No
-  branch number is hardcoded, on purpose — the branch, the open-vs-proprietary
-  flavour and the architecture are three separate questions and all three are
-  part of the package *name*:
+Every OS, Ubuntu included since k191 (rex-gpu k69): one call,
+`Rex::GPU::NVIDIA::install_driver(gpus => [...], $setup)`, handed the sysfs
+cards as `{ device_id => '2e12', name => ... }` (no lspci). It skips a
+working driver (nvidia-smi + libcuda.so.1 already there), installs only the
+running kernel's headers — never `linux-headers-generic`, which on a vendor
+kernel (a DGX Spark runs `6.17.0-1029-nvidia`) is a different kernel and
+would leave DKMS building against the wrong tree — loads the module and
+verifies the result. The toolkit is `install_container_toolkit`, unless
+OCP's own binary check (`nvidia-container-runtime` + `nvidia-ctk`) finds one
+already.
+
+- **Everywhere but Ubuntu**: no `$setup` is passed. Rex::GPU picks the
+  branch/module by GPU generation from the device IDs alone (Debian: non-free
+  `nvidia-driver nvidia-smi libcuda1`, Blackwell from NVIDIA's CUDA repo), and
+  dies before touching the host for Kepler or incompatible GPU mixes.
+- **Ubuntu**: `setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers'`. Deliberately
+  *not* the same as everywhere else, and a deliberate departure from ADR
+  0015's original "not OCP's decision" for this one question — see its
+  2026-09-26 amendment. Only the **branch** is asked of `ubuntu-drivers`; the
+  **kernel-module flavour** (open vs proprietary) comes from the same
+  device-ID table Rex::GPU already uses for every other OS: open for
+  Blackwell (GB10 among them), proprietary where the table names nothing
+  (Turing through Hopper), and for Maxwell, Pascal and Volta the
+  `580-server` branch is installed directly, without asking `ubuntu-drivers`
+  at all. `ubuntu-drivers list --gpgpu` only *names* the package for that
+  flavour (read-only); `apt-get` installs it and `dpkg` verifies it.
+  `ubuntu-drivers install` is **never** run. `ubuntu-drivers` missing, failing,
+  or naming nothing for the card dies before any driver package goes in — no
+  package name is guessed, and a package that cannot drive the card
+  (proprietary offered for a Blackwell, say) is refused rather than accepted.
+  Known gap, open: GH200 (Grace Hopper) is not yet in the table the way GB10
+  (Grace Blackwell) is, so it would currently get the proprietary branch —
+  the wrong one for that generation (rex-gpu k72).
   - R535 reached end of life in June 2026; on Ubuntu 24.04 `nvidia-driver-535`
     is a transitional package that pulls 580, so the old pin pinned nothing.
-  - Grace Hopper and Blackwell run **only** the open kernel modules; Maxwell,
-    Pascal and Volta run only the proprietary ones.
-  - amd64 and arm64 do not carry the same names (arm64 comes from ports).
-  `ubuntu-drivers` resolves all three from the card's PCI modalias. If it fails,
-  the task **dies** — OCP does not fall back to a guessed package name.
-- `linux-headers-generic` is never installed: on a vendor kernel (a DGX Spark
-  runs `6.17.0-1029-nvidia`) it pulls headers for a different kernel and DKMS
-  builds against the wrong tree.
+  - amd64 and arm64 do not carry the same package names (arm64 comes from
+    the ports archive) — `ubuntu-drivers` still resolves that from the card.
 - The container toolkit comes from NVIDIA's `libnvidia-container` apt repo —
   unless `_nvidia_toolkit_present` finds `nvidia-container-runtime` and
   `nvidia-ctk` already installed, in which case neither the apt source nor the
