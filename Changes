@@ -90,10 +90,13 @@ Revision history for OCP
       list --gpgpu` names the driver package. RKE2 installs from its
       checksum-verified release tarball, and a pinned version is checked
       against the installed binary. The machine running `ocp` reaches the
-      cluster API and GitHub while Cilium installs. An existing RKE2 control
-      plane restarts on each of its first two `ocp apply` runs with this
-      release: for its new config.yaml, then once more because the old
-      cluster-cidr drop-in goes only after config.yaml carries the same value.
+      cluster API and GitHub while Cilium installs. `ocp apply` on an
+      existing cluster leaves RKE2 alone, and its cluster-cidr drop-in stays
+      in force. A bootstrap run against an RKE2 control plane that is already
+      running (for example after losing `kubeconfig.yaml`) moves cluster-cidr
+      into config.yaml and restarts rke2-server, then once more on the next
+      such run, because the old drop-in goes only after config.yaml carries
+      the same value.
     - The LoadBalancer pool and L2 announcement are configurable through
       `network.lb_pool` and `network.l2`, so a multi-node cluster hands out
       external IPs from a real pool instead of a node's own address.
