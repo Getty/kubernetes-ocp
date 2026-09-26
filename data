@@ -1,0 +1,18 @@
+---
+claimed_at: 2026-09-26T22:56:48Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-24T14:24:26Z
+id: 161
+priority: low
+status: backlog
+tags:
+- rke2
+- gateway-api
+title: 'RKE2 >= v1.37: rke2-gateway-api-crd-Chart in die Disable-Liste'
+updated: 2026-09-26T22:56:48Z
+---
+
+Aus k157: RKE2 v1.37+ bringt ein eigenes rke2-gateway-api-crd-Chart, das die von OCP angewandten Gateway-API-CRDs ueberschreiben wuerde. Heute Pin v1.36 -> noch kein Problem. Done: beim RKE2-Bump auf >= v1.37 das Chart per disable abschalten (oder bewusst RKE2 die CRDs ueberlassen und OCPs Apply streichen) + Test.
+
+Audit 2026-09-27: Rex::Rancher kennt das Chart (RKE2.pm ~37, Abbruch in Cilium.pm ~1391), trägt es aber nur in rancher_deploy_server automatisch in die Disable-Liste ein (Rex/Rancher.pm ~672). OCP ruft install_server direkt auf, muss also disable => [@default, 'rke2-gateway-api-crd'] selbst übergeben, spätestens beim v1.37-Pin. Alternative im Sinn von k196: Default-Disable-Liste für install_server in die Lib.
