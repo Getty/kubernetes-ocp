@@ -75,14 +75,16 @@ caches CRD schemas at startup. Cilium itself is not touched. There is no
 kubectl apply and no `_apply_gateway_api_crds` left in the Rexfile any more
 (rex-rancher k43).
 
-IPAM: OCP always states `helm_values => { ipam => { mode => 'cluster-pool' }
-}` — Rex::Rancher's rke2 default is `ipam.mode: kubernetes`, so a fresh RKE2
-cluster would get that without it. Stated, it is also enforced: the library
-dies before touching the host when a running Cilium is in a different mode
-(Cilium cannot change IPAM under running pods; open: a running Cilium in a
-mode other than cluster-pool blocks install/upgrade outright, rex-rancher
-k64). The **pool** is not stated by OCP at all: `cluster_cidr` (passed next to
-`helm_values`) is only the pool of a *fresh* install — a running cluster-pool
+IPAM: OCP passes `ipam_mode => 'cluster-pool'` (rex-rancher k64) —
+Rex::Rancher's rke2 default is `ipam.mode: kubernetes`, so a fresh RKE2
+cluster would get that without it. Like `cluster_cidr` for the pool, it is
+only the mode of a *fresh* install: a running Cilium in another mode keeps
+its mode (and pool), with a warning from the library, because Cilium cannot
+change IPAM under running pods. **Never `helm_values => { ipam => { mode =>
+... } }`**: that is a demand, and against a running Cilium in any other mode
+the library dies before touching the host — every `ocp apply` would. The
+**pool** is not stated by OCP at all: `cluster_cidr` (passed next to
+`ipam_mode`) is only the pool of a *fresh* install — a running cluster-pool
 keeps its own, which the library reads off `kube-system/cilium-config`
 through the API itself and warns about when it differs from `cluster_cidr`
 (k182; an RKE2 cluster from before k182 runs `10.0.0.0/8`, which

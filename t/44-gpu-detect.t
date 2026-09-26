@@ -186,19 +186,13 @@ subtest 'the model whitelist is gone for good' => sub {
 #
 # nvidia-driver-535 was hardcoded for Ubuntu. R535 reached end of life in June
 # 2026 and on Ubuntu 24.04 the name is now a transitional package pulling 580,
-# so the pin pinned nothing — on amd64 as much as on arm64. And
-# linux-headers-generic tracks the generic kernel flavour, which on a vendor
-# kernel (a DGX Spark runs 6.17.0-1029-nvidia) is a different kernel entirely.
+# so the pin pinned nothing — on amd64 as much as on arm64. (The kernel
+# headers and ubuntu-drivers are held by what install_nvidia runs, below.)
 #
 
-subtest 'no branch number and no kernel flavour is guessed' => sub {
+subtest 'no driver branch is hardcoded' => sub {
     unlike $code, qr/nvidia-driver-\d/,
         'no hardcoded driver branch — it decides open vs proprietary too, and that is per GPU';
-    unlike $code, qr/linux-headers-/,
-        'no kernel headers named at all -- Rex::GPU installs the running kernel\'s, never '
-        . 'linux-headers-generic (t/155-rex-libraries.t)';
-    unlike $code, qr/ubuntu-drivers (?:install|list)/,
-        'and no ubuntu-drivers call of its own';
 };
 
 #
@@ -292,6 +286,22 @@ subtest 'Ubuntu: Rex::GPU installs the driver, ubuntu-drivers naming the package
     install_nvidia_on(os => 'Debian');
     ok !exists OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver')->{setup},
         'elsewhere the setup for the OS, as Rex::GPU picks it';
+};
+
+#
+# linux-headers-generic tracks the generic kernel flavour, which on a vendor
+# kernel (a DGX Spark runs 6.17.0-1029-nvidia) is a different kernel entirely.
+# OCP installs no headers of its own, on any OS: Rex::GPU installs the running
+# kernel's (held against the real library in t/155-rex-libraries.t).
+#
+
+subtest 'no kernel headers of OCP\'s own' => sub {
+    for my $os (qw( Ubuntu Debian )) {
+        install_nvidia_on(os => $os);
+        my @named = (OCPTest::Rexfile->commands,
+                     map { map { ref $_ eq 'ARRAY' ? @$_ : $_ } @{ $_->{args} } } OCPTest::Rexfile->calls('pkg'));
+        ok !(grep { defined && /linux-headers/ } @named), "$os: no command or package names them";
+    }
 };
 
 #

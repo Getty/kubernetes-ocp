@@ -110,7 +110,7 @@ subtest 'rke2: Cilium options' => sub {
     ok !exists $o->{k8s_service_host},
         'no k8s_service_host: the library uses 127.0.0.1:6443, which every RKE2 node serves';
     ok $o->{gateway_api}, 'Gateway API';
-    is_deeply $o->{helm_values}{ipam}, { mode => 'cluster-pool' }, 'cluster-pool IPAM';
+    is $o->{ipam_mode}, 'cluster-pool', 'cluster-pool IPAM for a fresh install (ipam_mode, rex-rancher k64)';
     is $o->{cluster_cidr}, '10.42.0.0/16', 'its pool = cluster-cidr (k182)';
 };
 

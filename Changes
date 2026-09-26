@@ -91,7 +91,9 @@ Revision history for OCP
       checksum-verified release tarball, and a pinned version is checked
       against the installed binary. The machine running `ocp` reaches the
       cluster API and GitHub while Cilium installs. An existing RKE2 control
-      plane restarts once on its first `ocp apply` with this release.
+      plane restarts on each of its first two `ocp apply` runs with this
+      release: for its new config.yaml, then once more because the old
+      cluster-cidr drop-in goes only after config.yaml carries the same value.
     - The LoadBalancer pool and L2 announcement are configurable through
       `network.lb_pool` and `network.l2`, so a multi-node cluster hands out
       external IPs from a real pool instead of a node's own address.

@@ -319,12 +319,14 @@ task "install_nvidia", sub {
     # naming nothing for the card dies before any driver package goes in.
     # Deliberately different from OCP's own path before it (ADR 0015):
     # ubuntu-drivers now picks only the branch, within the kernel-module flavour
-    # Rex::GPU derives from the device IDs -- open for Blackwell (GB10 among
-    # them), proprietary where its table asks for nothing (Turing to Hopper),
-    # and for Maxwell, Pascal and Volta the 580-server branch without asking
-    # ubuntu-drivers at all. In return a package that cannot drive the card
-    # (proprietary on a Blackwell) is refused. The packages are the -server
-    # ones; `ubuntu-drivers install` is never run.
+    # Rex::GPU derives from the device IDs -- open for Blackwell and Blackwell
+    # Ultra (GB10 among them) and for Grace Hopper (GH200, 10de:2342/2348),
+    # proprietary where its table asks for neither (the rest of Turing to
+    # Hopper, and IDs it has no row for), and for Maxwell, Pascal and Volta the
+    # 580-server branch without asking ubuntu-drivers at all. In return a
+    # package that cannot drive the card (proprietary on a Blackwell or a
+    # GH200) is refused. The packages are the -server ones; `ubuntu-drivers
+    # install` is never run.
     Rex::GPU::NVIDIA::install_driver(
         gpus => [ _nvidia_gpus(_pci_display_devices()) ],
         ($os eq 'Ubuntu' ? (setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers') : ()),
@@ -464,12 +466,14 @@ sub _install_server {
     _maybe_detect_gpu($params);
 
     my $cluster_cidr = $params->{pod_cidr} || _default_pod_cidr();
-    _remove_legacy_cluster_cidr_dropin($distribution, $cluster_cidr);
 
     Rex::Rancher::Server::install_server(
         _server_opts($distribution, $params, \@tls_sans),
         cluster_cidr => $cluster_cidr,
     );
+
+    # Only now that config.yaml carries cluster-cidr itself.
+    _remove_legacy_cluster_cidr_dropin($distribution, $cluster_cidr);
 
     _wait_for_api($distribution);
 }
@@ -640,9 +644,16 @@ sub _default_pod_cidr { '10.42.0.0/16' }
 # config.yaml does not, so nothing changes for the server. Any other content
 # is not left over but in force: a cluster's cluster-cidr cannot change, and
 # a drop-in that disagrees is what the server runs on, so it stays and says so.
-# Removing it changes config.yaml.d, which restarts a running rke2 server
-# (rex-rancher k49) -- on the same run whose new cluster-cidr line in
-# config.yaml restarts it anyway.
+#
+# Removed only after install_server returned, when config.yaml says the same
+# cluster-cidr. Before it, a failed install_server -- its version-skew check
+# dies before config.yaml is written -- would leave a config.yaml from before
+# 0.003 with no cluster-cidr and no drop-in, and the next start of the server
+# (a reboot) would run the distribution's default instead of pod_cidr. The
+# price: the removal changes config.yaml.d after the server (re)started, so
+# the next run's install_server restarts a running rke2 server once more
+# (rex-rancher k49 watches config.yaml.d by mtime). k3s restarts on every run
+# anyway.
 sub _legacy_cluster_cidr_dropin {
     my ($distribution) = @_;
     return "/etc/rancher/$distribution/config.yaml.d/50-ocp-cluster-cidr.yaml";
@@ -839,14 +850,16 @@ sub _gateway_api_channel { 'standard' }
 
 # The Rex::Rancher::Cilium options for OCP.
 #
-# The IPAM mode is always stated: cluster-pool, which every OCP cluster runs
-# (the chart's default before k155, stated since). Rex::Rancher's rke2 default
-# is ipam.mode kubernetes, so a fresh RKE2 cluster would get that without it.
-# Stated, it is also checked: a running Cilium in another mode makes the
-# library die before the node is touched (Cilium cannot change the mode under
-# running pods) -- where OCP up to 0.002 read the running mode and kept it.
-# The library knows no "mode for a fresh install" that gives way to a running
-# one, as cluster_cidr does for the pool.
+# The IPAM mode is ipam_mode cluster-pool (rex-rancher k64): the mode of a
+# fresh install, which every OCP cluster has run since before k155 (the
+# chart's default then). Rex::Rancher's rke2 default is ipam.mode kubernetes,
+# so a fresh RKE2 cluster would get that without it. Like cluster_cidr for the
+# pool, it gives way to a running Cilium: one in another mode keeps its mode
+# and pool, and the library warns instead of dying (Cilium cannot change the
+# mode under running pods) -- as OCP up to 0.002 read the running mode and
+# kept it. Not ipam.mode in helm_values: that is a demand, and against a
+# running Cilium in any other mode the library dies before the node is
+# touched, on every `ocp apply`.
 #
 # The pool is not stated: cluster_cidr is the pool of a fresh install only, a
 # running cluster-pool keeps its own (k182, with a warning when it differs --
@@ -871,7 +884,7 @@ sub _cilium_opts {
         gateway_api         => 1,
         gateway_api_version => $o{gateway_api_version},
         gateway_api_channel => _gateway_api_channel(),
-        helm_values         => { ipam => { mode => 'cluster-pool' } },
+        ipam_mode           => 'cluster-pool',
         (defined $o{cluster_cidr} ? (cluster_cidr => $o{cluster_cidr}) : ()),
         ($distribution eq 'k3s' && defined $host && length $host
             ? (k8s_service_host => $host) : ()),

@@ -423,9 +423,35 @@ subtest 'a running Cilium keeps its pool, whatever pod_cidr says (k182)' => sub 
         'an upgrade (no cluster_cidr) keeps it too';
 };
 
-subtest 'a running Cilium in another IPAM mode is refused, never switched' => sub {
-    ok !eval { adopted({ ipam_mode => 'kubernetes' }, distribution => 'rke2'); 1 }, 'dies';
-    like $@, qr/Cilium runs ipam\.mode kubernetes .*cannot change the IPAM mode/s, 'naming both modes';
+# OCP's cluster-pool is the mode of a fresh install (ipam_mode, rex-rancher
+# k64), not a demand: a running Cilium in another mode keeps it and its
+# pods their addresses, and `ocp apply` goes on -- as before 0.003, when OCP
+# read the running mode itself. It used to be helm_values ipam.mode, which
+# the library enforces: every apply against such a cluster died.
+subtest 'a running Cilium in another IPAM mode keeps it, never switched' => sub {
+    for my $dist (qw( rke2 k3s )) {
+        @LOG = ();
+        my $o = eval {
+            adopted({ ipam_mode => 'kubernetes', k8s_service_host => '198.51.100.4' },
+                    distribution => $dist, cluster_cidr => '10.42.0.0/16');
+        };
+        ok $o, "$dist: no refusal" or do { diag $@; next };
+        is $o->{values}{ipam}{mode}, 'kubernetes', "$dist: the running mode, not cluster-pool";
+        ok !exists $o->{values}{ipam}{operator}{clusterPoolIPv4PodCIDRList},
+            "$dist: and no pool, which only cluster-pool uses";
+        ok((grep { $_->[0] =~ /ipam_mode cluster-pool is not applied: Cilium already runs ipam\.mode kubernetes/ } @LOG),
+            "$dist: and says so");
+    }
+
+    my $up = eval { adopted({ ipam_mode => 'kubernetes' }, distribution => 'rke2') };
+    is $up && $up->{values}{ipam}{mode}, 'kubernetes',
+        'an upgrade (no cluster_cidr, the same options otherwise) keeps it too';
+
+    @LOG = ();
+    my $o = adopted({ ipam_mode => 'cluster-pool', pool => ['10.42.0.0/16'] },
+                    distribution => 'rke2', cluster_cidr => '10.42.0.0/16');
+    is $o->{values}{ipam}{mode}, 'cluster-pool', 'a running cluster-pool stays cluster-pool';
+    ok !(grep { $_->[0] =~ /ipam_mode .* is not applied/ } @LOG), 'without a word';
 };
 
 subtest 'k3s: the control plane address, never localhost (k178)' => sub {

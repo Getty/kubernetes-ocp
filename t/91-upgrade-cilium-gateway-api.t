@@ -113,7 +113,8 @@ subtest 'a failed upgrade (e.g. the CRD apply) fails the task' => sub {
 subtest 'the running pod pool is not overridden by the upgrade' => sub {
     my ($ok, $err, $o) = upgrade(%params, pod_cidr => '172.20.0.0/16');
     ok $ok, 'the task succeeds' or diag $err;
-    is_deeply $o->{helm_values}{ipam}, { mode => 'cluster-pool' }, 'the mode stated, no pool';
+    is $o->{ipam_mode}, 'cluster-pool', 'ipam_mode as for an install: a running Cilium keeps its own mode';
+    ok !exists(($o->{helm_values} // {})->{ipam}), 'and no IPAM in helm_values, so no pool';
     ok !exists $o->{cluster_cidr}, 'no cluster_cidr: pod_cidr does not reach the upgrade';
 };
 

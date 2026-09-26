@@ -201,8 +201,27 @@ subtest 'the drop-in OCP wrote before 0.003 goes when it says what config.yaml s
         like $out, qr/Removed \Q$path\E/, "$dist: and said so";
         my $removed = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'unlink' });
         my $install = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Server::install_server' });
-        ok $removed >= 0 && $install > $removed,
-            "$dist: before install_server, so a restart it causes is the one install_server does anyway";
+        ok $install >= 0 && $removed > $install,
+            "$dist: after install_server, once config.yaml carries the same cluster-cidr";
+    }
+};
+
+# install_server can die before it writes config.yaml -- its version-skew
+# check comes first. A config.yaml from before 0.003 carries no cluster-cidr,
+# so without the drop-in the server's next start (a reboot) would run the
+# distribution's default instead of pod_cidr.
+subtest 'a failed install_server leaves the drop-in where it is' => sub {
+    for my $dist (qw( rke2 k3s )) {
+        my $path = sprintf $DROPIN, $dist;
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::IS_FILE{$path} = 1;
+        local $OCPTest::Rexfile::CAT{$path} = "cluster-cidr: 172.20.0.0/16\n";
+        local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Server::install_server'} =
+            "$dist v1.38.0 would be a jump of more than one minor from the running v1.36.4\n";
+        ok !eval { OCPTest::Rexfile->run_task("install_${dist}_server",
+                       { token => 't', pod_cidr => '172.20.0.0/16' }); 1 }, "$dist: the task dies";
+        like $@, qr/jump of more than one minor/, "$dist: with install_server's error";
+        is scalar(OCPTest::Rexfile->calls('unlink')), 0, "$dist: the drop-in stays";
     }
 };
 
@@ -227,9 +246,10 @@ subtest 'a fresh Cilium gets pod_cidr as its pool, cluster-pool stated' => sub {
         my $o = cilium_opts_after('install_cilium', distribution => $dist,
             k8s_service_host => '203.0.113.7', pod_cidr => '172.20.0.0/16');
         is $o->{cluster_cidr}, '172.20.0.0/16', "$dist: cluster_cidr, the pool of a fresh install";
-        is_deeply $o->{helm_values}{ipam}, { mode => 'cluster-pool' },
-            "$dist: the mode stated -- no longer Cilium's 10.0.0.0/8, nor the library's rke2 default kubernetes;"
-            . ' no pool stated, so a running one is kept';
+        is $o->{ipam_mode}, 'cluster-pool',
+            "$dist: the mode of a fresh install -- not the library's rke2 default kubernetes (rex-rancher k64)";
+        ok !exists(($o->{helm_values} // {})->{ipam}),
+            "$dist: no IPAM in helm_values -- neither mode nor pool demanded, so a running Cilium keeps both";
     }
 
     my $hand = cilium_opts_after('install_cilium', distribution => 'rke2');
@@ -240,7 +260,8 @@ subtest 'an upgrade never moves the pool to ocp.yaml\'s value' => sub {
     my $o = cilium_opts_after('upgrade_cilium', distribution => 'rke2', pod_cidr => '172.20.0.0/16');
     ok $o, 'upgrade_cilium calls the library' or return;
     ok !exists $o->{cluster_cidr}, 'no cluster_cidr: the running pool stays (the library reads it)';
-    is_deeply $o->{helm_values}{ipam}, { mode => 'cluster-pool' }, 'and no pool of its own';
+    is $o->{ipam_mode}, 'cluster-pool', 'ipam_mode as for an install: a running Cilium keeps its own mode';
+    ok !exists(($o->{helm_values} // {})->{ipam}), 'and no IPAM in helm_values, so no pool of its own';
     ok !(grep { /cilium-config/ } OCPTest::Rexfile->commands),
         'nothing read on the node: the library reads the running Cilium through the API';
 };
