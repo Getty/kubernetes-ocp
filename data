@@ -1,0 +1,18 @@
+---
+class: standard
+created: 2026-09-26T04:46:29Z
+id: 194
+priority: low
+status: backlog
+tags:
+- gpu
+- ubuntu
+- driver
+title: Ubuntu-Nodes mit Kepler-oder-älter-NVIDIA-Karte scheitern seit k191 an der
+  Treiberinstallation
+updated: 2026-09-26T04:46:29Z
+---
+
+Aus dem Review von k191. OCP gibt jede NVIDIA-Display-Karte an Rex::GPU install_driver weiter (share/Rexfile ~289-297, ~328). Seit dem Ubuntu-Zweig über Setup::UbuntuDrivers verweigert Rex::GPU Kepler und älter auch auf Ubuntu (Setup.pm _reject_unsupported_gpu, wie schon auf Debian). Beispiel: Host mit GT 710 (GK208) als VGA -> ocp apply bzw. robocop-Join stirbt; vorher installierte ubuntu-drivers install dort 470. Rex::GPU überlässt die Frage "bekommt diese Karte einen Treiber" dem Aufrufer; sein eigenes gpu_setup reicht nur compute-fähige Karten durch.
+
+Entscheiden und umsetzen: nach Rex::GPUs Compute-Klassifikation filtern (Karte ohne Treiber, Node ohne GPU-Label) oder Verweigerung zur Warnung machen; Test.
