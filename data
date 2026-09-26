@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-09-26T22:56:40Z
+id: 199
+priority: medium
+status: backlog
+tags:
+- rke2
+- pod-cidr
+- drift
+- robocop
+title: 'Pre-k182-RKE2-Cluster: Drift-Rat pod_cidr 10.0.0.0/8 macht aus einem Re-Bootstrap
+  bzw. robocop-CP-Join eine cluster-cidr-Änderung'
+updated: 2026-09-26T22:56:40Z
+---
+
+Aus dem Audit zu k196 (2026-09-27). Auf RKE2-Clustern von vor k182 läuft der Cilium-Pool mit 10.0.0.0/8, rke2 selbst aber mit seinem Default 10.42.0.0/16 (keine cluster-cidr in config.yaml). OCP::Drift (lib/OCP/Drift.pm ~545) rät dort „set network.pod_cidr: 10.0.0.0/8“. OCP reicht pod_cidr als cluster_cidr an install_server durch (Rexfile ~468-473, lib/OCP/Node.pm ~515-516). Folgen: Ein Re-Bootstrap stellt die cluster-cidr des laufenden Servers um und startet ihn neu. Ein robocop-CP-Join wird von RKE2 abgelehnt (andere cluster-cidr als der bestehende Server). Mit rex-rancher k67 stirbt der Re-Bootstrap stattdessen. Beides ist die Folge eines Rats, den OCP selbst gibt. Done: Drift-Rat und cluster_cidr-Weitergabe so abstimmen, dass ein Pre-k182-Cluster weder live umgestellt noch beim CP-Join abgelehnt wird (z. B. cluster_cidr nur beim frischen Bootstrap übergeben, sonst die laufende nehmen); Test.
