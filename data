@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-26T04:33:31Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-26T04:33:31Z
+created: 2026-09-24T16:55:26Z
+id: 181
+priority: high
+started: 2026-09-24T16:56:06Z
+status: done
+tags:
+- destroy
+- hetzner
+- billing
+title: 'destroy: Hetzner-OCPNode mit providerId ohne lokalen Token wird still uebersprungen'
+updated: 2026-09-26T04:33:31Z
+---
+
+Aus k177: hat destroy keinen Hetzner-Token (z. B. frischer Checkout ohne secrets.yaml-Eintrag, oder Worker ueber eigenen Provider-CR mit anderem Token), werden Hetzner-Nodes mit providerId still ausgelassen -> bezahlte Server laufen weiter. Done: Token aus dem OCPNodeProvider-Secret im Cluster lesen, wenn lokal keiner da ist; sonst laut (STDERR, Exit != 0) die nicht geloeschten Server mit ID auflisten; Test.
+
+2026-09-24 17:06 Implemented on branch worktree-agent-a1e1826d145c7990c (1513623): per-node token from the OCPNode's OCPNodeProvider Secret (read while API answers), else local, else hetzner-default/sole CR; label search under every distinct token; a server with providerId and no token -> refuse BEFORE any delete (CP teardown would take the OCPNode+Secret along), name/id/ip/reason on STDERR, exit 1. t/181-destroy-hetzner-token.t. make test green (1927).
+
+2026-09-24 17:07 Review ok, rebased+ff nach main (6534a43). Docker 111/1927 gruen (Worker, vor Rebase auf k178).
+
+2026-09-26 04:33 Closing: 6534a43 confirmed ancestor of origin/main. Moving to done.
