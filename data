@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-26T22:56:26Z
+id: 197
+priority: medium
+status: backlog
+tags:
+- robocop
+- arm64
+- image
+title: 'robocop auf arm64-Control-Plane: Image nur amd64, kein Schutz, keine Meldung'
+updated: 2026-09-26T22:56:26Z
+---
+
+Aus dem Audit zu k196 (2026-09-27). raudssus/ocp wird nur für amd64 gebaut (Makefile ~60-62, share/bin/ocp-build-image:3-4, CI ubuntu-latest; Docker Hub :latest nur amd64). share/robocop/deployment.yaml hat Pflicht-Affinity auf control-plane plus Tolerations, aber keine Bedingung auf kubernetes.io/arch. Auf einer arm64-CP (DGX Spark als Single-Node-CP mit robocop: true, Hetzner-CAX-CP: der Picker bietet ARM gleichrangig an, lib/OCP/Hetzner/Picker.pm ~32-36, robocop ist beim Hetzner-Provider automatisch an, lib/OCP/Config.pm ~191-203) scheitert der Pod vermutlich an ErrImagePull, sonst an exec format error. Weder Validierung noch Meldung. Done: entweder Multi-Arch-Image (buildx, CI) oder Abweisen/Warnen bei arm64-CP + robocop, plus kubernetes.io/arch-Affinity; Test.
