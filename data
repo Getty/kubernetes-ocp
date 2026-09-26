@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-09-26T04:33:08Z
+id: 192
+priority: low
+status: backlog
+tags:
+- rexfile
+- docs
+title: 'Stale Rexfile comment: robocop CP joins now get pod_cidr, not just the fallback'
+updated: 2026-09-26T04:33:08Z
+---
+
+share/Rexfile ~line 742-744 (sub _default_pod_cidr comment) says: "this is the fallback for hand-runs and for robocop's control-plane joins, which never see ocp.yaml." That is stale since 2588109 (k186, k184): robocop now passes pod_cidr as OCP_POD_CIDR env to OCP::Node->install_rke2_server on CP joins, so CP joins are no longer limited to the built-in fallback. Left alone during k184 because k185 was working in share/Rexfile at the time. Done: reword the comment to reflect that robocop CP joins now carry pod_cidr via OCP_POD_CIDR, fallback applies to hand-runs only.
