@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-09-26T06:11:07Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-26T04:46:23Z
+id: 193
+priority: low
+status: backlog
+tags:
+- rke2
+- apply
+- drift
+- decision
+title: 'Bootstrap-Lauf gegen laufenden CP: Rex::Rancher 0.003 rollt oder verweigert
+  dessen RKE2-Version'
+updated: 2026-09-26T06:11:07Z
+---
+
+Aus dem Review von k191 (Branch rex-0.003-vendor). ocp apply ruft install_server bei JEDEM Lauf mit der gepinnten Version (lib/OCP/Cmd/Apply/Bootstrap.pm ~409, lib/OCP/Rex.pm ~259). Mit Rex::Rancher 0.002 war das auf einem laufenden Server ein No-op (`systemctl start`). Mit 0.003:
+- gepinnter Patch oder nächster Minor -> restart auf die neue Version (Distribution.pm start_verb). Eine Pin-Anhebung in OCP::Versions rollt damit den Bootstrap-CP live, und NUR ihn (Worker/robocop-CPs nicht).
+- laufende Version neuer als der Pin (jeder Patch) oder mehr als ein Minor dahinter -> jedes ocp apply stirbt in install_server (rex-rancher 3cdd6d2, d336335). Einziger Ausweg: kubernetes.version in ocp.yaml.
+
+Widerspruch: lib/OCP/Drift.pm ~364 und ~863 sowie Skill ocp-core sagen, Distribution-Upgrades seien manuell, Node für Node, nie auto-remediert. Wer das befolgt und von Hand hochzieht, blockiert danach apply.
+
+Entscheidung nötig (Maintainer): (a) Lib-Verhalten übernehmen: apply konvergiert den CP auf den Pin, Drift-Doku + Changes + Upgrade-Doku anpassen, Hinweis auf kubernetes.version; oder (b) OCP hält laufende Server fest (Lib-Option nötig -> Karte rex-rancher); oder (c) nur für den Bootstrap-CP erlauben, Rest manuell. Gatet den Merge von rex-0.003-vendor nach main (k191).
+
+2026-09-26 05:11 k191 ist per Maintainer-Go bereits auf main (a886f80). Die Entscheidung gatet damit nicht mehr den Merge, sondern das nächste OCP-Image/Release: jedes Image aus main hat das neue apply-Verhalten gegenüber laufenden CPs.
+
+2026-09-26 06:10 Prämisse korrigiert (Live-Test k191 + Code): ocp apply auf bestehendem Cluster ruft install_server NICHT (Reconcile-Pfad, t/38 verbietet es). install_server läuft nur (a) im Bootstrap-Pfad -- also gegen einen laufenden CP nur, wenn kubeconfig.yaml fehlt -- und (b) bei robocop-CP-Joins auf frischen Nodes (keine laufende Version). Die Entscheidung betrifft damit nur den seltenen Re-Bootstrap. Zusätzlich greift der Skew-/Neues-Binary-Check live derzeit gar nicht (rex-rancher k68). Priorität auf low.
