@@ -6,7 +6,7 @@ allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - ocp-core
-    - kanban-issues-karr-cli
+    - kanban-issues-karr-ticket
 ---
 
 You are the ocp-adr-auditor for **OCP**.

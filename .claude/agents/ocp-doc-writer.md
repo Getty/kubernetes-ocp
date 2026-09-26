@@ -5,8 +5,8 @@ model: sonnet
 allowed-tools: Read, Edit, Grep, Glob
 briefing:
   skills:
-    - getty-perl-release-author-getty
     - ocp-core
+    - getty-perl-pod
 ---
 
 You write documentation for **OCP**, an `[@Author::GETTY]` Dist::Zilla

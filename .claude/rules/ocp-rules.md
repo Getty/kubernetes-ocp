@@ -31,7 +31,7 @@ Depends on whether the Agent/Task tool is available to you.
 
 - **You can spawn subagents** (orchestrating main agent): Do NOT touch behavior-relevant
   code yourself — delegate. Your lane: coordinate, inspect, plan, review diffs, run
-  tests, manage git, edit `Changes`/`README`. When in doubt, delegate. Why: only the
+  tests, edit `Changes`/`README`. When in doubt, delegate. Why: only the
   `ocp-*` agents get their skills force-loaded via `briefing.skills`; you get no briefing
   and would touch the spec/status seam with too little context.
 
@@ -49,7 +49,7 @@ Depends on whether the Agent/Task tool is available to you.
   | Cross-cutting or not assignable elsewhere | `ocp-worker` (default) |
   | Write or extend tests in `t/` | `ocp-test-writer` |
   | POD and prose docs | `ocp-doc-writer` |
-  | Pre-release audit | `ocp-release-checker` |
+  | Commits, `Changes`, card → done, pre-release audit | `ocp-release-manager` |
   | ADR backfill/audit in `docs/adr/` | `ocp-adr-auditor` |
 
 - **You cannot spawn subagents** (you ARE an `ocp-*` agent): the lock does not apply —
@@ -58,11 +58,14 @@ Depends on whether the Agent/Task tool is available to you.
 Behavior-relevant = everything under `lib/` and `bin/`, `share/`
 (templates + Rexfile), and the tests. Prose in `README.md` and `Changes` bullets are not.
 
+**Only `ocp-release-manager` commits.** A worker leaves a commit-ready tree and hands its card
+to `review`; you then dispatch `ocp-release-manager` to cut the commit and close the card.
+
 ## Coordination — karr board (always in scope)
 
 Ticket coordination is the orchestrating agent's job, so `karr` is always in scope —
 you never need to ask or wait to touch the board. But "always in scope" is not "never
-read the docs": **load the `kanban-issues-karr-cli` skill before you write anything to a
+read the docs": **load the `kanban-issues-karr-coordination` skill before you write anything to a
 card or a commit** — the conventions live only there, not in this file. The one that
 bites hardest, stated here so it cannot be missed: **a karr id is written `kNN`, never a
 bare `#NN`** — in commit subjects, card bodies, anywhere the text travels, because a Git
@@ -75,7 +78,7 @@ a ticket on the other repo's board, never a direct edit there.
 
 - `karr list --compact` / `karr board` — open work · `karr show ID` — detail
 - `karr create "Title" --priority high --tags a,b --body '…'` · `karr edit ID -a "note"`
-  · `karr move ID in-progress --claim NAME` — full surface: skill `kanban-issues-karr-cli`
+  · `karr move ID in-progress --claim NAME` — full surface: skill `kanban-issues-karr-coordination`
 
 **Serialize board mutations when fanning out** — parallel implementation is fine, but
 collect results and then loop `karr move`/`handoff`/`sync` sequentially.

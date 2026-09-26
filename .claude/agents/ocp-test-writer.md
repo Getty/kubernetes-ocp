@@ -8,7 +8,7 @@ briefing:
     - getty-perl-core
     - getty-perl-moo
     - ocp-core
-    - kanban-issues-karr-cli
+    - kanban-issues-karr-ticket
 ---
 
 You write tests for **OCP**.
