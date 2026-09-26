@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-09-26T22:56:33Z
+id: 198
+priority: medium
+status: backlog
+tags:
+- cert-manager
+- kubectl
+- ssa
+title: upgrade_cert_manager per kubectl-Client-Side-Apply auf dem Node, Installation
+  per Server-Side Apply
+updated: 2026-09-26T22:56:33Z
+---
+
+Aus dem Audit zu k196 (2026-09-27). share/Rexfile ~1033-1054 (upgrade_cert_manager) macht ein kubectl-Client-Side-Apply auf dem Node. Die Erstinstallation geht dagegen per Server-Side Apply über Kubernetes::REST (lib/OCP/Cmd/Apply/Network.pm ~52-69). Das mischt Field-Manager, widerspricht ADR 0007 und der Hausregel „kein kubectl in irgendeinem Codepfad“. Done: Upgrade als API-Remedy in OCP (Drift.pm ~95-101, Update.pm ~285-289) mit SSA, gleicher Field-Manager wie bei der Installation; Rexfile-Task und _kube raus; Test.
