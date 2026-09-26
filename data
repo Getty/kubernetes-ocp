@@ -1,0 +1,62 @@
+---
+block_reason: wartet auf CPAN-Release Rex::GPU/Rex::Rancher 0.003 (dann TEMP-Vendor
+  raus + snapshot); Merge nach main ist erledigt
+blocked: true
+claimed_at: 2026-09-26T06:11:01Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-25T04:00:43Z
+id: 191
+priority: medium
+started: 2026-09-26T04:45:05Z
+status: review
+tags:
+- gpu
+- ubuntu
+- driver
+- rexfile
+- needs:rex-gpu#69
+title: Ubuntu-Treiberzweig auf Rex::GPU install_driver mit Setup::UbuntuDrivers umstellen
+updated: 2026-09-26T06:11:01Z
+---
+
+Folge aus k155: Der Treiberzweig laeuft ausser auf Ubuntu ueber Rex::GPU::NVIDIA::install_driver. Ubuntu blieb bei OCP wegen rex-gpu k69; das ist jetzt in rex-gpu main (a7a9088), aber UNRELEASED. Voraussetzung: Rex::GPU 0.003 auf CPAN, dann cpanfile + snapshot.
+
+Was Rex::GPU jetzt macht:
+- Setup::Ubuntu installiert nur noch linux-headers-$(uname -r), kein linux-headers-generic (Default fuer alle, also auch ohne Option richtig auf Vendor-Kernel wie DGX Spark 6.17.0-1029-nvidia).
+- Neue opt-in Klasse Rex::GPU::NVIDIA::Setup::UbuntuDrivers (experimental wie die ganze Setup-API): `ubuntu-drivers list --gpgpu` (nur lesend) nennt das Paket, installiert per apt-get (Lock-Timeout) und mit dpkg -l verifiziert, NICHT per `ubuntu-drivers install`. Kein apt-cache-Fallback: ubuntu-drivers fehlt, exit != 0 oder nichts gelistet -> stirbt vor jeder Treiberinstallation.
+
+Abweichung von OCP-Politik, bewusst pruefen: ubuntu-drivers waehlt das Paket (Zweig) innerhalb der Kernel-Modul-Art, die Rex::GPU aus der GPU ableitet (open fuer Blackwell, proprietaer sonst, fest 580-server fuer Maxwell/Pascal/Volta -- dort wird ubuntu-drivers gar nicht gefragt). Die Wahl open/proprietaer trifft also Rex::GPU, nicht ubuntu-drivers; dafuer bleibt die Requirement-Pruefung (Blackwell bekommt kein proprietaeres Paket).
+
+Umsetzung: im Ubuntu-Zweig install_driver(..., setup => "Rex::GPU::NVIDIA::Setup::UbuntuDrivers") statt des eigenen Wegs; eigenen Ubuntu-Code und seine quelltextbasierten Tests entfernen, Garantien als Verhaltenstests erhalten. Toolkit-Check ueber Binaries bleibt OCP-Politik.
+
+Live pruefen (nicht auf Hardware getestet): Ubuntu 24.04 GA-, HWE- und DGX-Spark-Kernel: dpkg -l "linux-headers-*" (nur laufender Kernel), dkms status, nvidia-smi -L, Ausgabe von ubuntu-drivers list --gpgpu vs. installiertes Paket. Offen: ob linux-headers-<vendor-flavour> auf DGX Spark im Archiv ist.
+
+2026-09-25 19:55 2026-09-25 Umgesetzt auf Branch rex-0.003-vendor (uncommitted, vendored Rex::GPU/Rex::Rancher 0.003, make test gruen 2041). Ubuntu-Zweig ueber install_driver + Setup::UbuntuDrivers. Offene Regression: GH200 bekommt proprietaeres Paket -> rex-gpu k72 (vor 0.003-Release). Zusaetzlich rex-rancher k64 (IPAM-Modus weicht laufendem Cilium). Drift: Skills ocp-cilium/ocp-rke2/ocp-gpu + ADR 0015 beschreiben noch den alten Weg.
+
+2026-09-25 22:24 Committed auf Branch rex-0.003-vendor: da46826 (Vendor+cpanfile), 6f5b5c1 (Rexfile+Tests+Changes), a899cc1 (Skills+ADR 0015 Amendment). Bleibt offen bis: rex-gpu k72 (GH200), Release Rex::GPU/Rex::Rancher 0.003, dann Vendor-TEMP raus + make snapshot + merge.
+
+2026-09-26 Maintainer: rex-gpu k72 (GH200) archiviert, keine solche Hardware -> kein Blocker mehr. Offen bleiben nur: Release Rex::GPU/Rex::Rancher 0.003, dann Vendor-TEMP raus + make snapshot + merge. Nachzuziehen: 'Known gap GH200' in ADR 0015 (~Z.148, dort auch GB200 faelschlich als Grace Hopper) und Skill ocp-gpu (~Z.115).
+
+2026-09-26 04:34 GH200 doc follow-up committed: 7aff449 (removes the 'Known gap GH200' notes from ocp-gpu SKILL.md and ADR 0015's amendment). Remaining before merge to main is unchanged: Rex::GPU and Rex::Rancher 0.003 on CPAN, then remove the TEMP vendor blocks (Makefile/Dockerfile/.dockerignore), make snapshot, make test, merge.
+
+2026-09-26 04:45 Review des Branches (Orchestrator + ocp-infra-worker read-only): Docker make test grün 120/2041 gegen frisch vendorte rex-gpu a3ba55d / rex-rancher d6196b2. Befunde: (1) IPAM über helm_values statt neuem ipam_mode (rex-rancher k64) -> laufendes Cilium in ipam.mode kubernetes lässt jedes apply sterben; (3) Legacy-Drop-in 50-ocp-cluster-cidr.yaml wird VOR install_server entfernt, dessen Skew-Check sterben kann; (8) Quelltext-grep-Asserts t/44:196-201, t/28:115; (9) Rexfile:322-324 'Turing to Hopper' veraltet seit rex-gpu 3a5299d. Diese vier gehen jetzt an ocp-infra-worker auf rex-0.003-vendor. Entscheidungs-/Sibling-Befunde (2,4,5,6,7) werden eigene Karten.
+
+2026-09-26 04:56 ocp-infra-worker, review findings 1-4 implemented (uncommitted). (1) _cilium_opts: ipam_mode => 'cluster-pool' instead of helm_values ipam.mode -- verified against vendored rex-rancher 0.003 (_explicit_values counts ipam_mode as a fresh-install default, _adopt_running keeps a running mode + pool with a warning; upgrade_cilium takes the same _resolve_opts/_adopt_running path). (2) _remove_legacy_cluster_cidr_dropin moved after install_server (its check_version_skew dies before config.yaml is written). Consequence: removal after the (re)start bumps config.yaml.d mtime, so the NEXT apply restarts a running rke2 server once more (k49 find -newermt includes the dir) -- Changes sentence updated from 'restarts once' to 'first two applies'. (3) t/44 ubuntu-drivers grep and t/28 ensure_gateway_api_crds grep removed (covers: t/44 Ubuntu recorder 'no command of its own' + t/155; t/93 'rke2: the pinned standard bundle'); t/44 linux-headers grep converted to a recorder test over Ubuntu+Debian. (4) Rexfile GPU comment: GH200 open-only per Rex::GPU table. Mutation-checked: every new/converted assertion goes red on the old code.
+
+2026-09-26 04:59 Also found (not touched, for the dispatcher): (a) the same stale 'proprietary ... Turing through Hopper' (GH200 now open-only) in .claude/skills/ocp-gpu/SKILL.md:107 and docs/adr/0015-decide-about-gpus-from-the-machine.md:123. (b) remaining source-grep asserts next to the removed ones: t/44 'no driver branch is hardcoded' (unlike nvidia-driver-\d) and t/28:113 (install_cilium gateway_api_version); both outside this brief. (c) pre-existing 'Use of uninitialized value in string eq' from Rex/Rancher/Cilium.pm _read_running during t/155 'k3s without an address' (present on HEAD too). (d) the second rke2 restart on the next apply after the drop-in removal is inherent to removing it after install_server; avoiding it would need the library (rex-rancher board) or an mtime trick OCP should not play.
+
+2026-09-26 05:00 Done (ocp-infra-worker): review findings 1-4 on rex-0.003-vendor, uncommitted, commit-ready. share/Rexfile: ipam_mode cluster-pool (running Cilium keeps its IPAM mode, no more die), legacy cluster-cidr drop-in removed only after install_server returns, GH200 comment. Tests: t/155 IPAM subtest claim changed refused -> kept (rke2+k3s+upgrade shape); t/182 order flipped + new failure case; t/178/t/182/t/91 assert ipam_mode; t/44 ubuntu-drivers + t/28 ensure_gateway_api_crds greps removed (covered by t/44 Ubuntu recorder/t/155 and t/93), t/44 linux-headers grep converted to a recorder test. Skill ocp-cilium IPAM paragraph and Changes restart sentence updated. Verified: mutation check (old code turns every new/converted assertion red); DOCKER_BUILDKIT=0 make test PASS, Files=120 Tests=2043.
+
+2026-09-26 05:02 Committed on rex-0.003-vendor: 8a15a9a (ipam_mode cluster-pool kept-not-refused + legacy cluster-cidr drop-in removed only after install_server + GH200 Rexfile comment + t/155,t/178,t/182,t/28,t/44,t/91,ocp-cilium SKILL.md,Changes), a886f80 (GH200 doc wording fix: ocp-gpu SKILL.md + ADR 0015 Amendment 2026-09-26). Merge to main gated by (a) Rex::GPU and Rex::Rancher 0.003 on CPAN, then remove the TEMP vendor blocks + make snapshot + make test, and (b) the maintainer decision in k193 (apply now rolls/refuses RKE2 on a running CP). Follow-ups filed from review: k192, k193, k194, k195 (this board); rex-rancher k66, k67 (rex-rancher board).
+
+2026-09-26 05:10 Per Maintainer-Go ff nach main gemerged und gepusht (ec1e76b..a886f80), Branch rex-0.003-vendor gelöscht. main trägt damit die TEMP-Vendor-Blöcke: ein frischer Checkout/CI baut erst nach 'make vendor' mit Sibling-Checkouts. Offen bis done: Rex::GPU + Rex::Rancher 0.003 auf CPAN, dann TEMP-Blöcke (Makefile/Dockerfile/.dockerignore) raus, make snapshot, make test.
+
+2026-09-26 06:10 Live-Test auf ocpt-cp/ocpt-w (Debian 13, rke2 v1.36.4, Image live-a886f80 = main mit vendortem rex-gpu a3ba55d / rex-rancher d6196b2), alles grün:
+(1) Cluster mit altem Image ec1e76b (0.002) gebaut, pod_cidr 10.60.0.0/16 -> Legacy-Drop-in vorhanden. apply mit neuem Image = Reconcile-Pfad, fasst RKE2 NICHT an (t/38 verbietet install_server dort), keine Restarts.
+(2) Bootstrap-Pfad auf laufenden CP (kubeconfig.yaml weggeräumt): cluster-cidr landet in config.yaml, Drop-in erst NACH install_server entfernt (mtime belegt), 1 Restart; 2. Lauf 1 Restart (config.yaml.d), 3. Lauf keiner. Cilium 'already deployed with the requested values': cluster-pool + Pool 10.60/16 erhalten, Nodes Ready, PodCIDRs unverändert.
+(3) destroy + frischer Bootstrap mit neuem Image: cluster-cidr direkt in config.yaml, Cilium frisch cluster-pool 10.60/16 via ipam_mode, Worker per CLI gejoint, keine WARN.
+(4) robocop live-a886f80: deploy-image setzt OCP_DISTRIBUTION/OCP_POD_CIDR (k187 live ok), inject-key ok, Worker per robocop Pending->Ready in 76s, PodCIDR 10.60.2.0/24, keine WARN.
+Live-Bug gefunden: rex-rancher k68 (high) -- running_version liest 'exe version' aus /proc/PID/exe nicht, Skew-Check/Neues-Binary-Erkennung greifen live nie. Gehört vor den 0.003-Release.
+NICHT live getestet: der eigentliche Ubuntu-Treiberzweig (install_driver + UbuntuDrivers) -- braucht Ubuntu + NVIDIA-Hardware.
+Changes korrigiert: apply auf bestehendem Cluster startet RKE2 nicht neu; nur ein Bootstrap-Lauf gegen laufenden CP.
