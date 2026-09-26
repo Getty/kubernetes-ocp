@@ -687,6 +687,11 @@ sub cli_reconcile_workers {
         return @results;
     }
 
+    # The project's kubeconfig, read once for every node (k196): OCP::Node
+    # hands it to a worker's agent install, which checks the agent's version
+    # against the control plane's before it touches the machine.
+    my $kubeconfig = $secrets && $secrets->read_kubeconfig;
+
     my @results;
     for my $name (@$names) {
         my $cr = eval { $api->get('OCPNode', $name, namespace => $ns) };
@@ -733,6 +738,7 @@ sub cli_reconcile_workers {
             join_token   => $join_token,
             distribution => $distribution,
             verbose      => $self->ocp->verbose,
+            ($kubeconfig ? (kubeconfig => $kubeconfig) : ()),
             (($hash->{spec}{role} // '') eq 'control-plane'
                 ? (tls_san => \@cp_sans, pod_cidr => $config->pod_cidr) : ()),
             %gpu_flags,

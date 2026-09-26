@@ -28,10 +28,8 @@ spec:
       # node-role.kubernetes.io/master (label + NoSchedule taint) to server
       # nodes; match/tolerate by key presence only (operator: Exists, no
       # value), same convention already used for nfd-master and
-      # gpu-operator in OCP::Cmd::Apply::Workloads. share/Rexfile's
-      # untaint_control_plane task removes both taints by key for the same
-      # reason and is unused by default, so the taints normally stay in
-      # place even on single-node clusters.
+      # gpu-operator in OCP::Cmd::Apply::Workloads. OCP never removes
+      # these taints, so they stay in place even on single-node clusters.
       tolerations:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists

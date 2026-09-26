@@ -262,7 +262,10 @@ for my $case (
 
   subtest "$task goes ahead on a clean host" => sub {
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub { return ('', 0) };
+    # The probe finds nothing; everything else is the harness's default node,
+    # whose server install leaves the admin kubeconfig the API wait reads.
+    my $node = $OCPTest::Rexfile::RUN;
+    local $OCPTest::Rexfile::RUN = sub { return $_[0] eq $probe ? ('', 0) : $node->(@_) };
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
     ok $ok, 'the task runs' or diag $@;
     is scalar(OCPTest::Rexfile->calls($lib)), 1, "$lib is called";

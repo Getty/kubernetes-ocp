@@ -336,12 +336,18 @@ sub _cli_reconcile {
             unless $join_token;
     }
 
+    # The project's kubeconfig (k196): OCP::Node hands it to a worker's agent
+    # install, which checks the agent's version against the control plane's
+    # before it touches the machine.
+    my $kubeconfig = $secrets && $secrets->read_kubeconfig;
+
     my $node = OCP::Node->from_cr($cr,
         k8s           => $api,
         ($provider_obj ? (provider => $provider_obj) : ()),
         ($ssh_key      ? (ssh_key  => $ssh_key)      : ()),
         ($server_url   ? (server_url => $server_url) : ()),
         ($join_token   ? (join_token => $join_token) : ()),
+        ($kubeconfig   ? (kubeconfig => $kubeconfig) : ()),
         distribution  => ($config->distribution || 'rke2'),
         pod_cidr      => $config->pod_cidr,   # a control-plane join repeats it (k184)
         reconciler_id => 'cli',

@@ -868,6 +868,52 @@ subtest 'the install version follows the distribution, not always rke2 (k148)' =
 };
 
 #
+# The cluster's kubeconfig for the agent's version check (k196).
+#
+# Rex::Rancher::Agent::install_agent reads the control plane's version through
+# a kubeconfig when it is given one, and refuses an agent of a newer minor
+# before the host is touched. The Rex run happens on this machine, so the
+# kubeconfig has to be a file here: the caller hands OCP::Node the content,
+# the way it hands the SSH key, and OCP::Node writes the file and keeps it as
+# long as the node object lives. Workers only -- a control plane joins as a
+# server. No kubeconfig (robocop has none) means no parameter, and the join
+# goes without the check.
+#
+subtest 'a worker gets the cluster kubeconfig as a file for the Rex run (k196)' => sub {
+    my $kc = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://1.2.3.4:6443\n";
+    my %install = (ssh_key => 'K', server_url => 'https://cp:9345', join_token => 'T',
+                   ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    my $params_for = sub {
+        my ($role, %over) = @_;
+        @FakeRex::_instances = ();
+        my $k = StrictK8s::build(cr => ocpnode(
+            metadata => { name => 'kc1', namespace => 'ocp-system' },
+            spec     => { role => $role, providerRef => 'hetzner-a' },
+            status   => { phase => 'Installing', publicIP => '1.2.3.4' },
+        ));
+        my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+            %install, %over);
+        $node->_install_kubernetes;
+        return ($node, $FakeRex::_instances[0]{calls}[0][1]);
+    };
+
+    my ($node, $p) = $params_for->('worker', kubeconfig => $kc);
+    my $file = $p->{kubeconfig};
+    ok defined $file && -r $file, 'the agent install is handed a file' or return;
+    is Path::Tiny::path($file)->slurp, $kc, 'holding the kubeconfig';
+    is((stat $file)[2] & 07777, 0600, 'readable by nobody else');
+    undef $node;
+    ok !-e $file, 'gone with the node';
+
+    (undef, $p) = $params_for->('worker');
+    ok !exists $p->{kubeconfig}, 'no kubeconfig: none handed on';
+
+    (undef, $p) = $params_for->('control-plane', kubeconfig => $kc);
+    ok !exists $p->{kubeconfig}, 'a control plane joins as a server: none handed on';
+};
+
+#
 # The key files OCP::Node hands to Rex (k93).
 #
 # OCP::Rex sets REX_PUBLIC_KEY to key_file . '.pub' unconditionally and never

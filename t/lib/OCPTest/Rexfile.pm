@@ -18,6 +18,7 @@ use Path::Tiny qw( path );
 #   OCPTest::Rexfile->load;
 #   OCPTest::Rexfile->reset;
 #   local $OCPTest::Rexfile::RUN = sub { my ($cmd) = @_; return ($out, $exit) };
+#   local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::K8s::wait_for_api'} = sub { 0 };
 #   my $out = OCPTest::Rexfile->run_task('install_k3s_server', { token => 't' });
 #   my ($call) = OCPTest::Rexfile->calls('Rex::Rancher::Server::install_server');
 #   my %opts = @{ $call->{args} };
@@ -28,11 +29,24 @@ our $SANDBOX = 'OCPTest::Rexfile::Sandbox';
 # Every recorded call, in order: { name => 'run' | 'file' | 'Rex::...::fn', args => [...] }
 our @CALLS;
 
-# run: ($cmd, %opt) -> ($output, $exit). Default: empty output, exit 0.
-our $RUN = sub { return ('', 0) };
+# The admin kubeconfig an installed RKE2/K3s server has written, as the
+# Rexfile reads it off the node (`cat /etc/rancher/<dist>/<dist>.yaml`) for
+# the API wait and the Cilium tasks.
+our $NODE_KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\n";
+
+# run: ($cmd, %opt) -> ($output, $exit). Default: a node whose server install
+# wrote its admin kubeconfig; every other command gives empty output, exit 0.
+our $RUN = sub {
+  return ( $NODE_KUBECONFIG, 0 ) if $_[0] =~ m{^cat /etc/rancher/(?:rke2/rke2|k3s/k3s)\.yaml$};
+  return ('', 0);
+};
 
 # Library calls that die: 'Rex::Rancher::Agent::install_agent' => "message\n"
 our %LIB_DIE;
+
+# Library calls answered by code instead of returning 1:
+# 'Rex::Rancher::K8s::wait_for_api' => sub { my (%opts) = @_; return 0 }
+our %LIB_CODE;
 
 # Host facts the stubs answer from.
 our %IS_FILE;
@@ -51,6 +65,7 @@ our @LIBRARY = qw(
   Rex::Rancher::Cilium::install_cilium
   Rex::Rancher::Cilium::upgrade_cilium
   Rex::Rancher::Cilium::ensure_gateway_api_crds
+  Rex::Rancher::K8s::wait_for_api
   Rex::GPU::NVIDIA::install_driver
   Rex::GPU::NVIDIA::install_container_toolkit
   Rex::GPU::NVIDIA::verify_nvidia
@@ -76,6 +91,7 @@ sub load {
     *{$fq} = sub {
       push @CALLS, { name => $fq, args => [@_] };
       die $LIB_DIE{$fq} if defined $LIB_DIE{$fq};
+      return $LIB_CODE{$fq}->(@_) if $LIB_CODE{$fq};
       return 1;
     };
   }
@@ -134,6 +150,7 @@ sub load {
 sub reset {
   @CALLS = ();
   %LIB_DIE = ();
+  %LIB_CODE = ();
   %IS_FILE = ();
   %CAT = ();
   %CAN_RUN = ();

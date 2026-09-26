@@ -2,6 +2,7 @@ package OCP::Node;
 # ABSTRACT: Trigger-neutral node reconcile state machine
 
 use Moo;
+use File::Temp ();
 use Time::Piece ();
 use OCP::K8s;
 # ssh_class and rex_class default to these by name. Nothing else in the
@@ -38,6 +39,26 @@ has tls_san       => (is => 'ro');
 # mismatch -- so, like tls_san, it arrives from outside. Unset leaves the
 # Rexfile's own fallback in charge. A worker takes none.
 has pod_cidr      => (is => 'ro');
+
+# A kubeconfig of the cluster, as content (k196). A worker's agent install
+# hands it to Rex::Rancher, which then reads the control plane's version
+# through the API and refuses an agent of a newer minor before the machine is
+# touched -- a kubelet must never be newer than its API server. The Rex run
+# happens on this machine, so it takes a file: written here, like the key
+# pair, and kept as long as this object lives. `ocp apply` and `ocp node add`
+# pass the project's kubeconfig; robocop runs off its service account and has
+# none, and its joins go without the check. A control plane takes none: it
+# joins as a server.
+has kubeconfig    => (is => 'ro');
+has _kubeconfig_file => (is => 'lazy', builder => '_build_kubeconfig_file');
+
+sub _build_kubeconfig_file {
+    my ($self) = @_;
+    my $fh = File::Temp->new(TEMPLATE => 'ocp-kubeconfig-XXXXXX', SUFFIX => '.yaml', TMPDIR => 1);
+    print {$fh} $self->kubeconfig;
+    close $fh or die "Cannot write the kubeconfig for the Rex run: $!\n";
+    return $fh;
+}
 
 # Cluster-wide GPU switches, from ocp.yaml's gpu: block. They are not on the
 # OCPNode CR -- they are the same for every node of a provider, and robocop
@@ -515,6 +536,12 @@ sub _install_kubernetes {
         my $pod_cidr = $self->pod_cidr;
         $params{pod_cidr} = $pod_cidr if defined $pod_cidr && length $pod_cidr;
     }
+
+    # The agent's version check against the control plane (k196): a path on
+    # this machine, where the Rex run reads it. See `kubeconfig`.
+    my $kubeconfig = $self->kubeconfig;
+    $params{kubeconfig} = $self->_kubeconfig_file->filename
+        if !$is_cp && defined $kubeconfig && length $kubeconfig;
 
     my $ok = eval { $rex->run_task($task, %params) };
     if (!$ok || $@) {
@@ -1167,6 +1194,15 @@ L<OCP::Rex>'s own defaults in charge — the pre-k31 baseline.
 The cluster's C<network.pod_cidr>. Only a control-plane join uses it: an
 additional RKE2 server must carry the first server's C<cluster-cidr>. Unset
 leaves the Rexfile's fallback in charge.
+
+=item kubeconfig
+
+A kubeconfig of the cluster, as content. Only a worker's join uses it: it is
+written to a C<0600> file on this machine for as long as the object lives, and
+the agent install hands that to L<Rex::Rancher::Agent>, which checks the agent
+against the control plane's version before it touches the machine. C<ocp apply>
+and C<ocp node add> pass the project's kubeconfig; unset (robocop) the join goes
+without the check.
 
 =item reconciler_id
 

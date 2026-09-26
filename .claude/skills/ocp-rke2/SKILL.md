@@ -119,10 +119,16 @@ move it.
    token reuse, Cilium-only CNI keys, the default disable list,
    `nvidia_runtime_path`, and a bounded service wait with journal (RKE2 with
    a pin uses `install_method => 'artifact'`; a running rke2 server restarts
-   only when its config actually changed, rex-rancher k49) — then OCP waits
-   for the API. `install_{rke2,k3s}_agent` — plain
+   only when its config actually changed, rex-rancher k49) — then
+   `Rex::Rancher::K8s::wait_for_api` waits for the API from the machine
+   running Rex, through the node's admin kubeconfig (no kubectl on the node;
+   the library returns false on its 5-minute timeout, so OCP dies itself,
+   k196). `install_{rke2,k3s}_agent` — plain
    `Rex::Rancher::Agent::install_agent`; the join URL in a failed join's error
    is the library's own since 0.003 (rex-rancher k44), OCP adds nothing to it.
+   With a `kubeconfig` task param the library first checks the agent against
+   the control plane's version; `ocp apply`/`ocp node add` pass one via
+   OCP::Node, robocop has none (k196).
 4. `install_cilium` / `upgrade_cilium` — `Rex::Rancher::Cilium` with a local
    kubeconfig fetched off the node, `gateway_api_channel => 'standard'`,
    `cluster_cidr` passed only on a fresh install (the pool of a running

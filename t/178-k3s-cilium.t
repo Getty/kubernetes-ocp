@@ -84,15 +84,17 @@ subtest 'optional keys stay out when not given' => sub {
     ok !exists $o->{tls_san}, 'no tls-san';
 };
 
+# Since k196 through Rex::Rancher::K8s::wait_for_api, from this machine, not
+# kubectl on the node; the details are held in t/196-rexfile-lib-offload.t.
 subtest 'install_k3s_server waits for the API before it reports ready' => sub {
     OCPTest::Rexfile->reset;
     OCPTest::Rexfile->run_task('install_k3s_server', { token => $TOKEN });
     my $install = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Server::install_server' });
-    my $wait    = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'run' && $_->{args}[0] =~ /kubectl .*get nodes/ });
-    ok $install >= 0 && $wait > $install, 'kubectl get nodes, after the install';
+    my $wait    = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::K8s::wait_for_api' });
+    ok $install >= 0 && $wait > $install, 'the API wait, after the install';
 
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub { $_[0] =~ /get nodes/ ? ('', 1) : ('', 0) };
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::K8s::wait_for_api'} = sub { 0 };
     ok !eval { OCPTest::Rexfile->run_task('install_k3s_server', { token => $TOKEN }); 1 },
         'an API that never answers fails the task';
     like $@, qr/did not answer/, 'and says so';

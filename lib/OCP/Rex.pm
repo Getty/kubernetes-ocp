@@ -382,44 +382,6 @@ sub install_agent {
     return 1;
 }
 
-sub get_kubeconfig {
-    my ($self, $distribution) = @_;
-
-    $distribution ||= 'rke2';
-
-    my $task = $distribution eq 'k3s' ? 'get_k3s_kubeconfig' : 'get_rke2_kubeconfig';
-    my $result = $self->run_task($task);
-
-    my $kubeconfig = $result->{stdout};
-
-    # Point the kubeconfig `server` at the advertised address, not the transport
-    # (see fetch_kubeconfig_ssh). advertised_host defaults to host, so this is a
-    # no-op except on the local provider (k138).
-    my $advertised = $self->advertised_host;
-    $kubeconfig =~ s/127\.0\.0\.1/$advertised/g;
-    $kubeconfig =~ s/localhost/$advertised/g;
-
-    # Remove certificate-authority-data and add insecure-skip-tls-verify
-    # (TLS cert only valid for short hostname, not FQDN)
-    $kubeconfig =~ s/^\s*certificate-authority-data:.*\n//mg;
-    $kubeconfig =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
-
-    return $kubeconfig;
-}
-
-sub get_token {
-    my ($self, $distribution) = @_;
-
-    $distribution ||= 'rke2';
-
-    my $task = $distribution eq 'k3s' ? 'get_k3s_token' : 'get_rke2_token';
-    my $result = $self->run_task($task);
-
-    my $token = $result->{stdout};
-    chomp $token;
-    return $token;
-}
-
 # The cluster token a control plane is already sealed with, read straight off
 # the machine, or undef when there is none. install_server reuses this instead
 # of minting a new token so a re-apply against an existing cluster never rotates
@@ -555,16 +517,12 @@ Returns hashref with C<token> and C<kubeconfig>.
 
 Join node to cluster as worker.
 
-=head2 get_kubeconfig
+=head2 fetch_kubeconfig_ssh
 
-    my $kubeconfig = $rex->get_kubeconfig('rke2');
+    my $kubeconfig = $rex->fetch_kubeconfig_ssh('rke2');
 
-Fetch kubeconfig from remote server.
-
-=head2 get_token
-
-    my $token = $rex->get_token('rke2');
-
-Fetch join token from control plane.
+The server's admin kubeconfig, read over SSH, with C<server> pointed at
+C<advertised_host> and the CA replaced by C<insecure-skip-tls-verify>.
+C<install_server> returns it as C<kubeconfig>.
 
 =cut

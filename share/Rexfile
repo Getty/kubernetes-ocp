@@ -9,11 +9,11 @@ use JSON::MaybeXS;
 
 # The install itself lives in Rex::Rancher and Rex::GPU, which exist for OCP
 # (k155): node preparation, the RKE2/K3s server and agent installs, Cilium with
-# the Gateway API CRDs, and the NVIDIA driver and container toolkit. This file
-# keeps what is OCP's own -- the parameter hand-over, the pod network, GPU
-# detection from sysfs, the legacy-file cleanups, the API wait -- and every
-# piece the libraries cannot yet express, each marked with the card on the
-# library's board that would move it there.
+# the Gateway API CRDs, the wait for the Kubernetes API, and the NVIDIA driver
+# and container toolkit. This file keeps what is OCP's own -- the parameter
+# hand-over, the pod network, GPU detection from sysfs, the legacy-file
+# cleanups -- and every piece the libraries cannot yet express, each marked
+# with the card on the library's board that would move it there.
 #
 # Loaded without imports: every call below names its library, so no library
 # function can shadow a task of the same name (install_cilium, prepare_node).
@@ -21,6 +21,7 @@ use Rex::Rancher::Node ();
 use Rex::Rancher::Server ();
 use Rex::Rancher::Agent ();
 use Rex::Rancher::Cilium ();
+use Rex::Rancher::K8s ();
 use Rex::GPU::NVIDIA ();
 
 # Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
@@ -83,12 +84,10 @@ sub check_os {
     }
 }
 
-# Where each distribution keeps its kubectl and its admin kubeconfig on the node.
-sub _kube {
+# Where each distribution keeps its admin kubeconfig on the node.
+sub _node_kubeconfig {
     my ($distribution) = @_;
-    return $distribution eq 'k3s'
-        ? ('kubectl', '/etc/rancher/k3s/k3s.yaml')
-        : ('/var/lib/rancher/rke2/bin/kubectl', '/etc/rancher/rke2/rke2.yaml');
+    return $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
 }
 
 #
@@ -381,19 +380,6 @@ task "install_rke2_agent", sub {
     say "RKE2 agent joined cluster";
 };
 
-desc "Get RKE2 kubeconfig";
-task "get_rke2_kubeconfig", sub {
-    my $kubeconfig = run "cat /etc/rancher/rke2/rke2.yaml";
-    return $kubeconfig;
-};
-
-desc "Get RKE2 token";
-task "get_rke2_token", sub {
-    my $token = run "cat /var/lib/rancher/rke2/server/node-token";
-    chomp $token;
-    return $token;
-};
-
 desc "Install K3s server (control plane)";
 task "install_k3s_server", sub {
     _install_server('k3s', task_params(shift));
@@ -404,19 +390,6 @@ desc "Install K3s agent (worker)";
 task "install_k3s_agent", sub {
     _install_agent('k3s', task_params(shift));
     say "K3s agent joined cluster";
-};
-
-desc "Get K3s kubeconfig";
-task "get_k3s_kubeconfig", sub {
-    my $kubeconfig = run "cat /etc/rancher/k3s/k3s.yaml";
-    return $kubeconfig;
-};
-
-desc "Get K3s token";
-task "get_k3s_token", sub {
-    my $token = run "cat /var/lib/rancher/k3s/server/node-token";
-    chomp $token;
-    return $token;
 };
 
 # A control plane: the first server (cluster-init), or with `server` another
@@ -504,38 +477,6 @@ sub _server_opts {
     );
 }
 
-desc "Untaint control plane (allow workloads)";
-task "untaint_control_plane", sub {
-    my $params = task_params(shift);
-    my $distribution = $params->{distribution} || 'rke2';
-
-    say "Removing control plane taints...";
-
-    if ($distribution eq 'rke2') {
-        # Wait for node to be registered
-        run "while ! /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>/dev/null; do sleep 2; done", timeout => 60;
-
-        # Get node name
-        my $node = run "/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o jsonpath='{.items[0].metadata.name}'";
-        chomp $node;
-
-        # Remove taints
-        run "/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml taint nodes $node node-role.kubernetes.io/control-plane:NoSchedule- || true";
-        run "/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml taint nodes $node node-role.kubernetes.io/master:NoSchedule- || true";
-    } else {
-        # K3s
-        run "while ! kubectl get nodes 2>/dev/null; do sleep 2; done", timeout => 60;
-
-        my $node = run "kubectl get nodes -o jsonpath='{.items[0].metadata.name}'";
-        chomp $node;
-
-        run "kubectl taint nodes $node node-role.kubernetes.io/control-plane:NoSchedule- || true";
-        run "kubectl taint nodes $node node-role.kubernetes.io/master:NoSchedule- || true";
-    }
-
-    say "Control plane untainted, workloads can be scheduled";
-};
-
 #
 # Helpers
 #
@@ -548,6 +489,13 @@ task "untaint_control_plane", sub {
 # agent that cannot reach its server used to hang the task and `ocp apply`
 # with it). The message names the server the agent joins through, the
 # likeliest reason it never gets there (rex-rancher k44).
+#
+# With `kubeconfig` -- a kubeconfig of the cluster, as a file on this machine
+# -- install_agent first reads the control plane's version through the API and
+# refuses an agent of a newer minor before the host is touched: a kubelet must
+# never be newer than its API server (k196). OCP::Node passes one when its
+# caller has it (`ocp apply`, `ocp node add`); robocop runs off its service
+# account and has no kubeconfig file, so its joins go without the check.
 sub _install_agent {
     my ($distribution, $params) = @_;
     $params->{server} or die "server URL required\n";
@@ -571,6 +519,7 @@ sub _agent_opts {
         node_name           => $params->{node_name} || undef,
         ($distribution eq 'rke2' ? (registries => _registries($params)) : ()),
         nvidia_runtime_path => 1,
+        ($params->{kubeconfig} ? (kubeconfig => $params->{kubeconfig}) : ()),
     );
 }
 
@@ -695,21 +644,27 @@ sub _registries {
     };
 }
 
-# Waits for the API server to answer on the node, and dies when it does not.
+# Waits for the API server to answer, and dies when it does not.
 # install_server returns once the service is active and the kubeconfig
 # written; everything after this (Cilium, the kubeconfig OCP fetches) needs
 # the API itself.
+#
+# Asked from this machine through Kubernetes::REST, not with kubectl on the
+# node (k196): Rex::Rancher::K8s::wait_for_api lists the Nodes every 5 seconds
+# for 5 minutes, through the node's admin kubeconfig pointed at the address
+# Rex reaches the node on -- the route install_cilium takes right after, and
+# the one Rex::Rancher's own server deploy waits on. The library returns false
+# on a timeout instead of dying, so the dying is done here.
 sub _wait_for_api {
     my ($distribution) = @_;
-    my ($kubectl, $kubeconfig) = _kube($distribution);
+    my $local = _local_kubeconfig($distribution);
 
-    say "Waiting for the Kubernetes API...";
-    run "until $kubectl --kubeconfig $kubeconfig get nodes >/dev/null 2>&1; do sleep 5; done",
-        auto_die => FALSE, timeout => 300;
-    return 1 if $? == 0;
+    return 1 if Rex::Rancher::K8s::wait_for_api(kubeconfig => "$local");
 
-    die "The Kubernetes API did not answer within 5 minutes.\n"
-      . "Check on the node: $kubectl --kubeconfig $kubeconfig get nodes\n";
+    my $host = "" . connection->server;
+    die "The Kubernetes API of $distribution on $host did not answer within 5 minutes,\n"
+      . "asked from this machine through the node's admin kubeconfig.\n"
+      . "Check that $distribution runs on the node and that this machine reaches $host:6443.\n";
 }
 
 # The containerd config template OCP used to write, byte for byte.
@@ -897,12 +852,13 @@ sub _cilium_opts {
 # to, as a File::Temp object (0600, gone when it goes out of scope).
 #
 # Rex::Rancher::Cilium reads the Helm release and applies the Gateway API
-# CRDs through Kubernetes::REST, from here. The admin kubeconfig is read off
+# CRDs through Kubernetes::REST, from here, and Rex::Rancher::K8s waits for
+# the API after a server install the same way. The admin kubeconfig is read off
 # the node and pointed at the address Rex reaches the node on -- the one
 # OCP::Rex connects to, which is where OCP reaches the API as well.
 sub _local_kubeconfig {
     my ($distribution) = @_;
-    my (undef, $kubeconfig) = _kube($distribution);
+    my $kubeconfig = _node_kubeconfig($distribution);
 
     my $content = run "cat $kubeconfig", auto_die => FALSE;
     die "Cannot read $kubeconfig on the node -- is $distribution running?\n"

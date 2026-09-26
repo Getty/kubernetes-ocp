@@ -55,6 +55,7 @@ subtest 'every entry point the Rexfile calls exists' => sub {
         Rex::Rancher::Cilium::install_cilium
         Rex::Rancher::Cilium::upgrade_cilium
         Rex::Rancher::Cilium::ensure_gateway_api_crds
+        Rex::Rancher::K8s::wait_for_api
         Rex::GPU::NVIDIA::install_driver
         Rex::GPU::NVIDIA::install_container_toolkit
         Rex::GPU::NVIDIA::verify_nvidia
@@ -309,6 +310,25 @@ subtest 'agents are started without blocking' => sub {
         ok $ok, "$d: started" or diag $err;
         ok((grep { $_ eq "systemctl $want" } @$cmds), "$d: systemctl $want");
     }
+};
+
+# OCP hands install_agent the cluster's kubeconfig from the CLI (k196); this is
+# what it buys: the control plane's version, read through the API, stops an
+# agent of a newer minor before the host is touched.
+subtest 'with a kubeconfig, an agent newer than the control plane is refused (k196)' => sub {
+    my @cmds;
+    local *Rex::Commands::Run::run = sub { push @cmds, $_[0]; $? = 0; return '' };
+    local *Rex::Rancher::K8s::control_plane_version = sub { 'v1.35.2+rke2r1' };
+    ok !eval {
+        Rex::Rancher::Agent::install_agent(distribution => 'rke2',
+            server => 'https://10.0.0.1:9345', token => 't',
+            version => 'v1.36.4+rke2r1', kubeconfig => '/tmp/ocp-kubeconfig-x.yaml');
+        1;
+    }, 'dies';
+    like $@, qr/control plane runs v1\.35\.2\+rke2r1/, 'naming the control plane\'s version';
+    like $@, qr/Nothing was installed/, 'before anything is installed';
+    is_deeply [ grep { !/^systemctl show -p MainPID |--version 2>&1$/ } @cmds ], [],
+        'nothing but read-only probes ran on the host';
 };
 
 subtest 'a join that never comes up names the address it joins through (rex-rancher k44)' => sub {
