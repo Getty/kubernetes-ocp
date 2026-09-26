@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-26T04:33:53Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-26T04:33:53Z
+created: 2026-09-24T17:28:54Z
+id: 184
+priority: low
+started: 2026-09-24T17:56:42Z
+status: done
+tags:
+- robocop
+- network
+- multi-cp
+title: robocop-CP-Joins kennen network.pod_cidr nicht
+updated: 2026-09-26T04:33:53Z
+---
+
+Aus k182: robocops Control-Plane-Joins (OCP::Node -> install_rke2_server) bekommen kein pod_cidr und nutzen den Rexfile-Fallback 10.42.0.0/16. Bei eigenem network.pod_cidr scheitert der Join an RKE2s critical-config-mismatch (laut, aber kaputt). Done: pod_cidr ueber den OCPNodeProvider-CR transportieren (wie die GPU-Flags), Test.
+
+2026-09-24 17:52 Covered by dd23efb (with k186): pod_cidr travels as OCP_POD_CIDR in the robocop Deployment env, not the provider CR (cluster-wide, needed at startup, deploy-robocop does not write provider CRs). OCP::Node->pod_cidr goes to install_rke2_server on CP joins; CLI paths (cli_reconcile_workers, ocp node add) pass it too. Rexfile comment 'robocop's joins only have the fallback' (~line 619) is now stale -- left alone because k185 is working in share/Rexfile.
+
+2026-09-24 17:56 Review ok, ff nach main (2588109), gepusht. Docker 116/2021 gruen. Live-Nachtest folgt (RKE2-Durchlauf).
+
+2026-09-26 04:33 Closing: 2588109 confirmed ancestor of origin/main. The stale Rexfile comment (~line 742, sub _default_pod_cidr: 'robocop's control-plane joins, which never see ocp.yaml') is still on origin/main; filed as k192 (backlog, low priority, rexfile/docs) instead of fixing here. Moving to done.
