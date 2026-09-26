@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-09-26T04:34:19Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-09-26T04:34:19Z
+created: 2026-09-24T17:53:20Z
+id: 187
+priority: medium
+started: 2026-09-24T17:57:07Z
+status: done
+tags:
+- robocop
+- deploy-image
+- upgrade
+title: 'ocp deploy-image: robocop-Deployment ohne OCP_DISTRIBUTION/OCP_POD_CIDR'
+updated: 2026-09-26T04:34:19Z
+---
+
+Aus k186: robocop stirbt seit k186 ohne OCP_DISTRIBUTION/OCP_POD_CIDR. deploy-image patcht nur das Image, und ein :latest-Pull bei Pod-Neustart (imagePullPolicy Always) auf einem Bestandscluster fuehrt zu CrashLoop, bis einmal ocp apply/deploy-robocop lief. Done: deploy-image ergaenzt fehlende env (aus ocp.yaml, gleicher Manifest->for_config-Pfad) oder verweigert mit klarer Meldung; Hinweis im Changes/Upgrade-Doku; Test.
+
+2026-09-24 18:02 Implemented in c3ac488 (branch worktree-agent-ab53abb946c2d518e): deploy-image's strategic-merge image patch now also sets OCP_DISTRIBUTION + OCP_POD_CIDR from ocp.yaml (env merges by name, so other env untouched; one patch = one rollout). Values from new OCP::Robocop::Manifest->cluster_env, shared with for_config. Chose patch over refuse: the merge is safe on any Deployment and Config always has values (defaults). docs/robocop.md upgrade note, Changes bullet adjusted. Docker make test: 116 files / 2023 tests green.
+
+2026-09-24 18:07 Review ok, ff nach main (c3ac488), gepusht. Docker 116/2023 gruen (Worker).
+
+2026-09-26 04:34 Closing: c3ac488 confirmed ancestor of origin/main. Moving to done.
