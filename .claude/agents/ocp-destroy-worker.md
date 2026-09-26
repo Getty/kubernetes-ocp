@@ -2,7 +2,6 @@
 name: ocp-destroy-worker
 description: "OCP teardown specialist — `ocp destroy`, `OCP::Cmd::Destroy.pm`, the delete path through the provider factory. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for any work that takes a cluster down — server deletion, status/deployed cleanup, the `--keep_status` opt-out. Use ocp-apply-worker for the create/upgrade side, ocp-provider-worker for the provider that owns the actual delete call. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core

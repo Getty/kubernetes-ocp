@@ -2,7 +2,6 @@
 name: ocp-worker
 description: "OCP fallback worker — use only for cross-cutting tasks that don't fit one of the specialized agents. Default for work that spans multiple lanes (e.g. a refactor that touches both Secrets and the state machine). For focused work, prefer the lane-specific agent: ocp-choices-worker (input validation), ocp-secrets-worker (Secrets/Keys/ClusterKey), ocp-state-worker (Config/Drift/Node/Versions), ocp-provider-worker (Provider roles + Hetzner/Local/SSH), ocp-apply-worker (init/apply/update/deploy-*), ocp-destroy-worker (destroy), ocp-status-worker (status/version). Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core

@@ -2,7 +2,6 @@
 name: ocp-choices-worker
 description: "OCP input-validation specialist — OCP::Choices, MooX::Options `option` blocks, _validate_* helpers, every place where a user-supplied value lands in the CLI. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use this for any input-validation work (karr #103, #110, #113 and the same shape). Use ocp-worker for code that is not about validating user input. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core

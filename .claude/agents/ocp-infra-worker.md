@@ -2,7 +2,6 @@
 name: ocp-infra-worker
 description: "Infrastructure lane for OCP — share/ (Kustomize, CRD YAML, manifest templates, the Rexfile) and OCP::Rex provisioning tasks, Cilium/RKE2/registry/GPU-stack configuration and version bumps in OCP::Versions. Pre-loaded with both layers: the generic Cilium, RKE2, GPU and registry references and the OCP-specific configuration on top. Use ocp-worker for general CLI/module code. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep, Skill
 briefing:
   skills:
     - ocp-core

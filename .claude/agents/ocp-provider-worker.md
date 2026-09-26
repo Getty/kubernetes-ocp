@@ -2,7 +2,6 @@
 name: ocp-provider-worker
 description: "OCP provider specialist — lib/OCP/Provider*, provider roles (OCP::Role::Provider*), Hetzner/Local/SSH provisioning paths, OCP::Rex, the SSH reachability story. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for anything that creates/removes a machine, talks to Hetzner, or provisions over Rex. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core

@@ -2,7 +2,7 @@
 name: ocp-doc-writer
 description: "Write and maintain OCP POD in the @Author::GETTY PodWeaver house format (inline =attr/=method/=opt, =description/=synopsis, # ABSTRACT) plus the prose docs (README, command help). Specify the files to work on. Documentation only — never changes code."
 model: sonnet
-allowed-tools: Read, Edit, Grep, Glob
+disallowedTools: Write, NotebookEdit, Bash
 briefing:
   skills:
     - ocp-core

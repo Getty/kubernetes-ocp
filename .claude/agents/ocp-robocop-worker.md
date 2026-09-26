@@ -2,7 +2,6 @@
 name: ocp-robocop-worker
 description: "Worker for robocop, OCP's in-cluster controller — bin/robocop, lib/OCP/Robocop/, the reconciliation loop, OCPNode/OCPNodeProvider handling from the controller side, and anything IO::Async/Future-shaped. Pre-loaded with async Perl patterns on top of the OCP core. Use ocp-worker for the CLI side. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core

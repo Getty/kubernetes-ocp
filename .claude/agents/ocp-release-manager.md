@@ -2,7 +2,6 @@
 name: ocp-release-manager
 description: "Owns ocp's commits and release readiness — cuts commits from the worker's commit-ready tree, writes commit messages and Changes entries, moves karr cards to done. Release audit: OCP before a release — cpanfile deps declared and Getty-authored deps pinned to released CPAN versions, dist.ini intact, $VERSION consistent across all modules, Changes current, dzil build clean, Docker image builds. Workers never commit; this agent does. Never pushes, tags or releases."
 model: sonnet
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-git-commit-style

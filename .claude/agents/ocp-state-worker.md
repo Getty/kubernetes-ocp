@@ -2,7 +2,6 @@
 name: ocp-state-worker
 description: "OCP state-machine specialist — OCP::Config (spec/status), OCP::Drift, OCP::Node (the state machine), OCP::Versions (component manifests), Hetzner/Local/SSH provider state, deployed.yaml reconciliation. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for anything that reads or writes the persistent state, the state machine, or the version-driven reconcile loop. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core

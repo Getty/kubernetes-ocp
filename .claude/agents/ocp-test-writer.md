@@ -2,7 +2,6 @@
 name: ocp-test-writer
 description: "Write and extend OCP tests in t/. Network-free and cluster-free: everything runs against inline mock packages (FakeK8s, FakeProvider, FakeRex) and File::Temp fixtures. Use for test additions, regression scaffolding and reproducing reported bugs."
 model: sonnet
-allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 briefing:
   skills:
     - getty-perl-core
