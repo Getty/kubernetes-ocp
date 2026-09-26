@@ -119,8 +119,9 @@ k155 — via a new `Rex::GPU::NVIDIA::Setup::UbuntuDrivers`, not OCP's own
 `ubuntu-drivers install`. Inside it, `ubuntu-drivers` answers only one of the
 three questions this ADR listed: the branch. The kernel-module flavour — open
 or proprietary — comes from the same device-ID table Rex::GPU already used
-for every non-Ubuntu OS since k155: open for Blackwell (GB10 included),
-proprietary where the table names nothing (Turing through Hopper), and for
+for every non-Ubuntu OS since k155: open for Blackwell (GB10 included) and
+Grace Hopper (GH200), proprietary where the table names nothing (the rest of
+Turing through Hopper), and for
 Maxwell, Pascal and Volta the `580-server` branch is installed directly,
 without consulting `ubuntu-drivers` at all. `ubuntu-drivers list --gpgpu` only
 *names* candidate packages for that flavour; `apt-get` installs the chosen

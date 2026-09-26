@@ -103,8 +103,9 @@ already.
   2026-09-26 amendment. Only the **branch** is asked of `ubuntu-drivers`; the
   **kernel-module flavour** (open vs proprietary) comes from the same
   device-ID table Rex::GPU already uses for every other OS: open for
-  Blackwell (GB10 among them), proprietary where the table names nothing
-  (Turing through Hopper), and for Maxwell, Pascal and Volta the
+  Blackwell (GB10 among them) and Grace Hopper (GH200), proprietary where
+  the table names nothing (the rest of Turing through Hopper), and for
+  Maxwell, Pascal and Volta the
   `580-server` branch is installed directly, without asking `ubuntu-drivers`
   at all. `ubuntu-drivers list --gpgpu` only *names* the package for that
   flavour (read-only); `apt-get` installs it and `dpkg` verifies it.
