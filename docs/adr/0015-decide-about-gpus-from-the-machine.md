@@ -144,9 +144,3 @@ first read — only "which package" — but the ADR's own bullet claimed
 `ubuntu-drivers` alone resolved all three questions, and that stopped being
 true the moment flavour became the library's table instead, first for every
 other OS at k155 and now for Ubuntu too.
-
-Known gap, not yet closed: GB200/GH200 (Grace Hopper generation) is not yet in
-Rex::GPU's table the way GB10 (Grace Blackwell) is, so it would currently get
-the proprietary branch — the wrong one for that generation, per this ADR's own
-Context (Grace Hopper and Blackwell run only the open kernel modules).
-Tracked as rex-gpu k72, open at the time of this amendment.

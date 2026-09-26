@@ -112,9 +112,6 @@ already.
   or naming nothing for the card dies before any driver package goes in — no
   package name is guessed, and a package that cannot drive the card
   (proprietary offered for a Blackwell, say) is refused rather than accepted.
-  Known gap, open: GH200 (Grace Hopper) is not yet in the table the way GB10
-  (Grace Blackwell) is, so it would currently get the proprietary branch —
-  the wrong one for that generation (rex-gpu k72).
   - R535 reached end of life in June 2026; on Ubuntu 24.04 `nvidia-driver-535`
     is a transitional package that pulls 580, so the old pin pinned nothing.
   - amd64 and arm64 do not carry the same package names (arm64 comes from
