@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-27T16:03:37Z
+id: 205
+priority: medium
+status: backlog
+tags:
+- robocop
+- join
+- rex-rancher
+title: 'robocop-Worker-Joins ohne Versionsprüfung: kein Kubeconfig im Pod'
+updated: 2026-09-27T16:03:37Z
+---
+
+Aus k196 (Teil 1, offen a). CLI-Joins (Apply::CR::cli_reconcile_workers, Node::Add::_cli_reconcile) geben install_agent die Projekt-Kubeconfig mit. Damit greift die Prüfung von Rex::Rancher, die einen Agent mit neuerem Minor als die CP ablehnt, bevor der Host angefasst wird. robocop läuft in_cluster mit dem ServiceAccount und hat keine Kubeconfig-Datei, also joint robocop Worker ohne diese Prüfung. Optionen: (1) robocop baut eine Kubeconfig aus /var/run/secrets/kubernetes.io/serviceaccount (tokenFile + certificate-authority; Kubernetes::REST::Kubeconfig 1.108 kann tokenFile; RBAC 'list nodes' ist da). (2) Rex::Rancher bekommt eine In-Cluster-Option (dann Karte auf dem rex-rancher-Board). Außerdem prüfen: Die API-Wartezeit läuft seit k196 von der Rex-Maschine an <node>:6443, bei robocop-CP-Joins also Pod -> neuer Server:6443. Done: robocop-Join lehnt einen zu neuen Agent vor dem Host-Eingriff ab, Test in t/ und live nachgeprüft. Lane: ocp-robocop-worker.
