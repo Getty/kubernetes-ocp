@@ -160,9 +160,15 @@ sub apply_yaml_string {
     }
 }
 
+# Bytes, not characters: YAML::XS::Load decodes UTF-8 itself and dies on a
+# decoded string with anything outside Latin-1 in it ("Wide character in
+# YAML::XS::Load()"). apply_yaml_string gets bytes from YAML::XS::Dump already;
+# the file has to arrive the same way. NVIDIA's ClusterPolicy CRD carries a
+# typographic apostrophe in two descriptions, which slurp_utf8 turned into an
+# apply that could never run.
 sub apply_yaml_file {
     my ($self, $api, $file_path) = @_;
-    apply_yaml_string($self, $api, path($file_path)->slurp_utf8);
+    apply_yaml_string($self, $api, path($file_path)->slurp_raw);
 }
 
 sub poll_deployment_ready {
