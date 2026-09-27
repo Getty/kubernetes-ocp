@@ -76,7 +76,8 @@ Revision history for OCP
       Cilium reaches the API server where the workers join the control plane
       -- its `public_ip` when `ocp.yaml` pins one, else its host -- with its
       pod pool on K3s' cluster CIDR. A Cilium that does not become ready stops
-      the apply with its status instead of passing for installed.
+      the apply with its status instead of passing for installed. While a K3s
+      node joins, its OCPNode status names a K3s agent, no longer an RKE2 one.
     - RKE2 and K3s share one pod network, `network.pod_cidr` (default
       10.42.0.0/16): it becomes the server's cluster-cidr and Cilium's pod
       pool, where RKE2 used to run Cilium's own 10.0.0.0/8 across most host
