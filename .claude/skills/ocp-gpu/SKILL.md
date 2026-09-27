@@ -35,6 +35,19 @@ Constraints that outlive any single pin:
 - **`nvidia_driver` only matters when `gpu.driver: operator`.** Keep it equal to
   `driver.version` in the operator chart's bundled `values.yaml` for the pinned
   operator version.
+- **The CRD bundle moves with `gpu_operator`.** `share/gpu-operator/crds/`
+  holds NVIDIA's `nvidia.com_clusterpolicies.yaml` and
+  `nvidia.com_nvidiadrivers.yaml` (as `clusterpolicy-crd.yaml` /
+  `nvidiadriver-crd.yaml`), unchanged from `deployments/gpu-operator/crds/` at
+  the pinned tag, under a `# Source:` header that names it. A pin bump means
+  fetching both again from the new tag — `t/40-gpu-clusterpolicy.t` stays red
+  until the header's tag equals the pin, and checks every field the generated
+  ClusterPolicy sets against the CRD `setup_gpu_operator` sends (declared,
+  required, type, enum, pattern; `preserve-unknown-fields` does not count as
+  declared). Never stub or hand-edit the CRD: the stub OCP shipped until
+  2026-09-27 had no `cdi`, and the live apply died with `.spec.cdi: field not
+  declared in schema`. The real CRD requires `spec.daemonsets`, which OCP sends
+  empty.
 - **`OCP::Drift` probes the GPU operator and NFD, and nothing else in the
   stack.** Both read the image off a Deployment OCP writes itself, so the
   version is honestly measurable; both are report-only (`remedy => undef`,
@@ -186,10 +199,11 @@ DaemonSet would rewrite a containerd config that already works.
 | `devicePlugin` | on | publishes `nvidia.com/gpu` |
 | `dcgm` + `dcgmExporter` | on | the operator runs its own hostengine on :5555 in the `nvidia-dcgm` container; the exporter connects there, not to a host engine. Expect a few exporter restarts racing the starting hostengine |
 | `gfd` | off | NFD does feature discovery |
-| `nfd` | off | OCP deploys NFD itself |
+| `nfd` | not sent | not a ClusterPolicy field (the CRD rejects it); NFD is a Helm subchart the operator never deploys, OCP deploys it itself |
 | `migManager` | off | MIG does not exist on GB10 |
-| `validator` | on, operator image | see the pinning rules |
+| `validator` | always runs, operator image | no `enabled` field exists; see the pinning rules |
 | `nodeStatusExporter` | off | |
+| `daemonsets` | `{}` | required by the CRD; empty is the operator's zero value, what it ran with before |
 
 ### `toolkit.env` — two variables, and two that are left out on purpose
 
@@ -231,8 +245,8 @@ neither can come back unnoticed.
 
 ## NFD (Node Feature Discovery)
 
-Deployed by OCP itself, not by the operator (`nfd.enabled: false` in the
-ClusterPolicy), into the `node-feature-discovery` namespace from
+Deployed by OCP itself, not by the operator (which never deploys NFD; the
+ClusterPolicy has no `nfd` field), into the `node-feature-discovery` namespace from
 `registry.k8s.io/nfd/node-feature-discovery`. nfd-master (Deployment) labels,
 nfd-worker (DaemonSet) detects. The RBAC in `_generate_nfd_manifest` mirrors
 upstream exactly — every rule is load-bearing.

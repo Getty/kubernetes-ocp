@@ -788,7 +788,7 @@ sub generate_gpu_operator_manifest {
 
         # ClusterPolicy CR (GPU Operator configuration)
         # driver.enabled follows gpu.driver — see above
-        # nfd.enabled: false — we deploy NFD ourselves
+        # no nfd section — OCP deploys NFD itself, and the operator never does
         # gfd.enabled: false — NFD handles GPU feature discovery
         # cdi.enabled: true — keep runc the default runtime (k76, decision k23)
         {
@@ -799,6 +799,15 @@ sub generate_gpu_operator_manifest {
                 operator => {
                     defaultRuntime => 'containerd',
                 },
+                # Required by NVIDIA's CRD (spec.required: daemonsets, dcgm,
+                # dcgmExporter, devicePlugin, driver, gfd, nodeStatusExporter,
+                # operator, toolkit — the rest are set below). Empty on
+                # purpose: the operator reads an empty and an absent daemonsets
+                # as the same zero value, which is what it ran with while
+                # share/ carried a stub CRD that required nothing, and the one
+                # default the CRD fills in (updateStrategy: RollingUpdate) is
+                # the operator's own.
+                daemonsets => {},
                 # CDI is the operator gate that writes
                 # NVIDIA_RUNTIME_SET_AS_DEFAULT=false into the toolkit env, which
                 # is what outvotes CONTAINERD_SET_AS_DEFAULT=1 (deleted in k30)
@@ -854,9 +863,11 @@ sub generate_gpu_operator_manifest {
                 gfd => {
                     enabled => JSON::PP::false,  # NFD handles feature discovery
                 },
-                nfd => {
-                    enabled => JSON::PP::false,  # We deploy NFD ourselves
-                },
+                # No nfd section: ClusterPolicySpec has no such field, and
+                # NVIDIA's CRD rejects it ("field not declared in schema").
+                # NFD is a subchart of the Helm chart, not something the
+                # operator deploys, so nfd.enabled was only ever dropped on the
+                # floor — OCP deploys NFD itself (setup_nfd).
                 migManager => {
                     enabled => JSON::PP::false,
                 },
@@ -867,8 +878,10 @@ sub generate_gpu_operator_manifest {
                 # with the chart's own appVersion. Anything else 404s and every
                 # GPU DaemonSet stays in Init:ImagePullBackOff — its init
                 # container is the validator.
+                #
+                # No enabled switch: the validator always runs, and
+                # ValidatorSpec has no such field for the CRD to accept.
                 validator => {
-                    enabled         => JSON::PP::true,
                     repository      => 'nvcr.io/nvidia',
                     image           => 'gpu-operator',
                     version         => $gpu_version,

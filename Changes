@@ -86,7 +86,9 @@ Revision history for OCP
     - The NVIDIA GPU stack -- driver, container toolkit, GPU Operator and its
       ClusterPolicy, RuntimeClass, device plugin, DCGM -- installs only where
       NFD reports a CUDA-capable card, and `gpu.enabled` / `gpu.driver` in
-      `ocp.yaml` govern it cluster-wide.
+      `ocp.yaml` govern it cluster-wide. The ClusterPolicy and NVIDIADriver
+      CRDs are NVIDIA's own, from the pinned GPU Operator release, so the
+      ClusterPolicy OCP writes is accepted as written.
     - Node preparation, the RKE2/K3s server and agent installs, Cilium with its
       Gateway API CRDs and readiness wait, the uninstall of an ssh/local
       machine, the check for a previous cluster's Cilium state, GPU detection
