@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-09-27T18:44:49Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-27T16:03:54Z
+id: 207
+priority: high
+status: backlog
+tags:
+- gpu
+- live
+- rex-gpu
+- robocop
+title: 'GPU-Live auf treiberlosem Host (crag): install_driver-Pfad nie live gelaufen'
+updated: 2026-09-27T18:44:49Z
+---
+
+Aus k196. Live gelaufen ist nur otoh mit vorinstalliertem Treiber 610.57 und Toolkit 1.20, dort kehrt install_driver sofort zurück. Nie live gelaufen: Rex::GPU install_driver bzw. Setup::UbuntuDrivers von null (k191/k194), das Toolkit ohne vorinstallierte Binaries und ein GPU-Worker, den robocop joint. Host: crag = 10.230.30.250 (RTX 3090, citilan-VLAN, neue IP laut Maintainer 2026-09-27). Stand 2026-09-27: erreichbar, aber der SSH-Key getty@reuben.cihq wird für root, getty und ubuntu abgelehnt, der Maintainer muss den Zugang herstellen. Plan: otoh (10.230.30.52) als CP, crag als ssh-Worker per ocp node add (robocop-Join; otoh -> crag im selben VLAN), gpu.enabled true, driver host. Vor einem Reboot beim Maintainer nachfragen (Treiberwechsel bzw. nouveau). Prüfen: Sysfs-Erkennung, gewähltes Paket, Treiber geladen, Toolkit, nvidia.com/gpu am Worker, cuda-validator, destroy bzw. node rm sauber. Mit dem Live-Image robocop per ctr importieren (siehe ocpt-Ablauf).
+
+2026-09-27 LIVE (Image live-486716a-rr5a885, rex-gpu 2996fe8, rex-rancher 5a885af): crag vorher treiberlos gemacht (18 nvidia-580-server-Pakete + libcudart/libcublas gepurgt, Reboot, kein nvidia/nouveau-Modul). otoh als CP (Dev-Projekt), crag per 'ocp node add crag-gpu --host 10.230.30.250 --gpu' (CLI-Join, robocop nicht deployt). Ergebnis grün, 6m37s: detect_gpu (Sysfs) [ok] 10de:2204 -> install_nvidia -> Setup::UbuntuDrivers installiert ubuntu-drivers-common selbst -> 'Driver source: ubuntu-server' -> nvidia-driver-595-server 595.91.07 + linux-headers, DKMS-Build, Modul OHNE Reboot geladen, Verify nvidia-smi ok -> binaries_suffice fällt auf Paket zurück -> nvidia-container-toolkit 1.20.1 -> PATH nach /etc/default/rke2-agent -> Join Ready. Cluster: nvidia.com/gpu=1 auf crag-gpu, cuda-validator Completed, Device-Plugin/Validator Running; nvidia-smi-Pod (nodeSelector crag-gpu, runtimeClass nvidia) Succeeded: RTX 3090, 595.91.07. node rm: /etc/default/rke2-agent (nur PATH-Zeile) weg (rex-rancher k85 Agent-Seite), keine rke2/Cilium-Reste, Treiber+Toolkit bleiben. BEFUND k208: ohne --gpu wird GPU übersprungen (CRD-Default gpu:false). Offen für diese Karte: derselbe Join über robocop (Secure-Mode-Projekt nötig, Dev-Projekt hat keinen robo-Key).
+
+2026-09-27 LIVE robocop-Pfad (Secure-Mode-Projekt, robocop mit live-486716a-rr5a885 per ctr-Import + deploy-image, pullPolicy Never): crag erneut treiberlos (21 Pakete gepurgt, Module per rmmod entladen, kein Reboot). 'ocp node add crag-gpu --host 10.230.30.250 --gpu' -> robocop: Installing -> Joining -> Ready in 4m46s. Die Treiberinstallation aus dem Pod lief 2,5 min (apt + DKMS) ohne Timeout in der Reconcile-Schleife. 595.91.07 + Toolkit 1.20.1 + PATH-Datei, nvidia.com/gpu=1, cuda-validator Completed, nvidia-smi-Pod auf crag ok. node rm: erster Versuch Failed (Admin-Key fehlte auf crag -> k209), nach dem Nachtragen erneuter node rm aus Failed sauber (13 s), keine Reste, Treiber bleibt. Karte fachlich erledigt, Rest in k208 (GPU-Default) und k209 (Key-Modell). Kann auf done.
