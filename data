@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-27T16:02:29Z
+id: 204
+priority: medium
+status: backlog
+tags:
+- ssh
+- provider
+- ux
+title: SSH-Wartezeit meldet abgelehnten Key als 'SSH not reachable'
+updated: 2026-09-27T16:02:29Z
+---
+
+Live 2026-09-27 (otoh, ssh-Provider, k196-Lauf 2): Der Projekt-Key (.ocp/id_ed25519, ocp-cluster-key) stand nicht in root's authorized_keys. ocp apply wartet 120 s und stirbt dann mit '[FAIL] SSH not ready: SSH not reachable on otho-lab.ai.citilan.de after 120s'. Port 22 und DNS waren erreichbar (auch aus dem Container). ssh mit dem Projekt-Key lieferte sofort 'Permission denied (publickey)'. Die Meldung schickt den Nutzer auf Netzwerksuche, obwohl das Problem die Authentifizierung ist, und die 120 s sind bei einer endgültigen Ablehnung verschwendet. Done: Die SSH-Bereitschaftsprüfung unterscheidet 'Port zu bzw. keine Route' (weiter warten) von 'Auth abgelehnt' (sofort abbrechen, Meldung nennt Host, User und Key-Fingerprint bzw. Pfad und den Hinweis auf authorized_keys bzw. ocp inject-key). Regressionstest mit gefaktem Auth-Fehler. Lane: ocp-provider-worker.
