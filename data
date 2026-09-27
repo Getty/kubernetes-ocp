@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-09-27T04:56:51Z
+id: 203
+priority: medium
+status: backlog
+tags:
+- gpu
+- apply
+- exit-code
+- stderr
+title: Fehlgeschlagener GPU-Operator-Schritt endet mit exit 0, [WARN] auf STDOUT,
+  und im Reconcile weder als updated noch als unresolved
+updated: 2026-09-27T04:56:51Z
+---
+
+Live 2026-09-27 (k196, otoh). Die ClusterPolicy wurde abgelehnt (alter CRD-Stub, inzwischen gefixt in 8119381). ocp apply meldete „[WARN] GPU Operator setup failed“ auf STDOUT und endete mit exit 0. Nach dem Bericht des Workers: Bootstrap-Pfad lib/OCP/Cmd/Apply/Deploy.pm ~131-141, Reconcile lib/OCP/Cmd/Apply/Drift.pm ~220-238. NFD gilt als „MUST succeed“ mit der Begründung „a silent NFD failure produces a successful cluster that has no GPU workloads“, und die trifft wörtlich auch hier zu. ADR 0017 regelt nur den Pod-Health-Check. Hausregel: STDERR für alles, was schiefging. Done: Entscheidung (gpu.enabled + erkannte GPU-Nodes → Fehlschlag ist fatal bzw. Exit != 0), Meldung auf STDERR, im Reconcile als unresolved zählen; Test.
