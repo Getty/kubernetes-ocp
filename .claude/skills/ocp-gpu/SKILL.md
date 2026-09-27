@@ -54,23 +54,35 @@ Two detections, at two times, asking two different questions.
 **1. Before the cluster — Rex `detect_gpu` (`share/Rexfile`).** Question: does
 this host need an NVIDIA driver?
 
-- `_pci_display_devices` reads **sysfs**, not `lspci`:
-  `/sys/bus/pci/devices/*/{vendor,device,class}`. Vendor `0x10de`, class
-  `0x0300xx` (VGA) or `0x0302xx` (3D controller).
+- `Rex::GPU::Detect::Sysfs->detect` (rex-gpu k73, experimental; since k196)
+  reads **sysfs**, not `lspci`: vendor, class, device and subsystem IDs of
+  every device under `/sys/bus/pci/devices`, in one read-only command, once per
+  host — `detect_gpu` hands the result to `install_nvidia`. Vendor `10de`,
+  class `0300` (VGA) or `0302` (3D controller). It returns the full hashes
+  (`compute`, `device_id`, `vgpu`/`vgpu_type`, NVSwitches under `nvswitch`),
+  and **dies** for a host whose sysfs it cannot read instead of calling it
+  GPU-less.
 - There is **no model whitelist**, and it must not come back. `lspci` prints
   the name from the host's `pci.ids` database, which is always older than the
   newest card: a DGX Spark prints `Device [10de:2e12]` for its GB10, and no list
   of marketing names can match that. Vendor and class come from the hardware.
-- `_gpu_action` decides: `nvidia` / `virtual` / `amd` / `none`. NVIDIA wins over
-  the virtual-adapter list, because a VM with a passed-through card has both.
-- The virtual blacklist (`1af4` virtio, `1b36` QEMU, `15ad` VMware, `80ee`
-  VirtualBox) stays: a short list of "definitely not" keeps working as hardware
-  moves on.
-- `_nvidia_driver_present` (nvidia-smi enumerates GPUs **and** `libcuda.so` is
-  in the linker cache) skips the driver install. Package state is the wrong
-  question — vendor appliances install outside the distro's package namespace.
-- Compute capability is **not** asked here. Whether a card is worth scheduling
-  on is answered later, by the device plugin.
+- Virtual display adapters (`1af4` virtio, `1b36` QEMU, `15ad` VMware, `80ee`
+  VirtualBox) are skipped by the library, per device, so they never hide a
+  passed-through card.
+- `_driver_gpus` is OCP's decision (k194): every NVIDIA GPU except
+  `compute => 0` — Kepler or older, whose last driver is the EOL 470 branch
+  Rex::GPU refuses on every OS. `compute => undef` (no generation row, and
+  sysfs has no name to judge by: a card newer than the table) **is** handed
+  on; `install_driver` takes it as an unknown GPU without a constraint.
+  `_gpu_action`: `nvidia` / `unsupported` (only Kepler-or-older: no driver, no
+  toolkit, no GPU node) / `amd` / `none`. `install_driver` is never called
+  with an empty list — that would install a GPU-agnostic driver, not skip.
+- A working driver (nvidia-smi enumerates GPUs **and** `libcuda.so.1` is in
+  the linker cache) is left alone by `install_driver`. Package state is the
+  wrong question — vendor appliances install outside the distro's package
+  namespace.
+- Whether a card is worth *scheduling* on is answered later, by the device
+  plugin.
 
 **2. After the cluster — NFD labels.** `_setup_gpu_operator` looks for
 `feature.node.kubernetes.io/pci-0300_10de.present` or `pci-0302_10de.present`.
@@ -83,15 +95,16 @@ everything before it is a prediction.
 ## Host Driver Install (`install_nvidia`)
 
 Every OS, Ubuntu included since k191 (rex-gpu k69): one call,
-`Rex::GPU::NVIDIA::install_driver(gpus => [...], $setup)`, handed the sysfs
-cards as `{ device_id => '2e12', name => ... }` (no lspci). It skips a
+`Rex::GPU::NVIDIA::install_driver(gpus => \@gpus, [nvswitches => ...], $setup)`,
+handed the GPUs `_driver_gpus` kept, as detected (vGPU keys included, so a
+vGPU guest without its licensed driver is refused; NVSwitches make it
+install Fabric Manager). It skips a
 working driver (nvidia-smi + libcuda.so.1 already there), installs only the
 running kernel's headers — never `linux-headers-generic`, which on a vendor
 kernel (a DGX Spark runs `6.17.0-1029-nvidia`) is a different kernel and
 would leave DKMS building against the wrong tree — loads the module and
-verifies the result. The toolkit is `install_container_toolkit`, unless
-OCP's own binary check (`nvidia-container-runtime` + `nvidia-ctk`) finds one
-already.
+verifies the result. The toolkit is always
+`install_container_toolkit(binaries_suffice => 1)` (rex-gpu k74).
 
 - **Everywhere but Ubuntu**: no `$setup` is passed. Rex::GPU picks the
   branch/module by GPU generation from the device IDs alone (Debian: non-free
@@ -118,10 +131,11 @@ already.
   - amd64 and arm64 do not carry the same package names (arm64 comes from
     the ports archive) — `ubuntu-drivers` still resolves that from the card.
 - The container toolkit comes from NVIDIA's `libnvidia-container` apt repo —
-  unless `_nvidia_toolkit_present` finds `nvidia-container-runtime` and
-  `nvidia-ctk` already installed, in which case neither the apt source nor the
-  package is touched. A DGX has both from its vendor image, and OCP has no
-  business deciding where such a host gets its packages from afterwards.
+  unless `nvidia-container-runtime` and `nvidia-ctk` are on the PATH and
+  `nvidia-ctk --version` runs (`binaries_suffice`), in which case neither the
+  apt source nor the package is touched. A DGX has both from its vendor image,
+  and OCP has no business deciding where such a host gets its packages from
+  afterwards.
 
 ## containerd — OCP writes nothing
 

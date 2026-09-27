@@ -89,11 +89,17 @@ Revision history for OCP
       `ocp.yaml` govern it cluster-wide.
     - Node preparation, the RKE2/K3s server and agent installs, Cilium with its
       Gateway API CRDs and readiness wait, the uninstall of an ssh/local
-      machine, the check for a previous cluster's Cilium state, and the NVIDIA
-      driver and container toolkit come from Rex::Rancher and Rex::GPU; on
-      Ubuntu `ubuntu-drivers list --gpgpu` names the driver package. RKE2 installs from its
+      machine, the check for a previous cluster's Cilium state, GPU detection
+      from sysfs, and the NVIDIA driver and container toolkit come from
+      Rex::Rancher and Rex::GPU; on Ubuntu `ubuntu-drivers list --gpgpu` names
+      the driver package. A Kepler-or-older NVIDIA card gets no driver and
+      makes no GPU node; a container toolkit already on the machine (a DGX's)
+      is kept. RKE2 installs from its
       checksum-verified release tarball, and a pinned version is checked
-      against the installed binary. The machine running `ocp` reaches the
+      against the installed binary. An install never moves a machine's RKE2 or
+      K3s version: a server or agent already there keeps the version it runs,
+      with a warning when the pin differs, and only a new machine gets the
+      pinned one. The machine running `ocp` reaches the
       cluster API, from the end of the server install on, and GitHub while
       Cilium installs; robocop reaches the API of a control plane it joins.
       `ocp apply` on an existing cluster leaves RKE2 alone, and its
@@ -119,8 +125,9 @@ Revision history for OCP
       deleted. An ssh/local machine gets whichever RKE2 or K3s uninstaller it
       carries, server or agent, and then loses the Cilium eBPF datapath the
       uninstallers leave behind, so it can be bootstrapped again without a
-      reboot; state that survives fails the uninstall with a request to reboot.
-      A machine it could not clean is named at the end with the reason on
+      reboot; state that survives fails the uninstall with a request to reboot,
+      and a part it had no tool to check (no `tc`, no iptables) is named on
+      STDERR. A machine it could not clean is named at the end with the reason on
       STDERR, and the run exits 1. An install onto a host that still carries a
       previous cluster's Cilium state stops at once and says to reboot it,
       instead of stalling every image pull until RKE2 times out.

@@ -8,12 +8,13 @@ use File::Temp ();
 use JSON::MaybeXS;
 
 # The install itself lives in Rex::Rancher and Rex::GPU, which exist for OCP
-# (k155): node preparation, the RKE2/K3s server and agent installs, Cilium with
-# the Gateway API CRDs, the wait for the Kubernetes API, and the NVIDIA driver
-# and container toolkit, the Cilium leftover guard and the removal of the bare
-# containerd template (rex-rancher k71, k72), the node's kubeconfig (k73).
-# This file keeps what is OCP's own -- the parameter hand-over, the pod
-# network, the kubeconfig policy, GPU detection from sysfs, the legacy-file
+# (k155): node preparation, the RKE2/K3s server and agent installs with their
+# checks up front (rex-rancher k78), Cilium with the Gateway API CRDs, the wait
+# for the Kubernetes API, GPU detection from sysfs (rex-gpu k73), the NVIDIA
+# driver and container toolkit, the Cilium leftover guard and the removal of
+# the bare containerd template (rex-rancher k71, k72), the node's kubeconfig
+# (k73). This file keeps what is OCP's own -- the parameter hand-over, the pod
+# network, the kubeconfig policy, which GPUs get a driver, the legacy-file
 # cleanups -- and every piece the libraries cannot yet express, each marked
 # with the card on the library's board that would move it there.
 #
@@ -23,8 +24,9 @@ use Rex::Rancher::Node ();
 use Rex::Rancher::Server ();
 use Rex::Rancher::Agent ();
 use Rex::Rancher::Cilium ();
+use Rex::Rancher::Distribution ();
 use Rex::Rancher::K8s ();
-use Rex::Rancher::Uninstall ();
+use Rex::GPU::Detect::Sysfs ();
 use Rex::GPU::NVIDIA ();
 
 # Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
@@ -173,25 +175,29 @@ sub _maybe_detect_gpu {
 
 desc "Detect NVIDIA GPU hardware and install drivers";
 task "detect_gpu", sub {
-    my @display = _pci_display_devices();
-
-    say "=== Display Controllers ===";
-    if (@display) {
-        say "  $_->{slot}  $_->{vendor}:$_->{device}  class $_->{class}" for @display;
-    } else {
-        say "  (none found)";
-    }
-    say "=== End Display Controllers ===";
-
-    my $action = _gpu_action(@display);
+    # The host's GPUs, read once. Rex::GPU::Detect::Sysfs (rex-gpu k73,
+    # experimental) reads vendor, class, device and subsystem IDs of every PCI
+    # device from /sys/bus/pci/devices in one read-only command -- no lspci,
+    # whose names come from a pci.ids that is always older than the newest card
+    # (a DGX Spark prints `Device [10de:2e12]` for its GB10), and no pciutils
+    # installed to ask. Vendor and class are the pair NFD labels the node with
+    # in-cluster (feature.node.kubernetes.io/pci-0300_10de). It logs every
+    # display device it looks at, skips the virtual ones (virtio, QEMU, VMware,
+    # VirtualBox) without letting them hide a passed-through card, finds the
+    # NVSwitches next to NVIDIA GPUs, marks vGPU guest devices, and dies --
+    # before anything is installed -- for a host whose sysfs it cannot read,
+    # instead of calling it GPU-less.
+    my $detected = Rex::GPU::Detect::Sysfs->detect;
+    my $action   = _gpu_action($detected);
 
     if ($action eq 'nvidia') {
-        my @nvidia = grep { $_->{vendor} eq '10de' } @display;
-        say "NVIDIA GPU present: " . join(', ', map { "$_->{vendor}:$_->{device}" } @nvidia);
-        do_task "install_nvidia";
+        say "NVIDIA GPU present: " . join(', ', map { $_->{name} } _driver_gpus($detected));
+        do_task "install_nvidia", { detected => $detected };
     }
-    elsif ($action eq 'virtual') {
-        say "Virtual GPU only (virtio/QEMU/VMware/VBox) — no host driver needed";
+    elsif ($action eq 'unsupported') {
+        say "NVIDIA GPU present, but only of a generation no driver Rex::GPU installs supports "
+          . "(Kepler or older): " . join(', ', map { $_->{name} } @{ $detected->{nvidia} })
+          . " — no driver, no container toolkit; this is no GPU node";
     }
     elsif ($action eq 'amd') {
         say "AMD GPU detected — driver support not yet implemented";
@@ -201,97 +207,56 @@ task "detect_gpu", sub {
     }
 };
 
-# What should the bootstrap do about the display hardware it found?
-# 'nvidia' (install the driver), 'virtual', 'amd' or 'none'.
+# What should the bootstrap do about the GPUs Rex::GPU::Detect::Sysfs found?
+# 'nvidia' (install the driver), 'unsupported' (NVIDIA cards, none a driver is
+# installed for), 'amd' or 'none'.
 #
 # Before the cluster exists there is exactly one question worth asking: does
-# this host need an NVIDIA driver? That is "NVIDIA hardware present" plus "no
-# working driver yet", and install_nvidia answers the second half. Whether the
-# card is worth scheduling on is decided later and elsewhere, by the device
-# plugin publishing nvidia.com/gpu — not here by guessing at a model name.
+# this host need an NVIDIA driver? That is "a card a driver can be installed
+# for" plus "no working driver yet", and install_driver answers the second
+# half. Whether the card is worth scheduling on is decided later and
+# elsewhere, by the device plugin publishing nvidia.com/gpu.
 sub _gpu_action {
-    my (@display) = @_;
-
-    # NVIDIA hardware settles it, and it is checked first on purpose: a VM with
-    # a passed-through GPU has a virtio display adapter *and* the card, and
-    # there the card wins. The virtual list only answers "nothing here needs a
-    # host driver", which is only true when nothing else is here.
-    return 'nvidia' if grep { $_->{vendor} eq '10de' } @display;
-
-    # A short list of "definitely not" stays true as hardware moves on, which
-    # is why this blacklist survives while the model whitelist did not.
-    return 'virtual' if grep { $_->{vendor} =~ /^(?:1af4|1b36|15ad|80ee)$/ } @display;
-
-    return 'amd' if grep { $_->{vendor} eq '1002' } @display;
-
+    my ($detected) = @_;
+    return 'nvidia'      if _driver_gpus($detected);
+    return 'unsupported' if @{ $detected->{nvidia} // [] };
+    return 'amd'         if @{ $detected->{amd}    // [] };
     return 'none';
 }
 
-# Display and 3D controllers as the kernel reports them:
-# { slot, vendor, device, class }, all lowercase hex without the 0x prefix.
-#
-# sysfs, not `lspci`. lspci prints the *name* it finds for a PCI ID in the
-# host's pci.ids database, and that database is always older than the newest
-# card — a DGX Spark prints `Device [10de:2e12]` for its GB10, which no list of
-# marketing names can ever match. Vendor and class come from the hardware
-# itself, need neither a database nor pciutils, and are precisely the pair NFD
-# labels the node with in-cluster (feature.node.kubernetes.io/pci-0300_10de).
-sub _pci_display_devices {
-    my $raw = run
-          q{for d in /sys/bus/pci/devices/*/; do }
-        . q{test -r "$d/class" || continue; }
-        . q{printf '%s|%s|%s|%s\n' "${d%/}" }
-        . q{"$(cat "$d/vendor" 2>/dev/null)" }
-        . q{"$(cat "$d/device" 2>/dev/null)" }
-        . q{"$(cat "$d/class" 2>/dev/null)"; }
-        . q{done},
-        auto_die => FALSE;
-
-    return () unless defined $raw;
-
-    my @devices;
-    for my $line (split /\n/, $raw) {
-        my ($path, $vendor, $device, $class) = split /\|/, $line, 4;
-        next unless defined $class;
-
-        # 0x0300xx = VGA controller, 0x0302xx = 3D controller. The last byte is
-        # the programming interface and is not part of the class we match on.
-        my ($class_id)  = $class  =~ /^0x(0300|0302)[0-9a-f]{2}$/i or next;
-        my ($vendor_id) = $vendor =~ /^0x([0-9a-f]{4})$/i          or next;
-        my ($device_id) = $device =~ /^0x([0-9a-f]{4})$/i;
-
-        my $slot = $path;
-        $slot =~ s{.*/}{};
-
-        push @devices, {
-            slot   => $slot,
-            vendor => lc $vendor_id,
-            device => lc($device_id // '????'),
-            class  => lc $class_id,
-        };
-    }
-
-    return @devices;
-}
-
-# The NVIDIA cards among the display devices, in the shape
-# Rex::GPU::NVIDIA::install_driver takes from a caller that finds its GPUs
-# without lspci (rex-gpu k42): device_id as exactly four hex digits, and a
-# name for its messages -- sysfs has none, so the PCI ID stands in. A device
-# ID sysfs would not give is left out rather than guessed: the library then
-# treats the card as one it does not know.
-sub _nvidia_gpus {
-    my (@display) = @_;
-    return map {
-        +{
-            name => "NVIDIA GPU [10de:$_->{device}]",
-            ($_->{device} =~ /^[0-9a-f]{4}$/ ? (device_id => $_->{device}) : ()),
-        }
-    } grep { $_->{vendor} eq '10de' } @display;
+# The NVIDIA GPUs a driver is installed for (k194): every one the detection
+# does not know to be unsupported. compute 0 is Kepler or older -- the newest
+# driver for those is the end-of-life 470 branch, which Rex::GPU refuses to
+# install, on every OS -- and such a card gets no driver and makes no GPU
+# node. compute undef is a card the generation table has no row for and sysfs
+# has no name to judge by: a card newer than the table, which is exactly the
+# one lspci would not have named either. It is handed on, and install_driver
+# takes it as an unknown GPU -- no constraint from the table, the newest
+# driver of the OS's first source -- rather than leaving a new card without
+# a driver. (Rex::GPU's own gpu_setup installs nothing for it; OCP takes the
+# caller's side the library leaves open.)
+sub _driver_gpus {
+    my ($detected) = @_;
+    return grep { !defined $_->{compute} || $_->{compute} } @{ $detected->{nvidia} // [] };
 }
 
 desc "Install NVIDIA GPU drivers and container toolkit";
 task "install_nvidia", sub {
+    my $params = task_params(shift);
+
+    # detect_gpu hands over what it detected, so the host is read once; a
+    # hand-run (`rex install_nvidia`) detects here.
+    my $detected = $params->{detected} || Rex::GPU::Detect::Sysfs->detect;
+    my @gpus = _driver_gpus($detected);
+
+    # install_driver with an empty gpus list does not skip: it installs a
+    # driver for no GPU in particular. A host without a card a driver is
+    # installed for gets none, and no toolkit either.
+    unless (@gpus) {
+        say "No NVIDIA GPU a driver is installed for — nothing to install";
+        return;
+    }
+
     say "Installing NVIDIA GPU drivers and container toolkit...";
 
     my $os = operating_system();
@@ -321,8 +286,16 @@ task "install_nvidia", sub {
     # package that cannot drive the card (proprietary on a Blackwell or a
     # GH200) is refused. The packages are the -server ones; `ubuntu-drivers
     # install` is never run.
+    #
+    # The GPUs go over as detected, vGPU keys included: a vGPU guest device
+    # without a working guest driver makes install_driver die before anything
+    # is installed (no package source carries NVIDIA's licensed driver). The
+    # NVSwitches of an HGX baseboard make it install Fabric Manager with the
+    # driver, or die first where the driver source has none.
+    my $nvswitches = $detected->{nvswitch} // [];
     Rex::GPU::NVIDIA::install_driver(
-        gpus => [ _nvidia_gpus(_pci_display_devices()) ],
+        gpus => \@gpus,
+        (@$nvswitches ? (nvswitches => $nvswitches) : ()),
         ($os eq 'Ubuntu' ? (setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers') : ()),
     );
 
@@ -331,33 +304,19 @@ task "install_nvidia", sub {
     # A vendor image already has it — on a DGX Spark, /usr/bin/nvidia-container-runtime
     # and nvidia-ctk are there before OCP is. Adding NVIDIA's apt source to such
     # a host changes where its packages come from for everything that follows,
-    # for no gain, so the presence of a working runtime ends this step. OCP asks
-    # for the binaries the CRI execs; the library's own skip additionally wants
-    # the dpkg package, which a runtime installed any other way does not have.
-    if (_nvidia_toolkit_present()) {
-        say "  Container toolkit already present — leaving the host's apt sources alone";
-    } else {
-        Rex::GPU::NVIDIA::install_container_toolkit();
-    }
+    # for no gain. binaries_suffice (rex-gpu k74): nvidia-container-runtime and
+    # nvidia-ctk on the PATH and `nvidia-ctk --version` running count as a
+    # toolkit, whoever installed them, and the package manager is not asked;
+    # anything less and the library installs the package from NVIDIA's
+    # repository. OCP writes no containerd configuration for it: RKE2 and k3s
+    # find the runtime themselves when their service starts.
+    Rex::GPU::NVIDIA::install_container_toolkit(binaries_suffice => 1);
 
     # 3. Verify everything; warns, never dies (a reboot may still be due).
     Rex::GPU::NVIDIA::verify_nvidia();
 
     say "NVIDIA GPU installation complete";
 };
-
-# Is a usable NVIDIA container runtime already on this host?
-#
-# Ask for the binaries the CRI actually execs, not for a package name: vendor
-# appliances install outside the distribution's package namespace. A DGX image
-# installs both, and k3s and RKE2 find nvidia-container-runtime on PATH by
-# themselves.
-sub _nvidia_toolkit_present {
-    return 0 unless can_run("nvidia-container-runtime");
-    return 0 unless can_run("nvidia-ctk");
-    say "  Existing NVIDIA container toolkit detected";
-    return 1;
-}
 
 #
 # RKE2 / K3s Tasks
@@ -417,7 +376,9 @@ task "install_k3s_agent", sub {
 #     holds for install_agent;
 #   - the service is started with --no-block and waited on for at most 10
 #     minutes, dying with its journal; a pinned version is verified against the
-#     installed binary.
+#     installed binary;
+#   - with hold_running (rex-rancher k77, k193) a server that is there keeps
+#     its version: see _server_opts.
 #
 # RKE2 comes from its checksum-verified release tarball when a version is
 # pinned (always, through OCP::Rex and OCP::Node): the old reason for the
@@ -433,35 +394,35 @@ sub _install_server {
                  : (defined $tls_san && length $tls_san) ? ($tls_san)
                  : ();
 
-    # Cilium datapath state from a previous cluster (k190): an uninstall that
-    # left Cilium's eBPF behind -- a vendor uninstaller run by hand, or an OCP
-    # from before its uninstall cleared it -- leaves the socket load balancer
-    # translating the old cluster's service addresses to pods that are gone, so
-    # connections to them hang instead of being refused. One of them is the
-    # registry mirror containerd is pointed at (localhost:30500): every image
-    # pull of the new install stalls, and RKE2 misses its start bound without
-    # saying why. Measured on ocpt-cp, cleared by a reboot.
-    #
-    # The check is Rex::Rancher's (rex-rancher k71): a host with Cilium's pins,
-    # its cgroup2 mount or its cilium_host device but no RKE2/K3s is refused,
-    # asking for a reboot; with a distribution there the state belongs to the
-    # running cluster. install_server and install_agent run it themselves,
-    # but only after prepare_node has changed the host -- so OCP asks first,
-    # and a refused host is left exactly as it was.
-    Rex::Rancher::Uninstall->check_cilium_residue;
+    # One set of options, for the checks up front and for the install.
+    my %opts = (
+        _server_opts($distribution, $params, \@tls_sans),
+        cluster_cidr => $params->{pod_cidr} || _default_pod_cidr(),
+    );
+
+    # Everything install_server would refuse, asked before prepare_node
+    # changes the host, so a refused host is left exactly as it was
+    # (rex-rancher k78). install_server asks the same again, first thing --
+    # its log lines appear twice. Read-only:
+    #   - Cilium datapath state from a previous cluster on a host without
+    #     RKE2/K3s (k190, rex-rancher k71): an uninstall that left Cilium's eBPF
+    #     behind leaves the socket load balancer translating the old cluster's
+    #     service addresses to pods that are gone, so connections hang instead
+    #     of being refused -- the registry mirror containerd pulls through
+    #     (localhost:30500) among them, and RKE2 misses its start bound without
+    #     saying why. Measured on ocpt-cp; the refusal asks for a reboot;
+    #   - the version to hold (hold_running) and its skew against the running
+    #     server or installed binary;
+    #   - the cluster-cidr of a server already set up here (rex-rancher k67).
+    Rex::Rancher::Server::preflight_server(%opts);
 
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
 
-    my $cluster_cidr = $params->{pod_cidr} || _default_pod_cidr();
-
-    Rex::Rancher::Server::install_server(
-        _server_opts($distribution, $params, \@tls_sans),
-        cluster_cidr => $cluster_cidr,
-    );
+    Rex::Rancher::Server::install_server(%opts);
 
     # Only now that config.yaml carries cluster-cidr itself.
-    _remove_legacy_cluster_cidr_dropin($distribution, $cluster_cidr);
+    _remove_legacy_cluster_cidr_dropin($distribution, $opts{cluster_cidr});
 
     _wait_for_api($distribution);
 }
@@ -489,6 +450,18 @@ sub _server_opts {
         # the service starts: /etc/default/rke2-server gets one, before the
         # install, if a host toolkit is there. No effect on k3s.
         nvidia_runtime_path => 1,
+        # OCP installs a distribution; it never upgrades one (k193, rex-rancher
+        # k77). The version on the host wins over the pin: a running server
+        # keeps the version it runs, a stopped one the installed binary's, and
+        # only a host with neither gets `version`. A pin that loses is named in
+        # a warning, on every run that meets it. The service is restarted only
+        # for a changed configuration, k3s included. A new node -- every robocop
+        # join, every fresh bootstrap -- has nothing to hold and gets the pin.
+        # So a bootstrap run against a control plane that is already there (a
+        # lost kubeconfig.yaml) neither rolls it to a new pin nor refuses it for
+        # having been upgraded by hand: distribution upgrades stay what
+        # OCP::Drift reports them as, a manual step, node by node.
+        hold_running        => 1,
     );
 }
 
@@ -511,19 +484,28 @@ sub _server_opts {
 # never be newer than its API server (k196). OCP::Node passes one when its
 # caller has it (`ocp apply`, `ocp node add`); robocop runs off its service
 # account and has no kubeconfig file, so its joins go without the check.
+#
+# With hold_running an agent that is there keeps its own version, as a server
+# does (see _server_opts); the check against the control plane still applies
+# to the version held.
 sub _install_agent {
     my ($distribution, $params) = @_;
     $params->{server} or die "server URL required\n";
     $params->{token}  or die "token required\n";
 
-    # Before anything touches the host, prepare_node included (k190): see
-    # _install_server.
-    Rex::Rancher::Uninstall->check_cilium_residue;
+    my %opts = _agent_opts($distribution, $params);
+
+    # Everything install_agent would refuse, before prepare_node touches the
+    # host (rex-rancher k78), as for a server (see _install_server): the Cilium
+    # leftovers (k190), the version to hold and its skew, and with
+    # `kubeconfig` the control plane's version, read through the API.
+    # install_agent asks again, first thing.
+    Rex::Rancher::Agent::preflight_agent(%opts);
 
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
 
-    Rex::Rancher::Agent::install_agent(_agent_opts($distribution, $params));
+    Rex::Rancher::Agent::install_agent(%opts);
 }
 
 sub _agent_opts {
@@ -537,6 +519,7 @@ sub _agent_opts {
         ($distribution eq 'rke2' ? (registries => _registries($params)) : ()),
         nvidia_runtime_path => 1,
         ($params->{kubeconfig} ? (kubeconfig => $params->{kubeconfig}) : ()),
+        hold_running        => 1,
     );
 }
 
@@ -633,11 +616,11 @@ sub _wait_for_api {
       . "Check that $distribution runs on the node and that this machine reaches $host:6443.\n";
 }
 
-# The containerd config template OCP used to write, byte for byte.
+# The bare containerd config template OCP wrote before k23.
 #
-# _configure_nvidia_containerd wrote exactly these two lines (56 bytes) to
-# /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl. k23 deleted
-# the code, not the file. RKE2 and k3s render config.toml from such
+# _configure_nvidia_containerd wrote two lines (56 bytes: an imports line and
+# `version = 2`) to /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl.
+# k23 deleted the code, not the file. RKE2 and k3s render config.toml from such
 # a template on every service start, *instead of* the config they generate
 # themselves, so a host bootstrapped before that fix keeps running containerd
 # off this two-liner forever -- no registry mirrors, no sandbox image, no CNI
@@ -649,76 +632,53 @@ sub _wait_for_api {
 # k72), so the host this matters for is the one that gets bootstrapped once and
 # only ever upgraded afterwards: `ocp apply` against a running cluster installs
 # nothing. That is what the probe and the drift remedy below are for.
-sub _legacy_containerd_template {
-    return qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n};
-}
-
-# Removal is decided by content, never by path. A template sitting there that
-# OCP did not write is somebody's deliberate configuration and has to survive
-# untouched -- that is the whole reason this is a content comparison and not an
-# `unlink`.
 #
-# Trailing whitespace is normalised on both sides so a stray or missing final
-# newline still counts as ours. Nothing else is tolerated: an extra directive, a
-# different import glob, or the `{{ template "base" . }}` line that a real
-# custom template needs all mean the file belongs to someone else.
-sub _is_legacy_containerd_template {
-    my ($content) = @_;
-    return 0 unless defined $content && length $content;
-
-    my $known = _legacy_containerd_template();
-    s/\s+\z// for $content, $known;
-
-    return $content eq $known ? 1 : 0;
-}
-
-# Both distributions. Only the RKE2 path was ever written by OCP (the deleted
-# code hardcoded it, which is why it silently did nothing under k3s), but k3s
-# renders a template it finds in exactly the same way, and the content check is
-# what makes looking there safe.
-sub _legacy_containerd_template_paths {
-    return (
-        '/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl',
-        '/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl',
-    );
+# What counts as that template is Rex::Rancher's decision, the one its installs
+# remove by: Rex::Rancher::Distribution's is_bare_template_output -- blank lines
+# and comments aside, exactly an `imports =` and a `version = 2` line (Rex::GPU
+# 0.001 wrote the same). Decided by content, never by path: any other template,
+# `{{ template "base" . }}` and all, is somebody's configuration and stays.
+# Both distributions: only the RKE2 path was ever written by OCP, but k3s
+# renders a template it finds in exactly the same way.
+sub _distributions {
+    my $classes = Rex::Rancher::Distribution->distribution_classes;
+    return map { Rex::Rancher::Distribution->new_for($_) } sort keys %$classes;
 }
 
 # Read-only counterpart of cleanup_legacy_containerd_template: it reports the
-# residue without touching it, so OCP::Drift's rex_probe mode can run it on
+# template without touching it, so OCP::Drift's rex_probe mode can run it on
 # `ocp status` (which must never modify a host). One "OCP-DRIFT-PRESENT <path>"
-# line per legacy template still present; silence means clean. The marker string
-# is the one OCP::Drift matches ($OCP::Drift::REX_DRIFT_MARKER) -- keep the two
-# in step.
+# line per bare template present; silence means clean. Read with `cat` over
+# the exec channel, as the library reads it. The marker string is the one
+# OCP::Drift matches ($OCP::Drift::REX_DRIFT_MARKER) -- keep the two in step.
 desc "Report whether the obsolete pre-k23 containerd config template is still present (read-only)";
 task "detect_legacy_containerd_template", sub {
-    for my $path (_legacy_containerd_template_paths()) {
-        next unless is_file($path);
-        my $content = eval { cat $path };
-        next unless _is_legacy_containerd_template($content);
-        say "OCP-DRIFT-PRESENT $path";
+    for my $dist (_distributions()) {
+        my $tmpl = $dist->containerd_dir . '/config.toml.tmpl';
+        my $content = run "cat $tmpl 2>/dev/null", auto_die => FALSE;
+        next unless $? == 0;
+        next unless $dist->is_bare_template_output($content);
+        say "OCP-DRIFT-PRESENT $tmpl";
     }
 };
 
-# OCP::Drift's remedy for what the probe above reports, with the same byte
-# exact decision, so it removes exactly what the probe found. The installs no
-# longer run it: Rex::Rancher removes the template itself, before the start.
-# It restarts nothing -- containerd keeps its config.toml until the service
-# starts again.
+# OCP::Drift's remedy for what the probe above reports: Rex::Rancher's
+# remove_bare_containerd_template, per distribution, which removes it by the
+# same decision the probe reports it by (and keeps any other template, saying
+# so), and dies naming the file when the removal fails. The installs do not
+# run it: install_server and install_agent remove the template themselves,
+# before the start.
+#
+# It restarts nothing: containerd keeps running on its config.toml until the
+# service starts again, which then renders the distribution's own config. A
+# public "remove and restart the running service once" is not in the library
+# (rex-rancher board, from k196).
 desc "Remove the obsolete containerd config template OCP wrote before k23";
 task "cleanup_legacy_containerd_template", sub {
-    for my $path (_legacy_containerd_template_paths()) {
-        next unless is_file($path);
-
-        my $content = eval { cat $path };
-        unless (_is_legacy_containerd_template($content)) {
-            say "Keeping $path: content is not the template OCP used to write";
-            next;
-        }
-
-        unlink $path;
-        say "Removed obsolete containerd template $path -- it was OCP's pre-k23 "
-          . "two-liner and was overriding the generated containerd config; "
-          . "the next service start renders that config again";
+    for my $dist (_distributions()) {
+        next unless $dist->remove_bare_containerd_template;
+        say "Removed the bare containerd template in " . $dist->containerd_dir
+          . " -- the next start of " . $dist->label . " renders its own containerd config again";
     }
 };
 

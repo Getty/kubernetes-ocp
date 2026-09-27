@@ -2,13 +2,14 @@
 use strict;
 use warnings;
 use Test::More;
-use Path::Tiny qw(path);
 
 use lib 't/lib';
 use OCPTest::Rexfile;
+use OCP::Drift;
 
 #
-# The pre-k23 containerd config template, and the Rex task that removes it.
+# The pre-k23 containerd config template, the read-only probe that reports it
+# and the Rex task that removes it.
 #
 # OCP used to write /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl
 # with two lines in it: an imports line pointing at /etc/containerd/conf.d and
@@ -21,139 +22,147 @@ use OCPTest::Rexfile;
 #
 # Since k196 the installs no longer run the task: Rex::Rancher's install_server
 # and install_agent remove such a template themselves, right before the service
-# starts (rex-rancher k72; that the library recognises exactly OCP's two-liner
-# is held against the real library in t/155-rex-libraries.t). The task stays as
-# OCP::Drift's remedy for a cluster that is only ever upgraded, next to the
-# read-only probe (t/71-drift-rex-probe.t).
+# starts (rex-rancher k72). The task stays as OCP::Drift's remedy for a cluster
+# that is only ever upgraded, next to the read-only probe
+# (t/71-drift-rex-probe.t), and both now take the decision from the library
+# (k196 part 2, option A): Rex::Rancher::Distribution's
+# is_bare_template_output decides what the probe reports, and its
+# remove_bare_containerd_template removes it -- the same decision the installs
+# remove by. OCP keeps no copy of the two-liner and no path list of its own.
 #
-# The task therefore removes by CONTENT, never by path: somebody may have put
-# their own template there, and theirs has to survive. That decision is the
-# thing worth testing, so the Rexfile keeps it in two plain subs with no Rex
-# in them, and this file lifts those subs out of the Rexfile and runs them.
-# Everything here is text and eval -- no network, no host, no Rex session.
+# Removal is still by CONTENT, never by path: somebody may have put their own
+# template there, and theirs has to survive. Up to k196 that decision was
+# OCP's own byte-exact comparison (trailing whitespace aside); the library's
+# is "blank lines and comments aside, exactly an `imports =` and a
+# `version = 2` line", so a bare template with another import glob counts as
+# well now. Everything else that OCP kept, the library keeps too. Here with the
+# real library's decision (it is pure), and the Rexfile against recorders
+# (t/lib/OCPTest/Rexfile.pm); that remove_bare_containerd_template removes the
+# two-liner and keeps the rest on a host is held against the real library in
+# t/155-rex-libraries.t.
 #
 
-my $root    = path(__FILE__)->parent->parent;
-my $rexfile = $root->child('share/Rexfile');
+# Byte for byte what the deleted _configure_nvidia_containerd wrote: 56 bytes,
+# the size measured on cortex in k45.
+my $LEGACY = qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n};
 
-plan skip_all => 'share/Rexfile not found' unless -f $rexfile;
+OCPTest::Rexfile->load;
+my @DISTS = map { Rex::Rancher::Distribution->new_for($_) } qw( rke2 k3s );
+my %TMPL  = map { $_->name => $_->containerd_dir . '/config.toml.tmpl' } @DISTS;
 
-my $src = $rexfile->slurp_utf8;
+# --- what counts as the template ---------------------------------------------
 
-# --- lift the decision out of the Rexfile ----------------------------------
-
-my @wanted = qw(
-    _legacy_containerd_template
-    _is_legacy_containerd_template
-    _legacy_containerd_template_paths
-);
-
-my @subs;
-for my $name (@wanted) {
-    my ($body) = $src =~ /^(sub \Q$name\E \{.*?^\})/ms;
-    ok defined $body, "share/Rexfile defines $name"
-        or BAIL_OUT("cannot test a decision that is not there: $name");
-    push @subs, $body;
-}
-
-my $pkg = 'RexfileLegacyTemplate';
-ok eval("package $pkg; " . join("\n", @subs) . "\n1;"),
-    'the three subs compile on their own -- they carry no Rex dependency'
-    or diag $@;
-
-my $known = $pkg->can('_legacy_containerd_template')->();
-my $is    = $pkg->can('_is_legacy_containerd_template');
-my @paths = $pkg->can('_legacy_containerd_template_paths')->();
-
-# --- what the task is allowed to delete ------------------------------------
-
-subtest 'the known content is exactly what OCP used to write' => sub {
-    is $known, qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n},
-        'byte for byte the content of the deleted _configure_nvidia_containerd';
-    is length($known), 56,
-        'and 56 bytes -- the size measured on cortex in k45';
+subtest 'the library recognises the template OCP used to write' => sub {
+    is length($LEGACY), 56, 'the fixture is the 56-byte two-liner';
+    for my $d (@DISTS) {
+        ok $d->is_bare_template_output($LEGACY), $d->name . ': the two-liner itself';
+        ok $d->is_bare_template_output($LEGACY =~ s/\n\z//r),
+            $d->name . ': the same content without a trailing newline';
+    }
 };
 
-subtest 'only that exact content is recognised' => sub {
-    ok $is->($known), 'the two-liner itself';
-    ok $is->("imports = [\"/etc/containerd/conf.d/*.toml\"]\nversion = 2"),
-        'the same content without a trailing newline';
-};
-
-subtest 'anything else is somebody elses template and stays' => sub {
+subtest 'anything else is somebody else\'s template and stays' => sub {
     my %other = (
         'a real custom template (has the base include)' =>
-            qq{{{ template "base" . }}\nimports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n},
-        'a different import glob' =>
-            qq{imports = ["/etc/containerd/mine.d/*.toml"]\nversion = 2\n},
+            qq{{{ template "base" . }}\n$LEGACY},
         'a different containerd config version' =>
             qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 3\n},
-        'our two lines plus an extra directive' =>
-            qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\nroot = "/var/lib/containerd"\n},
+        'the two lines plus an extra directive' =>
+            qq{${LEGACY}root = "/var/lib/containerd"\n},
         'only the imports line' =>
             qq{imports = ["/etc/containerd/conf.d/*.toml"]\n},
         'a full generated config' =>
             qq{version = 2\n[plugins]\n  [plugins."io.containerd.grpc.v1.cri"]\n    sandbox_image = "x"\n},
         'an empty file' => '',
     );
+    my $d = $DISTS[0];
+    ok !$d->is_bare_template_output($other{$_}), "left alone: $_" for sort keys %other;
+    ok !$d->is_bare_template_output(undef), 'left alone: unreadable file (undef content)';
 
-    ok !$is->($other{$_}), "left alone: $_" for sort keys %other;
-    ok !$is->(undef), 'left alone: unreadable file (undef content)';
+    # Widened from OCP's own byte-exact check: a bare template is bare
+    # whichever conf.d it imports -- it replaces the generated config just the
+    # same.
+    ok $d->is_bare_template_output(qq{imports = ["/etc/containerd/mine.d/*.toml"]\nversion = 2\n}),
+        'another import glob with nothing else is the same bare template';
 };
 
 subtest 'both distributions are covered' => sub {
-    is scalar @paths, 2, 'two paths';
-    is_deeply [sort @paths], [sort
+    is_deeply [ sort values %TMPL ], [ sort
         '/var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl',
         '/var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl',
     ], 'the rke2 and the k3s template path';
-
-    like $_, qr{/agent/etc/containerd/config\.toml\.tmpl$},
-        "$_ is the template the agent renders" for @paths;
 };
 
-# --- the task itself --------------------------------------------------------
+# --- the probe ---------------------------------------------------------------
 
-my ($task) = $src =~ /^task "cleanup_legacy_containerd_template", sub \{\n(.*?)\n\};$/ms;
+# The probe on a host whose templates are %content (distribution => content;
+# missing: no file). Returns what it printed and the commands it ran.
+sub probe {
+    my (%content) = @_;
+    OCPTest::Rexfile->reset;
+    my %by_path = map { $TMPL{$_} => $content{$_} } keys %content;
+    local $OCPTest::Rexfile::RUN = sub {
+        my ($cmd) = @_;
+        my ($path) = $cmd =~ /^cat (\S+) 2>\/dev\/null$/ or return ('', 0);
+        return defined $by_path{$path} ? ($by_path{$path}, 0) : ('', 1);
+    };
+    my $out = OCPTest::Rexfile->run_task('detect_legacy_containerd_template');
+    return ($out, [ OCPTest::Rexfile->commands ]);
+}
 
-subtest 'the task exists and deletes only behind the content check' => sub {
-    ok defined $task, 'task "cleanup_legacy_containerd_template" is defined'
-        or return;
+subtest 'the probe reports the template where it is, per distribution' => sub {
+    my ($out) = probe(rke2 => $LEGACY);
+    is $out, "$OCP::Drift::REX_DRIFT_MARKER $TMPL{rke2}\n",
+        'rke2: one line with the marker OCP::Drift matches, naming the file';
 
-    like $src, qr/^desc "[^"]*";\ntask "cleanup_legacy_containerd_template"/m,
-        'and carries a desc, so `rex -T` lists it';
-
-    like $task, qr/_legacy_containerd_template_paths/,
-        'it walks both template paths';
-    like $task, qr/next unless is_file/,
-        'a path that does not exist is skipped without a word';
-
-    my $guard  = index $task, '_is_legacy_containerd_template';
-    my $remove = index $task, 'unlink';
-    cmp_ok $guard,  '>=', 0, 'the content check is in the task';
-    cmp_ok $remove, '>=', 0, 'and so is the removal';
-    cmp_ok $guard,  '<',  $remove,
-        'the check comes first -- nothing is unlinked before the content matched';
-
-    like $task, qr/unless \s* \( \s* _is_legacy_containerd_template .*? \bnext\b/xs,
-        'a non-matching file leaves the loop body before the unlink';
+    ($out) = probe(k3s => $LEGACY);
+    is $out, "$OCP::Drift::REX_DRIFT_MARKER $TMPL{k3s}\n", 'k3s the same';
 };
 
-subtest 'both outcomes end up in the log' => sub {
-    ok defined $task, 'task body available' or return;
+subtest 'the probe is silent where there is nothing of the kind, and only reads' => sub {
+    my ($out, $cmds) = probe();
+    is $out, '', 'no template: silence';
+    is_deeply [ sort @$cmds ], [ sort map { "cat $_ 2>/dev/null" } values %TMPL ],
+        'it ran nothing but a cat of each template';
 
-    like $task, qr/say "Keeping \$path/,
-        'a template that is kept says so, naming the file';
-    like $task, qr/say "Removed obsolete containerd template \$path/,
-        'a template that is removed says so, naming the file';
+    ($out) = probe(rke2 => qq{{{ template "base" . }}\n$LEGACY});
+    is $out, '', 'a real custom template: silence';
+};
+
+# --- the remedy --------------------------------------------------------------
+
+subtest 'the remedy has the library remove it, for every distribution' => sub {
+    OCPTest::Rexfile->reset;
+    my %removes = (rke2 => 1, k3s => 0);
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::Distribution::remove_bare_containerd_template'} =
+        sub { $removes{ $_[0]->name } };
+    my $out = OCPTest::Rexfile->run_task('cleanup_legacy_containerd_template');
+
+    my @calls = OCPTest::Rexfile->calls('Rex::Rancher::Distribution::remove_bare_containerd_template');
+    is_deeply [ sort map { $_->{args}[0]->name } @calls ], [qw( k3s rke2 )],
+        'remove_bare_containerd_template for rke2 and k3s';
+    my $rke2_dir = $DISTS[0]->containerd_dir;
+    like $out, qr/Removed the bare containerd template in \Q$rke2_dir\E/,
+        'what was removed is said, naming where';
+    unlike $out, qr{/k3s/}, 'what was not is left to the library\'s own log line';
+
+    is_deeply [ OCPTest::Rexfile->commands ], [],
+        'and nothing of its own: no restart -- containerd keeps its config.toml until the next start';
+};
+
+subtest 'a removal that fails fails the remedy' => sub {
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Distribution::remove_bare_containerd_template'} =
+        "Could not remove $TMPL{rke2}, the bare containerd template ...\n";
+    ok !eval { OCPTest::Rexfile->run_task('cleanup_legacy_containerd_template'); 1 }, 'dies';
+    like $@, qr/Could not remove/, 'with the library\'s reason';
 };
 
 subtest 'the installs leave it to Rex::Rancher, for both distributions and both roles' => sub {
     # Up to k196 prepare_node ran the task before every install. Now the
     # library removes the template itself, right before the service is
     # (re)started -- the only moment at which an inherited template can still
-    # be thrown away instead of rendered. Run against recorders
-    # (t/lib/OCPTest/Rexfile.pm).
+    # be thrown away instead of rendered.
     for my $install (qw(
         install_rke2_server install_rke2_agent
         install_k3s_server  install_k3s_agent

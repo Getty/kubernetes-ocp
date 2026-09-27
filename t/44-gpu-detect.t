@@ -17,10 +17,14 @@ use OCPTest::Rexfile;
 # without difficulty. Vendor + PCI class come from the kernel, need no database
 # and no pciutils, and are the same evidence NFD uses.
 #
-# Detection stays OCP's own since k155 (Rex::GPU's detection uses lspci); the
-# driver and toolkit install go through Rex::GPU::NVIDIA, which OCP hands the
-# GPUs it found (rex-gpu k42). The Rexfile runs against recorders
-# (t/lib/OCPTest/Rexfile.pm).
+# OCP read sysfs itself from k155 on; since k196 the reading is Rex::GPU's
+# (Rex::GPU::Detect::Sysfs, rex-gpu k73), which gives the full GPU hashes --
+# a compute verdict from the generation table, vGPU keys, NVSwitches -- and
+# dies for a host whose sysfs it cannot read. What it finds on which hardware
+# is held against the real library in t/155-rex-libraries.t. What stays OCP's
+# and is held here, against recorders (t/lib/OCPTest/Rexfile.pm): which of
+# the GPUs found get a driver (k194), that the host is read once, and what
+# OCP hands Rex::GPU::NVIDIA.
 #
 
 my $src = OCPTest::Rexfile->rexfile->slurp_utf8;
@@ -29,16 +33,35 @@ my $src = OCPTest::Rexfile->rexfile->slurp_utf8;
 # named — assertions about what must not come back have to look at the code.
 my $code = join '', grep { !/^\s*#/ } split /^/, $src;
 
-my $sysfs_output;   # what the stubbed `run` returns
-$OCPTest::Rexfile::RUN = sub { return ($sysfs_output, 0) };
+my $gpu_action       = OCPTest::Rexfile->helper('_gpu_action');
+my $driver_gpus      = OCPTest::Rexfile->helper('_driver_gpus');
+my $maybe_detect_gpu = OCPTest::Rexfile->helper('_maybe_detect_gpu');
 
-my $pci_display_devices = OCPTest::Rexfile->helper('_pci_display_devices');
-my $gpu_action          = OCPTest::Rexfile->helper('_gpu_action');
-my $maybe_detect_gpu    = OCPTest::Rexfile->helper('_maybe_detect_gpu');
+# GPUs in the shape Rex::GPU::Detect::Sysfs returns them.
+sub nvidia {
+    my ($id, $compute, %more) = @_;
+    return {
+        name      => 'NVIDIA GPU [10de:' . ($id // '????') . ']',
+        vendor    => 'nvidia',
+        pci_class => '0300',
+        compute   => $compute,
+        device_id => $id,
+        subsystem_vendor_id => '10de',
+        subsystem_id        => '0000',
+        vgpu      => 0,
+        %more,
+    };
+}
+my $GB10    = nvidia('2e12', 1);                         # DGX Spark
+my $H100    = nvidia('2330', 1, pci_class => '0302');
+my $KEPLER  = nvidia('128b', 0);                         # GT 710, GK208
+my $UNKNOWN = nvidia('3000', undef);                     # no generation row, no name
+my $SWITCH  = { name => 'NVIDIA NVSwitch [10de:22a3]', vendor => 'nvidia',
+                pci_class => '0680', device_id => '22a3' };
 
-sub devices_for {
-    $sysfs_output = shift;
-    return [ $pci_display_devices->() ];
+sub detected {
+    my (%d) = @_;
+    return { nvidia => [], amd => [], nvswitch => [], %d };
 }
 
 sub detect_tasks_after {
@@ -48,83 +71,135 @@ sub detect_tasks_after {
     return [ map { $_->{args}[0] } OCPTest::Rexfile->calls('do_task') ];
 }
 
+# detect_gpu, and install_nvidia behind it, on a host whose detection says
+# $detected. Returns what the tasks printed.
+sub detect_gpu_on {
+    my ($detected, %o) = @_;
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::OS = $o{os} // 'Debian';
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { $detected };
+    local $OCPTest::Rexfile::FOLLOW{install_nvidia} = 1;
+    return OCPTest::Rexfile->run_task('detect_gpu');
+}
+
+sub install_nvidia_on {
+    my (%o) = @_;
+    return detect_gpu_on($o{detected} // detected(nvidia => [ $GB10 ]), %o);
+}
+
+sub driver_call { OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver') }
+sub count       { scalar OCPTest::Rexfile->calls($_[0]) }
+
 #
-# What the kernel actually exposes: /sys/bus/pci/devices/<slot>/{vendor,device,class}
-# hold 0x-prefixed hex, and class is six digits — class, subclass, programming
-# interface. NFD's label uses the first four.
+# Detection is Rex::GPU's, read once.
 #
 
-subtest 'the GB10 that the whitelist could not name is found by vendor and class' => sub {
-    my $devices = devices_for(<<'SYSFS');
-/sys/bus/pci/devices/000f:01:00.0|0x10de|0x2e12|0x030000
-SYSFS
+subtest 'the host is read once, through Rex::GPU::Detect::Sysfs' => sub {
+    detect_gpu_on(detected(nvidia => [ $GB10 ]));
+    my @detect = OCPTest::Rexfile->calls('Rex::GPU::Detect::Sysfs::detect');
+    is scalar @detect, 1, 'one detection for detect_gpu and the install behind it';
+    is $detect[0]{args}[0], 'Rex::GPU::Detect::Sysfs', 'the sysfs detection, as a class method';
+    ok driver_call(), 'and the driver install ran on what it found';
 
-    is scalar @$devices, 1, 'one display device';
-    is $devices->[0]{vendor}, '10de', 'NVIDIA, from the hardware and not from pci.ids';
-    is $devices->[0]{device}, '2e12', 'GB10';
-    is $devices->[0]{class},  '0300', 'VGA controller — the class NFD labels as pci-0300_10de';
-    is $devices->[0]{slot},   '000f:01:00.0', 'the slot keeps its domain';
-
-    is $gpu_action->(@$devices), 'nvidia',
-        'and it gets a driver, with nobody asking what the card is called';
+    # A hand-run of install_nvidia alone detects for itself.
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { detected(nvidia => [ $GB10 ]) };
+    OCPTest::Rexfile->run_task('install_nvidia');
+    is count('Rex::GPU::Detect::Sysfs::detect'), 1, 'install_nvidia on its own: it detects';
+    ok driver_call(), 'and installs';
 };
 
-subtest 'only display and 3D controllers count' => sub {
-    my $devices = devices_for(<<'SYSFS');
-/sys/bus/pci/devices/0000:00:00.0|0x8086|0x1234|0x060000
-/sys/bus/pci/devices/0000:01:00.0|0x10de|0x2330|0x030200
-/sys/bus/pci/devices/0000:01:00.1|0x10de|0x22ba|0x040300
-/sys/bus/pci/devices/0000:02:00.0|0x10de|0x1eb8|0x030100
-SYSFS
-
-    is_deeply [ map { $_->{class} } @$devices ], ['0302'],
-        'the host bridge, the GPU audio function and the XGA class are all left out';
-    is $devices->[0]{device}, '2330', 'an H100 registers as a 3D controller';
-};
-
-subtest 'a broken or missing sysfs entry is skipped, not fatal' => sub {
-    my $devices = devices_for(<<'SYSFS');
-/sys/bus/pci/devices/0000:01:00.0||0x2e12|0x030000
-/sys/bus/pci/devices/0000:02:00.0|0x10de|0x2e12|
-/sys/bus/pci/devices/0000:03:00.0|0x10de|0x2e12|0x030000
-SYSFS
-
-    is scalar @$devices, 1, 'only the complete entry survives';
-    is $devices->[0]{slot}, '0000:03:00.0', 'and it is the right one';
-
-    is_deeply devices_for(''),    [], 'no devices at all is not an error';
-    $sysfs_output = undef;
-    is_deeply [ $pci_display_devices->() ], [],
-        'neither is a command that produced nothing';
+subtest 'a host whose sysfs cannot be read fails, it is not GPU-less' => sub {
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::GPU::Detect::Sysfs::detect'} =
+        "GPU detection from sysfs: could not read /sys/bus/pci/devices on the host (exit 3)\n";
+    ok !eval { OCPTest::Rexfile->run_task('detect_gpu'); 1 }, 'detect_gpu dies';
+    like $@, qr/could not read \/sys\/bus\/pci\/devices/, 'with the library\'s reason';
+    is count('Rex::GPU::NVIDIA::install_driver'), 0, 'before any driver';
 };
 
 #
-# The virtual-GPU blacklist stays: a short list of "definitely not" keeps
-# working as hardware moves on, which is exactly what the whitelist did not.
+# Which GPUs get a driver (k194). Since k191 Rex::GPU refuses Kepler and older
+# on Ubuntu too (Setup.pm _reject_unsupported_gpu, as on Debian): the newest
+# driver for them is the end-of-life 470 branch. OCP handed every NVIDIA
+# display card to install_driver, so a host with a GT 710 as its VGA died in
+# `ocp apply` or a robocop join. Rex::GPU leaves "does this card get a
+# driver" to its caller, and an empty gpus list means "install one for no GPU
+# in particular", not "skip".
 #
 
-subtest 'virtual display adapters still need no host driver' => sub {
-    for my $vendor (qw(1af4 1b36 15ad 80ee)) {
-        my $devices = devices_for("/sys/bus/pci/devices/0000:00:02.0|0x$vendor|0x1050|0x030000\n");
-        is $gpu_action->(@$devices), 'virtual', "vendor $vendor is virtual";
+subtest 'the GB10 that the whitelist could not name gets a driver' => sub {
+    is $gpu_action->(detected(nvidia => [ $GB10 ])), 'nvidia',
+        'and nobody asked what the card is called';
+};
+
+subtest 'a Kepler-only host gets no driver, no toolkit, and is no GPU node (k194)' => sub {
+    is $gpu_action->(detected(nvidia => [ $KEPLER ])), 'unsupported', 'decided as unsupported';
+
+    my $out = detect_gpu_on(detected(nvidia => [ $KEPLER ]));
+    is count('Rex::GPU::NVIDIA::install_driver'), 0, 'install_driver is never called';
+    is count('Rex::GPU::NVIDIA::install_container_toolkit'), 0, 'nor the toolkit installed';
+    ok !(grep { $_->{args}[0] eq 'install_nvidia' } OCPTest::Rexfile->calls('do_task')),
+        'install_nvidia does not run';
+    like $out, qr/10de:128b/, 'the card is named';
+    like $out, qr/Kepler or older/, 'with the reason';
+    like $out, qr/no GPU node/, 'and what it means for the node';
+
+    for my $os (qw( Ubuntu Debian )) {
+        detect_gpu_on(detected(nvidia => [ $KEPLER ]), os => $os);
+        is count('Rex::GPU::NVIDIA::install_driver'), 0, "$os: no install_driver either";
     }
 };
 
-subtest 'a passed-through GPU beats the virtio adapter next to it' => sub {
-    my $devices = devices_for(<<'SYSFS');
-/sys/bus/pci/devices/0000:00:02.0|0x1af4|0x1050|0x030000
-/sys/bus/pci/devices/0000:06:00.0|0x10de|0x20b5|0x030200
-SYSFS
+subtest 'next to a newer card a Kepler is left out, the newer one gets its driver' => sub {
+    detect_gpu_on(detected(nvidia => [ $KEPLER, $GB10 ]));
+    my $o = driver_call() or return fail('install_driver called');
+    is_deeply [ map { $_->{device_id} } @{ $o->{gpus} } ], [ '2e12' ], 'only the GB10';
+};
 
-    is $gpu_action->(@$devices), 'nvidia',
-        'the VM display adapter does not veto the card that is actually there';
+subtest 'a card the table does not know is handed on, not dropped' => sub {
+    is_deeply [ $driver_gpus->(detected(nvidia => [ $UNKNOWN ])) ], [ $UNKNOWN ],
+        'compute undef (no generation row, no name in sysfs) counts';
+    detect_gpu_on(detected(nvidia => [ $UNKNOWN ]));
+    my $o = driver_call() or return fail('install_driver called');
+    is $o->{gpus}[0]{device_id}, '3000', 'install_driver gets it -- an unknown GPU to the library';
+
+    my $unreadable = nvidia(undef, undef);
+    detect_gpu_on(detected(nvidia => [ $unreadable ]));
+    $o = driver_call() or return fail('install_driver called');
+    is scalar @{ $o->{gpus} }, 1, 'a card whose device ID sysfs could not read is handed on too';
+    ok !defined $o->{gpus}[0]{device_id}, 'without a device_id -- not guessed';
+};
+
+subtest 'install_driver never gets an empty list' => sub {
+    for my $case (
+        [ 'no GPU'        => detected() ],
+        [ 'only a Kepler' => detected(nvidia => [ $KEPLER ]) ],
+        [ 'only AMD'      => detected(amd => [ { name => 'AMD GPU [1002:744c]', vendor => 'amd',
+                                                 pci_class => '0300', compute => 0 } ]) ],
+    ) {
+        my ($label, $d) = @$case;
+
+        detect_gpu_on($d);
+        is count('Rex::GPU::NVIDIA::install_driver'), 0, "$label: detect_gpu installs nothing";
+
+        # install_nvidia run by hand on such a host: nothing either.
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { $d };
+        my $out = OCPTest::Rexfile->run_task('install_nvidia');
+        is count('Rex::GPU::NVIDIA::install_driver'), 0, "$label: install_nvidia installs nothing";
+        is count('Rex::GPU::NVIDIA::install_container_toolkit'), 0, "$label: no toolkit";
+        like $out, qr/nothing to install/, "$label: and says so";
+    }
 };
 
 subtest 'the other outcomes' => sub {
-    my $amd = devices_for("/sys/bus/pci/devices/0000:03:00.0|0x1002|0x744c|0x030000\n");
-    is $gpu_action->(@$amd), 'amd', 'AMD is recognised but unimplemented';
-
-    is $gpu_action->(), 'none', 'nothing found means nothing to do';
+    is $gpu_action->(detected(amd => [ { vendor => 'amd', compute => 0 } ])), 'amd',
+        'AMD is recognised but unimplemented';
+    is $gpu_action->(detected()), 'none', 'nothing found means nothing to do';
+    # Virtual display adapters never reach OCP: Rex::GPU::Detect::Sysfs skips
+    # them without hiding a passed-through card (t/155-rex-libraries.t).
+    is $gpu_action->(detected(nvidia => [ $H100 ])), 'nvidia', 'a 3D controller is a GPU as well';
 };
 
 #
@@ -179,8 +254,9 @@ subtest 'the model whitelist is gone for good' => sub {
     unlike $code, qr/\bTITAN\b|\bQuadro\b/,
         'no marketing names are matched anywhere';
 
-    like $code, qr{/sys/bus/pci/devices},
-        'detection reads sysfs instead';
+    like $code, qr/Rex::GPU::Detect::Sysfs->detect/,
+        'detection reads sysfs, through Rex::GPU';
+    unlike $code, qr{/sys/bus/pci/devices}, 'and OCP reads none of it itself';
 };
 
 #
@@ -199,69 +275,48 @@ subtest 'no driver branch is hardcoded' => sub {
 # With detection fixed, install_nvidia now actually runs on a DGX — where the
 # driver guard stops the driver install but the toolkit step used to carry on
 # and add NVIDIA's apt source to a host that already had the toolkit from its
-# vendor image.
+# vendor image. Up to k196 OCP checked for the binaries itself and skipped
+# Rex::GPU; since rex-gpu k74 the library takes the binaries as a toolkit when
+# asked to (binaries_suffice), and OCP always asks. That the library then
+# leaves such a host alone is held against the real library in
+# t/155-rex-libraries.t.
 #
 
-my $GB10 = "/sys/bus/pci/devices/000f:01:00.0|0x10de|0x2e12|0x030000\n";
-
-sub install_nvidia_on {
-    my (%o) = @_;
-    OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::OS = $o{os} // 'Debian';
-    local %OCPTest::Rexfile::CAN_RUN = %{ $o{can_run} // {} };
-    local $OCPTest::Rexfile::RUN = sub {
-        my ($cmd) = @_;
-        return ($o{sysfs} // $GB10, 0) if $cmd =~ m{/sys/bus/pci/devices};
-        return ('', 0);
-    };
-    return OCPTest::Rexfile->run_task('install_nvidia');
-}
-
-subtest 'a host that already has the toolkit keeps its apt sources' => sub {
-    my ($check) = $code =~ /^(sub _nvidia_toolkit_present \{.*?^\})/ms;
-    ok $check, 'there is a check for an existing container toolkit';
-    like $check, qr/nvidia-container-runtime/,
-        'it asks for the binary the CRI execs, not for a package name';
-    like $check, qr/nvidia-ctk/, 'and for the toolkit CLI next to it';
-
-    my $out = install_nvidia_on(can_run => { 'nvidia-container-runtime' => 1, 'nvidia-ctk' => 1 });
-    is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_container_toolkit')), 0,
-        'the toolkit install is not asked for';
-    like $out, qr/leaving the host's apt sources alone/, 'and it says so';
-
-    install_nvidia_on(can_run => { 'nvidia-ctk' => 1 });
-    is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_container_toolkit')), 1,
-        'without the runtime binary, Rex::GPU installs the toolkit';
+subtest 'the toolkit: the binaries a host already has suffice' => sub {
+    install_nvidia_on();
+    my @tk = OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_container_toolkit');
+    is scalar @tk, 1, 'install_container_toolkit, once';
+    is_deeply +{ @{ $tk[0]{args} } }, { binaries_suffice => 1 },
+        'with binaries_suffice: nvidia-container-runtime and a working nvidia-ctk are a toolkit';
+    unlike $code, qr/_nvidia_toolkit_present|can_run\("nvidia/, 'no check of OCP\'s own left';
+    unlike $code, qr/configure_containerd/, 'and no containerd configuration with it';
 };
 
 #
 # The driver itself is Rex::GPU's since k155 (Ubuntu since k191). It gets the
-# GPUs OCP found in sysfs, in the shape Rex::GPU takes from a caller without
-# lspci (rex-gpu k42): device_id as four hex digits, and a name.
+# GPUs as Rex::GPU::Detect::Sysfs found them.
 #
 
-subtest 'Rex::GPU installs the driver for the GPUs sysfs found' => sub {
-    install_nvidia_on(sysfs => $GB10
-        . "/sys/bus/pci/devices/0000:01:00.0|0x10de|0x2330|0x030200\n"
-        . "/sys/bus/pci/devices/0000:00:02.0|0x1af4|0x1050|0x030000\n");
-    my $o = OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver');
-    ok $o, 'install_driver called' or return;
-    is_deeply [ map { $_->{device_id} } @{ $o->{gpus} } ], [ '2e12', '2330' ],
-        'every NVIDIA card, by device ID, nothing else';
-    like $o->{gpus}[0]{name}, qr/10de:2e12/, 'named by its PCI ID -- sysfs knows no names';
+subtest 'Rex::GPU installs the driver for the GPUs found, as found' => sub {
+    my $vgpu = nvidia('2236', 1, vgpu => 1, vgpu_type => 'NVIDIA A10-2Q', subsystem_id => '14b9');
+    install_nvidia_on(detected => detected(nvidia => [ $GB10, $H100, $vgpu ]));
+    my $o = driver_call() or return fail('install_driver called');
+    is_deeply $o->{gpus}, [ $GB10, $H100, $vgpu ],
+        'every GPU a driver is for, the whole hash -- vGPU keys included, so Rex::GPU can refuse a vGPU guest';
     ok !exists $o->{gpu}, 'as gpus, not the older single-GPU form';
-    is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::verify_nvidia')), 1, 'then verified';
+    ok !exists $o->{nvswitches}, 'no NVSwitch, no nvswitches';
+    is count('Rex::GPU::NVIDIA::verify_nvidia'), 1, 'then verified';
 
     my $toolkit = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::GPU::NVIDIA::install_container_toolkit' });
     my $driver  = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::GPU::NVIDIA::install_driver' });
     ok $driver >= 0 && $toolkit > $driver, 'driver before toolkit';
 };
 
-subtest 'a device ID sysfs does not give is left out, not guessed' => sub {
-    install_nvidia_on(sysfs => "/sys/bus/pci/devices/0000:01:00.0|0x10de||0x030200\n");
-    my $o = OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver');
-    is scalar @{ $o->{gpus} }, 1, 'the card is still passed';
-    ok !exists $o->{gpus}[0]{device_id}, 'without a device_id: an unknown GPU to the library';
+subtest 'an HGX baseboard\'s NVSwitches go with the driver' => sub {
+    install_nvidia_on(detected => detected(nvidia => [ $H100 ], nvswitch => [ $SWITCH ]));
+    my $o = driver_call() or return fail('install_driver called');
+    is_deeply $o->{nvswitches}, [ $SWITCH ],
+        'as nvswitches: Rex::GPU installs Fabric Manager with the driver';
 };
 
 #
@@ -274,18 +329,16 @@ subtest 'a device ID sysfs does not give is left out, not guessed' => sub {
 
 subtest 'Ubuntu: Rex::GPU installs the driver, ubuntu-drivers naming the package' => sub {
     install_nvidia_on(os => 'Ubuntu');
-    my $o = OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver');
-    ok $o, 'install_driver called' or return;
+    my $o = driver_call() or return fail('install_driver called');
     is $o->{setup}, 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers', 'with Setup::UbuntuDrivers';
-    is_deeply [ map { $_->{device_id} } @{ $o->{gpus} } ], [ '2e12' ], 'for the GPUs sysfs found';
+    is_deeply [ map { $_->{device_id} } @{ $o->{gpus} } ], [ '2e12' ], 'for the GPUs found';
     is_deeply [ OCPTest::Rexfile->calls('pkg') ], [], 'no package of OCP\'s own';
     ok !(grep { /ubuntu-drivers|modprobe/ } OCPTest::Rexfile->commands), 'no command of its own';
-    is scalar(OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::install_container_toolkit')), 1,
+    is count('Rex::GPU::NVIDIA::install_container_toolkit'), 1,
         'the toolkit still comes from Rex::GPU';
 
     install_nvidia_on(os => 'Debian');
-    ok !exists OCPTest::Rexfile->lib_opts('Rex::GPU::NVIDIA::install_driver')->{setup},
-        'elsewhere the setup for the OS, as Rex::GPU picks it';
+    ok !exists driver_call()->{setup}, 'elsewhere the setup for the OS, as Rex::GPU picks it';
 };
 
 #
@@ -321,16 +374,15 @@ subtest 'OCP writes no containerd configuration for the GPU' => sub {
     unlike $code, qr/Configuring RKE2 containerd/,
         'nothing claims to configure RKE2 while running under k3s';
 
-    # Both paths do appear in the Rexfile again, but only in
-    # cleanup_legacy_containerd_template, which REMOVES the template a pre-k23
-    # OCP left behind on hosts that are never destroyed (k45). The claim
-    # of this subtest is unchanged — OCP writes no containerd config — so it is
-    # asserted against everything except that task, which also pins the
-    # mentions to it: no future writer can hide behind the exception.
+    # The template path does appear in the Rexfile, but only in the probe that
+    # reports the template a pre-k23 OCP left behind and the remedy that has
+    # Rex::Rancher remove it (k45) -- on hosts that are never destroyed. The
+    # claim of this subtest is unchanged — OCP writes no containerd config —
+    # so it is asserted against everything except those two tasks, which also
+    # pins the mentions to them: no future writer can hide behind the
+    # exception.
     my $writers = $code;
-    $writers =~ s/^sub _legacy_containerd_template \{.*?^\}//ms;
-    $writers =~ s/^sub _is_legacy_containerd_template \{.*?^\}//ms;
-    $writers =~ s/^sub _legacy_containerd_template_paths \{.*?^\}//ms;
+    $writers =~ s/^task "detect_legacy_containerd_template", sub \{.*?^\};//ms;
     $writers =~ s/^task "cleanup_legacy_containerd_template", sub \{.*?^\};//ms;
 
     unlike $writers, qr/config\.toml\.tmpl/,
@@ -341,7 +393,7 @@ subtest 'OCP writes no containerd configuration for the GPU' => sub {
     my ($cleanup) = $code =~ /^task "cleanup_legacy_containerd_template", sub \{(.*?)^\};/ms;
     ok $cleanup, 'the template code that is left is the cleanup task';
     unlike $cleanup, qr/\bfile\s+["'\$]/, 'it writes nothing';
-    like $cleanup, qr/\bunlink\b/, 'it only removes';
+    like $cleanup, qr/remove_bare_containerd_template/, 'it only has the library remove';
 
     # What is left is the RKE2 runtime lookup: a PATH in /etc/default/rke2-*,
     # written by Rex::Rancher when asked (nvidia_runtime_path), only when a

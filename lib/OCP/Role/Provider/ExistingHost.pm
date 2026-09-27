@@ -109,8 +109,12 @@ on C<PATH>, and when Cilium state survived the cleanup -- a host in that state
 hangs the next bootstrap on it until it is rebooted, and the message says so.
 B<A failed uninstall dies> -- a refused SSH login, a command that exits
 non-zero -- with the host and L<Rex::Rancher::Uninstall/uninstall_failure>'s
-message: the exit status and the remote side's stderr. Returns the
-C<run_command> result on success. A host that cannot be resolved is still a
+message: the exit status and the remote side's stderr, without the warning
+lines. Those -- L<Rex::Rancher::Uninstall/uninstall_warnings>, a cleanup step
+the host had no tool for (C<tc>, an iptables backend), so that part of the
+datapath was not checked; a reboot clears it -- go to STDERR, one line each
+with the host in front, and fail nothing. Returns the C<run_command> result
+on success. A host that cannot be resolved is still a
 no-op: there is nowhere to uninstall from.
 
 This is OCP's one uninstall path; L<OCP::Node/Teardown>
@@ -160,9 +164,17 @@ sub delete_server {
     # exceptions, deleted the Node and the OCPNode of a worker that kept
     # running rke2-agent (k175). Say it the way every caller already hears,
     # with the host in front: the library's message cannot know it.
-    my ($exit, $stderr) = ref $result eq 'HASH'
-        ? ($result->{exit} // 0, $result->{stderr})
-        : (1, '');
+    my ($exit, $stdout, $stderr) = ref $result eq 'HASH'
+        ? ($result->{exit} // 0, $result->{stdout}, $result->{stderr})
+        : (1, '', '');
+
+    # A cleanup step the host could not run -- no tc, no iptables backend with
+    # both -save and -restore -- leaves that part of Cilium's datapath
+    # unchecked; a reboot clears it. Not a failure (rex-rancher k79): only the
+    # line's exit status decides that, and its message leaves these out. Said
+    # on STDERR, as the diagnosis it is, whatever the outcome.
+    warn "$host: $_\n" for Rex::Rancher::Uninstall->uninstall_warnings($stdout, $stderr);
+
     my $failure = Rex::Rancher::Uninstall->uninstall_failure($exit, $stderr);
     die "$host: $failure" if defined $failure;
     return $result;

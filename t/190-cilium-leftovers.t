@@ -23,7 +23,11 @@ use OCPTest::UninstallHost;
 # the line is made of, step by step, and the guard's probe are held there
 # (rex-rancher t/uninstall.t, t/cilium-residue.t, ported from this file); so
 # is that the two test the same signals, which this file used to keep in step
-# between the Rexfile and OCP::Role::Provider::ExistingHost.
+# between the Rexfile and OCP::Role::Provider::ExistingHost. Since k196 part 2
+# the Rexfile no longer asks the guard itself: it runs the library's
+# preflight_server / preflight_agent (rex-rancher k78), whose first read of the
+# host is that guard (held against the real library in t/155-rex-libraries.t),
+# with the options the install gets.
 #
 # The claims here are OCP's, through its own code paths:
 #   1. OCP's uninstall (ExistingHost::delete_server, the one `ocp destroy` and
@@ -33,8 +37,8 @@ use OCPTest::UninstallHost;
 #   2. Cilium state that survives fails it, naming the host, what is left, and
 #      that a reboot is needed;
 #   3. the install tasks refuse a host with Cilium state before anything
-#      touches it, prepare_node included -- the guard is the first thing they
-#      do; on a clean host they go ahead.
+#      touches it, prepare_node included -- the library's preflight, the guard
+#      in it, is the first thing they do; on a clean host they go ahead.
 #
 # Whether the kernel really detaches the programs when the pins go is a live
 # question (Cilium's own detach does exactly that for its bpf_links), NOT
@@ -92,18 +96,18 @@ my $REFUSAL = "This host still carries Cilium datapath state from an earlier clu
   . "Nothing was written or installed. Reboot the host, then run the install again.\n";
 
 for my $case (
-  [ install_rke2_server => 'Rex::Rancher::Server::install_server', {} ],
-  [ install_k3s_server  => 'Rex::Rancher::Server::install_server', {} ],
-  [ install_rke2_agent  => 'Rex::Rancher::Agent::install_agent',
+  [ install_rke2_server => 'Rex::Rancher::Server::install_server', 'Rex::Rancher::Server::preflight_server', {} ],
+  [ install_k3s_server  => 'Rex::Rancher::Server::install_server', 'Rex::Rancher::Server::preflight_server', {} ],
+  [ install_rke2_agent  => 'Rex::Rancher::Agent::install_agent',   'Rex::Rancher::Agent::preflight_agent',
     { server => 'https://10.0.0.1:9345', token => 't' } ],
-  [ install_k3s_agent   => 'Rex::Rancher::Agent::install_agent',
+  [ install_k3s_agent   => 'Rex::Rancher::Agent::install_agent',   'Rex::Rancher::Agent::preflight_agent',
     { server => 'https://10.0.0.1:6443', token => 't' } ],
 ) {
-  my ( $task, $lib, $params ) = @$case;
+  my ( $task, $lib, $preflight, $params ) = @$case;
 
   subtest "$task refuses a host with Cilium leftovers before touching it" => sub {
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Uninstall::check_cilium_residue'} = $REFUSAL;
+    local $OCPTest::Rexfile::LIB_DIE{$preflight} = $REFUSAL;
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
     ok !$ok, 'the task dies';
     is $@, $REFUSAL, 'with the library\'s refusal';
@@ -116,13 +120,13 @@ for my $case (
     OCPTest::Rexfile->reset;
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
     ok $ok, 'the task runs' or diag $@;
-    is scalar(OCPTest::Rexfile->calls('Rex::Rancher::Uninstall::check_cilium_residue')), 1,
-      'the host was checked';
-    is $OCPTest::Rexfile::CALLS[0]{name}, 'Rex::Rancher::Uninstall::check_cilium_residue',
-      'first, before anything else';
+    is scalar(OCPTest::Rexfile->calls($preflight)), 1, 'the host was checked';
+    is $OCPTest::Rexfile::CALLS[0]{name}, $preflight, 'first, before anything else';
     my $prep = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'do_task' && $_->{args}[0] eq 'prepare_node' });
     ok $prep > 0, 'then prepare_node';
     is scalar(OCPTest::Rexfile->calls($lib)), 1, "then $lib";
+    is_deeply(OCPTest::Rexfile->lib_opts($preflight), OCPTest::Rexfile->lib_opts($lib),
+      'checked with exactly the options the install gets');
   };
 }
 

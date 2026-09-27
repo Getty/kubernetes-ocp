@@ -90,12 +90,23 @@ Since k155 the Rexfile tasks are thin wrappers around **Rex::Rancher** and
 in the Rexfile is OCP's own, each gap marked with the library card that would
 move it.
 
-0. Before anything touches the host, every install task asks
-   `Rex::Rancher::Uninstall->check_cilium_residue` (rex-rancher k71): a host
+0. Before anything touches the host, every install task runs the library's
+   read-only checks with the options the install gets:
+   `Rex::Rancher::Server::preflight_server(%opts)` /
+   `Rex::Rancher::Agent::preflight_agent(%opts)` (rex-rancher k78). First
+   read of the host is `check_cilium_residue` (rex-rancher k71): a host
    carrying Cilium's pins, its cgroup2 mount or `cilium_host` but no RKE2/K3s
    is refused with a request to reboot (k190: the old socket LB hangs every
-   image pull). The library checks again inside `install_server`/
-   `install_agent`, but only after `prepare_node` — so OCP asks first.
+   image pull). Then the version to hold and its skew (with `kubeconfig`
+   against the control plane), and on a server the cluster-cidr of one
+   already set up (rex-rancher k67). `install_server`/`install_agent` run the
+   same checks again, first thing — their log lines appear twice.
+   Both installs get `hold_running => 1` (rex-rancher k77, k193): a running
+   server or agent keeps the version it runs, a stopped one its installed
+   binary's, only a host with neither gets the pin; a pin that loses is a
+   warning on every run, and the service restarts only for a changed config
+   (k3s included). OCP never rolls or refuses a node over its pin:
+   distribution upgrades are manual, node by node (OCP::Drift reports them).
 1. `prepare_node` — since Rex::Rancher 0.003 (rex-rancher k42) this is just
    `Rex::Rancher::Node::prepare_node(hostname, domain, timezone, locale, ntp
    => $ntp)`. OCP hands the library
@@ -108,11 +119,13 @@ move it.
    chrony, falling back to systemd-timesyncd on a failed chrony install, and
    warning (not dying) when neither is available. `ntp` defaults on; OCP
    passes `ntp => 0` only to skip it entirely.
-2. `detect_gpu` — sysfs detection (OCP's own); `install_nvidia` calls
+2. `detect_gpu` — `Rex::GPU::Detect::Sysfs->detect` once (rex-gpu k73), OCP's
+   `_driver_gpus` drops Kepler-or-older (k194); `install_nvidia` calls
    `Rex::GPU::NVIDIA::install_driver(gpus => ..., setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers')`
    on Ubuntu (since k191, rex-gpu k69), plain `install_driver(gpus => ...)`
-   elsewhere; toolkit via `install_container_toolkit` unless the runtime
-   binaries exist. See skill `ocp-gpu` for the Ubuntu setup's package choice.
+   elsewhere (never with an empty list); toolkit via
+   `install_container_toolkit(binaries_suffice => 1)` (rex-gpu k74). See
+   skill `ocp-gpu`.
 3. `install_{rke2,k3s}_server` — `cluster_cidr` is passed straight into
    `Rex::Rancher::Server::install_server`, which writes it as config.yaml's
    own `cluster-cidr` (rex-rancher k41; both distributions). The
@@ -129,9 +142,11 @@ move it.
    start it removes a bare containerd `config.toml.tmpl` (only `imports` +
    `version = 2`, what OCP before k23 wrote; any other template stays) and
    restarts a running service still on its output once (rex-rancher k72,
-   agents too) — OCP's own `cleanup_legacy_containerd_template` is only
-   OCP::Drift's remedy now, next to the read-only probe
-   `detect_legacy_containerd_template` (k189). Then
+   agents too). `cleanup_legacy_containerd_template` is only OCP::Drift's
+   remedy: `$dist->remove_bare_containerd_template` for every distribution,
+   restarting nothing; the read-only probe `detect_legacy_containerd_template`
+   (k189) reports what `$dist->is_bare_template_output` recognises. OCP keeps
+   no template content or path list of its own (k196). Then
    `Rex::Rancher::K8s::wait_for_api` waits for the API from the machine
    running Rex, through the node's admin kubeconfig (no kubectl on the node;
    the library returns false on its 5-minute timeout, so OCP dies itself,
@@ -164,6 +179,9 @@ move it.
 host, the leftovers (Cilium CLI, `/opt/cni`, `/run/k3s`), Cilium's datapath
 and ip rules — and dies with `"$host: " . uninstall_failure($exit, $stderr)`
 when the line's own outcome check fails (RKE2/K3s still on PATH, k175;
-Cilium state that survived, asking for a reboot, k190). The line's content is
+Cilium state that survived, asking for a reboot, k190). The line's
+`uninstall_warnings($stdout, $stderr)` (no `tc`, no iptables backend: that
+part of the datapath went unchecked) go to STDERR as `"$host: <warning>"`
+and fail nothing (rex-rancher k79). The line's content is
 the library's (rex-rancher k71); OCP holds what it does on a host in
 `t/29-destroy-cleanup.t` and `t/190-cilium-leftovers.t`.

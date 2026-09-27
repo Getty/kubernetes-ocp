@@ -25,11 +25,14 @@ use OCPTest::UninstallHost;
 
 plan skip_all => 'needs a POSIX /bin/sh' unless -x '/bin/sh';
 
+# The warnings delete_server gives (warn, i.e. STDERR) come back fourth.
 sub uninstall {
     my (%stubs) = @_;
     my $h = OCPTest::UninstallHost->new(stubs => \%stubs, real => [qw( grep sed )]);
+    my @warn;
+    local $SIG{__WARN__} = sub { push @warn, $_[0] };
     my $res = eval { $h->delete_server(undef, host => '10.0.0.5') };
-    return ($h, $res, $@);
+    return ($h, $res, $@, \@warn);
 }
 
 # Every path an `rm` in the uninstall was handed, from the stub log.
@@ -113,6 +116,30 @@ subtest 'every uninstaller present runs, a failing one does not stop the next' =
     like $h->log, qr/^rke2-uninstall\.sh/m,      'rke2 uninstaller attempted';
     like $h->log, qr/^k3s-uninstall\.sh/m,       'k3s uninstaller attempted';
     like $h->log, qr/^k3s-agent-uninstall\.sh/m, 'k3s agent uninstaller attempted';
+};
+
+# The line warns, with a marker, for a cleanup step the host has no tool for:
+# no tc (Rocky/RHEL without iproute-tc), no iptables backend with both -save
+# and -restore. That part of Cilium's datapath went unchecked; a reboot clears
+# it. Not a failure (rex-rancher k79): OCP says it on STDERR and goes on.
+subtest 'a cleanup step the host has no tool for is a warning on STDERR, not a failure' => sub {
+    # The stub PATH has neither tc nor any iptables-save/-restore.
+    my ($h, $res, $err, $warn) = uninstall(rm => "exit 0\n");
+    ok $res, 'delete_server succeeds' or diag $err;
+    ok((grep { /^10\.0\.0\.5: tc is not installed: .*a reboot clears them$/ } @$warn),
+        'the missing tc, with the host in front') or diag explain $warn;
+    ok((grep { /^10\.0\.0\.5: no iptables backend with both -save and -restore/ } @$warn),
+        'the missing iptables backend');
+    ok !(grep { /rex-rancher-uninstall-warning/ } @$warn), 'said without the library\'s marker';
+
+    ($h, $res, $err, $warn) = uninstall(
+        ( map { $_ => "exit 1\n" } qw( rke2-uninstall.sh k3s-uninstall.sh rm ip ) ),
+        rke2 => "exit 1\n",
+    );
+    ok !$res, 'a failed uninstall still dies';
+    like $err, qr/still installed/, 'for its reason';
+    unlike $err, qr/tc is not installed|uninstall-warning/, 'and the warnings are not part of it';
+    ok((grep { /tc is not installed/ } @$warn), 'they went to STDERR all the same');
 };
 
 done_testing;

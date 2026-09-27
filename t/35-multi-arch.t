@@ -62,6 +62,12 @@ subtest 'an existing working driver is respected, not overwritten (Ubuntu)' => s
             if $cmd =~ /libcuda/;
         return ('', 0);
     };
+    # The DGX Spark's GB10, as Rex::GPU::Detect::Sysfs reports it.
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub {
+        +{ nvidia => [ { name => 'NVIDIA GPU [10de:2e12]', vendor => 'nvidia', pci_class => '0300',
+                         compute => 1, device_id => '2e12', vgpu => 0 } ],
+           amd => [], nvswitch => [] };
+    };
     OCPTest::Rexfile->run_task('install_nvidia');
     ok !(grep { /ubuntu-drivers|apt/ } OCPTest::Rexfile->commands), 'no ubuntu-drivers or apt of its own';
     is scalar(OCPTest::Rexfile->calls('pkg')), 0, 'no package installed';

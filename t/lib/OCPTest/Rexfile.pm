@@ -38,7 +38,7 @@ our $RUN = sub { return ('', 0) };
 # Library calls that die: 'Rex::Rancher::Agent::install_agent' => "message\n"
 our %LIB_DIE;
 
-# Library calls answered by code instead of returning 1:
+# Library calls answered by code instead of returning 1 (or %LIB_DEFAULT):
 # 'Rex::Rancher::K8s::wait_for_api' => sub { my (%opts) = @_; return 0 }
 our %LIB_CODE;
 
@@ -54,17 +54,26 @@ our %FOLLOW;
 
 our @LIBRARY = qw(
   Rex::Rancher::Node::prepare_node
+  Rex::Rancher::Server::preflight_server
   Rex::Rancher::Server::install_server
   Rex::Rancher::Server::fetch_kubeconfig
+  Rex::Rancher::Agent::preflight_agent
   Rex::Rancher::Agent::install_agent
   Rex::Rancher::Cilium::install_cilium
   Rex::Rancher::Cilium::upgrade_cilium
   Rex::Rancher::Cilium::ensure_gateway_api_crds
   Rex::Rancher::K8s::wait_for_api
-  Rex::Rancher::Uninstall::check_cilium_residue
+  Rex::Rancher::Distribution::remove_bare_containerd_template
+  Rex::GPU::Detect::Sysfs::detect
   Rex::GPU::NVIDIA::install_driver
   Rex::GPU::NVIDIA::install_container_toolkit
   Rex::GPU::NVIDIA::verify_nvidia
+);
+
+# What a recorder returns without %LIB_CODE: 1, except where the Rexfile uses
+# the answer. A host without a GPU, by default.
+our %LIB_DEFAULT = (
+  'Rex::GPU::Detect::Sysfs::detect' => sub { +{ nvidia => [], amd => [], nvswitch => [] } },
 );
 
 my $loaded;
@@ -78,10 +87,14 @@ sub load {
   # The two libraries OCP's own lib/ loads as well -- OCP::Rex patches the
   # kubeconfig with Rex::Rancher::Server, OCP::Role::Provider::ExistingHost
   # uninstalls with Rex::Rancher::Uninstall -- are the real modules, so a
-  # class loaded after this still finds their pure functions. Only the entry
-  # points in @LIBRARY are recorded over.
+  # class loaded after this still finds their pure functions; so is
+  # Rex::Rancher::Distribution, whose objects the containerd template tasks
+  # ask (its is_bare_template_output is pure). Only the entry points in
+  # @LIBRARY are recorded over -- remove_bare_containerd_template among them,
+  # a method: its first argument is the Distribution object.
   require Rex::Rancher::Server;
   require Rex::Rancher::Uninstall;
+  require Rex::Rancher::Distribution;
 
   # The libraries: recorders standing in for the real modules, so the suite
   # asserts what OCP hands them without needing a host. %INC first, so the
@@ -96,6 +109,7 @@ sub load {
       push @CALLS, { name => $fq, args => [@_] };
       die $LIB_DIE{$fq} if defined $LIB_DIE{$fq};
       return $LIB_CODE{$fq}->(@_) if $LIB_CODE{$fq};
+      return $LIB_DEFAULT{$fq}->(@_) if $LIB_DEFAULT{$fq};
       return 1;
     };
   }

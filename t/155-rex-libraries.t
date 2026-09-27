@@ -11,6 +11,7 @@ use Rex::Rancher::Agent;
 use Rex::Rancher::Cilium;
 use Rex::Rancher::Distribution;
 use Rex::Rancher::Uninstall;
+use Rex::GPU::Detect::Sysfs;
 use Rex::GPU::NVIDIA;
 use Rex::GPU::NVIDIA::Setup::UbuntuDrivers;
 
@@ -54,14 +55,19 @@ cmp_ok $Rex::GPU::NVIDIA::VERSION,     '>=', 0.003, 'Rex::GPU 0.003 or later';
 subtest 'every entry point the Rexfile calls exists' => sub {
     for my $fq (qw(
         Rex::Rancher::Node::prepare_node
+        Rex::Rancher::Server::preflight_server
         Rex::Rancher::Server::install_server
         Rex::Rancher::Server::fetch_kubeconfig
+        Rex::Rancher::Agent::preflight_agent
         Rex::Rancher::Agent::install_agent
         Rex::Rancher::Cilium::install_cilium
         Rex::Rancher::Cilium::upgrade_cilium
         Rex::Rancher::Cilium::ensure_gateway_api_crds
         Rex::Rancher::K8s::wait_for_api
-        Rex::Rancher::Uninstall::check_cilium_residue
+        Rex::Rancher::Distribution::distribution_classes
+        Rex::Rancher::Distribution::remove_bare_containerd_template
+        Rex::Rancher::Distribution::is_bare_template_output
+        Rex::GPU::Detect::Sysfs::detect
         Rex::GPU::NVIDIA::install_driver
         Rex::GPU::NVIDIA::install_container_toolkit
         Rex::GPU::NVIDIA::verify_nvidia
@@ -77,6 +83,7 @@ subtest 'every library function OCP\'s own classes call exists' => sub {
     for my $fq (qw(
         Rex::Rancher::Server::patch_kubeconfig_server
         Rex::Rancher::Uninstall::uninstall_cmd
+        Rex::Rancher::Uninstall::uninstall_warnings
         Rex::Rancher::Uninstall::uninstall_failure
     )) {
         no strict 'refs';
@@ -393,13 +400,57 @@ subtest 'uninstall_failure: nothing for success, the exit and stderr otherwise' 
     like $m, qr/failed \(exit 255\): Permission denied \(publickey\)\.\n\z/, 'exit and stderr';
 };
 
+# The Rexfile no longer asks check_cilium_residue itself: it runs the
+# library's preflight_server / preflight_agent before prepare_node, with the
+# options the install gets (t/190). This holds that the guard is in there, as
+# the first read of the host, and that a refused host is only read.
+subtest 'preflight_server and preflight_agent refuse a host Cilium left state on, only reading it' => sub {
+    my $probe = Rex::Rancher::Uninstall->cilium_residue_probe_cmd;
+    for my $t (
+        [ server => sub { Rex::Rancher::Server::preflight_server(distribution => 'rke2',
+                              version => 'v1.36.4+rke2r1', install_method => 'artifact',
+                              cluster_cidr => '10.42.0.0/16', hold_running => 1) } ],
+        [ agent  => sub { Rex::Rancher::Agent::preflight_agent(distribution => 'rke2',
+                              server => 'https://10.0.0.1:9345', token => 't',
+                              version => 'v1.36.4+rke2r1', hold_running => 1) } ],
+    ) {
+        my ($role, $call) = @$t;
+        my @cmds;
+        local *Rex::Commands::Run::run = sub {
+            push @cmds, $_[0]; $? = 0;
+            return $_[0] eq $probe ? "/sys/fs/bpf/cilium\n" : '';
+        };
+        ok !eval { $call->(); 1 }, "$role: dies";
+        like $@, qr/Cilium datapath state from an earlier cluster/, "$role: with the guard's refusal";
+        is_deeply \@cmds, [ $probe ], "$role: the probe was the first and only thing run on the host";
+    }
+};
+
+# OCP::Role::Provider::ExistingHost says the warnings of the uninstall line on
+# STDERR and uses uninstall_failure for a failure only (rex-rancher k79, t/29).
+subtest 'uninstall_warnings: the marked lines only, and uninstall_failure leaves them out' => sub {
+    my $stderr = "rex-rancher-uninstall-warning: tc is not installed: ... a reboot clears them\n"
+               . "rke2-uninstall.sh: some noise\n"
+               . "RKE2/K3s is still installed after the uninstall: /usr/local/bin/rke2\n";
+    is_deeply [ Rex::Rancher::Uninstall->uninstall_warnings('', $stderr) ],
+        [ 'tc is not installed: ... a reboot clears them' ], 'the marked line, without its marker';
+    is_deeply [ Rex::Rancher::Uninstall->uninstall_warnings("banner\n", "noise\n") ], [],
+        'nothing else is a warning';
+    my $m = Rex::Rancher::Uninstall->uninstall_failure(1, $stderr);
+    unlike $m, qr/tc is not installed/, 'the failure message carries no warning';
+    like $m, qr/still installed/, 'but the reason';
+    ok !defined Rex::Rancher::Uninstall->uninstall_failure(0, $stderr), 'warnings alone are no failure';
+};
+
 # --- the bare containerd template (k45, rex-rancher k72) ----------------------
 
 # Up to k196 the Rexfile removed OCP's pre-k23 two-liner itself, before every
 # install. Now install_server and install_agent remove a bare template right
-# before the start: this holds that "bare" covers exactly what OCP wrote.
+# before the start, and OCP::Drift's remedy has the same function remove it
+# (t/68): this holds that "bare" covers what OCP wrote.
 subtest 'the template OCP wrote before k23 is removed before the start, any other stays' => sub {
-    my $legacy = $SANDBOX->can('_legacy_containerd_template')->();
+    # Byte for byte what OCP wrote before k23 (k45).
+    my $legacy = qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n};
     for my $d (qw( rke2 k3s )) {
         my $tmpl = dist($d)->containerd_dir . '/config.toml.tmpl';
         for my $case (
@@ -615,6 +666,28 @@ subtest 'upgrade_cilium needs the API, and gets it' => sub {
     like $@, qr/upgrade_cilium needs kubeconfig/, 'saying why';
 };
 
+# OCP::Drift's remedy and `ocp update --component cilium` run upgrade_cilium;
+# a Helm release it cannot upgrade dies in the library before the host is
+# touched (rex-rancher k66, k70), and the task passes the message on (t/91,
+# t/94). This holds which releases those are.
+subtest 'upgrade_cilium: only a deployed revision is upgraded, a stuck one refused' => sub {
+    my $require = \&Rex::Rancher::Cilium::_require_deployed_release;
+    ok !eval { $require->(undef); 1 }, 'no release: dies';
+    like $@, qr/no deployed revision of Helm release cilium.*Install Cilium with install_cilium/s,
+        'and says so';
+    ok !eval { $require->({ status => 'failed', revision => 1, has_deployed => 0 }); 1 },
+        'a failed first install: dies';
+    like $@, qr/latest revision 1 is failed/, 'naming the revision and its state';
+    for my $stuck (qw( pending-upgrade pending-rollback )) {
+        ok !eval { $require->({ status => $stuck, revision => 3, has_deployed => 1 }); 1 },
+            "$stuck: dies, deployed revision or not";
+    }
+    ok eval { $require->({ status => 'deployed', revision => 3, has_deployed => 1 }); 1 },
+        'a deployed release: upgraded' or diag $@;
+    ok eval { $require->({ status => 'failed', revision => 4, has_deployed => 1 }); 1 },
+        'a failed upgrade over a deployed revision: upgraded again' or diag $@;
+};
+
 subtest 'a Cilium that never gets ready fails, naming its state (k178)' => sub {
     my %ds = (metadata => { generation => 2 },
               status   => { desiredNumberScheduled => 5, numberReady => 0, updatedNumberScheduled => 5,
@@ -677,6 +750,107 @@ subtest 'a deployed release with an explicit other IPAM mode is refused' => sub 
         1;
     }, 'dies before cilium upgrade';
     like $@, qr/ipam\.mode/, 'naming the IPAM mode';
+};
+
+# --- GPU detection from sysfs (rex-gpu k73) ------------------------------------
+
+# The Rexfile's detect_gpu asks Rex::GPU::Detect::Sysfs and hands install_driver
+# what _driver_gpus keeps (t/44). This is what the detection makes of a host's
+# /sys/bus/pci/devices, and what the Rexfile's choice makes of that.
+sub sysfs_detect {
+    my ($out, $exit) = @_;
+    my @cmds;
+    local *Rex::GPU::Detect::Sysfs::run = sub { push @cmds, $_[0]; $? = ($exit // 0) << 8; $out };
+    my $d = eval { Rex::GPU::Detect::Sysfs->detect };
+    return ($d, $@, \@cmds);
+}
+my $driver_gpus = $SANDBOX->can('_driver_gpus');
+
+subtest 'sysfs: what the detection finds, and which cards OCP drives' => sub {
+    my ($d, $err, $cmds) = sysfs_detect(join '', map { "$_\n" }
+        '0000:00:02.0 0x030000 0x1af4 0x1050 0x1af4 0x1100',   # virtio display
+        '0000:01:00.0 0x030000 0x10de 0x2e12 0x10de 0x0000',   # GB10
+        '0000:02:00.0 0x030000 0x10de 0x128b 0x1043 0x8576',   # GT 710 (Kepler)
+        '0000:03:00.0 0x030000 0x10de 0x3000 0x10de 0x0000',   # no generation row
+        '0000:04:00.0 0x030200 0x10de 0x2330 0x10de 0x16c1',   # H100
+        '0000:05:00.0 0x068000 0x10de 0x22a3 0x10de 0x0000',   # NVSwitch
+        '0000:06:00.0 0x060000 0x8086 0x1234 0x8086 0x0000',   # host bridge
+    );
+    ok $d, 'detected' or return diag $err;
+    is scalar @$cmds, 1, 'one command on the host';
+
+    my %by = map { $_->{device_id} => $_ } @{ $d->{nvidia} };
+    is_deeply [ sort keys %by ], [qw( 128b 2330 2e12 3000 )],
+        'every NVIDIA display and 3D controller, the virtio adapter next to them skipped';
+    is $by{'2e12'}{compute}, 1, 'the GB10 is compute -- by its device ID, no name needed';
+    is $by{'2330'}{compute}, 1, 'the H100 (3D controller) is compute';
+    is $by{'128b'}{compute}, 0, 'the Kepler is not';
+    ok !defined $by{'3000'}{compute}, 'a card no generation row covers is undecided (undef)';
+    is $by{'2e12'}{vgpu}, 0, 'not a vGPU guest';
+    is_deeply [ map { $_->{device_id} } @{ $d->{nvswitch} } ], ['22a3'], 'the NVSwitch';
+
+    is_deeply [ sort map { $_->{device_id} } $driver_gpus->($d) ], [qw( 2330 2e12 3000 )],
+        'OCP drives all but the Kepler (k194), the undecided one included';
+
+    ($d) = sysfs_detect("0000:02:00.0 0x030000 0x10de 0x128b 0x1043 0x8576\n");
+    is_deeply [ $driver_gpus->($d) ], [], 'a Kepler-only host: no GPU to drive';
+};
+
+subtest 'sysfs: a host that cannot be read is not reported GPU-less' => sub {
+    my ($d, $err) = sysfs_detect('', 3);
+    ok !$d, 'dies';
+    like $err, qr/could not read \/sys\/bus\/pci\/devices/, 'saying what it could not read';
+    like $err, qr/Nothing was changed on the host/, 'and that nothing changed';
+};
+
+# Why the Rexfile drops compute 0 and keeps compute undef: install_driver
+# refuses a Kepler on every OS, before anything is installed, and takes a card
+# the table does not know as one without a constraint.
+subtest 'install_driver: a Kepler is refused, an unknown card is not' => sub {
+    my $setup = sub {
+        Rex::GPU::NVIDIA::Setup::UbuntuDrivers->new(gpus => [ @_ ], os => 'Ubuntu',
+            release => '24.04', arch => 'amd64', kernel => '6.8.0-60-generic');
+    };
+    my @cmds;
+    local *Rex::GPU::NVIDIA::Setup::run_cmd = sub { shift; push @cmds, $_[0]; $? = 0; '' };
+
+    ok !eval { $setup->({ device_id => '128b', name => 'NVIDIA GPU [10de:128b]' })->plan; 1 },
+        'a Kepler: plan dies';
+    like $@, qr/Kepler or older/, 'naming its generation';
+    is_deeply \@cmds, [], 'before anything was asked of the host';
+
+    ok eval { $setup->({ device_id => '3000', name => 'NVIDIA GPU [10de:3000]', compute => undef })->plan; 1 },
+        'a card the table does not know: planned' or diag $@;
+};
+
+# The toolkit: OCP always asks with binaries_suffice (t/44); a DGX's vendor
+# image has the binaries outside the package manager.
+subtest 'install_container_toolkit(binaries_suffice => 1): the binaries a host has suffice' => sub {
+    for my $t ([ 'both binaries, nvidia-ctk runs' => 1, 0 ],
+               [ 'no nvidia-container-runtime'    => 0, 1 ]) {
+        my ($label, $present, $want_install) = @$t;
+        my ($installed, @cmds) = (0);
+        local *Rex::GPU::NVIDIA::run = sub {
+            my ($cmd) = @_;
+            push @cmds, $cmd;
+            if ($cmd =~ /^command -v (\S+)/) {
+                my $there = $1 eq 'nvidia-ctk' || $present;
+                $? = $there ? 0 : 1 << 8;
+                return $there ? "/usr/bin/$1\n" : '';
+            }
+            $? = 0;
+            return $cmd =~ /nvidia-ctk --version/ ? "NVIDIA Container Toolkit CLI version 1.17.8\n" : '';
+        };
+        local *Rex::GPU::NVIDIA::operating_system = sub { 'Debian' };
+        local *Rex::GPU::NVIDIA::is_debian        = sub { 1 };
+        local *Rex::GPU::NVIDIA::_toolkit_present = sub { 0 };
+        local *Rex::GPU::NVIDIA::_install_toolkit_debian = sub { $installed++ };
+        Rex::GPU::NVIDIA::install_container_toolkit(binaries_suffice => 1);
+        is $installed, $want_install, "$label: " . ($want_install ? 'installed' : 'left alone');
+        ok !(grep { /dpkg|apt/ } @cmds), "$label: the package manager was not asked by the check";
+    }
+    ok !eval { Rex::GPU::NVIDIA::install_container_toolkit(binaries_suffices => 1); 1 },
+        'a misspelt option dies instead of falling through to the repository';
 };
 
 # --- the Ubuntu driver (k191, rex-gpu k69) ------------------------------------
