@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-09-27T16:02:21Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-27T04:56:45Z
+id: 202
+priority: medium
+status: backlog
+tags:
+- gpu
+- dcgm
+- operator
+title: 'GPU Operator: dcgm-exporter erreicht den Standalone-DCGM-Hostengine nicht
+  (CrashLoopBackOff)'
+updated: 2026-09-27T16:02:21Z
+---
+
+Live 2026-09-27 (k196, otoh RTX 3090, GPU Operator v26.3.3, gpu.driver host, toolkit false). nvidia-dcgm-exporter (4.5.3-4.8.2) meldet „Failed to connect to remote hostengine nvidia-dcgm:5555: Host engine connection invalid/disconnected“. Service und Endpoint nvidia-dcgm:5555 existieren, der Hostengine-Pod läuft („Started host engine version 4.5.2 using port number: 5555“, ohne Args). Vermutung: Der Hostengine bindet nur an localhost. Die ClusterPolicy aktiviert Standalone-DCGM (dcgm.enabled) ohne Bind-Adresse. Device-Plugin, Validator, nvidia.com/gpu und ein nvidia-smi-Pod liefen dagegen einwandfrei. Done: dcgm.enabled false (Exporter mit eingebettetem Hostengine) oder Hostengine mit Bind 0.0.0.0 bzw. passender Option; Test im Stil von t/40; live nachprüfen.
+
+2026-09-27 17:3x Live-Lauf 2 (otoh, Image live-486716a-rr5a885, rex-rancher 5a885af): Die Bind-Vermutung ist widerlegt. Der Exporter verbindet sich über den Service nvidia-dcgm:5555 (Pod-IP 10.42.0.84) mit dem Hostengine, allerdings erst beim 5. Start (15:37:36 UTC, 'Registry built successfully', Listening :9400). Nach 4 Neustarts (~4 min nach Pod-Start) steht er auf 1/1 Running. Es ist also ein Start-Wettlauf: Der Exporter startet parallel zum Hostengine und stirbt nach 5 s Connect-Timeout mit exit 1, bis der Hostengine antwortet. Folge in OCP: Step 4 'Verify cluster health' erwischt den CrashLoopBackOff und meldet 'CONTROL PLANE DEPLOYED — WITH WARNINGS', obwohl sich der Zustand von selbst löst. Neues Done: Der Health-Check unterscheidet einen DaemonSet-Pod, der noch im Anlauf ist (Restarts < N, Alter < X), von einem echten CrashLoop, oder er wartet auf den gpu-operator bzw. das DCGM-Exporter-DaemonSet, bis es ready ist. dcgm.enabled false ist nicht nötig.
