@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-09-27T18:44:00Z
+id: 209
+priority: medium
+status: backlog
+tags:
+- security
+- keys
+- robocop
+- ssh
+- docs
+- ux
+title: 'ssh-Worker im Secure Mode: robocop joint mit dem Robo-Key, node rm baut mit
+  dem Admin-Key ab, und niemand sagt, dass beide nötig sind'
+updated: 2026-09-27T18:44:00Z
+---
+
+Live 2026-09-27 (k207, Secure-Mode-Projekt, otoh CP + crag ssh-Worker, robocop mit Live-Image). Auf crag stand nur der Automation-Key (keys show --purpose automation). 'ocp node add crag-gpu --host … --gpu' lief über robocop grün, robocop kommt mit dem Robo-Key hinein. 'ocp node rm crag-gpu' baut den Worker dagegen aus der CLI mit dem ADMIN-Key ab ('In secure mode every machine of this cluster is reached with the admin key'). Ergebnis: 'Permission denied (publickey)', der Node steht auf Failed (terminal), rke2 läuft auf crag weiter. Admin-Key nachgetragen, node rm erneut: sauber. Befunde: (1) Für einen ssh-Worker sind BEIDE Public Keys nötig (robo für robocops Join/Reconcile, admin für node rm und ocp ssh). Das steht nur im Skill ocp-usage ('ssh-provider operators must add it themselves'). ocp init nennt nur den Admin-Key und nur den CP-Host, node add prüft und nennt nichts. (2) docs/security.md:22 behauptet 'Nothing currently deploys its public half onto any machine, so it is not a second way in'. Das ist falsch, seit k101 (Hetzner-Upload) und seit robocop ssh-Worker mit dem Robo-Key joint. (3) Asymmetrie: Den Join delegiert node add an robocop (Robo-Key), den Teardown macht node rm selbst (Admin-Key). Entscheidung: Teardown ebenfalls an robocop delegieren, wenn robocop läuft, oder dokumentieren, dass beide Keys Pflicht sind, und node add für ssh-Worker beide Keys vorab prüfen bzw. nennen lassen. Done: konsistentes Modell, node add für ssh nennt bzw. prüft die nötigen Keys vor dem Join, security.md korrigiert, Test. Lanes: ocp-secrets-worker (ClusterKey/Keys) + ocp-doc-writer.
