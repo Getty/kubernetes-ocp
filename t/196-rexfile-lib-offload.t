@@ -32,7 +32,11 @@ no warnings 'once';   # the stub packages are filled by a string eval
 #      kubeconfig pointed at the address Rex reaches the node on -- the route
 #      install_cilium takes right after -- and never through kubectl on the
 #      node. The library returns false on a timeout instead of dying, so the
-#      task dies itself, naming the address this machine has to reach;
+#      task dies itself, naming the address this machine has to reach. The
+#      kubeconfig comes from Rex::Rancher::Server::fetch_kubeconfig (part 2,
+#      rex-rancher k73), handed the Rex host and OCP's policy as its filter;
+#      that the library writes it 0600 with both applied is held against the
+#      real library in t/155-rex-libraries.t;
 #   3. an agent install hands Rex::Rancher the cluster's kubeconfig when it has
 #      one, so the library checks the agent's version against the control
 #      plane before the host is touched. `ocp apply` and `ocp node add` have
@@ -59,7 +63,7 @@ subtest 'the Rexfile declares the tasks OCP runs, and no others' => sub {
         install_cilium      => 1,
         # OCP::Drift's remedies and `ocp update`
         upgrade_cilium      => 1, update_gateway_api => 1, upgrade_cert_manager => 1,
-        # OCP::Drift's read-only probe and its remedy (also run by prepare_node)
+        # OCP::Drift's read-only probe and its remedy
         detect_legacy_containerd_template  => 1,
         cleanup_legacy_containerd_template => 1,
         # do_task inside the install tasks
@@ -76,21 +80,23 @@ subtest 'the Rexfile declares the tasks OCP runs, and no others' => sub {
 # --- 2. the API wait ---------------------------------------------------------
 
 my @SERVERS = (
-    [ 'rke2 server'      => install_rke2_server => '/etc/rancher/rke2/rke2.yaml', {} ],
-    [ 'k3s server'       => install_k3s_server  => '/etc/rancher/k3s/k3s.yaml',   {} ],
-    [ 'rke2 server join' => install_rke2_server => '/etc/rancher/rke2/rke2.yaml',
-        { server => 'https://10.0.0.1:9345' } ],
+    [ 'rke2 server'      => install_rke2_server => rke2 => {} ],
+    [ 'k3s server'       => install_k3s_server  => k3s  => {} ],
+    [ 'rke2 server join' => install_rke2_server => rke2 => { server => 'https://10.0.0.1:9345' } ],
 );
 
+my $NODE_KC = "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: QUJD\n"
+            . "    server: https://$HOST:6443\n  name: default\n";
+
 for my $case (@SERVERS) {
-    my ($label, $task, $node_kc, $extra) = @$case;
+    my ($label, $task, $dist, $extra) = @$case;
 
     subtest "$label: waits for the API through the library, from here" => sub {
         OCPTest::Rexfile->reset;
-        my ($seen, $mode);
+        my ($handed, $mode);
         local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::K8s::wait_for_api'} = sub {
             my (%o) = @_;
-            $seen = -r $o{kubeconfig} ? path($o{kubeconfig})->slurp : undef;
+            $handed = $o{kubeconfig};
             $mode = -e $o{kubeconfig} ? (stat $o{kubeconfig})[2] & 07777 : undef;
             return 1;
         };
@@ -99,16 +105,22 @@ for my $case (@SERVERS) {
         my @waits = OCPTest::Rexfile->calls('Rex::Rancher::K8s::wait_for_api');
         is scalar @waits, 1, 'wait_for_api, once' or return;
         my $install = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Server::install_server' });
+        my $fetch   = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Server::fetch_kubeconfig' });
         my $wait    = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::K8s::wait_for_api' });
-        ok $install >= 0 && $wait > $install, 'after the server install';
+        ok $install >= 0 && $fetch > $install && $wait > $fetch,
+            'after the server install, through a kubeconfig fetched off the node';
 
-        my %o = @{ $waits[0]{args} };
-        ok defined $seen, 'handed a kubeconfig file on this machine' or return;
-        is $mode, 0600, 'readable by nobody else';
-        ok !-e $o{kubeconfig}, 'gone once the task is done';
-        ok((grep { $_ eq "cat $node_kc" } OCPTest::Rexfile->commands), "read off the node ($node_kc)");
-        like $seen, qr{server: https://\Q$HOST\E:6443}, 'pointed at the address Rex reaches the node on';
-        like $seen, qr/insecure-skip-tls-verify: true/, 'as every kubeconfig OCP uses';
+        my $f = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
+        is $f->{distribution}, $dist, "the $dist admin kubeconfig";
+        is $f->{server}, $HOST, 'pointed at the address Rex reaches the node on';
+        is $f->{file}, $handed, 'written to the file the wait is handed, on this machine';
+        is $mode, 0600, 'which nobody else can read';
+        ok !-e $handed, 'gone once the task is done';
+
+        my $kc = $f->{filter}->($NODE_KC);
+        unlike $kc, qr/certificate-authority-data/, 'the filter drops the CA';
+        like $kc, qr/server: https:\S+\n    insecure-skip-tls-verify: true/,
+            'for insecure-skip-tls-verify, as every kubeconfig OCP uses';
     };
 
     subtest "$label: an API that does not answer fails the task" => sub {
@@ -125,9 +137,10 @@ for my $case (@SERVERS) {
 
 subtest 'a node without its admin kubeconfig is not waited on' => sub {
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub { $_[0] =~ /^cat / ? ('', 1) : ('', 0) };
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Server::fetch_kubeconfig'} =
+        "Could not fetch the kubeconfig from the rke2 server (cat: /etc/rancher/rke2/rke2.yaml: No such file)\n";
     ok !eval { OCPTest::Rexfile->run_task('install_rke2_server', { token => 't' }); 1 }, 'dies';
-    like $@, qr{Cannot read /etc/rancher/rke2/rke2\.yaml on the node}, 'naming the file';
+    like $@, qr/Could not fetch the kubeconfig from the rke2 server/, 'with the library\'s reason';
     is scalar(OCPTest::Rexfile->calls('Rex::Rancher::K8s::wait_for_api')), 0, 'before any wait';
 };
 

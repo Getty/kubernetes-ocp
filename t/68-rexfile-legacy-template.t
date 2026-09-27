@@ -19,6 +19,13 @@ use OCPTest::Rexfile;
 # off the two-liner no matter how often OCP is upgraded (k45, measured on
 # cortex before its teardown).
 #
+# Since k196 the installs no longer run the task: Rex::Rancher's install_server
+# and install_agent remove such a template themselves, right before the service
+# starts (rex-rancher k72; that the library recognises exactly OCP's two-liner
+# is held against the real library in t/155-rex-libraries.t). The task stays as
+# OCP::Drift's remedy for a cluster that is only ever upgraded, next to the
+# read-only probe (t/71-drift-rex-probe.t).
+#
 # The task therefore removes by CONTENT, never by path: somebody may have put
 # their own template there, and theirs has to survive. That decision is the
 # thing worth testing, so the Rexfile keeps it in two plain subs with no Rex
@@ -141,27 +148,23 @@ subtest 'both outcomes end up in the log' => sub {
         'a template that is removed says so, naming the file';
 };
 
-subtest 'every bootstrap runs it, for both distributions and both roles' => sub {
-    # prepare_node is the one task all four install tasks call first, and it
-    # runs before the service is (re)started -- the only moment at which an
-    # inherited template can still be thrown away instead of rendered. Run
-    # against recorders (t/lib/OCPTest/Rexfile.pm), since k155 moved the
-    # install bodies into shared helpers.
-    OCPTest::Rexfile->reset;
-    OCPTest::Rexfile->run_task('prepare_node', {});
-    ok((grep { $_->{args}[0] eq 'cleanup_legacy_containerd_template' } OCPTest::Rexfile->calls('do_task')),
-        'prepare_node runs the cleanup');
-
+subtest 'the installs leave it to Rex::Rancher, for both distributions and both roles' => sub {
+    # Up to k196 prepare_node ran the task before every install. Now the
+    # library removes the template itself, right before the service is
+    # (re)started -- the only moment at which an inherited template can still
+    # be thrown away instead of rendered. Run against recorders
+    # (t/lib/OCPTest/Rexfile.pm).
     for my $install (qw(
         install_rke2_server install_rke2_agent
         install_k3s_server  install_k3s_agent
     )) {
         OCPTest::Rexfile->reset;
         OCPTest::Rexfile->run_task($install, { token => 't', server => 'https://x:9345' });
-        my $prep = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'do_task' && $_->{args}[0] eq 'prepare_node' });
-        my $inst = OCPTest::Rexfile->index_of(sub { $_->{name} =~ /^Rex::Rancher::(?:Server|Agent)::/ });
-        ok $prep >= 0 && $inst > $prep,
-            "$install goes through prepare_node before the service starts, so it inherits the cleanup";
+        ok !(grep { $_->{args}[0] eq 'cleanup_legacy_containerd_template' } OCPTest::Rexfile->calls('do_task')),
+            "$install does not run the cleanup task";
+        is scalar(grep { $_->{name} =~ /^Rex::Rancher::(?:Server::install_server|Agent::install_agent)$/ }
+                       @OCPTest::Rexfile::CALLS), 1,
+            "$install installs through Rex::Rancher, which removes the template before the start";
     }
 };
 

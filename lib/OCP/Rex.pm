@@ -8,6 +8,8 @@ use JSON::MaybeXS;
 use MIME::Base64;
 use Path::Tiny qw(path);
 use File::Temp ();
+use Rex::Rancher::Distribution;
+use Rex::Rancher::Server ();
 use OCP::KnownHosts;
 use OCP::Share;
 use OCP::SSH;
@@ -307,9 +309,7 @@ sub install_server {
 sub fetch_kubeconfig_ssh {
     my ($self, $distribution) = @_;
 
-    $distribution ||= 'rke2';
-
-    my $path = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
+    my $path = Rex::Rancher::Distribution->new_for($distribution || 'rke2')->kubeconfig;
 
     my $result = $self->_ssh->run("cat $path");
 
@@ -319,19 +319,20 @@ sub fetch_kubeconfig_ssh {
             "The kubeconfig file may not exist yet. RKE2/K3s installation might still be in progress.\n";
     }
 
-    my $kubeconfig = $result->{stdout};
-
     # Point the kubeconfig `server` at the advertised address, not the transport.
     # The file is fetched over SSH to $self->host (127.0.0.1 for the local
     # provider), but a kubeconfig pinned to 127.0.0.1 only works from the machine
     # itself. advertised_host defaults to host, so this is a no-op everywhere
-    # except the local provider, where it is the routable IP (k138).
-    my $advertised = $self->advertised_host;
-    $kubeconfig =~ s/127\.0\.0\.1/$advertised/g;
-    $kubeconfig =~ s/localhost/$advertised/g;
+    # except the local provider, where it is the routable IP (k138). The rewrite
+    # is Rex::Rancher's (rex-rancher k73): https://127.0.0.1:PORT and
+    # https://[::1]:PORT, an IPv6 address bracketed.
+    my $kubeconfig = Rex::Rancher::Server::patch_kubeconfig_server(
+        $result->{stdout}, $self->advertised_host);
 
-    # Remove certificate-authority-data and add insecure-skip-tls-verify
-    # (TLS cert only valid for short hostname, not FQDN)
+    # OCP's policy: remove certificate-authority-data and add
+    # insecure-skip-tls-verify (TLS cert only valid for short hostname, not
+    # FQDN). The Rexfile's _kubeconfig_policy is the same, for the kubeconfig
+    # its tasks use.
     $kubeconfig =~ s/^\s*certificate-authority-data:.*\n//mg;
     $kubeconfig =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
 
@@ -521,8 +522,10 @@ Join node to cluster as worker.
 
     my $kubeconfig = $rex->fetch_kubeconfig_ssh('rke2');
 
-The server's admin kubeconfig, read over SSH, with C<server> pointed at
-C<advertised_host> and the CA replaced by C<insecure-skip-tls-verify>.
-C<install_server> returns it as C<kubeconfig>.
+The server's admin kubeconfig, read over SSH from where the distribution
+writes it (L<Rex::Rancher::Distribution/kubeconfig>), with C<server> pointed at
+C<advertised_host> (L<Rex::Rancher::Server/patch_kubeconfig_server>) and the CA
+replaced by C<insecure-skip-tls-verify>. C<install_server> returns it as
+C<kubeconfig>.
 
 =cut

@@ -61,7 +61,9 @@ TLSRoute v1 and BackendTLSPolicy v1, and from v1.6 also TCPRoute and
 UDPRoute — everything Cilium 1.20 needs.
 
 The library applies through Kubernetes::REST from the machine running `ocp`
-(a kubeconfig the Rexfile fetches off the node, pointed at the Rex host) —
+(a kubeconfig `Rex::Rancher::Server::fetch_kubeconfig` fetches off the node,
+pointed at the Rex host, with OCP's CA-less `insecure-skip-tls-verify` policy
+as its filter; rex-rancher k73) —
 no last-applied annotation, so the 256 KiB limit a client-side apply hits is
 moot; it skips the apply when the CRDs' bundle-version/channel annotations
 already match (the same ones OCP::Drift reads, k164) and dies on failure.

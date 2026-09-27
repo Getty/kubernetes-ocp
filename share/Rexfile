@@ -10,8 +10,10 @@ use JSON::MaybeXS;
 # The install itself lives in Rex::Rancher and Rex::GPU, which exist for OCP
 # (k155): node preparation, the RKE2/K3s server and agent installs, Cilium with
 # the Gateway API CRDs, the wait for the Kubernetes API, and the NVIDIA driver
-# and container toolkit. This file keeps what is OCP's own -- the parameter
-# hand-over, the pod network, GPU detection from sysfs, the legacy-file
+# and container toolkit, the Cilium leftover guard and the removal of the bare
+# containerd template (rex-rancher k71, k72), the node's kubeconfig (k73).
+# This file keeps what is OCP's own -- the parameter hand-over, the pod
+# network, the kubeconfig policy, GPU detection from sysfs, the legacy-file
 # cleanups -- and every piece the libraries cannot yet express, each marked
 # with the card on the library's board that would move it there.
 #
@@ -22,6 +24,7 @@ use Rex::Rancher::Server ();
 use Rex::Rancher::Agent ();
 use Rex::Rancher::Cilium ();
 use Rex::Rancher::K8s ();
+use Rex::Rancher::Uninstall ();
 use Rex::GPU::NVIDIA ();
 
 # Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
@@ -84,12 +87,6 @@ sub check_os {
     }
 }
 
-# Where each distribution keeps its admin kubeconfig on the node.
-sub _node_kubeconfig {
-    my ($distribution) = @_;
-    return $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
-}
-
 #
 # Common Tasks
 #
@@ -129,12 +126,10 @@ task "prepare_node", sub {
         ntp      => $ntp,
     );
 
-    # Every install task comes through here, for both distributions and both
-    # roles, and it runs before the service is (re)started -- which is exactly
-    # when an inherited containerd template still has a chance to be thrown
-    # away instead of being rendered again. See the task itself for why this
-    # is a content check and not an unlink.
-    do_task "cleanup_legacy_containerd_template";
+    # No containerd template cleanup of OCP's own any more: install_server and
+    # install_agent remove the bare template (only `imports` and `version = 2`,
+    # what OCP before k23 and Rex::GPU 0.001 wrote) right before the service
+    # is (re)started, on both distributions (rex-rancher k72).
 };
 
 # The prepare_node parameters out of an install task's parameters.
@@ -415,6 +410,11 @@ task "install_k3s_agent", sub {
 #   - a running rke2 server is restarted when its config.yaml(.d),
 #     registries.yaml or /etc/default file changed since it started, and only
 #     then (rex-rancher k49); k3s is restarted on every run;
+#   - a bare containerd config.toml.tmpl -- only `imports` and `version = 2`,
+#     what OCP before k23 wrote -- is removed right before the service is
+#     (re)started, and a running service whose config.toml is still its output
+#     is restarted once; any other template stays (rex-rancher k72). The same
+#     holds for install_agent;
 #   - the service is started with --no-block and waited on for at most 10
 #     minutes, dying with its journal; a pinned version is verified against the
 #     installed binary.
@@ -433,7 +433,22 @@ sub _install_server {
                  : (defined $tls_san && length $tls_san) ? ($tls_san)
                  : ();
 
-    _refuse_cilium_leftovers($distribution);
+    # Cilium datapath state from a previous cluster (k190): an uninstall that
+    # left Cilium's eBPF behind -- a vendor uninstaller run by hand, or an OCP
+    # from before its uninstall cleared it -- leaves the socket load balancer
+    # translating the old cluster's service addresses to pods that are gone, so
+    # connections to them hang instead of being refused. One of them is the
+    # registry mirror containerd is pointed at (localhost:30500): every image
+    # pull of the new install stalls, and RKE2 misses its start bound without
+    # saying why. Measured on ocpt-cp, cleared by a reboot.
+    #
+    # The check is Rex::Rancher's (rex-rancher k71): a host with Cilium's pins,
+    # its cgroup2 mount or its cilium_host device but no RKE2/K3s is refused,
+    # asking for a reboot; with a distribution there the state belongs to the
+    # running cluster. install_server and install_agent run it themselves,
+    # but only after prepare_node has changed the host -- so OCP asks first,
+    # and a refused host is left exactly as it was.
+    Rex::Rancher::Uninstall->check_cilium_residue;
 
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
@@ -501,7 +516,9 @@ sub _install_agent {
     $params->{server} or die "server URL required\n";
     $params->{token}  or die "token required\n";
 
-    _refuse_cilium_leftovers($distribution);
+    # Before anything touches the host, prepare_node included (k190): see
+    # _install_server.
+    Rex::Rancher::Uninstall->check_cilium_residue;
 
     do_task "prepare_node", _node_params($params);
     _maybe_detect_gpu($params);
@@ -521,57 +538,6 @@ sub _agent_opts {
         nvidia_runtime_path => 1,
         ($params->{kubeconfig} ? (kubeconfig => $params->{kubeconfig}) : ()),
     );
-}
-
-# Cilium datapath state from a previous cluster (k190).
-#
-# An uninstall that leaves Cilium's eBPF behind -- a vendor uninstaller run by
-# hand, or an OCP from before the uninstall cleared it -- leaves the socket
-# load balancer on the root cgroup translating the old cluster's service
-# addresses to pods that no longer exist. connect() to them hangs instead of
-# being refused; one of them is the registry mirror containerd is pointed at
-# (localhost:30500), so every image pull of the new install stalls for minutes
-# and RKE2 misses its 10-minute start bound without saying why. Measured on
-# ocpt-cp, cleared by a reboot.
-#
-# So a host that carries Cilium's pins, its cgroup2 mount or its cilium_host
-# device but no RKE2/K3s -- binary or running unit -- is refused before
-# anything is installed. With a distribution there the state belongs to the
-# running cluster (a re-apply, an upgrade) and the guard stays out of the way.
-# The signals are the ones OCP::Role::Provider::ExistingHost checks after its
-# uninstall (@CILIUM_RESIDUE); t/190 keeps the two in step.
-sub _cilium_leftover_probe {
-    return 'if command -v rke2 >/dev/null 2>&1 || command -v k3s >/dev/null 2>&1'
-         . ' || systemctl is-active --quiet rke2-server rke2-agent k3s k3s-agent 2>/dev/null;'
-         . ' then :; else'
-         . ' [ -e /sys/fs/bpf/cilium ] && echo /sys/fs/bpf/cilium;'
-         . ' grep -qs " /run/cilium/cgroupv2 " /proc/mounts && echo /run/cilium/cgroupv2;'
-         . ' ip link show dev cilium_host >/dev/null 2>&1 && echo cilium_host;'
-         . ' fi; true';
-}
-
-# What the probe found, one item per element; empty on a clean host. Only the
-# probe's own tokens count -- anything else on the channel (a login banner, a
-# shell's complaint) is not evidence of Cilium state.
-sub _cilium_leftover_signals { qw( /sys/fs/bpf/cilium /run/cilium/cgroupv2 cilium_host ) }
-
-sub _cilium_leftovers {
-    my $out = run _cilium_leftover_probe(), auto_die => FALSE;
-    my %signal = map { $_ => 1 } _cilium_leftover_signals();
-    return grep { $signal{$_} } map { s/^\s+|\s+$//gr } split /\n/, $out // '';
-}
-
-sub _refuse_cilium_leftovers {
-    my ($distribution) = @_;
-    my @left = _cilium_leftovers();
-    return 1 unless @left;
-
-    die "This host still carries Cilium datapath state from a previous cluster ("
-      . join(', ', @left) . "), and no RKE2/K3s is installed on it.\n"
-      . "Cilium's socket load balancer would keep intercepting connections to the old\n"
-      . "cluster's service addresses -- the registry mirror on localhost:30500 among\n"
-      . "them -- and every image pull of the new $distribution would stall until the\n"
-      . "install times out. Reboot the host, then run the install again.\n";
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and
@@ -671,15 +637,18 @@ sub _wait_for_api {
 #
 # _configure_nvidia_containerd wrote exactly these two lines (56 bytes) to
 # /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl. k23 deleted
-# the code; nothing removes the file. RKE2 and k3s render config.toml from such
+# the code, not the file. RKE2 and k3s render config.toml from such
 # a template on every service start, *instead of* the config they generate
 # themselves, so a host bootstrapped before that fix keeps running containerd
 # off this two-liner forever -- no registry mirrors, no sandbox image, no CNI
 # settings -- and upgrading OCP does not help, because the damage is a file and
 # not code. Measured on cortex (k45).
 #
-# `ocp destroy` takes /var/lib/rancher with it, so the host this matters for is
-# the one that gets bootstrapped once and only ever upgraded afterwards.
+# `ocp destroy` takes /var/lib/rancher with it, and every install through
+# Rex::Rancher removes the template before the service starts (rex-rancher
+# k72), so the host this matters for is the one that gets bootstrapped once and
+# only ever upgraded afterwards: `ocp apply` against a running cluster installs
+# nothing. That is what the probe and the drift remedy below are for.
 sub _legacy_containerd_template {
     return qq{imports = ["/etc/containerd/conf.d/*.toml"]\nversion = 2\n};
 }
@@ -730,6 +699,11 @@ task "detect_legacy_containerd_template", sub {
     }
 };
 
+# OCP::Drift's remedy for what the probe above reports, with the same byte
+# exact decision, so it removes exactly what the probe found. The installs no
+# longer run it: Rex::Rancher removes the template itself, before the start.
+# It restarts nothing -- containerd keeps its config.toml until the service
+# starts again.
 desc "Remove the obsolete containerd config template OCP wrote before k23";
 task "cleanup_legacy_containerd_template", sub {
     for my $path (_legacy_containerd_template_paths()) {
@@ -849,34 +823,34 @@ sub _cilium_opts {
 }
 
 # A kubeconfig on this machine for the cluster on the node Rex is connected
-# to, as a File::Temp object (0600, gone when it goes out of scope).
+# to, as a File::Temp object (gone when it goes out of scope).
 #
 # Rex::Rancher::Cilium reads the Helm release and applies the Gateway API
 # CRDs through Kubernetes::REST, from here, and Rex::Rancher::K8s waits for
-# the API after a server install the same way. The admin kubeconfig is read off
-# the node and pointed at the address Rex reaches the node on -- the one
-# OCP::Rex connects to, which is where OCP reaches the API as well.
+# the API after a server install the same way. Rex::Rancher::Server's
+# fetch_kubeconfig (rex-rancher k73) reads the admin kubeconfig off the node,
+# points its server at the address Rex reaches the node on -- the one OCP::Rex
+# connects to, which is where OCP reaches the API as well; the library takes
+# none on its own --, applies OCP's policy and writes the file 0600. It dies
+# naming the distribution when the node has no kubeconfig.
 sub _local_kubeconfig {
     my ($distribution) = @_;
-    my $kubeconfig = _node_kubeconfig($distribution);
-
-    my $content = run "cat $kubeconfig", auto_die => FALSE;
-    die "Cannot read $kubeconfig on the node -- is $distribution running?\n"
-        if $? != 0 || !defined $content || !length $content;
 
     my $fh = File::Temp->new(TEMPLATE => 'ocp-kubeconfig-XXXXXX', SUFFIX => '.yaml', TMPDIR => 1);
-    print {$fh} _external_kubeconfig($content, "" . connection->server);
-    close $fh or die "Cannot write the local kubeconfig: $!\n";
+    Rex::Rancher::Server::fetch_kubeconfig(
+        distribution => $distribution,
+        server       => "" . connection->server,
+        filter       => \&_kubeconfig_policy,
+        file         => $fh->filename,
+    );
     return $fh;
 }
 
-# The node's kubeconfig as seen from outside: `server` at $host instead of
-# 127.0.0.1, the CA dropped for insecure-skip-tls-verify. The same rewrite
-# OCP::Rex::fetch_kubeconfig_ssh makes for every kubeconfig OCP uses.
-sub _external_kubeconfig {
-    my ($content, $host) = @_;
-    $content =~ s/127\.0\.0\.1/$host/g;
-    $content =~ s/localhost/$host/g;
+# OCP's policy for the kubeconfigs it uses: the CA is dropped for
+# insecure-skip-tls-verify on every server entry. The same policy
+# OCP::Rex::fetch_kubeconfig_ssh applies to the kubeconfig OCP keeps.
+sub _kubeconfig_policy {
+    my ($content) = @_;
     $content =~ s/^\s*certificate-authority-data:.*\n//mg;
     $content =~ s/(server: https:\/\/[^\n]+)/$1\n    insecure-skip-tls-verify: true/g;
     return $content;

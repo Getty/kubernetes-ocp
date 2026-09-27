@@ -143,21 +143,26 @@ subtest 'k3s without an API server address: nothing guessed' => sub {
 };
 
 subtest 'the library talks to the API through a kubeconfig pointed at the node' => sub {
-    my $ext = OCPTest::Rexfile->helper('_external_kubeconfig')->(
-        "clusters:\n- cluster:\n    certificate-authority-data: QUJD\n    server: https://127.0.0.1:6443\n",
-        '203.0.113.7');
-    like $ext, qr{server: https://203\.0\.113\.7:6443}, 'server at the Rex host';
-    unlike $ext, qr/certificate-authority-data/, 'CA dropped';
-    like $ext, qr/insecure-skip-tls-verify: true/, 'as for every kubeconfig OCP uses';
-
     OCPTest::Rexfile->reset;
     local $OCPTest::Rexfile::RUN = \&fresh_node;
     OCPTest::Rexfile->run_task('install_cilium', { %PINS, distribution => 'rke2' });
     my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium');
     ok $o->{kubeconfig} && $o->{kubeconfig} =~ /ocp-kubeconfig-\w+\.yaml$/, 'a local temp file';
     ok !-e $o->{kubeconfig}, 'gone again once the task is done';
-    ok((grep { $_ eq 'cat /etc/rancher/rke2/rke2.yaml' } OCPTest::Rexfile->commands),
-        'read off the node');
+
+    # Read off the node by Rex::Rancher::Server::fetch_kubeconfig (k196,
+    # rex-rancher k73), which patches the server and writes the file; OCP
+    # hands it the Rex host and its policy. That the library applies both is
+    # held against the real library in t/155-rex-libraries.t.
+    my $f = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
+    ok $f, 'read off the node' or return;
+    is $f->{distribution}, 'rke2', 'the rke2 admin kubeconfig';
+    is $f->{file}, $o->{kubeconfig}, 'into the file install_cilium is handed';
+    is $f->{server}, '203.0.113.7', 'server at the Rex host';
+    my $ext = $f->{filter}->(
+        "clusters:\n- cluster:\n    certificate-authority-data: QUJD\n    server: https://203.0.113.7:6443\n");
+    unlike $ext, qr/certificate-authority-data/, 'CA dropped';
+    like $ext, qr/insecure-skip-tls-verify: true/, 'as for every kubeconfig OCP uses';
 };
 
 # --- 3. a Cilium that never gets ready fails the task -------------------------

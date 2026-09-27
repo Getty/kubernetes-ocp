@@ -158,11 +158,12 @@ our $REGISTRY_HOSTNAME = 'registry.local';
 our $REX_DRIFT_MARKER = 'OCP-DRIFT-PRESENT';
 our @REX_PROBES = (
     # The obsolete pre-k23 containerd config template (share/Rexfile's
-    # cleanup_legacy_containerd_template removes it). Reachable via install-only
-    # tasks, so an already-bootstrapped, only-ever-upgraded cluster never runs
-    # the cleanup on the reconcile path -- which is precisely the host that has
-    # it (k45/k71). The detection task is read-only so `ocp status` can run
-    # it without touching the host.
+    # cleanup_legacy_containerd_template removes it). An install removes it
+    # too -- Rex::Rancher's install_server/install_agent, before the service
+    # starts (rex-rancher k72) --, but an already-bootstrapped, only-ever-upgraded
+    # cluster never installs on the reconcile path -- which is precisely the
+    # host that has it (k45/k71). The detection task is read-only so
+    # `ocp status` can run it without touching the host.
     {
         component      => 'legacy_containerd_template',
         label          => 'Legacy containerd template',

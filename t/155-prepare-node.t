@@ -7,8 +7,11 @@ use lib 't/lib';
 use OCPTest::Rexfile;
 
 #
-# k155: prepare_node is Rex::Rancher::Node::prepare_node, then the legacy
-# containerd template cleanup (t/68).
+# k155: prepare_node is Rex::Rancher::Node::prepare_node, and nothing else.
+# The legacy containerd template cleanup it used to run after the library is
+# gone from the install path since k196: Rex::Rancher's install_server and
+# install_agent remove the template right before the service starts
+# (rex-rancher k72; held against the real library in t/155-rex-libraries.t).
 #
 # Up to Rex::Rancher 0.002 OCP did three things itself (rex-rancher k42): NTP
 # only when the clock was not synchronised yet, with a failed chrony install
@@ -69,13 +72,12 @@ subtest 'OCP does none of the library\'s steps itself any more' => sub {
         'no command of its own: no locale-gen, no timedatectl, no systemctl';
 };
 
-subtest 'the legacy containerd template cleanup runs last' => sub {
+subtest 'no containerd template cleanup of its own' => sub {
     prepare();
-    my @calls = @OCPTest::Rexfile::CALLS;
-    is $calls[-1]{name}, 'do_task', 'a task';
-    is $calls[-1]{args}[0], 'cleanup_legacy_containerd_template', 'the cleanup';
-    my $lib = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'Rex::Rancher::Node::prepare_node' });
-    ok $lib >= 0 && $lib < $#calls, 'after the library';
+    is_deeply [ map { $_->{args}[0] } OCPTest::Rexfile->calls('do_task') ], [],
+        'no task: cleanup_legacy_containerd_template is only OCP::Drift\'s remedy now';
+    is $OCPTest::Rexfile::CALLS[-1]{name}, 'Rex::Rancher::Node::prepare_node',
+        'the library is the last thing prepare_node does';
 };
 
 done_testing;

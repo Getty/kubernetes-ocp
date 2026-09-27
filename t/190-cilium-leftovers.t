@@ -2,14 +2,10 @@
 use strict;
 use warnings;
 use Test::More;
-use Path::Tiny ();
 
 use lib 't/lib';
 use OCPTest::Rexfile;
-
-use OCP::Role::Provider::ExistingHost;
-
-no warnings 'once';
+use OCPTest::UninstallHost;
 
 #
 # k190: after `ocp destroy` (rke2-uninstall.sh) and a fresh RKE2 bootstrap on
@@ -20,219 +16,80 @@ no warnings 'once';
 # http://localhost:30500 made every image pull wait ~2.5 minutes, and RKE2
 # missed its 10-minute start bound. A reboot cleared it. (Live, ocpt-cp.)
 #
-# The claims here:
-#   1. the shared uninstall clears Cilium's datapath: pins (the unpin is the
-#      detach of a link-attached program), legacy tc attachments, cilium_*
-#      devices, CILIUM_* iptables chains, the cgroup2 mount, the runtime dir --
-#      every step guarded, so the chain still runs to its outcome check;
-#   2. the outcome check (k175) also fails on Cilium state that survived, and
-#      says a reboot is needed;
-#   3. the install path refuses, before anything is installed, a host that
-#      carries Cilium state but no RKE2/K3s -- instead of hanging 10 minutes;
-#      with a distribution on the host (re-apply, upgrade) it stays out of the
-#      way.
+# Since k196 both halves are Rex::Rancher's (rex-rancher k71): the uninstall
+# line that clears the datapath (Rex::Rancher::Uninstall::uninstall_cmd) and
+# the guard that refuses a host carrying it (check_cilium_residue), both
+# testing the one list of signals the library keeps (cilium_residue). What
+# the line is made of, step by step, and the guard's probe are held there
+# (rex-rancher t/uninstall.t, t/cilium-residue.t, ported from this file); so
+# is that the two test the same signals, which this file used to keep in step
+# between the Rexfile and OCP::Role::Provider::ExistingHost.
+#
+# The claims here are OCP's, through its own code paths:
+#   1. OCP's uninstall (ExistingHost::delete_server, the one `ocp destroy` and
+#      `ocp node rm` run) clears Cilium's datapath -- the pins (the unpin is
+#      the detach of a link-attached program), the cilium_* devices, the
+#      cgroup2 mount, the runtime dir -- and succeeds on a host it leaves clean;
+#   2. Cilium state that survives fails it, naming the host, what is left, and
+#      that a reboot is needed;
+#   3. the install tasks refuse a host with Cilium state before anything
+#      touches it, prepare_node included -- the guard is the first thing they
+#      do; on a clean host they go ahead.
 #
 # Whether the kernel really detaches the programs when the pins go is a live
 # question (Cilium's own detach does exactly that for its bpf_links), NOT
 # claimed here.
 #
 
-my $cmd = $OCP::Role::Provider::ExistingHost::UNINSTALL_CMD;
-
-# Runs $cmd under /bin/sh with a PATH of nothing but stubs. A stub body gets
-# $OCP_STUB_LOG (one line per call: name and args) and $OCP_STUB_DIR.
-# Real tools the logic needs (grep, sed, printf) are linked in by name.
-sub run_uninstall {
-  my ( %stubs ) = @_;
-  my $dir  = Path::Tiny->tempdir;
-  my $bin  = $dir->child('bin');
-  $bin->mkpath;
-  my $log  = $dir->child('log');
-  for my $real (qw( grep sed )) {
-    my ( $path ) = grep { -x } map { "$_/$real" } qw( /usr/bin /bin );
-    symlink $path, $bin->child($real) if $path;
-  }
-  for my $name (sort keys %stubs) {
-    my $f = $bin->child($name);
-    $f->spew_utf8("#!/bin/sh\necho \"$name \$*\" >> \"\$OCP_STUB_LOG\"\n".$stubs{$name});
-    $f->chmod(0755);
-  }
-  my $err = $dir->child('stderr');
-  my $status = do {
-    local $ENV{PATH}         = "$bin";
-    local $ENV{OCP_STUB_LOG} = "$log";
-    local $ENV{OCP_STUB_DIR} = "$dir";
-    system('/bin/sh', '-e', '-c', '{ '.$cmd.' ; } 2>'.$err);
-  };
-  return {
-    status => $status,
-    log    => $log->exists ? $log->slurp : '',
-    stderr => $err->exists ? $err->slurp : '',
-    dir    => $dir,
-  };
-}
-
 plan skip_all => 'needs a POSIX /bin/sh' unless -x '/bin/sh';
 
 # --- 1. the uninstall clears the datapath ---------------------------------------
 
-subtest 'pins, devices, mount and runtime dir are removed' => sub {
-  my $r = run_uninstall(
-    ( map { $_ => "exit 0\n" } qw( rm tc umount ) ),
-    # deleting a device works; nothing is left to show, no rule to drain
-    ip => "case \"\$1 \$2\" in \"link del\") exit 0;; esac\nexit 1\n",
+subtest 'delete_server clears Cilium\'s datapath and succeeds on a clean host' => sub {
+  my $h = OCPTest::UninstallHost->new(
+    stubs => {
+      ( map { $_ => "exit 0\n" } qw( rm tc umount ) ),
+      # deleting a device works; nothing is left to show, no rule to drain
+      ip => "case \"\$1 \$2\" in \"link del\") exit 0;; esac\nexit 1\n",
+    },
+    real => [qw( grep sed )],
   );
-  my $log = $r->{log};
+  my $res = eval { $h->delete_server(undef, host => '10.0.0.5') };
+  ok $res, 'no error' or diag $@;
+  is $res && $res->{exit}, 0, 'the uninstall exits 0';
 
-  like $log, qr{^rm -rf /sys/fs/bpf/cilium /sys/fs/bpf/tc/globals/cilium_\*}m,
+  my $log = $h->log;
+  like $log, qr{^rm -rf .*/sys/fs/bpf/cilium\b}m,
     'the pinned links and maps go -- unpinning a link Cilium no longer holds detaches its program';
-  for my $l (qw( cilium_host cilium_net cilium_vxlan cilium_geneve cilium_wg0 )) {
-    like $log, qr/^ip link del dev $l$/m, "device $l is deleted";
-  }
+  like $log, qr/^ip link del dev cilium_host$/m, 'cilium_host is deleted';
   like $log, qr{^umount /run/cilium/cgroupv2$}m, "Cilium's cgroup2 mount is unmounted";
   like $log, qr{^rm -rf --one-file-system /run/cilium$}m,
     'the runtime dir goes, never recursing into a mount that stayed';
-
-  my $umount = index $log, 'umount /run/cilium/cgroupv2';
-  my $rmrun  = index $log, 'rm -rf --one-file-system /run/cilium';
-  ok $umount >= 0 && $umount < $rmrun, 'unmounted before the runtime dir is removed';
-  is $r->{status}, 0, 'a host the cleanup leaves clean: the uninstall succeeds';
-};
-
-subtest 'a device carrying a legacy tc program loses its clsact qdisc' => sub {
-  my @devs = map { $_->basename } Path::Tiny::path('/sys/class/net')->children;
-  plan skip_all => 'no /sys/class/net here' unless @devs;
-  my $dev = $devs[0];
-
-  my $r = run_uninstall(
-    rm => "exit 0\n",
-    ip => "exit 1\n",
-    tc => "case \"\$*\" in \"filter show dev $dev ingress\") echo 'filter protocol all pref 1 bpf chain 0 handle 0x1 cil_from_netdev direct-action';; esac\nexit 0\n",
-  );
-  like $r->{log}, qr/^tc qdisc del dev \Q$dev\E clsact$/m, "clsact removed from $dev";
-  my @other = grep { $_ ne $dev } @devs;
-  for my $o (@other) {
-    unlike $r->{log}, qr/^tc qdisc del dev \Q$o\E /m, "$o without a Cilium program is left alone";
-  }
-};
-
-subtest 'CILIUM_* iptables chains: jumps deleted, chains flushed and removed' => sub {
-  my $save = <<'SAVE';
-# Generated by iptables-save
-*nat
-:PREROUTING ACCEPT [0:0]
-:POSTROUTING ACCEPT [0:0]
-:CILIUM_POST_nat - [0:0]
-:KUBE-SERVICES - [0:0]
--A POSTROUTING -m comment --comment "cilium-feeder: CILIUM_POST_nat" -j CILIUM_POST_nat
--A PREROUTING -j KUBE-SERVICES
--A CILIUM_POST_nat -s 10.42.0.0/16 -j MASQUERADE
-COMMIT
-SAVE
-  my $dir = Path::Tiny->tempdir;
-  $dir->child('save')->spew_utf8($save);
-
-  my $r = run_uninstall(
-    rm                 => "exit 0\n",
-    ip                 => "exit 1\n",
-    'iptables-save'    => "case \"\$*\" in \"-t nat\") cat $dir/save;; *) echo '*filter'; echo ':INPUT ACCEPT [0:0]'; echo COMMIT;; esac\n",
-    'iptables-restore' => "cat >> \"\$OCP_STUB_DIR/restore\"\n",
-    cat                => "exec /bin/cat \"\$@\"\n",
-  );
-  my $restore = $r->{dir}->child('restore');
-  ok $restore->exists, 'iptables-restore was fed';
-  my $in = $restore->exists ? $restore->slurp : '';
-
-  is $in, join("\n",
-    '*nat',
-    '-D POSTROUTING -m comment --comment "cilium-feeder: CILIUM_POST_nat" -j CILIUM_POST_nat',
-    '-F CILIUM_POST_nat',
-    '-X CILIUM_POST_nat',
-    'COMMIT',
-  )."\n", 'one transaction for the nat table, nothing for a table without Cilium';
-  like $r->{log}, qr/^iptables-restore --noflush$/m, 'restored with --noflush: every other rule stays';
-  unlike $in, qr/KUBE-/, 'rules of anyone else are not touched';
-};
-
-subtest 'every Cilium step failing does not abort the chain' => sub {
-  my $r = run_uninstall(
-    map { $_ => "exit 1\n" }
-      qw( rke2-uninstall.sh rm ip tc umount iptables-save iptables-restore )
-  );
-  is $r->{status}, 0, 'runs to completion under set -e';
-  like $r->{log}, qr/^umount /m, 'the unmount is still attempted';
 };
 
 # --- 2. the outcome check -------------------------------------------------------
 
-subtest 'Cilium state that survived fails the uninstall, asking for a reboot' => sub {
-  my $r = run_uninstall(
-    rm => "exit 0\n",
-    ip => "case \"\$*\" in \"link show dev cilium_host\") exit 0;; esac\nexit 1\n",
+subtest 'Cilium state that survived fails delete_server, asking for a reboot' => sub {
+  my $h = OCPTest::UninstallHost->new(
+    stubs => {
+      rm => "exit 0\n",
+      ip => "case \"\$*\" in \"link show dev cilium_host\") exit 0;; esac\nexit 1\n",
+    },
+    real => [qw( grep sed )],
   );
-  isnt $r->{status}, 0, 'the command fails';
-  like $r->{stderr}, qr/Cilium datapath state is still on the host.*cilium_host/,
-    'naming what is left';
-  like $r->{stderr}, qr/reboot the host/, 'and what to do about it';
-};
-
-subtest 'delete_server surfaces that as the reason' => sub {
-  package FakeHost {
-    use Moo;
-    with 'OCP::Role::Provider::ExistingHost';
-    sub resolve_host   { '10.0.0.5' }
-    sub host_reachable { 1 }
-    sub run_command    { { stdout => '', exit => 1,
-      stderr => "Cilium datapath state is still on the host after the uninstall: cilium_host -- reboot the host before it is bootstrapped again\n" } }
-  }
-  my $ok = eval { FakeHost->new->delete_server(undef, host => '10.0.0.5'); 1 };
+  my $ok = eval { $h->delete_server(undef, host => '10.0.0.5'); 1 };
+  my $err = $@;
   ok !$ok, 'dies';
-  like $@, qr/10\.0\.0\.5.*reboot the host/s, 'with the host and the reboot hint';
+  like $err, qr/^10\.0\.0\.5: /, 'naming the host';
+  like $err, qr/Cilium datapath state is still on the host.*cilium_host/, 'and what is left';
+  like $err, qr/reboot the host/, 'and what to do about it';
 };
 
-# --- 3. the install path refuses leftovers --------------------------------------
+# --- 3. the install path refuses leftovers, before anything else ----------------
 
-OCPTest::Rexfile->load;
-my $probe = OCPTest::Rexfile->helper('_cilium_leftover_probe')->();
-
-subtest 'the install guard probes what the uninstall checks' => sub {
-  for my $r (@OCP::Role::Provider::ExistingHost::CILIUM_RESIDUE) {
-    my ( $check, $label ) = @$r;
-    like $probe, qr/\Q$check\E && echo \Q$label\E/, "probe checks $label the same way";
-  }
-};
-
-sub probe_with {
-  my ( %stubs ) = @_;
-  my $dir = Path::Tiny->tempdir;
-  my $bin = $dir->child('bin');
-  $bin->mkpath;
-  for my $name (keys %stubs) {
-    my $f = $bin->child($name);
-    $f->spew_utf8("#!/bin/sh\n".$stubs{$name});
-    $f->chmod(0755);
-  }
-  local $ENV{PATH} = "$bin";
-  return scalar qx{/bin/sh -c '$probe'};
-}
-
-subtest 'only the probe\'s own tokens count as leftovers' => sub {
-  OCPTest::Rexfile->reset;
-  local $OCPTest::Rexfile::RUN = sub { return ("Welcome to host\n/sys/bus/pci/devices/0000:03:00.0|0x1002\n", 0) };
-  is_deeply [ OCPTest::Rexfile->helper('_cilium_leftovers')->() ], [],
-    'noise on the channel is not Cilium state';
-  is_deeply [ sort OCPTest::Rexfile->helper('_cilium_leftover_signals')->() ],
-    [ sort map { $_->[1] } @OCP::Role::Provider::ExistingHost::CILIUM_RESIDUE ],
-    'the guard knows exactly the uninstall\'s residue labels';
-};
-
-subtest 'the probe reports leftovers only without a distribution' => sub {
-  my $ip = "case \"\$*\" in \"link show dev cilium_host\") exit 0;; esac\nexit 1\n";
-  like probe_with(ip => $ip), qr/^cilium_host$/m, 'no rke2/k3s: cilium_host is reported';
-  is probe_with(ip => $ip, rke2 => "exit 0\n"), '', 'rke2 installed: the state is the cluster\'s own';
-  is probe_with(ip => $ip, k3s => "exit 0\n"), '', 'k3s installed: likewise';
-  is probe_with(ip => $ip, systemctl => "exit 0\n"), '', 'a distribution unit active: likewise';
-};
+my $REFUSAL = "This host still carries Cilium datapath state from an earlier cluster "
+  . "(/sys/fs/bpf/cilium, cilium_host), and no RKE2/K3s is installed on it. [...] "
+  . "Nothing was written or installed. Reboot the host, then run the install again.\n";
 
 for my $case (
   [ install_rke2_server => 'Rex::Rancher::Server::install_server', {} ],
@@ -244,32 +101,28 @@ for my $case (
 ) {
   my ( $task, $lib, $params ) = @$case;
 
-  subtest "$task refuses a host with Cilium leftovers" => sub {
+  subtest "$task refuses a host with Cilium leftovers before touching it" => sub {
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::RUN = sub {
-      my ( $c ) = @_;
-      return $c eq $probe ? ("/sys/fs/bpf/cilium\ncilium_host\n", 0) : ('', 0);
-    };
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Uninstall::check_cilium_residue'} = $REFUSAL;
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
-    my $err = $@;
     ok !$ok, 'the task dies';
-    like $err, qr/still carries Cilium datapath state/, 'saying why';
-    like $err, qr{/sys/fs/bpf/cilium, cilium_host}, 'naming what it found';
-    like $err, qr/Reboot the host/, 'and what to do';
+    is $@, $REFUSAL, 'with the library\'s refusal';
     is scalar(OCPTest::Rexfile->calls($lib)), 0, "$lib is never called";
     is scalar(OCPTest::Rexfile->calls('do_task')), 0, 'nothing is prepared either';
+    is_deeply [ OCPTest::Rexfile->commands ], [], 'no command of OCP\'s own ran on the host';
   };
 
-  subtest "$task goes ahead on a clean host" => sub {
+  subtest "$task goes ahead on a clean host, after the check" => sub {
     OCPTest::Rexfile->reset;
-    # The probe finds nothing; everything else is the harness's default node,
-    # whose server install leaves the admin kubeconfig the API wait reads.
-    my $node = $OCPTest::Rexfile::RUN;
-    local $OCPTest::Rexfile::RUN = sub { return $_[0] eq $probe ? ('', 0) : $node->(@_) };
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
     ok $ok, 'the task runs' or diag $@;
-    is scalar(OCPTest::Rexfile->calls($lib)), 1, "$lib is called";
-    ok( (grep { $_ eq $probe } OCPTest::Rexfile->commands), 'after probing the host');
+    is scalar(OCPTest::Rexfile->calls('Rex::Rancher::Uninstall::check_cilium_residue')), 1,
+      'the host was checked';
+    is $OCPTest::Rexfile::CALLS[0]{name}, 'Rex::Rancher::Uninstall::check_cilium_residue',
+      'first, before anything else';
+    my $prep = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'do_task' && $_->{args}[0] eq 'prepare_node' });
+    ok $prep > 0, 'then prepare_node';
+    is scalar(OCPTest::Rexfile->calls($lib)), 1, "then $lib";
   };
 }
 

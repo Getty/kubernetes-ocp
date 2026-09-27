@@ -61,8 +61,9 @@ subtest 'the pinned CRDs travel with the upgrade (rke2)' => sub {
     is $o->{gateway_api_version}, 'v1.6.1', 'the pinned bundle';
     is $o->{gateway_api_channel}, 'standard', 'standard channel';
     like $o->{kubeconfig}, qr/ocp-kubeconfig-/, 'through a kubeconfig fetched from the node';
-    ok((grep { $_ eq 'cat /etc/rancher/rke2/rke2.yaml' } OCPTest::Rexfile->commands),
-        'the RKE2 admin kubeconfig');
+    my $f = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
+    is $f && $f->{distribution}, 'rke2', 'the RKE2 admin kubeconfig';
+    is $f && $f->{file}, $o->{kubeconfig}, 'fetched into that file';
 };
 
 subtest 'k3s: its own kubeconfig, and the API address the agents already use' => sub {
@@ -71,8 +72,8 @@ subtest 'k3s: its own kubeconfig, and the API address the agents already use' =>
     is $o->{distribution}, 'k3s', 'k3s';
     ok !exists $o->{k8s_service_host},
         'no k8sServiceHost passed: the library reads the running DaemonSet\'s (t/155-rex-libraries.t)';
-    ok((grep { $_ eq 'cat /etc/rancher/k3s/k3s.yaml' } OCPTest::Rexfile->commands),
-        'the k3s admin kubeconfig');
+    my $f = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
+    is $f && $f->{distribution}, 'k3s', 'the k3s admin kubeconfig';
 };
 
 for my $pin (qw( gateway_api_version cli_version version )) {

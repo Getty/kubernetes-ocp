@@ -10,6 +10,7 @@ use Rex::Rancher::Server;
 use Rex::Rancher::Agent;
 use Rex::Rancher::Cilium;
 use Rex::Rancher::Distribution;
+use Rex::Rancher::Uninstall;
 use Rex::GPU::NVIDIA;
 use Rex::GPU::NVIDIA::Setup::UbuntuDrivers;
 
@@ -29,7 +30,10 @@ use Rex::GPU::NVIDIA::Setup::UbuntuDrivers;
 # (rex-rancher k42), cluster_cidr (k41), the join address in the agent's error
 # (k44), the running Cilium's IPAM mode, pool and API address, the readiness
 # wait and the CRD-only Gateway API apply (k43), and the Ubuntu driver chosen
-# through ubuntu-drivers (rex-gpu k69).
+# through ubuntu-drivers (rex-gpu k69). With k196 part 2 also the Cilium
+# leftover guard and the uninstall (rex-rancher k71), the removal of the bare
+# containerd template before the start (k72), and the node's kubeconfig
+# fetched, patched and saved (k73).
 #
 # Some claims reach into the libraries' private helpers: those are where the
 # behaviour lives, and a renamed helper is exactly the moment to re-check
@@ -51,11 +55,13 @@ subtest 'every entry point the Rexfile calls exists' => sub {
     for my $fq (qw(
         Rex::Rancher::Node::prepare_node
         Rex::Rancher::Server::install_server
+        Rex::Rancher::Server::fetch_kubeconfig
         Rex::Rancher::Agent::install_agent
         Rex::Rancher::Cilium::install_cilium
         Rex::Rancher::Cilium::upgrade_cilium
         Rex::Rancher::Cilium::ensure_gateway_api_crds
         Rex::Rancher::K8s::wait_for_api
+        Rex::Rancher::Uninstall::check_cilium_residue
         Rex::GPU::NVIDIA::install_driver
         Rex::GPU::NVIDIA::install_container_toolkit
         Rex::GPU::NVIDIA::verify_nvidia
@@ -65,6 +71,20 @@ subtest 'every entry point the Rexfile calls exists' => sub {
     }
     ok 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers'->isa(Rex::GPU::NVIDIA->setup_base_class),
         'the Ubuntu setup install_nvidia names is a Rex::GPU::NVIDIA::Setup';
+};
+
+subtest 'every library function OCP\'s own classes call exists' => sub {
+    for my $fq (qw(
+        Rex::Rancher::Server::patch_kubeconfig_server
+        Rex::Rancher::Uninstall::uninstall_cmd
+        Rex::Rancher::Uninstall::uninstall_failure
+    )) {
+        no strict 'refs';
+        ok defined &{$fq}, $fq;
+    }
+    # OCP::Rex::fetch_kubeconfig_ssh reads the admin kubeconfig from here.
+    is dist('rke2')->kubeconfig, '/etc/rancher/rke2/rke2.yaml', 'the RKE2 admin kubeconfig';
+    is dist('k3s')->kubeconfig,  '/etc/rancher/k3s/k3s.yaml',   'the k3s admin kubeconfig';
 };
 
 # The shipped Rexfile, loaded with the real libraries: it compiles, and its
@@ -327,7 +347,10 @@ subtest 'with a kubeconfig, an agent newer than the control plane is refused (k1
     }, 'dies';
     like $@, qr/control plane runs v1\.35\.2\+rke2r1/, 'naming the control plane\'s version';
     like $@, qr/Nothing was installed/, 'before anything is installed';
-    is_deeply [ grep { !/^systemctl show -p MainPID |--version 2>&1$/ } @cmds ], [],
+    # The read-only probes: the Cilium leftover probe (rex-rancher k71, the
+    # first read of the host), the running and the installed version.
+    my $residue = Rex::Rancher::Uninstall->cilium_residue_probe_cmd;
+    is_deeply [ grep { $_ ne $residue && !/^systemctl show -p MainPID |--version 2>&1$/ } @cmds ], [],
         'nothing but read-only probes ran on the host';
 };
 
@@ -340,6 +363,91 @@ subtest 'a join that never comes up names the address it joins through (rex-ranc
             'names the join URL';
         like $err, qr/failed to get CA certs/, 'carries the journal';
     }
+};
+
+# --- Cilium leftovers (k190, rex-rancher k71) ---------------------------------
+
+# The Rexfile asks Rex::Rancher::Uninstall->check_cilium_residue before
+# prepare_node (t/190-cilium-leftovers.t); this is what it answers.
+subtest 'check_cilium_residue refuses a host Cilium left state on, only reading it' => sub {
+    my $probe = Rex::Rancher::Uninstall->cilium_residue_probe_cmd;
+    my @cmds;
+    my $out = "/sys/fs/bpf/cilium\ncilium_host\n";
+    local *Rex::Commands::Run::run = sub { push @cmds, $_[0]; $? = 0; return $_[0] eq $probe ? $out : '' };
+
+    ok !eval { Rex::Rancher::Uninstall->check_cilium_residue; 1 }, 'a host with Cilium state: dies';
+    like $@, qr{Cilium datapath state from an earlier cluster \(/sys/fs/bpf/cilium, cilium_host\)},
+        'naming what it found';
+    like $@, qr/Nothing was written or installed\. Reboot the host/, 'and that a reboot is needed';
+    is_deeply \@cmds, [ $probe ], 'the probe was the only thing run on the host';
+
+    $out = '';
+    ok eval { Rex::Rancher::Uninstall->check_cilium_residue; 1 }, 'a clean host passes' or diag $@;
+};
+
+# OCP::Role::Provider::ExistingHost runs the library's line through its own
+# channel and says a failure with the host in front (t/29, t/190).
+subtest 'uninstall_failure: nothing for success, the exit and stderr otherwise' => sub {
+    ok !defined Rex::Rancher::Uninstall->uninstall_failure(0, ''), 'exit 0: no message';
+    my $m = Rex::Rancher::Uninstall->uninstall_failure(255, "Permission denied (publickey).\n");
+    like $m, qr/failed \(exit 255\): Permission denied \(publickey\)\.\n\z/, 'exit and stderr';
+};
+
+# --- the bare containerd template (k45, rex-rancher k72) ----------------------
+
+# Up to k196 the Rexfile removed OCP's pre-k23 two-liner itself, before every
+# install. Now install_server and install_agent remove a bare template right
+# before the start: this holds that "bare" covers exactly what OCP wrote.
+subtest 'the template OCP wrote before k23 is removed before the start, any other stays' => sub {
+    my $legacy = $SANDBOX->can('_legacy_containerd_template')->();
+    for my $d (qw( rke2 k3s )) {
+        my $tmpl = dist($d)->containerd_dir . '/config.toml.tmpl';
+        for my $case (
+            [ 'OCP\'s pre-k23 two-liner' => $legacy, 1 ],
+            [ 'without its final newline' => $legacy =~ s/\n\z//r, 1 ],
+            [ 'a real template (base included)' =>
+                qq{{{ template "base" . }}\n$legacy}, 0 ],
+        ) {
+            my ($label, $content, $removed) = @$case;
+            my @cmds;
+            local *Rex::Commands::Run::run = sub {
+                push @cmds, $_[0]; $? = 0;
+                return $_[0] eq "cat $tmpl 2>/dev/null" ? $content : '';
+            };
+            is dist($d)->remove_bare_containerd_template, $removed, "$d, $label: "
+                . ($removed ? 'removed' : 'kept');
+            is scalar(grep { /^rm -f \Q$tmpl\E/ } @cmds), $removed, "$d, $label: "
+                . ($removed ? 'rm -f of the template' : 'no rm');
+        }
+    }
+};
+
+# --- the node's kubeconfig (rex-rancher k73) -----------------------------------
+
+# The Rexfile's tasks talk to the API through a kubeconfig
+# Rex::Rancher::Server::fetch_kubeconfig saves on this machine, with the Rex
+# host as server and OCP's policy as filter (t/196, t/178). This is what the
+# library makes of it.
+subtest 'fetch_kubeconfig with OCP\'s policy: the file OCP\'s tasks use' => sub {
+    my $node = "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: QUJD\n"
+             . "    server: https://127.0.0.1:6443\n  name: default\n";
+    my @cmds;
+    local *Rex::Rancher::Server::run = sub { push @cmds, $_[0]; $? = 0; return $node };
+    my $dir  = Path::Tiny->tempdir;
+    my $file = $dir->child('ocp-kubeconfig.yaml');
+    Rex::Rancher::Server::fetch_kubeconfig(
+        distribution => 'k3s',
+        server       => '203.0.113.7',
+        filter       => $SANDBOX->can('_kubeconfig_policy'),
+        file         => "$file",
+    );
+    is_deeply \@cmds, [ 'cat /etc/rancher/k3s/k3s.yaml' ], 'read off the node, the k3s admin kubeconfig';
+    ok -e $file, 'saved on this machine' or return;
+    is +(stat $file)[2] & 07777, 0600, 'mode 0600';
+    my $kc = $file->slurp;
+    like $kc, qr{server: https://203\.0\.113\.7:6443\n    insecure-skip-tls-verify: true},
+        'server at the Rex host, TLS verification skipped';
+    unlike $kc, qr/certificate-authority-data|127\.0\.0\.1/, 'no CA, no loopback address left';
 };
 
 # --- the NVIDIA runtime PATH for RKE2 ---------------------------------------

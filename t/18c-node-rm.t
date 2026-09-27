@@ -238,7 +238,7 @@ subtest 'a failed teardown fails the command' => sub {
     local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub { FakeClusterKey->new('/tmp/k') };
     local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
     local *OCP::Node::teardown = sub {
-        die "Teardown of node ssh-w failed: Uninstall of RKE2/K3s on w.vm failed (exit 255)\n";
+        die "Teardown of node ssh-w failed: w.vm: Uninstall of RKE2/K3s failed (exit 255)\n";
     };
 
     my $out = '';

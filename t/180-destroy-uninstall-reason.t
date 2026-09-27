@@ -57,7 +57,7 @@ my @events;
         my ($self, $id, %opts) = @_;
         push @events, [ $self->{type}, $opts{host} ];
         my $host = $opts{host} // '';
-        die "Uninstall of RKE2/K3s on $host failed (exit 255):"
+        die "$host: Uninstall of RKE2/K3s failed (exit 255):"
           . " ssh: connect to host $host port 22: Connection refused\n"
             if $main::DIE{$host};
         return { stdout => '', stderr => "rke2-uninstall.sh: not found", exit => 127 }

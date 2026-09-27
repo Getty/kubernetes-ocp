@@ -21,6 +21,7 @@ use Path::Tiny qw( path );
 #   local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::K8s::wait_for_api'} = sub { 0 };
 #   my $out = OCPTest::Rexfile->run_task('install_k3s_server', { token => 't' });
 #   my ($call) = OCPTest::Rexfile->calls('Rex::Rancher::Server::install_server');
+#   my $fetch = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
 #   my %opts = @{ $call->{args} };
 #   my $code = OCPTest::Rexfile->helper('_cilium_opts');
 
@@ -29,17 +30,10 @@ our $SANDBOX = 'OCPTest::Rexfile::Sandbox';
 # Every recorded call, in order: { name => 'run' | 'file' | 'Rex::...::fn', args => [...] }
 our @CALLS;
 
-# The admin kubeconfig an installed RKE2/K3s server has written, as the
-# Rexfile reads it off the node (`cat /etc/rancher/<dist>/<dist>.yaml`) for
-# the API wait and the Cilium tasks.
-our $NODE_KUBECONFIG = "apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\n";
-
-# run: ($cmd, %opt) -> ($output, $exit). Default: a node whose server install
-# wrote its admin kubeconfig; every other command gives empty output, exit 0.
-our $RUN = sub {
-  return ( $NODE_KUBECONFIG, 0 ) if $_[0] =~ m{^cat /etc/rancher/(?:rke2/rke2|k3s/k3s)\.yaml$};
-  return ('', 0);
-};
+# run: ($cmd, %opt) -> ($output, $exit). Default: every command gives empty
+# output, exit 0. The node's admin kubeconfig is no longer read here: the
+# Rexfile has Rex::Rancher::Server::fetch_kubeconfig fetch it (recorded below).
+our $RUN = sub { return ('', 0) };
 
 # Library calls that die: 'Rex::Rancher::Agent::install_agent' => "message\n"
 our %LIB_DIE;
@@ -61,11 +55,13 @@ our %FOLLOW;
 our @LIBRARY = qw(
   Rex::Rancher::Node::prepare_node
   Rex::Rancher::Server::install_server
+  Rex::Rancher::Server::fetch_kubeconfig
   Rex::Rancher::Agent::install_agent
   Rex::Rancher::Cilium::install_cilium
   Rex::Rancher::Cilium::upgrade_cilium
   Rex::Rancher::Cilium::ensure_gateway_api_crds
   Rex::Rancher::K8s::wait_for_api
+  Rex::Rancher::Uninstall::check_cilium_residue
   Rex::GPU::NVIDIA::install_driver
   Rex::GPU::NVIDIA::install_container_toolkit
   Rex::GPU::NVIDIA::verify_nvidia
@@ -79,9 +75,17 @@ sub load {
   my ( $class ) = @_;
   return 1 if $loaded;
 
+  # The two libraries OCP's own lib/ loads as well -- OCP::Rex patches the
+  # kubeconfig with Rex::Rancher::Server, OCP::Role::Provider::ExistingHost
+  # uninstalls with Rex::Rancher::Uninstall -- are the real modules, so a
+  # class loaded after this still finds their pure functions. Only the entry
+  # points in @LIBRARY are recorded over.
+  require Rex::Rancher::Server;
+  require Rex::Rancher::Uninstall;
+
   # The libraries: recorders standing in for the real modules, so the suite
   # asserts what OCP hands them without needing a host. %INC first, so the
-  # Rexfile's `use Rex::Rancher::Server ();` finds them loaded.
+  # Rexfile's `use Rex::Rancher::Agent ();` finds them loaded.
   for my $fq (@LIBRARY) {
     my ( $pkg, $fn ) = $fq =~ /^(.+)::([^:]+)$/;
     ( my $file = $pkg ) =~ s{::}{/}g;

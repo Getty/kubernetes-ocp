@@ -90,9 +90,15 @@ Since k155 the Rexfile tasks are thin wrappers around **Rex::Rancher** and
 in the Rexfile is OCP's own, each gap marked with the library card that would
 move it.
 
+0. Before anything touches the host, every install task asks
+   `Rex::Rancher::Uninstall->check_cilium_residue` (rex-rancher k71): a host
+   carrying Cilium's pins, its cgroup2 mount or `cilium_host` but no RKE2/K3s
+   is refused with a request to reboot (k190: the old socket LB hangs every
+   image pull). The library checks again inside `install_server`/
+   `install_agent`, but only after `prepare_node` — so OCP asks first.
 1. `prepare_node` — since Rex::Rancher 0.003 (rex-rancher k42) this is just
    `Rex::Rancher::Node::prepare_node(hostname, domain, timezone, locale, ntp
-   => $ntp)`, then `cleanup_legacy_containerd_template`. OCP hands the library
+   => $ntp)`. OCP hands the library
    its parameters and does nothing of the library's steps itself any more:
    the library does the apt refresh, hostname, the `/etc/hosts` entry without
    a domain (only when no line names the host already), timezone, the locale
@@ -119,11 +125,22 @@ move it.
    token reuse, Cilium-only CNI keys, the default disable list,
    `nvidia_runtime_path`, and a bounded service wait with journal (RKE2 with
    a pin uses `install_method => 'artifact'`; a running rke2 server restarts
-   only when its config actually changed, rex-rancher k49) — then
+   only when its config actually changed, rex-rancher k49). Right before the
+   start it removes a bare containerd `config.toml.tmpl` (only `imports` +
+   `version = 2`, what OCP before k23 wrote; any other template stays) and
+   restarts a running service still on its output once (rex-rancher k72,
+   agents too) — OCP's own `cleanup_legacy_containerd_template` is only
+   OCP::Drift's remedy now, next to the read-only probe
+   `detect_legacy_containerd_template` (k189). Then
    `Rex::Rancher::K8s::wait_for_api` waits for the API from the machine
    running Rex, through the node's admin kubeconfig (no kubectl on the node;
    the library returns false on its 5-minute timeout, so OCP dies itself,
-   k196). `install_{rke2,k3s}_agent` — plain
+   k196). The kubeconfig comes from `Rex::Rancher::Server::fetch_kubeconfig`
+   (rex-rancher k73: read off the node, `server` patched to the Rex host,
+   saved 0600); OCP's policy — CA dropped for `insecure-skip-tls-verify` — is
+   its `filter` (`_kubeconfig_policy`), and `OCP::Rex::fetch_kubeconfig_ssh`
+   applies the same after the library's pure `patch_kubeconfig_server`.
+   `install_{rke2,k3s}_agent` — plain
    `Rex::Rancher::Agent::install_agent`; the join URL in a failed join's error
    is the library's own since 0.003 (rex-rancher k44), OCP adds nothing to it.
    With a `kubeconfig` task param the library first checks the agent against
@@ -138,3 +155,15 @@ move it.
    status --wait`. `update_gateway_api` goes through the library too
    (`Rex::Rancher::Cilium::ensure_gateway_api_crds`), so there is no kubectl
    apply left in the Rexfile. See skill `ocp-cilium` for the detail.
+
+## Uninstall (ssh/local hosts)
+
+`OCP::Role::Provider::ExistingHost::delete_server` runs
+`Rex::Rancher::Uninstall->uninstall_cmd` through the provider's own channel
+(`run_command`: SSH, or the local shell) — every RKE2/K3s uninstaller on the
+host, the leftovers (Cilium CLI, `/opt/cni`, `/run/k3s`), Cilium's datapath
+and ip rules — and dies with `"$host: " . uninstall_failure($exit, $stderr)`
+when the line's own outcome check fails (RKE2/K3s still on PATH, k175;
+Cilium state that survived, asking for a reboot, k190). The line's content is
+the library's (rex-rancher k71); OCP holds what it does on a host in
+`t/29-destroy-cleanup.t` and `t/190-cilium-leftovers.t`.

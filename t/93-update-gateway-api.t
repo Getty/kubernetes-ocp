@@ -51,18 +51,20 @@ subtest 'rke2: the pinned standard bundle, through the library' => sub {
     is $o->{version}, 'v1.6.1', 'the passed version';
     is $o->{channel}, 'standard', 'standard channel';
     like $o->{kubeconfig}, qr/ocp-kubeconfig-\w+\.yaml$/, 'through a local kubeconfig';
-    ok((grep { $_ eq 'cat /etc/rancher/rke2/rke2.yaml' } OCPTest::Rexfile->commands),
-        'fetched off the node: the RKE2 admin kubeconfig');
+    my $f = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
+    is $f && $f->{distribution}, 'rke2', 'fetched off the node: the RKE2 admin kubeconfig';
+    is $f && $f->{file}, $o->{kubeconfig}, 'into that file';
     is scalar(grep { $_->{name} =~ /^Rex::Rancher::Cilium::(?:install|upgrade)_cilium$/ } @OCPTest::Rexfile::CALLS), 0,
         'Cilium itself is not touched';
-    ok !(grep { !/^cat / } OCPTest::Rexfile->commands), 'and nothing is run on the node but that read';
+    is_deeply [ OCPTest::Rexfile->commands ], [],
+        'and nothing of OCP\'s own is run on the node, only the library\'s read';
 };
 
 subtest 'k3s uses its own kubeconfig' => sub {
     my ($ok, $err) = update(version => 'v1.6.1', distribution => 'k3s');
     ok $ok, 'the task succeeds' or diag $err;
-    ok((grep { $_ eq 'cat /etc/rancher/k3s/k3s.yaml' } OCPTest::Rexfile->commands),
-        'the k3s admin kubeconfig');
+    my $f = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
+    is $f && $f->{distribution}, 'k3s', 'the k3s admin kubeconfig';
 };
 
 subtest 'it says whether it applied anything' => sub {

@@ -165,8 +165,10 @@ gpu:
   `--host` dies immediately.
 - Node name = hostname up to the first dot (`avatar.conflict.industries` →
   `avatar`); same rule for ssh worker pools.
-- Destroy runs `rke2-uninstall.sh || k3s-uninstall.sh` plus cleanup of
-  `/usr/local/bin/cilium`, `/opt/cni`, `/run/k3s`.
+- Destroy runs Rex::Rancher's uninstall line over SSH: every RKE2/K3s
+  uninstaller present, then `/usr/local/bin/cilium`, `/opt/cni`, `/run/k3s`
+  and Cilium's datapath; RKE2/K3s still installed, or Cilium state that
+  survived (reboot needed), fails it with the reason.
 
 ### Local
 - `OCP::Provider::Local`: provider operations run locally (open3), but
