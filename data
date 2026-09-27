@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-09-27T04:24:40Z
+id: 201
+priority: low
+status: backlog
+tags:
+- ux
+- rex
+- errors
+title: Konfigurationsfehler aus Rex-Tasks erscheinen dreifach und als 'internal error'
+updated: 2026-09-27T04:24:40Z
+---
+
+Live 2026-09-27 (k196, V1d): Ein Re-Bootstrap mit geändertem pod_cidr stirbt korrekt in rex-rancher k67 („Refusing to install rke2 with cluster-cidr …“). OCP gibt die Meldung aber dreimal aus (Rex ERROR, Task-Fehler, OCPs „Error: Rex task … failed“ mit dem ganzen Rex-Log) und hängt „This is an internal error. Run again with --verbose for the full trace.“ an. Das ist ein Nutzer- bzw. Konfigurationsfehler, kein interner. Done: Die Lib-Meldung genau einmal auf STDERR, kein „internal error“ bei einem gewollten Abbruch der Lib; Test.
