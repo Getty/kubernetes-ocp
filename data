@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-09-27T16:03:44Z
+id: 206
+priority: low
+status: backlog
+tags:
+- cilium
+- apply
+- update
+- decision
+title: upgrade_cilium-Verweigerung verweist auf install_cilium, das OCP auf laufendem
+  Cluster nicht anbietet
+updated: 2026-09-27T16:03:44Z
+---
+
+Aus k196 (Teil 2b, Also found 3). Die Verweigerung von upgrade_cilium (rex-rancher k66/k70: kein Cilium bzw. hängendes Helm-Release) kommt in OCP durch: Drift-Apply meldet [WARN] und unresolved, ocp update schreibt auf STDERR und endet mit exit 1 (t/94). Der Hinweis der Lib 'Use install_cilium' hat in OCP aber keinen Nutzerpfad, denn der Reconcile von apply ruft install_cilium nicht auf. Der Nutzer steht also ohne Ausweg da. Entscheidung nötig: (a) Meldung in OCP übersetzen (was der Nutzer tun soll, z. B. Re-Bootstrap bzw. manueller Helm-Schritt), (b) ocp update --component cilium ruft bei fehlendem Release install_cilium auf, (c) nur dokumentieren. Lane: ocp-apply-worker nach Entscheidung.
