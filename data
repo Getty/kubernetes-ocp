@@ -1,0 +1,21 @@
+---
+claimed_at: 2026-09-27T16:34:08Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-27T04:24:34Z
+id: 200
+priority: low
+status: backlog
+tags:
+- rke2
+- k3s
+- bootstrap
+- restart
+title: 'Erster Re-Bootstrap startet den CP einmal neu: frischer Bootstrap schreibt
+  kein token in config.yaml'
+updated: 2026-09-27T16:34:08Z
+---
+
+Live 2026-09-27 (k196, rke2 und k3s auf ocpt). Frischer Bootstrap: config.yaml ohne token-Zeile, rke2/k3s erzeugen den Token selbst. Der erste Re-Bootstrap gegen den laufenden CP (kubeconfig.yaml fehlt) übergibt den vorhandenen Token (OCP::Rex _existing_server_token), die Lib schreibt ihn nach config.yaml, und hold_running startet den Dienst einmal neu („changed since it started: config.yaml“). Jeder weitere Re-Bootstrap ist ein No-op (live belegt: V1c2 ohne Restart, Config unverändert). Done: Beide Pfade schreiben dieselbe config.yaml, z. B. übergibt der frische Bootstrap einen von OCP erzeugten Token, oder der Re-Bootstrap lässt ihn weg, wenn der Server schon läuft. Plus Test. Vgl. k150.
+
+2026-09-27 Hinweis aus der rex-rancher-Triage (Session rex-rancher-live-triage, Transkript 8252dc27): Im Live-Lauf A startete K3s bei zwei Re-Bootstraps hintereinander neu (04:14 und 04:47, Grund jeweils 'config.yaml changed since it started'), RKE2 einmal (03:43). YAML::PP rendert deterministisch, also haben sich die Eingaben zwischen den Läufen geändert. Möglicherweise kommt der Grund aus diesem Kartenbefund (Token fehlt beim ersten Mal), zwischen 04:14 und 04:47 lag allerdings auch der Fix 486716a. Beim nächsten Live-Lauf config.yaml vor und nach jedem Re-Bootstrap diffen.
