@@ -824,6 +824,41 @@ subtest '_install_kubernetes uses k3s task when distribution=k3s' => sub {
 };
 
 #
+# The Joining message names what was installed. Live (k3s test, 2026-09-27):
+# a k3s worker's OCPNode said "RKE2 agent installed, waiting for node
+# registration" -- the label was hardcoded. Asserted on the status PATCH that
+# actually left the client.
+#
+subtest 'the Joining message names the distribution that was installed' => sub {
+    my @cases = (
+        [ rke2 => 'worker'        => 'RKE2 agent installed, waiting for node registration' ],
+        [ k3s  => 'worker'        => 'K3s agent installed, waiting for node registration' ],
+        [ rke2 => 'control-plane' => 'RKE2 server installed, waiting for node registration' ],
+    );
+    for my $c (@cases) {
+        my ($dist, $role, $want) = @$c;
+        @FakeRex::_instances = ();
+        my $k = StrictK8s::build(cr => ocpnode(
+            metadata => { name => "lbl-$dist-$role", namespace => 'ocp-system' },
+            spec     => { role => $role, providerRef => 'hetzner-a' },
+            status   => { phase => 'Installing', publicIP => '1.2.3.4' },
+        ));
+        my $node = OCP::Node->from_cr($k->cr, k8s => $k,
+            provider => FakeProvider->new, ssh_key => 'K',
+            server_url => 'U', join_token => 'T',
+            distribution => $dist,
+            ssh_class => 'FakeSSH', rex_class => 'FakeRex',
+        );
+        $node->_install_kubernetes;
+        my ($patch) = grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+        ok $patch, "$dist $role: status patched" or next;
+        my $status = JSON::MaybeXS::decode_json($patch->{body})->{status};
+        is $status->{phase},   'Joining', "$dist $role: Joining";
+        is $status->{message}, $want,     "$dist $role: $want";
+    }
+};
+
+#
 # The version tag handed to the Rex install follows the distribution, it is
 # not always RKE2's (k148).
 #

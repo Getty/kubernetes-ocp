@@ -4,6 +4,10 @@ package OCP::Node;
 use Moo;
 use File::Temp ();
 use Time::Piece ();
+# The distribution's display name for the Joining message. OCP::Cmd::Apply::
+# Bootstrap::dist_label gives the same answer, but lives in the CLI; this
+# module is robocop's too.
+use Rex::Rancher::Distribution;
 use OCP::K8s;
 # ssh_class and rex_class default to these by name. Nothing else in the
 # reconcile path loads them, so without these two lines _install_kubernetes
@@ -550,8 +554,12 @@ sub _install_kubernetes {
         return;
     }
 
+    # Named after what was installed, by the same test that picked the task: a
+    # k3s worker used to report "RKE2 agent installed" (live, 2026-09-27).
+    my $label = Rex::Rancher::Distribution->new_for(
+        $self->distribution eq 'k3s' ? 'k3s' : 'rke2')->label;
     $self->_patch_status(phase => 'Joining',
-        message => ($is_cp ? 'RKE2 server' : 'RKE2 agent')
+        message => $label . ($is_cp ? ' server' : ' agent')
             . ' installed, waiting for node registration');
 }
 

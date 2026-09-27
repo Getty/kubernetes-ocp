@@ -31,6 +31,21 @@ has advertised_host => (
     builder => sub { $_[0]->host },
 );
 
+# Where the nodes reach the API server: Cilium's k8sServiceHost on k3s, whose
+# agents serve the API on 127.0.0.1:6444, so no localhost port works on every
+# node (k178). That is the address agents join the control plane at
+# (OCP::Config::join_host: a pinned public_ip, else the advertised host), which
+# need not be advertised_host -- the ssh provider advertises `host`, possibly a
+# name only the operator's machine resolves. Live (2026-09-27): `host:
+# ocpt-cp.vm` (--add-host in the CLI container) with public_ip 10.5.10.20; the
+# k3s worker joined via the IP, and its Cilium agent hung in Init against
+# https://ocpt-cp.vm:6443. Defaults to advertised_host, so a caller that does
+# not tell the two apart is unchanged. RKE2 ignores it.
+has node_api_host => (
+    is      => 'lazy',
+    builder => sub { $_[0]->advertised_host },
+);
+
 has user => (
     is      => 'ro',
     default => 'root',
@@ -289,8 +304,9 @@ sub install_server {
     $self->run_task('install_cilium',
         distribution => $distribution,
         # Where Cilium reaches the API server on k3s, which has no localhost
-        # port common to server and agents (k178). RKE2 ignores it.
-        k8s_service_host => $self->advertised_host,
+        # port common to server and agents (k178): the join address, see
+        # node_api_host. RKE2 ignores it.
+        k8s_service_host => $self->node_api_host,
         pod_cidr         => $pod_cidr,
         version      => $opts{cilium_version}
             || OCP::Versions->get_component_version('cilium') || '',
@@ -499,6 +515,11 @@ C<operator>.
 C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
 is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to
 C<10.42.0.0/16>. A Cilium that already runs keeps the pool it has.
+
+The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
+C<server> are C<advertised_host>. On k3s Cilium reaches the API server at
+C<node_api_host> instead, the address agents join the control plane at; it
+defaults to C<advertised_host>, which defaults to C<host>.
 
 When C<token> is omitted, an existing cluster's token is B<reused> rather than
 regenerated: the machine's on-disk C<server/token> is read first, and a fresh

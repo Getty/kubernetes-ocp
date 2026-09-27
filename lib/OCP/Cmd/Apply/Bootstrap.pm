@@ -379,9 +379,14 @@ sub bootstrap_control_plane {
     # Install the server (wrapped for failure cleanup)
     print "  [..] Installing $dist_label server...\n";
 
+    # The nodes reach the API server where the agents join: Cilium's
+    # k8sServiceHost on k3s is the join address, where a pinned public_ip wins
+    # over an advertised name the nodes may not resolve. tls-san and the
+    # kubeconfig endpoint stay $advertised.
     my $rex = OCP::Rex->new(
         host            => $cp_host,      # transport: where Rex connects
         advertised_host => $advertised,   # tls-san + kubeconfig server endpoint
+        node_api_host   => $config->join_host($advertised),
         key_file        => $ssh_key_path,
         user            => 'root',
         verbose         => $verbose,
