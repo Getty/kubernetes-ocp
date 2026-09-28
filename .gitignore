@@ -1,10 +1,14 @@
-# Claude Code — commit: skills/, agents/, rules/, hooks/, settings.json
+# Claude Code — commit: agents/, rules/, hooks/, settings.json, skilletor.json
+# Skills come from skilletor (see .claude/skilletor.json): the ocp-* skills are the
+# repo's own and stay tracked; each installed shared skill carries its own .gitignore.
 # Ignore: local overrides, credentials, session data
 
 # Tracked: shared config & extensibility
 !/.claude/
 .claude/*
 !.claude/settings.json
+!.claude/skilletor.json
+!.claude/.gitignore
 !.claude/agents/
 !.claude/agents/**
 !.claude/skills/

@@ -29,8 +29,10 @@ selbst zu laden.
 | `getty-perl-release-author-getty` / `perl-release-dist-ini` | Release-Konventionen |
 | `karr` | Git-natives Ticket-Board |
 
-Shared Skills sind Hardlinks (`manage-skills`) — **nie mit Edit/Write bearbeiten**,
-immer `cat > datei` (Details: globale CLAUDE.md / Skill `manage-skills`).
+Nur die `ocp-*`-Skills sind repo-eigen (hier direkt editieren). Alle anderen Skills
+kommen über **skilletor** aus ihren Sources (`.claude/skilletor.json`) — sie sind
+Build-Artefakte mit eigenem `.gitignore`, **nie mit Edit/Write bearbeiten**: in der
+Source ändern und `skilletor sync` (Details: Skill `skilletor`).
 
 ## Build & Test
 

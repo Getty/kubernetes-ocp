@@ -1,0 +1,39 @@
+{
+  "targets": ["claude"],
+  "sources": {
+    "getty":           { "git": "https://github.com/Getty/skills" },
+    "author-getty":    { "git": "https://github.com/Getty/p5-dist-zilla-pluginbundle-author-getty" },
+    "karr":            { "git": "https://github.com/Getty/karr" },
+    "io-k8s-p5":       { "git": "https://github.com/pplu/io-k8s-p5" },
+    "kubernetes-rest": { "git": "https://github.com/pplu/kubernetes-rest" }
+  },
+  "install": {
+    "skills": [
+      "claude-cross-session@getty",
+      "claude-headless@getty",
+      "docker@getty",
+      "docker-engine-api@getty",
+      "docker-registry@getty",
+      "getty-git-commit-style@getty",
+      "getty-git-usage@getty",
+      "getty-perl-core@getty",
+      "getty-perl-moo@getty",
+      "kubernetes-cilium-concepts@getty",
+      "kubernetes-concepts@getty",
+      "kubernetes-gpu@getty",
+      "kubernetes-rke2@getty",
+      "perl-io-async-future@getty",
+      "perl-mcp@getty",
+      "perl-release-dist-ini@getty",
+      "rex@getty",
+      "dist-zilla-pluginbundle-author-getty-core@author-getty",
+      "getty-perl-pod@author-getty",
+      "getty-perl-release-author-getty@author-getty",
+      "kanban-issues-karr-coordination@karr",
+      "kanban-issues-karr-ticket@karr",
+      "io-k8s-core@io-k8s-p5",
+      "perl-io-k8s-kubernetes-classes@io-k8s-p5",
+      "perl-kubernetes-rest@kubernetes-rest"
+    ]
+  }
+}
