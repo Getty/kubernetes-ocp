@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-10-01T14:19:04Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T05:40:54Z
+id: 218
+priority: medium
+started: 2026-10-01T13:50:01Z
+status: review
+tags:
+- bug
+title: 'Control-Plane per IP: Node und OCPNode heißen nur "10"'
+updated: 2026-10-01T14:19:04Z
+---
+
+control_planes.host: 10.5.10.20 ergibt node-name/OCPNode "10" (Kürzung am ersten Punkt wie bei einem FQDN). Live gesehen 2026-10-01 (ocpt). Bei einer IP den vollen Namen nehmen (z. B. 10-5-10-20) oder den Hostnamen des Hosts abfragen. Test für IP-Host.
+
+2026-10-01 14:02 Done in 24448a2: Bootstrap::host_name_parts -- IPv4/IPv6-Host wird voll benannt (10.5.10.20 -> 10-5-10-20, keine Domain), FQDN/Kurzname wie bisher; cp_identity (Node-Name, OCPNode, Maschinen-Hostname) und ocp ssh --node nutzen denselben Helfer. Entscheidung: Bindestrich-Form statt Hostname per SSH abfragen -- cp_identity ist eine reine Funktion, die der Reconcile-Pfad ohne SSH aufruft, und muss bei jedem apply denselben Namen liefern. Test: t/218-cp-ip-name.t; 77-cmd-ssh-multi-cp, 38, 52, 07, 08, 11, 129, 152, 169, 177, 180, 186, 196-k3s, 34, 39, 47, 69, 76, 77-destroy, 89, 95, 20 grün. Live nachzuweisen: frischer CP mit host: <IP> -> kubectl get nodes zeigt 10-5-10-20, OCPNode gleich, hostname auf der Maschine 10-5-10-20. ACHTUNG Bestand: ein bereits als '10' gebooteter Cluster (ocpt) bekommt beim nächsten apply ein zweites OCPNode '10-5-10-20' neben Node/OCPNode '10' -- ocpt neu aufsetzen oder OCPNode '10' von Hand aufräumen. Also found: ssh-Worker-Pools haben denselben Bug (CR.pm worker_ocpnodes: ($w_name) = split /\./, $host -> zwei Worker 10.5.10.21/.22 hießen beide '10' und kollidieren); nicht angefasst, host_name_parts wäre der Fix.
+
+LIVE NACHGEWIESEN (Koordinator, 2026-10-01, Image raudssus/ocp:vendor = HEAD 4b5a2b3 + vendor io-k8s 1.110/rex-gpu 0.004/crypt-age 0.005, frische Generalprobe ocpt): k217 Worker ocpt-w bekommt Europe/Berlin + de_DE.UTF-8 aus ocp.yaml; k218 CP per IP 10.5.10.20 heißt 10-5-10-20 (Node + OCPNode).
