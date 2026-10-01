@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-10-01T00:28:25Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-09-27T18:04:25Z
+id: 208
+priority: high
+started: 2026-10-01T00:26:19Z
+status: review
+tags:
+- gpu
+- crd
+- node
+- bug
+title: 'Worker per node add bekommen nie GPU-Erkennung: CRD-Default gpu:false schlägt
+  gpu.enabled:true'
+updated: 2026-10-01T00:28:25Z
+---
+
+Live 2026-09-27 (k207-Lauf, otoh CP + crag Worker, ocp.yaml gpu.enabled: true, driver host). 'ocp node add crag-gpu --host 10.230.30.250' (ohne --gpu) joint den Worker, Rex meldet aber 'GPU handling disabled (gpu.enabled: false) — skipping detection'. Kein Treiber, kein Toolkit, obwohl crag eine RTX 3090 hat. Ursache: share/robocop/crds/ocpnode.yaml deklariert spec.gpu mit 'default: false'. Node::Add lässt das Feld ohne --gpu weg (Add.pm ~193), der API-Server setzt aber false ein (OCPNode-Spec live: {"gpu":false,...}). OCP::Node (~511-518) lässt ein definiertes spec.gpu vor dem clusterweiten gpu_enabled vom OCPNodeProvider gewinnen (dort korrekt enabled: true). Der dokumentierte Weg über den Default von OCP::Rex (// 1) wird deshalb nie erreicht. Folge: Auf einem Cluster mit gpu.enabled: true bekommt jeder Worker ohne --gpu keine GPU. Changes sagt dagegen, gpu.enabled steuere es clusterweit. Betrifft CLI-Joins und robocop-Joins gleichermaßen (dieselbe OCP::Node-Logik), vermutlich auch Worker aus ocp.yaml. Für cp-lab (nur GPU-Worker) ist das ein Blocker. Done: Ohne ausdrückliches per-Node-Flag entscheidet gpu.enabled (bzw. die Erkennung), z. B. CRD-Default entfernen und die Semantik 'fehlt = erben' festlegen. Bestehende CRs, in denen gpu:false schon persistiert ist, bedenken (Migration bzw. Drift). Test über den Weg CRD-Default -> OCP::Node-Parameter. Live nachprüfen mit node add ohne --gpu auf crag. Lane: ocp-state-worker (OCP::Node) + CRD (infra).
+
+c0a8718: CRD-Default 'default: false' an spec.gpu entfernt (gleiches Muster wie k100 bei OCPNodeProvider). Semantik: fehlt = erbt gpu.enabled (OCP::Rex // 1), explizites spec.gpu bleibt per-Node-Entscheidung, gpu.enabled:false bleibt Kill-Switch. OCP::Node selbst unverändert (Logik war richtig, nur der Default machte jedes CR zu 'explizit false'). Test t/208-gpu-crd-default.t: node add ohne --gpu und ocp.yaml-Worker -> Schema-Defaulting aus der echten CRD -> OCP::Node-Install-Params (rot vor Fix, grün danach); t/70, t/31, t/19, t/75, t/179 grün. Changes-GPU-Bullet präzisiert. MIGRATION (Entscheidung, bitte bestätigen): kein Migrationscode. Kein OCP-Codepfad schreibt je gpu:false (node add schreibt nur true, apply gar nichts), persistierte false stammen also aus dem alten Default -- aber ocp apply PUTtet bestehende Worker-OCPNodes nicht (missing_worker_ocpnodes legt nur fehlende an), d.h. Alt-CRs behalten gpu:false. Betrifft nur Pre-Release-Lab-Cluster. LIVE-NACHWEIS (otoh/crag): 1) ocp apply (spielt die CRD ohne Default ein). 2) Alt-CR: ocp node rm crag-gpu; dann ocp node add crag-gpu --role worker --host 10.230.30.250 (ohne --gpu). 3) Erwartet: OCPNode spec ohne gpu-Feld (kubectl get ocpnode crag-gpu -n ocp-system -o jsonpath='{.spec}'), Rex-Log 'NVIDIA GPU present: ...' statt 'GPU handling disabled', Treiber + Toolkit installiert, Node bekommt nvidia.com/gpu. Dann done.
