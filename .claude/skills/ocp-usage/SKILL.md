@@ -64,7 +64,7 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
     token itself is the separate `--hetzner` step. `--provider ssh` dies
     without `--host`.
   - `--host HOST` — SSH host (for provider ssh)
-  - `--name` — cluster name · `--nogit` — skip git init
+  - `--name` — cluster name · `--nogit` — skip git init (`.gitignore` with `.ocp/` is still written; `.ocp/` also ignores itself)
   - `--nopassword` — dev mode without PINs
   - `--dist rke2|k3s` — distribution
   - `--ssh-key PATH` — reuse an existing private key (copied to `.ocp/`)

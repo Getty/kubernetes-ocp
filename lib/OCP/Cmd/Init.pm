@@ -183,9 +183,11 @@ sub execute {
     #
     # Step 2: .gitignore
     #
-    if ($self->nogit) {
-        # Skip gitignore when git is disabled
-    } elsif ($has_gitignore) {
+    # Written with --nogit too (k215): --nogit is how a project lives in a
+    # subdirectory of another repository, and there .ocp/ -- plaintext
+    # age.key, decrypted SSH keys -- would otherwise be committed by the
+    # next `git add .` in the surrounding repo.
+    if ($has_gitignore) {
         # .ocp/ is the only thing OCP needs ignored — see _gitignore_content.
         my $content = path('.gitignore')->slurp;
 
@@ -211,6 +213,15 @@ sub execute {
         print "[..] Creating .ocp/ directory\n";
         path('.ocp')->mkpath;
         print "[ok] Created .ocp/\n";
+    }
+
+    # .ocp/ ignores itself (k215): holds whatever rules the project or a
+    # surrounding repository has, and survives a lost project .gitignore.
+    # Written before any key lands in .ocp/.
+    my $ocp_ignore = path('.ocp', '.gitignore');
+    unless (-f $ocp_ignore) {
+        $ocp_ignore->spew("# Decrypted OCP state - never commit (written by ocp init)\n*\n");
+        print "[ok] Created .ocp/.gitignore\n";
     }
 
     #
@@ -441,7 +452,7 @@ sub execute {
         print "  age.key.enc     - Password-protected age key (git ✓)\n";
     }
     print "  .ocp/           - Keys & cache (gitignored)\n";
-    print "  .gitignore      - Git ignore rules\n" unless $self->nogit;
+    print "  .gitignore      - Git ignore rules\n";
     print "\n";
 
     if ($secrets->has_age_key_enc) {
@@ -1206,9 +1217,15 @@ to F</root/.ssh/authorized_keys> on every machine (C<ocp keys show --purpose
 admin>) B<before> running any other C<ocp> command against it. Init says so
 when it finds a bootstrap key in a secure-mode project.
 
-With --nogit, skips git repository initialization and .gitignore creation.
-The generated F<.gitignore> ignores F<.ocp/> only: the encrypted files
-(F<keys.yaml>, F<secrets.yaml>, F<age.key.enc>, F<kubeconfig.yaml>) are
-meant to be committed.
+With --nogit, skips git repository initialization -- the way to keep a
+project in a subdirectory of another repository. The F<.gitignore> is written
+either way. It ignores F<.ocp/> only: the encrypted files (F<keys.yaml>,
+F<secrets.yaml>, F<age.key.enc>, F<kubeconfig.yaml>) are meant to be
+committed.
+
+F<.ocp/> additionally carries its own F<.gitignore> (C<*>), so the decrypted
+state stays out of git whatever the project's or a surrounding repository's
+rules are, and even when the project F<.gitignore> is lost. An existing one is
+never overwritten.
 
 =cut
