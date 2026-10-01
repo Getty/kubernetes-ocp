@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-10-01T04:26:40Z
+id: 216
+priority: medium
+status: backlog
+tags:
+- secrets
+- citiai
+title: 'Leitstand fährt ocp apply unbeaufsichtigt: eigene age-Identität, eigener Admin-Key
+  ohne PIN2, SSH-Key auf die Nodes (k212 F4)'
+updated: 2026-10-01T04:26:40Z
+---
+
+Abgespalten aus k212 (F4, Entscheidung User 2026-10-01): Leitstand fährt ocp apply unbeaufsichtigt mit eigenem Admin-Key ohne PIN2; der Bediener-Key bleibt mit PIN2; beim Entzug des Leitstands wird auch sein SSH-Key von den Nodes entfernt.
+Stand nach k212 (Commit 1eb4775): Leitstand kann per 'ocp keys recipients add AGE1' SOPS-Empfänger werden (keys.yaml/secrets.yaml/kubeconfig.yaml, .sops.yaml), rm entzieht + Rotationshinweis. Die inneren age-Schichten der Private Keys in keys.yaml bleiben bewusst nur für den Projekt-Key -- der Leitstand liest keys.yaml, aber weder Admin- noch Robo-Private-Key.
+Teilschritte:
+(a) Identität: OCP liest die age-Identität aus SOPS_AGE_KEY_FILE (sops-nativ), wenn gesetzt, statt .ocp/age.key/PIN1 -- alle Decrypt-Pfade in OCP::Secrets und OCP::Keys (age_key_file). _assert_key_matches_project akzeptiert schon jeden gebundenen Empfänger. age.key.enc bleibt PIN1-only.
+(b) Leitstand-Admin-Key: Leitstand erzeugt sein SSH-Keypair selbst; nur der Public Key wird eingetragen (z.B. 'ocp keys recipients add AGE1 --ssh-key PUB --name leitstand-X' oder eigenes Kommando), keys.yaml-Eintrag purpose z.B. 'operator' ohne PIN2. Private Key bleibt auf dem Leitstand (Pfad via Env/Option). OCP::ClusterKey wählt unter fremder Identität diesen Key statt des PIN2-Admin-Keys.
+(c) Verteilung: Public Key auf alle CPs + Worker (authorized_keys über SSH mit dem Admin-Key, Bediener-PIN2 beim add; Hetzner: zusätzlich beim Server-Create hochladen; robocop-Worker?). Entzug (recipients rm) entfernt ihn wieder von allen Nodes und aus keys.yaml.
+(d) Robo-Key/robocop-credentials: Leitstand kann den Robo-Private-Key nicht entschlüsseln (innere Schicht Projekt-Key) -- klären, was apply tut, wenn das Secret fehlt/veraltet ist (überspringen + Hinweis?).
+Live-Nachweis: Leitstand (agent-lab) mit eigener Identität, 'ocp apply' ohne PIN-Prompt gegen den Cluster; nach Entzug kein SSH mehr auf die Nodes.
