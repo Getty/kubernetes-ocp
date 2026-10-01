@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-10-01T14:19:03Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T05:40:53Z
+id: 217
+priority: medium
+started: 2026-10-01T13:50:01Z
+status: review
+tags:
+- bug
+title: 'node add/robocop-Join ignoriert system: timezone/locale/ntp aus ocp.yaml'
+updated: 2026-10-01T14:19:03Z
+---
+
+OCP::Node baut die Join-Parameter ohne timezone/locale/ntp; das Rexfile fällt auf UTC/en_US.UTF-8 zurück. Live gesehen 2026-10-01 (Generalprobe ocpt): ocp.yaml system Europe/Berlin + de_DE.UTF-8, CP richtig, Worker ocpt-w auf UTC/en_US umgestellt. Wie gpu_enabled/gpu_driver (k31) müssen die cluster-weiten system-Werte über den OCPNodeProvider-CR zum Join (robocop sieht ocp.yaml nie). Test: Join-Params enthalten timezone/locale/ntp aus dem Provider-CR.
+
+2026-10-01 14:00 Done in 2a562a2: ensure_provider_cr schreibt spec.system {timezone, locale, ntp(JSON-bool)} auf den OCPNodeProvider-CR (CRD erweitert, sonst prunt der API-Server), OCP::Provider->system_flags_from_cr liest zurück, alle drei from_cr-Aufrufer (robocop Controller, apply-CLI-Pfad cli_reconcile_workers, ocp node add _cli_reconcile) reichen es an OCP::Node, das es an install_*_agent/-server (prepare_node) gibt. Ohne Feld (alter CR) wie bisher Rexfile-Defaults. Test: t/217-worker-system-settings.t (Writer, CRD, Parse, Node-Params, alle drei Aufrufer); 19-provider (CRD-Feld-Inventar ergänzt), 31, 33, 155x, 156, 74, 151, 75, 196, 70, 208, 16, 18, 09, 12, 27, 20, 45, 49, 18b, 18c, 185, 08 grün. Live nachzuweisen: ocp apply auf ocpt (aktualisiert CRD + Provider-CR: kubectl get ocpnodeprovider ssh-default -o yaml zeigt spec.system), dann neuen Worker per node add -> timedatectl/locale auf dem Worker = Europe/Berlin/de_DE.UTF-8. Bestehender ocpt-w wird NICHT nachträglich umgestellt (Join-Zeit-Einstellung). Also found: ocp node add _cli_reconcile reicht die gpu_flags (k31) NICHT an OCP::Node weiter (nur CR.pm und Controller tun es) -> per CLI-Pfad gejointer Node ignoriert gpu.enabled:false/gpu.driver; nicht angefasst.
+
+LIVE NACHGEWIESEN (Koordinator, 2026-10-01, Image raudssus/ocp:vendor = HEAD 4b5a2b3 + vendor io-k8s 1.110/rex-gpu 0.004/crypt-age 0.005, frische Generalprobe ocpt): k217 Worker ocpt-w bekommt Europe/Berlin + de_DE.UTF-8 aus ocp.yaml; k218 CP per IP 10.5.10.20 heißt 10-5-10-20 (Node + OCPNode).
