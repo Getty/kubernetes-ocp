@@ -60,11 +60,13 @@ spec:
                 type: string
                 description: "SSH user override"
 
-              # GPU support
+              # GPU support. No default on purpose (k208): an absent gpu
+              # follows the cluster-wide gpu.enabled, and only an explicit
+              # value is a per-node decision. A schema default would be
+              # stamped into every CR by the API server and read as one.
               gpu:
                 type: boolean
-                default: false
-                description: "Node has GPU (auto-install drivers)"
+                description: "Per-node GPU switch; absent follows the cluster-wide gpu.enabled"
 
               # Taints/tolerations
               taints:

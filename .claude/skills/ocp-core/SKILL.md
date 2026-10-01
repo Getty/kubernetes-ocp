@@ -121,7 +121,7 @@ spec:
   role: worker             # or: control-plane
   providerRef: hetzner-fsn1
   serverType: cx23         # override
-  gpu: false
+  gpu: true               # optional; absent follows ocp.yaml gpu.enabled
 status:
   phase: Ready
   providerId: "12345678"

@@ -507,7 +507,10 @@ sub _install_kubernetes {
     # joins must not come up running GPU detection on a cluster configured to
     # skip it. Otherwise the per-node flag decides, exactly as k70 left
     # it. Only when neither is set is the parameter left out, so OCP::Rex's
-    # // 1 default stays in charge -- the documented baseline.
+    # // 1 default stays in charge -- the documented baseline. That needs an
+    # absent spec.gpu to arrive here absent: the CRD carries no schema
+    # default for it (k208), or the API server would stamp a false into every
+    # CR written without --gpu and every worker would opt itself out.
     my $cr_gpu      = $self->cr->{spec}{gpu};
     my $gpu_enabled = $self->gpu_enabled;
     if (defined $gpu_enabled && !$gpu_enabled) {
