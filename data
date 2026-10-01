@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-10-01T00:40:52Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-01T00:40:52Z
+created: 2026-10-01T00:23:58Z
+id: 213
+priority: medium
+started: 2026-10-01T00:39:19Z
+status: done
+tags:
+- destroy
+- provider
+title: 'ExistingHost-Destroy: uninstall_warnings und uninstall_failure von Rex::Rancher
+  auswerten'
+updated: 2026-10-01T00:40:52Z
+---
+
+Aus rex-rancher k79 (2026-10-01): Rex::Rancher::Uninstall liefert uninstall_warnings (z. B. fehlendes tc oder unvollstaendiges iptables-Backend -> Cilium-Chains bleiben liegen) und uninstall_failure. OCP::Role::Provider::ExistingHost nutzt nur uninstall_cmd und wertet beides nicht aus.
+Ziel: Warnungen beim ocp destroy sichtbar machen (pro Host), Fehler als Fehler melden (exit != 0, Liste der Hosts). Wichtig fuer die Neuinstallation: ein destroy, das Reste hinterlaesst, muss das sagen (sonst greift beim naechsten install der Preflight / alter Token wird weiterverwendet).
+
+ac075c6. Befund: Die Kartenprämisse war teils überholt - ExistingHost::delete_server wertete uninstall_warnings (warn pro Host auf STDERR) und uninstall_failure (die mit Host -> Destroy listet ihn am Ende, exit 1, k180) schon seit 510bcfa (k196) aus. Lücke war: Warnungen erschienen nur mitten im Lauf, das Ende sagte 'Cluster destroyed.' ohne Hinweis auf möglicherweise verbliebenen Cilium-State. Jetzt: delete_server gibt die Warnungen im Ergebnis zurück (warnings => [...]), ocp destroy sammelt sie pro Host und schließt auf STDERR mit '[!] N machine(s) uninstalled, but part of Cilium's datapath could not be checked ...' + Hostliste mit Warnung + 'Reboot them before RKE2/K3s is installed on them again'. Exit-Code bleibt 0 für Warnungen (Bibliotheksvertrag: Warnung ist kein Fehler; echte Reste lässt das Uninstall-Outcome ohnehin mit exit 1 scheitern), Fehler weiter exit 1 mit Hostliste. Tests: t/180 + t/29 erweitert (rot ohne Fix), t/77,108,177,179,181,18c grün. Changes-Bullet ergänzt.
