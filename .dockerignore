@@ -56,8 +56,3 @@ local/
 
 # Node modules (if any)
 node_modules/
-
-# ─── TEMP: keep vendored Rex::GPU / Rex::Rancher tarballs in the context ─────
-# Remove together with the Dockerfile vendor/ block and the Makefile target.
-!vendor/
-!vendor/*.tar.gz
