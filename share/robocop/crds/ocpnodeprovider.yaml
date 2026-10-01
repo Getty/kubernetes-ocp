@@ -76,6 +76,25 @@ spec:
                       it on the node, operator = the GPU Operator's DaemonSet
                       does. Mirrors ocp.yaml gpu.driver.
 
+              system:
+                type: object
+                description: >-
+                  Cluster-wide host settings, copied from ocp.yaml's `system:`
+                  block by `ocp apply`, for the same reason as `gpu`: robocop
+                  never sees ocp.yaml, and without them a worker it joins got
+                  the Rexfile's UTC / en_US.UTF-8 defaults instead of what the
+                  control plane was given.
+                properties:
+                  timezone:
+                    type: string
+                    description: "zoneinfo name, e.g. Europe/Berlin. Mirrors ocp.yaml system.timezone."
+                  locale:
+                    type: string
+                    description: "e.g. de_DE.UTF-8. Mirrors ocp.yaml system.locale."
+                  ntp:
+                    type: boolean
+                    description: "Whether the node gets time sync. Mirrors ocp.yaml system.ntp."
+
               hetzner:
                 type: object
                 description: "Hetzner Cloud configuration"

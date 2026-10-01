@@ -76,6 +76,14 @@ sub _build_kubeconfig_file {
 # 'operator'.
 has gpu_enabled   => (is => 'ro');
 has gpu_driver    => (is => 'ro');
+
+# ocp.yaml's system: block, cluster-wide like the GPU switches above and
+# carried the same way, on the OCPNodeProvider CR (OCP::Provider->
+# system_flags_from_cr, k217). Undef leaves the install task's own default
+# (UTC, en_US.UTF-8, ntp on) in charge.
+has timezone      => (is => 'ro');
+has locale        => (is => 'ro');
+has ntp           => (is => 'ro');
 has reconciler_id => (is => 'ro', default => sub { 'cli' });
 has ssh_class     => (is => 'ro', default => sub { 'OCP::SSH' });
 has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
@@ -491,7 +499,9 @@ sub _install_kubernetes {
         version   => $version,
         node_name => $name,
         hostname  => $name,
-        ntp       => 1,
+        ntp       => $self->ntp // 1,
+        (defined $self->timezone ? (timezone => $self->timezone) : ()),
+        (defined $self->locale   ? (locale   => $self->locale)   : ()),
     );
 
     # Two GPU inputs meet here. spec.gpu on the OCPNode is per-node: `ocp node
@@ -1262,6 +1272,14 @@ and acts as a cluster kill switch: false forces C<gpu =E<gt> 0> at install even
 when the OCPNode's own C<spec.gpu> is true.  C<gpu_driver> is C<'host'> or
 C<'operator'>.  Both unset (a provider CR predating the field) leaves
 L<OCP::Rex>'s own defaults in charge — the pre-k31 baseline.
+
+=item timezone / locale / ntp
+
+F<ocp.yaml>'s C<system:> block, carried like the GPU switches: C<ocp apply>
+writes it onto the OCPNodeProvider CR, the caller reads it back with
+L<OCP::Provider/system_flags_from_cr> (k217).  Passed to the install task, whose
+C<prepare_node> sets them on the machine.  Unset leaves the task's own defaults
+(UTC, en_US.UTF-8, NTP on).
 
 =item pod_cidr
 

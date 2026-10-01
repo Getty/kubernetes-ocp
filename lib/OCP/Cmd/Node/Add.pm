@@ -375,6 +375,9 @@ sub _cli_reconcile {
         distribution  => ($config->distribution || 'rke2'),
         pod_cidr      => $config->pod_cidr,   # a control-plane join repeats it (k184)
         reconciler_id => 'cli',
+        # ocp.yaml's system: block, off the provider CR like robocop reads it
+        # (k217) -- one source for every join path.
+        ($provider_h ? OCP::Provider->system_flags_from_cr($provider_h) : ()),
     );
 
     # No budget named here: OCP::Node owns it ($OCP::Node::READY_TIMEOUT), and

@@ -161,6 +161,18 @@ sub ensure_provider_cr {
         driver  => $config->gpu_driver,
     };
 
+    # ocp.yaml's system: block, same channel and same reason as gpu above:
+    # the control plane's prepare_node gets it straight from the config, a
+    # worker robocop joins has no way to learn it but this CR. Without it the
+    # Rexfile's UTC / en_US.UTF-8 defaults won on every worker (k217).
+    # OCP::Provider->system_flags_from_cr reads it back; ntp is a JSON
+    # boolean for the same reason gpu.enabled is.
+    $spec->{system} = {
+        timezone => $config->timezone,
+        locale   => $config->locale,
+        ntp      => $config->ntp_enabled ? JSON::PP::true : JSON::PP::false,
+    };
+
     if ($type eq 'hetzner') {
         my $secret_name = "hetzner-api-token-$type";
         my $token = eval { $secrets->hetzner_token };
@@ -808,6 +820,8 @@ sub cli_reconcile_workers {
         # identically. Absent from a CR that predates the field means absent
         # here, and OCP::Node keeps OCP::Rex's default (k31).
         my %gpu_flags = OCP::Provider->gpu_flags_from_cr($prov_struct);
+        # ocp.yaml's system: block, off the same CR (k217).
+        my %system_flags = OCP::Provider->system_flags_from_cr($prov_struct);
 
         my $node = OCP::Node->from_cr($hash,
             k8s          => $api,
@@ -821,6 +835,7 @@ sub cli_reconcile_workers {
             (($hash->{spec}{role} // '') eq 'control-plane'
                 ? (tls_san => \@cp_sans, pod_cidr => $config->pod_cidr) : ()),
             %gpu_flags,
+            %system_flags,
         );
 
         # The interval is this path's own (workers are driven one after the

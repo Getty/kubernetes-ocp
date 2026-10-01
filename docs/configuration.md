@@ -68,7 +68,8 @@ registry:
   cache: ''                    # external docker.io pull-through cache URL
   upstream: ''                 # what the built-in cache pulls from
 
-system:                        # detected from the host at `ocp init`
+system:                        # detected from the host at `ocp init`; every
+                               # node gets it, workers via the provider CR
   timezone: Europe/Berlin
   locale: de_DE.UTF-8
   ntp: true

@@ -66,6 +66,26 @@ sub gpu_flags_from_cr {
     return %flags;
 }
 
+# ocp.yaml's system: block (timezone, locale, ntp) off an OCPNodeProvider CR,
+# for OCP::Node -- the same channel and the same contract as gpu_flags_from_cr
+# above (k217): `ocp apply` writes spec.system, robocop and the CLI reconcile
+# paths read it back here. ntp comes back 0/1; absent stays absent, so a CR
+# predating the field leaves the Rexfile's defaults in charge.
+sub system_flags_from_cr {
+    my ($class, $cr) = @_;
+
+    my $system = ($cr->{spec} && $cr->{spec}{system}) || {};
+
+    my %flags;
+    $flags{timezone} = $system->{timezone}
+        if defined $system->{timezone} && length $system->{timezone};
+    $flags{locale} = $system->{locale}
+        if defined $system->{locale} && length $system->{locale};
+    $flags{ntp} = $system->{ntp} ? 1 : 0 if defined $system->{ntp};
+
+    return %flags;
+}
+
 # Two entry points, one dispatch.
 #
 # `for_spec` is the CLI/bootstrap path: the control plane spec is a plain hash
@@ -330,6 +350,16 @@ Normalised like the matching L<OCP::Config> accessors: C<gpu_enabled> is 0/1
 from the CR is B<absent> from the returned list, so L<OCP::Node> leaves the
 Rex parameter out and L<OCP::Rex>'s own default wins — the behaviour a
 provider CR that predates the field must keep.
+
+=method system_flags_from_cr
+
+    my %flags = OCP::Provider->system_flags_from_cr($provider_cr);
+    # %flags = ( timezone => 'Europe/Berlin', locale => 'de_DE.UTF-8', ntp => 0|1 )
+
+F<ocp.yaml>'s C<system:> block read off an C<OCPNodeProvider> CR's
+C<spec.system>, ready to splat into C<< OCP::Node->from_cr >> -- the same
+channel and contract as L</gpu_flags_from_cr> (k217).  Absent fields are absent
+from the list, so the install task's own defaults stay in charge.
 
 =method for_spec
 

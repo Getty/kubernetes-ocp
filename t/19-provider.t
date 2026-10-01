@@ -370,6 +370,11 @@ subtest 'every field the OCPNodeProvider CRD declares is read or written' => sub
         # to the access syntax cannot false-green off an unrelated leaf.
         'spec.gpu.enabled'                 => qr/->\{enabled\}/,
         'spec.gpu.driver'                  => qr/->\{driver\}/,
+        # ocp.yaml's system: block (k217): OCP::Provider::system_flags_from_cr
+        # reads `$system->{...}`, ensure_provider_cr writes `$spec->{system}`.
+        'spec.system.timezone'             => qr/\$system->\{timezone\}/,
+        'spec.system.locale'               => qr/\$system->\{locale\}/,
+        'spec.system.ntp'                  => qr/\$system->\{ntp\}/,
         'spec.hetzner.tokenSecretRef.name' => qr/tokenSecretRef\s*=>\s*\{[^}]*\bname\b/,
         'spec.hetzner.tokenSecretRef.key'  => qr/tokenSecretRef\s*=>\s*\{[^}]*\bkey\b/,
         'spec.hetzner.location'            => qr/->\{location\}/,

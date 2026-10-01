@@ -1078,6 +1078,8 @@ sub _on_node_event {
     # to OCP::Node; absent from a CR that predates the field means OCP::Node
     # keeps OCP::Rex's default.
     my %gpu_flags = OCP::Provider->gpu_flags_from_cr($provider_cr);
+    # ocp.yaml's system: block (timezone, locale, ntp), same channel (k217).
+    my %system_flags = OCP::Provider->system_flags_from_cr($provider_cr);
 
     my $node = eval {
         OCP::Node->from_cr(
@@ -1092,6 +1094,7 @@ sub _on_node_event {
             verbose       => $self->verbose,
             reconciler_id => 'robocop',
             %gpu_flags,
+            %system_flags,
         );
     };
     if ($@) {
