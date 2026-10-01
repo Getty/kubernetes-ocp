@@ -273,6 +273,11 @@ sub install_server {
     # both from this one value. Empty leaves the Rexfile's fallback in charge.
     my $pod_cidr = $opts{pod_cidr} || '';
 
+    # ocp.yaml cilium: (k210) -- Helm values for install_cilium, left out
+    # when there are none so the Rexfile's call stays what it always was.
+    my $cilium_values = ref $opts{cilium_helm_values} eq 'HASH' && %{ $opts{cilium_helm_values} }
+        ? $opts{cilium_helm_values} : undef;
+
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
@@ -308,6 +313,7 @@ sub install_server {
         # node_api_host. RKE2 ignores it.
         k8s_service_host => $self->node_api_host,
         pod_cidr         => $pod_cidr,
+        ($cilium_values ? (helm_values => $cilium_values) : ()),
         version      => $opts{cilium_version}
             || OCP::Versions->get_component_version('cilium') || '',
         cli_version  => $opts{cilium_cli_version}
@@ -506,6 +512,7 @@ Execute a Rex task with parameters.
         gpu          => 1,       # 0 skips GPU detection entirely
         gpu_driver   => 'host',  # 'operator' leaves the host driver alone
         pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
+        cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
     );
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
@@ -515,6 +522,10 @@ C<operator>.
 C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
 is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to
 C<10.42.0.0/16>. A Cilium that already runs keeps the pool it has.
+
+C<cilium_helm_values> (F<ocp.yaml>'s C<cilium:>, merged by
+C<OCP::Config-E<gt>cilium_helm_values>) goes to C<install_cilium> as its
+C<helm_values>; an empty or missing hash passes none.
 
 The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
 C<server> are C<advertised_host>. On k3s Cilium reaches the API server at

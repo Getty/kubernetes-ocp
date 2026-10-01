@@ -140,8 +140,9 @@ my $multi  = { control_planes => { provider => 'hetzner', server_type => 'cx32',
     my $config = config_for($single, 'accessors-default');
     is($config->lb_pool_blocks, undef, 'lb_pool_blocks is undef when unconfigured');
     is_deeply($config->l2_node_selector, {}, 'l2_node_selector defaults empty');
-    is_deeply($config->l2_interfaces, ['^eth[0-9]+$', '^en[a-z0-9]+$'],
-        'l2_interfaces default is the anchored built-in list');
+    is_deeply($config->l2_interfaces,
+        ['^eth[0-9]+(\\.[0-9]+)?$', '^en[a-mo-zP0-9]+(\\.[0-9]+)?$'],
+        'l2_interfaces default is the anchored built-in list (k210: no switchdev np* ports)');
 }
 
 {

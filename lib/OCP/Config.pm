@@ -316,15 +316,53 @@ sub pod_cidr_is_set { defined shift->network_config->{pod_cidr} }
 sub l2_config        { shift->network_config->{l2} // {} }
 sub l2_node_selector { shift->l2_config->{node_selector} // {} }
 
-# The interface-name regexes for CiliumL2AnnouncementPolicy. The built-in list
-# is anchored on both ends: an unanchored "^en[a-z0-9]+" matched the QSFP
-# fabric (enp1s0f0np0) it had no business announcing on. A node with more than
-# one interface should use l2.node_selector rather than lean on these.
+# The interface-name regexes for CiliumL2AnnouncementPolicy, when
+# network.l2.interfaces sets none. Cilium compiles them as Go (RE2) regexes,
+# so there is no lookahead to say "but not that one" -- the exclusion has to
+# be spelled into the character class.
+#
+# The en* pattern leaves out every predictable name that carries an "n": in
+# systemd's naming scheme the only "n" after the "en" prefix is the
+# n<phys_port_name> suffix, which switchdev-capable NICs (Mellanox/NVIDIA
+# ConnectX and the like) get -- the QSFP/RoCE fabric between brain and cortex
+# is enp1s0f0np0. Announcing ARP for LoadBalancer IPs there answers on a
+# fabric no client sits on (k210). Capital P (PCI domain, enP7s7 on a GB10)
+# and a VLAN suffix (enP7s7.30) are allowed: that is the LAN port of the same
+# machine. A fabric NIC that comes without the suffix still matches; set
+# network.l2.interfaces or l2.node_selector on such a cluster.
+our $DEFAULT_L2_INTERFACES = [ '^eth[0-9]+(\\.[0-9]+)?$', '^en[a-mo-zP0-9]+(\\.[0-9]+)?$' ];
+
 sub l2_interfaces {
     my $self = shift;
     my $i = $self->l2_config->{interfaces};
     return $i if ref $i eq 'ARRAY' && @$i;
-    return ['^eth[0-9]+$', '^en[a-z0-9]+$'];
+    return [ @$DEFAULT_L2_INTERFACES ];
+}
+
+# Cilium's own Helm values (k210), for what OCP has no key of its own for --
+# above all `devices`, the interfaces Cilium attaches its datapath to, which
+# Cilium otherwise picks itself and which then include a fabric NIC.
+#
+#   cilium:
+#     devices: [ "enP7s7.30" ]      # Helm `devices`
+#     helm_values:                  # anything else, deep-merged over what
+#       bpf: { masquerade: true }   # Rex::Rancher::Cilium generates
+#
+# devices is the short form of helm_values.devices; setting both is an error.
+# The values travel to install_cilium and, so an upgrade keeps them, to every
+# upgrade_cilium. OCP's own choices (ipam, gatewayAPI, k8sServiceHost) stay
+# OCP's: a contradicting ipam.mode dies in Rex::Rancher::Cilium before the
+# host is touched.
+sub cilium_config { shift->spec->{cilium} // {} }
+
+# The merged Helm values, {} when ocp.yaml sets none.
+sub cilium_helm_values {
+    my $self = shift;
+    my $c = $self->cilium_config;
+    return {} unless ref $c eq 'HASH';
+    my %values = ref $c->{helm_values} eq 'HASH' ? %{ $c->{helm_values} } : ();
+    $values{devices} = [ @{ $c->{devices} } ] if ref $c->{devices} eq 'ARRAY';
+    return \%values;
 }
 
 # SSL configuration (for cert-manager)
@@ -536,6 +574,7 @@ sub validate {
     }
 
     push @errors, $self->_validate_network;
+    push @errors, $self->_validate_cilium;
     push @errors, $self->_validate_pod_cidr(
         ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {});
 
@@ -631,6 +670,38 @@ sub _validate_network {
         }
     }
 
+    return @errors;
+}
+
+# cilium: (k210). Report-only, same contract as validate().
+sub _validate_cilium {
+    my ($self) = @_;
+    my $c = $self->spec->{cilium};
+    return () unless defined $c;
+    return ("cilium: must be a mapping (devices, helm_values)") unless ref $c eq 'HASH';
+
+    my @errors;
+    for my $k (sort keys %$c) {
+        push @errors, "cilium.$k: unknown key (must be "
+            . OCP::Choices::or_list(qw( devices helm_values )) . ")"
+            unless $k eq 'devices' || $k eq 'helm_values';
+    }
+    if (defined(my $d = $c->{devices})) {
+        if (ref $d ne 'ARRAY' || !@$d) {
+            push @errors, "cilium.devices: must be a non-empty list of interface names";
+        }
+        elsif (grep { ref $_ || !defined $_ || !length $_ } @$d) {
+            push @errors, "cilium.devices: entries must be interface names (strings)";
+        }
+    }
+    if (defined(my $hv = $c->{helm_values})) {
+        if (ref $hv ne 'HASH') {
+            push @errors, "cilium.helm_values: must be a mapping of Helm values";
+        }
+        elsif (defined $c->{devices} && exists $hv->{devices}) {
+            push @errors, "cilium.devices and cilium.helm_values.devices: set one of them, not both";
+        }
+    }
     return @errors;
 }
 

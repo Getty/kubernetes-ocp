@@ -126,7 +126,9 @@ For bare-metal/single-node clusters, Cilium provides LoadBalancer support:
     kind       => 'CiliumL2AnnouncementPolicy',
     metadata   => { name => 'default-l2' },
     spec       => {
-        interfaces      => ['^eth[0-9]+', '^en[a-z0-9]+'],
+        interfaces      => $config->l2_interfaces,   # network.l2.interfaces, or
+                         # $OCP::Config::DEFAULT_L2_INTERFACES: ethN / en* (VLANs ok)
+                         # without switchdev "np" ports like enp1s0f0np0 (k210)
         externalIPs     => true,
         loadBalancerIPs => true,
     },
@@ -134,6 +136,15 @@ For bare-metal/single-node clusters, Cilium provides LoadBalancer support:
 ```
 
 This makes `type: LoadBalancer` services work on bare metal by assigning the node's IP and using L2 (ARP) announcements.
+
+## Cilium Helm values from ocp.yaml (k210)
+
+`cilium.devices` (short for Helm `devices`) and `cilium.helm_values` (deep-merged
+over what Rex::Rancher::Cilium generates) come from `OCP::Config->cilium_helm_values`
+and travel as `helm_values` to `install_cilium` (via `OCP::Rex::install_server`)
+and to every `upgrade_cilium` (drift remedy and `ocp update`, via
+`OCP::Drift->remedy_params`' `remedy_config`) — an upgrade without them would
+drop what the install set. IPAM stays OCP's: see the IPAM paragraph above.
 
 ## CRD Wait Pattern
 

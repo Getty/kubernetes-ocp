@@ -116,7 +116,13 @@ Revision history for OCP
       drop-in goes only after config.yaml carries the same value.
     - The LoadBalancer pool and L2 announcement are configurable through
       `network.lb_pool` and `network.l2`, so a multi-node cluster hands out
-      external IPs from a real pool instead of a node's own address.
+      external IPs from a real pool instead of a node's own address. Without
+      `network.l2.interfaces` L2 announces on ethN and predictable en* names,
+      VLANs included, but not on switchdev fabric ports such as
+      `enp1s0f0np0`.
+    - `cilium.devices` and `cilium.helm_values` in `ocp.yaml` reach Cilium's
+      Helm values at install and on every upgrade, e.g. to keep Cilium off a
+      RoCE fabric NIC.
     - No code path shells out to kubectl: every call goes through
       Kubernetes::REST and IO::K8s, and kubectl ships in the image only for you
       to debug with. `ocp deploy-image` and `ocp deploy-robocop` roll new images

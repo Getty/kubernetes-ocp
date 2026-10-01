@@ -777,6 +777,10 @@ sub _cilium_opts {
         (defined $o{cluster_cidr} ? (cluster_cidr => $o{cluster_cidr}) : ()),
         ($distribution eq 'k3s' && defined $host && length $host
             ? (k8s_service_host => $host) : ()),
+        # ocp.yaml cilium: (k210), e.g. devices -- on the upgrade as well, or
+        # the Helm upgrade would drop what the install set.
+        (ref $o{helm_values} eq 'HASH' && %{ $o{helm_values} }
+            ? (helm_values => $o{helm_values}) : ()),
         wait                => 1,
         wait_duration       => $o{wait_duration},
     );
@@ -875,6 +879,7 @@ task "install_cilium", sub {
         kubeconfig          => "$local",
         cluster_cidr        => $params->{pod_cidr} || _default_pod_cidr(),
         k8s_service_host    => $params->{k8s_service_host},
+        helm_values         => $params->{helm_values},
         wait_duration       => 600,
     ));
 
@@ -913,6 +918,7 @@ task "upgrade_cilium", sub {
         gateway_api_version => $gateway_api_version,
         kubeconfig          => "$local",
         k8s_service_host    => $params->{k8s_service_host},
+        helm_values         => $params->{helm_values},
         wait_duration       => 300,
     ));
 

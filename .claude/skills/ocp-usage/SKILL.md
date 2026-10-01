@@ -130,6 +130,9 @@ robocop: true               # default false; auto-true when a hetzner
                             # provider is configured
 lbipam: true                # opt-in LB-IPAM + L2 announcements (ARP takeover
                             # on the node network — know what you're doing)
+cilium:                     # optional Cilium Helm values, install + upgrade
+  devices: [enP7s7.30]      # Helm `devices` (keep Cilium off fabric NICs)
+  helm_values: {}           # anything else; not ipam (OCP's)
 nocert: false               # skip cert-manager stack
 registry:
   cache: ''                 # external docker.io pull-through cache

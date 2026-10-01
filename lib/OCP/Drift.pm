@@ -38,6 +38,9 @@ has rex_prober => (is => 'ro');
 #   remedy_pins  further OCP::Versions pins the remedy task needs, as
 #                { task param => component }; the target version and the
 #                distribution always travel
+#   remedy_config  task params read off OCP::Config, as { task param =>
+#                config method }; left out when the method returns nothing
+#                (undef, or an empty hash or list)
 #   remedy_if_missing  the remedy installs from nothing too, so a 'missing'
 #                entry carries it. Without this a missing component waits for
 #                a full deploy, which reconcile never runs.
@@ -73,6 +76,9 @@ our @COMPONENT_PROBES = (
             cli_version         => 'cilium_cli',
             gateway_api_version => 'gateway_api',
         },
+        # ocp.yaml cilium: (k210): the Helm upgrade re-applies them, or it
+        # would drop the devices the install set.
+        remedy_config => { helm_values => 'cilium_helm_values' },
     },
     # The Gateway API CRDs run no image, and a bump of only their pin (Cilium
     # unchanged) never showed on the cilium probe (k164). The bundle stamps
@@ -248,10 +254,21 @@ sub remedy_params {
     my ( $self, $config, $component, $version ) = @_;
     my ($probe) = grep { $_->{component} eq $component } @COMPONENT_PROBES;
     my $pins = $probe ? $probe->{remedy_pins} // {} : {};
+    my $from_config = $probe ? $probe->{remedy_config} // {} : {};
+    my %configured;
+    for my $param (keys %$from_config) {
+        my $method = $from_config->{$param};
+        my $v = $config->$method;
+        next unless defined $v;
+        next if ref $v eq 'HASH'  && !%$v;
+        next if ref $v eq 'ARRAY' && !@$v;
+        $configured{$param} = $v;
+    }
     return {
         version      => $version,
         distribution => $config->distribution,
-        map { $_ => OCP::Versions->get_component_version($pins->{$_}) } keys %$pins
+        (map { $_ => OCP::Versions->get_component_version($pins->{$_}) } keys %$pins),
+        %configured,
     };
 }
 
@@ -853,8 +870,10 @@ re-applies, which is what C<self_healing> on those entries says.
     my $params = OCP::Drift->remedy_params($config, 'cert_manager', $version);
 
 The params a component's upgrade task runs with: C<version>, the config's
-C<distribution> and the probe's C<remedy_pins> resolved from
-L<OCP::Versions>. Callable on the class. Both a drift remedy and
+C<distribution>, the probe's C<remedy_pins> resolved from
+L<OCP::Versions>, and its C<remedy_config> read off the config (for Cilium the
+C<helm_values> from F<ocp.yaml>'s C<cilium:>, so an upgrade keeps them).
+Callable on the class. Both a drift remedy and
 L<OCP::Cmd::Update> build their Rex params here, so the two paths drive a
 task the same way.
 

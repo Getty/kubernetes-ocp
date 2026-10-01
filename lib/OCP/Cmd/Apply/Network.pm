@@ -10,6 +10,7 @@ use JSON::PP ();
 # No `use Socket` here on purpose: both places that turned a configured host
 # into an address now go through OCP::Drift::resolve_address, and an import
 # sitting here unused is how the second copy grows back.
+use OCP::Config ();
 use OCP::Drift;
 use OCP::Versions;
 
@@ -289,7 +290,7 @@ sub lb_ipam_resources {
 
     my $l2_spec = {
         interfaces => $config ? $config->l2_interfaces
-                              : ['^eth[0-9]+$', '^en[a-z0-9]+$'],
+                              : [ @$OCP::Config::DEFAULT_L2_INTERFACES ],
         externalIPs     => JSON::PP::true,
         loadBalancerIPs => JSON::PP::true,
     };
