@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-10-01T13:53:41Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T13:49:57Z
+id: 222
+priority: high
+status: review
+tags:
+- build
+- deps
+- release
+title: 'Vendor als dauerhafter Mechanismus: unveröffentlichte Sibling-Dists ins Image'
+updated: 2026-10-01T13:53:41Z
+---
+
+Hausregel "nur der lokale Stand zählt": unveröffentlichte Fixes in Sibling-Dists gehören ins Image, ohne auf CPAN zu warten. Der TEMP-Vendor-Block (k133-Muster, CI-Job aus 00ea0cf) wurde in a40e737 (k214) entfernt; jetzt dauerhaft zurück:
+- Makefile: VENDOR ?= io-k8s-p5 rex-gpu p5-crypt-age unter SIBLINGS_DIR ?= ..; make vendor baut jede per dzil build nach vendor/, Reihenfolge = Liste (vendor/ORDER). VENDOR= ergibt leeres vendor/ mit .keep.
+- Dockerfile: installiert vendor/*.tar.gz in ORDER-Reihenfolge VOR dem Snapshot-Pass in dieselbe contained local-lib; leeres vendor/ erlaubt.
+- .dockerignore-Ausnahme für vendor/, vendor/*.tar.gz in .gitignore.
+- CI: Job vendor checkt dieselben Siblings aus (pplu/io-k8s-p5, Getty/rex-gpu, Getty/p5-crypt-age), reicht vendor/ als Artifact an die Image-Jobs.
+- docs/development.md: wann vendoren, zurück auf CPAN-only mit VENDOR=.
+- cpanfile: IO::K8s Floor 1.110 (k221; Fix aus io-k8s-p5 k196 nur lokal). Snapshot NICHT neu ziehen (Koordinator nach Release).
+
+2026-10-01 13:53 Done in 73d2fb6: Makefile vendor (VENDOR/SIBLINGS_DIR, Klon des committeten HEAD, vendor/ORDER), Dockerfile-Install vor dem Snapshot-Pass, .dockerignore/.gitignore, CI-Job vendor (pplu/io-k8s-p5, Getty/rex-gpu, Getty/p5-crypt-age) mit Artifact an dockerhub/ghcr, docs/development.md, cpanfile IO::K8s 1.110. Verifiziert: t/222-vendor.t (make vendor gegen Wegwerf-Siblings + Mock-dzil; Reihenfolge, VENDOR=, fehlender Sibling), t/48/53/66 grün; echtes make vendor VENDOR=io-k8s-p5 -> IO-K8s-1.110.tar.gz mit minimum/maximum Num, VENDOR=rex-gpu -> Rex-GPU-0.004. Entscheidung: Bau im Klon statt im Sibling-Arbeitsbaum, weil rex-gpu und p5-crypt-age gerade uncommittete WIP anderer Agenten haben (würde sonst mitvendort bzw. deren .build/ zerschossen). Live/Koordinator nachzuweisen: make build (löst make vendor aus) + Suite im Image; im Build-Log '[vendor] IO-K8s-1.110.tar.gz' und dass der Snapshot-Pass IO::K8s 1.109 nicht drüberinstalliert (perl -MIO::K8s -e 'print IO::K8s->VERSION' im Image = 1.110). CI: io-k8s-p5 ist lokal 1 Commit ahead (k196 nicht gepusht), p5-crypt-age 7 ahead -> der CI-vendor-Job baut erst nach Push der Siblings den Fix. Floors Rex::GPU/Crypt::Age bewusst nicht angehoben (OCP braucht keinen ungereleasten Fix daraus).
