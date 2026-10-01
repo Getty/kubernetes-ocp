@@ -12,6 +12,7 @@ use YAML::XS ();
 use OCP::Cmd::Apply::Bootstrap;
 use OCP::K8s;
 use OCP::Node;
+use OCP::NodeMeta;
 use OCP::Provider;
 use OCP::Robocop::Manifest;
 use OCP::SSH;
@@ -451,6 +452,12 @@ sub worker_ocpnodes {
             $spec->{serverType} = $pool->{server_type}      if $pool->{server_type};
             $spec->{image}      = $pool->{image}            if $pool->{image};
             $spec->{location}   = $pool->{location}         if $pool->{location};
+
+            # Pool labels and taints (k211); OCP::Node applies them to the Node.
+            my $labels = OCP::NodeMeta->spec_labels($pool->{labels});
+            my $taints = OCP::NodeMeta->spec_taints($pool->{taints});
+            $spec->{labels} = $labels if %$labels;
+            $spec->{taints} = $taints if @$taints;
 
             # The finalizer from the start (k179): deleting the OCPNode then
             # leaves its machine to robocop's teardown instead of orphaning it.

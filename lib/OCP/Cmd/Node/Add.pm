@@ -12,6 +12,7 @@ use OCP::Config;
 use OCP::Secrets;
 use OCP::K8s;
 use OCP::Node;
+use OCP::NodeMeta;
 use OCP::Provider;
 
 with 'OCP::Role::Cmd';
@@ -62,6 +63,24 @@ option image => (
 option gpu => (
     is  => 'ro',
     doc => 'Enable GPU support',
+);
+
+# Repeatable (k211): spec.labels / spec.taints, which OCP::Node puts on the
+# Kubernetes Node.
+option label => (
+    is         => 'ro',
+    format     => 's',
+    repeatable => 1,
+    default    => sub { [] },
+    doc        => 'Node label key=value (repeatable)',
+);
+
+option taint => (
+    is         => 'ro',
+    format     => 's',
+    repeatable => 1,
+    default    => sub { [] },
+    doc        => 'Node taint key=value:Effect or key:Effect (repeatable)',
 );
 
 # Spelled without a dash on purpose, like --nogit and --nopassword in
@@ -183,6 +202,9 @@ sub _build_cr {
     # spec.gpu is declared `type: boolean` in the OCPNode CRD. The bare Perl 1
     # that MooX::Options hands over serializes as a JSON integer and the API
     # rejects the CR with a 422, so it has to go out as a JSON boolean.
+    my %labels = map { OCP::NodeMeta->parse_label($_) } @{ $self->label };
+    my @taints = map { OCP::NodeMeta->parse_taint($_) } @{ $self->taint };
+
     my %spec = (
         role        => $self->role,
         providerRef => $provider_name,
@@ -191,6 +213,8 @@ sub _build_cr {
         ($self->location    ? (location   => $self->location)    : ()),
         ($self->image       ? (image      => $self->image)       : ()),
         ($self->gpu         ? (gpu        => JSON::PP::true)     : ()),
+        (%labels            ? (labels     => \%labels)           : ()),
+        (@taints            ? (taints     => \@taints)           : ()),
     );
 
     return {
@@ -417,6 +441,16 @@ sub execute {
     die OCP::Choices::unknown('role', $self->role, [ OCP::Node->roles ])
         unless OCP::Node->known_role($self->role);
 
+    # --label / --taint, before the API is asked anything (k211).
+    for my $l (@{ $self->label }) {
+        my $err = OCP::NodeMeta->label_error($l);
+        die "--label: $err\n" if defined $err;
+    }
+    for my $t (@{ $self->taint }) {
+        my $err = OCP::NodeMeta->taint_error($t);
+        die "--taint: $err\n" if defined $err;
+    }
+
     my $api           = $self->_k8s;
     my $provider_hash = $self->_resolve_provider($api);
     my $provider_type = $provider_hash->{spec}{type}
@@ -476,6 +510,8 @@ OCP::Cmd::Node::Add - Add an OCPNode CR and optionally reconcile it
     ocp node add gpu-1    --role worker --provider hetzner-default --gpu
     ocp node add ssh-1    --role worker --provider ssh-default --host 10.0.0.5
     ocp node add worker-2 --role worker --nowait
+    ocp node add crag-gpu --role worker --host 10.230.30.250 \
+        --label ai.citilan.de/node-class=rtx3090 --taint nvidia.com/gpu=present:NoSchedule
 
 =head1 DESCRIPTION
 
@@ -495,6 +531,15 @@ C<--no_wait> spelling is kept as an alias.  There is deliberately no
 C<--no-wait>: L<MooX::Options> reads a literal C<no-> as Getopt::Long's
 negation marker before it maps dashes to underscores, so the dashed form
 would ask to negate a C<wait> option that does not exist.
+
+=head1 LABELS AND TAINTS
+
+C<--label key=value> and C<--taint key=value:Effect> (or C<key:Effect>; effect
+C<NoSchedule>, C<PreferNoSchedule> or C<NoExecute>), each repeatable, go into
+the OCPNode's C<spec.labels> and C<spec.taints>.  Malformed ones are refused
+before the cluster is asked anything.  L<OCP::Node> passes the labels the
+kubelet may set itself to the join and puts all labels and taints on the
+Kubernetes Node once it registers; see L<OCP::NodeMeta>.
 
 =head1 CHOOSING THE PROVIDER
 

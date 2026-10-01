@@ -4,6 +4,7 @@ package OCP::Config;
 use Moo;
 use OCP;
 use OCP::Choices;
+use OCP::NodeMeta;
 use OCP::Provider;
 use JSON::MaybeXS;
 use Path::Tiny qw(path);
@@ -131,6 +132,7 @@ sub control_planes {
 }
 
 sub workers { shift->spec->{workers} // [] }
+
 sub ssh_config { shift->spec->{ssh} // {} }
 sub single_node {
     my $self = shift;
@@ -597,6 +599,22 @@ sub validate {
             # the control planes and what k110 made stale (k115).
             push @errors, "worker pool '$w->{name}': invalid provider '$wprov' (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
+        }
+
+        # labels / taints (k211): what the pool's OCPNodes carry.
+        my $where = "worker pool '" . ($w->{name} // '') . "'";
+        push @errors, OCP::NodeMeta->label_errors("$where: labels", $w->{labels})
+            if defined $w->{labels};
+        if (defined(my $taints = $w->{taints})) {
+            if (ref $taints ne 'ARRAY') {
+                push @errors, "$where: taints must be a list like [ \"key=value:NoSchedule\" ]";
+            }
+            else {
+                for my $t (@$taints) {
+                    my $err = OCP::NodeMeta->taint_error($t);
+                    push @errors, "$where: $err" if defined $err;
+                }
+            }
         }
     }
 

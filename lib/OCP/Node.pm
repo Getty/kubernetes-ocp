@@ -9,6 +9,7 @@ use Time::Piece ();
 # module is robocop's too.
 use Rex::Rancher::Distribution;
 use OCP::K8s;
+use OCP::NodeMeta;
 # ssh_class and rex_class default to these by name. Nothing else in the
 # reconcile path loads them, so without these two lines _install_kubernetes
 # dies on ->new the first time it runs against a real host.
@@ -544,6 +545,12 @@ sub _install_kubernetes {
         $params{pod_cidr} = $pod_cidr if defined $pod_cidr && length $pod_cidr;
     }
 
+    # spec.labels at registration (k211), those the kubelet may set itself;
+    # the rest, and every taint, follow through the API once the Node exists
+    # (_converge_node_meta).
+    my $join_labels = OCP::NodeMeta->join_labels($self->cr->{spec}{labels});
+    $params{node_labels} = $join_labels if @$join_labels;
+
     # The agent's version check against the control plane (k196): a path on
     # this machine, where the Rex run reads it. See `kubeconfig`.
     my $kubeconfig = $self->kubeconfig;
@@ -581,6 +588,10 @@ sub _wait_ready {
     my $node_hash = ref($k8s_node) eq 'HASH'
         ? $k8s_node
         : $self->k8s->k8s->object_to_struct($k8s_node);
+
+    # Registered: labels and taints now, before it turns Ready and takes
+    # workloads a NoSchedule taint is there to keep off.
+    $self->_converge_node_meta($node_hash);
 
     my $ready = 0;
     for my $cond (@{ $node_hash->{status}{conditions} // [] }) {
@@ -985,12 +996,52 @@ sub _verify {
         ? $k8s_node
         : $self->k8s->k8s->object_to_struct($k8s_node);
 
+    # A spec edited after the join reaches the Node here.
+    $self->_converge_node_meta($node_hash);
+
     for my $cond (@{ $node_hash->{status}{conditions} // [] }) {
         if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
             return 1;
         }
     }
 
+    return 0;
+}
+
+# Bring the Kubernetes Node's labels and taints to the OCPNode's spec.labels
+# and spec.taints (k211), leaving what others set alone (OCP::NodeMeta). The
+# patch is conditional on the Node's resourceVersion; a 409 -- the kubelet or
+# the node controller wrote in between -- reads the Node again and retries.
+#
+# Never fatal: the node is up either way, and a phase handler that died here
+# would mark a Ready worker Failed over its labels. A failure is a warning and
+# the next reconcile tries again.
+sub _converge_node_meta {
+    my ($self, $node_hash) = @_;
+
+    my $spec   = $self->cr->{spec} // {};
+    my $name   = $node_hash->{metadata}{name};
+
+    for my $attempt (1 .. 3) {
+        my $patch = OCP::NodeMeta->converge_patch($node_hash, $spec->{labels}, $spec->{taints});
+        return 1 unless $patch;
+
+        my $ok = eval {
+            $self->k8s->patch('Node', name => $name, patch => $patch, type => 'merge');
+            1;
+        };
+        return 1 if $ok;
+
+        my $err = $@;
+        if ($err =~ /\b409\b/ && $attempt < 3) {
+            my $fresh = eval { $self->k8s->get('Node', name => $name) } or last;
+            $node_hash = ref($fresh) eq 'HASH' ? $fresh : $self->k8s->k8s->object_to_struct($fresh);
+            next;
+        }
+        warn '[node] labels/taints of Node/' . $name . ' not applied: ' . $err;
+        return 0;
+    }
+    warn '[node] labels/taints of Node/' . $name . " not applied: it kept changing underneath\n";
     return 0;
 }
 

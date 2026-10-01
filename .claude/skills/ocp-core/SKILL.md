@@ -94,6 +94,7 @@ robocop: true     # optional; default false, auto-true with a hetzner provider
 | `OCP::Kubeconfig` | rename/merge kubeconfig (`ocp kubeconfig -e`) |
 | `OCP::Drift` / `OCP::Versions` | drift detection; version manifest incl. GPU stack |
 | `OCP::Node` | trigger-neutral node reconcile state machine, used by both `ocp apply` (one-shot) and robocop (watch loop); owns lease mechanics |
+| `OCP::NodeMeta` | OCPNode spec.labels/spec.taints: syntax, join labels the kubelet may set, merge patch converging the Node (managed-* annotations) |
 | `OCP::K8s` (+ `::OCPNode`, `::OCPNodeProvider`) | registers the CRDs as IO::K8s typed classes on a Kubernetes::REST api |
 | `OCP::Robocop` (+ `::Controller`) | in-cluster controller + reconciliation logic |
 | `OCP::Robocop::KeyInjection` | OCP-INJECT-KEY protocol over a port-forward: robocop's in-memory key listener + the CLI's sender, for `robocop.security_level: inject` |

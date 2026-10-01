@@ -441,6 +441,9 @@ sub _server_opts {
         # through REX_TASK_PARAMS, never on a command line.
         server              => $params->{server}    || undef,
         node_name           => $params->{node_name} || undef,
+        # OCPNode spec.labels the kubelet may set itself (k211); OCP::Node
+        # puts the rest and the taints on the Node through the API.
+        (_node_labels($params) ? (node_labels => _node_labels($params)) : ()),
         version             => $version,
         install_method      => ($distribution eq 'rke2' && $version ? 'artifact' : 'script'),
         (@$tls_sans ? (tls_san => [ @$tls_sans ]) : ()),
@@ -516,11 +519,20 @@ sub _agent_opts {
         token               => $params->{token},
         version             => $params->{version}   || undef,
         node_name           => $params->{node_name} || undef,
+        (_node_labels($params) ? (node_labels => _node_labels($params)) : ()),
         ($distribution eq 'rke2' ? (registries => _registries($params)) : ()),
         nvidia_runtime_path => 1,
         ($params->{kubeconfig} ? (kubeconfig => $params->{kubeconfig}) : ()),
         hold_running        => 1,
     );
+}
+
+# node_labels as task params carry them: a list of key=value strings, or
+# undef when there are none.
+sub _node_labels {
+    my ($params) = @_;
+    my $l = $params->{node_labels};
+    return ref $l eq 'ARRAY' && @$l ? [ @$l ] : undef;
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and

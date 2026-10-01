@@ -87,7 +87,8 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   default timeout 30s)
 - `ocp hetzner [--list] [--label KEY=VAL]` — Hetzner debugging
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
-  [--server-type TYPE] [--location LOC] [--image IMG] [--gpu] [--nowait]`
+  [--server-type TYPE] [--location LOC] [--image IMG] [--gpu]
+  [--label K=V]... [--taint K=V:Effect]... [--nowait]`
   — create an OCPNode CR (`--no_wait` is kept as an alias, see above)
 - `ocp node rm NAME` — drain + remove (OCP::Node->teardown)
 - `ocp node ls` — list OCPNode CRs (name, role, phase, provider, IP, age)
@@ -123,6 +124,9 @@ workers:                    # optional pools; apply turns each entry into
     provider: hetzner       # robocop or the CLI fallback
     server_type: cpx21
     nodes: 3
+    labels:                 # optional, onto each Node (OCPNode spec.labels)
+      ai.citilan.de/node-class: general
+    taints: ["dedicated=ml:NoSchedule"]   # optional, kubectl syntax
 ssh:
   private_key: .ocp/id_ed25519
   public_key: .ocp/id_ed25519.pub

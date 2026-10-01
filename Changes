@@ -120,6 +120,12 @@ Revision history for OCP
       `network.l2.interfaces` L2 announces on ethN and predictable en* names,
       VLANs included, but not on switchdev fabric ports such as
       `enp1s0f0np0`.
+    - Worker pools in `ocp.yaml` (`labels:`, `taints:`) and `ocp node add
+      --label key=value --taint key=value:Effect` put labels and taints on
+      their nodes: labels at registration where the kubelet may set them, and
+      all of both through the API once the node exists. Changing an OCPNode's
+      `spec.labels` or `spec.taints` later reaches the node; only labels and
+      taints OCP set are ever removed.
     - `cilium.devices` and `cilium.helm_values` in `ocp.yaml` reach Cilium's
       Helm values at install and on every upgrade, e.g. to keep Cilium off a
       RoCE fabric NIC.
