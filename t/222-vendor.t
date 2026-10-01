@@ -76,9 +76,10 @@ sub run_make {
     return ($? >> 8, $out);
 }
 
-subtest 'make vendor builds the default list into vendor/, in list order' => sub {
+subtest 'make vendor builds the VENDOR list into vendor/, in list order' => sub {
     my ($proj, $sib, $bin, $log) = sandbox();
-    my ($rc, $out) = run_make($proj, $bin, "SIBLINGS_DIR=$sib");
+    my ($rc, $out) = run_make($proj, $bin, "SIBLINGS_DIR=$sib",
+        "VENDOR='io-k8s-p5 rex-gpu p5-crypt-age'");
     is $rc, 0, 'make vendor succeeds' or diag $out;
 
     my $vendor = $proj->child('vendor');
@@ -126,9 +127,15 @@ subtest 'a missing sibling fails loud' => sub {
     like $out, qr{nope}, 'and names the missing sibling';
 };
 
+# Nothing pending since the 2026-10-01 releases (IO::K8s 1.110, Rex::GPU 0.004,
+# Crypt::Age 0.005): the default is empty, a plain `make vendor` is CPAN-only.
 subtest 'the default list' => sub {
-    ok $makefile->slurp_utf8 =~ m{^VENDOR \s* \?= \s* io-k8s-p5 \s+ rex-gpu \s+ p5-crypt-age \s*$}mx,
-        'VENDOR defaults to io-k8s-p5 rex-gpu p5-crypt-age';
+    ok $makefile->slurp_utf8 =~ m{^VENDOR \s* \?= \s*$}mx,
+        'VENDOR defaults to nothing -- everything the image needs is on CPAN';
+    my ($proj, $sib, $bin) = sandbox();
+    my ($rc, $out) = run_make($proj, $bin, "SIBLINGS_DIR=$sib");
+    is $rc, 0, 'a plain make vendor succeeds' or diag $out;
+    is $proj->child('vendor/ORDER')->slurp_utf8, '', 'and vendors nothing';
     ok $makefile->slurp_utf8 =~ m{^SIBLINGS_DIR \s* \?= \s* \.\. \s*$}mx,
         'SIBLINGS_DIR defaults to ..';
 };

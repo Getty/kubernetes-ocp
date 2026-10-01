@@ -1,5 +1,5 @@
 requires 'perl', '5.040001';
-requires 'Crypt::Age', '0.004';
+requires 'Crypt::Age', '0.005';
 requires 'Crypt::PBKDF2';
 requires 'CryptX', '0.091';
 requires 'File::ShareDir';

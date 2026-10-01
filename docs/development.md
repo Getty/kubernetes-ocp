@@ -42,7 +42,7 @@ Only the local state counts: when OCP needs a fix that sits in a sibling dist
 gets it from `vendor/` instead of waiting for the release.
 
 ```bash
-make vendor                              # the default list, from ../<repo>
+make vendor                              # the default list (Makefile VENDOR), from ../<repo>
 make vendor VENDOR="io-k8s-p5 rex-gpu"   # a different list, in install order
 make vendor SIBLINGS_DIR=~/dev           # siblings somewhere else
 make vendor VENDOR=                      # CPAN-only: empty vendor/

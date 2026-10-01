@@ -53,7 +53,9 @@ build: | vendor/ORDER
 #
 # Back to CPAN-only: `make vendor VENDOR=` leaves an empty vendor/ (.keep and
 # an empty ORDER), and the Dockerfile then installs nothing from it.
-VENDOR ?= io-k8s-p5 rex-gpu p5-crypt-age
+# Nothing pending: IO::K8s 1.110, Rex::GPU 0.004 and Crypt::Age 0.005 are on
+# CPAN (2026-10-01) and pinned in cpanfile.snapshot.
+VENDOR ?=
 SIBLINGS_DIR ?= ..
 
 vendor/ORDER:
