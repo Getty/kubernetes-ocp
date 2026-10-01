@@ -160,7 +160,9 @@ sub _resolve_target_host {
     for my $cp (@$cps) {
         my $cp_name;
         if (($cp->{provider} // '') eq 'ssh' && $cp->{host}) {
-            ($cp_name = $cp->{host}) =~ s/\..*//;
+            # The name cp_identity gives it, IP hosts included (k218).
+            require OCP::Cmd::Apply::Bootstrap;
+            ($cp_name) = OCP::Cmd::Apply::Bootstrap::host_name_parts($cp->{host});
         } else {
             $het_index++;
             $cp_name = 'police' . $het_index;

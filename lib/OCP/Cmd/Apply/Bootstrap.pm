@@ -84,12 +84,7 @@ sub cp_identity {
 
     my ($name, $hostname, $domain);
     if ($provider eq 'ssh' && $first_cp->{host}) {
-        my $host = $first_cp->{host};
-        if ($host =~ /\./) {
-            ($hostname, $domain) = split(/\./, $host, 2);
-        } else {
-            ($hostname, $domain) = ($host, '');
-        }
+        ($hostname, $domain) = host_name_parts($first_cp->{host});
         $name = $hostname;
     } else {
         $name     = 'police1';  # RoboCop naming!
@@ -104,6 +99,24 @@ sub cp_identity {
         domain   => $domain,
         host     => $first_cp->{host},
     };
+}
+
+# (short name, domain) of an ssh control plane's host. A FQDN splits at its
+# first dot: cp1.lab.example is cp1 in lab.example. An IP address has no short
+# name -- cutting 10.5.10.20 at the first dot named the Node, the OCPNode and
+# the machine "10", and every 10.x control plane alike (k218) -- so it is
+# named in full, dots and colons as dashes (10-5-10-20, 2a01-4f8--20), with no
+# domain. `ocp ssh --node` matches by the same name (OCP::Cmd::SSH).
+sub host_name_parts {
+    my ($host) = @_;
+
+    if ($host =~ /\A\d{1,3}(?:\.\d{1,3}){3}\z/ || $host =~ /:/) {
+        (my $name = lc $host) =~ s/[.:]/-/g;
+        $name =~ s/\A-+|-+\z//g;
+        return ($name, '');
+    }
+
+    return $host =~ /\./ ? split(/\./, $host, 2) : ($host, '');
 }
 
 # The apiserver tls-san set every control plane must advertise: one entry per
