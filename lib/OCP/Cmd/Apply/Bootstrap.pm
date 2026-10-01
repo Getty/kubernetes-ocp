@@ -438,6 +438,7 @@ sub bootstrap_control_plane {
             ntp               => $config->ntp_enabled,
             gpu               => $config->gpu_enabled,
             gpu_driver        => $config->gpu_driver,
+            gpu_toolkit       => $config->gpu_toolkit,
             pod_cidr          => $config->pod_cidr,
             cilium_helm_values => $config->cilium_helm_values,
         );

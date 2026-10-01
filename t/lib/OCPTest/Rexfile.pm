@@ -67,6 +67,7 @@ our @LIBRARY = qw(
   Rex::GPU::Detect::Sysfs::detect
   Rex::GPU::NVIDIA::install_driver
   Rex::GPU::NVIDIA::install_container_toolkit
+  Rex::GPU::NVIDIA::generate_cdi_specs
   Rex::GPU::NVIDIA::verify_nvidia
 );
 

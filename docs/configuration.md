@@ -57,7 +57,13 @@ gpu:
   enabled: true                # default true; false skips GPU entirely
   driver: host                 # host (Rex installs it) | operator (GPU
                                # Operator's driver DaemonSet)
-  toolkit: true                # default true; NVIDIA container toolkit
+  toolkit: true                # default true: the GPU Operator runs its
+                               # container toolkit, which writes the CDI
+                               # specs. false (a host bringing its own
+                               # toolkit, e.g. DGX/GB10): the operator runs
+                               # none, and OCP writes the CDI specs on every
+                               # node with a GPU (via the provider CR on
+                               # workers) -- only those that do not resolve
 
 ssl:
   email: admin@example.com     # enables Let's Encrypt issuers; omit for

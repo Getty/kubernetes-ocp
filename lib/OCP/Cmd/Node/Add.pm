@@ -292,6 +292,14 @@ sub _report_phase {
     return $phase;
 }
 
+# gpu_toolkit alone out of OCP::Provider->gpu_flags_from_cr (k223); empty
+# when the provider CR predates the field.
+sub _gpu_toolkit_flag {
+    my ($provider_h) = @_;
+    my %gpu = OCP::Provider->gpu_flags_from_cr($provider_h);
+    return exists $gpu{gpu_toolkit} ? (gpu_toolkit => $gpu{gpu_toolkit}) : ();
+}
+
 sub _cli_reconcile {
     my ($self, $cr, $api, $config, $secrets) = @_;
 
@@ -378,6 +386,10 @@ sub _cli_reconcile {
         # ocp.yaml's system: block, off the provider CR like robocop reads it
         # (k217) -- one source for every join path.
         ($provider_h ? OCP::Provider->system_flags_from_cr($provider_h) : ()),
+        # gpu.toolkit off the same CR (k223): false has the install task
+        # write the node's CDI specs. Only this one of the GPU switches --
+        # gpu.enabled / gpu.driver have never been read on this path.
+        ($provider_h ? _gpu_toolkit_flag($provider_h) : ()),
     );
 
     # No budget named here: OCP::Node owns it ($OCP::Node::READY_TIMEOUT), and

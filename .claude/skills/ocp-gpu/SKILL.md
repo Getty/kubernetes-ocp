@@ -117,7 +117,13 @@ running kernel's headers — never `linux-headers-generic`, which on a vendor
 kernel (a DGX Spark runs `6.17.0-1029-nvidia`) is a different kernel and
 would leave DKMS building against the wrong tree — loads the module and
 verifies the result. The toolkit is always
-`install_container_toolkit(binaries_suffice => 1)` (rex-gpu k74).
+`install_container_toolkit(binaries_suffice => 1)` (rex-gpu k74). With
+`gpu_toolkit => 0` (ocp.yaml `gpu.toolkit: false`, k223) `install_nvidia` then
+calls `Rex::GPU::NVIDIA::generate_cdi_specs()` before `verify_nvidia`: no
+operator toolkit writes `/run/cdi` then, and the library writes only the
+devices that do not resolve (rex-gpu k76, Rex::GPU >= 0.004). Toolkit true:
+no CDI of OCP's — a static `/etc/cdi/nvidia.yaml` next to the operator's
+`/run/cdi` would define the kind twice. Never any containerd config.
 
 - **Everywhere but Ubuntu**: no `$setup` is passed. Rex::GPU picks the
   branch/module by GPU generation from the device IDs alone (Debian: non-free
@@ -189,6 +195,13 @@ halves must never both be active.
 On DGX-class hosts NVIDIA's guidance is `driver.enabled=false` **and**
 `toolkit.enabled=false`: the vendor image already has both, and the toolkit
 DaemonSet would rewrite a containerd config that already works.
+
+`gpu.toolkit` reaches the hosts too (k223), the k31/k217 channel:
+`ensure_provider_cr` writes `spec.gpu.toolkit` (JSON boolean) onto the
+OCPNodeProvider CR, `OCP::Provider->gpu_flags_from_cr` returns `gpu_toolkit`
+0/1 (absent when the CR predates it), robocop / apply CLI / `ocp node add`
+hand it to `OCP::Node`, the bootstrap passes `$config->gpu_toolkit` to
+`OCP::Rex::install_server`. Absent everywhere means true.
 
 ## GPU Operator ClusterPolicy (`_generate_gpu_operator_manifest`)
 

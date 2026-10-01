@@ -76,6 +76,10 @@ sub _build_kubeconfig_file {
 # 'operator'.
 has gpu_enabled   => (is => 'ro');
 has gpu_driver    => (is => 'ro');
+# gpu.toolkit, same channel (k223): 0 has the install task write the node's
+# CDI specs, because the operator runs no toolkit DaemonSet that would. Undef
+# leaves the Rexfile's default (toolkit true, no CDI of OCP's) in charge.
+has gpu_toolkit   => (is => 'ro');
 
 # ocp.yaml's system: block, cluster-wide like the GPU switches above and
 # carried the same way, on the OCPNodeProvider CR (OCP::Provider->
@@ -537,6 +541,12 @@ sub _install_kubernetes {
     # when gpu is off, so passing it alongside gpu => 0 is harmless.
     my $gpu_driver = $self->gpu_driver;
     $params{gpu_driver} = $gpu_driver if defined $gpu_driver && length $gpu_driver;
+
+    # gpu_toolkit, cluster-wide as well (k223): 0 has install_nvidia write the
+    # CDI specs no operator toolkit writes. Absent leaves the Rexfile's
+    # default -- toolkit true -- in charge.
+    my $gpu_toolkit = $self->gpu_toolkit;
+    $params{gpu_toolkit} = $gpu_toolkit ? 1 : 0 if defined $gpu_toolkit;
 
     # tls-san is a control-plane concern only: an additional server has to carry
     # every control-plane address in its apiserver cert or TLS against it fails
@@ -1272,6 +1282,13 @@ and acts as a cluster kill switch: false forces C<gpu =E<gt> 0> at install even
 when the OCPNode's own C<spec.gpu> is true.  C<gpu_driver> is C<'host'> or
 C<'operator'>.  Both unset (a provider CR predating the field) leaves
 L<OCP::Rex>'s own defaults in charge — the pre-k31 baseline.
+
+=item gpu_toolkit
+
+F<ocp.yaml>'s C<gpu.toolkit>, carried the same way (k223), 0/1.  0 means the
+GPU Operator runs no toolkit DaemonSet, so the install task writes the node's
+CDI specs itself.  Unset leaves the Rexfile's default: toolkit true, no CDI
+specs of OCP's.
 
 =item timezone / locale / ntp
 

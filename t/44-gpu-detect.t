@@ -79,7 +79,7 @@ sub detect_gpu_on {
     local $OCPTest::Rexfile::OS = $o{os} // 'Debian';
     local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { $detected };
     local $OCPTest::Rexfile::FOLLOW{install_nvidia} = 1;
-    return OCPTest::Rexfile->run_task('detect_gpu');
+    return OCPTest::Rexfile->run_task('detect_gpu', $o{params});
 }
 
 sub install_nvidia_on {
@@ -225,7 +225,7 @@ subtest 'the spec can switch the host-side GPU work off' => sub {
 };
 
 subtest 'every install task goes through the guard' => sub {
-    my $direct = () = $code =~ /do_task "detect_gpu";/g;
+    my $direct = () = $code =~ /do_task "detect_gpu"/g;
     is $direct, 1, 'the only call to detect_gpu is the one inside the guard';
 
     for my $task (qw( install_rke2_server install_rke2_agent install_k3s_server install_k3s_agent )) {
@@ -290,6 +290,77 @@ subtest 'the toolkit: the binaries a host already has suffice' => sub {
         'with binaries_suffice: nvidia-container-runtime and a working nvidia-ctk are a toolkit';
     unlike $code, qr/_nvidia_toolkit_present|can_run\("nvidia/, 'no check of OCP\'s own left';
     unlike $code, qr/configure_containerd/, 'and no containerd configuration with it';
+};
+
+#
+# CDI specs (k223). While the GPU Operator runs its toolkit DaemonSet, that
+# writes /run/cdi, and a static /etc/cdi/nvidia.yaml next to it would define
+# the nvidia.com/gpu kind twice. With gpu.toolkit: false (ClusterPolicy
+# toolkit.enabled=false, a DGX/GB10 bringing its own toolkit) nothing writes
+# it: live on GB10 "brain" (2026-10-01) /run/cdi was empty after a reboot, the
+# operator validator died on management.nvidia.com/gpu=all and the node never
+# got nvidia.com/gpu. Then -- and only then -- Rex::GPU writes the specs; it
+# writes only what does not resolve (rex-gpu k76). gpu_toolkit travels from
+# the install task through _maybe_detect_gpu and detect_gpu to install_nvidia.
+#
+
+sub cdi_calls { count('Rex::GPU::NVIDIA::generate_cdi_specs') }
+
+subtest 'gpu.toolkit: false: CDI specs once, after the toolkit and before verify' => sub {
+    install_nvidia_on(params => { gpu_toolkit => 0 });
+    is cdi_calls(), 1, 'generate_cdi_specs, once';
+    my ($cdi) = OCPTest::Rexfile->calls('Rex::GPU::NVIDIA::generate_cdi_specs');
+    is_deeply $cdi && $cdi->{args}, [], 'with the library\'s own choice of what to write';
+
+    my $at = sub { my $n = shift; OCPTest::Rexfile->index_of(sub { $_->{name} eq "Rex::GPU::NVIDIA::$n" }) };
+    ok $at->('generate_cdi_specs') > $at->('install_container_toolkit'), 'after the toolkit';
+    ok $at->('generate_cdi_specs') < $at->('verify_nvidia'), 'before verify_nvidia';
+};
+
+subtest 'gpu.toolkit true or not passed: no CDI of OCP\'s' => sub {
+    install_nvidia_on(params => { gpu_toolkit => 1 });
+    is cdi_calls(), 0, 'toolkit true: the operator\'s toolkit writes /run/cdi';
+    ok driver_call(), 'the driver install is unchanged';
+
+    install_nvidia_on();
+    is cdi_calls(), 0, 'nothing passed: as before k223';
+};
+
+subtest 'no GPU a driver is for: no CDI either' => sub {
+    for my $case (
+        [ 'no GPU'        => detected() ],
+        [ 'only a Kepler' => detected(nvidia => [ $KEPLER ]) ],
+    ) {
+        my ($label, $d) = @$case;
+        detect_gpu_on($d, params => { gpu_toolkit => 0 });
+        is cdi_calls(), 0, "$label, toolkit false: detect_gpu writes no CDI";
+
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { $d };
+        OCPTest::Rexfile->run_task('install_nvidia', { gpu_toolkit => 0 });
+        is cdi_calls(), 0, "$label, toolkit false: install_nvidia writes none";
+    }
+};
+
+subtest 'gpu_toolkit travels from the install task to install_nvidia' => sub {
+    for my $case ([ { gpu_toolkit => 0 }, 0, 1 ], [ { gpu_toolkit => 1 }, 1, 0 ], [ {}, 1, 0 ]) {
+        my ($extra, $want, $cdi) = @$case;
+        my $label = %$extra ? "gpu_toolkit=$extra->{gpu_toolkit}" : 'nothing passed';
+
+        OCPTest::Rexfile->reset;
+        { local *STDOUT; open STDOUT, '>', \my $sink; $maybe_detect_gpu->({ %$extra }); }
+        my ($detect) = grep { $_->{args}[0] eq 'detect_gpu' } OCPTest::Rexfile->calls('do_task');
+        is $detect->{args}[1]{gpu_toolkit}, $want, "$label: detect_gpu gets gpu_toolkit $want";
+
+        for my $task (qw( install_rke2_agent install_k3s_server )) {
+            OCPTest::Rexfile->reset;
+            local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { detected(nvidia => [ $GB10 ]) };
+            local $OCPTest::Rexfile::FOLLOW{detect_gpu}     = 1;
+            local $OCPTest::Rexfile::FOLLOW{install_nvidia} = 1;
+            OCPTest::Rexfile->run_task($task, { token => 't', server => 'https://x:9345', %$extra });
+            is cdi_calls(), $cdi, "$task, $label: " . ($cdi ? 'CDI written' : 'no CDI');
+        }
+    }
 };
 
 #
@@ -369,8 +440,16 @@ subtest 'no kernel headers of OCP\'s own' => sub {
 
 subtest 'OCP writes no containerd configuration for the GPU' => sub {
     unlike $code, qr/_configure_nvidia_containerd/, 'the old helper is gone';
-    unlike $code, qr/configure_containerd|generate_cdi_specs|gpu_setup/,
-        'Rex::GPU\'s containerd, CDI and full setup are not used -- the GPU Operator owns them';
+    unlike $code, qr/configure_containerd|gpu_setup/,
+        'Rex::GPU\'s containerd configuration and full setup are not used -- the GPU Operator owns them';
+
+    # CDI is the operator's too -- while its toolkit runs. With gpu.toolkit:
+    # false nobody else writes it, so install_nvidia has Rex::GPU do it then
+    # and only then (k223, held by behaviour below): one call, in install_nvidia.
+    my @cdi = $code =~ /generate_cdi_specs/g;
+    is scalar @cdi, 1, 'generate_cdi_specs is named once';
+    my ($install) = $code =~ /^task "install_nvidia", sub \{(.*?)^\};/ms;
+    like $install, qr/generate_cdi_specs/, 'in install_nvidia';
     unlike $code, qr/Configuring RKE2 containerd/,
         'nothing claims to configure RKE2 while running under k3s';
 

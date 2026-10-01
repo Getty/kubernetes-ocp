@@ -75,6 +75,14 @@ spec:
                       Who installs the NVIDIA driver: host = the Rexfile does
                       it on the node, operator = the GPU Operator's DaemonSet
                       does. Mirrors ocp.yaml gpu.driver.
+                  toolkit:
+                    type: boolean
+                    description: >-
+                      Whether the GPU Operator runs its container-toolkit
+                      DaemonSet, which writes the node's CDI specs. false
+                      (a host bringing its own toolkit, e.g. DGX/GB10) has the
+                      Rexfile write them instead. Absent counts as true.
+                      Mirrors ocp.yaml gpu.toolkit.
 
               system:
                 type: object

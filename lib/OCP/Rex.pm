@@ -276,6 +276,9 @@ sub install_server {
     # Defaults match the Rexfile's own: absent means "do the GPU work".
     my $gpu        = $opts{gpu}        // 1;
     my $gpu_driver = $opts{gpu_driver} || 'host';
+    # gpu.toolkit (k223): false has install_nvidia write the CDI specs no
+    # operator toolkit writes. Absent means true, as in the Rexfile.
+    my $gpu_toolkit = $opts{gpu_toolkit} // 1;
 
     # network.pod_cidr (k182): the server's cluster-cidr and Cilium's pool,
     # both from this one value. Empty leaves the Rexfile's fallback in charge.
@@ -303,6 +306,7 @@ sub install_server {
         ntp               => $ntp,
         gpu               => $gpu ? 1 : 0,
         gpu_driver        => $gpu_driver,
+        gpu_toolkit       => $gpu_toolkit ? 1 : 0,
         pod_cidr          => $pod_cidr,
     );
 
@@ -390,6 +394,9 @@ sub install_agent {
 
     my $gpu        = $opts{gpu}        // 1;
     my $gpu_driver = $opts{gpu_driver} || 'host';
+    # gpu.toolkit (k223): false has install_nvidia write the CDI specs no
+    # operator toolkit writes. Absent means true, as in the Rexfile.
+    my $gpu_toolkit = $opts{gpu_toolkit} // 1;
 
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
@@ -408,6 +415,7 @@ sub install_agent {
         ntp               => $ntp,
         gpu               => $gpu ? 1 : 0,
         gpu_driver        => $gpu_driver,
+        gpu_toolkit       => $gpu_toolkit ? 1 : 0,
     );
 
     return 1;
@@ -519,13 +527,16 @@ Execute a Rex task with parameters.
         token        => '...',   # see below if omitted
         gpu          => 1,       # 0 skips GPU detection entirely
         gpu_driver   => 'host',  # 'operator' leaves the host driver alone
+        gpu_toolkit  => 1,       # 0: no operator toolkit, so write CDI specs
         pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
         cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
     );
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
 driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
-C<operator>.
+C<operator>.  With C<gpu_toolkit> false (F<ocp.yaml> C<gpu.toolkit: false>,
+k223) it also writes the node's CDI specs, which the GPU Operator's toolkit
+DaemonSet writes otherwise.
 
 C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
 is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to

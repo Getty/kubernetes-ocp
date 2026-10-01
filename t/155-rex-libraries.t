@@ -50,7 +50,9 @@ my @LOG;
 *Rex::Logger::info = sub { push @LOG, [ @_ ] };
 
 cmp_ok $Rex::Rancher::Server::VERSION, '>=', 0.003, 'Rex::Rancher 0.003 or later';
-cmp_ok $Rex::GPU::NVIDIA::VERSION,     '>=', 0.003, 'Rex::GPU 0.003 or later';
+# Rex::GPU 0.004: generate_cdi_specs writes only what does not resolve (rex-gpu
+# k76), which install_nvidia relies on with gpu.toolkit: false (k223).
+cmp_ok $Rex::GPU::NVIDIA::VERSION,     '>=', 0.004, 'Rex::GPU 0.004 or later';
 
 subtest 'every entry point the Rexfile calls exists' => sub {
     for my $fq (qw(
@@ -70,6 +72,7 @@ subtest 'every entry point the Rexfile calls exists' => sub {
         Rex::GPU::Detect::Sysfs::detect
         Rex::GPU::NVIDIA::install_driver
         Rex::GPU::NVIDIA::install_container_toolkit
+        Rex::GPU::NVIDIA::generate_cdi_specs
         Rex::GPU::NVIDIA::verify_nvidia
     )) {
         no strict 'refs';

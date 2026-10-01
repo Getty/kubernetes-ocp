@@ -370,6 +370,9 @@ subtest 'every field the OCPNodeProvider CRD declares is read or written' => sub
         # to the access syntax cannot false-green off an unrelated leaf.
         'spec.gpu.enabled'                 => qr/->\{enabled\}/,
         'spec.gpu.driver'                  => qr/->\{driver\}/,
+        # gpu.toolkit (k223), read as `$gpu->{toolkit}` -- anchored to the
+        # variable: Workloads reads ocp.yaml's own gpu_config->{toolkit}.
+        'spec.gpu.toolkit'                 => qr/\$gpu->\{toolkit\}/,
         # ocp.yaml's system: block (k217): OCP::Provider::system_flags_from_cr
         # reads `$system->{...}`, ensure_provider_cr writes `$spec->{system}`.
         'spec.system.timezone'             => qr/\$system->\{timezone\}/,

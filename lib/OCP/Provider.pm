@@ -63,6 +63,11 @@ sub gpu_flags_from_cr {
     my $driver = $gpu->{driver};
     $flags{gpu_driver} = $driver if defined $driver && length $driver;
 
+    # gpu.toolkit (k223): false means the GPU Operator runs no toolkit
+    # DaemonSet, so the install task writes the node's CDI specs itself.
+    my $toolkit = $gpu->{toolkit};
+    $flags{gpu_toolkit} = $toolkit ? 1 : 0 if defined $toolkit;
+
     return %flags;
 }
 
@@ -335,7 +340,7 @@ True if C<$type> is one of L</types>.  C<undef> is not.
 =method gpu_flags_from_cr
 
     my %flags = OCP::Provider->gpu_flags_from_cr($provider_cr);
-    # %flags = ( gpu_enabled => 0|1, gpu_driver => 'host'|'operator' )
+    # %flags = ( gpu_enabled => 0|1, gpu_driver => 'host'|'operator', gpu_toolkit => 0|1 )
 
 The cluster-wide GPU switches read off an C<OCPNodeProvider> CR, ready to
 splat into C<< OCP::Node->from_cr >>.  They live on the provider CR because
@@ -345,8 +350,10 @@ C<ocp apply> copies them there from F<ocp.yaml>
 (L<OCP::Cmd::Apply::CR/ensure_provider_cr>), and both callers of L</from_cr>
 read them back with this method.
 
-Normalised like the matching L<OCP::Config> accessors: C<gpu_enabled> is 0/1
-(the CR stores a JSON boolean), C<gpu_driver> is the string.  A field absent
+Normalised like the matching L<OCP::Config> accessors: C<gpu_enabled> and
+C<gpu_toolkit> are 0/1 (the CR stores JSON booleans), C<gpu_driver> is the
+string.  C<gpu_toolkit> false (k223) has the install task write the node's CDI
+specs, because no operator toolkit DaemonSet does.  A field absent
 from the CR is B<absent> from the returned list, so L<OCP::Node> leaves the
 Rex parameter out and L<OCP::Rex>'s own default wins — the behaviour a
 provider CR that predates the field must keep.

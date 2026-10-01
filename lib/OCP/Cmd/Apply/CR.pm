@@ -156,9 +156,15 @@ sub ensure_provider_cr {
     # JSON boolean because the CRD field is `type: boolean` and a bare Perl 1
     # serialises as an integer the API rejects (same reason `ocp node add
     # --gpu` uses JSON::PP::true, k50).
+    #
+    # toolkit (k223) goes the same way: with gpu.toolkit: false the operator
+    # runs no toolkit DaemonSet and nothing writes the node's CDI specs, so the
+    # install task has to -- on a worker robocop joins as much as on the
+    # control plane.
     $spec->{gpu} = {
         enabled => $config->gpu_enabled ? JSON::PP::true : JSON::PP::false,
         driver  => $config->gpu_driver,
+        toolkit => $config->gpu_toolkit ? JSON::PP::true : JSON::PP::false,
     };
 
     # ocp.yaml's system: block, same channel and same reason as gpu above:

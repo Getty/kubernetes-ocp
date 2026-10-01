@@ -111,7 +111,11 @@ Revision history for OCP
       Rex::Rancher and Rex::GPU; on Ubuntu `ubuntu-drivers list --gpgpu` names
       the driver package. A Kepler-or-older NVIDIA card gets no driver and
       makes no GPU node; a container toolkit already on the machine (a DGX's)
-      is kept. RKE2 installs from its
+      is kept. With `gpu.toolkit: false` the GPU Operator runs no toolkit, and
+      every node with a GPU, control plane and workers alike, gets its CDI
+      specs from Rex::GPU instead -- only those that do not already resolve,
+      so the operator validator finds `management.nvidia.com/gpu=all` and
+      the node its `nvidia.com/gpu`. RKE2 installs from its
       checksum-verified release tarball, and a pinned version is checked
       against the installed binary. An install never moves a machine's RKE2 or
       K3s version: a server or agent already there keeps the version it runs,
