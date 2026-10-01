@@ -93,6 +93,24 @@ ENV PERL_CARTON_PATH="$OCP_ROOT/install/perl5"
 COPY --chown=ocp:ocp ./cpanfile $OCP_ROOT/src
 COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 
+# Vendored sibling dists (k222) ===============================================
+# Unreleased fixes in sibling dists ship without waiting for CPAN: `make vendor`
+# dzil-builds the Makefile's VENDOR list into vendor/ and names the tarballs,
+# in install order, in vendor/ORDER. They go into the same contained local-lib
+# FIRST, so the snapshot pass below finds them already satisfied; their own
+# dependencies resolve from cpanfile.snapshot, MetaDB only as fallback. An
+# empty vendor/ (`make vendor VENDOR=`) installs nothing.
+COPY --chown=ocp:ocp ./vendor/ $OCP_ROOT/src/vendor/
+RUN if [ -s vendor/ORDER ]; then \
+      while read -r tgz; do \
+        [ -n "$tgz" ] || continue; \
+        echo "[vendor] $tgz"; \
+        cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+          --local-lib-contained=$PERL_LOCAL_LIB_ROOT "./vendor/$tgz" || exit 1; \
+      done < vendor/ORDER; \
+    fi \
+ && rm -rf ~/.perl-cpm/ /tmp/*
+
 # Install all dependencies from CPAN
 RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \

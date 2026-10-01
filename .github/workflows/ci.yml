@@ -36,13 +36,69 @@ permissions:
   packages: write
 
 jobs:
+  # ─── vendor: unreleased sibling dists (k222) ───────────────────────────────
+  # The Dockerfile installs what vendor/ORDER lists ahead of the snapshot pass,
+  # and `make vendor` dzil-builds that from sibling checkouts a runner does not
+  # have. So check the siblings out (default branch, full history so the
+  # version comes out of the tags), run that same target, and hand vendor/ to
+  # both image jobs. Keep the checkouts in step with the Makefile's VENDOR
+  # list; with VENDOR= the artifact is just an empty ORDER.
+  #
+  # CI sees what is PUSHED to the siblings. A fix that is only committed
+  # locally reaches a local `make build`, not this job.
+  vendor:
+    runs-on: ubuntu-latest
+    container:
+      image: perl:5.40-bookworm
+    defaults:
+      run:
+        shell: bash
+    env:
+      PERL_CPANM_OPT: --mirror http://cpan.metacpan.org --mirror-only
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: pplu/io-k8s-p5
+          path: siblings/io-k8s-p5
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          repository: Getty/rex-gpu
+          path: siblings/rex-gpu
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          repository: Getty/p5-crypt-age
+          path: siblings/p5-crypt-age
+          fetch-depth: 0
+      - name: Install Dist::Zilla and the siblings' author deps
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          cpanm -nq Dist::Zilla
+          for s in io-k8s-p5 rex-gpu p5-crypt-age; do
+            ( cd "siblings/$s" && dzil authordeps --missing | cpanm -nq )
+          done
+      - run: make vendor SIBLINGS_DIR="$GITHUB_WORKSPACE/siblings"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vendor
+          path: vendor/
+          if-no-files-found: error
+
   # Primary home. raudssus/ocp is the name the Makefile, OCP::Cmd::DeployImage,
   # the robocop manifests and xt/smoke.sh already agree on (t/66 guards it), so
   # it is what the README tells people to pull.
   dockerhub:
+    needs: vendor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: vendor
+          path: vendor
       - uses: Getty/simpici/action@main
         env:
           CICD_REGISTRY: docker.io
@@ -54,9 +110,14 @@ jobs:
   # Second location for the same image, so one registry being unreachable never
   # costs us the artifact.
   ghcr:
+    needs: vendor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: vendor
+          path: vendor
       - uses: Getty/simpici/action@main
         env:
           CICD_REGISTRY: ghcr.io

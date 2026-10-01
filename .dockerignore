@@ -56,3 +56,9 @@ local/
 
 # Node modules (if any)
 node_modules/
+
+# vendor/: unreleased sibling dists `make vendor` builds for the image (k222).
+# The *.tar.gz rule above would drop the tarballs; the Dockerfile installs
+# them in vendor/ORDER order ahead of the snapshot pass.
+!vendor/
+!vendor/*.tar.gz

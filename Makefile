@@ -29,13 +29,58 @@ DOCKER_PROVE = docker run --rm -v $(CURDIR):/src:ro -w /src \
 	--entrypoint prove $(IMAGE):$(TAG)
 
 .PHONY: all build test test-v test-host clean docker-test docker-push docker-release \
-        snapshot smoke build-image
+        snapshot smoke build-image vendor
 
 all: build
 
-# Build Docker image for the architecture of this machine
-build:
+# Build Docker image for the architecture of this machine. vendor/ORDER is an
+# order-only prerequisite: a fresh checkout runs `make vendor` once, after
+# that the build reuses vendor/ as it is. Refresh it with `make vendor`.
+build: | vendor/ORDER
 	docker build -t $(IMAGE):$(TAG) -t $(IMAGE):latest .
+
+# ─── vendor: unreleased sibling dists into the image (k222) ──────────────────
+# Only the local state counts: a fix that sits in a sibling dist but is not on
+# CPAN yet still belongs in the image. VENDOR names sibling checkouts under
+# SIBLINGS_DIR, in install order (a dist before the ones that need it).
+# `make vendor` dzil-builds each one into vendor/ and writes the tarball names
+# to vendor/ORDER, one per line; the Dockerfile installs them in that order,
+# ahead of the cpanfile.snapshot pass, into the same contained local-lib.
+#
+# Each sibling is built from its committed HEAD in a throwaway clone, never in
+# its own working tree: uncommitted work is not vendored (a warning says so),
+# and no tarball or .build/ lands in a checkout another agent may be using.
+#
+# Back to CPAN-only: `make vendor VENDOR=` leaves an empty vendor/ (.keep and
+# an empty ORDER), and the Dockerfile then installs nothing from it.
+VENDOR ?= io-k8s-p5 rex-gpu p5-crypt-age
+SIBLINGS_DIR ?= ..
+
+vendor/ORDER:
+	@$(MAKE) --no-print-directory vendor
+
+vendor:
+	@rm -rf $(CURDIR)/vendor && mkdir -p $(CURDIR)/vendor
+	@touch $(CURDIR)/vendor/.keep $(CURDIR)/vendor/ORDER
+	@set -e; for s in $(VENDOR); do \
+	  d="$(SIBLINGS_DIR)/$$s"; \
+	  if ! git -C "$$d" rev-parse --git-dir >/dev/null 2>&1; then \
+	    echo "[vendor] $$s: no git checkout at $$d" >&2; exit 1; \
+	  fi; \
+	  if [ -n "$$(git -C "$$d" status --porcelain --untracked-files=no)" ]; then \
+	    echo "[vendor] $$s: uncommitted changes in $$d are NOT vendored" >&2; \
+	  fi; \
+	  w="$$(mktemp -d)"; \
+	  git clone -q "$$d" "$$w/$$s"; \
+	  echo "[vendor] dzil build $$s ($$(git -C "$$w/$$s" describe --tags --always))"; \
+	  ( cd "$$w/$$s" && dzil build >"$$w/dzil.log" 2>&1 ) \
+	    || { cat "$$w/dzil.log" >&2; rm -rf "$$w"; exit 1; }; \
+	  tgz="$$(cd "$$w/$$s" && ls *.tar.gz)"; \
+	  mv "$$w/$$s/$$tgz" "$(CURDIR)/vendor/"; \
+	  echo "$$tgz" >> "$(CURDIR)/vendor/ORDER"; \
+	  rm -rf "$$w"; \
+	done
+	@echo "[vendor] install order:"; sed 's/^/  /' $(CURDIR)/vendor/ORDER
 
 # Run the suite against the pinned dependencies inside the image. THIS is the
 # binding result — the same perl and the same module versions the release
@@ -120,5 +165,5 @@ docker-release: build
 # target does NOT need maintainer go-ahead — the script pushes by default,
 # so `--push` here is explicit (call the script directly with `--no-push`
 # for a local-only build).
-build-image:
+build-image: | vendor/ORDER
 	share/bin/ocp-build-image --push

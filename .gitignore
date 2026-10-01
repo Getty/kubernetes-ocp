@@ -53,6 +53,11 @@ MYMETA.json
 MYMETA.yml
 Makefile.old
 
+# vendor/: `make vendor` output (k222). vendor/.keep is tracked so the
+# Dockerfile's COPY ./vendor/ works on a fresh checkout; the rest is generated.
+vendor/*.tar.gz
+vendor/ORDER
+
 # Carton / local libs
 # NOTE: cpanfile.snapshot is TRACKED here (Docker-first: the image build needs
 # a reproducible snapshot; regenerate via `make snapshot`, never on the host)

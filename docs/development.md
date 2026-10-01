@@ -35,6 +35,43 @@ make docker-test   # confirm the built image starts and its entrypoint answers
 If a target you need is missing, it gets added to the Makefile — it does not
 get worked around on the host.
 
+## Vendoring unreleased sibling dists
+
+Only the local state counts: when OCP needs a fix that sits in a sibling dist
+(`io-k8s-p5`, `rex-gpu`, `p5-crypt-age`, …) but is not on CPAN yet, the image
+gets it from `vendor/` instead of waiting for the release.
+
+```bash
+make vendor                              # the default list, from ../<repo>
+make vendor VENDOR="io-k8s-p5 rex-gpu"   # a different list, in install order
+make vendor SIBLINGS_DIR=~/dev           # siblings somewhere else
+make vendor VENDOR=                      # CPAN-only: empty vendor/
+```
+
+`make vendor` dzil-builds each repo in `VENDOR` from its **committed HEAD**, in
+a throwaway clone (uncommitted work is not vendored; it warns), into `vendor/`
+and writes the install order to `vendor/ORDER`. The Dockerfile installs those
+tarballs in that order before the `cpanfile.snapshot` pass, into the same
+local-lib, so the snapshot pass finds them already satisfied. List a dist
+before the ones that depend on it. `make build` runs `make vendor` once on a
+fresh checkout; after that, refresh `vendor/` yourself when a sibling moves.
+
+When to vendor: whenever `cpanfile` asks for a version that only exists in a
+sibling checkout (the floor names the sibling's next release, e.g. IO::K8s
+1.110 for the k196 fix). The vendored dist may be newer than the version
+`cpanfile.snapshot` pins; the snapshot is regenerated (`make snapshot`) after
+the release.
+
+Back to CPAN-only: once every floor is satisfiable from CPAN and the snapshot
+pins it, `make vendor VENDOR=` and rebuild — `vendor/` then holds only `.keep`
+and an empty `ORDER`, and the Dockerfile installs nothing from it. To make
+that the default, empty `VENDOR` in the Makefile and drop the matching
+checkouts from the `vendor` job in `.github/workflows/ci.yml`.
+
+CI builds the same list in its `vendor` job and hands `vendor/` to both image
+jobs as an artifact. CI checks out what is **pushed** to the siblings: a fix
+that is only committed locally reaches a local `make build`, not CI.
+
 ## `make smoke` is not a test
 
 ```bash
