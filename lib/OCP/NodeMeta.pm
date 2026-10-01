@@ -19,6 +19,11 @@ our @TAINT_EFFECTS = qw( NoSchedule PreferNoSchedule NoExecute );
 our $MANAGED_LABELS_ANNOTATION = 'ocp.internal/managed-labels';
 our $MANAGED_TAINTS_ANNOTATION = 'ocp.internal/managed-taints';
 
+# Which labels and taints of an OCPNode's spec its worker pool in ocp.yaml put
+# there, so `ocp apply` can take back what the pool dropped (k211).
+our $POOL_LABELS_ANNOTATION = 'ocp.internal/pool-labels';
+our $POOL_TAINTS_ANNOTATION = 'ocp.internal/pool-taints';
+
 my $NAME_RE   = qr/[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?/;
 my $PREFIX_RE = qr/[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*/;
 
@@ -170,6 +175,58 @@ sub _taint_norm {
   };
 }
 
+# The merge both patches below share: what a labels map and a taints list
+# carrying $have_labels / $have_taints become, when OCP previously set the
+# label keys @$prev_labels and the taint ids @$prev_taints and now wants
+# $want_labels / $want_taints. What OCP did not set is kept; what it set and
+# no longer wants goes. Returns the label changes for a merge patch (undef =
+# remove), the whole new taints list (or undef when unchanged) and the new
+# bookkeeping lists.
+sub _merge {
+  my ( $self, %a ) = @_;
+  my %have = %{ $a{have_labels} // {} };
+  my %want = %{ $a{want_labels} // {} };
+  my $json = $self->_json;
+
+  my %labels;
+  for my $k ( keys %want ) {
+    $labels{$k} = $want{$k} unless defined $have{$k} && $have{$k} eq $want{$k};
+  }
+  for my $k ( @{ $a{prev_labels} } ) {
+    $labels{$k} = undef if !exists $want{$k} && exists $have{$k};
+  }
+
+  my @have_t = @{ $a{have_taints} // [] };
+  my %prev_t = map { $_ => 1 } @{ $a{prev_taints} };
+  my %want_t = map { $self->taint_id($_) => $self->_taint_norm($_) } @{ $a{want_taints} // [] };
+  my @taints = (
+    ( grep { my $id = $self->taint_id($_); !$prev_t{$id} && !$want_t{$id} } @have_t ),
+    ( map { $want_t{$_} } sort keys %want_t ),
+  );
+  my $canon = sub { $json->encode( [ sort map { $json->encode( $self->_taint_norm($_) ) } @_ ] ) };
+
+  return (
+    \%labels,
+    ( $canon->(@taints) ne $canon->(@have_t) ? \@taints : undef ),
+    [ sort keys %want ],
+    [ sort keys %want_t ],
+  );
+}
+
+# Annotation changes for a merge patch: each name in %$lists to its JSON list,
+# removed when the list is empty, left out when it already reads that way.
+sub _bookkeeping {
+  my ( $self, $meta, %lists ) = @_;
+  my %annotations;
+  for my $a ( sort keys %lists ) {
+    my $now = ( $meta->{annotations} // {} )->{$a};
+    my $new = @{ $lists{$a} } ? $self->_json->encode( $lists{$a} ) : undef;
+    next if ( $now // '' ) eq ( $new // '' );
+    $annotations{$a} = $new;
+  }
+  return \%annotations;
+}
+
 # The JSON merge patch that brings a Node (as a struct) to the wanted labels
 # and taints, or undef when it already carries them. Labels and taints OCP did
 # not set (not in the managed annotations) are left alone; ones OCP set and the
@@ -178,49 +235,77 @@ sub _taint_norm {
 sub converge_patch {
   my ( $self, $node, $want_labels, $want_taints ) = @_;
   my $meta = $node->{metadata} // {};
-  my %have = %{ $meta->{labels} // {} };
-  my %want = %{ $want_labels // {} };
-  my $json = $self->_json;
 
-  my %labels;
-  for my $k ( keys %want ) {
-    $labels{$k} = $want{$k} unless defined $have{$k} && $have{$k} eq $want{$k};
-  }
-  for my $k ( $self->_managed( $meta, $MANAGED_LABELS_ANNOTATION ) ) {
-    $labels{$k} = undef if !exists $want{$k} && exists $have{$k};
-  }
-
-  my @have_t = @{ ( $node->{spec} // {} )->{taints} // [] };
-  my %prev_t = map { $_ => 1 } $self->_managed( $meta, $MANAGED_TAINTS_ANNOTATION );
-  my %want_t = map { $self->taint_id($_) => $self->_taint_norm($_) } @{ $want_taints // [] };
-  my @taints = (
-    ( grep { my $id = $self->taint_id($_); !$prev_t{$id} && !$want_t{$id} } @have_t ),
-    ( map { $want_t{$_} } sort keys %want_t ),
+  my ( $labels, $taints, $label_keys, $taint_ids ) = $self->_merge(
+    have_labels => $meta->{labels},
+    have_taints => ( $node->{spec} // {} )->{taints},
+    prev_labels => [ $self->_managed( $meta, $MANAGED_LABELS_ANNOTATION ) ],
+    prev_taints => [ $self->_managed( $meta, $MANAGED_TAINTS_ANNOTATION ) ],
+    want_labels => $want_labels,
+    want_taints => $want_taints,
   );
-  my $canon = sub { $json->encode( [ sort map { $json->encode( $self->_taint_norm($_) ) } @_ ] ) };
-  my $taints_changed = $canon->(@taints) ne $canon->(@have_t);
-
-  my %annotations;
-  my %new_managed = (
-    $MANAGED_LABELS_ANNOTATION => [ sort keys %want ],
-    $MANAGED_TAINTS_ANNOTATION => [ sort keys %want_t ],
+  my $annotations = $self->_bookkeeping( $meta,
+    $MANAGED_LABELS_ANNOTATION => $label_keys,
+    $MANAGED_TAINTS_ANNOTATION => $taint_ids,
   );
-  for my $a ( sort keys %new_managed ) {
-    my $now = ( $meta->{annotations} // {} )->{$a};
-    my $new = @{ $new_managed{$a} } ? $json->encode( $new_managed{$a} ) : undef;
-    next if ( $now // '' ) eq ( $new // '' );
-    $annotations{$a} = $new;
-  }
 
-  return undef unless %labels || %annotations || $taints_changed;
+  return undef unless %$labels || %$annotations || $taints;
   return {
     metadata => {
       resourceVersion => $meta->{resourceVersion},
-      ( %labels      ? ( labels      => \%labels )      : () ),
-      ( %annotations ? ( annotations => \%annotations ) : () ),
+      ( %$labels      ? ( labels      => $labels )      : () ),
+      ( %$annotations ? ( annotations => $annotations ) : () ),
     },
-    ( $taints_changed ? ( spec => { taints => \@taints } ) : () ),
+    ( $taints ? ( spec => { taints => $taints } ) : () ),
   };
+}
+
+# The same for an OCPNode's spec.labels / spec.taints against its worker
+# pool in ocp.yaml (k211): the merge patch `ocp apply` sends to an OCPNode
+# that already exists, or undef. Removes only what the pool put there itself
+# (the pool-* annotations, written with the OCPNode too); labels and taints
+# from `kubectl edit ocpnode` or `ocp node add` stay. An OCPNode without that
+# bookkeeping loses nothing -- its origin is unknown.
+sub spec_patch {
+  my ( $self, $ocpnode, $want_labels, $want_taints ) = @_;
+  my $meta = $ocpnode->{metadata} // {};
+  my $spec = $ocpnode->{spec} // {};
+
+  my ( $labels, $taints, $label_keys, $taint_ids ) = $self->_merge(
+    have_labels => $spec->{labels},
+    have_taints => $spec->{taints},
+    prev_labels => [ $self->_managed( $meta, $POOL_LABELS_ANNOTATION ) ],
+    prev_taints => [ $self->_managed( $meta, $POOL_TAINTS_ANNOTATION ) ],
+    want_labels => $want_labels,
+    want_taints => $want_taints,
+  );
+  my $annotations = $self->_bookkeeping( $meta,
+    $POOL_LABELS_ANNOTATION => $label_keys,
+    $POOL_TAINTS_ANNOTATION => $taint_ids,
+  );
+
+  return undef unless %$labels || %$annotations || $taints;
+  my %spec = (
+    ( %$labels ? ( labels => $labels ) : () ),
+    ( $taints  ? ( taints => $taints ) : () ),
+  );
+  return {
+    metadata => {
+      resourceVersion => $meta->{resourceVersion},
+      ( %$annotations ? ( annotations => $annotations ) : () ),
+    },
+    ( %spec ? ( spec => \%spec ) : () ),
+  };
+}
+
+# The pool-* annotations a new OCPNode starts with, for the labels and taints
+# (spec shape) the pool gives it. Empty when it gives none.
+sub pool_annotations {
+  my ( $self, $labels, $taints ) = @_;
+  return $self->_bookkeeping( {},
+    $POOL_LABELS_ANNOTATION => [ sort keys %{ $labels // {} } ],
+    $POOL_TAINTS_ANNOTATION => [ sort map { $self->taint_id($_) } @{ $taints // [] } ],
+  );
 }
 
 1;
@@ -272,6 +357,21 @@ The labels the kubelet may set on itself at registration, as sorted
 C<key=value> strings. Keys under C<kubernetes.io> or C<k8s.io> other than the
 few the NodeRestriction admission plugin allows would make the registration
 fail; they reach the Node through L</converge_patch> only.
+
+=method spec_patch
+
+  my $patch = OCP::NodeMeta->spec_patch($ocpnode_struct,
+    $pool_spec->{labels}, $pool_spec->{taints});
+
+A JSON merge patch for an OCPNode that brings its C<spec.labels> and
+C<spec.taints> to its worker pool's, or undef. The pool's own entries are
+recorded in C<ocp.internal/pool-labels> and C<ocp.internal/pool-taints>; only
+those are ever removed, so what C<kubectl edit ocpnode> or C<ocp node add>
+added stays. An OCPNode without the annotations loses nothing.
+
+=method pool_annotations
+
+The C<ocp.internal/pool-*> annotations a new OCPNode starts with.
 
 =method converge_patch
 

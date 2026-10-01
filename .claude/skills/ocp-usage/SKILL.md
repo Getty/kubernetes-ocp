@@ -127,6 +127,8 @@ workers:                    # optional pools; apply turns each entry into
     labels:                 # optional, onto each Node (OCPNode spec.labels)
       ai.citilan.de/node-class: general
     taints: ["dedicated=ml:NoSchedule"]   # optional, kubectl syntax
+                            # apply pulls changes onto existing workers;
+                            # removes only what the pool set (ocp.internal/pool-*)
 ssh:
   private_key: .ocp/id_ed25519
   public_key: .ocp/id_ed25519.pub

@@ -382,6 +382,24 @@ sub reconcile_components {
                 }
             }
         }
+
+        # Pool labels/taints changed in ocp.yaml onto the workers that have an
+        # OCPNode (k211): spec.labels/spec.taints only, no re-drive, no key.
+        my $meta = eval { OCP::Cmd::Apply::CR::sync_worker_meta($self, $api, $config) };
+        if (my $err = $@) {
+            print STDERR "  [!!] Could not check worker labels/taints: $err";
+            push @unresolved, 'worker labels/taints';
+        } else {
+            if (@{ $meta->{patched} }) {
+                print "  [ok] Worker labels/taints updated: "
+                    . join(', ', @{ $meta->{patched} }) . "\n";
+                $updated++;
+            }
+            for my $f (@{ $meta->{failed} }) {
+                print STDERR "  [!!] Worker labels/taints not updated: $f\n";
+                push @unresolved, 'labels/taints of worker ' . (split /:/, $f, 2)[0];
+            }
+        }
     }
 
     # Summary
@@ -460,6 +478,19 @@ sub dry_run_report {
             for @missing;
     }
 
+    # Pool labels/taints that differ on existing worker OCPNodes (k211).
+    my @relabel;
+    if (@{ $config->workers } && worker_step_wanted($self)) {
+        my $meta = eval {
+            OCP::Cmd::Apply::CR::sync_worker_meta($self, $self->_k8s_api, $config, dry_run => 1);
+        };
+        print STDERR "  [!!] Could not check worker labels/taints: $@" if $@;
+        @relabel = @{ $meta ? $meta->{patched} : [] };
+        print "  [workers] $_: labels/taints differ from ocp.yaml\n"
+            . "          would update labels/taints of OCPNode/$_\n"
+            for @relabel;
+    }
+
     # robocop (k173): what the real run's robocop step would write. Reads
     # only -- the credentials check is the same one that keeps a real
     # reconcile PIN2-free.
@@ -468,7 +499,7 @@ sub dry_run_report {
         : ();
 
     print "\n";
-    print '  ', scalar(@$drift) + scalar(@missing) + scalar(@robocop),
+    print '  ', scalar(@$drift) + scalar(@missing) + scalar(@relabel) + scalar(@robocop),
         " difference(s) a real run would act on.\n";
     print "  It would also re-apply any component whose manifest changed at an\n";
     print "  unchanged version — the one difference a read-only pass cannot see.\n";

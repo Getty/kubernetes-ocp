@@ -1008,6 +1008,18 @@ sub _verify {
     return 0;
 }
 
+# The Node of a Ready OCPNode brought to its spec.labels / spec.taints, for a
+# caller outside the state machine: `ocp apply` after it changed the spec of an
+# existing worker (k211, OCP::Cmd::Apply::CR::sync_worker_meta). Undef when the
+# Node is not registered (nothing to do yet), otherwise what
+# _converge_node_meta says.
+sub converge_node_meta {
+    my ($self) = @_;
+    my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $self->name;
+    my $node = eval { $self->k8s->get('Node', name => $k8s_name) } or return undef;
+    return $self->_converge_node_meta($self->_struct($node));
+}
+
 # Bring the Kubernetes Node's labels and taints to the OCPNode's spec.labels
 # and spec.taints (k211), leaving what others set alone (OCP::NodeMeta). The
 # patch is conditional on the Node's resourceVersion; a 409 -- the kubelet or
@@ -1272,6 +1284,18 @@ String identifying the reconciler holding the lease.  Defaults to
 C<'cli'>.  Robocop sets this to a pod-scoped identifier.
 
 =back
+
+=head1 METHODS
+
+=head2 converge_node_meta
+
+    OCP::Node->from_cr($ready_cr, k8s => $api)->converge_node_meta;
+
+Brings the Kubernetes Node of this OCPNode to its C<spec.labels> and
+C<spec.taints>, outside the state machine -- what C<ocp apply> calls after it
+pulled changed pool labels onto an existing worker. Removes only what OCP set
+(L<OCP::NodeMeta/converge_patch>). Undef when the Node is not registered, false
+(with a warning) when the patch failed.
 
 =head1 CLASS METHODS
 

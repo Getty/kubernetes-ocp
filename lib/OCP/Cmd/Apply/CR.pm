@@ -25,6 +25,7 @@ use OCP::SSH;
     OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($apply, $api, $config, \@names);
     my @crs     = OCP::Cmd::Apply::CR::worker_ocpnodes($config);
     my @missing = OCP::Cmd::Apply::CR::missing_worker_ocpnodes($apply, $api, $config);
+    my $meta    = OCP::Cmd::Apply::CR::sync_worker_meta($apply, $api, $config);
     OCP::Cmd::Apply::CR::migrate_legacy_nodes($apply, $api);
     OCP::Cmd::Apply::CR::ensure_robocop($apply, $api, $config);
     OCP::Cmd::Apply::CR::wait_robocop_ready($apply, $api, $timeout);
@@ -459,13 +460,18 @@ sub worker_ocpnodes {
             $spec->{labels} = $labels if %$labels;
             $spec->{taints} = $taints if @$taints;
 
+            # Which of them came from the pool, so a later apply can take back
+            # what the pool drops and nothing else (k211, sync_worker_meta).
+            my $pool_ann = OCP::NodeMeta->pool_annotations($labels, $taints);
+
             # The finalizer from the start (k179): deleting the OCPNode then
             # leaves its machine to robocop's teardown instead of orphaning it.
             push @crs, {
                 apiVersion => 'ocp.internal/v1',
                 kind       => 'OCPNode',
                 metadata   => { name => $w_name, namespace => $ns,
-                                finalizers => [ OCP::Node::TEARDOWN_FINALIZER ] },
+                                finalizers => [ OCP::Node::TEARDOWN_FINALIZER ],
+                                (%$pool_ann ? (annotations => $pool_ann) : ()) },
                 spec       => $spec,
             };
         }
@@ -496,6 +502,72 @@ sub missing_worker_ocpnodes {
     } @{ $list->items // [] };
 
     return grep { !$have{ $_->{metadata}{name} } } @wanted;
+}
+
+# Pool labels and taints changed in ocp.yaml onto the worker OCPNodes that
+# already exist (k211, decision 2026-10-01), and from there onto the Nodes.
+# missing_worker_ocpnodes leaves existing OCPNodes alone on purpose (k26); this
+# patches exactly spec.labels and spec.taints of them, nothing else, and takes
+# back only what the pool itself put there (OCP::NodeMeta->spec_patch).
+#
+# A Ready worker's Node is converged right here too, through the same
+# OCP::Node method its reconcile uses -- on a CLI-only cluster nobody else
+# would, and with robocop running the second writer finds nothing left to do
+# (both go by resourceVersion and the managed-* bookkeeping). This also repairs
+# a Node that drifted from its OCPNode. A worker on its way to Ready gets its
+# labels from its own state machine (_wait_ready, _verify).
+#
+# dry_run => 1 only reads and names what would change. Returns
+# { patched => [ names ], failed => [ "name: reason" ] }; a failure is never
+# fatal for the apply.
+sub sync_worker_meta {
+    my ($self, $api, $config, %opt) = @_;
+    my %result = (patched => [], failed => []);
+
+    my @wanted = worker_ocpnodes($config) or return \%result;
+    my %have = map {
+        my $h = $api->k8s->object_to_struct($_);
+        ($h->{metadata}{name} => $h);
+    } @{ $api->list('OCPNode', namespace => 'ocp-system')->items // [] };
+
+    for my $want (@wanted) {
+        my $name = $want->{metadata}{name};
+        my $cr   = $have{$name} or next;      # missing ones are k26's business
+
+        my $err;
+        for my $attempt (1 .. 3) {
+            my $patch = OCP::NodeMeta->spec_patch($cr, $want->{spec}{labels}, $want->{spec}{taints});
+            last unless $patch;
+            if ($opt{dry_run}) {
+                push @{ $result{patched} }, $name;
+                last;
+            }
+            my $new = eval {
+                $api->patch('OCPNode', name => $name, namespace => 'ocp-system',
+                    patch => $patch, type => 'merge');
+            };
+            if ($new) {
+                $cr = ref($new) eq 'HASH' ? $new : $api->k8s->object_to_struct($new);
+                push @{ $result{patched} }, $name;
+                $err = undef;
+                last;
+            }
+            $err = $@ || "patch returned nothing\n";
+            last unless $err =~ /\b409\b/ && $attempt < 3;
+            my $fresh = eval { $api->get('OCPNode', $name, namespace => 'ocp-system') } or last;
+            $cr = ref($fresh) eq 'HASH' ? $fresh : $api->k8s->object_to_struct($fresh);
+        }
+        if ($err) {
+            chomp $err;
+            push @{ $result{failed} }, "$name: $err";
+            next;
+        }
+
+        next if $opt{dry_run};
+        next unless (($cr->{status} // {})->{phase} // '') eq 'Ready';
+        OCP::Node->from_cr($cr, k8s => $api)->converge_node_meta;
+    }
+    return \%result;
 }
 
 # Write one Pending OCPNode CR per worker entry. If role/provider/etc. on

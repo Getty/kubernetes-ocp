@@ -430,6 +430,15 @@ package DryRunApi {
         return $obj;
     }
 
+    # The OCPNode merge patch of k211's pool sync; recorded as a write.
+    sub patch {
+        my ($self, $kind, %a) = @_;
+        push @{ $self->{writes} }, "PATCH $kind/$a{name}";
+        my $obj = $self->{ocpnodes}{ $a{name} };
+        $obj->{spec}{$_} = $a{patch}{spec}{$_} for keys %{ $a{patch}{spec} // {} };
+        return $obj;
+    }
+
     sub k8s              { $_[0] }
     sub object_to_struct { $_[1] }
 
@@ -804,6 +813,41 @@ subtest 'k26: --only gates the worker step the way the deploy path does' => sub 
     my $dry = reconcile(dry_run => 1, only => 'control-planes',
         yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
     unlike $dry->{out}, qr/would create OCPNode/, 'and the dry run agrees';
+};
+
+#
+# k211 (decision 2026-10-01): a pool's labels/taints changed in ocp.yaml reach
+# the workers that already have an OCPNode -- spec.labels/spec.taints only,
+# no re-drive. What exactly is patched is t/211's business; here only that the
+# reconcile path does it, counts it, and that a dry run only names it.
+#
+my $LABELLED_WORKERS = $TWO_SSH_WORKERS . <<'YAML';
+    labels:
+      ai.citilan.de/node-class: rtx3090
+    taints:
+      - nvidia.com/gpu=present:NoSchedule
+YAML
+
+subtest 'k211: changed pool labels/taints are pulled onto existing workers' => sub {
+    my $r = reconcile(yaml => $LABELLED_WORKERS, ocpnodes => ['brain', 'pinky']);
+
+    ok scalar(grep { $_ eq 'PATCH OCPNode/brain' } @{ $r->{writes} }), 'brain\'s OCPNode patched';
+    ok scalar(grep { $_ eq 'PATCH OCPNode/pinky' } @{ $r->{writes} }), 'and pinky\'s';
+    ok !touched($r, '_drive_workers'), 'no worker re-driven';
+    ok !$r->{key_asked}, 'no key asked for (no PIN2 prompt)';
+    like $r->{out}, qr/labels\/taints updated: brain, pinky/, 'named in the progress';
+    like $r->{out}, qr/1 component\(s\) updated/, 'and counted as an update';
+    is $r->{err}, '', 'nothing on STDERR';
+
+    my $dry = reconcile(dry_run => 1, yaml => $LABELLED_WORKERS, ocpnodes => ['brain', 'pinky']);
+    is_deeply $dry->{writes}, [], 'a dry run writes nothing';
+    like $dry->{out}, qr/would update labels\/taints of OCPNode\/brain/, 'but names it';
+};
+
+subtest 'k211: pool and OCPNodes in step -- no patch' => sub {
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky']);
+    ok !scalar(grep { /^PATCH OCPNode/ } @{ $r->{writes} }), 'nothing patched';
+    unlike $r->{out}, qr/labels\/taints/, 'and nothing said about it';
 };
 
 #

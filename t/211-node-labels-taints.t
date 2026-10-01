@@ -147,6 +147,77 @@ subtest 'a changed value replaces the old one' => sub {
     ok !exists $p->{metadata}{annotations}, 'bookkeeping unchanged';
 };
 
+# --- k211 follow-up: ocp apply pulls changed pool labels/taints onto existing workers
+#
+# Decision 2026-10-01: a pool's labels/taints changed in ocp.yaml reach the
+# OCPNodes that already exist, and from there the Nodes. Removed are only the
+# ones OCP put there itself -- on the OCPNode the pool's own entries
+# (ocp.internal/pool-labels, ocp.internal/pool-taints), on the Node the
+# managed-* bookkeeping above. Whatever someone else added stays.
+
+sub ocpnode_struct {
+    my (%o) = @_;
+    return {
+        metadata => { name => 'gpu-1', namespace => 'ocp-system', resourceVersion => '3',
+                      ($o{annotations} ? (annotations => $o{annotations}) : ()) },
+        spec     => { role => 'worker', providerRef => 'ssh-default',
+                      ($o{labels} ? (labels => $o{labels}) : ()),
+                      ($o{taints} ? (taints => $o{taints}) : ()) },
+        status   => { phase => $o{phase} // 'Ready' },
+    };
+}
+
+subtest 'spec_patch: pool labels and taints onto an OCPNode that has none' => sub {
+    my $p = $M->spec_patch(ocpnode_struct(), { 'ai.citilan.de/node-class' => 'rtx3090' }, [ $GPU_TAINT ]);
+    is $p->{metadata}{resourceVersion}, '3', 'conditional on the resourceVersion';
+    is_deeply $p->{spec}{labels}, { 'ai.citilan.de/node-class' => 'rtx3090' }, 'labels';
+    is_deeply $p->{spec}{taints}, [ $GPU_TAINT ], 'taints';
+    is $p->{metadata}{annotations}{'ocp.internal/pool-labels'}, '["ai.citilan.de/node-class"]',
+        'the pool labels recorded';
+    is $p->{metadata}{annotations}{'ocp.internal/pool-taints'}, '["nvidia.com/gpu:NoSchedule"]',
+        'the pool taints recorded';
+    ok !exists $p->{spec}{role}, 'nothing but labels and taints in the spec patch';
+};
+
+subtest 'spec_patch: an OCPNode that matches the pool: no patch' => sub {
+    my $n = ocpnode_struct(
+        labels      => { 'ai.citilan.de/node-class' => 'rtx3090' },
+        taints      => [ $GPU_TAINT ],
+        annotations => { 'ocp.internal/pool-labels' => '["ai.citilan.de/node-class"]',
+                         'ocp.internal/pool-taints' => '["nvidia.com/gpu:NoSchedule"]' },
+    );
+    is $M->spec_patch($n, { 'ai.citilan.de/node-class' => 'rtx3090' }, [ $GPU_TAINT ]), undef, 'idempotent';
+    is $M->spec_patch(ocpnode_struct(), {}, []), undef, 'nothing in the pool, nothing recorded: no patch';
+};
+
+subtest 'spec_patch: dropped from the pool goes, added by someone else stays' => sub {
+    my $n = ocpnode_struct(
+        labels      => { 'ai.citilan.de/node-class' => 'rtx3090', team => 'ml' },
+        taints      => [ $GPU_TAINT, { key => 'manual', effect => 'NoExecute' } ],
+        annotations => { 'ocp.internal/pool-labels' => '["ai.citilan.de/node-class"]',
+                         'ocp.internal/pool-taints' => '["nvidia.com/gpu:NoSchedule"]' },
+    );
+    my $p = $M->spec_patch($n, { 'ai.citilan.de/node-class' => 'gb10' }, []);
+    is_deeply $p->{spec}{labels}, { 'ai.citilan.de/node-class' => 'gb10' },
+        'the pool label changes value, team (kubectl edit / node add) is not touched';
+    is_deeply $p->{spec}{taints}, [ { key => 'manual', effect => 'NoExecute' } ],
+        'the pool taint goes, the manual one stays';
+    is_deeply $p->{metadata}{annotations}, { 'ocp.internal/pool-taints' => undef },
+        'taint bookkeeping cleared, label bookkeeping unchanged';
+
+    my $gone = $M->spec_patch($n, {}, [ $GPU_TAINT ]);
+    is_deeply $gone->{spec}{labels}, { 'ai.citilan.de/node-class' => undef },
+        'a pool label removed altogether is nulled in the merge patch';
+};
+
+subtest 'spec_patch: an OCPNode without bookkeeping loses nothing' => sub {
+    my $n = ocpnode_struct(labels => { 'ai.citilan.de/node-class' => 'rtx3090' },
+                           taints => [ $GPU_TAINT ]);
+    my $p = $M->spec_patch($n, {}, []);
+    ok !$p || (!exists $p->{spec}{labels} && !exists $p->{spec}{taints}),
+        'origin unknown: neither removed';
+};
+
 # --- where the spec comes from -------------------------------------------------
 
 my $ocp    = OCP->new;
@@ -171,6 +242,11 @@ subtest 'ocp.yaml worker pools carry labels and taints onto their OCPNodes' => s
     my ($gpu, $plain) = OCP::Cmd::Apply::CR::worker_ocpnodes($config);
     is_deeply $gpu->{spec}{labels}, { 'ai.citilan.de/node-class' => 'rtx3090' }, 'labels';
     is_deeply $gpu->{spec}{taints}, [ $GPU_TAINT ], 'taints, parsed';
+    is $gpu->{metadata}{annotations}{'ocp.internal/pool-labels'}, '["ai.citilan.de/node-class"]',
+        'a new OCPNode records which labels the pool gave it';
+    is $gpu->{metadata}{annotations}{'ocp.internal/pool-taints'}, '["nvidia.com/gpu:NoSchedule"]',
+        'and which taints';
+    ok !exists $plain->{metadata}{annotations}, 'a pool without: no bookkeeping';
     ok !exists $plain->{spec}{labels} && !exists $plain->{spec}{taints}, 'a pool without: neither key';
 };
 
@@ -304,6 +380,144 @@ subtest 'a failing patch warns and leaves the node Ready' => sub {
     local $SIG{__WARN__} = sub { push @w, @_ };
     ok ocp_node($k8s, phase => 'Ready')->_verify, 'Ready all the same';
     like "@w", qr{labels/taints of Node/crag not applied}, 'and says so';
+};
+
+# --- ocp apply: pool changes reach existing workers (k211 follow-up) ------------
+
+package SyncList { sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
+package SyncApi {
+    # OCPNodes and Nodes as structs; patches recorded and merged in.
+    sub new { my ($c, %a) = @_; bless { patches => [], conflicts => 0, ocpnodes => {}, nodes => {}, %a }, $c }
+    sub k8s              { $_[0] }
+    sub object_to_struct { $_[1] }
+    sub list {
+        my ($s, $kind) = @_;
+        return SyncList->new([ map { $s->{ocpnodes}{$_} } sort keys %{ $s->{ocpnodes} } ]);
+    }
+    sub get {
+        my ($s, $kind, @rest) = @_;
+        my $name = @rest % 2 ? shift @rest : undef;
+        my %o = @rest; $name //= $o{name};
+        my $obj = $kind eq 'Node' ? $s->{nodes}{$name} : $s->{ocpnodes}{$name};
+        die "Kubernetes API error (get $kind): 404 Not Found\n" unless $obj;
+        return $obj;
+    }
+    sub patch {
+        my ($s, $kind, %a) = @_;
+        push @{ $s->{patches} }, { kind => $kind, %a };
+        die "Kubernetes API error (patch $kind): 409 Conflict\n" if $kind eq 'OCPNode' && $s->{conflicts}-- > 0;
+        my $obj = $kind eq 'Node' ? $s->{nodes}{ $a{name} } : $s->{ocpnodes}{ $a{name} };
+        main::merge_into($obj, $a{patch});
+        $obj->{metadata}{resourceVersion}++;
+        return $obj;
+    }
+}
+package main;
+
+sub merge_into {
+    my ($obj, $patch) = @_;
+    for my $k (keys %$patch) {
+        my $v = $patch->{$k};
+        if    (!defined $v)                                 { delete $obj->{$k} }
+        elsif (ref $v eq 'HASH' && ref $obj->{$k} eq 'HASH') { merge_into($obj->{$k}, $v) }
+        elsif (ref $v eq 'HASH')                            { $obj->{$k} = {}; merge_into($obj->{$k}, $v) }
+        else                                                { $obj->{$k} = $v }
+    }
+}
+
+my $SYNC_POOLS = { workers => [
+    { name => 'gpu', provider => 'ssh', host => 'crag.lan',
+      labels => { 'ai.citilan.de/node-class' => 'gb10' },
+      taints => [ 'nvidia.com/gpu=present:NoSchedule' ] },
+] };
+
+sub sync_api {
+    my (%o) = @_;
+    return SyncApi->new(
+        conflicts => $o{conflicts} // 0,
+        ocpnodes  => { crag => {
+            apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
+            metadata   => { name => 'crag', namespace => 'ocp-system', resourceVersion => 5,
+                            annotations => { 'ocp.internal/pool-labels' => '["ai.citilan.de/node-class"]' } },
+            spec       => { role => 'worker', providerRef => 'ssh-default', host => 'crag.lan',
+                            labels => { 'ai.citilan.de/node-class' => 'rtx3090', team => 'ml' } },
+            status     => { phase => $o{phase} // 'Ready' },
+        } },
+        nodes => $o{no_node} ? {} : { crag => {
+            metadata => { name => 'crag', resourceVersion => 40,
+                          labels => { 'ai.citilan.de/node-class' => 'rtx3090', team => 'ml',
+                                      'feature.node.kubernetes.io/x' => 'true' },
+                          annotations => { 'ocp.internal/managed-labels' => '["ai.citilan.de/node-class","team"]' } },
+            spec     => {},
+            status   => { conditions => [ { type => 'Ready', status => 'True' } ] },
+        } },
+    );
+}
+
+subtest 'apply: a changed pool reaches the existing OCPNode and its Node' => sub {
+    my $api = sync_api();
+    my $r = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($SYNC_POOLS));
+    is_deeply $r->{patched}, [ 'crag' ], 'the OCPNode is reported as updated';
+    is_deeply $r->{failed},  [], 'nothing failed';
+
+    my $cr = $api->{ocpnodes}{crag};
+    is_deeply $cr->{spec}{labels}, { 'ai.citilan.de/node-class' => 'gb10', team => 'ml' },
+        'OCPNode: the pool label has its new value, team stays';
+    is_deeply $cr->{spec}{taints}, [ $GPU_TAINT ], 'OCPNode: the new pool taint';
+    is $cr->{spec}{host}, 'crag.lan', 'the rest of the spec untouched';
+
+    my $node = $api->{nodes}{crag};
+    is_deeply $node->{metadata}{labels},
+        { 'ai.citilan.de/node-class' => 'gb10', team => 'ml', 'feature.node.kubernetes.io/x' => 'true' },
+        'Node: new value, NFD\'s label untouched';
+    is_deeply $node->{spec}{taints}, [ $GPU_TAINT ], 'Node: the taint';
+
+    my $again = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($SYNC_POOLS));
+    is_deeply $again->{patched}, [], 'a second apply has nothing to change';
+    is scalar(grep { $_->{kind} eq 'OCPNode' } @{ $api->{patches} }), 1, 'one OCPNode patch in all';
+};
+
+subtest 'apply: a label dropped from the pool goes, only that one' => sub {
+    my $api = sync_api();
+    my $pools = { workers => [ { name => 'gpu', provider => 'ssh', host => 'crag.lan' } ] };
+    OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($pools));
+    is_deeply $api->{ocpnodes}{crag}{spec}{labels}, { team => 'ml' }, 'OCPNode: pool label gone, team stays';
+    is_deeply $api->{nodes}{crag}{metadata}{labels},
+        { team => 'ml', 'feature.node.kubernetes.io/x' => 'true' },
+        'Node: gone as well; NFD\'s label and team (still in the OCPNode spec) stay';
+};
+
+subtest 'apply: dry run reports and writes nothing' => sub {
+    my $api = sync_api();
+    my $r = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($SYNC_POOLS), dry_run => 1);
+    is_deeply $r->{patched}, [ 'crag' ], 'named';
+    is_deeply $api->{patches}, [], 'not written';
+};
+
+subtest 'apply: a worker not Ready yet gets the spec, its Node waits for the state machine' => sub {
+    my $api = sync_api(phase => 'Joining');
+    my $r = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($SYNC_POOLS));
+    is_deeply $r->{patched}, [ 'crag' ], 'OCPNode updated';
+    is scalar(grep { $_->{kind} eq 'Node' } @{ $api->{patches} }), 0, 'Node left to OCP::Node';
+};
+
+subtest 'apply: a Ready OCPNode without a registered Node is not an error' => sub {
+    my $api = sync_api(no_node => 1);
+    my @w; local $SIG{__WARN__} = sub { push @w, @_ };
+    my $r = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($SYNC_POOLS));
+    is_deeply $r->{failed}, [], 'no failure';
+    is_deeply \@w, [], 'no warning';
+};
+
+subtest 'apply: a 409 on the OCPNode reads it again and retries; a hard error is reported' => sub {
+    my $api = sync_api(conflicts => 1);
+    my $r = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $api, config_for($SYNC_POOLS));
+    is_deeply $r->{patched}, [ 'crag' ], 'updated on the retry';
+
+    my $bad = sync_api(conflicts => 99);
+    my $f = OCP::Cmd::Apply::CR::sync_worker_meta(undef, $bad, config_for($SYNC_POOLS));
+    is_deeply $f->{patched}, [], 'not updated';
+    like $f->{failed}[0], qr/^crag: .*409/, 'failure named with the worker';
 };
 
 # --- the Rexfile passes node_labels to the library ------------------------------
