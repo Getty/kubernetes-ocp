@@ -313,6 +313,11 @@ ocp node add ssh-1 --role worker --provider ssh-default --host 10.0.0.5
 ocp node add worker-2 --role worker --nowait     # write the CR, don't wait
 ```
 
+With `--gpu`, the command also makes sure of the GPU Operator once the node is
+Ready (the same check `ocp apply` runs), so a GPU worker added after the last
+apply gets `nvidia.com/gpu` without another `ocp apply`. With `--nowait` it
+cannot wait for that and tells you to run `ocp apply` instead.
+
 Note that `--provider` takes the **name** of a provider resource
 (`hetzner-default`), not a provider type (`hetzner`). `ocp provider ls` lists
 what exists. With only one provider you can leave the flag off entirely.

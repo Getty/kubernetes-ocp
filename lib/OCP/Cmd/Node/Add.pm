@@ -464,36 +464,110 @@ sub execute {
 
     if ($self->nowait) {
         print $self->name . "\n";
+        # STDOUT is the node name and nothing else; the hint is not payload.
+        print STDERR "Node '" . $self->name . "' asks for a GPU: once it is Ready, "
+          . "run `ocp apply` to deploy the GPU Operator.\n"
+            if $self->gpu;
         return 0;
     }
 
+    my ($ok, $config);
     if ($self->_robocop_ready($api)) {
         sleep 5;
-        my $ok = $self->_poll_until_ready($api);
-        if ($ok) {
-            print "Node '" . $self->name . "' is Ready.\n";
-            return 0;
-        }
-        else {
-            print STDERR "Node '" . $self->name . "' did not reach Ready state.\n";
-            return 1;
-        }
-    }
-
-    my $file   = $self->ocp->config;
-    my $config = OCP::Config->new(file => $file);
-    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-
-    my $ok = $self->_cli_reconcile($cr, $api, $config, $secrets);
-
-    if ($ok) {
-        print "Node '" . $self->name . "' is Ready.\n";
-        return 0;
+        $ok = $self->_poll_until_ready($api);
     }
     else {
+        $config = $self->_config;
+        my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+        $ok = $self->_cli_reconcile($cr, $api, $config, $secrets);
+    }
+
+    unless ($ok) {
         print STDERR "Node '" . $self->name . "' did not reach Ready state.\n";
         return 1;
     }
+
+    print "Node '" . $self->name . "' is Ready.\n";
+    $self->_ensure_gpu_operator($api, $config // $self->_config) if $self->gpu;
+    return 0;
+}
+
+sub _config {
+    my ($self) = @_;
+    return OCP::Config->new(file => $self->ocp->config);
+}
+
+# k220: a GPU node joined after the last `ocp apply` gets the GPU Operator
+# here, by the very check `ocp apply` runs ("Checking GPU Operator",
+# OCP::Cmd::Apply::Workloads::setup_gpu_operator) -- not a second copy of it.
+# That check deploys only for a node NFD has labelled with an NVIDIA card, and
+# a node that has only just turned Ready carries no NFD label yet, so it waits
+# for this node's label first (gpu_label_timeout, NFD's worker relabels once a
+# minute). gpu.enabled: false needs no label: setup_gpu_operator skips at once.
+#
+# Never fatal: the node is Ready, which is what `ocp node add` promised. A
+# missing label or a failed rollout is said on STDERR together with the way to
+# get the operator anyway, `ocp apply`. Returns whether the check completed.
+sub gpu_label_timeout  { 300 }
+sub gpu_label_interval { 10 }
+
+my @GPU_LABELS = map { "feature.node.kubernetes.io/pci-${_}.present" } qw(0300_10de 0302_10de);
+
+sub _ensure_gpu_operator {
+    my ($self, $api, $config) = @_;
+
+    print "  [..] Checking GPU Operator...\n";
+    my $done = eval {
+        if ($config->gpu_enabled) {
+            my $k8s_name = $self->_kubernetes_node_name($api);
+            $self->_wait_gpu_label($api, $k8s_name)
+                or die "Node '$k8s_name' has no NFD NVIDIA label ("
+                     . join(' / ', @GPU_LABELS) . ") after "
+                     . gpu_label_timeout() . "s\n";
+        }
+        my $apply = $self->_apply_cmd($api);
+        $apply->_report_component('GPU Operator', $apply->_setup_gpu_operator($config));
+        1;
+    };
+    return 1 if $done;
+
+    my $err = $@ || "unknown error\n";
+    $err .= "\n" unless $err =~ /\n\z/;
+    print STDERR "  [!!] GPU Operator not ensured: $err"
+        . "       Run `ocp apply` to deploy it.\n";
+    return 0;
+}
+
+sub _kubernetes_node_name {
+    my ($self, $api) = @_;
+    my $cr = eval { $api->get('OCPNode', name => $self->name, namespace => 'ocp-system') };
+    my $h  = $cr ? $api->k8s->object_to_struct($cr) : {};
+    return $h->{status}{kubernetesNodeName} // $self->name;
+}
+
+sub _wait_gpu_label {
+    my ($self, $api, $k8s_name) = @_;
+
+    my $interval = gpu_label_interval();
+    my $tries    = int(gpu_label_timeout() / $interval);
+    for my $try (0 .. $tries) {
+        my $node   = eval { $api->get('Node', name => $k8s_name) };
+        my $labels = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
+        return 1 if grep { ($labels->{$_} // '') eq 'true' } @GPU_LABELS;
+        $self->wait_seconds($interval) if $try < $tries;
+    }
+    return 0;
+}
+
+# An `ocp apply` command object for its GPU Operator step, talking to the
+# cluster this command already has a client for (the cache OCP::Cmd::Apply's
+# _k8s_api reads), so the kubeconfig is not decrypted a second time.
+sub _apply_cmd {
+    my ($self, $api) = @_;
+    require OCP::Cmd::Apply;
+    my $apply = OCP::Cmd::Apply->new(command_chain => $self->command_chain);
+    $apply->{_k8s_api} = $api;
+    return $apply;
 }
 
 1;
@@ -525,6 +599,15 @@ both paths, because the machine takes as long as it takes whoever is driving it
 — and every phase the node passes through is printed as it happens.  Running
 out of it is reported as that and not as a failure of the machine: the CR keeps
 its phase, and re-running the command carries on from there.
+
+With C<--gpu>, a node that reached C<Ready> also gets the GPU Operator, by
+the same check C<ocp apply> runs ("Checking GPU Operator"): it waits for Node
+Feature Discovery to label the node with its NVIDIA card (up to five minutes),
+then deploys or confirms the operator.  A node joined after the last
+C<ocp apply> would otherwise sit there without C<nvidia.com/gpu> until the next
+one (k220).  When that cannot be done -- no label in time, a failed rollout,
+or C<--nowait> -- it says so on STDERR and names C<ocp apply> as the way to get
+the operator; the exit code still reflects only whether the node is Ready.
 
 Pass C<--nowait> to write the CR and return immediately.  The older
 C<--no_wait> spelling is kept as an alias.  There is deliberately no

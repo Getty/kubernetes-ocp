@@ -99,7 +99,11 @@ Revision history for OCP
       unless its OCPNode sets `spec.gpu` itself, and `gpu.enabled: false`
       switches it off on every node. The ClusterPolicy and NVIDIADriver
       CRDs are NVIDIA's own, from the pinned GPU Operator release, so the
-      ClusterPolicy OCP writes is accepted as written.
+      ClusterPolicy OCP writes is accepted as written. `ocp node add --gpu`
+      deploys the GPU Operator once NFD has labelled the new node, by the
+      same check `ocp apply` runs, so a GPU worker added after the last apply
+      does not wait for the next one; when it cannot, it says to run
+      `ocp apply`.
     - Node preparation, the RKE2/K3s server and agent installs, Cilium with its
       Gateway API CRDs and readiness wait, the uninstall of an ssh/local
       machine, the check for a previous cluster's Cilium state, GPU detection
