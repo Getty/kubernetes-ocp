@@ -5,8 +5,8 @@ use IO::K8s::APIObject
     resource_plural => 'ocpnodes';
 
 with 'IO::K8s::Role::Namespaced';
-k8s spec   => { Str => 1 };
-k8s status => { Str => 1 };
+k8s spec   => Opaque;
+k8s status => Opaque;
 1;
 
 __END__
