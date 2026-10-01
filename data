@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-10-01T00:26:11Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T00:24:03Z
+id: 214
+priority: high
+started: 2026-10-01T00:25:06Z
+status: review
+tags:
+- release
+- deps
+title: 'Auf Lib-Release umstellen: Floors 1.109/1.109/0.009, OCPNode-Maps auf Opaque,
+  Snapshot'
+updated: 2026-10-01T05:09:29Z
+---
+
+Nach dem gemeinsamen Release (IO::K8s 1.109, Kubernetes::REST 1.109, Net::Async::Kubernetes 0.009, Rex::GPU 0.003, Rex::Rancher 0.003):
+1. cpanfile-Floors anheben (IO::K8s 1.109, Kubernetes::REST 1.109, Net::Async::Kubernetes 0.009, Rex::Rancher 0.003, Rex::GPU passend).
+2. OCP::K8s::OCPNode/OCPNodeProvider: spec/status sind als { Str => 1 } deklariert; ab IO::K8s 1.109 ist das eine echte String-Map (Deprecation-Warnung bei Referenzen, gesehen u. a. aus lib/OCP/Robocop/Controller.pm:796 status.conditions). Auf Opaque umstellen.
+3. Nach dem Release: make snapshot (cpanfile.snapshot pinnt noch 1.108/1.108/0.008/0.002/0.002) und den TEMP-Vendor-Block aus Dockerfile/CI/Makefile entfernen; CI-Fix 00ea0cf liegt lokal.
+Punkte 1+2 gehen schon vorab gegen die lokal installierten Versionen (IO::K8s/REST/NAK lokal = Release-Stand; Rex::Rancher/Rex::GPU per -I ../rex-rancher/lib -I ../rex-gpu/lib).
+
+Punkte 1+2 in 013f833: cpanfile-Floors IO::K8s 1.109 / Kubernetes::REST 1.109 / Net::Async::Kubernetes 0.009 (Rex::Rancher 0.003 und Rex::GPU 0.003 standen schon drin = Release-Stand der Repos). OCPNode/OCPNodeProvider spec/status -> Opaque; vorher warnte IO::K8s 1.109 bei jedem nested Feld (spec.labels, status.conditions) und stringifizierte spec.gpu zu "1", jetzt bleibt es Boolean. Regressionstest in t/22-k8s-registration.t (rot gegen alten Stand, grün jetzt); t/33,36,43,92,156 grün gegen lokale 1.109 + -I rex-rancher/rex-gpu. OFFEN (Punkt 3, nach dem Release): make snapshot (cpanfile.snapshot pinnt noch 1.108/1.108/0.008/0.002/0.002 -> make test im Image läuft bis dahin gegen 1.108, das kein Opaque kennt) und den TEMP-Vendor-Block aus Dockerfile/CI/Makefile entfernen (CI-Fix 00ea0cf liegt lokal).
+
+Punkt 3 erledigt (Koordinator, 2026-10-01): cpanfile.snapshot per carton update nur für die fünf Dists (IO::K8s/REST 1.109, NAK 0.009, Rex::GPU/Rex::Rancher 0.003), TEMP-Vendor-Block aus Makefile/Dockerfile/.dockerignore/CI entfernt. Image per podman build gebaut, Suite im Image 128/2154 PASS. Hinweis: make build scheitert auf reuben an podman+buildkit (cgroup), nicht am Dockerfile.
