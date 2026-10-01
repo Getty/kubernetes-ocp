@@ -595,9 +595,17 @@ sub execute {
     # that is already gone would otherwise make the project impossible to tear
     # down -- but they do make the run incomplete: named at the end, exit 1
     # (k180).
+    #
+    # @unchecked, as [ host, [ warnings ] ]: machines uninstalled cleanly, but
+    # where the uninstall had no tool for part of Cilium's datapath (no tc, no
+    # iptables backend with -save and -restore), so that part may still be
+    # there (k213). Not a failure -- the library's own outcome check passed --
+    # but the next install on such a host meets it, so the run ends by naming
+    # them and asking for a reboot.
     my $hinted = 0;
     my @undeleted;
     my @still_installed;
+    my @unchecked;
     for my $node (@$nodes) {
         print "Deleting $node->{name}...\n";
 
@@ -691,6 +699,8 @@ sub execute {
                 }
             } else {
                 print "  RKE2/K3s uninstalled on $target.\n";
+                my $warnings = ref $result eq 'HASH' ? $result->{warnings} // [] : [];
+                push @unchecked, [ $target, $warnings ] if @$warnings;
             }
         }
     }
@@ -749,6 +759,18 @@ sub execute {
         print  STDERR "     Nothing is billed for them through OCP. Once they are\n";
         print  STDERR "     reachable, run on each of them:\n";
         print  STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh / k3s-agent-uninstall.sh\n";
+    }
+
+    if (@unchecked) {
+        print STDERR "\n";
+        printf STDERR "[!] %d machine(s) uninstalled, but part of Cilium's datapath could not be\n",
+               scalar @unchecked;
+        print  STDERR "    checked there and may still be on them:\n";
+        for my $left (@unchecked) {
+            my ($host, $warnings) = @$left;
+            print STDERR "       - $host: $_\n" for @$warnings;
+        }
+        print  STDERR "    Reboot them before RKE2/K3s is installed on them again.\n";
     }
 
     return 1 if @undeleted || @still_installed;
@@ -919,6 +941,12 @@ delete — a Hetzner server the API did not remove — is different: the local
 state is B<kept> so a re-run can find the survivor by its C<providerId>, the
 teardown is reported B<incomplete> on STDERR, and the command returns
 non-zero (C<k140>).
+
+An uninstall that succeeded but could not check part of Cilium's datapath on
+its machine -- no C<tc>, no iptables backend with C<-save> and C<-restore>
+(L<Rex::Rancher::Uninstall/uninstall_warnings>) -- is not a failure: its
+warnings go to STDERR as they come, and the run ends by naming those machines
+with them and asking for a reboot before the next install (C<k213>).
 
 =seealso
 

@@ -145,7 +145,8 @@ Revision history for OCP
       uninstallers leave behind, so it can be bootstrapped again without a
       reboot; state that survives fails the uninstall with a request to reboot,
       and a part it had no tool to check (no `tc`, no iptables) is named on
-      STDERR. A machine it could not clean is named at the end with the reason on
+      STDERR, and again at the end with the machines to reboot before their
+      next install. A machine it could not clean is named at the end with the reason on
       STDERR, and the run exits 1. An install onto a host that still carries a
       previous cluster's Cilium state stops at once and says to reboot it,
       instead of stalling every image pull until RKE2 times out.

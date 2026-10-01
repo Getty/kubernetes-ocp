@@ -114,7 +114,8 @@ lines. Those -- L<Rex::Rancher::Uninstall/uninstall_warnings>, a cleanup step
 the host had no tool for (C<tc>, an iptables backend), so that part of the
 datapath was not checked; a reboot clears it -- go to STDERR, one line each
 with the host in front, and fail nothing. Returns the C<run_command> result
-on success. A host that cannot be resolved is still a
+on success, with those warnings (without the host) under C<warnings> when
+there were any. A host that cannot be resolved is still a
 no-op: there is nowhere to uninstall from.
 
 This is OCP's one uninstall path; L<OCP::Node/Teardown>
@@ -173,11 +174,15 @@ sub delete_server {
     # unchecked; a reboot clears it. Not a failure (rex-rancher k79): only the
     # line's exit status decides that, and its message leaves these out. Said
     # on STDERR, as the diagnosis it is, whatever the outcome.
-    warn "$host: $_\n" for Rex::Rancher::Uninstall->uninstall_warnings($stdout, $stderr);
+    my @warnings = Rex::Rancher::Uninstall->uninstall_warnings($stdout, $stderr);
+    warn "$host: $_\n" for @warnings;
 
     my $failure = Rex::Rancher::Uninstall->uninstall_failure($exit, $stderr);
     die "$host: $failure" if defined $failure;
-    return $result;
+
+    # Handed back as well, so a caller summing up a run of hosts (ocp destroy,
+    # k213) can name the ones that may keep Cilium state.
+    return @warnings ? { %$result, warnings => \@warnings } : $result;
 }
 
 1;

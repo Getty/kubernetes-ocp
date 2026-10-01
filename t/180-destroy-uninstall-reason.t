@@ -62,6 +62,10 @@ my @events;
             if $main::DIE{$host};
         return { stdout => '', stderr => "rke2-uninstall.sh: not found", exit => 127 }
             if $main::EXIT{$host};
+        # ExistingHost's success with warnings (k213): the cleanup step the
+        # host had no tool for.
+        return { stdout => '', stderr => '', exit => 0, warnings => [ @{ $main::WARN{$host} } ] }
+            if $main::WARN{$host};
         return { stdout => '', stderr => '', exit => 0 };
     }
 }
@@ -73,7 +77,7 @@ my @events;
     sub migration_hint { "hint\n" }
 }
 
-our (%DIE, %EXIT);
+our (%DIE, %EXIT, %WARN);
 
 my $YAML = <<'YAML';
 name: ocpt
@@ -182,6 +186,30 @@ subtest 'an uninstall skipped for want of an SSH key is not a clean teardown' =>
     like $r->{err}, qr/^\s+- cp\.lan\b.*no SSH key/m,
         'the machines that kept their install are listed';
     unlike $r->{out}, qr/Cluster destroyed/, 'no success line';
+};
+
+# k213: an uninstall that could not check part of Cilium's datapath succeeded,
+# so the run is not incomplete -- but it must not end as if every machine were
+# known clean: the next install on that host would meet what is left.
+subtest 'uninstall warnings: named at the end, reboot asked for, still exit 0' => sub {
+    local %WARN = (
+        'w1.lan' => [ 'tc is not installed: Cilium tc attachments were not checked; a reboot clears them' ],
+        'cp.lan' => [ 'no iptables backend with both -save and -restore: CILIUM_* chains were not checked' ],
+    );
+    my $config = project();
+    my $r = run_destroy($config);
+
+    is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
+    is $r->{ret}, 0, 'exit 0: a warning is not a failure';
+    like $r->{err}, qr/\[!\] 2 machine\(s\) uninstalled, but part of Cilium's datapath/,
+        'a closing notice on STDERR';
+    like $r->{err}, qr/^\s+- w1\.lan: tc is not installed/m, 'w1 with its warning';
+    like $r->{err}, qr/^\s+- cp\.lan: no iptables backend/m, 'cp with its warning';
+    unlike $r->{err}, qr/^\s+- w2\.lan/m, 'a machine without warnings is not named';
+    like $r->{err}, qr/Reboot them before RKE2\/K3s is installed on them again/, 'what to do';
+    unlike $r->{err}, qr/INCOMPLETE/, 'not reported incomplete';
+    unlike $r->{out}, qr/tc is not installed/, 'nothing of it on STDOUT';
+    like $r->{out}, qr/Cluster destroyed/, 'the cluster is destroyed all the same';
 };
 
 subtest 'all clean: exit 0, success line' => sub {

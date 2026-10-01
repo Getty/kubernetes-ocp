@@ -131,6 +131,8 @@ subtest 'a cleanup step the host has no tool for is a warning on STDERR, not a f
     ok((grep { /^10\.0\.0\.5: no iptables backend with both -save and -restore/ } @$warn),
         'the missing iptables backend');
     ok !(grep { /rex-rancher-uninstall-warning/ } @$warn), 'said without the library\'s marker';
+    ok((grep { /^tc is not installed/ } @{ $res->{warnings} // [] }),
+        'and handed back under warnings, for a caller to sum up (k213)') or diag explain $res;
 
     ($h, $res, $err, $warn) = uninstall(
         ( map { $_ => "exit 1\n" } qw( rke2-uninstall.sh k3s-uninstall.sh rm ip ) ),
