@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-10-01T04:28:43Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T00:45:41Z
+id: 215
+priority: high
+started: 2026-10-01T04:28:43Z
+status: review
+tags:
+- security
+- secrets
+- citiai
+title: 'ocp init --nogit schreibt keine .gitignore: .ocp/ mit Klartext-age.key landet
+  im umgebenden Repo'
+updated: 2026-10-01T04:28:43Z
+---
+
+Befund (k212-Analyse, 2026-10-01): ocp init --nogit überspringt mit dem git init auch das Anlegen der .gitignore. Lebt das OCP-Projekt in einem Unterverzeichnis eines anderen Repos (geplant: citiai-core), wird .ocp/ -- mit dem entschlüsselten age.key und den entschlüsselten SSH-Keys -- beim nächsten git add mitcommittet, sofern das umgebende Repo .ocp/ nicht selbst ignoriert.
+Ziel: --nogit schreibt trotzdem eine .gitignore ins Projektverzeichnis (mindestens .ocp/), bzw. ocp verweigert/warnt, wenn .ocp/ im umgebenden Repo nicht ignoriert ist (git check-ignore). Test offline.
+
+2026-10-01 04:26 Also found: t/26-cli-dispatch.t ruft 'ocp init' ohne STDIN-Umleitung auf und hängt, wenn die Suite mit offenem, nicht-terminalem STDIN läuft (Agent-Harness); 'prove ... </dev/null' läuft durch. Nicht durch k215 verursacht.
+
+2026-10-01 04:28 ff9f59c. ocp init schreibt die Projekt-.gitignore (.ocp/) jetzt auch mit --nogit; zusätzlich bekommt .ocp/ eine eigene .gitignore ('*'), angelegt bevor ein Key dort landet, eine vorhandene wird nicht überschrieben -- damit ist .ocp/ unabhängig von Eltern-Repo-Regeln und auch bei verlorener Projekt-.gitignore ignoriert. Bestehende Projekte bekommen .ocp/.gitignore beim nächsten 'ocp init'. Nicht umgesetzt (war nur Vorschlag in k212 F5, nicht Ziel von k215): git init überspringen, wenn ohne --nogit schon ein Eltern-Worktree existiert. Tests: t/215-init-nogit-gitignore.t (frisch --nogit, Unterverzeichnis eines Eltern-Repos per git check-ignore/git status, verlorene Projekt-.gitignore, vorhandenes .ocp/, vorhandene .ocp/.gitignore), t/41,69,70,95 grün, volle Suite grün (128 Dateien/2154 Tests). Live-Nachweis: in citiai-core/cluster 'ocp init --nogit', dann im citiai-core-Root 'git status --untracked-files=all' -> nichts unter cluster/.ocp/.
