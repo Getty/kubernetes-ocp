@@ -98,9 +98,16 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp provider rm NAME` — blocked while OCPNodes reference it
 - `ocp provider ls` — list providers with reference counts
 - `ocp keys show [--purpose admin|automation|general] [--name NAME]` — print
-  a **public** key from `keys.yaml`; the only `ocp keys` subcommand there is
-  (see "PIN Loss & Admin-Key Rotation" below — there is no rotate/add
-  subcommand)
+  a **public** key from `keys.yaml` (see "PIN Loss & Admin-Key Rotation"
+  below — there is no rotate/add subcommand for SSH keys)
+- `ocp keys recipients ls|add AGE1|rm AGE1` — age recipients of the SOPS
+  files (k212): project key always, plus the governing `.sops.yaml`'s rule.
+  add/rm rewrite the project's own `.sops.yaml` (never one further up — edit
+  that by hand, then add/rm re-encrypts) and re-encrypt keys/secrets/
+  kubeconfig.yaml via File::SOPS rotate (PIN1). rm prints on STDERR what to
+  rotate (secrets.yaml entries, kubeconfig admin creds; git history stays
+  readable for the removed one). Inner age layer of keys.yaml private keys
+  stays project-key-only.
 
 ## ocp.yaml Schema — snake_case, no aliases
 
@@ -250,8 +257,8 @@ by dropping the bootstrap key, and neither is covered anywhere else.
   via `ocp inject-key` under `security_level: inject`), but none of that
   gives PIN1 alone a route into a control plane or an `ssh`-provider node.
   So losing PIN2 still means out-of-band recovery, not a command.
-- **No rotation command exists.** `ocp keys` has only `show`
-  (`OCP::Cmd::Keys` dispatches to `Show` alone); `ocp init`, even
+- **No rotation command exists.** `ocp keys` has only `show` (and
+  `recipients`, which is about age recipients, not SSH keys); `ocp init`, even
   `--force`, skips key generation entirely whenever an automation-purpose
   key is already in `keys.yaml` (`OCP::Cmd::Init`, unconditional on
   `--force`). Adding a replacement admin key today needs
@@ -302,6 +309,7 @@ ocp.yaml              # spec (git-tracked)
 keys.yaml             # encrypted SSH keys (git-tracked)
 secrets.yaml          # encrypted secrets (git-tracked)
 age.key.enc           # PIN1-protected age key (git-tracked)
+.sops.yaml            # optional: further age recipients (ocp keys recipients)
 kubeconfig.yaml       # encrypted kubeconfig (git-tracked, even in dev mode)
 .ocp/                 # local state (gitignored)
   age.key / age.pub   # decrypted/public age key

@@ -9,6 +9,7 @@ use Crypt::Age;
 use Crypt::AuthEnc::GCM;
 use Crypt::PBKDF2;
 use File::SOPS;
+use OCP::Secrets;
 use Digest::SHA qw(sha256_hex);
 use MIME::Base64 qw(encode_base64 decode_base64);
 
@@ -450,11 +451,12 @@ sub _read_keys_file_encrypted {
 sub _write_keys_file_encrypted {
     my ($self, $data) = @_;
 
-    my $recipient = $self->_get_age_recipient;
-
+    # The SOPS layer goes to every project recipient (k212); the private
+    # halves inside keep their own layer for the project key alone.
     my $encrypted = File::SOPS->encrypt(
         data       => $data,
-        recipients => [$recipient],
+        recipients => OCP::Secrets->new(project_dir => $self->project_dir, ocp => $self->ocp)
+            ->recipients_for($self->keys_file),
         format     => 'yaml',
     );
 

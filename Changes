@@ -50,6 +50,10 @@ Revision history for OCP
       The decrypted state in `.ocp/` stays out of git in every case: init
       writes the project `.gitignore` also with `--nogit` (a project inside
       another repository), and `.ocp/` carries its own `.gitignore`.
+      `ocp keys recipients ls|add|rm` encrypts them for further age recipients
+      (a second machine, given only its public key), kept in `.sops.yaml` as
+      sops does; add and rm re-encrypt with a new data key, and rm names what
+      the removed recipient could already read and should be rotated.
       With `--pins-stdin` every command answers its PIN prompts, in order, from
       lines on STDIN instead of the terminal, and dies naming a missing one.
     - `robocop.security_level` decides how robocop gets that key: from a

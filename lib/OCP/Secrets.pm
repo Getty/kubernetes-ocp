@@ -10,6 +10,7 @@ use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 use Crypt::Age;
 use Crypt::Age::Keys;
 use File::SOPS;
+use YAML::XS ();
 
 has ocp => (
     is      => 'lazy',
@@ -291,6 +292,191 @@ sub restore_age_recipient {
 }
 
 #
+# Recipients (k212)
+#
+# The project key -- .ocp/age.key, age.key.enc behind PIN1 -- is a recipient of
+# every SOPS file OCP writes, always. Further recipients (a Leitstand machine,
+# a second operator) come from the .sops.yaml that governs the files, the way
+# sops itself decides: the nearest one at or above the project directory, its
+# first creation rule whose path_regex matches. Only the rule's age
+# recipients are taken; what gets encrypted stays OCP's business (everything).
+#
+# Every write path asks recipients_for, so an `ocp apply` that rewrites
+# kubeconfig.yaml keeps the extra recipients instead of silently dropping
+# them. A recipient only ever hands over its public key.
+#
+# Not covered: the private halves inside keys.yaml carry a second age layer
+# of their own (OCP::Keys::_single_encrypt / _double_encrypt) for the project
+# key alone. Another recipient reads keys.yaml, not the project's SSH keys.
+
+# The rule OCP writes into a .sops.yaml it creates.
+our $SOPS_RULE_REGEX = '^(keys|secrets|kubeconfig)\.yaml$';
+
+sub sops_config_file { $_[0]->project_dir->child('.sops.yaml') }
+
+# The .sops.yaml sops would read for the project's files, or undef: the
+# nearest one at or above the project directory, up to the filesystem root.
+sub governing_sops_config {
+    my ($self) = @_;
+
+    my $dir = $self->project_dir->absolute;
+    while (1) {
+        my $candidate = $dir->child('.sops.yaml');
+        return $candidate->stringify if -f $candidate;
+        last if $dir->is_rootdir;
+        $dir = $dir->parent;
+    }
+    return undef;
+}
+
+# Is the governing .sops.yaml the project's own (the one OCP may rewrite)?
+sub sops_config_is_ours {
+    my ($self) = @_;
+
+    my $config = $self->governing_sops_config // return 0;
+    return 0 unless -f $self->sops_config_file;
+    return path($config)->realpath eq $self->sops_config_file->realpath ? 1 : 0;
+}
+
+# The age recipients the governing .sops.yaml names for $file; empty without
+# a .sops.yaml or without a rule matching the file -- a .sops.yaml further up
+# that is about other files must not break OCP. Anything else wrong with the
+# config dies, as it does for sops.
+sub sops_recipients_for {
+    my ($self, $file) = @_;
+
+    my $config = $self->governing_sops_config // return ();
+    my %args = eval {
+        File::SOPS->creation_rules_for(file => path($file)->absolute->stringify, config => $config);
+    };
+    if (my $err = $@) {
+        return () if $err =~ /\ANo creation rule in /;
+        die $err;
+    }
+    return @{ $args{recipients} // [] };
+}
+
+# Everyone $file is encrypted for: the project key first, then the
+# .sops.yaml recipients.
+sub recipients_for {
+    my ($self, $file) = @_;
+
+    my $project = $self->age_recipient
+        or croak "No age recipient found. Run generate_age_key first.";
+    my %seen;
+    return [ grep { !$seen{$_}++ } $project, $self->sops_recipients_for($file) ];
+}
+
+# The recipients besides the project key, as the governing .sops.yaml has
+# them for the project's files (keys.yaml stands for all three).
+sub extra_recipients {
+    my ($self) = @_;
+
+    my $project = $self->age_recipient // '';
+    return grep { $_ ne $project } $self->sops_recipients_for($self->project_dir->child('keys.yaml'));
+}
+
+# May OCP write the recipient list into the project's own .sops.yaml? Yes
+# when that is the governing one, or when there is none, or when the one
+# further up has no rule for the project's files. A rule further up that does
+# match is somebody else's file: OCP reads it and leaves it alone.
+sub sops_config_editable {
+    my ($self) = @_;
+
+    my $config = $self->governing_sops_config // return 1;
+    return 1 if $self->sops_config_is_ours;
+    my $ok = eval {
+        File::SOPS->creation_rules_for(
+            file   => $self->project_dir->child('keys.yaml')->absolute->stringify,
+            config => $config);
+        1;
+    };
+    return 1 if !$ok && $@ =~ /\ANo creation rule in /;
+    return 0;
+}
+
+# Write the project's .sops.yaml so the OCP files go to the project key plus
+# @$extras. An existing file keeps every rule but the one matching the OCP
+# files, which gets the new list; without one a rule is put first. Rewritten
+# through YAML, so comments in an existing file do not survive.
+sub set_sops_recipients {
+    my ($self, $extras) = @_;
+
+    croak "The project's SOPS files take their recipients from "
+        . $self->governing_sops_config . ", outside this project; OCP does not rewrite it"
+        unless $self->sops_config_editable;
+
+    my $project = $self->age_recipient
+        or croak "No age recipient found. Run generate_age_key first.";
+    my %seen;
+    my $age = join ',', grep { !$seen{$_}++ } $project, @$extras;
+
+    my $file = $self->sops_config_file;
+    my $conf = -f $file ? YAML::XS::LoadFile($file->stringify) : undef;
+    $conf = {} unless ref $conf eq 'HASH';
+    my $rules = $conf->{creation_rules} = ref $conf->{creation_rules} eq 'ARRAY'
+        ? $conf->{creation_rules} : [];
+
+    my %index;
+    for my $name (qw( keys.yaml secrets.yaml kubeconfig.yaml )) {
+        my $i = 0;
+        for my $rule (@$rules) {
+            my $re = ref $rule eq 'HASH' ? $rule->{path_regex} : undef;
+            last if !defined $re || !length $re || $name =~ /$re/;
+            $i++;
+        }
+        $index{$i}++ if $i < @$rules;
+    }
+    croak "The creation rules in ".$file." split keys.yaml, secrets.yaml and kubeconfig.yaml"
+        . " over several rules; give them one rule so they share one recipient list"
+        if keys %index > 1;
+
+    if (my ($i) = keys %index) {
+        $rules->[$i]{age} = $age;
+    } else {
+        unshift @$rules, { path_regex => $SOPS_RULE_REGEX, age => $age };
+    }
+
+    my $header = -f $file ? '' :
+        "# Who the OCP files (keys.yaml, secrets.yaml, kubeconfig.yaml) are\n"
+      . "# encrypted for: the project key first, then the others. Kept by\n"
+      . "# `ocp keys recipients add|rm`, which also re-encrypts the files.\n";
+    $file->spew($header . YAML::XS::Dump($conf));
+    return 1;
+}
+
+# Re-encrypt every SOPS file of the project whose recipients are not the ones
+# recipients_for names now, with a new data key (File::SOPS rotate, sops
+# updatekeys + rotate). Needs the project key; returns the files it rewrote.
+sub rotate_sops_files {
+    my ($self) = @_;
+
+    my $identity = $self->age_key_file->slurp;
+    chomp $identity;
+    $self->_assert_key_matches_project($identity);
+
+    my %have;
+    push @{ $have{ $_->{file} } }, $_->{recipient} for @{ $self->age_key_bindings };
+
+    my @done;
+    for my $file ($self->_sops_files) {
+        next unless -f $file;
+        my $want = $self->recipients_for($file);
+        next if join(',', sort @$want) eq join(',', sort @{ $have{ $file->basename } // [] });
+
+        File::SOPS->rotate(
+            file       => $file->stringify,
+            identities => [$identity],
+            recipients => $want,
+            format     => 'yaml',
+        );
+        $file->spew($self->ocp->quote_sops_lastmodified($file->slurp));
+        push @done, $file->basename;
+    }
+    return @done;
+}
+
+#
 # Password-encrypted age.key (Defense in Depth!)
 #
 
@@ -380,10 +566,10 @@ sub create_secrets {
     my $recipient = $self->age_recipient
         or croak "No age recipient found. Run generate_age_key first.";
 
-    # Encrypt with File::SOPS
+    # Encrypt with File::SOPS, for every recipient of the project (k212)
     my $encrypted = File::SOPS->encrypt(
         data       => \%secrets,
-        recipients => [$recipient],
+        recipients => $self->recipients_for($self->secrets_file),
         format     => 'yaml',
     );
 
@@ -513,7 +699,7 @@ sub save_kubeconfig {
     # Encrypt kubeconfig with SOPS
     my $encrypted = File::SOPS->encrypt(
         data       => $self->ocp->load($kubeconfig_yaml),
-        recipients => [$recipient],
+        recipients => $self->recipients_for($self->kubeconfig_file),
         format     => 'yaml',
     );
 
@@ -570,13 +756,14 @@ sub encrypt_file {
     # If content is YAML string, parse it first
     my $data = ref($content) ? $content : $self->ocp->load($content);
 
+    my $file_path = $self->project_dir->child($file);
+
     my $encrypted = File::SOPS->encrypt(
         data       => $data,
-        recipients => [$recipient],
+        recipients => $self->recipients_for($file_path),
         format     => 'yaml',
     );
 
-    my $file_path = $self->project_dir->child($file);
     $file_path->spew($self->ocp->quote_sops_lastmodified($encrypted));
 
     return 1;
@@ -677,6 +864,42 @@ SOPS file). A generated keypair is always new, so it can never be the
 recipient those files name — writing F<.ocp/age.pub> from it would always be
 the destructive move. The guard sits here, below every command, so it holds
 for paths added later as well.
+
+=head2 recipients_for
+
+    my $recipients = $secrets->recipients_for($secrets->secrets_file);
+
+Everyone a SOPS file of the project is encrypted for (k212): the project key
+first, then the age recipients of the first creation rule matching the file in
+the governing F<.sops.yaml> -- the nearest one at or above the project
+directory, as sops finds it. A F<.sops.yaml> without a rule for the file adds
+nothing. Every write path (C<create_secrets>, C<save_kubeconfig>,
+C<encrypt_file>, L<OCP::Keys>) encrypts for this list.
+
+=head2 governing_sops_config / sops_config_is_ours / sops_config_editable
+
+Which F<.sops.yaml> governs the project's files, whether it is the project's
+own, and whether OCP may write the list there (its own file, none at all, or
+one further up without a rule for the project's files).
+
+=head2 extra_recipients
+
+The recipients besides the project key.
+
+=head2 set_sops_recipients
+
+    $secrets->set_sops_recipients([ 'age1...' ]);
+
+Writes the project key plus these recipients into the project's
+F<.sops.yaml>: into the rule matching F<keys.yaml>, F<secrets.yaml> and
+F<kubeconfig.yaml>, or as a new first rule. Other rules stay; comments do
+not. Refuses a F<.sops.yaml> outside the project that has the rule.
+
+=head2 rotate_sops_files
+
+Re-encrypts every SOPS file whose recipients differ from L</recipients_for>
+with a new data key (L<File::SOPS/rotate>). Needs F<.ocp/age.key>. Returns the
+file names it rewrote.
 
 =head2 restore_age_recipient
 
