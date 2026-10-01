@@ -1,0 +1,18 @@
+---
+claimed_at: 2026-10-01T13:57:36Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T06:23:40Z
+id: 220
+priority: medium
+started: 2026-10-01T13:50:01Z
+status: review
+tags:
+- gpu
+title: GPU-Operator kommt erst beim nächsten apply, wenn GPU-Worker nach dem CP joinen
+updated: 2026-10-01T13:57:36Z
+---
+
+Live 2026-10-01 (CitiAI-Lab): erstes ocp apply nur mit cp-lab (ohne GPU) -> "GPU Operator skipped". Danach ocp node add --gpu für brain/cortex/crag: Nodes Ready, aber kein GPU-Operator, kein nvidia.com/gpu. Erst ein zweites ocp apply meldet "GPU node(s) detected" und deployt ihn. Erwartung: node add --gpu (bzw. robocop-Join mit spec.gpu) stellt den GPU-Operator sicher oder weist ausdrücklich auf ocp apply hin. Zusätzlich: auf GB10 bleibt nvidia-dcgm auf brain not-ready (dcgm-exporter CrashLoop, cortex/crag ok) – getrennt untersuchen.
+
+2026-10-01 13:57 Done in 73b2469. Entscheidung: echtes Sicherstellen statt nur Hinweis, weil der Deploy klein bleibt -- node add ruft nach Ready genau apply's setup_gpu_operator auf (über ein OCP::Cmd::Apply-Objekt mit demselben API-Client, keine zweite Kopie der Logik, gleiche deployed.yaml-Hashes). Einzige Zusatzlogik: bis 300s auf das NFD-Label pci-0300_10de/pci-0302_10de genau dieses Nodes warten (status.kubernetesNodeName), sonst würde setup_gpu_operator wieder 'skipped' sagen. Nur bei --gpu (spec.gpu), nicht bei Workern, die gpu.enabled bloß folgen (sonst 300s Wartezeit für jeden CPU-Worker auf GPU-Clustern). Nicht fatal: Label fehlt / Rollout scheitert / --nowait -> STDERR mit 'Run ocp apply'; Exit bleibt 0 = Node Ready (wie apply, das GPU-Fehler auch nur warnt). robocop selbst deployt nichts (sieht ocp.yaml/.ocp/deployed.yaml nie). Test: t/220-node-add-gpu-operator.t (7 Subtests), dazu 18b/70/208/211/179/196-rexfile/71/73/75/76/26/182/185 grün. Live nachzuweisen: auf einem Cluster ohne Operator 'ocp node add <gpu> --gpu' -> '[..] Checking GPU Operator', 'GPU node(s) detected: <node>', '[ok] GPU Operator deployed', danach nvidia.com/gpu allocatable. Also found: ocp apply selbst hat dieselbe Lücke -- Deploy.pm und Drift.pm prüfen den GPU-Operator VOR robocop_step/worker_step, ein erstes apply mit GPU-Workern in ocp.yaml sagt also auch 'skipped' (eigene Karte?). dcgm-exporter-CrashLoop auf brain (GB10) nicht angefasst.
