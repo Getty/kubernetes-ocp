@@ -187,7 +187,15 @@ sub run_task {
               . "remove the stale entry and run again:\n  "
               . OCP::KnownHosts->new(file => $self->known_hosts)->remove_hint($self->host) . "\n"
             : '';
-        croak "Rex task '$task' failed: $err$hint";
+        # die with a trailing newline, not croak: croak appends this caller's
+        # source line, and OCP::run_cli reads a located error as an internal
+        # one ("This is an internal error. Run again with --verbose"). A failed
+        # task is the remote step refusing or failing -- a preflight abort with
+        # its operator hint among them (k219) -- and its diagnosis is the
+        # task's own message above, not a Perl trace --verbose could add.
+        my $msg = "Rex task '$task' failed: $err$hint";
+        $msg .= "\n" unless $msg =~ /\n\z/;
+        die $msg;
     }
 
     return {
