@@ -1,0 +1,18 @@
+---
+claimed_at: 2026-10-01T14:03:56Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T05:40:55Z
+id: 219
+priority: low
+started: 2026-10-01T13:50:01Z
+status: review
+tags:
+- ux
+title: Preflight-Abbruch endet mit "This is an internal error"
+updated: 2026-10-01T14:03:56Z
+---
+
+install_rke2_server bricht bei Cilium-Resten korrekt mit "Reboot the host" ab, OCP hängt aber "This is an internal error. Run again with --verbose" an. Erwartete Preflight-Abbrüche (Rex-Task-die mit Bedienerhinweis) ohne diesen Zusatz ausgeben. Live gesehen 2026-10-01 (ocpt).
+
+2026-10-01 14:03 Done in 1113222: Ursache war nicht der Rexfile-die (der endet korrekt auf \n), sondern OCP::Rex::run_task: croak 'Rex task X failed: ...' hängt IMMER ' at lib/... line N.' an, und OCP::_clean_message wertet jede Fehlermeldung mit Ortsangabe als intern. Entscheidung: jeder fehlgeschlagene Rex-Task ist ein Bedienerfehler/Remote-Fehler, kein OCP-Bug -- die Diagnose steht in der Rex-Ausgabe (STDERR), --verbose hätte nichts hinzuzufügen; deshalb die Nachricht mit \n beenden statt croak, keine Sonderliste von 'erwarteten' Preflight-Texten. Echte Perl-Fehler mit Ortsangabe bleiben 'internal'. Test: t/219-rex-task-failure-not-internal.t (run_task mit gemocktem IPC::Run + _report_error), dazu 80, 81, 27, 168, 23, 30, 71-drift, 94, 178, 210, 84, 85, 72, 16 grün. Live nachzuweisen: ocp apply gegen einen Host mit Cilium-Resten -> 'Error: Rex task 'install_rke2_server' failed: ... Reboot the host, then run the install again.' OHNE die Internal-Error-Zeile, Exit 1.
