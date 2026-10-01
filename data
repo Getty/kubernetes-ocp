@@ -1,0 +1,19 @@
+---
+claimed_at: 2026-10-01T14:05:47Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-01T06:24:16Z
+id: 221
+priority: high
+started: 2026-10-01T13:50:01Z
+status: review
+tags:
+- release
+- deps
+title: 'Nach Release IO::K8s 1.110: Floor + Snapshot anheben, Image neu bauen'
+updated: 2026-10-01T14:05:47Z
+---
+
+IO::K8s 1.109 serialisiert JSONSchemaProps.minimum/maximum/multipleOf als JSON-String -> install_cilium scheitert beim Anlegen der Gateway-API-CRDs (400). Fix in io-k8s-p5 k196 (0a339625), Release 1.110 macht der Maintainer. Danach hier: cpanfile requires IO::K8s 1.110, carton update IO::K8s (nur diese Dist), Image bauen, Suite im Image. Bis dahin läuft das Lab mit dem lokalen Übergangs-Image raudssus/ocp:k214-iok8s110 (k214 + IO-K8s-1.110.tar.gz). Lücke im Test: keine OCP-Suite deckt das Anlegen echter CRDs mit Zahlengrenzen ab -> einen Test gegen die gebündelten Gateway-API-CRDs ergänzen.
+
+2026-10-01 14:05 Floor IO::K8s 1.110 in 73d2fb6 (zusammen mit dem Vendor-Mechanismus k222, der die lokale 1.110 ins Image bringt). Testlücke geschlossen in 4b5a2b3: t/221-crd-numeric-bounds.t schickt eine Gateway-API-CRD (port 1..65535, weight 0..1000000, multipleOf 0.5) und die mitgelieferte share/gpu-operator ClusterPolicy-CRD (17 Grenzen) durch exakt den install_cilium-Pfad (Rex::Rancher::Cilium::ensure_gateway_api_crds: YAML::PP -> Kubernetes::REST->ensure(hashref) -> IO::K8s -> POST) gegen einen Fake-API-Server und prüft den POST-Body. Verifiziert: mit Host-IO::K8s 1.109 ROT (alle Grenzen als "1" etc. -- genau der Live-Fehler), mit -I../io-k8s-p5/lib (1.110, k196) GRÜN. Bewusst kein skip bei <1.110: make test-host bleibt für diese Datei rot, bis der Host 1.110 hat; bindend ist make test im Image (vendored 1.110). Offen (Koordinator): Snapshot nach CPAN-Release von IO::K8s 1.110 neu ziehen (carton update IO::K8s), Image bauen, Suite im Image; live: install_cilium auf frischem Cluster legt die Gateway-API-CRDs ohne 400 an.
