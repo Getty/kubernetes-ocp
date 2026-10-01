@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-10-01T00:33:02Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-01T00:33:02Z
+created: 2026-10-01T00:23:41Z
+id: 210
+priority: high
+started: 2026-10-01T00:28:33Z
+status: done
+tags:
+- network
+- cilium
+- citiai
+title: L2-Default-Regex trifft die Fabric-NIC; Cilium devices nicht konfigurierbar
+updated: 2026-10-01T00:33:02Z
+---
+
+Befund (Hub-Analyse 2026-10-01): Die Default-Regex fuer network.l2.interfaces ist ^en[a-z0-9]+$ (Config.pm l2_interfaces) und trifft damit enp1s0f0np0, die QSFP-Fabric-NIC zwischen brain und cortex (192.168.100.0/30, RoCE) -- der Kommentar behauptet das Gegenteil. Ausserdem reicht _cilium_opts (share/Rexfile) kein helm_values an Rex::Rancher::Cilium durch, obwohl die Lib es kann; Cilium-devices lassen sich daher nicht setzen bzw. die Fabric-NIC nicht ausschliessen.
+Ziel: (1) Default so, dass Fabric-/RDMA-NICs (z. B. *np*, Mellanox/ConnectX) nicht matchen oder L2 ohne explizite Angabe gar nicht auf GPU-Nodes ankuendigt; Kommentar korrigieren. (2) ocp.yaml-Option fuer Cilium devices (bzw. generisches helm_values-Durchreichen) bis in install/upgrade_cilium.
+Kontext: Neuinstallation des Lab-Clusters citiai (Spec perl-developer docs/superpowers/specs/2026-10-01-citiai-comb-netz-design.md, Phase P2). Tests offline (t/), kein Live-Lauf noetig fuer done.
+
+08a367c. (1) L2-Default jetzt ['^eth[0-9]+(\.[0-9]+)?$', '^en[a-mo-zP0-9]+(\.[0-9]+)?$'] ($OCP::Config::DEFAULT_L2_INTERFACES, auch für den config-losen Fallback in Network.pm): kein 'n' nach dem en-Präfix = keine switchdev-Ports mit n<phys_port_name> (enp1s0f0np0, enP2p1s0f0np0); dafür PCI-Domain (enP7s7) und VLAN (enP7s7.30) drin. RE2-tauglich (keine Lookaheads). Grenze: ConnectX ohne np-Suffix matcht weiter -> network.l2.interfaces/node_selector; Kommentar korrigiert. (2) Gewähltes ocp.yaml-Schema: top-level 'cilium: { devices: [...], helm_values: {...} }' (devices = Kurzform von helm_values.devices, beides zugleich = Validierungsfehler, unbekannte Keys ebenso). Fließt als helm_values über Bootstrap -> OCP::Rex::install_server -> Rexfile install_cilium und über OCP::Drift remedy_params (neues Probe-Feld remedy_config) in jedes upgrade_cilium (Drift-Remedy + ocp update), damit der Helm-Upgrade sie nicht verliert. Gegen die echte Rex::Rancher::Cilium geprüft: devices landet im values-File. Tests: neu t/210-cilium-devices-l2.t; t/78 angepasst; t/08,25,38,39,47,51,52,71*,75,91,94,155,178,182,196 grün. Hinweis: eine geänderte cilium.devices auf laufendem Cluster greift erst beim nächsten upgrade_cilium (Versions-Drift oder ocp update cilium) - kein eigener Drift-Check auf Helm-Values.
