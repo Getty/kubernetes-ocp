@@ -1,0 +1,24 @@
+---
+class: standard
+created: 2026-10-03T05:39:13Z
+id: 224
+priority: high
+status: backlog
+tags:
+- registry
+- cache
+- performance
+title: ocp-cache pulls large images at ~1 MB/s; Docker Hub direct gives 200 MB/s
+updated: 2026-10-03T05:39:13Z
+---
+
+Observed on cluster citiai, 2026-10-03: four nodes pulled vllm/vllm-openai:v0.27.1 (~7 GiB compressed) through the docker.io mirror ocp-cache (registries.yaml: docker.io -> http://localhost:30500, NodePort of ocp-system/ocp-cache). After 45 min the ingest on crag stood at 3.7 GiB; the cache pod showed ~660m CPU and 59 MiB RAM. The same image pulled with ctr directly from registry-1.docker.io on crag and otho-lab ran at 200+ MiB/s and finished in minutes.
+
+So the pull-through cache is the bottleneck for big images, and with several nodes pulling the same image at once it gets worse (each node waits on the same slow upstream fetch).
+
+To look at:
+- what limits it: single replica, storage backend (emptyDir/hostPath on cp-lab?), proxy chunking, CPU limit
+- whether containerd falls back to the upstream when the mirror is slow (it does not — a mirror that answers is used)
+- options: more resources, a faster backend, or let big images bypass the mirror (e.g. per-registry override in registries.yaml)
+
+Workaround used: ctr -n k8s.io images pull --platform linux/amd64 docker.io/... on each node, and for arm64 an import from the local Docker (docker save | ctr images import).
