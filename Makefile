@@ -53,11 +53,10 @@ build: | vendor/ORDER
 #
 # Back to CPAN-only: `make vendor VENDOR=` leaves an empty vendor/ (.keep and
 # an empty ORDER), and the Dockerfile then installs nothing from it.
-# Pending until the next CPAN release (2026-10-14): Rex::LibSSH 0.005 (File
-# handle reports failed writes), Net::Async::Kubernetes 0.010, Rex::Rancher
-# 0.004 and WWW::Hetzner 0.102. Drop them from VENDOR and `carton update` the
-# four dists once they are on CPAN.
-VENDOR ?= rex-libssh p5-net-async-kubernetes rex-rancher p5-www-hetzner
+# Default is empty. For an image with siblings that are not released yet, name
+# them on the command line, e.g.
+#   make vendor VENDOR="rex-libssh rex-rancher p5-net-async-kubernetes p5-www-hetzner"
+VENDOR ?=
 SIBLINGS_DIR ?= ..
 
 vendor/ORDER:
