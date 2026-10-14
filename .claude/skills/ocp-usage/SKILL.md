@@ -216,8 +216,10 @@ gpu:
 - **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`,
   `ocp inject-key`, and `ocp destroy` when the node list contains an ssh
   machine. PIN1 prompts whenever only `age.key.enc` exists. Read-only paths
-  (`ocp status`, drift detection, `--dry-run`) never prompt — they open no
-  SSH connection.
+  (`ocp status`, drift detection, `--dry-run`) never prompt. They use the
+  Kubernetes API; the host probe for drift (legacy containerd template) opens
+  a read-only SSH connection with the project key when one is at hand and is
+  silently skipped otherwise — it prints no Rex output.
 - **Dev mode (`--nopassword`)**: single unencrypted key `.ocp/id_ed25519`, no
   PIN prompts — but a plain age.key is still generated and
   **kubeconfig.yaml stays encrypted even in dev mode**. Apply detects dev

@@ -61,6 +61,14 @@ has verbose => (
     default => 0,
 );
 
+# Read-only probes (ocp status, dry run) run a Rex task for its return value
+# and want nothing printed: no "--- Rex Output ---" block on STDERR (k189).
+# A failure still dies with the task's own message.
+has quiet => (
+    is      => 'ro',
+    default => 0,
+);
+
 # The known_hosts file Rex::LibSSH verifies the host against -- the same one
 # OCP::SSH records into (k168). Reaches the rex child as OCP_KNOWN_HOSTS, which
 # the Rexfile turns into UserKnownHostsFile.
@@ -170,12 +178,14 @@ sub run_task {
     # payload and the apply progress narrative a parser may read (house rule:
     # output channels). In debug mode it already streamed live above; don't
     # print it a second time.
-    print STDERR "--- Rex Output ---\n";
-    unless ($debug) {
-        print STDERR $out if length $out;
-        print STDERR $err if length $err;
+    unless ($self->quiet && !$debug) {
+        print STDERR "--- Rex Output ---\n";
+        unless ($debug) {
+            print STDERR $out if length $out;
+            print STDERR $err if length $err;
+        }
+        print STDERR "--- End Rex Output ---\n";
     }
-    print STDERR "--- End Rex Output ---\n";
 
     if (!$success) {
         # libssh's refusal of a key that differs from the recorded one: it

@@ -244,6 +244,7 @@ sub rex_prober {
             host     => $host,
             key_file => $key_file,
             verbose  => $verbose,
+            quiet    => 1,
         );
 
         my $sink = '';
