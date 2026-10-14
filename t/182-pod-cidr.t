@@ -162,6 +162,26 @@ subtest 'the Rexfile fallback is OCP::Config\'s default' => sub {
     is(OCPTest::Rexfile->helper('_default_pod_cidr')->(), $OCP::Config::DEFAULT_POD_CIDR, 'one value');
 };
 
+# k199: a server that is already set up here keeps the cluster-cidr it runs
+# with. Passing network.pod_cidr -- the Cilium pool of a pre-k182 cluster, which
+# the drift advice names -- would make a re-bootstrap a cluster-cidr change.
+subtest 'k199: an established server keeps its running cluster-cidr' => sub {
+    for my $dist (qw( rke2 k3s )) {
+        OCPTest::Rexfile->reset;
+        local $OCPTest::Rexfile::ESTABLISHED_CIDR = '10.42.0.0/16';
+        OCPTest::Rexfile->run_task("install_${dist}_server", { token => 't', pod_cidr => '10.0.0.0/8' });
+
+        my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
+        ok $o, "$dist: install_server called" or next;
+        is $o->{cluster_cidr}, '10.42.0.0/16', "$dist: the running cidr, not pod_cidr";
+    }
+
+    OCPTest::Rexfile->reset;
+    OCPTest::Rexfile->run_task('install_rke2_server', { token => 't', pod_cidr => '172.20.0.0/16' });
+    is(OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server')->{cluster_cidr},
+        '172.20.0.0/16', 'a fresh server (nothing established) gets pod_cidr');
+};
+
 subtest 'a server gets cluster-cidr from pod_cidr, on both distributions' => sub {
     for my $dist (qw( rke2 k3s )) {
         for my $case ([ '172.20.0.0/16', '172.20.0.0/16' ], [ undef, '10.42.0.0/16' ]) {

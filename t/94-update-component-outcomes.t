@@ -116,6 +116,13 @@ sub run_update {
             die "boom from $task\n" if $opt{fail_task} && $opt{fail_task} eq $task;
             return 1;
         };
+        # cert-manager goes over the cluster API now (k198): no Rex task.
+        local *OCP::Cmd::Update::_update_via_api = sub {
+            my ($self, $config, $comp, $version, $task) = @_;
+            push @calls, { task => $task, version => $version, api => 1 };
+            die "boom from $task\n" if $opt{fail_task} && $opt{fail_task} eq $task;
+            return 1;
+        };
         my %args = map { $_ => $opt{$_} } grep { $_ ne 'fail_task' } keys %opt;
         my $cmd = OCP::Cmd::Update->new(
             command_chain => [ FakeOcp->new(config => $file) ],
@@ -149,8 +156,11 @@ for my $dist (qw( rke2 k3s )) {
         is $err, '', 'nothing on STDERR';
         is_deeply tasks($calls), [qw( upgrade_cert_manager upgrade_cilium )],
             'cert-manager and Cilium are upgraded; the Gateway API CRDs ride along with Cilium';
-        ok $REX_TASK{$_}, "$_ exists in share/Rexfile" for @{ tasks($calls) };
-        is $_->{distribution}, $dist, "$_->{task} gets the distribution" for @$calls;
+        ok $REX_TASK{$_->{task}}, "$_->{task} exists in share/Rexfile" for grep { !$_->{api} } @$calls;
+        is $_->{distribution}, $dist, "$_->{task} gets the distribution"
+            for grep { !$_->{api} } @$calls;
+        ok( (grep { $_->{api} && $_->{task} eq 'upgrade_cert_manager' } @$calls),
+            'cert-manager is upgraded over the cluster API, not by Rex' );
 
         my $other = $dist eq 'rke2' ? 'k3s' : 'rke2';
         like $out, qr/^\s*$other\b.*not relevant for $dist/m, "$other: skipped, not relevant";
@@ -279,7 +289,9 @@ subtest 'every manifest component has a known outcome' => sub {
                 ok $REX_TASK{ $plan->{task} }, "$dist/$comp: $plan->{task} is in share/Rexfile"
                     if $plan->{action} eq 'rex';
                 ok length $plan->{note}, "$dist/$comp: $plan->{action} says why"
-                    if $plan->{action} ne 'rex';
+                    if $plan->{action} ne 'rex' && $plan->{action} ne 'api';
+                is $plan->{task}, 'upgrade_cert_manager', "$dist/$comp: the API update is cert-manager's"
+                    if $plan->{action} eq 'api';
             }
         }
     }

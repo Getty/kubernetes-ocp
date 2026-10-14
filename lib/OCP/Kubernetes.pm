@@ -38,6 +38,44 @@ has api => (
 # so nothing can ever appear underneath it.
 my $IN_CLUSTER_ONLY = '/dev/null/ocp-in-cluster';
 
+# A kubeconfig document made of the pod's service account (k205): server from
+# KUBERNETES_SERVICE_HOST/PORT, the CA and the token by path -- tokenFile, so a
+# rotated token is picked up. For the one consumer that needs a kubeconfig FILE
+# in a pod: a worker join, whose Rex::Rancher agent install reads the control
+# plane's version through it (robocop has no admin kubeconfig). Undef outside a
+# pod, or when the account's files are not there. $dir is a test seam.
+sub in_cluster_kubeconfig {
+    my ($class, %opt) = @_;
+
+    my $dir  = $opt{dir}  // '/var/run/secrets/kubernetes.io/serviceaccount';
+    my $host = $opt{host} // $ENV{KUBERNETES_SERVICE_HOST};
+    my $port = $opt{port} // $ENV{KUBERNETES_SERVICE_PORT} // 443;
+    return undef unless defined $host && length $host;
+    return undef unless -r "$dir/token" && -r "$dir/ca.crt";
+
+    $host = "[$host]" if $host =~ /:/ && $host !~ /^\[/;
+
+    return join "\n",
+        'apiVersion: v1',
+        'kind: Config',
+        'clusters:',
+        '- name: in-cluster',
+        '  cluster:',
+        "    server: https://$host:$port",
+        "    certificate-authority: $dir/ca.crt",
+        'users:',
+        '- name: robocop',
+        '  user:',
+        "    tokenFile: $dir/token",
+        'contexts:',
+        '- name: in-cluster',
+        '  context:',
+        '    cluster: in-cluster',
+        '    user: robocop',
+        'current-context: in-cluster',
+        '';
+}
+
 sub _build_api {
     my ($self) = @_;
 

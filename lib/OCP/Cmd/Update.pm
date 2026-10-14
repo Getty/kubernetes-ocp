@@ -285,7 +285,7 @@ sub _plan_component {
     if ($comp eq 'cert_manager') {
         return { action => 'skip', note => 'cert-manager is disabled (nocert)' }
             if $config->no_cert;
-        return { action => 'rex', task => 'upgrade_cert_manager' };
+        return { action => 'api', task => 'upgrade_cert_manager' };
     }
 
     if ($APPLIED_BY_APPLY{$comp}) {
@@ -304,6 +304,7 @@ sub _plan_component {
 sub _plan_label {
     my ( $self, $plan ) = @_;
     return $plan->{action} eq 'rex'    ? 'via '.$plan->{task}
+         : $plan->{action} eq 'api'    ? 'via the cluster API ('.$plan->{task}.')'
          : $plan->{action} eq 'apply'  ? 'via ocp apply'
          : $plan->{action} eq 'refuse' ? 'refused, see below'
          :                               'skip: '.$plan->{note};
@@ -317,7 +318,7 @@ sub _update_component {
     my $plan = $update->{plan}
         // $self->_plan_component($config, $update, { $comp => 1 });
 
-    unless ($plan->{action} eq 'rex') {
+    unless ($plan->{action} eq 'rex' || $plan->{action} eq 'api') {
         # execute stops on refusals before this runs; a direct caller gets
         # one as the error it is.
         die $plan->{note} if $plan->{action} eq 'refuse';
@@ -326,7 +327,12 @@ sub _update_component {
     }
 
     print "Updating $comp to $version...\n";
-    $self->_update_via_rex($config, $comp, $version, $plan->{task});
+    if ($plan->{action} eq 'api') {
+        $self->_update_via_api($config, $comp, $version, $plan->{task});
+    }
+    else {
+        $self->_update_via_rex($config, $comp, $version, $plan->{task});
+    }
 
     # Track in status
     $config->status->{components} //= {};
@@ -343,6 +349,24 @@ sub _update_component {
 # secure cluster could not work at all. OCP::ClusterKey answers the question
 # properly; cluster_ssh_key caches it so a multi-component update prompts for
 # PIN2 once. k87.
+# The API remedies (k198): server-side apply from this machine with the
+# project kubeconfig, the way `ocp apply` does -- no SSH key, no PIN2.
+sub _update_via_api {
+    my ($self, $config, $component, $version, $task) = @_;
+
+    die "unknown API update $task\n" unless $task eq 'upgrade_cert_manager';
+
+    require OCP::Secrets;
+    require OCP::Cmd::Apply::K8s;
+    require OCP::Cmd::Apply::Network;
+
+    my $kubeconfig = OCP::Secrets->new(project_dir => $config->project_dir)->read_kubeconfig
+        or die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n";
+    my $api = OCP::Cmd::Apply::K8s::api($self, $kubeconfig);
+
+    OCP::Cmd::Apply::Network::upgrade_cert_manager($self, $api, $version);
+}
+
 sub _update_via_rex {
     my ($self, $config, $component, $version, $task) = @_;
 

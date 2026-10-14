@@ -419,9 +419,24 @@ sub _install_server {
                  : ();
 
     # One set of options, for the checks up front and for the install.
+    #
+    # network.pod_cidr is the cluster-cidr of a FRESH server only (k199). One
+    # that is already set up here keeps the cidr it runs with: moving it is a
+    # cluster-cidr change that rex-rancher k67 refuses for a re-bootstrap and
+    # RKE2 refuses for a joining control plane -- and a cluster from before
+    # k182 runs 10.42.0.0/16 under a Cilium pool of 10.0.0.0/8, so the value in
+    # ocp.yaml (the pool, as the drift advice has it) is not the server's.
+    my $wanted_cidr = $params->{pod_cidr} || _default_pod_cidr();
+    my $running_cidr = eval {
+        scalar Rex::Rancher::Distribution->new_for($distribution)->established_cluster_cidr;
+    };
+    if (defined $running_cidr && length $running_cidr && $running_cidr ne $wanted_cidr) {
+        say "[WARN] the server here runs cluster-cidr $running_cidr, not $wanted_cidr; "
+          . "keeping it (a running cluster's pod network is not changed by apply)";
+    }
     my %opts = (
         _server_opts($distribution, $params, \@tls_sans),
-        cluster_cidr => $params->{pod_cidr} || _default_pod_cidr(),
+        cluster_cidr => (defined $running_cidr && length $running_cidr) ? $running_cidr : $wanted_cidr,
     );
 
     # Everything install_server would refuse, asked before prepare_node
@@ -962,28 +977,7 @@ task "upgrade_cilium", sub {
     say "Cilium upgraded successfully to $version";
 };
 
-desc "Upgrade cert-manager to newer version";
-task "upgrade_cert_manager", sub {
-    my $params = task_params(shift);
-    my $version = $params->{version} or die "version parameter required\n";
-    my $distribution = $params->{distribution} || 'rke2';
-
-    say "Upgrading cert-manager to $version...";
-
-    my $kubeconfig = $distribution eq 'k3s' ? '/etc/rancher/k3s/k3s.yaml' : '/etc/rancher/rke2/rke2.yaml';
-    my $kubectl = $distribution eq 'k3s' ? 'kubectl' : '/var/lib/rancher/rke2/bin/kubectl';
-
-    # cert-manager can be upgraded by applying new manifests
-    my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
-
-    say "Applying cert-manager $version manifests...";
-    run "$kubectl --kubeconfig=$kubeconfig apply -f $url";
-
-    say "Waiting for cert-manager rollout...";
-    run "$kubectl --kubeconfig=$kubeconfig wait --for=condition=Available " .
-        "--timeout=300s deployment/cert-manager -n cert-manager";
-
-    say "cert-manager upgraded successfully to $version";
-};
+# upgrade_cert_manager is not a Rex task any more: OCP applies the manifest
+# itself over the cluster API, with the installation's field manager (k198).
 
 1;

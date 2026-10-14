@@ -1091,6 +1091,9 @@ sub _on_node_event {
             join_token    => $self->join_token,
             distribution  => $self->distribution,
             pod_cidr      => $self->pod_cidr,
+            # The pod's own service account as a kubeconfig, so a worker join
+            # gets Rex::Rancher's version-skew check too (k205).
+            kubeconfig    => OCP::Kubernetes->in_cluster_kubeconfig,
             verbose       => $self->verbose,
             reconciler_id => 'robocop',
             %gpu_flags,

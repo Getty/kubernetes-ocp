@@ -6,6 +6,7 @@ use warnings;
 
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Deploy;
+use OCP::Cmd::Apply::Network;
 use OCP::Drift;
 use OCP::Rex;
 use OCP::Secrets;
@@ -583,6 +584,17 @@ sub run_remedy {
     my ($self, $config, $entry) = @_;
 
     my $remedy = $entry->{remedy} or return 0;
+
+    # An API remedy runs from here, over the cluster API like the rest of the
+    # reconcile: no SSH, no key, no PIN2 (k198).
+    if (($remedy->{type} // '') eq 'api') {
+        die "unknown API remedy $remedy->{task}\n"
+            unless $remedy->{task} eq 'upgrade_cert_manager';
+        OCP::Cmd::Apply::Network::upgrade_cert_manager(
+            $self, $self->_k8s_api, $remedy->{params}{version});
+        return 1;
+    }
+
     return 0 unless ($remedy->{type} // '') eq 'rex';
 
     # A host-side probe (OCP::Drift's rex_probe mode) names the machine it

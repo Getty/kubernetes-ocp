@@ -61,8 +61,8 @@ subtest 'the Rexfile declares the tasks OCP runs, and no others' => sub {
         install_rke2_agent  => 1, install_k3s_agent  => 1,
         # OCP::Rex::install_server, after the server
         install_cilium      => 1,
-        # OCP::Drift's remedies and `ocp update`
-        upgrade_cilium      => 1, update_gateway_api => 1, upgrade_cert_manager => 1,
+        # OCP::Drift's remedies and `ocp update` (cert-manager is an API remedy, k198)
+        upgrade_cilium      => 1, update_gateway_api => 1,
         # OCP::Drift's read-only probe and its remedy
         detect_legacy_containerd_template  => 1,
         cleanup_legacy_containerd_template => 1,

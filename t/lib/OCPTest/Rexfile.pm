@@ -49,6 +49,10 @@ our %CAN_RUN;
 our $OS     = 'Debian';
 our $SERVER = '203.0.113.7';
 
+# What the host's running server says its cluster-cidr is (Rex::Rancher::
+# Distribution::established_cluster_cidr); undef = no server set up here yet.
+our $ESTABLISHED_CIDR;
+
 # Tasks do_task runs for real instead of only recording (by name).
 our %FOLLOW;
 
@@ -113,6 +117,14 @@ sub load {
       return $LIB_DEFAULT{$fq}->(@_) if $LIB_DEFAULT{$fq};
       return 1;
     };
+  }
+
+  # Not recorded (it is a read): answered from $ESTABLISHED_CIDR, so the real
+  # library does not reach for a host through the stubbed run().
+  {
+    no strict 'refs';
+    no warnings 'redefine';
+    *Rex::Rancher::Distribution::established_cluster_cidr = sub { $ESTABLISHED_CIDR };
   }
 
   # Raw bytes, as rex reads it: the Rexfile has no `use utf8`.

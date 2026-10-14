@@ -13,6 +13,7 @@ use JSON::PP ();
 use OCP::Config ();
 use OCP::Drift;
 use OCP::Versions;
+use OCP::Cmd::Apply::K8s;
 
 # CoreDNS ConfigMap names per distribution. Stored here (and aliased into
 # OCP::Drift) so the writer and the drift probe read the same list — a writer
@@ -51,11 +52,10 @@ surface (t/31, t/39) keeps working.
 =cut
 
 sub apply_cert_manager {
-    my ($self) = @_;
+    my ($self, $version, $api) = @_;
 
-    my $api = $self->_k8s_api;
-
-    my $version = OCP::Versions->get_component_version('cert_manager');
+    $api //= $self->_k8s_api;
+    $version //= OCP::Versions->get_component_version('cert_manager');
     my $url = "https://github.com/cert-manager/cert-manager/releases/download/$version/cert-manager.yaml";
 
     # Download manifest via HTTP
@@ -66,7 +66,26 @@ sub apply_cert_manager {
         unless $response->{success};
 
     # Parse multi-document YAML and server-side apply each resource
-    $self->_apply_yaml_string($api, $response->{content});
+    OCP::Cmd::Apply::K8s::apply_yaml_string($self, $api, $response->{content});
+}
+
+# Upgrade cert-manager on a running cluster (k198). The same server-side apply
+# with the same field manager as the installation -- the old Rex task ran a
+# client-side `kubectl apply` on the node, which mixed field managers and put
+# kubectl on a code path that has none by house rule (ADR 0007).
+sub upgrade_cert_manager {
+    my ($self, $api, $version) = @_;
+
+    die "cert-manager version required\n" unless defined $version && length $version;
+
+    print "  Applying cert-manager $version manifests...\n";
+    apply_cert_manager($self, $version, $api);
+
+    print "  Waiting for cert-manager rollout...\n";
+    OCP::Cmd::Apply::K8s::poll_deployment_ready($self, $api, 'cert-manager', 'cert-manager', 300)
+        or die "cert-manager deployment not ready after the upgrade to $version\n";
+
+    return 1;
 }
 
 sub wait_cert_manager_and_create_issuers {

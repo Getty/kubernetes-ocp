@@ -576,7 +576,9 @@ subtest 'ocp update on k3s hands every Rex task the drift remedy params (k163)' 
     is $config->distribution, 'k3s', 'the fixture is a k3s cluster';
     my $update = OCP::Cmd::Update->new(command_chain => [ FakeOcp->new ]);
 
-    my %task = (cilium => 'upgrade_cilium', cert_manager => 'upgrade_cert_manager');
+    # cert-manager is upgraded over the cluster API (k198), so only Cilium is a
+    # Rex task with remedy params to compare.
+    my %task = (cilium => 'upgrade_cilium');
     for my $comp (sort keys %task) {
         my $version = OCP::Versions->get_component_version($comp);
         my ($out, $err, $calls) = capture(sub {

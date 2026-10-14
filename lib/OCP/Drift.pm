@@ -104,6 +104,7 @@ our @COMPONENT_PROBES = (
         name      => 'cert-manager',
         namespace => 'cert-manager',
         remedy    => 'upgrade_cert_manager',
+        remedy_type => 'api',    # server-side apply from the CLI, no kubectl on the node (k198)
         skip_if   => 'no_cert',
     },
     # NFD is deployed on every cluster (the GPU operator's gating reads the
@@ -372,7 +373,7 @@ sub _probe_remedy {
     return undef unless $probe->{remedy};
 
     return {
-        type   => 'rex',
+        type   => $probe->{remedy_type} // 'rex',
         task   => $probe->{remedy},
         params => $self->remedy_params($self->config, $probe->{component}, $expected),
     };
