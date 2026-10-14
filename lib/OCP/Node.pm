@@ -622,9 +622,21 @@ sub _wait_ready {
     }
 
     if ($ready) {
+        # status.publicIP is the connection/teardown address (spec.host for
+        # ssh workers, a hostname often) and stays that. What the cluster
+        # itself says the node's address is goes to status.address (k174).
+        my $address;
+        for my $want (qw(ExternalIP InternalIP)) {
+            ($address) = map { $_->{address} }
+                grep { ($_->{type} // '') eq $want && length($_->{address} // '') }
+                @{ $node_hash->{status}{addresses} // [] };
+            last if $address;
+        }
+
         $self->_patch_status(
             phase              => 'Ready',
             kubernetesNodeName => $k8s_name,
+            ($address ? (address => $address) : ()),
             joinedAt           => _rfc3339_now(),
             message            => 'Node joined and Ready',
         );

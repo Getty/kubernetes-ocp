@@ -116,7 +116,11 @@ spec:
 
               publicIP:
                 type: string
-                description: "Public IP address"
+                description: "Address OCP connects to and tears the machine down by (spec.host for ssh nodes, so possibly a hostname)"
+
+              address:
+                type: string
+                description: "Node address as the cluster reports it (ExternalIP, else InternalIP), set once the node is Ready"
 
               privateIP:
                 type: string
@@ -187,6 +191,9 @@ spec:
     - name: IP
       type: string
       jsonPath: .status.publicIP
+    - name: Address
+      type: string
+      jsonPath: .status.address
     - name: Provider
       type: string
       jsonPath: .spec.providerRef

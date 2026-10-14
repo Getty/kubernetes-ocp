@@ -1068,6 +1068,28 @@ subtest '_wait_ready returns true when k8s Node is Ready' => sub {
     ok scalar(grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH')), 'status patched on Ready';
 };
 
+subtest 'k174: Ready records the cluster-reported address next to publicIP' => sub {
+    my $n = ready_node('w3a', 'True');
+    $n->{status}{addresses} = [
+        { type => 'Hostname',   address => 'w3a' },
+        { type => 'InternalIP', address => '10.5.10.31' },
+    ];
+    my $k = StrictK8s::build(
+        cr   => ocpnode(metadata => { name => 'w3a', namespace => 'ocp-system' },
+                        status   => { phase => 'Joining', kubernetesNodeName => 'w3a',
+                                      publicIP => 'w3a.vm' }),
+        node => $n,
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    ok $node->_wait_ready, 'ready';
+
+    my ($patch) = grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    my $sent = JSON::MaybeXS::decode_json($patch->{body});
+    is $sent->{status}{address}, '10.5.10.31', 'status.address is the node InternalIP';
+    ok !exists $sent->{status}{publicIP}, 'publicIP (connection/teardown address) is left alone';
+};
+
 subtest '_wait_ready returns false when Node not yet Ready' => sub {
     my $k = StrictK8s::build(
         cr   => ocpnode(metadata => { name => 'w4', namespace => 'ocp-system' },

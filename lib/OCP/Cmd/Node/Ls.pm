@@ -59,7 +59,7 @@ sub execute {
             $n->{spec}{role}              // '',
             $n->{status}{phase}           // 'Pending',
             $n->{spec}{providerRef}       // '',
-            $n->{status}{publicIP}         // '',
+            $n->{status}{address} // $n->{status}{publicIP} // '',
             _age($n->{metadata}{creationTimestamp});
     }
 
