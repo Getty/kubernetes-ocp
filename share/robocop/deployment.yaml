@@ -44,6 +44,12 @@ spec:
             - matchExpressions:
               - key: node-role.kubernetes.io/control-plane
                 operator: Exists
+              # The image is built for amd64 only (k197). On an arm64 control
+              # plane the pod stays Pending with a scheduling reason instead of
+              # dying with "exec format error" after an image pull.
+              - key: kubernetes.io/arch
+                operator: In
+                values: [amd64]
       containers:
       - name: controller
         image: raudssus/ocp:latest
