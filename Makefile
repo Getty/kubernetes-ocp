@@ -53,9 +53,11 @@ build: | vendor/ORDER
 #
 # Back to CPAN-only: `make vendor VENDOR=` leaves an empty vendor/ (.keep and
 # an empty ORDER), and the Dockerfile then installs nothing from it.
-# Nothing pending: IO::K8s 1.110, Rex::GPU 0.004 and Crypt::Age 0.005 are on
-# CPAN (2026-10-01) and pinned in cpanfile.snapshot.
-VENDOR ?=
+# Pending until the next CPAN release (2026-10-14): Rex::LibSSH 0.005 (File
+# handle reports failed writes), Net::Async::Kubernetes 0.010, Rex::Rancher
+# 0.004 and WWW::Hetzner 0.102. Drop them from VENDOR and `carton update` the
+# four dists once they are on CPAN.
+VENDOR ?= rex-libssh p5-net-async-kubernetes rex-rancher p5-www-hetzner
 SIBLINGS_DIR ?= ..
 
 vendor/ORDER:
