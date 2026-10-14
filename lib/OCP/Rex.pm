@@ -174,11 +174,20 @@ sub run_task {
     if (defined $old_params) { $ENV{REX_TASK_PARAMS} = $old_params; } else { delete $ENV{REX_TASK_PARAMS}; }
     if (defined $old_known_hosts) { $ENV{OCP_KNOWN_HOSTS} = $old_known_hosts; } else { delete $ENV{OCP_KNOWN_HOSTS}; }
 
+    # What a failed task says: Rex's own ERROR lines, each message once, minus
+    # the "Error executing task:" header. Rex repeats that message in its log,
+    # in the task error and in the summary, and printing all of it showed the
+    # operator one refusal three times (k201). Empty when Rex logged no ERROR
+    # line -- then the whole of stderr is the diagnosis, as before.
+    my $reason = $success ? '' : _failure_reason("$out\n$err");
+
     # Rex output is diagnosis, so it goes to STDERR -- STDOUT is reserved for the
     # payload and the apply progress narrative a parser may read (house rule:
     # output channels). In debug mode it already streamed live above; don't
-    # print it a second time.
-    unless ($self->quiet && !$debug) {
+    # print it a second time. A failure whose reason was extracted carries it in
+    # the error below, so the raw log is left for --verbose/OCP_REX_DEBUG.
+    my $show_log = !$self->quiet && !($reason && !$self->verbose);
+    if ($show_log || $debug && !$self->quiet) {
         print STDERR "--- Rex Output ---\n";
         unless ($debug) {
             print STDERR $out if length $out;
@@ -203,7 +212,7 @@ sub run_task {
         # task is the remote step refusing or failing -- a preflight abort with
         # its operator hint among them (k219) -- and its diagnosis is the
         # task's own message above, not a Perl trace --verbose could add.
-        my $msg = "Rex task '$task' failed: $err$hint";
+        my $msg = "Rex task '$task' failed: " . ($reason || $err) . $hint;
         $msg .= "\n" unless $msg =~ /\n\z/;
         die $msg;
     }
@@ -213,6 +222,21 @@ sub run_task {
         stderr => $err,
         exit   => $? >> 8,
     };
+}
+
+# The distinct messages of Rex's "ERROR - ..." log lines, in order, newline
+# separated. The "Error executing task:" header Rex writes first carries no
+# diagnosis of its own.
+sub _failure_reason {
+    my ($log) = @_;
+    my (%seen, @msgs);
+    for my $line (split /\n/, $log) {
+        next unless $line =~ /\bERROR\s+-\s+(.*\S)\s*$/;
+        my $m = $1;
+        next if $m =~ /^Error executing task:?$/i;
+        push @msgs, $m unless $seen{$m}++;
+    }
+    return join "\n", @msgs;
 }
 
 sub _find_rexfile {
