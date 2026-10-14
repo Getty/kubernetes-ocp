@@ -223,6 +223,7 @@ sub is_reachable {
     my ($self) = @_;
 
     my $result = $self->run('true');
+    $self->{_last_probe} = $result;
     return $result->{exit} == 0;
 }
 
@@ -277,6 +278,19 @@ sub wait_for_ssh {
     my $start = time;
     while (time - $start < $timeout) {
         return 1 if $self->is_reachable;
+        my $result = delete $self->{_last_probe} // {};
+
+        # A refused key is an answer, not a boot in progress: sshd is up and
+        # said no, and waiting out the budget would only send the operator to
+        # look at the network (k204).
+        if (($result->{stderr} // '') =~ /Permission denied/i) {
+            my $key = $self->key_file // 'the default ssh identity';
+            die "SSH key rejected by ${\$self->host}: user "
+              . $self->user . " with key $key was refused (Permission denied).\n"
+              . "The host is reachable; its authorized_keys does not hold this key.\n"
+              . "Add the public key there (ocp inject-key, or by hand) and run again.\n";
+        }
+
         sleep $interval;
         last if $interrupted;
     }
