@@ -135,7 +135,11 @@ sub deploy {
     print "  [..] Checking GPU Operator...\n";
     my $gpu_outcome = eval { $self->_setup_gpu_operator($config) };
     if ($@) {
-        print "  [WARN] GPU Operator setup failed: $@\n";
+        # Only a real failure gets here ('skipped' is a return value), and it
+        # leaves a cluster that has GPU nodes without GPU workloads. Said on
+        # STDERR, counted, and the run ends non-zero (k203).
+        print STDERR "  [!!] GPU Operator setup failed: $@";
+        push @{ $self->{_failed_components} }, 'GPU Operator';
     } else {
         $self->_report_component('GPU Operator', $gpu_outcome);
     }

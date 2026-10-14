@@ -60,6 +60,22 @@ my %CRITICAL_NS = map { $_ => 1 } qw(kube-system);
 
 my $CRASHLOOP_MIN_RESTARTS = 2;
 
+# A DaemonSet pod that needs its sibling first (dcgm-exporter waits for the
+# hostengine, k202) crashes a few times while it comes up and then settles. A
+# pod younger than this with fewer restarts than the cap is still starting up,
+# not in a durable CrashLoop.
+my $CRASHLOOP_GRACE_SECONDS = 300;
+my $CRASHLOOP_GRACE_RESTARTS = 5;
+
+sub _pod_age_seconds {
+    my ($pod) = @_;
+    my $ts = $pod->{metadata}{creationTimestamp} // return undef;
+    require Time::Local;
+    my @t = $ts =~ /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)/ or return undef;
+    my $epoch = eval { Time::Local::timegm($t[5], $t[4], $t[3], $t[2], $t[1] - 1, $t[0]) };
+    return defined $epoch ? time - $epoch : undef;
+}
+
 # healthy | starting | failing (+reason)
 sub classify_pod {
     my ($self, $pod) = @_;
@@ -81,6 +97,11 @@ sub classify_pod {
         next unless $reason && $DURABLE_WAIT{$reason};
         next if $reason eq 'CrashLoopBackOff'
             && ($cs->{restartCount} // 0) < $CRASHLOOP_MIN_RESTARTS;
+        if ($reason eq 'CrashLoopBackOff'
+            && ($cs->{restartCount} // 0) < $CRASHLOOP_GRACE_RESTARTS) {
+            my $age = _pod_age_seconds($pod);
+            next if defined $age && $age < $CRASHLOOP_GRACE_SECONDS;
+        }
         $reasons{$reason} = 1;
     }
     return ('failing', join(', ', sort keys %reasons)) if %reasons;
@@ -234,9 +255,15 @@ sub finish {
         print "     ocp kubeconfig -e\n\n";
     }
 
+    my @failed = @{ $self->{_failed_components} // [] };
+    if (@failed) {
+        print STDERR "Apply did not complete: " . join(', ', @failed) . " failed.\n";
+        print STDERR "The cluster is not at spec; fix the cause and run ocp apply again.\n";
+    }
+
     $self->_stamp_ocp_version($config);
 
-    return $unhealthy ? 1 : 0;
+    return ($unhealthy || @failed) ? 1 : 0;
 }
 
 1;

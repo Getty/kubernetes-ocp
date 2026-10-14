@@ -233,7 +233,9 @@ sub reconcile_components {
                 $self->_setup_gpu_operator($config));
         };
         if ($@) {
-            print "  [WARN] GPU Operator setup failed: $@\n";
+            print STDERR "  [!!] GPU Operator setup failed: $@";
+            push @unresolved, 'GPU Operator';
+            push @{ $self->{_failed_components} }, 'GPU Operator';
         }
     }
 
