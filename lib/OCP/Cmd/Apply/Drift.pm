@@ -457,11 +457,20 @@ sub dry_run_report {
         rex_prober => $self->rex_prober($config),
     )->detect;
 
+    # An entry with no remedy that the run does not re-apply either (not
+    # self_healing, not missing) is report-only -- the pod CIDR (k182): a real
+    # run names it and leaves it, so it is not counted as an action (k188).
+    my $is_report_only = sub {
+        my $e = shift;
+        return !$e->{remedy} && !$e->{self_healing} && ($e->{kind} // '') ne 'missing';
+    };
     print "  [ok] No drift detected\n" unless @$drift;
 
     for my $entry (@$drift) {
         print "  [drift] $entry->{message}\n";
         print "          would run $entry->{remedy}{task}\n" if $entry->{remedy};
+        print "          report only, a real run leaves it as it is\n"
+            if $is_report_only->($entry);
     }
 
     # Workers without an OCPNode (k26): named, not created. The list is the
@@ -498,9 +507,15 @@ sub dry_run_report {
         ? robocop_dry_run($self, $config, $cp_ip)
         : ();
 
+    my $report_only = scalar grep { $is_report_only->($_) } @$drift;
+    my $actions     = scalar(@$drift) - $report_only
+        + scalar(@missing) + scalar(@relabel) + scalar(@robocop);
+
     print "\n";
-    print '  ', scalar(@$drift) + scalar(@missing) + scalar(@relabel) + scalar(@robocop),
-        " difference(s) a real run would act on.\n";
+    print "  $actions difference(s) a real run would act on.\n";
+    print "  $report_only more reported only -- a real run leaves "
+        . ($report_only == 1 ? "it" : "them") . " as they are.\n"
+        if $report_only;
     print "  It would also re-apply any component whose manifest changed at an\n";
     print "  unchanged version — the one difference a read-only pass cannot see.\n";
     print "\n";

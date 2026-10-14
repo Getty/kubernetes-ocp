@@ -562,8 +562,9 @@ sub _node_labels {
 # The pod network, stated on both sides: the server's cluster-cidr and
 # Cilium's cluster-pool IPAM must agree, and Cilium's own default (10.0.0.0/8)
 # neither does nor stays clear of host LANs (k178, k182). OCP::Rex passes
-# network.pod_cidr from ocp.yaml as pod_cidr; this is the fallback for
-# hand-runs and for robocop's control-plane joins, which never see ocp.yaml.
+# network.pod_cidr from ocp.yaml as pod_cidr, robocop passes it as
+# OCP_POD_CIDR on control-plane joins (k184, k186); this is the fallback for
+# hand-runs only.
 # Same value as $OCP::Config::DEFAULT_POD_CIDR (t/182 holds them together),
 # and the built-in cluster-cidr of RKE2 and k3s alike.
 sub _default_pod_cidr { '10.42.0.0/16' }

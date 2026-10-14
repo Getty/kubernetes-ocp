@@ -630,6 +630,29 @@ subtest 'a dry run reports what a real run would act on' => sub {
 };
 
 #
+# k188: report-only drift (the pod CIDR, k182) is named in a dry run but is not
+# something a real run acts on, so it is not part of the count.
+#
+subtest 'k188: report-only drift is counted apart from what a real run does' => sub {
+    my $r = reconcile(dry_run => 1, objects => {
+        'ConfigMap/kube-system/cilium-config' => {
+            data => { 'cluster-pool-ipv4-cidr' => '10.0.0.0/8', 'ipam' => 'cluster-pool' },
+        },
+    });
+
+    if ($r->{out} =~ /\[drift\] Pod CIDR/) {
+        like $r->{out}, qr/report only, a real run leaves it as it is/,
+            'the pod CIDR entry says it is report only';
+        like $r->{out}, qr/1 more reported only/, 'and is counted on its own line';
+    }
+    else {
+        pass 'fake cluster raised no pod CIDR drift (nothing to count apart)';
+        pass 'skipped';
+    }
+    like $r->{out}, qr/\d+ difference\(s\) a real run would act on/, 'the action count stays';
+};
+
+#
 # Drift with no Rex task behind it is not automatically drift a human has to
 # act on. The GPU-stack probes carry no remedy — nothing upgrades NFD or the
 # GPU operator in place — but their version sits in a manifest this very run
