@@ -193,6 +193,12 @@ sub banner_text {
     my ($self, $health) = @_;
     return 'CONTROL PLANE DEPLOYED — CLUSTER IS NOT HEALTHY'
         if is_fatal($self, $health);
+    # A component that failed is an apply that did not finish, however healthy
+    # the pods look: the exit code already says so, the banner must too (k203,
+    # lab 2026-10-15: SUCCESSFULLY between "[!!] GPU Operator setup failed"
+    # and "Apply did not complete").
+    return 'CONTROL PLANE DEPLOYED — APPLY INCOMPLETE'
+        if @{ $self->{_failed_components} // [] };
     return 'CONTROL PLANE DEPLOYED — WITH WARNINGS'
         if @{ $health->{warnings} };
     return 'CONTROL PLANE DEPLOYED SUCCESSFULLY!';
@@ -243,9 +249,14 @@ sub finish {
     print "API Endpoint: ", $config->api_url($args{cp_ip}), "\n" if $args{cp_ip};
     print "\n";
 
+    my @failed = @{ $self->{_failed_components} // [] };
+
     if ($unhealthy) {
         print "Core cluster components are unhealthy — the cluster is up but\n";
         print "not functional. Inspect them before using it:\n";
+        print "  ocp status\n\n";
+    } elsif (@failed) {
+        print "Not every component reached its spec; see the [!!] lines above.\n";
         print "  ocp status\n\n";
     } else {
         print "Next steps:\n";
@@ -255,7 +266,6 @@ sub finish {
         print "     ocp kubeconfig -e\n\n";
     }
 
-    my @failed = @{ $self->{_failed_components} // [] };
     if (@failed) {
         print STDERR "Apply did not complete: " . join(', ', @failed) . " failed.\n";
         print STDERR "The cluster is not at spec; fix the cause and run ocp apply again.\n";
