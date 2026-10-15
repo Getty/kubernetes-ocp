@@ -134,7 +134,13 @@ sub _resolve_provider {
     return $self->provider_cr($api, $self->provider, namespace => $ns)
         if $self->provider;
 
-    my @items = $self->provider_crs($api, namespace => $ns);
+    # A synthetic provider (OCPNodeProvider/legacy, written by apply for nodes
+    # that joined outside OCP) only names where an observed node came from;
+    # nothing is ever provisioned through it, so it is no implicit choice
+    # (lab 2026-10-15: it made --provider mandatory next to ssh-default).
+    my @items = grep {
+        (($_->{metadata}{annotations} // {})->{'ocp.internal/synthetic'} // '') ne 'true'
+    } $self->provider_crs($api, namespace => $ns);
 
     if (@items == 1) {
         return $items[0];

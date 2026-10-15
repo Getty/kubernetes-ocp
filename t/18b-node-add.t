@@ -158,6 +158,27 @@ subtest 'uses default-annotated provider when multiple' => sub {
     is $p->{metadata}{name}, 'hetzner-default', 'picked default-annotated provider';
 };
 
+subtest 'a synthetic legacy provider is no choice' => sub {
+    # Lab 2026-10-15, citiai: apply's migrate_legacy_nodes wrote
+    # OCPNodeProvider/legacy (ocp.internal/synthetic) for a hand-joined node,
+    # and from then on `ocp node add` without --provider died with "Multiple
+    # providers found" -- although ssh-default was the only real one.
+    my $legacy = {
+        metadata => { name => 'legacy', annotations => { 'ocp.internal/synthetic' => 'true' } },
+        spec     => { type => 'ssh' },
+    };
+    my $k8s = FakeK8sA->new(providers => [$legacy, $ssh_provider]);
+    my $add = OCP::Cmd::Node::Add->new(k8s => $k8s, name => 'worker-1');
+    my $p = eval { $add->_resolve_provider($k8s) };
+    is $@, '', 'no "Multiple providers" error';
+    is $p && $p->{metadata}{name}, $ssh_provider->{metadata}{name}, 'the real provider is taken';
+
+    my $only = FakeK8sA->new(providers => [$legacy]);
+    my $add2 = OCP::Cmd::Node::Add->new(k8s => $only, name => 'worker-1');
+    eval { $add2->_resolve_provider($only) };
+    like $@, qr/provider/i, 'legacy alone is not picked implicitly';
+};
+
 subtest 'rejects --host for hetzner provider' => sub {
     my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
     my $add = OCP::Cmd::Node::Add->new(
