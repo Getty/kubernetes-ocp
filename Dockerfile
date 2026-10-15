@@ -31,7 +31,7 @@ ARG OCP_GID=1000
 RUN apt-get update -y && apt-get install -y --no-install-recommends \
   curl ca-certificates git openssh-client locales \
   libexpat1-dev zlib1g-dev libssl-dev libssh-dev build-essential pkg-config libtool libtool-bin \
-  libpkgconf-dev \
+  libpkgconf-dev age \
   && sed -i 's/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen && locale-gen \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -50,6 +50,23 @@ RUN ARCH="$(dpkg --print-architecture)" \
   && curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${ARCH}/kubectl" \
   && chmod +x kubectl \
   && mv kubectl /usr/local/bin/
+
+# Install sops ================================================================
+# Operator tool, like kubectl: OCP reads and writes its SOPS files itself
+# (File::SOPS, Crypt::Age), but a Leitstand added with `ocp keys recipients add`
+# checks its access with `sops -d kubeconfig.yaml` (k212), and `age` comes from
+# Debian above. Debian has no sops; the release binary is pinned by version
+# and sha256 per architecture.
+ARG SOPS_VERSION=3.13.3
+RUN ARCH="$(dpkg --print-architecture)" \
+  && case "$ARCH" in \
+       amd64) SUM=e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b ;; \
+       arm64) SUM=53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77 ;; \
+       *) echo "no pinned sops for $ARCH" >&2; exit 1 ;; \
+     esac \
+  && curl -fsSL -o /usr/local/bin/sops "https://github.com/getsops/sops/releases/download/v${SOPS_VERSION}/sops-v${SOPS_VERSION}.linux.${ARCH}" \
+  && echo "${SUM}  /usr/local/bin/sops" | sha256sum -c - \
+  && chmod +x /usr/local/bin/sops
 
 # Perl toolchain ==============================================================
 # The base image already carries perl, cpanm, cpm and a working
