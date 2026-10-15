@@ -55,6 +55,21 @@ subtest 'finish prints the incomplete banner and returns 1' => sub {
     like   $err, qr/Apply did not complete: GPU Operator failed/, 'STDERR as before';
 };
 
+subtest 'a banner with a dash keeps the box width' => sub {
+    # The em dash is three bytes in OCP's UTF-8 source; padding by bytes left
+    # every "—" banner two columns short (lab 2026-10-15).
+    require Encode;
+    my $apply = bless {}, 'OCP::Cmd::Apply';
+    for my $text ('CONTROL PLANE DEPLOYED — APPLY INCOMPLETE',
+                  'CONTROL PLANE DEPLOYED — WITH WARNINGS') {
+        my $out = '';
+        open my $fh, '>', \$out or die $!;
+        { local *STDOUT = $fh; $apply->_banner($text) }
+        my @lines = map { Encode::decode_utf8($_) } grep { /\S/ } split /\n/, $out;
+        is length($lines[1]), length($lines[0]), "$text: text line matches the border";
+    }
+};
+
 done_testing;
 
 package Fake::Config;

@@ -208,7 +208,11 @@ sub banner {
     my ($self, $text) = @_;
     my $width = 63;
     print "╔" . ("═" x $width) . "╗\n";
-    printf "║  %-*s║\n", $width - 2, $text;
+    # Padded by characters, not bytes: the text is UTF-8 bytes like the rest
+    # of OCP, and "—" is three of them.
+    require Encode;
+    my $pad = $width - 2 - length(Encode::decode_utf8($text));
+    print "║  " . $text . (' ' x ($pad > 0 ? $pad : 0)) . "║\n";
     print "╚" . ("═" x $width) . "╝\n\n";
     return;
 }
