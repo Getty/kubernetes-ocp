@@ -5,6 +5,7 @@ use Moo;
 use Carp qw(croak);
 use IPC::Run qw(run);
 use JSON::MaybeXS;
+use YAML::XS ();
 use MIME::Base64;
 use Path::Tiny qw(path);
 use File::Temp ();
@@ -471,9 +472,22 @@ sub _existing_server_token {
     my ($self, $distribution) = @_;
     $distribution ||= 'rke2';
 
-    my $path = $distribution eq 'k3s'
-        ? '/var/lib/rancher/k3s/server/token'
-        : '/var/lib/rancher/rke2/server/token';
+    my $dir = $distribution eq 'k3s' ? 'k3s' : 'rke2';
+
+    # The token the server was started with is the one in its config.yaml.
+    # server/token holds the same secret in RKE2's long form
+    # (K10<ca-hash>::server:<secret>), so handing that on would rewrite
+    # config.yaml and restart a server for nothing (k200: the fresh bootstrap
+    # writes OCP's 48-character token, the next re-bootstrap wrote the long
+    # form over it). server/token is the fallback for a config.yaml without one.
+    my $config = eval { $self->_ssh->run("cat /etc/rancher/$dir/config.yaml") };
+    if ($config && !$config->{exit}) {
+        my $doc = eval { YAML::XS::Load($config->{stdout} // '') };
+        my $token = ref $doc eq 'HASH' ? $doc->{token} : undef;
+        return "$token" if defined $token && !ref $token && length $token;
+    }
+
+    my $path = "/var/lib/rancher/$dir/server/token";
 
     my $result = eval { $self->_ssh->run("cat $path") };
     return undef unless $result && !$result->{exit};
