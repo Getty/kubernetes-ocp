@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-10-15T23:22:13Z
+created: 2026-09-24T20:23:09Z
+id: 188
+priority: low
+started: 2026-10-14T19:16:51Z
+status: done
+tags:
+- drift
+- output
+title: apply --dry-run zaehlt report-only-Drift als 'difference a real run would act
+  on'
+updated: 2026-10-15T23:22:13Z
+---
+
+Live 2026-09-24 (Upgrade-Probe): Pod-CIDR-Drift (k182, report-only) erscheint im Dry-Run als "1 difference(s) a real run would act on", obwohl apply sie nie anfasst. Done: report-only-Eintraege separat zaehlen/benennen.
+
+2026-10-14 19:16 Dry-Run zaehlt report-only-Drift (kein Remedy, nicht self_healing, nicht missing) getrennt: 'N more reported only'. Test t/38 k188. Suite gruen.
+
+2026-10-15 23:22 LIVE 2026-10-15: Zählung 'N difference(s) ... / 1 more reported only' live bestätigt (Versions-Drift und geänderter pod_cidr als Ersatz). Echter Pre-k182-Cluster nicht nachstellbar.
