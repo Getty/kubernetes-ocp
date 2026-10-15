@@ -519,11 +519,32 @@ sub missing_worker_ocpnodes {
     return () unless @wanted;
 
     my $list = $api->list('OCPNode', namespace => 'ocp-system');
-    my %have = map {
-        ($api->k8s->object_to_struct($_)->{metadata}{name} => 1)
-    } @{ $list->items // [] };
+    my (%have, %on_host);
+    for my $item (@{ $list->items // [] }) {
+        my $h = $api->k8s->object_to_struct($item);
+        $have{ $h->{metadata}{name} } = 1;
+        my $host = $h->{spec}{host} // '';
+        $on_host{ lc $host } = $h->{metadata}{name} if length $host;
+    }
 
-    return grep { !$have{ $_->{metadata}{name} } } @wanted;
+    # A pool may list a machine under another name than the OCPNode it already
+    # has -- by IP where `ocp node add` named it otho-lab (lab 2026-10-15, k211).
+    # Going by name alone, apply would create a second OCPNode for that machine
+    # and bootstrap it a second time. The host is the machine: an OCPNode on the
+    # same host counts as present, and the operator hears which name to use.
+    my @missing;
+    for my $w (@wanted) {
+        my $name = $w->{metadata}{name};
+        next if $have{$name};
+        my $host = lc($w->{spec}{host} // '');
+        if (length $host && defined(my $other = $on_host{$host})) {
+            warn "  [!!] worker $name (host $w->{spec}{host}) is already OCPNode/$other;"
+               . " not provisioning it again -- list it as $other in ocp.yaml\n";
+            next;
+        }
+        push @missing, $w;
+    }
+    return @missing;
 }
 
 # Pool labels and taints changed in ocp.yaml onto the worker OCPNodes that
