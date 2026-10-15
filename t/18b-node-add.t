@@ -478,6 +478,40 @@ subtest 'the wait says what it is waiting for, once per phase' => sub {
     like $out, qr/Joining: RKE2 agent installed/, 'same for the next phase';
 };
 
+#
+# k204, live 2026-10-15: the reason a node failed (SSH key refused, with the
+# fix) went to STDOUT among the progress lines, and STDERR held only the bare
+# "did not reach Ready state". The reason is diagnosis -- it belongs on STDERR
+# (ocp-rules "Output channels"), the phases it passed through stay progress.
+#
+subtest 'a Failed phase is diagnosis: its reason goes to STDERR, once' => sub {
+    my $k8s = FakeK8sA->new(providers => [$hetzner_provider]);
+    my $add = OCP::Cmd::Node::Add->new(
+        k8s      => $k8s,
+        name     => 'worker-f',
+        provider => 'hetzner-a',
+    );
+
+    my $err;
+    my $out = capture_stdout {
+        $err = capture_stderr {
+            my $r = '';
+            $r = $add->_report_phase($r, 'Pending', undef);
+            $r = $add->_report_phase($r, 'Installing', 'Server provisioned');
+            $r = $add->_report_phase($r, 'Failed', 'SSH not ready: key refused');
+            $r = $add->_report_phase($r, 'Failed', 'SSH not ready: key refused');
+        };
+    };
+
+    like $out, qr/\[\.\.\] Pending\n/,                       'progress stays on STDOUT';
+    like $out, qr/\[\.\.\] Installing: Server provisioned/, 'every progress phase';
+    unlike $out, qr/Failed|key refused/,                    'the failure is not on STDOUT';
+    like $err, qr/^  \[!!\] Failed: SSH not ready: key refused$/m,
+        'it is on STDERR, in the [!!] failure style';
+    is scalar(() = $err =~ /key refused/g), 1, 'and said once';
+    unlike $err, qr/Pending|Installing/, 'STDERR carries no progress';
+};
+
 {
     # Enough of a node to answer the one question these two subtests ask:
     # what did the CLI do with a reconcile that ended without a Ready?

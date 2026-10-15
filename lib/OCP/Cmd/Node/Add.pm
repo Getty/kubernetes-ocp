@@ -287,13 +287,22 @@ sub _poll_until_ready {
 # silence: the operator saw the command hang and, if the budget ran out, a bare
 # "did not reach Ready state" with nothing to say how far it got. Returns the
 # phase now reported, so the caller can pass it back in on the next tick.
+#
+# Failed is not progress: its message is the reason the node did not come up,
+# often with the fix, so it goes to STDERR in the [!!] style (k204). It is the
+# only place that reason is said -- execute's "did not reach Ready state" only
+# names the node.
 sub _report_phase {
     my ($self, $reported, $phase, $message) = @_;
 
     return $reported if $phase eq $reported;
 
-    print "  [..] $phase"
-        . (defined $message && length $message ? ": $message" : '') . "\n";
+    my $line = "$phase"
+        . (defined $message && length $message ? ": $message" : '');
+    $line .= "\n" unless $line =~ /\n\z/;
+
+    if ($phase eq 'Failed') { print STDERR "  [!!] $line" }
+    else                    { print "  [..] $line" }
 
     return $phase;
 }
