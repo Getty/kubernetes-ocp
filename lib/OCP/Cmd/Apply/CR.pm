@@ -460,7 +460,11 @@ sub worker_ocpnodes {
             my $host;
             if ($type eq 'ssh') {
                 $host = $hosts[$i - 1] // next;
-                ($w_name) = split(/\./, $host, 2);
+                # Same rule as the control plane (k218): a FQDN gives its first
+                # label, an IP address is named in full with dashes -- cutting
+                # 10.230.30.52 at the first dot named the worker "10", and every
+                # 10.x worker of the pool alike (k211, lab 2026-10-15).
+                ($w_name) = OCP::Cmd::Apply::Bootstrap::host_name_parts($host);
             }
 
             my $spec = {
