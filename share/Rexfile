@@ -523,9 +523,9 @@ sub _server_opts {
 # With `kubeconfig` -- a kubeconfig of the cluster, as a file on this machine
 # -- install_agent first reads the control plane's version through the API and
 # refuses an agent of a newer minor before the host is touched: a kubelet must
-# never be newer than its API server (k196). OCP::Node passes one when its
-# caller has it (`ocp apply`, `ocp node add`); robocop runs off its service
-# account and has no kubeconfig file, so its joins go without the check.
+# never be newer than its API server (k196). OCP::Node passes one on every
+# worker join: `ocp apply` and `ocp node add` the project's kubeconfig,
+# robocop its own service account as one (in_cluster_kubeconfig, k205).
 #
 # With hold_running an agent that is there keeps its own version, as a server
 # does (see _server_opts); the check against the control plane still applies

@@ -79,6 +79,15 @@ package MockTransport {
     sub _respond {
         my ($self, $api, $method, $path, $body) = @_;
 
+        # `put_fails` is an HTTP status to answer every PUT with: 409 is a
+        # reconciler that wrote the CR between our read and our write (k227).
+        return ($api->put_fails, { message => 'injected write conflict' })
+            if $method eq 'PUT' && $api->put_fails;
+
+        # `persist` keeps what a PUT wrote as the CR later reads see, for a
+        # test that follows a lease from take to release.
+        $api->cr($JSON->decode($body)) if $method eq 'PUT' && $api->persist;
+
         # Writes echo the object back, the way the API server does.
         return (200, $JSON->decode($body)) if $method eq 'PUT' || $method eq 'PATCH';
 
@@ -153,6 +162,8 @@ package StrictK8s {
     has pods           => (is => 'rw', default => sub { [] });  # pods the drain sees
     has evict          => (is => 'rw');                  # pod name -> status (or coderef)
     has linger         => (is => 'rw', default => 0);   # evicted pods stay, Terminating
+    has put_fails      => (is => 'rw', default => 0);   # HTTP status to inject on PUTs
+    has persist        => (is => 'rw', default => 0);   # a PUT replaces the served CR
 
     sub build {
         my (%args) = @_;
@@ -1197,6 +1208,170 @@ subtest 'reconcile catches exception and patches Failed' => sub {
             && (JSON::MaybeXS::decode_json($_->{body})->{status}{phase} // '') eq 'Failed';
     } $k->reqs('PATCH');
     ok $failed, 'status patched to Failed';
+};
+
+#
+# The install under the lease (k227).
+#
+# Lab, 2026-10-16: `ocp node add` took the CLI path while robocop restarted and
+# brought a node into Installing; the new robocop found it there and ran a
+# second Rex install on the same host alongside the first. Only _provision and
+# teardown took the lease. Now the install does too, and a reconciler that
+# finds the lease held by the other one leaves the node alone -- quietly: the
+# holder is doing the work, so Failed (terminal) would be the wrong answer.
+#
+
+sub installing_cr {
+    my (%ann) = @_;
+    return ocpnode(
+        metadata => { name => 'l1', namespace => 'ocp-system', resourceVersion => '5',
+                      (%ann ? (annotations => {%ann}) : ()) },
+        status   => { phase => 'Installing', publicIP => '1.2.3.4' },
+    );
+}
+
+sub lease_node {
+    my ($k, $id, %over) = @_;
+    return OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+        ssh_key => 'K', server_url => 'https://cp:9345', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex', reconciler_id => $id, %over);
+}
+
+sub status_phases {
+    my ($k) = @_;
+    return map { JSON::MaybeXS::decode_json($_->{body})->{status}{phase} // () }
+           grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+}
+
+for my $case ([ robocop => 'cli' ], [ cli => 'robocop' ]) {
+    my ($me, $holder) = @$case;
+    subtest "$me leaves an install alone that $holder holds the lease for" => sub {
+        @FakeRex::_instances = ();
+        my $lease = $holder . '@' . OCP::Node::_rfc3339_now() . '@' . $OCP::Node::INSTALL_LEASE_TTL;
+        my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => $lease));
+        my $node = lease_node($k, $me);
+
+        is $node->reconcile, 1, 'reconcile is not a failure';
+        is scalar @FakeRex::_instances, 0, 'no Rex install was started';
+        is_deeply [ status_phases($k) ], [], 'no phase written -- not Failed, not anything';
+        is scalar($k->reqs('PUT')), 0, 'and the lease is not touched';
+        is $node->phase, 'Installing', 'the node stays Installing';
+        is $node->lease_conflict, $lease, 'lease_conflict names the lease it found';
+    };
+}
+
+subtest 'an install under its own lease runs, and the lease is gone after' => sub {
+    @FakeRex::_instances = ();
+    my $lease = 'cli@' . OCP::Node::_rfc3339_now() . '@300';
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => $lease));
+    my $node = lease_node($k, 'cli');
+
+    is $node->reconcile, 1, 'reconcile reports success';
+    is $FakeRex::_instances[0]{calls}[0][0], 'install_rke2_agent', 'the install ran';
+    is $node->lease_conflict, undef, 'no conflict recorded';
+
+    my @puts = map { JSON::MaybeXS::decode_json($_->{body}) } $k->reqs('PUT');
+    is scalar @puts, 2, 'one PUT to take the lease, one to release it';
+    like $puts[0]{metadata}{annotations}{'ocp.internal/reconciler-lease'},
+        qr/^cli\@.+\@\Q$OCP::Node::INSTALL_LEASE_TTL\E$/,
+        'taken with the install TTL, not the 300 s of a provision';
+    ok !exists(($puts[1]{metadata}{annotations} // {})->{'ocp.internal/reconciler-lease'}),
+        'and released afterwards';
+
+    my @order = map { $_->{method} eq 'PUT' ? 'PUT' : 'STATUS' }
+                grep { $_->{method} eq 'PUT' || $_->{path} =~ m{/status$} } @{ $k->requests };
+    is_deeply \@order, [qw( PUT STATUS PUT )],
+        'lease taken before the install wrote Joining, released after';
+    is_deeply [ status_phases($k) ], ['Joining'], 'the node reached Joining';
+};
+
+subtest 'an expired lease of the other reconciler does not hold up the install' => sub {
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => installing_cr(
+        'ocp.internal/reconciler-lease' => 'cli@2000-01-01T00:00:00Z@1200'));
+    my $node = lease_node($k, 'robocop');
+
+    is $node->reconcile, 1, 'reconcile reports success';
+    ok scalar @FakeRex::_instances, 'robocop took the node over and installed';
+    my ($take) = map { JSON::MaybeXS::decode_json($_->{body}) } $k->reqs('PUT');
+    like $take->{metadata}{annotations}{'ocp.internal/reconciler-lease'}, qr/^robocop\@/,
+        'under its own lease';
+};
+
+subtest 'an install the previous holder already finished is not run again' => sub {
+    # robocop read Installing, the CLI finished meanwhile and released its
+    # lease. The lease is free now, but the stored CR says Joining.
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => installing_cr(), persist => 1);
+    my $node = lease_node($k, 'robocop');
+    $k->cr({ %{ $k->cr }, status => { phase => 'Joining', publicIP => '1.2.3.4' } });
+
+    is $node->reconcile, 1, 'reconcile reports success';
+    is scalar @FakeRex::_instances, 0, 'no second install';
+    is_deeply [ status_phases($k) ], [], 'and no phase written';
+    my @puts = map { JSON::MaybeXS::decode_json($_->{body}) } $k->reqs('PUT');
+    is scalar @puts, 2, 'the lease was taken and written back';
+    ok !exists(($puts[-1]{metadata}{annotations} // {})->{'ocp.internal/reconciler-lease'}),
+        'without it: released again';
+};
+
+subtest 'losing the race for a free lease (409) is not a failure either' => sub {
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => installing_cr());
+    $k->put_fails(409);
+    my $node = lease_node($k, 'robocop');
+
+    is $node->reconcile, 1, 'reconcile is not a failure';
+    is scalar @FakeRex::_instances, 0, 'no install';
+    is_deeply [ status_phases($k) ], [], 'no phase written';
+    like $node->lease_conflict, qr/409/, 'lease_conflict says why';
+};
+
+subtest 'a provision under the other reconciler\'s lease is left alone, not Failed' => sub {
+    # Same mechanism one phase earlier: _provision always took the lease, and
+    # a held one died into reconcile's catch-all -- Failed, terminal, for a
+    # node the other reconciler was provisioning just fine.
+    my $created = 0;
+    my $lease = 'cli@' . OCP::Node::_rfc3339_now() . '@300';
+    my $k = StrictK8s::build(cr => ocpnode(metadata => {
+        name => 'l2', namespace => 'ocp-system', resourceVersion => '1',
+        annotations => { 'ocp.internal/reconciler-lease' => $lease } }));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, reconciler_id => 'robocop',
+        provider => FakeProvider->new(create_cb => sub { $created++; { id => 'S', ip => '1.1.1.1' } }),
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+
+    is $node->reconcile, 1, 'reconcile is not a failure';
+    is $created, 0, 'no server was created';
+    is_deeply [ status_phases($k) ], [], 'and no phase written';
+    is $node->lease_conflict, $lease, 'lease_conflict names the holder';
+};
+
+subtest 'a provision someone else already did is not repeated under the lease' => sub {
+    my $created = 0;
+    my $k = StrictK8s::build(cr => ocpnode(metadata =>
+        { name => 'l3', namespace => 'ocp-system', resourceVersion => '1' }));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, reconciler_id => 'robocop',
+        provider => FakeProvider->new(create_cb => sub { $created++; { id => 'S', ip => '1.1.1.1' } }),
+        ssh_key => 'K', server_url => 'U', join_token => 'T');
+    $k->cr({ %{ $k->cr }, status => { phase => 'Installing', providerId => 'S' } });
+
+    is $node->reconcile, 1, 'reconcile reports success';
+    is $created, 0, 'create_server was not called again';
+    is_deeply [ status_phases($k) ], [], 'no phase written';
+};
+
+subtest 'reconcile_until_ready waits out an install the other reconciler holds' => sub {
+    # The CLI's loop: a held lease is one more tick, not the end of it.
+    @FakeRex::_instances = ();
+    my $lease = 'robocop@' . OCP::Node::_rfc3339_now() . '@1200';
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => $lease));
+    my $node = lease_node($k, 'cli');
+
+    my @seen;
+    is $node->reconcile_until_ready(timeout => 1, interval => 0,
+        on_phase => sub { push @seen, $_[0] }), 0, 'not Ready within the budget';
+    is_deeply \@seen, ['Installing'], 'and never anything but Installing -- no Failed';
+    is scalar @FakeRex::_instances, 0, 'no install of its own';
 };
 
 subtest 'reconcile_until_ready returns 1 on Ready CR' => sub {

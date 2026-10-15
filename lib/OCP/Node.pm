@@ -51,9 +51,9 @@ has pod_cidr      => (is => 'ro');
 # touched -- a kubelet must never be newer than its API server. The Rex run
 # happens on this machine, so it takes a file: written here, like the key
 # pair, and kept as long as this object lives. `ocp apply` and `ocp node add`
-# pass the project's kubeconfig; robocop runs off its service account and has
-# none, and its joins go without the check. A control plane takes none: it
-# joins as a server.
+# pass the project's kubeconfig, robocop its own service account as one
+# (OCP::Kubernetes->in_cluster_kubeconfig, k205). A control plane takes none:
+# it joins as a server.
 has kubeconfig    => (is => 'ro');
 has _kubeconfig_file => (is => 'lazy', builder => '_build_kubeconfig_file');
 
@@ -89,7 +89,14 @@ has timezone      => (is => 'ro');
 has locale        => (is => 'ro');
 has ntp           => (is => 'ro');
 has reconciler_id => (is => 'ro', default => sub { 'cli' });
-has ssh_class     => (is => 'ro', default => sub { 'OCP::SSH' });
+
+# Set when the last reconcile left the node alone because another reconciler
+# holds its lease (k227): the lease as found, or why it could not be taken.
+# Not an error -- the holder carries on -- so it goes nowhere near status;
+# robocop says it in its log, the CLI's poll loop simply looks again.
+has lease_conflict => (is => 'rwp', init_arg => undef);
+
+has ssh_class    => (is => 'ro', default => sub { 'OCP::SSH' });
 has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
 
 # The key pair this node's Rex and SSH calls run on, alive as long as the node
@@ -258,8 +265,10 @@ sub _put_cr {
     return $updated;
 }
 
+# $ttl in seconds, 300 unless the caller needs longer (the install does, see
+# $INSTALL_LEASE_TTL).
 sub _acquire_lease {
-    my $self = shift;
+    my ($self, $ttl) = @_;
     my $cr = $self->_get_cr // $self->cr;
     my $ann = $cr->{metadata}{annotations} //= {};
     my $existing = $ann->{'ocp.internal/reconciler-lease'};
@@ -267,8 +276,19 @@ sub _acquire_lease {
         die "lease held by another reconciler: $existing\n";
     }
     $ann->{'ocp.internal/reconciler-lease'} = sprintf "%s@%s@%d",
-        $self->reconciler_id, _rfc3339_now(), 300;
-    return $self->_put_cr($cr);
+        $self->reconciler_id, _rfc3339_now(), $ttl // 300;
+
+    # Two reconcilers that read the CR at the same moment both PUT it with the
+    # same resourceVersion, and the second one gets a 409. That is the lease
+    # working, not the node failing: said the same way as a lease found held,
+    # so reconcile steps aside rather than marking the node Failed (k227).
+    my $updated = eval { $self->_put_cr($cr) };
+    if (my $err = $@) {
+        die "lease held by another reconciler: lost the race for it, the OCPNode "
+          . "changed between read and write (409)\n" if $err =~ /\b409\b/;
+        die $err;
+    }
+    return $updated;
 }
 
 sub _release_lease {
@@ -316,6 +336,14 @@ sub _provision {
         unless $self->phase eq 'Pending';
 
     $self->_acquire_lease;
+
+    # Under the lease, from the CR as stored now: another reconciler may have
+    # provisioned the node between the read this pass started from and the
+    # lease. Then there is nothing left to do here (k227).
+    unless ($self->phase eq 'Pending') {
+        eval { $self->_release_lease };
+        return;
+    }
 
     my $result = $self->provider->create_server(
         name => $self->name,
@@ -645,10 +673,59 @@ sub _wait_ready {
     return $ready;
 }
 
+# How long the lease of an install lives.
+#
+# The install runs under the reconciler lease like _provision and teardown do
+# (k227): `ocp node add` took a node into Installing while robocop restarted,
+# the new robocop found it there and ran a second Rex install on the same host
+# alongside the first. The lease cannot be renewed in the middle of a blocking
+# Rex run, so it has to outlive the whole install from the start:
+#
+#   address:   $OCP::Provider::Hetzner::ADDRESS_TIMEOUT  <= 120 s
+#   ssh:       $OCP::SSH::WAIT_TIMEOUT                    <= 120 s
+#   install:   prepare_node + download, install           ~150 s
+#   start:     Rex::Rancher's wait_for_service for the
+#              unit to turn active (60 x 10 s)            <= 600 s
+#   ------------------------------------------------------------
+#                                                         ~990 s
+#
+# That is the slowest install that still succeeds -- a healthy one is the
+# ~540 s $READY_TIMEOUT counts with -- and the install line has no ceiling.
+# Running out mid-install lets a second reconciler start the very double
+# install this exists to prevent; outliving a holder that died only delays the
+# takeover: robocop's resync picks the node up once the lease expires, and the
+# same holder retakes its own lease at once. So it errs long.
+#
+# `our` so a test can set it.
+our $INSTALL_LEASE_TTL = 1200;
+
+sub _install_under_lease {
+    my $self = shift;
+    my $phase = $self->phase;
+
+    $self->_acquire_lease($INSTALL_LEASE_TTL);
+
+    # Under the lease, from the CR as stored now: the holder before us may
+    # have finished the install meanwhile and moved the node on.
+    my $ok = eval {
+        $self->_install_kubernetes if $self->phase eq $phase;
+        1;
+    };
+    my $err = $@;
+
+    # Best-effort, for the reason _provision gives: the phase is written, a
+    # lease left behind only stands until its TTL.
+    eval { $self->_release_lease };
+
+    die $err unless $ok;
+    return;
+}
+
 sub reconcile {
     my $self = shift;
     my $p = $self->phase;
 
+    $self->_set_lease_conflict(undef);
     return 0 if $p eq 'Failed' || $p eq 'Terminating';
 
     eval {
@@ -659,14 +736,21 @@ sub reconcile {
         # nothing in OCP ever writes: the agent was never installed and the
         # node sat waiting for a registration that could not happen.
         if    ($p eq 'Pending')      { $self->_provision }
-        elsif ($p eq 'Provisioning') { $self->_install_kubernetes }
-        elsif ($p eq 'Installing')   { $self->_install_kubernetes }
+        elsif ($p eq 'Provisioning') { $self->_install_under_lease }
+        elsif ($p eq 'Installing')   { $self->_install_under_lease }
         elsif ($p eq 'Joining')      { $self->_wait_ready }
         elsif ($p eq 'Ready')        { $self->_verify }
         else                         { die "unknown phase: $p\n" }
     };
-    if ($@) {
-        $self->_patch_status(phase => 'Failed', message => "$@");
+    if (my $err = $@) {
+        # Another reconciler holds the lease: it is working on this node, so
+        # this pass leaves it alone. Failed here would be terminal for a node
+        # that is doing fine (k227).
+        if ($err =~ /^lease held by another reconciler: (.*)/) {
+            $self->_set_lease_conflict($1);
+            return 1;
+        }
+        $self->_patch_status(phase => 'Failed', message => "$err");
         return 0;
     }
     return 1;
@@ -1253,12 +1337,30 @@ warned about and does not fail the teardown; a 404 there is silent.
 
 =head2 Lease Mechanics
 
-Before provisioning infrastructure, C<OCP::Node> writes a
-C<ocp.internal/reconciler-lease> annotation to the OCPNode CR.  The
-annotation encodes the holder id, timestamp, and TTL (300 s).  A second
-reconciler will refuse to proceed while a live lease is held by a
-different C<reconciler_id>.  The lease is released after the phase
-transition is written to status.
+Before provisioning infrastructure and before installing Kubernetes on it,
+C<OCP::Node> writes a C<ocp.internal/reconciler-lease> annotation to the
+OCPNode CR.  The annotation encodes the holder id, timestamp, and TTL: 300 s
+for C<Pending>, C<$OCP::Node::INSTALL_LEASE_TTL> (1200 s) for C<Installing>
+-- the lease cannot be renewed during the Rex run, so it has to outlive the
+address wait, the SSH wait and the slowest install that still succeeds
+together (the sum is written out above the variable).  A second reconciler
+will refuse to proceed while a live lease is held by a different
+C<reconciler_id>; one that loses the race for a free lease (a 409 on the
+write) is treated the same.  The lease is released, best-effort, after the
+phase transition is written to status.
+
+Having taken the lease, C<reconcile> checks the phase again on the CR as
+stored: if the previous holder moved the node on meanwhile, the step is
+skipped.
+
+A lease held by someone else is not a failure.  C<reconcile> leaves the node
+in the phase it is in, returns C<1>, and records the lease it found in
+C<lease_conflict> (undef after any other pass).  The holder carries on:
+C<reconcile_until_ready> simply looks again on its next tick, robocop logs
+who holds it and takes the node up on the next event or resync -- which is
+also how a node whose holder died gets picked up once the lease expires.
+Before k227 the install ran without a lease, and C<ocp node add> and a
+restarting robocop installed onto the same host at the same time.
 
 C<teardown> takes the same lease before it starts and renews it after the
 drain, so C<ocp node rm> and robocop never tear down the same node at once,
@@ -1322,13 +1424,21 @@ A kubeconfig of the cluster, as content. Only a worker's join uses it: it is
 written to a C<0600> file on this machine for as long as the object lives, and
 the agent install hands that to L<Rex::Rancher::Agent>, which checks the agent
 against the control plane's version before it touches the machine. C<ocp apply>
-and C<ocp node add> pass the project's kubeconfig; unset (robocop) the join goes
-without the check.
+and C<ocp node add> pass the project's kubeconfig, robocop its service account
+as one (C<< OCP::Kubernetes->in_cluster_kubeconfig >>); unset, the join goes without
+the check.
 
 =item reconciler_id
 
 String identifying the reconciler holding the lease.  Defaults to
-C<'cli'>.  Robocop sets this to a pod-scoped identifier.
+C<'cli'>.  Robocop sets it to C<'robocop'> -- one id for every pod and every
+reconcile child, so a restarted robocop takes its predecessor's lease over at
+once; the controller itself keeps two reconciles of one OCPNode apart.
+
+=item lease_conflict
+
+Read-only, set by C<reconcile>: the lease that made the last pass leave the
+node alone (see L</Lease Mechanics>), undef otherwise.
 
 =back
 

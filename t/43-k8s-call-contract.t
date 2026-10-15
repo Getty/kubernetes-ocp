@@ -354,8 +354,12 @@ subtest 'the reconcile dispatch can reach the agent install' => sub {
 
     # _provision writes phase=Installing; if that phase does not lead to the
     # install, the agent is never put on the machine.
-    like $reconcile, qr/\$p eq 'Installing'\s*\)\s*\{\s*\$self->_install_kubernetes/,
-        'Installing dispatches to _install_kubernetes';
+    # Through the lease since k227: the wrapper takes it, then installs.
+    like $reconcile, qr/\$p eq 'Installing'\s*\)\s*\{\s*\$self->_install_under_lease/,
+        'Installing dispatches to the install under the lease';
+    my ($under_lease) = $src =~ /^sub _install_under_lease \{\n(.*?)\n\}$/ms;
+    like $under_lease, qr/\$self->_install_kubernetes/,
+        'which runs _install_kubernetes';
 
     my ($provision) = $src =~ /^sub _provision \{\n(.*?)\n\}$/ms;
     like $provision, qr/phase\s*=>\s*'Installing'/,

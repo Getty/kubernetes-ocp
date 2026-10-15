@@ -119,8 +119,10 @@ option namespace => (
     --wait
     --no-wait
 
-Wait until every robocop pod is Ready before returning. Use C<--timeout> to
-cap the wait. Off by default; C<--no-wait> states that explicitly.
+Wait until the rollout is through before returning: the new pod template
+observed, every replica running it and available, and no pod of the old one
+left -- what C<kubectl rollout status> waits for. Use C<--timeout> to cap the
+wait. Off by default; C<--no-wait> states that explicitly.
 
 =cut
 
@@ -133,7 +135,7 @@ cap the wait. Off by default; C<--no-wait> states that explicitly.
 option wait => (
     is        => 'ro',
     negatable => 1,
-    doc       => 'Wait until all robocop pods are Ready before returning (default: off)',
+    doc       => 'Wait until the rollout is through: new pods Ready, old ones gone (default: off)',
 );
 
 =opt timeout
@@ -190,7 +192,7 @@ has _poll_interval => (
 Reads the encrypted C<kubeconfig.yaml>, patches the robocop Deployment's
 container image and cluster settings, optionally restarts the pods via the
 C<kubectl.kubernetes.io/restartedAt> annotation, and optionally waits until
-all robocop pods are Ready.
+the rollout is through.
 
 Returns C<0> on success, C<1> on a wait timeout. Dies loud on a missing
 project, missing kubeconfig, missing Deployment, or a mismatching
@@ -269,10 +271,10 @@ sub execute {
       . "Run 'ocp deploy-robocop' first.\n"
         unless $existing;
 
-    $self->_patch_image($api, $ns, $image, $env);
+    my $patched = $self->_patch_image($api, $ns, $image, $env);
 
     if ($self->restart) {
-        $self->_patch_restart($api, $ns);
+        $patched = $self->_patch_restart($api, $ns);
     }
     else {
         print "[--] rollout restart skipped (--no-restart)\n";
@@ -280,7 +282,11 @@ sub execute {
 
     if ($self->wait) {
         my $timeout = $self->timeout // 300;
-        return $self->_wait_for_ready($api, $ns, $timeout) ? 0 : 1;
+        # The generation our last write produced, from the API server's answer
+        # to it: the rollout to wait for is that one, whatever the status
+        # object of a later poll happens to say about itself (k227).
+        my $generation = $api->k8s->object_to_struct($patched)->{metadata}{generation};
+        return $self->_wait_for_ready($api, $ns, $timeout, $generation) ? 0 : 1;
     }
 
     return 0;
@@ -443,7 +449,7 @@ sub _build_api {
 sub _patch_image {
     my ($self, $api, $ns, $image, $env) = @_;
 
-    $api->patch(
+    my $patched = $api->patch(
         'Deployment', 'robocop',
         namespace => $ns,
         patch => {
@@ -462,6 +468,7 @@ sub _patch_image {
 
     print "[ok] image patched to $image\n";
     print '[ok] '.join(' ', map { $_->{name}.'='.$_->{value} } @$env)."\n";
+    return $patched;
 }
 
 # kubectl rollout restart's wire form: a strategic merge that adds/updates
@@ -472,7 +479,7 @@ sub _patch_restart {
 
     my $now = Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ');
 
-    $api->patch(
+    my $patched = $api->patch(
         'Deployment', 'robocop',
         namespace => $ns,
         patch => {
@@ -490,40 +497,85 @@ sub _patch_restart {
     );
 
     print "[ok] rollout restart triggered (restartedAt=$now)\n";
+    return $patched;
 }
 
-# Poll the Deployment's status until the new generation is observed AND every
-# desired replica is available. observedGeneration guards against reporting
-# success on a stale status object; availableReplicas >= replicas guards
-# against reporting success on a mid-recreate (Recreate briefly drops
-# availableReplicas to 0 -- exactly the window we want to keep polling).
+# Poll the Deployment until the rollout is through, the way `kubectl rollout
+# status` decides it (_rollout_pending). Ready replicas alone are not that:
+# `ocp deploy-image --wait` once said "robocop is Ready (1/1)" about the OLD
+# pod, because a status that has observed the new generation can still count
+# the old pod as the one available replica -- the new one had not even started
+# (k227). $generation is the one our last patch produced; a poll whose status
+# has not observed it yet is not an answer about this rollout.
 sub _wait_for_ready {
-    my ($self, $api, $ns, $timeout) = @_;
+    my ($self, $api, $ns, $timeout, $generation) = @_;
 
     my $interval = $self->_poll_interval;
     my $deadline = time + $timeout;
+    my $pending  = 'the Deployment was not read yet';
 
     while (time < $deadline) {
         my $deploy = eval { $api->get('Deployment', 'robocop', namespace => $ns) };
         if ($deploy) {
             my $h = $api->k8s->object_to_struct($deploy);
-            my $available  = $h->{status}{availableReplicas}  // 0;
-            my $replicas   = $h->{spec}{replicas}             // 1;
-            my $observed   = $h->{status}{observedGeneration} // 0;
-            my $generation = $h->{metadata}{generation}       // 0;
-
-            if ($available >= $replicas && $observed >= $generation) {
-                print "[ok] robocop is Ready ($available/$replicas replica(s))\n";
+            $pending = $self->_rollout_pending($h, $generation);
+            unless (defined $pending) {
+                my ($ctr) = grep { ($_->{name} // '') eq 'controller' }
+                    @{ $h->{spec}{template}{spec}{containers} // [] };
+                my $revision = ($h->{metadata}{annotations} // {})
+                    ->{'deployment.kubernetes.io/revision'};
+                my $updated  = $h->{status}{updatedReplicas} // 0;
+                print '[ok] robocop is Ready on ' . ($ctr->{image} // '?')
+                    . (defined $revision ? ' (revision ' . $revision . ')' : '')
+                    . ', ' . $updated . '/' . ($h->{spec}{replicas} // 1)
+                    . " replica(s) rolled out\n";
                 return 1;
             }
+        }
+        else {
+            my $err = $@ || "no answer\n";
+            chomp $err;
+            $pending = 'the Deployment could not be read: ' . $err;
         }
 
         last if time >= $deadline;
         sleep $interval if $interval > 0;
     }
 
-    print STDERR "Timed out after ${timeout}s waiting for robocop to be Ready\n";
+    print STDERR "Timed out after ${timeout}s waiting for robocop to roll out: $pending\n";
     return 0;
+}
+
+# What the rollout of $h still waits for, as a phrase for the timeout message;
+# undef once it is through. The checks and their order are kubectl rollout
+# status's: the new spec observed, every replica on the new pod template, no
+# old pod left, every new one available. Recreate (robocop's strategy) shows
+# the old pod as `replicas 1, updatedReplicas 0` until it is gone -- exactly
+# the status that read as Ready before.
+sub _rollout_pending {
+    my ($self, $h, $generation) = @_;
+
+    my $status = $h->{status} // {};
+    my $want   = $h->{metadata}{generation} // 0;
+    $want = $generation if defined $generation && $generation > $want;
+    my $observed = $status->{observedGeneration} // 0;
+    return 'the new spec is not observed yet (generation ' . $want
+         . ', observed ' . $observed . ')'
+        if $observed < $want;
+
+    my $replicas  = $h->{spec}{replicas}         // 1;
+    my $updated   = $status->{updatedReplicas}   // 0;
+    my $current   = $status->{replicas}          // 0;
+    my $available = $status->{availableReplicas} // 0;
+    my $old       = $current - $updated;
+
+    return $updated . ' of ' . $replicas . ' replica(s) updated'
+         . ($old > 0 ? ', ' . $old . ' old replica(s) still running' : '')
+        if $updated < $replicas;
+    return $old . ' old replica(s) still running' if $old > 0;
+    return $available . ' of ' . $updated . ' updated replica(s) available'
+        if $available < $updated;
+    return;
 }
 
 1;
@@ -571,11 +623,17 @@ image without rolling the pods.
 
 =back
 
-If C<--wait> is set the command polls the Deployment's status until
-C<status.observedGeneration> catches up with C<metadata.generation> AND
-C<status.availableReplicas> reaches C<spec.replicas>, capped by C<--timeout>
-seconds (default C<300>). On success the exit status is C<0>; on timeout it
-is C<1>.
+If C<--wait> is set the command polls the Deployment until the rollout is
+through, by the checks C<kubectl rollout status> makes: C<status.observedGeneration>
+has caught up with the generation the patches produced, C<status.updatedReplicas>
+reaches C<spec.replicas>, no replica of the old pod template is left
+(C<status.replicas> no more than C<updatedReplicas>), and every updated replica
+is available.  Ready replicas alone are not enough: right after the patch the
+status can still count the old pod as the available one.  The wait is capped by
+C<--timeout> seconds (default C<300>).  On success it prints the image and the
+Deployment revision now running, exit status C<0>; on timeout it says on STDERR
+what the rollout was still waiting for (e.g. C<0 of 1 replica(s) updated, 1 old
+replica(s) still running>), exit status C<1>.
 
 The image is specified either as the full reference via C<--image REF>
 (tag form C<REPO:TAG> or digest form C<REPO@sha256:<64hex>>) or as the

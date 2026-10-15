@@ -134,9 +134,11 @@ sub run_cmd {
     no warnings 'redefine';
     local *OCP::Cmd::DeployImage::_build_api = sub { return $api };
 
-    my $output = '';
+    my ($output, $errput) = ('', '');
     open my $out_fh, '>', \$output or die $!;
+    open my $err_fh, '>', \$errput or die $!;
     local *STDOUT = $out_fh;
+    local *STDERR = $err_fh;
 
     my $result = eval { $cmd->execute(undef, []) };
 
@@ -146,6 +148,7 @@ sub run_cmd {
         result    => $result,
         error     => $@,
         output    => $output,
+        errput    => $errput,
     };
 }
 
@@ -176,6 +179,7 @@ sub deployment {
             availableReplicas  => $over{availableReplicas}  // 1,
             readyReplicas      => $over{readyReplicas}      // 1,
             replicas           => $over{replicas}           // 1,
+            updatedReplicas    => $over{updatedReplicas}    // 1,
             observedGeneration => $over{observedGeneration} // $over{generation} // 1,
         },
         %over,
@@ -597,6 +601,108 @@ subtest 'the image patch writes the config defaults when ocp.yaml sets nothing (
     my $env    = image_patch_env($r);
     is($env->{OCP_DISTRIBUTION}{value}, $config->distribution, 'distribution: the config default');
     is($env->{OCP_POD_CIDR}{value},     $config->pod_cidr,     'pod CIDR: the config default');
+};
+
+# k227: `--wait` said "robocop is Ready (1/1)" about the OLD pod. The status had
+# observed the new generation and still counted the old pod as the available
+# replica; the new one started only afterwards. Ready is not rolled out --
+# kubectl rollout status's checks are: updatedReplicas reaches spec.replicas,
+# no old replica is left, the updated ones are available.
+
+# The PATCH answers carry the generation our writes produced (2); polls are
+# served from @states, the last one repeated.
+sub rollout_respond {
+    my ($polls, @states) = @_;
+    return sub {
+        my ($m, $p) = @_;
+        if ($m eq 'GET' && $p eq deployment_path('ocp-system')) {
+            $$polls++;
+            my $state = $$polls <= @states ? $states[ $$polls - 1 ] : $states[-1];
+            return (200, deployment(generation => 2, %$state));
+        }
+        return (200, deployment(generation => 2)) if $m eq 'PATCH';
+        return (404, { message => "unexpected $m $p" });
+    };
+}
+
+# Recreate, mid-rollout: generation observed, the old pod still the one
+# available replica, nothing on the new template yet.
+my %OLD_POD = (observedGeneration => 2, availableReplicas => 1, readyReplicas => 1,
+               replicas => 1, updatedReplicas => 0);
+
+subtest '--wait does not take the old pod for the rollout' => sub {
+    my $polls = 0;
+    my $r = run_cmd(
+        tag     => 'v1.2.3',
+        wait    => 1,
+        timeout => 30,
+        respond => rollout_respond(\$polls,
+            \%OLD_POD, \%OLD_POD,
+            # old pod gone, new one not available yet
+            { observedGeneration => 2, availableReplicas => 0, readyReplicas => 0,
+              replicas => 1, updatedReplicas => 1 },
+            { observedGeneration => 2 }),   # rolled out
+    );
+
+    is($r->{error}, '', 'execute did not die');
+    is($r->{result}, 0, 'returns 0 once the rollout is through');
+    is($polls, 4, 'kept polling past the old pod and the unavailable new one');
+    like($r->{output}, qr/robocop is Ready on raudssus\/ocp:latest, 1\/1 replica\(s\) rolled out/,
+        'the success line names the image the Deployment runs');
+};
+
+subtest '--wait names the revision when the Deployment carries one' => sub {
+    my $r = run_cmd(
+        tag     => 'v1.2.3',
+        wait    => 1,
+        timeout => 30,
+        respond => rollout_respond(\my $polls, { observedGeneration => 2,
+            metadata => { name => 'robocop', namespace => 'ocp-system', generation => 2,
+                annotations => { 'deployment.kubernetes.io/revision' => '7' } } }),
+    );
+    is($r->{result}, 0, 'rolled out');
+    like($r->{output}, qr/\(revision 7\)/, 'and says which revision');
+};
+
+subtest '--wait times out on the old pod and says that is what it waited for' => sub {
+    my $r = run_cmd(
+        tag     => 'v1.2.3',
+        wait    => 1,
+        timeout => 1,
+        respond => rollout_respond(\my $polls, \%OLD_POD),
+    );
+
+    is($r->{result}, 1, 'returns 1 on timeout');
+    unlike($r->{output}, qr/Ready/, 'never claimed Ready');
+    like($r->{errput},
+        qr/Timed out after 1s waiting for robocop to roll out: 0 of 1 replica\(s\) updated, 1 old replica\(s\) still running/,
+        'STDERR says what the rollout hung on');
+};
+
+subtest '--wait does not trust a poll that has not observed our generation' => sub {
+    # The polled object says generation 1 and has observed it -- a stale read
+    # from before our patches, which produced generation 2.
+    my $r = run_cmd(
+        tag     => 'v1.2.3',
+        wait    => 1,
+        timeout => 1,
+        respond => rollout_respond(\my $polls, { generation => 1, observedGeneration => 1 }),
+    );
+    is($r->{result}, 1, 'not taken for the rollout');
+    like($r->{errput}, qr/not observed yet \(generation 2, observed 1\)/,
+        'the generation to wait for is the one the patch answered with');
+};
+
+subtest '_rollout_pending: kubectl rollout status, check by check' => sub {
+    my $pending = sub { OCP::Cmd::DeployImage->_rollout_pending(deployment(@_), undef) };
+    is($pending->(), undef, 'all updated, none old, all available: through');
+    like($pending->(generation => 3, observedGeneration => 2), qr/not observed/, 'spec not observed');
+    like($pending->(%OLD_POD, generation => 2), qr/^0 of 1 replica\(s\) updated, 1 old/,
+        'old pod still the running one');
+    like($pending->(replicas => 2, updatedReplicas => 1, availableReplicas => 1),
+        qr/^1 old replica\(s\) still running$/, 'surge: new one up, old one not gone yet');
+    like($pending->(availableReplicas => 0), qr/^0 of 1 updated replica\(s\) available$/,
+        'new pod not available yet');
 };
 
 done_testing;

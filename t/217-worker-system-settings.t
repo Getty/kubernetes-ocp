@@ -199,6 +199,7 @@ my $PROVIDER = {
     sub phase { 'Ready' }
     sub name  { 'w1' }
     sub cr    { { status => {} } }
+    sub lease_conflict { undef }
 }
 {
     package FakeOcp;

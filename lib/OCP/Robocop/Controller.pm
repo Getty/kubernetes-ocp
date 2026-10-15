@@ -1120,6 +1120,14 @@ sub _report_result {
     my $name  = $node->name;
     my $after = $node->phase;
 
+    # Left alone, not reconciled: someone else holds the lease (k227). Not an
+    # error; the next event or resync looks again.
+    if (defined(my $lease = $node->lease_conflict)) {
+        $self->log("$name: left to the reconciler holding the lease, phase stays "
+            . "$after: $lease");
+        return;
+    }
+
     unless ($after eq 'Failed') {
         $self->log("$name: reconciled, phase $before -> $after");
         return;
@@ -1418,6 +1426,12 @@ recorded the failure into the status or the controller did -- logs the reason
 on STDERR, followed by L</retry_hint>, and appends the same hint to
 C<status.message> unless it is already there. C<Failed> is terminal: robocop
 never reconciles such a node again on its own.
+
+A node whose lease another reconciler holds -- C<ocp node add> or C<ocp apply>
+installing it (L<OCP::Node/Lease Mechanics>) -- is left alone in the phase it
+is in; the result line on STDOUT says so and names the lease. The next event
+or resync looks again, and takes the node over once the lease is released or
+has expired.
 
 =head2 retry_hint
 

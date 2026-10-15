@@ -48,8 +48,10 @@ sub ocpnode {
 package FakeKube {
     use JSON::MaybeXS ();
     sub new { my ($c, %a) = @_; bless { patches => [], %a }, $c }
+    # OCP::Node reads its CR positionally (Kind, name, namespace => ...), the
+    # controller with name => ...; neither argument list matters here.
     sub get {
-        my ($self, $kind, %a) = @_;
+        my ($self, $kind) = @_;
         return $self->{node} if $kind eq 'OCPNode';
         return { apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
                  metadata => { name => 'p', namespace => 'ocp-system' },
@@ -58,6 +60,9 @@ package FakeKube {
     sub k8s { bless {}, 'FakeIOK8s' }
     # The teardown finalizer robocop adds to a worker that has none (k179).
     sub patch { 1 }
+    # The install lease OCP::Node takes and releases around the step (k227):
+    # written back as sent, the way the API server echoes a PUT.
+    sub update { $_[1] }
     sub patch_status {
         my ($self, $kind, %a) = @_;
         push @{ $self->{patches} }, $a{patch}{status};
@@ -67,7 +72,11 @@ package FakeKube {
         return 1;
     }
 }
-package FakeIOK8s { sub object_to_struct { $_[1] } }
+package FakeIOK8s {
+    sub object_to_struct { $_[1] }
+    sub expand_class     { $_[1] }
+    sub struct_to_object { $_[2] }
+}
 
 package main;
 
@@ -143,6 +152,28 @@ subtest 'a successful step logs the phase it reached' => sub {
     like $out, qr/w1: .*Installing -> Joining/, 'the result on STDOUT';
     is $err, '', 'nothing on STDERR';
     is scalar @{ $kube->{patches} }, 1, 'no extra status patch';
+};
+
+subtest 'a node the CLI holds the lease for is left alone, and the log says who holds it' => sub {
+    # k227: `ocp node add` installing it while robocop restarted. Not an
+    # error, so nothing on STDERR and nothing into status.
+    no warnings 'redefine';
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
+    my $installed = 0;
+    local *OCP::Node::_install_kubernetes = sub { $installed++ };
+
+    my $lease = 'cli@' . OCP::Node::_rfc3339_now() . '@1200';
+    my $cr = ocpnode('w1', 'Installing');
+    $cr->{metadata}{annotations} = { 'ocp.internal/reconciler-lease' => $lease };
+    my $kube = FakeKube->new(node => $cr);
+    my ($out, $err) = capture_std(sub { ctrl(kube => $kube)->_reconcile_cr($cr) });
+
+    is $installed, 0, 'no install';
+    like $out, qr/w1: left to the reconciler holding the lease, phase stays Installing: \Q$lease\E/,
+        'STDOUT names the lease and the phase';
+    unlike $out, qr/reconciled, phase/, 'and does not claim a reconcile';
+    is $err, '', 'nothing on STDERR';
+    is scalar @{ $kube->{patches} }, 0, 'no status write';
 };
 
 subtest 'a node already Failed is skipped, and the hint is not added twice' => sub {
