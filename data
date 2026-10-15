@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-10-15T23:22:03Z
+claimed_by: perl-developer
+class: standard
+completed: 2026-10-15T23:22:03Z
+created: 2026-10-14T18:52:45Z
+id: 225
+priority: high
+started: 2026-10-15T23:22:03Z
+status: done
+title: 'Lib-Updates 2: Floors Rex::LibSSH 0.005, NAK 0.010, Rex::Rancher 0.004, WWW::Hetzner
+  0.102 (lokal installiert, Suite gruen)'
+updated: 2026-10-15T23:22:03Z
+---
+
+Floors und VENDOR in c804050. Offen nach CPAN-Release: die vier Dists aus VENDOR nehmen, carton update nur fuer diese vier, Image bauen (agent-lab), Suite im Image. Inhalt: Rex::LibSSH #9 (File-Handle meldet Fehler, betrifft Schreibzugriffe von Rex::Rancher/Rex::GPU), NAK 6 Fixes (robocop-Watcher/Controller), Rex::Rancher K3s kubeconfig_mode 0600 (OCP liest als root, unbetroffen, geprueft), WWW::Hetzner Transportfehler (niedrige Prio). Rex::Rancher #83 bewusst nicht dabei.
+
+2026-10-14: Alle vier per dzil install lokal; volle Suite gegen die installierten Versionen gruen (135 Dateien, 2204 Tests). Snapshot/Image zieht der gemeinsame Release nach, kein Blocker. Makefile-VENDOR bleibt leer (t/222-vendor.t).
+
+2026-10-15 23:22 LIVE 2026-10-15: Image mit den Floors gebaut, Suite im Image 2271/2273 grün, Lab-Durchgang darauf gefahren.
