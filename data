@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-10-15T23:21:20Z
+created: 2026-09-24T20:23:15Z
+id: 189
+priority: low
+started: 2026-10-14T19:16:52Z
+status: done
+tags:
+- status
+- drift
+- output
+title: ocp status oeffnet SSH (Legacy-containerd-Probe) und zeigt Rex-Output
+updated: 2026-10-15T23:21:20Z
+---
+
+Live 2026-09-24: ocp status laeuft detect_legacy_containerd_template per Rex/SSH (k71-Host-Probe) und druckt Rex-Output; Skill ocp-usage sagt, Read-only-Pfade oeffnen kein SSH. Im secure mode: fragt es dann PIN2? Done: klaeren, ob status SSH darf (sonst Probe nur in apply), Rex-Output unterdruecken, Skill/Doku angleichen.
+
+2026-10-14 19:16 Probe laeuft quiet (OCP::Rex quiet, kein Rex-Output auf STDERR); Skill ocp-usage korrigiert: status oeffnet nur den read-only Host-Probe per SSH, wenn Key da. Entscheidung: SSH im Probe bleibt.
+
+2026-10-15 23:21 LIVE 2026-10-15 bestanden: ocp status gegen citiai (mit und ohne Key) und gegen Testcluster ocplab: Exit 0, keine Rex-Output-Zeilen, kein PIN-Prompt, STDERR leer.
