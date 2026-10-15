@@ -694,6 +694,39 @@ subtest 'k164: an outdated Gateway API bundle is repaired through its Rex task' 
     ok !touched($dry, '_run_remedy'), 'and does not run it';
 };
 
+#
+# k198: cert-manager's remedy is a server-side apply from the CLI, not a Rex
+# task. The lab run on 2026-10-15 healed it correctly over the API but still
+# printed "Running upgrade_cert_manager..." and, dry, "would run
+# upgrade_cert_manager" -- telling the operator a node task runs that does not
+# exist any more. Rex remedies keep naming their task (k164 above).
+#
+subtest 'k198: an API remedy is not announced as a task run' => sub {
+    my $old = { 'Deployment/cert-manager/cert-manager' => {
+        spec => { template => { spec => { containers => [
+            { image => 'quay.io/jetstack/cert-manager-controller:v1.0.0' },
+        ] } } },
+    } };
+
+    my $r = do {
+        no warnings 'redefine';
+        local *OCP::Cmd::Apply::_run_remedy = sub { push @touched, '_run_remedy'; 1 };
+        reconcile(objects => $old);
+    };
+    like $r->{out}, qr/\[drift\] cert-manager runs v1\.0\.0/, 'the outdated cert-manager is reported';
+    ok touched($r, '_run_remedy'), 'and healed through the remedy step';
+    unlike $r->{out}, qr/Running upgrade_cert_manager/, 'not announced as a task run';
+    like $r->{out}, qr/\[\.\.\] Updating cert-manager via the cluster API\.\.\./,
+        'but as an update over the cluster API';
+    like $r->{out}, qr/\[ok\] cert-manager updated to /, 'and its result is reported';
+
+    my $dry = reconcile(objects => $old, dry_run => 1);
+    unlike $dry->{out}, qr/would run upgrade_cert_manager/, 'a dry run names no task';
+    like $dry->{out}, qr/would update cert-manager via the cluster API/,
+        'it says what a real run would do';
+    ok !touched($dry, '_run_remedy'), 'and does not do it';
+};
+
 subtest 'k164: a bundle at the pin is left alone' => sub {
     my $r = reconcile();
     unlike $r->{out}, qr/Gateway API CRD bundle/, 'no finding';

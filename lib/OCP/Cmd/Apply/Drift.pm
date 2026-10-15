@@ -147,10 +147,18 @@ sub reconcile_components {
                 next;
             }
 
-            print "  [..] Running $entry->{remedy}{task}...\n";
+            # An API remedy is no Rex task on a node (k198): naming its
+            # handler as something "running" would tell the operator
+            # otherwise. The wording matches ocp update's "via the cluster API".
+            my $via_api = ($entry->{remedy}{type} // 'rex') eq 'api';
+            print $via_api
+                ? "  [..] Updating $entry->{label} via the cluster API...\n"
+                : "  [..] Running $entry->{remedy}{task}...\n";
             my $done = eval { $self->_run_remedy($config, $entry) };
             if ($@) {
-                print "  [WARN] $entry->{remedy}{task} failed: $@";
+                print $via_api
+                    ? "  [WARN] $entry->{label} update via the cluster API failed: $@"
+                    : "  [WARN] $entry->{remedy}{task} failed: $@";
                 push @unresolved, $entry->{label} // $entry->{component};
             } elsif ($done) {
                 print "  [ok] $entry->{label} updated to $entry->{expected}\n";
@@ -471,7 +479,11 @@ sub dry_run_report {
 
     for my $entry (@$drift) {
         print "  [drift] $entry->{message}\n";
-        print "          would run $entry->{remedy}{task}\n" if $entry->{remedy};
+        if ($entry->{remedy}) {
+            print +($entry->{remedy}{type} // 'rex') eq 'api'
+                ? "          would update $entry->{label} via the cluster API\n"
+                : "          would run $entry->{remedy}{task}\n";
+        }
         print "          report only, a real run leaves it as it is\n"
             if $is_report_only->($entry);
     }
