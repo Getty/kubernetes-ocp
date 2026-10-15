@@ -700,6 +700,35 @@ subtest 'a node with spec.host never asks a provider for its address' => sub {
         'and the install ran against spec.host, unchanged';
 };
 
+subtest 'a refused key is not reported as unreachable' => sub {
+    # Lab 2026-10-15 (k204): OCPNode/probe204 said "Failed: SSH not reachable:
+    # SSH key rejected by 10.230.30.111 ..." -- the prefix contradicted the
+    # message it carried.
+    @FakeRex::_instances = ();
+    no warnings 'redefine';
+    local *FakeSSH::wait_for_ssh = sub {
+        die "SSH key rejected by 10.0.0.5: user root with key K was refused (Permission denied).\n";
+    };
+    my $prov = FakeProvider->new;
+    my $k = StrictK8s::build(cr => ocpnode(
+        metadata => { name => 's3', namespace => 'ocp-system' },
+        spec     => { role => 'worker', providerRef => 'ssh-default', host => '10.0.0.5' },
+        status   => { phase => 'Installing' },
+    ));
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov,
+        ssh_key => 'K', server_url => 'U', join_token => 'T',
+        ssh_class => 'FakeSSH', rex_class => 'FakeRex');
+
+    $node->_install_kubernetes;
+
+    my ($sent) = map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+                 grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    is $sent->{phase}, 'Failed', 'terminal';
+    like   $sent->{message}, qr/key rejected/, 'carries the refusal';
+    unlike $sent->{message}, qr/not reachable/, 'and does not call the host unreachable';
+    is scalar @FakeRex::_instances, 0, 'no install was attempted';
+};
+
 subtest 'no address and no server to ask is still a visible failure' => sub {
     @FakeRex::_instances = ();
     my $prov = FakeProvider->new;

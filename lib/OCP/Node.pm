@@ -448,7 +448,7 @@ sub _install_kubernetes {
     # Bootstrap spends -- and the failure below is terminal (k109).
     eval { $ssh->wait_for_ssh };
     if ($@) {
-        $self->_patch_status(phase => 'Failed', message => "SSH not reachable: $@");
+        $self->_patch_status(phase => 'Failed', message => "SSH not ready: $@");
         return;
     }
 

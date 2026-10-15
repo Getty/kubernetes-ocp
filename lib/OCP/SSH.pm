@@ -263,6 +263,18 @@ sub learn_host_key {
 # `our` so a test can shorten it without timing the real thing.
 our $WAIT_TIMEOUT = 120;
 
+# The fingerprint ssh-keygen -l prints for a key file, or undef. The key file
+# OCP::Node hands over is a temporary copy, so its path alone tells the operator
+# nothing; the fingerprint is what they can compare on the host (k204).
+sub _key_fingerprint {
+    my ($key) = @_;
+    return undef unless defined $key && -f $key;
+    open my $fh, '-|', 'ssh-keygen', '-l', '-f', $key or return undef;
+    my $line = do { local $/; <$fh> } // '';
+    close $fh;
+    return $line =~ /(SHA256:\S+)/ ? $1 : undef;
+}
+
 sub wait_for_ssh {
     my ($self, $timeout, $interval) = @_;
     $timeout //= $WAIT_TIMEOUT;
@@ -285,6 +297,8 @@ sub wait_for_ssh {
         # look at the network (k204).
         if (($result->{stderr} // '') =~ /Permission denied/i) {
             my $key = $self->key_file // 'the default ssh identity';
+            my $fp  = _key_fingerprint($self->key_file);
+            $key .= " ($fp)" if $fp;
             die "SSH key rejected by ${\$self->host}: user "
               . $self->user . " with key $key was refused (Permission denied).\n"
               . "The host is reachable; its authorized_keys does not hold this key.\n"

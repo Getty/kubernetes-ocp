@@ -47,4 +47,22 @@ my $runs = 0;
     cmp_ok $n, '>=', 1, 'probed';
 }
 
+# The key named by its fingerprint: OCP::Node hands wait_for_ssh a temporary
+# copy of the cluster key (/tmp/XXXX.key, lab 2026-10-15), a path that tells the
+# operator nothing; the fingerprint is what ssh-keygen -l on their side shows.
+SKIP: {
+    require File::Temp;
+    my $dir = File::Temp::tempdir(CLEANUP => 1);
+    system('ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', "$dir/k") == 0
+        or skip 'no ssh-keygen', 2;
+    my ($fp) = `ssh-keygen -lf $dir/k.pub` =~ /(SHA256:\S+)/;
+    my $s2 = OCP::SSH->new(host => 'h.example', user => 'root', key_file => "$dir/k");
+    no warnings 'redefine';
+    local *OCP::SSH::run = sub { { exit => 255, stdout => '',
+        stderr => "root\@h.example: Permission denied (publickey).\n" } };
+    eval { $s2->wait_for_ssh(120, 2) };
+    like $@, qr/\Q$fp\E/, 'names the key by its fingerprint';
+    like $@, qr/key rejected by h\.example/, 'still names the host';
+}
+
 done_testing;
