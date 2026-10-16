@@ -464,6 +464,15 @@ use OCP::Versions;
 # The CRD OCP::Drift reads the Gateway API bundle version off (k164).
 # Cluster-scoped, hence the '-' DryRunApi files a namespace-less GET under.
 my $GATEWAY_CRD_KEY = 'CustomResourceDefinition/-/gateways.gateway.networking.k8s.io';
+my $CILIUM_KEY      = 'Deployment/kube-system/cilium-operator';
+
+# The operator at the pin, as a cluster that runs Cilium has it.
+sub cilium_operator {
+    my ($version) = @_;
+    return { spec => { template => { spec => { containers => [
+        { image => "quay.io/cilium/operator-generic:v$version" },
+    ] } } } };
+}
 
 sub gateway_bundle {
     my ($version) = @_;
@@ -548,8 +557,13 @@ YAML
         # The Gateway API CRDs at the pin, as install_cilium leaves them: a
         # cluster without them is drifted with a Rex remedy (k164), which
         # every test here would otherwise count as unresolved.
+        #
+        # Likewise Cilium itself: no cilium-operator is a cluster without a pod
+        # network, which the upgrade_cilium remedy installs (k206) -- `no_cilium`.
         objects  => { $GATEWAY_CRD_KEY => gateway_bundle(
                           OCP::Versions->get_component_version('gateway_api')),
+                      ($opt{no_cilium} ? () : ($CILIUM_KEY => cilium_operator(
+                          OCP::Versions->get_component_version('cilium')))),
                       %{ $opt{objects} // {} } },
         ocpnodes => { map { $_ => {
             apiVersion => 'ocp.internal/v1',
@@ -623,9 +637,9 @@ subtest 'the same run with the flag off does write' => sub {
 subtest 'a dry run reports what a real run would act on' => sub {
     my $r = reconcile(dry_run => 1);
 
-    # The fake cluster has no cilium-operator and no cert-manager, which the
-    # detector reads as "not deployed".
-    like $r->{out}, qr/\[drift\] Cilium is not deployed/, 'names what differs';
+    # The fake cluster has no NFD and no cert-manager, which the detector
+    # reads as "not deployed".
+    like $r->{out}, qr/\[drift\] NFD is not deployed/, 'names what differs';
     like $r->{out}, qr/difference\(s\) a real run would act on/, 'and counts it';
 
     # The blind spot, stated rather than implied: a manifest that changed
@@ -730,6 +744,23 @@ subtest 'k198: an API remedy is not announced as a task run' => sub {
     like $dry->{out}, qr/would update cert-manager via the cluster API/,
         'it says what a real run would do';
     ok !touched($dry, '_run_remedy'), 'and does not do it';
+};
+
+#
+# k206: a cluster with no cilium-operator has no pod network. Cilium is a core
+# component, so the reconcile runs the upgrade_cilium task, which installs it
+# when there is no Helm release to upgrade (t/235) -- rather than naming a
+# manual step nobody can take.
+#
+subtest 'k206: a cluster without Cilium gets it from the reconcile' => sub {
+    my $r = reconcile(no_cilium => 1);
+    like $r->{out}, qr/\[drift\] Cilium is not deployed/, 'reported';
+    like $r->{out}, qr/Running upgrade_cilium/, 'and the Cilium task is run';
+    ok touched($r, '_run_remedy'), 'through the remedy step';
+
+    my $dry = reconcile(no_cilium => 1, dry_run => 1);
+    like $dry->{out}, qr/would run upgrade_cilium/, 'a dry run names the task';
+    ok !touched($dry, '_run_remedy'), 'and does not run it';
 };
 
 subtest 'k164: a bundle at the pin is left alone' => sub {

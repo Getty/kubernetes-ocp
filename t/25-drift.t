@@ -212,7 +212,14 @@ YAML
     my ($drift) = grep { $_->{component} eq 'cilium' }
                   OCP::Drift->new(config => $config, api => $api)->component_drift;
     is($drift->{kind}, 'missing', 'absent deployment reported as missing');
-    is($drift->{remedy}, undef, 'missing components have no upgrade remedy');
+    # k206: the exception is Cilium (and the Gateway API CRDs): a cluster
+    # without a pod network is fixed by the task, which installs when there is
+    # no release to upgrade. Components a full deploy owns have no remedy.
+    is($drift->{remedy}{task}, 'upgrade_cilium', 'a missing Cilium carries the task that installs it');
+    is($drift->{remedy}{params}{pod_cidr}, $config->pod_cidr, 'with network.pod_cidr, for the fresh pool');
+    my ($nfd) = grep { $_->{component} eq 'nfd' }
+                OCP::Drift->new(config => $config, api => $api)->component_drift;
+    is($nfd->{remedy}, undef, 'other missing components have no upgrade remedy') if $nfd;
 }
 
 #

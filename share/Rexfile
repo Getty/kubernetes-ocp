@@ -921,7 +921,13 @@ task "update_gateway_api", sub {
 
 desc "Install Cilium CNI";
 task "install_cilium", sub {
-    my $params = task_params(shift);
+    _install_cilium(task_params(shift));
+};
+
+# The body of install_cilium, also what upgrade_cilium falls back to on a
+# cluster that has no Cilium release to upgrade (k206).
+sub _install_cilium {
+    my ($params) = @_;
     my $distribution = $params->{distribution} || 'rke2';
 
     # Every pin first: nothing touches the node without all three.
@@ -952,7 +958,7 @@ task "install_cilium", sub {
     ));
 
     say "Cilium installed successfully";
-};
+}
 
 #
 # Update Tasks
@@ -979,19 +985,60 @@ task "upgrade_cilium", sub {
     # Gateway controller) and the Helm upgrade, in that order. No cluster_cidr:
     # the pool stays what the cluster runs (k182), as do the API address on k3s
     # and the operator's replicas; this task never acts on network.pod_cidr.
-    Rex::Rancher::Cilium::upgrade_cilium(_cilium_opts(
-        distribution        => $distribution,
-        version             => $version,
-        cli_version         => $cli_version,
-        gateway_api_version => $gateway_api_version,
-        kubeconfig          => "$local",
-        k8s_service_host    => $params->{k8s_service_host},
-        helm_values         => $params->{helm_values},
-        wait_duration       => 300,
-    ));
+    my $upgraded = eval {
+        Rex::Rancher::Cilium::upgrade_cilium(_cilium_opts(
+            distribution        => $distribution,
+            version             => $version,
+            cli_version         => $cli_version,
+            gateway_api_version => $gateway_api_version,
+            kubeconfig          => "$local",
+            k8s_service_host    => $params->{k8s_service_host},
+            helm_values         => $params->{helm_values},
+            wait_duration       => 300,
+        ));
+        1;
+    };
+    unless ($upgraded) {
+        _cilium_upgrade_refused($@, $params);
+        return;
+    }
 
     say "Cilium upgraded successfully to $version";
 };
+
+# What OCP does with the library's refusals of upgrade_cilium (k206), whose
+# own advice names install_cilium -- a function, not something an `ocp`
+# command offers.
+#
+#   - No deployed release of Cilium's Helm chart (none at all, or one left
+#     failed/uninstalled): Cilium is a core component, a cluster has no pod
+#     network without it, so the library's own advice is taken -- install_cilium
+#     (it removes a release left behind first). The pool is network.pod_cidr,
+#     as for a fresh bootstrap.
+#   - A Helm operation hanging over the release (pending-upgrade/-rollback):
+#     the revision below it carries the pod network, so nothing is done
+#     automatically. The library names the Secret to delete; here it is
+#     spelled as the command.
+sub _cilium_upgrade_refused {
+    my ($err, $params) = @_;
+
+    if ($err =~ /\bupgrade_cilium found no deployed revision of Helm release/) {
+        say "[WARN] no deployed Cilium release on this cluster: installing Cilium "
+          . "$params->{version} instead of upgrading it";
+        _install_cilium($params);
+        return;
+    }
+
+    if ($err =~ /\bis stuck in \S+ \(revision \d+\).*?delete Secret (\S+) in (\S+) and re-run/s) {
+        my ($secret, $namespace) = ($1, $2);
+        die $err . "Once no other Helm operation or deploy is running, remove that revision on a\n"
+          . "control plane and run the command again:\n"
+          . "  kubectl -n $namespace delete secret $secret\n"
+          . "(the deployed revision below it stays the running Cilium).\n";
+    }
+
+    die $err;
+}
 
 # upgrade_cert_manager is not a Rex task any more: OCP applies the manifest
 # itself over the cluster API, with the installation's field manager (k198).

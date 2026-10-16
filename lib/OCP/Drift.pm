@@ -78,7 +78,15 @@ our @COMPONENT_PROBES = (
         },
         # ocp.yaml cilium: (k210): the Helm upgrade re-applies them, or it
         # would drop the devices the install set.
-        remedy_config => { helm_values => 'cilium_helm_values' },
+        remedy_config => {
+            helm_values => 'cilium_helm_values',
+            # Only for a cluster without a Cilium release, where the task
+            # installs instead of upgrading (k206); an upgrade ignores it.
+            pod_cidr    => 'pod_cidr',
+        },
+        # No Cilium at all is a cluster without a pod network: the task
+        # installs it (k206).
+        remedy_if_missing => 1,
     },
     # The Gateway API CRDs run no image, and a bump of only their pin (Cilium
     # unchanged) never showed on the cilium probe (k164). The bundle stamps
