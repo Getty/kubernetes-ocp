@@ -67,6 +67,15 @@ my $CRASHLOOP_MIN_RESTARTS = 2;
 my $CRASHLOOP_GRACE_SECONDS = 300;
 my $CRASHLOOP_GRACE_RESTARTS = 5;
 
+# A pod that is still not up after this long is not starting, it is stuck
+# (k228 point 4): the GPU pods on crag sat in Init with
+# FailedCreatePodSandBox for over 15 minutes without a single restart, and
+# apply called them "still starting" and reported SUCCESS. Long enough for a
+# cold pull of the largest image OCP rolls out (the driver image, several GB,
+# through the pull-through cache) -- a pod that needs longer than that is
+# worth a line either way.
+our $STUCK_SECONDS = 900;
+
 sub _pod_age_seconds {
     my ($pod) = @_;
     my $ts = $pod->{metadata}{creationTimestamp} // return undef;
@@ -126,11 +135,33 @@ sub classify_pod {
     # Readiness is judged on the regular containers only: a completed init
     # container's `ready` flag is not a reliable signal across versions.
     my @regular = @{ $pod->{status}{containerStatuses} // [] };
-    return ('starting') unless $phase eq 'Running' && @regular;
-    for my $cs (@regular) {
-        return ('starting') unless $cs->{ready};
+    my $up = $phase eq 'Running' && @regular && !grep { !$_->{ready} } @regular;
+    return ('healthy') if $up;
+    return ('starting') unless defined $age && $age >= $STUCK_SECONDS;
+    return ('failing', _stuck_reason($pod, $phase, $age));
+}
+
+# "stuck in Init for 17m (ContainerCreating)": the phase, how long, and the
+# most telling reason at hand -- a waiting reason of any container, else why
+# the pod is not scheduled, else nothing.
+sub _stuck_reason {
+    my ($pod, $phase, $age) = @_;
+
+    my ($why) = grep { length }
+        map { $_->{state}{waiting}{reason} // '' }
+        @{ $pod->{status}{initContainerStatuses} // [] },
+        @{ $pod->{status}{containerStatuses}     // [] };
+    unless ($why) {
+        ($why) = map { $_->{reason} // () }
+            grep { ($_->{type} // '') eq 'PodScheduled' && ($_->{status} // '') ne 'True' }
+            @{ $pod->{status}{conditions} // [] };
     }
-    return ('healthy');
+    my $init_pending = grep { !$_->{ready} } @{ $pod->{status}{initContainerStatuses} // [] };
+    my $where = $init_pending        ? 'in Init'
+              : $phase eq 'Running'  ? 'not ready'
+              :                        'in ' . ($phase || 'Pending');
+    my $text = sprintf 'stuck %s for %dm', $where, int($age / 60);
+    return $why ? "$text ($why)" : $text;
 }
 
 sub scan_pods {

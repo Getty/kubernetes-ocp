@@ -403,6 +403,10 @@ sub _generate_nfd_manifest {
     return OCP::Cmd::Apply::Workloads::generate_nfd_manifest(@_);
 }
 
+sub _setup_gpu_operator_after_join {
+    return OCP::Cmd::Apply::Workloads::setup_gpu_operator_after_join(@_);
+}
+
 sub _setup_gpu_operator {
     return OCP::Cmd::Apply::Workloads::setup_gpu_operator(@_);
 }

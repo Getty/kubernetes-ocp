@@ -240,8 +240,10 @@ sub reconcile_components {
             # the cluster and was put back at an unchanged hash, and called
             # that "up to date". 'skipped' is the fifth answer, for the
             # cluster this component is not part of.
-            $updated += $self->_report_component('GPU Operator',
-                $self->_setup_gpu_operator($config));
+            my $outcome = $self->_setup_gpu_operator($config);
+            $updated += $self->_report_component('GPU Operator', $outcome);
+            # Checked again after the worker step when it skipped (k228).
+            $self->{_gpu_outcome} = $outcome;
         };
         if ($@) {
             print STDERR "  [!!] GPU Operator setup failed: $@";
@@ -393,6 +395,10 @@ sub reconcile_components {
                 } else {
                     push @unresolved, "worker $r->{name}";
                 }
+            }
+            unless (OCP::Cmd::Apply::Deploy::gpu_after_join($self, $config, \@results)) {
+                push @unresolved, 'GPU Operator';
+                push @{ $self->{_failed_components} }, 'GPU Operator';
             }
         }
 

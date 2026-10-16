@@ -8,6 +8,7 @@ use Digest::MD5;
 use JSON::PP ();
 use Path::Tiny qw(path);
 
+use OCP::Drift ();
 use OCP::Versions;
 
 =head1 SYNOPSIS
@@ -489,7 +490,26 @@ sub setup_gpu_operator {
 
     my $recorded = exists $deployed->{'gpu-operator'};
 
-    if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running) {
+    # gpu.toolkit decides who prepares each GPU node -- Rex::GPU on the host
+    # (CDI specs) or the operator's toolkit DaemonSet -- and that happens at
+    # join time. Changing it under a running cluster flips the ClusterPolicy,
+    # but the nodes keep what their join left them, and the two mix (k228
+    # point 5, lab note 15). Said, not acted on: the clean way is a re-join.
+    if ($gpu_running) {
+        my $cp = $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy');
+        my $warning = toolkit_switch_warning($cp, $config->gpu_toolkit);
+        print $warning if $warning;
+    }
+
+    # The recorded hash is only what this project applied last; the CRDs in
+    # the cluster are compared too (k228 point 3), so a stub or a CRD of
+    # another release is put right instead of called up to date.
+    my @crd_differ = $gpu_running
+        ? OCP::Drift->gpu_crds_differing(sub { $self->_crd_get($api, $_[0]) })
+        : ();
+    print "      CRD $_ differs from the shipped one, re-applying\n" for @crd_differ;
+
+    if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running && !@crd_differ) {
         print "      GPU Operator already deployed (up to date)\n";
         return 'unchanged';
     }
@@ -539,6 +559,71 @@ sub setup_gpu_operator {
     $self->_save_deployed_hash($config, 'gpu-operator', $hash);
 
     return $outcome;
+}
+
+# The [WARN] for a gpu.toolkit that differs from the running ClusterPolicy's
+# toolkit.enabled, or undef when they agree or there is nothing to compare.
+sub toolkit_switch_warning {
+    my ($cluster_policy, $toolkit) = @_;
+    my $was = $cluster_policy && ref $cluster_policy->{spec}{toolkit} eq 'HASH'
+        ? $cluster_policy->{spec}{toolkit}{enabled} : undef;
+    return undef unless defined $was;
+    return undef if !!$was == !!$toolkit;
+    return sprintf "  [WARN] gpu.toolkit changed (%s -> %s): GPU nodes that joined before keep\n"
+         . "         what their join set up. Re-join them (`ocp node rm NAME`, then\n"
+         . "         `ocp node add` or the next apply) for a clean switch.\n",
+        ($was ? 'true' : 'false'), ($toolkit ? 'true' : 'false');
+}
+
+# k228 point 2: the GPU check runs before the worker step on both apply paths
+# (it needs NFD, which needs the cluster), so in an apply that joins a GPU
+# worker through an ssh pool it found no NVIDIA label and skipped -- the
+# operator only came with the second apply. When that check skipped and this
+# run brought workers up, the check runs once more, after NFD has looked at
+# the new nodes. "Has looked" is any NFD label on the node: NFD labels every
+# node it inspects (system-os_release, cpu-*), so a worker without a GPU does
+# not hold the run for the whole budget, only a node NFD never reaches does.
+#
+# Returns undef when no second check is needed (gpu.enabled false, the first
+# check did not skip, or nobody joined), else the step's verdict like
+# setup_gpu_operator, and dies like it on a real failure. A node NFD has not labelled in
+# time is said and checked anyway: setup_gpu_operator decides on what it sees.
+sub gpu_label_timeout  { 300 }
+sub gpu_label_interval { 10 }
+
+sub setup_gpu_operator_after_join {
+    my ($self, $config, $first_outcome, @ocpnode_names) = @_;
+
+    return undef unless $config->gpu_enabled;
+    return undef unless defined $first_outcome && $first_outcome eq 'skipped';
+    return undef unless @ocpnode_names;
+
+    my $api = $self->_k8s_api;
+    my @k8s_names = map {
+        my $name = $_;
+        my $cr = eval { $api->get('OCPNode', name => $name, namespace => 'ocp-system') };
+        my $h  = $cr ? $api->k8s->object_to_struct($cr) : {};
+        $h->{status}{kubernetesNodeName} // $name;
+    } @ocpnode_names;
+
+    print "  [..] Waiting for NFD on the new worker(s): " . join(', ', @k8s_names) . "\n";
+    my $interval = gpu_label_interval();
+    my $tries    = int(gpu_label_timeout() / $interval);
+    my @waiting  = @k8s_names;
+    for my $try (0 .. $tries) {
+        @waiting = grep {
+            my $node   = eval { $api->get('Node', name => $_) };
+            my $labels = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
+            !grep { index($_, 'feature.node.kubernetes.io/') == 0 } keys %$labels;
+        } @waiting;
+        last unless @waiting;
+        $self->wait_seconds($interval) if $try < $tries;
+    }
+    print "  [WARN] NFD has not labelled " . join(', ', @waiting) . " after "
+        . gpu_label_timeout() . "s; checking with what is there\n" if @waiting;
+
+    print "  [..] Checking GPU Operator again, after the worker join...\n";
+    return setup_gpu_operator($self, $config);
 }
 
 sub generate_gpu_operator_manifest {
@@ -837,6 +922,16 @@ sub generate_gpu_operator_manifest {
                     env => [
                         { name => 'CONTAINERD_SOCKET', value => $containerd_socket },
                         { name => 'CONTAINERD_CONFIG', value => $containerd_config },
+                        # The low-level runtime the NVIDIA runtime wraps, in
+                        # order: runc first, crun only where runc is missing.
+                        # RKE2 adds a crun runtime entry wherever it finds
+                        # /usr/bin/crun (podman brings one), and the toolkit
+                        # then put crun first -- crun 1.14.1 rejects the OCI
+                        # spec ("unknown version specified") and every GPU
+                        # sandbox on that node failed (k228, crag 2026-10-16,
+                        # live with toolkit v1.19.1). Rex::GPU warns about an
+                        # old crun; this keeps the node working regardless.
+                        { name => 'NVIDIA_CONTAINER_RUNTIME_RUNTIMES', value => 'runc,crun' },
                     ],
                 },
                 devicePlugin => {

@@ -142,6 +142,9 @@ sub deploy {
         push @{ $self->{_failed_components} }, 'GPU Operator';
     } else {
         $self->_report_component('GPU Operator', $gpu_outcome);
+        # The worker step comes later; a 'skipped' here is checked again once
+        # workers joined (k228, gpu_after_join).
+        $self->{_gpu_outcome} = $gpu_outcome;
     }
 
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
@@ -276,9 +279,35 @@ sub deploy {
         # lab cluster's Failed worker printed its reason and exited 0.
         push @{ $self->{_failed_components} },
             OCP::Cmd::Apply::CR::unready_nodes($self, \@results);
+        push @{ $self->{_failed_components} }, 'GPU Operator'
+            unless gpu_after_join($self, $config, \@results);
     }
 
     return $step;
+}
+
+# The GPU check once more after workers came up, when the one before the
+# worker step found no GPU node (k228 point 2; the node-add side is k220).
+# Both apply paths call it with the worker step's results. Returns false when
+# the check failed -- said on STDERR here, counted by the caller -- and true
+# otherwise, including when there was nothing to do.
+sub gpu_after_join {
+    my ($self, $config, $results) = @_;
+
+    my @joined = map { $_->{name} } grep { ($_->{phase} // '') eq 'Ready' } @{ $results // [] };
+    return 1 unless @joined;
+
+    my $outcome = eval {
+        $self->_setup_gpu_operator_after_join($config, $self->{_gpu_outcome}, @joined)
+    };
+    if (my $err = $@) {
+        print STDERR "  [!!] GPU Operator setup failed: $err";
+        return 0;
+    }
+    return 1 unless defined $outcome;    # no second check needed
+    $self->_report_component('GPU Operator', $outcome);
+    $self->{_gpu_outcome} = $outcome;
+    return 1;
 }
 
 # Whether --only lets the worker side run -- robocop and the worker step: no

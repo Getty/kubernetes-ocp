@@ -181,12 +181,82 @@ our @REX_PROBES = (
     },
 );
 
+# The GPU Operator's CRDs OCP ships (share/gpu-operator/crds) and applies with
+# the operator. A CRD in the cluster that differs from the shipped one -- an
+# older stub that required nothing, a CRD of another operator release --
+# went unnoticed: the drift check compared only the local hash in
+# .ocp/deployed.yaml (k228 point 3, lab 2026-10-16).
+our @GPU_CRDS = (
+    [ 'clusterpolicies.nvidia.com', 'clusterpolicy-crd.yaml' ],
+    [ 'nvidiadrivers.nvidia.com',   'nvidiadriver-crd.yaml' ],
+);
+
+# What two CRDs must agree on to count as the same: per version its name and
+# the field names of its spec. Coarse on purpose -- the apiserver stores a CRD
+# normalised (defaults filled, numbers and booleans re-encoded), so comparing
+# the schemas as text would be drift on every cluster; the names are what a
+# stub or another release changes.
+sub crd_fingerprint {
+    my ($class, $crd) = @_;
+    return join ';', map {
+        my $props = _dig($_, qw(schema openAPIV3Schema properties spec properties));
+        ($_->{name} // '?') . ':' . join(',', sort keys %{ ref $props eq 'HASH' ? $props : {} });
+    } sort { ($a->{name} // '') cmp ($b->{name} // '') }
+      @{ _dig($crd, qw(spec versions)) // [] };
+}
+
+# [name, label] of every shipped GPU Operator CRD whose cluster copy differs.
+# A CRD the cluster does not have is not drift: the operator is optional, and
+# apply puts both in place with it. $get is how the CRD is read (a path GET
+# returning the decoded JSON or undef), so the reconcile path and this
+# detector read it the same way.
+sub gpu_crds_differing {
+    my ($class, $get) = @_;
+    require OCP::Share;
+    require YAML::XS;
+    my $dir = OCP::Share->dir->child('gpu-operator', 'crds');
+    my @differ;
+    for my $crd (@GPU_CRDS) {
+        my ($name, $file) = @$crd;
+        my $have = $get->("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$name")
+            or next;
+        my $want = eval { YAML::XS::LoadFile($dir->child($file)->stringify) } or next;
+        next if $class->crd_fingerprint($have) eq $class->crd_fingerprint($want);
+        push @differ, $name;
+    }
+    return @differ;
+}
+
+sub gpu_crd_drift {
+    my ($self) = @_;
+    require JSON::PP;
+    my $api = $self->api;
+    # The same raw GET as OCP::Cmd::Apply::K8s::crd_get: a CRD has no
+    # IO::K8s class OCP reads.
+    my $get = sub {
+        my $r = eval { $api->_request('GET', $_[0]) };
+        return undef unless $r && $r->status < 400;
+        return eval { JSON::PP::decode_json($r->content) };
+    };
+    return map {
+        +{
+            kind         => 'version',
+            component    => 'gpu_operator_crd',
+            label        => "CRD $_",
+            message      => "GPU Operator CRD $_ in the cluster differs from the one OCP ships; ocp apply re-applies it",
+            remedy       => undef,
+            self_healing => 1,
+        }
+    } __PACKAGE__->gpu_crds_differing($get);
+}
+
 sub detect {
     my ($self) = @_;
 
     my @drift = $self->spec_drift;
     if ($self->api) {
         push @drift, $self->component_drift;
+        push @drift, $self->gpu_crd_drift;
         push @drift, $self->registry_dns_drift;
         push @drift, $self->pod_cidr_drift;
     }

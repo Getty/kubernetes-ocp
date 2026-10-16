@@ -275,7 +275,12 @@ subtest 'the toolkit env is the operator input and nothing else' => sub {
         ok !exists $env->{CONTAINERD_RUNTIME_CLASS},
             "$distribution: the operator sets the runtime class itself";
 
-        is_deeply [sort keys %$env], [qw(CONTAINERD_CONFIG CONTAINERD_SOCKET)],
+        is $env->{NVIDIA_CONTAINER_RUNTIME_RUNTIMES}, 'runc,crun',
+            "$distribution: runc is the runtime the NVIDIA runtime wraps, crun only "
+          . 'as fallback -- crun 1.14.1 first broke every GPU sandbox (k228)';
+
+        is_deeply [sort keys %$env],
+            [qw(CONTAINERD_CONFIG CONTAINERD_SOCKET NVIDIA_CONTAINER_RUNTIME_RUNTIMES)],
             "$distribution: nothing else rides along — a new variable here is a "
           . 'decision about the node, so it has to be made in this test too';
     }
