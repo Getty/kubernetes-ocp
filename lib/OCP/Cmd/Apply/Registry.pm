@@ -78,6 +78,7 @@ sub setup {
     }
 
     # Server-side apply all registry resources
+    switch_to_recreate($self, $api, $config);
     $self->_apply_yaml_string($api, $manifest);
 
     # Wait for deployed components
@@ -121,6 +122,34 @@ sub running {
     }
 
     return 1;
+}
+
+# The registries roll with Recreate since the k224 follow-up. A Deployment
+# created before that carries spec.strategy.rollingUpdate, defaulted by the API
+# server and owned by no field manager -- so Server-Side Apply cannot drop it,
+# and the API server refuses Recreate next to it (422 "rollingUpdate:
+# Forbidden"). A JSON merge patch can null it. Sent once, only to a Deployment
+# this configuration rolls out that exists and is not Recreate yet.
+sub switch_to_recreate {
+    my ($self, $api, $config) = @_;
+
+    my @names;
+    push @names, 'ocp-cache'    unless $config && $config->has_external_cache;
+    push @names, 'ocp-registry' unless $config && $config->has_external_upstream;
+
+    for my $name (@names) {
+        my $live = eval { $api->get('Deployment', $name, namespace => 'ocp-system') }
+            or next;    # not there: the apply creates it with Recreate
+        my $type = $live->TO_JSON->{spec}{strategy}{type} // '';
+        next if $type eq 'Recreate';
+
+        $api->patch('Deployment', $name,
+            namespace => 'ocp-system',
+            patch     => { spec => { strategy => { type => 'Recreate', rollingUpdate => undef } } },
+            type      => 'merge',
+        );
+    }
+    return;
 }
 
 sub generate_manifest {

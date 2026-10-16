@@ -75,16 +75,28 @@ package FakeApi {
         my ($self, $kind, $name, %opts) = @_;
         my $key = join '/', $kind, ($opts{namespace} // '-'), $name;
         die "404 $key not found\n" unless $self->{have}{$key};
-        return bless { kind => $kind, name => $name }, 'FakeObject';
+        # A live Deployment carries the strategy the cluster holds; unless a
+        # test says otherwise, the Recreate this OCP writes.
+        my $type = exists $self->{strategy}{$name} ? $self->{strategy}{$name} : 'Recreate';
+        return bless { kind => $kind, name => $name,
+            spec => { strategy => { type => $type } } }, 'FakeObject';
+    }
+    sub patch {
+        my ($self, $kind, $name, %opts) = @_;
+        push @main::events, "patch $kind/$name";
+        push @{ $self->{patches} }, { kind => $kind, name => $name, %opts };
+        return 1;
     }
 }
+package FakeObject { sub TO_JSON { +{ spec => $_[0]{spec} } } }
 
 package main;
 
 my @applied;
+our @events;    # patches and applies, in the order they reached the cluster
 {
     no warnings 'redefine';
-    *OCP::Cmd::Apply::_apply_yaml_string  = sub { push @applied, $_[2]; 1 };
+    *OCP::Cmd::Apply::_apply_yaml_string  = sub { push @applied, $_[2]; push @events, 'apply'; 1 };
     *OCP::Cmd::Apply::_poll_deployment_ready = sub { 1 };
 }
 
@@ -118,15 +130,19 @@ sub setup_registry {
     }
 
     my $apply = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
-    $apply->{_k8s_api} = FakeApi->new(have => $opt{have} // {});
+    my $api = FakeApi->new(have => $opt{have} // {}, strategy => $opt{strategy} // {});
+    $apply->{_k8s_api} = $api;
 
     @applied = ();
+    @events  = ();
     my ($out, $outcome) = capture_stdout { $apply->_setup_registry($config) };
 
     return {
         out     => $out,
         outcome => $outcome,
         applied => [@applied],
+        events  => [@events],
+        patches => $api->{patches} // [],
         hashes  => -f $config->deployed_file
             ? YAML::XS::LoadFile($config->deployed_file) : {},
     };
@@ -207,6 +223,54 @@ subtest 'nothing is expected that this configuration never deploys' => sub {
     is $again->{outcome}, 'unchanged',
         'and the next run is quiet without either deployment existing';
     is scalar @{ $again->{applied} }, 0, 'nothing reapplied';
+};
+
+#
+# k224 follow-up: the registries switched to strategy Recreate. On a Deployment
+# that already existed the API server had defaulted
+# spec.strategy.rollingUpdate {maxSurge, maxUnavailable}; no field manager owns
+# it, so Server-Side Apply cannot remove it and the apply was refused (422
+# "rollingUpdate: Forbidden ... when strategy type is 'Recreate'"). A JSON merge
+# patch can drop it; it has to go out before the apply, and only where needed.
+#
+subtest 'an existing RollingUpdate registry is switched by merge patch before the apply' => sub {
+    my $r = setup_registry(
+        have     => { %FULL_REGISTRY },
+        strategy => { 'ocp-cache' => 'RollingUpdate', 'ocp-registry' => 'RollingUpdate' },
+    );
+
+    is_deeply $r->{events},
+        ['patch Deployment/ocp-cache', 'patch Deployment/ocp-registry', 'apply'],
+        'both Deployments patched, then the manifest applied';
+    for my $p (@{ $r->{patches} }) {
+        is $p->{type}, 'merge', "$p->{name}: a JSON merge patch";
+        is $p->{namespace}, 'ocp-system', "$p->{name}: in ocp-system";
+        is_deeply $p->{patch},
+            { spec => { strategy => { type => 'Recreate', rollingUpdate => undef } } },
+            "$p->{name}: sets Recreate and nulls the defaulted rollingUpdate";
+    }
+};
+
+subtest 'no patch where there is nothing to switch' => sub {
+    my $already = setup_registry(have => { %FULL_REGISTRY });
+    is_deeply $already->{events}, ['apply'], 'already Recreate: apply only';
+
+    my $fresh = setup_registry(have => { 'Namespace/-/ocp-system' => 1 });
+    is_deeply $fresh->{events}, ['apply'], 'not there yet: SSA creates it Recreate';
+
+    my %have = %FULL_REGISTRY;
+    delete $have{'Deployment/ocp-system/ocp-registry'};
+    my $half = setup_registry(have => \%have, strategy => { 'ocp-cache' => 'RollingUpdate' });
+    is_deeply $half->{events}, ['patch Deployment/ocp-cache', 'apply'],
+        'only the Deployment that exists with RollingUpdate';
+
+    my $external = setup_registry(
+        config   => { external_cache => 1, external_upstream => 1 },
+        have     => { %FULL_REGISTRY },
+        strategy => { 'ocp-cache' => 'RollingUpdate', 'ocp-registry' => 'RollingUpdate' },
+    );
+    is_deeply $external->{events}, ['apply'],
+        'a registry this configuration does not deploy is not touched';
 };
 
 subtest 'reconcile reports what happened, not what the file suggested' => sub {
