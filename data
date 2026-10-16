@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-16T07:31:11Z
+claimed_by: hub
+class: standard
+completed: 2026-10-16T07:30:42Z
+created: 2026-10-16T06:14:39Z
+id: 233
+priority: medium
+started: 2026-10-16T06:23:14Z
+status: done
+tags:
+- gpu
+- lab
+title: 'GPU Rest aus Runde 6: ClusterPolicy-Inhalt keine Drift, NFD-Fenster zu kurz,
+  dcgm-Anlauf als CrashLoop, Dry-Run ohne toolkit-Wechsel (Lab 2026-10-16)'
+updated: 2026-10-16T07:31:11Z
+---
+
+Notizen 24-27 aus .agent-sessions/ocp-lab/ergebnis-turn6.md (frank-ocp Runde 6).
+24. Von Hand veränderte ClusterPolicy (runc-Pin per kubectl patch entfernt) ist keine Drift; apply holt sie nur mit gelöschtem Hash zurück.
+25. NFD-Wartefenster 300 s nach Pool-Join zu kurz: auf frischem brain bekam der nfd-worker erst nach 4-5 min eine Sandbox (Cilium noch nicht bereit); GPU-Node fehlte im Check.
+26. #202-Restlücke live: zwei GPU-Nodes gleichzeitig, dcgm-exporter 5-7 Restarts in ~4 min -> [WARN] CrashLoopBackOff, Banner WITH WARNINGS, Minuten später Ready.
+27. apply --dry-run kündigt gpu.toolkit-Wechsel nicht an.
+Fertig, wenn: 24 als Drift erkannt und von apply geheilt, 25 Fenster passend, 26 kein Fehlalarm im Anlauf, 27 im Dry-Run angekündigt; live nachgeprüft.
+
+2026-10-16 gebaut in f47579a (main, kein Push). Suite 166/2571 grün. LIVE offen: ClusterPolicy-Env per kubectl patch entfernen -> dry-run [drift] ... spec.toolkit.env, apply heilt ohne Hash-Löschen; toolkit-Wechsel im dry-run; Pool-Join mit zwei GPU-Nodes -> kein dcgm-CrashLoop-WARN.
+
+Live 2026-10-16 Runde 7 (frank-ocp, ocp-lab:f47579a..08f5ebe): bestanden (ClusterPolicy-Env-Drift erkannt und ohne Hash-Löschen geheilt, toolkit-Wechsel im Dry-Run, dcgm still starting ohne CrashLoop-WARN – nur ein GPU-Node im Lauf). Notiz 30 -> #237.
+
+Korrektur: der Verweis '#237' in der Notiz davor meint #234.
