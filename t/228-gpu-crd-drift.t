@@ -80,7 +80,7 @@ subtest 'drift entry: self-healing, counted as an action' => sub {
 
 subtest 'apply compares the cluster CRDs before calling the operator up to date' => sub {
     my $src = path('lib/OCP/Cmd/Apply/Workloads.pm')->slurp_utf8;
-    like $src, qr/gpu_crds_differing.*?\$gpu_running && !\@crd_differ/s, 'a differing CRD is not "unchanged"';
+    like $src, qr/gpu_crds_differing.*?\$gpu_running\s*&& !\@crd_differ/s, 'a differing CRD is not "unchanged"';
 };
 
 done_testing;

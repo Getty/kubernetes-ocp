@@ -509,7 +509,16 @@ sub setup_gpu_operator {
         : ();
     print "      CRD $_ differs from the shipped one, re-applying\n" for @crd_differ;
 
-    if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running && !@crd_differ) {
+    # The same for the ClusterPolicy's content (lab note 24): a hand edit --
+    # the runc pin taken out with kubectl patch -- kept the hash and was
+    # called up to date.
+    my @cp_differ = $gpu_running
+        ? cluster_policy_differences($self, $config, $api, $manifest)
+        : ();
+    print "      ClusterPolicy differs from the spec at $_, re-applying\n" for @cp_differ;
+
+    if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running
+        && !@crd_differ && !@cp_differ) {
         print "      GPU Operator already deployed (up to date)\n";
         return 'unchanged';
     }
@@ -561,6 +570,48 @@ sub setup_gpu_operator {
     return $outcome;
 }
 
+# Where the live ClusterPolicy differs from the one in $manifest (the
+# generated operator manifest), as paths like spec.toolkit.env. Only what OCP
+# sets is compared: the apiserver fills in the CRD's defaults, and the
+# operator never writes spec, so a key OCP does not name is not drift. A list
+# (toolkit.env) must match as a whole. Empty when the ClusterPolicy cannot be
+# read: whether the operator runs is asked elsewhere.
+sub cluster_policy_differences {
+    my ($self, $config, $api, $manifest) = @_;
+    $manifest //= generate_gpu_operator_manifest($self, $config);
+    require YAML::XS;
+    my ($want) = grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'ClusterPolicy' }
+        YAML::XS::Load($manifest);
+    return () unless $want;
+    my $live = $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy')
+        or return ();
+    my @paths;
+    _differ($want->{spec}, $live->{spec}, 'spec', \@paths);
+    return @paths;
+}
+
+sub _differ {
+    my ($want, $have, $path, $out) = @_;
+    if (ref $want eq 'HASH') {
+        return push @$out, $path unless ref $have eq 'HASH';
+        _differ($want->{$_}, $have->{$_}, "$path.$_", $out) for sort keys %$want;
+        return;
+    }
+    if (ref $want eq 'ARRAY') {
+        return push @$out, $path unless ref $have eq 'ARRAY' && @$want == @$have;
+        my @sub;
+        _differ($want->[$_], $have->[$_], "$path\[$_]", \@sub) for 0 .. $#$want;
+        push @$out, $path if @sub;
+        return;
+    }
+    return push @$out, $path unless defined $have || !defined $want;
+    # Booleans arrive as JSON booleans from the API and as YAML ones from the
+    # manifest; numbers and strings compare as text.
+    my $norm = sub { my $v = shift; ref $v ? ($v ? 'true' : 'false') : "$v" };
+    push @$out, $path if defined $want && $norm->($want) ne $norm->($have);
+    return;
+}
+
 # The [WARN] for a gpu.toolkit that differs from the running ClusterPolicy's
 # toolkit.enabled, or undef when they agree or there is nothing to compare.
 sub toolkit_switch_warning {
@@ -588,7 +639,10 @@ sub toolkit_switch_warning {
 # check did not skip, or nobody joined), else the step's verdict like
 # setup_gpu_operator, and dies like it on a real failure. A node NFD has not labelled in
 # time is said and checked anyway: setup_gpu_operator decides on what it sees.
-sub gpu_label_timeout  { 300 }
+# 600: on a freshly joined node NFD's worker pod waits for the CNI first --
+# brain needed 4-5 minutes before its sandbox got a network (lab note 25), and
+# the old 300 s ran out with the GPU node missing from the check.
+sub gpu_label_timeout  { 600 }
 sub gpu_label_interval { 10 }
 
 sub setup_gpu_operator_after_join {

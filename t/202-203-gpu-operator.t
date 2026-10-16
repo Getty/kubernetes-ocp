@@ -26,8 +26,13 @@ sub pod {
 my $self = bless {}, 'OCP::Cmd::Apply';
 is( (OCP::Cmd::Apply::Health::classify_pod($self, pod(60, 4)))[0], 'starting',
     '4 restarts within a minute: still starting' );
-is( (OCP::Cmd::Apply::Health::classify_pod($self, pod(60, 6)))[0], 'failing',
-    'too many restarts: failing' );
+# Lab note 26 (two GPU nodes at once: dcgm-exporters at 5-7 restarts in about
+# four minutes, then Ready): inside the grace period the count does not
+# decide. Past it, it does (below).
+is( (OCP::Cmd::Apply::Health::classify_pod($self, pod(60, 6)))[0], 'starting',
+    'many restarts, but a minute old: still starting' );
+is( (OCP::Cmd::Apply::Health::classify_pod($self, pod(301, 6)))[0], 'failing',
+    'the same past the grace period: failing' );
 is( (OCP::Cmd::Apply::Health::classify_pod($self, pod(3600, 4)))[0], 'failing',
     'an hour old and still crash-looping: failing' );
 

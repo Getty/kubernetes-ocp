@@ -7,6 +7,7 @@ use warnings;
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Deploy;
 use OCP::Cmd::Apply::Network;
+use OCP::Cmd::Apply::Workloads ();
 use OCP::Drift;
 use OCP::Rex;
 use OCP::Secrets;
@@ -551,9 +552,14 @@ sub dry_run_report {
         ? robocop_dry_run($self, $config, $cp_ip)
         : ();
 
+    # The GPU Operator's ClusterPolicy (lab notes 24, 27): its content against
+    # the spec, and a gpu.toolkit switch -- both said by the real run's GPU
+    # step, so the read-only pass says them too. Only where the operator runs.
+    my @gpu = gpu_dry_run($self, $config);
+
     my $report_only = scalar grep { $is_report_only->($_) } @$drift;
     my $actions     = scalar(@$drift) - $report_only
-        + scalar(@missing) + scalar(@relabel) + scalar(@robocop);
+        + scalar(@missing) + scalar(@relabel) + scalar(@robocop) + scalar(@gpu);
 
     print "\n";
     print "  $actions difference(s) a real run would act on.\n";
@@ -571,6 +577,28 @@ sub dry_run_report {
 # The robocop half of the dry run: prints what robocop_step would write and
 # returns one entry per difference. A Deployment that is there is not
 # compared -- a real run re-applies it anyway, like every other manifest.
+# One entry per ClusterPolicy path that differs from the spec; the
+# gpu.toolkit warning is printed but is no action of its own (the real run
+# only warns as well).
+sub gpu_dry_run {
+    my ($self, $config) = @_;
+    return () unless $config->gpu_enabled;
+    # Read-only and best effort, like the rest of this report: a cluster that
+    # cannot be asked has no GPU finding here.
+    my $api = eval { $self->_k8s_api } or return ();
+    return () unless eval { $self->_resource_exists($api, 'Deployment', 'gpu-operator',
+        namespace => 'gpu-operator') };
+    my @paths = eval {
+        OCP::Cmd::Apply::Workloads::cluster_policy_differences($self, $config, $api)
+    };
+    print "  [drift] GPU Operator ClusterPolicy differs from the spec at $_\n"
+        . "          would re-apply the GPU Operator manifest\n" for @paths;
+    my $cp = eval { $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy') };
+    my $warning = OCP::Cmd::Apply::Workloads::toolkit_switch_warning($cp, $config->gpu_toolkit);
+    print $warning if $warning;
+    return @paths;
+}
+
 sub robocop_dry_run {
     my ($self, $config, $cp_ip) = @_;
     my $api   = $self->_k8s_api;

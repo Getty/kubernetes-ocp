@@ -106,8 +106,13 @@ sub classify_pod {
         next unless $reason && $DURABLE_WAIT{$reason};
         next if $reason eq 'CrashLoopBackOff'
             && ($cs->{restartCount} // 0) < $CRASHLOOP_MIN_RESTARTS;
-        if ($reason eq 'CrashLoopBackOff'
-            && ($cs->{restartCount} // 0) < $CRASHLOOP_GRACE_RESTARTS) {
+        # A young pod is starting up however often it restarted: two GPU
+        # nodes coming up at once took the dcgm-exporters to 5-7 restarts in
+        # about four minutes, then they settled (lab note 26, the #202 gap).
+        # Once it is past the grace period the restart count decides, here
+        # and in the between-crashes rule below; one that never comes up is
+        # stuck after $STUCK_SECONDS.
+        if ($reason eq 'CrashLoopBackOff') {
             my $age = _pod_age_seconds($pod);
             next if defined $age && $age < $CRASHLOOP_GRACE_SECONDS;
         }
