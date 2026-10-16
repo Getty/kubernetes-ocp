@@ -104,6 +104,22 @@ sub classify_pod {
         }
         $reasons{$reason} = 1;
     }
+
+    # A looping container is waiting in CrashLoopBackOff only between crashes;
+    # in the windows around each one it is running or terminated, and the
+    # waiting scan above sees nothing. Past both grace limits, an unready
+    # container is a crash loop whatever window the scan hits — the restart
+    # count is the evidence. k202, lab 2026-10-16: crash-old (6 restarts,
+    # 5m47s) was reported "still starting" because the last scan caught it
+    # between crashes, one apply after another had flagged it failing.
+    my $age = _pod_age_seconds($pod);
+    unless (defined $age && $age < $CRASHLOOP_GRACE_SECONDS) {
+        for my $cs (@{ $pod->{status}{containerStatuses} // [] }) {
+            next if $cs->{ready};
+            next if ($cs->{restartCount} // 0) < $CRASHLOOP_GRACE_RESTARTS;
+            $reasons{CrashLoopBackOff} = 1;
+        }
+    }
     return ('failing', join(', ', sort keys %reasons)) if %reasons;
     return ('failing', 'Failed') if $phase eq 'Failed';
 
