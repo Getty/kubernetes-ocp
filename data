@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-10-16T06:50:57Z
+claimed_by: k-171
+class: standard
+created: 2026-09-24T16:14:33Z
+id: 171
+priority: low
+started: 2026-10-16T06:45:29Z
+status: review
+tags:
+- robocop
+- ssh
+- security
+title: 'robocop: Host-Key-Fingerprints in OCPNode-Status pinnen'
+updated: 2026-10-16T06:50:57Z
+---
+
+Aus k168: robocop macht TOFU pro Pod (/tmp/ocp-known_hosts-<uid>, emptyDir). Nach Reschedule vertraut ein neuer Pod erneut. Done: Fingerprint beim ersten Kontakt in OCPNode status (z. B. status.hostKey) schreiben, spaeter dagegen verifizieren; CLI kann denselben Wert nutzen. Optional OCP_KNOWN_HOSTS explizit im deployment.yaml.
+
+2026-10-16 fd99432 (Branch k-171, kein Push). status.hostKeys [{type,fingerprint,key}] im CRD; OCP::Node seedet pro Node eine known_hosts aus dem Status (OCP_KNOWN_HOSTS: SSH, Rex-Kind, Teardown), TOFU beim ersten Kontakt (accept-new + ssh-keyscan fuer alle Typen), danach strikt. Mismatch: Phase bleibt, status.message 'host key of X changed (expected SHA256:.., got SHA256:..)... ocp node trust-host NAME', kein Install/Uninstall, reconcile_until_ready stirbt laut (CLI Exit 1), robocop log_error. Neu: ocp node trust-host NAME [--yes] (Merge-Patch null; Befehls-Alias in OCP.pm jetzt auf allen Ebenen). CP-known_hosts unveraendert. Dateien: Node.pm, KnownHosts.pm, SSH.pm (HostKeyChanged-Exception), Rex.pm, Controller.pm, Cmd/Node/TrustHost.pm, CRD, OCP.pm, Changes. Tests: t/171-node-host-key-pins.t neu (6 Subtests, gegen altes lib rot); t/217/223/231 angepasst (FakeNode host_key_mismatch; 231 pinnt Host im CR). t/16 'hetzner forgets key' bleibt gruen (Node vergisst die Adresse zusaetzlich in der Aufrufer-known_hosts). Volle Suite prove -lr -j2 t: 167 Dateien / 2585 Tests gruen. LIVE offen: (1) CRD per ocp apply/update ausrollen; (2) neuen Worker joinen -> status.hostKeys gefuellt, 2+ Typen; (3) robocop-Pod loeschen, Reconcile -> kein erneutes TOFU; (4) auf Testhost Host-Key wechseln (rm /etc/ssh/ssh_host_*; ssh-keygen -A; sshd restart), reconcile/ocp node rm -> Phase unveraendert, expected/got-Meldung, nichts deinstalliert; (5) ocp node trust-host NAME --yes -> naechster Kontakt pinnt neu. Offen/Design: bestehende Ready-Nodes pinnen erst bei Install/Teardown-Kontakt (kein Pinning im _verify-Pfad); Empfehlung: so lassen.
+
+2026-10-16 Hub: geprüft (Suite 167/2585 grün, t/171 gegen altes lib rot), ff auf main fd99432, kein Push. Live in der nächsten Lab-Runde.
