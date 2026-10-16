@@ -112,7 +112,7 @@ into existence:
 | Provider | What it does |
 |---|---|
 | `hetzner` | Creates and destroys real Hetzner Cloud servers via the API. Idempotent, matched by label. |
-| `ssh` | Uses an existing server you already have. Requires `host:`. OCP never creates or deletes this machine — it only installs and uninstalls Kubernetes on it. |
+| `ssh` | Uses an existing server you already have. Requires `host:`. OCP never creates or deletes this machine — it only installs and uninstalls Kubernetes on it. You put its public keys into root's `authorized_keys`: in secure mode the admin key on a control plane, the admin **and** the robo key on a worker (`ocp keys authorized-keys` prints them; see [security](security.md)). |
 | `local` | Same as `ssh`, but provider operations (checks, uninstall) run directly on this machine instead of over SSH. The Kubernetes install itself still goes through Rex over SSH to `127.0.0.1`, so the admin public key must still be in this machine's `~/.ssh/authorized_keys`. |
 
 Providers can also be registered imperatively, without touching `ocp.yaml`:

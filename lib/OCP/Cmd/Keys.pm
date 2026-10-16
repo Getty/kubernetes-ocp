@@ -11,7 +11,7 @@ with 'OCP::Role::Cmd';
 
 sub execute {
     my ($self, $args, $chain) = @_;
-    die "subcommand required: ocp keys [show|recipients]\n";
+    die "subcommand required: ocp keys [show|authorized-keys|recipients]\n";
 }
 
 1;
@@ -27,6 +27,8 @@ OCP::Cmd::Keys - Inspect the encrypted keys in keys.yaml
     ocp keys show                     # admin public key
     ocp keys show --purpose automation
     ocp keys show --name admin-ssh-20260815
+    ocp keys authorized-keys          # admin + robo: what an ssh worker needs
+    ocp keys authorized-keys --purpose admin   # what a control plane needs
     ocp keys recipients ls            # age recipients of the SOPS files
     ocp keys recipients add age1...
     ocp keys recipients rm  age1...
@@ -34,7 +36,15 @@ OCP::Cmd::Keys - Inspect the encrypted keys in keys.yaml
 =head1 DESCRIPTION
 
 Entry point for the C<ocp keys> subcommand group. Dispatches to
-L<OCP::Cmd::Keys::Show> and L<OCP::Cmd::Keys::Recipients>.
+L<OCP::Cmd::Keys::Show>, L<OCP::Cmd::Keys::AuthorizedKeys> and
+L<OCP::Cmd::Keys::Recipients>.
+
+C<show> prints one key, picked by purpose or name. C<authorized-keys> answers
+the question an operator setting up a machine has: which lines go into its
+F<authorized_keys>. In secure mode a control plane needs the admin key and a
+worker the C<ssh> provider reaches needs the admin B<and> the robo key, since
+robocop joins and tears down workers with the robo key while C<ocp node rm>,
+C<ocp ssh> and a CLI join use the admin key (k209).
 
 The group prints B<public> key material only (C<recipients add|rm> rewrite
 who the SOPS files are encrypted for, never a key). Private
@@ -44,6 +54,6 @@ decrypted private key never has to touch the filesystem.
 
 =head1 SEE ALSO
 
-L<OCP::Cmd::Keys::Show>, L<OCP::Keys>
+L<OCP::Cmd::Keys::Show>, L<OCP::Cmd::Keys::AuthorizedKeys>, L<OCP::Keys>
 
 =cut

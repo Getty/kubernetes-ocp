@@ -1028,6 +1028,7 @@ sub _on_node_deleted {
         provider      => $provider,
         ssh_key       => $self->ssh_key,
         ssh_key_label => 'the robo key',
+        ssh_key_purpose => 'automation',   # a refusal names the robo key (k209)
         distribution  => $self->distribution,
         verbose       => $self->verbose,
         reconciler_id => $self->reconciler_id,
@@ -1158,6 +1159,7 @@ sub _on_node_event {
             provider      => $provider,
             ssh_key       => $self->ssh_key,
             ssh_key_label => 'the robo key',
+            ssh_key_purpose => 'automation',   # a refusal names the robo key (k209)
             server_url    => $self->server_url,
             join_token    => $self->join_token,
             distribution  => $self->distribution,

@@ -181,7 +181,9 @@ ocp init --provider local                            # this very machine
 ```
 
 Both need OCP's admin public key in the target's `authorized_keys`. Print it
-with `ocp keys show --purpose admin`. No `--hetzner` and no `--provider` gives
+with `ocp keys authorized-keys --purpose admin`. A worker you add over SSH needs
+the robo key as well, because robocop joins and tears it down with that one:
+`ocp keys authorized-keys` prints both. No `--hetzner` and no `--provider` gives
 you the same `ocp.yaml` offline, with a reminder to add a token before you
 deploy.
 
@@ -409,11 +411,13 @@ ocp provider add --name hetzner-fsn1 --type hetzner --token-file token.txt --def
 ocp provider ls
 ```
 
-**Print the admin public key** — this is how you authorise OCP on a machine you
-own. Only the key goes to STDOUT, so it pipes cleanly:
+**Print the public keys a machine needs** — this is how you authorise OCP on a
+machine you own. A control plane needs the admin key, an SSH worker the admin
+and the robo key. Only the keys go to STDOUT, so it pipes cleanly:
 
 ```bash
-ocp keys show --purpose admin | ssh root@yourserver 'cat >> ~/.ssh/authorized_keys'
+ocp keys authorized-keys | ssh root@yourworker 'cat >> ~/.ssh/authorized_keys'
+ocp keys authorized-keys --purpose admin | ssh root@yourserver 'cat >> ~/.ssh/authorized_keys'
 ```
 
 **Deploy or roll out `robocop`:**

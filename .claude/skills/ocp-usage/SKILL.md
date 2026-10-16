@@ -100,6 +100,12 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp keys show [--purpose admin|automation|general] [--name NAME]` — print
   a **public** key from `keys.yaml` (see "PIN Loss & Admin-Key Rotation"
   below — there is no rotate/add subcommand for SSH keys)
+- `ocp keys authorized-keys [--purpose all|admin|automation]` — the
+  `authorized_keys` lines a machine needs (k209): default `all` = admin +
+  robo (an ssh worker), `--purpose admin` for a control plane. STDOUT only
+  key lines, names on STDERR; PIN1 at most, never PIN2; finds every wanted
+  key before printing any (missing one → error, nothing printed). Dev mode
+  prints `.ocp/id_ed25519.pub` for any purpose.
 - `ocp keys recipients ls|add AGE1|rm AGE1` — age recipients of the SOPS
   files (k212): project key always, plus the governing `.sops.yaml`'s rule.
   add/rm rewrite the project's own `.sops.yaml` (never one further up — edit
@@ -205,14 +211,26 @@ gpu:
   PIN2) — never on disk, lost again on every pod restart. It still never
   opens a control plane: `OCP::ClusterKey` always picks the admin key there,
   on every provider.
-- The robo key's public half reaches Hetzner-provisioned workers
-  automatically, uploaded under `ocp-<name>-robo`
-  (`OCP::Config::robo_ssh_key_name`, k101); `ssh`-provider operators must
-  add it to `authorized_keys` themselves — nothing does that for them.
-- **The admin key opens every machine, on every provider.** Hetzner gets it
-  through the API before the server exists; a `provider: ssh` machine gets it
-  from a human (`ocp keys show --purpose admin` → `authorized_keys`). The
-  provider decides who distributes it, not which key.
+- The robo key's public half reaches Hetzner servers automatically,
+  uploaded under `ocp-<name>-robo` (`OCP::Config::robo_ssh_key_name`, k101;
+  every server is created with both keys, control plane included);
+  `ssh`-provider operators must add it to `authorized_keys` themselves —
+  nothing does that for them.
+- **Two-key rule for ssh workers (k209):** robocop joins and tears down
+  workers with the robo key, `ocp node rm`/`ocp ssh`/a CLI join use the
+  admin key. So a `provider: ssh` worker needs **both** public keys
+  (`ocp keys authorized-keys | ssh root@W 'cat >> ~/.ssh/authorized_keys'`);
+  a control plane needs the admin key. With only one, robocop's join works
+  and `ocp node rm` ends `Failed` with rke2 still running (or the reverse).
+  `ocp node add` on an ssh provider says so before the join; a refused key
+  names the missing one (`OCP::SSH key_purpose`, from
+  `OCP::Node ssh_key_purpose`: CLI paths `admin`, robocop `automation`).
+- **The admin key opens every machine the CLI reaches, on every provider.**
+  Hetzner gets it through the API before the server exists; a
+  `provider: ssh` machine gets it from a human
+  (`ocp keys authorized-keys --purpose admin` → `authorized_keys`). The
+  provider decides who distributes it, not which key. `OCP::ClusterKey` is
+  the CLI's choice only — robocop never goes through it.
 - **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`,
   `ocp inject-key`, and `ocp destroy` when the node list contains an ssh
   machine. PIN1 prompts whenever only `age.key.enc` exists. Read-only paths
@@ -254,13 +272,15 @@ by dropping the bootstrap key, and neither is covered anywhere else.
   decrypts it (`OCP::Keys::get_automation_key`, no PIN2 ever), but
   `OCP::ClusterKey` never selects it for a human login — that picks only
   the bootstrap key (dev mode) or the admin key (secure mode), on every
-  provider. Its public half does reach machines (Hetzner workers
-  automatically under `ocp-<name>-robo`, k101; a running robocop's memory
-  via `ocp inject-key` under `security_level: inject`), but none of that
-  gives PIN1 alone a route into a control plane or an `ssh`-provider node.
-  So losing PIN2 still means out-of-band recovery, not a command.
-- **No rotation command exists.** `ocp keys` has only `show` (and
-  `recipients`, which is about age recipients, not SSH keys); `ocp init`, even
+  provider. Its public half does reach machines, though: every Hetzner
+  server under `ocp-<name>-robo` (k101) and every `ssh` worker (k209), so
+  PIN1 alone *does* open those as root — by hand (`ssh -i`), not through an
+  `ocp` command. A `provider: ssh`/`local` control plane carries only the
+  admin key, and no `ocp` command reaches anything without PIN2. So losing
+  PIN2 still means out-of-band recovery for the control plane.
+- **No rotation command exists.** `ocp keys` has only `show` and
+  `authorized-keys` (both print public halves; plus `recipients`, which is
+  about age recipients, not SSH keys); `ocp init`, even
   `--force`, skips key generation entirely whenever an automation-purpose
   key is already in `keys.yaml` (`OCP::Cmd::Init`, unconditional on
   `--force`). Adding a replacement admin key today needs

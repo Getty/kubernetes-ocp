@@ -385,10 +385,13 @@ sub bootstrap_control_plane {
     # key_label: the key as the operator knows it. $ssh_key_path is a temp copy
     # of the admin key in secure mode, and a refusal naming /tmp/XXXX told them
     # nothing (k226).
+    # key_purpose: a refused admin key names `ocp keys authorized-keys
+    # --purpose admin` (k209); dev mode's bootstrap key is neither purpose.
     my $ssh = OCP::SSH->new(
         host      => $cp_host,
         key_file  => $ssh_key_path,
         key_label => $key->label,
+        ($key->origin eq 'admin' ? (key_purpose => 'admin') : ()),
         user      => 'root',
     );
 

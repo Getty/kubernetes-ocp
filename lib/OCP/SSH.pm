@@ -49,6 +49,21 @@ has key_label => (
     is => 'ro',
 );
 
+# Which of the two secure-mode keys key_file is (k209): 'admin' for the CLI,
+# 'automation' for robocop's robo key. Optional, and only read by the refusal
+# in wait_for_ssh: knowing the purpose, it can name the missing key and the
+# command that prints it, instead of a generic "add the public key there".
+# Absent -- dev mode's bootstrap key, or a caller that does not say -- the
+# message stays the generic one.
+has key_purpose => (
+    is  => 'ro',
+    isa => sub {
+        croak __PACKAGE__.'->key_purpose must be admin or automation, not '
+            .(defined $_[0] ? "'$_[0]'" : 'undef')
+            unless defined $_[0] && $_[0] =~ /\A(?:admin|automation)\z/;
+    },
+);
+
 has connect_timeout => (
     is      => 'ro',
     default => 10,
@@ -310,6 +325,37 @@ sub _key_fingerprint {
     return $line =~ /(SHA256:\S+)/ ? $1 : undef;
 }
 
+# What a refused key needs, by purpose (k209). The generic line names "ocp
+# inject-key, or by hand" -- but inject-key hands robocop its PRIVATE key and
+# writes no authorized_keys anywhere, which made it the wrong advice for the
+# case that came up live: a robocop join to an ssh worker that only ever got
+# the admin key. With the purpose known, the advice names the key and the
+# command that prints it; without, it stays as it was.
+my %KEY_ROLE = (
+    automation => 'the robo key (purpose automation), which robocop joins and '
+                . 'tears down workers with',
+    admin      => 'the admin key (purpose admin), which ocp apply, ocp ssh and '
+                . 'ocp node add/rm reach machines with',
+);
+
+sub _rejection_advice {
+    my ($self) = @_;
+
+    my $purpose = $self->key_purpose;
+    return "Add the public key there (ocp inject-key, or by hand) and run again.\n"
+        unless defined $purpose;
+
+    my $user = $self->user;
+    my $host = $self->host;
+
+    return "It needs $KEY_ROLE{$purpose}. With whatever access you have to\n"
+      . "that machine, add it and run again:\n"
+      . "  ocp keys authorized-keys --purpose $purpose | ssh $user\@$host "
+      . "'cat >> ~/.ssh/authorized_keys'\n"
+      . "In secure mode a worker on the ssh provider needs both keys, admin and robo;\n"
+      . "'ocp keys authorized-keys' without --purpose prints both.\n";
+}
+
 sub wait_for_ssh {
     my ($self, $timeout, $interval) = @_;
     $timeout //= $WAIT_TIMEOUT;
@@ -338,7 +384,7 @@ sub wait_for_ssh {
             die "SSH key rejected by ${\$self->host}: user "
               . $self->user . " with $key was refused (Permission denied).\n"
               . "The host is reachable; its authorized_keys does not hold this key.\n"
-              . "Add the public key there (ocp inject-key, or by hand) and run again.\n";
+              . $self->_rejection_advice;
         }
 
         sleep $interval;
@@ -425,5 +471,18 @@ budget failed nodes that were merely slow to boot (k109).
 An explicit argument is for a different question. L<OCP::Provider::SSH>'s
 C<is_reachable> passes 10: it probes a host that is supposed to be up already
 and wants a quick no, not a boot wait.
+
+=head2 A refused key
+
+A C<Permission denied> answer ends the wait at once (k204): the host is up and
+said no. The message names user, key (C<key_label>, else C<key_file>) and the
+key's fingerprint. With C<key_purpose> set (C<admin> or C<automation>, k209)
+it also names which of the two secure-mode keys is missing and the command
+that installs it:
+
+    ocp keys authorized-keys --purpose automation | ssh root@HOST 'cat >> ~/.ssh/authorized_keys'
+
+together with the rule that a worker on the C<ssh> provider needs both keys.
+L<OCP::Node> passes it on from its C<ssh_key_purpose>.
 
 =cut

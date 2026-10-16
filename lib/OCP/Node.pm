@@ -29,6 +29,11 @@ has ssh_key       => (is => 'ro');
 # temporary copy this class writes (k226). Whoever hands the key in knows its
 # name; absent, OCP::SSH names the file.
 has ssh_key_label => (is => 'ro');
+# Which secure-mode key ssh_key is: 'admin' (the CLI) or 'automation'
+# (robocop's robo key). Handed to OCP::SSH as key_purpose, so a refusal names
+# the missing key and `ocp keys authorized-keys --purpose ...` (k209). Absent
+# -- dev mode's bootstrap key -- the refusal stays generic.
+has ssh_key_purpose => (is => 'ro');
 has server_url    => (is => 'ro');
 has join_token    => (is => 'ro');
 has distribution  => (is => 'ro', default => sub { 'rke2' });
@@ -603,7 +608,8 @@ sub _install_kubernetes {
         host     => $host,
         key_file => $self->_ssh_key_file->path,
         user     => 'root',
-        (defined $self->ssh_key_label ? (key_label => $self->ssh_key_label) : ()),
+        (defined $self->ssh_key_label   ? (key_label   => $self->ssh_key_label)   : ()),
+        (defined $self->ssh_key_purpose ? (key_purpose => $self->ssh_key_purpose) : ()),
     );
     # No budget named here on purpose: this is the same wait for the same kind
     # of freshly created machine the control-plane path does, so it takes the
@@ -1609,6 +1615,14 @@ C<OCP::K8s->register>.
 
 An C<OCP::Provider::*> instance used for server create/delete.  Optional
 when the node already has a public IP in status.
+
+=item ssh_key / ssh_key_label / ssh_key_purpose
+
+The private key the node is reached with, what the operator calls it, and
+which of the secure-mode keys it is: C<admin> when the CLI drives the node,
+C<automation> when robocop does (k209). Label and purpose only shape the
+message of a refused key (L<OCP::SSH/A refused key>); without a purpose it
+stays generic.
 
 =item gpu_enabled / gpu_driver
 

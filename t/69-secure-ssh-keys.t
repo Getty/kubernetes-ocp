@@ -125,7 +125,9 @@ subtest 'secure + ssh writes no bootstrap key and hands out the admin key' => su
         'the report names the admin key as the one to distribute';
     like $r->{out}, qr/\Q$admin->{public}\E/,
         'and prints that exact key, ready to paste';
-    like $r->{out}, qr/ocp keys show --purpose admin/,
+    # k209: the command that prints it again is `ocp keys authorized-keys`,
+    # which also prints the pair a worker needs; same claim, newer command.
+    like $r->{out}, qr/ocp keys authorized-keys --purpose admin/,
         'plus the command that prints it again';
 
     unlike $r->{out}, qr/id_ed25519/,

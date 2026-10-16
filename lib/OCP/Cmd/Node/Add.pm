@@ -395,6 +395,9 @@ sub _cli_reconcile {
         # A refused key named as the operator knows it, not as the temp copy
         # OCP::Node writes (k226).
         ($key          ? (ssh_key_label => $key->label) : ()),
+        # Which key, so a refusal names the one missing (k209); the bootstrap
+        # key of dev mode is neither.
+        ($key && $key->origin eq 'admin' ? (ssh_key_purpose => 'admin') : ()),
         ($server_url   ? (server_url => $server_url) : ()),
         ($join_token   ? (join_token => $join_token) : ()),
         ($kubeconfig   ? (kubeconfig => $kubeconfig) : ()),
@@ -495,14 +498,19 @@ sub execute {
     my $cr = $self->_build_cr($provider_name);
     $api->ensure($cr);
 
+    my $key_note = $self->_ssh_keys_note($provider_type);
+
     if ($self->nowait) {
         print $self->name . "\n";
-        # STDOUT is the node name and nothing else; the hint is not payload.
+        # STDOUT is the node name and nothing else; the hints are not payload.
+        print STDERR $key_note;
         print STDERR "Node '" . $self->name . "' asks for a GPU: once it is Ready, "
           . "run `ocp apply` to deploy the GPU Operator.\n"
             if $self->gpu;
         return 0;
     }
+
+    print "  [..] $key_note" if length $key_note;
 
     my ($ok, $config);
     if ($self->_robocop_ready($api)) {
@@ -528,6 +536,28 @@ sub execute {
 sub _config {
     my ($self) = @_;
     return OCP::Config->new(file => $self->ocp->config);
+}
+
+# An ssh-provider machine in secure mode needs BOTH public keys in root's
+# authorized_keys (k209): robocop joins and tears it down with the robo key,
+# `ocp node rm`, `ocp ssh` and a CLI join reach it with the admin key. Which of
+# them comes knocking depends on who drives the node, so a machine with only
+# one of them works until the other one is needed -- live, a robocop join that
+# went through and an `ocp node rm` left Failed with rke2 still running.
+#
+# Nothing here can look into authorized_keys on the far side, so this says it
+# before the join instead of checking; the refusal itself names the missing
+# key (OCP::SSH key_purpose). Empty for every other provider and in dev mode,
+# where a single key reaches everything.
+sub _ssh_keys_note {
+    my ($self, $provider_type) = @_;
+
+    return '' unless $provider_type eq 'ssh';
+    return '' unless eval { -f $self->_config->project_dir->child('keys.yaml') };
+
+    return 'Host ' . $self->host . " needs both public keys in root's "
+      . "authorized_keys (secure mode): robo for robocop, admin for the CLI and "
+      . "`ocp node rm`. `ocp keys authorized-keys` prints both.\n";
 }
 
 # k220: a GPU node joined after the last `ocp apply` gets the GPU Operator

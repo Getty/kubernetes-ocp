@@ -187,7 +187,10 @@ subtest 'secure mode + hetzner reaches the admin key, never .ocp/id_ed25519' => 
 
     ok $key->is_temporary, 'it knows it owns these files';
     # With the prompt, on STDERR (k231): STDOUT stays the narrative.
-    like $stderr, qr/trust the admin/,
+    # k209: "they trust the admin public key and nothing else" was wrong for
+    # workers, which robocop reaches with the robo key; the reason now says
+    # whose key it is -- the CLI's. Same claim, corrected words.
+    like $stderr, qr/reached from the\s+CLI with the admin key/,
         'the operator is told why a password is suddenly wanted';
     unlike $out, qr/trust the admin/, 'and not on STDOUT';
 };

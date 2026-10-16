@@ -1002,6 +1002,8 @@ sub cli_reconcile_workers {
             # Named as the operator knows it in a refusal (k226), when the
             # key object is on hand -- the same lookup as the hint above.
             ($key ? (ssh_key_label => $key->label) : ()),
+            # And which key it is, so a refusal names the missing one (k209).
+            ($key && $key->origin eq 'admin' ? (ssh_key_purpose => 'admin') : ()),
             server_url   => $server_url,
             join_token   => $join_token,
             distribution => $distribution,

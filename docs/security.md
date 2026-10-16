@@ -19,9 +19,25 @@ is encrypted and safe in a public repository. Two PINs protect it:
   That admin key is the *only* key any `ocp` command uses to reach a machine —
   on Hetzner, over SSH, or locally; control plane or worker.
 
-There is also a `robo-ssh` automation key, protected by PIN1 alone. Nothing
-currently deploys its public half onto any machine, so it is not a second way
-in.
+There is also a `robo-ssh` automation key, protected by PIN1 alone. It is
+robocop's key: robocop joins and tears down workers with it. So its public
+half **is** on machines, and it is a second way in: every worker carries it,
+and on Hetzner the control plane does too, because OCP uploads it next to the
+admin key and creates every server with both. Whoever has PIN1 can reach those
+machines as root without PIN2. On the `ssh` provider you put it there
+yourself, on the workers.
+
+Which machine needs which public key, in secure mode:
+
+| Machine | Needs | Why |
+|---|---|---|
+| control plane (`ssh`/`local`) | admin | every `ocp` command reaches it with the admin key |
+| worker (`ssh` provider) | admin **and** robo | robocop joins and tears it down with robo; `ocp node rm`, `ocp ssh` and a join from the CLI use admin |
+| any Hetzner server | admin and robo | uploaded through the API for you |
+
+A worker with only one of the two works until the other one is needed: a
+robocop join goes through on robo alone, then `ocp node rm` is refused and
+leaves the node `Failed` with RKE2 still running on it.
 
 Which commands prompt for what:
 
@@ -52,21 +68,32 @@ age.key.enc       kubeconfig.yaml
 **Never commit `.ocp/`.** It is local, gitignored state: the decrypted key
 cache and runtime status. `ocp init` sets the ignore rule up for you.
 
-## Getting the admin public key out
+## Getting the public keys out
 
-To authorise OCP on a machine you own (the `ssh` and `local` providers), paste
-the admin public key into its `authorized_keys`:
-
-```bash
-ocp keys show --purpose admin
-```
-
-This command puts **only** the key material on STDOUT and every diagnostic on
-STDERR, so it pipes cleanly:
+To authorise OCP on a machine you own (the `ssh` and `local` providers), put
+its public keys into its `authorized_keys`. `ocp keys authorized-keys` prints
+exactly those lines:
 
 ```bash
-ocp keys show --purpose admin | ssh root@yourserver 'cat >> ~/.ssh/authorized_keys'
+ocp keys authorized-keys                    # admin + robo: an ssh worker
+ocp keys authorized-keys --purpose admin    # admin: a control plane
+ocp keys authorized-keys --purpose automation   # robo alone
 ```
+
+It puts **only** `authorized_keys` lines on STDOUT and every diagnostic (key
+names, what each key is for) on STDERR, so it pipes cleanly:
+
+```bash
+ocp keys authorized-keys | ssh root@worker 'cat >> ~/.ssh/authorized_keys'
+ocp keys authorized-keys --purpose admin | ssh root@controlplane 'cat >> ~/.ssh/authorized_keys'
+```
+
+It needs PIN1 at most, never PIN2, and works before any cluster exists. In a
+`--nopassword` project it prints `.ocp/id_ed25519.pub`, the only key there is.
+`ocp keys show --purpose admin` prints the admin key alone, as before.
+
+When a machine refuses a key, the error names which one is missing and the
+`ocp keys authorized-keys --purpose …` line that adds it.
 
 ## Losing a PIN
 

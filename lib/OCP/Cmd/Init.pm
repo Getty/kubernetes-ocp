@@ -501,18 +501,25 @@ sub execute {
         print "  For development only! Use default mode for production.\n";
     }
 
-    # SSH provider instructions: which public key does a human have to put on
-    # the machine? Exactly one, and which one it is follows the mode.
+    # SSH provider instructions: which public keys does a human have to put on
+    # the machines? Which ones follows the mode -- and, in secure mode, the
+    # machine's role.
     #
-    #   secure  -> the ADMIN key. `ocp apply`, `ocp ssh`, `ocp update`,
-    #              `ocp node add` and `ocp destroy` all reach the machine with
-    #              it. It is the same key the Hetzner provider uploads through
-    #              the API; the only difference here is that a human carries it.
+    #   secure  -> the control plane (--host) needs the ADMIN key: `ocp
+    #              apply`, `ocp ssh`, `ocp update` and `ocp destroy` reach it
+    #              with that. Every ssh WORKER needs the admin key AND the robo
+    #              key: robocop joins and tears workers down with the robo
+    #              key, while `ocp node rm`, `ocp ssh` and a CLI join use the
+    #              admin key (k209). Hetzner gets both through the API; here a
+    #              human carries them, and `ocp keys authorized-keys` prints
+    #              them. This block used to say "that one key is all of it",
+    #              which held for the control plane and locked workers out.
     #   dev     -> the bootstrap key, the only key material a --nopassword
     #              project has.
     #
-    # Naming two keys (as this block did while the bootstrap key still existed
-    # in secure mode) is how an operator ends up authorising the wrong one.
+    # The bootstrap key is never among them in secure mode: naming it next to
+    # the admin key (as this block did while it still existed there) is how an
+    # operator ends up authorising the wrong one.
     # _effective_provider, not _provider: a bare `ocp init` re-run inside an
     # existing ssh project passes no --provider, and that re-run is exactly
     # how an operator asks "what do I have to do now?" during the migration.
@@ -554,7 +561,7 @@ sub execute {
                 print "  $pubkey\n\n";
             }
             else {
-                print "  ocp keys show --purpose admin\n\n";
+                print "  ocp keys authorized-keys --purpose admin\n\n";
             }
 
             print "Commands to run as root on your server";
@@ -569,13 +576,20 @@ sub execute {
 
             unless ($self->nopassword) {
                 print "\n";
-                print "That one key is all of it: 'ocp apply', 'ocp ssh',\n";
-                print "'ocp update', 'ocp node add' and 'ocp destroy' all use it.\n";
-                print "Print it again any time with:\n";
-                print "  ocp keys show --purpose admin\n";
+                print "That is the control plane. Two keys reach this cluster's\n";
+                print "machines in secure mode:\n";
+                print "  admin  'ocp apply', 'ocp ssh', 'ocp update', 'ocp node add/rm'\n";
+                print "         and 'ocp destroy' -- the control plane needs this one.\n";
+                print "  robo   robocop, which joins and tears down workers with it.\n";
+                print "Every ssh worker needs BOTH in root's authorized_keys: robocop\n";
+                print "joins it with the robo key, 'ocp node rm', 'ocp ssh' and a join\n";
+                print "from the CLI use the admin key. Print them any time with:\n";
+                print "  ocp keys authorized-keys                  # admin + robo: a worker\n";
+                print "  ocp keys authorized-keys --purpose admin  # admin: a control plane\n";
+                print "e.g. ocp keys authorized-keys | ssh root\@WORKER 'cat >> ~/.ssh/authorized_keys'\n";
                 print "\n";
                 print "Nothing checks this in advance. The first command that\n";
-                print "opens an SSH connection is what finds out whether the key\n";
+                print "opens an SSH connection is what finds out whether the keys\n";
                 print "arrived.\n";
 
                 # The migration case, stated where the operator is already
@@ -1198,6 +1212,13 @@ is the same paste, into I<this> machine's own F<authorized_keys>: OCP installs
 the control plane over SSH to C<127.0.0.1> (self-ssh-local), so the report
 prints the key for the local box too. The provider decides who distributes the
 key, not which key gets distributed.
+
+Workers need one key more. robocop joins and tears down workers with the robo
+key, while C<ocp node rm>, C<ocp ssh> and a join from the CLI use the admin
+key, so in secure mode every C<provider: ssh> worker needs B<both> public keys
+in F<authorized_keys> (k209; Hetzner gets both through the API). The report
+says so, and C<ocp keys authorized-keys> prints the pair
+(C<--purpose admin> for a control plane alone).
 
 The B<bootstrap key> F<.ocp/id_ed25519> therefore exists only under
 C<--nopassword>, where there is no F<keys.yaml> and it is the single piece of

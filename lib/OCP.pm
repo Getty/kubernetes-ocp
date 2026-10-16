@@ -124,11 +124,16 @@ option verbose => (
 # MooX::Cmd derives command names from class names, so OCP::Cmd::DeployImage
 # is 'deployimage' and OCP::Cmd::DeployRobocop is 'deployrobocop'. Accept the
 # readable spellings too.
+#
+# Below the root an alias is keyed by the words in front of it (k209):
+# 'keys authorized-keys' is the spelling of OCP::Cmd::Keys::AuthorizedKeys,
+# and 'authorized-keys' means nothing at the root.
 our %COMMAND_ALIASES = (
-    'deploy-image'   => 'deployimage',
-    'deploy-robocop' => 'deployrobocop',
-    'inject-key'     => 'injectkey',
-    'trust-host'     => 'trusthost',
+    'deploy-image'         => 'deployimage',
+    'deploy-robocop'       => 'deployrobocop',
+    'inject-key'           => 'injectkey',
+    'keys authorized-keys' => 'authorizedkeys',
+    'node trust-host'      => 'trusthost',
 );
 
 # MooX::Cmd resolves a word it does not recognise by quietly falling back to
@@ -178,16 +183,15 @@ sub _command_word_index {
     return -1;
 }
 
-# Walk the command words in $argv level by level, rewriting the root-level
-# aliases in place. Dies naming the available commands as soon as one of them
-# does not resolve.
+# Walk the command words in $argv level by level, rewriting the aliases of
+# each level in place. Dies naming the available commands as soon as one of
+# them does not resolve.
 sub _resolve_commands {
     my ($class, $argv) = @_;
 
-    my %spelling = reverse %COMMAND_ALIASES;
-    my $current  = $class;
-    my $from     = 0;
-    my @path     = ('ocp');
+    my $current = $class;
+    my $from    = 0;
+    my @path    = ('ocp');
 
     while (1) {
         my $known = _command_map($current);
@@ -196,8 +200,16 @@ sub _resolve_commands {
         my $i = _command_word_index($current, $argv, $from);
         last if $i < 0;
 
+        # The aliases of this level: the keys that are these words plus one.
+        my $prefix = join '', map { $_ . ' ' } @path[1 .. $#path];
+        my %alias  = map  { substr($_, length $prefix) => $COMMAND_ALIASES{$_} }
+                     grep { substr($_, 0, length $prefix) eq $prefix
+                            && index($_, ' ', length $prefix) < 0 }
+                     keys %COMMAND_ALIASES;
+        my %spelling = reverse %alias;
+
         my $word = $argv->[$i];
-        my $name = $COMMAND_ALIASES{$word} // $word;
+        my $name = $alias{$word} // $word;
 
         my $cmd_class = $known->{$name}
             or die sprintf "Unknown command '%s' for '%s'.\nAvailable: %s\n",

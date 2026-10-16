@@ -29,6 +29,12 @@ Revision history for OCP
       (expected ..., got ...)" in `status.message` and touches nothing.
       `ocp node trust-host NAME [--yes]` forgets the pins on purpose. The CRD
       gains `status.hostKeys` (`ocp apply` / `ocp update` roll it out).
+    - `ocp keys authorized-keys [--purpose all|admin|automation]` prints the
+      authorized_keys lines a machine needs, and nothing else on STDOUT. In
+      secure mode a worker on the ssh provider needs both keys: robocop joins
+      and tears it down with the robo key, the CLI (`ocp node rm`, `ocp ssh`)
+      uses the admin key. `ocp init` and `ocp node add` say so; a refused key
+      names the missing one and this command instead of `ocp inject-key`.
     - `ocp apply` no longer resets robocop to `:latest`: the image is
       `robocop.image` from ocp.yaml, else `raudssus/ocp:<version of the running
       ocp>` (a development checkout falls back to `:latest` with a [WARN]).

@@ -1,5 +1,5 @@
 package OCP::ClusterKey;
-# ABSTRACT: The private SSH key a cluster's machines actually trust
+# ABSTRACT: The private SSH key the CLI reaches a cluster's machines with
 
 use strict;
 use warnings;
@@ -31,12 +31,19 @@ our $INTERACTIVE;
 #   robo   purpose: automation, age only, no PIN2 — unattended automation
 #   admin  purpose: admin, age + PIN2            — everything a human does
 #
-# So in secure mode the answer is always the admin key, on every provider.
+# This module is the CLI's choice, and in secure mode the CLI's answer is
+# always the admin key, on every provider. It is not the whole of what a
+# machine has to trust: robocop never comes through here -- it holds the robo
+# key and joins and tears down workers with it (OCP::Robocop::Controller). So
+# a control plane needs the admin public key, and a worker needs the admin
+# AND the robo public key, since whether the CLI or robocop drives it decides
+# which of the two arrives (k209).
+#
 # The providers differ only in who does the distributing: on Hetzner OCP
-# uploads the admin public key through the API before the server exists; on
-# the ssh provider a human pastes the same public key into authorized_keys,
-# which is what `ocp keys show --purpose admin` prints. Same key either way,
-# so the same key opens the machine either way.
+# uploads both public keys through the API before the server exists (the robo
+# one since k101); on the ssh provider a human puts them into authorized_keys,
+# which is what `ocp keys authorized-keys` prints (`--purpose admin` for a
+# control plane). Same keys either way, so the same keys open the machine.
 #
 # The bootstrap key .ocp/id_ed25519 survives in exactly one place:
 # --nopassword dev mode, which has no keys.yaml and therefore no admin key at
@@ -82,8 +89,13 @@ our $INTERACTIVE;
 
 =description
 
-Answers one question: which private SSH key file should this process use to
-reach the machines of the cluster described by C<$config>?
+Answers one question: which private SSH key file should B<the CLI> use to
+reach the machines of the cluster described by C<$config>? robocop does not
+ask it: it holds the robo key (C<purpose: automation>) and joins and tears
+down workers with that. So the key chosen here is one of the keys a machine
+must trust, not the only one — in secure mode a worker on the C<ssh> provider
+needs the admin B<and> the robo public key (k209); C<ocp keys authorized-keys>
+prints both.
 
 Two answers, decided by the mode alone:
 
@@ -95,8 +107,8 @@ B<Secure mode> (F<keys.yaml> exists) — the admin key from F<keys.yaml>, on
 B<every> provider. That costs a PIN2 prompt (ADR 0006) and a pair of temp
 files, because Rex reads its key from disk and expects C<key_file.pub> beside
 it. The provider decides only who put that public key on the machine: the
-Hetzner API before the server existed, or a human with C<ocp keys show
---purpose admin>.
+Hetzner API before the server existed, or a human with C<ocp keys
+authorized-keys --purpose admin>.
 
 =item *
 
@@ -281,10 +293,12 @@ sub _unlock_admin_key {
     # where the prompt goes, STDERR (k231: STDOUT is the narrative, and a
     # `> file` must not swallow the reason for a prompt the operator sees);
     # with the PIN2 handed in there is no prompt, and it is narrative.
+    #
+    # "From the CLI": robocop reaches workers with the robo key, so "the admin
+    # key and nothing else", which this said before, was wrong for them (k209).
     my $fh = defined $opt{pin2} ? \*STDOUT : \*STDERR;
-    print {$fh} "  In secure mode every machine of this cluster is reached with the\n";
-    print {$fh} "  admin key — they trust the admin public key and nothing else\n";
-    print {$fh} "  (provider '$provider').\n";
+    print {$fh} "  In secure mode every machine of this cluster is reached from the\n";
+    print {$fh} "  CLI with the admin key (provider '$provider').\n";
     print {$fh} "  " . ($reason ? "$reason needs" : "This step needs")
         . " it to reach them.\n";
 
