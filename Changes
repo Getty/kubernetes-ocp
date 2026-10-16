@@ -24,6 +24,8 @@ Revision history for OCP
       The OCPNode CRD's status.reconciler accepts robocop@<pod name> (and still
       cli/robocop); with the old enum every robocop status write failed with a
       422 and new workers stayed Pending.
+      robocop's memory limit is now 1Gi (request 256Mi); at 256Mi the controller
+      was OOMKilled during every worker join.
     - First release. OCP is a Perl CLI that builds and looks after RKE2 or K3s
       clusters -- on Hetzner Cloud servers it creates, on machines you already
       own over SSH, or on the local host -- from one spec kept in git.

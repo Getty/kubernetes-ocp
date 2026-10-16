@@ -106,12 +106,23 @@ spec:
             secretKeyRef:
               name: robocop-credentials
               key: rke2-token
+        # Memory is sized for the Rex installs robocop runs, not for the idle
+        # controller (k232). Lab 2026-10-16: at 256Mi the container was
+        # OOMKilled (exit 137) during every pool-worker join -- cgroup at
+        # 245-252 MB right before each kill, the install aborted, the next
+        # container started it again, the join never finished. RSS during one
+        # install: controller ~111 MB, reconcile child ~120 MB, three Rex
+        # processes ~58/97/94 MB. Up to 2 reconciles run at once
+        # (max_reconciles), so ~111 + 2 x ~370 = ~850 MB (an upper bound: the
+        # forked child shares pages with the controller); 1Gi leaves headroom.
+        # The request covers the idle controller plus a reconcile. CPU stays:
+        # 200m slows an install down but does not kill it.
         resources:
           requests:
-            memory: 64Mi
+            memory: 256Mi
             cpu: 50m
           limits:
-            memory: 256Mi
+            memory: 1Gi
             cpu: 200m
         securityContext:
           readOnlyRootFilesystem: true
