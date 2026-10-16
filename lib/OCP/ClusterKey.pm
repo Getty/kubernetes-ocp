@@ -277,11 +277,15 @@ sub _unlock_admin_key {
 
     # Say what is being asked for before asking. A bare "Enter PIN2" in the
     # middle of `ocp update` reads as a bug in a command that never used to
-    # want one; this names the reason the key model gives for it.
-    print STDERR "  In secure mode every machine of this cluster is reached with the\n";
-    print STDERR "  admin key — they trust the admin public key and nothing else\n";
-    print STDERR "  (provider '$provider').\n";
-    print STDERR "  " . ($reason ? "$reason needs" : "This step needs")
+    # want one; this names the reason the key model gives for it. It goes
+    # where the prompt goes, STDERR (k231: STDOUT is the narrative, and a
+    # `> file` must not swallow the reason for a prompt the operator sees);
+    # with the PIN2 handed in there is no prompt, and it is narrative.
+    my $fh = defined $opt{pin2} ? \*STDOUT : \*STDERR;
+    print {$fh} "  In secure mode every machine of this cluster is reached with the\n";
+    print {$fh} "  admin key — they trust the admin public key and nothing else\n";
+    print {$fh} "  (provider '$provider').\n";
+    print {$fh} "  " . ($reason ? "$reason needs" : "This step needs")
         . " it to reach them.\n";
 
     my $pin2 = $opt{pin2}

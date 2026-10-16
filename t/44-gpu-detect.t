@@ -472,7 +472,7 @@ subtest 'OCP writes no containerd configuration for the GPU' => sub {
     my ($cleanup) = $code =~ /^task "cleanup_legacy_containerd_template", sub \{(.*?)^\};/ms;
     ok $cleanup, 'the template code that is left is the cleanup task';
     unlike $cleanup, qr/\bfile\s+["'\$]/, 'it writes nothing';
-    like $cleanup, qr/remove_bare_containerd_template/, 'it only has the library remove';
+    like $cleanup, qr/heal_bare_containerd_template/, 'it only has the library heal it (rex-rancher k83)';
 
     # What is left is the RKE2 runtime lookup: a PATH in /etc/default/rke2-*,
     # written by Rex::Rancher when asked (nvidia_runtime_path), only when a

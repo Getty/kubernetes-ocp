@@ -165,7 +165,8 @@ subtest 'source claims: Bootstrap, Init, ClusterKey, robocop label' => sub {
     my $ck = path('lib/OCP/ClusterKey.pm')->slurp_utf8;
     unlike $ck, qr/^\s*print "  In secure mode every machine|^\s*print "  \(provider|^\s*print "  " \. \(\$reason/m,
         'the PIN2 explanation is not on STDOUT';
-    like $ck, qr/print STDERR "  In secure mode every machine/, 'it goes with the prompt on STDERR';
+    like $ck, qr/my \$fh = defined \$opt\{pin2\} \? \\\*STDOUT : \\\*STDERR;\s*print \{\$fh\} "  In secure mode every machine/,
+        'it goes with the prompt on STDERR (STDOUT only when the PIN2 is handed in, no prompt)';
     my $rc = path('lib/OCP/Robocop/Controller.pm')->slurp_utf8;
     is scalar(() = $rc =~ /ssh_key_label => 'the robo key'/g), 2, 'both from_cr sites label the robo key';
 };

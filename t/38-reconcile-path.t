@@ -799,8 +799,10 @@ subtest 'k26: nothing missing means no worker step at all' => sub {
 subtest 'k26: no workers in ocp.yaml, path unchanged' => sub {
     my $r = reconcile();
 
-    ok !scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }),
-        'OCPNodes are not even listed';
+    # One list stays: a worker added with `ocp node add` that went Failed is
+    # named even when ocp.yaml lists no workers (k231, lab note 18).
+    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 1,
+        'OCPNodes are listed once, for the Failed check';
     ok !touched($r, '_drive_workers') && !touched($r, '_ensure_robocop')
         && !touched($r, '_wait_robocop_ready'), 'no worker step';
     unlike $r->{out}, qr/worker/i, 'and no worker line in the output';

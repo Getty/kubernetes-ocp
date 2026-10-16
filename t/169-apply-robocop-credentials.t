@@ -250,7 +250,10 @@ subtest 'secret: apply writes the Secret, and before the Deployment' => sub {
         'secure mode, nothing unlocked yet: ONE PIN2 for the key that reads the token';
     is_deeply $r->{waits}, [0, 60],
         'one look when rolled out, then the 60s wait the worker step needs';
-    is $r->{err}, '', 'nothing on STDERR';
+    # The one prompt brings its reason with it, on STDERR where the prompt
+    # is (k231); nothing else goes there.
+    like $r->{err}, qr/\A  In secure mode every machine.*robocop credentials needs it to reach them\.\n\z/s,
+        'STDERR carries only the reason for the PIN2 prompt';
 };
 
 subtest 'secret: a current Secret is left alone -- no SSH, no PIN2' => sub {
@@ -352,7 +355,7 @@ subtest 'inject: public key only, a note, and no 60s wait' => sub {
     is_deeply $r->{waits}, [0], 'readiness is looked at once, not waited for';
     like $r->{out}, qr/ocp inject-key/, 'STDOUT tells the operator to inject the key';
     ok !$r->{drives}[0]{robocop_ready}, 'the CLI brings the workers up this run';
-    is $r->{err}, '', 'not an error';
+    unlike $r->{err}, qr/\[!!\]|ERROR|failed/i, 'not an error (at most the PIN2 prompt\'s reason)';
 
     local $ROBOCOP_READY = 1;
     my $ready = run_step(dir => make_project(level => 'inject'));

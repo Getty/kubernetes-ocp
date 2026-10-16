@@ -171,10 +171,12 @@ subtest 'other durable image and config faults are caught too' => sub {
 };
 
 subtest 'the health report is printed, not swallowed' => sub {
-    my $out = '';
+    my ($out, $err) = ('', '');
     open my $fh, '>', \$out or die $!;
+    open my $efh, '>', \$err or die $!;
     {
         local *STDOUT = $fh;
+        local *STDERR = $efh;
         $apply->_print_health({
             critical => [{ namespace => 'kube-system', name => 'coredns',
                            reason => 'CrashLoopBackOff' }],
@@ -183,8 +185,8 @@ subtest 'the health report is printed, not swallowed' => sub {
             starting => [],
         });
     }
-    like $out, qr/\[!!\].*kube-system\/coredns.*CrashLoopBackOff/,
-        'critical finding printed loudly';
+    like $err, qr/\[!!\].*kube-system\/coredns.*CrashLoopBackOff/,
+        'critical finding printed loudly, on STDERR (k231)';
     like $out, qr/\[WARN\].*gpu-operator\/nvidia-dcgm.*ImagePullBackOff/,
         'warning printed as a warning';
 };
