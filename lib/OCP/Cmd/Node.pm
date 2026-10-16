@@ -11,7 +11,7 @@ with 'OCP::Role::Cmd';
 
 sub execute {
     my ($self, $args, $chain) = @_;
-    die "subcommand required: ocp node [add|rm|ls]\n";
+    die "subcommand required: ocp node [add|rm|ls|trust-host]\n";
 }
 
 1;

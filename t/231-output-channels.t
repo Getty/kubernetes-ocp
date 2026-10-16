@@ -137,7 +137,10 @@ subtest 'N22: a Rex warning in the successful join reaches the STDOUT narrative'
             apiVersion => 'ocp.internal/v1', kind => 'OCPNode',
             metadata => { name => 'w1', namespace => 'ocp-system', resourceVersion => '1' },
             spec     => { role => 'worker', providerRef => 'ssh-default', host => 'w.example' },
-            status   => { phase => 'Installing', publicIP => 'w.example' },
+            # The host is known the way the node knows hosts since k171: pinned.
+            status   => { phase => 'Installing', publicIP => 'w.example', hostKeys => [
+                { type => 'ssh-ed25519', fingerprint => 'SHA256:x',
+                  key => 'AAAAC3NzaC1lZDI1NTE5AAAAIGtra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tr' } ] },
         },
         k8s => AnyK8s->new, provider => AnyProv->new, ssh_key => 'KEY',
         server_url => 'https://cp:9345', join_token => 'TOKEN',

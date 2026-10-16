@@ -200,6 +200,7 @@ my $PROVIDER = {
     sub name  { 'w1' }
     sub cr    { { status => {} } }
     sub lease_conflict { undef }
+    sub host_key_mismatch { undef }
 }
 {
     package FakeOcp;

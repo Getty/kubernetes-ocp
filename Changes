@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - OCPNode host keys are pinned: the first SSH contact writes the machine's
+      host key fingerprints (all key types) to `status.hostKeys`, and every
+      later contact -- CLI or any robocop pod -- verifies against them. A
+      changed key leaves the phase alone, says "host key of X changed
+      (expected ..., got ...)" in `status.message` and touches nothing.
+      `ocp node trust-host NAME [--yes]` forgets the pins on purpose. The CRD
+      gains `status.hostKeys` (`ocp apply` / `ocp update` roll it out).
     - `ocp apply` no longer resets robocop to `:latest`: the image is
       `robocop.image` from ocp.yaml, else `raudssus/ocp:<version of the running
       ocp>` (a development checkout falls back to `:latest` with a [WARN]).

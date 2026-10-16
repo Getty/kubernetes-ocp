@@ -9,6 +9,7 @@ use Time::Piece ();
 # module is robocop's too.
 use Rex::Rancher::Distribution;
 use OCP::K8s;
+use OCP::KnownHosts;
 use OCP::NodeMeta;
 # ssh_class and rex_class default to these by name. Nothing else in the
 # reconcile path loads them, so without these two lines _install_kubernetes
@@ -110,6 +111,23 @@ has lease_conflict_seen => (is => 'rwp', init_arg => undef);
 # about it depends on who called, and only `ocp node rm` has a --keep-machine
 # to offer; robocop retries.
 has machine_cleanup_failed => (is => 'rwp', init_arg => undef);
+
+# Set when this pass met a host key other than the one pinned in
+# status.hostKeys (k171). Like lease_conflict, a fact for the caller: the
+# phase was not touched, only status.message says so, and reconcile_until_ready
+# stops watching because waiting cannot change the answer.
+has host_key_mismatch => (is => 'rwp', init_arg => undef);
+
+# The known_hosts file every SSH/Rex contact of this node verifies against,
+# alive as long as the node object (k171). Seeded from status.hostKeys before
+# a contact -- so the trust is the one the FIRST contact established, wherever
+# this reconcile runs (CLI, or whichever robocop pod) -- and empty for a node
+# that has none yet, which is trust on first use.
+has _node_known_hosts => (is => 'lazy', builder => '_build_node_known_hosts');
+
+sub _build_node_known_hosts {
+    return File::Temp->new(TEMPLATE => 'ocp-node-known_hosts-XXXXXX', TMPDIR => 1);
+}
 
 has ssh_class    => (is => 'ro', default => sub { 'OCP::SSH' });
 has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
@@ -495,6 +513,72 @@ sub _resolve_host {
     return $host;
 }
 
+# The pins for this node: status.hostKeys as the CR holds them.
+sub host_keys {
+    my ($self) = @_;
+    my $keys = $self->cr->{status}{hostKeys};
+    return ref $keys eq 'ARRAY' ? @$keys : ();
+}
+
+# Point this node's known_hosts at what status.hostKeys says (empty: TOFU) and
+# return its path, for `local $ENV{OCP_KNOWN_HOSTS}`: OCP::SSH, OCP::Rex, the
+# Rexfile and the providers' own ssh all pick the file up from there, so no
+# contact path needs to learn about pins one by one.
+sub _seed_known_hosts {
+    my ($self, $host) = @_;
+    my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
+    $kh->seed($host, 22, $self->host_keys);
+    return $kh->file;
+}
+
+# First successful contact: what the machine presented goes into
+# status.hostKeys (k171). OpenSSH's accept-new recorded the type it
+# negotiated; ssh-keyscan adds the other types, so a later libssh connection
+# that negotiates another one finds its key pinned too. Nothing recorded (a
+# test double, say) pins nothing. Already pinned: the contact verified
+# against the pins and there is nothing to learn.
+sub _pin_host_keys {
+    my ($self, $host) = @_;
+    return if $self->host_keys;
+
+    my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
+    my @pins = $kh->pins($host, 22);
+    return unless @pins;
+
+    my %have = map { $_->{type} => 1 } @pins;
+    for my $extra (eval { $kh->scan($host, 22) }) {
+        next if $have{ $extra->{type} }++;
+        push @pins, { type => $extra->{type}, key => $extra->{key},
+                      fingerprint => $kh->fingerprint($extra->{key}) };
+    }
+
+    $self->_patch_status(hostKeys => \@pins);
+    $kh->seed($host, 22, @pins);
+    return;
+}
+
+# A key other than the pinned one: say so in status.message, keep the phase,
+# touch nothing (k171). Returns the message.
+sub _host_key_changed {
+    my ($self, $host) = @_;
+
+    my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
+    my @expected = map { $_->{fingerprint} . ' (' . $_->{type} . ')' } $self->host_keys;
+    my @got = map { $kh->fingerprint($_->{key}) . ' (' . $_->{type} . ')' }
+        eval { $kh->scan($host, 22) };
+
+    my $message = "host key of $host changed (expected "
+        . (join(', ', @expected) || 'none pinned') . ', got '
+        . (join(', ', @got) || 'nothing from ssh-keyscan') . '); '
+        . 'refusing to touch the machine. If it was rebuilt on purpose: '
+        . 'ocp node trust-host ' . $self->name;
+    $self->_set_host_key_mismatch($message);
+    $self->_patch_status(message => $message);
+    return $message;
+}
+
+sub _is_host_key_changed { return ref $_[1] && $_[1]->isa('OCP::SSH::HostKeyChanged') }
+
 sub _install_kubernetes {
     my $self = shift;
 
@@ -511,6 +595,10 @@ sub _install_kubernetes {
         return;
     }
 
+    # Every contact below -- the readiness probe, the Rex run and its child --
+    # verifies against the pinned host keys (k171).
+    local $ENV{OCP_KNOWN_HOSTS} = $self->_seed_known_hosts($host);
+
     my $ssh = $self->ssh_class->new(
         host     => $host,
         key_file => $self->_ssh_key_file->path,
@@ -523,10 +611,15 @@ sub _install_kubernetes {
     # ($OCP::SSH::WAIT_TIMEOUT, 120s). It used to name 60 -- half of what
     # Bootstrap spends -- and the failure below is terminal (k109).
     eval { $ssh->wait_for_ssh };
-    if ($@) {
-        $self->_patch_status(phase => 'Failed', message => "SSH not ready: $@");
+    if (my $err = $@) {
+        if ($self->_is_host_key_changed($err)) {
+            $self->_host_key_changed($host);
+            return;
+        }
+        $self->_patch_status(phase => 'Failed', message => "SSH not ready: $err");
         return;
     }
+    $self->_pin_host_keys($host);
 
     my $rex = $self->rex_class->new(
         host     => $host,
@@ -657,6 +750,10 @@ sub _install_kubernetes {
         if !$is_cp && defined $kubeconfig && length $kubeconfig;
 
     my $ok = eval { $rex->run_task($task, %params) };
+    if (!$ok && $self->_is_host_key_changed($@)) {
+        $self->_host_key_changed($host);
+        return;
+    }
     if (!$ok || $@) {
         $self->_patch_status(phase => 'Failed',
             message => "Rex task failed: " . ($@ // 'unknown'));
@@ -790,6 +887,7 @@ sub reconcile {
     my $p = $self->phase;
 
     $self->_set_lease_conflict(undef);
+    $self->_set_host_key_mismatch(undef);
     return 0 if $p eq 'Failed' || $p eq 'Terminating';
 
     eval {
@@ -903,6 +1001,9 @@ sub reconcile_until_ready {
         return 1 if $phase eq 'Ready';
         return 0 if $phase eq 'Failed';
         $self->reconcile;
+        # A changed host key does not change by waiting (k171): the phase is
+        # as it was, status.message says why, and the operator decides.
+        die $self->host_key_mismatch . "\n" if defined $self->host_key_mismatch;
         sleep $interval;
     }
     return 0;
@@ -950,6 +1051,7 @@ our $DRAIN_INTERVAL = 5;
 sub teardown {
     my ($self, %opt) = @_;
     $self->_set_machine_cleanup_failed(undef);
+    $self->_set_host_key_mismatch(undef);
 
     # The lease first, before anything is touched (k179). robocop tears down a
     # deleted OCPNode and `ocp node rm` tears down the one it is pointed at;
@@ -983,6 +1085,13 @@ sub teardown {
             # reports failure by dying -- Hetzner when the API refuses,
             # ExistingHost when the uninstall does not complete.
             my $status = $self->cr->{status} // {};
+            my $host   = $status->{publicIP} // $self->cr->{spec}{host};
+            # The uninstall verifies the pinned host keys like the install did
+            # (k171). The caller's own known_hosts is kept for the forget
+            # below: whatever it holds for a deleted address is stale (k168).
+            my $outer_kh = OCP::KnownHosts->new(file => OCP::KnownHosts->default_file);
+            local $ENV{OCP_KNOWN_HOSTS} = defined $host
+                ? $self->_seed_known_hosts($host) : $ENV{OCP_KNOWN_HOSTS};
             eval {
                 $self->provider->delete_server(
                     $status->{providerId},
@@ -991,13 +1100,27 @@ sub teardown {
                 );
                 1;
             } or do {
+                my $err = $@;
+                if ($self->_is_host_key_changed($err)) {
+                    $self->_set_host_key_mismatch($self->_host_key_changed($host));
+                    die $err;
+                }
                 $self->_set_machine_cleanup_failed(1);
-                die $@;
+                die $err;
             };
+            $outer_kh->forget($host) if defined $host;
         }
         1;
     };
     unless ($ok) {
+        # A changed host key is neither a failed node nor a reason to retry
+        # blindly: the phase stays, status.message (written above) names the
+        # way out, and nothing was uninstalled (k171).
+        if (defined $self->host_key_mismatch) {
+            my $message = $self->host_key_mismatch;
+            eval { $self->_release_lease };
+            die 'Teardown of node ' . $self->name . " not done: $message\n";
+        }
         my $err = $@ || "unknown error\n";
         chomp $err;
         my $message = 'Teardown failed: ' . $err

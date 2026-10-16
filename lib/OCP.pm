@@ -128,6 +128,7 @@ our %COMMAND_ALIASES = (
     'deploy-image'   => 'deployimage',
     'deploy-robocop' => 'deployrobocop',
     'inject-key'     => 'injectkey',
+    'trust-host'     => 'trusthost',
 );
 
 # MooX::Cmd resolves a word it does not recognise by quietly falling back to
@@ -196,7 +197,7 @@ sub _resolve_commands {
         last if $i < 0;
 
         my $word = $argv->[$i];
-        my $name = @path == 1 ? ($COMMAND_ALIASES{$word} // $word) : $word;
+        my $name = $COMMAND_ALIASES{$word} // $word;
 
         my $cmd_class = $known->{$name}
             or die sprintf "Unknown command '%s' for '%s'.\nAvailable: %s\n",
@@ -302,7 +303,7 @@ Commands:
   destroy         Destroy cluster
   kubeconfig      Print kubeconfig (-e merges it into ~/.kube/config)
   ssh             SSH into a cluster node
-  node            Manage nodes: ls, add, rm
+  node            Manage nodes: ls, add, rm, trust-host
   provider        Manage providers: ls, add, rm
   version         Show OCP and component versions
   update          Update components to the bundled versions
@@ -422,7 +423,7 @@ SSH into a cluster node using the admin key, or run a command on it
 
 =item B<node>
 
-Manage nodes as C<OCPNode> CRs: C<ls>, C<add NAME>, C<rm NAME>.
+Manage nodes as C<OCPNode> CRs: C<ls>, C<add NAME>, C<rm NAME>, C<trust-host NAME>.
 
 =item B<provider>
 

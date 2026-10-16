@@ -1199,6 +1199,13 @@ sub _report_result {
         return;
     }
 
+    # A pinned host key does not match (k171): the phase stays, the message
+    # says what to do. Loud in the log, since nothing else will retry it.
+    if (defined(my $mismatch = $node->host_key_mismatch)) {
+        $self->log_error("$name: $mismatch");
+        return;
+    }
+
     unless ($after eq 'Failed') {
         $self->log("$name: reconciled, phase $before -> $after");
         return;

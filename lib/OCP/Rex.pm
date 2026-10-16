@@ -242,6 +242,9 @@ sub run_task {
         # task's own message above, not a Perl trace --verbose could add.
         my $msg = "Rex task '$task' failed: " . ($reason || $err) . $hint;
         $msg .= "\n" unless $msg =~ /\n\z/;
+        die OCP::SSH::HostKeyChanged->new(
+            host => $self->host, file => $self->known_hosts, text => $msg)
+            if $hint;
         die $msg;
     }
 

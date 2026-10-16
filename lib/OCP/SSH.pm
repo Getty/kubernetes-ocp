@@ -1,3 +1,18 @@
+package OCP::SSH::HostKeyChanged;
+# ABSTRACT: The exception for a host key that differs from the recorded one
+
+# A string would do for the CLI; OCP::Node needs to tell this failure from
+# every other one (k171): a changed key leaves the node's phase alone and
+# touches nothing, where "not reachable" fails the node. Stringifies to the
+# operator-facing text, so everything that treated the error as a string still
+# does.
+use overload '""' => sub { $_[0]{text} }, fallback => 1;
+
+sub new { my ($class, %args) = @_; return bless {%args}, $class }
+sub host { $_[0]{host} }
+sub port { $_[0]{port} // 22 }
+sub file { $_[0]{file} }
+
 package OCP::SSH;
 # ABSTRACT: SSH operations for OCP
 
@@ -128,12 +143,17 @@ sub _check_host_key {
     return unless $stderr =~ /REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/;
 
     my $kh = $self->_known_hosts;
-    die 'Host key of ' . $self->host . ' does not match the one recorded in '
-      . $kh->file . ".\n"
-      . "Either the machine was reinstalled or replaced, or something is intercepting\n"
-      . "the connection. If the machine was rebuilt on purpose, remove the stale entry\n"
-      . "and run again:\n"
-      . '  ' . $kh->remove_hint($self->host, $self->port) . "\n";
+    die OCP::SSH::HostKeyChanged->new(
+        host => $self->host,
+        port => $self->port,
+        file => $kh->file,
+        text => 'Host key of ' . $self->host . ' does not match the one recorded in '
+          . $kh->file . ".\n"
+          . "Either the machine was reinstalled or replaced, or something is intercepting\n"
+          . "the connection. If the machine was rebuilt on purpose, remove the stale entry\n"
+          . "and run again:\n"
+          . '  ' . $kh->remove_hint($self->host, $self->port) . "\n",
+    );
 }
 
 sub _build_ssh_cmd {

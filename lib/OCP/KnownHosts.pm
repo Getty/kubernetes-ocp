@@ -6,6 +6,7 @@ use Carp qw( croak );
 use Digest::SHA qw( sha256 hmac_sha1 );
 use MIME::Base64 qw( decode_base64 encode_base64 );
 use Path::Tiny qw( path );
+use OCP::Exec qw( capture_command );
 
 # One file, two readers (k168). OCP::SSH hands it to the OpenSSH client as
 # UserKnownHostsFile with StrictHostKeyChecking=accept-new, which is what
@@ -101,6 +102,45 @@ sub fingerprint {
     my $fp = encode_base64(sha256(decode_base64($key_b64)), '');
     $fp =~ s/=+\z//;
     return 'SHA256:' . $fp;
+}
+
+# The recorded keys of a host as status.hostKeys wants them (k171): type, the
+# SHA256 fingerprint a human compares, and the key itself, which is what a
+# known_hosts line is made of -- a fingerprint alone cannot be turned back
+# into one, and the pin has to be able to seed the file.
+sub pins {
+    my ($self, $host, $port) = @_;
+    return map { +{ type => $_->{type}, fingerprint => $self->fingerprint($_->{key}), key => $_->{key} } }
+        $self->entries($host, $port);
+}
+
+# Overwrite the file with exactly these pins for the host. The per-node file
+# OCP::Node seeds from status.hostKeys before any contact: what ssh and
+# libssh then verify against is what the first contact recorded, whatever
+# this pod or checkout has seen since.
+sub seed {
+    my ($self, $host, $port, @pins) = @_;
+    my $pattern = $self->host_pattern($host, $port);
+    $self->ensure_dir;
+    path($self->file)->spew_utf8(
+        map { join(' ', $pattern, $_->{type}, $_->{key}) . "\n" } @pins);
+    return scalar @pins;
+}
+
+# Every host key the machine offers right now, one { type, key } per key type
+# (ssh-keyscan). OpenSSH's accept-new records only the type it negotiated;
+# Rex::LibSSH may negotiate another, and a pin that lacks it would turn a
+# healthy machine into an unknown one. Empty when the scan finds nothing.
+sub scan {
+    my ($self, $host, $port) = @_;
+    my $result = capture_command(
+        [ 'ssh-keyscan', '-T', '5', '-p', ($port // 22), $host ], timeout => 15);
+    my @found;
+    for my $line (split /\n/, $result->{stdout} // '') {
+        my (undef, $type, $key) = $self->_parse_line($line);
+        push @found, { type => $type, key => $key } if defined $key;
+    }
+    return @found;
 }
 
 # Remove every entry for the host. Returns how many lines went. For a machine

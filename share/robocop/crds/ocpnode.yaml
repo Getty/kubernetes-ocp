@@ -130,6 +130,26 @@ spec:
                 type: string
                 description: "Name of corresponding Kubernetes Node object"
 
+              hostKeys:
+                type: array
+                description: "SSH host keys pinned at the first contact (trust on first use); every later contact is verified against them. Reset with 'ocp node trust-host'"
+                items:
+                  type: object
+                  required:
+                  - type
+                  - fingerprint
+                  - key
+                  properties:
+                    type:
+                      type: string
+                      description: "Key type, e.g. ssh-ed25519"
+                    fingerprint:
+                      type: string
+                      description: "SHA256 fingerprint as ssh-keygen -l prints it"
+                    key:
+                      type: string
+                      description: "The public key, base64 as in known_hosts"
+
               conditions:
                 type: array
                 description: "Node conditions"
