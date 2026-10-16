@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-16T07:31:10Z
+claimed_by: hub
+class: standard
+completed: 2026-10-16T07:30:40Z
+created: 2026-10-16T04:39:38Z
+id: 230
+priority: medium
+started: 2026-10-16T05:50:47Z
+status: done
+tags:
+- betrieb
+- ux
+title: 'Betrieb: maschinenlesbares Inventar, stabile status/health-Ausgabe, Lese-Kubeconfig
+  (Wunsch citiai-admin 2026-10-16)'
+updated: 2026-10-16T07:31:10Z
+---
+
+Wünsche des Leitstands citiai-admin (frank-admin, Pulse/Lagebild) für den Neuaufbau von citiai mit frischer OCP:
+1. Inventar je Node, per Skript abfragbar: Host, IP, Pool, Labels, GPU, Container-Runtime (runc/crun + Version), RKE2/K3s-Version. Vorschlag: ocp node ls --json bzw. ocp inventory --json aus OCPNode + Node + Host-Probe.
+2. ocp status / ocp health mit stabiler, maschinenlesbarer Ausgabe (--json), ohne Zeitstempel im Inhalt, damit Pulse sie direkt vergleichen kann.
+3. Ein lesender Kubeconfig-Weg für den Leitstand: heute ist die ocplab-Kubeconfig sops-verschlüsselt und für citiai-admin nicht nutzbar. Vorschlag: ocp kubeconfig --readonly erzeugt einen ServiceAccount mit view-ClusterRole und gibt eine Kubeconfig dafür aus (Secrets-Lane beachten, ADR 0006).
+(Punkt 'Hostname nicht aus IP ableiten' ist mit #229 erledigt.)
+Fertig, wenn: die drei Ausgaben existieren, dokumentiert und getestet sind; Format mit citiai-admin abgestimmt.
+
+2026-10-16 05:14 status-worker: node ls --json (Ls.pm), status --json (Status.pm), new 'ocp health [--json]' (Cmd/Health.pm), tests t/230-{node-ls,status,health}-json.t, README/OCP.pm/bin/ocp docs. Open: pool is null unless annotation ocp.internal/pool (CR has no pool name); health reason text contains minutes for stuck pods (documented). Format still to agree with citiai-admin.
+
+2026-10-16 05:50 Commit 9b98a05. Was: ocp node ls --json, ocp status --json, ocp health [--json] (kanonisches JSON, STDERR-Diagnose); ocp kubeconfig --readonly [--name] [--revoke]. Tests: t/230-*.t (4 Dateien) + volle Suite 2529 gruen (Host-prove, nicht Docker make test). Live offen: nicht gegen echten Cluster geprueft; Format mit citiai-admin noch abzustimmen. Empfehlungen/offen: (a) pool im node-ls-JSON ist null, solange der OCPNode keine Annotation ocp.internal/pool traegt -- Apply sollte sie schreiben (Produktentscheidung); (b) health-reason-Texte enthalten Minuten (stuck ... 17m) -- Pulse soll namespace/name/state vergleichen, nicht reason; (c) --readonly uebernimmt server aus der Admin-Kubeconfig; bei 127.0.0.1 unbrauchbar -- Empfehlung --server URL-Override; (d) SA-Token laufen nie ab; (e) ClusterRole ocp-readonly bleibt bei --revoke stehen; (f) status --json liest spec.version aus Config->version/Manifest.
+
+2026-10-16 Hub: geprüft, nachgezogen in 282c7c5: pool aus ocp.yaml statt null, --server für --readonly, t/230-health-json an k231-Kanal angepasst. Suite 165/2559 grün, main 282c7c5. Offen bleiben bewusst: SA-Token ohne Ablauf (Widerruf per --revoke), ClusterRole ocp-readonly bleibt bei --revoke (geteilt). Live + Format-Abstimmung mit citiai-admin offen.
+
+Live 2026-10-16 Runde 7 (frank-ocp, ocp-lab:f47579a..08f5ebe): bestanden (node ls/status/health --json je zweimal byte-gleich, Exit-Codes wie Text (gesunder Fall); kubeconfig --readonly: lesen ja, Secrets/Delete verweigert, --revoke macht Token ungültig). Notiz 36 (reconciler-Feld fehlt im JSON) -> #237.
+
+Korrektur: der Verweis '#237' in der Notiz davor meint #234.
