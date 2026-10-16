@@ -1,0 +1,37 @@
+---
+claimed_at: 2026-10-16T07:30:35Z
+claimed_by: hub
+class: standard
+completed: 2026-10-16T07:30:35Z
+created: 2026-10-15T23:22:55Z
+id: 227
+priority: high
+started: 2026-10-15T23:24:07Z
+status: done
+tags:
+- robocop
+- lease
+- lab
+title: 'robocop und CLI: doppelter Reconcile in Phase Installing, apply setzt robocop-Image
+  zurück, deploy-image --wait meldet alten Pod (Lab 2026-10-16)'
+updated: 2026-10-16T07:30:35Z
+---
+
+Aus dem Lab-Durchgang 2026-10-16 (crag im Testcluster ocplab).
+1. DOPPELTER RECONCILE: OCP::Node::_install_kubernetes (Phase Installing) läuft ohne Lease; nur _provision und teardown nehmen ihn. ocp node add nahm den CLI-Weg, weil robocop gerade neu startete (_robocop_ready sah readyReplicas 0); der neue robocop sah den Node in Installing und installierte parallel (CLI ab 01:02:04, robocop ab 01:02:25) auf demselben Host. Diesmal folgenlos (hold_running), aber zwei gleichzeitige Rex-Läufe.
+2. Auslöser: 'ocp deploy-image --wait' meldete 'robocop is Ready (1/1)' für den ALTEN Pod; der neue startete erst danach (Rollout nicht abgewartet).
+3. Jeder ocp apply setzt das robocop-Image auf raudssus/ocp:latest (share/robocop/deployment.yaml) zurück und macht deploy-image rückgängig; kein ocp.yaml-Schlüssel für das Image.
+4. Veralteter Kommentar share/Rexfile über _install_agent ('robocop … has no kubeconfig file, so its joins go without the check') – seit k205 falsch.
+Fertig, wenn: Installing hält den Lease (CLI und robocop schließen sich aus, Test), deploy-image --wait wartet den Rollout ab (observedGeneration/updatedReplicas), apply behält ein gesetztes Image bzw. ocp.yaml kennt robocop.image (Entscheidung Maintainer), Kommentar korrigiert.
+
+2026-10-15 23:29 Punkt 3 (apply setzt robocop-Image zurück) – Maintainer-Entscheidung, nicht gebaut. Befund: share/robocop/deployment.yaml trägt image: raudssus/ocp:latest; ocp apply und ocp deploy-robocop schreiben das Deployment bei jedem Lauf über OCP::Robocop::Manifest->for_config, ocp deploy-image patcht nur das Live-Deployment. Empfehlung: (a) optionaler ocp.yaml-Schlüssel robocop.image, den for_config ins Deployment schreibt – ocp.yaml bleibt die Spec, Spec/Status-Trennung gewahrt; (b) Default ohne Schlüssel nicht :latest, sondern raudssus/ocp:<Version des laufenden CLI> (CLI und Controller passen zusammen, kein stilles Mitwandern mit :latest); (c) deploy-image bleibt ein bewusster Ad-hoc-Override und sagt das auf STDOUT ('ocp apply setzt auf <spec-image> zurück; für Dauer robocop.image in ocp.yaml setzen'); (d) apply erzählt, wenn es ein abweichendes Live-Image ersetzt. Gegen 'apply behält das Live-Image': das macht den Cluster-Zustand zur Spec und versteckt Drift.
+
+2026-10-15 23:42 Punkte 1, 2, 4 erledigt in d6f2cc1 (Branch lab-226-227-229, nicht gepusht). (1) OCP::Node installiert unter dem Reconciler-Lease (_install_under_lease, TTL 1200 s = langsamster noch erfolgreicher Install inkl. wait_for_service 600 s), Phase-Recheck unter dem Lease; fremder Lease bzw. 409 beim Lease-Write = ruhiges Überspringen (lease_conflict), nicht Failed – gleicher Fix für _provision. robocop loggt den Halter auf STDOUT. (2) deploy-image --wait prüft wie kubectl rollout status (gepatchte Generation beobachtet, updatedReplicas, keine alten Replicas, alle verfügbar); Timeout nennt auf STDERR, woran es hing. (4) Rexfile-Kommentar korrigiert. Tests: t/16-node.t (Lease beidseitig, abgelaufen, 409, Phase weitergezogen, Pending unter fremdem Lease), t/156, t/54 (5 Rollout-Subtests), t/43; volle Suite 2288 grün. Hinweis Merge: t/223-gpu-toolkit-cdi.t und t/217 bekommen je eine Zeile (FakeNode lease_conflict) – trivial gegen frank. LIVE zu prüfen: ocp node add während robocop-Neustart → robocop loggt 'left to the reconciler holding the lease', genau ein Rex-Lauf auf dem Host; deploy-image --wait meldet erst den neuen Pod; 409-Pfad mit der echten Kubernetes::REST-Fehlermeldung (Regex /\b409\b/). Offen (nicht gebaut): alle robocops teilen die id 'robocop' (übernehmen den Lease des Vorgängers sofort; Fork-Kind des alten Pods überlebt Shutdown → theoretisch Doppel-Install); Ctrl-C in ocp node add lässt den Lease bis 20 min stehen; ocp node add schweigt, solange robocop den Lease hält (eine Zeile 'robocop installiert ihn' wäre gut). Punkt 3 bleibt Maintainer-Entscheidung (Empfehlung oben).
+
+2026-10-16 00:14 LIVE 2026-10-16 erneut (Notiz 17): bei robocop: false griff ein noch terminierender robocop-Pod nach dem Herunterskalieren das neue OCPNode auf und schrieb CDI-Specs vor der CLI – derselbe fehlende Lease, diesmal auf dem apply-Pfad (Pod im Terminating-Zustand zählt mit).
+
+Live 2026-10-16 Abschlussrunde ocplab (frank-ocp Turn 5, Image ocp-lab:4ebb059, Suite im Image 153/2352 grün): Punkte 1+2 bestanden. deploy-image --wait meldet erst nach Rollout ('[ok] robocop is Ready on registry.local/ocp:lab-4ebb059 (revision 10), 1/1 replica(s) rolled out'). Doppel-Reconcile gezielt provoziert (robocop-Neustart + sofort node add crag): CLI fand robocop-Lease und übersprang, auf crag nur robo-Key-Logins. Punkt 3 (apply setzt robocop-Image zurück) weiter Getty-Frage; Folgebefunde -> #232.
+
+Punkt 3 gebaut, Commit cf1338b auf Branch k232-robocop (nach c77d738/#232), kein Push. Umsetzung nach Empfehlung: (a) ocp.yaml robocop.image (Config::robocop_image, validiert in Accessor + validate(): repo:tag oder repo@sha256, keine Leerzeichen, kein implizites Tag); Manifest->for_config schreibt es ins Deployment. (b) Default raudssus/ocp:<$OCP::VERSION>; Entwicklungs-Checkout (Version noch Platzhalter 0.001) -> :latest + einmal [WARN] auf STDOUT (apply und deploy-robocop). Annahme: das Release-Image-Tag ist die nackte Version (docker-release pusht $(TAG)); falls die Tags 'v0.x' heissen, ist es eine Zeile in Manifest::_default_image. (c) deploy-image: '[!!] ad-hoc override: ocp apply resets robocop to <spec> ...', nur wenn das Image vom Spec-Image abweicht. (d) apply: '[..] robocop image <live> -> <spec>'. Doku: docs/robocop.md, configuration.md, deploy-image POD, Changes. Tests: t/227-robocop-image.t, Subtest in t/54; rot gegen altes lib; volle Suite 156 Dateien/2375 gruen. LIVE offen: apply auf einem Cluster mit deploy-image-Override zeigt die Zeile und rollt zurueck; mit robocop.image bleibt das Image. deploy-robocop nennt die Aenderung des Live-Images nicht (nur apply, wie verlangt).
+
+Live 2026-10-16 Runde 7 (frank-ocp, ocp-lab:f47579a..08f5ebe): Punkt 3 bestanden (robocop.image greift, zweites apply lässt es stehen, deploy-image nennt Override, apply stellt zurück).
