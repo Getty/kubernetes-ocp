@@ -83,9 +83,15 @@ sub cp_identity {
     my $provider = $first_cp->{provider} // 'hetzner';
 
     my ($name, $hostname, $domain);
+    my $set_hostname = 1;
     if ($provider eq 'ssh' && $first_cp->{host}) {
         ($hostname, $domain) = host_name_parts($first_cp->{host});
         $name = $hostname;
+        # An IP names the Node and the OCPNode (k218), not the machine: the
+        # host keeps the hostname it has (k229). The dashed form is no name
+        # anybody gave that host, and setting it threw away the one it had
+        # (agent-lab-2 became 10-230-30-212, lab 2026-10-15).
+        $set_hostname = 0 if is_address($first_cp->{host});
     } else {
         $name     = 'police1';  # RoboCop naming!
         $hostname = $config->name . "-" . $name;
@@ -98,7 +104,17 @@ sub cp_identity {
         hostname => $hostname,
         domain   => $domain,
         host     => $first_cp->{host},
+        # Whether the install sets the machine's hostname to `hostname`.
+        set_hostname => $set_hostname,
     };
+}
+
+# Is $host an IP address (IPv4 dotted quad, or anything with a colon: IPv6)
+# rather than a name?
+sub is_address {
+    my ($host) = @_;
+    return 0 unless defined $host;
+    return $host =~ /\A\d{1,3}(?:\.\d{1,3}){3}\z/ || $host =~ /:/ ? 1 : 0;
 }
 
 # (short name, domain) of an ssh control plane's host. A FQDN splits at its
@@ -110,7 +126,7 @@ sub cp_identity {
 sub host_name_parts {
     my ($host) = @_;
 
-    if ($host =~ /\A\d{1,3}(?:\.\d{1,3}){3}\z/ || $host =~ /:/) {
+    if (is_address($host)) {
         (my $name = lc $host) =~ s/[.:]/-/g;
         $name =~ s/\A-+|-+\z//g;
         return ($name, '');
@@ -439,8 +455,8 @@ sub bootstrap_control_plane {
             registry_cache    => $config->registry_cache,
             registry_upstream => $config->registry_upstream,
             registry_name     => $config->registry_name,
-            hostname          => $cp_hostname // '',
-            domain            => $cp_domain // '',
+            hostname          => $cp_id->{set_hostname} ? $cp_hostname // '' : '',
+            domain            => $cp_id->{set_hostname} ? $cp_domain // '' : '',
             timezone          => $config->timezone,
             locale            => $config->locale,
             ntp               => $config->ntp_enabled,

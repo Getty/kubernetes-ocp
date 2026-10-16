@@ -542,7 +542,10 @@ sub _install_kubernetes {
         token     => $self->join_token,
         version   => $version,
         node_name => $name,
-        hostname  => $name,
+        # The machine keeps its hostname when the OCPNode's name is only the
+        # dashed form of an IP host (k218/k211 naming), not a name anybody
+        # gave it (k229). A name chosen with `ocp node add NAME` still is one.
+        ($self->_name_is_from_address($name) ? () : (hostname => $name)),
         ntp       => $self->ntp // 1,
         (defined $self->timezone ? (timezone => $self->timezone) : ()),
         (defined $self->locale   ? (locale   => $self->locale)   : ()),
@@ -683,6 +686,19 @@ sub _wait_ready {
     }
 
     return $ready;
+}
+
+# Is $name the name OCP derives from an IP spec.host (10.230.30.250 ->
+# 10-230-30-250), i.e. no name of the machine's own?
+sub _name_is_from_address {
+    my ($self, $name) = @_;
+    my $host = $self->cr->{spec}{host};
+    # The naming rule lives with the control-plane identity; loaded here only,
+    # OCP::Node does not need the rest of the deploy path.
+    require OCP::Cmd::Apply::Bootstrap;
+    return 0 unless OCP::Cmd::Apply::Bootstrap::is_address($host);
+    my ($derived) = OCP::Cmd::Apply::Bootstrap::host_name_parts($host);
+    return $derived eq $name ? 1 : 0;
 }
 
 # How long the lease of an install lives.
