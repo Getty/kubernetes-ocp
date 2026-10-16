@@ -256,16 +256,48 @@ sub deployment {
         };
     }
 
+    # The data is a hostPath, so it lives on whichever node the pod runs on.
+    # At bootstrap that is the control plane, and nothing kept it there: the
+    # k224 image pin re-rolled both Deployments, the scheduler put them on a
+    # worker, and the local registry came up empty there (robocop went
+    # ImagePullBackOff on registry.local/ocp, the cache went cold with 9 GB
+    # left on the CP). Any re-roll -- image bump, config change, drain -- could
+    # do the same. Clients do not care where the pod runs (NodePort, CoreDNS),
+    # only the data is node-bound, so pin to the control plane and tolerate its
+    # taint -- by key presence, the convention robocop, nfd-master and
+    # gpu-operator use. With several control planes the pod can still move
+    # between them, and the data dir is per node: each CP has its own.
+    #
+    # Recreate, because RollingUpdate starts the new pod before the old one is
+    # gone -- two registry processes writing the same directory on one node.
     return {
         apiVersion => 'apps/v1',
         kind       => 'Deployment',
         metadata   => { name => $name, namespace => 'ocp-system', labels => { app => $name } },
         spec       => {
             replicas => 1,
+            strategy => { type => 'Recreate' },
             selector => { matchLabels => { app => $name } },
             template => {
                 metadata => { labels => { app => $name } },
                 spec     => {
+                    tolerations => [
+                        map { { key => $_, operator => 'Exists', effect => 'NoSchedule' } }
+                            'node-role.kubernetes.io/control-plane',
+                            'node-role.kubernetes.io/master',
+                    ],
+                    affinity => {
+                        nodeAffinity => {
+                            requiredDuringSchedulingIgnoredDuringExecution => {
+                                nodeSelectorTerms => [{
+                                    matchExpressions => [{
+                                        key      => 'node-role.kubernetes.io/control-plane',
+                                        operator => 'Exists',
+                                    }],
+                                }],
+                            },
+                        },
+                    },
                     (@init_containers ? (initContainers => \@init_containers) : ()),
                     containers => [$container],
                     volumes    => \@volumes,

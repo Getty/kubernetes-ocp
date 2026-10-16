@@ -4,6 +4,7 @@ use warnings;
 use Test::More;
 
 use OCP::Cmd::Apply;
+use YAML::XS ();
 
 #
 # ocp-cache is registry:2 in pull-through mode. It resolves its upstream once,
@@ -85,5 +86,61 @@ for my $d ($cache, $registry) {
         "$d->{metadata}{name}: registry image from OCP::Versions";
 }
 unlike(OCP::Versions->get_component_version('registry'), qr/\A2\z/, 'a full version, not the major tag');
+
+#
+# k224 follow-up (lab, 2026-10-16): both registries keep their data in a
+# hostPath on whatever node the pod runs on. At bootstrap that is the control
+# plane; pinning the image re-rolled both Deployments, the scheduler put them on
+# a worker, and the local registry came up empty (robocop ImagePullBackOff, the
+# cache cold, 9 GB stranded on the CP). They have to stay on the control plane,
+# tolerate its taint, and never run two processes on one directory.
+#
+subtest 'both registries stay on the control plane where their data lives' => sub {
+    for my $d ($cache, $registry) {
+        my $name = $d->{metadata}{name};
+        my $pod  = $d->{spec}{template}{spec};
+
+        my $terms = $pod->{affinity}{nodeAffinity}
+            {requiredDuringSchedulingIgnoredDuringExecution}{nodeSelectorTerms} // [];
+        is_deeply $terms,
+            [{ matchExpressions => [{
+                key      => 'node-role.kubernetes.io/control-plane',
+                operator => 'Exists',
+            }] }],
+            "$name: required to schedule on a control-plane node";
+
+        my %tolerated = map { $_->{key} => $_ } @{ $pod->{tolerations} // [] };
+        for my $key ('node-role.kubernetes.io/control-plane', 'node-role.kubernetes.io/master') {
+            is_deeply $tolerated{$key},
+                { key => $key, operator => 'Exists', effect => 'NoSchedule' },
+                "$name: tolerates the $key taint";
+        }
+
+        is_deeply $d->{spec}{strategy}, { type => 'Recreate' },
+            "$name: Recreate, never two registries on one hostPath";
+    }
+};
+
+# The deploy hash is over the whole manifest, so a changed Deployment spec is
+# re-applied on the next apply instead of being declared up to date.
+{
+    my $src = do {
+        local $/;
+        open my $fh, '<', 'lib/OCP/Cmd/Apply/Registry.pm' or die "open Registry.pm: $!";
+        <$fh>;
+    };
+    like $src, qr/md5_hex\(\$manifest\)/, 'registry hash covers the full manifest';
+    # generate_manifest only needs ->ocp->dump; OCP::dump ignores its invocant.
+    my $self = bless {}, 'T33::Apply';
+    no warnings 'once';
+    *T33::Apply::ocp = sub { 'OCP' };
+    require OCP;
+    my $manifest = OCP::Cmd::Apply::Registry::generate_manifest($self, undef);
+    my @deployments = grep { $_->{kind} eq 'Deployment' } YAML::XS::Load($manifest);
+    is scalar(@deployments), 2, 'the hashed manifest holds both registry Deployments';
+    is $_->{spec}{strategy}{type}, 'Recreate',
+        "$_->{metadata}{name}: the hashed manifest carries the strategy"
+        for @deployments;
+}
 
 done_testing;
