@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-10-16T07:31:10Z
+claimed_by: hub
+class: standard
+completed: 2026-10-16T07:30:37Z
+created: 2026-10-16T04:52:20Z
+id: 232
+priority: medium
+started: 2026-10-16T05:37:11Z
+status: done
+tags:
+- lab
+- robocop
+title: 'robocop: Lease-Identität je Pod, SIGTERM-Verhalten, status.reconciler nach
+  fremdem Lease (Lab 2026-10-16)'
+updated: 2026-10-16T07:31:10Z
+---
+
+Aus der Abschlussrunde (Notizen 20, 21, 23), Folge von #227.
+1. (N21) Alle robocop-Pods nutzen reconciler_id 'robocop' (lib/OCP/Robocop/Controller.pm:963, :1098). Ein Nachfolger hält den Lease des Vorgängers für den eigenen und setzt dessen abgebrochene Installation fort. Nur Recreate verhindert Parallelbetrieb; bei RollingUpdate/replicas>1 wirkungslos. Vorschlag: robocop@$POD_NAME (Downward API), Übernahme eines toten Vorgänger-Leases erst nach TTL oder bewusst über Pod-Existenz-Prüfung.
+2. (N20) robocop beendet sich auf SIGTERM nicht zügig: ~32 s volle Grace, arbeitet im Fenster weiter (Installation lief im alten Pod). Vorschlag: SIGTERM -> keine neuen Reconciles annehmen, laufende Rex-Läufe zu Ende oder sauber abbrechen; Grace passend zur Install-Dauer.
+3. (N23) status.reconciler bleibt 'cli', obwohl robocop installierte: CLI schreibt bei Skip unter fremdem Lease den Status mit ($updates{reconciler} //= reconciler_id in _patch_status). Beim Skip nicht schreiben.
+Fertig, wenn: drei Punkte gebaut mit Test, live mit deploy-image + node add wie in #227 nachgeprüft.
+
+k232 gebaut, Commit c77d738 auf Branch k232-robocop (von main 138a7ad), kein Push. Suite 155 Dateien/2371 Tests gruen; neue Tests rot gegen altes lib.
+Entscheidungen: (1) ID robocop@$POD_NAME (Fallback hostname); POD_NAME stand schon im Deployment. Fremder Lease eines robocop-Pods wird vor TTL nur uebernommen, wenn der Pod per API 404 ist oder Succeeded/Failed (RBAC pods/get neu); terminierender Pod, Lookup-Fehler, 'cli'-Lease und alter 'robocop'-Lease laufen nur per TTL ab (alt = fremd). Die Pruefung sitzt in OCP::Node, gilt also auch fuer die CLI. (2) SIGTERM/INT: keine neuen Reconciles, Resync aus, laufende Kinder laufen zu Ende und geben ihren Lease selbst frei, dann Exit 0; idle = sofort. terminationGracePeriodSeconds 600 (gesunde Installation ~540 s, siehe Kommentar im Manifest). (3) status.reconciler: Node stempelt es nicht mehr, sobald es einmal unter fremdem Lease zurueckgetreten ist. Die Fundstelle war der Ready-Write der CLI nach robocops Install (Joining->Ready), nicht der Skip selbst.
+Live zu pruefen: deploy-image + node add wie #227: alter Pod beendet sich sofort (kein 32-s-Fenster) bzw. nach laufender Installation; Nachfolger-Pod uebernimmt erst nach Pod-Ende (Lease robocop@<pod> in der Annotation); node ls RECONCILER zeigt robocop@<pod>; 'ocp deploy-robocop/apply' muss das neue Manifest + RBAC (pods get) ausrollen, sonst bleibt der Lookup 403 -> nur TTL. Achtung: deploy-image --wait (Default 300 s) kann bei laufender Installation im alten Pod laenger als 300 s warten; --timeout dann anheben.
+
+Live 2026-10-16 Runde 7 (frank-ocp, ocp-lab:f47579a..08f5ebe): bestanden nach zwei Lab-Fixes (1f1e7ad->7be5d1f CRD-Pattern für status.reconciler robocop@<pod>; 08f5ebe->ade6e0b robocop 1Gi Limit, 256Mi wurde OOMKilled). Lease je Pod, Rollout ohne Join 6 s, mit Join: alter Pod beendet Install, dann Exit 0, genau ein Rex-Lauf; RECONCILER robocop@…. Notiz 29 (erster Wechsel von pre-#232-robocop: 600 s Grace) -> #237.
+
+Korrektur: der Verweis '#237' in der Notiz davor meint #234.
