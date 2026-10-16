@@ -214,7 +214,7 @@ sub print {
     my ($self, $health) = @_;
 
     for my $p (@{ $health->{critical} }) {
-        printf "  [!!] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
+        printf STDERR "  [!!] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
     }
     for my $p (@{ $health->{warnings} }) {
         printf "  [WARN] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};

@@ -361,7 +361,7 @@ sub execute {
                 $secrets->set_hetzner_token($input);
                 print "[ok] Hetzner token saved (encrypted)\n";
             } else {
-                print "[!!] No token provided. Run 'ocp init --hetzner' again.\n";
+                print STDERR "[!!] No token provided. Run 'ocp init --hetzner' again.\n";
             }
         }
     }
@@ -906,7 +906,7 @@ sub _ensure_bootstrap_key {
     elsif (!$self->nopassword) {
         # Nothing reads a bootstrap key in secure mode, on any provider.
         if (defined $self->ssh_key) {
-            print "[!!] --ssh-key is not used in secure mode.\n";
+            print STDERR "[!!] --ssh-key is not used in secure mode.\n";
             print "     Only a --nopassword project authenticates with the\n";
             print "     bootstrap key .ocp/id_ed25519. Here every machine is\n";
             print "     reached with the admin key from keys.yaml, whatever the\n";
@@ -956,7 +956,7 @@ sub _prompt_hetzner_control_plane {
     my $types     = eval { $picker->server_type_options };
 
     unless (($locations && @$locations) && ($types && @$types)) {
-        print "[!!] Could not read the Hetzner catalogue — keeping the defaults\n";
+        print STDERR "[!!] Could not read the Hetzner catalogue — keeping the defaults\n";
         return;
     }
 

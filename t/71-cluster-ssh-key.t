@@ -166,7 +166,7 @@ sub capture_stderr_too {
 subtest 'secure mode + hetzner reaches the admin key, never .ocp/id_ed25519' => sub {
     my $config = project(provider => 'hetzner');
 
-    my ($out, $err, $key) = capture(sub {
+    my ($out, $stderr, $err, $key) = capture_stderr_too(sub {
         with_key_store(sub { OCP::ClusterKey->for_config($config) });
     });
     is $err, '', 'no error' or diag $out;
@@ -186,8 +186,10 @@ subtest 'secure mode + hetzner reaches the admin key, never .ocp/id_ed25519' => 
         'at exactly the name OCP::Rex derives, key_file . ".pub"';
 
     ok $key->is_temporary, 'it knows it owns these files';
-    like $out, qr/trust the admin/,
+    # With the prompt, on STDERR (k231): STDOUT stays the narrative.
+    like $stderr, qr/trust the admin/,
         'the operator is told why a password is suddenly wanted';
+    unlike $out, qr/trust the admin/, 'and not on STDOUT';
 };
 
 subtest 'the realistic post-k85 layout: no bootstrap key on disk at all' => sub {
@@ -272,14 +274,14 @@ subtest 'the per-machine provider override no longer changes the key' => sub {
     # hand Rex a key the machine rejects.
     my $config = project(provider => 'hetzner');
 
-    my ($out, $err, $key) = capture(sub {
+    my ($out, $stderr, $err, $key) = capture_stderr_too(sub {
         with_key_store(sub {
             OCP::ClusterKey->for_config($config, provider => 'ssh');
         });
     });
     is $err, '', 'no error' or diag $out;
     is $key->origin, 'admin', 'still the admin key, override or not';
-    like $out, qr/provider 'ssh'/, 'the override only picks the name in the message';
+    like $stderr, qr/provider 'ssh'/, 'the override only picks the name in the message';
 
     # In dev mode the override is equally inert, from the other side.
     my $dev = project(provider => 'hetzner', secure => 0);
@@ -827,7 +829,8 @@ subtest 'a worker failure with nothing to migrate stays a plain failure' => sub 
 
     is $r->{err}, '', 'ran' or diag $r->{out};
     ok defined $r->{rv} && !$r->{rv}, 'still a failure';
-    is $r->{stderr}, '', 'and nothing is said about a migration that does not apply';
+    unlike $r->{stderr}, qr/migrat|ocp keys show/,
+        'and nothing is said about a migration that does not apply';
 };
 
 subtest 'a worker that came up is told nothing at all' => sub {
@@ -837,7 +840,7 @@ subtest 'a worker that came up is told nothing at all' => sub {
     my $r = node_add_key($config, ready => 1);
 
     ok $r->{rv}, 'the worker reached Ready';
-    is $r->{stderr}, '', 'so there is nothing to diagnose';
+    unlike $r->{stderr}, qr/\[!!\]|migrat|ocp keys show/, 'so there is nothing to diagnose';
 };
 
 subtest 'dev mode has no migration to report' => sub {
@@ -1405,6 +1408,48 @@ subtest 'a declined remedy is not summarised as "up to date"' => sub {
     like $stderr, qr/Apply did not complete: Cilium\b/,
         'naming what is still wrong';
     is $rc, 1, 'and ocp apply ends non-zero (k226)';
+};
+
+subtest 'cert-manager and Gateway setup failures are [!!] on STDERR and count (k231)' => sub {
+    my $config = project(provider => 'hetzner', bootstrap_key => 0);
+    my $apply  = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
+    $apply->{_k8s_api} = FakeNodeApi->new;
+
+    my @writers = qw(
+        _setup_registry _configure_registry_dns _setup_nfd _setup_gpu_operator
+        _wait_cert_manager_and_create_issuers
+        _save_deployed_hash _setup_lb_ipam _ensure_crds
+        _ensure_providers _migrate_legacy_nodes _ensure_cp_ocpnode
+        _load_deployed_hashes _resource_exists _report_component
+    );
+
+    my $rc;
+    my ($out, $stderr, $err) = capture_stderr_too(sub {
+        no strict 'refs';
+        no warnings 'redefine';
+        local *OCP::Cmd::Apply::_k8s_api = sub { $_[0]{_k8s_api} };
+        local *OCP::Secrets::read_kubeconfig = sub { "apiVersion: v1\n" };
+        local *OCP::Drift::new = sub { bless {}, 'FakeDrift' };
+        local *FakeDrift::detect = sub { [] };
+        local *OCP::Cmd::Apply::_check_cluster_health = sub {
+            { critical => [], warnings => [], starting => [] } };
+        local *OCP::Cmd::Apply::_stamp_ocp_version = sub { };
+        for my $w (@writers) {
+            *{"OCP::Cmd::Apply::$w"} = sub { 0 };
+        }
+        local *OCP::Cmd::Apply::_apply_cert_manager = sub { die "cm boom\n" };
+        local *OCP::Cmd::Apply::_setup_cilium_gateway = sub { die "gw boom\n" };
+        my $r = OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);
+        $rc = $apply->_finish_apply(config => $config, api => undef, %$r);
+    });
+    is $err, '', 'ran' or diag $out;
+
+    like   $stderr, qr/^  \[!!\] cert-manager setup failed: cm boom$/m, 'cert-manager: [!!] on STDERR';
+    like   $stderr, qr/^  \[!!\] Cilium Gateway setup failed: gw boom$/m, 'Gateway: [!!] on STDERR';
+    unlike $out, qr/setup failed/, 'nothing of it on STDOUT';
+    like   $stderr, qr/Apply did not complete: .*cert-manager/, 'cert-manager counts for the exit';
+    like   $stderr, qr/Apply did not complete: .*Cilium Gateway/, 'so does the Gateway';
+    is $rc, 1, 'ocp apply ends non-zero';
 };
 
 done_testing;

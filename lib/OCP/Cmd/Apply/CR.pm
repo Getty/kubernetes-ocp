@@ -540,11 +540,42 @@ sub missing_worker_ocpnodes {
         if (length $host && defined(my $other = $on_host{$host})) {
             warn "  [!!] worker $name (host $w->{spec}{host}) is already OCPNode/$other;"
                . " not provisioning it again -- list it as $other in ocp.yaml\n";
+            # The pool does not match the cluster: the run did not reach spec,
+            # so it must not end 0 (k231). The line stays on STDERR.
+            push @{ $self->{_failed_components} }, "worker $name" if ref $self;
             next;
         }
         push @missing, $w;
     }
     return @missing;
+}
+
+# Worker OCPNodes in phase Failed that ocp.yaml does not list -- one made by
+# `ocp node add`, say. `ocp apply` checks the spec, so these do not count for
+# its exit (k231); but a Failed machine nobody is told about is invisible, so
+# each is named on STDOUT as a [WARN] with the way out. A worker is "listed"
+# by name or by host, the way missing_worker_ocpnodes matches. Dies when the
+# list fails; returns the names it warned about.
+sub warn_unlisted_failed_ocpnodes {
+    my ($self, $api, $config) = @_;
+
+    my (%name, %host);
+    for my $w (worker_ocpnodes($config)) {
+        $name{ $w->{metadata}{name} } = 1;
+        $host{ lc $w->{spec}{host} } = 1 if length($w->{spec}{host} // '');
+    }
+
+    my @warned;
+    for my $item (@{ $api->list('OCPNode', namespace => 'ocp-system')->items // [] }) {
+        my $h = $api->k8s->object_to_struct($item);
+        next unless ($h->{spec}{role} // '') eq 'worker';
+        next unless ($h->{status}{phase} // '') eq 'Failed';
+        my $n = $h->{metadata}{name};
+        next if $name{$n} || $host{ lc($h->{spec}{host} // '') };
+        print "  [WARN] OCPNode $n is Failed and not in ocp.yaml (ocp node rm $n)\n";
+        push @warned, $n;
+    }
+    return @warned;
 }
 
 # Pool labels and taints changed in ocp.yaml onto the worker OCPNodes that

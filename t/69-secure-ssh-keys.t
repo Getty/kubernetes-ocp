@@ -70,14 +70,15 @@ sub run_init {
     my $cwd = getcwd();
     chdir $dir or die "chdir: $!";
 
-    my $out = '';
+    my ($out, $stderr) = ('', '');
     my $err = eval {
         no warnings 'redefine';
         local *OCP::Password::prompt_password = sub { $prompts++; $PIN };
         open my $fh, '>', \$out or die "capture: $!";
+        open my $efh, '>', \$stderr or die "capture: $!";
         my $old = select $fh;
-        eval { $init->execute([], []) };
-        my $e = $@;
+        my $e;
+        { local *STDERR = $efh; eval { $init->execute([], []) }; $e = $@; }
         select $old;
         close $fh;
         $e;
@@ -89,6 +90,7 @@ sub run_init {
     return {
         dir     => path($dir),
         out     => $out,
+        stderr  => $stderr,
         err     => $err,
         prompts => $prompts,
     };
@@ -350,7 +352,7 @@ subtest '--ssh-key in secure mode is refused out loud, on every provider' => sub
 
         ok !-f $r->{dir}->child('.ocp', 'id_ed25519'),
             "$provider: nothing was written where nothing would read it";
-        like $r->{out}, qr/--ssh-key is not used in secure mode/,
+        like $r->{stderr}, qr/--ssh-key is not used in secure mode/,
             "$provider: the operator is told the flag did not apply";
         like $r->{out}, qr/ocp keys show --purpose admin/,
             "$provider: with the key that IS used named, and how to print it";

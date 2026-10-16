@@ -470,7 +470,7 @@ sub bootstrap_control_plane {
     if ($@) {
         my $err = $@;
         if ($server_info->{newly_created}) {
-            print "  [!!] Installation failed, cleaning up server...\n";
+            print STDERR "  [!!] Installation failed, cleaning up server...\n";
             $prov->cleanup_on_failure($server_info->{id});
         }
         die $err;

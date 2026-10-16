@@ -283,7 +283,10 @@ sub reconcile_components {
             }
         };
         if ($@) {
-            print "  [WARN] cert-manager setup failed: $@\n";
+            # "MUST succeed" in the deploy path: said on STDERR and counted (k231).
+            print STDERR "  [!!] cert-manager setup failed: $@";
+            print STDERR "\n" unless $@ =~ /\n\z/;
+            push @{ $self->{_failed_components} }, 'cert-manager';
         }
     }
 
@@ -293,9 +296,14 @@ sub reconcile_components {
     {
         $checked++;
         print "  [..] Checking Cilium Gateway...\n";
-        eval { $self->_setup_cilium_gateway($config); 1 }
-            ? print "  [ok] Cilium Gateway up to date\n"
-            : print "  [WARN] Cilium Gateway setup failed: $@";
+        if (eval { $self->_setup_cilium_gateway($config); 1 }) {
+            print "  [ok] Cilium Gateway up to date\n";
+        } else {
+            # "MUST succeed" in the deploy path: STDERR and counted (k231).
+            print STDERR "  [!!] Cilium Gateway setup failed: $@";
+            print STDERR "\n" unless $@ =~ /\n\z/;
+            push @{ $self->{_failed_components} }, 'Cilium Gateway';
+        }
     }
 
     # LB-IPAM stays behind the same opt-in as in the deploy path.
@@ -419,6 +427,13 @@ sub reconcile_components {
                 push @unresolved, 'labels/taints of worker ' . (split /:/, $f, 2)[0];
             }
         }
+    }
+
+    # A Failed worker OCPNode that ocp.yaml does not list (made by `ocp node
+    # add`, say) is not part of the spec this apply checks: named, not
+    # counted for the exit (k231). Also with no workers in ocp.yaml at all.
+    if (worker_step_wanted($self)) {
+        eval { OCP::Cmd::Apply::CR::warn_unlisted_failed_ocpnodes($self, $self->_k8s_api, $config) };
     }
 
     # Summary
