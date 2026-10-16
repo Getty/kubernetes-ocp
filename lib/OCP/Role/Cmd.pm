@@ -234,7 +234,27 @@ sub rex_prober {
         my $path = $config->ssh_private_key_path;
         $key_file = $path if defined $path && -f $path;
     }
-    return undef unless defined $key_file;
+
+    # Secure mode with no PIN2 asked yet has no key of the kinds above. The
+    # robo key needs the age key alone (ADR 0006), so the probe may use it
+    # without a prompt (k234). It need not be authorised on a machine (by
+    # intent it does not reach control planes): a host that refuses it is
+    # skipped and said once -- see host_probe_warning -- not an error.
+    my $robo = 0;
+    unless (defined $key_file) {
+        my $pair = $self->_robo_probe_key($config);
+        if ($pair) {
+            $key_file = $pair->path;
+            $robo     = 1;
+        }
+    }
+
+    delete $self->{_probe_skipped};
+    unless (defined $key_file) {
+        $self->{_probe_no_key} = 'no SSH key to probe with that needs no PIN2';
+        return undef;
+    }
+    delete $self->{_probe_no_key};
 
     my $verbose = eval { $self->ocp->verbose } || 0;
 
@@ -248,12 +268,60 @@ sub rex_prober {
         );
 
         my $sink = '';
-        return do {
+        my $result = eval {
             local *STDOUT;
             open STDOUT, '>', \$sink or die "cannot capture rex output: $!\n";
             $rex->run_task($task, %{ $params // {} });
         };
+        if (my $err = $@) {
+            die $err unless $robo;
+            $self->{_probe_skipped}{$host} = 'the robo key was not accepted (it is not authorised everywhere; the admin key needs PIN2)';
+            return undef;
+        }
+        return $result;
     };
+}
+
+# The robo (automation) key as a key file for the host probes, or undef when
+# the project has none (dev mode, no keys.yaml) or it cannot be read without a
+# prompt. Held on the command so the temp file lives as long as the command.
+sub _robo_probe_key {
+    my ($self, $config) = @_;
+
+    return $self->{_robo_probe_key} if $self->{_robo_probe_key};
+
+    require OCP::Keys;
+    require OCP::TempKeyPair;
+    my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+    return undef unless eval { $keys->has_keys_file };
+    my $robo = eval { $keys->get_automation_key } or return undef;
+    return undef unless defined $robo->{private} && length $robo->{private};
+
+    return $self->{_robo_probe_key} = OCP::TempKeyPair->for_private_key(
+        $robo->{private}, public => $robo->{public});
+}
+
+# The one line for host probes that did not run, or '' when all did (k234).
+# Hosts the robo key was refused on, or -- with no key at all -- every machine
+# the probes would have looked at. A skipped probe is not drift and not a
+# failure; it only must not read as "no drift".
+sub host_probe_warning {
+    my ($self, $drift) = @_;
+
+    my $skipped = $self->{_probe_skipped} || {};
+    my (@hosts, %reason);
+    if (%$skipped) {
+        @hosts = sort keys %$skipped;
+        $reason{ $skipped->{$_} } = 1 for @hosts;
+    }
+    elsif (defined $self->{_probe_no_key}) {
+        @hosts = $drift->probe_targets;
+        $reason{ $self->{_probe_no_key} } = 1;
+    }
+    return '' unless @hosts;
+
+    return sprintf "  [WARN] host probes skipped on %s: %s\n",
+        join(', ', @hosts), join('; ', sort keys %reason);
 }
 
 # Every retry/poll pause a command makes goes through here — ONE seam,

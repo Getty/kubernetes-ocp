@@ -33,7 +33,7 @@ sub run_ls {
 }
 
 my @KEYS = sort qw(name role pool host address publicIP phase kubernetesNodeName
-                   labels gpu runtime kubelet os kernel);
+                   labels gpu runtime kubelet os kernel reconciler);
 
 my $api = FakeApi->new(
     ocpnodes => [
@@ -42,7 +42,8 @@ my $api = FakeApi->new(
         { metadata => { name => 'crag', annotations => { 'ocp.internal/pool' => 'gpu' } },
           spec => { role => 'worker', host => '10.0.0.20', labels => { tier => 'gpu' } },
           status => { phase => 'Ready', address => '10.0.0.20', publicIP => '1.2.3.4',
-                      kubernetesNodeName => 'crag-k8s' } },
+                      kubernetesNodeName => 'crag-k8s',
+                      reconciler => 'robocop@robocop-5dd68bf544-wwxdl' } },
     ],
     nodes => [
         { metadata => { name => 'crag-k8s' },
@@ -71,11 +72,12 @@ is($crag->{os}, 'Debian 12', 'os');
 is($crag->{kernel}, '6.1.0', 'kernel');
 is_deeply($crag->{labels}, { tier => 'gpu' }, 'labels');
 is($crag->{kubernetesNodeName}, 'crag-k8s', 'join key kept');
+is($crag->{reconciler}, 'robocop@robocop-5dd68bf544-wwxdl', 'reconciler from status (k234)');
 
 is($zeta->{gpu}, 0, 'no Node: gpu is 0');
 ok(!ref(\$zeta->{gpu}) || $zeta->{gpu} =~ /\A\d+\z/, 'gpu is a number');
 is($zeta->{phase}, 'Pending', 'phase defaults to Pending');
-for my $k (qw(pool host address publicIP kubernetesNodeName labels runtime kubelet os kernel)) {
+for my $k (qw(pool host address publicIP reconciler kubernetesNodeName labels runtime kubelet os kernel)) {
     ok(exists $zeta->{$k} && !defined $zeta->{$k}, "missing $k is null");
 }
 like($out, qr/"gpu"\s*:\s*0\b/, 'gpu rendered as number, not string');

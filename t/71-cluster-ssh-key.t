@@ -691,6 +691,7 @@ subtest 'the update temp key is gone when the command object is' => sub {
 {
     package FakeDrift;
     sub detect { [] }
+    sub probe_targets { () }
 }
 
 # _cli_reconcile reads the join token off the control plane over SSH, then

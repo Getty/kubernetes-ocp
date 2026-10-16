@@ -166,7 +166,8 @@ our $REGISTRY_HOSTNAME = 'registry.local';
 # $REX_DRIFT_MARKER gets a drift entry whose remedy is the cleanup task, run by
 # OCP::Cmd::Apply::Drift exactly like every other rex remedy. See rex_probe_drift.
 #
-#   host_selector   which machines to probe -- 'control_planes' for now
+#   host_selector   which machines to probe -- 'control_planes', or 'machines'
+#                   (the control planes plus the workers OCP can reach)
 #   detection_task  read-only Rex task; prints $REX_DRIFT_MARKER when the residue is present
 #   remedy_task     the Rex task that removes it
 #   message         the tail of the human-readable finding, after "<label> on <host>: "
@@ -187,7 +188,7 @@ our @REX_PROBES = (
     {
         component      => 'legacy_containerd_template',
         label          => 'Legacy containerd template',
-        host_selector  => 'control_planes',
+        host_selector  => 'machines',
         detection_task => 'detect_legacy_containerd_template',
         remedy_task    => 'cleanup_legacy_containerd_template',
         message        => 'obsolete pre-k23 containerd config template present; ocp apply removes it',
@@ -715,8 +716,13 @@ sub rex_probe_drift {
     return @drift;
 }
 
-# The machines a host_selector names. Only 'control_planes' for now: the CPs
-# from ocp.yaml, addressed by their pinned public_ip (or host). A selector this
+# The machines a host_selector names. 'control_planes': the CPs from ocp.yaml,
+# addressed by their pinned public_ip (or host). 'machines': those plus every
+# worker OCPNode whose provider is ssh or local -- the machines OCP reaches by
+# an address of its own (status.publicIP, else spec.host); a Hetzner server or a
+# node robocop alone can reach is not probed (k234: a worker with the bare
+# containerd template went unseen, with the same effect as on a CP). The workers
+# need the API; without it only the control planes are named. A selector this
 # module does not know is a programmer error -- a probe table that named one out
 # of sync -- not a quiet empty list that silently probes nothing.
 sub _probe_hosts {
@@ -724,12 +730,39 @@ sub _probe_hosts {
     $selector //= 'control_planes';
 
     croak "OCP::Drift: unknown host_selector '$selector'"
-        unless $selector eq 'control_planes';
+        unless $selector eq 'control_planes' || $selector eq 'machines';
 
-    my @hosts;
+    my (@hosts, %seen);
+    my $add = sub {
+        my $host = shift;
+        push @hosts, $host if defined $host && length $host && $host ne '-' && !$seen{$host}++;
+    };
+
     for my $cp (@{ $self->config->control_planes }) {
-        my $host = $cp->{public_ip} // $cp->{host};
-        push @hosts, $host if defined $host && length $host && $host ne '-';
+        $add->($cp->{public_ip} // $cp->{host});
+    }
+
+    if ($selector eq 'machines' && $self->api) {
+        my $items = eval { $self->api->list('OCPNode', namespace => 'ocp-system')->items } || [];
+        for my $item (@$items) {
+            my $h = eval { $self->api->k8s->object_to_struct($item) } or next;
+            next unless ($h->{spec}{role} // '') eq 'worker';
+            next unless ($h->{spec}{providerRef} // '') =~ /^(?:ssh|local)-/;
+            $add->($h->{status}{publicIP} // $h->{spec}{host});
+        }
+    }
+    return @hosts;
+}
+
+# Every machine any host-side probe would look at, once each. Public so the
+# command can name them when it had to skip the probes (k234).
+sub probe_targets {
+    my ($self) = @_;
+    my (@hosts, %seen);
+    for my $probe (@REX_PROBES) {
+        for my $h ($self->_probe_hosts($probe->{host_selector})) {
+            push @hosts, $h unless $seen{$h}++;
+        }
     }
     return @hosts;
 }

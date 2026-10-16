@@ -17,6 +17,11 @@ spec:
     metadata:
       labels:
         app: robocop
+      annotations:
+        # Marks a robocop that handles SIGTERM (k232). One without it ignores
+        # the signal and would run the whole grace period out, so apply and
+        # deploy-robocop delete such a pod with a short grace period (k234).
+        ocp.internal/robocop-sigterm: "1"
     spec:
       serviceAccountName: robocop
       # SIGTERM stops robocop taking work and lets the reconciles already

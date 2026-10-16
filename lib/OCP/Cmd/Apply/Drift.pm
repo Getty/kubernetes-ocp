@@ -118,13 +118,24 @@ sub reconcile_components {
         $checked++;
         print "  [..] Checking for drift...\n";
 
-        my $drift = OCP::Drift->new(
+        my $detector = OCP::Drift->new(
             config     => $config,
             api        => $self->_k8s_api,
             rex_prober => $self->rex_prober($config),
-        )->detect;
+        );
+        my $drift = $detector->detect;
+        print $self->host_probe_warning($detector);
 
-        if (!@$drift) {
+        # The ClusterPolicy is checked by the GPU step further down, but a
+        # run that says "No drift detected" and then names a drift tells two
+        # stories (k234): asked here, read-only, before the line is printed.
+        my @gpu = @$drift ? () : gpu_dry_run($self, $config, quiet => 1);
+        if (@gpu) {
+            print "  [drift] GPU Operator ClusterPolicy differs from the spec at $_\n"
+                . "          the GPU Operator check below re-applies the manifest\n"
+                for @gpu;
+        }
+        elsif (!@$drift) {
             print "  [ok] No drift detected\n";
         }
 
@@ -164,7 +175,18 @@ sub reconcile_components {
                     : "  [!!] $entry->{remedy}{task} failed: $@";
                 push @unresolved, $entry->{label} // $entry->{component};
             } elsif ($done) {
-                print "  [ok] $entry->{label} updated to $entry->{expected}\n";
+                if (($entry->{kind} // '') eq 'rex_probe') {
+                    # A host-side residue has no version to be "updated to"
+                    # (it printed an empty target, k234): it was removed on a
+                    # host, and the task said whether it restarted a service.
+                    my ($svc) = map { /^Restarted (\S+?):/ ? $1 : () }
+                        @{ $entry->{result}{steps} // [] };
+                    print "  [ok] $entry->{label} removed on $entry->{host}"
+                        . (defined $svc ? ", $svc restarted" : '') . "\n";
+                }
+                else {
+                    print "  [ok] $entry->{label} updated to $entry->{expected}\n";
+                }
                 $updated++;
             } else {
                 # _run_remedy has already said why. What it cannot do is stop
@@ -187,7 +209,13 @@ sub reconcile_components {
             $updated += $self->_report_component('Registry', $self->_setup_registry($config));
         };
         if ($@) {
-            print "  [WARN] Registry setup failed: $@\n";
+            # The registry is required infrastructure ("MUST succeed" in the
+            # deploy path: every image pull goes through it), so a failure is
+            # an unfinished apply like cert-manager and the Gateway (k234).
+            print STDERR "  [!!] Registry setup failed: $@";
+            print STDERR "\n" unless $@ =~ /\n\z/;
+            push @unresolved, 'Registry';
+            push @{ $self->{_failed_components} }, 'Registry';
         }
     }
 
@@ -380,8 +408,9 @@ sub reconcile_components {
         my @missing = eval {
             OCP::Cmd::Apply::CR::missing_worker_ocpnodes($self, $api, $config);
         };
-        if (my $err = $@) {
-            print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $err";
+        my $list_err = $@;
+        if ($list_err) {
+            print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $list_err";
             push @unresolved, 'workers';
         } elsif (!@missing) {
             print "  [ok] Every worker in ocp.yaml has an OCPNode\n";
@@ -408,6 +437,18 @@ sub reconcile_components {
             unless (OCP::Cmd::Apply::Deploy::gpu_after_join($self, $config, \@results)) {
                 push @unresolved, 'GPU Operator';
                 push @{ $self->{_failed_components} }, 'GPU Operator';
+            }
+        }
+
+        # A worker whose OCPNode exists but is not Ready is said, not waited
+        # for, and not re-driven (k234). The ones just created are reported
+        # by the worker step.
+        unless ($list_err) {
+            my %created = map { $_->{metadata}{name} => 1 } @missing;
+            eval { OCP::Cmd::Apply::CR::check_worker_phases($self, $api, $config, \%created) };
+            if (my $perr = $@) {
+                print STDERR "  [!!] Could not check worker phases: $perr";
+                push @unresolved, 'worker phases';
             }
         }
 
@@ -492,11 +533,13 @@ sub dry_run_report {
 
     print "  [..] Checking for drift (read-only)...\n";
 
-    my $drift = OCP::Drift->new(
+    my $detector = OCP::Drift->new(
         config     => $config,
         api        => $self->_k8s_api,
         rex_prober => $self->rex_prober($config),
-    )->detect;
+    );
+    my $drift = $detector->detect;
+    print $self->host_probe_warning($detector);
 
     # An entry with no remedy that the run does not re-apply either (not
     # self_healing, not missing) is report-only -- the pod CIDR (k182): a real
@@ -505,7 +548,10 @@ sub dry_run_report {
         my $e = shift;
         return !$e->{remedy} && !$e->{self_healing} && ($e->{kind} // '') ne 'missing';
     };
-    print "  [ok] No drift detected\n" unless @$drift;
+    # The GPU findings are asked first, silently: "No drift detected" is only
+    # true when they find nothing either (k234). They are printed below.
+    my @gpu_found = gpu_dry_run($self, $config, quiet => 1);
+    print "  [ok] No drift detected\n" unless @$drift || @gpu_found;
 
     for my $entry (@$drift) {
         print "  [drift] $entry->{message}\n";
@@ -581,7 +627,7 @@ sub dry_run_report {
 # gpu.toolkit warning is printed but is no action of its own (the real run
 # only warns as well).
 sub gpu_dry_run {
-    my ($self, $config) = @_;
+    my ($self, $config, %opt) = @_;
     return () unless $config->gpu_enabled;
     # Read-only and best effort, like the rest of this report: a cluster that
     # cannot be asked has no GPU finding here.
@@ -591,6 +637,7 @@ sub gpu_dry_run {
     my @paths = eval {
         OCP::Cmd::Apply::Workloads::cluster_policy_differences($self, $config, $api)
     };
+    return @paths if $opt{quiet};
     print "  [drift] GPU Operator ClusterPolicy differs from the spec at $_\n"
         . "          would re-apply the GPU Operator manifest\n" for @paths;
     my $cp = eval { $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy') };
@@ -696,7 +743,7 @@ sub run_remedy {
         return 0;
     }
 
-    OCP::Rex->new(
+    $entry->{result} = OCP::Rex->new(
         host     => $host,
         key_file => $key->path,
         verbose  => $self->ocp->verbose,

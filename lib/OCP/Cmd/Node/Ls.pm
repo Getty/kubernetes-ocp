@@ -132,6 +132,7 @@ sub _execute_json {
             address            => $n->{status}{address},
             publicIP           => $n->{status}{publicIP},
             phase              => $n->{status}{phase} // 'Pending',
+            reconciler         => $n->{status}{reconciler},
             kubernetesNodeName => $kname,
             labels             => $n->{spec}{labels},
             gpu                => ($gpu // 0) + 0,
@@ -199,13 +200,15 @@ C<null>, C<gpu> is always a number.
           "phase" : "Ready",
           "pool" : null,
           "publicIP" : "10.0.0.20",
+          "reconciler" : "robocop@robocop-5dd68bf544-wwxdl",
           "role" : "worker",
           "runtime" : "containerd://1.7.23-k3s2"
        }
     ]
 
-C<address>, C<publicIP>, C<phase> and C<kubernetesNodeName> come from the
-OCPNode C<status>, C<host> and C<labels> from its C<spec>; C<gpu> is the
+C<address>, C<publicIP>, C<phase>, C<reconciler> (C<cli>, or C<robocop@POD>
+while robocop drives the node; null when none did) and C<kubernetesNodeName>
+come from the OCPNode C<status>, C<host> and C<labels> from its C<spec>; C<gpu> is the
 C<nvidia.com/gpu> allocatable of the Kubernetes Node (0 when it has none or
 the Node is not joined yet), C<runtime>, C<kubelet>, C<os> and C<kernel> its
 C<status.nodeInfo>.

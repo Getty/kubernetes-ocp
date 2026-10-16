@@ -743,9 +743,9 @@ task "cleanup_legacy_containerd_template", sub {
     for my $dist (_distributions()) {
         my $r = $dist->heal_bare_containerd_template;
         next unless $r->{removed} || $r->{restarted};
-        say "Removed the bare containerd template in " . $dist->containerd_dir
+        say "[STEP] Removed the bare containerd template in " . $dist->containerd_dir
           if $r->{removed};
-        say "Restarted " . $dist->service . ": its containerd config was still that template's output"
+        say "[STEP] Restarted " . $dist->service . ": its containerd config was still that template's output"
           if $r->{restarted};
     }
 };

@@ -53,9 +53,11 @@ package FakeApi {
     sub new     { my ($c, %a) = @_; bless { ensured => [], %a }, $c }
     sub ensure  { push @{ $_[0]{ensured} }, $_[1]; $_[1] }
     sub get     { my $s = shift; die "404\n" unless $s->{live}; $s->{live} }
+    sub list    { bless { items => [] }, 'FakeEmptyList' }
     sub k8s     { $_[0] }
     sub object_to_struct { $_[1] }
 }
+package FakeEmptyList { sub items { $_[0]{items} } }
 package FakeShareCmd {
     sub new             { bless {}, shift }
     sub _find_share_dir { Path::Tiny::path('share') }

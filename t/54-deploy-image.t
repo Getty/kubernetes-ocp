@@ -200,6 +200,8 @@ subtest 'an image other than the spec one is announced as an ad-hoc override (k2
     my $r = run_cmd(tag => 'v9', respond => $respond);
     like($r->{output}, qr{ad-hoc override: ocp apply resets robocop to raudssus/ocp:0\.123.*robocop\.image},
         'says what apply will set back');
+    like($r->{output}, qr/^\[WARN\] ad-hoc override/m, 'a hint, so [WARN] (k234)');
+    unlike($r->{output}, qr/\[!!\]/, 'not [!!], which is STDERR since k231');
 
     my $same = run_cmd(tag => '0.123', respond => $respond);
     unlike($same->{output}, qr/ad-hoc override/, 'silent when it is the spec image');

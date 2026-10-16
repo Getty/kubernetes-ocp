@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` (reconcile) says what it used to leave out: a Registry setup
+      failure is `[!!]` on STDERR and exit 1; a worker whose OCPNode is not
+      Ready is `[WARN] worker X is <phase>, not Ready yet` (banner WITH
+      WARNINGS, exit 0) or, Failed, `[!!]` and exit 1; "No drift detected" is
+      held back while the GPU ClusterPolicy differs. The legacy containerd
+      template probe covers ssh/local workers too; in secure mode without
+      PIN2 the host probes use the robo key and a `[WARN] host probes skipped
+      on <hosts>: <reason>` names what they could not reach. Its closing line
+      reads `Legacy containerd template removed on <host>[, <service>
+      restarted]`. robocop pods from before SIGTERM handling (no
+      `ocp.internal/robocop-sigterm` annotation) are deleted with a 30 s grace
+      period after the rollout. `ocp deploy-image`'s override hint is `[WARN]`;
+      `ocp node ls --json` has `reconciler`.
     - OCPNode host keys are pinned: the first SSH contact writes the machine's
       host key fingerprints (all key types) to `status.hostKeys`, and every
       later contact -- CLI or any robocop pod -- verifies against them. A

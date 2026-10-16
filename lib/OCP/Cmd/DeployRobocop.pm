@@ -10,6 +10,7 @@ use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
 
 use OCP;
+use OCP::Cmd::Apply::CR;
 use OCP::Config;
 use OCP::Robocop::Manifest;
 use OCP::Secrets;
@@ -90,6 +91,7 @@ sub _apply_manifests {
             print "  [ok] ensured $kind/$name\n";
         }
     }
+    OCP::Cmd::Apply::CR::retire_unannotated_robocop_pods($self, $api);
     return;
 }
 

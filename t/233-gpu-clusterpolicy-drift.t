@@ -104,4 +104,21 @@ subtest 'dry-run says both' => sub {
     is $out, '', 'and silent';
 };
 
+subtest 'quiet: the same finding, said nowhere (k234)' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::Workloads::generate_gpu_operator_manifest = sub { $MANIFEST };
+    my $out = '';
+    my @r;
+    {
+        local *STDOUT;
+        open STDOUT, '>', \$out or die;
+        @r = OCP::Cmd::Apply::Drift::gpu_dry_run(
+            FakeApply->new(cp => live(sub { pop @{ $_[0]{spec}{toolkit}{env} } })),
+            FakeConfig->new(toolkit => 0), quiet => 1);
+    }
+    is_deeply \@r, ['spec.toolkit.env'], 'found, so "No drift detected" can be held back';
+    is $out, '', 'and nothing printed';
+};
+
+
 done_testing;

@@ -578,6 +578,43 @@ sub warn_unlisted_failed_ocpnodes {
     return @warned;
 }
 
+# Workers listed in ocp.yaml whose OCPNode exists but is not Ready (k234).
+# The reconcile never drives an existing OCPNode, and it used to say nothing
+# about one either: a worker stuck in Installing ended in "SUCCESSFULLY",
+# exit 0. Now a worker on its way (Pending, Provisioning, Installing, Joining)
+# is a [WARN] on STDOUT -- recorded in {_apply_warnings}, which turns the
+# banner into WITH WARNINGS, exit 0 -- and a Failed one is a [!!] on STDERR
+# counted for the exit. $skip: names of the OCPNodes this very run created,
+# whose outcome the worker step has reported already. Dies when the list
+# fails; returns the names it reported.
+sub check_worker_phases {
+    my ($self, $api, $config, $skip) = @_;
+    $skip ||= {};
+
+    my %wanted = map { $_->{metadata}{name} => 1 } worker_ocpnodes($config);
+    return () unless %wanted;
+
+    my @reported;
+    for my $item (@{ $api->list('OCPNode', namespace => 'ocp-system')->items // [] }) {
+        my $h = $api->k8s->object_to_struct($item);
+        my $n = $h->{metadata}{name};
+        next unless $wanted{$n} && !$skip->{$n};
+        my $phase = $h->{status}{phase} // 'Pending';
+        next if $phase eq 'Ready';
+        if ($phase eq 'Failed') {
+            my $msg = $h->{status}{message};
+            print STDERR "  [!!] worker $n is Failed" . (length($msg // '') ? ": $msg" : '') . "\n";
+            push @{ $self->{_failed_components} }, "worker $n" if ref $self;
+        }
+        else {
+            print "  [WARN] worker $n is $phase, not Ready yet\n";
+            push @{ $self->{_apply_warnings} }, "worker $n" if ref $self;
+        }
+        push @reported, $n;
+    }
+    return @reported;
+}
+
 # Pool labels and taints changed in ocp.yaml onto the worker OCPNodes that
 # already exist (k211, decision 2026-10-01), and from there onto the Nodes.
 # missing_worker_ocpnodes leaves existing OCPNodes alone on purpose (k26); this
@@ -690,6 +727,54 @@ sub ensure_robocop {
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
     }
+    retire_unannotated_robocop_pods($self, $api);
+    return;
+}
+
+# The one-time transition to a robocop that handles SIGTERM (k232, k234): the
+# Deployment now gives its pods a 600 s grace period, which a robocop from
+# before ignores -- it runs the whole period out, with no robocop at all in the
+# meantime. Such a pod is told apart by the missing template annotation
+# ocp.internal/robocop-sigterm; each one still running after the rollout is
+# deleted with a 30 s grace period instead, said on STDOUT. A pod that has the
+# annotation is never touched, so this does nothing once the transition is
+# over. Best effort: a failure is a [WARN], not a failed apply.
+sub retire_unannotated_robocop_pods {
+    my ($self, $api) = @_;
+
+    my @old = eval {
+        my @found;
+        for my $item (@{ $api->list('Pod', namespace => 'ocp-system', labelSelector => 'app=robocop')->items // [] }) {
+            my $h = $api->k8s->object_to_struct($item);
+            next if exists(($h->{metadata}{annotations} // {})->{'ocp.internal/robocop-sigterm'});
+            push @found, $h->{metadata}{name};
+        }
+        @found;
+    };
+    if (my $err = $@) {
+        chomp $err;
+        print "  [WARN] could not check for robocop pods without SIGTERM handling: $err\n";
+        return;
+    }
+
+    for my $name (@old) {
+        # No delete() option for it in Kubernetes::REST: DeleteOptions go out
+        # as query parameters. A pod that is gone already (404) is fine.
+        my $resp = eval {
+            $api->_request('DELETE', "/api/v1/namespaces/ocp-system/pods/$name",
+                undef, parameters => { gracePeriodSeconds => 30 });
+        };
+        my $ok = $resp && $resp->status < 400 || $resp && $resp->status == 404;
+        $@ ||= "HTTP " . $resp->status . "\n" if $resp && !$ok;
+        if ($ok) {
+            print "  [..] robocop pod $name predates SIGTERM handling; deleted with a 30 s grace period (one-time transition)\n";
+        }
+        else {
+            my $err = $@; chomp $err;
+            print "  [WARN] could not delete robocop pod $name (no SIGTERM handling): $err\n";
+        }
+    }
+    return;
 }
 
 # What apply does to the robocop image, said out loud (k227): the spec decides

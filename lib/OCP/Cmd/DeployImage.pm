@@ -276,7 +276,7 @@ sub execute {
     # An override, not a setting (k227): the next `ocp apply` writes the
     # Deployment from ocp.yaml again. Said here, where the operator is looking.
     my $spec_image = OCP::Robocop::Manifest->image($config);
-    print "[!!] ad-hoc override: ocp apply resets robocop to $spec_image; "
+    print "[WARN] ad-hoc override: ocp apply resets robocop to $spec_image; "
         . "set robocop.image in ocp.yaml to keep it\n"
         if $image ne $spec_image;
 

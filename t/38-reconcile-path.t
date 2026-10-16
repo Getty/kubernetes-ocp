@@ -9,6 +9,7 @@ use lib 'lib';
 
 use OCP::Cmd::Apply;
 use OCP::Config;
+use OCP::Rex;
 use OCP::Secrets;
 
 #
@@ -570,7 +571,7 @@ YAML
             kind       => 'OCPNode',
             metadata   => { name => $_, namespace => 'ocp-system' },
             spec       => { role => 'worker', providerRef => 'ssh-default' },
-            status     => { phase => 'Ready' },
+            status     => { phase => ($opt{phases} // {})->{$_} // 'Ready' },
         } } @{ $opt{ocpnodes} // [] } },
     );
 
@@ -832,8 +833,9 @@ subtest 'k26: no workers in ocp.yaml, path unchanged' => sub {
 
     # One list stays: a worker added with `ocp node add` that went Failed is
     # named even when ocp.yaml lists no workers (k231, lab note 18).
-    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 1,
-        'OCPNodes are listed once, for the Failed check';
+    # The other is the host probes naming the workers they skipped (k234).
+    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 2,
+        'OCPNodes are listed for the host-probe warning and the Failed check, nothing more';
     ok !touched($r, '_drive_workers') && !touched($r, '_ensure_robocop')
         && !touched($r, '_wait_robocop_ready'), 'no worker step';
     unlike $r->{out}, qr/worker/i, 'and no worker line in the output';
@@ -1189,5 +1191,113 @@ subtest 'k226: fresh deploy -- a robocop that cannot be deployed is unfinished' 
     my $r = deploy(yaml => "robocop: true\n");
     is_deeply $r->{failed}, ['robocop'], 'as on the reconcile path';
 };
+
+#
+# k234 (lab 2026-10-16, round 7): what the reconcile left unsaid or called fine.
+#
+
+subtest 'k234 point 28: a registry that cannot be set up is an unfinished apply' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_setup_registry = sub { die "apply Deployment/ocp-cache failed: HTTP 422\n" };
+    my $r = reconcile();
+
+    like   $r->{err}, qr/^  \[!!\] Registry setup failed: apply Deployment\/ocp-cache failed: HTTP 422$/m,
+        '[!!] on STDERR';
+    unlike $r->{out}, qr/Registry setup failed/, 'and not on STDOUT';
+    ok scalar(grep { $_ eq 'Registry' } @{ $r->{failed} }), 'counted for the exit (Apply::Health::finish)';
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'the summary does not claim everything is fine';
+};
+
+subtest 'k234 point 31: a worker with an OCPNode that is not Ready is said' => sub {
+    for my $phase (qw(Pending Provisioning Installing Joining)) {
+        my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky'],
+                          phases => { pinky => $phase });
+        like $r->{out}, qr/^  \[WARN\] worker pinky is \Q$phase\E, not Ready yet$/m,
+            "$phase: [WARN] on STDOUT";
+        unlike $r->{err}, qr/pinky/, "$phase: nothing on STDERR";
+        is_deeply $r->{failed}, [], "$phase: the exit stays 0";
+        ok !touched($r, '_drive_workers'), "$phase: not driven again";
+
+        my $apply = bless { _apply_warnings => ['worker pinky'] }, 'OCP::Cmd::Apply';
+        like OCP::Cmd::Apply::Health::banner_text($apply, { critical => [], warnings => [], starting => [] }),
+            qr/WITH WARNINGS/, "$phase: banner WITH WARNINGS";
+    }
+
+    my $ok = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky']);
+    unlike $ok->{out}, qr/not Ready yet/, 'Ready workers say nothing';
+
+    my $failed = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky'],
+                           phases => { brain => 'Failed' });
+    like $failed->{err}, qr/^  \[!!\] worker brain is Failed/m, 'Failed: [!!] on STDERR';
+    ok scalar(grep { $_ eq 'worker brain' } @{ $failed->{failed} }), 'Failed: counted for the exit';
+    unlike $failed->{out}, qr/worker brain is Failed/, 'Failed: not on STDOUT';
+
+    my $made = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    unlike $made->{out}, qr/pinky is \w+, not Ready yet/,
+        'a worker this very run created is reported by the worker step, not twice';
+};
+
+subtest 'k234 point 30: "No drift detected" only when the ClusterPolicy agrees too' => sub {
+    no warnings 'redefine';
+    local *OCP::Drift::detect = sub { [] };
+    local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub {
+        my ($self, $config, %o) = @_;
+        print "  [drift] GPU Operator ClusterPolicy differs from the spec at spec.toolkit.env\n"
+            unless $o{quiet};
+        return ('spec.toolkit.env');
+    };
+    my $real = reconcile();
+    unlike $real->{out}, qr/\[ok\] No drift detected/, 'real run: not said over a differing ClusterPolicy';
+    like   $real->{out}, qr/\[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.toolkit\.env/,
+        'real run: the drift is named';
+
+    my $dry = reconcile(dry_run => 1);
+    unlike $dry->{out}, qr/\[ok\] No drift detected/, 'dry run: not said either';
+    like   $dry->{out}, qr/ClusterPolicy differs/, 'dry run: named';
+};
+
+subtest 'k234 point 30: nothing found anywhere still says so' => sub {
+    no warnings 'redefine';
+    local *OCP::Drift::detect = sub { [] };
+    local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub { return () };
+    like reconcile()->{out}, qr/\[ok\] No drift detected/, 'real run';
+    like reconcile(dry_run => 1)->{out}, qr/\[ok\] No drift detected/, 'dry run';
+};
+
+
+subtest 'k234 point 34: the closing line after a host-side removal names the host' => sub {
+    my $entry = sub {
+        return { kind => 'rex_probe', component => 'legacy_containerd_template',
+                 label => 'Legacy containerd template', host => '10.230.30.212',
+                 expected => undef, message => 'present',
+                 remedy => { type => 'rex', task => 'cleanup_legacy_containerd_template',
+                             host => '10.230.30.212', params => {} } };
+    };
+    no warnings 'redefine';
+    local *OCP::Drift::detect = sub { [ $entry->() ] };
+
+    local *OCP::Cmd::Apply::_run_remedy = sub { $_[2]{result} = { steps => [] }; 1 };
+    my $r = reconcile();
+    like $r->{out}, qr/^  \[ok\] Legacy containerd template removed on 10\.230\.30\.212$/m, 'removed';
+    unlike $r->{out}, qr/updated to/, 'no empty "updated to" target';
+
+    local *OCP::Cmd::Apply::_run_remedy = sub {
+        $_[2]{result} = { steps => [ 'Removed the bare containerd template in /x',
+            "Restarted rke2-server: its containerd config was still that template's output" ] };
+        1;
+    };
+    $r = reconcile();
+    like $r->{out}, qr/^  \[ok\] Legacy containerd template removed on 10\.230\.30\.212, rke2-server restarted$/m,
+        'removed, service restarted';
+};
+
+subtest 'k234 point 34: the Rexfile task narrates through [STEP] lines, which show without --verbose' => sub {
+    my $rexfile = path('share/Rexfile')->slurp_utf8;
+    like $rexfile, qr/say "\[STEP\] Removed the bare containerd template in "/, 'Removed';
+    like $rexfile, qr/say "\[STEP\] Restarted "/, 'Restarted';
+    my @steps = OCP::Rex::_task_steps("[STEP] Removed the bare containerd template in /d\nINFO x\n");
+    is_deeply \@steps, ['Removed the bare containerd template in /d'], '_task_steps hands them to the narrative';
+};
+
 
 done_testing;

@@ -252,7 +252,7 @@ sub banner_text {
     return 'CONTROL PLANE DEPLOYED — APPLY INCOMPLETE'
         if @{ $self->{_failed_components} // [] };
     return 'CONTROL PLANE DEPLOYED — WITH WARNINGS'
-        if @{ $health->{warnings} };
+        if @{ $health->{warnings} } || @{ $self->{_apply_warnings} // [] };
     return 'CONTROL PLANE DEPLOYED SUCCESSFULLY!';
 }
 
