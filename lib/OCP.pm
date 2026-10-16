@@ -297,7 +297,8 @@ Usage: ocp <command> [options]
 Commands:
   init            Initialize OCP project (git, keys, config)
   apply           Reconcile cluster to match config, fix drift
-  status          Show cluster status and drift
+  status          Show cluster status and drift (--json for scripts)
+  health          One-shot pod health report (--json for scripts)
   destroy         Destroy cluster
   kubeconfig      Print kubeconfig (-e merges it into ~/.kube/config)
   ssh             SSH into a cluster node
@@ -397,6 +398,12 @@ automatically. Idempotent.
 
 Show current cluster status including node health, IPs and drift against the
 spec and version manifest.
+
+=item B<health>
+
+Scan all pods once, without waiting, and report the critical, warning and
+still-starting ones; exit 1 when a core (C<kube-system>) pod is broken.
+C<--json> prints canonical JSON. See L<OCP::Cmd::Health>.
 
 =item B<destroy>
 

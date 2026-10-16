@@ -25,6 +25,7 @@ ocp - Omni Control Plane CLI
     ocp init --hetzner                    # initialize project (keys, config, git)
     ocp apply                             # deploy / reconcile, fix drift
     ocp status                            # cluster status and drift
+    ocp health                            # one-shot pod health (--json for scripts)
     ocp destroy                           # tear the cluster down
 
     # Cluster access

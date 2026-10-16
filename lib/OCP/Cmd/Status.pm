@@ -4,6 +4,7 @@ package OCP::Cmd::Status;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
+use JSON::MaybeXS ();
 
 use OCP;
 use OCP::Config;
@@ -13,6 +14,20 @@ use OCP::Secrets;
 use OCP::Versions;
 
 with 'OCP::Role::Cmd';
+
+=opt json
+
+    --json
+
+Print one canonical JSON document on STDOUT instead of the text report;
+diagnostics go to STDERR.  See L</JSON OUTPUT>.
+
+=cut
+
+option json => (
+    is  => 'ro',
+    doc => 'Print the status as canonical JSON on STDOUT (diagnostics on STDERR, no timestamps)',
+);
 
 sub execute {
     my ($self, $args, $chain) = @_;
@@ -24,6 +39,8 @@ sub execute {
     }
 
     my $config = OCP::Config->new(file => $file);
+
+    return $self->_execute_json($config, $file) if $self->json;
 
     print "Cluster: ", $config->name, "\n";
     print "Config:  $file\n";
@@ -149,6 +166,103 @@ sub execute {
     return 0;
 }
 
+# The --json form of the report. Same data as the text form, one object, and
+# nothing else on STDOUT; whatever went wrong is told on STDERR as well.
+sub _execute_json {
+    my ($self, $config, $file) = @_;
+
+    my @workers = @{ $config->workers };
+    my $cps     = $config->control_planes;
+    my $dist    = $config->distribution;
+
+    my %out = (
+        cluster  => $config->name,
+        config   => $file,
+        deployed => JSON::MaybeXS::false(),
+        nodes    => [],
+        drift    => [],
+        spec     => {
+            distribution  => $dist,
+            version       => ($config->version || OCP::Versions->get_component_version($dist) || 'latest'),
+            control_planes => {
+                count       => scalar(@$cps),
+                provider    => ($cps->[0]{provider} || 'hetzner'),
+                server_type => $cps->[0]{server_type},
+            },
+            workers => [ map {
+                +{
+                    name     => $_->{name},
+                    provider => ($_->{provider} // 'ssh'),
+                    nodes    => (ref($_->{nodes}) eq 'ARRAY' ? scalar(@{$_->{nodes}}) : ($_->{nodes} // $_->{count} // 0)) + 0,
+                }
+            } @workers ],
+        },
+    );
+
+    my $exit = $self->_collect_json($config, \%out);
+
+    print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode(\%out);
+    return $exit;
+}
+
+sub _collect_json {
+    my ($self, $config, $out) = @_;
+
+    return 0 unless $config->cluster_exists;
+    $out->{deployed} = JSON::MaybeXS::true();
+
+    my $secrets    = OCP::Secrets->new(project_dir => $config->project_dir);
+    my $kc_content = $secrets->read_kubeconfig;
+    unless ($kc_content) {
+        $out->{error} = 'Cannot decrypt kubeconfig.yaml (is .ocp/age.key present?)';
+        print STDERR "ERROR: $out->{error}\n";
+        return 1;
+    }
+
+    my $k8s   = OCP::Kubernetes->new(kubeconfig => $kc_content);
+    my $nodes = eval { $k8s->list_nodes };
+    if (!$nodes || $@) {
+        my $error = $@ || 'Unknown Kubernetes API error';
+        chomp $error;
+        $out->{error} = 'Cannot connect to cluster API: ' . $error;
+        print STDERR "WARNING: $out->{error}\n";
+        return 1;
+    }
+
+    $out->{nodes} = [ sort { $a->{name} cmp $b->{name} } map {
+        +{
+            name        => $k8s->node_name($_),
+            ready       => ($k8s->node_ready($_) ? JSON::MaybeXS::true() : JSON::MaybeXS::false()),
+            roles       => $k8s->node_roles($_),
+            version     => $k8s->node_version($_),
+            internal_ip => $k8s->node_internal_ip($_),
+            gpu         => ($k8s->node_gpu_count($_) // 0) + 0,
+        }
+    } @$nodes ];
+
+    my $drift = eval {
+        OCP::Drift->new(
+            config     => $config,
+            api        => $k8s->api,
+            rex_prober => $self->rex_prober($config),
+        )->detect;
+    } // [];
+
+    $out->{drift} = [ sort { $a->{component} cmp $b->{component} || $a->{message} cmp $b->{message} } map {
+        +{
+            kind        => $_->{kind},
+            component   => $_->{component} // $_->{label} // '',
+            expected    => $_->{expected},
+            actual      => $_->{actual},
+            message     => $_->{message} // '',
+            manual_step => $_->{manual_step},
+            fixable     => ($_->{remedy} ? JSON::MaybeXS::true() : JSON::MaybeXS::false()),
+        }
+    } @$drift ];
+
+    return 0;
+}
+
 1;
 
 __END__
@@ -173,6 +287,53 @@ the C<.ocp/age.key> must be present for the live-status section to render.
 
 The command never modifies cluster state.  Drift entries that carry a
 C<remedy> are listed together with the count that C<ocp apply> would resolve.
+
+=head1 JSON OUTPUT
+
+C<ocp status --json> prints exactly one JSON object (canonical: sorted keys,
+pretty-printed, no timestamps or ages) on STDOUT; diagnostics go to STDERR.
+Two runs against an unchanged cluster print identical bytes, so a script can
+compare them.  The exit code is that of the text form: 1 when the kubeconfig
+cannot be decrypted or the API cannot be reached (the object then carries an
+C<error> string and whatever could be collected), else 0.
+
+    {
+       "cluster" : "mycluster",
+       "config" : "ocp.yaml",
+       "deployed" : true,
+       "drift" : [
+          {
+             "actual" : "v1.32.0+rke2r1",
+             "component" : "rke2",
+             "expected" : "v1.32.1+rke2r1",
+             "fixable" : false,
+             "kind" : "version",
+             "manual_step" : null,
+             "message" : "rke2: ..."
+          }
+       ],
+       "nodes" : [
+          {
+             "gpu" : 0,
+             "internal_ip" : "10.0.0.10",
+             "name" : "police1",
+             "ready" : true,
+             "roles" : "control-plane",
+             "version" : "v1.32.1+rke2r1"
+          }
+       ],
+       "spec" : {
+          "control_planes" : { "count" : 1, "provider" : "hetzner", "server_type" : "cx32" },
+          "distribution" : "rke2",
+          "version" : "v1.32.1+rke2r1",
+          "workers" : [ { "name" : "pool-a", "nodes" : 2, "provider" : "ssh" } ]
+       }
+    }
+
+C<nodes> are sorted by name, C<drift> by component and message; a drift
+entry's C<fixable> says whether C<ocp apply> carries a remedy for it.  The
+drift list includes the C<< kind => 'error' >> entry that
+L<OCP::Drift> reports when the API call behind a check failed.
 
 =method execute
 

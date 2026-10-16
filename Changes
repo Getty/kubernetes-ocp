@@ -193,3 +193,8 @@ Revision history for OCP
       spelling, `--pins-stdin` or `--pins_stdin`, in any position.
     - Ships as a Docker image on a Docker-first toolchain, with CI that builds
       the image and publishes it to Docker Hub and GHCR.
+    - `ocp node ls --json`, `ocp status --json` and the new `ocp health
+      [--json]` print canonical JSON (sorted keys, no timestamps) on STDOUT,
+      diagnostics on STDERR. `ocp kubeconfig --readonly [--name NAME]
+      [--revoke]` prints a kubeconfig for a read-only ServiceAccount (view plus
+      nodes and the OCP CRDs), without SSH and without stored state.

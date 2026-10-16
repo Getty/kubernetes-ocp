@@ -237,6 +237,12 @@ Prints your spec summary, the live node table (name, Ready/NotReady, roles,
 kubelet version, IP), GPU capacity if there is any, and a drift report if the
 running cluster has diverged from `ocp.yaml` or the pinned versions.
 
+`ocp status --json` prints the same facts as one canonical JSON object
+(sorted keys, no timestamps) on STDOUT, diagnostics on STDERR, so two runs can
+be compared byte for byte. `ocp health [--json]` scans all pods once (no
+waiting) and lists the critical / warning / starting ones; it exits 1 when a
+`kube-system` pod is broken.
+
 This command is read-only. It never prompts for a PIN, opens no SSH connection
 and changes nothing — so it is always safe to run.
 
@@ -257,6 +263,21 @@ previous file.
 > ```bash
 > ocp kubeconfig > ~/.kube/config
 > ```
+
+### Read-only access for someone else
+
+```bash
+ocp kubeconfig --readonly [--name NAME] > readonly.yaml   # default NAME: leitstand
+ocp kubeconfig --readonly --revoke --name NAME            # take it back
+```
+
+Creates a ServiceAccount `ocp-readonly-NAME` in `ocp-system` (ClusterRole
+`view` plus get/list/watch on Nodes, OCPNodes and OCPNodeProviders) and prints a
+kubeconfig with its token to STDOUT. The recipient needs no SSH and not the
+encrypted admin kubeconfig. The token is a secret; it is read-only (`view` has
+no Secrets), nothing is stored in the project, and a repeated call returns the
+same token. `--revoke` deletes the token, bindings and account; the shared
+ClusterRole `ocp-readonly` stays.
 
 Now your own tools can talk to the cluster:
 
@@ -304,6 +325,11 @@ ocp node ls
 ```
 
 Columns: NAME, ROLE, PHASE, PROVIDER, IP, AGE.
+
+For scripts, `ocp node ls --json` prints the inventory as canonical JSON
+(name, role, pool, host, address, publicIP, phase, labels, GPU count,
+container runtime, kubelet, OS, kernel). It reads only the Kubernetes API.
+`pool` is `null` unless the OCPNode carries an `ocp.internal/pool` annotation.
 
 Useful variations:
 

@@ -8,12 +8,19 @@ use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
 use OCP::Config;
 use OCP::Secrets;
+use JSON::MaybeXS ();
 use OCP::K8s;
 use Time::Piece;
 
 with 'OCP::Role::Cmd';
 
 has k8s => (is => 'rw');
+
+
+option json => (
+    is  => 'ro',
+    doc => 'Print the node inventory as canonical JSON (name, role, pool, host, address, GPU, runtime, versions)',
+);
 
 sub _k8s {
     my $self = shift;
@@ -51,6 +58,8 @@ sub execute {
     my $list = $api->list('OCPNode', namespace => $ns);
     my @nodes = map { $api->k8s->object_to_struct($_) } @{ $list->items // [] };
 
+    return $self->_execute_json($api, \@nodes) if $self->json;
+
     printf "%-16s %-13s %-12s %-14s %-15s %s\n",
         qw(NAME ROLE PHASE PROVIDER IP AGE);
     for my $n (sort { $a->{metadata}{name} cmp $b->{metadata}{name} } @nodes) {
@@ -63,6 +72,51 @@ sub execute {
             _age($n->{metadata}{creationTimestamp});
     }
 
+    return 0;
+}
+
+# The machine-readable inventory: OCPNode joined with the Kubernetes Node it
+# became (status.kubernetesNodeName, else the OCPNode's own name). Kubernetes
+# API only -- no SSH, no PIN. Every key is always present (null when unknown),
+# gpu is always a number, the list is sorted by name and the encoder is
+# canonical, so two runs against an unchanged cluster print identical bytes.
+sub _execute_json {
+    my ($self, $api, $ocpnodes) = @_;
+
+    my $nlist = $api->list('Node');
+    my %k8s_node;
+    for my $item (@{ $nlist->items // [] }) {
+        my $n = $api->k8s->object_to_struct($item);
+        $k8s_node{ $n->{metadata}{name} } = $n if defined $n->{metadata}{name};
+    }
+
+    my @rows;
+    for my $n (@$ocpnodes) {
+        my $name   = $n->{metadata}{name};
+        my $kname  = $n->{status}{kubernetesNodeName};
+        my $node   = $k8s_node{ $kname // $name } // {};
+        my $info   = $node->{status}{nodeInfo} // {};
+        my $gpu    = $node->{status}{allocatable}{'nvidia.com/gpu'};
+        push @rows, {
+            name               => $name,
+            role               => $n->{spec}{role},
+            pool               => $n->{metadata}{annotations}{'ocp.internal/pool'},
+            host               => $n->{spec}{host},
+            address            => $n->{status}{address},
+            publicIP           => $n->{status}{publicIP},
+            phase              => $n->{status}{phase} // 'Pending',
+            kubernetesNodeName => $kname,
+            labels             => $n->{spec}{labels},
+            gpu                => ($gpu // 0) + 0,
+            runtime            => $info->{containerRuntimeVersion},
+            kubelet            => $info->{kubeletVersion},
+            os                 => $info->{osImage},
+            kernel             => $info->{kernelVersion},
+        };
+    }
+    @rows = sort { $a->{name} cmp $b->{name} } @rows;
+
+    print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode(\@rows);
     return 0;
 }
 
@@ -89,11 +143,49 @@ OCP::Cmd::Node::Ls - List OCPNode CRs
 =head1 SYNOPSIS
 
     ocp node ls
+    ocp node ls --json
 
 =head1 DESCRIPTION
 
 Lists all OCPNode CRs in the C<ocp-system> namespace.  Columns: NAME, ROLE,
 PHASE, PROVIDER, IP, AGE.
+
+=head1 JSON OUTPUT
+
+C<ocp node ls --json> prints a JSON array, one object per OCPNode, sorted by
+name, as canonical pretty JSON (sorted keys, no timestamps) on STDOUT and
+nothing else.  It reads the OCPNode CRs and the Kubernetes Nodes through the
+API; no SSH, no PIN.  Every key is always present; an unknown value is
+C<null>, C<gpu> is always a number.
+
+    [
+       {
+          "address" : "10.0.0.20",
+          "gpu" : 1,
+          "host" : "10.0.0.20",
+          "kernel" : "6.1.0-18-amd64",
+          "kubelet" : "v1.32.1+rke2r1",
+          "kubernetesNodeName" : "crag",
+          "labels" : { "tier" : "gpu" },
+          "name" : "crag",
+          "os" : "Debian GNU/Linux 12",
+          "phase" : "Ready",
+          "pool" : null,
+          "publicIP" : "10.0.0.20",
+          "role" : "worker",
+          "runtime" : "containerd://1.7.23-k3s2"
+       }
+    ]
+
+C<address>, C<publicIP>, C<phase> and C<kubernetesNodeName> come from the
+OCPNode C<status>, C<host> and C<labels> from its C<spec>; C<gpu> is the
+C<nvidia.com/gpu> allocatable of the Kubernetes Node (0 when it has none or
+the Node is not joined yet), C<runtime>, C<kubelet>, C<os> and C<kernel> its
+C<status.nodeInfo>.
+
+B<pool> may be null today: the OCPNode CR carries no pool name (only
+C<providerRef>), so C<pool> is read from the annotation C<ocp.internal/pool>
+and is null where that annotation is absent.
 
 =head1 SEE ALSO
 
