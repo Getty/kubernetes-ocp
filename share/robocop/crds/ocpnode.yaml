@@ -196,10 +196,10 @@ spec:
 
               reconciler:
                 type: string
-                enum:
-                - cli
-                - robocop
-                description: "Which reconciler last acted on this node"
+                # cli, robocop@<pod name> (k232; the hostname when POD_NAME is
+                # unset), or plain robocop as written by robocops before k232.
+                pattern: '^(cli|robocop(@[A-Za-z0-9]([-A-Za-z0-9._]*[A-Za-z0-9])?)?)$'
+                description: "Which reconciler last acted on this node: cli, or robocop@<pod name> (plain robocop from robocops before k232)"
 
     additionalPrinterColumns:
     - name: Role

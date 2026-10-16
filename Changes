@@ -21,6 +21,9 @@ Revision history for OCP
       release their lease -- and the Deployment sets terminationGracePeriodSeconds
       600. status.reconciler is no longer overwritten by a reconciler that
       stepped aside for another's lease.
+      The OCPNode CRD's status.reconciler accepts robocop@<pod name> (and still
+      cli/robocop); with the old enum every robocop status write failed with a
+      422 and new workers stayed Pending.
     - First release. OCP is a Perl CLI that builds and looks after RKE2 or K3s
       clusters -- on Hetzner Cloud servers it creates, on machines you already
       own over SSH, or on the local host -- from one spec kept in git.
