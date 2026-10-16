@@ -169,6 +169,10 @@ sub kubeconfig {
   my $cname   = $arg{cluster_name};
   my %keep    = map { $_ => $cluster->{$_} } grep { defined $cluster->{$_} }
     qw( server certificate-authority-data certificate-authority insecure-skip-tls-verify tls-server-name );
+  # The admin kubeconfig may name a server only the operator's machine
+  # reaches (127.0.0.1 through a tunnel); --server names the one the reader
+  # reaches. The CA stays: it is the cluster's, whatever the address.
+  $keep{server} = $arg{server} if defined $arg{server};
 
   return OCP->dump( {
     apiVersion => 'v1',

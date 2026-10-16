@@ -47,6 +47,12 @@ option name => (
     doc    => 'With --readonly: name of the read-only account (default: leitstand)',
 );
 
+option server => (
+    is     => 'ro',
+    format => 's',
+    doc    => 'With --readonly: API server URL to put in the kubeconfig (default: the admin one\'s)',
+);
+
 option revoke => (
     is    => 'ro',
     doc   => 'With --readonly: remove the account and its token',
@@ -63,6 +69,7 @@ sub _check_options {
     unless ($self->readonly) {
         die "--revoke only works together with --readonly.\n" if $self->revoke;
         die "--name only works together with --readonly.\n" if defined $self->name;
+        die "--server only works together with --readonly.\n" if defined $self->server;
         return;
     }
 
@@ -126,6 +133,7 @@ sub _readonly {
         cluster_name     => $cname,
         name             => $name,
         token            => $token,
+        (defined $self->server ? (server => $self->server) : ()),
     );
     print STDERR "Read-only kubeconfig for '$user' on STDOUT. The token is a secret; "
         . "revoke with: ocp kubeconfig --readonly --revoke --name $name\n";
@@ -135,7 +143,7 @@ sub _readonly {
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    if ($self->readonly || $self->revoke || defined $self->name) {
+    if ($self->readonly || $self->revoke || defined $self->name || defined $self->server) {
         my $name = $self->_check_options;
         return $self->_readonly($name);
     }

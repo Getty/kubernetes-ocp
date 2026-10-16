@@ -131,6 +131,16 @@ sub run {
     is scalar(keys %$o), 5, 'no new objects (SA, CR, 2 CRB, Secret)';
 }
 
+# --- --server names the address the reader reaches
+{
+    my ($out) = run(cmd(readonly => 1, server => 'https://cp-lab.ai.citilan.de:6443'));
+    my $kc = OCP->load($out);
+    is $kc->{clusters}[0]{cluster}{server}, 'https://cp-lab.ai.citilan.de:6443', '--server replaces the admin server';
+    is $kc->{clusters}[0]{cluster}{'certificate-authority-data'}, 'Q0FEQVRB', 'the CA stays';
+    ok !eval { cmd(server => 'https://x:6443')->_check_options; 1 }, '--server without --readonly';
+    like $@, qr/--server only works together with --readonly/, 'is refused';
+}
+
 # --- nothing on disk
 {
     my $dir = tempdir(CLEANUP => 1);

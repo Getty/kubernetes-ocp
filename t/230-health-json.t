@@ -82,8 +82,8 @@ like(decode_json($out)->{error}, qr/connection refused/, 'error field');
 like($err, qr/connection refused/, 'diagnosis on STDERR');
 
 # text form: same exit code, no JSON
-($rc, $out) = run_health($mixed);
+($rc, $out, $err) = run_health($mixed);
 is($rc, 1, 'text form exit 1');
-like($out, qr/\[!!\] kube-system\/coredns/, 'text form prints the critical line');
+like($err, qr/\[!!\] kube-system\/coredns/, 'text form prints the critical line, on STDERR (k231)');
 
 done_testing;

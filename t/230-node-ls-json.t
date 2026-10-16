@@ -106,4 +106,21 @@ is($fbd->[0]{kubelet}, 'v1', 'fallback join carries nodeInfo');
     is_deeply([grep { $_ eq 'Node' } @{ $api->{kinds} }], [('Node') x 2], 'text form did not list Nodes (only the two JSON runs did)');
 }
 
+# Pool from ocp.yaml when the OCPNode carries no annotation (k230): the names
+# apply gives the OCPNodes of each pool.
+{
+    use File::Temp qw(tempdir);
+    use Path::Tiny qw(path);
+    use YAML::XS ();
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('.ocp')->mkpath;
+    $dir->child('ocp.yaml')->spew(YAML::XS::Dump({ name => 'lab',
+        control_planes => { provider => 'ssh', host => 'cp.lab.example' },
+        workers => [ { name => 'gpu',  provider => 'ssh', nodes => ['10.230.30.250'] },
+                     { name => 'gb10', provider => 'ssh', nodes => ['10.230.30.195', 'spark2.lab.example'] } ] }));
+    my $pools = OCP::Cmd::Node::Ls::_pools_of(OCP::Config->new(file => $dir->child('ocp.yaml')->stringify));
+    is_deeply($pools, { '10-230-30-250' => 'gpu', '10-230-30-195' => 'gb10', 'spark2' => 'gb10' },
+        'OCPNode name -> pool, as apply names them');
+}
+
 done_testing;

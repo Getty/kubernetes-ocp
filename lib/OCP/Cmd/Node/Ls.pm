@@ -58,7 +58,15 @@ sub execute {
     my $list = $api->list('OCPNode', namespace => $ns);
     my @nodes = map { $api->k8s->object_to_struct($_) } @{ $list->items // [] };
 
-    return $self->_execute_json($api, \@nodes) if $self->json;
+    if ($self->json) {
+        # The pools come from ocp.yaml; without one (an injected client in
+        # tests, a kubeconfig used from elsewhere) only the annotation counts.
+        my $pools = eval {
+            my $file = $self->ocp->config;
+            -f $file ? _pools_of(OCP::Config->new(file => $file)) : {};
+        } // {};
+        return $self->_execute_json($api, \@nodes, $pools);
+    }
 
     printf "%-16s %-13s %-12s %-14s %-15s %s\n",
         qw(NAME ROLE PHASE PROVIDER IP AGE);
@@ -75,13 +83,31 @@ sub execute {
     return 0;
 }
 
+# OCPNode name -> worker pool, from ocp.yaml the way `ocp apply` names the
+# OCPNodes of its pools (OCP::Cmd::Apply::CR::worker_ocpnodes). An OCPNode's
+# spec does not carry its pool; a worker added with `ocp node add` has none.
+sub _pools_of {
+    my ($config) = @_;
+    require OCP::Cmd::Apply::CR;
+    my %pool;
+    for my $pool (@{ $config->workers }) {
+        my $pname = $pool->{name} // next;
+        my $one   = OCP::Config->new(file => $config->file,
+                                     spec => { %{ $config->spec }, workers => [ $pool ] });
+        $pool{ $_->{metadata}{name} } = $pname
+            for eval { OCP::Cmd::Apply::CR::worker_ocpnodes($one) };
+    }
+    return \%pool;
+}
+
 # The machine-readable inventory: OCPNode joined with the Kubernetes Node it
 # became (status.kubernetesNodeName, else the OCPNode's own name). Kubernetes
 # API only -- no SSH, no PIN. Every key is always present (null when unknown),
 # gpu is always a number, the list is sorted by name and the encoder is
 # canonical, so two runs against an unchanged cluster print identical bytes.
 sub _execute_json {
-    my ($self, $api, $ocpnodes) = @_;
+    my ($self, $api, $ocpnodes, $pool_of) = @_;
+    $pool_of //= {};
 
     my $nlist = $api->list('Node');
     my %k8s_node;
@@ -100,7 +126,8 @@ sub _execute_json {
         push @rows, {
             name               => $name,
             role               => $n->{spec}{role},
-            pool               => $n->{metadata}{annotations}{'ocp.internal/pool'},
+            pool               => $n->{metadata}{annotations}{'ocp.internal/pool'}
+                                      // $pool_of->{$name},
             host               => $n->{spec}{host},
             address            => $n->{status}{address},
             publicIP           => $n->{status}{publicIP},
