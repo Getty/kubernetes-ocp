@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-16T07:30:38Z
+claimed_by: hub
+class: standard
+completed: 2026-10-16T07:30:38Z
+created: 2026-10-16T04:52:19Z
+id: 231
+priority: low
+started: 2026-10-16T05:11:09Z
+status: done
+tags:
+- lab
+- ux
+title: 'Ausgabekanäle Rest nach #226: unsichtbarer Failed-Worker, [!!] mit Exit 0,
+  Rex-Warnung im CLI-Pfad (Lab 2026-10-16)'
+updated: 2026-10-16T07:30:38Z
+---
+
+Aus der Abschlussrunde (Notizen 18, 19, 22 in .agent-sessions/ocp-lab/ergebnis-turn5.md) plus offene Fragen aus #226.
+1. (N18) Ein per ocp node add angelegter Worker in Phase Failed, der nicht in ocp.yaml steht, ist für ocp apply unsichtbar: keine Zeile, Exit 0, SUCCESSFULLY. Entscheidung: apply prüft nur die Spec (dann wenigstens eine [WARN]-Zeile 'OCPNode X Failed, nicht in ocp.yaml') oder zählt alle OCPNodes.
+2. (N19) Pool-Host, der schon einem anderen OCPNode gehört: '[!!] … already OCPNode/ghost' auf STDERR, aber Exit 0 + SUCCESSFULLY. Nach Hausregel entweder in _failed_components oder [WARN] auf STDOUT.
+3. (N22) Rex-Warnungen (z. B. Rex::GPU-crun-Warnung, Rex::Logger warn) im erfolgreichen CLI-Join-Pfad: kommen sie als [WARN] in der STDOUT-Erzählung an (#226 Punkt 4)? Live nicht prüfbar gewesen; Test + Live.
+4. Aus #226 offen: (a) '[WARN] … setup failed' für registry, NFD, cert-manager, Gateway, LB-IPAM u. a. auf STDOUT und nicht im Exit (Empfehlung: STDERR + zählen, mind. cert-manager/Gateway); (b) Health.pm:170/:242, Bootstrap.pm '[!!] Installation failed, cleaning up' und Init.pm [!!]-Zeilen auf STDOUT; (c) robocop ohne ssh_key_label; (d) ClusterKey-Erklärung vor PIN2 auf STDOUT.
+Fertig, wenn: jeder Punkt entschieden/gebaut, mit Test.
+
+2026-10-16 Gebaut in 25467c2 (Branch k231, nicht gepusht). N18: CR::warn_unlisted_failed_ocpnodes, Aufruf im Reconcile-Pfad (auch bei leerer Worker-Liste): '[WARN] OCPNode X is Failed and not in ocp.yaml (ocp node rm X)' auf STDOUT, zählt nicht. N19: missing_worker_ocpnodes pusht 'worker NAME' in _failed_components (Zeile bleibt STDERR). N22: war durch Rex.pm (k226) schon abgedeckt; jetzt per Test mit Fake-Rex-WARN durch OCP::Node::_install_kubernetes belegt (STDERR leer, [WARN] auf STDOUT), kein Code nötig. 4a: Drift.pm cert-manager + Gateway '[!!] ... setup failed' auf STDERR + _failed_components (Exit 1); registry/DNS/NFD/LB-IPAM bleiben [WARN] STDOUT; im Deploy-Pfad sterben beide ohnehin. 4b: Health critical pods, Bootstrap 'Installation failed', 3 Init-[!!] auf STDERR. 4c: Controller.pm ssh_key_label 'the robo key' an BEIDEN from_cr-Stellen. 4d: ClusterKey-Erklärung vor PIN2 auf STDERR. Tests: neu t/231-output-channels.t, Teil in t/71 (cert-manager/Gateway Exit 1), t/71+t/69 Kanal-Behauptungen umgestellt; Suite 159 Dateien grün, Tests gegen altes lib rot. LIVE zu prüfen: Failed-Worker per node add, nicht in ocp.yaml -> apply Exit 0 + WARN-Zeile; Pool-Host mit fremdem OCPNode -> Exit 1; ocp update im secure mode: PIN2-Erklärung nur auf STDERR.
+
+2026-10-16 Hub: Branch war trotz Meldung nicht grün (t/37, t/38, t/169, t/231 rot). Nachgezogen in b33bf8f: PIN2-Erklärung geht mit dem Prompt auf STDERR, ohne Prompt (PIN2 übergeben) auf STDOUT; Tests an die neuen Kanäle angepasst; N18 listet OCPNodes auch ohne Worker in ocp.yaml einmal (t/38). main b33bf8f, Suite 161/2406 grün.
+
+Live 2026-10-16 Runde 7 (frank-ocp, ocp-lab:f47579a..08f5ebe): bestanden (Ghost außerhalb ocp.yaml WARN+Exit 0, Pool-Host-Konflikt Exit 1, PIN2-Erklärung nur STDERR).
