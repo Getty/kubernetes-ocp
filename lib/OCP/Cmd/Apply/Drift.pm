@@ -655,7 +655,12 @@ sub robocop_dry_run {
     my $secret = eval {
         $self->_robocop_credentials_state($api, $config, undef, $level, host => $cp_ip);
     } // 'outdated';
-    if ($secret ne 'current') {
+    if ($secret eq 'unreadable') {
+        # k216: an operator's identity cannot read the robo key to compare,
+        # and a real run leaves the Secret as it is (with a warning).
+        print "  [robocop] Secret/robocop-credentials cannot be checked with this age\n"
+            . "          identity (SOPS_AGE_KEY_FILE); a real run leaves it as it is\n";
+    } elsif ($secret ne 'current') {
         print "  [robocop] Secret/robocop-credentials is $secret\n"
             . "          would " . ($secret eq 'missing' ? 'write' : 'rewrite')
             . " it ($level)\n";

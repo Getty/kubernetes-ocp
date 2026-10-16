@@ -48,30 +48,6 @@ sub execute {
     return 0;
 }
 
-# What a removed recipient could read until now (F3). Re-encrypting only
-# locks it out of what is written from here on; every version it could
-# decrypt -- git history included -- stays readable for it.
-sub rotation_hint {
-    my ($self, $secrets, $recipient, @done) = @_;
-
-    my @names = eval { sort keys %{ $secrets->read_all_secrets } };
-    my $hint = "\n[!!] $recipient is no longer a recipient"
-        . (@done ? ' and ' . join(', ', @done) . ' were re-encrypted' : '') . ".\n"
-        . "     That only locks it out of what is written from now on. Every version\n"
-        . "     it could decrypt until now -- the old ones in git history included --\n"
-        . "     stays readable for it. Rotate what those held:\n";
-    $hint .= "       secrets.yaml:    " . join(', ', @names) . "\n"
-          .  "                        (hetzner_token: revoke it in the Hetzner Cloud\n"
-          .  "                        console, then store a new one)\n"
-        if $secrets->has_secrets_file;
-    $hint .= "       kubeconfig.yaml: the cluster admin credentials (client certificate\n"
-          .  "                        and key) -- issue new ones on the control plane\n"
-        if $secrets->has_kubeconfig;
-    $hint .= "     keys.yaml held names and public keys for it; the private SSH keys in\n"
-          .  "     it carry their own age layer for the project key alone.\n";
-    return $hint;
-}
-
 1;
 
 __END__

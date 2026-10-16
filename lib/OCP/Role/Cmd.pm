@@ -370,8 +370,26 @@ sub wait_seconds_total { $_[0]->{_wait_seconds_total} // 0 }
 # human holding PIN2 approved AND a key the caller may reuse -- deploy-robocop
 # reaches the control plane with it -- so it is RETURNED, not thrown away. A
 # wrong or absent PIN2 dies before the caller does anything.
+#
+# A run under another age identity (SOPS_AGE_KEY_FILE, k216) cannot give it:
+# the admin key opens for the project key alone, and an operator (Leitstand)
+# runs unattended -- nobody would answer the prompt. Refused by name before
+# asking, so an unattended run ends instead of waiting.
 sub require_admin_approval {
     my ($self, $config, $action) = @_;
+
+    require OCP::ClusterKey;
+
+    my ($who, $entry) = OCP::ClusterKey->identity_of($config);
+    die "ERROR: $action is admin-gated and needs PIN2 approval -- the\n"
+      . "       admin key's PIN2, which only the project key's holder can give.\n"
+      . "       This run decrypts as the operator '$entry->{name}' (SOPS_AGE_KEY_FILE);\n"
+      . "       run it with the project key (PIN1 + PIN2).\n"
+        if $who eq 'operator';
+    die OCP::ClusterKey->foreign_identity_refusal($config,
+        "$action is admin-gated and needs PIN2 approval, from the admin key\n"
+      . "whose private half opens for the project key alone.")
+        if $who eq 'other';
 
     print STDERR "  $action is admin-gated and needs PIN2 approval.\n";
 
@@ -495,6 +513,16 @@ none, it returns C<undef> and L<OCP::Drift> skips its SSH detection mode, which
 is the graceful degradation C<ocp status> needs when a host is unreachable.  The
 narration L<OCP::Rex> prints is captured so it does not land on the report's
 STDOUT.
+
+=method require_admin_approval
+
+    my $admin = $self->require_admin_approval($config, 'Injecting the robo key');
+
+The PIN2 approval gate of an admin-gated action (C<secret_approved>'s Secret
+write, C<ocp inject-key>). Returns the admin key the PIN2 unlocked; dies on a
+wrong or missing PIN2. A run under another age identity
+(C<SOPS_AGE_KEY_FILE>: an operator, or another recipient) cannot give the
+approval and is refused before any prompt (k216).
 
 =method provider_crs
 

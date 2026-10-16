@@ -51,6 +51,31 @@ sub reencrypt {
     return @done;
 }
 
+# What a removed recipient could read until now (F3). Shared by
+# `ocp keys recipients rm` and `ocp keys operator rm` (k216). Re-encrypting only
+# locks it out of what is written from here on; every version it could
+# decrypt -- git history included -- stays readable for it.
+sub rotation_hint {
+    my ($self, $secrets, $recipient, @done) = @_;
+
+    my @names = eval { sort keys %{ $secrets->read_all_secrets } };
+    my $hint = "\n[!!] $recipient is no longer a recipient"
+        . (@done ? ' and ' . join(', ', @done) . ' were re-encrypted' : '') . ".\n"
+        . "     That only locks it out of what is written from now on. Every version\n"
+        . "     it could decrypt until now -- the old ones in git history included --\n"
+        . "     stays readable for it. Rotate what those held:\n";
+    $hint .= "       secrets.yaml:    " . join(', ', @names) . "\n"
+          .  "                        (hetzner_token: revoke it in the Hetzner Cloud\n"
+          .  "                        console, then store a new one)\n"
+        if $secrets->has_secrets_file;
+    $hint .= "       kubeconfig.yaml: the cluster admin credentials (client certificate\n"
+          .  "                        and key) -- issue new ones on the control plane\n"
+        if $secrets->has_kubeconfig;
+    $hint .= "     keys.yaml held names and public keys for it; the private SSH keys in\n"
+          .  "     it carry their own age layer for the project key alone.\n";
+    return $hint;
+}
+
 1;
 
 __END__
@@ -63,8 +88,11 @@ OCP::Role::Cmd::Recipients - What the C<ocp keys recipients> commands share
 
 C<project_secrets> (the project's L<OCP::Secrets>, PIN1 when C<unlock> asks
 for the private key), C<recipient_arg> (an age recipient from the command line,
-checked before anything is touched) and C<reencrypt> (re-encrypt what is out
-of step and say so on STDOUT), for L<OCP::Cmd::Keys::Recipients::Ls>,
-L<OCP::Cmd::Keys::Recipients::Add> and L<OCP::Cmd::Keys::Recipients::Rm>.
+checked before anything is touched), C<reencrypt> (re-encrypt what is out
+of step and say so on STDOUT) and C<rotation_hint> (what a removed recipient
+could read until now, for STDERR), for L<OCP::Cmd::Keys::Recipients::Ls>,
+L<OCP::Cmd::Keys::Recipients::Add>, L<OCP::Cmd::Keys::Recipients::Rm> and the
+operator commands (L<OCP::Cmd::Keys::Operator::Add>,
+L<OCP::Cmd::Keys::Operator::Rm>).
 
 =cut

@@ -199,6 +199,30 @@ sub setup_ssh_key {
     return $key;
 }
 
+# k216: the first deploy of a secure-mode cluster is the project key's
+# holder's. An operator (Leitstand, SOPS_AGE_KEY_FILE) reconciles a cluster
+# unattended with its own key, but this run uploads the admin and robo public
+# keys, creates the machines with them and hands robocop the robo private key
+# -- which opens for the project key alone. Refused before anything is asked
+# or built; another recipient that is no operator likewise.
+sub assert_first_deploy_identity {
+    my ($config) = @_;
+
+    my ($who, $operator) = OCP::ClusterKey->identity_of($config);
+    die "ERROR: There is no cluster yet (no kubeconfig.yaml), and this run decrypts\n"
+      . "       as the operator '$operator->{name}' (SOPS_AGE_KEY_FILE). The first\n"
+      . "       'ocp apply' is made with the project key (PIN1 + PIN2): it builds\n"
+      . "       the machines with the admin and robo keys and hands robocop its\n"
+      . "       key, none of which the operator can open. After that the operator\n"
+      . "       reconciles without a PIN. Nothing was done.\n"
+        if $who eq 'operator';
+    die OCP::ClusterKey->foreign_identity_refusal($config,
+        "There is no cluster yet (no kubeconfig.yaml), and the first 'ocp apply'\n"
+      . "needs the admin key (PIN2), which opens for the project key alone.")
+        if $who eq 'other';
+    return 1;
+}
+
 # The (name => public-key) pairs to upload before a machine of this cluster
 # exists. The admin key is always present, under $config->admin_ssh_key_name;
 # the robo public follows, under $config->robo_ssh_key_name, whenever secure

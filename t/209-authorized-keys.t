@@ -103,7 +103,7 @@ subtest 'an unknown purpose is refused before anything is unlocked' => sub {
     my $r = run_cmd($project->{dir}, purpose => 'general');
 
     like $r->{err}, qr/^Unknown key purpose 'general'\.\n/, 'names what it did not understand';
-    like $r->{err}, qr/^Available: admin, all, automation$/m, 'and what would have worked';
+    like $r->{err}, qr/^Available: admin, all, automation, operator$/m, 'and what would have worked';
     is $r->{out}, '', 'nothing on STDOUT';
     is_deeply $r->{prompts}, [], 'a typo costs no PIN1 prompt';
 
@@ -121,7 +121,7 @@ subtest 'dispatches as `ocp keys authorized-keys`, and only there' => sub {
 
     my @typo = ('keys', 'nope');
     eval { OCP::_resolve_commands('OCP', \@typo) };
-    like $@, qr/^Available: authorized-keys, recipients, secure, show$/m,
+    like $@, qr/^Available: authorized-keys, operator, recipients, secure, show$/m,
         'a wrong word under keys lists it in its readable spelling';
 
     my @root = ('authorized-keys');

@@ -100,13 +100,15 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp provider ls` — list providers with reference counts
 - `ocp keys show [--purpose admin|automation|general] [--name NAME]` — print
   a **public** key from `keys.yaml` (see "PIN Loss & Admin-Key Rotation"
-  below — there is no rotate/add subcommand for SSH keys)
-- `ocp keys authorized-keys [--purpose all|admin|automation]` — the
+  below — there is no rotate/add subcommand for the admin/robo SSH keys)
+- `ocp keys authorized-keys [--purpose all|admin|automation|operator]` — the
   `authorized_keys` lines a machine needs (k209): default `all` = admin +
-  robo (an ssh worker), `--purpose admin` for a control plane. STDOUT only
-  key lines, names on STDERR; PIN1 at most, never PIN2; finds every wanted
-  key before printing any (missing one → error, nothing printed). Dev mode
-  prints `.ocp/id_ed25519.pub` for any purpose.
+  robo (an ssh worker) + every operator key (k216, optional — none is fine),
+  `--purpose admin` for a control plane. STDOUT only key lines, names on
+  STDERR; PIN1 at most, never PIN2; finds every wanted key before printing
+  any (missing admin/robo, or `--purpose operator` with none → error, nothing
+  printed). Dev mode prints `.ocp/id_ed25519.pub` for any purpose but
+  `operator` (refused: no operators in dev mode).
 - `ocp keys secure [--drop-bootstrap]` — dev mode → secure mode (k96).
   Order is the point: PIN1 (unless `age.key.enc` exists) + PIN2 set, admin +
   robo keys staged in `.ocp/keys.yaml.pending` (gitignored), both publics
@@ -131,7 +133,23 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   rotate (secrets.yaml entries, kubeconfig admin creds; git history stays
   readable for the removed one). Inner age layer of keys.yaml private keys
   stays project-key-only.
-
+- `ocp keys operator add --name NAME --ssh-pubkey FILE --age AGE1` /
+  `ocp keys operator rm NAME` — a Leitstand (operator) that runs `ocp apply`
+  unattended (k216). Run where the project key is (PIN1, PIN2 for the admin
+  key; an operator/other `SOPS_AGE_KEY_FILE` identity is refused). add:
+  name `[a-z0-9][a-z0-9-]*` (≤63), checks before any PIN; SSH public key onto
+  every machine (`OCP::Role::Cmd::Machines`, same walk as `keys secure`) with
+  the admin key FIRST — a failed host → STDERR, exit 1, nothing recorded,
+  re-run idempotent; then `.sops.yaml` gets AGE1 (external `.sops.yaml` →
+  stop before any machine, same message as `recipients add`) and keys.yaml
+  an entry `{name, type, purpose: operator, public, age, created,
+  deprecated: 0}` with NO `private` (`OCP::Keys::add_public_key`), files
+  re-encrypted. Same add again = ok; same name + other keys, a taken SSH key
+  or age recipient, the project key as AGE1 → error. rm: blob off every
+  machine (admin key), entry + recipient out, re-encrypt, rotation hint on
+  STDERR; a machine that fails is named with a manual `grep -vF` line, exit
+  1, but entry/recipient go anyway. Not built: Hetzner servers created later
+  do not get the operator key (re-run `add` after they join).
 ## ocp.yaml Schema — snake_case, no aliases
 
 There is NO key normalization (plain `YAML::XS::LoadFile`) and NO camelCase
@@ -248,6 +266,23 @@ gpu:
   (`ocp keys authorized-keys --purpose admin` → `authorized_keys`). The
   provider decides who distributes it, not which key. `OCP::ClusterKey` is
   the CLI's choice only — robocop never goes through it.
+- **Operator / Leitstand (k216):** `SOPS_AGE_KEY_FILE` (set, non-empty) is the
+  age identity of EVERY decrypt in `OCP::Secrets`/`OCP::Keys` — no PIN1,
+  never copied to `.ocp/age.key`, never used to write `.ocp/age.pub`;
+  `age.key.enc` stays the project key behind PIN1. Without `.ocp/age.pub` the
+  project recipient is read off the files (identity opens keys.yaml's private
+  keys → it is the project key; else bindings − `.sops.yaml` list − operator
+  ages − own identity); ambiguous → every write dies (put the project
+  recipient into `.ocp/age.pub`). `OCP::ClusterKey::identity_of` →
+  `project|operator|other`: operator (identity recipient == an entry's
+  `age`) → the operator key from `OCP_OPERATOR_KEY` (path; public half must
+  match the entry), origin `operator`, no PIN2, temp pair for Rex; other →
+  refused by name. Operator cannot: open robo/admin private keys (inner layer
+  project-key-only; named error), PIN2 approval (`secret_approved`,
+  `inject-key` → refused, no prompt), a first `ocp apply` (no kubeconfig.yaml
+  → refused). robocop Secret under an operator: exists → `[WARN]` on STDERR,
+  left as is, Deployment still ensured; missing → robocop step failed, apply
+  exit 1; `inject` needs only the public half → written normally.
 - **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`,
   `ocp inject-key`, and `ocp destroy` when the node list contains an ssh
   machine. PIN1 prompts whenever only `age.key.enc` exists. Read-only paths

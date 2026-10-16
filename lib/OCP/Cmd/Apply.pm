@@ -179,6 +179,9 @@ sub execute {
         print "[ok] SSH key loaded (dev mode)\n\n";
 
     } else {
+        # k216: not an operator's to make -- see Bootstrap.
+        OCP::Cmd::Apply::Bootstrap::assert_first_deploy_identity($config);
+
         # Secure mode: Use admin-key from keys.yaml (requires PIN2)
         print "Step 1: Unlock encrypted secrets (PIN1 required)\n";
         $secrets->ensure_age_key();

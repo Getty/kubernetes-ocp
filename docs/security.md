@@ -18,7 +18,9 @@ is encrypted and safe in a public repository. Two PINs protect it:
   design.
 - **PIN2 unlocks the private half of the admin SSH key** inside `keys.yaml`.
   That admin key is the *only* key any `ocp` command uses to reach a machine —
-  on Hetzner, over SSH, or locally; control plane or worker.
+  on Hetzner, over SSH, or locally; control plane or worker. The one exception
+  is a registered operator (a Leitstand, below), which brings an age identity
+  and an SSH key of its own and runs without either PIN.
 
 There is also a `robo-ssh` automation key, protected by PIN1 alone. It is
 robocop's key: robocop joins and tears down workers with it. So its public
@@ -49,6 +51,8 @@ Which commands prompt for what:
 | `ocp destroy` | PIN2 when an `ssh`/`local` node is involved |
 | `ocp deploy-robocop` | PIN1 (credentials come out of the encrypted files) |
 | `ocp keys secure` | sets PIN1 and PIN2 (each twice); PIN2 once when it continues, or for `--drop-bootstrap` on a secure project |
+| `ocp keys operator add` / `rm` | PIN1, and PIN2 when there are machines to reach |
+| anything, as an operator (`SOPS_AGE_KEY_FILE` + `OCP_OPERATOR_KEY`) | nothing — see below |
 
 ## Dev mode (`ocp init --nopassword`)
 
@@ -100,6 +104,99 @@ in with the admin key, and only where the admin key has just been accepted.
 It never deletes `.ocp/id_ed25519` itself — it tells you when nothing it
 reaches still trusts the key, and the rest is yours.
 
+## A Leitstand: an operator that runs `ocp apply` unattended
+
+A Leitstand — a control machine that reconciles the cluster on its own — cannot
+answer a PIN prompt. It runs as an **operator** with two keys of its own, and
+hands over only their public halves:
+
+- an **age identity**, which it decrypts the project's SOPS files with. OCP
+  reads it from `SOPS_AGE_KEY_FILE`, as sops does;
+- an **SSH key**, which every machine of the cluster trusts and which OCP
+  reaches them with when the run's age identity is the operator's. OCP reads
+  the private half from the file `OCP_OPERATOR_KEY` names.
+
+The human with the project key registers it once:
+
+```bash
+# on the Leitstand
+age-keygen -o ~/.config/ocp/age.key          # prints its recipient, age1...
+ssh-keygen -t ed25519 -f ~/.ssh/ocp-leitstand
+
+# where the project key is (PIN1, PIN2)
+ocp keys operator add --name leitstand \
+    --ssh-pubkey ocp-leitstand.pub --age age1...
+```
+
+`add` first appends the SSH public key to `/root/.ssh/authorized_keys` on every
+machine of the cluster — the control planes and every worker an OCPNode names —
+logged in with the admin key. Only when every machine took it does it record
+the operator: an entry in `keys.yaml` (purpose `operator`, the public key and
+the age recipient, **no private key**) and the age recipient in `.sops.yaml`,
+with `keys.yaml`, `secrets.yaml` and `kubeconfig.yaml` re-encrypted for it. A
+machine that refuses is named and nothing is recorded; run the same command
+again once it is fixed — it adds nothing twice. Commit the result.
+
+From then on the Leitstand runs without a prompt:
+
+```bash
+SOPS_AGE_KEY_FILE=~/.config/ocp/age.key \
+OCP_OPERATOR_KEY=~/.ssh/ocp-leitstand \
+ocp apply
+```
+
+What changes under `SOPS_AGE_KEY_FILE` (set and not empty):
+
+- That file is the age identity of every decrypt. PIN1 is never asked, and
+  nothing lands in `.ocp/`: the identity is not copied to `.ocp/age.key`, and
+  `.ocp/age.pub` is never derived from it. `age.key.enc` stays the project
+  key behind PIN1. A missing or unreadable file is an error naming the
+  variable.
+- What OCP writes stays encrypted for the project key. Without `.ocp/age.pub`
+  it reads the project's recipient off the committed files; when they cannot
+  tell (several recipients, none of them known as an operator's), the write
+  stops and says so — put the project's recipient (the first line of
+  `ocp keys recipients ls` where the project key is) into `.ocp/age.pub`.
+- With an operator's identity, `OCP_OPERATOR_KEY` must be set and hold the
+  private half of exactly the key `keys.yaml` has for that operator; otherwise
+  the run stops by name. An identity that is a recipient but no operator is
+  refused when a machine has to be reached.
+
+What an operator **cannot** do, by design:
+
+- open the admin or robo private key: their inner age layer belongs to the
+  project key alone. It reads `keys.yaml`, not the keys inside;
+- give the PIN2 approval of `robocop.security_level: secret_approved` or
+  `ocp inject-key` — refused, never prompted;
+- make the first `ocp apply` of a cluster (no `kubeconfig.yaml` yet) — that
+  one builds the machines with the admin and robo keys and is the project key
+  holder's;
+- write robocop's credentials Secret for the `secret` levels (it holds the
+  robo private key). An existing Secret is left as it is with a `[WARN]`; a
+  missing one fails the run until the project key holder runs `ocp apply` or
+  `ocp deploy-robocop` once. `security_level: inject` needs only the public
+  half and works as usual.
+
+New machines: `ocp keys authorized-keys` (`all`) prints the operator keys
+with the admin and robo key, so an `ssh`-provider host set up from it admits
+the operators too. Hetzner servers created later get the admin and robo keys
+only — run `ocp keys operator add` with the same arguments again after they
+joined.
+
+### Revoking an operator
+
+```bash
+ocp keys operator rm leitstand        # PIN1, PIN2
+```
+
+It removes every `authorized_keys` line carrying the operator's SSH key from
+every machine, logged in with the admin key, then the `keys.yaml` entry and
+the age recipient, and re-encrypts the files — and, like
+`ocp keys recipients rm`, says on STDERR what the operator could read until
+now and what to rotate. A machine that cannot be reached does not hold up the
+revocation: it is named, with the line to remove there by hand, the exit code
+is 1, and the entry and the recipient go anyway.
+
 ## What goes into git
 
 **Commit these** — all encrypted, safe in a public repo:
@@ -122,7 +219,11 @@ exactly those lines:
 ocp keys authorized-keys                    # admin + robo: an ssh worker
 ocp keys authorized-keys --purpose admin    # admin: a control plane
 ocp keys authorized-keys --purpose automation   # robo alone
+ocp keys authorized-keys --purpose operator     # the operators' keys alone
 ```
+
+`all` includes every operator key (see the Leitstand section above); a
+project without operators is complete without them.
 
 It puts **only** `authorized_keys` lines on STDOUT and every diagnostic (key
 names, what each key is for) on STDERR, so it pipes cleanly:

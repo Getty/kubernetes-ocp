@@ -29,6 +29,15 @@ Revision history for OCP
       (expected ..., got ...)" in `status.message` and touches nothing.
       `ocp node trust-host NAME [--yes]` forgets the pins on purpose. The CRD
       gains `status.hostKeys` (`ocp apply` / `ocp update` roll it out).
+    - `ocp keys operator add|rm`: a Leitstand runs `ocp apply` unattended with
+      its own age identity (SOPS_AGE_KEY_FILE, which OCP now honours for every
+      decrypt -- no PIN1, nothing copied into .ocp/, the project key stays a
+      recipient of every write) and its own SSH key (OCP_OPERATOR_KEY, no
+      PIN2). `add` puts the public key onto every machine first, then records
+      it in keys.yaml (no private half) and .sops.yaml; `rm` takes it off every
+      machine and revokes it. `ocp keys authorized-keys` includes operator
+      keys. Under such an identity apply leaves an existing robocop Secret
+      alone with a [WARN], fails on a missing one, and refuses a first deploy.
     - `ocp keys secure [--drop-bootstrap]` moves a --nopassword project into
       secure mode: it sets PIN1/PIN2, stages the admin and robo keys in .ocp/,
       puts both public keys on every machine over the bootstrap key, tests the

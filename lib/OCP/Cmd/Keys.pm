@@ -11,7 +11,7 @@ with 'OCP::Role::Cmd';
 
 sub execute {
     my ($self, $args, $chain) = @_;
-    die "subcommand required: ocp keys [show|authorized-keys|recipients|secure]\n";
+    die "subcommand required: ocp keys [show|authorized-keys|recipients|operator|secure]\n";
 }
 
 1;
@@ -32,6 +32,8 @@ OCP::Cmd::Keys - Inspect the encrypted keys in keys.yaml, and move a dev-mode pr
     ocp keys recipients ls            # age recipients of the SOPS files
     ocp keys recipients add age1...
     ocp keys recipients rm  age1...
+    ocp keys operator add --name leitstand --ssh-pubkey leitstand.pub --age age1...
+    ocp keys operator rm leitstand    # its SSH key off every machine, its age key out
     ocp keys secure                   # dev mode -> secure mode, machines first
     ocp keys secure --drop-bootstrap  # ...and remove .ocp/id_ed25519 from them
 
@@ -39,7 +41,12 @@ OCP::Cmd::Keys - Inspect the encrypted keys in keys.yaml, and move a dev-mode pr
 
 Entry point for the C<ocp keys> subcommand group. Dispatches to
 L<OCP::Cmd::Keys::Show>, L<OCP::Cmd::Keys::AuthorizedKeys>,
-L<OCP::Cmd::Keys::Recipients> and L<OCP::Cmd::Keys::Secure>.
+L<OCP::Cmd::Keys::Recipients>, L<OCP::Cmd::Keys::Operator> and
+L<OCP::Cmd::Keys::Secure>.
+
+C<operator> registers and revokes an operator -- a Leitstand that runs
+C<ocp apply> unattended with its own age identity and SSH key (k216): the key
+onto or off every machine, the age recipient into or out of F<.sops.yaml>.
 
 C<show> prints one key, picked by purpose or name. C<authorized-keys> answers
 the question an operator setting up a machine has: which lines go into its
@@ -53,7 +60,7 @@ the admin and robo keys, puts their public halves onto every machine while the
 bootstrap key still opens them, checks the admin key on each, and only then
 writes F<keys.yaml>.
 
-Apart from C<secure>, the group prints B<public> key material only
+Apart from C<secure> and C<operator>, the group prints B<public> key material only
 (C<recipients add|rm> rewrite who the SOPS files are encrypted for, never a
 key). Private
 keys are reached through the commands that need them — L<OCP::Cmd::SSH> for
@@ -63,6 +70,6 @@ decrypted private key never has to touch the filesystem.
 =head1 SEE ALSO
 
 L<OCP::Cmd::Keys::Show>, L<OCP::Cmd::Keys::AuthorizedKeys>,
-L<OCP::Cmd::Keys::Secure>, L<OCP::Keys>
+L<OCP::Cmd::Keys::Operator>, L<OCP::Cmd::Keys::Secure>, L<OCP::Keys>
 
 =cut

@@ -5,25 +5,23 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
 use Path::Tiny qw( path );
 
 use OCP::ClusterKey;
-use OCP::Cmd::Apply::Bootstrap ();
 use OCP::Cmd::Apply::CR ();
 use OCP::Cmd::Apply::Deploy ();
 use OCP::Config;
-use OCP::K8s;
 use OCP::Keys;
 use OCP::Password;
 use OCP::Provider;
 use OCP::Secrets;
 use OCP::Share;
-use OCP::SSH;
 use OCP::TempKeyPair;
 
 with 'OCP::Role::Cmd';
+# Every machine of the cluster and its authorized_keys -- shared with the
+# operator commands since k216, behaviour as it was here.
+with 'OCP::Role::Cmd::Machines';
 # robocop's credentials Secret, rewritten with the robo key this command
 # creates -- the same code `ocp apply` and `ocp deploy-robocop` write it with.
 with 'OCP::Role::Cmd::RobocopCredentials';
@@ -32,10 +30,6 @@ option drop_bootstrap => (
     is  => 'ro',
     doc => 'Also remove the bootstrap key .ocp/id_ed25519 from every machine',
 );
-
-# The cluster API. Injectable for tests, the way OCP::Cmd::Destroy has it;
-# otherwise built from kubeconfig.yaml on first use.
-has k8s => (is => 'rw');
 
 #
 # k96: `ocp init --nopassword` used to be a one-way door. A dev-mode project's
@@ -229,15 +223,15 @@ sub _distribute_and_test {
 
     print "\n";
     for my $m (@$machines) {
-        my $label = _label($m);
+        my $label = $self->_machine_label($m);
 
         print "[..] $label: adding the admin and robo keys (over the bootstrap key)\n";
         my $added = eval {
             $self->_append_keys($m, [ $bootstrap->path, $bootstrap->label ],
-                $admin->{public}, $robo->{public});
+                [ $admin->{public}, 'admin' ], [ $robo->{public}, 'robo' ]);
         };
         unless ($added) {
-            push @failed, { %$m, label => $label, why => 'could not add the keys: '._oneline($@) };
+            push @failed, { %$m, label => $label, why => 'could not add the keys: '.$self->_oneline($@) };
             next;
         }
         print "     $added\n";
@@ -296,7 +290,7 @@ sub _drop_bootstrap {
     print "\n";
     my @failed;
     for my $m (@$machines) {
-        my $label = _label($m);
+        my $label = $self->_machine_label($m);
 
         if (defined(my $why = $self->_admin_refused($m, $admin_key))) {
             push @failed, $label;
@@ -308,7 +302,7 @@ sub _drop_bootstrap {
         my $removed = eval { $self->_remove_blob($m, $admin_key, $blob) };
         unless (defined $removed) {
             push @failed, $label;
-            print STDERR "[!!] $label: could not remove the bootstrap key: "._oneline($@)."\n";
+            print STDERR "[!!] $label: could not remove the bootstrap key: ".$self->_oneline($@)."\n";
             next;
         }
         print $removed
@@ -377,7 +371,7 @@ sub _upload_to_hetzner {
         1;
     };
     unless ($ok) {
-        print STDERR "[!!] Could not store the keys in the Hetzner project: "._oneline($@)."\n"
+        print STDERR "[!!] Could not store the keys in the Hetzner project: ".$self->_oneline($@)."\n"
           . "     Servers created from now on would get the old key. Add them in the\n"
           . "     Hetzner console under " . $config->admin_ssh_key_name . " and "
           . $config->robo_ssh_key_name . ".\n";
@@ -430,7 +424,7 @@ sub _reroll_robocop {
     if ($had && $step->{changed}) {
         my $ok = eval { $self->_restart_robocop($api); 1 };
         unless ($ok) {
-            print STDERR "[!!] robocop could not be restarted: "._oneline($@)."\n"
+            print STDERR "[!!] robocop could not be restarted: ".$self->_oneline($@)."\n"
               . "     Its pod still runs with the old credentials. Delete it\n"
               . "     (label app=robocop in ocp-system) or run 'ocp deploy-robocop'.\n";
             return 0;
@@ -461,83 +455,13 @@ sub _restart_robocop {
 # Machines
 #
 
-# Every machine of this cluster that exists, as { name, address, role }: the
-# OCPNodes when the cluster can be asked (every role -- status.publicIP, else
-# spec.host, the address OCP installed them over), the control planes of
-# ocp.yaml with a known address, the recorded one. The OCPNodes go first, so
-# their addresses win.
-#
-# One machine shows up under several sources, and not always under the same
-# address: an ssh control plane is a hostname in ocp.yaml and may be an IP in
-# its OCPNode. So, as in OCP::Cmd::Destroy, a name (its first label) or an
-# address already seen is the same machine.
-#
-# Second return: ocp.yaml pool hosts with no OCPNode. Not machines yet --
-# nothing has joined them -- but they will need both keys when they do.
-sub _machines {
-    my ( $self, $config, $api ) = @_;
-
-    my ( @machines, %seen );
-    my $add = sub {
-        my ( $name, $address, $role ) = @_;
-        return unless defined $address && length $address && $address ne '-';
-        my @ids = ( 'addr:'.lc $address );
-        push @ids, 'name:'.lc( (split /\./, $name, 2)[0] ) if defined $name && length $name;
-        # A second source for a known machine still teaches its other ids.
-        my $known = grep { $seen{$_} } @ids;
-        $seen{$_} = 1 for @ids;
-        return if $known;
-        push @machines, { name => $name // $address, address => $address, role => $role };
-    };
-
-    my @nodes = $api ? $self->_ocpnodes($api) : ();
-    $add->($_->{metadata}{name}, $_->{status}{publicIP} || $_->{spec}{host},
-           $_->{spec}{role} // 'worker') for @nodes;
-
-    my $hetzner = 0;
-    for my $cp (@{ $config->control_planes }) {
-        my $provider = $cp->{provider} // 'hetzner';
-        my $name = $cp->{name}
-            // ( $provider eq 'ssh' && $cp->{host}
-                 ? (OCP::Cmd::Apply::Bootstrap::host_name_parts($cp->{host}))[0]
-                 : $provider eq 'hetzner' ? 'police'.++$hetzner : undef );
-        $add->($name, $cp->{host} // $cp->{public_ip}, 'control-plane');
-    }
-    for my $node (grep { ($_->{role} // 'control-plane') !~ /worker/ } @{ $config->nodes_status }) {
-        $add->($node->{name}, $node->{public_ip}, 'control-plane');
-    }
-    # Its name is made up ("cp-1") when nothing recorded one: the address alone.
-    my $status = $config->cluster_status;
-    $add->(undef, $status->{public_ip} // $status->{host}, 'control-plane');
-
-    my %named = map { $_->{metadata}{name} => 1 } @nodes;
-    my @pending =
-        grep { !$named{ $_->{name} } && !$seen{ 'addr:'.lc $_->{host} } }
-        map  { { name => $_->{metadata}{name}, host => $_->{spec}{host} } }
-        grep { defined $_->{spec}{host} && length $_->{spec}{host} }
-        OCP::Cmd::Apply::CR::worker_ocpnodes($config);
-
-    return ( \@machines, \@pending );
-}
-
-# Every OCPNode, as plain hashes. A cluster that has a kubeconfig but does not
-# answer is not "no workers": the switch would leave every worker trusting the
-# bootstrap key alone, which robocop does not hold. So it stops here, before
-# anything was asked or changed.
-sub _ocpnodes {
-    my ( $self, $api ) = @_;
-
-    my $list = eval { $api->list('OCPNode', namespace => 'ocp-system') };
-    unless ($list) {
-        my $why = _oneline($@ || 'no answer');
-        die "ERROR: Could not read the OCPNodes from the cluster API: $why\n"
-          . "       Without them the workers are unknown, and a switch now would\n"
-          . "       leave them trusting the bootstrap key alone. Nothing was changed;\n"
-          . "       run 'ocp keys secure' again once the cluster answers.\n";
-    }
-
-    return map { ref $_ eq 'HASH' ? $_ : $api->k8s->object_to_struct($_) }
-           @{ $list->items // [] };
+# What _machines (OCP::Role::Cmd::Machines) says when the OCPNodes cannot be
+# read: a switch now would leave the workers on the bootstrap key alone, which
+# robocop does not hold.
+sub _ocpnodes_unreadable {
+    return "       Without them the workers are unknown, and a switch now would\n"
+         . "       leave them trusting the bootstrap key alone. Nothing was changed;\n"
+         . "       run 'ocp keys secure' again once the cluster answers.\n";
 }
 
 sub _print_pending_hosts {
@@ -552,137 +476,11 @@ sub _print_pending_hosts {
     return;
 }
 
-# The cluster API, or undef when the project has no kubeconfig.yaml (never
-# deployed, or deployed and destroyed).
-sub _cluster_api {
-    my ( $self, $config, $secrets ) = @_;
-
-    return $self->k8s if $self->k8s;
-    return undef unless $secrets->has_kubeconfig;
-
-    my $kc = $secrets->read_kubeconfig
-        or die "ERROR: kubeconfig.yaml exists but could not be decrypted.\n";
-
-    my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$fh} $kc;
-    close $fh;
-    # Anchored on the instance: File::Temp unlinks it on destruction.
-    $self->{_kc_temp} = $fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(kubeconfig_path => $fh->filename)->api;
-    OCP::K8s->register($api);
-    return $self->k8s($api);
-}
-
-# Hetzner is in this project when a control plane, a worker pool or an
-# OCPNodeProvider says so.
-sub _uses_hetzner {
-    my ( $self, $config, $api ) = @_;
-
-    return 1 if grep { ($_->{provider} // 'hetzner') eq 'hetzner' } @{ $config->control_planes };
-    return 1 if grep { ($_->{provider} // '') eq 'hetzner' } @{ $config->workers };
-    return 0 unless $api;
-    return 1 if grep { ($_->{spec}{type} // '') eq 'hetzner' } $self->provider_crs($api);
-    return 0;
-}
-
 sub _hetzner_provider {
     my ( $self, $config, $token ) = @_;
     return OCP::Provider->for_spec({ provider => 'hetzner' },
         token        => $token,
         cluster_name => $config->name,
-    );
-}
-
-#
-# One machine
-#
-
-# Appends the two public keys to root's authorized_keys unless a line already
-# carries the key's blob -- the blob, not the line: the same key under another
-# comment or behind options is the same key. Returns what it did, in words.
-sub _append_keys {
-    my ( $self, $m, $key, @public ) = @_;
-
-    my @adds;
-    for my $i (0 .. $#public) {
-        my $line = $public[$i];
-        chomp $line;
-        my $blob = _blob($line);
-        push @adds, 'add '._sq($line).' '._sq($blob).' '.($i ? 'robo' : 'admin');
-    }
-
-    my $script = join "\n",
-        'set -e',
-        'umask 077',
-        'd=/root/.ssh',
-        'f=$d/authorized_keys',
-        'mkdir -p "$d"',
-        'chmod 700 "$d"',
-        'touch "$f"',
-        'chmod 600 "$f"',
-        # A last line without its newline would swallow the first key added.
-        'if [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ]; then echo >> "$f"; fi',
-        'has() { awk -v b="$1" \'{ for (i = 1; i <= NF; i++) if ($i == b) { f = 1; exit } } END { exit !f }\' "$f"; }',
-        'add() { if has "$2"; then echo "$3 key already there"; else printf \'%s\n\' "$1" >> "$f"; echo "$3 key added"; fi; }',
-        @adds,
-        '';
-
-    my $res = $self->_ssh($m, $key)->run_script($script);
-    die _ssh_failure($res) if $res->{exit};
-
-    my @did = grep { /\S/ } split /\n/, ($res->{stdout} // '');
-    return @did ? join(', ', @did) : 'keys in place';
-}
-
-# Removes every authorized_keys line carrying $blob. Returns how many.
-sub _remove_blob {
-    my ( $self, $m, $key, $blob ) = @_;
-
-    my $script = join "\n",
-        'set -e',
-        'umask 077',
-        'f=/root/.ssh/authorized_keys',
-        'if [ ! -f "$f" ]; then echo 0; exit 0; fi',
-        't="$f.ocp-secure"',
-        ': > "$t"',
-        'n=$(awk -v b='._sq($blob).' -v out="$t" \'{ m = 0; for (i = 1; i <= NF; i++) if ($i == b) m = 1 } m { c++; next } { print > out } END { print c + 0 }\' "$f")',
-        # cat into the file rather than mv over it: owner, mode and any
-        # SELinux label stay the ones it had.
-        'cat "$t" > "$f"',
-        'rm -f "$t"',
-        'echo "$n"',
-        '';
-
-    my $res = $self->_ssh($m, $key, 'admin')->run_script($script);
-    die _ssh_failure($res) if $res->{exit};
-
-    my ($n) = ($res->{stdout} // '') =~ /(\d+)\s*\z/;
-    die "unexpected answer: "._oneline($res->{stdout} // '')."\n" unless defined $n;
-    return $n;
-}
-
-# Undef when the admin key opens $m, the reason otherwise.
-sub _admin_refused {
-    my ( $self, $m, $key ) = @_;
-
-    my $res = eval { $self->_ssh($m, $key, 'admin')->run('true') };
-    return _oneline($@) unless $res;
-    return undef unless $res->{exit};
-    return _ssh_failure($res);
-}
-
-# $key is [ path, label ]; $purpose names the admin key to OCP::SSH, so a
-# refusal says which key is missing (k209). The bootstrap key has none.
-sub _ssh {
-    my ( $self, $m, $key, $purpose ) = @_;
-    my ( $path, $label ) = @$key;
-    return OCP::SSH->new(
-        host      => $m->{address},
-        user      => 'root',
-        key_file  => $path,
-        key_label => $label,
-        ($purpose ? (key_purpose => $purpose) : ()),
     );
 }
 
@@ -709,7 +507,7 @@ sub _bootstrap_blob {
         $line = -f $priv ? OCP::TempKeyPair::public_from_private(path($priv)->slurp) : undef;
     }
     return undef unless defined $line && $line =~ /\S/;
-    return _blob($line);
+    return $self->_key_blob($line);
 }
 
 sub _can_prompt {
@@ -729,47 +527,6 @@ sub _ensure_robocop {
 sub _wait_robocop_ready {
     my ( $self, $api, $timeout ) = @_;
     return OCP::Cmd::Apply::CR::wait_robocop_ready($self, $api, $timeout);
-}
-
-#
-# Helpers
-#
-
-sub _label {
-    my ($m) = @_;
-    return $m->{name} eq $m->{address} ? $m->{name} : $m->{name}.' ('.$m->{address}.')';
-}
-
-# The base64 body of an authorized_keys line: what identifies the key, with
-# the type in front and the comment after it left out.
-sub _blob {
-    my ($line) = @_;
-    my ($blob) = $line =~ m{\A\s*\S+\s+([A-Za-z0-9+/]+=*)(?:\s|\z)};
-    die "Not an SSH public key: "._oneline($line)."\n" unless defined $blob;
-    return $blob;
-}
-
-sub _sq {
-    my ($s) = @_;
-    $s =~ s/'/'\\''/g;
-    return "'".$s."'";
-}
-
-sub _ssh_failure {
-    my ($res) = @_;
-    my $why = $res->{stderr} // '';
-    $why = $res->{stdout} // '' unless $why =~ /\S/;
-    $why = 'ssh exited with '.($res->{exit} // '?') unless $why =~ /\S/;
-    return _oneline($why);
-}
-
-sub _oneline {
-    my ($s) = @_;
-    $s = '' unless defined $s;
-    $s =~ s/ at \S+ line \d+\.?\s*\z//;
-    $s =~ s/\s+/ /g;
-    $s =~ s/\A\s+|\s+\z//g;
-    return $s;
 }
 
 1;

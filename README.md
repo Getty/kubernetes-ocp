@@ -420,6 +420,20 @@ ocp keys authorized-keys | ssh root@yourworker 'cat >> ~/.ssh/authorized_keys'
 ocp keys authorized-keys --purpose admin | ssh root@yourserver 'cat >> ~/.ssh/authorized_keys'
 ```
 
+**Let another machine run `ocp apply` unattended** (a Leitstand) — it brings
+its own age identity and SSH key, and only the public halves enter the project:
+
+```bash
+ocp keys operator add --name leitstand --ssh-pubkey leitstand.pub --age age1...
+# on the Leitstand: no PIN1, no PIN2
+SOPS_AGE_KEY_FILE=~/.config/ocp/age.key OCP_OPERATOR_KEY=~/.ssh/ocp_leitstand ocp apply
+ocp keys operator rm leitstand   # off every machine, out of keys.yaml and .sops.yaml
+```
+
+OCP reads `SOPS_AGE_KEY_FILE` the way sops does. Set globally in your shell for
+other sops projects, it makes OCP refuse this one ("does not belong to this
+project"); unset it for `ocp`.
+
 **Deploy or roll out `robocop`:**
 
 ```bash

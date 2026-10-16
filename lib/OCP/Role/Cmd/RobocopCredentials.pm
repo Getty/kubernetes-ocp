@@ -31,20 +31,63 @@ my $ROBOCOP_NAMESPACE  = 'ocp-system';
 # token that is there is taken as the right one; `ocp deploy-robocop` rewrites
 # it unconditionally when it has to be refreshed.
 #
-# Returns 'current' or 'written'. Dies, writing nothing, when the Secret has to
-# be written and cannot be (no host, no key, refused PIN2, empty token).
+# Returns 'current', 'written' or 'kept'. Dies, writing nothing, when the
+# Secret has to be written and cannot be (no host, no key, refused PIN2, empty
+# token).
+#
+# 'kept' is a run under an age identity that cannot read the robo private key
+# (k216: an operator, SOPS_AGE_KEY_FILE; the key's inner layer is the project
+# key's alone). The secret levels put that key into the Secret, so such a run
+# cannot write it -- nor tell whether it is current. A Secret that exists is
+# left as it is, with a warning, and the Deployment is still rolled out; one
+# that is missing is the project key's holder's to write, and the run fails
+# saying so. inject needs the public half only and goes on as ever.
 sub _ensure_robocop_credentials {
     my ($self, $api, $config, $secrets, $level, %opt) = @_;
 
     $secrets //= OCP::Secrets->new(project_dir => $config->project_dir);
 
-    if ($self->_robocop_credentials_current($api, $config, $secrets, $level, %opt)) {
+    my $state = $self->_robocop_credentials_state($api, $config, $secrets, $level, %opt);
+
+    if ($state eq 'current') {
         print "  [ok] Secret/$CREDENTIALS_SECRET is current ($level)\n";
         return 'current';
     }
 
+    if ($state eq 'unreadable') {
+        print STDERR "  [WARN] Secret/$CREDENTIALS_SECRET is left as it is: this run's age\n"
+          . "         identity (SOPS_AGE_KEY_FILE) cannot read the robo private key it\n"
+          . "         holds -- that key opens for the project key alone -- so it can\n"
+          . "         neither check nor rewrite it. To refresh it, run 'ocp deploy-robocop'\n"
+          . "         (or 'ocp apply') once with the project key.\n";
+        return 'kept';
+    }
+
+    die "ERROR: Secret/$CREDENTIALS_SECRET does not exist, and this run cannot write it:\n"
+      . "       its age identity (SOPS_AGE_KEY_FILE) does not open the robo private\n"
+      . "       key in keys.yaml, which robocop.security_level '$level' puts into it --\n"
+      . "       that key opens for the project key alone. Run 'ocp apply' (or\n"
+      . "       'ocp deploy-robocop') once with the project key (PIN1); after that\n"
+      . "       this run leaves the Secret as it is.\n"
+        if $state eq 'missing' && $self->_robo_key_unreadable($config, $secrets, $level);
+
     $self->_apply_credentials_secret($api, $config, $secrets, $level, %opt);
     return 'written';
+}
+
+# True when the robo key's PRIVATE half is wanted (the secret levels) and this
+# run's identity is known not to open it: SOPS_AGE_KEY_FILE set and the
+# private keys in keys.yaml closed to it (k216). Without the variable the
+# project key decrypts, and any failure is the write's to report.
+sub _robo_key_unreadable {
+    my ($self, $config, $secrets, $level) = @_;
+
+    return 0 if ($level // '') eq 'inject';
+    return 0 unless $secrets->sops_age_key_file;
+
+    $secrets->ensure_age_key;
+    my $opens = $secrets->identity_opens_private_keys;
+    return defined $opens && !$opens ? 1 : 0;
 }
 
 # Write the robocop-credentials Secret according to security_level.
@@ -147,12 +190,20 @@ sub _robocop_credentials_current {
 # reports it as is (k173). Any other failure to tell -- a read error, no host,
 # no robo key -- is 'outdated': the write that follows then fails loud with the
 # real reason, instead of a skip hiding it.
+#
+# One more, 'unreadable' (k216): a Secret is there, and this run's identity
+# cannot read the robo private key it would be compared with (see
+# _robo_key_unreadable). Not 'outdated': nothing says it is, and the write
+# that would follow could not be made.
 sub _robocop_credentials_state {
     my ($self, $api, $config, $secrets, $level, %opt) = @_;
 
     my $obj = eval {
         $api->get('Secret', $CREDENTIALS_SECRET, namespace => $ROBOCOP_NAMESPACE);
     } or return 'missing';
+
+    $secrets //= OCP::Secrets->new(project_dir => $config->project_dir);
+    return 'unreadable' if $self->_robo_key_unreadable($config, $secrets, $level);
 
     my $data = eval {
         my $s = ref $obj eq 'HASH' ? $obj : $api->k8s->object_to_struct($obj);
@@ -161,7 +212,6 @@ sub _robocop_credentials_state {
 
     my $host = eval { $self->_cp_host($config, $opt{host}) } or return 'outdated';
 
-    $secrets //= OCP::Secrets->new(project_dir => $config->project_dir);
     $secrets->ensure_age_key;
     my %key = eval { $self->_robo_key_entry($config, $level) } or return 'outdated';
 
@@ -285,20 +335,26 @@ sub _robo_key_entry {
     my ($self, $config, $level) = @_;
 
     my $keys = OCP::Keys->new(project_dir => $config->project_dir);
-
-    # purpose 'automation', non-deprecated, age-layer only (no PIN2).
-    my $robo = $keys->get_automation_key
-        or die "ERROR: No automation (robo) key found in keys.yaml.\n"
+    my $none = "ERROR: No automation (robo) key found in keys.yaml.\n"
              . "       'ocp init' creates it in secure mode; robocop needs it "
              . "to reach the workers it joins.\n";
 
     if (($level // '') eq 'inject') {
+        # The public half alone, so its private half is not decrypted for
+        # nothing -- an operator's identity could not (k216). Same choice as
+        # get_automation_key: the first non-deprecated automation key.
+        my ($robo) = grep { ($_->{purpose} // '') eq 'automation' && !$_->{deprecated} }
+                     @{ $keys->list_keys };
+        die $none unless $robo;
         my $public = $robo->{public};
         die "ERROR: The robo key carries no public half in keys.yaml; "
           . "robocop could not check an injected key against it.\n"
             unless defined $public && length $public;
         return ('robo-ssh-public-key' => $public);
     }
+
+    # purpose 'automation', non-deprecated, age-layer only (no PIN2).
+    my $robo = $keys->get_automation_key or die $none;
 
     my $private = $robo->{private};
     die "ERROR: The robo key carries no private material.\n"
@@ -346,6 +402,10 @@ read of the token.
 
 C<_ensure_robocop_credentials> skips the write when the Secret already carries
 the level's key set, the current robo key and join URL, and a non-empty token.
+A run whose age identity cannot read the robo private key (C<SOPS_AGE_KEY_FILE>
+of an operator, k216) leaves an existing Secret of the C<secret> levels as it
+is, with a C<[WARN]> on STDERR, and fails on a missing one: writing it is the
+project key's holder's job. C<inject> needs the public half only.
 The token's value is not compared: that would need the SSH read, and with it
 the admin key and a PIN2 prompt on every reconcile. C<ocp deploy-robocop>
 always writes.

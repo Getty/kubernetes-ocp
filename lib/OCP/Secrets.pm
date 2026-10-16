@@ -88,6 +88,107 @@ sub has_age_key {
     return -f $self->age_key_file;
 }
 
+#
+# The age identity this run decrypts with (k216)
+#
+# sops' own variable first: SOPS_AGE_KEY_FILE, set and not empty, names the
+# file the identity is read from, as it does for the sops CLI. That is how a
+# Leitstand -- another recipient of the project's SOPS files, added with
+# `ocp keys operator add` or `ocp keys recipients add` -- runs OCP with its
+# own key: no PIN1, nothing unlocked into .ocp/. Without it, the project key
+# in .ocp/age.key (unlocked from age.key.enc with PIN1).
+#
+# The variable's file is read, never copied: age_key_file stays .ocp/age.key,
+# the project key's cache, and age.key.enc stays the project key behind PIN1.
+# Nor is the project's recipient ever derived from it -- see age_recipient.
+
+sub sops_age_key_file {
+    my ($self) = @_;
+    my $file = $ENV{SOPS_AGE_KEY_FILE};
+    return (defined $file && length $file) ? path($file) : undef;
+}
+
+# Every decrypt in OCP::Secrets and OCP::Keys takes its identities from here.
+# A file as age-keygen writes it: comments, then AGE-SECRET-KEY-1... lines;
+# sops reads every one of them, and so does this.
+sub identities {
+    my ($self) = @_;
+
+    my $file = $self->sops_age_key_file;
+    unless ($file) {
+        my $identity = $self->age_key_file->slurp;
+        chomp $identity;
+        return ($identity);
+    }
+
+    die "SOPS_AGE_KEY_FILE is set to ".$file.", and there is no such file.\n"
+      . "Point it at the age identity this machine decrypts the project with, or\n"
+      . "unset it to use the project key (.ocp/age.key, age.key.enc behind PIN1).\n"
+        unless -f $file;
+
+    my $content = eval { $file->slurp };
+    unless (defined $content) {
+        my $why = "$@";
+        $why =~ s/\s+\z//;
+        die "SOPS_AGE_KEY_FILE is set to ".$file.", which cannot be read: ".$why."\n";
+    }
+
+    my @ids = grep { /\AAGE-SECRET-KEY-1/ }
+              map  { s/\A\s+|\s+\z//gr } split /\n/, $content;
+    die "SOPS_AGE_KEY_FILE is set to ".$file.", which holds no age identity\n"
+      . "(no AGE-SECRET-KEY-1... line, as age-keygen writes it).\n"
+        unless @ids;
+
+    for my $id (@ids) {
+        die "SOPS_AGE_KEY_FILE is set to ".$file.", and a line in it is not a valid age identity.\n"
+            unless eval { $self->_recipient_of_key($id); 1 };
+    }
+
+    return @ids;
+}
+
+# The recipients (public keys) of those identities.
+sub identity_recipients {
+    my ($self) = @_;
+    return map { $self->_recipient_of_key($_) } $self->identities;
+}
+
+# Do the identities open the private SSH keys inside keys.yaml? Those carry an
+# age layer of their own for the project key alone (OCP::Keys), so this is the
+# one test that tells the project key from another recipient without knowing
+# the project's recipient first. 1 or 0; undef when there is nothing to try
+# it on (no keys.yaml, none of it readable, or no private half in it).
+sub identity_opens_private_keys {
+    my ($self) = @_;
+    return $self->_opens_private_keys([ $self->identities ]);
+}
+
+sub _opens_private_keys {
+    my ($self, $ids) = @_;
+
+    my $data = $self->_keys_yaml_data($ids) or return undef;
+    my ($entry) = grep { ref $_ eq 'HASH' && defined $_->{private} && length $_->{private} }
+                  @{ $data->{keys} // [] };
+    return undef unless $entry;
+
+    my $private = $entry->{private};
+    return eval { Crypt::Age->decrypt(ciphertext => $private, identities => $ids); 1 } ? 1 : 0;
+}
+
+# keys.yaml without its SOPS layer, or undef. Read here rather than through
+# OCP::Keys, which builds on this class.
+sub _keys_yaml_data {
+    my ($self, $ids) = @_;
+
+    my $file = $self->project_dir->child('keys.yaml');
+    return undef unless -f $file;
+
+    my $data = eval {
+        File::SOPS->decrypt(encrypted => $file->slurp, identities => $ids, format => 'yaml');
+    };
+    return ref $data eq 'HASH' ? $data : undef;
+}
+
 # The SOPS files OCP writes. Every one of them records, in plaintext, the age
 # recipient its data key is wrapped for:
 #
@@ -211,12 +312,101 @@ sub generate_age_key {
     };
 }
 
+# The project key's recipient: .ocp/age.pub. Under SOPS_AGE_KEY_FILE without
+# one -- a Leitstand's checkout never held the project key -- it is read off
+# the committed files instead (_derive_project_recipient), never taken from
+# the identity in use. undef when there is no answer, or no unambiguous one.
 sub age_recipient {
     my ($self) = @_;
-    return undef unless -f $self->age_recipient_file;
-    my $recipient = $self->age_recipient_file->slurp;
-    chomp $recipient;
+
+    if (-f $self->age_recipient_file) {
+        my $recipient = $self->age_recipient_file->slurp;
+        chomp $recipient;
+        return $recipient;
+    }
+    return undef unless $self->sops_age_key_file;
+
+    my ($recipient) = $self->_derive_project_recipient;
     return $recipient;
+}
+
+# Which of the recipients the SOPS files are encrypted for is the project
+# key? Returns ($recipient or undef, [ the candidates ]).
+#
+#   1. An identity that opens the private keys inside keys.yaml IS the
+#      project key -- no other recipient can (their own age layer).
+#   2. Otherwise the recipients the files are bound to (age_key_bindings),
+#      minus those the governing .sops.yaml lists: OCP's own .sops.yaml lists
+#      the project key too, so when nothing is left, all bound ones remain.
+#   3. Still more than one: minus the operators' recipients in keys.yaml, and
+#      minus this run's own identities once (1) said they are not the key.
+#
+# Exactly one left is the answer; anything else is no answer, and the write
+# paths refuse instead of guessing (project_recipient).
+sub _derive_project_recipient {
+    my ($self) = @_;
+
+    my @ids = eval { $self->identities };
+    for my $id (@ids) {
+        return ($self->_recipient_of_key($id), [])
+            if $self->_opens_private_keys([$id]);
+    }
+    my $opens = @ids ? $self->_opens_private_keys(\@ids) : undef;
+
+    my @bound  = @{ $self->project_age_recipients };
+    my %listed = map { $_ => 1 }
+                 eval { $self->sops_recipients_for($self->project_dir->child('keys.yaml')) };
+    my @candidates = grep { !$listed{$_} } @bound;
+    @candidates = @bound unless @candidates;
+
+    if (@candidates > 1) {
+        my %other = map { $_ => 1 } $self->_operator_recipients(\@ids);
+        if (defined $opens && !$opens) {
+            $other{ $self->_recipient_of_key($_) } = 1 for @ids;
+        }
+        @candidates = grep { !$other{$_} } @candidates;
+    }
+
+    return (@candidates == 1 ? $candidates[0] : undef, \@candidates);
+}
+
+# The age recipients of the operator entries in keys.yaml (k216).
+sub _operator_recipients {
+    my ($self, $ids) = @_;
+
+    my $data = $self->_keys_yaml_data($ids) or return ();
+    return map  { $_->{age} }
+           grep { ref $_ eq 'HASH' && ($_->{purpose} // '') eq 'operator'
+                  && defined $_->{age} && length $_->{age} }
+           @{ $data->{keys} // [] };
+}
+
+# The project's recipient for a write, or a refusal that says why there is
+# none. Without SOPS_AGE_KEY_FILE that is the old "no recipient" -- a project
+# that never had a key. With it, the files could not tell (see
+# _derive_project_recipient), and encrypting on a guess could leave the
+# project key out of every file this run writes.
+sub project_recipient {
+    my ($self) = @_;
+
+    my $recipient = $self->age_recipient;
+    return $recipient if defined $recipient;
+
+    my $file = $self->sops_age_key_file
+        or croak "No age recipient found. Run generate_age_key first.";
+
+    my (undef, $candidates) = $self->_derive_project_recipient;
+    die "ERROR: Which age recipient is this project's own key? This run decrypts\n"
+      . "       with SOPS_AGE_KEY_FILE (".$file."), and this checkout has no\n"
+      . "       .ocp/age.pub to say.\n"
+      . (@$candidates
+          ? "       The encrypted files leave these open:\n"
+            . join('', map { "         $_\n" } @$candidates)
+          : "       The encrypted files name no recipient that could be it.\n")
+      . "       Writing on a guess could encrypt them without the project key, so\n"
+      . "       nothing was written. Put the project key's recipient -- the first\n"
+      . "       line of 'ocp keys recipients ls' where the project key is -- into\n"
+      . "       .ocp/age.pub, and run again.\n";
 }
 
 # The public half of an age secret key. X25519, so it is derivable — there is
@@ -236,18 +426,24 @@ sub _recipient_of_key {
 # age.key.enc fails here — with the two recipients named — instead of later,
 # as an opaque "could not decrypt data key with any of the provided
 # identities" from three commands down.
+#
+# Several keys (SOPS_AGE_KEY_FILE may hold more than one, k216): one of them
+# opening the files is enough, as for sops.
 sub _assert_key_matches_project {
-    my ($self, $secret_key) = @_;
+    my ($self, @secret_keys) = @_;
 
     my $bound = $self->age_key_bindings;
     return 1 unless @$bound;
 
-    my $public = $self->_recipient_of_key($secret_key);
-    return 1 if grep { $_->{recipient} eq $public } @$bound;
+    my @public = map { $self->_recipient_of_key($_) } @secret_keys;
+    my %bound  = map { $_->{recipient} => 1 } @$bound;
+    return 1 if grep { $bound{$_} } @public;
 
+    my $from = $self->sops_age_key_file;
     croak
         "This age key does not belong to this project.\n"
-      . "  The key opens:   $public\n"
+      . join('', map { "  The key opens:   $_\n" } @public)
+      . ($from ? "  (read from SOPS_AGE_KEY_FILE=$from)\n" : '')
       . join('', map { sprintf "  %-16s %s\n", "$_->{file} needs:", $_->{recipient} }
                  @$bound)
       . "Nothing was done. Use the key those files name.";
@@ -262,6 +458,8 @@ sub _assert_key_matches_project {
 sub check_local_age_key {
     my ($self) = @_;
 
+    return $self->_assert_key_matches_project($self->identities)
+        if $self->sops_age_key_file;
     return 0 unless $self->has_age_key;
     return $self->_assert_key_matches_project($self->age_key_file->slurp);
 }
@@ -274,9 +472,14 @@ sub check_local_age_key {
 # It never overwrites an existing recipient file: that file is what the
 # committed material is bound to, and replacing it is the whole failure mode
 # this guards against.
+#
+# Never under SOPS_AGE_KEY_FILE (k216): that identity may be another
+# recipient, and an age.pub written from it would make the next write encrypt
+# kubeconfig.yaml, secrets.yaml and keys.yaml without the project key.
 sub restore_age_recipient {
     my ($self) = @_;
 
+    return 0 if $self->sops_age_key_file;
     return 0 if -f $self->age_recipient_file;
     return 0 unless $self->has_age_key;
 
@@ -361,8 +564,7 @@ sub sops_recipients_for {
 sub recipients_for {
     my ($self, $file) = @_;
 
-    my $project = $self->age_recipient
-        or croak "No age recipient found. Run generate_age_key first.";
+    my $project = $self->project_recipient;
     my %seen;
     return [ grep { !$seen{$_}++ } $project, $self->sops_recipients_for($file) ];
 }
@@ -406,8 +608,7 @@ sub set_sops_recipients {
         . $self->governing_sops_config . ", outside this project; OCP does not rewrite it"
         unless $self->sops_config_editable;
 
-    my $project = $self->age_recipient
-        or croak "No age recipient found. Run generate_age_key first.";
+    my $project = $self->project_recipient;
     my %seen;
     my $age = join ',', grep { !$seen{$_}++ } $project, @$extras;
 
@@ -451,9 +652,8 @@ sub set_sops_recipients {
 sub rotate_sops_files {
     my ($self) = @_;
 
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
-    $self->_assert_key_matches_project($identity);
+    my @identities = $self->identities;
+    $self->_assert_key_matches_project(@identities);
 
     my %have;
     push @{ $have{ $_->{file} } }, $_->{recipient} for @{ $self->age_key_bindings };
@@ -466,7 +666,7 @@ sub rotate_sops_files {
 
         File::SOPS->rotate(
             file       => $file->stringify,
-            identities => [$identity],
+            identities => \@identities,
             recipients => $want,
             format     => 'yaml',
         );
@@ -531,6 +731,13 @@ sub decrypt_age_key_with_password {
 sub ensure_age_key {
     my ($self, $password) = @_;
 
+    # SOPS_AGE_KEY_FILE (k216): that file is the identity. No PIN1, nothing
+    # written to .ocp/ -- checked that it opens this project, and done.
+    if ($self->sops_age_key_file) {
+        $self->_assert_key_matches_project($self->identities);
+        return 1;
+    }
+
     # If .ocp/age.key exists, we're good
     if ($self->has_age_key) {
         $self->restore_age_recipient;
@@ -563,9 +770,6 @@ sub has_secrets_file {
 sub create_secrets {
     my ($self, %secrets) = @_;
 
-    my $recipient = $self->age_recipient
-        or croak "No age recipient found. Run generate_age_key first.";
-
     # Encrypt with File::SOPS, for every recipient of the project (k212)
     my $encrypted = File::SOPS->encrypt(
         data       => \%secrets,
@@ -591,18 +795,17 @@ sub read_all_secrets {
 
     return {} unless $self->has_secrets_file;
 
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
+    my @identities = $self->identities;
     # The same guard the write paths use: a foreign key in .ocp/age.key
     # must surface as the named-recipients error, not as File::SOPS's
     # opaque "could not decrypt data key" line (k118).
-    $self->_assert_key_matches_project($identity);
+    $self->_assert_key_matches_project(@identities);
 
     my $encrypted = $self->secrets_file->slurp;
 
     return File::SOPS->decrypt(
         encrypted  => $encrypted,
-        identities => [$identity],
+        identities => \@identities,
         format     => 'yaml',
     );
 }
@@ -693,9 +896,6 @@ sub has_kubeconfig {
 sub save_kubeconfig {
     my ($self, $kubeconfig_yaml) = @_;
 
-    my $recipient = $self->age_recipient
-        or croak "No age recipient found. Generate age key first.";
-
     # Encrypt kubeconfig with SOPS
     my $encrypted = File::SOPS->encrypt(
         data       => $self->ocp->load($kubeconfig_yaml),
@@ -712,16 +912,15 @@ sub read_kubeconfig {
 
     return undef unless $self->has_kubeconfig;
 
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
+    my @identities = $self->identities;
     # Same guard as the write paths — k118.
-    $self->_assert_key_matches_project($identity);
+    $self->_assert_key_matches_project(@identities);
 
     my $encrypted = $self->kubeconfig_file->slurp;
 
     my $decrypted = File::SOPS->decrypt(
         encrypted  => $encrypted,
-        identities => [$identity],
+        identities => \@identities,
         format     => 'yaml',
     );
 
@@ -750,9 +949,6 @@ sub decrypt_kubeconfig_to_file {
 sub encrypt_file {
     my ($self, $content, $file) = @_;
 
-    my $recipient = $self->age_recipient
-        or croak "No age recipient found";
-
     # If content is YAML string, parse it first
     my $data = ref($content) ? $content : $self->ocp->load($content);
 
@@ -775,16 +971,15 @@ sub decrypt_file {
     my $file_path = $self->project_dir->child($file);
     return undef unless -f $file_path;
 
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
+    my @identities = $self->identities;
     # Same guard as the write paths — k118.
-    $self->_assert_key_matches_project($identity);
+    $self->_assert_key_matches_project(@identities);
 
     my $encrypted = $file_path->slurp;
 
     my $decrypted = File::SOPS->decrypt(
         encrypted  => $encrypted,
-        identities => [$identity],
+        identities => \@identities,
         format     => 'yaml',
     );
 
@@ -822,6 +1017,57 @@ stored in C<.ocp/age.key>.
 
 This module uses pure Perl implementations (Crypt::Age and File::SOPS)
 and does not require any external CLI tools.
+
+=head1 WHICH IDENTITY DECRYPTS
+
+Every decrypt -- C<read_all_secrets>, C<read_kubeconfig>, C<decrypt_file>,
+C<rotate_sops_files>, and L<OCP::Keys> -- takes its age identities from
+C<identities> (k216):
+
+=over 4
+
+=item * C<SOPS_AGE_KEY_FILE>, when set and not empty: every
+C<AGE-SECRET-KEY-1...> line of that file, as sops reads it. No PIN1 is asked,
+and nothing is written to F<.ocp/> -- the file is never copied to
+F<.ocp/age.key>, and F<.ocp/age.pub> is never derived from it. A missing,
+unreadable or empty file dies naming the variable. This is how an operator (a
+Leitstand, C<ocp keys operator add>) runs OCP with its own identity.
+
+=item * otherwise F<.ocp/age.key>, the project key, unlocked from
+F<age.key.enc> with PIN1. F<age.key.enc> holds the project key only, always.
+
+=back
+
+Under another identity the project's recipient (L</age_recipient>) is read
+off the committed files, never taken from that identity: a write must stay
+encrypted for the project key. The private SSH keys inside F<keys.yaml> stay
+closed to such an identity; L<OCP::Keys> says so by name.
+
+=head2 sops_age_key_file
+
+The path C<SOPS_AGE_KEY_FILE> names, as a L<Path::Tiny>, or C<undef>.
+
+=head2 identities / identity_recipients
+
+The age identities this run decrypts with, and their recipients.
+
+=head2 identity_opens_private_keys
+
+1 when the identities open the private keys inside F<keys.yaml> (their inner
+age layer is the project key's alone -- so this identity is the project
+key), 0 when they do not, C<undef> when there is nothing to try.
+
+=head2 age_recipient / project_recipient
+
+The project key's recipient: F<.ocp/age.pub>. Under C<SOPS_AGE_KEY_FILE>
+without one: the identity's own recipient when it opens the private keys in
+F<keys.yaml>; otherwise the recipients the SOPS files are bound to, less the
+ones the governing F<.sops.yaml> lists (unless that leaves none), less the
+operators' recipients from F<keys.yaml> and the run's own identities. Exactly
+one left is the answer. C<age_recipient> returns C<undef> without one;
+C<project_recipient>, which every write path uses, dies -- naming the
+candidates and the way out (the project key's recipient into
+F<.ocp/age.pub>) -- rather than encrypt on a guess.
 
 =head1 WHOSE KEY IS IT
 
@@ -898,12 +1144,14 @@ not. Refuses a F<.sops.yaml> outside the project that has the rule.
 =head2 rotate_sops_files
 
 Re-encrypts every SOPS file whose recipients differ from L</recipients_for>
-with a new data key (L<File::SOPS/rotate>). Needs F<.ocp/age.key>. Returns the
-file names it rewrote.
+with a new data key (L<File::SOPS/rotate>). Needs an identity that opens the
+files (F<.ocp/age.key>, or C<SOPS_AGE_KEY_FILE>). Returns the file names it
+rewrote.
 
 =head2 restore_age_recipient
 
-Rebuilds F<.ocp/age.pub> from F<.ocp/age.key> when it is missing — the public
+Never under C<SOPS_AGE_KEY_FILE> (k216). Rebuilds F<.ocp/age.pub> from
+F<.ocp/age.key> when it is missing — the public
 half is derivable (X25519), so a clone that unlocked F<age.key.enc> does not
 need a stored copy in order to encrypt again. It never overwrites an existing
 recipient file, and refuses outright when the local key does not open what the

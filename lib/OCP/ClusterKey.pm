@@ -63,6 +63,17 @@ our $INTERACTIVE;
 # the public half (and, in setup_ssh_key's case with UNLINK => 0, the private
 # half too), OCP::Node never wrote the public half at all (k93).
 #
+# A third answer since k216, and not a third tier: the OPERATOR key. A
+# Leitstand runs `ocp apply` unattended with its own age identity
+# (SOPS_AGE_KEY_FILE) and its own SSH key, registered with
+# `ocp keys operator add` -- a keys.yaml entry of purpose 'operator' that
+# holds the public half and the Leitstand's age recipient, never a private
+# half. When this run's identity is such a recipient, the operator key is the
+# one the CLI reaches machines with: read from OCP_OPERATOR_KEY, checked
+# against the entry, no PIN2. The admin key stays the human's, behind PIN2;
+# the operator could not open it anyway (its inner age layer is the project
+# key's alone).
+#
 # Why here and not in OCP::Keys: OCP::Keys is the key *store* — it answers
 # "decrypt the key called X". This is *selection* policy — "which key does
 # this cluster's hardware trust, and how do I hand it to Rex". Those are
@@ -97,7 +108,8 @@ must trust, not the only one — in secure mode a worker on the C<ssh> provider
 needs the admin B<and> the robo public key (k209); C<ocp keys authorized-keys>
 prints both.
 
-Two answers, decided by the mode alone:
+Three answers, decided by the mode -- and, in secure mode, by whose age
+identity the run decrypts with:
 
 =over 4
 
@@ -115,6 +127,17 @@ authorized-keys --purpose admin>.
 B<Dev mode> (no F<keys.yaml>) — the bootstrap key F<.ocp/id_ed25519>, on
 every provider. Nothing is prompted, nothing is written. This is the only
 place the bootstrap key still lives.
+
+=item *
+
+B<Operator> (secure mode, k216) — when this run decrypts with
+C<SOPS_AGE_KEY_FILE> and that identity's recipient is the C<age> of a
+C<purpose: operator> entry in F<keys.yaml> (C<ocp keys operator add>): that
+operator's SSH key, whose private half is the file C<OCP_OPERATOR_KEY> names.
+Its public half has to be the entry's. No PIN2; the temp file pair is written
+as for the admin key. An identity that is another recipient without an
+operator entry is refused by name: the admin key opens for the project key
+alone.
 
 =back
 
@@ -199,7 +222,165 @@ sub for_config {
 
     return $class->_bootstrap_key($config, $provider) if $dev_mode;
 
+    # k216: whose age identity is this? A key handed in was unlocked by the
+    # project key's holder already.
+    my ($who, $entry) = $opt{admin_key} ? ('project') : $class->identity_of($config);
+    return $class->_operator_key($config, $provider, $entry) if $who eq 'operator';
+    die $class->foreign_identity_refusal($config,
+        "This cluster's machines are reached with the admin key, whose private\n"
+      . "half opens for the project key alone.") if $who eq 'other';
+
     return $class->_admin_key($config, $provider, %opt);
+}
+
+=method identity_of
+
+    my ($who, $entry) = OCP::ClusterKey->identity_of($config);
+
+Who this run's age identity is to the project (k216): C<'project'> -- the
+project key, which is the only answer without C<SOPS_AGE_KEY_FILE>, and never
+costs a prompt to give --, C<'operator'> with that operator's F<keys.yaml>
+entry, or C<'other'>, another recipient of the SOPS files that is no
+operator. An identity that cannot be told apart (no private key in
+F<keys.yaml> to try it on) counts as the project key: what it then attempts
+fails by name in L<OCP::Keys>.
+
+=cut
+
+sub identity_of {
+    my ($class, $config) = @_;
+
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    return ('project') unless $secrets->sops_age_key_file;
+
+    if (my $entry = $class->operator_entry($config)) {
+        return ('operator', $entry);
+    }
+
+    my $opens = $secrets->identity_opens_private_keys;
+    return ('other') if defined $opens && !$opens;
+    return ('project');
+}
+
+=method operator_entry
+
+    my $entry = OCP::ClusterKey->operator_entry($config);
+
+The C<purpose: operator> entry of F<keys.yaml> whose C<age> recipient is one
+of this run's identities from C<SOPS_AGE_KEY_FILE>, or C<undef>. Without the
+variable there is none: F<.ocp/age.key> is the project key.
+
+=cut
+
+sub operator_entry {
+    my ($class, $config) = @_;
+
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    return undef unless $secrets->sops_age_key_file;
+
+    my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+    return undef unless $keys->has_keys_file;
+
+    $secrets->ensure_age_key;
+    my %mine = map { $_ => 1 } $secrets->identity_recipients;
+    my $all  = $keys->list_keys;
+
+    my ($entry) = grep {
+        ($_->{purpose} // '') eq 'operator' && !$_->{deprecated}
+        && defined $_->{age} && $mine{ $_->{age} }
+    } @$all;
+    return $entry;
+}
+
+=method foreign_identity_refusal
+
+    die OCP::ClusterKey->foreign_identity_refusal($config, $why);
+
+The message for a run whose age identity (C<SOPS_AGE_KEY_FILE>) is another
+recipient of the project but neither its project key nor an operator, with
+C<$why> -- the thing that needs the project key -- in front.
+
+=cut
+
+sub foreign_identity_refusal {
+    my ($class, $config, $why) = @_;
+
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    my $file    = $secrets->sops_age_key_file // '';
+    my @mine    = eval { $secrets->identity_recipients };
+
+    return "ERROR: $why\n"
+      . "This run decrypts with SOPS_AGE_KEY_FILE ($file):\n"
+      . join('', map { "  $_\n" } @mine)
+      . "That identity reads the project's SOPS files, but it is not the project key,\n"
+      . "and no operator in keys.yaml names it. Run this with the project key (unset\n"
+      . "SOPS_AGE_KEY_FILE; PIN1), or register this machine as an operator where the\n"
+      . "project key is:\n"
+      . "  ocp keys operator add --name NAME --ssh-pubkey FILE --age "
+      . ($mine[0] // 'AGE1...') . "\n";
+}
+
+# An operator's SSH key (k216): the private half from OCP_OPERATOR_KEY, the
+# public half the keys.yaml entry's -- the file must be that key, or the
+# machines `ocp keys operator add` put it on would refuse it. Written into a
+# temp pair for the same reason as the admin key: Rex wants key.pub beside it.
+sub _operator_key {
+    my ($class, $config, $provider, $entry) = @_;
+
+    my $name = $entry->{name};
+    my $file = $ENV{OCP_OPERATOR_KEY};
+    my $who  = "This run decrypts as the operator '$name' (SOPS_AGE_KEY_FILE), so it\n"
+             . "       reaches the machines with that operator's SSH key";
+
+    die "ERROR: $who --\n"
+      . "       and OCP_OPERATOR_KEY, the path to its private half, is not set.\n"
+        unless defined $file && length $file;
+    die "ERROR: $who --\n"
+      . "       and OCP_OPERATOR_KEY is set to $file, which does not exist.\n"
+        unless -f $file;
+
+    my $private = eval { Path::Tiny::path($file)->slurp };
+    die "ERROR: $who --\n"
+      . "       and OCP_OPERATOR_KEY ($file) cannot be read.\n"
+        unless defined $private && length $private;
+
+    my $public = OCP::TempKeyPair::public_from_private($private);
+    $public = Path::Tiny::path($file . '.pub')->slurp
+        if !defined $public && -f ($file . '.pub');
+
+    my $have = _key_blob($public);
+    my $want = _key_blob($entry->{public});
+    die "ERROR: $who --\n"
+      . "       and the key at OCP_OPERATOR_KEY ($file) is not it.\n"
+      . "       keys.yaml has for '$name': " . ($entry->{public} // '?') . "\n"
+      . "       the file is:              "
+      . (defined $have ? _key_line($public) : 'no OpenSSH private key OCP can read') . "\n"
+        unless defined $have && defined $want && $have eq $want;
+
+    my $pair = OCP::TempKeyPair->for_private_key($private, public => $entry->{public});
+
+    return bless {
+        path        => $pair->path,
+        public_path => $pair->public_path,
+        origin      => 'operator',
+        provider    => $provider,
+        name        => $name,
+        temp        => $pair,
+    }, $class;
+}
+
+# The base64 body of an authorized_keys line, or undef.
+sub _key_blob {
+    my ($line) = @_;
+    return undef unless defined $line;
+    my ($blob) = $line =~ m{\A\s*\S+\s+([A-Za-z0-9+/]+=*)(?:\s|\z)};
+    return $blob;
+}
+
+sub _key_line {
+    my ($line) = @_;
+    $line =~ s/\s+\z//;
+    return $line;
 }
 
 # The unencrypted key on disk. Nothing to write, nothing to clean up.
@@ -357,7 +538,8 @@ sub content { Path::Tiny::path($_[0]{path})->slurp }
     if ($key->origin eq 'admin') { ... }
 
 C<'bootstrap'> for F<.ocp/id_ed25519>, C<'admin'> for the PIN2-protected key
-out of F<keys.yaml>. Tests assert on this: "secure + hetzner reached the
+out of F<keys.yaml>, C<'operator'> for an operator's key from
+C<OCP_OPERATOR_KEY> (k216). Tests assert on this: "secure + hetzner reached the
 admin key" is the claim, and a path comparison alone cannot make it.
 
 =cut
@@ -442,6 +624,8 @@ sub describe {
     return $self->{origin} eq 'admin'
         ? "admin key" . ($self->{name} ? " '$self->{name}'" : '')
             . " (provider $self->{provider}, PIN2)"
+        : $self->{origin} eq 'operator'
+        ? "operator key '$self->{name}' (provider $self->{provider}, OCP_OPERATOR_KEY)"
         : "bootstrap key .ocp/id_ed25519 (provider $self->{provider})";
 }
 
@@ -451,7 +635,8 @@ sub describe {
     # "the admin key 'admin-ssh' from keys.yaml"
 
 The key as the operator knows it, for a message about it: the admin key by its
-name in F<keys.yaml>, the bootstrap key by its place in the project. L</path>
+name in F<keys.yaml>, an operator key by its operator's name, the bootstrap
+key by its place in the project. L</path>
 is no answer to that for the admin key -- it is a temporary copy.
 
 =cut
@@ -460,6 +645,8 @@ sub label {
     my ($self) = @_;
     return $self->{origin} eq 'admin'
         ? 'the admin key' . ($self->{name} ? " '$self->{name}'" : '') . ' from keys.yaml'
+        : $self->{origin} eq 'operator'
+        ? "the operator key '$self->{name}'"
         : 'the bootstrap key .ocp/id_ed25519';
 }
 

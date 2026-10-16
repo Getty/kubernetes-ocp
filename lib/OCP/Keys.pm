@@ -38,6 +38,24 @@ has age_recipient_file => (
     builder => sub { shift->project_dir->child('.ocp', 'age.pub') },
 );
 
+# Where the age identity and the project's recipient come from (k216:
+# SOPS_AGE_KEY_FILE, see OCP::Secrets::identities). One place for both, so
+# the key file and the SOPS files can never be read with different keys.
+has _secrets => (
+    is       => 'lazy',
+    init_arg => undef,
+);
+
+sub _build__secrets {
+    my ($self) = @_;
+    return OCP::Secrets->new(
+        project_dir        => $self->project_dir,
+        ocp                => $self->ocp,
+        age_key_file       => $self->age_key_file,
+        age_recipient_file => $self->age_recipient_file,
+    );
+}
+
 #
 # Check if keys.yaml exists
 #
@@ -123,6 +141,46 @@ sub add_key {
     };
 
     # Save
+    $self->_write_keys_file_encrypted($data);
+
+    return 1;
+}
+
+#
+# Add a key that has a public half only (k216)
+#
+
+# An operator's SSH key (`ocp keys operator add`): its private half stays on
+# the operator's machine, so the entry has none -- and no PIN2 layer either.
+# Every other field as add_key writes it; `age` is the operator's age
+# recipient, which is how OCP::ClusterKey recognises a run under that
+# operator's identity.
+sub add_public_key {
+    my ($self, %params) = @_;
+
+    my $name    = $params{name}    or croak "name required";
+    my $type    = $params{type}    or croak "type required";
+    my $public  = $params{public}  or croak "public key required";
+    my $purpose = $params{purpose} or croak "purpose required";
+
+    my $data = $self->has_keys_file ? $self->_read_keys_file_encrypted : {
+        version => 1,
+        keys    => [],
+    };
+
+    croak "Key '$name' already exists. Use update_key or choose different name."
+        if grep { $_->{name} eq $name } @{ $data->{keys} // [] };
+
+    push @{$data->{keys}}, {
+        name       => $name,
+        type       => $type,
+        purpose    => $purpose,
+        created    => _timestamp(),
+        public     => $public,
+        (defined $params{age} ? (age => $params{age}) : ()),
+        deprecated => 0,
+    };
+
     $self->_write_keys_file_encrypted($data);
 
     return 1;
@@ -271,15 +329,21 @@ sub decrypt_key {
 
     my $key = $self->get_key($name) or return;
 
+    # An operator key (k216) has no private half here: it never left the
+    # operator's machine.
+    die "ERROR: Key '$name' has no private half in keys.yaml (purpose "
+      . ($key->{purpose} // '?') . "); its owner holds it.\n"
+        unless defined $key->{private} && length $key->{private};
+
     # Detect encryption type
     my $decrypted;
     if ($key->{purpose} && $key->{purpose} eq 'automation') {
         # Single decrypt (age only)
-        $decrypted = $self->_single_decrypt($key->{private});
+        $decrypted = $self->_single_decrypt($key->{private}, $name);
     } else {
         # Double decrypt (age + password)
         croak "PIN2 required for non-automation key" unless $pin2;
-        $decrypted = $self->_double_decrypt($key->{private}, $pin2);
+        $decrypted = $self->_double_decrypt($key->{private}, $pin2, $name);
     }
 
     return {
@@ -371,17 +435,37 @@ sub _single_encrypt {
 }
 
 sub _single_decrypt {
-    my ($self, $encrypted) = @_;
+    my ($self, $encrypted, $name) = @_;
 
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
+    return $self->_inner_decrypt($encrypted, $name);
+}
 
-    my $plaintext = Crypt::Age->decrypt(
-        ciphertext => $encrypted,
-        identities => [$identity],
-    );
+# The age layer of a private half. It is the project key's alone (k212); under
+# SOPS_AGE_KEY_FILE an identity that is another recipient reads keys.yaml but
+# not this, and gets told so instead of age's "no identity matched" (k216).
+sub _inner_decrypt {
+    my ($self, $encrypted, $name) = @_;
 
-    return $plaintext;
+    my @identities = $self->_secrets->identities;
+
+    my $plaintext = eval {
+        Crypt::Age->decrypt(
+            ciphertext => $encrypted,
+            identities => \@identities,
+        );
+    };
+    return $plaintext if defined $plaintext;
+
+    my $err  = $@;
+    my $file = $self->_secrets->sops_age_key_file;
+    die $err unless $file;
+
+    die "ERROR: The private half of " . (defined $name ? "'$name'" : 'this key')
+      . " in keys.yaml opens for the project key alone,\n"
+      . "       and this run decrypts with SOPS_AGE_KEY_FILE (".$file."),\n"
+      . "       another recipient of the project: it reads keys.yaml, not the\n"
+      . "       private SSH keys inside it. Run this with the project key (PIN1),\n"
+      . "       or unset SOPS_AGE_KEY_FILE.\n";
 }
 
 #
@@ -411,16 +495,10 @@ sub _double_encrypt {
 }
 
 sub _double_decrypt {
-    my ($self, $encrypted, $password) = @_;
+    my ($self, $encrypted, $password, $name) = @_;
 
     # Layer 1: Age decryption
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
-
-    my $pw_layer = Crypt::Age->decrypt(
-        ciphertext => $encrypted,
-        identities => [$identity],
-    );
+    my $pw_layer = $self->_inner_decrypt($encrypted, $name);
 
     # Layer 2: Password decryption
     my $decoded = decode_base64($pw_layer);
@@ -510,14 +588,13 @@ sub _read_keys_file_encrypted {
 
     return {} unless -f $self->keys_file;
 
-    my $identity = $self->age_key_file->slurp;
-    chomp $identity;
+    my @identities = $self->_secrets->identities;
 
     my $encrypted = $self->keys_file->slurp;
 
     return File::SOPS->decrypt(
         encrypted  => $encrypted,
-        identities => [$identity],
+        identities => \@identities,
         format     => 'yaml',
     );
 }
@@ -529,8 +606,7 @@ sub _write_keys_file_encrypted {
     # halves inside keep their own layer for the project key alone.
     my $encrypted = File::SOPS->encrypt(
         data       => $data,
-        recipients => OCP::Secrets->new(project_dir => $self->project_dir, ocp => $self->ocp)
-            ->recipients_for($self->keys_file),
+        recipients => $self->_secrets->recipients_for($self->keys_file),
         format     => 'yaml',
     );
 
@@ -538,13 +614,13 @@ sub _write_keys_file_encrypted {
     return 1;
 }
 
+# The project key's recipient, for the inner layers. OCP::Secrets answers it
+# the same way for the SOPS layer: .ocp/age.pub, or under SOPS_AGE_KEY_FILE
+# read off the files -- never derived from that identity (k216).
 sub _get_age_recipient {
     my ($self) = @_;
 
-    return undef unless -f $self->age_recipient_file;
-    my $recipient = $self->age_recipient_file->slurp;
-    chomp $recipient;
-    return $recipient;
+    return $self->_secrets->project_recipient;
 }
 
 #
@@ -674,6 +750,17 @@ So F<keys.yaml> alone is useless; F<keys.yaml> + F<age.key> yields the public
 keys and the automation private key; the admin private key additionally needs
 PIN2.
 
+The age identity is the one L<OCP::Secrets/identities> names: the project key,
+or the file C<SOPS_AGE_KEY_FILE> points at (k216). The SOPS layer opens for
+every recipient of the project; the inner layer of a private half is the
+project key's alone, and another identity trying it is told so by name
+instead of with age's own error.
+
+B<operator> entries (C<purpose: operator>, k216, written by
+C<add_public_key>) have no C<private> at all, and an C<age> field: the
+operator's age recipient. Their private SSH key never leaves the operator's
+machine.
+
 =head1 METHODS
 
 =head2 list_keys
@@ -691,6 +778,15 @@ Returns specific key metadata.
 Add new key with double encryption.
 
 Required params: name, type, private, pin2
+
+=head2 add_public_key(%params)
+
+    $keys->add_public_key(name => 'leitstand', type => 'ssh_ed25519',
+        purpose => 'operator', public => $line, age => 'age1...');
+
+Adds an entry with a public half and B<no> private one -- an operator's SSH
+key (k216). Required: name, type, public, purpose; C<age> is optional. Croaks
+when the name is taken.
 
 =head2 add_cluster_keys(pin2 => $pin2, datestamp => $stamp)
 
@@ -710,7 +806,8 @@ secure> turns its staging file into F<keys.yaml> with it.
 =head2 decrypt_key($name, $pin2)
 
 Decrypt specific key, returns hashref with decrypted private key. C<$pin2> is
-required unless the key's purpose is C<automation>.
+required unless the key's purpose is C<automation>. Dies, naming the key, for
+an entry without a private half (an operator's).
 
 To read only a public key, use C<list_keys>/C<get_key> and take the C<public>
 field — that path needs no PIN2. C<ocp keys show> is the CLI for it.
