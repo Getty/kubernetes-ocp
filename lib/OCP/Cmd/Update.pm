@@ -220,6 +220,7 @@ sub execute {
 our %APPLIED_BY_APPLY = map { $_ => 1 } qw(
     nfd gpu_operator nvidia_toolkit nvidia_driver
     nvidia_device_plugin dcgm_exporter nvidia_dcgm
+    registry
 );
 
 our %DIST_UPGRADE_DOCS = (
@@ -290,7 +291,7 @@ sub _plan_component {
 
     if ($APPLIED_BY_APPLY{$comp}) {
         return { action => 'skip', note => 'GPU stack is off (gpu.enabled: false)' }
-            if $comp ne 'nfd' && !$config->gpu_enabled;
+            if $comp ne 'nfd' && $comp ne 'registry' && !$config->gpu_enabled;
         return { action => 'apply', note => "rolled out by 'ocp apply' (it re-applies the manifest)" };
     }
 
@@ -492,6 +493,9 @@ otherwise Rex task C<update_gateway_api>.
 
 =item * B<cert_manager> - Rex task C<upgrade_cert_manager>; skipped with
 C<nocert>.
+
+=item * B<registry> (registry.local and the ocp-cache) - like NFD, from the
+manifest C<ocp apply> re-applies.
 
 =item * B<nfd> and the GPU stack (C<gpu_operator>, C<nvidia_*>, C<dcgm_*>) -
 their versions live in manifests C<ocp apply> re-applies, so C<ocp update>

@@ -47,6 +47,11 @@ our $VERSIONS = {
             dcgm_exporter        => '4.5.3-4.8.2-distroless',
             nvidia_dcgm          => '4.5.2-1-ubuntu22.04',
             nfd                  => 'v0.18.3',
+
+            # registry.local and the docker.io pull-through cache ocp-cache.
+            # Pinned, not the moving registry:2 tag (k224: measured in the lab,
+            # the cache is not what limits a cold pull -- Docker Hub's CDN is).
+            registry             => '2.8.3',
         },
         notes => 'Initial release with RKE2/K3s, Cilium CNI + Gateway API, cert-manager, GPU stack',
     },

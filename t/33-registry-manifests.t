@@ -78,4 +78,12 @@ subtest 'apply waits for the cache it is about to point containerd at' => sub {
         'apply blocks on the cache becoming ready';
 };
 
+# k224: a pinned registry image, not the moving registry:2 tag.
+for my $d ($cache, $registry) {
+    is $d->{spec}{template}{spec}{containers}[0]{image},
+        'registry:' . OCP::Versions->get_component_version('registry'),
+        "$d->{metadata}{name}: registry image from OCP::Versions";
+}
+unlike(OCP::Versions->get_component_version('registry'), qr/\A2\z/, 'a full version, not the major tag');
+
 done_testing;

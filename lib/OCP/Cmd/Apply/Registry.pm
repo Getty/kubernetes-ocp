@@ -195,7 +195,7 @@ sub stamp_ocp_version {
 sub deployment {
     my ($name, $opts) = @_;
 
-    my $image = 'registry:2';
+    my $image = 'registry:' . OCP::Versions->get_component_version('registry');
 
     my @volume_mounts;
     my @volumes;
