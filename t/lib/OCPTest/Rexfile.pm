@@ -68,6 +68,7 @@ our @LIBRARY = qw(
   Rex::Rancher::Cilium::ensure_gateway_api_crds
   Rex::Rancher::K8s::wait_for_api
   Rex::Rancher::Distribution::remove_bare_containerd_template
+  Rex::Rancher::Distribution::heal_bare_containerd_template
   Rex::GPU::Detect::Sysfs::detect
   Rex::GPU::NVIDIA::install_driver
   Rex::GPU::NVIDIA::install_container_toolkit
@@ -79,6 +80,8 @@ our @LIBRARY = qw(
 # the answer. A host without a GPU, by default.
 our %LIB_DEFAULT = (
   'Rex::GPU::Detect::Sysfs::detect' => sub { +{ nvidia => [], amd => [], nvswitch => [] } },
+  # A node without the bare template: nothing removed, nothing restarted.
+  'Rex::Rancher::Distribution::heal_bare_containerd_template' => sub { +{ removed => 0, restarted => 0 } },
 );
 
 my $loaded;

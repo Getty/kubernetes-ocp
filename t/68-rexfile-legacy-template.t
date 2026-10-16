@@ -131,28 +131,32 @@ subtest 'the probe is silent where there is nothing of the kind, and only reads'
 
 # --- the remedy --------------------------------------------------------------
 
-subtest 'the remedy has the library remove it, for every distribution' => sub {
+subtest 'the remedy has the library heal it, for every distribution' => sub {
     OCPTest::Rexfile->reset;
-    my %removes = (rke2 => 1, k3s => 0);
-    local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::Distribution::remove_bare_containerd_template'} =
-        sub { $removes{ $_[0]->name } };
+    my %heal = (rke2 => { removed => 1, restarted => 1 }, k3s => { removed => 0, restarted => 0 });
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::Rancher::Distribution::heal_bare_containerd_template'} =
+        sub { $heal{ $_[0]->name } };
     my $out = OCPTest::Rexfile->run_task('cleanup_legacy_containerd_template');
 
-    my @calls = OCPTest::Rexfile->calls('Rex::Rancher::Distribution::remove_bare_containerd_template');
+    my @calls = OCPTest::Rexfile->calls('Rex::Rancher::Distribution::heal_bare_containerd_template');
     is_deeply [ sort map { $_->{args}[0]->name } @calls ], [qw( k3s rke2 )],
-        'remove_bare_containerd_template for rke2 and k3s';
+        'heal_bare_containerd_template for rke2 and k3s (rex-rancher k83)';
+    ok !OCPTest::Rexfile->calls('Rex::Rancher::Distribution::remove_bare_containerd_template'),
+        'not the remove-only call any more';
     my $rke2_dir = $DISTS[0]->containerd_dir;
     like $out, qr/Removed the bare containerd template in \Q$rke2_dir\E/,
         'what was removed is said, naming where';
-    unlike $out, qr{/k3s/}, 'what was not is left to the library\'s own log line';
+    like $out, qr/Restarted rke2-server: its containerd config was still that template's output/,
+        'and the restart, naming the service';
+    unlike $out, qr{/k3s/|k3s}, 'nothing for a distribution that needed nothing';
 
     is_deeply [ OCPTest::Rexfile->commands ], [],
-        'and nothing of its own: no restart -- containerd keeps its config.toml until the next start';
+        'no command of its own: the restart is the library\'s';
 };
 
-subtest 'a removal that fails fails the remedy' => sub {
+subtest 'a heal that fails fails the remedy' => sub {
     OCPTest::Rexfile->reset;
-    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Distribution::remove_bare_containerd_template'} =
+    local $OCPTest::Rexfile::LIB_DIE{'Rex::Rancher::Distribution::heal_bare_containerd_template'} =
         "Could not remove $TMPL{rke2}, the bare containerd template ...\n";
     ok !eval { OCPTest::Rexfile->run_task('cleanup_legacy_containerd_template'); 1 }, 'dies';
     like $@, qr/Could not remove/, 'with the library\'s reason';

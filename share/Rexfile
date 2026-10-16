@@ -715,22 +715,23 @@ task "detect_legacy_containerd_template", sub {
 };
 
 # OCP::Drift's remedy for what the probe above reports: Rex::Rancher's
-# remove_bare_containerd_template, per distribution, which removes it by the
-# same decision the probe reports it by (and keeps any other template, saying
-# so), and dies naming the file when the removal fails. The installs do not
-# run it: install_server and install_agent remove the template themselves,
-# before the start.
-#
-# It restarts nothing: containerd keeps running on its config.toml until the
-# service starts again, which then renders the distribution's own config. A
-# public "remove and restart the running service once" is not in the library
-# (rex-rancher board, from k196).
+# heal_bare_containerd_template, per distribution (rex-rancher k83). It removes
+# the template by the same decision the probe reports it by (and keeps any
+# other template, saying so), and restarts a running service once when its
+# config.toml is still that template's output, so containerd runs on the
+# distribution's own config again now, not at the next start. A stopped
+# service is not started. Dies naming the file or the service when either
+# step fails. The installs do not run it: install_server and install_agent
+# remove the template themselves, before their start.
 desc "Remove the obsolete containerd config template OCP wrote before k23";
 task "cleanup_legacy_containerd_template", sub {
     for my $dist (_distributions()) {
-        next unless $dist->remove_bare_containerd_template;
+        my $r = $dist->heal_bare_containerd_template;
+        next unless $r->{removed} || $r->{restarted};
         say "Removed the bare containerd template in " . $dist->containerd_dir
-          . " -- the next start of " . $dist->label . " renders its own containerd config again";
+          if $r->{removed};
+        say "Restarted " . $dist->service . ": its containerd config was still that template's output"
+          if $r->{restarted};
     }
 };
 
