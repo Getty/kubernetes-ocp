@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-16T06:23:12Z
+created: 2026-10-03T05:39:13Z
+id: 224
+priority: high
+started: 2026-10-16T06:23:12Z
+status: done
+tags:
+- registry
+- cache
+- performance
+title: ocp-cache pulls large images at ~1 MB/s; Docker Hub direct gives 200 MB/s
+updated: 2026-10-16T07:30:43Z
+---
+
+Observed on cluster citiai, 2026-10-03: four nodes pulled vllm/vllm-openai:v0.27.1 (~7 GiB compressed) through the docker.io mirror ocp-cache (registries.yaml: docker.io -> http://localhost:30500, NodePort of ocp-system/ocp-cache). After 45 min the ingest on crag stood at 3.7 GiB; the cache pod showed ~660m CPU and 59 MiB RAM. The same image pulled with ctr directly from registry-1.docker.io on crag and otho-lab ran at 200+ MiB/s and finished in minutes.
+
+So the pull-through cache is the bottleneck for big images, and with several nodes pulling the same image at once it gets worse (each node waits on the same slow upstream fetch).
+
+To look at:
+- what limits it: single replica, storage backend (emptyDir/hostPath on cp-lab?), proxy chunking, CPU limit
+- whether containerd falls back to the upstream when the mirror is slow (it does not — a mirror that answers is used)
+- options: more resources, a faster backend, or let big images bypass the mirror (e.g. per-registry override in registries.yaml)
+
+Workaround used: ctr -n k8s.io images pull --platform linux/amd64 docker.io/... on each node, and for arm64 an import from the local Docker (docker save | ctr images import).
+
+Live 2026-10-16 Runde 6 (frank-ocp, ocp-lab:6801f92) gemessen (Details im Commit ec87339 und .agent-sessions/ocp-lab/ergebnis-turn6.md): Cache ist nicht der Engpass, kalte Pulls laufen im Tempo des Docker-Hub-CDN (2-27 MiB/s je Verbindung, mit und ohne Cache), warmer Cache 44 MiB/s. Gebaut: registry-Image gepinnt (2.8.3). Ideen ohne Messbeleg, nicht gebaut: Vorwärmen großer Images, mehrere Cache-Pods (paralleles Ziehen mehrerer Nodes nicht gemessen).
+
+Live 2026-10-16 Runde 7 (frank-ocp, ocp-lab:f47579a..08f5ebe): Folgefix aus dem Pinning: Registry-Pods landeten nach Re-Rollout auf einem Worker (hostPath auf dem CP) -> 55d3b32/2b8b30d (jetzt 0d4cbb4/f93beaf): CP-nodeSelector + Recreate, Merge-Patch für bestehende Deployments; live bestätigt.
