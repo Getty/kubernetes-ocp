@@ -838,7 +838,7 @@ sub _cilium_opts {
         version             => $o{version},
         cli_version         => $o{cli_version},
         kubeconfig          => $o{kubeconfig},
-        gateway_api         => 1,
+        gateway_api         => exists $o{gateway_api} ? $o{gateway_api} : 1,
         gateway_api_version => $o{gateway_api_version},
         gateway_api_channel => _gateway_api_channel(),
         ipam_mode           => 'cluster-pool',
@@ -985,19 +985,29 @@ task "upgrade_cilium", sub {
     # Gateway controller) and the Helm upgrade, in that order. No cluster_cidr:
     # the pool stays what the cluster runs (k182), as do the API address on k3s
     # and the operator's replicas; this task never acts on network.pod_cidr.
-    my $upgraded = eval {
+    # $crds: apply the Gateway API bundle with this step. The stations on the
+    # way leave the CRDs alone (k195) and keep Gateway API switched on in the
+    # Helm values, so the walk does not flip the cluster's configuration.
+    my $step = sub {
+        my ($to, $crds) = @_;
+        my $helm_values = $params->{helm_values};
+        unless ($crds) {
+            $helm_values = { %{ $helm_values || {} } };
+            $helm_values->{gatewayAPI} = { %{ $helm_values->{gatewayAPI} || {} }, enabled => JSON::MaybeXS::true() };
+        }
         Rex::Rancher::Cilium::upgrade_cilium(_cilium_opts(
             distribution        => $distribution,
-            version             => $version,
+            version             => $to,
             cli_version         => $cli_version,
+            gateway_api         => $crds ? 1 : 0,
             gateway_api_version => $gateway_api_version,
             kubeconfig          => "$local",
             k8s_service_host    => $params->{k8s_service_host},
-            helm_values         => $params->{helm_values},
+            helm_values         => $helm_values,
             wait_duration       => 300,
         ));
-        1;
     };
+    my $upgraded = eval { _upgrade_cilium_along($step, $version, $params->{cilium_stations}); 1 };
     unless ($upgraded) {
         _cilium_upgrade_refused($@, $params);
         return;
@@ -1005,6 +1015,71 @@ task "upgrade_cilium", sub {
 
     say "Cilium upgraded successfully to $version";
 };
+
+# Cilium upgrades one minor at a time (rex-rancher: a pinned version more than
+# one minor from the running one dies before the host is touched, "Cilium runs
+# X, version Y is more than one minor version away"). A cluster further from
+# the pin than that is walked through the stations OCP::Versions lists
+# (cilium_stations, passed in), one line per station (k195). Asked first for
+# the pin itself: the refusal costs nothing and names the running version, so
+# a cluster one minor away, or already there, takes the one step as before.
+# A step that fails stops the walk and names the station reached; running the
+# task again resumes from there. Only upwards: a Cilium newer than the pin is
+# the library's refusal to give.
+sub _upgrade_cilium_along {
+    my ($step, $target, $stations) = @_;
+
+    return if eval { $step->($target, 1); 1 };
+    my $err = $@;
+
+    my ($running) = $err =~ /\bCilium runs (\S+), version \S+ is more than one minor version away/
+        or die $err;
+    my @route = (_cilium_route($running, $target, $stations), $target);
+    @route > 1 or die $err;
+
+    # The Gateway API CRDs are cluster-wide and additive downwards: changing
+    # them back and forth per station risks more than a Gateway controller that
+    # does not start for a while. The bundle at the pin goes on with the last
+    # step, as it does for a single one.
+    say "[STEP] Gateway API may be degraded until the last step: the CRDs stay as they are "
+      . "until Cilium $target";
+
+    my $reached = $running;
+    for my $i (0 .. $#route) {
+        my $last = $i == $#route;
+        # [STEP] lines are the task's narrative: OCP::Rex prints them on a
+        # successful task too, where the rest of the log stays out of sight.
+        say "[STEP] Cilium $reached -> $route[$i] (step " . ($i + 1) . " of " . @route . ")";
+        unless (eval { $step->($route[$i], $last); 1 }) {
+            my $why = $@;
+            $why =~ s/\n+\z//;
+            die "Cilium upgrade stopped at $reached, on the way to $target: the step to "
+              . "$route[$i] failed: $why"
+              . ($last ? '' : " (the Gateway API CRDs are unchanged)") . "\n";
+        }
+        $reached = $route[$i];
+    }
+    return;
+}
+
+# The stations strictly between the running minor and the target's, ascending,
+# one per minor; empty when the target is not newer or no station lies between.
+sub _cilium_route {
+    my ($running, $target, $stations) = @_;
+    my ($rmaj, $rmin) = $running =~ /\Av?(\d+)\.(\d+)/ or return;
+    my ($tmaj, $tmin) = $target  =~ /\Av?(\d+)\.(\d+)/ or return;
+    return unless $rmaj == $tmaj && $tmin > $rmin;
+
+    my (%seen, @route);
+    for my $st (sort { _cilium_minor($a) <=> _cilium_minor($b) } @{ $stations // [] }) {
+        my ($maj, $min) = $st =~ /\Av?(\d+)\.(\d+)/ or next;
+        next unless $maj == $rmaj && $min > $rmin && $min < $tmin;
+        push @route, $st unless $seen{$min}++;
+    }
+    return @route;
+}
+
+sub _cilium_minor { my ($v) = @_; return ($v =~ /\Av?\d+\.(\d+)/)[0] // 0 }
 
 # What OCP does with the library's refusals of upgrade_cilium (k206), whose
 # own advice names install_cilium -- a function, not something an `ocp`
@@ -1022,7 +1097,8 @@ task "upgrade_cilium", sub {
 sub _cilium_upgrade_refused {
     my ($err, $params) = @_;
 
-    if ($err =~ /\bupgrade_cilium found no deployed revision of Helm release/) {
+    # A station that failed halfway is no cluster without Cilium, whatever it says.
+    if ($err !~ /\ACilium upgrade stopped at / && $err =~ /\bupgrade_cilium found no deployed revision of Helm release/) {
         say "[WARN] no deployed Cilium release on this cluster: installing Cilium "
           . "$params->{version} instead of upgrading it";
         _install_cilium($params);
@@ -1031,10 +1107,12 @@ sub _cilium_upgrade_refused {
 
     if ($err =~ /\bis stuck in \S+ \(revision \d+\).*?delete Secret (\S+) in (\S+) and re-run/s) {
         my ($secret, $namespace) = ($1, $2);
-        die $err . "Once no other Helm operation or deploy is running, remove that revision on a\n"
-          . "control plane and run the command again:\n"
-          . "  kubectl -n $namespace delete secret $secret\n"
-          . "(the deployed revision below it stays the running Cilium).\n";
+        # One line: OCP::Rex reads the failure out of the log line by line,
+        # and only the first line of a message carries Rex's ERROR prefix.
+        $err =~ s/\n+\z//;
+        die "$err Command on a control plane, once no other Helm operation is running "
+          . "(the deployed revision below the pending one stays the running Cilium): "
+          . "kubectl -n $namespace delete secret $secret\n";
     }
 
     die $err;

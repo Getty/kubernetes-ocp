@@ -56,6 +56,23 @@ my $STUCK = "Helm release cilium is stuck in pending-upgrade (revision 3): an ea
   . "interrupted or another deploy is still running. Once none is, delete Secret "
   . "sh.helm.release.v1.cilium.v3 in kube-system and re-run.\n";
 
+# The Rexfile recognises the library's refusals by their wording. Held against
+# the real library (its private _require_deployed_release), so a rewording
+# turns this red instead of quietly bringing the dead end back.
+subtest 'the library still words its refusals the way the Rexfile reads them' => sub {
+    require Rex::Rancher::Cilium;
+    my $req = Rex::Rancher::Cilium->can('_require_deployed_release')
+        or plan skip_all => 'Rex::Rancher::Cilium has no _require_deployed_release any more';
+
+    eval { $req->(undef); 1 };
+    like $@, qr/\bupgrade_cilium found no deployed revision of Helm release/, 'no release';
+    eval { $req->({ status => 'failed', revision => 1, has_deployed => 0 }); 1 };
+    like $@, qr/\bupgrade_cilium found no deployed revision of Helm release/, 'a failed release';
+    eval { $req->({ status => 'pending-upgrade', revision => 3, has_deployed => 1 }); 1 };
+    like $@, qr/\bis stuck in \S+ \(revision \d+\).*?delete Secret (\S+) in (\S+) and re-run/s,
+        'a stuck release';
+};
+
 for my $case ([ 'no release' => $NO_RELEASE ], [ 'a failed release' => $FAILED ]) {
     my ($name, $msg) = @$case;
     subtest "$name: Cilium is installed instead" => sub {
@@ -75,8 +92,9 @@ for my $case ([ 'no release' => $NO_RELEASE ], [ 'a failed release' => $FAILED ]
 subtest 'a stuck release: no install, the command that clears it' => sub {
     my ($out, $err) = upgrade($STUCK);
     like $err, qr/is stuck in pending-upgrade/, 'the library\'s diagnosis stays';
-    like $err, qr/^\s+kubectl -n kube-system delete secret sh\.helm\.release\.v1\.cilium\.v3$/m,
+    like $err, qr/kubectl -n kube-system delete secret sh\.helm\.release\.v1\.cilium\.v3\n\z/,
         'the Secret to delete, as a command';
+    is scalar(() = $err =~ /\n/g), 1, 'in one line: OCP::Rex reads a failure line by line';
     ok !OCPTest::Rexfile->lib_opts('Rex::Rancher::Cilium::install_cilium'),
         'install_cilium is not tried over a hanging operation';
 };

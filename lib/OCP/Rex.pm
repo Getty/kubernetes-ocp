@@ -215,6 +215,11 @@ sub run_task {
     # task, nowhere. A warning on a task that worked is part of what the run
     # did, so it goes into the narrative on STDOUT; on a failed one it is
     # part of the diagnosis, on STDERR, unless the full log already said it.
+    my @steps = _task_steps("$out\n$err");
+    if (@steps && !$self->quiet && !$show_log && !$debug) {
+        print "  [..] $_\n" for @steps;
+    }
+
     my @warnings = _task_warnings("$out\n$err");
     if (@warnings && !$self->quiet) {
         if ($success) {
@@ -253,7 +258,21 @@ sub run_task {
         stderr   => $err,
         exit     => $? >> 8,
         warnings => \@warnings,
+        steps    => \@steps,
     };
+}
+
+# The task's own progress lines, in order: "[STEP] ..." on its stdout (the
+# Rexfile's upgrade_cilium says one per Cilium minor it passes, k195). A task
+# that worked shows no log, so these are what the run narrates of it.
+sub _task_steps {
+    my ($log) = @_;
+    my @steps;
+    for my $line (split /\n/, $log) {
+        $line =~ s/\e\[[0-9;]*m//g;
+        push @steps, $1 if $line =~ /^\s*\[STEP\]\s+(.*\S)/;
+    }
+    return @steps;
 }
 
 # The distinct warnings in a task's output, in order, without timestamp or

@@ -57,6 +57,18 @@ our $VERSIONS = {
     },
 };
 
+# The Cilium minors a cluster is walked through to reach the pin (k195): Cilium
+# upgrades one minor at a time, so a cluster more than one minor behind needs
+# the ones between. One entry per minor, ascending; the pin's own minor ends
+# the list. The patch of a station is the one OCP has pinned for that minor
+# (1.17.0, 1.19.2 and 1.20.0 are former pins, 1.18.0 the one the first
+# manifest carried); a cluster already on a later patch of the minor goes on
+# from there -- the library takes it as that minor. A new pin adds its minor
+# here (t/236 holds the list gapless up to the pin).
+our @CILIUM_STATIONS = qw( 1.17.0 1.18.0 1.19.2 1.20.0 );
+
+sub cilium_stations { return @CILIUM_STATIONS }
+
 # No local $VERSION here — OCP.pm is the single source of truth. Loaded
 # lazily (not via `use`) so this stays safe whether OCP.pm is already loaded
 # (bin/ocp loads it before any OCP::Cmd::* pulls this module in) or not

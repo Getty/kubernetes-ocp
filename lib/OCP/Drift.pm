@@ -41,6 +41,8 @@ has rex_prober => (is => 'ro');
 #   remedy_config  task params read off OCP::Config, as { task param =>
 #                config method }; left out when the method returns nothing
 #                (undef, or an empty hash or list)
+#   remedy_lists  further task params that are lists kept in OCP::Versions,
+#                as { task param => OCP::Versions method }
 #   remedy_if_missing  the remedy installs from nothing too, so a 'missing'
 #                entry carries it. Without this a missing component waits for
 #                a full deploy, which reconcile never runs.
@@ -84,6 +86,9 @@ our @COMPONENT_PROBES = (
             # installs instead of upgrading (k206); an upgrade ignores it.
             pod_cidr    => 'pod_cidr',
         },
+        # Cilium moves one minor at a time: the stations between a far-away
+        # cluster and the pin (k195), { task param => OCP::Versions method }.
+        remedy_lists => { cilium_stations => 'cilium_stations' },
         # No Cilium at all is a cluster without a pod network: the task
         # installs it (k206).
         remedy_if_missing => 1,
@@ -343,10 +348,12 @@ sub remedy_params {
         next if ref $v eq 'ARRAY' && !@$v;
         $configured{$param} = $v;
     }
+    my $lists = $probe ? $probe->{remedy_lists} // {} : {};
     return {
         version      => $version,
         distribution => $config->distribution,
         (map { $_ => OCP::Versions->get_component_version($pins->{$_}) } keys %$pins),
+        (map { my $m = $lists->{$_}; $_ => [ OCP::Versions->$m ] } keys %$lists),
         %configured,
     };
 }
