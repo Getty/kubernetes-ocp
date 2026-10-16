@@ -84,6 +84,73 @@ concerns deliberately never move into `t/` — everything in `t/` is
 network-free and cluster-free, running against inline mock packages
 (`FakeK8s`, `FakeProvider`, `FakeRex`) and `File::Temp` fixtures.
 
+### What smoke covers
+
+| Always | |
+|---|---|
+| provenance | `share/` really comes from the working tree |
+| `init`, `apply` | single-node control plane, API endpoint on 6443 |
+| `status`, `kubeconfig`, `node ls` | Ready, IP, kubectl reaches the cluster |
+| workloads | Cilium and the registry run, no pod in CrashLoopBackOff/Error |
+| lease | `xt/lease-409.t` against the live API server (see below) |
+| `update --dry-run`, `destroy` | |
+
+| Optional: the worker path | Switch | Costs |
+|---|---|---|
+| ssh worker on an existing machine | `OCP_SMOKE_WORKER_HOST=<host>` | nothing; its Kubernetes is wiped like `SMOKE_HOST`'s, +3–6 min |
+| Hetzner worker | `OCP_SMOKE_HETZNER_WORKER=1` (+ `HETZNER_API_TOKEN`) | one paid server for the length of the run, +5–10 min |
+
+Both do the same, in this order: a worker pool (`smoke-workers`) is written
+into the `ocp.yaml` `ocp init` made, so `ocp apply` joins it after the control
+plane; smoke waits for its OCPNode to be `Ready`
+(`OCP_SMOKE_WORKER_TIMEOUT`, default 900 s); reads
+`status.kubernetesNodeName` (empty is a failure — the name is not guessed) and
+checks `kubectl get node` under exactly that name; schedules a pod pinned to it
+by `kubernetes.io/hostname` (`OCP_SMOKE_POD_IMAGE`, default
+`registry.k8s.io/pause:3.10`, which every node already has); runs
+`ocp node rm`; and checks the machine is clean afterwards:
+
+- ssh worker: the OCPNode and the Kubernetes node are gone and `rke2-agent`
+  (`k3s-agent` for `SMOKE_DIST=k3s`) is no longer active on the host;
+- Hetzner worker: the OCPNode and the Kubernetes node are gone and no server
+  labelled `ocp-cluster=smoke-<dist>` is left at Hetzner (counted through
+  `OCP::Provider::Hetzner`). If a run fails with the paid worker up, the exit
+  trap calls `ocp destroy --force` unless `SMOKE_KEEP` is set.
+
+```bash
+# free: an ssh worker. root@<worker> must accept SMOKE_SSH_KEY (the cluster's
+# admin key is that same key).
+OCP_SMOKE_WORKER_HOST=crag.lab SMOKE_HOST=reuben.cihq make smoke
+
+# paid: SMOKE_HOST needs an address the Hetzner server can reach (public), and
+# robocop (switched on by the hetzner pool) must be able to pull its image.
+HETZNER_API_TOKEN=... OCP_SMOKE_HETZNER_WORKER=1 \
+  OCP_SMOKE_HETZNER_SERVER_TYPE=cpx21 OCP_SMOKE_HETZNER_LOCATION=fsn1 \
+  SMOKE_HOST=cp.example.org make smoke
+```
+
+The helper `xt/smoke-worker.pl` holds the parsing (the pool in `ocp.yaml`, the
+`ocp node ls --json` lookup, the pod, the server count); `t/229-smoke-worker.t`
+tests it without a cluster. The shell around it — the machines — is the part
+only a run can test.
+
+### The lease against a real API server
+
+`xt/lease-409.t` creates a throwaway OCPNode (`lease-409-<pid>`, control-plane,
+phase `Failed` so robocop leaves it alone), then proves with two `OCP::Node`
+instances of different `reconciler_id` that (1) a write from a stale read is
+answered `409` by the API server and does not overwrite the holder, and (2) in
+`OCP_SMOKE_LEASE_ROUNDS` (default 8) simultaneous races for the lease, forked
+processes with a common start time, exactly one wins and the other is told the
+lease is held. The node is deleted at the end whatever happened. `smoke.sh`
+runs it every time; on its own:
+
+```bash
+OCP_SMOKE_KUBECONFIG=/path/to/kubeconfig prove -l xt/lease-409.t
+```
+
+Without the variable it skips.
+
 ## Output channels: STDOUT vs STDERR
 
 Every `ocp` command has two output channels with separate jobs, and mixing them

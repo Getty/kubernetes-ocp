@@ -458,7 +458,7 @@ Stated plainly, so nothing surprises you halfway through:
 | [`ocp.yaml` reference](docs/configuration.md) | Every configuration field, provider modes, version pinning |
 | [Security model](docs/security.md) | PIN1/PIN2, the key layout, what belongs in git, what losing a PIN costs |
 | [robocop](docs/robocop.md) | The in-cluster controller, and how credentials reach it |
-| [Developing OCP](docs/development.md) | Build, test, the Docker-first toolchain, CI, releasing |
+| [Developing OCP](docs/development.md) | Build, test, the live smoke run (incl. the worker path), the Docker-first toolchain, CI, releasing |
 | [Architecture decisions](docs/adr/) | Why OCP is shaped the way it is, one decision per file |
 
 ## Links

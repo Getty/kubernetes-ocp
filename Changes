@@ -14,6 +14,14 @@ Revision history for OCP
       `ocp.internal/robocop-sigterm` annotation) are deleted with a 30 s grace
       period after the rollout. `ocp deploy-image`'s override hint is `[WARN]`;
       `ocp node ls --json` has `reconciler`.
+    - `make smoke` can cover the worker path: `OCP_SMOKE_WORKER_HOST=<host>`
+      (ssh worker, free) or `OCP_SMOKE_HETZNER_WORKER=1` (paid) joins a worker
+      through an `ocp.yaml` pool, waits for Ready, checks
+      `status.kubernetesNodeName` against `kubectl get node`, schedules a pod
+      onto it and checks that `ocp node rm` leaves no agent / no server
+      behind. `xt/lease-409.t` proves the OCPNode lease against a real API
+      server (409 on a stale write, one winner of a race). See
+      docs/development.md.
     - OCPNode host keys are pinned: the first SSH contact writes the machine's
       host key fingerprints (all key types) to `status.hostKeys`, and every
       later contact -- CLI or any robocop pod -- verifies against them. A
