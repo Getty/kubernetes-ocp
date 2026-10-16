@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-16T00:04:16Z
+claimed_by: lab-226-227-229
+class: standard
+completed: 2026-10-16T04:51:59Z
+created: 2026-10-15T23:22:54Z
+id: 226
+priority: medium
+started: 2026-10-15T23:24:36Z
+status: done
+tags:
+- stderr
+- output
+- lab
+title: 'Ausgabekanäle: Erfolgs-Rex-Log auf STDERR, Fehler auf STDOUT, Exit 0 trotz
+  Failed-Worker (Lab 2026-10-15/16)'
+updated: 2026-10-16T04:51:59Z
+---
+
+Sammelkarte aus dem Lab-Durchgang 2026-10-15/16 (.lab/ergebnis.md bei frank-ocp, Kopie im Hub .agent-sessions/ocp-lab/). Hausregel: STDERR ist alles, was schiefging.
+1. Auch ein erfolgreicher apply schreibt den kompletten '--- Rex Output ---'-Block (INFO, ANSI) auf STDERR (lib/OCP/Rex.pm:190).
+2. OCP::Cmd::Apply::CR::print_worker_status gibt fehlgeschlagene Worker ('[!!] name — Failed (…)') auf STDOUT aus – Gegenstück zum #204-Fix 6ac9b25.
+3. ocp apply mit Worker in Failed: 'This run did NOT bring the cluster back to spec.', aber Exit 0.
+4. Wichtige Warnungen (#193 hold_running im Re-Bootstrap, #199 'keeping cluster-cidr') stehen nur im rohen Rex-Log auf STDERR, die STDOUT-Erzählung erwähnt sie nicht.
+5. ANSI-Farben auch, wenn STDOUT keine TTY ist (ocp update).
+6. LANG=de_DE.UTF-8 aus ocp.yaml/Umgebung im Container -> 'perl: warning: Setting locale failed' bei jedem Aufruf.
+7. #204-Kosmetik: Zeile beginnt mit 'Error:   [FAIL] SSH not ready: …', der Key-Pfad ist ein Temp-Pfad statt keys.yaml-Name.
+Fertig, wenn: Erfolg schreibt nichts auf STDERR (Rex-Log nur mit --verbose oder bei Fehler), alle Failed-Ausgaben auf STDERR, Exit != 0 bei Failed-Worker, Warnungen in der Erzählung, Farben nur an TTY, Locale-Warnung weg; Tests je Punkt.
+
+2026-10-16 00:04 Alle 7 Punkte in 930efe1 (Branch lab-226-227-229, nicht gepusht). (1) Rex-Log bei Erfolg nur mit --verbose (ocp update reicht verbose jetzt durch). (2) print_worker_status: alles Nicht-Ready auf STDERR, Migration-Hint mit. (3) Exit != 0: Deploy-Pfad zählt nicht fertige CP-Joins/Worker/robocop-Fehler, Reconcile-Pfad alle @unresolved in _failed_components → Health::finish (unverändert) sagt es einmal auf STDERR und gibt 1; die STDOUT-Zeile 'did NOT bring the cluster back to spec' entfällt dafür; gescheiterte/abgelehnte Remedies [!!] auf STDERR. (4) Warnungen (Rex::Logger WARN, Rexfile [WARN]/WARNING:) als '  [WARN] …' in der STDOUT-Erzählung, run_task gibt sie als warnings zurück. (5) ocp update färbt nur an TTY; rex läuft mit -m (in Rex 1.16.1 verifiziert). (6) Dockerfile ENV PERL_BADLANG=0 (Host-LANG bleibt für ocp init lesbar; locales-all wegen Größe verworfen). (7) [FAIL]-Präfix weg; abgelehnter Key wird per OCP::ClusterKey->label benannt (keys.yaml-Name / .ocp/id_ed25519), Fingerprint bleibt. Tests: t/226-*.t (5 neue), Kanal-Behauptungen in t/38, t/71, t/80, t/152 umgestellt; volle Suite 2309 grün. LIVE/IMAGE zu prüfen: gesundes 'ocp apply 2>err' → err leer (PIN-Prompt-Kanal ungeprüft); Re-Bootstrap mit hold_running/CIDR-Abweichung zeigt [WARN] nach 'Running Rex task'; Failed-Worker → $?=1, Banner APPLY INCOMPLETE; 'ocp update | cat' ohne ANSI; 'docker run -e LANG=de_DE.UTF-8 … ocp version' ohne Locale-Warnung (auch rex-Kind); t/226-image-locale-warning.t hat einen Teil, der nur im Image läuft (make test). Merge-Risiko frank: Health::finish-Wortlaut wird jetzt für alle @unresolved gebraucht (t/71, t/203 brechen bei Umformulierung); Drift-Dedup verlässt sich auf den String 'GPU Operator'.
+
+2026-10-16 00:04 Offene Fragen an den Maintainer (nicht gebaut): (a) '[WARN] … setup failed' für registry, registry.local-DNS, NFD, cert-manager, Gateway, LB-IPAM, node-CR (Drift) bzw. registry-DNS/LB-IPAM (Deploy) stehen weiter auf STDOUT und zählen nicht für den Exit. Empfehlung: auf STDERR und mitzählen, mindestens cert-manager und Gateway (im Deploy-Pfad 'MUST succeed'). (b) Nicht angefasst wegen Sperre/Scope: Health.pm:170 ('[!!] pod' auf STDOUT) und :242; Bootstrap.pm:457 '[!!] Installation failed, cleaning up server...' auf STDOUT; [!!]-Zeilen in Init.pm (364, 909, 959). (c) robocop setzt kein ssh_key_label – seine Ablehnungen nennen Temp-Pfad + Fingerprint; Empfehlung: 'the robo key' setzen. (d) robocop läuft mit verbose=0: erfolgreiche Installs schreiben keinen Rex-Log mehr ins Pod-Log, nur noch die [WARN]-Zeilen – konsistent mit der Hausregel, aber eine sichtbare Änderung fürs Debugging (ROBOCOP verbose existiert).
+
+Live 2026-10-16 Abschlussrunde ocplab (frank-ocp Turn 5, Image ocp-lab:4ebb059, Suite im Image 153/2352 grün): bestanden. Gesunder apply Exit 0, STDERR leer (PIN2-Prompt in secure mode auf STDERR, gewollt). update | cat ohne ANSI. version mit LANG=de_DE.UTF-8 ohne Locale-Warnung. Failed-Worker (Ghost 10.230.30.254 als Pool) Exit 1, Worker-Zeile + 'Apply did not complete' auf STDERR, Banner APPLY INCOMPLETE. Reste -> #231.
