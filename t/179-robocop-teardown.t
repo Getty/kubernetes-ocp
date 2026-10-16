@@ -305,7 +305,7 @@ subtest 'a deleted ssh worker is torn down, the key only lives for the teardown'
         'before the OCPNode delete -- otherwise the delete only marks it again';
 
     my ($term) = grep { ($_->{phase} // '') eq 'Terminating' } $k->status_writes;
-    is $term->{reconciler}, 'robocop', 'the teardown is recorded as robocop\'s';
+    like $term->{reconciler}, qr{^robocop\@}, 'the teardown is recorded as robocop\'s';
     like $out, qr/w1: deleted, tearing down/, 'logged: start';
     like $out, qr/w1: torn down, finalizer removed/, 'logged: done';
     is $err, '', 'nothing on STDERR';

@@ -448,7 +448,7 @@ subtest '_on_node_event without a providerRef marks the CR Failed' => sub {
     like $sent->{status}{message}, qr/spec\.providerRef is missing/,
         'message names what was missing';
     ok $sent->{status}{lastReconcileTime}, 'lastReconcileTime is set';
-    is $sent->{status}{reconciler}, 'robocop',
+    like $sent->{status}{reconciler}, qr{^robocop\@},
         'reconciler is the controller, not the CLI';
 };
 
@@ -516,7 +516,7 @@ subtest '_on_node_event marks Failed when the provider cannot be constructed' =>
     is $sent->{status}{phase}, 'Failed';
     like $sent->{status}{message}, qr/tokenSecretRef\.name missing/,
         'message carries the underlying construction error';
-    is $sent->{status}{reconciler}, 'robocop', 'reconciler is the controller';
+    like $sent->{status}{reconciler}, qr{^robocop\@}, 'reconciler is the controller';
 };
 
 subtest '_mark_failed survives a status patch that itself fails' => sub {

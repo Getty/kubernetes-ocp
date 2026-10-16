@@ -141,6 +141,24 @@ has resync_interval => (
     default => 60,
 );
 
+# Who this robocop is in the OCPNode leases and in status.reconciler (k232):
+# robocop@<pod name>. Every pod has to be someone of its own -- with one shared
+# 'robocop' a successor takes its predecessor's lease for its own and carries on
+# the install the predecessor was cut off in, and under RollingUpdate or
+# replicas > 1 the lease would keep robocops from each other not at all. The
+# Deployment hands the pod name in (POD_NAME, Downward API); the hostname is
+# the pod name too, should the variable be missing.
+has reconciler_id => ( is => 'lazy' );
+
+sub _build_reconciler_id {
+    my $pod = $ENV{POD_NAME};
+    unless (defined $pod && length $pod) {
+        require Sys::Hostname;
+        $pod = Sys::Hostname::hostname();
+    }
+    return "robocop\@$pod";
+}
+
 # Scheduler state (k159). _inflight: node key => Future of the running child.
 # _pending: node key => the latest CR copy of a node waiting for its turn --
 # queued, or due for one rerun once its running reconcile ends. _queue: the
@@ -418,9 +436,16 @@ sub run {
         },
     );
 
+    $self->_watch_signals;
+
     $loop->run;
 
-    # Nothing stops the loop except a fatal API check (_check_api_tick).
+    if ($self->{_stopping}) {
+        $self->log("stopped");
+        return;
+    }
+
+    # Nothing else stops the loop except a fatal API check (_check_api_tick).
     $self->_fatal($self->{_fatal} // 'the event loop stopped unexpectedly');
 }
 
@@ -485,6 +510,47 @@ sub _check_api_tick {
     return;
 }
 
+# SIGTERM / SIGINT (k232). robocop is PID 1 of its container, and PID 1 has no
+# default action for a signal it installed no handler for: the kubelet's SIGTERM
+# was ignored and every restart ran out the whole grace period before SIGKILL.
+#
+# The first signal makes robocop stop taking work: no reconcile starts any more
+# (queued nodes are looked at again by the successor's initial watch replay),
+# the resync stops, and the reconciles already running are left to finish --
+# a Rex install killed half way leaves a machine the successor cannot tell
+# from a healthy one -- each releasing its lease on its own way out. When the
+# last one has ended the loop stops and run() returns, exit 0. A reconcile that
+# outlives terminationGracePeriodSeconds is SIGKILLed by the kubelet like
+# before; its lease then expires, or is taken over once this pod is gone
+# (OCP::Node::_lease_holder_gone).
+sub _watch_signals {
+    my ($self) = @_;
+    weaken(my $wself = $self);
+    for my $sig (qw( TERM INT )) {
+        $self->loop->watch_signal($sig => sub { $wself && $wself->shutdown($sig) });
+    }
+    return;
+}
+
+sub shutdown {
+    my ($self, $why) = @_;
+    return if $self->{_stopping}++;
+    my $running = keys %{ $self->_inflight };
+    $self->log("received SIG" . ($why // 'TERM') . ": no new reconciles; "
+        . ($running ? "waiting for $running running reconcile(s) to finish" : "exiting"));
+    $self->{_resync_timer}->stop if $self->{_resync_timer};
+    $self->_stop_when_idle;
+    return;
+}
+
+sub stopping { $_[0]->{_stopping} ? 1 : 0 }
+
+sub _stop_when_idle {
+    my ($self) = @_;
+    $self->loop->stop if $self->{_stopping} && !%{ $self->_inflight };
+    return;
+}
+
 sub _fatal {
     my ($self, $msg) = @_;
     chomp $msg;
@@ -546,6 +612,8 @@ sub enqueue {
 sub _start_next {
     my ($self) = @_;
     my $queue = $self->_queue;
+    # Told to stop (SIGTERM): what is running ends, nothing new starts (k232).
+    return if $self->{_stopping};
     while (@$queue && keys %{ $self->_inflight } < $self->max_reconciles) {
         my $key = shift @$queue;
         $self->_launch($key, delete $self->_pending->{$key});
@@ -573,6 +641,7 @@ sub _finished {
 
     push @{ $self->_queue }, $key if exists $self->_pending->{$key};
     $self->_start_next;
+    $self->_stop_when_idle;
     return;
 }
 
@@ -766,7 +835,7 @@ sub _set_key_condition {
             },
         ],
         lastReconcileTime => $now,
-        reconciler        => 'robocop',
+        reconciler        => $self->reconciler_id,
         ($available ? () : (message => "Waiting for SSH key: run 'ocp inject-key'")),
     );
 
@@ -961,7 +1030,7 @@ sub _on_node_deleted {
         ssh_key_label => 'the robo key',
         distribution  => $self->distribution,
         verbose       => $self->verbose,
-        reconciler_id => 'robocop',
+        reconciler_id => $self->reconciler_id,
     );
 
     $self->log("$name: deleted, tearing down (phase $phase)");
@@ -1002,7 +1071,7 @@ sub _teardown_blocked {
                 phase             => 'Failed',
                 message           => $message,
                 lastReconcileTime => Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ'),
-                reconciler        => 'robocop',
+                reconciler        => $self->reconciler_id,
             },
         );
         1;
@@ -1097,7 +1166,7 @@ sub _on_node_event {
             # gets Rex::Rancher's version-skew check too (k205).
             kubeconfig    => OCP::Kubernetes->in_cluster_kubeconfig,
             verbose       => $self->verbose,
-            reconciler_id => 'robocop',
+            reconciler_id => $self->reconciler_id,
             %gpu_flags,
             %system_flags,
         );
@@ -1198,7 +1267,7 @@ sub _mark_failed {
         phase             => 'Failed',
         message           => $self->_with_hint($name, $message),
         lastReconcileTime => Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ'),
-        reconciler        => 'robocop',
+        reconciler        => $self->reconciler_id,
     };
 
     eval {

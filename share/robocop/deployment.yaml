@@ -19,6 +19,14 @@ spec:
         app: robocop
     spec:
       serviceAccountName: robocop
+      # SIGTERM stops robocop taking work and lets the reconciles already
+      # running finish (k232) -- an Rex install killed half way leaves a
+      # machine nobody can tell from a healthy one. An idle robocop exits at
+      # once, so the grace period only costs anything while an install runs.
+      # 600 s covers a healthy install (~540 s); one that
+      # runs longer is SIGKILLed and its lease (1200 s) is taken over as soon as
+      # this pod no longer exists.
+      terminationGracePeriodSeconds: 600
       # Pin to the control-plane node: robocop only ever needs to run where
       # the CP server lives (always amd64 in this project — see k10).
       # Workers may be a different arch (e.g. arm64 GB10/DGX Spark, karr

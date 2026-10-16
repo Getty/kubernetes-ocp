@@ -115,6 +115,8 @@ subtest 'the rest of the robocop call path is covered too' => sub {
         # k179: robocop runs OCP::Node::teardown on a deleted OCPNode.
         [ '/pods', 'list',
             'OCP::Node::_pods_to_drain lists the pods on the node' ],
+        [ '/pods', 'get',
+            'OCP::Node::_lease_holder_gone asks whether the lease holder\'s pod exists (k232)' ],
         [ '/pods/eviction', 'create',
             'OCP::Node::_drain evicts through OCP::K8s::evict' ],
         [ 'ocp.internal/ocpnodes', 'patch',

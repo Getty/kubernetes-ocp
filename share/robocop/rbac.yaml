@@ -72,6 +72,9 @@ rules:
   - pods
   verbs:
   - list
+  # get: OCP::Node::_lease_holder_gone asks whether the robocop pod holding a
+  # lease still exists (k232).
+  - get
 
 - apiGroups:
   - ""

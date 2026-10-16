@@ -131,6 +131,15 @@ package MockTransport {
                 grep { ($_->{spec}{nodeName} // '') eq $node } @{ $api->pods } ] });
         }
 
+        # One pod by name (k232): is the robocop that holds a lease still there?
+        # `pod_get_fails` answers every such read with that status instead.
+        if ($method eq 'GET' && $path =~ m{^/api/v1/namespaces/([^/]+)/pods/([^/]+)$}) {
+            return ($api->pod_get_fails, { message => 'injected pod read failure' })
+                if $api->pod_get_fails;
+            my ($found) = grep { $_->{metadata}{name} eq $2 } @{ $api->pods };
+            return $found ? (200, $found) : (404, { message => "pods \"$2\" not found" });
+        }
+
         if ($api->read_fails && $api->reads_ok_first <= 0) {
             return ($api->read_fails, { message => 'injected read failure' });
         }
@@ -167,6 +176,7 @@ package StrictK8s {
     has pods           => (is => 'rw', default => sub { [] });  # pods the drain sees
     has evict          => (is => 'rw');                  # pod name -> status (or coderef)
     has linger         => (is => 'rw', default => 0);   # evicted pods stay, Terminating
+    has pod_get_fails  => (is => 'rw', default => 0);   # HTTP status to inject on a pod read
     has put_fails      => (is => 'rw', default => 0);   # HTTP status to inject on PUTs
     has persist        => (is => 'rw', default => 0);   # a PUT replaces the served CR
 
@@ -2127,6 +2137,129 @@ subtest 'the join-token path is one constant, not one per caller' => sub {
         is $OCP::Node::K3S_TOKEN_PATH, '/tmp/ocp-k122-k3s-token',
             'a localised override of the constant is what subsequent reads see';
     }
+};
+
+#
+# Lease identity per pod (k232).
+#
+# Every robocop used the id 'robocop', so a successor pod read its
+# predecessor's lease as its own and carried on the install the predecessor was
+# cut off in. The id is robocop@<pod> now; a lease of another pod is respected
+# until it expires -- or until that pod provably no longer exists.
+#
+
+sub pod_lease { my ($pod, $ttl) = @_; "robocop\@$pod\@" . OCP::Node::_rfc3339_now() . '@' . ($ttl // 1200) }
+sub pod_obj   { my ($name, $phase) = @_; +{ apiVersion => 'v1', kind => 'Pod',
+    metadata => { name => $name, namespace => 'ocp-system' }, status => { phase => $phase // 'Running' } } }
+
+subtest 'a lease whose holder id contains an @ still parses' => sub {
+    my $p = OCP::Node::_lease_parse('robocop@robocop-abc-1@2026-10-16T01:02:03Z@1200');
+    is $p->{holder}, 'robocop@robocop-abc-1', 'holder keeps its @';
+    is $p->{ttl}, 1200, 'ttl';
+    ok OCP::Node::_lease_mine(pod_lease('p1'), 'robocop@p1'), 'own lease recognised';
+    ok !OCP::Node::_lease_mine(pod_lease('p1'), 'robocop'), 'the old shared id is not it';
+};
+
+subtest 'a live lease of ANOTHER robocop pod that still exists is respected' => sub {
+    @FakeRex::_instances = ();
+    my $lease = pod_lease('robocop-old');
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => $lease),
+        pods => [ pod_obj('robocop-old') ]);
+    my $node = lease_node($k, 'robocop@robocop-new');
+
+    is $node->reconcile, 1, 'not a failure';
+    is scalar @FakeRex::_instances, 0, 'no install: the predecessor is still at it';
+    is $node->lease_conflict, $lease, 'conflict names the lease';
+    is scalar($k->reqs('PUT')), 0, 'lease untouched';
+};
+
+subtest 'a terminating pod still exists -- its lease is respected' => sub {
+    @FakeRex::_instances = ();
+    my $pod = pod_obj('robocop-old');
+    $pod->{metadata}{deletionTimestamp} = '2026-10-16T00:00:00Z';
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => pod_lease('robocop-old')),
+        pods => [ $pod ]);
+    my $node = lease_node($k, 'robocop@robocop-new');
+    $node->reconcile;
+    is scalar @FakeRex::_instances, 0, 'no install';
+    ok defined $node->lease_conflict, 'left alone';
+};
+
+subtest 'a live lease of a robocop pod that is gone is taken over' => sub {
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => pod_lease('robocop-old')),
+        pods => [ pod_obj('robocop-other') ]);
+    my $node = lease_node($k, 'robocop@robocop-new');
+
+    is $node->reconcile, 1, 'reconcile succeeds';
+    is $node->lease_conflict, undef, 'no conflict';
+    is $FakeRex::_instances[0]{calls}[0][0], 'install_rke2_agent', 'the install continued';
+    my ($take) = map { JSON::MaybeXS::decode_json($_->{body}) } $k->reqs('PUT');
+    like $take->{metadata}{annotations}{'ocp.internal/reconciler-lease'}, qr/^robocop\@robocop-new\@/,
+        'under the successor\'s own id';
+};
+
+subtest 'a lease of a pod that Succeeded/Failed is taken over' => sub {
+    for my $phase (qw(Failed Succeeded)) {
+        @FakeRex::_instances = ();
+        my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => pod_lease('robocop-old')),
+            pods => [ pod_obj('robocop-old', $phase) ]);
+        my $node = lease_node($k, 'robocop@robocop-new');
+        $node->reconcile;
+        is scalar @FakeRex::_instances, 1, "$phase pod: install ran";
+    }
+};
+
+subtest 'a pod lookup that fails is not proof -- only the TTL counts then' => sub {
+    @FakeRex::_instances = ();
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => pod_lease('robocop-old')),
+        pod_get_fails => 403);
+    my $node = lease_node($k, 'robocop@robocop-new');
+    $node->reconcile;
+    is scalar @FakeRex::_instances, 0, 'no install';
+    ok defined $node->lease_conflict, 'left alone';
+};
+
+subtest 'the old pod-less "robocop" lease and the CLI lease are never looked up' => sub {
+    for my $holder ('robocop', 'cli') {
+        @FakeRex::_instances = ();
+        my $lease = "$holder\@" . OCP::Node::_rfc3339_now() . '@1200';
+        my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => $lease));
+        my $node = lease_node($k, 'robocop@robocop-new');
+        $node->reconcile;
+        is scalar @FakeRex::_instances, 0, "$holder: respected while live";
+        is scalar(grep { $_->{path} =~ m{/pods/} } @{ $k->requests }), 0, "$holder: no pod lookup";
+    }
+    # ...and an expired one is taken as always.
+    @FakeRex::_instances = ();
+    my $old = 'robocop@2020-01-01T00:00:00Z@300';
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => $old));
+    lease_node($k, 'robocop@robocop-new')->reconcile;
+    is scalar @FakeRex::_instances, 1, 'expired old-format lease: taken over';
+};
+
+subtest 'status.reconciler: an observer that stepped aside does not take the column over' => sub {
+    # The CLI skipped under robocop's lease; later it sees the node Joining and
+    # writes Ready. The install was robocop's, and so is the column.
+    my $k = StrictK8s::build(cr => installing_cr('ocp.internal/reconciler-lease' => pod_lease('robocop-old')),
+        pods => [ pod_obj('robocop-old') ], node => { metadata => { name => 'l1' },
+            status => { conditions => [ { type => 'Ready', status => 'True' } ] } });
+    my $node = lease_node($k, 'cli');
+    $node->reconcile;
+    ok defined $node->lease_conflict, 'skipped under the foreign lease';
+    $node->_set_cr({ %{ $node->cr }, status => { phase => 'Joining', publicIP => '1.2.3.4' } });
+    $node->reconcile;
+    my @st = map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+             grep { $_->{path} =~ m{/status$} } $k->reqs('PATCH');
+    ok scalar(@st), 'Ready was written';
+    ok !exists $_->{reconciler}, 'without a reconciler field' for @st;
+
+    # A reconciler that never yielded still stamps itself.
+    my $k2 = StrictK8s::build(cr => installing_cr(), pods => []);
+    lease_node($k2, 'robocop@p')->reconcile;
+    my @st2 = map { JSON::MaybeXS::decode_json($_->{body})->{status} }
+              grep { $_->{path} =~ m{/status$} } $k2->reqs('PATCH');
+    is $st2[-1]{reconciler}, 'robocop@p', 'the worker stamps its own id';
 };
 
 done_testing;

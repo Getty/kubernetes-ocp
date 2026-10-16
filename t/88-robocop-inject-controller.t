@@ -230,7 +230,7 @@ subtest 'no key: a Pending node is held with SSHKeyAvailable=False, not provisio
     is $c->{reason}, 'KeyInjectionRequired', 'reason KeyInjectionRequired';
     like $c->{message}, qr/ocp inject-key/,  'the message says what to run';
     like $st->{message}, qr/ocp inject-key/, 'and so does status.message';
-    is $st->{reconciler}, 'robocop', 'written by robocop';
+    like $st->{reconciler}, qr{^robocop\@}, 'written by robocop';
 };
 
 subtest 'no key: an already-held node is not patched again (no event loop)' => sub {

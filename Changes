@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - robocop leases as robocop@<pod name> (POD_NAME, Downward API), not as one
+      shared `robocop`: a successor pod no longer takes its predecessor's lease
+      for its own. A live lease of another robocop pod is taken over once that
+      pod is gone (404, Succeeded, Failed); otherwise it waits for the TTL.
+      robocop handles SIGTERM -- no new reconciles, running ones finish and
+      release their lease -- and the Deployment sets terminationGracePeriodSeconds
+      600. status.reconciler is no longer overwritten by a reconciler that
+      stepped aside for another's lease.
     - First release. OCP is a Perl CLI that builds and looks after RKE2 or K3s
       clusters -- on Hetzner Cloud servers it creates, on machines you already
       own over SSH, or on the local host -- from one spec kept in git.

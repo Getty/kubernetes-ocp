@@ -227,7 +227,7 @@ subtest 'a watch event with no providerRef is marked Failed via the status subre
     my ($sent) = $k->status_patches;
     is $sent->{phase}, 'Failed', 'phase Failed';
     like $sent->{message}, qr/providerRef/, 'and the message says what is missing';
-    is $sent->{reconciler}, 'robocop', 'marked by the robocop reconciler';
+    like $sent->{reconciler}, qr{^robocop\@}, 'marked by the robocop reconciler';
 };
 
 subtest 'a watch event whose provider cannot be loaded reaches _on_node_event' => sub {

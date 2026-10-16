@@ -101,6 +101,10 @@ has reconciler_id => (is => 'ro', default => sub { 'cli' });
 # robocop says it in its log, the CLI's poll loop simply looks again.
 has lease_conflict => (is => 'rwp', init_arg => undef);
 
+# Sticky version of the above (k232): the first lease this object ever left a
+# node to, kept across later passes. See _patch_status.
+has lease_conflict_seen => (is => 'rwp', init_arg => undef);
+
 # Set when the last teardown failed at the machine -- the server delete or the
 # uninstall -- rather than before it (k229). A fact, not advice: what to do
 # about it depends on who called, and only `ocp node rm` has a --keep-machine
@@ -202,7 +206,9 @@ sub _rfc3339_now { Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ') }
 sub _lease_parse {
     my $v = shift;
     return unless $v;
-    $v =~ /^([^@]+)\@([^@]+)\@(\d+)$/ or return;
+    # The holder may itself contain an '@' (robocop@<pod>, k232); the timestamp
+    # and the TTL never do, so the greedy first group is unambiguous.
+    $v =~ /^(.+)\@([^@]+)\@(\d+)$/ or return;
     return { holder => $1, ts => $2, ttl => $3 };
 }
 
@@ -283,7 +289,8 @@ sub _acquire_lease {
     my $cr = $self->_get_cr // $self->cr;
     my $ann = $cr->{metadata}{annotations} //= {};
     my $existing = $ann->{'ocp.internal/reconciler-lease'};
-    if ($existing && _lease_live($existing) && !_lease_mine($existing, $self->reconciler_id)) {
+    if ($existing && _lease_live($existing) && !_lease_mine($existing, $self->reconciler_id)
+        && !$self->_lease_holder_gone($existing)) {
         die "lease held by another reconciler: $existing\n";
     }
     $ann->{'ocp.internal/reconciler-lease'} = sprintf "%s@%s@%d",
@@ -302,6 +309,31 @@ sub _acquire_lease {
     return $updated;
 }
 
+# A live lease of a robocop pod that provably no longer exists (k232). Every
+# robocop pod leases as robocop@<pod name>; a predecessor killed in the middle
+# of an install leaves its lease behind for up to $INSTALL_LEASE_TTL, and the
+# successor -- another pod, another name -- would otherwise wait that out
+# before it may continue. "Provably": the Pod answers 404, or has Succeeded /
+# Failed. A pod that is merely terminating still exists and may still be
+# working. Any other answer (API error, no such lookup) is "not known gone" and
+# leaves the TTL as the only way out. The CLI ('cli') and the old, pod-less
+# 'robocop' leases name no pod, so they only ever expire.
+sub _lease_holder_gone {
+    my ($self, $lease) = @_;
+    my $l = _lease_parse($lease) or return 0;
+    my ($pod) = $l->{holder} =~ /^robocop\@(.+)$/ or return 0;
+    my $obj = eval {
+        $self->k8s->get('Pod', $pod, namespace => $self->namespace);
+    };
+    if (my $err = $@) {
+        return $err =~ /\b404\b/ ? 1 : 0;
+    }
+    return 0 unless $obj;
+    my $h = $self->_struct($obj);
+    my $phase = $h->{status}{phase} // '';
+    return ($phase eq 'Succeeded' || $phase eq 'Failed') ? 1 : 0;
+}
+
 sub _release_lease {
     my $self = shift;
     # Re-read before writing. Between acquire and release the caller patched
@@ -318,7 +350,11 @@ sub _release_lease {
 sub _patch_status {
     my ($self, %updates) = @_;
     $updates{lastReconcileTime} //= _rfc3339_now();
-    $updates{reconciler}        //= $self->reconciler_id;
+    # Not when this pass stepped aside for another reconciler's lease (k232):
+    # the one that did the work stays the node's reconciler, the observer
+    # that merely saw it become Ready does not take the column over.
+    $updates{reconciler}        //= $self->reconciler_id
+        unless defined $self->lease_conflict_seen;
 
     my $status = $self->cr->{status} //= {};
     $status->{$_} = $updates{$_} for keys %updates;
@@ -776,6 +812,7 @@ sub reconcile {
         # that is doing fine (k227).
         if ($err =~ /^lease held by another reconciler: (.*)/) {
             $self->_set_lease_conflict($1);
+            $self->_set_lease_conflict_seen($1);
             return 1;
         }
         $self->_patch_status(phase => 'Failed', message => "$err");
@@ -1420,6 +1457,13 @@ also how a node whose holder died gets picked up once the lease expires.
 Before k227 the install ran without a lease, and C<ocp node add> and a
 restarting robocop installed onto the same host at the same time.
 
+A live lease of another robocop pod (holder C<robocop@E<lt>podE<gt>>) is taken
+over before it expires when that pod provably no longer exists: the Pod answers
+404, or is C<Succeeded>/C<Failed>.  A pod that is merely terminating still
+exists and may still be working, and a failed lookup proves nothing -- both
+leave the TTL as the only way out, as do the CLI's lease and the pod-less
+C<robocop> of releases before k232.
+
 C<teardown> takes the same lease before it starts and renews it after the
 drain, so C<ocp node rm> and robocop never tear down the same node at once,
 nor one the other is provisioning.
@@ -1489,9 +1533,15 @@ the check.
 =item reconciler_id
 
 String identifying the reconciler holding the lease.  Defaults to
-C<'cli'>.  Robocop sets it to C<'robocop'> -- one id for every pod and every
-reconcile child, so a restarted robocop takes its predecessor's lease over at
-once; the controller itself keeps two reconciles of one OCPNode apart.
+C<'cli'>.  Robocop sets it to C<robocop@E<lt>pod nameE<gt>> -- one id per pod,
+shared by that pod's reconcile children (k232).  A successor pod therefore does
+not mistake its predecessor's lease for its own; see L</Lease Mechanics>.
+
+=item lease_conflict_seen
+
+Read-only: the first lease this object ever left a node to (k232).  Once set,
+status writes no longer stamp C<status.reconciler> -- the reconciler that did
+the work stays the node's reconciler.
 
 =item lease_conflict
 
