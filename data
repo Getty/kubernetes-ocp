@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-16T00:24:23Z
+claimed_by: lab-226-227-229
+class: standard
+completed: 2026-10-16T06:23:11Z
+created: 2026-10-15T23:22:57Z
+id: 229
+priority: low
+started: 2026-10-15T23:25:02Z
+status: done
+tags:
+- lab
+- ux
+title: 'Kleinkram aus dem Lab: Hostname aus IP, node rm für nie erreichten Node, ocp
+  ssh --node (Lab 2026-10-15/16)'
+updated: 2026-10-16T06:23:11Z
+---
+
+Aus dem Lab-Durchgang 2026-10-15/16.
+1. Ist control_planes.host eine IP, setzt OCP den Hostnamen des Hosts auf die k218-Form (agent-lab-2 -> 10-230-30-212). FRAGE an Maintainer: gewollt? Ein vorhandener sinnvoller Hostname geht verloren.
+2. Ein OCPNode, der seinen Host nie erreicht hat (Phase Failed), lässt sich mit ocp node rm nicht entfernen (Teardown scheitert an SSH, k175: lieber laut). Ohne robocop hängt kubectl delete dann am Finalizer ocp.internal/teardown. Die Meldung nennt keinen Ausweg (z. B. node rm --force / --keep-machine für nie provisionierte Nodes).
+3. ocp ssh --node crag löst den Node-Namen als Hostnamen auf ('Could not resolve hostname crag') statt die Adresse aus dem OCPNode zu nehmen; ocp ssh reicht keinen Befehl durch.
+
+2026-10-15 23:29 Punkt 1 (Hostname aus IP) – Frage an den Maintainer, nicht gebaut. Befund: OCP::Cmd::Apply::Bootstrap::host_name_parts macht aus einer IP die k218-Form (10-230-30-212) und cp_identity nutzt sie als name UND hostname; der Rexfile-Weg setzt damit den OS-Hostnamen. Empfehlung: Ist control_planes.host eine IP, den OS-Hostnamen nicht anfassen; die k218-Form nur als Kubernetes-Node-Name (RKE2/K3s node-name in config.yaml) und OCPNode-Name verwenden – die brauchen einen stabilen, DNS-tauglichen Namen, der Host nicht. Bei FQDN/Kurzname bleibt das heutige Verhalten. Optional später: control_planes[].name als explizite Überschreibung. Wichtig fürs Umstellen: bestehende Cluster haben den Node schon unter der k218-Form registriert; der Node-Name darf sich nicht ändern, nur das Setzen des OS-Hostnamens fällt weg.
+
+2026-10-16 00:24 Punkte 2 und 3 in 1d6647f (Branch lab-226-227-229, nicht gepusht). (2) ocp node rm NAME --keep-machine: Teardown ohne Provider-Löschung (OCP::Node::teardown(keep_machine => 1); Lease, Cordon/Drain, Finalizer, Deletes unverändert), baut keinen Provider, fragt keinen Key/PIN2; STDOUT nennt, was liegen bleibt (Hetzner: Server-ID/IP, kostet weiter; ssh/local: RKE2/K3s-Rest registriert sich neu + Uninstall-Skripte). Scheitert die Teardown an der Maschine (machine_cleanup_failed), nennt ocp node rm den Ausweg, bei nie beigetretenem Node ausdrücklich. Default (k175, laut) unverändert. Flag-Name --keep-machine ist meine Wahl aus dem Kartenvorschlag (benennt die Konsequenz; --force wäre mehrdeutig), vor Release leicht änderbar. Nebenbei behoben: MooX::Cmd gab --keep-machine als Node-Namen weiter. (3) ocp ssh --node NAME: OCPNode (status.publicIP, sonst spec.host), dann K8s-Node mit exakt dem Namen, erst dann Hostname-Fallback; police*/cp* unverändert; OCPNode ohne Adresse wird mit Phase abgewiesen. ocp ssh --node NAME -- CMD führt den Befehl aus, Ausgabe STDOUT, Exit-Code durchgereicht; ClusterKey-Prompttext in ocp ssh auf STDERR umgelenkt. Tests: t/18c, t/16, t/229-ssh-node-name.t, t/229-ssh-command.t (Ersatz-ssh im PATH, Exit 7 kommt durch), t/71; volle Suite 2348 grün. LIVE zu prüfen: ocp node rm crag --keep-machine auf Failed-ssh-OCPNode, auch auf einem per kubectl gelöschten am Finalizer (geht der Lease-Write auf ein Objekt mit deletionTimestamp durch?); ocp ssh --node crag sowie ocp ssh --node crag -- false (Exit 1 erwartet); Secure-Mode: ocp ssh --node X -- cat /etc/hostname > f, f enthält nur Nutzlast. Offen: (a) Befehlsform schreibt bei Erfolg noch Banner/[ok] auf STDERR (vs. k226: Erfolg = STDERR leer) – weglassen?; (b) --keep-machine auf beigetretenem Hetzner-Node: Meldung nennt Kosten, nicht die Neuregistrierung; (c) -v nach -- schaltet run_cli-Verbose ein (harmlos, unsauber); (d) OCP::ClusterKey schreibt seine Erklärung vor dem PIN2-Prompt generell auf STDOUT – Secrets-Lane.
+
+2026-10-16 Getty zu Punkt 1: wie empfohlen – bei IP als control_planes.host den OS-Hostnamen nicht anfassen; k218-Form nur als Kubernetes-Node-Name und OCPNode-Name. Bestehende Cluster behalten ihren registrierten Node-Namen.
+
+2026-10-16 Punkt 1 gebaut in 138a7ad (main, kein Push): cp_identity set_hostname=0 bei IP-Host, install_server ohne hostname/domain, node_name unverändert; Worker, deren OCPNode-Name die Strichform ihrer IP ist, ohne hostname; gewählter Name/FQDN wie bisher. t/229-ip-host-keeps-hostname.t (gegen altes lib rot), Suite 154/2358 grün. LIVE offen: frischer CP per IP behält Hostnamen; Re-Bootstrap von ocplab (CP heißt schon 10-230-30-212) ändert den Node-Namen nicht.
+
+Live 2026-10-16 Abschlussrunde ocplab (frank-ocp Turn 5, Image ocp-lab:4ebb059, Suite im Image 153/2352 grün): Punkte 2+3 bestanden. node rm ghost scheitert und nennt --keep-machine; --keep-machine entfernt sofort ohne PIN, auch an einem Objekt mit deletionTimestamp am Finalizer. ocp ssh --node <Name> interaktiv ok, '-- false' Exit 1, '-- cat /etc/hostname > f' nur Nutzlast. Punkt 1 (138a7ad) live noch offen (nächster Lab-Lauf).
+
+Live 2026-10-16 Runde 6 (frank-ocp, ocp-lab:6801f92): Punkt 1 bestanden: Hostname agent-lab-2 zurückgesetzt, Re-Bootstrap über prepare_node ohne Hostnamen-Schritt; Hostname bleibt agent-lab-2, Node-Name 10-230-30-212, config.yaml byte-gleich, kein rke2-Neustart; crag behält 'crag'.
