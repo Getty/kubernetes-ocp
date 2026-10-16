@@ -122,6 +122,11 @@ sub run_task {
         '-H', $self->host,
         '-u', $self->user,
     );
+    # -m: monochrome. Rex::Logger colours every line whether or not anyone
+    # reads it on a terminal; here it is read by _failure_reason and
+    # _task_warnings, or printed on STDERR into a pipe or a pod log, and the
+    # escapes are noise in all three (k226).
+    push @cmd, '-m';
     push @cmd, '-d' if $debug;
 
     # Pass SSH keys via environment variables (Rex way)
@@ -187,7 +192,13 @@ sub run_task {
     # output channels). In debug mode it already streamed live above; don't
     # print it a second time. A failure whose reason was extracted carries it in
     # the error below, so the raw log is left for --verbose/OCP_REX_DEBUG.
-    my $show_log = !$self->quiet && !($reason && !$self->verbose);
+    #
+    # A task that succeeded has nothing to diagnose: its log is shown only when
+    # --verbose asks for it. Every successful apply used to write the whole
+    # block, INFO lines and all, onto STDERR -- where a wrapper or a human
+    # reads "something went wrong" (k226, lab 2026-10-15).
+    my $show_log = !$self->quiet
+        && ($self->verbose || (!$success && !$reason));
     if ($show_log || $debug && !$self->quiet) {
         print STDERR "--- Rex Output ---\n";
         unless ($debug) {
@@ -195,6 +206,22 @@ sub run_task {
             print STDERR $err if length $err;
         }
         print STDERR "--- End Rex Output ---\n";
+    }
+
+    # What the task warned about (k226): rex-rancher keeping the running
+    # distribution version (hold_running, k193), the Rexfile keeping a
+    # running server's cluster-cidr (k199). Said only inside the log, they
+    # went wherever the log went -- and with the log off for a successful
+    # task, nowhere. A warning on a task that worked is part of what the run
+    # did, so it goes into the narrative on STDOUT; on a failed one it is
+    # part of the diagnosis, on STDERR, unless the full log already said it.
+    my @warnings = _task_warnings("$out\n$err");
+    if (@warnings && !$self->quiet) {
+        if ($success) {
+            print "  [WARN] $_\n" for @warnings;
+        } elsif (!$show_log && !$debug) {
+            print STDERR "  [WARN] $_\n" for @warnings;
+        }
     }
 
     if (!$success) {
@@ -219,10 +246,29 @@ sub run_task {
     }
 
     return {
-        stdout => $out,
-        stderr => $err,
-        exit   => $? >> 8,
+        stdout   => $out,
+        stderr   => $err,
+        exit     => $? >> 8,
+        warnings => \@warnings,
     };
+}
+
+# The distinct warnings in a task's output, in order, without timestamp or
+# colour. Three shapes say "warning" here: Rex::Logger's "[date] WARN - ..."
+# (rex-rancher, rex-gpu, Rex::LibSSH), and the Rexfile's own "[WARN] ..." and
+# "WARNING: ..." lines on stdout.
+sub _task_warnings {
+    my ($log) = @_;
+    my (%seen, @msgs);
+    for my $line (split /\n/, $log) {
+        $line =~ s/\e\[[0-9;]*m//g;
+        next unless $line =~ /^(?:\[[^\]]*\]\s*)?WARN\s+-\s+(.*\S)/
+                 || $line =~ /^\s*\[WARN\]\s+(.*\S)/
+                 || $line =~ /^\s*WARNING:\s+(.*\S)/;
+        my $m = $1;
+        push @msgs, $m unless $seen{$m}++;
+    }
+    return @msgs;
 }
 
 # The distinct messages of Rex's "ERROR - ..." log lines, in order, newline

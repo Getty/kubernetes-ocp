@@ -146,6 +146,21 @@ sub capture {
     return ($out, $err, @r);
 }
 
+# capture, plus what went to STDERR: since k226 a failure's explanation --
+# the migration hint, a remedy that did not run, the unfinished verdict -- is
+# said there, not among the progress lines.
+sub capture_stderr_too {
+    my ($code) = @_;
+    my $stderr = '';
+    open my $eh, '>', \$stderr or die "capture: $!";
+    my ($out, $err, @r);
+    {
+        local *STDERR = $eh;
+        ($out, $err, @r) = capture($code);
+    }
+    return ($out, $stderr, $err, @r);
+}
+
 # ------------------------------------------------------- which key, and why
 
 subtest 'secure mode + hetzner reaches the admin key, never .ocp/id_ed25519' => sub {
@@ -892,7 +907,7 @@ sub apply_workers {
     local *OCP::Node::from_cr     = sub { bless {}, 'FakeWorkerNode' };
     local *FakeWorkerNode::reconcile_until_ready = sub { $ready };
 
-    my ($out, $err, @results) = capture(sub {
+    my ($out, $stderr, $err, @results) = capture_stderr_too(sub {
         with_key_store(sub {
             # The production route to the key: bootstrap picks it, parks it on
             # the command object and passes the PATH on to the deploy step.
@@ -907,7 +922,7 @@ sub apply_workers {
         });
     });
 
-    return { out => $out, err => $err, results => \@results };
+    return { out => $out, stderr => $stderr, err => $err, results => \@results };
 }
 
 # How often the diagnosis appears in a run's output.
@@ -927,9 +942,11 @@ subtest 'ocp apply explains a worker that would not take the admin key' => sub {
     is $r->{results}[0]{phase}, 'Failed',
         'and it is still Failed — the hint changes nothing about the outcome';
 
-    is hint_count($r->{out}), 1, 'the diagnosis was given';
-    like $r->{out}, qr/authorized_keys/, 'naming where the key goes';
-    like $r->{out}, qr/Nothing here falls back to the bootstrap key/,
+    # It explains a failure, so it is said on STDERR (k226).
+    is hint_count($r->{stderr}), 1, 'the diagnosis was given, on STDERR';
+    is hint_count($r->{out}), 0, 'not among the progress lines';
+    like $r->{stderr}, qr/authorized_keys/, 'naming where the key goes';
+    like $r->{stderr}, qr/Nothing here falls back to the bootstrap key/,
         'and refusing the fallback in as many words';
 };
 
@@ -941,7 +958,7 @@ subtest 'five unreachable workers are five failures, not five essays' => sub {
     is scalar @{$r->{results}}, 5, 'all five were attempted';
     is scalar(grep { $_->{phase} eq 'Failed' } @{$r->{results}}), 5,
         'all five failed, each on its own row';
-    is hint_count($r->{out}), 1, 'and the explanation appears exactly once';
+    is hint_count($r->{stderr}), 1, 'and the explanation appears exactly once';
 };
 
 subtest 'ocp apply says nothing where there is nothing to migrate' => sub {
@@ -1014,7 +1031,7 @@ subtest 'no terminal: the remedy declines out loud instead of hanging' => sub {
     my $apply  = OCP::Cmd::Apply->new(command_chain => [ FakeOcp->new ]);
 
     my $ran;
-    my ($out, $err) = capture(sub {
+    my ($out, $stderr, $err) = capture_stderr_too(sub {
         with_key_store(sub {
             with_rex(sub { $ran = $apply->_run_remedy($config, $CILIUM_DRIFT) });
         }, interactive => 0);
@@ -1024,10 +1041,12 @@ subtest 'no terminal: the remedy declines out loud instead of hanging' => sub {
     ok defined $ran && !$ran, 'and it reports that it did not run';
     is $PROMPTS, 0, 'nothing waited on a password nobody could see';
 
-    like $out, qr/NOT run/, 'the output says the task did not run';
-    like $out, qr/Cilium/, 'names what is therefore still drifted';
-    like $out, qr/ocp update --component cilium/,
+    # A repair that did not run is a failure of the run: STDERR (k226).
+    like $stderr, qr/NOT run/, 'the output says the task did not run';
+    like $stderr, qr/Cilium/, 'names what is therefore still drifted';
+    like $stderr, qr/ocp update --component cilium/,
         'and points at the interactive command that can do it';
+    unlike $out, qr/NOT run/, 'none of it among the progress lines';
 };
 
 subtest 'a run with nothing to repair never asks for anything' => sub {
@@ -1323,31 +1342,40 @@ subtest 'a declined remedy is not summarised as "up to date"' => sub {
         _load_deployed_hashes _resource_exists _report_component
     );
 
-    my ($out, $err) = capture(sub {
+    # Through the single exit as `ocp apply` goes (k226): the closing verdict
+    # is Health::finish's, and it used to be a STDOUT line over exit 0.
+    my $rc;
+    my ($out, $stderr, $err) = capture_stderr_too(sub {
         no strict 'refs';
         no warnings 'redefine';
         local *OCP::Cmd::Apply::_k8s_api = sub { $_[0]{_k8s_api} };
         local *OCP::Secrets::read_kubeconfig = sub { "apiVersion: v1\n" };
         local *OCP::Drift::new = sub { bless {}, 'FakeDrift' };
         local *FakeDrift::detect = sub { [ $CILIUM_DRIFT ] };
+        local *OCP::Cmd::Apply::_check_cluster_health = sub {
+            { critical => [], warnings => [], starting => [] } };
+        local *OCP::Cmd::Apply::_stamp_ocp_version = sub { };
         # Every write the reconcile path owns is a no-op here; the claim is
         # about the closing verdict, not about the components.
         for my $w (@writers) {
             no warnings 'redefine';
             *{"OCP::Cmd::Apply::$w"} = sub { 0 };
         }
-        OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);
+        my $r = OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);
+        $rc = $apply->_finish_apply(config => $config, api => undef, %$r);
     });
+    is $err, '', 'ran' or diag $out;
 
     like $out, qr/\[drift\]/, 'the drift was reported';
-    like $out, qr/NOT run/, 'and the failure to repair it was reported';
+    like $stderr, qr/NOT run/, 'and the failure to repair it was reported, on STDERR';
 
-    unlike $out, qr/All \d+ component\(s\) up to date/,
+    unlike $out, qr/All \d+ component\(s\) up to date|SUCCESSFULLY/,
         'the summary does NOT claim everything is fine';
-    like $out, qr/did NOT bring the cluster back to spec/,
+    like $stderr, qr/not at spec/,
         'it says the opposite, in as many words';
-    like $out, qr/left as they were: Cilium/,
+    like $stderr, qr/Apply did not complete: Cilium\b/,
         'naming what is still wrong';
+    is $rc, 1, 'and ocp apply ends non-zero (k226)';
 };
 
 done_testing;

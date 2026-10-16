@@ -23,6 +23,11 @@ has cr            => (is => 'ro', writer => '_set_cr', required => 1);
 has k8s           => (is => 'ro', required => 1);
 has provider      => (is => 'ro');
 has ssh_key       => (is => 'ro');
+# What ssh_key is called where it came from -- "the admin key 'admin-ssh' from
+# keys.yaml" -- for a refused-key message, which would otherwise name the
+# temporary copy this class writes (k226). Whoever hands the key in knows its
+# name; absent, OCP::SSH names the file.
+has ssh_key_label => (is => 'ro');
 has server_url    => (is => 'ro');
 has join_token    => (is => 'ro');
 has distribution  => (is => 'ro', default => sub { 'rke2' });
@@ -468,6 +473,7 @@ sub _install_kubernetes {
         host     => $host,
         key_file => $self->_ssh_key_file->path,
         user     => 'root',
+        (defined $self->ssh_key_label ? (key_label => $self->ssh_key_label) : ()),
     );
     # No budget named here on purpose: this is the same wait for the same kind
     # of freshly created machine the control-plane path does, so it takes the

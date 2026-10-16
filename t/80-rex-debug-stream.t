@@ -63,8 +63,10 @@ my $shape;
     };
 }
 
-# Run run_task with STDOUT and STDERR captured into scalars.
+# Run run_task with STDOUT and STDERR captured into scalars. A leading
+# { verbose => 1 } goes to the constructor.
 sub capture_run_task {
+    my $new = ref $_[0] eq 'HASH' ? shift : {};
     my ($task, %params) = @_;
     @cmds  = ();
     $shape = undef;
@@ -75,16 +77,19 @@ sub capture_run_task {
         open my $efh, '>', \$err or die "capture STDERR: $!";
         local *STDOUT = $ofh;
         local *STDERR = $efh;
-        $result = OCP::Rex->new(host => 'psyduck.example', key_file => $key->stringify)
+        $result = OCP::Rex->new(host => 'psyduck.example', key_file => $key->stringify, %$new)
             ->run_task($task, %params);
     }
     return { result => $result, stdout => $out, stderr => $err, cmd => $cmds[0] };
 }
 
-subtest 'without OCP_REX_DEBUG: unchanged call shape, diagnosis on STDERR' => sub {
+# k226: a task that succeeded has nothing to diagnose, so without --verbose
+# its log no longer reaches STDERR at all (t/226-rex-log-on-success.t); with
+# --verbose it is shown, and still on STDERR, never STDOUT.
+subtest 'without OCP_REX_DEBUG: unchanged call shape, the --verbose log on STDERR' => sub {
     delete local $ENV{OCP_REX_DEBUG};
 
-    my $c = capture_run_task('install_cilium');
+    my $c = capture_run_task({ verbose => 1 }, 'install_cilium');
 
     is $shape, 'scalarref',
         'non-debug path still calls run(\@cmd, \undef, \$out, \$err) -- t/27 mock stays valid';

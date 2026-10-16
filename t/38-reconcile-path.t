@@ -504,8 +504,10 @@ my (@driven, $key_asked);
         my ($self, $api, $config, $deps) = @_;
         push @touched, '_drive_workers';
         push @driven, { %$deps };
+        # The fresh deploy names no workers: it drives every one in ocp.yaml.
         return map { { name => $_, phase => $DRIVE_PHASE, message => '' } }
-            @{ $deps->{names} };
+            @{ $deps->{names} // [ map { $_->{metadata}{name} }
+                OCP::Cmd::Apply::CR::worker_ocpnodes($config) ] };
     };
     *OCP::Cmd::Apply::cluster_ssh_key = sub {
         $key_asked++;
@@ -578,6 +580,9 @@ YAML
         touched   => [@touched],
         driven    => [@driven],
         key_asked => $key_asked,
+        # What OCP::Cmd::Apply::Health::finish will name as not completed
+        # and turn into a non-zero exit (k226).
+        failed    => $apply->{_failed_components} // [],
     };
 }
 
@@ -831,8 +836,10 @@ subtest 'k26: the CLI fallback gets the cluster key only when it needs it' => su
     ok !touched($nokey, '_drive_workers'), 'no key, no drive';
     like $nokey->{err}, qr/pinky/,        'the failure names the worker on STDERR';
     like $nokey->{err}, qr/no key for you/, 'with the diagnosis';
-    like $nokey->{out}, qr/did NOT bring the cluster back to spec/,
+    unlike $nokey->{out}, qr/All \d+ component\(s\) up to date/,
         'and the summary does not claim success';
+    is_deeply $nokey->{failed}, ['worker pinky'],
+        'the run is unfinished: ocp apply ends non-zero (k226)';
 };
 
 subtest 'k26: a worker that does not come up is not reported as up to date' => sub {
@@ -840,7 +847,10 @@ subtest 'k26: a worker that does not come up is not reported as up to date' => s
     my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
 
     unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'no clean summary';
-    like $r->{out}, qr/left as they were: .*pinky/, 'the worker is named as unresolved';
+    is_deeply $r->{failed}, ['worker pinky'],
+        'the worker is named as unfinished -- the exit code follows (k226)';
+    like $r->{err}, qr/\[!!\] pinky — Failed/, 'its status line is on STDERR (k226)';
+    unlike $r->{out}, qr/pinky — Failed/, 'not among the progress';
 };
 
 subtest 'k26: --dry-run names the worker it would create and creates nothing' => sub {
@@ -979,7 +989,7 @@ subtest 'k173: a robocop that cannot be deployed is unresolved, workers go to th
     like $r->{err}, qr/robocop deploy failed: Wrong PIN2/, 'STDERR, with the reason';
     ok !touched($r, '_wait_robocop_ready'), 'nothing waited for';
     ok !$r->{driven}[0]{robocop_ready}, 'the CLI drives the missing worker';
-    like $r->{out}, qr/left as they were: robocop/, 'robocop is named as unresolved';
+    is_deeply $r->{failed}, ['robocop'], 'robocop is named as unfinished (k226)';
 };
 
 subtest 'k173: robocop disabled -- not rolled out, not torn down' => sub {
@@ -1050,8 +1060,8 @@ YAML
     @touched = ();
     @driven  = ();
     my ($out, $step);
+    my $err = '';
     {
-        my $err = '';
         open my $efh, '>', \$err or die $!;
         local *STDERR = $efh;
         ($out, $step) = capture_stdout {
@@ -1067,7 +1077,8 @@ YAML
             });
         };
     }
-    return { out => $out, step => $step, touched => [@touched], driven => [@driven] };
+    return { out => $out, err => $err, step => $step, touched => [@touched],
+             driven => [@driven], failed => $apply->{_failed_components} // [] };
 }
 
 subtest 'k173: fresh deploy without workers rolls robocop out' => sub {
@@ -1105,6 +1116,45 @@ subtest 'k173: fresh deploy, robocop off or gated away: no robocop step' => sub 
 
     my $cp = deploy(yaml => "robocop: true\n", only => 'control-planes');
     is_deeply robocop_steps($cp), [], '--only control-planes: nothing';
+};
+
+#
+# k226, lab 2026-10-15/16: a worker in Failed after `ocp apply` -- and the run
+# exited 0. On the fresh deploy nothing even looked at worker_step's results.
+# Now they reach the single exit (OCP::Cmd::Apply::Health::finish), which ends
+# non-zero for every component named in _failed_components.
+#
+
+my $ONE_WORKER = <<'YAML';
+workers:
+  - name: gpu
+    provider: ssh
+    nodes:
+      - brain.ocp.invalid
+YAML
+
+subtest 'k226: fresh deploy -- a Failed worker is an unfinished apply' => sub {
+    local $DRIVE_PHASE = 'Failed';
+    my $r = deploy(yaml => $ONE_WORKER);
+
+    ok touched($r, '_drive_workers'), 'the worker was driven';
+    is_deeply $r->{failed}, [ 'worker brain' ], 'counted for the exit code';
+    like $r->{err}, qr/\[!!\] brain — Failed/, 'its status line is on STDERR';
+    unlike $r->{out}, qr/— Failed/, 'not among the progress';
+};
+
+subtest 'k226: fresh deploy -- workers that came up leave the exit alone' => sub {
+    my $r = deploy(yaml => $ONE_WORKER);
+    is_deeply $r->{failed}, [], 'nothing counted';
+    like $r->{out}, qr/\[ok\] \S+ — Ready/, 'the Ready line is progress, on STDOUT';
+    unlike $r->{err}, qr/Ready/, 'and not on STDERR';
+};
+
+subtest 'k226: fresh deploy -- a robocop that cannot be deployed is unfinished' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_ensure_robocop_credentials = sub { die "Wrong PIN2\n" };
+    my $r = deploy(yaml => "robocop: true\n");
+    is_deeply $r->{failed}, ['robocop'], 'as on the reconcile path';
 };
 
 done_testing;

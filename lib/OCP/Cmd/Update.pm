@@ -129,7 +129,7 @@ sub execute {
         printf("  %-20s %s -> %s  (%s)\n",
             $update->{component},
             $update->{from},
-            colored($update->{to}, 'green'),
+            $self->_paint(\*STDOUT, $update->{to}, 'green'),
             $self->_plan_label($update->{plan}),
         );
     }
@@ -137,10 +137,10 @@ sub execute {
 
     # Check for breaking changes
     if (OCP::Versions->has_breaking_changes($current_version, $target_version)) {
-        print colored("⚠️  BREAKING CHANGES:\n", 'yellow bold');
+        print $self->_paint(\*STDOUT, "⚠️  BREAKING CHANGES:\n", 'yellow bold');
         my $changes = OCP::Versions->get_breaking_changes($current_version, $target_version);
         for my $change (@$changes) {
-            print colored("  - $change\n", 'yellow');
+            print $self->_paint(\*STDOUT, "  - $change\n", 'yellow');
         }
         print "\n";
     }
@@ -148,9 +148,9 @@ sub execute {
     # Check for manual steps
     my $manual_steps = OCP::Versions->get_manual_steps($current_version, $target_version);
     if (@$manual_steps) {
-        print colored("⚠️  MANUAL STEPS REQUIRED:\n", 'yellow bold');
+        print $self->_paint(\*STDOUT, "⚠️  MANUAL STEPS REQUIRED:\n", 'yellow bold');
         for my $step (@$manual_steps) {
-            print colored("  - $step\n", 'yellow');
+            print $self->_paint(\*STDOUT, "  - $step\n", 'yellow');
         }
         print "\n";
     }
@@ -160,7 +160,7 @@ sub execute {
     # says what to do instead, and --component still reaches the rest.
     my @refused = grep { $_->{plan}{action} eq 'refuse' } @updates;
     if (@refused) {
-        print STDERR colored("✗ $_->{component}: ", 'red').$_->{plan}{note} for @refused;
+        print STDERR $self->_paint(\*STDERR, "✗ $_->{component}: ", 'red').$_->{plan}{note} for @refused;
         print STDERR "Nothing was changed. 'ocp update --component NAME' updates"
                    . " the other components on their own.\n";
         return 1;
@@ -168,7 +168,7 @@ sub execute {
 
     # Dry-run exit
     if ($self->dry_run) {
-        print colored("Dry-run mode. No changes made.\n", 'cyan');
+        print $self->_paint(\*STDOUT, "Dry-run mode. No changes made.\n", 'cyan');
         print "Run without --dry-run to apply updates.\n";
         return 0;
     }
@@ -192,7 +192,7 @@ sub execute {
             $self->_update_component($config, $update);
         };
         if ($@) {
-            print STDERR colored("✗ Failed to update $update->{component}: $@", 'red');
+            print STDERR $self->_paint(\*STDERR, "✗ Failed to update $update->{component}: $@", 'red');
             return 1;
         }
     }
@@ -202,7 +202,7 @@ sub execute {
     $config->save_status;
 
     print "\n";
-    print colored("✓ All updates completed successfully.\n", 'green bold');
+    print $self->_paint(\*STDOUT, "✓ All updates completed successfully.\n", 'green bold');
     print "Cluster is now at OCP version $target_version.\n";
 
     my @by_apply = map { $_->{component} }
@@ -339,7 +339,7 @@ sub _update_component {
     $config->status->{components}{$comp} = $version;
     $config->save_status;
 
-    print colored("✓ $comp updated to $version\n", 'green');
+    print $self->_paint(\*STDOUT, "✓ $comp updated to $version\n", 'green');
 }
 
 # Both Rex paths below reach the control plane over SSH, and both used to
@@ -351,6 +351,20 @@ sub _update_component {
 # PIN2 once. k87.
 # The API remedies (k198): server-side apply from this machine with the
 # project kubeconfig, the way `ocp apply` does -- no SSH key, no PIN2.
+# Colour only where a terminal reads it (k226): piped into a file, a CI log or
+# a parser, the escape codes are garbage. Asked per channel -- STDOUT can be a
+# pipe while STDERR is still the terminal. Same rule as OCP::_report_error's
+# "Error:" label.
+sub _paint {
+    my ($self, $fh, $text, $color) = @_;
+    return $self->_on_terminal($fh) ? colored($text, $color) : $text;
+}
+
+sub _on_terminal {
+    my ($self, $fh) = @_;
+    return -t $fh ? 1 : 0;
+}
+
 sub _update_via_api {
     my ($self, $config, $component, $version, $task) = @_;
 
@@ -373,9 +387,12 @@ sub _update_via_rex {
     my $cp_status = $config->cluster_status;
     my $host = $cp_status->{public_ip} or die "No control plane IP found\n";
 
+    # --verbose shows the task's log, as it does for `ocp apply`: a task that
+    # succeeded writes none otherwise (k226).
     my $rex = OCP::Rex->new(
         host     => $host,
         key_file => $self->cluster_ssh_key($config, reason => 'ocp update')->path,
+        verbose  => eval { $self->ocp->verbose } || 0,
     );
 
     # Same params the drift remedy passes for this task (k163): before, only

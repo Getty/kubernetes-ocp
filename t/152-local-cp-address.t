@@ -47,16 +47,18 @@ sub local_config {
     return $config;
 }
 
-sub capture_stdout (&) {
+sub capture_output (&) {
     my ($code) = @_;
-    my $out = '';
+    my ($out, $err) = ('', '');
     open my $fh, '>', \$out or die $!;
+    open my $eh, '>', \$err or die $!;
     my $rc;
     {
         local *STDOUT = $fh;
+        local *STDERR = $eh;
         $rc = $code->();
     }
-    return ($out, $rc);
+    return ($out, $err, $rc);
 }
 
 #
@@ -113,13 +115,14 @@ subtest 'a drift remedy on a local CP gets a host instead of "no address"' => su
         remedy    => { type => 'rex', task => 'upgrade_cert_manager' },
     };
 
-    my ($out, $ran) = capture_stdout {
+    my ($out, $err, $ran) = capture_output {
         OCP::Cmd::Apply::Drift::run_remedy($fake_self, $config, $entry);
     };
 
-    unlike $out, qr/No control plane address known/,
+    unlike "$out$err", qr/No control plane address known/,
         'the k152 error is gone -- a host was resolved for the local CP';
-    like $out, qr/needs SSH access to the control plane/,
+    # A remedy that did not run is a failure of the run: STDERR since k226.
+    like $err, qr/needs SSH access to the control plane/,
         'and the remedy reaches the later (key) stage, host in hand';
     ok !$ran, 'still returns falsy -- no key here, so nothing was applied';
 };

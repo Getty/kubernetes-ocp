@@ -800,7 +800,7 @@ sub cli_reconcile_workers {
         # The control plane itself refused the key — same diagnosis, and the
         # workers below are never attempted, so this is the only place it can
         # be said on this run.
-        print $hint if $hint && !$hinted++;
+        print STDERR $hint if $hint && !$hinted++;
         my @results = map { {
             name    => $_,
             phase   => 'Failed',
@@ -858,6 +858,9 @@ sub cli_reconcile_workers {
             k8s          => $api,
             provider     => $provider,
             ssh_key      => $ssh_key,
+            # Named as the operator knows it in a refusal (k226), when the
+            # key object is on hand -- the same lookup as the hint above.
+            ($key ? (ssh_key_label => $key->label) : ()),
             server_url   => $server_url,
             join_token   => $join_token,
             distribution => $distribution,
@@ -885,8 +888,9 @@ sub cli_reconcile_workers {
         # Printed as it happens rather than after the loop, so the operator
         # reads it at the first refusal instead of after four more timeouts.
         # The result row is unchanged: this worker stays Failed and `ocp
-        # apply` still ends the way it would have.
-        print $hint if !$ok && $hint && !$hinted++;
+        # apply` still ends the way it would have. On STDERR: it explains a
+        # failure (k226).
+        print STDERR $hint if !$ok && $hint && !$hinted++;
 
         push @results, {
             name    => $name,
@@ -897,6 +901,11 @@ sub cli_reconcile_workers {
     return @results;
 }
 
+# The closing word on each node the step drove. A node that is Ready is
+# progress, on STDOUT. One that is not -- Failed, or still short of Ready when
+# the wait ended -- did not come up, and its message is why: that is
+# diagnosis, on STDERR (k226; the per-node counterpart of k204's phase line in
+# `ocp node add`). The callers count the same rows as unfinished (k226).
 sub print_worker_status {
     my ($self, $results, $label) = @_;
     $label //= 'Worker';
@@ -907,9 +916,22 @@ sub print_worker_status {
         my $tag = $r->{phase} eq 'Ready'  ? '[ok]'
                 : $r->{phase} eq 'Failed' ? '[!!]'
                 :                           '[..]';
-        print "    $tag $r->{name} — $r->{phase}" .
-              ($r->{message} ? " ($r->{message})" : "") . "\n";
+        my $line = "    $tag $r->{name} — $r->{phase}" .
+              ($r->{message} ? " ($r->{message})" : "");
+        if ($r->{phase} eq 'Ready') { print "$line\n" }
+        else                        { print STDERR "$line\n" }
     }
+}
+
+# The rows of a worker step that did not end Ready, as the names an
+# unfinished apply reports (OCP::Cmd::Apply::Health::finish): "worker NAME",
+# or "control plane NAME" for a joining control plane. Everything short of
+# Ready counts -- the run is over, and that node is not at spec.
+sub unready_nodes {
+    my ($self, $results, $label) = @_;
+    $label //= 'worker';
+    return map { "$label $_->{name}" }
+           grep { ($_->{phase} // '') ne 'Ready' } @{ $results // [] };
 }
 
 1;

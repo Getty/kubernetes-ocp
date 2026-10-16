@@ -232,6 +232,10 @@ sub deploy {
                 secrets      => $secrets,
             });
             $self->_print_worker_status(\@cp_results, 'Control plane');
+            # A control plane that did not join is an apply that did not
+            # complete: counted for the exit code (k226).
+            push @{ $self->{_failed_components} },
+                OCP::Cmd::Apply::CR::unready_nodes($self, \@cp_results, 'control plane');
         }
     }
 
@@ -252,18 +256,26 @@ sub deploy {
             cp_ip   => $cp_ip,
             secrets => $secrets,
         });
+        # robocop.enabled is spec: a robocop that could not be rolled out
+        # leaves the run short of it, as on the reconcile path (k226).
+        push @{ $self->{_failed_components} }, 'robocop'
+            if $robocop->{state} eq 'failed';
     }
 
     if (@$workers && worker_gate($self)) {
         print "\n";
         print "Step $step: Deploy workers (CR-driven)\n";
         $step++;
-        worker_step($self, $api, $config, {
+        my @results = worker_step($self, $api, $config, {
             ssh_key_path => $ssh_key_path,
             cp_ip        => $cp_ip,
             secrets      => $secrets,
             robocop      => $robocop,
         });
+        # A worker that did not come up ends the apply non-zero (k226): the
+        # lab cluster's Failed worker printed its reason and exited 0.
+        push @{ $self->{_failed_components} },
+            OCP::Cmd::Apply::CR::unready_nodes($self, \@results);
     }
 
     return $step;

@@ -37,6 +37,16 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
 
 ENV LANG=en_US.UTF-8
 
+# The README's alias hands the host's LANG in (-e LANG), so `ocp init` can give
+# the cluster the operator's locale (OCP::Cmd::Init::_detect_locale). That
+# locale is a name for the nodes, not for this container, which generates
+# en_US.UTF-8 only: every perl here -- ocp, and the rex it starts for each
+# task -- greeted the operator with "perl: warning: Setting locale failed"
+# before a line of OCP ran (k226). PERL_BADLANG=0 silences exactly that
+# warning; perl falls back to the C locale, as it did all along. Generating
+# every locale instead (locales-all) would grow the image for a warning.
+ENV PERL_BADLANG=0
+
 # Install kubectl =============================================================
 # Debug tool only. OCP itself never shells out to kubectl — all Kubernetes
 # access goes through Kubernetes::REST / IO::K8s. This is here so you can

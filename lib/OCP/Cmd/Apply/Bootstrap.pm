@@ -366,10 +366,14 @@ sub bootstrap_control_plane {
     # ssh_key for every worker — got a path to a file that no longer existed.
     # Workers then failed as "Could not read join token from CP". The .pub
     # written next to it had no owner at all and stayed in /tmp forever.
+    # key_label: the key as the operator knows it. $ssh_key_path is a temp copy
+    # of the admin key in secure mode, and a refusal naming /tmp/XXXX told them
+    # nothing (k226).
     my $ssh = OCP::SSH->new(
-        host     => $cp_host,
-        key_file => $ssh_key_path,
-        user     => 'root',
+        host      => $cp_host,
+        key_file  => $ssh_key_path,
+        key_label => $key->label,
+        user      => 'root',
     );
 
     # The 120s this has always spent, now taken from $OCP::SSH::WAIT_TIMEOUT
@@ -382,7 +386,11 @@ sub bootstrap_control_plane {
         # authorised. migration_hint says so when the evidence is there and
         # stays quiet otherwise — there is deliberately no fallback to that
         # key (ADR: two tiers, robo and admin, nothing else).
-        die "  [FAIL] SSH not ready: $@" . $key->migration_hint . "\n";
+        #
+        # No "  [FAIL]" in front: this reaches the operator through
+        # OCP::run_cli as "Error: ...", and an indented status tag after that
+        # label read as "Error:   [FAIL] SSH not ready" (k226).
+        die "SSH not ready: $@" . $key->migration_hint . "\n";
     }
     print "  [ok] SSH ready\n";
 

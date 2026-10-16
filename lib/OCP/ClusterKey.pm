@@ -359,7 +359,7 @@ sub is_temporary { defined $_[0]{temp} ? 1 : 0 }
 =method migration_hint
 
     if (my $hint = $key->migration_hint) {
-        die "  [FAIL] SSH not ready: $err\n" . $hint;
+        die "SSH not ready: $err\n" . $hint;
     }
 
 The explanation for one specific failure, and the empty string for every other
@@ -425,6 +425,24 @@ sub describe {
         ? "admin key" . ($self->{name} ? " '$self->{name}'" : '')
             . " (provider $self->{provider}, PIN2)"
         : "bootstrap key .ocp/id_ed25519 (provider $self->{provider})";
+}
+
+=method label
+
+    OCP::SSH->new(key_file => $key->path, key_label => $key->label, ...);
+    # "the admin key 'admin-ssh' from keys.yaml"
+
+The key as the operator knows it, for a message about it: the admin key by its
+name in F<keys.yaml>, the bootstrap key by its place in the project. L</path>
+is no answer to that for the admin key -- it is a temporary copy.
+
+=cut
+
+sub label {
+    my ($self) = @_;
+    return $self->{origin} eq 'admin'
+        ? 'the admin key' . ($self->{name} ? " '$self->{name}'" : '') . ' from keys.yaml'
+        : 'the bootstrap key .ocp/id_ed25519';
 }
 
 =method cleanup

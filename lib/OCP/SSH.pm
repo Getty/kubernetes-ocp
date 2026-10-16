@@ -26,6 +26,14 @@ has key_file => (
     default => sub { $ENV{OCP_SSH_KEY} },
 );
 
+# The key as the operator knows it ("the admin key 'admin-ssh' from
+# keys.yaml"), for the one message that names it: a refusal in wait_for_ssh.
+# key_file is regularly a temporary copy whose path means nothing to them
+# (k226). Optional; without it the message names key_file, as before.
+has key_label => (
+    is => 'ro',
+);
+
 has connect_timeout => (
     is      => 'ro',
     default => 10,
@@ -296,11 +304,12 @@ sub wait_for_ssh {
         # said no, and waiting out the budget would only send the operator to
         # look at the network (k204).
         if (($result->{stderr} // '') =~ /Permission denied/i) {
-            my $key = $self->key_file // 'the default ssh identity';
+            my $key = defined $self->key_label ? $self->key_label
+                    : 'key ' . ($self->key_file // 'the default ssh identity');
             my $fp  = _key_fingerprint($self->key_file);
             $key .= " ($fp)" if $fp;
             die "SSH key rejected by ${\$self->host}: user "
-              . $self->user . " with key $key was refused (Permission denied).\n"
+              . $self->user . " with $key was refused (Permission denied).\n"
               . "The host is reachable; its authorized_keys does not hold this key.\n"
               . "Add the public key there (ocp inject-key, or by hand) and run again.\n";
         }

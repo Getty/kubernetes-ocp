@@ -740,6 +740,32 @@ subtest 'a refused key is not reported as unreachable' => sub {
     is scalar @FakeRex::_instances, 0, 'no install was attempted';
 };
 
+subtest 'k226: the SSH wait names the key as the caller knows it' => sub {
+    # The refusal named the temp copy OCP::Node writes (/tmp/XXXX); whoever
+    # hands the key in knows its name, and OCP::SSH says that instead.
+    @FakeRex::_instances = ();
+    my $label;
+    no warnings 'redefine';
+    local *FakeSSH::wait_for_ssh = sub { $label = $_[0]{key_label}; die "refused\n" };
+    my $build = sub {
+        my $k = StrictK8s::build(cr => ocpnode(
+            metadata => { name => 's4', namespace => 'ocp-system' },
+            spec     => { role => 'worker', providerRef => 'ssh-default', host => '10.0.0.5' },
+            status   => { phase => 'Installing' },
+        ));
+        OCP::Node->from_cr($k->cr, k8s => $k, provider => FakeProvider->new,
+            ssh_key => 'K', server_url => 'U', join_token => 'T',
+            ssh_class => 'FakeSSH', rex_class => 'FakeRex', @_);
+    };
+
+    $build->(ssh_key_label => "the admin key 'admin-ssh' from keys.yaml")->_install_kubernetes;
+    is $label, "the admin key 'admin-ssh' from keys.yaml", 'handed on to OCP::SSH';
+
+    $label = 'unset';
+    $build->()->_install_kubernetes;
+    is $label, undef, 'and left out without one -- OCP::SSH names the file then';
+};
+
 subtest 'no address and no server to ask is still a visible failure' => sub {
     @FakeRex::_instances = ();
     my $prov = FakeProvider->new;

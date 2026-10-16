@@ -156,9 +156,11 @@ sub reconcile_components {
                 : "  [..] Running $entry->{remedy}{task}...\n";
             my $done = eval { $self->_run_remedy($config, $entry) };
             if ($@) {
-                print $via_api
-                    ? "  [WARN] $entry->{label} update via the cluster API failed: $@"
-                    : "  [WARN] $entry->{remedy}{task} failed: $@";
+                # A repair that failed leaves the drift in place and the run
+                # unfinished (k226): said on STDERR, in the [!!] style.
+                print STDERR $via_api
+                    ? "  [!!] $entry->{label} update via the cluster API failed: $@"
+                    : "  [!!] $entry->{remedy}{task} failed: $@";
                 push @unresolved, $entry->{label} // $entry->{component};
             } elsif ($done) {
                 print "  [ok] $entry->{label} updated to $entry->{expected}\n";
@@ -423,11 +425,17 @@ sub reconcile_components {
         print "  All $checked component(s) up to date.\n";
     }
 
+    # What this run left short of spec is an apply that did not complete
+    # (k226): it used to be said here on STDOUT -- "This run did NOT bring the
+    # cluster back to spec." -- and `ocp apply` exited 0 all the same, a
+    # Failed worker included. Every entry is a repair or a step this run tried
+    # and that did not take; each has said why on STDERR where it happened.
+    # Handed to OCP::Cmd::Apply::Health::finish, the single exit, which
+    # names them on STDERR, takes the success banner away and ends non-zero.
+    # The GPU Operator is already there (k203), so nothing is named twice.
     if (@unresolved) {
-        print "  " . scalar(@unresolved)
-            . " known difference(s) left as they were: "
-            . join(', ', @unresolved) . ".\n";
-        print "  This run did NOT bring the cluster back to spec.\n";
+        my %named = map { $_ => 1 } @{ $self->{_failed_components} // [] };
+        push @{ $self->{_failed_components} }, grep { !$named{$_}++ } @unresolved;
     }
 
     return { cp_name => $cp_name, cp_ip => $cp_ip };
@@ -614,7 +622,7 @@ sub run_remedy {
     # control plane, as before.
     my $host = $remedy->{host} // $config->cluster_status->{public_ip};
     unless ($host) {
-        print "  [!!] No control plane address known, cannot run $remedy->{task}.\n";
+        print STDERR "  [!!] No control plane address known, cannot run $remedy->{task}.\n";
         return 0;
     }
 
@@ -629,11 +637,12 @@ sub run_remedy {
         my $why = $@ || "no usable SSH key for the control plane\n";
         $why =~ s/\s+\z//;
 
+        # A repair that did not run is a failure of this run (k226): STDERR.
         my $what = $entry->{label} // $entry->{component} // 'this component';
-        print "  [!!] $remedy->{task} needs SSH access to the control plane and\n";
-        print "       could not get a key for it. NOT run: $what stays as it is.\n";
-        print "       $_\n" for split /\n/, $why;
-        print "       Run 'ocp update --component $entry->{component}' instead.\n"
+        print STDERR "  [!!] $remedy->{task} needs SSH access to the control plane and\n";
+        print STDERR "       could not get a key for it. NOT run: $what stays as it is.\n";
+        print STDERR "       $_\n" for split /\n/, $why;
+        print STDERR "       Run 'ocp update --component $entry->{component}' instead.\n"
             if defined $entry->{component};
         return 0;
     }

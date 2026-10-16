@@ -657,6 +657,7 @@ subtest 'explicit --provider overrides implicit resolution' => sub {
     sub path           { '/dev/null' }
     sub content        { "FAKE\n" }
     sub migration_hint { '' }
+    sub label          { 'the admin key from keys.yaml' }   # k226
 }
 
 # Capture every OCP::SSH->new call. _cli_reconcile constructs it only inside

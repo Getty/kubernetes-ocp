@@ -392,6 +392,9 @@ sub _cli_reconcile {
         k8s           => $api,
         ($provider_obj ? (provider => $provider_obj) : ()),
         ($ssh_key      ? (ssh_key  => $ssh_key)      : ()),
+        # A refused key named as the operator knows it, not as the temp copy
+        # OCP::Node writes (k226).
+        ($key          ? (ssh_key_label => $key->label) : ()),
         ($server_url   ? (server_url => $server_url) : ()),
         ($join_token   ? (join_token => $join_token) : ()),
         ($kubeconfig   ? (kubeconfig => $kubeconfig) : ()),
