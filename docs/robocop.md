@@ -36,6 +36,25 @@ ocp deploy-robocop
 When robocop is *not* running, `ocp node add` falls back to driving the
 reconciliation itself from the CLI. Same state machine, different driver.
 
+## Which image runs
+
+`ocp apply` and `ocp deploy-robocop` write the robocop Deployment on every
+run, so the image comes from `ocp.yaml`:
+
+```yaml
+robocop:
+  image: registry.example/ocp:1.2.3   # optional; repo:tag or repo@sha256:<digest>
+```
+
+Without it, robocop runs `raudssus/ocp:<version of the ocp you run>` -- CLI and
+controller match, and nothing moves with `:latest`. A development checkout has
+no release version to name; it falls back to `raudssus/ocp:latest` and says so
+with a `[WARN]`.
+
+`ocp deploy-image` is a one-off override of the live Deployment: it says so,
+and the next `ocp apply` sets the image back to the one above (and prints
+`robocop image <live> -> <spec>`). To keep an image, put it in `robocop.image`.
+
 ## How credentials reach it
 
 To join workers, robocop needs the cluster's join token and the private

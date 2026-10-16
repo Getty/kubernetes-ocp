@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` no longer resets robocop to `:latest`: the image is
+      `robocop.image` from ocp.yaml, else `raudssus/ocp:<version of the running
+      ocp>` (a development checkout falls back to `:latest` with a [WARN]).
+      apply prints `robocop image <live> -> <spec>` when it replaces a different
+      live image; `ocp deploy-image` says it is an ad-hoc override.
     - robocop leases as robocop@<pod name> (POD_NAME, Downward API), not as one
       shared `robocop`: a successor pod no longer takes its predecessor's lease
       for its own. A live lease of another robocop pod is taken over once that

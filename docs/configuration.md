@@ -37,6 +37,9 @@ ssh:
 
 robocop: true                  # optional; default false, auto-true when any
                                # control plane or worker pool uses hetzner
+                               # mapping form: robocop: { image: repo:tag }
+                               # pins the robocop image (default: raudssus/ocp:
+                               # <version of this ocp>, see docs/robocop.md)
 
 network:                       # optional; Cilium LB-IPAM + L2 announcement
   pod_cidr: 10.42.0.0/16       # default; cluster-cidr + Cilium pod pool, set at

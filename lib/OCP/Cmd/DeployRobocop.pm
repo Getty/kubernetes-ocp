@@ -76,6 +76,10 @@ sub _apply_manifests {
     my @other_files = grep { $_->basename ne 'kustomization.yaml' }
                            $robocop_dir->children(qr/\.ya?ml$/);
 
+    if (defined(my $notice = OCP::Robocop::Manifest->image_notice($config))) {
+        print "  $notice\n";
+    }
+
     for my $file_path (@crd_files, @other_files) {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {

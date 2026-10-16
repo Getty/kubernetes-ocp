@@ -273,6 +273,13 @@ sub execute {
 
     my $patched = $self->_patch_image($api, $ns, $image, $env);
 
+    # An override, not a setting (k227): the next `ocp apply` writes the
+    # Deployment from ocp.yaml again. Said here, where the operator is looking.
+    my $spec_image = OCP::Robocop::Manifest->image($config);
+    print "[!!] ad-hoc override: ocp apply resets robocop to $spec_image; "
+        . "set robocop.image in ocp.yaml to keep it\n"
+        if $image ne $spec_image;
+
     if ($self->restart) {
         $patched = $self->_patch_restart($api, $ns);
     }
@@ -600,6 +607,11 @@ C<kubectl> (ADR 0007: no kubectl in code paths).
 The default target is the C<robocop> Deployment in the C<ocp-system>
 namespace on the cluster named in the project's C<ocp.yaml>. Two patches
 are issued against the live Deployment:
+
+This is an override, not a setting: C<ocp apply> and C<ocp deploy-robocop>
+write the Deployment from C<ocp.yaml> (C<robocop.image>, else the CLI's own
+version) and set the image back. When the image differs from that one, the
+command says so on STDOUT; to keep an image, set C<robocop.image>.
 
 =over 4
 

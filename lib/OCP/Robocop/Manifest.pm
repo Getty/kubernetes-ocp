@@ -116,6 +116,8 @@ sub for_config {
 
     my $ctr = $class->_controller($doc) or return $doc;
 
+    $ctr->{image} = $class->image($config);
+
     my $env = $class->cluster_env($config);
     my %set = map { $_->{name} => 1 } @$env;
 
@@ -125,6 +127,56 @@ sub for_config {
     ];
 
     return $doc;
+}
+
+# The version the source tree carries until dzil stamps a release over it.
+our $DEV_VERSION = '0.001';
+our $IMAGE_REPO  = 'raudssus/ocp';
+
+=method image
+
+    my $ref = OCP::Robocop::Manifest->image($config);
+
+The image the robocop Deployment runs (k227): C<robocop.image> from
+C<ocp.yaml> when set; otherwise C<raudssus/ocp:E<lt>version of this CLIE<gt>>, so
+controller and CLI match and nothing moves with C<:latest>. A source checkout
+(C<$OCP::VERSION> still the placeholder) has no release to name and falls back
+to C<:latest>, see L</image_notice>.
+
+=cut
+
+sub image {
+    my ($class, $config) = @_;
+    my $set = $config->robocop_image;
+    return $set if defined $set;
+    return $class->_default_image;
+}
+
+sub _release_version {
+    my $v = $OCP::VERSION;
+    return undef unless defined $v && length $v && $v ne $DEV_VERSION;
+    return $v;
+}
+
+sub _default_image {
+    my ($class) = @_;
+    my $v = $class->_release_version;
+    return "$IMAGE_REPO:" . ($v // 'latest');
+}
+
+=method image_notice
+
+A one-line C<[WARN]> text when the image falls back to C<:latest> because the
+CLI is no release and C<robocop.image> is not set; undef otherwise. The caller
+prints it, once per run.
+
+=cut
+
+sub image_notice {
+    my ($class, $config) = @_;
+    return undef if defined $config->robocop_image || defined $class->_release_version;
+    return "[WARN] no release version to pin robocop to (development checkout) -- using "
+        . "$IMAGE_REPO:latest; set robocop.image in ocp.yaml to pin it";
 }
 
 =method cluster_env

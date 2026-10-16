@@ -242,6 +242,33 @@ sub _raw_robocop_security_level {
     return ref $val eq 'HASH' ? $val->{security_level} : undef;
 }
 
+# robocop.image (k227): the image the robocop Deployment runs, in the mapping
+# form of the robocop key. Undef when not set -- OCP::Robocop::Manifest then
+# names the CLI's own version. `ocp apply` writes the Deployment on every run,
+# so this is where a non-default image has to live to survive it;
+# `ocp deploy-image` alone is a one-off override.
+sub robocop_image {
+    my ($self) = @_;
+    my $val = $self->spec->{robocop};
+    return undef unless ref $val eq 'HASH' && defined $val->{image};
+    my $err = _image_ref_error($val->{image});
+    croak "robocop.image: $err" if $err;
+    return $val->{image};
+}
+
+# A reference as docker writes it: repo:tag or repo@sha256:<64 hex>. No
+# implicit tag -- the same rule `ocp deploy-image` has.
+sub _image_ref_error {
+    my ($ref) = @_;
+    return "must be an image reference like raudssus/ocp:1.2.3, not a "
+        . lc(ref $ref) if ref $ref;
+    return "must not be empty" unless length($ref // '');
+    return "must not contain whitespace ('$ref')" if $ref =~ /\s/;
+    return undef if $ref =~ m{\A[^@\s]+\@sha256:[0-9a-f]{64}\z};
+    return undef if $ref =~ m{\A(?:[^/\s]+/)*[^/:\s@]+:[^/:\s@]+\z};
+    return "needs a tag or a digest, like raudssus/ocp:1.2.3 or repo\@sha256:<64 hex> ('$ref')";
+}
+
 sub _any_hetzner_provider {
     my $self = shift;
     for my $cp (@{$self->control_planes}) {
@@ -586,6 +613,12 @@ sub validate {
     if (defined $rl && !grep { $_ eq $rl } @ROBOCOP_SECURITY_LEVELS) {
         push @errors, "robocop.security_level: invalid value '$rl' (must be "
             . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS) . ")";
+    }
+
+    # robocop.image, report-only (k227), same reason as security_level above.
+    if (ref $self->spec->{robocop} eq 'HASH' && defined $self->spec->{robocop}{image}) {
+        my $ie = _image_ref_error($self->spec->{robocop}{image});
+        push @errors, "robocop.image: $ie" if $ie;
     }
 
     for my $w (@{$self->workers}) {

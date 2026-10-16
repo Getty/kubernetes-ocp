@@ -190,6 +190,25 @@ sub deployment_path { "/apis/apps/v1/namespaces/$_[0]/deployments/robocop" }
 
 # --- Tests ----------------------------------------------------------------
 
+subtest 'an image other than the spec one is announced as an ad-hoc override (k227)' => sub {
+    my $respond = sub {
+        my ($m, $p) = @_;
+        return (200, deployment()) if $m eq 'GET' || $m eq 'PATCH';
+        return (404, { message => "unexpected $m $p" });
+    };
+    local $OCP::VERSION = '0.123';
+    my $r = run_cmd(tag => 'v9', respond => $respond);
+    like($r->{output}, qr{ad-hoc override: ocp apply resets robocop to raudssus/ocp:0\.123.*robocop\.image},
+        'says what apply will set back');
+
+    my $same = run_cmd(tag => '0.123', respond => $respond);
+    unlike($same->{output}, qr/ad-hoc override/, 'silent when it is the spec image');
+
+    my $dir = make_project(extra_yaml => "robocop:\n  image: reg.example/ocp:pinned\n");
+    my $pinned = run_cmd(tag => 'v9', dir => $dir, respond => $respond);
+    like($pinned->{output}, qr{resets robocop to reg\.example/ocp:pinned}, 'robocop.image is the spec');
+};
+
 subtest 'happy path: --tag v1.2.3 patches image and triggers restart' => sub {
     my $r = run_cmd(
         tag => 'v1.2.3',

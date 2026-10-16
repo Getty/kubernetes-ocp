@@ -684,10 +684,35 @@ sub ensure_robocop {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
-            $api->ensure(OCP::Robocop::Manifest->for_config($doc, $config));
+            my $shaped = OCP::Robocop::Manifest->for_config($doc, $config);
+            _say_robocop_image_change($api, $config, $shaped);
+            $api->ensure($shaped);
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
     }
+}
+
+# What apply does to the robocop image, said out loud (k227): the spec decides
+# (robocop.image, else this CLI's version), so an `ocp deploy-image` override
+# on the live Deployment is replaced here -- and the operator should read that
+# on STDOUT, not find it out from a pod that rolled back.
+sub _say_robocop_image_change {
+    my ($api, $config, $doc) = @_;
+    return unless ($doc->{kind} // '') eq 'Deployment' && ($doc->{metadata}{name} // '') eq 'robocop';
+
+    if (defined(my $notice = OCP::Robocop::Manifest->image_notice($config))) {
+        print "  $notice\n";
+    }
+
+    my $want = OCP::Robocop::Manifest->image($config);
+    my $live = eval {
+        my $dep = $api->get('Deployment', 'robocop', namespace => $doc->{metadata}{namespace} // 'ocp-system');
+        my $h   = $api->k8s->object_to_struct($dep);
+        my ($c) = grep { ($_->{name} // '') eq 'controller' } @{ $h->{spec}{template}{spec}{containers} // [] };
+        $c && $c->{image};
+    };
+    print "  [..] robocop image $live -> $want\n" if $live && $live ne $want;
+    return;
 }
 
 # Looks at least once, so a timeout of 0 is "is it ready right now" -- what
