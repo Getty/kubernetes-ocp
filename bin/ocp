@@ -31,12 +31,14 @@ ocp - Omni Control Plane CLI
     ocp kubeconfig                        # print kubeconfig
     ocp kubeconfig -e                     # merge into ~/.kube/config
     ocp ssh --node police1                # SSH into a node (admin key)
+    ocp ssh --node worker-1 -- uptime     # run a command on it
     ocp keys show                         # admin public key (for authorized_keys)
 
     # Nodes and providers (OCPNode / OCPNodeProvider CRs)
     ocp node ls
     ocp node add worker-1 --role worker
     ocp node rm worker-1
+    ocp node rm worker-1 --keep-machine   # remove it, leave its machine alone
     ocp provider ls
     ocp provider add --name hetzner-fsn1 --type hetzner --token-file token.txt
 

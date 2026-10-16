@@ -261,6 +261,148 @@ subtest 'a provider that cannot be built stops rm before teardown' => sub {
     is $torn, 0, 'without removing the node and leaving its server behind';
 };
 
+#
+# k229: an ssh worker that never reached its host fails its teardown at the
+# uninstall on every attempt, and the OCPNode stays (k175, and that stays so).
+# --keep-machine is the way out, asked for by name; the failure says so.
+#
+
+my $crag_cr = {
+    metadata => { name => 'crag', namespace => 'ocp-system' },
+    spec     => { role => 'worker', providerRef => 'ssh-default', host => '10.0.0.9' },
+    status   => { phase => 'Failed', message => 'SSH not ready: No route to host' },
+};
+my $hetzner_joined_cr = {
+    metadata => { name => 'h1', namespace => 'ocp-system' },
+    spec     => { role => 'worker', providerRef => 'hetzner-a' },
+    status   => { phase => 'Ready', providerId => '4711', publicIP => '203.0.113.7',
+                  kubernetesNodeName => 'h1', joinedAt => '2026-10-15T20:00:00Z' },
+};
+
+sub rm_k229 {
+    my (%args) = @_;
+    my $providers = delete $args{providers}
+        // { 'hetzner-a' => $hetzner_provider_cr, 'ssh-default' => $ssh_provider_cr };
+    my $k8s = FakeK8sRm->new(
+        nodes     => { crag => $crag_cr, h1 => $hetzner_joined_cr },
+        providers => $providers,
+    );
+    return OCP::Cmd::Node::Rm->new(k8s => $k8s, _config => bless({}, 'FakeConfig'), %args);
+}
+
+# What a --keep-machine run touched: the teardown's options and node, and
+# whether a provider or a key was asked for.
+sub keep_machine_run {
+    my ($rm, @args) = @_;
+    my %seen = (from_cr => 0, key => 0);
+    no warnings 'redefine';
+    local *OCP::Provider::from_cr = sub { $seen{from_cr}++; bless {}, 'FakeProvider' };
+    local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub { $seen{key}++; FakeClusterKey->new('/k') };
+    local *OCP::Node::teardown = sub {
+        my ($node, %opt) = @_;
+        $seen{opt}      = \%opt;
+        $seen{provider} = $node->provider;
+        1;
+    };
+    $seen{out} = capture_stdout { $rm->execute([ @args ], []) };
+    return \%seen;
+}
+
+subtest '--keep-machine: teardown without the machine, nothing asked for it' => sub {
+    my $r = keep_machine_run(rm_k229(name => 'crag', keep_machine => 1));
+
+    is_deeply $r->{opt}, { keep_machine => 1 }, 'teardown is asked to keep the machine';
+    ok !$r->{provider}, 'the node gets no provider -- there is nothing to call it for';
+    is $r->{from_cr}, 0, 'no provider is built';
+    is $r->{key},     0, 'no cluster key, so no PIN2 for a machine nobody contacts';
+
+    like $r->{out}, qr/^Node 'crag' removed\. Its machine was not touched:/m,
+        'STDOUT says it is removed and that the machine was not touched';
+    like $r->{out}, qr/10\.0\.0\.9/,            'names the host';
+    like $r->{out}, qr/RKE2\/K3s/,              'what may still be on it';
+    like $r->{out}, qr/registers its Node again/, 'and why that matters';
+    like $r->{out}, qr/rke2-uninstall\.sh/,     'and how to get rid of it';
+};
+
+subtest '--keep-machine on a Hetzner node names the server that keeps billing' => sub {
+    my $r = keep_machine_run(rm_k229(name => 'h1', keep_machine => 1));
+
+    like $r->{out}, qr/Hetzner server 4711 \(203\.0\.113\.7\) keeps running and is billed/,
+        'the server, by id and address, and that it costs';
+};
+
+subtest '--keep-machine needs no OCPNodeProvider' => sub {
+    my $r = keep_machine_run(rm_k229(name => 'crag', keep_machine => 1, providers => {}));
+
+    is_deeply $r->{opt}, { keep_machine => 1 }, 'the node is removed all the same';
+    like $r->{out}, qr/10\.0\.0\.9/, 'the machine is described from the OCPNode alone';
+};
+
+subtest 'the name is the first word that is not an option' => sub {
+    my $r = keep_machine_run(rm_k229(keep_machine => 1), '--keep-machine', 'crag');
+
+    like $r->{out}, qr/^Node 'crag' removed/m,
+        '`ocp node rm --keep-machine crag` removes crag, not a node called --keep-machine';
+};
+
+# A teardown that failed at the machine, the way OCP::Node reports it.
+sub failing_at_machine {
+    my ($err) = @_;
+    return sub {
+        my ($node) = @_;
+        $node->_set_machine_cleanup_failed(1);
+        die $err;
+    };
+}
+
+subtest 'without --keep-machine a node that never joined stays, and the error names the way out' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Node::Rm::cluster_ssh_key = sub { FakeClusterKey->new('/tmp/k') };
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
+    local *OCP::Node::teardown = failing_at_machine(
+        "Teardown of node crag failed: 10.0.0.9: ssh: connect to host 10.0.0.9 port 22: "
+      . "No route to host\nThe node is kept (phase Failed); fix the cause and run "
+      . "'ocp node rm crag' again.\n");
+
+    my $out = '';
+    my $ok = eval { $out = capture_stdout { rm_k229(name => 'crag')->execute([], []) }; 1 };
+    my $err = $@;
+    ok !$ok, 'rm still fails: the default is unchanged';
+    unlike $out, qr/removed/i, 'and says nothing was removed';
+    like $err, qr/No route to host/,                 'the reason comes first';
+    like $err, qr/never joined the cluster/,         'it says this node never joined';
+    like $err, qr/^  ocp node rm crag --keep-machine$/m, 'the way out, ready to run';
+    like $err, qr/^Then check the machine by hand:\n  .*10\.0\.0\.9/m,
+        'and what to check afterwards';
+};
+
+subtest 'a joined node that fails at the machine gets the way out, worded for it' => sub {
+    no warnings 'redefine';
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
+    local *OCP::Node::teardown = failing_at_machine(
+        "Teardown of node h1 failed: injected Hetzner API failure\n");
+
+    ok !eval { capture_stdout { rm_k229(name => 'h1')->execute([], []) }; 1 }, 'rm fails';
+    my $err = $@;
+    unlike $err, qr/never joined/,                  'not called a node that never joined';
+    like $err, qr/If the machine is gone/,          'offered for a machine that is gone';
+    like $err, qr/ocp node rm h1 --keep-machine/,   'the way out';
+    like $err, qr/Hetzner server 4711/,             'naming the server that would stay';
+};
+
+subtest 'a teardown that stopped before the machine offers no --keep-machine' => sub {
+    no warnings 'redefine';
+    local *OCP::Provider::from_cr = sub { bless {}, 'FakeProvider' };
+    local *OCP::Node::teardown = sub {
+        die "Teardown of node h1 failed: drain of Node/h1 timed out after 300s\n";
+    };
+
+    ok !eval { capture_stdout { rm_k229(name => 'h1')->execute([], []) }; 1 }, 'rm fails';
+    like $@, qr/drain of Node\/h1/, 'with the reason';
+    unlike $@, qr/--keep-machine/,
+        'and no --keep-machine: the drain runs with it too, so it would not help';
+};
+
 subtest 'a providerRef that names no provider stops rm before teardown' => sub {
     my $torn = 0;
     no warnings 'redefine';
@@ -271,6 +413,8 @@ subtest 'a providerRef that names no provider stops rm before teardown' => sub {
     my $ok = eval { capture_stdout { $rm->execute([], []) }; 1 };
     ok !$ok, 'rm fails';
     like $@, qr/OCPNodeProvider.*hetzner-a/, 'naming the missing provider';
+    like $@, qr/^  ocp node rm worker-1 --keep-machine$/m,
+        'and the way out that needs no provider (k229)';
     is $torn, 0, 'nothing is torn down';
 };
 

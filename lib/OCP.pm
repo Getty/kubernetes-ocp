@@ -410,7 +410,8 @@ L<OCP::Cmd::Kubeconfig>.
 
 =item B<ssh>
 
-SSH into a cluster node using the admin key.
+SSH into a cluster node using the admin key, or run a command on it
+(C<ocp ssh --node NAME -- COMMAND>).
 
 =item B<node>
 

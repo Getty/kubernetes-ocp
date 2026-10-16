@@ -88,6 +88,11 @@ package MockTransport {
         # test that follows a lease from take to release.
         $api->cr($JSON->decode($body)) if $method eq 'PUT' && $api->persist;
 
+        # A patch of a Node that is not there is a 404, as on a real API
+        # server -- the cordon of a worker that never registered (k229).
+        return (404, { message => "nodes not found" })
+            if $method eq 'PATCH' && $path =~ m{^/api/v1/nodes/[^/]+$} && !$api->node;
+
         # Writes echo the object back, the way the API server does.
         return (200, $JSON->decode($body)) if $method eq 'PUT' || $method eq 'PATCH';
 
@@ -1753,6 +1758,123 @@ subtest 'hetzner: a refused server delete keeps the OCPNode and its providerId' 
     like $@, qr/injected Hetzner API failure/, 'with the API answer';
     is_deeply [ $k->reqs('DELETE') ], [],
         'the OCPNode -- the record of a server that still bills -- is kept';
+};
+
+#
+# k229: an ssh worker that never reached its host (phase Failed, "SSH not
+# ready") could not be removed at all. Its teardown fails at the uninstall --
+# over the same SSH that never worked -- so the OCPNode stays, as k175 wants
+# it to; without robocop a `kubectl delete` then hangs at the finalizer.
+# keep_machine is the explicit way out: the same teardown without step 3.
+#
+
+sub never_joined {
+    my (%args) = @_;
+    my $deleted = 0;
+    my $prov = FakeProvider->new(delete_cb => $args{delete_cb} // sub {
+        $deleted++;
+        die "10.0.0.9: ssh: connect to host 10.0.0.9 port 22: No route to host\n";
+    });
+    my $k = StrictK8s::build(
+        cr => ocpnode(
+            metadata => { name => 'crag', namespace => 'ocp-system',
+                          resourceVersion => '100',
+                          finalizers => [ OCP::Node::TEARDOWN_FINALIZER ],
+                          %{ $args{metadata} // {} } },
+            spec     => { role => 'worker', providerRef => 'ssh-default',
+                          host => '10.0.0.9' },
+            status   => { phase => 'Failed',
+                          message => 'SSH not ready: No route to host' }),
+        %{ $args{k8s} // {} },
+    );
+    my $node = OCP::Node->from_cr($k->cr, k8s => $k, provider => $prov);
+    return ($k, $node, \$deleted);
+}
+
+subtest 'keep_machine: the machine is not touched, the records go' => sub {
+    my ($k, $node, $deleted) = never_joined();
+
+    is $node->teardown(keep_machine => 1), 1, 'teardown succeeds';
+    is $$deleted, 0, 'the provider delete is not called -- no uninstall, no server delete';
+
+    my @deleted = map { $_->{path} } $k->reqs('DELETE');
+    ok scalar(grep { $_ eq '/apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes/crag' } @deleted),
+        'the OCPNode is deleted';
+    ok scalar(grep { $_ eq '/api/v1/nodes/crag' } @deleted),
+        'the Node delete is attempted (a 404 would be quiet)';
+
+    my ($release) = reverse grep { $_->{path} =~ m{/ocpnodes/crag$} } $k->reqs('PUT');
+    my $meta = JSON::MaybeXS::decode_json($release->{body})->{metadata};
+    is_deeply $meta->{finalizers}, [],
+        'the teardown finalizer comes off before the delete, so the delete is final';
+
+    my ($terminating) = grep { ($_->{phase} // '') eq 'Terminating' } status_writes($k);
+    like $terminating->{message}, qr/machine is left as it is/,
+        'the OCPNode says, while it lasts, that the machine is left alone';
+    ok !$node->machine_cleanup_failed, 'nothing failed at the machine';
+};
+
+subtest 'keep_machine on a node that never registered: nothing to cordon or drain' => sub {
+    my ($k, $node) = never_joined(k8s => { pods => [ pod('stray', node => 'crag') ] });
+
+    $node->teardown(keep_machine => 1);
+
+    my ($cordon) = grep { $_->{path} eq '/api/v1/nodes/crag' } $k->reqs('PATCH');
+    ok $cordon, 'the cordon is tried ...';
+    ok !grep({ $_->{path} =~ /pods/ } $k->reqs('GET')),
+        '... answers 404, so no drain -- there is no Node to drain';
+    is_deeply [ $k->reqs('POST') ], [], 'nothing is evicted';
+};
+
+subtest 'keep_machine on a registered node still cordons and drains' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my ($k, $node, $deleted) = never_joined(k8s => {
+        node => ready_node('crag', 'True'),
+        pods => [ pod('web-1', namespace => 'apps', node => 'crag') ],
+    });
+
+    $node->teardown(keep_machine => 1);
+
+    is_deeply [ map { $_->{path} } $k->reqs('POST') ],
+        [ '/api/v1/namespaces/apps/pods/web-1/eviction' ],
+        'its pods are evicted: the Node object goes either way, so they must move';
+    is $$deleted, 0, 'and the machine is still not touched';
+};
+
+subtest 'keep_machine takes the lease first, like every teardown' => sub {
+    my $held = 'robocop@' . Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ') . '@300';
+    my ($k, $node, $deleted) = never_joined(metadata => {
+        annotations => { 'ocp.internal/reconciler-lease' => $held } });
+
+    ok !eval { $node->teardown(keep_machine => 1); 1 }, 'refused';
+    like $@, qr/not started, nothing was touched: lease held by another reconciler/,
+        'naming the lease';
+    is_deeply [ $k->reqs('DELETE') ], [], 'nothing is deleted';
+};
+
+subtest 'without keep_machine the node stays, and the failure is at the machine' => sub {
+    my ($k, $node, $deleted) = never_joined();
+
+    ok !eval { $node->teardown; 1 }, 'teardown dies, as k175 has it';
+    like $@, qr/No route to host/, 'with the reason';
+    is $$deleted, 1, 'the uninstall was tried';
+    is_deeply [ $k->reqs('DELETE') ], [], 'and nothing is deleted';
+    ok $node->machine_cleanup_failed,
+        'machine_cleanup_failed says where it failed, for a caller that has a way out to offer';
+};
+
+subtest 'machine_cleanup_failed is false when the teardown stopped before the machine' => sub {
+    local $OCP::Node::DRAIN_INTERVAL = 0;
+    my ($k, $node, $deleted) = never_joined(k8s => {
+        node  => ready_node('crag', 'True'),
+        pods  => [ pod('p1', node => 'crag') ],
+        evict => { p1 => 403 },
+    });
+
+    ok !eval { $node->teardown; 1 }, 'the drain fails the teardown';
+    is $$deleted, 0, 'before the machine';
+    ok !$node->machine_cleanup_failed,
+        'so keeping the machine would not have helped, and the flag does not say it would';
 };
 
 subtest 'reconcile returns 0 on Failed phase (terminal)' => sub {

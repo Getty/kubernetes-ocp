@@ -1106,8 +1106,12 @@ sub run_ocp_ssh {
                 bless {}, $class;
             };
             local *OCP::SSH::is_reachable = sub { $opt{reachable} // 1 };
-            local *OCP::SSH::interactive  = sub { $seen{connected} = 1 };
-            $cmd->execute([], []);
+            local *OCP::SSH::interactive  = sub {
+                my ($ssh, @command) = @_;
+                $seen{connected} = 1;
+                $seen{command}   = \@command;
+            };
+            $cmd->execute($opt{args} // [], []);
         }, %opt);
     });
 
@@ -1151,6 +1155,31 @@ subtest 'ocp ssh diagnoses a refused admin key instead of just exec-ing' => sub 
 
     like $r->{stderr}, qr/did not accept the admin key/, 'it says what happened';
     like $r->{stderr}, qr/ocp keys show --purpose admin/, 'and what to do about it';
+};
+
+# k229: a command after `--` runs instead of the shell -- same key, same
+# PIN2, handed to the same exec (t/229-ssh-command.t has the ssh command line
+# and the exit status).
+subtest 'ocp ssh -- COMMAND hands the command to the session' => sub {
+    my $config = project(provider => 'ssh');
+
+    my $r = run_ocp_ssh($config, args => [qw(--node 9.9.9.9 -- uptime -p)]);
+    is $r->{err}, '', 'it connected' or diag $r->{out};
+    is_deeply $r->{command}, [qw(uptime -p)], 'with the command, options and all';
+    is $r->{material}, $ADMIN->{private}, 'with the admin key, as a session gets';
+    is $r->{out}, '', "nothing of ocp's own on STDOUT -- that is the command's";
+
+    my $plain = run_ocp_ssh($config);
+    is_deeply $plain->{command}, [], 'no -- , no command: the interactive session';
+};
+
+subtest 'ocp ssh refuses a stray word before asking for anything' => sub {
+    my $config = project(provider => 'ssh');
+
+    my $r = run_ocp_ssh($config, args => [qw(--node 9.9.9.9 uptime)]);
+    like $r->{err}, qr/^Unexpected argument 'uptime'/, 'refused, naming the word';
+    ok !$r->{connected}, 'no session';
+    is $PROMPTS, 0, 'and no PIN2 asked for a command that was never going to run';
 };
 
 # ------------------------------------------------------------- ocp destroy

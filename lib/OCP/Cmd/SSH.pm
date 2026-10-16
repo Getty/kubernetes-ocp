@@ -8,6 +8,7 @@ use OCP;
 use OCP::Choices;
 use OCP::ClusterKey;
 use OCP::Config;
+use OCP::K8s;
 use OCP::Kubernetes;
 use OCP::Secrets;
 use OCP::SSH;
@@ -44,8 +45,11 @@ sub execute {
 
     my $node_arg = $self->node;
     unless ($node_arg) {
-        die "Usage: ocp ssh --node <name|ip>\n";
+        die "Usage: ocp ssh --node <name|ip> [-- COMMAND ...]\n";
     }
+
+    # Before any prompt: a stray word is refused while nothing has been asked.
+    my @command = $self->_remote_command($args);
 
     my $secure = -f $config->project_dir->child('keys.yaml');
 
@@ -68,7 +72,16 @@ sub execute {
     # age key on the way, and owns the temp file it writes — the hand-rolled
     # File::Temp here had UNLINK => 1 but no owner for the .pub Rex-style
     # callers expect.
-    my $key = $self->cluster_ssh_key($config, reason => 'ocp ssh');
+    #
+    # OCP::ClusterKey explains its PIN2 prompt with plain prints -- narration
+    # for `ocp apply`, but here it would land in the payload, ahead of what a
+    # remote command prints (k229). This command's framing is STDERR, so that
+    # is where those lines go too.
+    my $was = select STDERR;
+    my $key = eval { $self->cluster_ssh_key($config, reason => 'ocp ssh') };
+    my $key_err = $@;
+    select $was;
+    die $key_err unless $key;
     print STDERR "[ok] " . $key->describe . "\n";
 
     # Determine target host
@@ -102,9 +115,53 @@ sub execute {
         }
     }
 
-    $ssh->interactive;
+    # With a command, ssh runs it instead of a shell (k229). The process is
+    # replaced all the same, so what the command prints is this command's
+    # STDOUT -- the payload, nothing of ocp's own in between -- and its exit
+    # status is ocp's.
+    $ssh->interactive(@command);
 
     return 0;
+}
+
+# The command to run on the node: everything after `--`, verbatim (k229).
+#
+# MooX::Cmd hands execute the command line as typed, options included, and
+# MooX::Options stops reading options at the `--`, so what follows it is
+# nobody's but the remote command's -- `ocp ssh --node crag -- ls -la` keeps
+# its -la. Without the `--` an option of the command would be read as one of
+# ours and refused by Getopt.
+#
+# A word before the `--` that is neither an option nor an option's value is
+# refused, not dropped: `ocp ssh --node crag uptime` would otherwise open a
+# shell and quietly ignore the uptime. Which options take a value is asked
+# of MooX::Options, abbreviations included, the way Getopt reads them.
+sub _remote_command {
+    my ($self, $args) = @_;
+
+    my @args = @{ $args // [] };
+    my (@before, $dashes);
+    while (@args) {
+        my $arg = shift @args;
+        if ($arg eq '--') { $dashes = 1; last }
+        push @before, $arg;
+    }
+
+    my %options = $self->_options_data;
+    my @valued  = grep { $options{$_}{format} } keys %options;
+
+    while (defined(my $arg = shift @before)) {
+        if ($arg =~ /^--?([\w-]+)$/) {
+            (my $opt = $1) =~ tr/-/_/;
+            shift @before if grep { index($_, $opt) == 0 } @valued;
+            next;
+        }
+        next if $arg =~ /^-/;
+        die "Unexpected argument '$arg'. A command to run on the node goes after '--':\n"
+          . '  ocp ssh --node ' . ($self->node // '<name|ip>') . " -- $arg\n";
+    }
+
+    return $dashes ? @args : ();
 }
 
 # The names the Kubernetes API answers to, or nothing.
@@ -116,17 +173,32 @@ sub execute {
 # one API call on a path that is about to exit non-zero anyway.
 #
 # Tolerant like every listing built for an error message: a failing list must
-# not replace the message with its own.
+# not replace the message with its own -- each of the two lists below fails on
+# its own.
+#
+# The OCPNodes are listed too since k229, those with an address: that is what
+# _lookup_by_name connects to, so a worker that has not joined but has a host
+# is something this command can reach. One without an address still is not,
+# and is not offered.
 sub _node_names {
     my ($self, $secrets) = @_;
 
-    return () unless $secrets->has_kubeconfig;
-    my $kubeconfig = $secrets->read_kubeconfig or return ();
+    my $k8s = eval { $self->_kubernetes($secrets) } or return ();
 
-    my $k8s   = eval { OCP::Kubernetes->new(kubeconfig => $kubeconfig) } or return ();
-    my $nodes = eval { $k8s->list_nodes }                               or return ();
+    my $nodes = eval { $k8s->list_nodes } // [];
+    my @names = map { $k8s->node_name($_) } @$nodes;
 
-    return sort grep { length } map { $k8s->node_name($_) } @$nodes;
+    my $crs = eval {
+        my $api = $k8s->api;
+        OCP::K8s->register($api);
+        [ map { $api->k8s->object_to_struct($_) }
+              @{ $api->list('OCPNode', namespace => 'ocp-system')->items // [] } ];
+    } // [];
+    push @names, map  { $_->{metadata}{name} }
+                 grep { $_->{status}{publicIP} || $_->{spec}{host} } @$crs;
+
+    my %seen;
+    return sort grep { length && !$seen{$_}++ } @names;
 }
 
 # Resolve --node to an SSH target. Returns the host string, or undef when
@@ -146,8 +218,9 @@ sub _node_names {
 # happens to be.
 #
 # Anything that does not match a CP falls through to the legacy
-# police/cp regex (API lookup), and from there to the IP/hostname path
-# -- the same cascade that `ocp ssh --node 1.2.3.4` always used.
+# police/cp regex (API lookup), then to the node of exactly that name
+# (OCPNode, then Kubernetes Node; k229), and from there to the IP/hostname
+# path -- the same cascade that `ocp ssh --node 1.2.3.4` always used.
 sub _resolve_target_host {
     my ($self, $config, $secrets, $node_arg) = @_;
 
@@ -177,13 +250,100 @@ sub _resolve_target_host {
     }
 
     # No exact identity match. The legacy /^(police|cp)/ regex: anything
-    # that looks like a CP name is API-looked-up; anything else is an IP.
+    # that looks like a CP name is API-looked-up, as it always was. Only what
+    # that finds nothing for is asked by its exact name as well (k229) -- a
+    # worker called cpu-1 is a worker, whatever its first letters say.
     if ($node_arg eq 'police1' || $node_arg =~ /^police\d+$/ || $node_arg =~ /^cp/) {
         print STDERR "[..] Looking up control plane IP via Kubernetes API...\n";
-        return $self->_lookup_node_ip($secrets, $node_arg);
+        return $self->_lookup_node_ip($secrets, $node_arg)
+            // $self->_lookup_by_name($secrets, $node_arg);
+    }
+
+    # A worker, by the name `ocp node ls` shows (k229). It used to fall
+    # straight through to the hostname path below, so `ocp ssh --node crag`
+    # ended in "Could not resolve hostname crag" for a node whose address the
+    # cluster had all along. An IP is not a node name, and asking the API
+    # about one would only cost a round trip.
+    unless ($node_arg =~ /^[\d.]+$/ || $node_arg =~ /:/) {
+        my $address = $self->_lookup_by_name($secrets, $node_arg);
+        return $address if defined $address;
     }
 
     return $node_arg;
+}
+
+# The address of the node called exactly $name, or undef when nothing in the
+# cluster has that name (k229).
+#
+# The OCPNode first, its address in the order OCP::Node::_resolve_host uses:
+# status.publicIP, then spec.host. That is the address OCP installed the
+# machine over, so it is the one its SSH answers on; the Kubernetes Node's
+# addresses are what the kubelet reports, which may be a private one (k174).
+# Then the Kubernetes Node of exactly that name, ExternalIP before InternalIP
+# like _lookup_node_ip -- but not by substring: "crag" must not reach
+# "crag-2".
+#
+# A node that exists and has no address yet is not "nothing called that":
+# that dies with what is missing, instead of handing the name to ssh as a
+# hostname. An API that does not answer is said on STDERR and leaves the
+# hostname path to try.
+sub _lookup_by_name {
+    my ($self, $secrets, $name) = @_;
+
+    my $k8s = $self->_kubernetes($secrets) or return undef;
+
+    my ($cr, $node);
+    my $ok = eval {
+        my $api = $k8s->api;
+        OCP::K8s->register($api);
+        $cr   = $self->_get_or_undef($api, 'OCPNode', name => $name, namespace => 'ocp-system');
+        $node = $self->_get_or_undef($api, 'Node',    name => $name);
+        1;
+    };
+    unless ($ok) {
+        my $err = $@;
+        chomp $err;
+        print STDERR "[!!] Could not look up node '$name' in the cluster API: $err\n"
+                   . "     Trying '$name' as a hostname.\n";
+        return undef;
+    }
+
+    if ($cr) {
+        my $address = $cr->{status}{publicIP} || $cr->{spec}{host};
+        return $address if $address;
+    }
+    if ($node) {
+        my $address = $k8s->node_external_ip($node) || $k8s->node_internal_ip($node);
+        return $address if $address;
+    }
+    return undef unless $cr || $node;
+
+    die $self->_unknown_node_error($name, $name) unless $cr;
+    die "OCPNode '$name' has no address yet (phase "
+      . ($cr->{status}{phase} // 'Pending')
+      . ': no status.publicIP, no spec.host), and no Kubernetes node of that name has one.'
+      . "\nConnect by address instead: ocp ssh --node <ip>\n";
+}
+
+# A get that answers a 404 with undef, the way OCP::Node::_get_cr draws the
+# line: absent is an answer, every other failure is not.
+sub _get_or_undef {
+    my ($self, $api, $kind, %args) = @_;
+    my $obj = eval { $api->get($kind, %args) };
+    if (my $err = $@) {
+        die $err unless $err =~ /\b404\b/;
+        return undef;
+    }
+    return $obj && $kind eq 'OCPNode' ? $api->k8s->object_to_struct($obj) : $obj;
+}
+
+# The cluster API as OCP::Kubernetes, from the project's kubeconfig, or undef
+# when the project has none.
+sub _kubernetes {
+    my ($self, $secrets) = @_;
+    return undef unless $secrets->has_kubeconfig;
+    my $kubeconfig = $secrets->read_kubeconfig or return undef;
+    return OCP::Kubernetes->new(kubeconfig => $kubeconfig);
 }
 
 # Why --node did not resolve to anything to connect to.
@@ -197,8 +357,11 @@ sub _resolve_target_host {
 # is true.
 #
 # What gets listed is what this command could actually have used: Kubernetes
-# node names. Not OCPNode CRs — a CR whose machine has not joined yet is
-# nothing `ocp ssh` can reach, so offering it would be a lie of its own.
+# node names, and since k229 the OCPNodes that have an address -- a worker
+# that has not joined is reachable once its host is known, because
+# _lookup_by_name connects to it by that. An OCPNode with no address is still
+# left out: nothing `ocp ssh` can reach, so offering it would be a lie of its
+# own. (_node_names makes that choice; this sub lists what it is given.)
 sub _unknown_node_error {
     my ($self, $node_arg, @names) = @_;
 
@@ -218,12 +381,7 @@ sub _unknown_node_error {
 sub _lookup_node_ip {
     my ($self, $secrets, $node_name) = @_;
 
-    return undef unless $secrets->has_kubeconfig;
-
-    my $kubeconfig = $secrets->read_kubeconfig
-        or return undef;
-
-    my $k8s = OCP::Kubernetes->new(kubeconfig => $kubeconfig);
+    my $k8s = $self->_kubernetes($secrets) or return undef;
 
     for my $node (@{ $k8s->list_nodes }) {
         my $name = $k8s->node_name($node);
@@ -255,8 +413,13 @@ OCP::Cmd::SSH - SSH into a cluster node with the key it trusts
     # SSH into node by IP
     ocp ssh --node 1.2.3.4
 
-    # SSH into worker
+    # SSH into worker, by its OCPNode name -- joined or not
     ocp ssh --node worker-1
+
+    # Run a command instead of a shell: its output on STDOUT, its exit
+    # status as ocp's
+    ocp ssh --node worker-1 -- uptime
+    ocp ssh --node worker-1 -- journalctl -u rke2-agent -n 50 > agent.log
 
 =head1 DESCRIPTION
 
@@ -289,16 +452,48 @@ See L<OCP::ClusterKey/migration_hint>. It never falls back to that key.
 
 =head2 --node <name|ip>
 
-Node name or IP address to SSH into.
+Node name or IP address to SSH into.  A name is looked for in this order:
 
-A name that resolves to nothing is refused with the node names the
-Kubernetes API does answer to:
+=over 4
+
+=item 1. a control plane of F<ocp.yaml> by its name (C<police1>, an ssh
+control plane by its host's first label)
+
+=item 2. a name that looks like a control plane's (C<police*>, C<cp*>): the
+Kubernetes node whose name contains it
+
+=item 3. the OCPNode of exactly that name, at C<status.publicIP>, else
+C<spec.host> -- the address OCP installed it over, so a worker that never
+joined is reachable too -- then the Kubernetes node of exactly that name, at
+its ExternalIP, else its InternalIP
+
+=item 4. otherwise the argument itself, as an IP address or hostname
+
+=back
+
+A control-plane-like name that resolves to nothing is refused with the names
+this command could have reached -- Kubernetes nodes and OCPNodes that have an
+address:
 
     Unknown node 'police1'.
-    Available: cp-lab, otho-gpu
+    Available: cp-lab, crag, otho-gpu
 
 A name that I<does> match a known node but has no address recorded is a
 different fact and gets a different sentence — it is not a typo, so it is not
-called unknown.
+called unknown.  That holds for an OCPNode with no address yet as well: it is
+refused naming its phase, instead of being handed to ssh as a hostname.
+
+=head2 -- COMMAND ...
+
+Everything after C<--> is run on the node instead of a login shell.  ssh joins
+the words and the remote shell reads them, as with plain ssh.  The command's
+output is this command's STDOUT and its exit status is C<ocp>'s, so it pipes
+and scripts like ssh does; C<ocp>'s own framing stays on STDERR.
+
+A word before the C<--> that is no option is refused with the form that would
+have worked, rather than dropped:
+
+    Unexpected argument 'uptime'. A command to run on the node goes after '--':
+      ocp ssh --node crag -- uptime
 
 =cut

@@ -101,6 +101,12 @@ has reconciler_id => (is => 'ro', default => sub { 'cli' });
 # robocop says it in its log, the CLI's poll loop simply looks again.
 has lease_conflict => (is => 'rwp', init_arg => undef);
 
+# Set when the last teardown failed at the machine -- the server delete or the
+# uninstall -- rather than before it (k229). A fact, not advice: what to do
+# about it depends on who called, and only `ocp node rm` has a --keep-machine
+# to offer; robocop retries.
+has machine_cleanup_failed => (is => 'rwp', init_arg => undef);
+
 has ssh_class    => (is => 'ro', default => sub { 'OCP::SSH' });
 has rex_class     => (is => 'ro', default => sub { 'OCP::Rex' });
 
@@ -878,8 +884,19 @@ our $DRAIN_INTERVAL = 5;
 # deleted -- a running kubelet registers its Node again. A Failed OCPNode is
 # visible in `ocp node ls`, is left alone by every reconciler, and
 # `ocp node rm` on it simply runs this again.
+#
+# keep_machine => 1 leaves out step 3, and nothing else (k229). It is for a
+# node whose machine cannot be cleaned up and need not be: typically one that
+# never reached its host (phase Failed, "SSH not ready"), where the uninstall
+# can only fail the same way again, so the OCPNode -- finalizer and all --
+# would otherwise stay for good. Only ever on request: the caller asked for it
+# by name and owns telling whoever asked that the machine was left as it is.
+# Cordon and drain still run. For a node that never registered they find
+# nothing to do (_cordon answers a 404 with "no drain"); for one that did, its
+# pods have to move all the same, because its Node object goes either way.
 sub teardown {
-    my $self = shift;
+    my ($self, %opt) = @_;
+    $self->_set_machine_cleanup_failed(undef);
 
     # The lease first, before anything is touched (k179). robocop tears down a
     # deleted OCPNode and `ocp node rm` tears down the one it is pointed at;
@@ -895,7 +912,9 @@ sub teardown {
               : '');
     };
 
-    $self->_patch_status(phase => 'Terminating', message => 'Teardown initiated');
+    $self->_patch_status(phase => 'Terminating', message => $opt{keep_machine}
+        ? 'Teardown initiated; the machine is left as it is'
+        : 'Teardown initiated');
 
     my $k8s_name = $self->cr->{status}{kubernetesNodeName} // $self->name;
 
@@ -905,17 +924,23 @@ sub teardown {
         # Renewed: the drain alone may take as long as the lease lives.
         $self->_acquire_lease;
 
-        if ($self->provider) {
+        if ($self->provider && !$opt{keep_machine}) {
             # Providers take the id they handed out at creation time; the
             # host-based ones need the address instead. Pass both. A provider
             # reports failure by dying -- Hetzner when the API refuses,
             # ExistingHost when the uninstall does not complete.
             my $status = $self->cr->{status} // {};
-            $self->provider->delete_server(
-                $status->{providerId},
-                name => $self->name,
-                host => $status->{publicIP} // $self->cr->{spec}{host},
-            );
+            eval {
+                $self->provider->delete_server(
+                    $status->{providerId},
+                    name => $self->name,
+                    host => $status->{publicIP} // $self->cr->{spec}{host},
+                );
+                1;
+            } or do {
+                $self->_set_machine_cleanup_failed(1);
+                die $@;
+            };
         }
         1;
     };
@@ -1314,6 +1339,17 @@ delete the Kubernetes Node and the OCPNode
 
 =back
 
+    $node->teardown(keep_machine => 1);
+
+Leaves out step 3 and nothing else: the server is not deleted, nothing is
+uninstalled, the machine is not contacted at all.  For a node whose machine
+cannot be cleaned up -- typically one that never reached its host, where the
+uninstall can only fail again -- and which would otherwise keep its OCPNode
+for good.  Only ever on request (C<ocp node rm --keep-machine>); telling the
+operator what was left running is the caller's job.  Cordon and drain still
+run: a node that never registered has nothing to cordon, one that did has its
+pods moved, because its Node object is deleted either way.
+
 =head2 The teardown finalizer
 
     OCP::Node::TEARDOWN_FINALIZER            # 'ocp.internal/teardown'
@@ -1445,6 +1481,12 @@ once; the controller itself keeps two reconciles of one OCPNode apart.
 
 Read-only, set by C<reconcile>: the lease that made the last pass leave the
 node alone (see L</Lease Mechanics>), undef otherwise.
+
+=item machine_cleanup_failed
+
+Read-only, set by C<teardown>: true when the last teardown failed at step 3,
+the server delete or the uninstall, rather than before it.  C<ocp node rm>
+reads it to offer C<--keep-machine>; robocop retries.
 
 =back
 

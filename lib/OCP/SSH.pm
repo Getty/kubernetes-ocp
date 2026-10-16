@@ -185,8 +185,14 @@ sub run_script {
 
 # Interactive SSH session (replaces current process via exec). ssh itself
 # prints the changed-key warning here; there is nothing left to catch after exec.
+#
+# With @command, ssh runs that instead of a login shell (k229, `ocp ssh --node
+# X -- CMD`): its output is the process's own STDOUT/STDERR and ssh exits with
+# its exit status. The `--` ends ssh's own options for good: OpenSSH reads
+# options right after the destination as well. ssh joins the words with
+# spaces and the remote shell reads the line, as with plain ssh.
 sub interactive {
-    my ($self) = @_;
+    my ($self, @command) = @_;
 
     $self->_known_hosts->ensure_dir;
 
@@ -195,8 +201,9 @@ sub interactive {
     push @cmd, '-p', $self->port if $self->port != 22;
     push @cmd, '-i', $self->key_file if $self->key_file;
     push @cmd, $self->user . '@' . $self->host;
+    push @cmd, '--', @command if @command;
 
-    exec(@cmd);
+    exec(@cmd) or die "Could not run ssh: $!\n";
 }
 
 sub scp_to {
@@ -360,6 +367,9 @@ OCP::SSH - SSH operations for OCP using IPC::Open3
 
     # Interactive session (replaces process)
     $ssh->interactive;
+
+    # A command instead of a shell (replaces process; its exit status is ssh's)
+    $ssh->interactive('uptime');
 
 =head1 DESCRIPTION
 
