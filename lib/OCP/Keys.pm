@@ -129,6 +129,80 @@ sub add_key {
 }
 
 #
+# The two-tier pair a secure-mode project starts with (ADR 0006)
+#
+
+# Generates a robo key (purpose automation, age only) and an admin key
+# (purpose admin, age + PIN2) and adds both to this key file, named
+# robo-ssh-<stamp> and admin-ssh-<stamp>. `ocp init` writes them into
+# keys.yaml; `ocp keys secure` (k96) into a staging file under .ocp/ that only
+# becomes keys.yaml once every machine accepts the new admin key.
+#
+# ssh-keygen needs a file to write to, so each private half sits in .ocp/ in
+# plaintext for as long as it takes to read it back -- removed before it is
+# added here, so a failing add_key cannot leave it behind.
+#
+# Returns { automation => {...}, admin => {...} }, each with name, public and
+# private: the caller that generated the keys has the admin private half in
+# hand and need not ask for the PIN2 it just set to read it back.
+sub add_cluster_keys {
+    my ($self, %params) = @_;
+
+    my $pin2 = $params{pin2};
+    croak "add_cluster_keys: pin2 required" unless defined $pin2 && length $pin2;
+    my $stamp = $params{datestamp} // _datestamp();
+
+    my $secrets = OCP::Secrets->new(project_dir => $self->project_dir, ocp => $self->ocp);
+
+    my %made;
+    for my $tier ([ robo => 'automation', undef ], [ admin => 'admin', $pin2 ]) {
+        my ($prefix, $purpose, $pin) = @$tier;
+        my $name  = $prefix.'-ssh-'.$stamp;
+        my $files = $secrets->generate_ssh_key(name => $name);
+
+        my $private = path($files->{private_key})->slurp;
+        my $public  = path($files->{public_key})->slurp;
+        chomp $public;
+        path($_)->remove for @$files{qw( private_key public_key )};
+
+        $self->add_key(
+            name    => $name,
+            type    => 'ssh_ed25519',
+            purpose => $purpose,
+            private => $private,
+            public  => $public,
+            pin2    => $pin,
+        );
+        $made{$purpose} = { name => $name, purpose => $purpose, public => $public, private => $private };
+    }
+
+    return \%made;
+}
+
+# Moves this key file to $target -- a staging file becoming keys.yaml (k96).
+# Not a plain rename: the SOPS layer is written anew for the recipients
+# $target has (OCP::Secrets::recipients_for), because a .sops.yaml rule that
+# names keys.yaml does not match the staging file's name. The private halves
+# inside keep their own layer and are carried over untouched. Returns the
+# OCP::Keys for $target.
+sub promote_to {
+    my ($self, $target) = @_;
+
+    my $data = $self->_read_keys_file_encrypted;
+    croak "promote_to: ".$self->keys_file." holds no keys" unless $data && $data->{keys};
+
+    my $dest = (ref $self)->new(
+        project_dir => $self->project_dir,
+        ocp         => $self->ocp,
+        keys_file   => path($target),
+    );
+    $dest->_write_keys_file_encrypted($data);
+    $self->keys_file->remove;
+
+    return $dest;
+}
+
+#
 # Update key (re-encrypt with new PIN2)
 #
 
@@ -477,6 +551,11 @@ sub _get_age_recipient {
 # Helpers
 #
 
+sub _datestamp {
+    my @t = gmtime;
+    return sprintf('%04d%02d%02d', $t[5]+1900, $t[4]+1, $t[3]);
+}
+
 sub _timestamp {
     my @t = gmtime;
     return sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',
@@ -612,6 +691,21 @@ Returns specific key metadata.
 Add new key with double encryption.
 
 Required params: name, type, private, pin2
+
+=head2 add_cluster_keys(pin2 => $pin2, datestamp => $stamp)
+
+Generates the pair a secure-mode project starts with -- C<robo-ssh-STAMP>
+(C<purpose: automation>, age only) and C<admin-ssh-STAMP> (C<purpose: admin>,
+age + PIN2) -- and adds both. C<datestamp> defaults to today (UTC,
+C<YYYYMMDD>). Returns C<< { automation => {...}, admin => {...} } >>, each
+with C<name>, C<public> and C<private>. C<ocp init> and C<ocp keys secure> use
+it.
+
+=head2 promote_to($target)
+
+Moves this key file to C<$target>, re-encrypting the SOPS layer for
+C<$target>'s recipients, and returns the L<OCP::Keys> for it. C<ocp keys
+secure> turns its staging file into F<keys.yaml> with it.
 
 =head2 decrypt_key($name, $pin2)
 

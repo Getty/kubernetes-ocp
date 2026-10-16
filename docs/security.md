@@ -4,8 +4,9 @@ OCP's premise is that a cluster project should be safe to commit to git,
 including its secrets. That works because every secret is encrypted at rest
 with age/SOPS, and two independent PINs stand in front of the key material.
 
-Which mode a project uses is chosen once, at `ocp init`, and is not something
-you flip later.
+Which mode a project uses is chosen at `ocp init`. A dev-mode project can be
+moved into secure mode later with `ocp keys secure` (below); there is no way
+back.
 
 ## Secure mode (the default)
 
@@ -47,6 +48,7 @@ Which commands prompt for what:
 | `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add` | PIN2 (the admin key) |
 | `ocp destroy` | PIN2 when an `ssh`/`local` node is involved |
 | `ocp deploy-robocop` | PIN1 (credentials come out of the encrypted files) |
+| `ocp keys secure` | sets PIN1 and PIN2 (each twice); PIN2 once when it continues, or for `--drop-bootstrap` on a secure project |
 
 ## Dev mode (`ocp init --nopassword`)
 
@@ -54,7 +56,49 @@ A single unencrypted SSH key at `.ocp/id_ed25519` and no PIN prompts, ever.
 `kubeconfig.yaml` is still encrypted even in this mode. Use it for local
 experiments and nothing you would mind losing.
 
-A dev-mode project cannot currently be migrated into secure mode.
+## From dev mode to secure mode (`ocp keys secure`)
+
+A dev-mode project's machines trust `.ocp/id_ed25519` and nothing else, and
+secure mode never offers that key. Creating `keys.yaml` by hand would
+therefore lock OCP out of every machine. `ocp keys secure` makes the switch in
+the one order that cannot:
+
+1. It sets PIN1 (unless `age.key.enc` exists already) and PIN2, and generates
+   the admin and robo keys into `.ocp/keys.yaml.pending` — not `keys.yaml`,
+   because `keys.yaml` is what makes a project secure for every other command.
+2. It appends both public keys to `/root/.ssh/authorized_keys` on every
+   machine of the cluster, logged in with the bootstrap key that still works:
+   the control planes, and every worker an OCPNode names. A key that is
+   already there is not added twice.
+3. It logs in to every machine with the admin key, and with nothing else.
+4. Only when every machine passed: `age.key.enc` and `keys.yaml` are written.
+   Commit both.
+
+```bash
+ocp keys secure                     # PIN1, PIN1, PIN2, PIN2
+ocp keys secure --drop-bootstrap    # and remove the bootstrap key afterwards
+```
+
+If a machine fails, the command names it on STDERR and exits 1; the project
+stays in dev mode, the staged keys stay in `.ocp/`. Fix the machine and run it
+again: it continues with the same keys (PIN2 once, to unlock them).
+
+After the switch it does what `ocp apply` would: on Hetzner it stores both
+public keys in the project under `ocp-<name>-admin` / `ocp-<name>-robo`, where
+dev mode had stored the bootstrap key, so servers created later get them; and
+with robocop enabled it writes robocop's credentials Secret with the new robo
+key and restarts a running robocop. When there is no cluster yet, robocop gets
+them with the first `ocp apply`.
+
+Workers listed in `ocp.yaml` that have not joined yet are not machines yet:
+the command names them, and they need both keys before they join
+(`ocp keys authorized-keys`).
+
+The bootstrap key stays in `authorized_keys` until you remove it:
+`ocp keys secure --drop-bootstrap` deletes its lines on every machine, logged
+in with the admin key, and only where the admin key has just been accepted.
+It never deletes `.ocp/id_ed25519` itself — it tells you when nothing it
+reaches still trusts the key, and the rest is yours.
 
 ## What goes into git
 

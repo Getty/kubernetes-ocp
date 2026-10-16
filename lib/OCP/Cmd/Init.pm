@@ -54,7 +54,7 @@ option provider => (
 
 option nopassword => (
     is    => 'ro',
-    doc   => 'Disable encryption (local dev only)',
+    doc   => 'Dev mode: no PINs, one unencrypted key (ocp keys secure switches later)',
 );
 
 option host => (
@@ -245,12 +245,7 @@ sub execute {
             print "═" x 60, "\n\n";
 
 
-            my $pin1 = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
-            my $pin1_confirm = OCP::Password::prompt_password("Confirm PIN1: ");
-
-            if ($pin1 ne $pin1_confirm) {
-                die "PIN1 passwords don't match!\n";
-            }
+            my $pin1 = OCP::Password::prompt_new_pin('PIN1', 'cluster access');
 
             print "[..] Encrypting age.key with PIN1\n";
             $secrets->encrypt_age_key_with_password($pin1);
@@ -278,62 +273,16 @@ sub execute {
         } else {
             print "[..] Generating two-tier SSH keys\n";
 
-            my $datestamp = _datestamp();
+            # PIN2 before the keys: the admin key is born under it. The pair
+            # itself comes from OCP::Keys, where `ocp keys secure` (k96) gets
+            # the very same pair when it moves a dev-mode project over.
+            my $pin2 = OCP::Password::prompt_new_pin('PIN2', 'admin SSH access');
 
-            # Generate robo-ssh key (automation, age only)
-            my $robo_name = "robo-ssh-$datestamp";
-            $secrets->generate_ssh_key(name => $robo_name);
-
-            my $robo_private = path(".ocp/$robo_name")->slurp;
-            my $robo_public = path(".ocp/$robo_name.pub")->slurp;
-            chomp $robo_public;
-
-            # Generate admin-ssh key (requires PIN2)
-            my $admin_name = "admin-ssh-$datestamp";
-            $secrets->generate_ssh_key(name => $admin_name);
-
-            my $admin_private = path(".ocp/$admin_name")->slurp;
-            my $admin_public = path(".ocp/$admin_name.pub")->slurp;
-            chomp $admin_public;
-
-            # Prompt for PIN2 (admin SSH access)
-
-            my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin SSH access): ");
-            my $pin2_confirm = OCP::Password::prompt_password("Confirm PIN2: ");
-
-            if ($pin2 ne $pin2_confirm) {
-                die "PIN2 passwords don't match!\n";
-            }
-
-            # Add robo-key (age only, no PIN2)
-            $keys_mgr->add_key(
-                name    => "robo-ssh-$datestamp",
-                type    => 'ssh_ed25519',
-                purpose => 'automation',
-                private => $robo_private,
-                public  => $robo_public,
-                pin2    => undef,  # No PIN2 for automation!
-            );
-
-            # Add admin-key (age + PIN2)
-            $keys_mgr->add_key(
-                name    => "admin-ssh-$datestamp",
-                type    => 'ssh_ed25519',
-                purpose => 'admin',
-                private => $admin_private,
-                public  => $admin_public,
-                pin2    => $pin2,
-            );
-
-            # Cleanup: Remove temporary key files (keys are now in keys.yaml!)
-            unlink ".ocp/robo-ssh-$datestamp";
-            unlink ".ocp/robo-ssh-$datestamp.pub";
-            unlink ".ocp/admin-ssh-$datestamp";
-            unlink ".ocp/admin-ssh-$datestamp.pub";
+            my $made = $keys_mgr->add_cluster_keys(pin2 => $pin2, datestamp => _datestamp());
 
             print "[ok] Generated SSH keys:\n";
-            print "     - robo-ssh-$datestamp (automation, age encrypted)\n";
-            print "     - admin-ssh-$datestamp (admin, age+PIN2 encrypted)\n";
+            print "     - $made->{automation}{name} (automation, age encrypted)\n";
+            print "     - $made->{admin}{name} (admin, age+PIN2 encrypted)\n";
             print "     Stored in keys.yaml (encrypted)\n";
         }
     }
@@ -499,6 +448,7 @@ sub execute {
         print "⚠️  Dev Mode (--nopassword):\n";
         print "  Single SSH key in .ocp/id_ed25519 (NOT encrypted)\n";
         print "  For development only! Use default mode for production.\n";
+        print "  Switch this project to secure mode later: ocp keys secure\n";
     }
 
     # SSH provider instructions: which public keys does a human have to put on
@@ -1225,6 +1175,12 @@ C<--nopassword>, where there is no F<keys.yaml> and it is the single piece of
 key material the project has. It carries no PIN, because dev mode promises
 never to prompt. C<--ssh-key> supplies it instead of generating it; in secure
 mode the flag is reported as not applicable rather than silently dropped.
+
+C<--nopassword> is not a one-way door. C<ocp keys secure> moves a dev-mode
+project into secure mode later: it sets PIN1 and PIN2, generates the two keys
+above, puts both public halves onto every machine of the cluster while the
+bootstrap key still opens them, checks the admin key on each, and only then
+writes F<keys.yaml> (see L<OCP::Cmd::Keys::Secure>).
 
 An existing F<.ocp/id_ed25519> is never regenerated, never silently replaced,
 and never deleted — its public half may still be in F<authorized_keys> on a

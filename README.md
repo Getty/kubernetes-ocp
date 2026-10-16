@@ -451,7 +451,10 @@ Stated plainly, so nothing surprises you halfway through:
   key lives only in robocop's memory; after a restart robocop is not Ready
   and holds back the OCPNodes that need SSH until you run `ocp inject-key`
   again. Use `secret` or `secret_approved` if workers must come up unattended.
-- **A dev-mode project cannot move to secure mode.** Choose at `ocp init`.
+- **Moving a dev-mode project to secure mode needs every machine reachable.**
+  `ocp keys secure` puts the new keys on each machine over the bootstrap key
+  and only switches once the admin key works on all of them; a host that
+  fails is named and the project stays in dev mode until a re-run gets it.
 - **Not on CPAN, ever.** This distribution builds with `no_cpan = 1`. Docker
   image or git checkout.
 

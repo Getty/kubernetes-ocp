@@ -29,6 +29,13 @@ Revision history for OCP
       (expected ..., got ...)" in `status.message` and touches nothing.
       `ocp node trust-host NAME [--yes]` forgets the pins on purpose. The CRD
       gains `status.hostKeys` (`ocp apply` / `ocp update` roll it out).
+    - `ocp keys secure [--drop-bootstrap]` moves a --nopassword project into
+      secure mode: it sets PIN1/PIN2, stages the admin and robo keys in .ocp/,
+      puts both public keys on every machine over the bootstrap key, tests the
+      admin key there and only then writes keys.yaml and age.key.enc. A failed
+      host leaves the project in dev mode; a re-run continues with the same
+      keys. robocop's credentials are rolled out again; --drop-bootstrap takes
+      the bootstrap key off the machines.
     - `ocp keys authorized-keys [--purpose all|admin|automation]` prints the
       authorized_keys lines a machine needs, and nothing else on STDOUT. In
       secure mode a worker on the ssh provider needs both keys: robocop joins

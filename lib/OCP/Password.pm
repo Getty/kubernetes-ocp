@@ -12,7 +12,7 @@ use Path::Tiny qw(path);
 use MIME::Base64 qw(encode_base64 decode_base64);
 use Digest::SHA qw(sha256);
 
-our @EXPORT_OK = qw(prompt_password encrypt_age_key decrypt_age_key);
+our @EXPORT_OK = qw(prompt_password prompt_new_pin encrypt_age_key decrypt_age_key);
 
 # --pins-stdin (k166): answer every prompt below with the next line of STDIN
 # instead of the terminal. Switched on once per process by the option's
@@ -69,6 +69,29 @@ sub _read_stdin_line {
 
     $line =~ s/\n\z//;
     return $line;
+}
+
+# A PIN being SET rather than entered: asked twice, refused when the two
+# differ or when it is empty. `ocp init` sets PIN1 and PIN2 this way and
+# `ocp keys secure` (k96) does the same when it moves a dev-mode project over,
+# so the prompts and their order -- which --pins-stdin feeds line by line --
+# are one thing in both.
+#
+# Empty is refused because an empty PIN2 is not a weak PIN2 but none at all:
+# OCP::Keys::add_key reads a false pin2 as "automation key" and stores the
+# admin key under the age layer alone, while its purpose still says admin.
+sub prompt_new_pin {
+    my ($pin, $purpose) = @_;
+
+    my $value   = prompt_password("Enter $pin ($purpose): ");
+    my $confirm = prompt_password("Confirm $pin: ");
+
+    die "$pin passwords don't match!\n"
+        unless ($value // '') eq ($confirm // '');
+    die "$pin must not be empty.\n"
+        unless defined $value && length $value;
+
+    return $value;
 }
 
 #
@@ -222,6 +245,15 @@ command has, see L<OCP::Role::Cmd> -- the answer is the next line of STDIN
 instead of the terminal: one line per prompt, in prompt order, only the
 trailing newline stripped. A missing line dies naming the prompt that had
 none; there is no fallback to the terminal.
+
+=head2 prompt_new_pin($pin, $purpose)
+
+    my $pin2 = prompt_new_pin('PIN2', 'admin SSH access');
+
+Sets a PIN: prompts C<Enter $pin ($purpose): >, then C<Confirm $pin: >, both
+through L</prompt_password> (so C<--pins-stdin> reads two lines). Dies when
+the two differ or the PIN is empty; returns it otherwise. C<ocp init> and
+C<ocp keys secure> set PIN1 and PIN2 with it.
 
 =head2 encrypt_age_key($age_key_content, $password)
 

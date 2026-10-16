@@ -65,7 +65,8 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
     without `--host`.
   - `--host HOST` — SSH host (for provider ssh)
   - `--name` — cluster name · `--nogit` — skip git init (`.gitignore` with `.ocp/` is still written; `.ocp/` also ignores itself)
-  - `--nopassword` — dev mode without PINs
+  - `--nopassword` — dev mode without PINs (not one-way: `ocp keys secure`
+    switches the project later)
   - `--dist rke2|k3s` — distribution
   - `--ssh-key PATH` — reuse an existing private key (copied to `.ocp/`)
   - `--service systemd|none` — for provider local
@@ -106,6 +107,22 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   key lines, names on STDERR; PIN1 at most, never PIN2; finds every wanted
   key before printing any (missing one → error, nothing printed). Dev mode
   prints `.ocp/id_ed25519.pub` for any purpose.
+- `ocp keys secure [--drop-bootstrap]` — dev mode → secure mode (k96).
+  Order is the point: PIN1 (unless `age.key.enc` exists) + PIN2 set, admin +
+  robo keys staged in `.ocp/keys.yaml.pending` (gitignored), both publics
+  appended (blob-dedup) to `/root/.ssh/authorized_keys` on every machine over
+  the bootstrap key, admin key tested alone on each — only if ALL pass:
+  `age.key.enc` + staging → `keys.yaml` (SOPS re-encrypted for its
+  recipients). Machines = OCPNodes (`status.publicIP || spec.host`, any role)
+  + ocp.yaml CPs with an address, deduped by name/address; a kubeconfig whose
+  API does not answer aborts before any prompt; pool hosts without OCPNode are
+  only named. A failed host → STDERR, exit 1, still dev mode, staging kept; a
+  re-run reuses it (PIN2 once). After the switch: Hetzner re-upload under
+  `ocp-<name>-admin/-robo` (ensure replaces dev mode's bootstrap key there),
+  robocop Secret via `robocop_step` with the run's admin key (no 2nd PIN2),
+  running robocop pods deleted to re-read env. `--drop-bootstrap` removes the
+  bootstrap blob's lines with the admin key, only where it works; never
+  deletes `.ocp/id_ed25519`. Already secure: `[ok]`, or only the drop step.
 - `ocp keys recipients ls|add AGE1|rm AGE1` — age recipients of the SOPS
   files (k212): project key always, plus the governing `.sops.yaml`'s rule.
   add/rm rewrite the project's own `.sops.yaml` (never one further up — edit
@@ -242,7 +259,9 @@ gpu:
   PIN prompts — but a plain age.key is still generated and
   **kubeconfig.yaml stays encrypted even in dev mode**. Apply detects dev
   mode by the absence of keys.yaml. This is the ONLY mode with a bootstrap
-  key; secure mode has none, on any provider.
+  key; secure mode has none, on any provider. `ocp keys secure` migrates a
+  dev-mode project (above); never create `keys.yaml` by hand in one — its
+  machines would refuse every key secure mode offers.
 - **Migration hazard**: an ssh-provider cluster built before the bootstrap key
   was dropped has that key in `authorized_keys` and not the admin one. Add the
   admin key there before running anything else. There is no fallback — OCP
@@ -280,7 +299,8 @@ by dropping the bootstrap key, and neither is covered anywhere else.
   PIN2 still means out-of-band recovery for the control plane.
 - **No rotation command exists.** `ocp keys` has only `show` and
   `authorized-keys` (both print public halves; plus `recipients`, which is
-  about age recipients, not SSH keys); `ocp init`, even
+  about age recipients, not SSH keys, and `secure`, which only moves a
+  dev-mode project that has no keys.yaml yet); `ocp init`, even
   `--force`, skips key generation entirely whenever an automation-purpose
   key is already in `keys.yaml` (`OCP::Cmd::Init`, unconditional on
   `--force`). Adding a replacement admin key today needs
