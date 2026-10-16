@@ -504,7 +504,22 @@ sub _server_opts {
         # having been upgraded by hand: distribution upgrades stay what
         # OCP::Drift reports them as, a manual step, node by node.
         hold_running        => 1,
+        # OCP owns the Gateway API CRDs (install_cilium applies them, k160).
+        # RKE2 v1.37+ ships its own rke2-gateway-api-crd chart, which would
+        # overwrite them, and install_server adds it to the disable list only
+        # from rancher_deploy_server -- OCP calls install_server itself, so the
+        # list is handed over here: the distribution's default plus that chart
+        # (k161). An RKE2 that does not ship the chart ignores the name, so it
+        # goes in whatever the pin is. K3s has no such chart: its default stays.
+        _gateway_api_disable($distribution),
     );
+}
+
+sub _gateway_api_disable {
+    my ($distribution) = @_;
+    my $dist  = Rex::Rancher::Distribution->new_for($distribution);
+    my $chart = $dist->gateway_api_crd_chart // return ();
+    return (disable => [ @{ $dist->default_disable }, $chart ]);
 }
 
 #

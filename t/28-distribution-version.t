@@ -120,14 +120,19 @@ subtest 'Gateway API travels with Cilium' => sub {
 
 subtest 'every bundled ingress controller is disabled' => sub {
     # RKE2 v1.36 added Traefik; its helm-install job crashes on a
-    # Cilium-owned cluster and leaves two pods in CrashLoopBackOff. Since k155
-    # the list is Rex::Rancher::Server's default for rke2 (held against the
-    # real library in t/155-rex-libraries.t); OCP must leave that default in
-    # charge rather than hand over a list of its own.
+    # Cilium-owned cluster and leaves two pods in CrashLoopBackOff. The list is
+    # Rex::Rancher's default for rke2 (held against the real library in
+    # t/155-rex-libraries.t); OCP must not restate it. Since k161 OCP hands the
+    # list over itself -- install_server adds rke2-gateway-api-crd only from
+    # rancher_deploy_server -- but built from the library default plus that
+    # chart (t/234), never from names of its own.
+    require Rex::Rancher::Distribution;
+    my $default = Rex::Rancher::Distribution->new_for('rke2')->default_disable;
     OCPTest::Rexfile->reset;
     OCPTest::Rexfile->run_task('install_rke2_server', { token => 't' });
     my $o = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::install_server');
-    ok $o && !exists $o->{disable}, 'install_rke2_server leaves the disable list to the library default';
+    is_deeply $o && $o->{disable}, [ @$default, 'rke2-gateway-api-crd' ],
+        'install_rke2_server hands over the library default list, plus the Gateway API CRD chart';
 };
 
 subtest 'the manifest actually carries a version per distribution' => sub {
