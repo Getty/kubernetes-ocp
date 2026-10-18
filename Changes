@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A host name that does not resolve is reported as such instead of
+      blaming the key ("the robo key was not accepted") or a generic SSH
+      failure (k236): host probes, `OCP::SSH` and robocop's node
+      `status.message` say so. `ocp node add --host NAME` warns, when
+      robocop is on, that the name must resolve inside the cluster too.
     - Workers installed before the host-key pins (and ones whose pins were
       removed with `ocp node trust-host`) are pinned on the next reconcile of
       a Ready node (k235). `ocp ssh --node NAME` verifies the node's pins

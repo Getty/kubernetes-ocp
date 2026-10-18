@@ -151,6 +151,34 @@ sub _capture {
     return $result;
 }
 
+# The one recogniser for "this name does not resolve" (k236), shared by the
+# host probes (OCP::Role::Cmd), wait_for_ssh/learn_host_key here and, through
+# the error text they die with, OCP::Node's status.message. It reads whatever
+# a connection attempt printed: OpenSSH ("Could not resolve hostname X: Name or
+# service not known", "...Temporary failure in name resolution"), libssh via
+# Rex::Interface::Connection::LibSSH ("Failed to resolve hostname X (...)",
+# carried in Rex's ERROR lines) and the libc getaddrinfo strings both wrap.
+# A refused key never matches: sshd answered, the name was fine.
+sub name_unresolved {
+    my ($self, $text) = @_;
+    return 0 unless defined $text && length $text;
+    return $text =~ /(?:Could\s+not|Failed\s+to|Unable\s+to|Cannot)\s+resolve\s+(?:host\s*name|address)
+                    |Name or service not known
+                    |Temporary failure in name resolution
+                    |nodename nor servname provided
+                    |No address associated with hostname
+                    |getaddrinfo/xi ? 1 : 0;
+}
+
+# What to tell the operator for such a failure, in place of the generic
+# "not reachable" or a key complaint. $host is the name that was tried.
+sub unresolved_message {
+    my ($self, $host) = @_;
+    return "Name '$host' does not resolve: the lookup failed on this machine"
+         . " (DNS or /etc/hosts), so no SSH connection was attempted. This is"
+         . " not a key problem. Fix the name or use the IP address.\n";
+}
+
 sub _check_host_key {
     my ($self, $result) = @_;
     return unless ($result->{exit} // 0) == 255;
@@ -288,6 +316,9 @@ sub learn_host_key {
     my $result = $self->run('true');
     return 1 unless $result->{exit};
 
+    die $self->unresolved_message($self->host)
+        if $self->name_unresolved($result->{stderr});
+
     my $reason = $result->{stderr} // '';
     $reason =~ s/\s+\z//;
     die 'Cannot reach ' . $self->host . ' over SSH to record its host key'
@@ -372,6 +403,11 @@ sub wait_for_ssh {
     while (time - $start < $timeout) {
         return 1 if $self->is_reachable;
         my $result = delete $self->{_last_probe} // {};
+
+        # A name that does not resolve is no boot in progress either, and
+        # not the key's fault (k236).
+        die $self->unresolved_message($self->host)
+            if $self->name_unresolved($result->{stderr});
 
         # A refused key is an answer, not a boot in progress: sshd is up and
         # said no, and waiting out the budget would only send the operator to
@@ -484,5 +520,35 @@ that installs it:
 
 together with the rule that a worker on the C<ssh> provider needs both keys.
 L<OCP::Node> passes it on from its C<ssh_key_purpose>.
+
+=head2 A name that does not resolve
+
+A host given by name that the lookup cannot resolve is no boot in progress and
+no key problem, so C<wait_for_ssh> and C<learn_host_key> die at once with
+L</unresolved_message> instead of waiting out the budget or blaming the key
+(k236).  The same recogniser serves the host probes of L<OCP::Role::Cmd> and,
+through the error text, the C<status.message> of an L<OCP::Node>.  The lookup
+that failed is the one of the machine running this code: for robocop that is
+the cluster's DNS, for the CLI the CLI host.
+
+=head2 name_unresolved
+
+    if ($ssh->name_unresolved($result->{stderr})) { ... }
+
+Returns true (1) when the text says a host name could not be resolved, else 0
+(also for C<undef> or an empty string).  It reads what a connection attempt
+printed: OpenSSH ("Could not resolve hostname", "Name or service not known",
+"Temporary failure in name resolution"), libssh via
+L<Rex::Interface::Connection::LibSSH> ("Failed to resolve hostname") and the
+C<getaddrinfo> strings both wrap.  A refused key never matches: sshd answered,
+so the name was fine.
+
+=head2 unresolved_message
+
+    die $ssh->unresolved_message($ssh->host);
+
+Returns the operator-facing text for such a failure, ending in a newline:
+"Name 'HOST' does not resolve ... This is not a key problem. Fix the name or
+use the IP address."  C<$host> is the name that was tried.
 
 =cut

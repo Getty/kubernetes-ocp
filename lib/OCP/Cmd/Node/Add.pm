@@ -6,6 +6,8 @@ use MooX::Cmd;
 use MooX::Options;
 use File::Temp ();
 use JSON::PP ();
+use Path::Tiny ();
+use Socket ();
 use Kubernetes::REST::Kubeconfig;
 use OCP::Choices;
 use OCP::Config;
@@ -500,6 +502,15 @@ sub execute {
 
     my $key_note = $self->_ssh_keys_note($provider_type);
 
+    # robocop reaches the machine by this name from inside the cluster (k236).
+    # Asked only for a name: --nowait without --host never reads the Deployment.
+    my $robocop_ready;
+    my $name_note = $self->_host_name_note($self->host);
+    if (length $name_note) {
+        $robocop_ready = $self->_robocop_ready($api);
+        print STDERR $name_note if $robocop_ready;
+    }
+
     if ($self->nowait) {
         print $self->name . "\n";
         # STDOUT is the node name and nothing else; the hints are not payload.
@@ -513,7 +524,7 @@ sub execute {
     print "  [..] $key_note" if length $key_note;
 
     my ($ok, $config);
-    if ($self->_robocop_ready($api)) {
+    if ($robocop_ready // $self->_robocop_ready($api)) {
         sleep 5;
         $ok = $self->_poll_until_ready($api);
     }
@@ -530,6 +541,49 @@ sub execute {
 
     print "Node '" . $self->name . "' is Ready.\n";
     $self->_ensure_gpu_operator($api, $config // $self->_config) if $self->gpu;
+    return 0;
+}
+
+# The hint for `--host NAME` with robocop on (k236), '' when there is nothing to
+# say: an IP address needs no lookup, anywhere. A name is resolved by robocop in
+# the cluster (CoreDNS, then the node's resolver), not by this machine, so what
+# resolves here proves nothing -- least of all a name only /etc/hosts or a
+# container's --add-host knows, which no pod sees. The CLI-side lookup only
+# picks the wording. No in-cluster test is made.
+sub _host_name_note {
+    my ($self, $host) = @_;
+    return '' unless defined $host && length $host;
+    return '' if $host =~ /\A\d+\.\d+\.\d+\.\d+\z/ || $host =~ /:/;
+
+    my $why = !$self->_resolves_here($host)
+            ? "it does not resolve from this machine either"
+            : $self->_in_etc_hosts($host)
+            ? "here it resolves through /etc/hosts or similar, which no pod sees"
+            : "whether it does cannot be checked from here";
+    return "  [!!] --host '$host' is a name, and robocop resolves it inside the cluster\n"
+         . "       (CoreDNS), not on this machine: $why.\n"
+         . "       If the cluster cannot resolve it the node fails; use the IP or a name\n"
+         . "       the cluster's DNS knows.\n";
+}
+
+sub _resolves_here {
+    my ($self, $host) = @_;
+    my ($err, @res) = Socket::getaddrinfo($host, undef, { socktype => Socket::SOCK_STREAM() });
+    return !$err && @res ? 1 : 0;
+}
+
+# Overridable seam for tests.
+sub _etc_hosts_file { '/etc/hosts' }
+
+sub _in_etc_hosts {
+    my ($self, $host) = @_;
+    my $file = $self->_etc_hosts_file;
+    return 0 unless -r $file;
+    for my $line (Path::Tiny::path($file)->lines({ chomp => 1 })) {
+        $line =~ s/#.*//;
+        my (undef, @names) = split ' ', $line;
+        return 1 if grep { lc $_ eq lc $host } @names;
+    }
     return 0;
 }
 
@@ -722,6 +776,21 @@ because that class is trigger-neutral and also runs inside Robocop, where
 C<ocp keys show> is not a command anyone can type.  A diagnosis only: nothing
 looked ahead to see which key the machine accepts, nothing falls back to the
 bootstrap key, and the command still exits non-zero.
+
+=head1 HOST BY NAME
+
+With C<--host NAME> (not an IP address) and Robocop running, Robocop reaches the
+machine by that name from inside the cluster (CoreDNS, then the node's
+resolver), not from the machine running C<ocp>.  A name that resolves only here
+-- through F</etc/hosts> or a container's C<--add-host> -- is unknown to every
+pod, so the join would fail.  The command says so on STDERR (never on STDOUT,
+which stays the node name with C<--nowait>) and notes whether the name resolves
+on this machine; it makes no lookup inside the cluster (k236).  An IP address
+gets no note.
+
+A name that does not resolve where it is tried is reported as that -- "does not
+resolve ... not a key problem" (L<OCP::SSH/unresolved_message>) -- and not as a
+rejected key.  Use the IP address or a DNS entry the cluster knows.
 
 =head1 SEE ALSO
 

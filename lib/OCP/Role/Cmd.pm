@@ -8,6 +8,7 @@ use OCP::Choices;
 use OCP::Keys;
 use OCP::Password;
 use OCP::Provider;
+use OCP::SSH;
 
 # --pins-stdin (k166): every PIN prompt of this run reads the next line of
 # STDIN instead of the terminal -- `ocp apply --pins-stdin < <(pass show x)`.
@@ -323,6 +324,13 @@ sub rex_prober {
             $rex->run_task($task, %{ $params // {} });
         };
         if (my $err = $@) {
+            # A name that does not resolve is said as that, with any key
+            # (k236); the robo key's refusal below is only one other reason.
+            if (OCP::SSH->name_unresolved("$err")) {
+                $self->{_probe_skipped}{$host}
+                    = 'the name does not resolve from here (not a key problem)';
+                return undef;
+            }
             die $err unless $robo;
             $self->{_probe_skipped}{$host} = 'the robo key was not accepted (it is not authorised everywhere; the admin key needs PIN2)';
             return undef;

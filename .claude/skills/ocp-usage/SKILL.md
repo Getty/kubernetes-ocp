@@ -231,6 +231,16 @@ gpu:
   `--host` dies immediately.
 - Node name = hostname up to the first dot (`avatar.conflict.industries` →
   `avatar`); same rule for ssh worker pools.
+- **A worker by name (`ocp node add --host NAME`, k236):** with robocop on, the
+  name is resolved by robocop inside the cluster (CoreDNS, then the node's
+  resolver), not by the CLI host. A name that only resolves here (`/etc/hosts`,
+  a container's `--add-host`) is invisible to every pod, so the join fails.
+  `ocp node add` says so on STDERR (not for an IP). A name that does not
+  resolve is reported as that, never as a rejected key: "Name 'X' does not
+  resolve … This is not a key problem" (host-probe warning, `OCP::SSH`
+  `wait_for_ssh`/`learn_host_key`, robocop's `status.message`; recogniser
+  `OCP::SSH->name_unresolved`). Recommendation: pass the IP, or a DNS entry the
+  cluster knows.
 - Destroy runs Rex::Rancher's uninstall line over SSH: every RKE2/K3s
   uninstaller present, then `/usr/local/bin/cilium`, `/opt/cni`, `/run/k3s`
   and Cilium's datapath; RKE2/K3s still installed, or Cilium state that

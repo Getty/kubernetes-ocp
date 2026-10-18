@@ -673,6 +673,15 @@ sub known_hosts_for { my ($self, $host) = @_; return $self->_seed_known_hosts($h
 # a node that has pins already.
 sub pin_host_keys { my ($self, $host) = @_; return $self->_pin_host_keys($host) }
 
+# The operator-facing "name does not resolve" text for a status.message
+# (k236): OCP::SSH's wording, one line, naming the host the node was given.
+sub _name_unresolved_message {
+    my ($self, $host) = @_;
+    my $m = OCP::SSH->unresolved_message($host // 'the host');
+    chomp $m;
+    return $m;
+}
+
 sub _is_host_key_changed { return ref $_[1] && $_[1]->isa('OCP::SSH::HostKeyChanged') }
 
 sub _install_kubernetes {
@@ -852,8 +861,12 @@ sub _install_kubernetes {
         return;
     }
     if (!$ok || $@) {
+        # robocop resolves the name itself, in the cluster: say so (k236).
+        my $unresolved = OCP::SSH->name_unresolved($@);
         $self->_patch_status(phase => 'Failed',
-            message => "Rex task failed: " . ($@ // 'unknown'));
+            message => $unresolved
+                ? $self->_name_unresolved_message($host)
+                : "Rex task failed: " . ($@ // 'unknown'));
         return;
     }
 
@@ -1235,7 +1248,10 @@ sub teardown {
         }
         my $err = $@ || "unknown error\n";
         chomp $err;
-        my $message = 'Teardown failed: ' . $err
+        my $message = 'Teardown failed: '
+            . (OCP::SSH->name_unresolved($err)
+                ? $self->_name_unresolved_message($self->cr->{status}{publicIP} // $self->cr->{spec}{host})
+                : $err)
             . "\nThe node is kept; fix the cause and run 'ocp node rm "
             . $self->name . "' again.";
         eval { $self->_patch_status(phase => 'Failed', message => $message); 1 }

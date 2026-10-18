@@ -127,6 +127,21 @@ CR, not a provider type — `--provider ssh-default`, not `--provider ssh`.
 `ocp apply` names the CRs it writes `<type>-default`, and `ocp provider ls`
 lists what exists.
 
+### A worker by hostname
+
+`ocp node add --host NAME` with a name instead of an IP address works only if
+the name also resolves **inside the cluster**. With robocop on, robocop reaches
+the machine, and it looks the name up through CoreDNS and the node's resolver,
+not on the machine running `ocp`. A name that resolves only on the CLI host —
+through `/etc/hosts` or a container's `--add-host` — is unknown to every pod,
+and the join fails.
+
+`ocp node add` warns about this on STDERR whenever it is given a name; an IP
+address gets no warning. A name that does not resolve is reported as that
+(`Name 'X' does not resolve … This is not a key problem`), in the host-probe
+warning, in the SSH error and in the node's `status.message` — not as a
+rejected key. Use the IP address, or a DNS entry the cluster knows.
+
 ## Pinned versions
 
 `kubernetes.version: ''` and every component version resolve to what this
