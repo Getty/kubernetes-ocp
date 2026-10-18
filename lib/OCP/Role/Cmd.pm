@@ -90,6 +90,55 @@ sub _option_argv_spelled {
     return @spelled;
 }
 
+# The positional words of a command's $args (k216). MooX::Cmd hands execute
+# the command line as typed, options and their values included -- MooX::Options
+# parses a protected copy of @ARGV and leaves the vector alone -- so
+# `if @$args` is true for any option and `$args->[0]` can be an option. Read
+# the way Getopt::Long read it before: an option that takes a value takes the
+# next word unless written --opt=value, an unambiguous abbreviation counts as
+# the option, and everything after `--` is positional. Getopt has already
+# refused anything it did not understand, so nothing here needs to.
+sub positional_args {
+    my ($self, $args) = @_;
+
+    my %data = $self->_options_data;
+    my %takes_value = map { $_ => defined $data{$_}{format} }
+                      keys %data, qw( h help usage man );
+    my %short_value = map { $data{$_}{short} => defined $data{$_}{format} }
+                      grep { defined $data{$_}{short} } keys %data;
+
+    my @words = @{ $args // [] };
+    my @positional;
+
+    while (@words) {
+        my $arg = shift @words;
+
+        if ($arg eq '--') {
+            push @positional, @words;
+            last;
+        }
+
+        if ($arg =~ /\A--([^=]+)\z/) {
+            (my $name = $1) =~ tr/-/_/;
+            my @hit = exists $takes_value{$name} ? ($name)
+                    : grep { index($_, $name) == 0 } keys %takes_value;
+            shift @words if @hit == 1 && $takes_value{ $hit[0] };
+            next;
+        }
+        next if $arg =~ /\A--/;    # --opt=value
+
+        if ($arg =~ /\A-(.)\z/) {
+            shift @words if $short_value{$1};
+            next;
+        }
+        next if $arg =~ /\A-./;    # bundled short options, -ovalue
+
+        push @positional, $arg;
+    }
+
+    return @positional;
+}
+
 sub ocp { $_[0]->command_chain->[0] }
 
 # What to say instead of a listing when the cluster has no OCPNodeProvider at
@@ -464,6 +513,16 @@ Returns the first element of the L<MooX::Cmd> C<command_chain>, i.e. the
 root C<OCP> object.  Use it to read C<config> (path to C<ocp.yaml>) and
 C<verbose>, and to share file/IO helpers (C<dump>, C<dump_file>,
 C<load_file>) across commands.
+
+=method positional_args
+
+    my @words = $self->positional_args($args);
+
+The positional words of the C<$args> L<MooX::Cmd> hands to C<execute>, which
+is the command line as typed, options included: every option of the command
+and the value of each that takes one are left out, as Getopt::Long read them
+(C<--opt=value>, abbreviations, short options); everything after C<--> is
+positional.
 
 =method cluster_ssh_key
 

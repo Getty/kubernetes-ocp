@@ -56,7 +56,7 @@ my $USAGE = 'ocp keys operator add --name NAME --ssh-pubkey FILE --age AGE1...';
 sub execute {
     my ( $self, $args, $chain ) = @_;
 
-    die "usage: $USAGE\n" if @$args;
+    die "usage: $USAGE\n" if $self->positional_args($args);
 
     # Before any PIN: a typo must not cost one.
     my $name   = $self->operator_name_arg($self->name, $USAGE);

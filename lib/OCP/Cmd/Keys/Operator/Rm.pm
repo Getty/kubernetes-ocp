@@ -29,8 +29,9 @@ my $USAGE = 'ocp keys operator rm NAME';
 sub execute {
     my ( $self, $args, $chain ) = @_;
 
-    die "usage: $USAGE\n" if @$args > 1;
-    my $name = $self->operator_name_arg($args->[0], $USAGE);
+    my @words = $self->positional_args($args);
+    die "usage: $USAGE\n" if @words > 1;
+    my $name = $self->operator_name_arg($words[0], $USAGE);
 
     my ( $config, $secrets, $keys ) = $self->operator_project('rm');
 

@@ -29,7 +29,7 @@ sub project_secrets {
 sub recipient_arg {
     my ($self, $args, $verb) = @_;
 
-    my $recipient = $args->[0];
+    my ($recipient) = $self->positional_args($args);
     die "usage: ocp keys recipients $verb AGE_RECIPIENT\n"
         unless defined $recipient && length $recipient;
     die "Not an age recipient: '$recipient'.\n"

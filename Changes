@@ -44,6 +44,12 @@ Revision history for OCP
       machine and revokes it. `ocp keys authorized-keys` includes operator
       keys. Under such an identity apply leaves an existing robocop Secret
       alone with a [WARN], fails on a missing one, and refuses a first deploy.
+      `ocp keys operator add --name ... --ssh-pubkey ... --age ...` no longer
+      fails with its usage message on every call; commands that take a
+      positional word also find it behind an option (`keys operator rm
+      --pins-stdin NAME`, `keys recipients add|rm --pins-stdin AGE`,
+      `provider rm --pins-stdin NAME`, `node add --role worker NAME`, which
+      named the node `--role`).
     - `ocp keys secure [--drop-bootstrap]` moves a --nopassword project into
       secure mode: it sets PIN1/PIN2, stages the admin and robo keys in .ocp/,
       puts both public keys on every machine over the bootstrap key, tests the

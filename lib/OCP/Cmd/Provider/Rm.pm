@@ -48,7 +48,7 @@ sub execute {
 
     my $api  = $self->_k8s;
     my $ns   = 'ocp-system';
-    my $name = $self->name // ($args && $args->[0]);
+    my $name = $self->name // ($self->positional_args($args))[0];
     die "Usage: ocp provider rm NAME\n" unless $name;
 
     # Names the providers that exist, with their types — same wording as

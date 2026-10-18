@@ -464,7 +464,7 @@ sub _cli_reconcile {
 sub execute {
     my ($self, $args, $chain) = @_;
 
-    $self->name($self->name // ($args && $args->[0]));
+    $self->name($self->name // ($self->positional_args($args))[0]);
     die "Usage: ocp node add NAME [--role worker|control-plane]\n"
         unless defined $self->name && length $self->name;
 
