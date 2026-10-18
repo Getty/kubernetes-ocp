@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-09-27T18:44:00Z
+id: 209
+priority: medium
+started: 2026-10-16T06:28:07Z
+status: done
+tags:
+- security
+- keys
+- robocop
+- ssh
+- docs
+- ux
+title: 'ssh-Worker im Secure Mode: robocop joint mit dem Robo-Key, node rm baut mit
+  dem Admin-Key ab, und niemand sagt, dass beide nötig sind'
+updated: 2026-10-18T06:48:27Z
+---
+
+Live 2026-09-27 (k207, Secure-Mode-Projekt, otoh CP + crag ssh-Worker, robocop mit Live-Image). Auf crag stand nur der Automation-Key (keys show --purpose automation). 'ocp node add crag-gpu --host … --gpu' lief über robocop grün, robocop kommt mit dem Robo-Key hinein. 'ocp node rm crag-gpu' baut den Worker dagegen aus der CLI mit dem ADMIN-Key ab ('In secure mode every machine of this cluster is reached with the admin key'). Ergebnis: 'Permission denied (publickey)', der Node steht auf Failed (terminal), rke2 läuft auf crag weiter. Admin-Key nachgetragen, node rm erneut: sauber. Befunde: (1) Für einen ssh-Worker sind BEIDE Public Keys nötig (robo für robocops Join/Reconcile, admin für node rm und ocp ssh). Das steht nur im Skill ocp-usage ('ssh-provider operators must add it themselves'). ocp init nennt nur den Admin-Key und nur den CP-Host, node add prüft und nennt nichts. (2) docs/security.md:22 behauptet 'Nothing currently deploys its public half onto any machine, so it is not a second way in'. Das ist falsch, seit k101 (Hetzner-Upload) und seit robocop ssh-Worker mit dem Robo-Key joint. (3) Asymmetrie: Den Join delegiert node add an robocop (Robo-Key), den Teardown macht node rm selbst (Admin-Key). Entscheidung: Teardown ebenfalls an robocop delegieren, wenn robocop läuft, oder dokumentieren, dass beide Keys Pflicht sind, und node add für ssh-Worker beide Keys vorab prüfen bzw. nennen lassen. Done: konsistentes Modell, node add für ssh nennt bzw. prüft die nötigen Keys vor dem Join, security.md korrigiert, Test. Lanes: ocp-secrets-worker (ClusterKey/Keys) + ocp-doc-writer.
+
+2026-10-15 23:22 LIVE 2026-10-16 bestätigt (ocplab, crag): Pool-Join über robocop scheiterte an 'SSH key rejected … (robo-ssh)', bis der robo-Pubkey auf crag stand. ocp init sagt 'That one key is all of it', OCP::ClusterKey 'secure mode: immer admin' – beides stimmt für robocop-Joins nicht.
+
+k-keys 2026-10-16: Commit 4cd80a6 (Branch k-keys, nicht gepusht). Modell: ssh-Worker brauchen BEIDE Keys (kein Teardown-Umbau). Neu: ocp keys authorized-keys [--purpose all|admin|automation] (STDOUT nur Keys, PIN1 max, Dev-Mode = .ocp/id_ed25519.pub). Ablehnung in OCP::SSH::wait_for_ssh nennt robo/admin + authorized-keys-Zeile (key_purpose, CLI=admin, robocop=automation; Controller.pm nur 2 Zeilen). init/node add/ClusterKey/security.md/configuration.md/README/Skill ocp-usage korrigiert. Tests: t/209-authorized-keys.t neu, t/18b/69/71 angepasst (Behauptungen gleich). Suite: Files=167, Tests=2593, Result: PASS. Befund (Entscheidung offen): Hetzner-CP wird mit ALLEN hochgeladenen Keys erzeugt, also auch dem Robo-Key -> PIN1 allein öffnet den Hetzner-CP als root (Bootstrap create_server). Live zu prüfen: (1) ocp keys authorized-keys | ssh root@crag 'cat >> …' – 1x PIN1, kein PIN2, 2 Zeilen; (2) Worker nur mit Admin-Key über robocop joinen: Failed-Meldung nennt robo-Key + --purpose automation; (3) nur Robo-Key, ocp node rm: läuft über Provider-Uninstall, nicht wait_for_ssh – alte Diagnose bleibt; (4) [..]-Zeile von ocp node add --host vor dem Join.
+
+2026-10-18 05:58 Hub 2026-10-18: Branch auf main rebaset und per ff gemergt (main d6dc7cb, nicht gepusht). Volle Suite 177 Dateien/2750 Tests grün. Live-Nachweis folgt in der Lab-Runde.
+
+2026-10-18 06:48 LIVE Runde 8 bestanden: keys authorized-keys 1× PIN1, kein PIN2, zwei Zeilen; --purpose je eine; Admin-Key auf crag entfernt → Meldung nennt purpose admin + authorized-keys-Zeile (nicht-interaktiver Pfad). ocp ssh ohne diese Diagnose: Folgekarte.
