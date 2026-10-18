@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-09-24T14:24:26Z
+id: 161
+priority: low
+started: 2026-10-16T06:35:21Z
+status: done
+tags:
+- rke2
+- gateway-api
+title: 'RKE2 >= v1.37: rke2-gateway-api-crd-Chart in die Disable-Liste'
+updated: 2026-10-18T06:48:27Z
+---
+
+Aus k157: RKE2 v1.37+ bringt ein eigenes rke2-gateway-api-crd-Chart, das die von OCP angewandten Gateway-API-CRDs ueberschreiben wuerde. Heute Pin v1.36 -> noch kein Problem. Done: beim RKE2-Bump auf >= v1.37 das Chart per disable abschalten (oder bewusst RKE2 die CRDs ueberlassen und OCPs Apply streichen) + Test.
+
+Audit 2026-09-27: Rex::Rancher kennt das Chart (RKE2.pm ~37, Abbruch in Cilium.pm ~1391), trägt es aber nur in rancher_deploy_server automatisch in die Disable-Liste ein (Rex/Rancher.pm ~672). OCP ruft install_server direkt auf, muss also disable => [@default, 'rke2-gateway-api-crd'] selbst übergeben, spätestens beim v1.37-Pin. Alternative im Sinn von k196: Default-Disable-Liste für install_server in die Lib.
+
+Commit 3ad0e85. share/Rexfile: _server_opts gibt install_server disable => Rex default_disable + gateway_api_crd_chart (nur rke2; k3s behaelt Default). Immer, nicht erst ab v1.37: Rex::Rancher-Doku: 'a name the installed RKE2 does not ship is ignored' -> kein Versionsvergleich. Tests: neu t/234-rexfile-gateway-api-crd-disable.t; t/28 angepasst (Claim 'OCP gibt keine Liste weiter' ersetzt durch 'Liste = Lib-Default + Chart'). Volle Suite prove -lr -j2 t: 167 Files / 2573 Tests PASS. Live offen: beim ersten RKE2>=v1.37-Bootstrap pruefen, dass config.yaml disable den Chart enthaelt und kein rke2-gateway-api-crd Helm-Release entsteht (helm ls -A); und dass v1.36 den unbekannten Namen beim Start wirklich ignoriert.
+
+2026-10-16 Hub: geprüft (Suite 170/2606 grün, neue Tests gegen altes lib rot), ff auf main 79b23af, kein Push. Live offen.
+
+2026-10-18 06:48 LIVE Runde 8 bestanden: Re-Bootstrap des CP, config.yaml-Diff genau '- rke2-gateway-api-crd', rke2 v1.36.4 läuft nach Neustart, keine Journal-Fehler, alle 10 Gateway-API-CRDs da.
