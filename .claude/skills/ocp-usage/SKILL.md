@@ -82,7 +82,11 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp kubeconfig` — stdout; `-e` merge (with backup, other clusters kept),
   `-o FILE` write to file, `--refresh` re-fetch from cluster
 - `ocp version` — versions (needs the ocpVersion stamp for "deployed")
-- `ocp ssh --node <name|ip>` — SSH to nodes (admin-key, PIN2)
+- `ocp ssh --node <name|ip>` — SSH to nodes (admin-key, PIN2). An OCPNode
+  target is verified against its `status.hostKeys` pins (one batch-mode
+  probe connection first; changed key → refused, `ocp node trust-host NAME`;
+  no pins → trusted on first contact and pinned, k235). CPs and bare
+  addresses stay on the project's known_hosts.
 - `ocp deploy-robocop` — robocop + CRDs standalone
 - `ocp inject-key [--timeout SECONDS]` — hand the robo private key to a
   running robocop pod for `robocop.security_level: inject` (PIN1 + PIN2;
@@ -92,7 +96,11 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu]
   [--label K=V]... [--taint K=V:Effect]... [--nowait]`
   — create an OCPNode CR (`--no_wait` is kept as an alias, see above)
-- `ocp node rm NAME` — drain + remove (OCP::Node->teardown)
+- `ocp node rm NAME` — drain + remove (OCP::Node->teardown). For ssh/local
+  nodes it checks the machine's host key against the pins first (k235): a
+  changed key refuses before lease, cordon or drain — nothing is touched.
+  A Ready worker without pins (pre-pinning install, or after `trust-host`)
+  is pinned by TOFU on its next reconcile (`OCP::Node::_pin_unpinned`).
 - `ocp node ls` — list OCPNode CRs (name, role, phase, provider, IP, age)
 - `ocp provider add --name NAME --type hetzner --token-file FILE
   [--location LOC] [--server-type TYPE] [--image IMG] [--default]`

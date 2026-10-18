@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Workers installed before the host-key pins (and ones whose pins were
+      removed with `ocp node trust-host`) are pinned on the next reconcile of
+      a Ready node (k235). `ocp ssh --node NAME` verifies the node's pins
+      (refusing with the `trust-host` hint on a changed key; trust on first
+      use for a node without pins). `ocp node rm` checks the host key before
+      anything of the node is touched, so a changed key leaves phase,
+      schedulability and workloads as they were.
     - `ocp apply` warns (k197) when robocop is on but no control plane is
       amd64 (every one a Hetzner `cax*` server): the robocop image is amd64
       only, so the pod would stay Pending and worker joins through robocop

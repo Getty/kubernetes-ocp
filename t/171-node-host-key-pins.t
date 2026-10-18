@@ -152,7 +152,10 @@ subtest 'teardown with a changed key uninstalls nothing and keeps the phase' => 
     }
     ok !(grep { ($_->{phase} // '') eq 'Failed' } @patches), 'phase is not Failed';
     ok !$n->machine_cleanup_failed, 'and --keep-machine is not the advice';
-    is $FakeProvider::seen_file_content, "10.0.0.9 ssh-ed25519 $ED\n", 'the provider contacted the machine under the pins';
+    # k235: the host key is checked before anything of the node is touched, so
+    # the provider is never reached -- the pre-check is the evidence that the
+    # machine was not touched (the fallback at the provider is t/235).
+    ok !defined $FakeProvider::seen_file_content, 'the provider never contacted the machine (the pre-check refused first)';
 };
 {
     package FakeProvider;

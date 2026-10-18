@@ -551,7 +551,7 @@ sub _pin_host_keys {
     return unless @pins;
 
     my %have = map { $_->{type} => 1 } @pins;
-    for my $extra (eval { $kh->scan($host, 22) }) {
+    for my $extra (eval { $self->_scan_host_keys($host) }) {
         next if $have{ $extra->{type} }++;
         push @pins, { type => $extra->{type}, key => $extra->{key},
                       fingerprint => $kh->fingerprint($extra->{key}) };
@@ -562,25 +562,116 @@ sub _pin_host_keys {
     return;
 }
 
+# Every key the machine offers right now, { type, key } each: ssh-keyscan, no
+# login and so no SSH key needed. The one seam for a contact that only looks at
+# the host key (the pin of a node that has none, the check before a teardown);
+# a test replaces it instead of faking ssh-keyscan.
+sub _scan_host_keys {
+    my ($self, $host) = @_;
+    return OCP::KnownHosts->new(file => $self->_node_known_hosts->filename)->scan($host, 22);
+}
+
+# The address OCP reaches this node on, without asking a provider for it:
+# status.publicIP, then spec.host. Undef when neither is known yet.
+sub _known_host {
+    my ($self) = @_;
+    my $host = $self->cr->{status}{publicIP} || $self->cr->{spec}{host};
+    return defined $host && length $host ? $host : undef;
+}
+
+# A node that has no pins yet -- one that was installed before k171, or whose
+# pins `ocp node trust-host` removed -- is pinned on the next contact that
+# looks at its host key (k235): trust on first use, what the install does.
+# Called from _verify for a Ready node only: a node that is not healthy may be
+# a machine that was replaced, and its key is not one to learn. One
+# ssh-keyscan until the pins are there, none after: a node that has pins costs
+# no traffic. Never fatal -- a scan that finds nothing (unreachable) is tried
+# again on the next reconcile, a failed status write is warned about.
+sub _pin_unpinned {
+    my ($self) = @_;
+    return if $self->host_keys;
+    my $host = $self->_known_host;
+    return unless defined $host;
+
+    my @scan = eval { $self->_scan_host_keys($host) } or return;
+    my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
+    my @pins = map { +{ type => $_->{type}, fingerprint => $kh->fingerprint($_->{key}),
+                        key => $_->{key} } } @scan;
+
+    eval { $self->_patch_status(hostKeys => \@pins); 1 } or do {
+        my $err = $@;
+        chomp $err;
+        warn '[node] could not pin the host key of ' . $self->name . ": $err\n";
+        return;
+    };
+    # Diagnosis, not payload (STDERR; robocop's log picks it up).
+    print STDERR 'Trusted host key of ' . $host . ' (' . $self->name
+        . ') on first contact, pinned in status.hostKeys: '
+        . join(', ', map { $_->{fingerprint} . ' (' . $_->{type} . ')' } @pins) . "\n";
+    return;
+}
+
+# Whether the machine's host key is the pinned one, before anything of the
+# node is touched (k235). A scan is all it takes: the key is the pin or it is
+# not. Returns the "host key of X changed" message, or nothing when it matches,
+# when there are no pins (nothing to compare with), or when the machine does
+# not answer (no verdict; the teardown's own contact fails on its own terms).
+# Compared by key type, the way OpenSSH picks what to verify: a type present
+# on both sides must be the same key, and a machine that offers keys but none
+# of a pinned type is a changed machine.
+sub host_key_mismatch_message {
+    my ($self, $host) = @_;
+    my @pins = $self->host_keys or return;
+    my @scan = eval { $self->_scan_host_keys($host) } or return;
+
+    my %pinned = map { $_->{type} => $_->{key} } @pins;
+    my $overlap = 0;
+    for my $got (@scan) {
+        next unless exists $pinned{ $got->{type} };
+        $overlap = 1;
+        return $self->host_key_message($host, @scan) if $pinned{ $got->{type} } ne $got->{key};
+    }
+    return $overlap ? () : $self->host_key_message($host, @scan);
+}
+
+# The words for a changed host key, shared by every place that refuses: the
+# reconcile (status.message), teardown, `ocp ssh`. Pure -- it writes nothing.
+# @got are the keys the machine offered ({ type, key }); none given, they are
+# scanned.
+sub host_key_message {
+    my ($self, $host, @got) = @_;
+
+    my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
+    @got = eval { $self->_scan_host_keys($host) } unless @got;
+    my @expected = map { $_->{fingerprint} . ' (' . $_->{type} . ')' } $self->host_keys;
+    my @seen = map { $kh->fingerprint($_->{key}) . ' (' . $_->{type} . ')' } @got;
+
+    return "host key of $host changed (expected "
+        . (join(', ', @expected) || 'none pinned') . ', got '
+        . (join(', ', @seen) || 'nothing from ssh-keyscan') . '); '
+        . 'refusing to touch the machine. If it was rebuilt on purpose: '
+        . 'ocp node trust-host ' . $self->name;
+}
+
 # A key other than the pinned one: say so in status.message, keep the phase,
 # touch nothing (k171). Returns the message.
 sub _host_key_changed {
     my ($self, $host) = @_;
 
-    my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
-    my @expected = map { $_->{fingerprint} . ' (' . $_->{type} . ')' } $self->host_keys;
-    my @got = map { $kh->fingerprint($_->{key}) . ' (' . $_->{type} . ')' }
-        eval { $kh->scan($host, 22) };
-
-    my $message = "host key of $host changed (expected "
-        . (join(', ', @expected) || 'none pinned') . ', got '
-        . (join(', ', @got) || 'nothing from ssh-keyscan') . '); '
-        . 'refusing to touch the machine. If it was rebuilt on purpose: '
-        . 'ocp node trust-host ' . $self->name;
+    my $message = $self->host_key_message($host);
     $self->_set_host_key_mismatch($message);
     $self->_patch_status(message => $message);
     return $message;
 }
+
+# The known_hosts file for contacting this node at $host, seeded from the
+# pins (empty: trust on first use) -- for a caller outside the state machine
+# that makes the contact itself, `ocp ssh`. Alive as long as the node object.
+sub known_hosts_for { my ($self, $host) = @_; return $self->_seed_known_hosts($host) }
+
+# Pin what a first contact over known_hosts_for recorded (k235). A no-op for
+# a node that has pins already.
+sub pin_host_keys { my ($self, $host) = @_; return $self->_pin_host_keys($host) }
 
 sub _is_host_key_changed { return ref $_[1] && $_[1]->isa('OCP::SSH::HostKeyChanged') }
 
@@ -1059,6 +1150,21 @@ sub teardown {
     $self->_set_machine_cleanup_failed(undef);
     $self->_set_host_key_mismatch(undef);
 
+    # The host key before everything else (k235): a machine that is not the
+    # one pinned is not touched, and neither is its node -- no lease, no
+    # Terminating, no cordon, no drain. Only where the teardown goes on to
+    # contact the machine: a cloud server is deleted through the provider's
+    # API, and keep_machine never reaches it.
+    my $status0 = $self->cr->{status} // {};
+    my $host0   = $self->_known_host;
+    if ($self->provider && !$opt{keep_machine} && defined $host0
+        && !(defined $status0->{providerId} && length $status0->{providerId})) {
+        if (my $message = $self->host_key_mismatch_message($host0)) {
+            $self->_set_host_key_mismatch($message);
+            die 'Teardown of node ' . $self->name . " not done: $message\n";
+        }
+    }
+
     # The lease first, before anything is touched (k179). robocop tears down a
     # deleted OCPNode and `ocp node rm` tears down the one it is pointed at;
     # the lease is what keeps the two from draining and deleting the same
@@ -1330,6 +1436,7 @@ sub _verify {
 
     for my $cond (@{ $node_hash->{status}{conditions} // [] }) {
         if ($cond->{type} eq 'Ready' && $cond->{status} eq 'True') {
+            $self->_pin_unpinned;
             return 1;
         }
     }
@@ -1704,6 +1811,60 @@ C<spec.taints>, outside the state machine -- what C<ocp apply> calls after it
 pulled changed pool labels onto an existing worker. Removes only what OCP set
 (L<OCP::NodeMeta/converge_patch>). Undef when the Node is not registered, false
 (with a warning) when the patch failed.
+
+=head2 host_key_message
+
+    my $text = $node->host_key_message($host);
+    my $text = $node->host_key_message($host, @got);   # @got: { type, key }
+
+The words for a changed host key: what C<status.hostKeys> pins, what the
+machine offered instead, and C<ocp node trust-host NAME> as the way out if it
+was rebuilt on purpose.  The one text behind every refusal -- the reconcile
+(C<status.message>), C<teardown>, C<ocp node rm>, C<ocp ssh --node>.  Without
+C<@got> the machine is scanned with C<ssh-keyscan>.  Pure: it writes nothing.
+
+=head2 host_key_mismatch_message
+
+    if (my $message = $node->host_key_mismatch_message($host)) { die "$message\n" }
+
+Scans the machine and compares the keys with the pins, by key type like
+OpenSSH: a type on both sides must be the same key, and a machine that offers
+keys but none of a pinned type counts as changed.  Returns
+L</host_key_message> on a mismatch, and nothing when the keys match, when the
+node has no pins (nothing to compare with) or when the machine does not answer
+(no verdict).  C<ocp node rm> asks this before it changes anything, and
+C<teardown> asks it itself before taking the lease -- so a machine that is not
+the pinned one keeps its node, phase and pods.
+
+=head2 known_hosts_for
+
+    my $file = $node->known_hosts_for($host);
+
+The path of a known_hosts file for contacting this node at C<$host>, seeded
+from C<status.hostKeys> -- empty for a node without pins, which makes the first
+contact trust on first use.  For a caller outside the state machine that makes
+the contact itself (C<ocp ssh --node>); the file lives as long as the object.
+
+=head2 pin_host_keys
+
+    $node->pin_host_keys($host);
+
+Writes what a first contact over L</known_hosts_for> recorded into
+C<status.hostKeys> (the type it negotiated, plus the other types from
+C<ssh-keyscan>).  A no-op for a node that has pins already, and for a contact
+that recorded nothing.  Dies when the status write fails.
+
+=head2 Host keys
+
+An install pins the machine's host keys on its first contact and every later
+contact verifies against them (C<ocp node trust-host> replaces them).  A node
+that has none -- installed before pinning existed, or after C<trust-host>
+cleared them -- is pinned by trust on first use: C<reconcile> on a C<Ready>
+node scans the machine and pins what it offers, once; a machine that does not
+answer is tried again on the next pass.  Only C<Ready> nodes learn a key this
+way, because a node that is not healthy may be a machine that was replaced.
+C<ocp ssh --node> checks against the OCPNode's pins as well (and pins on first
+contact), and C<ocp node rm> checks before it touches anything.
 
 =head1 CLASS METHODS
 

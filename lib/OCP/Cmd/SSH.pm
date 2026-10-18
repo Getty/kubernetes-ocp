@@ -10,11 +10,18 @@ use OCP::ClusterKey;
 use OCP::Config;
 use OCP::K8s;
 use OCP::Kubernetes;
+use OCP::Node;
 use OCP::Secrets;
 use OCP::SSH;
 use Path::Tiny qw(path);
 
 with 'OCP::Role::Cmd';
+
+# The OCPNode --node resolved to, as an OCP::Node bound to the cluster API
+# (k235): its status.hostKeys are what the connection is verified against.
+# Unset for a control plane or an address -- those stay on the project's
+# known_hosts, as decided in k171.
+has _target_node => (is => 'rw');
 
 option node => (
     is     => 'ro',
@@ -94,10 +101,14 @@ sub execute {
     print STDERR "[ok] Target: $target_host\n";
     print STDERR "[..] Connecting...\n\n";
 
+    my $node = $self->_target_node;
     my $ssh = OCP::SSH->new(
         host     => $target_host,
         key_file => $key->path,
+        # An OCPNode's pins, not the project's file (k235).
+        ($node ? (known_hosts => $node->known_hosts_for($target_host)) : ()),
     );
+    $self->_check_node_host_key($node, $ssh, $target_host) if $node;
 
     # ->interactive execs, so this process is gone the moment it runs and
     # cannot report anything afterwards. Where a lockout is plausible — an
@@ -105,8 +116,9 @@ sub execute {
     # with a batch-mode connection and say what a refusal probably means.
     #
     # The probe never blocks the session: it warns and hands over anyway. It
-    # is also skipped entirely unless migration_hint has something to say, so
-    # a normal `ocp ssh` keeps its single connection.
+    # is skipped unless migration_hint has something to say -- apart from an
+    # OCPNode target, which always gets one connection of its own first, for
+    # the host key check above (k235).
     if (my $hint = $key->migration_hint) {
         unless ($ssh->is_reachable) {
             print STDERR "[!!] $target_host did not accept the admin key.\n";
@@ -122,6 +134,30 @@ sub execute {
     $ssh->interactive(@command);
 
     return 0;
+}
+
+# The host key of an OCPNode, checked before the session is handed over
+# (k235): ->interactive execs and cannot report afterwards. One batch-mode
+# connection, against the pins of the OCPNode: a changed key ends the command
+# with the message every other refusal uses, trust-host included; a node
+# without pins is trusted on this first contact and pinned, what the install
+# does. A machine that does not answer is not this check's business -- ssh's
+# own error follows -- but whatever it recorded before failing is pinned.
+sub _check_node_host_key {
+    my ($self, $node, $ssh, $host) = @_;
+
+    eval { $ssh->run('true'); 1 } or do {
+        my $err = $@;
+        die $node->host_key_message($host) . "\n"
+            if ref $err && $err->isa('OCP::SSH::HostKeyChanged');
+        die $err;
+    };
+    eval { $node->pin_host_keys($host); 1 } or do {
+        my $err = $@;
+        chomp $err;
+        print STDERR "[!!] Could not pin the host key of " . $node->name . ": $err\n";
+    };
+    return;
 }
 
 # The command to run on the node: everything after `--`, verbatim (k229).
@@ -309,6 +345,8 @@ sub _lookup_by_name {
     }
 
     if ($cr) {
+        # Whatever address ends up used, the pins are this OCPNode's (k235).
+        $self->_target_node(OCP::Node->from_cr($cr, k8s => $k8s->api));
         my $address = $cr->{status}{publicIP} || $cr->{spec}{host};
         return $address if $address;
     }
@@ -447,6 +485,14 @@ If the connection is refused while F<.ocp/id_ed25519> is still in the
 project, the command says what that usually means: machines authorised before
 the bootstrap key was removed from secure mode carry the wrong public key.
 See L<OCP::ClusterKey/migration_hint>. It never falls back to that key.
+
+A target that is an OCPNode is verified against the host keys pinned in its
+C<status.hostKeys>, not against the project's known_hosts.  One batch-mode
+connection is made first, before the session is handed over: a changed key
+ends the command with the same message every other refusal gives, naming
+C<ocp node trust-host>; a node without pins is trusted on this first contact
+and pinned.  A control plane or a bare address stays on the project's
+known_hosts.
 
 =head1 OPTIONS
 

@@ -302,6 +302,15 @@ what to check by hand afterwards.  It says so most plainly for a node that
 never joined the cluster: an ssh node that never reached its host fails the
 uninstall on every retry, for the same reason it failed to install.
 
+B<Host key first.>  For an C<ssh> or C<local> node, where the teardown contacts the
+machine, the host key is checked against the pins in C<status.hostKeys> before
+anything is changed (L<OCP::Node/host_key_mismatch_message>): no lease, no
+C<Terminating>, no cordon, no drain.  A machine that is not the pinned one
+ends the command with the "host key of ... changed" message and
+C<ocp node trust-host NAME> as the way out; the node stays as it was.  Not
+checked: a node without pins, a machine that does not answer, a Hetzner node
+(deleted through the API) and C<--keep-machine> (no contact).
+
 B<robocop and this command.>  Deleting a worker OCPNode through the API
 (C<ocp.internal/teardown> finalizer) leaves the teardown to robocop; this
 command does the teardown itself, whether or not robocop runs, and removes

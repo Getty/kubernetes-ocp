@@ -191,3 +191,23 @@ b658a13).
   **Not yet verified** at the time of writing: the fix against a real `ocp
   apply` on the host that exposed k168, which waits for a new image, and
   robocop's per-pod path in a live cluster.
+
+## Amendment: OCPNode pins (k171, k235)
+
+The per-pod robocop TOFU above is superseded for workers. The first contact
+of an OCPNode pins the machine's host keys in `status.hostKeys`, and the CLI
+and every robocop pod verify against them (`ocp node trust-host NAME` forgets
+them on purpose). The "until k171 lands" lines describe the state this ADR was
+written in.
+
+k235 closed the remaining gaps:
+
+- A Ready worker without pins (installed before pinning, or after
+  `trust-host`) is pinned by trust on first use on its next reconcile.
+- `ocp ssh --node` on an OCPNode verifies against its pins, not the project's
+  known_hosts, and pins a node that has none. Control planes and bare
+  addresses stay on `.ocp/known_hosts`.
+- `ocp node rm` checks the host key of an `ssh`/`local` node before it takes
+  the lease or changes anything.
+
+The first contact is still unauthenticated; pinning stops later ones.
