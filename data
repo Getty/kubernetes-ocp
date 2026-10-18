@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-10-01T04:26:40Z
+id: 216
+priority: medium
+started: 2026-10-16T07:26:51Z
+status: done
+tags:
+- secrets
+- citiai
+title: 'Leitstand fährt ocp apply unbeaufsichtigt: eigene age-Identität, eigener Admin-Key
+  ohne PIN2, SSH-Key auf die Nodes (k212 F4)'
+updated: 2026-10-18T06:48:27Z
+---
+
+Abgespalten aus k212 (F4, Entscheidung User 2026-10-01): Leitstand fährt ocp apply unbeaufsichtigt mit eigenem Admin-Key ohne PIN2; der Bediener-Key bleibt mit PIN2; beim Entzug des Leitstands wird auch sein SSH-Key von den Nodes entfernt.
+Stand nach k212 (Commit 1eb4775): Leitstand kann per 'ocp keys recipients add AGE1' SOPS-Empfänger werden (keys.yaml/secrets.yaml/kubeconfig.yaml, .sops.yaml), rm entzieht + Rotationshinweis. Die inneren age-Schichten der Private Keys in keys.yaml bleiben bewusst nur für den Projekt-Key -- der Leitstand liest keys.yaml, aber weder Admin- noch Robo-Private-Key.
+Teilschritte:
+(a) Identität: OCP liest die age-Identität aus SOPS_AGE_KEY_FILE (sops-nativ), wenn gesetzt, statt .ocp/age.key/PIN1 -- alle Decrypt-Pfade in OCP::Secrets und OCP::Keys (age_key_file). _assert_key_matches_project akzeptiert schon jeden gebundenen Empfänger. age.key.enc bleibt PIN1-only.
+(b) Leitstand-Admin-Key: Leitstand erzeugt sein SSH-Keypair selbst; nur der Public Key wird eingetragen (z.B. 'ocp keys recipients add AGE1 --ssh-key PUB --name leitstand-X' oder eigenes Kommando), keys.yaml-Eintrag purpose z.B. 'operator' ohne PIN2. Private Key bleibt auf dem Leitstand (Pfad via Env/Option). OCP::ClusterKey wählt unter fremder Identität diesen Key statt des PIN2-Admin-Keys.
+(c) Verteilung: Public Key auf alle CPs + Worker (authorized_keys über SSH mit dem Admin-Key, Bediener-PIN2 beim add; Hetzner: zusätzlich beim Server-Create hochladen; robocop-Worker?). Entzug (recipients rm) entfernt ihn wieder von allen Nodes und aus keys.yaml.
+(d) Robo-Key/robocop-credentials: Leitstand kann den Robo-Private-Key nicht entschlüsseln (innere Schicht Projekt-Key) -- klären, was apply tut, wenn das Secret fehlt/veraltet ist (überspringen + Hinweis?).
+Live-Nachweis: Leitstand (agent-lab) mit eigener Identität, 'ocp apply' ohne PIN-Prompt gegen den Cluster; nach Entzug kein SSH mehr auf die Nodes.
+
+k-keys 2026-10-16: Commit 92d2751 (Branch k-keys, nicht gepusht). (a) SOPS_AGE_KEY_FILE = Identität für alle Decrypts (Secrets+Keys), kein PIN1, nichts nach .ocp/. Projekt-Empfänger nie aus fremder Identität: .ocp/age.pub, sonst aus den Dateien abgeleitet (Identität öffnet innere Schicht = Projekt-Key; sonst gebundene minus .sops.yaml-Liste bzw. alle, minus Operator-age, minus eigene Identität); mehrdeutig -> jeder Schreibpfad bricht ab. 'Fremd' = Identität öffnet die Private Keys in keys.yaml nicht (Decrypt-Versuch). (b) ocp keys operator add --name --ssh-pubkey --age: Eintrag purpose operator ohne private + age; nur der Projekt-Key darf add/rm; nur secure mode; idempotent, Kollision (Name/SSH-Key/age, Projekt-Key als --age) = Fehler. ClusterKey wählt unter Operator-Identität den Operator-Key aus OCP_OPERATOR_KEY (nur Env, keine Option – wäre an jedem Kommando nötig), Pubkey-Abgleich, origin operator, kein PIN2. Entscheidungen: Erst-Bootstrap (kein kubeconfig) unter Operator-Identität abgelehnt (Upload unter Admin-Namen wäre falsch, robocop braucht Robo-Private); require_admin_approval (secret_approved, inject-key) unter fremder Identität abgelehnt vor jedem Prompt; Identität, die Empfänger aber kein Operator ist, wird beim Namen abgelehnt. (c) add: erst alle Maschinen (Admin-Key/PIN2), dann Eintrag+Empfänger; Host scheitert -> genannt, Exit 1, Re-Run idempotent. rm: Blob von allen Maschinen, Eintrag+Empfänger raus + Rotationshinweis; scheiternder Host genannt mit grep -vF-Zeile, Exit 1, Entzug trotzdem. k96-Helfer -> OCP::Role::Cmd::Machines. authorized-keys: --purpose operator, all inkl. Operator-Keys. (d) Robo-Private nicht lesbar: Secret da -> [WARN] STDERR, Deployment trotzdem; Secret fehlt -> Exit 1; inject nur Public. Tests: t/216-operator.t (17 Subtests), t/209 Listen um operator ergänzt. Apply.pm blieb unter t/52-Grenze (Prüfung nach Bootstrap.pm). Suite: Files=169, Tests=2652, Result: PASS. Offen: Hetzner-Server, die nach operator add entstehen, bekommen den Operator-Key nicht (Workaround: add erneut); global gesetztes SOPS_AGE_KEY_FILE lässt OCP das Projekt ablehnen (README-Hinweis drin); voller Reconcile-Lauf unter Operator nur schrittweise getestet. Live (agent-lab): Leitstand-Keys mit age-keygen/ssh-keygen; beim Bediener ocp keys operator add --name leitstand …, committen; auf Leitstand ohne .ocp/: SOPS_AGE_KEY_FILE=… OCP_OPERATOR_KEY=… ocp apply </dev/null -> kein PIN-Prompt, robocop-Secret [WARN], kubeconfig.yaml weiter mit Projekt-Key lesbar, .ocp/age.key/age.pub nicht angelegt; ocp ssh / inject-key-Verhalten prüfen; ocp keys operator rm leitstand -> Leitstand: Permission denied auf allen Nodes, sops -d kubeconfig.yaml der neuen Version scheitert.
+
+Korrektur Live-Punkt: ocp inject-key ist unter Operator-Identität ABGELEHNT (require_admin_approval, Meldung nennt den Operator) – im Lab genau das prüfen; ocp ssh dagegen soll mit dem Operator-Key ohne PIN gehen.
+
+2026-10-18 05:58 Hub 2026-10-18: Branch auf main rebaset und per ff gemergt (main d6dc7cb, nicht gepusht). Volle Suite 177 Dateien/2750 Tests grün. Live-Nachweis folgt in der Lab-Runde.
+
+2026-10-18 06:48 LIVE Runde 8: erst gescheitert (operator add brach bei jedem Aufruf mit Usage ab: execute bekam die Argumente samt Optionen; gleicher Fehler in node add --role, recipients add/operator rm --pins-stdin, provider rm). Fix fa2662a von frank, im Hub rebaset auf main c8f4d9d (Suite 180/2804 grün, t/216-positional-args.t gegen altes lib rot). Danach bestanden: Leitstand apply Exit 0 ohne PIN, ocp ssh ohne PIN, inject-key abgelehnt mit Operator-Namen, operator rm → Permission denied auf allen drei, Rotationshinweis. Host-Probes unter Leitstand: Folgekarte.
