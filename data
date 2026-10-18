@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-09-24T16:21:13Z
+id: 174
+priority: low
+started: 2026-10-14T19:16:53Z
+status: done
+tags:
+- state
+- ocpnode
+title: OCPNode status.publicIP zeigt bei ssh-Workern den Hostnamen
+updated: 2026-10-18T06:48:27Z
+---
+
+Aus Live-Test/k169: OCPNode ocpt-w (ssh-Provider) zeigt IP-Spalte = ocpt-w.vm. OCP::Node fuellt status.publicIP aus spec.host (bewusst: Verbindungs-/Teardown-Adresse). CRD nennt es "Public IP address". Done: IP nach Ready aus K8s-Node-Adresse fuellen (wie ensure_cp_ocpnode via k8s_node_ip) oder eigenes Feld (status.address vs status.publicIP) - ohne SSH/Teardown-Ziel zu aendern.
+
+2026-10-14 19:16 Neues Feld status.address (Node ExternalIP/InternalIP) bei Ready; publicIP bleibt Verbindungs-/Teardown-Adresse. CRD + node ls + Test t/16.
+
+2026-10-15 23:22 LIVE 2026-10-16 teilweise: IP-Spalte = status.address; alle Lab-Hosts (citiai, crag) nur per IP erreichbar, Hostname-Fall ohne DNS-Namen nicht prüfbar.
+
+2026-10-18 06:48 LIVE Runde 8 bestanden: crag per node add --host crag.lab, node ls IP-Spalte 10.230.30.250, publicIP bleibt crag.lab. (robocop löst crag.lab nicht auf, weil der Name nur im CLI-Container stand: Folgekarte.)
