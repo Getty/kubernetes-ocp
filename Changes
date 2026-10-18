@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys operator add` and `operator rm` list every re-encrypted file
+      in their `[ok] Re-encrypted with a new data key:` line, keys.yaml
+      included (k241); the line and the rotation message of `operator rm`
+      now come from one list.
     - robocop no longer fails silently to pin the host key of a Ready worker
       (k239): the node stays Ready, `status.message` reads `Node joined and
       Ready; host key not pinned: <reason>` (an unresolvable name with the

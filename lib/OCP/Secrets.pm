@@ -203,9 +203,13 @@ sub _keys_yaml_data {
 # has_age_key, which only answers "is there one on this machine".
 sub _sops_files {
     my ($self) = @_;
-    return map { $self->project_dir->child($_) }
-        qw(keys.yaml secrets.yaml kubeconfig.yaml);
+    return map { $self->project_dir->child($_) } $self->sops_file_names;
 }
+
+# The names of the SOPS-encrypted project files, in the order they are listed
+# everywhere (k241): the one list reencrypt's [ok] line and the rotation
+# message are both ordered by.
+sub sops_file_names { qw(keys.yaml secrets.yaml kubeconfig.yaml) }
 
 # Which committed files are bound to which recipient. Returns a list of
 # { file => 'keys.yaml', recipient => 'age1...' } — names, not a boolean,

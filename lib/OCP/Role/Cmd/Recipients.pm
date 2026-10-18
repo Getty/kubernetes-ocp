@@ -40,11 +40,18 @@ sub recipient_arg {
     return $recipient;
 }
 
-# Re-encrypt what is out of step, and say what happened on STDOUT.
+# Re-encrypt what is out of step, and say what happened on STDOUT. @written
+# are the files the command itself wrote for the new recipient list before
+# getting here (keys.yaml, by add_public_key / delete_key): rotate_sops_files
+# finds them in step and does not list them, but they were re-encrypted all
+# the same (k241). Returns the merged list -- deduplicated, in the order of
+# OCP::Secrets->sops_file_names -- which is what the [ok] line prints and what
+# rotation_hint names: one source.
 sub reencrypt {
-    my ($self, $secrets) = @_;
+    my ($self, $secrets, @written) = @_;
 
-    my @done = $secrets->rotate_sops_files;
+    my %got = map { $_ => 1 } @written, $secrets->rotate_sops_files;
+    my @done = grep { $got{$_} } $secrets->sops_file_names;
     print @done
         ? "[ok] Re-encrypted with a new data key: " . join(', ', @done) . "\n"
         : "[ok] Every encrypted file is already encrypted for this list\n";
@@ -99,7 +106,8 @@ OCP::Role::Cmd::Recipients - What the C<ocp keys recipients> commands share
 C<project_secrets> (the project's L<OCP::Secrets>, PIN1 when C<unlock> asks
 for the private key), C<recipient_arg> (an age recipient from the command line,
 checked before anything is touched), C<reencrypt> (re-encrypt what is out
-of step and say so on STDOUT) and C<rotation_hint> (what a removed recipient
+of step, plus the files the command wrote itself, and say so on STDOUT; it
+returns that one list) and C<rotation_hint> (what a removed recipient
 could read until now, for STDERR) and C<reencrypted_clause> (the files
 C<reencrypt> rewrote as a clause in the right number -- "keys.yaml was
 re-encrypted", "A and B were re-encrypted" -- used by C<rotation_hint>, k237),

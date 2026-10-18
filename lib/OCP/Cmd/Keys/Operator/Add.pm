@@ -109,6 +109,7 @@ sub execute {
         print "[ok] Added $age to " . $secrets->sops_config_file . "\n";
     }
 
+    my @written;
     if ($existing) {
         print "[ok] keys.yaml already has the operator '$name' with these keys\n";
     } else {
@@ -121,9 +122,10 @@ sub execute {
             age     => $age,
         );
         print "[ok] keys.yaml: operator '$name' (purpose operator, no private key)\n";
+        @written = ('keys.yaml');
     }
 
-    $self->reencrypt($secrets);
+    $self->reencrypt($secrets, @written);
 
     $self->_print_pending_operator($pending);
     $self->_print_hetzner_gap($config, $api);

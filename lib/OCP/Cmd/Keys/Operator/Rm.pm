@@ -61,13 +61,12 @@ sub execute {
         print "[ok] Removed $age from " . $secrets->sops_config_file . "\n";
     }
     # delete_key writes keys.yaml for the recipients as they stand now, so
-    # reencrypt finds it in step and does not list it; it was re-encrypted all
-    # the same (k237).
+    # reencrypt finds it in step; it was re-encrypted all the same, so it is
+    # handed over as written (k237, k241).
     my $wrote_keys = $keys->delete_key($name);
     print "[ok] keys.yaml: operator '$name' removed\n";
 
-    my @done = $self->reencrypt($secrets);
-    unshift @done, 'keys.yaml' if $wrote_keys && !grep { $_ eq 'keys.yaml' } @done;
+    my @done = $self->reencrypt($secrets, ($wrote_keys ? 'keys.yaml' : ()));
     print STDERR $self->rotation_hint($secrets, $age, @done) if length $age;
 
     my $rc = 0;

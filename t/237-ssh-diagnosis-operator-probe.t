@@ -500,9 +500,9 @@ subtest '(3) operator rm re-encrypts keys.yaml, secrets.yaml and kubeconfig.yaml
     is_deeply(OCP::Secrets->new(project_dir => $dir)->read_all_secrets, { hetzner_token => 'hz-token' },
         'and the project key still reads what it held');
 
-    # keys.yaml is rewritten by delete_key, before rotate_sops_files looks, so
-    # reencrypt does not list it; Rm adds it, so STDERR names all three.
-    like $r->{out}, qr/Re-encrypted with a new data key: secrets\.yaml, kubeconfig\.yaml\n/, 'STDOUT: what rotate_sops_files rewrote';
+    # keys.yaml is rewritten by delete_key, before rotate_sops_files looks; Rm
+    # hands it to reencrypt (k241), so STDOUT and STDERR both name all three.
+    like $r->{out}, qr/Re-encrypted with a new data key: keys\.yaml, secrets\.yaml, kubeconfig\.yaml\n/, 'STDOUT: all three files (k241)';
     like $r->{err}, qr/\[!!\] age1\S+ is no longer a recipient and keys\.yaml, secrets\.yaml and kubeconfig\.yaml were re-encrypted\.\n/,
         'STDERR: keys.yaml too, A, B and C were';
     unlike $r->{err}, qr/ was re-encrypted/, 'no singular for three files';
