@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-18T07:54:52Z
+created: 2026-10-18T06:49:19Z
+id: 236
+priority: low
+started: 2026-10-18T06:50:22Z
+status: done
+tags:
+- ssh
+- dns
+- robocop
+- lab
+title: 'Worker per Hostname: DNS-Fehler klar melden statt dem Key die Schuld zu geben,
+  Voraussetzung dokumentieren (Lab-Notizen 40-41)'
+updated: 2026-10-18T16:05:48Z
+---
+
+Aus Lab-Runde 8 (2026-10-18, Folge von #174):
+40. crag per 'node add --host crag.lab' (Name nur im CLI-Container per --add-host): robocop kann crag.lab nicht auflösen (kein CoreDNS-Eintrag); Teardown oder Re-Join über robocop würde scheitern. OCP übernimmt publicIP: crag.lab unaufgelöst.
+41. '[WARN] host probes skipped on …, crag.lab: the robo key was not accepted' erscheint auch, wenn der Name gar nicht auflöst. Die Meldung schiebt einen DNS-Fehler auf den Key.
+Fertig, wenn: (a) Host-Probes, OCP::SSH und robocop unterscheiden 'Name löst nicht auf' von 'Key abgelehnt' und sagen es so (Probe-Warnung, status.message, CLI); (b) node add mit einem Hostnamen sagt bei robocop an, dass der Name auch im Cluster (CoreDNS) auflösen muss, wenn die Auflösung vom CLI-Host aus nur über /etc/hosts o. ä. kommt bzw. nicht prüfbar ist (mindestens ein Hinweis, Doku in docs/ und Skill ocp-usage); (c) Tests für beide Meldungen.
+
+k236 committed 1260a55 on lab-folgen (local). Suite 182 files/2827 tests green.
+
+2026-10-18 07:54 Hub 2026-10-18: geprüft (Suite 183/2841 grün, t/236-*.t gegen altes lib rot), per ff auf main c6b7a20, nicht gepusht. Live in der nächsten Lab-Runde.
+
+2026-10-18 16:05 Live 2026-10-18 Lab-Runde 10 (ocplab, Image lab-849581d): bestanden, Details .lab/ergebnis.md bei frank. #235c-Abweichung (robocop pinnte den CP) in 849581d behoben. Folgekarten #238–#241.
