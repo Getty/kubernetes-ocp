@@ -682,9 +682,13 @@ sub pin_host_keys { my ($self, $host) = @_; return $self->_pin_host_keys($host) 
 
 # The operator-facing "name does not resolve" text for a status.message
 # (k236): OCP::SSH's wording, one line, naming the host the node was given.
+# The context follows the reconciler (k240): under robocop the lookup ran in
+# its pod, not on an operator's machine. Other ssh-failure texts reuse this.
+sub _ssh_message_context { ($_[0]->reconciler_id // '') =~ /^robocop/ ? 'cluster' : 'cli' }
+
 sub _name_unresolved_message {
     my ($self, $host) = @_;
-    my $m = OCP::SSH->unresolved_message($host // 'the host');
+    my $m = OCP::SSH->unresolved_message($host // 'the host', context => $self->_ssh_message_context);
     chomp $m;
     return $m;
 }

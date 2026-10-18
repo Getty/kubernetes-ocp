@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - robocop's "name does not resolve" `status.message` no longer says
+      "this machine (DNS or /etc/hosts)": the lookup ran in its pod, so it
+      says the lookup failed inside the cluster (CoreDNS) and points at the
+      cluster DNS or the IP address (k240). The CLI wording is unchanged;
+      `OCP::SSH->unresolved_message` takes an optional `context => 'cluster'`.
     - `ocp ssh` explains a refused key with the same diagnosis as the SSH
       wait (which key, `ocp keys authorized-keys --purpose ...`) before
       handing over to ssh (k237). Host probes use the operator key

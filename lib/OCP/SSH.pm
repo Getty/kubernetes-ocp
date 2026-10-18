@@ -172,8 +172,17 @@ sub name_unresolved {
 
 # What to tell the operator for such a failure, in place of the generic
 # "not reachable" or a key complaint. $host is the name that was tried.
+# One source, two contexts (k240): the CLI looked the name up on the
+# operator's machine; with context => 'cluster' (robocop) the lookup ran in
+# its pod, through the cluster DNS (CoreDNS), and the way out is a DNS entry
+# there or the IP address.
 sub unresolved_message {
-    my ($self, $host) = @_;
+    my ( $self, $host, %opt ) = @_;
+    return "Name '$host' does not resolve: the lookup failed inside the cluster"
+         . " (CoreDNS, from the robocop pod), so no SSH connection was attempted."
+         . " This is not a key problem. Add the name to the cluster DNS or use"
+         . " the IP address.\n"
+        if ( $opt{context} // '' ) eq 'cluster';
     return "Name '$host' does not resolve: the lookup failed on this machine"
          . " (DNS or /etc/hosts), so no SSH connection was attempted. This is"
          . " not a key problem. Fix the name or use the IP address.\n";
@@ -593,6 +602,9 @@ so the name was fine.
 
 Returns the operator-facing text for such a failure, ending in a newline:
 "Name 'HOST' does not resolve ... This is not a key problem. Fix the name or
-use the IP address."  C<$host> is the name that was tried.
+use the IP address."  C<$host> is the name that was tried.  With
+C<< context => 'cluster' >> (robocop) the text says the lookup failed inside
+the cluster (CoreDNS, from the robocop pod) and points at the cluster DNS or
+the IP address instead; the CLI wording is unchanged.
 
 =cut
