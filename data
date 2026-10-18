@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-10-18T07:54:51Z
+created: 2026-10-18T06:49:18Z
+id: 235
+priority: medium
+started: 2026-10-18T06:50:21Z
+status: done
+tags:
+- security
+- ssh
+- robocop
+- lab
+title: 'Host-Key-Pins vollständig: Bestandsnodes pinnen, ocp ssh prüft gegen die Pins,
+  node rm prüft vor dem Drain (Lab-Notizen 37-39)'
+updated: 2026-10-18T16:05:48Z
+---
+
+Aus Lab-Runde 8 (2026-10-18, ocplab, Folge von #171):
+37. Pins entstehen nur beim Install (OCP::Node::_install_kubernetes -> _pin_host_keys). Ein bestehender Ready-Node bekommt nie welche (kein Host-Kontakt auf dem Reconcile-Pfad); nach dem Upgrade auf #171 sind alle bestehenden Worker ungepinnt, bis sie neu joinen. Der CP wird nie gepinnt (laut #171-Commit gewollt).
+38. ocp ssh prüft nicht gegen die OCPNode-Pins, sondern gegen die Projekt-known_hosts: mit verfälschtem Pin ging 'ocp ssh --node 10-230-30-250' durch.
+39. node rm setzt die Phase auf Terminating und cordoned/draint den Node VOR dem Host-Kontakt. Bei abweichendem Host-Key bleibt der Node danach Ready,SchedulingDisabled, Phase Terminating, GPU-Workloads geräumt, obwohl 'refusing to touch the machine'.
+Fertig, wenn: (a) ein Worker ohne status.hostKeys wird beim nächsten Host-Kontakt (Reconcile-Probe, ocp ssh, robocop-Reconcile) per TOFU gepinnt, wie beim Install; (b) ocp ssh --node prüft gegen die Pins des OCPNode (Abweichung: Abbruch mit derselben Meldung wie #171 und dem trust-host-Weg); (c) node rm prüft den Host-Key, bevor es die Phase setzt, cordoned oder draint; bei Abweichung bleibt der Node unverändert. CP bleibt ungepinnt wie entschieden. Je Punkt ein Test, rot vorher.
+
+k235 committed fe70e9c on lab-folgen (local). Suite 181 files/2816 tests green. Also found: (1) ocp ssh --node <IP> bypasses pins (only names resolve to an OCPNode); (2) ocp ssh leaves the seeded temp known_hosts file behind (exec); (3) ocp ssh now makes a probe connection for OCPNode targets.
+
+Also found (k236/k237 rounds): ocp ssh makes a probe connection for every target now; probe exceptions for non-OCPNode targets are swallowed (ssh reports them); _rejection_advice wraps mid-sentence ('With whatever access you have to\nthat machine'); Cpanel/handwritten =head1 NAME blocks in SSH.pm, Cmd/SSH.pm, Operator/Rm.pm, Recipients.pm deviate from the POD house format; test numbers 235/236 are used twice in t/ (siblings of cilium tests).
+
+2026-10-18 07:54 Hub 2026-10-18: geprüft (Suite 183/2841 grün, t/235-*.t gegen altes lib rot), per ff auf main c6b7a20, nicht gepusht. Live in der nächsten Lab-Runde.
+
+2026-10-18 16:05 Live 2026-10-18 Lab-Runde 10 (ocplab, Image lab-849581d): bestanden, Details .lab/ergebnis.md bei frank. #235c-Abweichung (robocop pinnte den CP) in 849581d behoben. Folgekarten #238–#241.
