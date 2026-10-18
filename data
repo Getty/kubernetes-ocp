@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-18T07:54:52Z
+created: 2026-10-18T06:49:20Z
+id: 237
+priority: low
+started: 2026-10-18T06:50:23Z
+status: done
+tags:
+- ssh
+- keys
+- ux
+- lab
+title: 'ocp ssh mit der #209-Diagnose, Leitstand-Probes mit dem Operator-Key, Rotationsmeldung
+  (Lab-Notizen 42-44)'
+updated: 2026-10-18T16:05:49Z
+---
+
+Aus Lab-Runde 8 (2026-10-18, Folge von #209 und #216):
+42. ocp ssh (interaktiv/exec) gibt bei einem fehlenden Key nur 'root@crag.lab: Permission denied (publickey).' aus, ohne die #209-Diagnose (welcher Key, wie eintragen: ocp keys authorized-keys --purpose …).
+43. Leitstand-apply: '[WARN] host probes skipped on 10.230.30.212, 10.230.30.195, crag.lab: no SSH key to probe with that needs no PIN2', obwohl der Operator-Key (OCP_OPERATOR_KEY) auf allen Maschinen steht. Die Probes sollen ihn nutzen.
+44. operator rm/recipients rm: '[!!] … is no longer a recipient and kubeconfig.yaml were re-encrypted.' (Grammatik bei einer Datei). Prüfen, ob secrets.yaml für Operatoren mit neu verschlüsselt werden muss (im Lab gab es keine).
+Fertig, wenn: ocp ssh zeigt bei abgelehntem Key dieselbe Diagnose wie OCP::SSH::wait_for_ssh; rex_prober nimmt unter Operator-Identität den Operator-Key; die Meldung zählt die Dateien richtig und nennt alle neu verschlüsselten; je Punkt ein Test.
+
+k237 committed c6b7a20 on lab-folgen (local). Suite 183 files/2841 tests green. Fix on the way: ocp keys operator rm now names keys.yaml among the re-encrypted files (delete_key writes it before reencrypt looks). secrets.yaml IS re-encrypted for operators (rotate_sops_files covers keys/secrets/kubeconfig); no bug there. Behaviour change: ocp ssh now probes every target before handing over (CP/IP: one extra connection); migration_hint only on real refusal.
+
+2026-10-18 07:54 Hub 2026-10-18: geprüft (Suite 183/2841 grün, t/237-*.t gegen altes lib rot), per ff auf main c6b7a20, nicht gepusht. Live in der nächsten Lab-Runde.
+
+2026-10-18 16:05 Live 2026-10-18 Lab-Runde 10 (ocplab, Image lab-849581d): bestanden, Details .lab/ergebnis.md bei frank. #235c-Abweichung (robocop pinnte den CP) in 849581d behoben. Folgekarten #238–#241.
