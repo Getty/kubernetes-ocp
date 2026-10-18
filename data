@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-10-16T07:31:01Z
+id: 234
+priority: medium
+started: 2026-10-16T07:32:06Z
+status: done
+tags:
+- lab
+title: 'Rest aus Runde 7: Registry-Fehler mit Exit 0, hängender Pool-Worker unbemerkt,
+  Host-Probes nur CP und nicht im secure mode, Kleinkram (Lab 2026-10-16)'
+updated: 2026-10-18T06:48:27Z
+---
+
+Notizen 28-36 aus .agent-sessions/ocp-lab/ergebnis-turn7.md (frank-ocp Runde 7).
+28. Registry-Fehler im Reconcile nur [WARN] auf STDOUT, Exit 0 (Drift.pm reconcile_components ~177-192), obwohl die Registry Pflicht ist.
+29. Erster Rollout des #232-Manifests über einen alten robocop (ohne SIGTERM-Behandlung): alter Pod läuft 600 s Grace voll aus, solange kein robocop.
+30. Drift-Erzählung: '[ok] No drift detected' und direkt danach '[drift] GPU Operator ClusterPolicy differs …'.
+31. Pool-Worker mit OCPNode, aber nicht Ready (z. B. Installing), wird vom Reconcile weder gemeldet noch abgewartet: SUCCESSFULLY, Exit 0.
+32. legacy_containerd_template-Probe nur auf Control Planes (host_selector), Worker nie geprüft.
+33. secure mode: SSH-Host-Probes laufen beim Reconcile nicht, solange nichts PIN2 abgefragt hat (rex_prober: cluster_ssh_key_if_known, sonst ssh.private_key, das es im secure mode nicht gibt).
+34. Abschlusszeile nach Template-Entfernung '[ok] Legacy containerd template updated to ' (leeres Ziel); Rex-Zeile 'Removed …' nur mit --verbose.
+35. ocp deploy-image gibt den Override-Hinweis als '[!!]' auf STDOUT aus; als Hinweis gehört er als [WARN] auf STDOUT.
+36. ocp node ls --json ohne reconciler-Feld (Textform hat RECONCILER).
+Fertig, wenn: jeder Punkt gebaut mit Test, live nachgeprüft.
+
+Gebaut, Commit d657bb3 auf Branch k234 (von main ade6e0b, nicht gepusht). Punkte 28-36 je mit Test, rot gegen altes lib. Volle Suite prove -lr -j2 t: 173 Files, 2639 Tests, PASS. Files: lib/OCP/{Drift,Role/Cmd}.pm, lib/OCP/Cmd/Apply/{Drift,CR,Health}.pm, Cmd/{DeployImage,DeployRobocop}.pm, Cmd/Node/Ls.pm, share/Rexfile, share/robocop/deployment.yaml, Changes; Tests t/38, t/233, t/234-round7-rest.t (neu), t/54, t/230, t/71, t/227. Befunde: (33) Robo-Key ist ohne PIN2 entschluesselbar (OCP::Keys::get_automation_key, ADR 0006), erreicht aber by intent keine CPs -> dort meist abgelehnt, dann nur die WARN-Zeile; ohne keys.yaml und ohne Key-Datei: WARN mit allen Probe-Hosts. Nebeneffekt: reconcile-apply listet OCPNodes ggf. 1x mehr (Probe-Hosts). (29) gracePeriodSeconds via api->_request(DELETE, parameters), weil Kubernetes::REST delete() es nicht kennt. (31) prueft nur Workers aus ocp.yaml per Name. LIVE ZU PRUEFEN: (28) Registry kaputt -> [!!] STDERR + Exit 1; (29) Rollout ueber alten robocop ohne Annotation: alter Pod mit 30 s Grace geloescht; (30) ClusterPolicy per patch aendern: kein '[ok] No drift detected' davor; (31) Worker in Installing -> WARN, Exit 0; Failed -> Exit 1; (32) bares Template auf Worker -> Drift + apply entfernt; (33) secure mode ohne PIN2: Worker-Probe mit Robo-Key, CP -> 'host probes skipped'-WARN; (34) Abschlusszeile inkl. Restart-Zweig; (35) deploy-image Override [WARN] STDOUT; (36) node ls --json reconciler.
+
+2026-10-18 05:58 Hub 2026-10-18: Branch auf main rebaset und per ff gemergt (main d6dc7cb, nicht gepusht). Volle Suite 177 Dateien/2750 Tests grün. Live-Nachweis folgt in der Lab-Runde.
+
+2026-10-18 06:48 LIVE Runde 8 bestanden: '[WARN] worker … is Installing, not Ready yet'; '[WARN] host probes skipped on 10.230.30.212: the robo key was not accepted'; node ls --json mit reconciler; deploy-image '[WARN] ad-hoc override'; GPU-Drift ohne 'No drift detected'; Registry-Fehler per Admission Policy → Exit 1 '[!!] Registry setup failed'.
