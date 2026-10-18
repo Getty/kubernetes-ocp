@@ -276,9 +276,25 @@ sub rex_prober {
     my ($self, $config, %opt) = @_;
 
     require OCP::Rex;
+    require OCP::ClusterKey;
 
     my $key      = $self->cluster_ssh_key_if_known($config, %opt);
     my $key_file = $key ? $key->path : undef;
+
+    # A Leitstand (operator identity, k216) reaches the machines with its own
+    # key, which stands on all of them and needs no PIN2 (k237). Without a key
+    # already in hand it comes before the on-disk fallback: that one belongs
+    # to a project key's holder. Set but unusable: said once, probe skipped.
+    unless (defined $key_file) {
+        my ($op, $problem) = OCP::ClusterKey->operator_probe_key($config);
+        if ($op) {
+            $self->{_operator_probe_key} = $op;    # holds the temp file
+            $key_file = $op->path;
+        } elsif (defined $problem) {
+            print STDERR "[WARN] OCP_OPERATOR_KEY is set but cannot be used for the host probes: $problem\n"
+                unless $self->{_operator_probe_warned}++;
+        }
+    }
 
     unless (defined $key_file) {
         my $path = $config->ssh_private_key_path;
@@ -574,12 +590,17 @@ returns L<OCP::Rex>'s result.
 
 Deliberately non-prompting: detection runs on read-only C<ocp status> and at
 the top of every C<ocp apply>, and a secure-mode cluster key costs a PIN2
-prompt.  It uses only a key already in hand — one L</cluster_ssh_key_if_known>
-already built, or an on-disk private key (C<ssh>/C<local> providers).  With
-none, it returns C<undef> and L<OCP::Drift> skips its SSH detection mode, which
-is the graceful degradation C<ocp status> needs when a host is unreachable.  The
-narration L<OCP::Rex> prints is captured so it does not land on the report's
-STDOUT.
+prompt.  It uses only a key already in hand, in this order: one
+L</cluster_ssh_key_if_known> already built; the operator key of a run under an
+operator identity (a Leitstand, C<SOPS_AGE_KEY_FILE>), from C<OCP_OPERATOR_KEY>
+via L<OCP::ClusterKey/operator_probe_key>, which needs no PIN2 and stands on
+every machine (k237); an on-disk private key (C<ssh>/C<local> providers); the
+robo key, which needs the age key alone.  If C<OCP_OPERATOR_KEY> is set but
+unusable, a C<[WARN]> on STDERR says why, once, and the probe falls through to
+the next key.  With none, it returns C<undef> and L<OCP::Drift> skips its SSH
+detection mode, which is the graceful degradation C<ocp status> needs when a
+host is unreachable.  The narration L<OCP::Rex> prints is captured so it does
+not land on the report's STDOUT.
 
 =method require_admin_approval
 

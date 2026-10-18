@@ -1104,15 +1104,22 @@ sub run_ocp_ssh {
     my ($out, $err) = capture(sub {
         with_key_store(sub {
             no warnings 'redefine';
+            my $real_new = \&OCP::SSH::new;
             local *OCP::SSH::new = sub {
                 my ($class, %args) = @_;
                 $seen{host} = $args{host};
                 $seen{key}  = $args{key_file};
                 $seen{material} = (-f $args{key_file}
                     ? path($args{key_file})->slurp : undef);
-                bless {}, $class;
+                return $class->$real_new(%args);
             };
-            local *OCP::SSH::is_reachable = sub { $opt{reachable} // 1 };
+            # The batch-mode probe before the session (k237): a refusal is
+            # what sshd says to a key it does not hold.
+            local *OCP::SSH::run = sub {
+                return ($opt{reachable} // 1)
+                    ? { exit => 0, stdout => '', stderr => '' }
+                    : { exit => 255, stdout => '', stderr => "Permission denied (publickey).\n" };
+            };
             local *OCP::SSH::interactive  = sub {
                 my ($ssh, @command) = @_;
                 $seen{connected} = 1;
@@ -1160,7 +1167,7 @@ subtest 'ocp ssh diagnoses a refused admin key instead of just exec-ing' => sub 
     is $r->{err}, '', 'it did not refuse to run' or diag $r->{out};
     ok $r->{connected}, 'ssh still got the terminal';
 
-    like $r->{stderr}, qr/did not accept the admin key/, 'it says what happened';
+    like $r->{stderr}, qr/SSH key rejected by 9\.9\.9\.9.*the admin key/s, 'it says what happened (k237: the wait_for_ssh text)';
     like $r->{stderr}, qr/ocp keys show --purpose admin/, 'and what to do about it';
 };
 
@@ -1344,8 +1351,9 @@ subtest 'the read-only paths cannot acquire a key, so they cannot prompt' => sub
     ok $prober, 'found rex_prober';
     like $prober, qr/cluster_ssh_key_if_known/,
         'rex_prober uses only a key already cached';
-    unlike $prober, qr/->cluster_ssh_key\b(?!_if_known)|ClusterKey->/,
-        'and never builds one, so the read-path probe cannot prompt';
+    unlike $prober, qr/->cluster_ssh_key\b(?!_if_known)|ClusterKey->(?!operator_probe_key\b)/,
+        'and never builds one, so the read-path probe cannot prompt'
+      . ' (operator_probe_key, k237, is the one allowed: it never prompts)';
 
     # And the dry run stops before the only step on the reconcile path that
     # could want one.

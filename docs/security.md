@@ -191,7 +191,8 @@ ocp keys operator rm leitstand        # PIN1, PIN2
 
 It removes every `authorized_keys` line carrying the operator's SSH key from
 every machine, logged in with the admin key, then the `keys.yaml` entry and
-the age recipient, and re-encrypts the files — and, like
+the age recipient, and re-encrypts the files (`keys.yaml` is named among them)
+— and, like
 `ocp keys recipients rm`, says on STDERR what the operator could read until
 now and what to rotate. A machine that cannot be reached does not hold up the
 revocation: it is named, with the line to remove there by hand, the exit code
@@ -238,7 +239,11 @@ It needs PIN1 at most, never PIN2, and works before any cluster exists. In a
 `ocp keys show --purpose admin` prints the admin key alone, as before.
 
 When a machine refuses a key, the error names which one is missing and the
-`ocp keys authorized-keys --purpose …` line that adds it.
+`ocp keys authorized-keys --purpose …` line that adds it. `ocp ssh` gives the
+same diagnosis: it probes the target once before handing over the terminal, for
+every target, and if the key is refused it prints that text and then lets ssh
+run anyway. An unreachable host or a name that does not resolve is not a
+refused key and gets no such text.
 
 ## Losing a PIN
 

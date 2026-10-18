@@ -105,26 +105,32 @@ sub execute {
     my $ssh = OCP::SSH->new(
         host     => $target_host,
         key_file => $key->path,
+        # The key as the operator knows it and what it is for: a refusal below
+        # names it and the command that prints what the machine needs (k237).
+        key_label => $key->label,
+        ($key->origin =~ /\A(?:admin|operator)\z/ ? (key_purpose => $key->origin) : ()),
         # An OCPNode's pins, not the project's file (k235).
         ($node ? (known_hosts => $node->known_hosts_for($target_host)) : ()),
     );
-    $self->_check_node_host_key($node, $ssh, $target_host) if $node;
 
     # ->interactive execs, so this process is gone the moment it runs and
-    # cannot report anything afterwards. Where a lockout is plausible — an
-    # admin key, and a bootstrap key still lying in the project — probe first
-    # with a batch-mode connection and say what a refusal probably means.
+    # cannot report anything afterwards. So one batch-mode connection comes
+    # first, and a refused key is explained from it -- with the text
+    # wait_for_ssh gives (which key, how to put it on the machine, k209) --
+    # before ssh is handed the terminal. For an OCPNode that connection is the
+    # one the host key check needs anyway (k235); a control plane or an
+    # address gets it as a plain probe of its own (k237).
     #
-    # The probe never blocks the session: it warns and hands over anyway. It
-    # is skipped unless migration_hint has something to say -- apart from an
-    # OCPNode target, which always gets one connection of its own first, for
-    # the host key check above (k235).
-    if (my $hint = $key->migration_hint) {
-        unless ($ssh->is_reachable) {
-            print STDERR "[!!] $target_host did not accept the admin key.\n";
+    # The probe never blocks the session: it warns and hands over anyway,
+    # and ssh's own error follows.
+    my $probe = $node ? $self->_check_node_host_key($node, $ssh, $target_host)
+                      : eval { $ssh->run('true') };
+    if ($ssh->probe_rejected($probe)) {
+        print STDERR "[!!] " . $ssh->rejection_message;
+        if (my $hint = $key->migration_hint) {
             print STDERR $hint;
-            print STDERR "\nHanding over to ssh anyway — its own error follows.\n\n";
         }
+        print STDERR "\nHanding over to ssh anyway -- its own error follows.\n\n";
     }
 
     # With a command, ssh runs it instead of a shell (k229). The process is
@@ -143,10 +149,11 @@ sub execute {
 # without pins is trusted on this first contact and pinned, what the install
 # does. A machine that does not answer is not this check's business -- ssh's
 # own error follows -- but whatever it recorded before failing is pinned.
+# Returns the probe's result, for the caller to read a refused key from (k237).
 sub _check_node_host_key {
     my ($self, $node, $ssh, $host) = @_;
 
-    eval { $ssh->run('true'); 1 } or do {
+    my $result = eval { $ssh->run('true') } or do {
         my $err = $@;
         die $node->host_key_message($host) . "\n"
             if ref $err && $err->isa('OCP::SSH::HostKeyChanged');
@@ -157,7 +164,7 @@ sub _check_node_host_key {
         chomp $err;
         print STDERR "[!!] Could not pin the host key of " . $node->name . ": $err\n";
     };
-    return;
+    return $result;
 }
 
 # The command to run on the node: everything after `--`, verbatim (k229).
@@ -481,18 +488,29 @@ ask for PIN2 anyway and could only fail.
 
 =back
 
-If the connection is refused while F<.ocp/id_ed25519> is still in the
-project, the command says what that usually means: machines authorised before
-the bootstrap key was removed from secure mode carry the wrong public key.
-See L<OCP::ClusterKey/migration_hint>. It never falls back to that key.
+A run whose age identity is an operator's (C<SOPS_AGE_KEY_FILE>, a Leitstand)
+connects with that operator's key from C<OCP_OPERATOR_KEY> instead, without a
+PIN2 (L<OCP::ClusterKey>).
+
+Before the session is handed over, one batch-mode probe (C<true>) runs for
+B<every> target -- an OCPNode, a control plane or a bare address (k237).  If
+the key is refused (C<Permission denied>), the command prints the same
+diagnosis as the SSH wait of C<ocp apply> and C<ocp node add>
+(L<OCP::SSH/rejection_message>): which key, that the host is reachable, and
+the command that puts the key on the machine.  Only for such a real refusal --
+not for an unreachable host or an unresolved name -- and only while
+F<.ocp/id_ed25519> is still in the project does it add what that usually
+means: machines authorised before the bootstrap key was removed from secure
+mode carry the wrong public key.  See L<OCP::ClusterKey/migration_hint>.  It
+never falls back to that key.  The probe never blocks: after the diagnosis
+the command hands over to C<ssh> anyway, whose own error follows.
 
 A target that is an OCPNode is verified against the host keys pinned in its
-C<status.hostKeys>, not against the project's known_hosts.  One batch-mode
-connection is made first, before the session is handed over: a changed key
-ends the command with the same message every other refusal gives, naming
-C<ocp node trust-host>; a node without pins is trusted on this first contact
-and pinned.  A control plane or a bare address stays on the project's
-known_hosts.
+C<status.hostKeys>, not against the project's known_hosts.  That probe doubles
+as the host key check: a changed key ends the command with the same message
+every other refusal gives, naming C<ocp node trust-host>; a node without pins
+is trusted on this first contact and pinned.  A control plane or a bare
+address stays on the project's known_hosts.
 
 =head1 OPTIONS
 

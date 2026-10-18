@@ -86,7 +86,12 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   target is verified against its `status.hostKeys` pins (one batch-mode
   probe connection first; changed key → refused, `ocp node trust-host NAME`;
   no pins → trusted on first contact and pinned, k235). CPs and bare
-  addresses stay on the project's known_hosts.
+  addresses stay on the project's known_hosts. Under an operator identity
+  the key is `OCP_OPERATOR_KEY`, no PIN2. Every target gets that probe
+  (k237): a refused key (`Permission denied`) prints the `wait_for_ssh`
+  diagnosis (`OCP::SSH::rejection_message`: which key, how to install it);
+  `migration_hint` only for such a real refusal. Never blocks — hands over
+  to ssh anyway.
 - `ocp deploy-robocop` — robocop + CRDs standalone
 - `ocp inject-key [--timeout SECONDS]` — hand the robo private key to a
   running robocop pod for `robocop.security_level: inject` (PIN1 + PIN2;
@@ -156,7 +161,7 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   re-encrypted. Same add again = ok; same name + other keys, a taken SSH key
   or age recipient, the project key as AGE1 → error. rm: blob off every
   machine (admin key), entry + recipient out, re-encrypt, rotation hint on
-  STDERR; a machine that fails is named with a manual `grep -vF` line, exit
+  STDERR (names every file re-encrypted, keys.yaml included, k237); a machine that fails is named with a manual `grep -vF` line, exit
   1, but entry/recipient go anyway. Not built: Hetzner servers created later
   do not get the operator key (re-run `add` after they join).
 ## ocp.yaml Schema — snake_case, no aliases
@@ -307,8 +312,11 @@ gpu:
   machine. PIN1 prompts whenever only `age.key.enc` exists. Read-only paths
   (`ocp status`, drift detection, `--dry-run`) never prompt. They use the
   Kubernetes API; the host probe for drift (legacy containerd template) opens
-  a read-only SSH connection with the project key when one is at hand and is
-  silently skipped otherwise — it prints no Rex output.
+  a read-only SSH connection with a key that needs no prompt — one already in
+  hand, an operator's `OCP_OPERATOR_KEY` (a Leitstand, k237; set but unusable →
+  `[WARN]` once on STDERR), the project key, else the robo key — and is
+  skipped with a `[WARN] host probes skipped` line when none exists. It prints
+  no Rex output.
 - **Dev mode (`--nopassword`)**: single unencrypted key `.ocp/id_ed25519`, no
   PIN prompts — but a plain age.key is still generated and
   **kubeconfig.yaml stays encrypted even in dev mode**. Apply detects dev

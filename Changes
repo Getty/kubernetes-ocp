@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp ssh` explains a refused key with the same diagnosis as the SSH
+      wait (which key, `ocp keys authorized-keys --purpose ...`) before
+      handing over to ssh (k237). Host probes use the operator key
+      (OCP_OPERATOR_KEY) under an operator identity instead of being
+      skipped; a set but unusable key is warned about. `ocp keys
+      recipients rm` and `ocp keys operator rm` name every re-encrypted
+      file (keys.yaml included) in correct grammar.
     - A host name that does not resolve is reported as such instead of
       blaming the key ("the robo key was not accepted") or a generic SSH
       failure (k236): host probes, `OCP::SSH` and robocop's node

@@ -60,10 +60,14 @@ sub execute {
         $secrets->set_sops_recipients([ grep { $_ ne $age } @extras ]);
         print "[ok] Removed $age from " . $secrets->sops_config_file . "\n";
     }
-    $keys->delete_key($name);
+    # delete_key writes keys.yaml for the recipients as they stand now, so
+    # reencrypt finds it in step and does not list it; it was re-encrypted all
+    # the same (k237).
+    my $wrote_keys = $keys->delete_key($name);
     print "[ok] keys.yaml: operator '$name' removed\n";
 
     my @done = $self->reencrypt($secrets);
+    unshift @done, 'keys.yaml' if $wrote_keys && !grep { $_ eq 'keys.yaml' } @done;
     print STDERR $self->rotation_hint($secrets, $age, @done) if length $age;
 
     my $rc = 0;
@@ -158,7 +162,9 @@ other lines, owner and mode stay.
 
 The entry leaves F<keys.yaml>, the operator's age recipient leaves the
 project's F<.sops.yaml>, and the files are re-encrypted with a new data key.
-STDERR then says what the operator could read until now and what to rotate
+F<keys.yaml> counts among them although writing the entry's removal already
+encrypted it for the remaining recipients: the STDERR notice names every file
+re-encrypted, F<keys.yaml> included (k237).  STDERR then says what the operator could read until now and what to rotate
 (as C<ocp keys recipients rm>): re-encryption only locks it out of what is
 written from now on.
 

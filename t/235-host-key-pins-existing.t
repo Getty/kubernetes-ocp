@@ -224,7 +224,7 @@ subtest '(a) a scan that finds nothing pins nothing and does not fail the reconc
             if $rec->{key} ne $machine;
         return { exit => 0 };
     }
-    sub is_reachable { 1 }
+    sub probe_rejected { OCP::SSH::probe_rejected(@_) }
     sub interactive  { my $s = shift; push @{ $s->{interactive} }, [@_]; 0 }
 }
 
@@ -233,6 +233,8 @@ subtest '(a) a scan that finds nothing pins nothing and does not fail the reconc
     sub new            { bless {}, shift }
     sub path           { '/nonexistent/key' }
     sub describe       { 'fake key' }
+    sub label          { 'the fake key' }
+    sub origin         { 'bootstrap' }
     sub migration_hint { undef }
     package FakeOcp;
     sub new    { bless { config => $_[1] }, $_[0] }

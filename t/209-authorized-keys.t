@@ -215,8 +215,8 @@ subtest 'no purpose: the message is what it was' => sub {
     unlike $err, qr/authorized-keys/, 'no purpose-specific advice';
 
     ok !eval { OCP::SSH->new(host => 'h', key_purpose => 'general'); 1 },
-        'a purpose that is not admin or automation is refused';
-    like $@, qr/key_purpose must be admin or automation/, 'by name';
+        'a purpose that is not admin, automation or operator is refused';
+    like $@, qr/key_purpose must be admin, automation or operator/, 'by name';
 };
 
 # ------------------------------------- the purpose travels Node -> SSH

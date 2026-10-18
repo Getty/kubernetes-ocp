@@ -51,6 +51,16 @@ sub reencrypt {
     return @done;
 }
 
+# "keys.yaml was re-encrypted", "A and B were", "A, B and C were" -- every file
+# reencrypt rewrote, in the number it has (k237).
+sub reencrypted_clause {
+    my ($self, @files) = @_;
+
+    my $list = @files < 2 ? join('', @files)
+             : join(', ', @files[ 0 .. $#files - 1 ]) . ' and ' . $files[-1];
+    return $list . (@files == 1 ? ' was' : ' were') . ' re-encrypted';
+}
+
 # What a removed recipient could read until now (F3). Shared by
 # `ocp keys recipients rm` and `ocp keys operator rm` (k216). Re-encrypting only
 # locks it out of what is written from here on; every version it could
@@ -60,7 +70,7 @@ sub rotation_hint {
 
     my @names = eval { sort keys %{ $secrets->read_all_secrets } };
     my $hint = "\n[!!] $recipient is no longer a recipient"
-        . (@done ? ' and ' . join(', ', @done) . ' were re-encrypted' : '') . ".\n"
+        . (@done ? ' and ' . $self->reencrypted_clause(@done) : '') . ".\n"
         . "     That only locks it out of what is written from now on. Every version\n"
         . "     it could decrypt until now -- the old ones in git history included --\n"
         . "     stays readable for it. Rotate what those held:\n";
@@ -90,7 +100,10 @@ C<project_secrets> (the project's L<OCP::Secrets>, PIN1 when C<unlock> asks
 for the private key), C<recipient_arg> (an age recipient from the command line,
 checked before anything is touched), C<reencrypt> (re-encrypt what is out
 of step and say so on STDOUT) and C<rotation_hint> (what a removed recipient
-could read until now, for STDERR), for L<OCP::Cmd::Keys::Recipients::Ls>,
+could read until now, for STDERR) and C<reencrypted_clause> (the files
+C<reencrypt> rewrote as a clause in the right number -- "keys.yaml was
+re-encrypted", "A and B were re-encrypted" -- used by C<rotation_hint>, k237),
+for L<OCP::Cmd::Keys::Recipients::Ls>,
 L<OCP::Cmd::Keys::Recipients::Add>, L<OCP::Cmd::Keys::Recipients::Rm> and the
 operator commands (L<OCP::Cmd::Keys::Operator::Add>,
 L<OCP::Cmd::Keys::Operator::Rm>).

@@ -292,6 +292,42 @@ sub operator_entry {
     return $entry;
 }
 
+=method operator_probe_key
+
+    my ($key, $problem) = OCP::ClusterKey->operator_probe_key($config);
+
+The operator's SSH key for a read-only probe, without ever prompting (k237).
+A run whose age identity is an operator (L</identity_of>) reaches machines
+with the key C<OCP_OPERATOR_KEY> names; this builds that key the way
+C<for_config> does and returns it. Returns the empty list when this run is no
+operator's, or the project has no F<keys.yaml>, or C<OCP_OPERATOR_KEY> is not
+set -- nothing to say, the caller looks elsewhere. C<OCP_OPERATOR_KEY> set but
+unusable (missing, unreadable, not the key F<keys.yaml> has for the operator)
+returns C<undef> and the reason as C<$problem>: the caller warns and skips the
+probe, it is not fatal.
+
+=cut
+
+sub operator_probe_key {
+    my ($class, $config) = @_;
+
+    return () unless -f $config->project_dir->child('keys.yaml');
+    my $file = $ENV{OCP_OPERATOR_KEY};
+    return () unless defined $file && length $file;
+
+    my ($who, $entry) = eval { $class->identity_of($config) };
+    return () unless defined $who && $who eq 'operator';
+
+    my $key = eval { $class->_operator_key($config, 'probe', $entry) };
+    return ($key) if $key;
+
+    my $problem = $@ || "the operator key could not be built\n";
+    $problem =~ s/\A(?:ERROR:\s*)//;
+    $problem =~ s/\s+/ /g;
+    $problem =~ s/\s+\z//;
+    return (undef, $problem);
+}
+
 =method foreign_identity_refusal
 
     die OCP::ClusterKey->foreign_identity_refusal($config, $why);

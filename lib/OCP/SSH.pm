@@ -58,9 +58,9 @@ has key_label => (
 has key_purpose => (
     is  => 'ro',
     isa => sub {
-        croak __PACKAGE__.'->key_purpose must be admin or automation, not '
+        croak __PACKAGE__.'->key_purpose must be admin, automation or operator, not '
             .(defined $_[0] ? "'$_[0]'" : 'undef')
-            unless defined $_[0] && $_[0] =~ /\A(?:admin|automation)\z/;
+            unless defined $_[0] && $_[0] =~ /\A(?:admin|automation|operator)\z/;
     },
 );
 
@@ -367,6 +367,8 @@ my %KEY_ROLE = (
                 . 'tears down workers with',
     admin      => 'the admin key (purpose admin), which ocp apply, ocp ssh and '
                 . 'ocp node add/rm reach machines with',
+    operator   => 'the operator key (purpose operator), which a Leitstand '
+                . 'reaches machines with (OCP_OPERATOR_KEY)',
 );
 
 sub _rejection_advice {
@@ -383,8 +385,32 @@ sub _rejection_advice {
       . "that machine, add it and run again:\n"
       . "  ocp keys authorized-keys --purpose $purpose | ssh $user\@$host "
       . "'cat >> ~/.ssh/authorized_keys'\n"
-      . "In secure mode a worker on the ssh provider needs both keys, admin and robo;\n"
-      . "'ocp keys authorized-keys' without --purpose prints both.\n";
+      . ($purpose eq 'operator' ? '' :
+          "In secure mode a worker on the ssh provider needs both keys, admin and robo;\n"
+        . "'ocp keys authorized-keys' without --purpose prints both.\n");
+}
+
+# Did this probe result (run's hashref) end in a refused key? sshd is up and
+# said no (k204).
+sub probe_rejected {
+    my ($self, $result) = @_;
+    return (($result // {})->{stderr} // '') =~ /Permission denied/i ? 1 : 0;
+}
+
+# The whole refusal: user, key (label, else file, plus fingerprint), the fact
+# that the host is reachable, and what the key needs (k204, k209, k226). One
+# text for wait_for_ssh and `ocp ssh` (k237).
+sub rejection_message {
+    my ($self) = @_;
+
+    my $key = defined $self->key_label ? $self->key_label
+            : 'key ' . ($self->key_file // 'the default ssh identity');
+    my $fp  = _key_fingerprint($self->key_file);
+    $key .= " ($fp)" if $fp;
+    return "SSH key rejected by ${\$self->host}: user "
+      . $self->user . " with $key was refused (Permission denied).\n"
+      . "The host is reachable; its authorized_keys does not hold this key.\n"
+      . $self->_rejection_advice;
 }
 
 sub wait_for_ssh {
@@ -412,16 +438,7 @@ sub wait_for_ssh {
         # A refused key is an answer, not a boot in progress: sshd is up and
         # said no, and waiting out the budget would only send the operator to
         # look at the network (k204).
-        if (($result->{stderr} // '') =~ /Permission denied/i) {
-            my $key = defined $self->key_label ? $self->key_label
-                    : 'key ' . ($self->key_file // 'the default ssh identity');
-            my $fp  = _key_fingerprint($self->key_file);
-            $key .= " ($fp)" if $fp;
-            die "SSH key rejected by ${\$self->host}: user "
-              . $self->user . " with $key was refused (Permission denied).\n"
-              . "The host is reachable; its authorized_keys does not hold this key.\n"
-              . $self->_rejection_advice;
-        }
+        die $self->rejection_message if $self->probe_rejected($result);
 
         sleep $interval;
         last if $interrupted;
@@ -511,15 +528,42 @@ and wants a quick no, not a boot wait.
 =head2 A refused key
 
 A C<Permission denied> answer ends the wait at once (k204): the host is up and
-said no. The message names user, key (C<key_label>, else C<key_file>) and the
-key's fingerprint. With C<key_purpose> set (C<admin> or C<automation>, k209)
-it also names which of the two secure-mode keys is missing and the command
-that installs it:
+said no. The message (L</rejection_message>) names user, key (C<key_label>,
+else C<key_file>) and the key's fingerprint. With C<key_purpose> set
+(C<admin>, C<automation> or C<operator>, k209, k237) it also names which key
+is missing and the command that installs it:
 
     ocp keys authorized-keys --purpose automation | ssh root@HOST 'cat >> ~/.ssh/authorized_keys'
 
-together with the rule that a worker on the C<ssh> provider needs both keys.
-L<OCP::Node> passes it on from its C<ssh_key_purpose>.
+together, for C<admin> and C<automation>, with the rule that a worker on the
+C<ssh> provider needs both keys.  The C<operator> key is the one a Leitstand
+reaches machines with (C<OCP_OPERATOR_KEY>); that rule is left out for it.
+L<OCP::Node> passes the purpose on from its C<ssh_key_purpose>; C<ocp ssh>
+passes it for the admin and operator key (L<OCP::Cmd::SSH>).
+
+=head2 key_purpose
+
+Optional attribute: C<admin>, C<automation> or C<operator>; anything else
+croaks.  Only the refusal reads it.  Absent (dev mode's bootstrap key, or a
+caller that does not say), the message gives the generic "add the public key
+there" advice.
+
+=head2 probe_rejected
+
+    if ($ssh->probe_rejected($result)) { ... }
+
+Returns 1 when the result of a probe (the hashref C<run> returns; C<undef> is
+accepted) ended in a refused key -- C<Permission denied> on its C<stderr>:
+sshd is up and said no -- else 0.
+
+=head2 rejection_message
+
+    die $ssh->rejection_message;
+
+The whole refusal as text, ending in a newline: user, key (label, else file,
+plus fingerprint), the fact that the host is reachable, and what the key needs
+according to C<key_purpose>.  One text for C<wait_for_ssh> and for the probe
+of C<ocp ssh> (k237).
 
 =head2 A name that does not resolve
 
