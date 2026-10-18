@@ -1,0 +1,74 @@
+---
+claimed_at: 2026-10-16T06:59:41Z
+claimed_by: k29
+class: standard
+completed: 2026-10-18T06:04:49Z
+created: 2026-08-12T16:12:28Z
+depends_on:
+- 1
+id: 29
+priority: medium
+started: 2026-09-24T14:16:53Z
+status: done
+tags:
+- workers
+- testing
+- smoke
+title: Worker-Pfad ist end-to-end unverifiziert - smoke faehrt nur Single-Node-CP
+updated: 2026-10-18T06:04:49Z
+---
+
+#21 hat sieben Defekte im Worker-Pfad gefunden, #28 einen achten in robocop. Alle
+haben so lange ueberlebt, weil nie ein echter Worker provisioniert wurde.
+
+Am Cluster auf cortex nachgesehen (lesend, ueber Kubernetes::REST::Kubeconfig):
+genau ein OCPNode (cortex, control-plane, Ready, reconciler=cli) und genau ein
+k8s Node (cortex). Es hat dort nie einen Worker gegeben.
+
+Die Suite ist nach #21 auf Signatur- und Pfad-Ebene streng: t/16-node.t faehrt
+ein echtes Kubernetes::REST mit Mock-Transport, t/43-k8s-call-contract.t haelt
+den Vertrag fest. Was Mocks aber nicht zeigen koennen:
+
+- ob der RKE2-Agent auf einer frischen Maschine wirklich hochkommt
+- ob sich der Node am CP registriert und unter welchem Namen
+  (status.kubernetesNodeName ist geraten, wenn er nicht gesetzt ist)
+- ob teardown die Maschine beim Provider wirklich abraeumt
+- ob zwei Reconciler sich am Lease tatsaechlich per 409 aussperren
+  (die Optimistic Concurrency haengt an resourceVersion und ist nie
+  gegen einen echten API-Server gelaufen)
+
+xt/smoke.sh bootstrapped nur einen Single-Node-CP ohne Worker.
+
+Braucht eine Entscheidung: einen Worker in smoke aufnehmen (kostet echte
+Server und Laufzeit) oder den Pfad bewusst als unverifiziert markieren.
+Siehe auch #26 - der Reconcile-Pfad legt ohnehin keine Worker an.
+BLOCKIERT durch #1: der Maintainer ueberarbeitet erst Net::Async::Kubernetes, danach wird robocop komplett neu gedacht. Bis dahin keine Architekturarbeit an diesem Ticket.
+## TODO for foundation (when #1 unblocks)
+
+Body dokumentiert den Status: t/16-node.t und t/43-k8s-call-contract.t sind streng auf Mock-Ebene, smoke faehrt nur Single-Node-CP. Was Mocks nicht zeigen koennen, ist im Body aufgelistet (Agent hochfahren, Node-Registrierung, teardown-Aufraeumung, Lease-409).
+
+Cross-Refs: #33 (robocop tickt nicht - Voraussetzung fuer Worker-Loop), #26 (worker-Reconcile-Pfad), #1.
+
+### Aufgaben
+
+- [ ] xt/smoke.sh: Worker-Drift einbauen. Mindestens: worker-Provisionierung verifizieren, status.kubernetesNodeName explizit lesen (nicht raten), teardown auf Server-Existenz pruefen, zwei reconciler-Instanzen mit 409 aussperren
+- [ ] xt/WORKERS.md oder smoke-README: was kostet der erweiterte Smoke (Server-Anzahl, Laufzeit) - ehrliche Doku fuer den Maintainer
+- [ ] Offene Maintainer-Entscheidung (Body): 'erweitern oder explizit als unverifiziert markieren'. Bei 'unverifiziert' Variante: Banner in xt/smoke.sh + README, der die Luecke benennt
+- [ ] Cross-checks: #26 loest das Reconcile-Problem, #33 den Controller - Smoke-Validierung ist die Konsequenz beider
+- [ ] Tests: nichts neues in t/, weil smoke und t/ unterschiedliche Realitaeten testen - bestehende Mock-Suite bleibt, smoke wird nur ehrlicher
+
+STAND 2026-09-01 (main-agent): k1 blockiert NICHT mehr - robocop tickt jetzt echt (k33 done), der Worker-Pfad KANN endlich gefahren werden. Die im Body geforderte smoke-Erweiterung ist realisierbar. AKTIONABLE AUFGABE unveraendert (Body): xt/smoke.sh um einen echten Worker erweitern - Provisionierung verifizieren, status.kubernetesNodeName explizit LESEN (nicht raten), teardown auf Server-Existenz pruefen, zwei Reconciler mit 409 aussperren; ODER bewusst als unverifiziert bannern. Hinweis: die bindende Docker-Suite braucht erst das CPAN-Release der Siblings (k1).
+
+2026-09-09 07:02 k8 gelandet (Commit ac40991): der Multi-CP-RKE2-Join-Pfad ist jetzt gebaut und Mock-verifiziert, aber wie der Worker-Pfad end-to-end unverifiziert. Neue Smoke-Items zusaetzlich zum Worker: joint police2 real als zweiter embedded-etcd-Member, bleibt der Cluster quorat, kommt police2 als control-plane (nicht agent) hoch. Der Code-Teil der HA-Vollstaendigkeit (tls-san, Client-HA-Endpoint) ist k137.
+
+2026-09-09 07:04 Korrektur: k8-Commit ist 628efea (nicht ac40991, amendet).
+
+2026-09-24 04:04 Hinweis 'BLOCKIERT durch k1' ist hinfaellig: k1 ist done (N::A::K 0.008 released + genutzt). Offen ist hier nur noch die eigene Entscheidung/Arbeit.
+
+2026-09-24 15:01 Zurueck in backlog: wartet auf Maintainer-Antwort zum Live-Test (Test-VMs, PINs, Image-Transport). Zusammen mit k2/k26/k156/k157/k159 live pruefen.
+
+k29 a33cdb6 (Branch k29, nicht gepusht). ssh-Worker-Pfad im Lab live verifiziert (2026-10-15/16, ocplab: CLI-/robocop-Joins, node rm, Lease-409, GPU-Worker; ~/dev/perl-developer/docs/ocp-lab-ergebnis-2026-10-16.md). NEU: xt/smoke.sh OCP_SMOKE_WORKER_HOST=<host> (ssh-Pool smoke-workers in ocp.yaml, Ready-Wait, status.kubernetesNodeName gelesen + kubectl get node, Pod per nodeSelector, ocp node rm, kein rke2-agent mehr) und OCP_SMOKE_HETZNER_WORKER=1 (+HETZNER_API_TOKEN, kostet Geld; prueft per OCP::Provider::Hetzner dass kein Server ocp-cluster=smoke-<dist> bleibt; Exit-Trap destroy bei Fehler). xt/lease-409.t (nur mit OCP_SMOKE_KUBECONFIG): stale Write->409, 8 Races mit 2 geforkten OCP::Node, genau ein Gewinner. Files: xt/smoke.sh, xt/smoke-worker.pl, xt/lease-409.t, t/229-smoke-worker.t, docs/development.md, README.md, Changes. Tests: volle Suite prove -lr -j2 t: 168 Files, 2615 Tests, PASS. NICHT live gefahren. Koordinator im Lab: SMOKE_HOST=<wegwerf-CP> OCP_SMOKE_WORKER_HOST=<wegwerf-worker> make smoke (root@worker muss SMOKE_SSH_KEY akzeptieren; Image muss die Arbeitsbaum-Libs tragen); nur Lease: OCP_SMOKE_KUBECONFIG=<kubeconfig> prove -l xt/lease-409.t. Offen/Risiko: Shell-Teil ungetestet live; lease-409 legt OCPNode lease-409-<pid> role control-plane phase Failed an (robocop laesst Failed in Ruhe; kurzes Fenster zwischen create und Status-Patch); Hetzner-Modus braucht oeffentliche SMOKE_HOST-Adresse + ziehbares robocop-Image. Nicht abgedeckt: Multi-CP-Join (k8).
+
+2026-10-18 05:58 Hub 2026-10-18: Branch auf main rebaset und per ff gemergt (main d6dc7cb, nicht gepusht). Volle Suite 177 Dateien/2750 Tests grün. Live-Nachweis folgt in der Lab-Runde.
+
+2026-10-18 06:04 Hub 2026-10-18: Geschlossen. Smoke-Erweiterung (xt/smoke.sh Worker-Pfad, xt/lease-409.t, t/229) auf main 5ab457d. Der Worker-Pfad selbst ist im Lab live verifiziert (2026-10-15/16, CLI- und robocop-Joins, node rm, Lease-409, GPU-Worker; docs/ocp-lab-ergebnis-2026-10-16.md im Hub). Ein Lauf von xt/smoke.sh braucht eine freie Maschine; den fahren wir beim nächsten Neuaufbau.
