@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-09-26T04:46:35Z
+id: 195
+priority: low
+started: 2026-10-16T06:52:35Z
+status: done
+tags:
+- cilium
+- upgrade
+- versions
+title: 'Cilium bewegt sich nur noch einen Minor pro Schritt: Cluster weit weg vom
+  Pin sterben in apply und update'
+updated: 2026-10-18T06:48:27Z
+---
+
+Aus dem Review von k191. Rex::Rancher 0.003 (8f8076a) lässt Cilium nur einen Minor pro Schritt wandern. Ein Cluster, der mehr als einen Minor vom Pin in OCP::Versions entfernt läuft (Pin-Historie 1.17.0 -> 1.19.2 -> 1.20.0), stirbt dann in install_cilium bei jedem apply und in der upgrade_cilium-Drift-Remedy. OCP hat keinen Weg, schrittweise zu gehen: ein Pin, und ocp update kennt keinen Versions-Override. Betrifft vor dem nächsten OCP-Release nur Dev-Cluster.
+
+Done: Entscheidung, ob OCP Zwischenstufen fährt (Liste der Minor-Stationen in OCP::Versions), einen Versions-Override für ocp update bekommt, oder die Meldung nur klar auf den manuellen Weg zeigt; Test.
+
+2026-09-26 06:10 Korrektur (Live-Test k191): install_cilium läuft nicht bei jedem apply, nur im Bootstrap-Pfad. Betroffen bleiben die upgrade_cilium-Drift-Remedy (ocp apply/update auf einem Cluster > 1 Minor vom Pin) und ein Re-Bootstrap.
+
+Commit 7c26de7. Entscheidung laut Koordinator: Zwischenstufen fahren. lib/OCP/Versions.pm: cilium_stations = 1.17.0 1.18.0 1.19.2 1.20.0 (fruehere Pins aus git log; 1.18.0 aus dem ersten Manifest; Patch einer Station ist egal, wenn der Cluster schon auf spaeterem Patch derselben Minor laeuft). lib/OCP/Drift.pm: remedy_lists -> remedy_params gibt cilium_stations an den Task (Apply-Remedy und ocp update teilen remedy_params). share/Rexfile: upgrade_cilium fragt zuerst den Pin (Lib-Verweigerung kostet nichts, nennt die laufende Version 'Cilium runs X, version Y is more than one minor version away'), laeuft dann Station fuer Station nur aufwaerts, je Station eine '[STEP] Cilium A -> B (step i of n)'-Zeile; Abbruch: 'Cilium upgrade stopped at <erreicht>, on the way to <Pin>: the step to <X> failed: <Grund>' (einzeilig); Re-Run setzt dort fort. lib/OCP/Rex.pm: [STEP]-Zeilen werden auch bei erfolgreichem Task auf STDOUT gedruckt ('  [..] ...'), result->{steps}. Tests: neu t/236-cilium-stations.t (Leiter lueckenlos bis Pin, Params, Walk 1.17.0/1.18.4/1.19.1, Abbruch, keine Stations, kein Downgrade-Walk, Narrative; haelt die Lib-Formulierung der Verweigerung gegen die echte Lib); t/235 haelt ausserdem die #206-Formulierungen gegen die echte Lib. Volle Suite prove -lr -j2 t: 169 Files / 2592 Tests PASS. Offen/Empfehlung: (1) Patch-Versionen der Stationen auf aktuelle Letzt-Patches je Minor anheben, sobald verifiziert ist, dass das Helm-Chart existiert und der CLI-Pin v0.19.7 sie traegt (ich konnte hier nichts live pruefen; 1.17.0/1.18.0 sind nur 'existierende' Patches); (2) bei einem neuen Cilium-Pin die neue Minor in cilium_stations ergaenzen (t/236 erzwingt das). Live offen: Wegwerf-VM (ocpt) mit Cilium 1.17.x aufsetzen -> ocp apply / ocp update --component cilium: pruefen, dass 3 Stationen laufen, jede Station Ready wird (wait 300s je Station reicht?), die Gateway-API-CRDs mit v1.6.1 auf 1.17/1.18 Cilium keine Probleme machen (Lib sagt: 1.17-1.19 nur standard-Channel noetig), und dass Abbruch + Re-Run an der erreichten Station fortsetzt.
+
+Update (Hub-Entscheidung per Cross-Session): Zwischenstationen heben nur Cilium, Gateway-API-CRDs bleiben unangetastet (gateway_api => 0, gatewayAPI.enabled bleibt per helm_values an), das Bundle (v1.6.1) kommt erst mit dem letzten Schritt (Pin). Einmal '[STEP] Gateway API may be degraded until the last step: the CRDs stay as they are until Cilium X'; scheitert eine Zwischenstation: '... stopped at <erreicht> ... (the Gateway API CRDs are unchanged)'. Kein Pin je Station. Commit amended -> 2709a4c. t/236 erweitert (CRD-Flag je Schritt, helm_values, Abbruchtext). Volle Suite: 169 Files / 2592 Tests PASS. Live zusaetzlich pruefen: Cilium 1.17/1.18 mit gatewayAPI.enabled=true aber altem/ohne CRD-Bundle startet (Operator-Log), bzw. wie lange der Gateway-Controller bis zum letzten Schritt degradiert ist.
+
+2026-10-16 Hub: geprüft (Suite 170/2606 grün, neue Tests gegen altes lib rot), ff auf main 79b23af, kein Push. Live offen.
+
+2026-10-18 06:48 LIVE Runde 8 nicht herstellbar: ocplab läuft auf dem Pin v1.20.0 ('Already up to date'), ein Cilium-Downgrade über mehrere Minors kommt auf dem Testcluster nicht in Frage. Geschlossen auf den Mock-Tests (gegen altes lib rot, Hub-Prüfung 2026-10-16).
