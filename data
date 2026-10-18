@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-18T06:48:27Z
+created: 2026-09-27T16:03:44Z
+id: 206
+priority: low
+started: 2026-10-16T06:46:28Z
+status: done
+tags:
+- cilium
+- apply
+- update
+- decision
+title: upgrade_cilium-Verweigerung verweist auf install_cilium, das OCP auf laufendem
+  Cluster nicht anbietet
+updated: 2026-10-18T06:48:27Z
+---
+
+Aus k196 (Teil 2b, Also found 3). Die Verweigerung von upgrade_cilium (rex-rancher k66/k70: kein Cilium bzw. hängendes Helm-Release) kommt in OCP durch: Drift-Apply meldet [WARN] und unresolved, ocp update schreibt auf STDERR und endet mit exit 1 (t/94). Der Hinweis der Lib 'Use install_cilium' hat in OCP aber keinen Nutzerpfad, denn der Reconcile von apply ruft install_cilium nicht auf. Der Nutzer steht also ohne Ausweg da. Entscheidung nötig: (a) Meldung in OCP übersetzen (was der Nutzer tun soll, z. B. Re-Bootstrap bzw. manueller Helm-Schritt), (b) ocp update --component cilium ruft bei fehlendem Release install_cilium auf, (c) nur dokumentieren. Lane: ocp-apply-worker nach Entscheidung.
+
+Commit f708abb. Entscheidung laut Koordinator: Weg (b)+(a). share/Rexfile: upgrade_cilium faengt die Lib-Verweigerung: 'no deployed revision' (kein Release / failed / uninstalled) -> install_cilium (Pool = network.pod_cidr) mit [WARN]-Zeile; 'stuck in pending-*' -> Lib-Meldung + Befehl 'kubectl -n kube-system delete secret sh.helm.release.v1.cilium.vN', nichts automatisch; sonstige Fehler unveraendert. lib/OCP/Drift.pm: Cilium-Probe remedy_if_missing + remedy_config pod_cidr -> fehlender cilium-operator ist Drift mit Remedy, ocp apply erreicht den Install; ocp update --component cilium nutzt denselben Task. Abhaengigkeit: Regex auf den Lib-Meldungstext (Rex::Rancher Cilium.pm _require_deployed_release/_die_release_stuck) -- aendert die Lib den Wortlaut, faellt es auf 'unveraendert durchreichen' zurueck (Test t/235 haelt den heutigen Text fest). Tests: neu t/235-upgrade-cilium-refusals.t; t/25-drift.t und t/38-reconcile-path.t angepasst (Claim 'fehlende Komponenten haben keinen Remedy' gilt nicht mehr fuer Cilium; Fake-Cluster in t/38 bekommt cilium-operator am Pin wie schon das Gateway-CRD, neuer Subtest k206 mit no_cilium). Volle Suite prove -lr -j2 t: 168 Files / 2581 Tests PASS. Hinweis: Drift liest 'missing' auch bei API-Lesefehler (eval um api->get); bei transientem Fehler laeuft dann ein (idempotenter) upgrade_cilium -- die Lib liest das Release selbst und installiert nur bei echtem 'no deployed revision'. Live offen: (1) Cluster ohne Cilium (z. B. nach 'helm uninstall cilium -n kube-system' auf Wegwerf-VM ocpt): ocp apply muss installieren, Nodes werden Ready; (2) Release mit status failed ohne deployed-Revision: install raeumt es weg; (3) pending-upgrade provozieren: Fehlertext + Befehl pruefen, Befehl auf dem CP ausfuehren, apply laeuft danach durch.
+
+2026-10-16 Hub: geprüft (Suite 170/2606 grün, neue Tests gegen altes lib rot), ff auf main 79b23af, kein Push. Live offen.
+
+2026-10-18 06:48 LIVE Runde 8 nicht herstellbar (siehe #195). Geschlossen auf den Mock-Tests.
