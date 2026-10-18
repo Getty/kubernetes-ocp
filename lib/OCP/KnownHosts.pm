@@ -20,6 +20,8 @@ use OCP::Exec qw( capture_command );
 # host is in it yet (OCP::Rex's "learn it first" decision), the fingerprint
 # OCP::SSH logs on first contact, and removing an entry that belongs to a
 # machine that no longer exists.
+has _scan_error => ( is => 'rw', init_arg => undef );
+
 has file => (
     is      => 'lazy',
     builder => sub { $_[0]->default_file },
@@ -140,8 +142,15 @@ sub scan {
         my (undef, $type, $key) = $self->_parse_line($line);
         push @found, { type => $type, key => $key } if defined $key;
     }
+    # Why nothing came back (k239): ssh-keyscan's own words, for a caller that
+    # wants to say so. The list return stays as it was.
+    my $why = join ' ', grep { length && !/^#/ } map { s/^\s+|\s+$//gr } split /\n/, $result->{stderr} // '';
+    $self->_scan_error( @found ? undef : $why );
     return @found;
 }
+
+# The stderr of the last scan that found nothing, or undef.
+sub scan_error { $_[0]->_scan_error }
 
 # Remove every entry for the host. Returns how many lines went. For a machine
 # that is gone or was just created in its place: whatever key is recorded for

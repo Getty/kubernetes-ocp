@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - robocop no longer fails silently to pin the host key of a Ready worker
+      (k239): the node stays Ready, `status.message` reads `Node joined and
+      Ready; host key not pinned: <reason>` (an unresolvable name with the
+      cluster wording of k240), the reason is warned in robocop's log, and
+      the next resync tries again and clears the message once pinned.
     - robocop's "name does not resolve" `status.message` no longer says
       "this machine (DNS or /etc/hosts)": the lookup ran in its pod, so it
       says the lookup failed inside the cluster (CoreDNS) and points at the

@@ -568,7 +568,12 @@ sub _pin_host_keys {
 # a test replaces it instead of faking ssh-keyscan.
 sub _scan_host_keys {
     my ($self, $host) = @_;
-    return OCP::KnownHosts->new(file => $self->_node_known_hosts->filename)->scan($host, 22);
+    my $kh    = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
+    my @found = $kh->scan($host, 22);
+    # Nothing found and ssh-keyscan said why: that is the reason (k239), for
+    # callers that look at the exception; the list return is unchanged.
+    die $kh->scan_error . "\n" if !@found && defined $kh->scan_error && length $kh->scan_error;
+    return @found;
 }
 
 # The address OCP reaches this node on, without asking a provider for it:
@@ -600,12 +605,21 @@ sub _pin_unpinned {
     my $host = $self->_known_host;
     return unless defined $host;
 
-    my @scan = eval { $self->_scan_host_keys($host) } or return;
+    my @scan = eval { $self->_scan_host_keys($host) };
+    unless (@scan) {
+        my $err = $@;
+        chomp $err if defined $err;
+        $self->_note_unpinned($host, $err);
+        return;
+    }
     my $kh = OCP::KnownHosts->new(file => $self->_node_known_hosts->filename);
     my @pins = map { +{ type => $_->{type}, fingerprint => $kh->fingerprint($_->{key}),
                         key => $_->{key} } } @scan;
 
-    eval { $self->_patch_status(hostKeys => \@pins); 1 } or do {
+    # A message left by an earlier failed attempt goes with the success.
+    my %clear = ($self->cr->{status}{message} // '') =~ /; host key not pinned: /
+        ? (message => 'Node joined and Ready') : ();
+    eval { $self->_patch_status(hostKeys => \@pins, %clear); 1 } or do {
         my $err = $@;
         chomp $err;
         warn '[node] could not pin the host key of ' . $self->name . ": $err\n";
@@ -615,6 +629,27 @@ sub _pin_unpinned {
     print STDERR 'Trusted host key of ' . $host . ' (' . $self->name
         . ') on first contact, pinned in status.hostKeys: '
         . join(', ', map { $_->{fingerprint} . ' (' . $_->{type} . ')' } @pins) . "\n";
+    return;
+}
+
+# A pin attempt that found nothing (k239): the Node stays Ready, the reason
+# goes to status.message and to robocop's log; the next reconcile tries again.
+# The name-does-not-resolve reason is the shared wording in the robocop
+# context (k240). Patched only when the message changes -- no write per resync.
+sub _note_unpinned {
+    my ($self, $host, $err) = @_;
+    my $reason = !defined $err || !length $err ? 'ssh-keyscan found no host key'
+        : OCP::SSH->name_unresolved($err)      ? $self->_name_unresolved_message($host)
+        :                                        $err;
+    $reason =~ s/\s+\z//;
+    warn '[node] host key of ' . $self->name . ' (' . $host . ') not pinned: ' . $reason . "\n";
+    my $msg = 'Node joined and Ready; host key not pinned: ' . $reason;
+    return if ($self->cr->{status}{message} // '') eq $msg;
+    eval { $self->_patch_status(message => $msg); 1 } or do {
+        my $e = $@;
+        chomp $e;
+        warn '[node] could not record the unpinned host key of ' . $self->name . ": $e\n";
+    };
     return;
 }
 
