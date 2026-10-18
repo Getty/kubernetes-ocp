@@ -587,8 +587,15 @@ sub _known_host {
 # ssh-keyscan until the pins are there, none after: a node that has pins costs
 # no traffic. Never fatal -- a scan that finds nothing (unreachable) is tried
 # again on the next reconcile, a failed status write is warned about.
+#
+# Not a control plane (k235 lab follow-up): k171 left the control plane on the
+# project's known_hosts, and the first robocop with this pinned the bootstrap
+# CP's OCPNode on its first reconcile all the same. A control plane joined
+# through an OCPNode still gets its pins at install (_pin_host_keys); this
+# only stops the after-the-fact trust on first use.
 sub _pin_unpinned {
     my ($self) = @_;
+    return if ($self->role // '') eq 'control-plane';
     return if $self->host_keys;
     my $host = $self->_known_host;
     return unless defined $host;

@@ -165,6 +165,37 @@ subtest '(a) a node that is not Ready is not pinned' => sub {
     }
 };
 
+# k235 lab follow-up: the control plane stays unpinned, as k171 decided. The
+# first robocop with k235 pinned the bootstrap CP's OCPNode (10-230-30-212)
+# on its first reconcile; a worker beside it is still pinned.
+subtest '(a) a Ready control plane without pins is not pinned; a worker still is' => sub {
+    my $cp = node();
+    $cp->cr->{metadata}{name} = 'cp1';
+    $cp->cr->{spec}{role}     = 'control-plane';
+    my $err = '';
+    {
+        no warnings 'redefine';
+        local *OCP::Node::_scan_host_keys = scan_stub([ { type => 'ssh-ed25519', key => $ED } ]);
+        open my $efh, '>', \$err or die;
+        local *STDERR = $efh;
+        is $cp->reconcile, 1, 'the control plane reconciles as Ready';
+    }
+    is_deeply \@scans, [], 'control plane: no scan';
+    ok !exists patched()->{hostKeys}, 'control plane: no status.hostKeys patch';
+    unlike $err, qr/Trusted host key/, 'control plane: nothing said about trusting a key';
+
+    my $worker = node();
+    {
+        no warnings 'redefine';
+        local *OCP::Node::_scan_host_keys = scan_stub([ { type => 'ssh-ed25519', key => $ED } ]);
+        open my $efh, '>', \my $werr or die;
+        local *STDERR = $efh;
+        $worker->reconcile;
+    }
+    is_deeply \@scans, ['10.0.0.9'], 'worker: scanned';
+    is scalar(@{ patched()->{hostKeys} // [] }), 1, 'worker: pinned';
+};
+
 subtest '(a) a scan that finds nothing pins nothing and does not fail the reconcile' => sub {
     my $n = node();
     {
