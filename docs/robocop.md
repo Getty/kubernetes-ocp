@@ -20,6 +20,13 @@ The default is `false`, but it flips to `true` automatically whenever any
 control plane or worker pool uses the `hetzner` provider — because that is the
 case where nodes appear and disappear without a human present.
 
+Prerequisite: the robocop image is published for amd64 only. At least one
+control plane has to be amd64 (Hetzner `cpx`/`cx`, not `cax`), or the robocop
+pod stays Pending and no worker joins through robocop. When every control
+plane is a `cax` server, `ocp apply` warns (`[WARN]`, banner WITH WARNINGS)
+at the start and again after the health check, if the cluster's Nodes confirm
+it; it does not refuse. Way out: `robocop: false` or an amd64 control plane.
+
 `ocp apply` deploys it when it is enabled — on every run, on a fresh cluster
 and an existing one alike, whether or not `ocp.yaml` lists workers: its
 credentials Secret first (left alone when already current, so a re-apply asks

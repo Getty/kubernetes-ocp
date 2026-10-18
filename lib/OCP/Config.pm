@@ -204,6 +204,33 @@ sub robocop_enabled {
     return 0;
 }
 
+=method robocop_arch_warning
+
+Returns a C<[WARN]> line when robocop is enabled but no control plane can run
+its image, undef otherwise (k197). The robocop image is amd64 only; when every
+control plane is a Hetzner CAX (ARM) server the pod stays Pending and no
+worker joins through robocop. A warning, never a refusal: a mixed cluster, an
+amd64 control plane or C<robocop: false> say nothing.
+
+=cut
+
+sub robocop_arch_warning {
+    my ($self) = @_;
+    return unless $self->robocop_enabled;
+
+    my @cps = @{ $self->control_planes };
+    return unless @cps;
+    for my $cp (@cps) {
+        return unless ref $cp eq 'HASH'
+            && ($cp->{provider} // '') eq 'hetzner'
+            && ($cp->{server_type} // '') =~ /^cax/i;
+    }
+
+    return '[WARN] robocop image is amd64 only, but every control plane is an ARM server (cax*): '
+        . 'the robocop pod stays Pending and worker joins through robocop do not run. '
+        . 'Set `robocop: false` or add an amd64 control plane (cpx/cx).';
+}
+
 # How the private robo (automation) SSH key reaches the cluster (k129),
 # read from `robocop.security_level` (the mapping form of the robocop key):
 #

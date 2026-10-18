@@ -26,6 +26,7 @@ ocp kubeconfig -e           # merge kubeconfig into $KUBECONFIG / ~/.kube/config
 ocp destroy                 # tear down cluster (real servers!)
 ```
 
+The robocop image is amd64 only: with only `cax*` (ARM) control planes `ocp apply` warns (pod stays Pending).
 `ocp apply` deploys robocop itself when `robocop` is enabled and workers exist;
 if robocop isn't ready within 60s, apply falls back to CLI-side reconcile via
 `OCP::Node`. `ocp deploy-robocop` still exists as a manual/standalone step.

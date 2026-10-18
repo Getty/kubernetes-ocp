@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` warns (k197) when robocop is on but no control plane is
+      amd64 (every one a Hetzner `cax*` server): the robocop image is amd64
+      only, so the pod would stay Pending and worker joins through robocop
+      would not run. `[WARN]` up front and after the health check (banner WITH
+      WARNINGS), and an unschedulable robocop pod is named as that reason.
+      Not a refusal; `robocop: false` or an amd64 control plane clears it.
     - `ocp apply` (reconcile) says what it used to leave out: a Registry setup
       failure is `[!!]` on STDERR and exit 1; a worker whose OCPNode is not
       Ready is `[WARN] worker X is <phase>, not Ready yet` (banner WITH

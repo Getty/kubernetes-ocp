@@ -85,9 +85,11 @@ sub _pod_age_seconds {
     return defined $epoch ? time - $epoch : undef;
 }
 
+our $ROBOCOP_ARCH_REASON = 'robocop-Image nur amd64, keine amd64-Control-Plane';
+
 # healthy | starting | failing (+reason)
 sub classify_pod {
-    my ($self, $pod) = @_;
+    my ($self, $pod, $no_amd64_cp) = @_;
 
     my $phase = $pod->{status}{phase} // '';
     return ('healthy') if $phase eq 'Succeeded';
@@ -143,7 +145,64 @@ sub classify_pod {
     my $up = $phase eq 'Running' && @regular && !grep { !$_->{ready} } @regular;
     return ('healthy') if $up;
     return ('starting') unless defined $age && $age >= $STUCK_SECONDS;
+    # k197: an unschedulable robocop pod on a cluster without an amd64
+    # control plane is the image, not a mystery.
+    return ('failing', $ROBOCOP_ARCH_REASON)
+        if $no_amd64_cp && _is_robocop_pod($pod) && _unschedulable($pod);
     return ('failing', _stuck_reason($pod, $phase, $age));
+}
+
+sub _is_robocop_pod {
+    my ($pod) = @_;
+    return ($pod->{metadata}{namespace} // '') eq 'ocp-system'
+        && ($pod->{metadata}{labels}{app} // '') eq 'robocop';
+}
+
+sub _unschedulable {
+    my ($pod) = @_;
+    return scalar grep {
+        ($_->{type} // '') eq 'PodScheduled' && ($_->{status} // '') ne 'True'
+    } @{ $pod->{status}{conditions} // [] };
+}
+
+# Nodes as plain structs; empty when the list fails (k197).
+sub _nodes {
+    my ($api) = @_;
+    my @nodes = eval {
+        my $list = $api->list('Node');
+        map { ref($_) eq 'HASH' ? $_ : $api->k8s->object_to_struct($_) }
+            @{ ($list && $list->items) || [] };
+    };
+    return @nodes;
+}
+
+# True when control-plane Nodes are known and none of them is amd64.
+sub _no_amd64_cp {
+    my ($api) = @_;
+    my @cp = grep {
+        my $l = $_->{metadata}{labels} // {};
+        exists $l->{'node-role.kubernetes.io/control-plane'}
+            || exists $l->{'node-role.kubernetes.io/master'}
+    } _nodes($api);
+    return 0 unless @cp;
+    return (grep { ($_->{metadata}{labels}{'kubernetes.io/arch'} // '') eq 'amd64' } @cp) ? 0 : 1;
+}
+
+=method robocop_arch_warning
+
+C<< robocop_arch_warning($apply, $api) >> returns a C<[WARN]> line when robocop
+is enabled and the cluster's control-plane Nodes include no amd64 one, else
+undef (k197). Reads the Nodes tolerantly: a failed or empty list warns nothing.
+
+=cut
+
+sub robocop_arch_warning {
+    my ($self, $api) = @_;
+    return unless $self->config->robocop_enabled;
+    return unless _no_amd64_cp($api);
+    return '[WARN] robocop image is amd64 only, but no control-plane Node is amd64: '
+        . 'the robocop pod stays Pending and worker joins through robocop do not run. '
+        . 'Set `robocop: false` or add an amd64 control plane.';
 }
 
 # "stuck in Init for 17m (ContainerCreating)": the phase, how long, and the
@@ -176,9 +235,13 @@ sub scan_pods {
     my @pods = map { ref($_) eq 'HASH' ? $_ : $api->k8s->object_to_struct($_) }
                @{ ($list && $list->items) || [] };
 
+    # The Nodes are only read when an unschedulable robocop pod makes the
+    # architecture relevant; a healthy cluster costs no extra list call.
+    my $no_amd64_cp = (grep { _is_robocop_pod($_) && _unschedulable($_) } @pods)
+        ? _no_amd64_cp($api) : 0;
     my %out = (failing => [], starting => []);
     for my $pod (@pods) {
-        my ($state, $reason) = classify_pod($self, $pod);
+        my ($state, $reason) = classify_pod($self, $pod, $no_amd64_cp);
         next if $state eq 'healthy';
         push @{ $out{$state} }, {
             namespace => $pod->{metadata}{namespace} // '',
@@ -295,6 +358,12 @@ sub finish {
         $health = { critical => [], warnings => [], starting => [] };
     }
     $self->_print_health($health);
+
+    my $arch = eval { robocop_arch_warning($self, $api) };
+    if ($arch) {
+        print "  $arch\n";
+        push @{ $self->{_apply_warnings} }, 'robocop arch';
+    }
 
     print "\n";
     my $unhealthy = $self->_health_is_fatal($health);

@@ -95,6 +95,12 @@ sub execute {
 
     print "Cluster: ", $config->name, "\n\n";
 
+    # k197: the robocop image is amd64 only; say so before any work starts.
+    if (my $arch = $config->robocop_arch_warning) {
+        print "$arch\n\n";
+        push @{ $self->{_apply_warnings} }, 'robocop arch';
+    }
+
     # Check if cluster already exists
     if ($config->cluster_exists) {
         print "[ok] Cluster already exists (kubeconfig.yaml found)\n";
