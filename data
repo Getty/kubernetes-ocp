@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-18T16:25:21Z
+created: 2026-10-18T15:57:47Z
+id: 239
+priority: medium
+started: 2026-10-18T16:07:38Z
+status: done
+tags:
+- lab
+- bug
+- robocop
+- host-keys
+title: 'robocop: failed host-key pinning of a Ready node is silent'
+updated: 2026-10-19T05:42:46Z
+---
+
+Lab 2026-10-18 Runde 10 (Notiz 45). robocop's reconcile pinning (#235, _pin_unpinned) of a Ready node fails silently when the cluster cannot resolve the node's name (crag.lab, resolvable only via /etc/hosts on the operator machine): no pin in status.hostKeys, status.message stays `Node joined and Ready`, nothing in the log an operator would see.
+
+Done when: a failed pin attempt shows in status.message (keeping Ready; something like `Node joined and Ready; host key not pinned: <reason>`) and in robocop's log at warn, with the #236 wording for a name that does not resolve; retried on the next resync; test with a mocked scan failure.
+
+2026-10-18 lab-folgen-2: committed ab395e5 (lokal, Branch lab-folgen-2). t/239 vorher rot; Suite 186/2855 gruen. KnownHosts::scan_error neu (stderr von ssh-keyscan); warn bei jedem Resync, status.message nur bei Aenderung gepatcht. Also found: Changes-Eintraege tragen interne kNN-IDs (Stil der Nachbarn, unveraendert).
+
+2026-10-19 05:42 Live 2026-10-19 Lab-Runde 11 (ocplab, robocop lab-7a71a64): bestanden. Abweichungen #240 (SSH-Wartetext) und #239 (Notiz blieb nach Re-Pin) in 5bfc5e2/7a71a64 behoben. Folgekarte #242.
