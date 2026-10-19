@@ -1032,6 +1032,7 @@ sub _on_node_deleted {
         distribution  => $self->distribution,
         verbose       => $self->verbose,
         reconciler_id => $self->reconciler_id,
+        logger        => $self->_node_logger,
     );
 
     $self->log("$name: deleted, tearing down (phase $phase)");
@@ -1169,6 +1170,7 @@ sub _on_node_event {
             kubeconfig    => OCP::Kubernetes->in_cluster_kubeconfig,
             verbose       => $self->verbose,
             reconciler_id => $self->reconciler_id,
+            logger        => $self->_node_logger,
             %gpu_flags,
             %system_flags,
         );
@@ -1307,6 +1309,15 @@ sub list_ocp_nodes {
 #
 # Helpers
 #
+
+# The logger handed to OCP::Node (k242): its lines carry the timestamp.
+sub _node_logger {
+    my ($self) = @_;
+    return sub {
+        my ($level, $msg) = @_;
+        return $level eq 'warn' ? $self->log_error($msg) : $self->log($msg);
+    };
+}
 
 sub log {
     my ($self, $msg) = @_;

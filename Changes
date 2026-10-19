@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - robocop's `host key of NAME (HOST) not pinned: ...` warning (k242) goes
+      through robocop's own log (timestamped) and only when it first appears
+      or its reason changes, not on every resync; once the key is pinned
+      after such a note, one `host key of NAME (HOST) pinned` line follows.
     - `ocp node add --host NAME` with robocop off checks the host before it
       writes the OCPNode (k238): a name that does not resolve on this machine,
       and without `--nowait` a host that does not answer SSH with the join's

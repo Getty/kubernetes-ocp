@@ -40,6 +40,11 @@ has distribution  => (is => 'ro', default => sub { 'rke2' });
 has registry_cfg  => (is => 'ro');
 has verbose       => (is => 'ro', default => 0);
 
+# Optional coderef ->($level, $msg), level 'warn' or 'info' (k242): robocop
+# hands one that stamps and routes the line like its own log. Unset (the CLI):
+# the line is a plain warn, prefixed '[node] '.
+has logger        => (is => 'ro');
+
 # The apiserver tls-san entries an additional control plane must advertise: the
 # full set of control-plane addresses, so TLS holds against every server and not
 # just police1 (k137, point 1). An arrayref, assembled by the caller from
@@ -610,7 +615,9 @@ sub _pin_unpinned {
             my $err = $@;
             chomp $err;
             warn '[node] could not clear the unpinned note of ' . $self->name . ": $err\n";
+            return;
         };
+        $self->_log_pinned($self->_known_host);
         return;
     }
     my $host = $self->_known_host;
@@ -628,8 +635,8 @@ sub _pin_unpinned {
                         key => $_->{key} } } @scan;
 
     # A message left by an earlier failed attempt goes with the success.
-    my %clear = ($self->cr->{status}{message} // '') =~ /; host key not pinned: /
-        ? (message => 'Node joined and Ready') : ();
+    my $had_note = ($self->cr->{status}{message} // '') =~ /; host key not pinned: /;
+    my %clear = $had_note ? (message => 'Node joined and Ready') : ();
     eval { $self->_patch_status(hostKeys => \@pins, %clear); 1 } or do {
         my $err = $@;
         chomp $err;
@@ -640,7 +647,23 @@ sub _pin_unpinned {
     print STDERR 'Trusted host key of ' . $host . ' (' . $self->name
         . ') on first contact, pinned in status.hostKeys: '
         . join(', ', map { $_->{fingerprint} . ' (' . $_->{type} . ')' } @pins) . "\n";
+    $self->_log_pinned($host) if $had_note;
     return;
+}
+
+# One line through the logger, or a plain warn with the '[node] ' prefix.
+sub _emit {
+    my ($self, $level, $msg) = @_;
+    return $self->logger->($level, $msg) if $self->logger;
+    warn '[node] ' . $msg . "\n";
+    return;
+}
+
+# The host key is pinned after a note said it was not (k242): said once.
+sub _log_pinned {
+    my ($self, $host) = @_;
+    return $self->_emit('info', 'host key of ' . $self->name
+        . (defined $host ? ' (' . $host . ')' : '') . ' pinned');
 }
 
 # A pin attempt that found nothing (k239): the Node stays Ready, the reason
@@ -653,9 +676,10 @@ sub _note_unpinned {
         : OCP::SSH->name_unresolved($err)      ? $self->_name_unresolved_message($host)
         :                                        $err;
     $reason =~ s/\s+\z//;
-    warn '[node] host key of ' . $self->name . ' (' . $host . ') not pinned: ' . $reason . "\n";
     my $msg = 'Node joined and Ready; host key not pinned: ' . $reason;
+    # robocop forks per reconcile, so "already said" lives in status.message.
     return if ($self->cr->{status}{message} // '') eq $msg;
+    $self->_emit('warn', 'host key of ' . $self->name . ' (' . $host . ') not pinned: ' . $reason);
     eval { $self->_patch_status(message => $msg); 1 } or do {
         my $e = $@;
         chomp $e;
