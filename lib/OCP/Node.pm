@@ -768,6 +768,12 @@ sub _install_kubernetes {
             $self->_host_key_changed($host);
             return;
         }
+        # The wait dies with OCP::SSH's finished CLI text for a name that does
+        # not resolve, not ssh's raw resolver error -- so the text itself is
+        # matched too, and replaced by the reconciler's wording (k240).
+        $err = $self->_name_unresolved_message($host) . "\n"
+            if OCP::SSH->name_unresolved($err)
+            || $err eq OCP::SSH->unresolved_message($host);
         $self->_patch_status(phase => 'Failed', message => "SSH not ready: $err");
         return;
     }

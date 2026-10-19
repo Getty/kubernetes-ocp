@@ -31,6 +31,11 @@ our $ERR;
     sub new { my ($c, %a) = @_; bless {%a}, $c }
     sub wait_for_ssh { 1 }
     sub run { +{ exit => 0 } }
+    package FakeSSHUnresolved;
+    our @ISA = ('FakeSSH');
+    # What OCP::SSH->wait_for_ssh dies with on an unresolvable name: the
+    # finished CLI text, not ssh's raw resolver error.
+    sub wait_for_ssh { die OCP::SSH->unresolved_message($_[0]{host}) }
     package FakeRex;
     sub new { my ($c, %a) = @_; bless {%a}, $c }
     sub run_task { die $main::ERR }
@@ -54,6 +59,24 @@ sub install_message {
         status   => { phase => 'Installing', publicIP => 'crag.lab' },
     }, k8s => 'x', ssh_key => 'K', server_url => 'https://cp:9345', join_token => 'T',
        ssh_class => 'FakeSSH', rex_class => 'FakeRex', ($rid ? (reconciler_id => $rid) : ()));
+    no warnings 'redefine';
+    local *OCP::Node::_seed_known_hosts = sub { '/dev/null' };
+    local *OCP::Node::_pin_host_keys    = sub { 1 };
+    $n->_install_kubernetes;
+    my $p = last_patch();
+    return ($p->{phase}, $p->{message});
+}
+
+sub wait_message {
+    my ($rid) = @_;
+    @patches = ();
+    my $n = OCP::Node->from_cr({
+        metadata => { name => 'ghost8', namespace => 'ocp-system' },
+        spec     => { role => 'worker', host => 'crag.lab' },
+        status   => { phase => 'Installing', publicIP => 'crag.lab' },
+    }, k8s => 'x', ssh_key => 'K', server_url => 'https://cp:9345', join_token => 'T',
+       ssh_class => 'FakeSSHUnresolved', rex_class => 'FakeRex',
+       ($rid ? (reconciler_id => $rid) : ()));
     no warnings 'redefine';
     local *OCP::Node::_seed_known_hosts = sub { '/dev/null' };
     local *OCP::Node::_pin_host_keys    = sub { 1 };
@@ -104,6 +127,16 @@ subtest 'robocop: teardown on an unresolvable name' => sub {
     like $msg, qr/ocp node rm w1/, 'way out kept';
 };
 
+# Lab finding on k240: `ocp node add ghost8 --host gibtsnicht.lab` under
+# robocop still read "the lookup failed on this machine" -- the SSH wait dies
+# with OCP::SSH's finished CLI text, which reached status.message verbatim.
+subtest 'robocop: SSH wait on an unresolvable name' => sub {
+    my ($phase, $msg) = wait_message('robocop@robocop-7d9f-abcde');
+    is $phase, 'Failed', 'Failed';
+    like $msg, qr/\ASSH not ready: Name 'crag\.lab' does not resolve/, '"SSH not ready: " prefix kept';
+    robocop_ok($msg, 'wait');
+};
+
 subtest 'CLI: wording unchanged, word for word' => sub {
     my ($phase, $msg) = install_message('cli');
     is $phase, 'Failed', 'Failed';
@@ -115,6 +148,12 @@ subtest 'CLI: wording unchanged, word for word' => sub {
 
     my (undef, $default) = install_message(undef);
     is $default, $want, 'default reconciler_id (cli) is the CLI text';
+
+    my ($wphase, $wmsg) = wait_message('cli');
+    is $wphase, 'Failed', 'wait: Failed';
+    is $wmsg, "SSH not ready: $CLI_TEXT", 'wait: status.message is "SSH not ready: " + the k236 text, exactly as before';
+    my (undef, $wdefault) = wait_message(undef);
+    is $wdefault, "SSH not ready: $CLI_TEXT", 'wait: default reconciler_id (cli) unchanged';
 };
 
 subtest 'OCP::SSH->unresolved_message with one argument is unchanged' => sub {
