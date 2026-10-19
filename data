@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-19T06:21:25Z
+created: 2026-10-19T05:34:20Z
+id: 242
+priority: low
+started: 2026-10-19T05:59:46Z
+status: done
+tags:
+- lab
+- bug
+- robocop
+- logging
+title: 'robocop: #239 not-pinned warning repeats every resync, without timestamp'
+updated: 2026-10-19T06:34:16Z
+---
+
+Lab 2026-10-19 Runde 11 (Notiz 48). While a Ready node's name does not resolve in the cluster, robocop logs the #239 warning `[node] … not pinned: …` on every resync (every 60 s), and the line lacks the timestamp the other robocop log lines carry. status.message is patched only on change (correct), the log is not.
+
+Done when: the warning goes out through the same logger as the other robocop lines (timestamp), and only when the reason changes or first appears (plus, optionally, a reminder at a long interval); test covers two resyncs with the same failure -> one warning.
+
+2026-10-19 lab-folgen-4: committed 2babd71 (lokal, Branch lab-folgen-4). t/242 vorher rot (9 von 11); Suite 188 Dateien/2877 Tests gruen. Node bekommt logger-Callback (Controller reicht log/log_error mit Zeitstempel durch); Dedup ueber status.message, weil robocop pro Reconcile forkt; info-Zeile beim Re-Pin nach Note; kein Erinnerungs-Intervall. Also found: Worktree wurde von origin/main abgezweigt (nicht lokalem main), per reset --hard main korrigiert.
+
+2026-10-19 06:34 Live 2026-10-19 Lab-Runde 12 (robocop lab-2babd71): bestanden. Warnung genau einmal mit Zeitstempel über sechs Reconciles, info 'pinned' einmal nach Re-Pin. Korrektur zu Notiz 48: Der 60-s-Resync überspringt Ready-Nodes; die Wiederholungen kamen aus Watch-Events (inkl. eigenem Status-Patch).
