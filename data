@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-18T16:25:22Z
+created: 2026-10-18T15:57:48Z
+id: 240
+priority: low
+started: 2026-10-18T16:07:37Z
+status: done
+tags:
+- lab
+- bug
+- robocop
+- wording
+title: robocop's does-not-resolve message says 'this machine' for its own pod
+updated: 2026-10-19T05:42:46Z
+---
+
+Lab 2026-10-18 Runde 10 (Notiz 46, #236c). The OCPNode status.message written by robocop reads `… does not resolve: the lookup failed on this machine (DNS or /etc/hosts) …`. For robocop the lookup ran inside its pod, i.e. through the cluster DNS (CoreDNS), not on the operator's machine. The text is the CLI's.
+
+Done when: the message is context-aware: under robocop it says the lookup failed inside the cluster (CoreDNS / robocop pod) and points at adding the name to cluster DNS or using the IP; the CLI wording is unchanged; tests for both.
+
+2026-10-18 lab-folgen-2: committed 06c2fe1 (lokal, Branch lab-folgen-2). t/240 vorher rot; Suite 186 Dateien/2855 Tests gruen.
+
+2026-10-19 05:42 Live 2026-10-19 Lab-Runde 11 (ocplab, robocop lab-7a71a64): bestanden. Abweichungen #240 (SSH-Wartetext) und #239 (Notiz blieb nach Re-Pin) in 5bfc5e2/7a71a64 behoben. Folgekarte #242.
