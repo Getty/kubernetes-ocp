@@ -99,6 +99,9 @@ sub capture (&) {
     sub gpu_enabled  { $_[0]{gpu} }
     sub project_dir  { require Path::Tiny; Path::Tiny->tempdir }
     sub distribution { 'rke2' }
+    # k238: no control-plane address recorded -> the SSH preflight probe of
+    # `node add --host` is skipped; this test is about the GPU Operator, not the probe.
+    sub cluster_status { +{} }
 }
 
 # Runs `ocp node add` down the CLI path to a Ready node, with the GPU Operator

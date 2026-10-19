@@ -16,6 +16,7 @@ use OCP::K8s;
 use OCP::Node;
 use OCP::NodeMeta;
 use OCP::Provider;
+use OCP::SSH;
 
 with 'OCP::Role::Cmd';
 
@@ -497,19 +498,30 @@ sub execute {
 
     $self->_validate_flags($provider_type, $provider_name);
 
+    # Who drives the node decides what happens to a host that cannot be
+    # reached (k238). Asked only with --host: without it --nowait never reads
+    # the Deployment, and the value read here is reused further down, not read
+    # twice.
+    my $robocop_ready;
+    my $has_host = defined $self->host && length $self->host;
+    if ($has_host) {
+        $robocop_ready = $self->_robocop_ready($api);
+
+        # Robocop off: this machine does the join, so what it cannot resolve or
+        # reach fails here, BEFORE the first cluster write -- a refusal leaves
+        # no OCPNode behind. With robocop on the OCPNode stays the request (the
+        # name may resolve only in the cluster, k236) and a failure shows up as
+        # Failed with the message.
+        $self->_preflight_host($provider_type) unless $robocop_ready;
+    }
+
     my $cr = $self->_build_cr($provider_name);
     $api->ensure($cr);
 
     my $key_note = $self->_ssh_keys_note($provider_type);
 
     # robocop reaches the machine by this name from inside the cluster (k236).
-    # Asked only for a name: --nowait without --host never reads the Deployment.
-    my $robocop_ready;
-    my $name_note = $self->_host_name_note($self->host);
-    if (length $name_note) {
-        $robocop_ready = $self->_robocop_ready($api);
-        print STDERR $name_note if $robocop_ready;
-    }
+    print STDERR $self->_host_name_note($self->host) if $robocop_ready;
 
     if ($self->nowait) {
         print $self->name . "\n";
@@ -544,12 +556,75 @@ sub execute {
     return 0;
 }
 
+# Robocop off, `--host` given (k238): look at the host BEFORE the OCPNode is
+# written, so a refusal leaves nothing in the cluster. First the name -- it
+# must resolve on this machine, which is the machine that does the join; an IP
+# literal needs no lookup (same test as _host_name_note) -- then, without
+# --nowait, the SSH probe. --nowait defers every contact with the machine to the
+# join that comes later, so it checks the name and nothing else.
+#
+# A refusal dies with a "\n"-terminated message (OCP::SSH's own text), which
+# bin/ocp prints on STDERR with exit 1. Returns 1 when the host passed.
+sub _preflight_host {
+    my ($self, $provider_type) = @_;
+
+    my $host = $self->host;
+    return 1 unless defined $host && length $host;
+
+    unless ($host =~ /\A\d+\.\d+\.\d+\.\d+\z/ || $host =~ /:/) {
+        die OCP::SSH->unresolved_message($host)
+            unless $self->_resolves_here($host);
+    }
+
+    $self->_host_probe_ssh($host) unless $self->nowait;
+    return 1;
+}
+
+# The SSH probe of _preflight_host: the same wait the join does (OCP::SSH
+# wait_for_ssh), with the key _cli_reconcile will use, so a refused key or an
+# unreachable host is said now and not as a Failed OCPNode. Dies with OCP::SSH's
+# message (unresolved_message / rejection_message / "not reachable").
+#
+# Skipped, not failed, when there is nothing to probe with: no control-plane
+# address recorded means _cli_reconcile gets no key either (it reads the join
+# token off the control plane), and inventing a new error here would turn a
+# state that path tolerates into a refusal. The join then reports as before.
+#
+# The probe trusts host keys into a throwaway known_hosts file: a preflight
+# must not record anything in the project's file (OCP::Node pins the keys on
+# the join), and a changed key is the join's to report.
+sub _host_probe_ssh {
+    my ($self, $host) = @_;
+
+    my $config = $self->_config;
+    return 1 unless $config->cluster_status->{public_ip};
+
+    my $key   = $self->cluster_ssh_key($config, reason => 'ocp node add');
+    my $known = Path::Tiny->tempfile;
+    my $ssh   = OCP::SSH->new(
+        host        => $host,
+        key_file    => $key->path,
+        user        => 'root',
+        known_hosts => "$known",
+        (defined $key->label ? (key_label => $key->label) : ()),
+        ($key->origin eq 'admin' ? (key_purpose => 'admin') : ()),
+    );
+
+    eval { $ssh->wait_for_ssh; 1 } and return 1;
+    my $err = $@;
+    $err = "$err";
+    $err .= "\n" unless $err =~ /\n\z/;
+    die $err;
+}
+
 # The hint for `--host NAME` with robocop on (k236), '' when there is nothing to
 # say: an IP address needs no lookup, anywhere. A name is resolved by robocop in
 # the cluster (CoreDNS, then the node's resolver), not by this machine, so what
 # resolves here proves nothing -- least of all a name only /etc/hosts or a
 # container's --add-host knows, which no pod sees. The CLI-side lookup only
-# picks the wording. No in-cluster test is made.
+# picks the wording. No in-cluster test is made. Only said with robocop on; with
+# it off the name is checked before the OCPNode is written (_preflight_host,
+# k238).
 sub _host_name_note {
     my ($self, $host) = @_;
     return '' unless defined $host && length $host;
@@ -791,6 +866,17 @@ gets no note.
 A name that does not resolve where it is tried is reported as that -- "does not
 resolve ... not a key problem" (L<OCP::SSH/unresolved_message>) -- and not as a
 rejected key.  Use the IP address or a DNS entry the cluster knows.
+
+Without Robocop this machine does the join, so the host is checked B<before> the
+OCPNode is written (k238): the name must resolve here (an IP address is not
+looked up) and, unless C<--nowait> is given, the host must answer SSH with the
+key the join will use.  A failure prints the L<OCP::SSH> message on STDERR, exits
+1 and leaves no OCPNode behind.  With C<--nowait> only the name is checked; the
+SSH contact is part of the join that comes later.  The SSH check is skipped when
+the project records no control-plane address, since no key is known then.  With
+Robocop running the OCPNode stays the request, as above: the name may resolve
+only in the cluster, and a failure is the node's C<Failed> status with the
+message.
 
 =head1 SEE ALSO
 

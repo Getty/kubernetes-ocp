@@ -246,6 +246,14 @@ gpu:
   `wait_for_ssh`/`learn_host_key`, robocop's `status.message`; recogniser
   `OCP::SSH->name_unresolved`). Recommendation: pass the IP, or a DNS entry the
   cluster knows.
+  **Without robocop (CLI path, k238)** the name is checked BEFORE any cluster
+  write: resolution on this machine, then (not with `--nowait`) the usual SSH
+  probe with the join's wait (~120 s). Failure prints "Name 'X' does not
+  resolve: the lookup failed on this machine …" or the SSH error on STDERR,
+  exit 1, and no OCPNode or other object is created (nothing to clean up, no
+  `node rm --keep-machine`). `--nowait` checks resolution only; IPs are never
+  resolved. With robocop on, unchanged: OCPNode as request, STDERR warning,
+  `Failed` with a message if the cluster cannot resolve it.
 - Destroy runs Rex::Rancher's uninstall line over SSH: every RKE2/K3s
   uninstaller present, then `/usr/local/bin/cilium`, `/opt/cni`, `/run/k3s`
   and Cilium's datapath; RKE2/K3s still installed, or Cilium state that

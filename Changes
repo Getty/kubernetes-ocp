@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add --host NAME` with robocop off checks the host before it
+      writes the OCPNode (k238): a name that does not resolve on this machine,
+      and without `--nowait` a host that does not answer SSH with the join's
+      key, is refused on STDERR with exit 1 and leaves no `Failed` OCPNode
+      behind. With robocop running the OCPNode stays the request.
     - `ocp keys operator add` and `operator rm` list every re-encrypted file
       in their `[ok] Re-encrypted with a new data key:` line, keys.yaml
       included (k241); the line and the rotation message of `operator rm`

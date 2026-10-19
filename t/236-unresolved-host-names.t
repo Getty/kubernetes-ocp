@@ -218,7 +218,7 @@ subtest '4: a teardown that cannot resolve the name: status.message says so' => 
             if $kind eq 'Deployment';
         return undef;
     }
-    sub ensure { $_[1] }
+    sub ensure { my ($s, $o) = @_; push @{ $s->{calls} }, [ ensure => $o ]; $o }
 }
 my $ssh_provider = {
     metadata => { name => 'ssh-a', namespace => 'ocp-system', annotations => {} },
@@ -232,7 +232,7 @@ sub add_host {
     my $hosts = path(tempdir(CLEANUP => 1), 'hosts');
     $hosts->spew_utf8($o{hosts_file} // "127.0.0.1 localhost\n");
     my $add = OCP::Cmd::Node::Add->new(k8s => $k8s, name => 'w1', host => $o{host}, nowait => 1);
-    my ($out, $err) = ('', '');
+    my ($out, $err, $died) = ('', '', '');
     {
         no warnings 'redefine';
         local *OCP::Cmd::Node::Add::_resolves_here   = sub { $o{resolves} ? 1 : 0 };
@@ -242,9 +242,9 @@ sub add_host {
         open my $efh, '>', \$err or die $!;
         local *STDOUT = $ofh;
         local *STDERR = $efh;
-        $add->execute([], []);
+        eval { $add->execute([], []); 1 } or $died = $@;
     }
-    return ($out, $err, $k8s);
+    return ($out, $err, $k8s, $died);
 }
 
 subtest '5: a name that does not resolve here: hint on STDERR with robocop' => sub {
@@ -273,8 +273,14 @@ subtest '5: no hint for an IP address or without robocop' => sub {
     unlike $err_ip, qr/inside the cluster/, 'IPv4: nothing to say';
     my (undef, $err_v6) = add_host(host => 'fd00::9', robocop => 1, resolves => 0);
     unlike $err_v6, qr/inside the cluster/, 'IPv6: nothing to say';
-    my (undef, $err_nr) = add_host(host => 'crag.lab', robocop => 0, resolves => 0);
-    unlike $err_nr, qr/inside the cluster/, 'robocop not ready: nothing to say';
+    # k238: without robocop nothing resolves the name but this machine, so the
+    # call now aborts in the preflight (before ensure; t/238 pins the details).
+    # What stays pinned here: the cluster hint is not printed without robocop.
+    my (undef, $err_nr, $k8s_nr, $died) = add_host(host => 'crag.lab', robocop => 0, resolves => 0);
+    like $died, qr/does not resolve.*on this machine/s, 'robocop not ready: aborts, name unresolved on this machine';
+    unlike $err_nr, qr/inside the cluster/, 'robocop not ready: no cluster hint';
+    unlike $died, qr/inside the cluster/, 'robocop not ready: no cluster hint in the error either';
+    ok !(grep { $_->[0] eq 'ensure' } @{ $k8s_nr->{calls} }), 'ensure never called';
 };
 
 done_testing;

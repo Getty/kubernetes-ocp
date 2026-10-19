@@ -337,6 +337,10 @@ sub node_add {
         no warnings 'redefine';
         local *OCP::Cmd::Node::Add::_robocop_ready = sub { 0 };
         local *OCP::Cmd::Node::Add::_cli_reconcile = sub { 1 };
+        # k238: this test is about the key note, not the host preflight (name
+        # resolution + SSH probe), so the preflight is made to pass.
+        local *OCP::Cmd::Node::Add::_resolves_here = sub { 1 };
+        local *OCP::Cmd::Node::Add::_host_probe_ssh = sub { 1 };
         open my $fh,  '>', \$out  or die $!;
         open my $efh, '>', \$diag or die $!;
         local *STDOUT = $fh;

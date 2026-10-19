@@ -142,6 +142,18 @@ address gets no warning. A name that does not resolve is reported as that
 warning, in the SSH error and in the node's `status.message` — not as a
 rejected key. Use the IP address, or a DNS entry the cluster knows.
 
+Without robocop, `ocp node add --host NAME` drives the join from the CLI and
+checks the name **before it writes anything to the cluster**: first it resolves
+the name on this machine, then (unless `--nowait`) it runs the usual SSH probe,
+waiting as long as the join does (about 120 s). If either fails, the command
+prints `Name 'X' does not resolve: the lookup failed on this machine …` or the
+SSH error on STDERR and exits 1. No `OCPNode` or any other object has been
+created, so there is nothing to clean up and no `node rm --keep-machine` is
+needed. With `--nowait` only the resolution is checked. IP addresses are not
+resolved. With robocop on nothing changes: the name can only resolve inside the
+cluster, so the `OCPNode` is written as a request, the warning goes to STDERR,
+and the node goes `Failed` with a message if the cluster cannot resolve it.
+
 ## Pinned versions
 
 `kubernetes.version: ''` and every component version resolve to what this
