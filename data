@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-18T16:25:24Z
+created: 2026-10-18T15:57:49Z
+id: 241
+priority: low
+started: 2026-10-18T16:07:39Z
+status: done
+tags:
+- lab
+- bug
+- keys
+- wording
+title: 'keys operator add/rm: [ok] Re-encrypted line omits keys.yaml'
+updated: 2026-10-19T05:42:48Z
+---
+
+Lab 2026-10-18 Runde 10 (Notiz 47, #237c, in a project copy). `ocp keys operator add` / `operator rm` print `[ok] Re-encrypted with a new data key: secrets.yaml, kubeconfig.yaml`, while keys.yaml is re-encrypted as well (verified: the recipient is gone from all three) and the rotation message correctly names three files. `recipients rm` already prints all three.
+
+Done when: the [ok] line of operator add/rm lists every re-encrypted file, derived from the same list the rotation message uses (one source, not two); test asserts the line for add, rm and recipients rm.
+
+2026-10-18 lab-folgen-2: committed 9ba4e55 (lokal, Branch lab-folgen-2). t/241 vorher rot (add, rm); recipients rm war schon korrekt. Neu Secrets::sops_file_names als eine Dateiliste; t/237 angepasst. Suite 186/2855 gruen.
+
+2026-10-19 05:42 Live 2026-10-19 Lab-Runde 11 (ocplab, robocop lab-7a71a64): bestanden. Abweichungen #240 (SSH-Wartetext) und #239 (Notiz blieb nach Re-Pin) in 5bfc5e2/7a71a64 behoben. Folgekarte #242.
