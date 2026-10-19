@@ -601,7 +601,18 @@ sub _known_host {
 sub _pin_unpinned {
     my ($self) = @_;
     return if ($self->role // '') eq 'control-plane';
-    return if $self->host_keys;
+    if ($self->host_keys) {
+        # Pinned by someone else -- the CLI's trust on first use -- after a
+        # failed attempt here left its note (k239): the note goes, once.
+        return unless ($self->cr->{status}{message} // '')
+            =~ /\ANode joined and Ready; host key not pinned/;
+        eval { $self->_patch_status(message => 'Node joined and Ready'); 1 } or do {
+            my $err = $@;
+            chomp $err;
+            warn '[node] could not clear the unpinned note of ' . $self->name . ": $err\n";
+        };
+        return;
+    }
     my $host = $self->_known_host;
     return unless defined $host;
 

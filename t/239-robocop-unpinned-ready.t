@@ -138,4 +138,41 @@ subtest 'a node with pins costs no scan and says nothing' => sub {
     ok !(grep { /not pinned/ } @warns), 'no warning';
 };
 
+# Lab finding on k239: robocop noted the unpinned key, then the CLI pinned it
+# (TOFU via `ocp ssh --node crag`). _pin_unpinned returns early on pins, and
+# only robocop's own successful pin cleared the note -- so status.message kept
+# saying "host key not pinned" next to three pins. A node with pins clears that
+# note (and only that note), once.
+my $PINS = [ { type => 'ssh-ed25519', key => $ED, fingerprint => 'SHA256:x' } ];
+my $NOTE = "Node joined and Ready; host key not pinned: Name 'crag.lab' does not resolve: the lookup failed inside the cluster";
+
+subtest 'pinned elsewhere: a stale "not pinned" note clears, once, without a scan' => sub {
+    my $n = node(status => { hostKeys => $PINS, message => $NOTE });
+    my @warns = reconcile_with($n, sub { die $RESOLVER });
+    is_deeply \@scans, [], 'no scan';
+    my $p = patched();
+    is $p->{message}, 'Node joined and Ready', 'note cleared';
+    ok !exists $p->{hostKeys}, 'pins not rewritten';
+    ok !(grep { /not pinned/ } @warns), 'no warning';
+    is $n->phase, 'Ready', 'Ready';
+
+    # next resync: nothing left to clear, nothing written
+    my $m = node(status => { hostKeys => $PINS, message => 'Node joined and Ready' });
+    reconcile_with($m, sub { die $RESOLVER });
+    ok !exists patched()->{message}, 'plain message: no write per resync';
+};
+
+subtest 'pinned: any other message is left alone' => sub {
+    my $n = node(status => { hostKeys => $PINS, message => 'Rex task failed: something earlier' });
+    reconcile_with($n, sub { die $RESOLVER });
+    ok !exists patched()->{message}, 'not touched';
+};
+
+subtest 'a control plane with pins and the note: untouched (k235 skip)' => sub {
+    my $n = node(role => 'control-plane', status => { hostKeys => $PINS, message => $NOTE });
+    reconcile_with($n, sub { die $RESOLVER });
+    is_deeply \@scans, [], 'no scan';
+    ok !exists patched()->{message}, 'message not touched';
+};
+
 done_testing;
