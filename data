@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-19T05:19:27Z
+created: 2026-10-18T15:57:47Z
+id: 238
+priority: low
+started: 2026-10-19T04:45:44Z
+status: done
+tags:
+- lab
+- robocop
+title: 'node add: unresolvable --host leaves a Failed OCPNode behind'
+updated: 2026-10-19T05:42:45Z
+---
+
+Lab 2026-10-18 Runde 10 (#236a, Befund B). `ocp node add --host gibtsnicht.lab` (CLI path) prints the #236 message (`Name 'gibtsnicht.lab' does not resolve: the lookup failed on this machine …`), but the OCPNode is already created and stays in `Failed` (`Failed is terminal; to retry, rem…`). "Nothing changed" holds for the machine, not for the cluster. Cleanup needed `ocp node rm --keep-machine` (ghost5, ghost6).
+
+Maintainer question:
+(a) CLI path: resolve (and SSH-probe) the host BEFORE creating the OCPNode; with robocop on, the OCPNode stays the request (the name may resolve only in the cluster, #236b) and `Failed` with the message is right.
+(b) Leave as is: Failed is terminal by design, the message already names `node rm --keep-machine`.
+Recommendation: (a). It matches how the other preflight refusals of node add behave (nothing written before they pass).
+
+Done when: decided; for (a) the CLI path writes no OCPNode for a name that does not resolve locally when robocop is off, test covers both paths.
+
+2026-10-19 04:22 Entscheidung Getty 2026-10-19: (a). CLI-Pfad (robocop aus) prüft Auflösung (und SSH-Probe) vor dem Anlegen des OCPNode; mit robocop bleibt der OCPNode die Anfrage, Failed mit Meldung ist dort richtig.
+
+2026-10-19 lab-folgen-3: committed 7f8b6e6 (lokal, Branch lab-folgen-3). t/238 vorher rot (4 von 7); Suite 187 Dateien/2862 Tests gruen. Also found: (1) ohne --nowait wartet der Preflight bis ~120 s (wait_for_ssh wie der Join), bevor er einen unerreichbaren Host abweist; eine einzelne is_reachable-Probe waere schneller, wartet aber nicht auf einen bootenden Host - Maintainer-Entscheidung. (2) Secure-Mode: PIN2-Abfrage kann frueher kommen (cluster_ssh_key, einmal pro Kommando gecacht). (3) Ohne cp_ip im Status wird die SSH-Probe uebersprungen (wie _cli_reconcile). t/209, t/220, t/236 fixierten die alte Reihenfolge und wurden angepasst.
+
+2026-10-19 05:42 Live 2026-10-19 Lab-Runde 11 (ocplab, robocop lab-7a71a64): bestanden. Abweichungen #240 (SSH-Wartetext) und #239 (Notiz blieb nach Re-Pin) in 5bfc5e2/7a71a64 behoben. Folgekarte #242.
