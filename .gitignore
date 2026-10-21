@@ -28,6 +28,9 @@
 .claude/todos/
 .claude/projects/
 
+# Claude Code worktrees (isolated agents) -- never commit
+/.claude/worktrees/
+
 # AGENTS.md ignored - our-codex
 AGENTS.md
 
