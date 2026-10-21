@@ -79,6 +79,6 @@ ocp destroy          # echte Server löschen
 
 ## Verwandte Projekte (Siblings, eigene Repos + Boards)
 
-`~/dev/perl/`: `p5-www-hetzner`, `p5-crypt-age`, `p5-file-sops`,
+Nachbar-Repos (`../`): `p5-www-hetzner`, `p5-crypt-age`, `p5-file-sops`,
 `p5-net-async-kubernetes`, `io-k8s-p5`, `kubernetes-rest`. Cross-Repo-Arbeit läuft
 über karr-Tickets auf dem Board des jeweiligen Repos, nie als Direkt-Edit.
