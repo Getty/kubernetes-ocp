@@ -86,7 +86,7 @@ registry:
 ## Installation Flow (Rex)
 
 Since k155 the Rexfile tasks are thin wrappers around **Rex::Rancher** and
-**Rex::GPU** (pinned 0.003 in cpanfile, still unreleased/vendored); what stays
+**Rex::GPU** (both from CPAN, floors in cpanfile, exact versions in cpanfile.snapshot); what stays
 in the Rexfile is OCP's own, each gap marked with the library card that would
 move it.
 

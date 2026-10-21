@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Dependencies move to the releases of 2026-10-21, all from CPAN, so the
+      image vendors nothing: cpanfile raises the floors to IO::K8s 1.111,
+      Kubernetes::REST 1.110, Net::Async::Kubernetes 0.011, File::SOPS 0.005
+      and Rex::GPU 0.005 (Rex::LibSSH 0.005, Rex::Rancher 0.004 and
+      WWW::Hetzner 0.102 were already asked for), and cpanfile.snapshot pins
+      exactly these eight; no other distribution moves.
     - robocop's `host key of NAME (HOST) not pinned: ...` warning (k242) goes
       through robocop's own log (timestamped) and only when it first appears
       or its reason changes, not on every resync; once the key is pinned
