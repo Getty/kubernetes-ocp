@@ -11,10 +11,27 @@ House rules, Delegations-Lock, Hazards: `.claude/rules/ocp-rules.md` (auto-loade
 
 ## Delegation
 
-Verhaltensrelevanten Code an den passenden Agenten delegieren. Volle Tabelle + Lock:
+Verhaltensrelevanten Code an den passenden Agenten delegieren. Lock und Lane-Grenzen:
 `.claude/rules/ocp-rules.md`. Agents bekommen ihre Skills via `briefing.skills`
 force-geladen (siehe `.claude/agents/`); der Main-Agent delegiert, statt sie
 selbst zu laden.
+
+| Task | Agent |
+|---|---|
+| Eingabe-Validierung, `OCP::Choices`, `option(...)` | `ocp-choices-worker` |
+| Secrets/Keys, `OCP::Secrets`, `OCP::Keys`, age/SOPS/PIN | `ocp-secrets-worker` |
+| Zustandsmaschine, `OCP::Config`, `OCP::Drift`, `OCP::Node` | `ocp-state-worker` |
+| Provider, Hetzner/Local/SSH-Provisioning, `OCP::Rex` | `ocp-provider-worker` |
+| `ocp init/apply/update/deploy-*`, Dispatcher `bin/ocp` | `ocp-apply-worker` |
+| `ocp destroy` | `ocp-destroy-worker` |
+| `ocp status` / `ocp version` | `ocp-status-worker` |
+| robocop-Controller, IO::Async, Reconciliation | `ocp-robocop-worker` |
+| `share/`, Rexfile, Cilium/RKE2/Registry/GPU | `ocp-infra-worker` |
+| Übergreifend oder nicht zuordenbar | `ocp-worker` (Default) |
+| Tests in `t/` | `ocp-test-writer` |
+| POD und Prosa-Dokumente | `ocp-doc-writer` |
+| ADR in `docs/adr/` | `ocp-adr-auditor` |
+| Commits, `Changes`, Karte → done, Release-Audit | `ocp-release-manager` |
 
 ## Wissens-Landkarte (Skills in `.claude/skills/`)
 
