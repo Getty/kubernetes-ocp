@@ -176,9 +176,11 @@ subtest 'CI builds the same list and hands it to both image jobs' => sub {
     }
 };
 
-subtest 'cpanfile: IO::K8s floor 1.110 (k221, k196 fix)' => sub {
-    ok $root->child('cpanfile')->slurp_utf8 =~ m{^requires 'IO::K8s', '1\.110';$}m,
-        'requires IO::K8s 1.110';
+subtest 'cpanfile: IO::K8s floor at least 1.110 (k221, k196 fix)' => sub {
+    my ($floor) = $root->child('cpanfile')->slurp_utf8
+        =~ m{^requires 'IO::K8s', '([0-9.]+)';$}m;
+    ok defined $floor && $floor >= 1.110,
+        'requires IO::K8s 1.110 or newer (' . ($floor // 'none') . ')';
 };
 
 done_testing;
