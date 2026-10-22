@@ -139,8 +139,14 @@ RUN if [ -s vendor/ORDER ]; then \
  && rm -rf ~/.perl-cpm/ /tmp/*
 
 # Install all dependencies from CPAN
+#
+# --configure-timeout: cpm gives a Makefile.PL 60s by default. IO-Tty's symbol
+# probe compiles one test program per constant and needs longer when
+# $(nproc) workers share a slow builder (rootless Podman on reuben timed out
+# twice, 2026-10-22).
 RUN cpm install --cpanfile=./cpanfile --snapshot=./cpanfile.snapshot \
   --workers=$(nproc) --local-lib-contained=$PERL_LOCAL_LIB_ROOT \
+  --configure-timeout=600 \
   --show-build-log-on-failure && rm -rf ~/.perl-cpm/ /tmp/*
 
 # Generate VERSION ------------------------------------------------------------
