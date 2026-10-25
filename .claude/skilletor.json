@@ -1,11 +1,23 @@
 {
-  "targets": ["claude"],
+  "targets": [
+    "claude"
+  ],
   "sources": {
-    "getty":           { "git": "https://github.com/Getty/skills" },
-    "author-getty":    { "git": "https://github.com/Getty/p5-dist-zilla-pluginbundle-author-getty" },
-    "karr":            { "git": "https://github.com/Getty/karr" },
-    "io-k8s-p5":       { "git": "https://github.com/pplu/io-k8s-p5" },
-    "kubernetes-rest": { "git": "https://github.com/pplu/kubernetes-rest" }
+    "getty": {
+      "git": "https://github.com/Getty/skills"
+    },
+    "author-getty": {
+      "git": "https://github.com/Getty/p5-dist-zilla-pluginbundle-author-getty"
+    },
+    "karr": {
+      "git": "https://github.com/Getty/karr"
+    },
+    "io-k8s-p5": {
+      "git": "https://github.com/pplu/io-k8s-p5"
+    },
+    "kubernetes-rest": {
+      "git": "https://github.com/pplu/kubernetes-rest"
+    }
   },
   "install": {
     "skills": [
@@ -34,6 +46,9 @@
       "io-k8s-core@io-k8s-p5",
       "perl-io-k8s-kubernetes-classes@io-k8s-p5",
       "perl-kubernetes-rest@kubernetes-rest"
+    ],
+    "bundles": [
+      "getty-house@getty"
     ]
   }
 }

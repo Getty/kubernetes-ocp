@@ -1,87 +1,96 @@
 # OCP House Rules
 
-Apply to every task in this repository unless explicitly overridden. Bias: caution over speed on
-non-trivial work. Loaded automatically at launch (same priority as `CLAUDE.md`). Subagents get their
-conventions from the skills force-loaded via `briefing.skills` — this file is for the orchestrating
-agent. Skill content is never restated here: the agents get the skills force-loaded via
-`briefing.skills`, `.claude/agents/` defines which agent briefs which.
+The shared house rules come from skilletor — bundle `getty-house@getty`: engineering
+discipline, the delegation lock, the publish gate, karr coordination. They load as
+`.claude/rules/.local.*.md`; if they are missing, run `skilletor sync` and publish nothing
+until they load. This file adds what is true only here, and wins where it differs.
 
-## Engineering discipline
+## What this repo is
 
-1. **Think before coding** — State assumptions; ask rather than guess. Push back when a simpler approach exists. Stop when confused; name what's unclear.
-2. **Simplicity first, surgically applied** — Minimum code that solves the problem, nothing speculative. Touch only what you must; don't "improve" adjacent code.
-3. **Goal-driven execution** — Define success criteria, loop until verified.
-4. **Surface conflicts, don't average them** — Contradicting patterns: pick one (more recent / more tested), explain why, flag the other. Don't blend.
-5. **Read before you write** — Before new code, read `OCP::Config`, `OCP::Node` and the provider role you're about to touch. Spec/status, the state machine and the lease mechanics are one mechanism; "looks orthogonal" is dangerous here.
-6. **Tests verify intent, not just behavior** — Reproduce a bug before fixing it; leave the regression test behind.
-7. **A red test is a claim before it is a failure** — Before changing code to turn a test green, say what the test asserts and whether your fix keeps that claim or replaces it.
-8. **Checkpoint and fail loud** — Summarize done / verified / left after each significant step. "Done" is wrong if anything was skipped silently.
-9. **Match the codebase's conventions, even if you disagree** — Conformance > taste.
+OCP — Omni Control Plane: one command, one config file, a complete Kubernetes cluster
+(RKE2/K3s on Hetzner), packaged as a Perl distribution and shipped as a Docker image. Two
+components: the `ocp` CLI and the in-cluster `robocop` controller. Read first: `OCP::Config`,
+`OCP::Node` and the provider role you're about to touch — spec/status, the state machine and
+the lease mechanics are one mechanism; "looks orthogonal" is dangerous here.
 
-## Delegation
+## Agent team
 
-Depends on whether the Agent/Task tool is available to you.
+| Task | Agent |
+|---|---|
+| Input validation, `OCP::Choices`, `option(...)`, `_validate_*` | `ocp-choices-worker` |
+| Secrets/Keys: `OCP::Secrets`, `OCP::Keys`, `OCP::ClusterKey`, age/SOPS/PIN | `ocp-secrets-worker` |
+| State machine: `OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions` | `ocp-state-worker` |
+| Provider base + roles, Hetzner/Local/SSH provisioning, `OCP::Rex` | `ocp-provider-worker` |
+| `ocp init/apply/update/deploy-image/deploy-robocop`, `OCP::Cmd::Apply/*`, `bin/ocp` dispatcher | `ocp-apply-worker` |
+| `ocp destroy`, `OCP::Cmd::Destroy.pm` | `ocp-destroy-worker` |
+| `ocp status`/`ocp version`, `OCP::Cmd::Status.pm`, `OCP::Cmd::Version.pm` | `ocp-status-worker` |
+| robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
+| share/, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
+| Cross-cutting or not assignable elsewhere | `ocp-worker` (default) |
+| Write or extend tests in `t/` | `ocp-test-writer` |
+| POD and prose docs | `ocp-doc-writer` |
+| Commits, `Changes`, card → done, pre-release audit | `ocp-release-manager` |
+| ADR backfill/audit in `docs/adr/` | `ocp-adr-auditor` |
+| Read-only research, audit, gap analysis | the narrowest domain worker ("read-only, change nothing") |
 
-- **You can spawn subagents** (orchestrating main agent): Do NOT touch behavior-relevant code yourself — delegate. Your lane: coordinate, inspect, plan, review diffs, run tests, edit `Changes`/`README`. When in doubt, delegate. Why: only the `ocp-*` agents get their skills force-loaded via `briefing.skills`; you get no briefing and would touch the spec/status seam with too little context.
+Behavior-relevant = everything under `lib/` and `bin/`, `share/` (templates + Rexfile), and
+the tests. Prose in `README.md` and `Changes` bullets are not.
 
-  | Task | Agent |
-  |---|---|
-  | Input validation, `OCP::Choices`, `option(...)`, `_validate_*` | `ocp-choices-worker` |
-  | Secrets/Keys: `OCP::Secrets`, `OCP::Keys`, `OCP::ClusterKey`, age/SOPS/PIN | `ocp-secrets-worker` |
-  | State machine: `OCP::Config`, `OCP::Drift`, `OCP::Node`, `OCP::Versions` | `ocp-state-worker` |
-  | Provider base + roles, Hetzner/Local/SSH provisioning, `OCP::Rex` | `ocp-provider-worker` |
-  | `ocp init/apply/update/deploy-image/deploy-robocop`, `OCP::Cmd::Apply/*`, `bin/ocp` dispatcher | `ocp-apply-worker` |
-  | `ocp destroy`, `OCP::Cmd::Destroy.pm` | `ocp-destroy-worker` |
-  | `ocp status`/`ocp version`, `OCP::Cmd::Status.pm`, `OCP::Cmd::Version.pm` | `ocp-status-worker` |
-  | robocop controller, IO::Async, reconciliation loop | `ocp-robocop-worker` |
-  | share/, Rexfile, Cilium/RKE2/registry/GPU stack | `ocp-infra-worker` |
-  | Cross-cutting or not assignable elsewhere | `ocp-worker` (default) |
-  | Write or extend tests in `t/` | `ocp-test-writer` |
-  | POD and prose docs | `ocp-doc-writer` |
-  | Commits, `Changes`, card → done, pre-release audit | `ocp-release-manager` |
-  | ADR backfill/audit in `docs/adr/` | `ocp-adr-auditor` |
+## Release
 
-- **You cannot spawn subagents** (you ARE an `ocp-*` agent): the lock does not apply — implement, refactor, debug and test per these rules.
+`make test` / `make build` / `dzil build` are fine anytime. The release commands that need the
+maintainer's go-ahead here: the dzil release, `make docker-push`, `make docker-release` — even
+if a plan lists "release" as the next step.
 
-Behavior-relevant = everything under `lib/` and `bin/`, `share/` (templates + Rexfile), and the tests. Prose in `README.md` and `Changes` bullets are not.
+## Deviations from the house rules
 
-**Only `ocp-release-manager` commits.** A worker leaves a commit-ready tree and hands its card to `review`; you then dispatch `ocp-release-manager` to cut the commit and close the card.
-
-## Coordination — karr board (always in scope)
-
-Ticket coordination is the orchestrating agent's job, so `karr` is always in scope — you never need to ask or wait to touch the board. But "always in scope" is not "never read the docs": **load the `kanban-issues-karr-coordination` skill before you write anything to a card or a commit** — the conventions live only there, not in this file. The one that bites hardest, stated here so it cannot be missed: **a karr id is written `kNN`, never a bare `#NN`** — in commit subjects, card bodies, anywhere the text travels, because a Git forge resolves `#NN` against its *own* issue tracker, a different thing. Routine reads (`karr list`, `karr show`) need no ceremony. Git-native kanban; state lives in `refs/karr/*` in this repo. Sibling distributions (io-k8s-p5, kubernetes-rest, …) have their own boards — cross-repo work is a ticket on the other repo's board, never a direct edit there.
-
-- `karr list --compact` / `karr board` — open work · `karr show ID` — detail
-- `karr create "Title" --priority high --tags a,b --body '…'` · `karr edit ID -a "note"` · `karr move ID in-progress --claim NAME` — full surface: skill `kanban-issues-karr-coordination`
-
-**Serialize board mutations when fanning out** — parallel implementation is fine, but collect the results and then loop `karr move`/`handoff`/`sync` sequentially.
-
-## Release & publish — never without permission
-
-`make test` / `make build` / `dzil build` are fine anytime. STRICTLY forbidden without the maintainer's explicit go-ahead: `dzil release`, `make docker-push`, `make docker-release` — even if a plan lists "release" as the next step.
+- **Load skill `kanban-issues-karr-coordination` before you write anything to a card or a
+  commit** — the conventions live only there. Routine reads (`karr list`, `karr show`) need no
+  ceremony.
+- **A karr id is written `kNN`, never a bare `#NN`** — in commit subjects, card bodies,
+  anywhere the text travels; a Git forge resolves `#NN` against its own issue tracker.
 
 ## Hazards specific to this repo
 
-- **`make smoke` bootstraps against a REAL machine and wipes its cluster** (`xt/smoke.sh`, needs `SMOKE_HOST`). Human-triggered only — never run it, never move its concerns into `t/`.
-- **`ocp apply`/`ocp destroy` against a real project dir touches real infrastructure** (creates/deletes paid Hetzner servers). Only ever run `ocp` inside tests' temp dirs or on explicit instruction with a named target.
-- **Toolchain is Docker-first** — never `carton install`/`cpm` on the host; snapshot via `make snapshot`, missing Docker targets get added, not worked around. Host runs pollute host CPAN state and produce inconsistent results.
-- **No kubectl in any code path** — K8s access is Kubernetes::REST/IO::K8s only; kubectl in the image is for human debugging.
-- **Encrypted files are meant to be committed** (`keys.yaml`, `secrets.yaml`, `age.key.enc`, `kubeconfig.yaml` — SOPS/age). `.ocp/` (decrypted state) is gitignored and must stay out.
+- **`make smoke` bootstraps against a REAL machine and wipes its cluster** (`xt/smoke.sh`,
+  needs `SMOKE_HOST`). Human-triggered only — never run it, never move its concerns into `t/`.
+- **`ocp apply`/`ocp destroy` against a real project dir touches real infrastructure**
+  (creates/deletes paid Hetzner servers). Only ever run `ocp` inside tests' temp dirs or on
+  explicit instruction with a named target.
+- **Toolchain is Docker-first** — never `carton install`/`cpm` on the host; snapshot via
+  `make snapshot`, missing Docker targets get added, not worked around. Host runs pollute host
+  CPAN state and produce inconsistent results.
+- **No kubectl in any code path** — K8s access is Kubernetes::REST/IO::K8s only; kubectl in the
+  image is for human debugging.
+- **Encrypted files are meant to be committed** (`keys.yaml`, `secrets.yaml`, `age.key.enc`,
+  `kubeconfig.yaml` — SOPS/age). `.ocp/` (decrypted state) is gitignored and must stay out.
 
-Both invariants behind the middle two bullets are written down in skill `ocp-core` ("Hard invariants").
+Both invariants behind the middle two bullets are written down in skill `ocp-core` ("Hard
+invariants").
 
 ## Output channels — STDOUT vs STDERR
 
-Jedes `ocp`-Kommando hat zwei Ausgabekanäle mit getrennten Aufgaben. Wer mischt, macht die Pipe kaputt — die Regel existiert genau dafür.
+Every `ocp` command has two output channels with separate jobs. Mixing them breaks the pipe —
+that is exactly why the rule exists.
 
-- **STDOUT ist die Nutzlast** (Ergebnis) oder der **Fortschrittsbericht** (Rollout, Apply-Erzählung), den ein Mensch liest oder eine Maschine weiterverarbeitet.
-- **STDERR ist alles, was schiefging**, samt Diagnose. Eine Fehlermeldung ohne Diagnose verstößt ebenso wie eine Diagnose ohne Fehler (Wartungsrauschen auf STDOUT).
-- **Maschinenlesbare Kommandos** (`keys show`, `kubeconfig`, künftige Maschinen-Schnittstellen) geben **ausschließlich** die Nutzlast auf STDOUT aus. Diagnose strikt auf STDERR. Anders lässt sich nicht sauber nach `authorized_keys` oder in einen Parser pipen.
+- **STDOUT is the payload** (the result) or the **progress report** (rollout, apply narrative)
+  that a human reads or a machine processes further.
+- **STDERR is everything that went wrong**, with its diagnosis. An error message without a
+  diagnosis violates the rule just as much as a diagnosis without an error (maintenance noise
+  on STDOUT).
+- **Machine-readable commands** (`keys show`, `kubeconfig`, future machine interfaces) print
+  **only** the payload on STDOUT; diagnostics strictly on STDERR. Otherwise the output cannot be
+  piped cleanly into `authorized_keys` or a parser.
 
-Präzedenzfall: `ocp keys show` trennt seit #84 bewusst — Schlüsselmaterial auf STDOUT, alles andere auf STDERR. Diese Regel ist die Verallgemeinerung dessen.
+Precedent: since k84 `ocp keys show` deliberately separates them — key material on STDOUT,
+everything else on STDERR. This rule generalizes that.
 
-Ausnahmen und Streitfälle gehören ins Issue, nicht in eine stillschweigende Ausnahme. Jede Abweichung kostet Begründung.
+Exceptions and disputed cases belong in a ticket, not in a silent exception. Every deviation
+needs a justification.
 
 ## Perl specifics — reference, don't restate
 
-Module loading, Moo patterns, cpanfile pinning and house style live in skills `getty-perl-core` / `getty-perl-moo` (force-loaded for `ocp-*` agents). The split between the CLI and robocop, the stack decisions and the hard invariants live in skill `ocp-core`. Do not duplicate that content here.
+Module loading, Moo patterns, cpanfile pinning and house style live in skills `getty-perl-core`
+/ `getty-perl-moo` (force-loaded for `ocp-*` agents). The split between the CLI and robocop,
+the stack decisions and the hard invariants live in skill `ocp-core`. Do not duplicate that
+content here.

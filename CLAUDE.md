@@ -7,12 +7,13 @@ OCPNode/OCPNodeProvider CRDs).
 
 Architektur, CRDs, Modul-Map, Spec/Status-Semantik: **Skill `ocp-core`**.
 CLI-Befehle, `ocp.yaml`-Schema, Provider-Modi: **Skill `ocp-usage`**.
-House rules, Delegations-Lock, Hazards: `.claude/rules/ocp-rules.md` (auto-loaded).
+Shared house rules (Delegations-Lock, Publish-Gate, karr): skilletor-Bundle `getty-house@getty`;
+was nur hier gilt, Lanes, Hazards: `.claude/rules/ocp-rules.md` (auto-loaded).
 
 ## Delegation
 
-Verhaltensrelevanten Code an den passenden Agenten delegieren. Lock und Lane-Grenzen:
-`.claude/rules/ocp-rules.md`. Agents bekommen ihre Skills via `briefing.skills`
+Verhaltensrelevanten Code an den passenden Agenten delegieren. Der Lock ist Shared House
+Rule (Bundle `getty-house@getty`), die Lane-Grenzen stehen in `.claude/rules/ocp-rules.md`. Agents bekommen ihre Skills via `briefing.skills`
 force-geladen (siehe `.claude/agents/`); der Main-Agent delegiert, statt sie
 selbst zu laden.
 
