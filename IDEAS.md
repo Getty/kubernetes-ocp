@@ -1,10 +1,10 @@
 # IDEAS
 
-Sammlung von Ideen die noch durchgespielt werden müssen.
+Collection of ideas that still need to be played through.
 
-## Config: `control` statt `cps`, kein `single` Flag
+## Config: `control` instead of `cps`, no `single` flag
 
-Aktuell:
+Currently:
 
 ```yaml
 name: mycluster
@@ -14,18 +14,18 @@ cps:
   serverType: cx32
 ```
 
-Problem: `single: true` ist redundant und `cps` ist kryptisch.
+Problem: `single: true` is redundant and `cps` is cryptic.
 
-Idee: `control` als Key. Wenn direkt Properties drin stehen = single node. Wenn eine Liste drin steht = multi control plane.
+Idea: `control` as the key. If properties sit directly inside = single node. If a list sits inside = multi control plane.
 
 ```yaml
-# Single Node (Properties direkt)
+# Single Node (properties directly)
 name: mycluster
 control:
   provider: hetzner
   serverType: cx32
 
-# Multi Control Plane (Liste)
+# Multi Control Plane (list)
 name: mycluster
 control:
   - provider: hetzner
@@ -39,12 +39,12 @@ control:
     host: 10.0.0.3
 ```
 
-Single heißt nur: eine Control Plane statt 3. Workers sind unabhängig davon.
+Single only means: one control plane instead of 3. Workers are independent of that.
 
-Erkennung: Hash = single CP, Array = multi CP. (`ref $control eq 'ARRAY'`)
+Detection: hash = single CP, array = multi CP. (`ref $control eq 'ARRAY'`)
 
 ```yaml
-# Single CP + Workers (normaler Produktions-Case)
+# Single CP + workers (normal production case)
 name: mycluster
 control:
   provider: hetzner
@@ -65,16 +65,16 @@ control:
     serverType: cx32
 ```
 
-Offene Fragen:
+Open questions:
 
-- Braucht man einen `nodes: 3` Shortcut für "3 identische CPs"?
+- Do we need a `nodes: 3` shortcut for "3 identical CPs"?
   ```yaml
   control:
     provider: hetzner
     serverType: cx32
     nodes: 3   # -> police1, police2, police3
   ```
-  Aber dann ist es ein Hash mit `nodes` Key, nicht eine Liste — Konflikt mit der Hash=single Erkennung.
-  Mögliche Lösung: `nodes: 1` oder kein `nodes` = single, `nodes: 3` = multi.
-  Dann ist die Liste-Variante nur für heterogene CPs (verschiedene Provider/Typen).
-- `controlPlanes` / `cps` als Alias weiter unterstützen oder hart auf `control` umstellen?
+  But then it is a hash with a `nodes` key, not a list — conflict with the hash=single detection.
+  Possible solution: `nodes: 1` or no `nodes` = single, `nodes: 3` = multi.
+  Then the list variant is only for heterogeneous CPs (different providers/types).
+- Keep supporting `controlPlanes` / `cps` as an alias, or switch hard to `control`?

@@ -3,52 +3,52 @@
 Single-config Kubernetes cluster management for RKE2 and K3s on Hetzner Cloud,
 on bare-metal servers reached over SSH, or on a single host (Local).
 
-## Was OCP heute ist
+## What OCP is today
 
-- **CLI**: `ocp` mit Subcommands `init`, `apply`, `status`, `destroy`, `update`,
+- **CLI**: `ocp` with subcommands `init`, `apply`, `status`, `destroy`, `update`,
   `kubeconfig`, `ssh`, `version`, `node`, `provider`.
-- **Distributionen**: RKE2 und K3s gleichberechtigt (ADR 0012).
-- **Provider**: Hetzner Cloud, SSH (existing hosts), Local (single-node).
-- **CNI**: Cilium inklusive Gateway API und cert-manager.
+- **Distributions**: RKE2 and K3s on equal footing (ADR 0012).
+- **Providers**: Hetzner Cloud, SSH (existing hosts), Local (single-node).
+- **CNI**: Cilium including Gateway API and cert-manager.
 - **GPU**: NVIDIA operator + driver + toolkit + DCGM + device-plugin, optional.
-- **Robocop**: in-Cluster-Controller-Pfad für Worker-Reconciliation
-  (heute Platzhalter, ADR 0021 in Arbeit).
-- **Spec/Status-Trennung**: spec in Git (`ocp.yaml`), status aus dem Cluster.
-- **Toolchain**: Docker-first, gebaut für die Architektur der Bau-Maschine,
-  `cpanfile` + `cpanfile.snapshot` gepinnt, Versions-Manifest in `OCP::Versions`.
+- **Robocop**: in-cluster controller path for worker reconciliation
+  (a placeholder today, ADR 0021 in progress).
+- **Spec/status separation**: spec in Git (`ocp.yaml`), status from the cluster.
+- **Toolchain**: Docker-first, built for the architecture of the build machine,
+  `cpanfile` + `cpanfile.snapshot` pinned, version manifest in `OCP::Versions`.
 
-Architektur, Modul-Landkarte und Invarianten: Skill `ocp-core`. CLI und
-Config-Schema: Skill `ocp-usage`. Architektur-Entscheidungen mit Begründung:
+Architecture, module map and invariants: skill `ocp-core`. CLI and
+config schema: skill `ocp-usage`. Architecture decisions with rationale:
 `docs/adr/`.
 
-## Was OCP bewusst nicht ist
+## What OCP deliberately is not
 
-- Kein Multi-Cloud-Orchestrator.
-- Kein Addon-System. Cilium, cert-manager und GPU sind eingebaute Komponenten,
-  keine Helm-Stacks on top (ADR 0011).
-- Kein App-Deployment-Layer (kein ArgoCD-Setup, kein Helm-Apply für User-Apps).
-- Kein Cloud-agnostisches Network-Overlay. Tailscale/Wireguard nicht drin.
-- Keine Web-UI.
+- Not a multi-cloud orchestrator.
+- No addon system. Cilium, cert-manager and GPU are built-in components,
+  not Helm stacks on top (ADR 0011).
+- No app deployment layer (no ArgoCD setup, no Helm apply for user apps).
+- No cloud-agnostic network overlay. Tailscale/Wireguard are not included.
+- No web UI.
 
-## TODOs (kein Versprechen, lose Ideen)
+## TODOs (no promise, loose ideas)
 
-Niedrige Prio, keine Roadmap, kein Lieferdatum. Wenn etwas davon kommt, kommt
-es als karr-Ticket auf den Backlog, nicht als Phasenplan.
+Low priority, no roadmap, no delivery date. If any of this comes, it comes
+as a karr ticket on the backlog, not as a phased plan.
 
-- **Vast.ai als Provider**: Denkbar als Quelle für GPU-Worker, aber vermutlich
-  nicht über k8s-Control-Plane — vast.ai orchestriert selbst schon Container.
-  Falls überhaupt dann als Worker-only, angebunden über den SSH-Provider-Adapter
-  gegen existierende vast.ai-Instanzen. Offen, niedrige Prio, vermutlich nie.
-- **Weitere Cloud-Provider**: AWS, GCP, Azure, Hetzner Robot (Dedicated).
-  Aktuell nicht geplant — Fokus liegt auf Hetzner und SSH.
-- **Auto-Scaling von Node-Pools**: Nicht geplant.
-- **Helm-Stacks für User-Addons**: Bewusst nicht (ADR 0011). Falls ein Addon
-  Helm braucht, wird es handgerollt und gepinnt.
+- **Vast.ai as a provider**: Conceivable as a source of GPU workers, but probably
+  not via a k8s control plane — vast.ai already orchestrates containers itself.
+  If at all, then worker-only, attached through the SSH provider adapter
+  against existing vast.ai instances. Open, low priority, probably never.
+- **More cloud providers**: AWS, GCP, Azure, Hetzner Robot (dedicated).
+  Currently not planned — the focus is on Hetzner and SSH.
+- **Auto-scaling of node pools**: Not planned.
+- **Helm stacks for user addons**: Deliberately not (ADR 0011). If an addon
+  needs Helm, it gets hand-rolled and pinned.
 
-## Wo ich nachschaue
+## Where I look things up
 
-- `README.md` — Quick Start, Installationsweg.
-- `docs/adr/` — Architektur-Entscheidungen mit Begründung, indexiert in
+- `README.md` — quick start, installation path.
+- `docs/adr/` — architecture decisions with rationale, indexed in
   `docs/adr/README.md`.
-- Skill `ocp-core` — Modul-Landkarte, Invarianten, Reconciliation-Loop.
-- Skill `ocp-usage` — CLI-Kommandos, Provider-Modi, Datei-Layout.
+- Skill `ocp-core` — module map, invariants, reconciliation loop.
+- Skill `ocp-usage` — CLI commands, provider modes, file layout.
