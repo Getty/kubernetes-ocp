@@ -45,7 +45,9 @@
       "kanban-issues-karr-ticket@karr",
       "io-k8s-core@io-k8s-p5",
       "perl-io-k8s-kubernetes-classes@io-k8s-p5",
-      "perl-kubernetes-rest@kubernetes-rest"
+      "perl-kubernetes-rest@kubernetes-rest",
+      "hetzner-operator@getty",
+      "ssl-tls-pki@getty"
     ],
     "bundles": [
       "getty-house@getty"

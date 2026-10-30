@@ -14,6 +14,7 @@ briefing:
     - kubernetes-rke2
     - kubernetes-gpu
     - docker-registry
+    - rex
     - kanban-issues-karr-ticket
 ---
 
