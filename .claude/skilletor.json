@@ -63,7 +63,8 @@
       "perl-www-hetzner@www-hetzner",
       "perl-crypt-age@crypt-age",
       "perl-file-sops@file-sops",
-      "perl-net-async-kubernetes@net-async-kubernetes"
+      "perl-net-async-kubernetes@net-async-kubernetes",
+      "rocm-engineering@getty"
     ],
     "bundles": [
       "getty-house@getty"
