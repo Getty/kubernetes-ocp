@@ -1,0 +1,46 @@
+---
+class: standard
+completed: 2026-10-30T22:03:07Z
+created: 2026-10-30T21:38:41Z
+id: 243
+priority: medium
+started: 2026-10-30T22:01:36Z
+status: done
+tags:
+- skills
+- agents
+title: Wire in consumer skills for WWW::Hetzner, Crypt::Age, File::SOPS, Net::Async::Kubernetes
+  once their repos ship them
+updated: 2026-10-30T22:03:07Z
+---
+
+Four libraries OCP depends on have only maintainer skills ("load before editing <dist>"),
+none for using them. Cards filed on their boards (see the needs: tags) ask each repo for a
+consumer skill. Once one lands:
+
+- `skilletor add <repo> --project` (source name = board name), then
+  `skilletor install <skill>@<source> --project`
+- brief it into the lane that uses the library:
+  - WWW::Hetzner → ocp-provider-worker
+  - Crypt::Age, File::SOPS → ocp-secrets-worker
+  - Net::Async::Kubernetes → ocp-robocop-worker
+- verify with the briefing hook (skill `getty-agent-team`, step 8) — mind the 64 kB soft cap
+- commit `.claude/skilletor.json` + the agent files via ocp-release-manager
+
+Rex::Rancher, Rex::GPU and Rex::LibSSH need no card: `rex@getty` covers their use.
+
+2026-10-30 21:55 All four skills are on main and pushed; installing them from GitHub into a scratch project with skilletor worked and gave files identical to the repos:
+
+    skilletor add p5-www-hetzner https://github.com/Getty/p5-www-hetzner.git --project
+    skilletor add p5-crypt-age https://github.com/Getty/p5-crypt-age.git --project
+    skilletor add p5-file-sops https://github.com/Getty/p5-file-sops.git --project
+    skilletor add p5-net-async-kubernetes https://github.com/Getty/p5-net-async-kubernetes.git --project
+    skilletor install perl-www-hetzner@p5-www-hetzner perl-crypt-age@p5-crypt-age perl-file-sops@p5-file-sops perl-net-async-kubernetes@p5-net-async-kubernetes --project
+
+Sizes for the 64 kB briefing cap: perl-www-hetzner 8.8 kB (ocp-provider-worker), perl-crypt-age 5.9 kB + perl-file-sops 9.2 kB (ocp-secrets-worker), perl-net-async-kubernetes 9.0 kB (ocp-robocop-worker).
+
+Consumer bugs found while writing them: k245 (ocp hetzner list crash), k246 (Hetzner paging and server type filter), k247 (outdated library notes, lastmodified workaround).
+
+Wired in. Project sources (git, Getty/<repo>) named without the p5- prefix like the user-config convention: www-hetzner, crypt-age, file-sops, net-async-kubernetes; user config got local overrides to ~/dev/p5-* like the existing sources. Installed perl-www-hetzner, perl-crypt-age, perl-file-sops, perl-net-async-kubernetes. Briefed: ocp-provider-worker += perl-www-hetzner (48 kB), ocp-secrets-worker += perl-crypt-age, perl-file-sops (37 kB), ocp-robocop-worker += perl-net-async-kubernetes (50 kB). Briefing hook run for all 14 agents: none denied, each new skill body present in its agent's prompt; only ocp-infra-worker over 64 kB (k244, pre-existing). Not briefed: inject-key's single NAK list call in the secrets lane — skill is installed for on-demand use.
+
+Committed as 40a6a14
