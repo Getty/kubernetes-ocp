@@ -17,6 +17,18 @@
     },
     "kubernetes-rest": {
       "git": "https://github.com/pplu/kubernetes-rest"
+    },
+    "www-hetzner": {
+      "git": "https://github.com/Getty/p5-www-hetzner"
+    },
+    "crypt-age": {
+      "git": "https://github.com/Getty/p5-crypt-age"
+    },
+    "file-sops": {
+      "git": "https://github.com/Getty/p5-file-sops"
+    },
+    "net-async-kubernetes": {
+      "git": "https://github.com/Getty/p5-net-async-kubernetes"
     }
   },
   "install": {
@@ -47,7 +59,11 @@
       "perl-io-k8s-kubernetes-classes@io-k8s-p5",
       "perl-kubernetes-rest@kubernetes-rest",
       "hetzner-operator@getty",
-      "ssl-tls-pki@getty"
+      "ssl-tls-pki@getty",
+      "perl-www-hetzner@www-hetzner",
+      "perl-crypt-age@crypt-age",
+      "perl-file-sops@file-sops",
+      "perl-net-async-kubernetes@net-async-kubernetes"
     ],
     "bundles": [
       "getty-house@getty"

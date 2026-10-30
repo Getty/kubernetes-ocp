@@ -8,6 +8,7 @@ briefing:
     - getty-perl-moo
     - ocp-core
     - perl-io-async-future
+    - perl-net-async-kubernetes
     - perl-kubernetes-rest
     - perl-io-k8s-kubernetes-classes
     - kanban-issues-karr-ticket

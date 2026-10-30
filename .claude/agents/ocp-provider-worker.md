@@ -1,6 +1,6 @@
 ---
 name: ocp-provider-worker
-description: "OCP provider specialist — lib/OCP/Provider*, provider roles (OCP::Role::Provider*), Hetzner/Local/SSH provisioning paths, OCP::Rex, the SSH reachability story. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, rex, hetzner-operator, karr. Use for anything that creates/removes a machine, talks to Hetzner, or provisions over Rex. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
+description: "OCP provider specialist — lib/OCP/Provider*, provider roles (OCP::Role::Provider*), Hetzner/Local/SSH provisioning paths, OCP::Rex, the SSH reachability story. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, rex, hetzner-operator, perl-www-hetzner, karr. Use for anything that creates/removes a machine, talks to Hetzner, or provisions over Rex. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
 briefing:
   skills:
@@ -9,6 +9,7 @@ briefing:
     - ocp-core
     - rex
     - hetzner-operator
+    - perl-www-hetzner
     - kanban-issues-karr-ticket
 ---
 

@@ -1,12 +1,14 @@
 ---
 name: ocp-secrets-worker
-description: "OCP secrets/keys specialist — OCP::Secrets, OCP::Keys, OCP::ClusterKey, OCP::Password, OCP::TempKeyPair, ocp inject-key, age/SOPS/PIN1/PIN2, the SSH key boundary between this machine and the cluster. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, karr. Use for anything that touches the encrypted files (keys.yaml, secrets.yaml, age.key.enc, kubeconfig.yaml) or the bootstrap/admin cluster SSH keys. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
+description: "OCP secrets/keys specialist — OCP::Secrets, OCP::Keys, OCP::ClusterKey, OCP::Password, OCP::TempKeyPair, ocp inject-key, age/SOPS/PIN1/PIN2, the SSH key boundary between this machine and the cluster. Pre-loaded with getty-perl-core, getty-perl-moo, ocp-core, perl-crypt-age, perl-file-sops, karr. Use for anything that touches the encrypted files (keys.yaml, secrets.yaml, age.key.enc, kubeconfig.yaml) or the bootstrap/admin cluster SSH keys. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
 briefing:
   skills:
     - getty-perl-core
     - getty-perl-moo
     - ocp-core
+    - perl-crypt-age
+    - perl-file-sops
     - kanban-issues-karr-ticket
 ---
 
