@@ -1,0 +1,46 @@
+---
+class: standard
+completed: 2026-10-31T13:58:42Z
+created: 2026-10-31T10:47:54Z
+id: 342
+priority: low
+started: 2026-10-31T13:58:42Z
+status: done
+tags:
+- cleanup
+- errors
+title: One helper for an exception as one STDERR line (Keys/Secure.pm, Role/Cmd/Machines.pm,
+  Init.pm)
+updated: 2026-10-31T13:58:42Z
+---
+
+Found under k265 (apply worker, 2026-10-31): three helpers now each turn an exception into one STDERR line -- strip Perl's " at FILE line N.", fold whitespace, mask a secret:
+- lib/OCP/Cmd/Keys/Secure.pm
+- lib/OCP/Role/Cmd/Machines.pm
+- lib/OCP/Cmd/Init.pm `_catalogue_error` (k265)
+
+One shared helper (where: the worker decides, e.g. a small OCP:: utility module) would keep them saying failures the same way. Behaviour unchanged; each caller's existing tests must pass unchanged.
+
+Done = one helper, three callers, a unit test for it (location strip, whitespace, masking, empty -> 'unknown error').
+
+2026-10-31 13:12 Done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets349/k342.patch (on base 12d049a + k339/k343/k338/k261/k297/k329 + k349-secrets.patch + k346.patch; git apply --check clean, result identical to the working copy). Not committed.
+
+What: new lib/OCP/ErrorLine.pm, one_line($err, mask => SECRET, empty => TEXT): the secret masked as text, every " at FILE line N." out, whitespace folded, trimmed, nothing left -> 'unknown error' unless empty => says otherwise. Init::_catalogue_error is one_line($err, mask => $token) (same results as before); Machines::_oneline is one_line($s, empty => '') (callers put their own words in front).
+Two callers, not three: Keys/Secure.pm has no helper of its own -- its five calls (:279 :353 :422 :469 :483) go through the role's _oneline, as Add.pm:240 / Rm.pm:123 do -- so it is unchanged.
+One difference, my choice: _oneline stripped a single location at the very end, Init (k265, newer, tested on chains) every one. The shared helper strips every one, so a wrapped die's inner " at ... line N." no longer stays in a keys command's line; text without a location or with one only at the end reads as before. No existing test depended on it.
+Files: lib/OCP/ErrorLine.pm (new, # ABSTRACT, POD, no $VERSION), lib/OCP/Role/Cmd/Machines.pm, lib/OCP/Cmd/Init.pm, t/342-error-line.t (new).
+
+Verified (make test in the image, through the load guard):
+- red: t/342 on base+k349+k346 -- Can't locate OCP/ErrorLine.pm, FAIL.
+- green: t/342 + the callers' tests (t/265, t/260, t/41, t/70, t/215, t/96 x2, t/216 x2, t/209, t/237, t/241, t/346, t/101, t/69, t/71, t/95, t/107, t/26, t/289, t/00-load): 22 files, 742 tests, PASS -- the callers' existing tests unchanged.
+- mutants: 13/13 killed, each on its own lines (no strip, end-only strip, no fold, no trim, no mask, mask as pattern, empty default '', empty option ignored, || for //, "0" as nothing, Init not masking, _oneline 'unknown error', _oneline's old body). Mask-after-strip left out: equivalent for a token without whitespace.
+
+Changes bullet: optional, only the edge above is visible -- "`ocp keys secure` and `ocp keys operator add|rm` name why a machine failed without any Perl source location in it, as `ocp init` does: one in the middle of a wrapped error no longer stays in the line."
+
+Also found (not converted, out of scope): Drift.pm:1229 and Status.pm:531 strip a location with their own s/ at .+? line \d+\.?\n*\z//s; Init.pm:741/:800 keep end-only strips of their own; OCP.pm:235 detects internal errors by a final location. Secure.pm:422 prints a WWW::Hetzner error without masking the token (Init masks it for the same source).
+
+2026-10-31 13:12 Done: OCP::ErrorLine::one_line shared by Machines::_oneline and Init::_catalogue_error (Secure.pm already went through _oneline). Behaviour unchanged except locations now stripped everywhere, not only at the end, for the keys commands (my choice, Init's k265 rule). Red (module missing), green 22 files 742 tests, 13/13 mutants killed. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets349/k342.patch (stacks on k349-secrets + k346). Not committed.
+
+2026-10-31 (main): correction to the card text: Keys/Secure.pm has no helper of its own; its calls go through the Machines role's _oneline. Follow-ups: k362 (Secure.pm prints a Hetzner error without masking the token) and k363 (the remaining hand-made strippers).
+
+Committed as 4dd5114
