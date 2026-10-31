@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-10-31T13:16:59Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T11:44:40Z
+id: 348
+priority: low
+status: in-progress
+tags:
+- dns
+- registry
+- drift
+title: 'registry.local DNS after k338: k3s coredns-custom snippets unseen, ConfigMap
+  without Corefile key, duplicate-hosts crash not probed'
+updated: 2026-10-31T13:16:59Z
+---
+
+Left over from k338 (2026-10-31), where the registry.local writer and its drift probe now read the Corefile through one parser (OCP::Corefile):
+- k3s `coredns-custom` ConfigMap `*.server` snippets: CoreDNS on k3s imports server blocks from that second ConfigMap. Neither the writer nor the probe looks at it, so a snippet that answers registry.local (or shadows it) is invisible to both. ADR 0022 treats this as solved; it is not. Decide: read coredns-custom on k3s too (and through OCP::Corefile), or say in the ADR that it is out of scope.
+- A CoreDNS ConfigMap with no `Corefile` key: the writer dies (k328, a [WARN] on STDERR), the probe moves on or reports nothing. They still disagree there.
+- The writer repairs the duplicate-hosts Corefile that crashes CoreDNS; the probe does not detect it.
+- Server-block keys with a port are matched by zone only (as before k338) -- fine for :53, say so if another port appears.
+
+Done = writer and probe agree on each case (t/338 extended), or an ADR line saying which case is deliberately not handled.
+
+2026-10-31 12:15 Started (ocp-state-worker). Plan: (1) coredns-custom: OCP::Corefile learns top-level 'import' expansion from given files; writer and probe read kube-system/coredns-custom only when the Corefile imports from /etc/coredns/custom (k3s stock does, RKE2's chart does not -- so no distribution switch); only a 404 is absent. (2) no Corefile key: probe takes the first ConfigMap that exists, like the writer, and reports kind spec + manual_step; writer names the missing key. (3) duplicate hosts: drop logic moves into OCP::Corefile so the probe asks the writer's question. (4) port: only plain-DNS keys on :53 answer cluster queries. Work in a scratch copy, no shared-tree edits.
+
+2026-10-31 13:16 Implementation done in scratch (WIP: w-state348/wip.diff): OCP::Corefile gains imports/origin/file (top-level import expansion), on_cluster_port, hosts_lines, without_added_hosts (moved from Network::corefile_drop_added_hosts), import_patterns; OCP::Drift gains $COREDNS_CUSTOM_CONFIGMAP/$COREDNS_CUSTOM_DIR, corefile_imports_custom, coredns_custom_files, corefile_block_name, and registry_dns_drift reads the first ConfigMap that exists, coredns-custom when imported, and the root block's hosts count; Network::configure_registry_dns does the same (dies -> [WARN] on STDERR). t/338 extended (27 new agreement cases + unit subtests), t/328's no-Corefile-key message updated. Apply/Drift.pm untouched. Waiting for a loadguard slot for red/green/mutant runs.
