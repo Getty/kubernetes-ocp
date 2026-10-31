@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys operator add|rm` and `ocp keys secure --drop-bootstrap` stop
+      on a control plane or worker pool in `ocp.yaml` that is no mapping, a
+      `control_planes` or `workers` of the wrong shape, a host that is a
+      list, or a pool's `nodes` its provider cannot read -- with
+      `validate()`'s line on STDERR and exit 1, before PIN1 is asked, the
+      cluster is read or a machine is touched -- instead of an internal
+      error after PIN1, or taking a `control_planes` string for no control
+      plane.
     - `gpu.amd.integrated: true` in `ocp.yaml` reaches every node, not
       only one joined with `ocp node add --gpu`: `ocp apply` writes it
       onto the OCPNodeProvider CR as `spec.gpu.amd.integrated`, robocop,

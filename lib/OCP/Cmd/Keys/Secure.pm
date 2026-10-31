@@ -201,7 +201,9 @@ sub _migrate {
 # execute): that path reads only the machines and the key files, writes
 # nothing made of ocp.yaml, and takes a key off a machine only where the
 # admin key has just logged in -- the step a leaked bootstrap key needs, not
-# to be held up by a line it does not read.
+# to be held up by a line it does not read. The lines of what it does read,
+# the machines, it refuses as the operator commands do (k346, see
+# OCP::Role::Cmd::Machines::_machines_spec_errors).
 sub _refuse_invalid_config {
     my ( $self, $config ) = @_;
 
@@ -298,9 +300,12 @@ sub _distribute_and_test {
 #
 
 # Already secure: only the last step, typically after a run without the flag.
+# Not validate() (see _refuse_invalid_config), but the shape of what the
+# machine lookup reads, before PIN1 (k346).
 sub _drop_in_secure_mode {
     my ( $self, $config, $secrets ) = @_;
 
+    $self->_refuse_unreadable_machines($config, 'ocp keys secure --drop-bootstrap');
     $secrets->ensure_age_key;
     my $api = $self->_cluster_api($config, $secrets);
     my ($machines) = $self->_machines($config, $api);
@@ -700,8 +705,11 @@ switch the command does apply's work from F<ocp.yaml> -- it rolls robocop
 out and stores the keys at Hetzner under the cluster's name -- so a mistake
 in it stopped the command halfway, with the PINs set and F<keys.yaml>
 written (C<k321>). C<--drop-bootstrap> on a project that is already secure does not
-check F<ocp.yaml>: it reads only the machines, and removes the bootstrap key
-only where the admin key has just logged in.
+check all of F<ocp.yaml>: it reads only the machines, and removes the bootstrap key
+only where the admin key has just logged in. What it reads it checks, in
+validate()'s words and before PIN1 (C<k346>): C<control_planes> and C<workers>
+in their shapes, each control plane's C<host>, and a pool's C<nodes> and
+C<host> as the pool reads them.
 
 =head1 SEE ALSO
 

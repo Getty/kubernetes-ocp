@@ -6,7 +6,9 @@ use Kubernetes::REST::Kubeconfig;
 
 use OCP::Cmd::Apply::Bootstrap ();
 use OCP::Cmd::Apply::CR ();
+use OCP::Config ();
 use OCP::K8s;
+use OCP::Provider ();
 use OCP::SSH;
 
 use Moo::Role;
@@ -26,6 +28,90 @@ has k8s => (is => 'rw');
 #
 # Machines
 #
+
+# What _machines reads of ocp.yaml, refused in validate()'s words before the
+# age key, a PIN or the cluster is asked (k346). `ocp keys operator add|rm`
+# and `ocp keys secure --drop-bootstrap` on a project that is secure already
+# do not run validate() (k321): the walk below died inside Perl on an entry
+# that is no mapping ("Not a HASH reference ... internal error"), after PIN1,
+# and a host that is a list became the machine ARRAY(0x...).
+#
+# Only what is read, as ocp destroy has it (k323, k326, k335): the shape of
+# control_planes and of each entry, each entry's host (its address, whatever
+# the provider); the shape of workers and of each pool, and in a pool whose
+# provider OCP knows the nodes as worker_ocpnodes reads them -- a list of
+# hosts for ssh, a count for the others (_pool_nodes_errors) -- and an ssh
+# pool's host where no nodes: list stands beside it. With nodes: N the
+# control planes are N copies of one entry, said once (k322). Each line is
+# one validate() has for the same ocp.yaml.
+sub _machines_spec_errors {
+    my ( $self, $config ) = @_;
+    my @errors;
+
+    my $raw = $config->spec->{control_planes};
+    if (defined $raw && ref $raw ne 'HASH' && ref $raw ne 'ARRAY') {
+        push @errors, 'control_planes: must be a mapping (one control plane, or nodes: N of them) '
+            . 'or a list of mappings, not ' . OCP::Config::_shown_value($raw);
+    }
+    else {
+        my $cps = $config->control_planes;
+        for my $i (0 .. ($config->_control_planes_shared ? 0 : $#$cps)) {
+            my ( $cp, $idx ) = ( $cps->[$i], $i + 1 );
+            unless (ref $cp eq 'HASH') {
+                push @errors, "control_planes[$idx]: must be a mapping (one control plane), not "
+                    . OCP::Config::_shown_value($cp);
+                next;
+            }
+            my $err = $self->_machine_host_error($cp->{host}) // next;
+            push @errors, "control_planes[$idx].host: $err";
+        }
+    }
+
+    my $workers = $config->workers;
+    return ( @errors, 'workers: must be a list of worker pools, not '
+                    . OCP::Config::_shown_value($workers) )
+        unless ref $workers eq 'ARRAY';
+
+    my $n = 0;
+    for my $w (@$workers) {
+        $n++;
+        unless (ref $w eq 'HASH') {
+            push @errors, "workers[$n]: must be a mapping (a worker pool), not "
+                . OCP::Config::_shown_value($w);
+            next;
+        }
+        my $prov = $w->{provider};
+        next if ref $prov || !OCP::Provider->known_type($prov);
+        my $where = $config->_pool_where($w, $n);
+        if ($prov eq 'ssh' && ref $w->{nodes} ne 'ARRAY'
+            && defined(my $err = $self->_machine_host_error($w->{host}))) {
+            push @errors, "$where: host $err";
+        }
+        push @errors, $config->_pool_nodes_errors($w, $where);
+    }
+    return @errors;
+}
+
+# validate()'s words for a host that is no string (k315), or undef.
+sub _machine_host_error {
+    my ( $self, $host ) = @_;
+    return OCP::Config::_not_a_string($host, 'a host name or IP address');
+}
+
+# Dies with every line of _machines_spec_errors, the way `ocp apply` refuses
+# an invalid ocp.yaml; $command names the consumer in the message.
+sub _refuse_unreadable_machines {
+    my ( $self, $config, $command ) = @_;
+
+    my @errors = $self->_machines_spec_errors($config) or return;
+    my $file = $config->file;
+    my $s    = @errors == 1 ? '' : 's';
+    die "$file has " . scalar(@errors) . " error$s:\n"
+      . join('', map { "  - $_\n" } @errors)
+      . "Nothing was changed: $command reads the machines of the control planes and worker "
+      . "pools in $file, and checks their shape before it asks for a PIN or touches a "
+      . "machine. Fix the line$s above and run it again.\n";
+}
 
 # Every machine of this cluster that exists, as { name, address, role }: the
 # OCPNodes when the cluster can be asked (every role -- status.publicIP, else
@@ -305,6 +391,13 @@ OCP::Role::Cmd::Machines - Every machine of a cluster, and their authorized_keys
 What L<OCP::Cmd::Keys::Secure> (k96) and the operator commands
 L<OCP::Cmd::Keys::Operator::Add> and L<OCP::Cmd::Keys::Operator::Rm> (k216)
 share.
+
+C<_refuse_unreadable_machines> dies, in L<OCP::Config/validate>'s words, on
+what C<_machines> cannot read of F<ocp.yaml> (C<_machines_spec_errors>, k346):
+C<control_planes> and C<workers> that are no mapping or list, an entry or a
+pool that is no mapping, a host that is no string, a pool's C<nodes> in a shape
+its provider does not take. A consumer calls it before the age key, a PIN or
+the cluster.
 
 C<_machines> lists every machine of the cluster as C<< { name, address, role } >>:
 each OCPNode in C<ocp-system> when the cluster can be asked (at

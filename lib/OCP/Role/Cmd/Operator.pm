@@ -7,7 +7,7 @@ use OCP::Keys;
 
 use Moo::Role;
 
-requires qw( ocp project_secrets );
+requires qw( ocp project_secrets _refuse_unreadable_machines );
 
 # An operator's name: what `ocp keys operator rm` takes and keys.yaml shows.
 # Lower case, digits and dashes, a letter or digit first -- a word that is
@@ -28,6 +28,9 @@ sub operator_name_arg {
 # The project, ready for an operator to be added or removed: secure mode,
 # this run holding the project key (an operator does not appoint operators),
 # and the age key unlocked (PIN1). Returns ($config, $secrets, $keys).
+#
+# Both commands walk every machine of ocp.yaml (OCP::Role::Cmd::Machines), so
+# its shape is checked first, before PIN1 (k346).
 sub operator_project {
     my ($self, $verb) = @_;
 
@@ -35,6 +38,7 @@ sub operator_project {
     die "Config file '$file' not found. Run 'ocp init' first.\n" unless -f $file;
 
     my $config = OCP::Config->new(file => $file);
+    $self->_refuse_unreadable_machines($config, "ocp keys operator $verb");
     my $keys   = OCP::Keys->new(project_dir => $config->project_dir);
 
     die "ERROR: Operators exist in secure mode only, and this project has no keys.yaml\n"
@@ -70,10 +74,12 @@ OCP::Role::Cmd::Operator - What the C<ocp keys operator> commands share
 =head1 DESCRIPTION
 
 C<operator_name_arg> (an operator's name, C<[a-z0-9][a-z0-9-]*>, checked
-before anything is touched), C<operator_project> (secure mode, the project key
-in hand -- an operator's own identity is refused --, PIN1) and
+before anything is touched), C<operator_project> (the shape of the machines in
+F<ocp.yaml>, k346; secure mode, the project key in hand -- an operator's own
+identity is refused --, PIN1) and
 C<operator_entries> (the C<purpose: operator> entries of F<keys.yaml>), for
 L<OCP::Cmd::Keys::Operator::Add> and L<OCP::Cmd::Keys::Operator::Rm>. The
-consumer also consumes L<OCP::Role::Cmd> and L<OCP::Role::Cmd::Recipients>.
+consumer also consumes L<OCP::Role::Cmd>, L<OCP::Role::Cmd::Recipients> and
+L<OCP::Role::Cmd::Machines>.
 
 =cut
