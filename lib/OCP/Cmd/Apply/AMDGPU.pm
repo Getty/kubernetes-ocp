@@ -76,7 +76,7 @@ Ready a few seconds before port 5000 answers; apply does not probe it).
 
 =back
 
-A Rex::Rancher without the AMD functions (0.004 and 0.005 have none) is one
+A Rex::Rancher without the AMD functions (0.004, the released one) is one
 C<[WARN]> on STDERR and nothing deployed -- never a failed apply.
 
 =cut
@@ -121,14 +121,6 @@ my %COMPONENT = (
 );
 
 my $LIB = 'Rex::Rancher::K8s';
-
-# The names a ready component shows in the cluster: the device plugin's
-# resource (mixed naming adds partitioned ones under the same prefix) and the
-# DRA driver's name on its ResourceSlices. A local copy, as OCP::Cmd::Status
-# has one: k258 moves both onto shared variables in OCP::Config.
-my $AMD_GPU_RESOURCE   = 'amd.com/gpu';
-my $AMD_GPU_PREFIX     = 'amd.com/';
-my $AMD_GPU_DRA_DRIVER = 'gpu.amd.com';
 
 # Readiness budget per component, in seconds: the DaemonSet's pods pull their
 # image cold through the registry cache, then the plugin has to report.
@@ -471,9 +463,11 @@ sub not_ready {
             my ($node, $why) = read_or_why("Node '$n->{name}'", sub { $api->get('Node', name => $n->{name}) });
             return $why if $why;
             my $alloc = $node ? ($api->k8s->object_to_struct($node)->{status}{allocatable} // {}) : {};
-            my @gpu   = grep { $mixed ? index($_, $AMD_GPU_PREFIX) == 0 : $_ eq $AMD_GPU_RESOURCE } keys %$alloc;
+            my @gpu   = grep { $mixed ? index($_, $OCP::Config::AMD_GPU_RESOURCE_PREFIX) == 0
+                                      : $_ eq $OCP::Config::AMD_GPU_RESOURCE } keys %$alloc;
             next if grep { ($alloc->{$_} // '0') =~ /\A([0-9]+)/ && $1 > 0 } @gpu;
-            return "node '$n->{name}' shows no " . ($mixed ? "$AMD_GPU_PREFIX*" : $AMD_GPU_RESOURCE)
+            return "node '$n->{name}' shows no "
+                . ($mixed ? "$OCP::Config::AMD_GPU_RESOURCE_PREFIX*" : $OCP::Config::AMD_GPU_RESOURCE)
                 . " in status.allocatable";
         }
     }
@@ -483,9 +477,10 @@ sub not_ready {
         return $why if $why;
         $slices //= {};
         my %has = map { ($_->{spec}{nodeName} // '') => 1 }
-                  grep { ($_->{spec}{driver} // '') eq $AMD_GPU_DRA_DRIVER } @{ $slices->{items} // [] };
+                  grep { ($_->{spec}{driver} // '') eq $OCP::Config::AMD_GPU_DRA_DRIVER }
+                  @{ $slices->{items} // [] };
         for my $n (@$nodes) {
-            return "no ResourceSlice of driver $AMD_GPU_DRA_DRIVER for node '$n->{name}'"
+            return "no ResourceSlice of driver $OCP::Config::AMD_GPU_DRA_DRIVER for node '$n->{name}'"
                 unless $has{ $n->{name} };
         }
     }

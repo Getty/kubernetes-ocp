@@ -331,13 +331,6 @@ sub _drift_lines {
 # AMD GPU nodes in the GPU section (k252; design spec 2026-10-31, section 6)
 #
 
-# The resource the AMD device plugin registers and the name of AMD's DRA
-# driver. The stack itself comes from Rex::Rancher::K8s; this is only where
-# its objects are read back. OCP::Cmd::Apply::AMDGPU (k251) holds a second
-# copy of both; they are not shared through OCP::Config yet.
-my $AMD_GPU_RESOURCE   = 'amd.com/gpu';
-my $AMD_GPU_DRA_DRIVER = 'gpu.amd.com';
-
 # A node with an AMD GPU: the host step's marker label, or amd.com/gpu on the
 # node at all (a node labelled by hand or before k249). Under DRA allocatable
 # is 0 and only the marker is left; whether a count is real is the count
@@ -356,7 +349,7 @@ sub _print_amd_gpu {
     my $default = $self->_amd_gpu_default_allocation($config);
     for my $node (@$nodes) {
         print '  '.$k8s->node_name($node).": AMD GPU\n";
-        print '    '.$AMD_GPU_RESOURCE.': '.$self->_amd_gpu_count($node)."\n";
+        print '    '.$OCP::Config::AMD_GPU_RESOURCE.': '.$self->_amd_gpu_count($node)."\n";
         print '    gfx target:  '.$self->_amd_gpu_gfx_targets($node)."\n";
         print '    allocation:  '.$self->_amd_gpu_allocation($node, $default)."\n";
     }
@@ -448,7 +441,7 @@ sub _stale_gpu_capacity {
 sub _amd_gpu_quantity {
     my ($self, $node, $field) = @_;
     my $resources = $self->_dig($node, 'status', $field);
-    return ref $resources eq 'HASH' ? $resources->{$AMD_GPU_RESOURCE} : undef;
+    return ref $resources eq 'HASH' ? $resources->{$OCP::Config::AMD_GPU_RESOURCE} : undef;
 }
 
 # Both forms the host step writes: one target as the label's value, several
@@ -516,7 +509,7 @@ sub _amd_gpu_default_allocation {
 # The header line, then one line per node.
 sub _amd_gpu_slice_lines {
     my ($self, $api) = @_;
-    my $head = 'AMD DRA ResourceSlices (driver '.$AMD_GPU_DRA_DRIVER.') [experimental]:';
+    my $head = 'AMD DRA ResourceSlices (driver '.$OCP::Config::AMD_GPU_DRA_DRIVER.') [experimental]:';
 
     my $slices = $self->_amd_gpu_slices($api);
     return $head." not served (this cluster's API has no resource.k8s.io/v1)"
@@ -550,7 +543,7 @@ sub _amd_gpu_slices {
 # the rest), so a slice of the old generation still listed is not added.
 sub _amd_gpu_slice_devices {
     my ($self, $slices) = @_;
-    my @ours = grep { ($self->_dig($_, qw(spec driver)) // '') eq $AMD_GPU_DRA_DRIVER } @$slices;
+    my @ours = grep { ($self->_dig($_, qw(spec driver)) // '') eq $OCP::Config::AMD_GPU_DRA_DRIVER } @$slices;
 
     my %newest;
     for my $slice (@ours) {

@@ -513,6 +513,19 @@ our $AMD_GPU_PRESENT_LABEL    = 'ocp.internal/amd-gpu.present';
 our $AMD_GPU_ALLOCATION_LABEL = 'ocp.internal/amd-gpu.allocation';
 our $AMD_GPU_GFX_TARGET_LABEL = 'ocp.internal/amd-gpu.gfx-target';
 
+# The names the AMD stack shows in the cluster, named once for everything
+# that reads them back (ocp apply's readiness wait, ocp status). The stack
+# itself is written by Rex::Rancher::K8s.
+#
+#   $AMD_GPU_RESOURCE         the device plugin's extended resource.
+#   $AMD_GPU_RESOURCE_PREFIX  where resource_naming: mixed puts the
+#                             partitioned resources (amd.com/<partition>).
+#   $AMD_GPU_DRA_DRIVER       the DRA driver's name on its ResourceSlices,
+#                             and its DeviceClass.
+our $AMD_GPU_RESOURCE        = 'amd.com/gpu';
+our $AMD_GPU_RESOURCE_PREFIX = 'amd.com/';
+our $AMD_GPU_DRA_DRIVER      = 'gpu.amd.com';
+
 sub gpu_amd_config {
     my ($self) = @_;
     my $amd = $self->gpu_config->{amd};
