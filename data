@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-10-31T02:50:12Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T02:50:12Z
+created: 2026-10-31T02:32:37Z
+id: 270
+priority: medium
+started: 2026-10-31T02:50:12Z
+status: done
+tags:
+- gpu
+- nvidia
+- status
+title: NVIDIA GPUs are counted from status.capacity, not allocatable
+updated: 2026-10-31T02:50:17Z
+---
+
+Found by k244 (ocp-infra-worker). The AMD side reads `status.allocatable` (k251/k252/rex-rancher k106) because the kubelet keeps `capacity` standing after a device plugin unregisters. The NVIDIA side still counts `nvidia.com/gpu` from capacity (ocp status nodes[].gpu and wherever else NVIDIA readiness is judged), so a node whose plugin died still reads as having its GPU.
+
+Done when every NVIDIA GPU count/readiness check reads allocatable (capacity may be shown beside it, as the AMD section does), with tests for capacity 1 / allocatable 0. Lanes: ocp-status-worker (status), ocp-apply-worker if apply/node add judge readiness from capacity.
+
+2026-10-31 02:38 Survey (ocp-status-worker): the only NVIDIA reader of status.capacity in lib/ is OCP::Kubernetes::node_gpu_count (and gpu_nodes through it); callers are OCP::Cmd::Status only (text GPU section + --json nodes[].gpu). OCP::Cmd::Node::Ls already reads allocatable. Apply side does NOT judge NVIDIA readiness from capacity: OCP::Cmd::Apply::Workloads::setup_gpu_operator (lib/OCP/Cmd/Apply/Workloads.pm ~449-469) and OCP::Cmd::Node::Add::_wait_gpu_vendors (lib/OCP/Cmd/Node/Add.pm ~778-794) detect NVIDIA nodes by NFD labels pci-0300_10de/pci-0302_10de; neither waits for nvidia.com/gpu at all (unlike AMDGPU.pm ~412-443, which waits for allocatable). No edit needed there; whether apply/node add should wait for nvidia.com/gpu allocatable as the AMD side does is a separate question for ocp-apply-worker. Robocop, Drift, Rex: no nvidia.com/gpu count.
+
+2026-10-31 02:47 JSON decision: option 1 -- nodes[].gpu is now nvidia.com/gpu ALLOCATABLE (contract change, said in the Status.pm POD) and every node gains gpu_capacity (number, null when the node has none; always present, as ocp node ls --json keeps every key). Why: healthy nodes read the same as before, the two differ only where the plugin is gone/devices unhealthy -- exactly where the old gpu misled; and ocp node ls --json's gpu is already allocatable, so the two commands now agree. Text: healthy node prints the old line byte for byte ('otho: 1x NVIDIA GPU'); where capacity differs: 'otho: 0x NVIDIA GPU allocatable (capacity 1: stale after a device plugin unregisters, or unhealthy devices; only allocatable schedules)' -- the AMD line's reason, now one helper (_stale_gpu_capacity) both use. Per the card, capacity is shown only where it differs (AMD shows it always; left as is). gpu_nodes selects allocatable>0 OR capacity>0 so a plugin-gone node stays listed with its 0.
+
+2026-10-31 02:47 Also found (prose/docs, not my lane, for the dispatcher): README.md:239 ('GPU capacity if there is any'); .claude/skills/ocp-gpu/references/nvidia-cluster.md:143 ('When nodes carry nvidia.com/gpu in capacity, ocp status shows ...' -- also claims operator status + device-plugin pod count, which ocp status does not print); docs/adr/0015-decide-about-gpus-from-the-machine.md:61-63 and :101 (says node_gpu_count reads capacity as the authoritative usable signal) and docs/adr/0017-success-is-a-statement-about-the-cluster.md:82 -- ADR wording is ocp-adr-auditor's call. Apply/node add: no capacity reads (see first note); they do not wait for nvidia.com/gpu allocatable at all, unlike AMDGPU.pm -- a possible follow-up card for ocp-apply-worker, not done here.
+
+2026-10-31 02:47 Done (uncommitted, tree commit-ready for my files): lib/OCP/Kubernetes.pm (node_gpu_count reads allocatable; new node_gpu_capacity; gpu_nodes keeps capacity-only nodes; POD), lib/OCP/Cmd/Status.pm (text NVIDIA line via _nvidia_gpu_count, shared _stale_gpu_capacity with AMD; --json gpu=allocatable + gpu_capacity; POD incl. contract change), new t/270-status-nvidia-allocatable.t (cap1/alloc0, cap1/alloc1, cap2/alloc1, no GPU; text + JSON, numbers checked byte-exact), t/10 (helper claims now allocatable; plugin-gone + gpu_nodes cases; typed round-trip cap2/alloc1), t/230 (fake node_gpu_capacity, key set +gpu_capacity), t/252 + t/258 (NVIDIA fixtures given allocatable 1 beside capacity 1 -- real nodes always carry both; t/258 expected object +gpu_capacity). Verified: DOCKER_BUILDKIT=0 make test TESTS='t/00-load.t t/10-kubernetes.t t/11-status-command.t t/230-status-json.t t/252-status-amd-gpu.t t/257-status-text-stderr.t t/258-status-json-amd-gpu.t t/270-status-nvidia-allocatable.t t/230-node-ls-json.t' -> Files=9 Tests=244 PASS. Mutations (8, all killed): count reads capacity; gpu_nodes allocatable-only; no capacity note; note always; gpu_capacity as string; JSON gpu from capacity; gpu_capacity key dropped; AMD stale note dropped.
+
+2026-10-31 02:50 Committed as f2d9de6
