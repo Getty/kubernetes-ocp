@@ -1,0 +1,20 @@
+---
+claimed_at: 2026-10-31T14:35:58Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:54:16Z
+id: 371
+priority: low
+status: in-progress
+tags:
+- secrets
+- git
+title: 'A clone''s .ocp/ gets no .ocp/.gitignore: only ocp init writes it'
+updated: 2026-10-31T14:35:58Z
+---
+
+Found by the secrets worker during k360 (2026-10-31). Only `ocp init` writes `.ocp/.gitignore`. A clone's `.ocp/`, now created by the first PIN1 unlock (k360) or by any other writer, never gets one, so keeping the decrypted state out of git relies on the project's own `.gitignore`. A hard invariant (skill ocp-core) says `.ocp/` must stay out of git.
+
+Done = whoever creates `.ocp/` first also writes the same `.ocp/.gitignore` init writes, with the same content, and never overwrites an existing one. One helper, not ten copies. Test: a clone fixture without `.ocp/` gets `.ocp/.gitignore` after a first unlock, and `git status` in a temp repo shows nothing under `.ocp/`.
+
+Lane: ocp-secrets-worker (the creators of .ocp/ are mostly in OCP::Secrets; list the others).
