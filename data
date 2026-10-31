@@ -1,0 +1,35 @@
+---
+class: standard
+completed: 2026-10-31T06:56:25Z
+created: 2026-10-31T05:12:28Z
+id: 302
+priority: low
+started: 2026-10-31T06:56:25Z
+status: done
+tags:
+- skills
+title: Skills follow-up after k293 and the validation batch (k292/k296/k299)
+updated: 2026-10-31T06:56:25Z
+---
+
+Found under k293 (2026-10-31). The ocp-usage skill (.claude/skills/ocp-usage/SKILL.md) is out of date in two places:
+- around lines 136-137: `ocp deploy-image --cluster` now refuses a name other than ocp.yaml's, before anything is sent;
+- around lines 177-180: `ocp node trust-host` without a terminal refuses (no STDIN read) and needs `--yes`.
+
+Once k292/k296/k299 land, also check ocp-usage for:
+- the new network: unknown-key and lb_pool start>stop refusals;
+- node addresses vs the service CIDR;
+- malformed-shape lines.
+The dash/underscore paragraph still credits MooX::Options::Role; since k167 it is OCP::Role::Cmd::_option_argv_spelled (noted on k294).
+
+Done = the skill matches lib/ for these, with surgical edits.
+
+From k292/k299 (choices worker): .claude/skills/ocp-usage/SKILL.md (around line 375) still says an unknown key under network: is not reported; since k292 it is refused (network.*, network.lb_pool.*, network.l2.*, plus lb_pool start after stop). ocp-usage should also name the service-network check (k299: node addresses and lb_pool inside 10.43.0.0/16 are refused, no key to move it). Config.pm POD for node_ip mentions only the pod CIDR; add the service network (doc-writer). gpu: false is now refused with the hint gpu: { enabled: false } (k296).
+
+From k312 (status worker): .claude/skills/ocp-usage/SKILL.md:91 still says 'fixable = apply carries a remedy'. Since k312, fixable (and the 'N of M can be reconciled automatically' count) means 'ocp apply closes it': a remedy, self_healing, or kind missing; report-only and error entries are not fixable.
+
+ocp-doc-writer (2026-10-31): ocp-usage SKILL.md now matches lib/ on: dash/underscore = OCP::Role::Cmd::_option_argv_spelled (k167); fixable per k312 (also in the Reconciliation & Drift section); update/destroy/trust-host confirmations (k301/k303/k304/k293); deploy-image --cluster guard (k293); validate lines for k292/k296/k299/k305. Also fixed the destroy cleanup list (--keep-status keeps status.yaml + deployed.yaml; the encrypted kubeconfig.yaml goes either way) and the false 'unknown key under network: is not reported'. Checked against source only, not by running. Main agent reviewed the diff.
+
+Skill text done, ready to commit (ocp-usage SKILL.md only).
+
+Committed as bc06678
