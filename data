@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-10-31T13:35:01Z
+id: 369
+priority: low
+status: todo
+tags:
+- gpu
+- drift
+title: 'NFD drift probe reads nfd-master only: an nfd-worker image changed in the
+  cluster is drift nowhere'
+updated: 2026-10-31T13:35:01Z
+---
+
+Left over from k351 (apply worker, 2026-10-31). The NFD drift probe in OCP::Drift (@COMPONENT_PROBES) reads the `nfd-master` Deployment only. A hand-changed image on the `nfd-worker` DaemonSet counts as drift nowhere: `ocp status` doesn't show it, and `ocp apply` doesn't re-apply. The k351 card body named nfd-worker; k351 fixed the master side.
+
+Done = decide whether nfd-worker gets its own probe, or whether the NFD probe reads both objects. Either way, status, the dry run and apply then agree on it, as k350/k351 made them agree for the other GPU workloads (OCP::Drift->version_against_pin, Workloads::off_pin). Test: hand-change the nfd-worker image in a fake cluster; status names it, the dry run says it would re-apply, and the real run re-applies. Red first, then a mutation check.
+
+Lanes: ocp-state-worker (the probe in OCP::Drift), then ocp-apply-worker if setup_nfd needs to read the second object.
