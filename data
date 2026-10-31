@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-10-31T02:47:26Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T02:47:26Z
+created: 2026-10-31T02:32:08Z
+id: 267
+priority: high
+started: 2026-10-31T02:47:26Z
+status: done
+tags:
+- apply
+- drift
+- bug
+title: ocp apply treats a drift error entry (k119/k256) as report-only drift
+updated: 2026-10-31T02:47:31Z
+---
+
+Found by k256 (ocp-state-worker). OCP::Drift reports a probe it could not read (RBAC denial, 5xx, TLS) as `kind => "error"`, remedy undef, "drift unknown" (k119 for distribution_drift, k256 for component_drift). lib/OCP/Cmd/Apply/Drift.pm handles those entries like report-only drift:
+1. the loop prints "No automatic step for this — see `ocp update`", wrong advice for a failed read;
+2. the entry never reaches @unresolved, so a run can print "All N component(s) up to date" and exit 0 over a cluster it could not read;
+3. dry_run_report labels it "report only, a real run leaves it as it is" instead of "could not be checked".
+
+Done when an error entry is said as "could not be checked: <cause>" (the cause is already on STDERR from Drift), counts as unresolved (non-zero exit, named in the summary), and dry-run says it could not be checked; tests for apply and --dry-run. Lane: ocp-apply-worker.
+
+2026-10-31 02:38 Read: Apply::Drift reconcile loop prints 'No automatic step' for any remedy-less entry not missing/self_healing, so kind=error lands there and never reaches @unresolved; dry_run_report's $is_report_only is true for it too. Plan: error branch first in both loops ('[drift] could not be checked: <message>', STDOUT -- Drift already carped the cause), real run pushes '<label> drift check' to @unresolved (Health::finish names it, exit 1), dry run counts it apart from actions and report-only. Only Apply/Drift.pm + a t/38 subtest; Apply.pm untouched.
+
+2026-10-31 02:44 Also found (not in scope, for the dispatcher): (1) Health::finish's STDOUT line 'Not every component reached its spec; see the [!!] lines above.' has no [!!] line to point at when a drift check is the only unresolved item -- the cause is OCP::Drift's untagged carp (Apply/Health.pm, apply lane). (2) Pre-existing grammar in dry_run_report: '1 more reported only -- a real run leaves it as they are.' (3) The binding run's t/71-drift-rex-probe.t died in k268's in-flight lib/OCP/Drift.pm ('Can't locate object method _worker_hosts ... Drift.pm line 829'); it passes 24/24 with HEAD's OCP::Drift and this change. Interaction with k268: every new error entry it adds now fails the apply by design, so re-run t/38 + t/71-cluster-ssh-key after k268 lands -- fakes must answer those reads with a 404 or an object. (4) --dry-run still exits 0 over an error entry (execute returns 0 for any dry run); unchanged, not asked. (5) Apply::Drift POD does not mention error entries -- ocp-doc-writer could add a line.
+
+2026-10-31 02:44 Done. lib/OCP/Cmd/Apply/Drift.pm: a kind=error entry is handled before the remedy check in both loops. Real run: STDOUT '  [drift] could not be checked: <message>' (cause stays only in the message; nothing new on STDERR), no 'ocp update' advice, '<label> drift check' pushed to @unresolved -> Health::finish 'Apply did not complete: Cilium drift check failed.', exit 1, summary 'N component(s) checked, none updated.' Dry run: same line, not 'report only', excluded from both the action and report-only counts, new line '  1 more could not be checked -- a real run would not complete until it can be read.' Apply.pm untouched. Test: t/38 subtest 'k267: ...' (stubbed detect: error entry + report-only pod CIDR entry, plus a control with the report-only entry alone; real run, Health::finish exit, dry run). Mutation: 8 mutants (fall-through to advice, wording dropped, push removed, dry wording removed, counted report-only, counted as action, count line dropped, line moved to STDERR) all killed; unmutated control passes in the same harness. Binding: DOCKER_BUILDKIT=0 make test over t/00-load t/52 t/38 t/20 t/47 t/71-cluster-ssh-key t/182 t/259 all ok; t/71-drift-rex-probe failed in k268's in-flight Drift.pm, passes against HEAD's (see note).
+
+2026-10-31 02:47 Committed as f04fdf5.
