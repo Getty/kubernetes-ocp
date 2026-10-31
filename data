@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-10-31T12:45:53Z
+created: 2026-10-31T10:06:42Z
+id: 339
+priority: low
+started: 2026-10-31T12:45:53Z
+status: done
+tags:
+- status
+title: ocp status counts 0 workers for a counted pool without nodes:, where apply
+  builds one
+updated: 2026-10-31T12:45:53Z
+---
+
+Found under k332 (status worker, 2026-10-31): a hetzner or local worker pool with no nodes: passes validate(), and ocp apply builds one worker for it (Apply/CR.pm worker_ocpnodes: `$count = $pool->{nodes} // 1`), but ocp status' spec summary counts it 0. k332 fixed the same miscount for a host-only ssh pool (Status.pm _pool_machines); this is the other pool type.
+
+Done = status counts what worker_ocpnodes builds for every pool shape validate() accepts (test, ideally one sweep against worker_ocpnodes as k322's t/296 claim 16 does for validate()).
+
+2026-10-31 10:28 Cause: Status.pm _pool_machines ended in `$nodes // $pool->{count} // 0`; worker_ocpnodes (Apply/CR.pm) makes `$pool->{nodes} // 1` workers of a non-ssh pool and never reads count:. Fix (scratch copy): non-ssh pool -> nodes // 1, ssh unchanged (list size, else 1 for a true host:, else nodes // 0), count: no longer read. count: history: only apply reader was _parse_node_names (392ddb1, 2026-02-15), removed in a5a598d (2026-02-16); since then status alone read it. validate() accepts count: silently on HEAD and HEAD+k331 (no pool key check). New sweep t/339-status-pool-count.t: product of provider x nodes x host x count, accepted set asked of validate() at run time, both forms compared with scalar worker_ocpnodes. Docker runs pending.
+
+2026-10-31 11:01 Also found (not in scope, for this board): (1) validate() accepts count: on a worker pool without a word, on HEAD and with k331 -- no pool key check; it names no machine for apply. Candidate: refuse unknown keys under a pool as k331 does under gpu:/system: (state/choices lane). (2) status runs without validate(), so on shapes validate() refuses its count can still differ from worker_ocpnodes: t/230's fixture provider: ssh, nodes: 2 shows 2, apply would make 0. Left alone: outside the card's criterion, t/230's claim is the JSON shape. (3) status shows a pool with no provider as ssh, apply reads it as hetzner; validate() refuses such a pool. Left alone.
+
+2026-10-31 11:01 Done: Status.pm _pool_machines counts what worker_ocpnodes builds -- an ssh pool the hosts it names (nodes list, else 1 for a true host:), any other pool nodes // 1; count: no longer read (apply has not read it since a5a598d, 2026-02-16). POD says so. New t/339-status-pool-count.t: product provider x nodes x host x count (270 shapes), the accepted set asked of validate() at run time, both forms compared with scalar worker_ocpnodes, plus 10 named shapes with pinned counts. Docker make test (status tests + t/332 + t/339, 14 files): PASS, Tests=209 on HEAD 984e43c and on HEAD+k331; t/339 sweep 132 accepted/138 refused on HEAD, 52/218 with k331. Mutations: old '// 0' -> t/339 red (80 of 264 sweep + 8 of 40 named), 'count //' back -> red (40 + 2); t/332 stayed green under both. Patch w-status339/k339.patch applied to the shared tree (Status.pm, t/339). Not committed.
+
+Committed as f801c0d
