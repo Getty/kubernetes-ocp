@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T08:49:08Z
+created: 2026-10-31T08:10:45Z
+id: 323
+priority: low
+started: 2026-10-31T08:49:08Z
+status: done
+tags:
+- destroy
+- validation
+title: ocp destroy reads pool nodes without validate() and dies on a malformed entry
+updated: 2026-10-31T08:49:08Z
+---
+
+Found under k315 (2026-10-31). lib/OCP/Cmd/Destroy.pm ~399 reads a worker pool's nodes the way Apply/CR.pm worker_ocpnodes does, and `ocp destroy` runs no validate(): an ssh pool with a boolean entry dies inside Perl ("Not a HASH reference"), a hetzner pool with a list there numifies it. k315 refuses those shapes in validate(), but destroy never asks.
+
+Fix: run validate() (or the pool-nodes part, Config::_pool_nodes_errors) before destroy reads the pools, and stop with its lines on STDERR; or read through the same helper. Related: k306 (commands that read control_planes/workers without validate()).
+
+Done = `ocp destroy` on a malformed pool nodes: stops with validate()'s line before it deletes anything (test).
+
+2026-10-31 08:21 Reproduced on HEAD c46f5f1 (t/323-destroy-pool-nodes.t, red): ssh pool nodes: [w1.lan, true] dies 'Not a HASH reference at Destroy.pm line 400' after the secrets read and the OCPNode list; through run_cli it is an 'internal error'. A hetzner pool's list is read as host names. Plan: gate on exactly what _spec_worker_entries reads -- a pool's nodes: in its list form, known provider -- via Config::_pool_nodes_errors/_pool_where (validate()'s words, one source), first thing in execute(), before secrets/API. Not a full validate(): destroy is the way out and must not wait on keys it never reads (gpu, robocop, pool counts).
+
+2026-10-31 08:46 Decision: not a full validate(). Destroy is the way out of a cluster; a full gate would refuse a teardown over keys destroy never reads (gpu.driver, robocop: no / unknown robocop key since k315, >7 listed CPs), keeping paid servers up until an unrelated edit. The gate covers exactly the read _spec_worker_entries makes: a pool that is a mapping, known string provider, nodes: a LIST -> Config::_pool_nodes_errors(_pool_where) (validate()'s words, one source; cross-class private call has precedent in Drift.pm -> OCP::Config::_looks_like_cidr). A pool count is never read by destroy, so no count shape gates it. Runs first in execute(), before the secrets read (PIN), the API and any provider. t/77's local pool used nodes: [127.0.0.1], refused by validate() since k315 (a local pool counts); moved to host: worker.local, which also makes its k116 subtest bite (it was masked by the CP fallback). Mutants (10 on Destroy.pm): 8 killed; survivors no_ref_guard (equivalent once OCP is loaded, kept per ocp-core invariant 4) and the workers-is-a-list guard (crash moves earlier/later, k306).
+
+2026-10-31 08:46 Also found (k306 material, destroy lane): workers: foo and a non-mapping pool still die inside Perl in _spec_worker_entries (before anything is deleted). control_planes: [police1] (a string entry) with a hetzner token: destroy deletes the servers and removes status.yaml, then dies in _report_mislabelled_servers ('Can't use string as a HASH ref') -- no 'Cluster destroyed.', exit 1, mislabelled-server report skipped. Suggest a public Config helper (shape errors: name, control_planes/workers shape, pool mapping, provider, host, pool nodes) that validate() calls first and read-side commands gate on -- for state-worker, Config.pm is busy (k320/k322). Note: Destroy now calls Config::_pool_nodes_errors and _pool_where; a rename there breaks it.
+
+2026-10-31 08:46 Done: Destroy.pm _spec_worker_errors + gate at the top of execute(): a worker pool nodes: list validate() refuses stops ocp destroy with validate()'s lines (die -> run_cli STDERR, exit 1) before secrets/API/provider; nothing else validate() refuses gates it. POD updated. t/323-destroy-pool-nodes.t new (8 subtests, 6 red on HEAD c46f5f1, 2 guard the no-lockout side); t/77 local-pool fixture moved to host: worker.local. Verified: make test on t/323 + destroy neighbours (15 files, 279 tests) PASS; full make test on clean HEAD+patch: Files=226, Tests=3590, PASS, no skips. Patch: scratchpad w-destroy323/k323.patch.
+
+Committed as e2b7b1a
