@@ -11,6 +11,7 @@ use Kubernetes::REST::Kubeconfig;
 
 use OCP;
 use OCP::Cmd::Apply::CR;
+use OCP::Cmd::Apply::K8s ();
 use OCP::Config;
 use OCP::Robocop::Manifest;
 use OCP::Secrets;
@@ -65,7 +66,10 @@ sub execute {
 # CRDs first, then the rest of share/robocop/ (skipping kustomization.yaml),
 # each document shaped from the config (OCP::Robocop::Manifest->for_config):
 # the security level's variant, plus the distribution and pod CIDR robocop
-# refuses to start without (k186, k184).
+# refuses to start without (k186, k184). A CRD in the cluster that is newer
+# than this ocp is left as it is, judged and said the way `ocp apply` does
+# (OCP::Cmd::Apply::CR::skip_newer_crd, k311); one that cannot be read dies
+# with the cause.
 sub _apply_manifests {
     my ($self, $api, $config) = @_;
 
@@ -87,6 +91,7 @@ sub _apply_manifests {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
             my $kind = $doc->{kind};
             my $name = $doc->{metadata}{name};
+            next if OCP::Cmd::Apply::CR::skip_newer_crd($self, $api, $doc);
             $api->ensure(OCP::Robocop::Manifest->for_config($doc, $config));
             print "  [ok] ensured $kind/$name\n";
         }
@@ -98,6 +103,13 @@ sub _apply_manifests {
 sub _find_share_dir {
     my ($self) = @_;
     return OCP::Share->dir;
+}
+
+# The raw read skip_newer_crd judges a CRD by, as OCP::Cmd::Apply has it:
+# undef only for a 404, a death with the cause for anything else (k269).
+sub _crd_get {
+    my ($self, $api, $resource_path) = @_;
+    return OCP::Cmd::Apply::K8s::crd_get($self, $api, $resource_path);
 }
 
 1;
@@ -127,8 +139,11 @@ L<OCP::Robocop::Manifest>) and leaves the private key to C<ocp inject-key>.
 Then reads manifests from the OCP share directory (C<share/robocop/>), applies
 CRDs first and then remaining resources (skipping C<kustomization.yaml>) via
 L<Kubernetes::REST/ensure> against the encrypted kubeconfig for the current
-project. The Deployment carries the cluster's distribution and pod CIDR from
-F<ocp.yaml> (C<OCP_DISTRIBUTION>, C<OCP_POD_CIDR>); robocop does not start
-without them.
+project. A CRD in the cluster that declares fields this ocp's does not -- one
+a newer ocp installed -- is left as it is, with the C<[skip]> line C<ocp apply>
+gives it (L<OCP::Cmd::Apply::CR>, k311); a CRD it cannot read stops the
+command with the cause instead of being written over blind. The Deployment
+carries the cluster's distribution and pod CIDR from F<ocp.yaml>
+(C<OCP_DISTRIBUTION>, C<OCP_POD_CIDR>); robocop does not start without them.
 
 =cut

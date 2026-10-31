@@ -21,6 +21,7 @@ use OCP::SSH;
 =head1 SYNOPSIS
 
     OCP::Cmd::Apply::CR::ensure_crds($apply, $api);
+    my $left    = OCP::Cmd::Apply::CR::skip_newer_crd($cmd, $api, $crd_doc);
     OCP::Cmd::Apply::CR::ensure_providers($apply, $api, $config, $secrets);
     OCP::Cmd::Apply::CR::ensure_cp_ocpnode($apply, $api, $cp_info);
     OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($apply, $api, $config, \@names);
@@ -62,7 +63,9 @@ line, when that CRD declares fields this ocp's does not -- one a newer ocp
 installed, whose fields the API server would otherwise drop from every
 object; L<OCP::Drift/ocp_crd_drift> reports it, and both judge by
 L<OCP::Drift/crd_schema_diff>. A CRD it cannot read is not written over
-blind: it dies with the cause.
+blind: it dies with the cause. C<skip_newer_crd> is that judgement for one
+CRD document, and C<ocp deploy-robocop> (L<OCP::Cmd::DeployRobocop>) makes it
+too (k311).
 
 L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
 forwarder — the existing test surface (t/20-apply-refactor.t,
@@ -91,31 +94,42 @@ sub ensure_crds {
     # Nothing here needs a typed round-trip; the NFD and GPU CRDs already go the
     # same way via _apply_yaml_file.
     #
-    # A CRD in the cluster that declares fields this one does not is newer
-    # than this ocp, and is left as it is (k291): written over, the API server
-    # would drop those fields from every OCPNode a newer ocp or robocop wrote
-    # -- the nodeIP k291 lost, the other way round. OCP::Drift reports it,
-    # with the way out, and judges it by the same crd_schema_diff. Only a 404
-    # is "not there"; a CRD that cannot be read is not written over blind
-    # (crd_get dies with the cause, k269).
+    # A CRD in the cluster that is newer than this ocp is left as it is
+    # (k291, skip_newer_crd).
     for my $file_path (sort $crd_dir->children(qr/\.ya?ml$/)) {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
-            if ($doc->{kind} eq 'CustomResourceDefinition') {
-                my $live = $self->_crd_get($api,
-                    '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/' . $doc->{metadata}{name});
-                my (undef, $extra) = $live ? OCP::Drift->crd_schema_diff($live, $doc) : ();
-                if ($extra && @$extra) {
-                    print "  [skip] $doc->{kind}/$doc->{metadata}{name} is newer than this ocp"
-                        . ' (it declares ' . join(', ', @$extra) . "); left as it is\n";
-                    next;
-                }
-            }
+            next if skip_newer_crd($self, $api, $doc);
             $self->_server_side_apply($api, $doc);
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
     }
+}
+
+# Whether $doc, one of OCP's CRDs, is to be left as the cluster has it: true,
+# with a [skip] line on STDOUT, when the cluster's declares fields $doc does
+# not -- a newer ocp installed it, and written over, the API server would drop
+# those fields from every OCPNode a newer ocp or robocop wrote (k291; the
+# nodeIP k291 lost, the other way round). OCP::Drift reports it, with the way
+# out, and judges it by the same crd_schema_diff. False otherwise, and for a
+# document that is no CRD. Only a 404 is "not there"; a CRD that cannot be
+# read is not written over blind ($self->_crd_get dies with the cause, k269).
+#
+# The one judgement both writers of OCP's CRDs make: ensure_crds (`ocp
+# apply`) and OCP::Cmd::DeployRobocop (`ocp deploy-robocop`, k311).
+sub skip_newer_crd {
+    my ($self, $api, $doc) = @_;
+    return 0 unless $doc->{kind} eq 'CustomResourceDefinition';
+
+    my $live = $self->_crd_get($api,
+        '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/' . $doc->{metadata}{name});
+    my (undef, $extra) = $live ? OCP::Drift->crd_schema_diff($live, $doc) : ();
+    return 0 unless $extra && @$extra;
+
+    print "  [skip] $doc->{kind}/$doc->{metadata}{name} is newer than this ocp"
+        . ' (it declares ' . join(', ', @$extra) . "); left as it is\n";
+    return 1;
 }
 
 sub ensure_providers {

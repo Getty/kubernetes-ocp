@@ -56,6 +56,15 @@ package FakeApi {
     sub list    { bless { items => [] }, 'FakeEmptyList' }
     sub k8s     { $_[0] }
     sub object_to_struct { $_[1] }
+    # deploy-robocop reads each OCP CRD raw before it writes it (k311): this
+    # cluster has none yet, which is a 404.
+    sub _request { FakeNotFound->new }
+}
+
+package FakeNotFound {
+    sub new     { bless {}, shift }
+    sub status  { 404 }
+    sub content { '{"kind":"Status","reason":"NotFound","code":404}' }
 }
 package FakeEmptyList { sub items { $_[0]{items} } }
 package FakeShareCmd {

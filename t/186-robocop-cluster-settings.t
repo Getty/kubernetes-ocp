@@ -47,6 +47,15 @@ package FakeApi {
     sub new     { bless { ensured => [] }, shift }
     sub ensure  { push @{ $_[0]{ensured} }, $_[1]; return $_[1] }
     sub ensured { $_[0]{ensured} }
+    # deploy-robocop reads each OCP CRD raw before it writes it (k311): this
+    # cluster has none yet, which is a 404.
+    sub _request { FakeNotFound->new }
+}
+
+package FakeNotFound {
+    sub new     { bless {}, shift }
+    sub status  { 404 }
+    sub content { '{"kind":"Status","reason":"NotFound","code":404}' }
 }
 
 package FakeOCP {

@@ -447,6 +447,10 @@ ocp deploy-robocop            # deploy the controller and its CRDs
 ocp deploy-image --tag v1.2.3 # new controller image, without a full apply
 ```
 
+An OCPNode or OCPNodeProvider CRD that a newer `ocp` installed stays as it is
+(`[skip]`), as with `ocp apply`; a CRD that cannot be read stops the command
+with its cause.
+
 **See every version in play:**
 
 ```bash

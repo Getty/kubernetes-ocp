@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp deploy-robocop` leaves an OCPNode or OCPNodeProvider CRD that a
+      newer `ocp` installed as it is, with `ocp apply`'s `[skip]` line,
+      judged by the one check both commands share. An older or absent CRD
+      is still written; one that cannot be read stops the command with the
+      cause.
     - `ocp node add --gpu` waits for the GPU label as long as `ocp apply`
       waits for NFD on a fresh node, ten minutes, instead of five: the NFD
       worker pod of a node that has just joined gets no sandbox until
