@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-31T03:57:38Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T03:57:42Z
+created: 2026-10-31T02:15:04Z
+id: 262
+priority: medium
+started: 2026-10-31T03:57:42Z
+status: done
+tags:
+- status
+- drift
+title: ocp status hides an exception from OCP::Drift->detect
+updated: 2026-10-31T03:57:42Z
+---
+
+Found by k257 (ocp-status-worker). In both the text and the --json form of `ocp status`, `eval { OCP::Drift->...->detect } // []` swallows an exception thrown by OCP::Drift itself: drift then just reads as empty ("no drift") and nothing reaches STDERR. That is a wrong verdict, not a missing line (house rule: STDERR carries what went wrong, with its diagnosis).
+
+Done when: a die inside Drift detection is reported on STDERR with its cause, the drift section says it could not be determined (text) / carries an unknown state (JSON) instead of "none", and the exit code reflects it; test pins both forms. Lane: ocp-status-worker.
+
+2026-10-31 03:37 Cause: lib/OCP/Cmd/Status.pm text (line ~154) and _collect_json (~260) wrap OCP::Drift->new(...)->detect in eval {} // [] -- a die reads as an empty drift list, exit 0, nothing on STDERR. Also: text form prints a kind=error entry as plain '  [drift] <message>' and counts it into the 'N of M can be reconciled' total; ocp apply (k267) already says '  [drift] could not be checked: <message>'. Plan: one shared detect wrapper for both forms, unknown entries rendered like apply. No change in lib/OCP/Drift.pm needed.
+
+2026-10-31 03:47 JSON decision: no new field and no change of meaning. On a die inside detect, 'drift' stays a list but is not empty: it holds ONE entry of the existing kind 'error' (the k256/k268 per-probe shape) -- component 'drift', message 'Drift detection: could not complete, drift unknown: <cause>', expected/actual/manual_step null, fixable false. Beside it the existing top-level 'error' = 'Cannot detect drift: <cause>' and exit 1, so the documented 'exit 1 <=> error string present' holds. Why: kind=error is already the documented 'drift unknown' marker in this list; a consumer that honours it reads the die as unknown with no code change, and a parallel drift_state field would be a second source of truth. Text: STDERR 'WARNING: Cannot detect drift: <cause>'; drift section '  [drift] could not be checked: Drift detection: could not complete, drift unknown: <cause>'; exit 1. Per-probe error entries: text now '  [drift] could not be checked: <message>' (apply's k267 wording) and left out of 'N of M can be reconciled'; JSON unchanged (kind error, fixable false, cause in message). Exit for a per-probe error entry stays 0 (t/230 pins that; AMD read failures leave the exit alone the same way) -- only a die of the whole detection is exit 1. Open for the dispatcher: whether a per-probe error should also exit 1 as in apply (k267).
+
+2026-10-31 03:54 Also: t/11-status-command.t's FakeK8s had no api(), so its with-cluster case had always died inside detect and been swallowed -- the k262 bug in a test. After the fix it printed 'WARNING: Cannot detect drift: Can't locate object method api' and returned 1 without failing an assertion. Gave the fake 'sub api { undef }' and mocked rex_prober as t/230/t/257 do; no assertion changed.
+
+2026-10-31 03:54 Done. lib/OCP/Cmd/Status.pm: new _detect_drift shared by text and --json (die -> STDERR 'WARNING: Cannot detect drift: <cause>', one kind=error entry component 'drift', exit 1; JSON also sets error 'Cannot detect drift: <cause>'); _drift_lines renders kind=error as '  [drift] could not be checked: <message>' (apply's k267 wording); 'N of M can be reconciled' counts only found drift; POD (description, JSON OUTPUT, execute) updated. t/262-status-drift-unknown.t new (34 tests: die text+json, detect returning no list, mixed per-probe error entries text+json, clean control). t/11-status-command.t: fake gets api(), rex_prober mocked. Verified: t/262 red on HEAD's Status.pm (15 of 34 fail); mutations M1-M7 (text exit, json error/exit, line wording, count, STDERR line, swallow-undef, empty list instead of entry) each killed. Binding: DOCKER_BUILDKIT=0 make test on 27 affected files (status, kubernetes, drift, robocop-kube/controller, ssh, health) -> Files=27 Tests=689 PASS; rerun after the t/11 change: 5 files 93 tests PASS, no stray STDERR. No change in lib/OCP/Drift.pm needed. Open question: per-probe error entries keep exit 0.
+
+Decision (main agent, my call, not the maintainer's): a single probe that could not be read keeps ocp status at exit 0, as t/230 pins. ocp status is a report, not a gate: exit 1 there means the report itself could not be produced (kubeconfig, API, detection died), and the unreadable probe is shown as 'could not be checked' in both forms. ocp apply is the gate and exits 1 for it (k267). Easy to flip if the maintainer wants status to match.
+
+2026-10-31 03:57 Decision: a single unreadable probe stays exit 0; only a died detection exits 1.
+
+2026-10-31 03:57 Committed as 1e361a5.
