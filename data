@@ -1,0 +1,47 @@
+---
+class: standard
+completed: 2026-10-31T12:46:34Z
+created: 2026-10-31T09:56:58Z
+id: 338
+priority: low
+started: 2026-10-31T12:46:34Z
+status: done
+tags:
+- registry
+- drift
+title: 'Corefile without a root block: configure_registry_dns warns, OCP::Drift sees
+  no drift; one block parser instead of three'
+updated: 2026-10-31T12:46:34Z
+---
+
+Found under k328 (apply worker, 2026-10-31), state lane, an edge case: a CoreDNS Corefile with no root server block but with its own registry.local block -- since k328 configure_registry_dns warns (no root block to add the host to), while OCP::Drift reports no registry.local drift. The writer and the drift check read the Corefile differently.
+
+Cleanup alongside: the Corefile nesting-depth loop now exists three times (corefile_with_host, corefile_drop_added_hosts, corefile_has_root_block in Apply/Network.pm or Registry.pm) -- one parser would keep the writer and OCP::Drift reading it the same way.
+
+Done = writer and drift agree on that Corefile (test), one shared block parser.
+
+2026-10-31 11:04 Repro (red on HEAD 984e43c): new t/338-registry-dns-one-reading.t drives configure_registry_dns and registry_dns_drift over 13 Corefiles and asserts their verdicts agree. HEAD: 11/14 subtests red; the card's Corefile (no root block, registry.local:53 block mapping to the CP) -> writer dies 'no server block for the root zone', probe says nothing to do. Cause: the writer looks only at the root block, corefile_host_address takes the first record anywhere in the file; neither asks which block CoreDNS answers registry.local from (ADR 0022 measured: the more specific block shadows the root record). Plan: one parser, new Moo class OCP::Corefile (blocks, block_for = most specific covering zone, address_of, record), used by Network.pm and Drift.pm; writer writes only into the root block (ADR 0016/0022), a block of its own that maps right = up to date, otherwise dies with the cause; probe reports such a Corefile as drift ocp apply does not close (spec + manual_step).
+
+2026-10-31 11:43 Result: patch at scratchpad/w-core338/k338.patch (against HEAD 3d6e6e2, git apply --check clean; not applied to the shared tree). Files: lib/OCP/Corefile.pm (new), lib/OCP/Cmd/Apply/Network.pm, lib/OCP/Cmd/Apply.pm, lib/OCP/Drift.pm, t/338-registry-dns-one-reading.t (new).
+
+Parser: new Moo class OCP::Corefile (text -> lines/depth/blocks; block_for picks the server block whose zone covers a name most specifically, root '.' as catch-all, first on a tie; record/record_index/address_of read the hosts record in that block). Not in Network.pm: Drift would have to `use OCP::Cmd::Apply::Network`, which already uses OCP::Drift (compile-time cycle; breaking it with a runtime require goes against getty-perl-core), and ocp status would load an apply command module. Not in Drift.pm: a parsed Corefile is state a Moo object holds, the grammar is neither drift nor apply, and it keeps the Drift.pm diff small ahead of k313. Network.pm's three depth loops and corefile_root_block are gone; corefile_has_root_block delegates (its POD stays with k337). Removed the uncalled forwarder Apply.pm::_corefile_root_block.
+
+How the two sides agree now: the answering block maps the name to the CP -> writer 0 / probe undef. The answering block is root and the record is missing or stale -> writer patches / probe kind missing "ocp apply restores it" (same as before). Any other block answers wrongly, or no block answers -> writer dies naming the block / probe kind spec + manual_step (not counted fixable by Status/dry run). The writer still writes only into the root block (ADR 0016/0022).
+
+Behaviour changes: no root block + own block right: die -> 0 (the card case). Own block stale or without a record: die with a message naming the shadowing block. Root + own block right: used to write a shadowed root record -> 0. Root right + own block stale: used to be 0 -> dies. Probe: a record outside the answering block no longer counts. A stale own block is reported with the address CoreDNS answers. Cases ocp apply cannot fix are kind spec instead of missing. The writer's record recognizer now needs a '.' or ':' in the address (the old regex took pure hex words such as `add` for an address).
+
+Tests (make test, IMAGE=localhost/ocp-w338): red on old HEAD 984e43c + t/338 = 11 of 14 subtests failed (card case: probe "nothing to do" while the writer died "no server block for the root zone"). With the fix, targeted run of t/338 + mutant driver + t/39 t/328 t/38 t/268 t/269 t/312 = Files=8 Tests=165 PASS. t/39 and t/328 pass with no assertion changed. Full suite on HEAD 3d6e6e2 + patch: make test -> Files=235 Tests=3679 Result: PASS, nothing skipped.
+
+Mutation: 7/7 killed, control passes (HEAD's Network+Drift; old first-record-anywhere reader in Drift; writer ignores own block; first matching block instead of most specific; probe always restorable; Drift's own regex root check; writer's own record scan instead of record_index). Mutants are preloaded with -M because Rex prepends the absolute lib to @INC, and an $INC assertion checks each mutant really loaded.
+
+Leftovers, not done here (for the dispatcher to route):
+- docs/adr/0022 says corefile_host_address "reads the mapping regardless of which block the line sits in", which is no longer true (adr-auditor).
+- ADR 0022 counts a k3s coredns-custom *.server snippet as solved, but those come from another ConfigMap and neither side sees them.
+- A ConfigMap with no Corefile key: the probe moves on to the next name or returns nothing, while the writer dies (k328). The two still disagree there; out of scope.
+- Server-block ports are ignored when matching zones, as root-block matching always did.
+- The probe does not see the duplicate-hosts crash that the writer repairs (a different concern).
+- k337: corefile_has_root_block POD is still pending. I wrote the POD for the new OCP::Corefile; the doc writer may review it.
+
+2026-10-31 11:43 Ready for review: patch at scratchpad/w-core338/k338.patch, headed by a proposed subject, body and Changes bullet; not applied, not committed. Full binding suite PASS (235 files, 3679 tests). Release manager: apply it to the tree, add the Changes bullet, commit.
+
+Committed as 5ea2861
