@@ -321,7 +321,9 @@ package FakeApi {
     sub get {
         my ($self, $kind, %a) = @_;
         my $obj = $self->{objects}{ join '/', $kind, $a{namespace} // '', $a{name} // '' };
-        die "$kind not found\n" unless $obj;
+        # A 404, as Kubernetes::REST answers an object that is not there
+        # (k256: only that reads as absent to OCP::Drift).
+        die "Kubernetes API error (get $kind): 404 $kind not found\n" unless $obj;
         return $obj;
     }
     sub list { +{ items => [] } }

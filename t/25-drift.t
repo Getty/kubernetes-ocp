@@ -10,6 +10,7 @@ use OCP::Config;
 use OCP::Drift;
 use OCP::Versions;
 use IO::K8s;
+use Kubernetes::REST::APIError;
 
 #
 # Fake Kubernetes API: hands back plain hashrefs, like the real client does
@@ -22,8 +23,11 @@ package FakeApi {
     sub get {
         my ($self, $kind, %args) = @_;
         my $key = join '/', $kind, $args{namespace} // '', $args{name} // '';
+        die $self->{get_die}{$key} if $self->{get_die}{$key};
         my $obj = $self->{objects}{$key};
-        die "$kind $args{name} not found\n" unless $obj;
+        # What Kubernetes::REST dies with for an object that is not there:
+        # only a 404 reads as absent (k256).
+        die "Kubernetes API error (get $kind): 404 $kind $args{name} not found\n" unless $obj;
         return $obj;
     }
 
@@ -533,7 +537,7 @@ sub gateway_drift {
         my ($self, $kind, %args) = @_;
         push @asked, { kind => $kind, %args } if $kind eq 'CustomResourceDefinition';
         my $obj = $self->{objects}{ join '/', $kind, $args{namespace} // '', $args{name} // '' };
-        die "not found\n" unless $obj;
+        die "Kubernetes API error (get $kind): 404 not found\n" unless $obj;
         return $obj;
     };
     gateway_drift();
@@ -619,6 +623,108 @@ sub gateway_drift {
     my ($entry) = grep { $_->{kind} eq 'error' } @$drift;
     ok($entry, 'detect() surfaces a distribution API error as a drift entry');
     is($entry->{component}, 'rke2', 'the entry attributes the error to the distribution');
+}
+
+#
+# Test: a probe's read that fails with anything but a 404 is "drift unknown",
+# never "not there" (k256, the class of k119).
+#
+# component_drift took every failed GET for an absent object. For an optional
+# probe -- the GPU operator, the AMD GPU DaemonSets -- absence is no drift, so
+# an RBAC denial or an apiserver 5xx came out as a clean cluster. For a
+# required one it came out as 'missing', and Cilium's missing entry carries
+# the remedy that installs it from nothing.
+#
+
+# What Kubernetes::REST dies with for an HTTP error status.
+sub api_error {
+    my ($code, $reason, $context) = @_;
+    return Kubernetes::REST::APIError->new(
+        code    => $code,
+        context => $context,
+        body    => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}),
+    );
+}
+
+my $NODES = { Node => { items => [
+    { metadata => { name => 'police1' },
+      status => { nodeInfo => { kubeletVersion => 'v1.31.3+rke2r1' } } },
+] } };
+
+# [ label, FakeApi key, kind, "<namespace>/<name>" as the message names it ]
+my @OPTIONAL = (
+    [ 'GPU Operator', 'Deployment/gpu-operator/gpu-operator', 'Deployment', 'gpu-operator/gpu-operator' ],
+    [ 'AMD GPU device plugin', amd_key('device_plugin'), 'DaemonSet',
+      'kube-system/' . $OCP::Drift::AMD_GPU_DAEMONSETS{device_plugin}{name} ],
+);
+
+for my $optional (@OPTIONAL) {
+    my ($label, $key, $kind, $where) = @$optional;
+    my $config = write_config(spec => $BASE_SPEC);
+
+    {
+        my @warn;
+        local $SIG{__WARN__} = sub { push @warn, $_[0] };
+        my $api = FakeApi->new(objects => { matching_cluster() }, lists => $NODES,
+            get_die => { $key => api_error(404, 'NotFound', "get $kind") });
+        is_deeply(OCP::Drift->new(config => $config, api => $api)->detect, [],
+            "$label answering 404: not deployed, which is no drift for an optional probe");
+        is_deeply(\@warn, [], "$label answering 404: nothing on stderr");
+    }
+
+    for my $case ([ 403, 'Forbidden' ], [ 500, 'InternalError' ]) {
+        my ($code, $reason) = @$case;
+        my @warn;
+        local $SIG{__WARN__} = sub { push @warn, $_[0] };
+        my $api = FakeApi->new(objects => { matching_cluster() }, lists => $NODES,
+            get_die => { $key => api_error($code, $reason, "get $kind") });
+
+        my $drift = OCP::Drift->new(config => $config, api => $api)->detect;
+        is(scalar @$drift, 1, "$label answering $code: one entry, not a clean cluster");
+        my ($d) = @$drift;
+        is($d->{kind}, 'error', "$label answering $code: an error entry, drift unknown");
+        is($d->{label}, $label, "$label answering $code: named after the probe");
+        is($d->{actual}, undef, "$label answering $code: no running version claimed");
+        is($d->{remedy}, undef, "$label answering $code: nothing to run");
+        ok(!$d->{self_healing}, "$label answering $code: not one a plain apply closes");
+        like($d->{message}, qr/^\Q$label\E: could not read \Q$kind $where\E, drift unknown: /,
+            "$label answering $code: the message names the object and says drift is unknown");
+        like($d->{message}, qr/\b$code\b.*\Q$reason\E/,
+            "$label answering $code: and carries the API error");
+        is(scalar @warn, 1, "$label answering $code: one diagnosis on stderr");
+        like($warn[0], qr/component_drift: get \Q$kind $where\E failed: .*\b$code\b/,
+            "$label answering $code: the diagnosis names the read and the status");
+    }
+}
+
+{
+    # Not every failure is an HTTP status: a discovery or transport failure
+    # dies with a plain string. That is not a 404 either.
+    my @warn;
+    local $SIG{__WARN__} = sub { push @warn, $_[0] };
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => { matching_cluster() }, lists => $NODES,
+        get_die => { amd_key('metrics') => "Could not load resource map from cluster: connection refused\n" });
+    my ($d) = OCP::Drift->new(config => $config, api => $api)->component_drift;
+    is($d->{kind}, 'error', 'a plain-string failure of an optional probe is drift unknown too');
+    like($d->{message}, qr/connection refused/, 'carrying the reason');
+    is(scalar @warn, 1, 'said on stderr');
+}
+
+{
+    # A required probe: a cluster OCP could not read is not a cluster without
+    # Cilium. The missing entry would carry upgrade_cilium, which installs.
+    my @warn;
+    local $SIG{__WARN__} = sub { push @warn, $_[0] };
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => { matching_cluster() }, lists => $NODES,
+        get_die => { 'Deployment/kube-system/cilium-operator' => api_error(403, 'Forbidden', 'get Deployment') });
+    my @drift = grep { $_->{component} eq 'cilium' }
+                OCP::Drift->new(config => $config, api => $api)->component_drift;
+    is(scalar @drift, 1, 'a Cilium read denied with 403 is one entry');
+    is($drift[0]{kind}, 'error', 'drift unknown, not missing');
+    is($drift[0]{remedy}, undef, 'and no install remedy rides on it');
+    is(scalar @warn, 1, 'said on stderr');
 }
 
 #

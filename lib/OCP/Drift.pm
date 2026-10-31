@@ -452,6 +452,30 @@ sub component_drift {
                 (defined $probe->{namespace} ? (namespace => $probe->{namespace}) : ()),
             );
         };
+        my $err = $@;
+
+        # Only a 404 says the object is not there. Every other failed read --
+        # an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
+        # the component, and used to read as absent all the same: no drift at
+        # all for an optional probe, a 'missing' entry for the others, one
+        # whose remedy installs from nothing (k256, the class of k119). It is
+        # an 'error' entry instead, carped to stderr: drift unknown, not clean.
+        if (!$object && $err && $err !~ /\b404\b/) {
+            my $where = join '/', grep { defined } $probe->{namespace}, $probe->{name};
+            my $reason = "$err";
+            chomp $reason;
+            carp "OCP::Drift::component_drift: get $probe->{kind} $where failed: $reason";
+            push @drift, {
+                kind      => 'error',
+                component => $probe->{component},
+                label     => $probe->{label},
+                expected  => $expected,
+                actual    => undef,
+                message   => "$probe->{label}: could not read $probe->{kind} $where, drift unknown: $reason",
+                remedy    => undef,
+            };
+            next;
+        }
 
         unless ($object) {
             # Not every component belongs on every cluster. Reporting the GPU
@@ -972,7 +996,9 @@ Each entry is a hashref:
 
 =item * B<kind> - C<spec>, C<version>, C<missing>, C<error> or C<rex_probe>.
 C<error> is a query that could not be made -- revoked token, RBAC denial, TLS
-failure, apiserver 5xx -- rather than a comparison that came back wrong.
+failure, apiserver 5xx -- rather than a comparison that came back wrong: the
+drift of what it names is unknown, and the cause was carped to stderr. It
+carries no remedy.
 C<rex_probe> is host-side drift found over SSH rather than through the API.
 
 =item * B<component> - key in the version manifest, or the node name for spec drift
@@ -1061,6 +1087,14 @@ C<metrics> entries are upstream's Helm defaults, which no released Rex::Rancher
 deploys yet). All four
 are optional — they exist only on clusters with an AMD card, and C<gpu.amd>
 decides which of them run — and report-only.
+
+Only a 404 on a probe's read counts as "not there" (k256). Any other failed
+read -- an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
+the component: the probe becomes one C<kind =E<gt> 'error'> entry with no
+remedy, whose message names the object and the exception, and the same
+exception is carped to stderr. That holds for the optional probes, which
+would otherwise report nothing, and for the others, which would otherwise
+report the component missing.
 
 =head2 remedy_params
 

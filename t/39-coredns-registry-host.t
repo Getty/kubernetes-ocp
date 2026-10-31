@@ -252,7 +252,9 @@ package FakeApi {
         my ($self, $kind, %args) = @_;
         my $key = join '/', $kind, $args{namespace} // '', $args{name} // '';
         my $obj = $self->{objects}{$key};
-        die "$kind $args{name} not found\n" unless $obj;
+        # A 404, as Kubernetes::REST answers an object that is not there
+        # (k256: only that reads as absent to OCP::Drift).
+        die "Kubernetes API error (get $kind): 404 $kind $args{name} not found\n" unless $obj;
         return $obj;
     }
 
