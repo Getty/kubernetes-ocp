@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-10-31T09:00:36Z
+created: 2026-10-31T08:03:44Z
+id: 318
+priority: medium
+started: 2026-10-31T09:00:36Z
+status: done
+tags:
+- apply
+- output
+title: Apply summary says All up to date after a failed cert-manager or Gateway step,
+  and three more output gaps
+updated: 2026-10-31T09:00:36Z
+---
+
+Found under k278/k307 (apply worker, 2026-10-31), noted on k278:
+- A failed cert-manager or Cilium Gateway step does not stop the reconcile summary from saying "All up to date". The [!!] line is on STDERR and the component is in _failed_components, but the summary text ignores it. Verify which path, and whether the exit code is right.
+- Deploy.pm's robocop "falling back" [WARN] still goes to STDOUT (output-channels rule).
+- Network.pm around line 417: the loopback fallback swallows a failed Node list (the k269/k277 shape).
+- Wording: the reconcile [ok] line says "Cilium Gateway updated (manifest changed)" (k307), while the step itself says "Cilium Gateway updated (spec changed)" (k300). Pick one.
+
+Done = the summary never says all up to date when a component failed (test), the robocop fallback warning is on STDERR, the Node-list failure is reported with its cause, one wording.
+
+2026-10-31 08:21 Cause (summary): reconcile_components' summary looked only at @unresolved; cert-manager and the Cilium Gateway (and a Failed worker via check_worker_phases, k234) count their failure straight into {_failed_components}, so 'All N component(s) up to date' followed a [!!]. Exit code was already right (Health::finish reads _failed_components, exit 1, APPLY INCOMPLETE) -- the reconcile path only; the deploy path has no summary and dies on those two. Fix: the summary also checks {_failed_components}. Robocop fallback [WARN] (Deploy.pm worker_step) -> STDERR. Network.pm loopback Node list -> read_or_absent: a 404 lists nothing (loopback as before), any other failure dies 'could not read Nodes (for an address instead of 127.0.0.1): <cause>' and LB-IPAM is [!!]. Wording: 'spec changed' in both places -- report_component takes an optional what-changed (default 'manifest changed' for the hash-gated components), the Gateway passes 'spec changed'; the step compares metadata.generation, which moves with the spec only, so the k300 wording is the right one. Tests: t/38 (k318 summary + exit + fallback subtests, k307 wording updated), t/269 (loopback). Work in a scratch worktree; patch k318.patch.
+
+2026-10-31 08:39 Addendum: moving the robocop fallback warning to STDERR broke t/169's claim 'STDERR carries only the reason for the PIN2 prompt' (robocop is not ready in that harness, so the fallback fires). The claim was written with the fallback on STDOUT; under the channel rule it belongs on STDERR, so the claim is amended, not the fix: STDERR carries the PIN2 reason, then only the fallback line. Added to k318.patch (now 8 files: + t/169-apply-robocop-credentials.t). Mutation 'fallback back to STDOUT' kills t/169 too.
+
+2026-10-31 08:53 Done, uncommitted. Patch: scratchpad/w-apply318/k318.patch against HEAD (built on c46f5f1, 1f5ff77 is docs-only; applies cleanly to the shared tree as it stands). 8 files: lib/OCP/Cmd/Apply.pm, Apply/Deploy.pm, Apply/DeployedHash.pm, Apply/Drift.pm, Apply/Network.pm, t/38, t/269, t/169. The reconcile summary keeps 'All up to date' away from a failed cert-manager, Gateway or Failed worker. The robocop fallback warning goes to STDERR. A failed loopback Node list dies with its cause. The Gateway update reads 'spec changed'. t/169's STDERR claim is amended for the fallback line. Verified: Docker make test on 11 files, 266 tests, PASS (t/169 was added after that run, then passed in the full suite). Full make test on HEAD+k318+k319: Files=226, Tests=3590, PASS, no file skipped. 8 mutants, all killed.
+
+Committed as 3a76bdc
