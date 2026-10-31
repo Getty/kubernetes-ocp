@@ -6,6 +6,11 @@ Revision history for OCP
       reads nothing, says on STDERR that a person at a terminal is needed,
       and exits 1 with nothing changed. The question is asked on STDERR,
       only `y` or `yes` continues, and Ctrl-D aborts without a warning.
+    - `ocp destroy` that finds no nodes asks before it removes
+      `.ocp/status.yaml`, `.ocp/deployed.yaml` and the encrypted
+      `kubeconfig.yaml`, and names them; it needs a terminal or `--force`.
+      Without either it removes nothing and exits 1. Scripts that tidy up
+      after an out-of-band teardown need `--force`.
     - `ocp destroy` without a terminal no longer takes a piped `y` as
       confirmation: it reads nothing, says on STDERR that it needs a
       terminal or `--force`, and exits 1 with nothing deleted. Scripts

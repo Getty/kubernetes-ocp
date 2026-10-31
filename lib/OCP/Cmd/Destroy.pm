@@ -501,8 +501,29 @@ sub execute {
         # leaving deployed.yaml behind made the next `ocp apply` compare a
         # fresh cluster against the hashes of one that was gone (ADR 0004).
         # --keep_status opts out below.
+        #
+        # k304: but not unasked. An empty node list is also what a stale
+        # status.yaml or a read that failed looks like while the cluster is
+        # alive, and the kubeconfig is the way into it. So the same yes as
+        # the main path -- a person at a terminal, or --force -- naming the
+        # files. Nothing to remove, nothing to ask.
+        my @files = $self->_project_state_files($config);
+        return 0 unless @files;
+
+        my $listed = join ', ',
+            map { path($_)->relative($config->project_dir) } @files;
+        my $state  = "the local state of cluster '".$config->name."' (".$listed.')';
+        unless ($self->force || $self->confirmed(
+            question => 'Remove '.$state.'?',
+            action   => 'removing '.$state,
+            switch   => '--force',
+        )) {
+            print STDERR "Aborted; nothing was removed.\n";
+            return 1;
+        }
+
         $self->_cleanup_project_state($config);
-        return;
+        return 0;
     }
 
     print "Cluster: ", $config->name, "\n";
@@ -804,19 +825,27 @@ sub execute {
 sub _cleanup_project_state {
     my ($self, $config) = @_;
 
-    unless ($self->keep_status) {
-        for my $file ($config->status_file, $config->deployed_file) {
-            next unless -f $file;
-            unlink $file;
-            print "Removed ", path($file)->basename, ".\n";
-        }
+    my $kubeconfig = $self->_kubeconfig_file($config);
+    for my $file ($self->_project_state_files($config)) {
+        unlink $file;
+        print $file eq $kubeconfig ? "Encrypted kubeconfig removed.\n"
+                                   : 'Removed '.path($file)->basename.".\n";
     }
+}
 
-    my $kubeconfig = $config->project_dir->child('kubeconfig.yaml');
-    if (-f $kubeconfig) {
-        unlink $kubeconfig;
-        print "Encrypted kubeconfig removed.\n";
-    }
+# The files _cleanup_project_state removes, those that exist, in the order it
+# removes them. One list, so what the no-nodes question names (k304) is what
+# goes.
+sub _project_state_files {
+    my ($self, $config) = @_;
+    return grep { -f $_ }
+        ($self->keep_status ? () : ($config->status_file, $config->deployed_file)),
+        $self->_kubeconfig_file($config);
+}
+
+sub _kubeconfig_file {
+    my ($self, $config) = @_;
+    return $config->project_dir->child('kubeconfig.yaml')->stringify;
 }
 
 1;
@@ -910,7 +939,12 @@ the previous one and announced every component as "up to date" against a
 registry that was never rolled out.  Cleanup runs even when no nodes were
 found to delete (C<k78>) — a teardown that discovers nothing on the
 wire is exactly the shape a project directory takes after a cluster was
-torn down out of band.  It is B<skipped>, though, when any provider delete
+torn down out of band.  It is asked for first, the way the teardown is
+(C<k304>): an empty node list is also what a stale C<status.yaml> or a failed
+read looks like while the cluster is alive, and the kubeconfig is the way in.
+The question names the files that would go; it needs a person at a terminal
+or C<--force>, and a no keeps every file and returns 1.  With nothing to
+remove nothing is asked.  It is B<skipped>, though, when any provider delete
 failed: the survivor is still running (and still billing) and
 C<status.yaml> is the only local record of its C<providerId>, so keeping it
 is what lets a re-run finish the job (C<k140>).
@@ -928,6 +962,9 @@ The confirmation is asked on a terminal only (C<k301>).  Without one (a pipe,
 a CI step, a here-string, a closed STDIN) the command does not read STDIN at
 all: it says on STDERR that it needs a person at a terminal or C<--force>,
 deletes nothing and returns 1.  A piped C<y> is not a confirmation.
+
+When no node is found, C<--force> likewise skips the question before the
+local state is removed (C<k304>).
 
 =opt keep_status
 
