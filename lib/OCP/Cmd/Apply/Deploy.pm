@@ -443,8 +443,10 @@ sub worker_step {
             print "  [ok] robocop ready — grace period (5s)\n";
             $self->wait_seconds(5);
         } else {
-            # Something that went wrong, so STDERR (k318).
+            # Something that went wrong, so STDERR (k318), and counted for
+            # the banner, once with the wait's own [WARN] (k378).
             print STDERR "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
+            OCP::Cmd::Apply::CR::note_robocop_not_ready($self);
         }
     } elsif ($robocop eq 'failed') {
         print "  [..] robocop is not running: the CLI brings the workers up\n";

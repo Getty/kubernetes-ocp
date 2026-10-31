@@ -83,7 +83,10 @@ Those two C<[WARN]>s, and the ones for an OCPNode status left unwritten
 not be listed or deleted (C<retire_unannotated_robocop_pods>), are counted in
 the apply's C<{_apply_warnings}>, as a worker not Ready yet is: the closing
 banner reads WITH WARNINGS, and the exit code stays as it was (k367,
-L<OCP::Cmd::Apply::Health>).
+L<OCP::Cmd::Apply::Health>). So is robocop not seen Ready, once, however many
+of its two C<[WARN]>s a run prints -- C<wait_robocop_ready>'s, for a wait that
+ended on a failed read, and the fallback to the CLI in
+L<OCP::Cmd::Apply::Deploy/worker_step>: C<note_robocop_not_ready> (k378).
 
 L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
 forwarder — the existing test surface (t/20-apply-refactor.t,
@@ -954,7 +957,9 @@ sub _say_robocop_image_change {
 # A read that failed is read again like a pod not ready yet. When the wait
 # ends on one -- a 403/500, or a 404 for the Deployment just written -- its why
 # goes to STDERR (k330, as k319's waits): the callers say "not ready", which
-# without it reads as a robocop that is merely slow.
+# without it reads as a robocop that is merely slow. That [WARN] counts for the
+# banner (note_robocop_not_ready, k378); a wait that ends on a readable
+# Deployment with no pod Ready says none, and its caller decides.
 sub wait_robocop_ready {
     my ($self, $api, $timeout) = @_;
     $timeout //= 60;
@@ -971,8 +976,26 @@ sub wait_robocop_ready {
         last if time >= $deadline;
         $self->wait_seconds(5);
     }
-    print STDERR "  [WARN] robocop not seen ready: $why\n" if $why;
+    if ($why) {
+        print STDERR "  [WARN] robocop not seen ready: $why\n";
+        note_robocop_not_ready($self);
+    }
     return 0;
+}
+
+# robocop not seen Ready, counted in {_apply_warnings} once (k378): the banner
+# reads WITH WARNINGS, the exit code stays (k367). Its two [WARN]s -- the wait
+# above ending on a failed read, worker_step's fallback to the CLI (k318) --
+# have the one cause, so a run that prints both carries one tag. The CLI
+# brings the workers up all the same; robocop, which drives every later worker
+# change, does not run.
+sub note_robocop_not_ready {
+    my ($self) = @_;
+    return unless ref $self;
+    my $tag = 'robocop not ready';
+    push @{ $self->{_apply_warnings} }, $tag
+        unless grep { $_ eq $tag } @{ $self->{_apply_warnings} // [] };
+    return;
 }
 
 # Drive worker reconcile. Either poll CR phases (if robocop is running)
