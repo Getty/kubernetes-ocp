@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses an unknown key under `network:`,
+      `network.lb_pool` and `network.l2` (a typo like `pod_cdir` leaves
+      the default in force), and a `network.lb_pool` whose `start` is
+      after its `stop`.
     - `ocp apply` refuses a node address (a control plane's `host`,
       `public_ip`, `private_ip` or `node_ip`, a worker pool host) or
       `network.lb_pool` inside the service network 10.43.0.0/16, the

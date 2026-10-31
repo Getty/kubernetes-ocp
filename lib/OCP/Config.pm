@@ -345,6 +345,12 @@ sub has_external_upstream { shift->registry_upstream ne '' }
 #         - "^eth[0-9]+$"
 sub network_config { shift->spec->{network} // {} }
 
+# The keys the accessors here read under network:, and so the keys validate()
+# takes there (k292): anything else is a typo whose default stays in force.
+our @NETWORK_KEYS = qw( pod_cidr lb_pool l2 );
+our @LB_POOL_KEYS = qw( cidr start stop );
+our @L2_KEYS      = qw( node_selector interfaces );
+
 sub lb_pool_config { shift->network_config->{lb_pool} // {} }
 
 # The CiliumLoadBalancerIPPool blocks list, or undef when no pool is
@@ -949,13 +955,14 @@ sub _validate_network {
     return () unless defined $net;
     return ("network: must be a mapping") unless ref $net eq 'HASH';
 
-    my @errors;
+    my @errors = _unknown_keys('network', $net, @NETWORK_KEYS);
 
     if (defined(my $pool = $net->{lb_pool})) {
         if (ref $pool ne 'HASH') {
             push @errors, "network.lb_pool: must be a mapping (cidr, or start+stop)";
         }
         else {
+            push @errors, _unknown_keys('network.lb_pool', $pool, @LB_POOL_KEYS);
             my $has_cidr  = defined $pool->{cidr};
             my $has_start = defined $pool->{start};
             my $has_stop  = defined $pool->{stop};
@@ -974,6 +981,13 @@ sub _validate_network {
                     if $has_start && !_looks_like_ipv4($pool->{start});
                 push @errors, "network.lb_pool.stop: '$pool->{stop}' is not an IPv4 address"
                     if $has_stop && !_looks_like_ipv4($pool->{stop});
+
+                # Compared as addresses: 10.0.0.9 comes before 10.0.0.10.
+                # Equal is a pool of one.
+                push @errors, "network.lb_pool: start '$pool->{start}' is after stop "
+                    . "'$pool->{stop}' (the pool runs from start up to stop)"
+                    if _looks_like_ipv4($pool->{start}) && _looks_like_ipv4($pool->{stop})
+                    && (_cidr_range("$pool->{start}/32"))[0] > (_cidr_range("$pool->{stop}/32"))[0];
             }
             else {
                 push @errors, "network.lb_pool: needs cidr or start+stop";
@@ -986,6 +1000,7 @@ sub _validate_network {
             push @errors, "network.l2: must be a mapping";
         }
         else {
+            push @errors, _unknown_keys('network.l2', $l2, @L2_KEYS);
             if (defined(my $ns = $l2->{node_selector})) {
                 if (ref $ns ne 'HASH' || !%$ns) {
                     push @errors, "network.l2.node_selector: must be a non-empty mapping of label => value";
@@ -1009,6 +1024,15 @@ sub _validate_network {
     }
 
     return @errors;
+}
+
+# One line per key of $map that is not one of @known, sorted, in the words
+# cilium.* and gpu.amd.* are refused in (k292).
+sub _unknown_keys {
+    my ($path, $map, @known) = @_;
+    my %known = map { $_ => 1 } @known;
+    return map { "$path.$_: unknown key (must be " . OCP::Choices::or_list(@known) . ')' }
+        grep { !$known{$_} } sort keys %$map;
 }
 
 # cilium: (k210). Report-only, same contract as validate().
