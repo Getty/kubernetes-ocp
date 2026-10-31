@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T10:05:54Z
+created: 2026-10-31T08:55:18Z
+id: 328
+priority: low
+started: 2026-10-31T10:05:54Z
+status: done
+tags:
+- apply
+- robustness
+title: 'Apply: robocop_step, corefile_with_host and the nfd-worker wait still take
+  a failure for absence or say nothing (after k319)'
+updated: 2026-10-31T10:05:54Z
+---
+
+Found under k319 (apply worker, 2026-10-31), the k269/k277/k319 class (only a 404 is absent; any other failure is reported with its cause) and silent outputs, in places k319 did not cover:
+- lib/OCP/Cmd/Apply/Deploy.pm robocop_step: `$had_deployment = eval { get } ? 1 : 0` takes a 403/500 for "no Deployment"; until fixed, the dry run's "a real run would not complete" is not exact for robocop.
+- corefile_with_host (registry.local DNS): a Corefile with no root server block is "up to date" without a word.
+- Workloads.pm nfd-worker wait: runs out silently when 0 pods became ready (k319 covered the failed-read case only).
+
+Done = each uses OCP::Cmd::Apply::K8s read_or_absent / read_or_why as fits, tests pin 404 vs 403/500 per place, no silent "up to date" without a server block.
+
+2026-10-31 09:54 Notes (apply worker). Workloads.pm was unmodified in the tree at start; k309 only reads Workloads::gpu_label_timeout() from Node/Add.pm, so no overlap. robocop_step: the Deployment read is now OCP::Cmd::Apply::K8s::read_or_absent inside the step's eval, before credentials/Deployment are written, so a 403/500 fails the step ('[!!] robocop deploy failed: could not read Deployment ocp-system/robocop: ...' on STDERR, nothing written); Deploy counts robocop as a failed component and the Drift reconcile counts it as unresolved -- what the k319 dry run already says ('could not be checked'). Corefile: corefile_with_host stays as it is (t/39 pins its 'no root block, no change'); configure_registry_dns refuses a Corefile with no root server block before patching (new pure corefile_has_root_block), and the callers' existing '[WARN] registry.local DNS setup failed' (STDERR, not counted, k278) carries it. nfd-worker: the wait says why it ran out every time (new nfd_worker_why): the failed read (k319 wording kept), the 404, no status yet, or 'N of M pod(s) ready'. Also found, outside my lane: lib/OCP/Cmd/Keys/Secure.pm _reroll_robocop still has its own $had = eval { get Deployment } ? 1 : 0 -- the same 403-as-absent case (secrets lane; k321 is in that file right now). With this patch a 403 there now fails robocop_step, and Secure says 'only robocop is behind', which is coherent. Also: a Corefile with no root block but a registry.local block of its own -> the writer warns, but the OCP::Drift reader reports no drift (exotic, state lane).
+
+2026-10-31 09:54 Done (apply worker), as a patch, nothing in the shared tree: scratchpad w-apply327/k328.patch against HEAD+k327 (both apply in order on 89102c9). Files: lib/OCP/Cmd/Apply/Deploy.pm (robocop_step via read_or_absent), lib/OCP/Cmd/Apply/Network.pm (configure_registry_dns refuses a Corefile with no root block; new corefile_has_root_block), lib/OCP/Cmd/Apply/Workloads.pm (nfd-worker wait always says why; new nfd_worker_why), t/319 fakes and three 'nothing on STDERR' claims adjusted (the claim kept: no failed read named), new t/328-apply-absent-or-silent.t (robocop 404 vs 403/500, nothing written; root block vs none/empty/no key; corefile_has_root_block shapes; nfd 0 of 2, 0 of 0, no status, 404, then-ready, 403/500). Red on HEAD at all three places; all valid mutants killed (14; one invalid mutant replaced). Binding Docker run (make test, 91 neighbour files incl. t/169 t/39 t/269 t/216 t/38 t/83 t/20 t/96-adjacent fakes): Files=91 Tests=1223 PASS. Full suite on clean HEAD 89102c9 + k327 + k328: Files=229 Tests=3609 PASS, no skips. Proposed subject: Fail the robocop step on a Deployment read that is no 404, stop calling a Corefile with no root server block up to date, and say why the nfd-worker wait ran out (k328).
+
+Committed as dad74bf
