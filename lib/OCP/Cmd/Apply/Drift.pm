@@ -506,6 +506,11 @@ sub reconcile_components {
         $checked++;
         print "  [..] Checking worker OCPNodes...\n";
         my $api = $self->_k8s_api;
+        # A worker that matches an OCPNode only by host is not missing, but
+        # it does not match either: missing_worker_ocpnodes says so on STDERR
+        # and counts it into {_failed_components} (k211, k231) -- no [ok] over
+        # it (k330).
+        my $failed_before = @{ $self->{_failed_components} // [] };
         my @missing = eval {
             OCP::Cmd::Apply::CR::missing_worker_ocpnodes($self, $api, $config);
         };
@@ -514,7 +519,8 @@ sub reconcile_components {
             print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $list_err";
             push @unresolved, 'workers';
         } elsif (!@missing) {
-            print "  [ok] Every worker in ocp.yaml has an OCPNode\n";
+            print "  [ok] Every worker in ocp.yaml has an OCPNode\n"
+                if @{ $self->{_failed_components} // [] } == $failed_before;
         } else {
             my @names = map { $_->{metadata}{name} } @missing;
             print "  [..] Creating " . scalar(@names) . " worker(s) without an OCPNode: "

@@ -589,7 +589,9 @@ YAML
             apiVersion => 'ocp.internal/v1',
             kind       => 'OCPNode',
             metadata   => { name => $_, namespace => 'ocp-system' },
-            spec       => { role => 'worker', providerRef => 'ssh-default' },
+            # hosts => { name => host }: an OCPNode on that machine (k330).
+            spec       => { role => 'worker', providerRef => 'ssh-default',
+                            ($opt{hosts} && $opt{hosts}{$_} ? (host => $opt{hosts}{$_}) : ()) },
             status     => { phase => ($opt{phases} // {})->{$_} // 'Ready' },
         } } @{ $opt{ocpnodes} // [] } },
     );
@@ -849,6 +851,26 @@ subtest 'k26: nothing missing means no worker step at all' => sub {
     ok !touched($r, '_wait_robocop_ready'), 'no robocop wait';
     ok !$r->{key_asked}, 'and no key asked for (no PIN2 prompt)';
     like $r->{out}, qr/All \d+ component\(s\) up to date/, 'the summary stays clean';
+    like $r->{out}, qr/\[ok\] Every worker in ocp\.yaml has an OCPNode\n/, 'and says so';
+};
+
+#
+# k330: a worker that matches an OCPNode only by host -- pinky.ocp.invalid is
+# OCPNode/otho, made by `ocp node add` under another name -- is not created
+# again, and is a [!!] on STDERR counted for the exit (k211, k231). The [ok]
+# under it said every worker had an OCPNode all the same.
+#
+subtest 'k330: a worker matched only by host gets no [ok]' => sub {
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'otho'],
+        hosts => { otho => 'pinky.ocp.invalid' });
+
+    ok !scalar(grep { /^ENSURE OCPNode/ } @{ $r->{writes} }), 'premise: nothing created';
+    like $r->{err}, qr/\[!!\] worker pinky \(host pinky\.ocp\.invalid\) is already OCPNode\/otho/,
+        'premise: the mismatch on STDERR';
+    is_deeply $r->{failed}, ['worker pinky'], 'premise: counted for the exit';
+    unlike $r->{out}, qr/\[ok\] Every worker in ocp\.yaml has an OCPNode/,
+        'no [ok] over the worker that does not match';
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'and no clean summary';
 };
 
 subtest 'k26: no workers in ocp.yaml, path unchanged' => sub {

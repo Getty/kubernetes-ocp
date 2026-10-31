@@ -1,6 +1,8 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` no longer says every worker in `ocp.yaml` has an OCPNode
+      when one of them matches an OCPNode only by its host.
     - `ocp apply` takes only a 404 for a Node, OCPNode or robocop
       Deployment that is not there in its CR steps; a 403 or 500 is named
       with its cause on STDERR or in the worker's result instead.
