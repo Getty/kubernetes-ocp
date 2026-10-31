@@ -98,12 +98,17 @@ sub execute {
 
     my $k8s = OCP::Kubernetes->new(kubeconfig => $kc_content);
 
+    # An API that does not answer is one line naming the server and why (k384).
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        chomp $error;
-        print STDERR "WARNING: Cannot connect to cluster API\n";
-        print STDERR "Error: $error\n";
+        if (my $line = $self->cluster_api_unreachable($k8s, $error)) {
+            print STDERR "ERROR: $line\n";
+        } else {
+            chomp $error;
+            print STDERR "WARNING: Cannot connect to cluster API\n";
+            print STDERR "Error: $error\n";
+        }
         print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
@@ -229,9 +234,14 @@ sub _collect_json {
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        chomp $error;
-        $out->{error} = 'Cannot connect to cluster API: ' . $error;
-        print STDERR "WARNING: $out->{error}\n";
+        if (my $line = $self->cluster_api_unreachable($k8s, $error)) {
+            $out->{error} = $line;
+            print STDERR "ERROR: $line\n";
+        } else {
+            chomp $error;
+            $out->{error} = 'Cannot connect to cluster API: ' . $error;
+            print STDERR "WARNING: $out->{error}\n";
+        }
         return 1;
     }
 
@@ -679,7 +689,13 @@ status section says so.  The kubeconfig is read through L<OCP::Secrets>, so
 the C<.ocp/age.key> must be present for the live-status section to render.
 When the kubeconfig cannot be decrypted or the API cannot be reached, the
 report on STDOUT stops there, the error and its diagnosis go to STDERR, and
-the exit code is 1.
+the exit code is 1.  An API server that does not answer at all is one line,
+naming the server from the kubeconfig and the reason:
+
+    ERROR: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused) ...
+
+Earlier builds printed the client's error as it came, Perl source locations
+included.
 
 The command never modifies cluster state.  Every drift entry is listed,
 followed by the count of those C<ocp apply> closes:

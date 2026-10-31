@@ -51,7 +51,10 @@ sub _api {
     die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n"
         unless $kc;
 
-    return $self->api(OCP::Kubernetes->new(kubeconfig => $kc)->api);
+    # An API that does not answer is said here, in one line (k384).
+    my $api = OCP::Kubernetes->new(kubeconfig => $kc)->api;
+    $self->reach_cluster_api($api);
+    return $self->api($api);
 }
 
 # One scan, no waiting: check() with a zero timeout stops after the first scan
@@ -127,7 +130,9 @@ C<critical> is a durable fault in C<kube-system> (fatal, exit code 1),
 C<warning> a durable fault elsewhere, C<starting> a pod that is still coming
 up.  Unlike the gate it does not wait for the cluster to settle, and it never
 changes anything.  Exit code: 1 when a critical pod exists (or the cluster
-cannot be reached), else 0.
+cannot be reached), else 0.  An API server that does not answer at all is
+one line on STDERR, naming the server from the kubeconfig and the reason
+(L<OCP::Role::Cmd/reach_cluster_api>).
 
 =head1 JSON OUTPUT
 

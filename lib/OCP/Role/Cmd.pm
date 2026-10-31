@@ -3,8 +3,10 @@ package OCP::Role::Cmd;
 
 use Moo::Role;
 use MooX::Options;
+use Scalar::Util ();
 
 use OCP::Choices;
+use OCP::ErrorLine;
 use OCP::Keys;
 use OCP::Password;
 use OCP::Provider;
@@ -207,6 +209,49 @@ sub provider_cr {
     # empty case, which is the second form OCP::Choices::unknown takes.
     die OCP::Choices::unknown('provider', $name,
         $self->provider_choices(@providers), hint => $type_hint);
+}
+
+# k384: the API server the kubeconfig names does not answer -- the connect is
+# refused, there is no route, the TLS handshake fails, the request times out.
+# Kubernetes::REST returns that as status 599 (its "Error contract"); a call
+# dies with an APIError of code 599 whose body is LWP's text. That text has
+# LWP's own " at FILE line N." in it and the APIError adds the caller's, so
+# where it reached OCP.pm it read "This is an internal error". Before it, the
+# first lookup of an OCP Kind (OCPNode, OCPNodeProvider) warned that discovery
+# had failed, with a location of its own. An API that does not answer is the
+# most ordinary failure there is: one line, naming the server and the reason.
+#
+# Only a 599 means "could not be reached". Any answer from the API server --
+# 401, 403, 404, 500 -- means it was reached, and the caller reads that one.
+#
+# $client is read only for a 599, which only a built client can give: the
+# client itself, or the OCP::Kubernetes that holds it (ocp status). Asking
+# an OCP::Kubernetes for its client earlier would run its builder again when
+# the build was what died.
+sub cluster_api_unreachable {
+    my ($self, $client, $err) = @_;
+    return unless Scalar::Util::blessed($err)
+        && $err->isa('Kubernetes::REST::APIError') && $err->code == 599;
+    my $api = $client->can('server') ? $client : $client->api;
+    return $self->_cluster_api_unreachable($api, $err->body);
+}
+
+# One GET /version, before the first call of a command that built its client
+# from the kubeconfig, so an API that does not answer is said before anything
+# else is asked of it (the discovery warning included). Any answer is enough:
+# the server answers /version even to a token it refuses.
+sub reach_cluster_api {
+    my ($self, $api) = @_;
+    my $res = $api->io->call($api->prepare_request('GET', '/version'));
+    die $self->_cluster_api_unreachable($api, $res->content)."\n"
+        if $res->status == 599;
+    return $api;
+}
+
+sub _cluster_api_unreachable {
+    my ($self, $api, $why) = @_;
+    return 'The cluster API at '.$api->server->endpoint.' could not be reached: '
+        .OCP::ErrorLine::one_line($why);
 }
 
 # Which private key reaches this cluster's machines — see OCP::ClusterKey for
@@ -699,6 +744,38 @@ The last line appears only when the rejected name is a provider type and the
 cluster has providers at all; without any, the bootstrap hint is the whole
 answer.  A type is never resolved to the CR that happens to carry it:
 provider names and provider types are separate namespaces and may collide.
+
+=method reach_cluster_api
+
+    my $api = Kubernetes::REST::Kubeconfig->new(kubeconfig_path => $kc)->api;
+    $self->reach_cluster_api($api);
+
+Sends one C<GET /version> through the client.  When the API server the
+kubeconfig names does not answer (the connect is refused, there is no route,
+TLS fails, the request times out: a transport failure, status C<599> in
+L<Kubernetes::REST>), it dies with one line and no Perl source location:
+
+    The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused) ...
+
+Any answer from the API server, an error status included, counts as reached;
+it returns C<$api>.  For a command that builds its client from the
+kubeconfig, before its first call: C<ocp node ls>, C<ocp provider ls>,
+C<ocp health> (k384).
+
+=method cluster_api_unreachable
+
+    my $nodes = eval { $k8s->list_nodes };
+    if (my $line = $self->cluster_api_unreachable($k8s, $@)) {
+        print STDERR "ERROR: $line\n";
+    }
+
+The same line, for an error a call already caught: when C<$err> is a
+L<Kubernetes::REST::APIError> of code C<599>, the line naming the server
+(C<< ->server->endpoint >> of the client) and the transport reason, made one
+line by L<OCP::ErrorLine/one_line>.  The client is a L<Kubernetes::REST>, or
+an L<OCP::Kubernetes> holding one.  For anything else it returns nothing and
+does not touch the client, so a client whose build died is not built again.
+Used by C<ocp status> (k384).
 
 =method wait_seconds
 

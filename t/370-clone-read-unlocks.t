@@ -297,7 +297,7 @@ my @commands = (
           is $st >> 8, 0, 'exit 0' or diag $e;
           like $o, qr{server: https://127\.0\.0\.1:9}, 'the kubeconfig on STDOUT';
           unlike $o, qr/PIN1/, 'and nothing else there' } ],
-    [ ['status'],          sub { like $_[2], qr/Cannot connect to cluster API/, 'on to the API' } ],
+    [ ['status'],          sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
     [ ['node', 'ls'],      sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
     [ ['health'],          sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
     [ ['provider', 'ls'],  sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],

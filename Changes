@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status`, `ocp node ls`, `ocp health` and `ocp provider ls` say
+      in one line on STDERR that the cluster API at the kubeconfig's server
+      could not be reached, and why, when it does not answer -- instead of
+      the client's error with Perl source locations, which `node ls`,
+      `health` and `provider ls` labelled "This is an internal error".
+      `ocp status` still shows what it can from `ocp.yaml` and the local
+      state on STDOUT; `ocp status --json` and `ocp health --json` carry the
+      same line in their error field.
     - `ocp hetzner list` takes `--pins-stdin` like every other command, so
       the PIN1 it asks for on a fresh clone without `HETZNER_API_TOKEN` can
       come from STDIN instead of a terminal.

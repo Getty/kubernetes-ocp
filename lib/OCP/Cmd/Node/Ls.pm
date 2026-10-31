@@ -43,6 +43,8 @@ sub _k8s {
     my $api = Kubernetes::REST::Kubeconfig->new(
         kubeconfig_path => $kc_fh->filename,
     )->api;
+    # An API that does not answer is said here, in one line (k384).
+    $self->reach_cluster_api($api);
 
     OCP::K8s->register($api);
     $self->k8s($api);
