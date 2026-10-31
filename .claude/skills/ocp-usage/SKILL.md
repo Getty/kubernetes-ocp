@@ -374,8 +374,10 @@ gpu:
     mapping of scalars. `l2.interfaces`: a non-empty list of strings.
   - An unknown key under `network:` is not reported, unlike under `cilium:`
     and `gpu.amd:`.
-  - **No command calls `validate` today** (only `t/` does), so `ocp apply`
-    does not refuse a bad value before it uses it.
+  - **`ocp apply` and `ocp apply --dry-run` call `validate` first** (k255),
+    before a PIN, a file, a host or the cluster: every error at once on
+    STDERR, one line each, then exit 1 with nothing done. `ocp status` does
+    not gate on it: it has to show a cluster whose ocp.yaml has a mistake.
 
 ### gpu.amd — AMD GPU nodes (k249–k252)
 

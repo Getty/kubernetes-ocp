@@ -456,6 +456,8 @@ sub gpu_config  { shift->spec->{gpu} // {} }
 sub gpu_enabled { my $v = shift->gpu_config->{enabled}; return 1 unless defined $v; return $v ? 1 : 0 }
 sub gpu_toolkit { my $v = shift->gpu_config->{toolkit}; return 1 unless defined $v; return $v ? 1 : 0 }
 
+our @GPU_DRIVERS = qw( host operator );
+
 sub gpu_driver {
     my ($self) = @_;
     my $driver = $self->gpu_config->{driver} // 'host';
@@ -463,7 +465,7 @@ sub gpu_driver {
     # A typo here would silently fall back to 'host' and leave the operator's
     # driver DaemonSet disabled on a cluster that was configured for it.
     croak "gpu.driver must be 'host' or 'operator', not '$driver'"
-        unless $driver eq 'host' || $driver eq 'operator';
+        unless _is_choice($driver, @GPU_DRIVERS);
 
     return $driver;
 }
@@ -748,6 +750,7 @@ sub validate {
 
     push @errors, $self->_validate_network;
     push @errors, $self->_validate_cilium;
+    push @errors, $self->_validate_gpu_driver;
     push @errors, $self->_validate_gpu_amd;
     push @errors, $self->_validate_pod_cidr(
         ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {});
@@ -948,6 +951,18 @@ sub _validate_cilium {
         }
     }
     return @errors;
+}
+
+# gpu.driver (k255). Report-only, same contract as validate(); gpu_driver
+# croaks on the same values, but only where a GPU node is set up -- after a
+# control plane was built.
+sub _validate_gpu_driver {
+    my ($self) = @_;
+    my $gpu = $self->spec->{gpu};
+    return () unless ref $gpu eq 'HASH' && defined $gpu->{driver};
+    return () if _is_choice($gpu->{driver}, @GPU_DRIVERS);
+    return ('gpu.driver: invalid value '._shown_value($gpu->{driver})
+        .' (must be '.OCP::Choices::or_list(@GPU_DRIVERS).')');
 }
 
 # gpu.amd (k250). Report-only, same contract as validate(); the accessors

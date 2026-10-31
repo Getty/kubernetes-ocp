@@ -39,6 +39,7 @@ use OCP::Cmd::Apply::Health;
 use OCP::Cmd::Apply::K8s;
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Registry;
+use OCP::Cmd::Apply::Validate;
 use OCP::Cmd::Apply::Workloads;
 
 with 'OCP::Role::Cmd';
@@ -87,6 +88,8 @@ sub execute {
     }
 
     my $config = OCP::Config->new(file => $file);
+    # k255: every ocp.yaml error at once, before a PIN, a file, a host or the cluster.
+    OCP::Cmd::Apply::Validate::refuse_invalid_config($config);
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
     print "╔═══════════════════════════════════════════════════════════════╗\n";

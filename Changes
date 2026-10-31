@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` and `ocp apply --dry-run` check `ocp.yaml` first: on
+      errors they list every one on STDERR and exit 1 before asking for a
+      PIN or touching a host or the cluster. `gpu.driver` is checked too.
+      A Hetzner control plane without `server_type` or `location` is now
+      refused instead of being built as cx32 in fsn1.
     - `ocp apply` and `ocp apply --dry-run` no longer take a GPU Operator
       read the cluster refuses (an RBAC denial, an apiserver 5xx) for "no
       GPU Operator", "no ClusterPolicy differences" or "no ClusterPolicy";
