@@ -1075,15 +1075,23 @@ our @CP_NAME_KEYS = (
     [ name => "the control plane's name, like police1" ],
 );
 
+# "control_planes[N].KEY: must be a string (WHAT), not ..." for the control
+# plane $cp at place $idx, or undef (k315, k340, k355).
+sub _cp_string_error {
+    my ($cp, $idx, $key) = @_;
+    my ($what) = map { $_->[1] } grep { $_->[0] eq $key } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS;
+    my $err = _not_a_string($cp->{$key}, $what);
+    return defined $err ? "control_planes[$idx].$key: $err" : undef;
+}
+
 # The first control plane's $key -- its address, as join_host and
 # cluster_status read it, or its name -- refused in validate()'s words when it
 # is no string (k340, k355): read on, a list was the address workers joined
 # at, ARRAY(0x...).
 sub _first_cp_string {
     my ($self, $cp, $key) = @_;
-    my ($what) = map { $_->[1] } grep { $_->[0] eq $key } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS;
-    my $err = _not_a_string($cp->{$key}, $what);
-    croak "control_planes[1].$key: $err" if defined $err;
+    my $err = _cp_string_error($cp, 1, $key);
+    croak $err if defined $err;
     return $cp->{$key};
 }
 
@@ -1133,15 +1141,9 @@ sub validate {
     my $spec_err = $self->_spec_error;
     return ($spec_err) if defined $spec_err;
 
-    # A name that is a list or mapping passed (k305), and every key name the
-    # cluster derives from it said ARRAY(0x...).
-    if (ref $self->spec->{name}) {
-        push @errors, "name: must be a string (the cluster's name), not "
-            . _shown_value($self->spec->{name});
-    }
-    else {
-        push @errors, "name is required" unless $self->name && $self->name =~ /\S/;
-    }
+    # The name, the control planes, gpu: and the worker pools come from the
+    # producers spec_errors reads too (k306), each line spelt once there.
+    push @errors, _lines_of($self->_name_lines);
 
     # kubernetes: and its dist (k340), the lines kubernetes and distribution
     # refuse on. dist: rke3 passed, installed RKE2 and told robocop rke3.
@@ -1156,126 +1158,11 @@ sub validate {
         push @errors, _kubernetes_unknown_keys($k8s);
     }
 
-    my $cps = $self->control_planes;
-
-    # The shape first (k296). A control_planes that is neither form would be
-    # read as one hetzner control plane with nothing set, and refused for
-    # what nobody wrote; a list entry that is no mapping died inside Perl.
-    my $raw_cps = $self->spec->{control_planes};
-    if (defined $raw_cps && ref $raw_cps ne 'HASH' && ref $raw_cps ne 'ARRAY') {
-        push @errors, "control_planes: must be a mapping (one control plane, or nodes: N of them) "
-            . "or a list of mappings, not " . _shown_value($raw_cps);
-        $cps = [];
-    }
-    push @errors, "control_planes: must list at least one control plane, not an empty list"
-        if ref $raw_cps eq 'ARRAY' && !@$raw_cps;
-    my $etcd_bound = "every control plane is an etcd member, and etcd advises no more "
-        . "than $MAX_CONTROL_PLANE_NODES";
-    if (ref $raw_cps eq 'HASH' && defined(my $nodes = $raw_cps->{nodes})) {
-        my $whole = _is_whole_number($nodes);
-        push @errors, "control_planes.nodes: must be a whole number from 1 to "
-            . "$MAX_CONTROL_PLANE_NODES, not " . _shown_value($nodes)
-            . ($whole && $nodes > $MAX_CONTROL_PLANE_NODES ? "; $etcd_bound" : '')
-            unless $whole && $nodes >= 1 && $nodes <= $MAX_CONTROL_PLANE_NODES;
-    }
-    # The list form holds no more than nodes: may stand for (k315): the bound
-    # is etcd's, whichever way the control planes are written. Its entries are
-    # still checked below.
-    push @errors, "control_planes: must list at most $MAX_CONTROL_PLANE_NODES control planes, not "
-        . scalar(@$raw_cps) . "; $etcd_bound"
-        if ref $raw_cps eq 'ARRAY' && @$raw_cps > $MAX_CONTROL_PLANE_NODES;
-
-    # The mapping form with `nodes: N` is N copies of one entry (see
-    # control_planes), so a node_ip there would be every one of them's (k254).
-    # Refused once, not per copy; its syntax is not worth a line then.
-    my $shared  = $self->_control_planes_shared;
-    push @errors, "control_planes: node_ip with nodes: " . scalar(@$cps)
-        . " would give all " . scalar(@$cps) . " control planes the same address; "
-        . "list them one by one (control_planes: as a list), each with its own node_ip"
-        if $shared && defined $raw_cps->{node_ip};
-
-    # The entries are checked one by one -- but with nodes: N they are N
-    # copies of one, whose lines were said N times over (k322): once is enough.
-    my %node_ip_at;    # address (as an IP) => the control plane that has it
-    for my $i (0 .. ($shared ? 0 : $#$cps)) {
-        my $cp = $cps->[$i];
-        my $idx = $i + 1;
-        unless (ref $cp eq 'HASH') {
-            push @errors, "control_planes[$idx]: must be a mapping (one control plane), not "
-                . _shown_value($cp);
-            next;
-        }
-        my $prov = $cp->{provider} // 'hetzner';
-
-        # A key nothing reads (k347). nodes: is the mapping form's, which
-        # control_planes takes out of each copy; in a list entry nothing
-        # reads it.
-        my $mapping = ref $raw_cps eq 'HASH';
-        my $one_each = 'a list has one entry per control plane';
-        push @errors, _entry_unknown_keys("control_planes[$idx]", $cp, {
-                count => 'count is read by nothing -- '
-                    . ($mapping ? 'how many control planes there are is nodes: N' : $one_each),
-                nodes => "nodes: N is read on a control_planes mapping only -- $one_each",
-            }, @CONTROL_PLANE_KEYS, ($mapping ? 'nodes' : ()));
-
-        # The wording this rejection has always had; the SET behind it now
-        # comes from the factory that builds those providers instead of being
-        # spelled out a second time here (k103). Same three words, one
-        # source -- a fourth provider type appears in this message the moment
-        # OCP::Provider can construct it.
-        # !ref: a boolean is no provider, whatever eq on it says; see
-        # _is_choice (k305, k314).
-        unless (!ref $prov && OCP::Provider->known_type($prov)) {
-            push @errors, "control_planes[$idx]: invalid provider " . _shown_value($prov) . " (must be "
-                . OCP::Choices::or_list(OCP::Provider->types) . ")";
-        }
-
-        # host, server_type, location and image (k315, k322): one name each,
-        # which the provider is handed and the OCPNode's spec carries as is. A
-        # list passed for being true, and named the machine ARRAY(0x...). One
-        # line for the shape, not a "required" beside it.
-        # public_ip and private_ip (k340) the same way, and name (k355).
-        my %malformed;
-        for my $s (@ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS) {
-            my ($key, $what) = @$s;
-            my $err = _not_a_string($cp->{$key}, $what) // next;
-            push @errors, "control_planes[$idx].$key: $err";
-            $malformed{$key} = 1;
-        }
-
-        if ($prov eq 'hetzner') {
-            push @errors, "control_planes[$idx]: server_type required for hetzner"
-                unless $cp->{server_type} || $malformed{server_type};
-            push @errors, "control_planes[$idx]: location required for hetzner"
-                unless $cp->{location} || $malformed{location};
-        }
-
-        if ($prov eq 'ssh') {
-            push @errors, "control_planes[$idx]: host required for ssh"
-                unless $cp->{host} || $malformed{host};
-        }
-
-        # node_ip (k254): the address this control plane registers by, in the
-        # words `ocp node add --node_ip` and an OCPNode's spec.nodeIP are
-        # refused with.
-        if (!$shared && defined $cp->{node_ip}) {
-            my $err = OCP::Choices::node_ip_error($cp->{node_ip});
-            push @errors, "control_planes[$idx].node_ip: $err" if defined $err;
-            push @errors, $self->_node_ip_clashes($cp->{node_ip}, $idx, \%node_ip_at)
-                unless defined $err;
-        }
-    }
+    push @errors, _lines_of($self->_control_plane_lines);
 
     push @errors, $self->_validate_network;
     push @errors, $self->_validate_cilium;
-    my $gpu_err = _gpu_shape_error($self->spec->{gpu});
-    push @errors, "gpu: $gpu_err" if defined $gpu_err;
-    # A key of gpu: that is none of its four (k331), the lines gpu_config
-    # refuses on.
-    push @errors, _unknown_keys('gpu', $self->spec->{gpu}, @GPU_KEYS)
-        if ref $self->spec->{gpu} eq 'HASH';
-    push @errors, $self->_validate_gpu_driver;
-    push @errors, $self->_validate_gpu_amd;
+    push @errors, _lines_of($self->_gpu_lines);
 
     # system: (k331), the lines system_config refuses on.
     push @errors, _system_errors($self->spec->{system});
@@ -1289,15 +1176,7 @@ sub validate {
     push @errors, _ssh_errors($ssh);
     push @errors, _unknown_keys('ssh', $ssh, map { $_->[0] } @SSH_KEYS) if ref $ssh eq 'HASH';
 
-    # The switches (k320): true or false, as robocop: is; each line is its
-    # accessor's refusal too (_switch). Read through mappings only: a gpu: or
-    # gpu.amd: that is none has its own line above.
-    for my $path (sort keys %SWITCH_DEFAULTS) {
-        my $value = $self->spec;
-        $value = ref $value eq 'HASH' ? $value->{$_} : undef for split /\./, $path;
-        my $err = _switch_error($path, $value);
-        push @errors, $err if defined $err;
-    }
+    push @errors, _lines_of($self->_switch_lines);
 
     my $net = ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {};
     push @errors, $self->_validate_pod_cidr($net);
@@ -1323,37 +1202,305 @@ sub validate {
         push @errors, "robocop.image: $ie" if $ie;
     }
 
+    push @errors, _lines_of($self->_worker_lines);
+
+    return @errors;
+}
+
+=method spec_errors
+
+    my @lines = $config->spec_errors('control_planes', 'control_planes[*]');
+    my @lines = $config->spec_errors("workers[$n].nodes", "workers[$n].host");
+
+The lines C<validate> has at the key paths named, in its words and its
+order, each line once; none when nothing is wrong there (k306). For a
+command that reads part of F<ocp.yaml> without running all of
+C<validate>: it refuses on what it reads, and on nothing it does not.
+
+The key paths, C<I> an entry's place counted from 1, or C<*> for every entry
+C<validate> checks (with C<nodes: N> the control planes are one entry,
+said once):
+
+    name                         a name that is no string
+    control_planes               control_planes that is neither form
+    control_planes[I]            an entry that is no mapping
+    control_planes[I].provider   a provider OCP does not know
+    control_planes[I].KEY        KEY no string: host, public_ip, private_ip,
+                                 server_type, location, image, name
+    workers                      workers that is no list
+    workers[I]                   a pool that is no mapping
+    workers[I].name              a pool name that is no string
+    workers[I].provider          a provider missing, or one OCP does not know
+    workers[I].nodes             nodes: as the pool's provider reads it
+    workers[I].KEY               KEY no string: host (on a pool that takes
+                                 one), server_type, location, image
+    gpu                          every line under gpu:
+
+Under a section or an entry that has a line of its own shape, a path has
+none: C<validate> reads no further there either. Nor has an entry past the
+last one.
+
+Not at any path, C<validate>'s alone: a name missing, the cluster's or a
+pool's; a key nothing reads (k347); what a provider requires; the bounds of
+C<control_planes>; every C<node_ip>; labels and taints; an ssh pool that
+names its machines both ways, or neither; a host on a pool that takes none;
+and every other section. A path outside these croaks. An F<ocp.yaml> that
+is empty or no mapping stops it with its line, as it stops every reader.
+
+=cut
+
+# The paths spec_errors answers for under a control plane and a pool (k306).
+my @CP_PATH_KEYS   = ('provider', map { $_->[0] } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS);
+my @POOL_PATH_KEYS = (qw( name provider nodes ), map { $_->[0] } @ONE_NAME_KEYS);
+
+sub spec_errors {
+    my ($self, @paths) = @_;
+
+    my %want;    # section => [ the tags it is asked for, as regexes ]
+    for my $path (@paths) {
+        my ($section, $re) = _spec_path($path);
+        croak 'spec_errors: no key path ' . _shown_value($path) . ' (see OCP::Config/spec_errors)'
+            unless defined $section;
+        push @{ $want{$section} }, $re;
+    }
+
+    # In validate()'s order: the name, the control planes, gpu:, the pools.
+    my @lines;
+    for my $s ([ name => '_name_lines' ], [ control_planes => '_control_plane_lines' ],
+               [ gpu => '_gpu_spec_lines' ], [ workers => '_worker_lines' ]) {
+        my ($section, $producer) = @$s;
+        my $res = $want{$section} or next;
+        for my $pair ($self->$producer) {
+            my ($tag, $line) = @$pair;
+            push @lines, $line if defined $tag && grep { $tag =~ $_ } @$res;
+        }
+    }
+    return @lines;
+}
+
+# The section a key path is in and a regex for the tags it stands for, or
+# nothing for a path spec_errors does not answer for.
+sub _spec_path {
+    my ($path) = @_;
+    return () if !defined $path || ref $path;
+    return ($path, qr/\A\Q$path\E\z/) if grep { $path eq $_ } qw( name control_planes gpu workers );
+    my ($section, $i, $key) = $path =~ /\A(control_planes|workers)\[(\*|[1-9][0-9]*)\](?:\.([a-z_]+))?\z/
+        or return ();
+    return () if defined $key
+        && !grep { $_ eq $key } ($section eq 'workers' ? @POOL_PATH_KEYS : @CP_PATH_KEYS);
+    my $index = $i eq '*' ? '[0-9]+' : $i;
+    my $tail  = defined $key ? "\\.$key" : '';
+    return ($section, qr/\A$section\[$index\]$tail\z/);
+}
+
+# The producers (k306): validate()'s lines of one block, in its order, as
+# [ tag, line ] -- the tag the key path spec_errors finds the line at, undef
+# for a line that is validate()'s alone.
+sub _lines_of { return map { $_->[1] } @_ }
+sub _tagged   { my ($tag, @lines) = @_; return map { [ $tag, $_ ] } @lines }
+
+# A name that is a list or mapping passed (k305), and every key name the
+# cluster derives from it said ARRAY(0x...). "name is required" is
+# validate()'s alone: ocp destroy searches a name like '' as the label it is
+# (k335).
+sub _name_lines {
+    my ($self) = @_;
+    return _tagged(name => "name: must be a string (the cluster's name), not "
+        . _shown_value($self->spec->{name})) if ref $self->spec->{name};
+    return $self->name && $self->name =~ /\S/ ? () : _tagged(undef, "name is required");
+}
+
+sub _control_plane_lines {
+    my ($self) = @_;
+    my @lines;
+
+    my $cps = $self->control_planes;
+
+    # The shape first (k296). A control_planes that is neither form would be
+    # read as one hetzner control plane with nothing set, and refused for
+    # what nobody wrote; a list entry that is no mapping died inside Perl.
+    my $raw_cps = $self->spec->{control_planes};
+    if (defined $raw_cps && ref $raw_cps ne 'HASH' && ref $raw_cps ne 'ARRAY') {
+        push @lines, _tagged(control_planes => "control_planes: must be a mapping (one control plane, "
+            . "or nodes: N of them) or a list of mappings, not " . _shown_value($raw_cps));
+        $cps = [];
+    }
+    push @lines, _tagged(undef, "control_planes: must list at least one control plane, not an empty list")
+        if ref $raw_cps eq 'ARRAY' && !@$raw_cps;
+    my $etcd_bound = "every control plane is an etcd member, and etcd advises no more "
+        . "than $MAX_CONTROL_PLANE_NODES";
+    if (ref $raw_cps eq 'HASH' && defined(my $nodes = $raw_cps->{nodes})) {
+        my $whole = _is_whole_number($nodes);
+        push @lines, _tagged(undef, "control_planes.nodes: must be a whole number from 1 to "
+            . "$MAX_CONTROL_PLANE_NODES, not " . _shown_value($nodes)
+            . ($whole && $nodes > $MAX_CONTROL_PLANE_NODES ? "; $etcd_bound" : ''))
+            unless $whole && $nodes >= 1 && $nodes <= $MAX_CONTROL_PLANE_NODES;
+    }
+    # The list form holds no more than nodes: may stand for (k315): the bound
+    # is etcd's, whichever way the control planes are written. Its entries are
+    # still checked below.
+    push @lines, _tagged(undef, "control_planes: must list at most $MAX_CONTROL_PLANE_NODES control "
+        . "planes, not " . scalar(@$raw_cps) . "; $etcd_bound")
+        if ref $raw_cps eq 'ARRAY' && @$raw_cps > $MAX_CONTROL_PLANE_NODES;
+
+    # The mapping form with `nodes: N` is N copies of one entry (see
+    # control_planes), so a node_ip there would be every one of them's (k254).
+    # Refused once, not per copy; its syntax is not worth a line then.
+    my $shared  = $self->_control_planes_shared;
+    push @lines, _tagged(undef, "control_planes: node_ip with nodes: " . scalar(@$cps)
+        . " would give all " . scalar(@$cps) . " control planes the same address; "
+        . "list them one by one (control_planes: as a list), each with its own node_ip")
+        if $shared && defined $raw_cps->{node_ip};
+
+    # The entries are checked one by one -- but with nodes: N they are N
+    # copies of one, whose lines were said N times over (k322): once is enough.
+    my %node_ip_at;    # address (as an IP) => the control plane that has it
+    for my $i (0 .. ($shared ? 0 : $#$cps)) {
+        my $cp = $cps->[$i];
+        my $idx = $i + 1;
+        my $at  = "control_planes[$idx]";
+        unless (ref $cp eq 'HASH') {
+            push @lines, _tagged($at => "$at: must be a mapping (one control plane), not "
+                . _shown_value($cp));
+            next;
+        }
+        my $prov = $cp->{provider} // 'hetzner';
+
+        # A key nothing reads (k347). nodes: is the mapping form's, which
+        # control_planes takes out of each copy; in a list entry nothing
+        # reads it.
+        my $mapping = ref $raw_cps eq 'HASH';
+        my $one_each = 'a list has one entry per control plane';
+        push @lines, _tagged(undef, _entry_unknown_keys($at, $cp, {
+                count => 'count is read by nothing -- '
+                    . ($mapping ? 'how many control planes there are is nodes: N' : $one_each),
+                nodes => "nodes: N is read on a control_planes mapping only -- $one_each",
+            }, @CONTROL_PLANE_KEYS, ($mapping ? 'nodes' : ())));
+
+        # The wording this rejection has always had; the SET behind it now
+        # comes from the factory that builds those providers instead of being
+        # spelled out a second time here (k103). Same three words, one
+        # source -- a fourth provider type appears in this message the moment
+        # OCP::Provider can construct it.
+        # !ref: a boolean is no provider, whatever eq on it says; see
+        # _is_choice (k305, k314).
+        unless (!ref $prov && OCP::Provider->known_type($prov)) {
+            push @lines, _tagged("$at.provider" => "$at: invalid provider " . _shown_value($prov)
+                . " (must be " . OCP::Choices::or_list(OCP::Provider->types) . ")");
+        }
+
+        # host, server_type, location and image (k315, k322): one name each,
+        # which the provider is handed and the OCPNode's spec carries as is. A
+        # list passed for being true, and named the machine ARRAY(0x...). One
+        # line for the shape, not a "required" beside it.
+        # public_ip and private_ip (k340) the same way, and name (k355).
+        my %malformed;
+        for my $s (@ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS) {
+            my $key  = $s->[0];
+            my $line = _cp_string_error($cp, $idx, $key) // next;
+            push @lines, _tagged("$at.$key" => $line);
+            $malformed{$key} = 1;
+        }
+
+        if ($prov eq 'hetzner') {
+            push @lines, _tagged(undef, "$at: server_type required for hetzner")
+                unless $cp->{server_type} || $malformed{server_type};
+            push @lines, _tagged(undef, "$at: location required for hetzner")
+                unless $cp->{location} || $malformed{location};
+        }
+
+        if ($prov eq 'ssh') {
+            push @lines, _tagged(undef, "$at: host required for ssh")
+                unless $cp->{host} || $malformed{host};
+        }
+
+        # node_ip (k254): the address this control plane registers by, in the
+        # words `ocp node add --node_ip` and an OCPNode's spec.nodeIP are
+        # refused with.
+        if (!$shared && defined $cp->{node_ip}) {
+            my $err = OCP::Choices::node_ip_error($cp->{node_ip});
+            push @lines, _tagged(undef, "$at.node_ip: $err") if defined $err;
+            push @lines, _tagged(undef, $self->_node_ip_clashes($cp->{node_ip}, $idx, \%node_ip_at))
+                unless defined $err;
+        }
+    }
+
+    return @lines;
+}
+
+# gpu:, but for its switches (_switch_lines).
+sub _gpu_lines {
+    my ($self) = @_;
+    my $gpu_err = _gpu_shape_error($self->spec->{gpu});
+    return _tagged(gpu =>
+        (defined $gpu_err ? "gpu: $gpu_err" : ()),
+        # A key of gpu: that is none of its four (k331), the lines gpu_config
+        # refuses on.
+        (ref $self->spec->{gpu} eq 'HASH' ? _unknown_keys('gpu', $self->spec->{gpu}, @GPU_KEYS) : ()),
+        $self->_validate_gpu_driver,
+        $self->_validate_gpu_amd,
+    );
+}
+
+# All of gpu:'s lines, its switches with them, in validate()'s order.
+sub _gpu_spec_lines {
+    my ($self) = @_;
+    return ($self->_gpu_lines, grep { defined $_->[0] } $self->_switch_lines);
+}
+
+# The switches (k320): true or false, as robocop: is; each line is its
+# accessor's refusal too (_switch). Read through mappings only: a gpu: or
+# gpu.amd: that is none has its own line (_gpu_lines). Those under gpu: are
+# at its path.
+sub _switch_lines {
+    my ($self) = @_;
+    my @lines;
+    for my $path (sort keys %SWITCH_DEFAULTS) {
+        my $value = $self->spec;
+        $value = ref $value eq 'HASH' ? $value->{$_} : undef for split /\./, $path;
+        my $err = _switch_error($path, $value);
+        push @lines, _tagged(($path =~ /\Agpu\./ ? 'gpu' : undef), $err) if defined $err;
+    }
+    return @lines;
+}
+
+sub _worker_lines {
+    my ($self) = @_;
+    my @lines;
+
     # A workers that is no list, or an entry that is no mapping, died inside
     # Perl (k296).
     my $workers = $self->spec->{workers} // [];
     if (ref $workers ne 'ARRAY') {
-        push @errors, "workers: must be a list of worker pools, not " . _shown_value($workers);
+        push @lines, _tagged(workers => "workers: must be a list of worker pools, not "
+            . _shown_value($workers));
         $workers = [];
     }
     my $pool_n = 0;
     for my $w (@$workers) {
         $pool_n++;
+        my $at = "workers[$pool_n]";
         unless (ref $w eq 'HASH') {
-            push @errors, "workers[$pool_n]: must be a mapping (a worker pool), not " . _shown_value($w);
+            push @lines, _tagged($at => "$at: must be a mapping (a worker pool), not " . _shown_value($w));
             next;
         }
         if (ref $w->{name}) {
-            push @errors, "workers[$pool_n].name: must be a string (the pool's name), not "
-                . _shown_value($w->{name});
+            push @lines, _tagged("$at.name" => "$at.name: must be a string (the pool's name), not "
+                . _shown_value($w->{name}));
         }
         else {
-            push @errors, "worker pool: name required" unless $w->{name};
+            push @lines, _tagged(undef, "worker pool: name required") unless $w->{name};
         }
         my $where = $self->_pool_where($w, $pool_n);
         my $wprov = $w->{provider} // '';
         if ($wprov eq '') {
-            push @errors, "$where: provider required";
+            push @lines, _tagged("$at.provider" => "$where: provider required");
         } elsif (ref $wprov || !OCP::Provider->known_type($wprov)) {
             # Same set, same source as the control-plane check above --
             # spelling the regex here again is what k103 deleted for
             # the control planes and what k110 made stale (k115).
-            push @errors, "$where: invalid provider " . _shown_value($wprov) . " (must be "
-                . OCP::Choices::or_list(OCP::Provider->types) . ")";
+            push @lines, _tagged("$at.provider" => "$where: invalid provider " . _shown_value($wprov)
+                . " (must be " . OCP::Choices::or_list(OCP::Provider->types) . ")");
         }
 
         # A key nothing reads (k347); node_ip has its line below. count: was
@@ -1361,11 +1508,11 @@ sub validate {
         my %keys = %$w;
         delete $keys{node_ip};
         my $ssh_pool = !ref $wprov && $wprov eq 'ssh';
-        push @errors, _entry_unknown_keys("workers[$pool_n]", \%keys, {
+        push @lines, _tagged(undef, _entry_unknown_keys($at, \%keys, {
                 count => 'count is read by nothing -- ' . ($ssh_pool
                     ? 'an ssh pool names its machines: host for one, or nodes, a list of hosts'
                     : 'write nodes: N, how many machines the pool has; without nodes it has one'),
-            }, @POOL_KEYS);
+            }, @POOL_KEYS));
 
         # host, server_type, location and image (k315, k322): one name each,
         # which worker_ocpnodes copies into every OCPNode of the pool. A host
@@ -1375,7 +1522,7 @@ sub validate {
             my ($key, $what) = @$s;
             next if $key eq 'host' && !$self->_pool_takes_host($w);
             if (defined(my $err = _not_a_string($w->{$key}, $what))) {
-                push @errors, "$where: $key $err";
+                push @lines, _tagged("$at.$key" => "$where: $key $err");
             }
         }
 
@@ -1383,23 +1530,23 @@ sub validate {
         # hangs on its provider, so only a known one is asked. An ssh pool's
         # host beside it is validate()'s own (k322), see
         # _ssh_pool_machines_errors.
-        push @errors, $self->_pool_nodes_errors($w, $where)
+        push @lines, _tagged("$at.nodes" => $self->_pool_nodes_errors($w, $where))
             if !ref $wprov && $wprov ne '' && OCP::Provider->known_type($wprov);
-        push @errors, $self->_ssh_pool_machines_errors($w, $where)
+        push @lines, _tagged(undef, $self->_ssh_pool_machines_errors($w, $where))
             if !ref $wprov && $wprov eq 'ssh';
-        push @errors, $self->_pool_host_error($w, $where) // ();
+        push @lines, _tagged(undef, $self->_pool_host_error($w, $where) // ());
 
         # labels / taints (k211): what the pool's OCPNodes carry.
-        push @errors, OCP::NodeMeta->label_errors("$where: labels", $w->{labels})
+        push @lines, _tagged(undef, OCP::NodeMeta->label_errors("$where: labels", $w->{labels}))
             if defined $w->{labels};
         if (defined(my $taints = $w->{taints})) {
             if (ref $taints ne 'ARRAY') {
-                push @errors, "$where: taints must be a list like [ \"key=value:NoSchedule\" ]";
+                push @lines, _tagged(undef, "$where: taints must be a list like [ \"key=value:NoSchedule\" ]");
             }
             else {
                 for my $t (@$taints) {
                     my $err = OCP::NodeMeta->taint_error($t);
-                    push @errors, "$where: $err" if defined $err;
+                    push @lines, _tagged(undef, "$where: $err") if defined $err;
                 }
             }
         }
@@ -1410,15 +1557,15 @@ sub validate {
         # default route's address, which is what node_ip is there to prevent.
         my $per_node = 'set it per node: ocp node add NAME --node_ip ADDRESS, '
             . 'or spec.nodeIP on its OCPNode';
-        push @errors, "$where: node_ip cannot be set on a pool, one address cannot be "
-            . "every machine's; $per_node"
+        push @lines, _tagged(undef, "$where: node_ip cannot be set on a pool, one address cannot be "
+            . "every machine's; $per_node")
             if defined $w->{node_ip};
         if (ref $w->{nodes} eq 'ARRAY') {
             for my $n (0 .. $#{ $w->{nodes} }) {
                 my $entry = $w->{nodes}[$n];
                 next unless ref $entry eq 'HASH';
-                push @errors, "$where: nodes[" . ($n + 1) . "].node_ip is not read from "
-                    . "a pool's nodes; $per_node"
+                push @lines, _tagged(undef, "$where: nodes[" . ($n + 1) . "].node_ip is not read from "
+                    . "a pool's nodes; $per_node")
                     if defined $entry->{node_ip};
 
                 # A key of an ssh pool's machine that nothing reads (k355).
@@ -1427,13 +1574,13 @@ sub validate {
                 # is a count, and a list there has its line.
                 my %keys = %$entry;
                 delete $keys{node_ip};
-                push @errors, _entry_unknown_keys("workers[$pool_n].nodes[" . ($n + 1) . "]", \%keys, {},
-                    @POOL_NODE_KEYS) if $ssh_pool;
+                push @lines, _tagged(undef, _entry_unknown_keys("$at.nodes[" . ($n + 1) . "]", \%keys, {},
+                    @POOL_NODE_KEYS)) if $ssh_pool;
             }
         }
     }
 
-    return @errors;
+    return @lines;
 }
 
 # The mapping form with nodes: N > 1, one entry standing for N control planes
