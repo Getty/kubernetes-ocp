@@ -314,10 +314,6 @@ HELP
 
 __END__
 
-=head1 NAME
-
-OCP - Omni Control Plane - Kubernetes Cluster Management
-
 =head1 SYNOPSIS
 
     # Initialize project

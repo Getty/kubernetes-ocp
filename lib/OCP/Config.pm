@@ -1939,10 +1939,6 @@ sub _compact_control_planes {
 
 __END__
 
-=head1 NAME
-
-OCP::Config - OCP configuration and status management
-
 =head1 SYNOPSIS
 
     use OCP::Config;

@@ -1,18 +1,3 @@
-package OCP::SSH::HostKeyChanged;
-# ABSTRACT: The exception for a host key that differs from the recorded one
-
-# A string would do for the CLI; OCP::Node needs to tell this failure from
-# every other one (k171): a changed key leaves the node's phase alone and
-# touches nothing, where "not reachable" fails the node. Stringifies to the
-# operator-facing text, so everything that treated the error as a string still
-# does.
-use overload '""' => sub { $_[0]{text} }, fallback => 1;
-
-sub new { my ($class, %args) = @_; return bless {%args}, $class }
-sub host { $_[0]{host} }
-sub port { $_[0]{port} // 22 }
-sub file { $_[0]{file} }
-
 package OCP::SSH;
 # ABSTRACT: SSH operations for OCP
 
@@ -454,6 +439,25 @@ sub wait_for_ssh {
     }
 
     die "SSH not reachable on ${\$self->host} after ${timeout}s\n" if !$interrupted;
+}
+
+# The exception for a host key that differs from the recorded one. A string
+# would do for the CLI; OCP::Node needs to tell this failure from every other
+# one (k171): a changed key leaves the node's phase alone and touches nothing,
+# where "not reachable" fails the node. Stringifies to the operator-facing
+# text, so everything that treated the error as a string still does.
+#
+# It sits below OCP::SSH because Pod::Weaver names the file's POD after its
+# first package and first ABSTRACT (k317).
+{
+    package    # loaded with OCP::SSH, no file of its own; hidden from the indexer
+        OCP::SSH::HostKeyChanged;
+    use overload '""' => sub { $_[0]{text} }, fallback => 1;
+
+    sub new { my ($class, %args) = @_; return bless {%args}, $class }
+    sub host { $_[0]{host} }
+    sub port { $_[0]{port} // 22 }
+    sub file { $_[0]{file} }
 }
 
 1;
