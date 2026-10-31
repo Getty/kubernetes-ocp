@@ -25,9 +25,14 @@ api from a kubeconfig string, server-side apply a hash, parse and apply a
 multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path,
 and the reads a readiness wait and a single lookup make, which tell a 404 from
 a read that failed.
-L<OCP::Cmd::Apply> re-exports every helper as a C<_method> thin forwarder so
-the existing test surface (C<local *OCP::Cmd::Apply::_server_side_apply = ...>)
-keeps working.
+L<OCP::Cmd::Apply> keeps a C<_method> thin forwarder for C<api> (as
+C<_k8s_api>), C<pluralize_kind>, C<build_resource_path>, C<server_side_apply>,
+C<server_side_apply_all>, C<apply_yaml_string>, C<apply_yaml_file>,
+C<poll_deployment_ready>, C<resource_exists> and C<crd_get>, so the existing
+test surface (C<local *OCP::Cmd::Apply::_server_side_apply = ...>) keeps
+working. The newer C<kubeconfig_path>, C<read_or_why> and C<read_or_absent>
+have no forwarder; callers use their full name,
+C<OCP::Cmd::Apply::K8s::read_or_absent(...)>.
 
 =cut
 

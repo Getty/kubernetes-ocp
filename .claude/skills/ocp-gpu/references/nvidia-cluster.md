@@ -49,11 +49,22 @@ argued back in.
 1. **NFD labels**: `_setup_gpu_operator` looks for
    `feature.node.kubernetes.io/pci-0300_10de.present` or `pci-0302_10de.present`.
    That is the same evidence as sysfs, seen from the other side.
-   - When that first check skipped and the run joined workers,
-     `setup_gpu_operator_after_join` (in `OCP::Cmd::Apply::Workloads`) checks
-     again.
-   - First it waits up to 600 s for *any* `feature.node.kubernetes.io/` label
-     on each new node. NFD's worker waits for the CNI before it labels.
+   - When the run joined workers, `setup_gpu_operator_after_join` (in
+     `OCP::Cmd::Apply::Workloads`) checks again, unless the first check
+     failed or `gpu.enabled` is false.
+   - First it waits up to 600 s (`gpu_label_timeout`) for *any*
+     `feature.node.kubernetes.io/` label on each new node. NFD's worker pod
+     gets no network sandbox until Cilium's first BPF compile on the fresh
+     node is done (4-5 min on brain, ~5.5 min on synapse), so it labels late.
+     A node NFD never labels in time is a `[WARN]` on STDERR, and the check
+     goes on with what is there.
+   - Then it decides by what the first check did:
+     - It skipped: the check runs again, and decides on the labels it sees.
+     - It ran (k287): the check runs again only when a joined worker carries
+       an NFD NVIDIA label; otherwise it says "No NVIDIA GPU on the new
+       worker(s)" and stops. An up-to-date operator still waits (300 s,
+       `gpu_ready_timeout`) for `nvidia.com/gpu` in `status.allocatable` on
+       the new node (k273).
 2. **Authoritative**: `nvidia.com/gpu` in the node's `status.allocatable`,
    published by the device plugin, plus a CUDA smoke pod.
    - Not capacity: the kubelet leaves capacity standing after a plugin

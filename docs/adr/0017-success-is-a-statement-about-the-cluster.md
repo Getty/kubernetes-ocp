@@ -99,22 +99,45 @@ For NVIDIA the rest of the sentence still holds, though no longer because
 nothing asks. Since k273 (7e786ce), every `setup_gpu_operator` run that does
 not skip, `unchanged` included, waits up to 300 s (`gpu_ready_timeout`). It
 waits for `nvidia.com/gpu` above 0 in `status.allocatable` on every NVIDIA node
-it detected, and `ocp node add --gpu` runs the same check. A node that does not
-get there is one `[WARN] NVIDIA GPU not ready after 300s: …` on STDERR. The
+it detected, and `ocp node add --gpu` runs the same check. Since k287
+(fc5740b) that also covers an NVIDIA worker that joins in the same apply after
+the check ran. `setup_gpu_operator_after_join` used to check again only when
+the first check had skipped, so nothing waited for that node until the next
+apply. Now it also checks again after a first check that ran: it waits up to
+600 s (`gpu_label_timeout`) for NFD to label the joined workers, and runs
+`setup_gpu_operator` once more when one of them carries NFD's NVIDIA label.
+After a failed first check there is no second one. A node without
+`nvidia.com/gpu` in allocatable after 300 s is one
+`[WARN] NVIDIA GPU not ready after 300s: …` on STDERR, in either check. The
 verdict, the banner and the exit code stay as they were. The proof is checked,
 but outside the gate.
 
 For AMD it no longer holds. This was added alongside the capacity error, not
-caused by it. Since k251 (4d90591), the AMD stack step waits up to 300 s for
+caused by it. Since k251 (4d90591), the AMD stack step waits for
 `amd.com/gpu` in `status.allocatable` on every node the device plugin selects
-(for the DRA driver, a ResourceSlice per node). A node that never shows it is a
-failed component: `ocp apply` names it on STDERR, the banner reads
+(for the DRA driver, a ResourceSlice per node). A node that does not show it in
+time is a failed component: `ocp apply` names it on STDERR, the banner reads
 `— APPLY INCOMPLETE`, and the exit code is non-zero
 (`OCP::Cmd::Apply::Health::finish`). That check is not the pod scan this ADR
 describes. It reaches the same banner and exit code through the
-failed-component list.
+failed-component list. `ocp node add --gpu` reports the same failure on STDERR
+and names `ocp apply`; its exit code still says only whether the node is Ready.
+
+Until k286 (bd5233d) the step waited only after it rolled a component out. An
+`unchanged` component returned at once, so a node that joined an up-to-date
+stack was never waited for. Now `ensure` waits on `unchanged` too, and a wait
+that runs out fails the component the same way. The budget is 300 s
+(`ready_timeout`), or 600 s (`join_ready_timeout`) when the step runs for a
+node that just joined: `step(..., joined => 1)`, from `ocp node add --gpu` and
+from `after_join` in `ocp apply`. The 600 s comes from synapse (amdlab):
+Cilium's first BPF compile on the fresh node held the plugin pod back until
+about 7 minutes after registration, past the 300 s. NVIDIA needs no such
+budget for allocatable: its check after a join starts only once NFD has
+labelled the node, so its 300 s start on a node whose CNI works.
 
 The two vendors therefore differ. A node without its GPU in allocatable is a
 warning on NVIDIA and a failed component on AMD. That asymmetry was set in k273
 as a provisional call, not a maintainer decision, and it is open on k285.
-Recorded under k274.
+k286 and k287 widened which nodes are waited for on both sides and left the
+asymmetry as it was. Recorded under k274; the waits for joined nodes under
+k310.

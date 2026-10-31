@@ -135,11 +135,13 @@ Rexfile writes the label keys out literally, because it runs under rex without
 - `step` runs on the full deploy (`Apply/Deploy.pm`) and on the reconcile path
   (`Apply/Drift.pm`), as `[..] Checking AMD GPU stack...`.
 - `after_join` runs once more after the worker step, when a worker that came
-  up Ready carries the marker. There is nothing to wait for, since the marker
-  comes with registration. It is skipped when the first step failed, warned or
-  did not run.
-- `ocp node add --gpu` (`_ensure_amd_gpu_stack`) waits up to 300 s for the
-  marker or an NFD NVIDIA label, then runs `step`.
+  up Ready carries the marker. There is no label to wait for, since the marker
+  comes with registration, but it runs `step(..., joined => 1)`, so the
+  readiness waits get the budget of a freshly joined node (see Readiness). It
+  is skipped when the first step failed, warned or did not run.
+- `ocp node add --gpu` (`_ensure_amd_gpu_stack`) waits for the marker or an
+  NFD NVIDIA label (`gpu_label_timeout`, 600 s, the apply side's NFD budget
+  from `OCP::Cmd::Apply::Workloads`; k309), then runs `step(..., joined => 1)`.
   - It is never fatal: the exit code reflects only whether the node is Ready.
   - No GPU shown in time, or a failed component, is said on STDERR together
     with `ocp apply` as the way to get the stack. A missing-lib `[WARN]` stands
@@ -205,6 +207,9 @@ components AND an allocation term on top:
   - An equal hash with the DaemonSet present means `unchanged`. Otherwise the
     outcome is `deployed` (not recorded before), `restored` (DaemonSet gone) or
     `updated`.
+  - `unchanged` still runs the readiness wait (k286): a node that joined
+    since gets its pod only now. A wait that runs out keeps the recorded hash,
+    so the next apply redeploys nothing and waits again.
 - The lib's calls run with `Rex::Logger` silenced, because STDERR is the error
   channel. Progress is OCP's own, on STDOUT.
 - Deploy order: the non-default allocation component (`In`) first, then the
@@ -215,9 +220,24 @@ components AND an allocation term on top:
 
 ### Readiness: allocatable, never capacity
 
-OCP passes `wait => 0` and checks readiness itself (`wait_ready`, 300 s budget,
-10 s interval). The lib's own wait used to read `status.capacity` and reported
+OCP passes `wait => 0` and checks readiness itself (`wait_ready`, 10 s
+interval). The lib's own wait used to read `status.capacity` and reported
 success one second into a redeploy (rex-rancher k106).
+
+The budget is per component and set by `setup`'s `joined` option:
+
+| Run | Budget |
+|---|---|
+| `ocp apply` (full deploy, reconcile path) | `ready_timeout`, 300 s |
+| a node that just joined: `step(..., joined => 1)` from `after_join` and `ocp node add --gpu` | `join_ready_timeout`, 600 s |
+
+- It applies to an up-to-date stack too (k286), not only to a fresh deploy.
+- The reason for 600 s: the marker is there from registration, so the wait
+  starts while Cilium is still on its first BPF compile for the fresh node, and
+  no pod there gets a sandbox until it is done. On synapse that took ~5.5 min,
+  and the plugin pod came up ~7 min after registration, which ran out 300 s.
+- A wait that runs out fails that component: `AMD GPU device plugin not ready
+  after 600s: node 'X' shows no amd.com/gpu in status.allocatable`.
 
 1. The DaemonSet rolled out: `observedGeneration` >= `generation`,
    `desiredNumberScheduled` > 0, and `numberReady` and `updatedNumberScheduled`
