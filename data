@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T02:16:31Z
+created: 2026-10-30T21:54:38Z
+id: 246
+priority: medium
+started: 2026-10-31T01:32:10Z
+status: done
+tags:
+- hetzner
+- provider
+title: Hetzner reads stop at page one and filter server types on the top-level deprecated
+  flag
+updated: 2026-10-31T02:16:50Z
+---
+
+Found while writing the consumer skill perl-www-hetzner (p5-www-hetzner k35); each checked against WWW::Hetzner lib/:
+
+- servers->list and servers->list_by_label fetch one page; list_all(%filters) follows every page. One-page calls: lib/OCP/Provider/Hetzner.pm line 115 (the idempotency lookup) and line 421 (list_servers_by_cluster, used by sweeps), lib/OCP/Cmd/Hetzner/List.pm lines 33-34. A cluster with more servers than one page misses servers there.
+- lib/OCP/Hetzner/Picker.pm lines 14 and 18 read locations->list and server_types->list, also one page each.
+- Picker.pm line 42 hides deprecated types with !$_->deprecated. The API drops the top-level deprecated field; the attribute then reads undef and the filter hides nothing. ServerType->locations (WWW::Hetzner 0.102, already pinned) carries name, available and deprecated per location.
+
+Done when: those reads use list_all (servers with label_selector), the picker offers a type for a location only when that location entry is available and not deprecated, and tests drive both through a fake IO with a second page.
+
+2026-10-31 01:37 Verified against WWW::Hetzner 0.102 in raudssus/ocp:latest: Servers/Locations/ServerTypes compose Role::Pagination (list_all follows meta.pagination.next_page, carries filters); list/list_by_label = one _list_page. ServerType->locations is the raw API array, passed through untouched. DIVERGENCE: the 0.102 POD (and this card, and skill perl-www-hetzner) say the per-location entry carries 'deprecated'. Hetzner's official OpenAPI spec (docs.hetzner.cloud/cloud.spec.json, read 2026-10-31) says server_types[].locations[] = { id, name, deprecation (object|null), recommended, available } - there is no 'deprecated' key. A filter on ->{deprecated} would hide nothing again. Changelog 2026-09-08: top-level server_types.deprecated is removed 2026-11-02; use locations[].deprecation. Per brief: stopping on the Picker deprecation filter, doing the list_all reads.
+
+2026-10-31 01:49 Done (list_all part): Provider/Hetzner.pm server_exists + list_servers_by_cluster -> servers->list_all(label_selector => ...); Cmd/Hetzner/List.pm -> list_all(label_selector => --label if given); Hetzner/Picker.pm locations/server_types -> list_all; POD lines corrected (=opt label, Picker round-trip note). Test doubles in t/12, t/16, t/74, t/101 now stub list_all (t/74 still records the selector). New t/246-hetzner-list-all.t (6 subtests) via t/lib/OCPTest/HetznerIO.pm, 2 entries a page. Red first on sweep + picker (hetzner-list subtests masked by k245). Mutations each red: sweep->list_by_label (st 1), List.pm->list/list_by_label (st 3-4), Picker locations->list (st 5), server_types->list (st 6). server_exists->list_by_label: t/246 stays green (a cluster+node selector never spans a page - it pins the request only), t/12/t/16/t/74/t/101 go red. make test on 9 files: 255 tests PASS.
+
+2026-10-31 01:51 Coordinator's decision (their call, not mine): per-location key is 'deprecation' (object|null) - Hetzner changelog 2026-09-08 drops 'deprecated' from Images/Server Types/LB Types on 2026-11-02. server_type_options(%filter) gets optional location => NAME next to architecture. With location: offer a type only if a locations entry with that name is available and has deprecation null. Without: offer if at least one entry is available and undeprecated. Top-level 'deprecated' is not read anywhere afterwards. Init.pm wiring (pass the chosen location, ~919) is the apply-worker's, dispatched separately.
+
+2026-10-31 02:00 Done, per the coordinator's decision. Picker.pm: server_type_options(%filter) takes optional location => NAME next to architecture; new _orderable($type, $location) reads ServerType->locations (0.102: arrayref of plain hashes, JSON::PP::Boolean available, undef for null; locations: null -> undef, guarded; non-hash entries skipped). Entry counts when available && !defined deprecation; with location only the entry of that name counts, without, any. Top-level deprecated no longer read anywhere (only Hetzner read was Picker.pm:42). POD + comment updated. New t/246-hetzner-picker-locations.t (10 subtests): 9 single-type cases with and without location => fsn1 (ok, deprecated, unavailable, location missing, deprecated-here-ok-elsewhere, nowhere orderable, top-level deprecated ignored, locations null, non-hash entry) + whole catalogue across 5 pages. t/42 and t/41 fixtures moved from top-level deprecated to locations entries (t/42 claim 'deprecated ones are not listed' kept, now per location). Mutations each red: old top-level filter, no name match, no available, no deprecation, first entry decides, no null guard, no hash guard, top-level re-added. DOCKER_BUILDKIT=0 make test on t/245, t/246 x2, t/12, t/16, t/74, t/101, t/41, t/42, t/00-load: 10 files, 265 tests PASS. Open: Init.pm ~919 still calls server_type_options() without the chosen location - apply-worker.
+
+2026-10-31 02:16 Closed with 01a1c81. Verified on that commit alone in a detached worktree: prove -l over t/245, t/246-hetzner-list-all.t, t/246-hetzner-picker-locations.t, t/12, t/16, t/74, t/101, t/41, t/42, t/00-load, 10 files, 265 tests, PASS. Host prove run, not the binding Docker suite; the binding full Docker suite passed on a later tree containing both commits (196 files, 3089 tests).
