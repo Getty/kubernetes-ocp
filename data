@@ -1,0 +1,27 @@
+---
+class: standard
+created: 2026-10-31T14:26:43Z
+id: 375
+priority: medium
+status: todo
+tags:
+- secrets
+- ux
+- bug
+title: A wrong PIN1 is reported as an internal error
+updated: 2026-10-31T14:26:43Z
+---
+
+Found by the apply worker during k349 (2026-10-31), via bin/ocp --pins-stdin with a wrong PIN1:
+
+    Error: Decryption failed. Wrong password?
+    This is an internal error. Run again with --verbose for the full trace.
+
+Cause: OCP::Password (lib/OCP/Password.pm:162) croaks "Decryption failed. Wrong password?". A croak carries " at FILE line N.", which OCP.pm _clean_message classifies as an internal error (lib/OCP.pm:88-90, 253-260). A mistyped PIN is the most common user error; calling it internal sends the user to --verbose for a stack trace instead of retyping.
+
+Done =
+- A wrong PIN1 (and PIN2, if it shares the path) dies with a user-facing "message\n": what failed (PIN1 does not open age.key.enc), and the fix (retype; if forgotten, how to recover per docs/security.md). STDERR, exit non-zero, no "internal error" line, no Perl location.
+- Same check for the sibling user-facing croaks on the PIN1 path in OCP::Secrets (e.g. _unlock_age_key "No age.key found. Run ocp init first."): list which you converted and which stay croak (programming errors), with why.
+- Regression test through bin/ocp --pins-stdin: wrong PIN1 → no "internal error" in STDERR, red first, then a mutation check.
+
+Lane: ocp-secrets-worker (OCP::Password, OCP::Secrets). OCP.pm _clean_message stays as is.
