@@ -186,7 +186,8 @@ sub ds {
 {
     my $cfg = project('nvlab');
     my $api = Local::FakeApi->new(nodes => [
-        node('otho', ip => '10.230.30.52', capacity => { 'nvidia.com/gpu' => '1' },
+        node('otho', ip => '10.230.30.52',
+             allocatable => { 'nvidia.com/gpu' => '1' }, capacity => { 'nvidia.com/gpu' => '1' },
              labels => { 'node-role.kubernetes.io/control-plane' => 'true' }),
         node('crag', ip => '10.230.30.54', labels => { 'ocp.internal/amd-gpu.present' => 'false' }),
     ]);
@@ -199,10 +200,10 @@ sub ds {
         deployed => $true,
         drift    => [],
         nodes    => [
-            { gpu => 0, internal_ip => '10.230.30.54', name => 'crag', ready => $true,
-              roles => '<none>', version => 'v1.36.4+rke2r1' },
-            { gpu => 1, internal_ip => '10.230.30.52', name => 'otho', ready => $true,
-              roles => 'control-plane', version => 'v1.36.4+rke2r1' },
+            { gpu => 0, gpu_capacity => undef, internal_ip => '10.230.30.54', name => 'crag',
+              ready => $true, roles => '<none>', version => 'v1.36.4+rke2r1' },
+            { gpu => 1, gpu_capacity => 1, internal_ip => '10.230.30.52', name => 'otho',
+              ready => $true, roles => 'control-plane', version => 'v1.36.4+rke2r1' },
         ],
         spec => {
             control_planes => { count => 1, provider => 'ssh', server_type => undef },
@@ -210,7 +211,7 @@ sub ds {
             version        => 'v1.36.4+rke2r1',
             workers        => [],
         },
-    }), 'no AMD node: the pre-k258 object to the byte, no amd_gpu key';
+    }), 'no AMD node: the pre-k258 object (plus k270\'s gpu_capacity) to the byte, no amd_gpu key';
     is $rc, 0, 'no AMD node: exit 0';
     is $err, '', 'no AMD node: nothing on STDERR';
     is_deeply [ grep { !/^list Node$/ } @{ $api->calls } ], [],
@@ -223,7 +224,8 @@ sub ds {
     my $cfg = project('amdlab', enabled => 1);
     my $api = Local::FakeApi->new(
         nodes => [
-            node('otho', capacity => { 'nvidia.com/gpu' => '1' }),
+            node('otho', allocatable => { 'nvidia.com/gpu' => '1' },
+                 capacity    => { 'nvidia.com/gpu' => '1' }),
             node('synapse', labels => { %AMD, 'ocp.internal/amd-gpu.gfx-target' => 'gfx1151' },
                  allocatable => { 'amd.com/gpu' => '1' }, capacity => { 'amd.com/gpu' => '1' }),
         ],

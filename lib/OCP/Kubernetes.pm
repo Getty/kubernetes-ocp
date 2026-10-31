@@ -200,16 +200,35 @@ sub node_external_ip {
     return '';
 }
 
+# Allocatable is the count: it is what the scheduler hands out. The kubelet
+# keeps capacity standing after a device plugin unregisters, so capacity never
+# says the GPU can be used (k270; the AMD side has read allocatable since
+# k251/k252).
 sub node_gpu_count {
     my ($self, $node) = @_;
-    my $capacity = $self->_dig($node, qw(status capacity)) || {};
-    return $capacity->{'nvidia.com/gpu'} // 0;
+    return $self->_nvidia_gpu_quantity($node, 'allocatable') // 0;
 }
 
+sub node_gpu_capacity {
+    my ($self, $node) = @_;
+    return $self->_nvidia_gpu_quantity($node, 'capacity');
+}
+
+# A node whose device plugin is gone (capacity 1, allocatable 0) is still a
+# GPU node: it stays in the list with nothing to hand out instead of dropping
+# out of sight, which is the one case the count has to show.
 sub gpu_nodes {
     my ($self) = @_;
     my $nodes = $self->list_nodes;
-    return [ grep { $self->node_gpu_count($_) > 0 } @$nodes ];
+    return [ grep {
+        $self->node_gpu_count($_) > 0 || ($self->node_gpu_capacity($_) // 0) > 0
+    } @$nodes ];
+}
+
+sub _nvidia_gpu_quantity {
+    my ($self, $node, $field) = @_;
+    my $resources = $self->_dig($node, 'status', $field);
+    return ref $resources eq 'HASH' ? $resources->{'nvidia.com/gpu'} : undef;
 }
 
 sub _array {
@@ -384,14 +403,24 @@ First C<ExternalIP> entry from C<status.addresses>, or the empty string.
 
     my $n = $k8s->node_gpu_count($node);
 
-Reads C<status.capacity.nvidia.com/gpu>; 0 when absent.
+Reads C<status.allocatable.nvidia.com/gpu>; 0 when absent.  Allocatable,
+not capacity: the kubelet keeps capacity after a device plugin unregisters,
+so only allocatable says how many GPUs the scheduler can hand out.
+
+=method node_gpu_capacity
+
+    my $n = $k8s->node_gpu_capacity($node);
+
+Reads C<status.capacity.nvidia.com/gpu>; undef when absent.  For showing
+beside L</node_gpu_count> only -- it never says the GPU is usable.
 
 =method gpu_nodes
 
     my $gpu_nodes = $k8s->gpu_nodes;
 
-Returns the subset of C<list_nodes> whose C<node_gpu_count> is greater
-than zero.
+Returns the subset of C<list_nodes> with an C<nvidia.com/gpu> allocatable or
+capacity greater than zero, so a node whose device plugin is gone (capacity
+standing, allocatable 0) is still listed.
 
 =seealso
 

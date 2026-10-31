@@ -119,6 +119,7 @@ sub node_json {
         status => {
             addresses  => $a{addresses} // [],
             capacity   => $a{capacity} // { cpu => '4', memory => '8Gi' },
+            ($a{allocatable} ? (allocatable => $a{allocatable}) : ()),
             conditions => $a{conditions} // [],
             nodeInfo   => {
                 kubeletVersion          => $a{version} // 'v1.32.1',
@@ -185,9 +186,10 @@ my $gpu_node = {
         },
     },
     status => {
-        nodeInfo   => { kubeletVersion => 'v1.32.1' },
-        capacity   => { 'nvidia.com/gpu' => 2, cpu => '16', memory => '64Gi' },
-        conditions => [
+        nodeInfo    => { kubeletVersion => 'v1.32.1' },
+        capacity    => { 'nvidia.com/gpu' => 2, cpu => '16', memory => '64Gi' },
+        allocatable => { 'nvidia.com/gpu' => 2, cpu => '16', memory => '64Gi' },
+        conditions  => [
             { type => 'Ready', status => 'True' },
         ],
         addresses => [
@@ -232,10 +234,40 @@ is($k8s->node_internal_ip({ metadata => { name => 'missing-ip' }, status => { ad
 is($k8s->node_gpu_count($gpu_node), 2, 'node_gpu_count returns GPU count');
 is($k8s->node_gpu_count($ready_node), 0, 'node_gpu_count returns 0 for non-GPU node');
 is($k8s->node_gpu_count($worker_node), 0, 'node_gpu_count returns 0 for worker without capacity');
+is($k8s->node_gpu_capacity($gpu_node), 2, 'node_gpu_capacity returns the capacity');
+is($k8s->node_gpu_capacity($ready_node), undef, 'node_gpu_capacity is undef for a non-GPU node');
 
 my $gpu_nodes = $k8s->gpu_nodes;
 is(scalar @$gpu_nodes, 1, 'gpu_nodes returns only GPU nodes');
 is($gpu_nodes->[0]{metadata}{name}, 'gpu-worker', 'gpu_nodes returns correct node');
+
+# k270: the kubelet keeps capacity standing after the NVIDIA device plugin
+# unregisters. The count is allocatable; the node stays a GPU node.
+{
+    my $gone = {
+        metadata => { name => 'plugin-gone' },
+        status   => {
+            capacity    => { 'nvidia.com/gpu' => '1' },
+            allocatable => { 'nvidia.com/gpu' => '0' },
+        },
+    };
+    my $up = {
+        metadata => { name => 'plugin-up' },
+        status   => {
+            capacity    => { 'nvidia.com/gpu' => '1' },
+            allocatable => { 'nvidia.com/gpu' => '1' },
+        },
+    };
+    is($k8s->node_gpu_count($gone), 0, 'capacity 1 / allocatable 0: node_gpu_count is 0, not the capacity');
+    is($k8s->node_gpu_capacity($gone), 1, '... and node_gpu_capacity still says 1');
+    is($k8s->node_gpu_count($up), 1, 'capacity 1 / allocatable 1: node_gpu_count is 1');
+    is($k8s->node_gpu_count({ status => { allocatable => { 'nvidia.com/gpu' => '1' } } }), 1,
+        'node_gpu_count reads allocatable even without a capacity');
+
+    local $k8s->{api} = Local::FakeAPI->new([$ready_node, $gone, $up]);
+    is_deeply([ map { $_->{metadata}{name} } @{ $k8s->gpu_nodes } ], [qw(plugin-gone plugin-up)],
+        'gpu_nodes keeps the node whose plugin is gone, so its 0 can be shown');
+}
 
 #
 # 2. Empty cluster vs. cluster that did not answer -- through the real client.
@@ -299,10 +331,11 @@ subtest 'nodes come back inflated, and the helpers read them' => sub {
                     conditions => [ { type => 'Ready', status => 'True' } ],
                 ),
                 node_json(
-                    name       => 'gpu-worker',
-                    addresses  => [ { type => 'InternalIP', address => '10.0.0.30' } ],
-                    capacity   => { 'nvidia.com/gpu' => '2', cpu => '16' },
-                    conditions => [ { type => 'Ready', status => 'False' } ],
+                    name        => 'gpu-worker',
+                    addresses   => [ { type => 'InternalIP', address => '10.0.0.30' } ],
+                    capacity    => { 'nvidia.com/gpu' => '2', cpu => '16' },
+                    allocatable => { 'nvidia.com/gpu' => '1', cpu => '16' },
+                    conditions  => [ { type => 'Ready', status => 'False' } ],
                 ),
             ],
         },
@@ -322,8 +355,10 @@ subtest 'nodes come back inflated, and the helpers read them' => sub {
     ok $k->node_ready($list->[0]), '... node_ready on a Ready node';
     ok !$k->node_ready($list->[1]), '... and on one that is not';
 
-    is $k->node_gpu_count($list->[1]), '2', 'node_gpu_count reads status.capacity';
+    is $k->node_gpu_count($list->[1]), '1', 'node_gpu_count reads status.allocatable';
     is $k->node_gpu_count($list->[0]), 0, '... and 0 where there is no GPU';
+    is $k->node_gpu_capacity($list->[1]), '2', 'node_gpu_capacity reads status.capacity';
+    is $k->node_gpu_capacity($list->[0]), undef, '... and undef where there is no GPU';
 };
 
 #

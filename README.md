@@ -236,7 +236,8 @@ ocp status
 ```
 
 Prints your spec summary, the live node table (name, Ready/NotReady, roles,
-kubelet version, IP), GPU capacity if there is any, and a drift report if the
+kubelet version, IP), the GPUs each node can hand out (allocatable, with a stale
+capacity beside it) if there are any, and a drift report if the
 running cluster has diverged from `ocp.yaml` or the pinned versions.
 
 `ocp status --json` prints the same facts as one canonical JSON object

@@ -130,17 +130,16 @@ sub execute {
             $name, $ready, $roles, $version, $internal_ip;
     }
 
-    # GPU Status. NVIDIA nodes are read off their capacity as before; AMD
-    # nodes (k252) follow in a block of their own, and a cluster without one
-    # prints exactly what it printed before and reads nothing more.
+    # GPU Status. NVIDIA nodes are counted by allocatable (k270), capacity
+    # beside it where the two differ; AMD nodes (k252) follow in a block of
+    # their own, and a cluster without one prints exactly what it printed
+    # before and reads nothing more.
     my $gpu_nodes = $k8s->gpu_nodes;
     my @amd_nodes = grep { $self->_amd_gpu_node($_) } @nodes;
     if (@$gpu_nodes || @amd_nodes) {
         print "\n=== GPU Status ===\n";
         for my $gnode (@$gpu_nodes) {
-            my $gname = $k8s->node_name($gnode);
-            my $gcount = $k8s->node_gpu_count($gnode);
-            printf "  %s: %dx NVIDIA GPU\n", $gname, $gcount;
+            print '  '.$k8s->node_name($gnode).': '.$self->_nvidia_gpu_count($k8s, $gnode)."\n";
         }
         $self->_print_amd_gpu($config, $k8s, \@amd_nodes) if @amd_nodes;
     }
@@ -240,14 +239,18 @@ sub _collect_json {
         return 1;
     }
 
+    # gpu is nvidia.com/gpu allocatable since k270 (it was capacity before);
+    # gpu_capacity stands beside it, null on a node without one.
     $out->{nodes} = [ sort { $a->{name} cmp $b->{name} } map {
+        my $gpu_capacity = $k8s->node_gpu_capacity($_);
         +{
-            name        => $k8s->node_name($_),
-            ready       => ($k8s->node_ready($_) ? JSON::MaybeXS::true() : JSON::MaybeXS::false()),
-            roles       => $k8s->node_roles($_),
-            version     => $k8s->node_version($_),
-            internal_ip => $k8s->node_internal_ip($_),
-            gpu         => ($k8s->node_gpu_count($_) // 0) + 0,
+            name         => $k8s->node_name($_),
+            ready        => ($k8s->node_ready($_) ? JSON::MaybeXS::true() : JSON::MaybeXS::false()),
+            roles        => $k8s->node_roles($_),
+            version      => $k8s->node_version($_),
+            internal_ip  => $k8s->node_internal_ip($_),
+            gpu          => ($k8s->node_gpu_count($_) // 0) + 0,
+            gpu_capacity => (defined $gpu_capacity ? $gpu_capacity + 0 : undef),
         }
     } @$nodes ];
 
@@ -373,7 +376,25 @@ sub _amd_gpu_count {
     my $count = $allocatable.' allocatable';
     return $count unless defined $capacity;
     return $count.' (capacity '.$capacity.')' if $capacity eq $allocatable;
-    return $count.' (capacity '.$capacity.': stale after a device plugin unregisters,'
+    return $count.$self->_stale_gpu_capacity($capacity);
+}
+
+# The NVIDIA line counts allocatable the same way (k270). Where capacity
+# agrees it is the line of before, so a healthy node prints what it always
+# did; where it does not, the count says allocatable and capacity stands
+# beside it with the AMD line's reason.
+sub _nvidia_gpu_count {
+    my ($self, $k8s, $node) = @_;
+    my $allocatable = $k8s->node_gpu_count($node);
+    my $capacity    = $k8s->node_gpu_capacity($node);
+    my $count = sprintf '%dx NVIDIA GPU', $allocatable;
+    return $count if !defined $capacity || $capacity eq $allocatable;
+    return $count.' allocatable'.$self->_stale_gpu_capacity($capacity);
+}
+
+sub _stale_gpu_capacity {
+    my ($self, $capacity) = @_;
+    return ' (capacity '.$capacity.': stale after a device plugin unregisters,'
         .' or unhealthy devices; only allocatable schedules)';
 }
 
@@ -575,8 +596,8 @@ C<ocp status> is the read-only inspection command for a project.  It prints
 the spec summary (cluster name, distribution + pinned version, control planes,
 worker pools) from C<ocp.yaml> and, when the cluster has been deployed, the
 live state from the Kubernetes API: node name, Ready/NotReady, role labels,
-kubelet version, InternalIP, GPU capacity and any L<OCP::Drift> entries that
-the spec or version manifest disagree with.
+kubelet version, InternalIP, the GPUs each node can hand out and any
+L<OCP::Drift> entries that the spec or version manifest disagree with.
 
 If C<ocp.yaml> is missing the command dies with a hint to run C<ocp init>.
 If the cluster has never been deployed the spec section is printed and the
@@ -591,8 +612,17 @@ C<remedy> are listed together with the count that C<ocp apply> would resolve.
 
 =head1 GPU SECTION
 
-NVIDIA nodes are listed with their C<nvidia.com/gpu> capacity.  Below them
-comes every AMD GPU node, i.e. a node with the marker label
+NVIDIA nodes, i.e. nodes with an C<nvidia.com/gpu> allocatable or capacity,
+are listed with their C<nvidia.com/gpu> allocatable, the count the scheduler
+hands out:
+
+    police2: 1x NVIDIA GPU
+    police3: 0x NVIDIA GPU allocatable (capacity 1: stale after a device plugin unregisters, or unhealthy devices; only allocatable schedules)
+
+Capacity is named beside it only where the two differ: the kubelet keeps
+capacity after the device plugin unregisters, so a node whose plugin is gone
+shows 0 allocatable and its capacity, not a usable GPU.  Below them comes
+every AMD GPU node, i.e. a node with the marker label
 C<ocp.internal/amd-gpu.present=true> or an C<amd.com/gpu> resource:
 
 =over 4
@@ -646,6 +676,7 @@ C<error> string and whatever could be collected), else 0.
        "nodes" : [
           {
              "gpu" : 0,
+             "gpu_capacity" : null,
              "internal_ip" : "10.0.0.10",
              "name" : "police1",
              "ready" : true,
@@ -665,7 +696,11 @@ C<nodes> are sorted by name, C<drift> by component and message; a drift
 entry's C<fixable> says whether C<ocp apply> carries a remedy for it.  The
 drift list includes the C<< kind => 'error' >> entry that
 L<OCP::Drift> reports when the API call behind a check failed.  A node's
-C<gpu> is its C<nvidia.com/gpu> capacity.
+C<gpu> is its C<nvidia.com/gpu> allocatable (0 when it has none), the same
+as C<gpu> in C<ocp node ls --json>, and C<gpu_capacity> its C<nvidia.com/gpu>
+capacity (C<null> when it has none).  Earlier builds reported the capacity as
+C<gpu>; the two differ only on a node whose device plugin is gone or whose
+devices are unhealthy, and there C<gpu> now says what can be scheduled.
 
 A cluster with an AMD GPU node (see L</GPU SECTION>) adds an C<amd_gpu>
 object; any other cluster prints the object above without it, byte for byte:

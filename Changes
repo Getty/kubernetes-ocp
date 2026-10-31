@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` counts NVIDIA GPUs by `nvidia.com/gpu` allocatable, so a
+      node whose device plugin is gone shows 0 with its stale capacity
+      beside it. In `--json`, `nodes[].gpu` now means allocatable (it was
+      capacity) and every node gains `gpu_capacity` (a number, or null).
     - `ocp apply` no longer treats a drift probe it could not read (RBAC
       denial, API 5xx, TLS) as report-only drift. It says the component
       "could not be checked", no longer points at `ocp update`, and ends

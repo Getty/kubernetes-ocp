@@ -182,7 +182,8 @@ sub gpu_section {
 {
     my $cfg = project('nvlab');
     my $api = Local::FakeApi->new(nodes => [
-        node('otho', ip => '10.230.30.52', capacity => { 'nvidia.com/gpu' => '1' },
+        node('otho', ip => '10.230.30.52',
+             allocatable => { 'nvidia.com/gpu' => '1' }, capacity => { 'nvidia.com/gpu' => '1' },
              labels => { 'node-role.kubernetes.io/control-plane' => 'true' }),
         node('crag', ip => '10.230.30.54'),
     ]);
@@ -232,7 +233,8 @@ sub gpu_section {
     my $cfg = project('amdlab', enabled => 1);
     my $api = Local::FakeApi->new(
         nodes => [
-            node('otho', capacity => { 'nvidia.com/gpu' => '1' }),
+            node('otho', allocatable => { 'nvidia.com/gpu' => '1' },
+                 capacity    => { 'nvidia.com/gpu' => '1' }),
             node('synapse', labels => { %AMD, 'ocp.internal/amd-gpu.gfx-target' => 'gfx1151' },
                  allocatable => { 'amd.com/gpu' => '1' }, capacity => { 'amd.com/gpu' => '1' }),
         ],

@@ -30,6 +30,7 @@ use OCP::Versions;
     sub node_version { $_[1]{version} }
     sub node_internal_ip { $_[1]{internal_ip} }
     sub node_gpu_count { $_[1]{gpu} // 0 }
+    sub node_gpu_capacity { $_[1]{gpu_capacity} }
 }
 
 our ($KC, $API_DOWN);
@@ -64,7 +65,7 @@ no warnings 'redefine';
 local *OCP::Secrets::new = sub { Local::FakeSecrets->new };
 local *OCP::Kubernetes::new = sub {
     Local::FakeK8s->new([
-        { metadata => { name => 'police2' }, ready => 0, roles => '<none>', version => 'v1.32.1', internal_ip => '10.0.0.11', gpu => 2 },
+        { metadata => { name => 'police2' }, ready => 0, roles => '<none>', version => 'v1.32.1', internal_ip => '10.0.0.11', gpu => 2, gpu_capacity => 2 },
         { metadata => { name => 'police1' }, ready => 1, roles => 'control-plane', version => 'v1.32.1', internal_ip => '10.0.0.10' },
     ]);
 };
@@ -101,9 +102,12 @@ local *OCP::Cmd::Status::rex_prober = sub { undef };
     my $d = decode_json($out);
     ok($d->{deployed}, 'deployed true');
     is_deeply([map { $_->{name} } @{ $d->{nodes} }], [qw(police1 police2)], 'nodes sorted');
-    is_deeply([sort keys %{ $d->{nodes}[0] }], [sort qw(name ready roles version internal_ip gpu)], 'node keys');
+    is_deeply([sort keys %{ $d->{nodes}[0] }], [sort qw(name ready roles version internal_ip gpu gpu_capacity)], 'node keys');
     ok($d->{nodes}[0]{ready}, 'ready true'); ok(!$d->{nodes}[1]{ready}, 'ready false');
     is($d->{nodes}[0]{gpu}, 0, 'gpu 0'); is($d->{nodes}[1]{gpu}, 2, 'gpu 2');
+    ok(exists $d->{nodes}[0]{gpu_capacity} && !defined $d->{nodes}[0]{gpu_capacity},
+        'gpu_capacity null on a node without one');
+    is($d->{nodes}[1]{gpu_capacity}, 2, 'gpu_capacity 2');
     is_deeply([map { "$_->{component}|$_->{message}" } @{ $d->{drift} }],
               ['cilium|cilium: a', 'cilium|cilium: b', 'distribution|distribution: API failed'], 'drift sorted');
     is_deeply([map { $_->{fixable} ? 1 : 0 } @{ $d->{drift} }], [0, 1, 0], 'fixable flag');
