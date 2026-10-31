@@ -1,0 +1,37 @@
+---
+class: standard
+completed: 2026-10-31T17:55:01Z
+created: 2026-10-31T12:26:42Z
+id: 353
+priority: low
+started: 2026-10-31T17:55:01Z
+status: done
+tags:
+- destroy
+- robustness
+title: 'ocp destroy after k345: ssh control plane without host skipped silently, provider
+  '''' unsaid, a failed label search outside the fallback silent, API-down warning
+  names ocp.yaml for local workers'
+updated: 2026-10-31T17:55:01Z
+---
+
+Left over from k345 (destroy worker, 2026-10-31). Destroy lane. Each item is small; fix them with validate()'s words and the k323 principle (destroy checks only what it reads):
+- An ssh control plane without a host is still listed in the control-plane fallback, then skipped without a word. Say it on STDERR, as k341 does for an unknown provider: that control plane is NOT torn down, and validate()'s line for the missing host.
+- `provider: ''` on a control plane or a worker pool: validate() names it, destroy says nothing.
+- A Hetzner label search that fails outside the control-plane fallback (some source found nodes, so the fallback does not run) is still silent. A server that only that search would have found stays up without a word. Say it on STDERR with the cause and the `hcloud server list -l ocp-cluster=<name>` selector, as k345 does in the fallback.
+- The API-down warning still names ocp.yaml as a source for workers. A local pool's worker is found only by its OCPNode, not in ocp.yaml, so the warning's list is wrong for it.
+
+Done = a test per item: red first, the line on STDERR, nothing else changed. Then a mutation check.
+
+More from k340 (choices worker, 2026-10-31): Destroy.pm's control-plane fallback reads public_ip without the shape check (around line 229 at 12d049a; k340 refuses a list/mapping public_ip in validate() and join_host/cluster_status). And the cluster_ssh_key eval in execute (around line 785) prints the ssh: refusal from ssh_config with a croak location ('at ... line N.') -- strip it, as k265's _catalogue_error does (see k342 for the shared helper).
+
+2026-10-31 13:38 Red: new t/353-destroy-said-lines.t against queued15 -- 11/13 subtests fail, the 2 controls pass. Each item reproduced: ssh CP no host listed 'prod-cp-1 (ssh, -)' + 'Deleting' + nothing said; provider '' silent (CP and pool); failed label search with police1 recorded silent; API-down text names ocp.yaml for workers; local CP public_ip [..] listed as ARRAY(0x..); key refusal printed '... not a list at /src/lib/OCP/ClusterKey.pm line 426.'. Also found: the k345 fallback line prints the same kind of location for a real Hetzner croak ('... at .../OCP/Provider/Hetzner.pm line 421.'), since it takes the error's first line. Plan: one_line there too, so both lines name the search failure alike.
+
+2026-10-31 16:56 Green + mutants (one guarded run from the mutant copy, make test with IMAGE=localhost/ocp-w353): 19 green files all ok (t/353, 345, 77, 335, 326, 323, 177, 180, 181, 108, 107, 301, 304, 47, 71, 74, 00-load, 342, 51-pod). 5 logic mutants, all killed, each loaded from mutants/MN/lib (the harness dies unless %INC says so; Rex @INC hazard): M1 no skip for an ssh CP without host -> t/353 subtests 1,2,12 + t/345 'host: 0 or ''' fail; M3 old provider guard -> t/353 4,5; M4 no _say_failed_search call -> t/353 6,7,9; M6 no search_said -> t/353 8 + t/345 4 (said twice); M10 no public_ip check -> t/353 11. The message-text items were not mutated, per the new rule. Log: scratchpad/w-destroy353/green-mut.log.
+What changed (lib/OCP/Cmd/Destroy.pm only): (1) an ssh CP with no host is said 'control_planes[N]: host required for ssh -- skipped: that control plane is NOT torn down.' and not listed; (2) provider '' is said: 'provider required' on a pool, "invalid provider ''" on a CP; (3) every failed label search the fallback does not say -> STDERR with its cause on one line, the hcloud selector, and the OCPNodeProvider whose token it used (not said twice when the fallback's k345 line says it); (4) the API-down text names ssh pools' hosts, a local pool's and a node-add worker as the ones that may be missed; (5) a local CP with no host: public_ip shape-checked up front in validate()'s words; (6) the key refusal and the k345 search error go through OCP::ErrorLine::one_line. Exit codes unchanged (k354). t/345: the 'listed as prod-cp-1 (ssh, -)' claim is replaced by the STDERR line + not listed. t/77: comment only. t/47's fixture (ssh CP without host) now takes the 'No nodes to destroy.' path; its claim (state files removed) holds. No Config.pm change needed.
+Patch: scratchpad/w-destroy353/k353.patch against queued15 (applies forward on queued15, reverse on the working copy; no Changes hunk; header has the subject, description and Changes bullet).
+Also found (not fixed): Destroy.pm:1029-1030 an ssh node from status.yaml/OCPNodes with no host is still skipped silently at uninstall (resolve_host dies -> next); Destroy.pm:85 the k98 mislabelled-server search swallows a failure (eval || []); raw $@ with possible croak location at Destroy.pm:327 (API why), :399 (CR adapter reason), :748 (robocop stop), :990 (Hetzner delete Warning), :1049 (uninstall why); Destroy.pm:575 mixed case: one token's search answered, another failed -> STDOUT 'no server carries it' while STDERR names the failed search; one_line folds ClusterKey's multi-line refusals into one long line; t/47-deployed-state.t:632 now prints an uncaptured STDERR line.
+
+2026-10-31 16:57 Done: all six items fixed in Destroy.pm, each with a test in t/353. Red 11/13 on queued15; green 19 files ok; 5 logic mutants all killed. Patch: scratchpad/w-destroy353/k353.patch, against queued15. Exit codes unchanged (k354). Leftovers are listed in the previous note.
+
+Committed as 22ba968
