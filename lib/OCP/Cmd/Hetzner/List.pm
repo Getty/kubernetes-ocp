@@ -10,6 +10,10 @@ use OCP::ErrorLine ();
 use OCP::Secrets;
 use WWW::Hetzner::Cloud;
 
+# --pins-stdin with the rest (k383): without HETZNER_API_TOKEN the token
+# comes out of secrets.yaml, and on a clone that asks for PIN1 first.
+with 'OCP::Role::Cmd';
+
 option label => (
     is     => 'ro',
     format => 's',
@@ -112,6 +116,17 @@ token masked (L<OCP::ErrorLine>).
 Filter the listing to servers carrying every label key/value pair given.
 Passed to the API as the C<label_selector> of
 L<WWW::Hetzner::Cloud::API::Servers/list_all>, which reads every page.
+
+=opt pins_stdin
+
+    ocp hetzner list --pins-stdin < pin1
+
+Read the PIN1 prompt's answer from the next line of STDIN instead of the
+terminal, as every command does (L<OCP::Role::Cmd/pins_stdin>).  Without
+C<$HETZNER_API_TOKEN> the token comes out of F<secrets.yaml>, and on a
+checkout without F<.ocp/age.key> -- a clone -- opening that asks for PIN1
+first.  A STDIN with no line left for it is refused, never read from the
+terminal instead.
 
 =attr cloud
 

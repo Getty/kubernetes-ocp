@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp hetzner list` takes `--pins-stdin` like every other command, so
+      the PIN1 it asks for on a fresh clone without `HETZNER_API_TOKEN` can
+      come from STDIN instead of a terminal.
     - `ocp apply`'s closing banner reads WITH WARNINGS, not SUCCESSFULLY,
       when robocop was not seen Ready (a failed read at the end of its
       wait, or the fallback to the CLI after 60 s); the exit code stays 0.

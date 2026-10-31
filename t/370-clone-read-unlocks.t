@@ -268,14 +268,11 @@ subtest 'no age.key and no age.key.enc: a refusal that says where the key is' =>
 my $bin = path('bin/ocp')->absolute;
 my $lib = path('lib')->absolute;
 
-# PINs on STDIN: with --pins-stdin where the command has it; `ocp hetzner
-# list` does not, and its prompt reads the line off a STDIN that is no
-# terminal all the same.
+# PINs on STDIN, with --pins-stdin (`ocp hetzner list` too, since k383).
 sub run_ocp {
     my ($dir, $stdin, @argv) = @_;
     my ($in, $out, $err) = map { Path::Tiny->tempfile } 1 .. 3;
     $in->spew($stdin);
-    my @pins = $argv[0] eq 'hetzner' ? () : ('--pins-stdin');
     my $pid = fork // die "fork: $!";
     unless ($pid) {
         chdir $dir or die "chdir: $!";
@@ -285,7 +282,7 @@ sub run_ocp {
         open STDOUT, '>', "$out" or die;
         open STDERR, '>', "$err" or die;
         alarm 120;
-        exec $^X, "-I$lib", "$bin", @argv, @pins or die "exec: $!";
+        exec $^X, "-I$lib", "$bin", @argv, '--pins-stdin' or die "exec: $!";
     }
     waitpid $pid, 0;
     return ($?, $out->slurp_utf8, $err->slurp_utf8);
