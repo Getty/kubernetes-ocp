@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T11:40:42Z
+created: 2026-10-31T08:10:33Z
+id: 321
+priority: low
+started: 2026-10-31T11:40:42Z
+status: done
+tags:
+- keys
+- validation
+title: ocp keys secure reads the robocop switch only after switching the keys, and
+  runs no validate()
+updated: 2026-10-31T11:40:42Z
+---
+
+Found under k315 (2026-10-31). Keys/Secure.pm `_reroll_robocop` reads Config::robocop_enabled only AFTER the keys are switched to secure mode, and `ocp keys secure` never runs validate(). Since k315 a malformed robocop: croaks there with validate()'s line -- better than before (robocop: no read as on and rolled robocop's credentials out), but the command stops halfway, after the first PIN and the switch.
+
+Fix: read robocop_enabled (or run validate()) before the first PIN, so a malformed ocp.yaml stops `ocp keys secure` before it changes anything.
+
+Done = a malformed robocop: stops `ocp keys secure` before the first prompt and before any file is written (test), the message is validate()'s line on STDERR.
+
+2026-10-31 08:20 Reproduced on HEAD c46f5f1 (k315 in): new subtests in t/96-keys-secure.t. robocop: no / robocop.enabled: off / robocop: { enable: false } / robocop.security_level: secrte all die AFTER the switch (PIN1+PIN2 asked, keys.yaml + age.key.enc written, machines touched; the croak carries 'at lib/OCP/Cmd/Keys/Secure.pm line 398', so run_cli calls it an internal error). robocop.image without a tag completes the switch and fails the robocop rollout (exit 1). security_level is the same bug as the switch: robocop_step reads it outside its eval. Plan: run validate() first in _migrate and refuse on its robocop lines only (all of robocop:, the block read after the switch), before the terminal check, the age key, any prompt.
+
+2026-10-31 10:24 Took over the WIP (second worker). The earlier gate refused only validate()'s robocop lines (grep /\Arobocop[.:]/). Probed on that WIP: name: [k96] with a hetzner CP switched, exit 0, and stored the keys at Hetzner as ocp-ARRAY(0x...)-admin/-robo; network.pod_cidr: 10.0.0.0/33 switched, exit 0, and rolled robocop out with OCP_POD_CIDR=10.0.0.0/33; a control-plane host that is a list asked both PINs, staged keys and SSHed to ARRAY(0x...). All three are validate() lines keys secure reads. Decision: full validate() first in _migrate (before the terminal check), as ocp apply (k255). Reason: after the switch keys secure runs apply's own robocop step and the Hetzner upload; what it reads is most of ocp.yaml and grows with code outside this command, so a read-subset gate goes stale. The k323 cost (a newer validate() blocking the way out) does not hold: destroy may be the last command, keys secure is followed by ocp apply, which refuses the same lines. Not gated: --drop-bootstrap on an already-secure project (reads only machines + key files, removes only where the admin login just worked). Fixtures in t/96 with a hetzner CP got server_type (validate() requires it).
+
+2026-10-31 10:37 Tests (t/96): 9 malformed shapes -> refused before any prompt, SSH, cluster write, Hetzner upload or file change, validate()'s line quoted, STDOUT empty: the 4 robocop shapes + robocop.image, name: a list (hetzner CP), network.pod_cidr /33, a CP host that is a list, control_planes: [ 'host' ] and workers: 'host' (both died inside Perl in Machines.pm / worker_ocpnodes on HEAD), gpu.driver typo (not read; refused as apply does). Plus: two lines at once in validate()'s order; bin/ocp end-to-end without --pins-stdin (the config line wins over the no-terminal refusal); --drop-bootstrap on a secure project is NOT held up. Mutants (host perl, fresh copies of HEAD+patch): HEAD Secure.pm, no gate, robocop-only grep (the earlier WIP: fails exactly the name/pod_cidr/host/shape/gpu cases), gate after the terminal check / after _machines / after PIN1 / after staging / after the switch, first error only, gate also on the secure-mode drop path -- all 10 killed. Binding make test of t/96 + 15 neighbours in the tree: 16 files, 261 tests, PASS (before the two shape cases were added).
+
+2026-10-31 10:58 Also found (not in scope, for the dispatcher): (1) t/296 section 10 comment says ocp keys secure reads robocop_enabled 'without' validate() -- stale after this patch; t/296 is another worker's (staged) file. (2) kubernetes.dist is validated nowhere: probe rolled robocop out with OCP_DISTRIBUTION=rke3 (keys secure and apply alike) -- Config/choices lane. (3) The paths left ungated on purpose -- keys secure --drop-bootstrap on a secure project, and ocp keys operator add|rm (k216, same _machines) -- still die inside Perl before PIN2 on control_planes: [ 'host' ] (Machines.pm:65) and workers: 'host' (CR.pm worker_ocpnodes:503): nothing changed, but an internal error, not validate()'s line; a read-only gate in the k323 manner would fit there. (4) k329 untouched: _reroll_robocop's $had still takes any failed Deployment read for absence; this patch neither uses nor extends it.
+
+2026-10-31 10:58 Done: lib/OCP/Cmd/Keys/Secure.pm -- _migrate runs all of OCP::Config::validate() first (_refuse_invalid_config), before the terminal check, the age key, any PIN, machine or file; every line on STDERR at once, 'Nothing was changed', exit 1 via run_cli. Already-secure --drop-bootstrap is not gated (reasons in the comment + POD). t/96: k321 section (9 shapes, all-lines, bin/ocp end-to-end, drop not gated); two hetzner fixtures got server_type (validate() requires it; the claims there are unchanged). Verified: binding make test t/96 + 15 neighbours PASS (16 files, 261 tests), rerun t/96+t/296+t/216 on the final version PASS (69 tests); full make test on clean HEAD 984e43c + k321.patch PASS, 232 files, 3648 tests, no skips. 10 mutants, all killed. Patch: scratchpad w-secrets321b/k321.patch.
+
+Committed as 12d049a. Note: t/296 section 10 comment says keys secure reads robocop_enabled without validate(); stale after this commit (t/296 is k331's file, committed 15f02e4) - worth a small test-writer fix.
