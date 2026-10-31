@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` names a `control_planes` entry, a `workers` value or
+      entry, or a `gpu:` that is not the shape it must be
+      (`control_planes[2]: must be a mapping (one control plane), not
+      'foo'`), and a `control_planes.nodes` that is not a whole number of
+      1 or more, instead of dying with a Perl error. `gpu: false` is
+      refused with the hint `gpu: { enabled: false }`; `ocp update` and
+      `ocp node add` refuse it in the same words.
     - `ocp update`, when the version manifest lists manual steps, no
       longer takes a piped `y` as confirmation: without a terminal it
       reads nothing, says on STDERR that a person at a terminal is needed,

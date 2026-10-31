@@ -126,6 +126,12 @@ sub control_planes {
     if (ref $raw eq 'HASH') {
         my %cp = %$raw;
         my $count = delete $cp{nodes} // 1;
+
+        # A nodes: that is no whole number stands for one control plane, so
+        # its entry is still read once; validate() refuses it (k296). Taken
+        # as a repeat count, a list numifies to its address and asks for
+        # some 10^14 copies.
+        $count = 1 unless _is_whole_number($count);
         return [(%cp ? \%cp : {}) x $count];
     }
 
@@ -448,7 +454,27 @@ sub ntp_enabled   { shift->system_config->{ntp} // 1 }
 #            toolkit.enabled=false alongside driver.enabled=false, so that the
 #            toolkit DaemonSet does not rewrite a containerd config that
 #            already works.
-sub gpu_config  { shift->spec->{gpu} // {} }
+#
+# A gpu: that is no mapping is refused here in validate()'s words (k296):
+# read on, every accessor below died inside Perl ("Can't use string as a
+# HASH ref"), and taken for absent, gpu: false would mean enabled.
+sub gpu_config {
+    my ($self) = @_;
+    my $gpu = $self->spec->{gpu} // {};
+    my $err = _gpu_shape_error($gpu);
+    croak "gpu $err" if defined $err;
+    return $gpu;
+}
+
+# What is wrong with the value of gpu:, or undef. robocop: takes a boolean,
+# so gpu: false is the likely slip, and the line says what was meant.
+sub _gpu_shape_error {
+    my ($gpu) = @_;
+    return undef if !defined $gpu || ref $gpu eq 'HASH';
+    return 'must be a mapping, not ' . _shown_value($gpu)
+        . (JSON::MaybeXS::is_bool($gpu)
+            ? '; write gpu: { enabled: ' . ($gpu ? 'true' : 'false') . ' }' : '');
+}
 
 # Normalised to 0/1: these travel to the Rexfile as JSON and into a
 # ClusterPolicy as a YAML boolean, and YAML::XS hands back JSON::PP::Boolean
@@ -567,11 +593,19 @@ sub _is_choice {
     return grep({ $_ eq $value } @choices) ? 1 : 0;
 }
 
+# 0, 1, 2, ... as YAML gives them: a plain scalar, no sign, no fraction. A
+# boolean is a reference and no number.
+sub _is_whole_number {
+    my ($value) = @_;
+    return defined $value && !ref $value && $value =~ /\A[0-9]+\z/ ? 1 : 0;
+}
+
 # A value as an error message quotes it. YAML hands `false` back as a boolean
 # object, which would otherwise read as '0'.
 sub _shown_value {
     my ($value) = @_;
-    return JSON::MaybeXS::is_bool($value) ? ($value ? 'true' : 'false')
+    return !defined $value                ? 'null'
+         : JSON::MaybeXS::is_bool($value) ? ($value ? 'true' : 'false')
          : ref $value eq 'HASH'           ? 'a mapping'
          : ref $value eq 'ARRAY'          ? 'a list'
          :                                  "'$value'";
@@ -712,10 +746,24 @@ sub validate {
 
     my $cps = $self->control_planes;
 
+    # The shape first (k296). A control_planes that is neither form would be
+    # read as one hetzner control plane with nothing set, and refused for
+    # what nobody wrote; a list entry that is no mapping died inside Perl.
+    my $raw_cps = $self->spec->{control_planes};
+    if (defined $raw_cps && ref $raw_cps ne 'HASH' && ref $raw_cps ne 'ARRAY') {
+        push @errors, "control_planes: must be a mapping (one control plane, or nodes: N of them) "
+            . "or a list of mappings, not " . _shown_value($raw_cps);
+        $cps = [];
+    }
+    if (ref $raw_cps eq 'HASH' && defined(my $nodes = $raw_cps->{nodes})) {
+        push @errors, "control_planes.nodes: must be a whole number of 1 or more, not "
+            . _shown_value($nodes)
+            unless _is_whole_number($nodes) && $nodes >= 1;
+    }
+
     # The mapping form with `nodes: N` is N copies of one entry (see
     # control_planes), so a node_ip there would be every one of them's (k254).
     # Refused once, not per copy; its syntax is not worth a line then.
-    my $raw_cps = $self->spec->{control_planes};
     my $shared  = $self->_control_planes_shared;
     push @errors, "control_planes: node_ip with nodes: " . scalar(@$cps)
         . " would give all " . scalar(@$cps) . " control planes the same address; "
@@ -726,6 +774,11 @@ sub validate {
     for my $i (0 .. $#$cps) {
         my $cp = $cps->[$i];
         my $idx = $i + 1;
+        unless (ref $cp eq 'HASH') {
+            push @errors, "control_planes[$idx]: must be a mapping (one control plane), not "
+                . _shown_value($cp);
+            next;
+        }
         my $prov = $cp->{provider} // 'hetzner';
 
         # The wording this rejection has always had; the SET behind it now
@@ -763,6 +816,8 @@ sub validate {
 
     push @errors, $self->_validate_network;
     push @errors, $self->_validate_cilium;
+    my $gpu_err = _gpu_shape_error($self->spec->{gpu});
+    push @errors, "gpu: $gpu_err" if defined $gpu_err;
     push @errors, $self->_validate_gpu_driver;
     push @errors, $self->_validate_gpu_amd;
     push @errors, $self->_validate_pod_cidr(
@@ -782,21 +837,34 @@ sub validate {
         push @errors, "robocop.image: $ie" if $ie;
     }
 
-    for my $w (@{$self->workers}) {
+    # A workers that is no list, or an entry that is no mapping, died inside
+    # Perl (k296).
+    my $workers = $self->spec->{workers} // [];
+    if (ref $workers ne 'ARRAY') {
+        push @errors, "workers: must be a list of worker pools, not " . _shown_value($workers);
+        $workers = [];
+    }
+    my $pool_n = 0;
+    for my $w (@$workers) {
+        $pool_n++;
+        unless (ref $w eq 'HASH') {
+            push @errors, "workers[$pool_n]: must be a mapping (a worker pool), not " . _shown_value($w);
+            next;
+        }
         push @errors, "worker pool: name required" unless $w->{name};
+        my $where = "worker pool '" . ($w->{name} // '') . "'";
         my $wprov = $w->{provider} // '';
         if ($wprov eq '') {
-            push @errors, "worker pool '$w->{name}': provider required";
+            push @errors, "$where: provider required";
         } elsif (!OCP::Provider->known_type($wprov)) {
             # Same set, same source as the control-plane check above --
             # spelling the regex here again is what k103 deleted for
             # the control planes and what k110 made stale (k115).
-            push @errors, "worker pool '$w->{name}': invalid provider '$wprov' (must be "
+            push @errors, "$where: invalid provider '$wprov' (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
         # labels / taints (k211): what the pool's OCPNodes carry.
-        my $where = "worker pool '" . ($w->{name} // '') . "'";
         push @errors, OCP::NodeMeta->label_errors("$where: labels", $w->{labels})
             if defined $w->{labels};
         if (defined(my $taints = $w->{taints})) {
@@ -1043,6 +1111,7 @@ sub _validate_pod_cidr {
     my @taken = ([ "the service network $SERVICE_CIDR", $SERVICE_CIDR ]);
     my $cps = $self->control_planes;
     for my $i (0 .. $#$cps) {
+        next unless ref $cps->[$i] eq 'HASH';    # validate() has its line (k296)
         for my $key (qw( host public_ip private_ip )) {
             my $addr = $cps->[$i]{$key};
             push @taken, [ "control_planes[" . ($i + 1) . "].$key $addr", "$addr/32" ]
@@ -1058,7 +1127,8 @@ sub _validate_pod_cidr {
         push @taken, map { [ "control_planes[" . ($i + 1) . "].node_ip $_", "$_/32" ] }
             grep { _looks_like_ipv4($_) } split /,/, $node_ip;
     }
-    for my $pool (@{ $self->workers }) {
+    my $workers = $self->workers;
+    for my $pool (ref $workers eq 'ARRAY' ? @$workers : ()) {
         next unless ref $pool eq 'HASH';
         my @hosts = ($pool->{host},
             map { ref $_ eq 'HASH' ? $_->{host} : $_ } @{ ref $pool->{nodes} eq 'ARRAY' ? $pool->{nodes} : [] });
