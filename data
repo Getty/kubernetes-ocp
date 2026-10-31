@@ -1,0 +1,65 @@
+---
+class: standard
+completed: 2026-10-31T17:23:39Z
+created: 2026-10-31T14:26:43Z
+id: 375
+priority: medium
+started: 2026-10-31T17:23:39Z
+status: done
+tags:
+- secrets
+- ux
+- bug
+title: A wrong PIN1 is reported as an internal error
+updated: 2026-10-31T17:23:39Z
+---
+
+Found by the apply worker during k349 (2026-10-31), via bin/ocp --pins-stdin with a wrong PIN1:
+
+    Error: Decryption failed. Wrong password?
+    This is an internal error. Run again with --verbose for the full trace.
+
+Cause: OCP::Password (lib/OCP/Password.pm:162) croaks "Decryption failed. Wrong password?". A croak carries " at FILE line N.", which OCP.pm _clean_message classifies as an internal error (lib/OCP.pm:88-90, 253-260). A mistyped PIN is the most common user error; calling it internal sends the user to --verbose for a stack trace instead of retyping.
+
+Done =
+- A wrong PIN1 (and PIN2, if it shares the path) dies with a user-facing "message\n": what failed (PIN1 does not open age.key.enc), and the fix (retype; if forgotten, how to recover per docs/security.md). STDERR, exit non-zero, no "internal error" line, no Perl location.
+- Same check for the sibling user-facing croaks on the PIN1 path in OCP::Secrets (e.g. _unlock_age_key "No age.key found. Run ocp init first."): list which you converted and which stay croak (programming errors), with why.
+- Regression test through bin/ocp --pins-stdin: wrong PIN1 → no "internal error" in STDERR, red first, then a mutation check.
+
+Lane: ocp-secrets-worker (OCP::Password, OCP::Secrets). OCP.pm _clean_message stays as is.
+
+From k370 (secrets worker, 2026-10-31), two more sites for this card: (a) _unlock_age_key tells a dev-mode clone "No age.key found. Run 'ocp init' first." -- wrong advice (a new key opens none of the committed files; k370's _no_age_key_refusal has the right text) and croaked, so labelled internal error; (b) several command files still print the old hint "Make sure .ocp/age.key exists." -- grep it and replace with the k370 wording or drop it.
+
+2026-10-31 16:12 Done on queued-head11 (head10 + k384); patch $S/w-secrets375/k375.patch (S = session scratchpad), git apply --check OK on queued-head11 and on head11+k266.patch (no overlap: k266 hunks Secrets.pm 766/806/1383, mine 500/863/872/935/1252).
+
+WRONG-PIN1 WORDING (OCP::Secrets::_wrong_pin1_refusal; k382/destroy should use the same, e.g. die $secrets->_wrong_pin1_refusal or the same text):
+  PIN1 does not open age.key.enc. Nothing was unlocked, nothing written.
+  <blank line>
+  Run the command again and retype PIN1 (with --pins-stdin: the line that
+  answers "Enter PIN1"). If PIN1 is right, age.key.enc has changed since it
+  was set -- git log age.key.enc shows by what. A forgotten PIN1 cannot be
+  recovered: nothing opens age.key.enc without it (docs/security.md,
+  "Losing a PIN").
+bin/ocp shows it as "Error: PIN1 does not open age.key.enc. ..." on STDERR, exit non-zero, no internal-error line.
+
+CONVERTED to user errors (die "...\n"), all in OCP::Secrets:
+- wrong PIN1: _open_age_key_enc wraps OCP::Password::decrypt_age_key in eval and dies _wrong_pin1_refusal (Password stays a croaking codec; t/08 unchanged)
+- empty PIN1 (undef or ""): "No PIN1 given, so age.key.enc stays locked. Nothing was written." + run again
+- empty age.key.enc: "age.key.enc is empty ..." + git checkout -- age.key.enc (not blamed on PIN1)
+- _assert_key_matches_project (foreign key): same text, die not croak, ends "\n"
+- _unlock_age_key no key anywhere: files encrypted to a key -> _no_age_key_refusal (k370 wording, card note (a)); nothing encrypted -> "ERROR: This project has no age key ... Run ocp init to set it up."
+STAYS CROAK (programming/environment, not user input): _open_age_key_enc "No age.key.enc found." (every caller checks has_age_key_enc first); _spew_secure filesystem errors; generate_age_key refusal (safety net init never reaches); "No age recipient found"; encrypt_age_key_with_password "No age.key found. Run generate_age_key first."; creation-rules croaks (not on the PIN1 path); decrypt_kubeconfig_to_file "No kubeconfig found"; OCP::Password::decrypt_age_key/encrypt_age_key own croaks (codec, translated in Secrets).
+
+PIN2 does NOT share the path (OCP::Keys AES-GCM, not OCP::Password).
+
+STALE HINT (card note (b)): new OCP::Secrets->no_kubeconfig_refusal ("This project has no kubeconfig.yaml, so there is no cluster API to reach" + ocp apply writes it; read_kubeconfig is undef for that alone since k370). Cross-lane files changed (one line each): Cmd/Kubeconfig.pm x2, Health.pm, DeployRobocop.pm, DeployImage.pm, Update.pm, InjectKey.pm, Node/Ls.pm, Node/Rm.pm, Node/Add.pm, Node/TrustHost.pm, Provider/Ls.pm, Provider/Rm.pm, Provider/Add.pm (apply/provider/node lanes), Status.pm text path (status lane: two print lines -> print STDERR the refusal). Cross-lane tests changed to the new wording: t/257 (status), t/297 + t/349-apply-dry-run-clone (apply), t/360, t/370, t/349-unlock-age-key-in-memory (mine).
+LEFT, for the owning lane: Cmd/Apply/Drift.pm:147-148 prints "Cannot decrypt kubeconfig.yaml ... Make sure .ocp/age.key exists." on STDOUT (apply lane, forbidden file here; for k381). Status.pm _collect_json error field "Cannot decrypt kubeconfig.yaml (is .ocp/age.key present?)" (status lane; machine-readable JSON payload, behind cluster_exists so unreachable in practice; t/230 asserts only rc).
+
+ALSO FOUND (not fixed, for whoever routes them):
+1. ClusterKey.pm:528 calls $keys->get_admin_key($pin2) without eval: a wrong PIN2 on the SSH path dies "Error: AES-GCM authentication failed" (no internal-error label, but no diagnosis); the "Wrong PIN2 or no admin-key found!" line after it is unreachable for a wrong PIN2. Role::Cmd require_admin_approval already evals it. Secrets lane.
+2. PIN "0": prompt_new_pin accepts it (length 1), but OCP::Password::encrypt_age_key/decrypt_age_key test truthiness and croak "password required" -> ocp init with PIN1 "0" dies as an internal error. For PIN2, OCP::Keys::add_key reads a false pin2 as "automation key" (per the Password.pm comment), so a PIN2 of "0" would store the admin key under the age layer alone. Secrets lane, needs its own card.
+3. Unreachable in practice (read after cluster_exists, so kubeconfig.yaml exists): Status, Health, Kubeconfig x2 sites; changed anyway for one wording. Not covered by a bin/ocp test: Update, InjectKey, Health, Kubeconfig (compile via t/00-load + shared message).
+
+2026-10-31 16:12 To review. Patch: $S/w-secrets375/k375.patch against queued-head11, header + proposed Changes bullet, no Changes hunk. Verified (guarded make test, IMAGE=localhost/ocp-w370, explicit lists): RED on base22 with only the test changes: t/375 22/22 subtests fail, t/257 dies (no no_kubeconfig_refusal), t/349-apply-dry-run-clone/t/360/t/370 1 each. GREEN on head11: 44 files (secrets/keys/PIN1 callers + t/384) 42 ok, then t/297 and t/349-unlock-age-key-in-memory failed on the old wording; claims updated; rerun with those two + 18 more callers of read_kubeconfig/ensure_age_key (status/node-add/apply fakes) 20/20 ok, 372 tests; no skips. MUTATION on head11 (MutShadow, Rex first, %INC/sub FILE probe, count asserted): 20/20 killed (m01-m10 Secrets PIN1 path, m11-m19 each command site reverted, m20 Status via t/257). Findings 1 and 2 in the previous note are from reading the code, not from a run.
+
+Committed as 1206939
