@@ -132,6 +132,44 @@ subtest 'bad pod CIDRs are refused with a reason' => sub {
     like "@e", qr/set network\.pod_cidr/, 'and tells the human what to do';
 };
 
+# k279: control_planes[].node_ip (k254) is the address the node registers by,
+# the one a pod CIDR must least of all contain. Every part of it is a node
+# address; the IPv4 one is held against the IPv4 pod CIDR, an IPv6 one has no
+# IPv6 pod CIDR to collide with.
+subtest 'a control plane\'s node_ip is a node address too' => sub {
+    my $ssh = sub { +{ provider => 'ssh', host => $_[0], @_[1 .. $#_] } };
+
+    my @e = errors_for({}, control_planes => [ $ssh->('otho.lab', node_ip => '10.42.0.5') ]);
+    is_deeply \@e, [ 'network.pod_cidr (default 10.42.0.0/16) overlaps control_planes[1].node_ip '
+        . '10.42.0.5 -- set network.pod_cidr to a range nothing else uses' ],
+        'IPv4, inside the default: named like host and public_ip are' or diag explain \@e;
+
+    @e = errors_for({ pod_cidr => '10.0.0.0/12' }, control_planes => [
+        $ssh->('otho.lab'),
+        $ssh->('crag.lab', node_ip => '10.5.10.9,fd00::9'),
+    ]);
+    is_deeply \@e, [ "network.pod_cidr: '10.0.0.0/12' overlaps control_planes[2].node_ip 10.5.10.9" ],
+        'dual-stack v4,v6: the IPv4 part, the right entry' or diag explain \@e;
+
+    @e = errors_for({ pod_cidr => '10.0.0.0/12' },
+        control_planes => [ $ssh->('crag.lab', node_ip => 'fd00::9,10.5.10.9') ]);
+    is_deeply \@e, [ "network.pod_cidr: '10.0.0.0/12' overlaps control_planes[1].node_ip 10.5.10.9" ],
+        'dual-stack v6,v4: the IPv4 part, wherever it stands' or diag explain \@e;
+
+    @e = errors_for({}, control_planes => [ $ssh->('otho.lab', node_ip => 'fd00::42') ]);
+    is_deeply \@e, [], 'IPv6 only: nothing to overlap' or diag explain \@e;
+
+    @e = errors_for({}, control_planes => [ $ssh->('otho.lab', node_ip => '10.230.30.52,fd00::52') ]);
+    is_deeply \@e, [], 'clear of the pod CIDR: nothing' or diag explain \@e;
+
+    @e = errors_for({}, control_planes => [ $ssh->('otho.lab', node_ip => '10.42.0.5, fd00::1') ]);
+    is_deeply \@e, [], 'an invalid node_ip is refused for its syntax, not counted here' or diag explain \@e;
+
+    @e = errors_for({}, control_planes => { %{ $ssh->('otho.lab', node_ip => '10.42.0.5') }, nodes => 3 });
+    is_deeply \@e, [], 'nodes: 3 sharing one node_ip: refused once for that, not three times here'
+        or diag explain \@e;
+};
+
 # --- 3 + 4. the Rexfile -------------------------------------------------------
 #
 # Since k155 the Rexfile hands the install to Rex::Rancher; the claims hold

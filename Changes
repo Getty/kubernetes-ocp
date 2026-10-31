@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses a `network.pod_cidr` (or the default
+      10.42.0.0/16) that contains a control plane's `node_ip`, the IPv4
+      part of a dual-stack value included, as it already does for `host`
+      and `public_ip`.
     - `ocp apply` and `ocp apply --dry-run` check `ocp.yaml` first: on
       errors they list every one on STDERR and exit 1 before asking for a
       PIN or touching a host or the cluster. `gpu.driver` is checked too.

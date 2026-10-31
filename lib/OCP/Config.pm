@@ -703,7 +703,7 @@ sub validate {
     # control_planes), so a node_ip there would be every one of them's (k254).
     # Refused once, not per copy; its syntax is not worth a line then.
     my $raw_cps = $self->spec->{control_planes};
-    my $shared  = ref $raw_cps eq 'HASH' && @$cps > 1;
+    my $shared  = $self->_control_planes_shared;
     push @errors, "control_planes: node_ip with nodes: " . scalar(@$cps)
         . " would give all " . scalar(@$cps) . " control planes the same address; "
         . "list them one by one (control_planes: as a list), each with its own node_ip"
@@ -818,6 +818,14 @@ sub validate {
     }
 
     return @errors;
+}
+
+# The mapping form with nodes: N > 1, one entry standing for N control planes
+# (see control_planes). A node_ip there is refused once (k254) and counted
+# for nothing else.
+sub _control_planes_shared {
+    my ($self) = @_;
+    return ref $self->spec->{control_planes} eq 'HASH' && @{ $self->control_planes } > 1 ? 1 : 0;
 }
 
 # Two control planes with one node-ip register at one address (k254), as the
@@ -1027,6 +1035,15 @@ sub _validate_pod_cidr {
             push @taken, [ "control_planes[" . ($i + 1) . "].$key $addr", "$addr/32" ]
                 if _looks_like_ipv4($addr);
         }
+
+        # node_ip (k279), the address the node registers by: each part, the
+        # IPv4 one against this IPv4 pod CIDR. Only a value validate()
+        # accepted counts; a refused one has its own line already.
+        my $node_ip = $cps->[$i]{node_ip};
+        next if !defined $node_ip || $self->_control_planes_shared
+            || defined OCP::Choices::node_ip_error($node_ip);
+        push @taken, map { [ "control_planes[" . ($i + 1) . "].node_ip $_", "$_/32" ] }
+            grep { _looks_like_ipv4($_) } split /,/, $node_ip;
     }
     for my $pool (@{ $self->workers }) {
         next unless ref $pool eq 'HASH';
@@ -1280,6 +1297,11 @@ is refused -- list the control planes one by one instead;
 are compared address by address and as IPs, so C<10.0.0.1,fd00::1> clashes
 with C<10.0.0.1>, and C<FD00::1> with C<fd00::1>; the line names both
 entries;
+
+=item * its IPv4 address, either part of a dual-stack value, must lie outside
+C<network.pod_cidr> (default C<10.42.0.0/16>): it is a node address like
+C<host> and C<public_ip>, and refused in the same words when the pod CIDR
+contains it (k279);
 
 =item * a C<workers> pool takes none, and neither does an entry of a pool's
 C<nodes> list. Both are refused rather than ignored, and the line points to
