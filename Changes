@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys operator add|rm`, `ocp keys secure --drop-bootstrap` and
+      `ocp node ls` no longer run out of memory on a worker pool whose
+      `nodes:` is a list, or a huge number on a pool whose provider is
+      unknown or missing: such a `nodes:` reads as one worker, and
+      `validate()` refuses the pool anyway.
     - `ocp apply`'s closing banner reads WITH WARNINGS, not SUCCESSFULLY,
       when an OCPNode status could not be written, an old robocop pod could
       not be listed or deleted, or the control plane's Node or the robocop

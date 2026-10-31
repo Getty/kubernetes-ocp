@@ -11,6 +11,7 @@ use YAML::XS ();
 
 use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::K8s ();
+use OCP::Config ();
 use OCP::Drift ();
 use OCP::K8s;
 use OCP::Node;
@@ -564,6 +565,20 @@ sub worker_ocpnodes {
                 @hosts = ($pool->{host});
             }
             $count = scalar @hosts || 1;
+        }
+        elsif (!(OCP::Provider->known_type($pool->{provider})
+                 && OCP::Config::_is_whole_number($count))) {
+            # A count is taken where validate() takes one (k361): a whole
+            # number (OCP::Config::_pool_nodes_errors) on a pool whose
+            # provider OCP knows -- any other pool validate() refuses for its
+            # provider, and asks nothing about its nodes:. Any other nodes:
+            # stands for one worker, as control_planes() reads a count
+            # validate() refuses (k296). Taken as a count, a list numified to
+            # its address, and a huge number on such a pool ran as is: both
+            # built OCPNodes until memory ran out, in the commands that walk
+            # the machines without validate() (ocp keys operator add|rm,
+            # ocp keys secure --drop-bootstrap, ocp node ls).
+            $count = 1;
         }
 
         for my $i (1 .. $count) {
