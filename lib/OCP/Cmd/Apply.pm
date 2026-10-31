@@ -176,7 +176,11 @@ sub execute {
 
         # Secure mode: Use admin-key from keys.yaml (requires PIN2)
         print "Step 1: Unlock encrypted secrets (PIN1 required)\n";
-        $secrets->ensure_age_key();
+        # A dry run opens the project key into memory and leaves .ocp/ as it
+        # is: no age.key cached, no age.pub restored (k349). The admin key
+        # below is read with it.
+        if ($self->dry_run) { $secrets->unlock_age_key }
+        else                { $secrets->ensure_age_key }
         print "[ok] Secrets unlocked\n\n";
 
         print "Step 2: Admin authentication (PIN2 required)\n";
@@ -185,7 +189,8 @@ sub execute {
 
 
 
-        my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+        my $keys = OCP::Keys->new(project_dir => $config->project_dir,
+                                  age_key     => $secrets->age_key);
         my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key): ");
 
         $admin_key = $keys->get_admin_key($pin2);

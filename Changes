@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply --dry-run` on a secure-mode project no longer writes the
+      project key: PIN1 opens it in memory, so a dry run leaves no
+      `.ocp/age.key` or `.ocp/age.pub` behind, and works on a fresh clone
+      without `.ocp/`, against an existing cluster too.
     - `ocp keys secure` masks the Hetzner API token when storing the keys
       in the Hetzner project fails, as `ocp init` does: an error that
       carries the request no longer shows the token.

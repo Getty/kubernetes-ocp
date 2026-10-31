@@ -20,7 +20,7 @@ use OCP::Versions;
 
     my $result = OCP::Cmd::Apply::Drift::reconcile_components($apply, $config);
     my $ran    = OCP::Cmd::Apply::Drift::run_remedy($apply, $config, $entry);
-    OCP::Cmd::Apply::Drift::dry_run_report($apply, $config, $cp_ip);   # --dry-run
+    OCP::Cmd::Apply::Drift::dry_run_report($apply, $config, $cp_ip, $secrets);   # --dry-run
 
 =head1 DESCRIPTION
 
@@ -59,6 +59,15 @@ C<gpu.enabled>): their steps read the image as the probe does and re-apply
 at an unchanged hash too (k351).
 C<reconcile_components> then returns false, which is how the dispatcher
 knows to stop without stamping a version.
+
+On a secure-mode clone without F<.ocp/> the dry run writes no project key
+(k349): PIN1 opens F<age.key.enc> into memory
+(L<OCP::Secrets/unlock_age_key>) instead of F<.ocp/age.key>, and the
+kubeconfig and the robo key for the robocop check are read with that key.
+F<.ocp/age.pub> is not restored either, on a checkout that has the key on
+disk too. The host probes are not given the key: their first contact records
+the host key in F<.ocp/known_hosts>, so on a clone they stay skipped, as the
+C<[WARN] host probes skipped> line says.
 
 A drift probe that L<OCP::Drift> could not read (an RBAC denial, an
 apiserver 5xx, anything but a 404) comes back as an entry with
@@ -124,6 +133,10 @@ sub reconcile_components {
     # Read the kubeconfig from the encrypted store — never from a plaintext
     # copy lying around in the project directory.
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    # A dry run on a clone has no .ocp/age.key: PIN1 opens age.key.enc into
+    # memory, and every read of this run takes the key from $secrets (k349).
+    # With the key on disk already this asks nothing. A real run is unchanged.
+    $secrets->unlock_age_key if $self->dry_run && $secrets->has_age_key_enc;
     my $kubeconfig = $secrets->read_kubeconfig;
     unless ($kubeconfig) {
         print "  Cannot decrypt kubeconfig.yaml, skipping component reconcile.\n";
@@ -140,7 +153,7 @@ sub reconcile_components {
 
     # --dry-run stops here. Everything below this line writes — see
     # dry_run_report for why that is the whole list and what it costs.
-    return dry_run_report($self, $config, $cp_ip) if $self->dry_run;
+    return dry_run_report($self, $config, $cp_ip, $secrets) if $self->dry_run;
 
     my $updated = 0;
     my $checked = 0;
@@ -643,8 +656,13 @@ sub reconcile_components {
 # cannot see is a manifest that changed while its version stayed put — the
 # only place that knows is the deploy step, and asking it means deploying.
 # Printed as a caveat rather than left for the user to find out.
+#
+# $secrets is the run's OCP::Secrets, the project key unlocked into it on a
+# clone (k349); the robocop check reads the robo key with it. The host probes
+# do not: their first contact records the host key in .ocp/known_hosts, a
+# write, so on a clone they stay skipped as before.
 sub dry_run_report {
-    my ($self, $config, $cp_ip) = @_;
+    my ($self, $config, $cp_ip, $secrets) = @_;
 
     print "  [..] Checking for drift (read-only)...\n";
 
@@ -724,7 +742,7 @@ sub dry_run_report {
     # only -- the credentials check is the same one that keeps a real
     # reconcile PIN2-free.
     my @robocop = $config->robocop_enabled && worker_step_wanted($self)
-        ? robocop_dry_run($self, $config, $cp_ip)
+        ? robocop_dry_run($self, $config, $cp_ip, $secrets)
         : ();
 
     # The GPU Operator's ClusterPolicy (lab notes 24, 27): its content against
@@ -832,8 +850,12 @@ sub _say_unchecked {
 # Only a 404 is a Deployment missing; a read that fails otherwise is an
 # { kind => 'error' } entry, "could not be checked" with its cause on STDERR
 # (k319), the shape of a GPU read gpu_dry_run could not make (k276).
+#
+# $secrets (optional) is the run's, unlocked into memory on a clone (k349):
+# the robo key is read with it, and read_only keeps the state from caching
+# the project key or restoring .ocp/age.pub.
 sub robocop_dry_run {
-    my ($self, $config, $cp_ip) = @_;
+    my ($self, $config, $cp_ip, $secrets) = @_;
     my $api   = $self->_k8s_api;
     my $level = $config->robocop_security_level;
     my @found;
@@ -841,7 +863,8 @@ sub robocop_dry_run {
     # The Secret the same way (k329): a read that is no 404 dies in the
     # state, and is no "missing, would write it".
     my $secret = eval {
-        $self->_robocop_credentials_state($api, $config, undef, $level, host => $cp_ip);
+        $self->_robocop_credentials_state($api, $config, $secrets, $level,
+            host => $cp_ip, read_only => 1);
     };
     if (my $err = $@) {
         chomp(my $cause = $err);

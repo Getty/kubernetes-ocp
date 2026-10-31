@@ -189,9 +189,10 @@ sub _robocop_credentials_current {
 
 # 'current', 'missing' (no Secret to read) or 'outdated' (a Secret that says
 # something else than a write would). Read-only -- `ocp apply --dry-run`
-# reports it as is (k173). A failure to tell on this side -- no host, no robo
-# key -- is 'outdated': the write that follows then fails loud with the real
-# reason, instead of a skip hiding it.
+# reports it as is (k173), and passes read_only: the project key is then
+# unlocked into memory at most, never cached in .ocp/ (k349). A failure to
+# tell on this side -- no host, no robo key -- is 'outdated': the write that
+# follows then fails loud with the real reason, instead of a skip hiding it.
 #
 # Only a 404 is 'missing'. A read that fails otherwise -- an RBAC denial, an
 # apiserver 5xx, a broken connection -- says nothing about the Secret and
@@ -223,8 +224,11 @@ sub _robocop_credentials_state {
 
     my $host = eval { $self->_cp_host($config, $opt{host}) } or return 'outdated';
 
-    $secrets->ensure_age_key;
-    my %key = eval { $self->_robo_key_entry($config, $level) } or return 'outdated';
+    # read_only (the dry run, k349): the key into memory at most, nothing
+    # written to .ocp/ -- an unlocked $secrets asks nothing at all.
+    if ($opt{read_only}) { $secrets->unlock_age_key }
+    else                 { $secrets->ensure_age_key }
+    my %key = eval { $self->_robo_key_entry($config, $level, $secrets) } or return 'outdated';
 
     my %want = (
         %key,
@@ -343,9 +347,11 @@ sub _robocop_credentials {
 # which robocop checks an injected key against -- the private key reaches the
 # pod only through `ocp inject-key`.
 sub _robo_key_entry {
-    my ($self, $config, $level) = @_;
+    my ($self, $config, $level, $secrets) = @_;
 
-    my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+    # With the project key that $secrets holds in memory, if any (k349).
+    my $keys = OCP::Keys->new(project_dir => $config->project_dir,
+                              age_key     => $secrets && $secrets->age_key);
     my $none = "ERROR: No automation (robo) key found in keys.yaml.\n"
              . "       'ocp init' creates it in secure mode; robocop needs it "
              . "to reach the workers it joins.\n";
@@ -422,6 +428,10 @@ project key's holder's job. C<inject> needs the public half only.
 The token's value is not compared: that would need the SSH read, and with it
 the admin key and a PIN2 prompt on every reconcile. C<ocp deploy-robocop>
 always writes.
+
+The dry run's check reads the robo key with the project key the run holds in
+memory (L<OCP::Secrets/unlock_age_key>): on a clone it writes no
+F<.ocp/age.key>, and nowhere does it restore F<.ocp/age.pub> (k349).
 
 Consumers must also consume L<OCP::Role::Cmd>.
 
