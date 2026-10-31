@@ -47,7 +47,12 @@ Revision history for OCP
       ready/desired of the AMD DaemonSets, DRA marked experimental. A missing
       DaemonSet reads "not deployed"; a failed read says "unknown" and puts
       the API error on STDERR. Clusters without AMD nodes print the section
-      unchanged; `--json` does not carry the AMD lines yet.
+      unchanged.
+    - `ocp status --json` carries an `amd_gpu` object on clusters with an AMD
+      GPU node: per node allocatable, capacity, gfx targets and the effective
+      allocation with its source; the devices per node in the gpu.amd.com
+      ResourceSlices; and ready/desired/state of each AMD DaemonSet. The
+      output for other clusters is unchanged.
     - `ocp status` now prints a kubeconfig that cannot be decrypted, or a
       cluster API that cannot be reached, on STDERR with its diagnosis. The
       report stays on STDOUT and the exit code stays 1.
