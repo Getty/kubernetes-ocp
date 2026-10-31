@@ -52,8 +52,26 @@ sub _k8s {
     return $api;
 }
 
+# --json answers on STDOUT when the nodes could not be listed too (k388), as
+# ocp status --json and ocp health --json do: an object whose error is the
+# line, where the inventory is an array -- so the type tells a list that
+# could not be made from an empty one. The line goes to STDERR as without
+# --json: the error dies on to OCP.pm, which says it and exits 1.
 sub execute {
     my ($self, $args, $chain) = @_;
+
+    return $self->_ls unless $self->json;
+
+    my $exit;
+    return $exit if eval { $exit = $self->_ls; 1 };
+    my $err = $@ || "Unknown error\n";
+    chomp(my $line = "$err");
+    print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode({ error => $line });
+    die $err;
+}
+
+sub _ls {
+    my ($self) = @_;
 
     my $api = $self->_k8s;
     my $ns  = 'ocp-system';
@@ -225,6 +243,21 @@ OCP itself never writes one. Without it, C<pool> is null for a node no named
 pool produces (a control plane, a worker C<ocp node add> created under a name
 of its own, the nodes of a pool without C<name>), and for every node when
 there is no readable C<ocp.yaml>.
+
+When the nodes cannot be listed -- the API server the kubeconfig names does
+not answer or answers with an error, or there is no C<ocp.yaml> or no
+kubeconfig -- STDOUT carries one object instead of the array, its C<error>
+the message the command stopped on (for the API, the one line of
+L<OCP::Role::Cmd/cluster_api_error>), and the exit code is 1, as with
+C<ocp status --json> and C<ocp health --json> (k388). STDERR says it as
+without C<--json>.
+
+    {
+       "error" : "The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)"
+    }
+
+An empty array is a cluster without OCPNodes; an object is a list that could
+not be made.
 
 =head1 SEE ALSO
 

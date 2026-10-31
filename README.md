@@ -336,7 +336,9 @@ container runtime, kubelet, OS, kernel). It reads the Kubernetes API, plus
 produced the node. It is `null` for a control plane, for a worker that
 `ocp node add` created under its own name, and when there is no readable
 `ocp.yaml`. An `ocp.internal/pool` annotation on the OCPNode takes precedence,
-but OCP never writes one.
+but OCP never writes one. When the nodes cannot be listed (the cluster API
+does not answer or answers with an error) it prints `{"error": "..."}` instead
+of the array and exits 1, as `ocp status --json` and `ocp health --json` do.
 
 Useful variations:
 

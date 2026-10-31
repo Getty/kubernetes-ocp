@@ -31,8 +31,9 @@ use OCP::Secrets;
 #   3. no output carries a Perl source location or "internal error";
 #   4. ocp status keeps on STDOUT what it can show without the API: the spec
 #      summary from ocp.yaml, that the cluster exists, the kubeconfig hint;
-#   5. --json keeps STDOUT pure JSON: status and health print their object
-#      with the error in it, node ls prints nothing;
+#   5. --json keeps STDOUT pure JSON: status, health and node ls print an
+#      object with the error in it (node ls: that and nothing else, where it
+#      lists an array -- k388); STDERR says it as without --json;
 #   6. a kubeconfig no client can be built from is not "could not be
 #      reached": ocp status reports it as before.
 # And of the OCP::Role::Cmd methods that say it: only a transport failure
@@ -221,8 +222,10 @@ my @commands = (
       } ],
     [ ['node', 'ls', '--json'], sub {
           my ($o, $e) = @_;
-          like $e, qr/\AError: $unreachable\n\z/, 'STDERR: the API and why, one line, nothing else';
-          is $o, '', 'STDOUT: nothing, so nothing that is not JSON';
+          like $e, qr/\AError: $unreachable\n\z/, 'STDERR: the API and why, one line, as without --json';
+          my $doc = json_of($o);
+          like $doc->{error} // '', qr/\A$unreachable\z/, 'JSON: error says it, as on STDERR';
+          is_deeply [ sort keys %$doc ], ['error'], 'JSON: the error and nothing else (k388)';
       } ],
     [ ['health'], sub {
           my ($o, $e) = @_;
@@ -259,6 +262,21 @@ for my $c (@commands) {
         unlike $e, qr/PIN/, 'no PIN asked: the key is in .ocp/';
         is scalar(() = $e =~ /Connection refused/g), 1, 'STDERR: the reason said once';
     } or diag "ocp @$argv: exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
+}
+
+# Nothing to ask with: without an ocp.yaml, ocp node ls --json still answers
+# with the object (k388), and STDERR says it as without --json.
+{
+    my $empty = path(tempdir(CLEANUP => 1));
+    my $why   = "Config file 'ocp.yaml' not found. Run 'ocp init' first.";
+    my ($st, $o, $e);
+    subtest 'ocp node ls --json, no ocp.yaml: the object, the message as its error' => sub {
+        ($st, $o, $e) = run_ocp($empty, 'node', 'ls', '--json');
+        is $st & 127, 0, 'no signal (alarm)';
+        is $st >> 8, 1, 'exit 1';
+        is $e, "Error: $why\n", 'STDERR: as without --json';
+        is_deeply json_of($o), { error => $why }, 'JSON: the message as its error, nothing else';
+    } or diag "exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
 }
 
 # A kubeconfig no client can be built from is not an API that could not be

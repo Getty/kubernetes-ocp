@@ -33,8 +33,8 @@ use OCP::Secrets;
 #   3. no output carries a Perl source location or "internal error" -- nor
 #      Kubernetes::REST's discovery warning, which carries one;
 #   4. ocp status keeps on STDOUT what it shows without the API, and --json
-#      keeps STDOUT pure JSON (status and health: their object, the line as
-#      its error; node ls: nothing).
+#      keeps STDOUT pure JSON (status, health and node ls: their object, the
+#      line as its error; node ls's has nothing else -- k388).
 # 401 is answered to every request, /version included, as a token the API
 # server does not know is; 403 and 500 only to the resources, after /version
 # and discovery were answered, as RBAC and a failing etcd do.
@@ -209,7 +209,9 @@ my @commands = (
           is $_[0], '', 'STDOUT: nothing';
       } ],
     [ ['node', 'ls', '--json'], 'ocpnodes', 'Error', sub {
-          is $_[0], '', 'STDOUT: nothing, so nothing that is not JSON';
+          my ($o, $line) = @_;
+          is_deeply json_of($o), { error => $line },
+              'JSON: the line as its error, nothing else (k388)';
       } ],
     [ ['health'], 'pods', 'Error', sub {
           is $_[0], '', 'STDOUT: nothing';
@@ -250,6 +252,71 @@ for my $c (@codes) {
             unlike "$o$e", qr/k387-token/, 'the token is not shown';
         } or diag "ocp @$argv ($code): exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
     }
+}
+
+#### k388: ocp node ls --json, the Nodes after the OCPNodes
+
+# ocp node ls --json lists the OCPNodes, then the Kubernetes Nodes. An API that
+# lets the first through and denies the second -- RBAC that may list the OCP
+# Kinds but not Nodes -- ends in the object too, its line naming the Nodes. An
+# API that answers both with nothing is [] and exit 0: "no nodes", which a
+# reader of --json could tell from "could not ask" by the exit code alone
+# before.
+
+# The core group as discovery serves it, with the Nodes in it: the client node
+# ls builds from the kubeconfig resolves a Kind from discovery, and an empty
+# one leaves Node unknown to it.
+my $core = { kind => 'APIGroupDiscoveryList', apiVersion => 'apidiscovery.k8s.io/v2',
+             items => [ { metadata => {}, versions => [ { version => 'v1', resources => [
+                 { resource => 'nodes', scope => 'Cluster',
+                   responseKind => { group => '', version => 'v1', kind => 'Node' } },
+             ] } ] } ] };
+
+# /version and discovery answered, the resources named here as an empty
+# list, every other one denied.
+sub lists_api {
+    my (%empty) = @_;
+    return fake_api(sub {
+        my ($p) = @_;
+        return (200, $core) if $p eq '/api';
+        return @{ $reached{$p} } if $reached{$p};
+        my $plural = plural_of($p);
+        return (200, { kind => $empty{$plural}[0], apiVersion => $empty{$plural}[1],
+                       metadata => {}, items => [] })
+            if $empty{$plural};
+        return (403, status_doc(403, 'Forbidden',
+            qq{$plural is forbidden: User "k387" cannot list resource "$plural"}));
+    });
+}
+
+my $s403n = lists_api(ocpnodes => [ 'OCPNodeList', 'ocp.internal/v1' ]);
+my $s200  = lists_api(ocpnodes => [ 'OCPNodeList', 'ocp.internal/v1' ],
+                      nodes    => [ 'NodeList', 'v1' ]);
+
+{
+    my $line = qq{The cluster API at $s403n denied the request (403 Forbidden): }
+             . qq{nodes is forbidden: User "k387" cannot list resource "nodes"};
+    my ($st, $o, $e) = (0, '', '');
+    subtest 'ocp node ls --json, the OCPNodes listed and the Nodes denied' => sub {
+        ($st, $o, $e) = run_ocp(project($s403n), 'node', 'ls', '--json');
+        is $st & 127, 0, 'no signal (alarm)';
+        is $st >> 8, 1, 'exit 1';
+        is $e, "Error: $line\n", 'STDERR: the line for the Nodes';
+        is_deeply json_of($o), { error => $line }, 'JSON: the object, not an empty list';
+        unlike "$o$e", $perl_text, 'no Perl source location, no "internal error"';
+    } or diag "exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
+}
+
+{
+    my ($st, $o, $e) = (0, '', '');
+    subtest 'ocp node ls --json, a cluster without OCPNodes: [] and exit 0' => sub {
+        ($st, $o, $e) = run_ocp(project($s200), 'node', 'ls', '--json');
+        is $st & 127, 0, 'no signal (alarm)';
+        is $st >> 8, 0, 'exit 0';
+        is $e, '', 'STDERR: nothing';
+        my $doc = eval { JSON::MaybeXS->new->decode($o) };
+        is_deeply $doc, [], 'JSON: an empty list';
+    } or diag "exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
 }
 
 #### OCP::Role::Cmd: the line for each status

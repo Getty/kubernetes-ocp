@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node ls --json` prints `{"error": "..."}` on STDOUT and exits 1
+      when the nodes cannot be listed (the cluster API does not answer or
+      answers with an error, no `ocp.yaml`, no kubeconfig), as `ocp status
+      --json` and `ocp health --json` do; an empty array still means no
+      nodes. STDERR says the error as before.
     - `ocp destroy` now names on STDERR what it does not tear down: an ssh
       control plane with no host, a control plane or pool with `provider:
       ''`, and a Hetzner label search that failed, with its cause, the
