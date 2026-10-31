@@ -9,7 +9,9 @@ Verified against the code 2026-10-31: the `network:` block and the commands
 `status --json`, `health`, `node ls --json`, `node rm --keep-machine`,
 `node trust-host` and `deploy-image`, by source and POD only (OCP::Config,
 OCP::Cmd::*), no live run; likewise `hetzner list`, `kubeconfig --readonly`,
-`provider add`, `--pins-stdin` and the PIN2 list (k294). The rest was
+`provider add`, `--pins-stdin` and the PIN2 list (k294); the destroy, update
+and trust-host confirmations, `validate` and `fixable` the same day, by source
+only (k302). The rest was
 verified 2026-08-16 (OCP::Config, OCP::Cmd::*, OCP::Drift, OCP::Keys,
 OCP::Secrets, OCP::ClusterKey), including live runs of each command in the
 shipped Docker image (not `--help` text or source inspection alone — see
@@ -49,13 +51,17 @@ the key is gone, robocop is not Ready, and every OCPNode in `Pending`,
 
 ## Command Reference
 
-`MooX::Options::Role` normalizes hyphens to underscores when matching an incoming flag
-against a declared option name, so `--dry-run` and `--dry_run` both work for the same
-option — `--help` only ever prints one spelling, which is not evidence the other is
-rejected. The docs below use the hyphenated form throughout, matching `xt/smoke.sh` and
-`README.md`. **The one shape that never works is a leading `--no-`**: it is peeled off
-*before* the dash/underscore substitution, as a Getopt::Long-style negation marker
-(`^(\-+)(no\-)?(.*)$`), so `--no-foo` is read as "negate a boolean option called `foo`"
+`OCP::Role::Cmd::_option_argv_spelled` (k167) rewrites hyphens to underscores before
+MooX::Options sees the command line, for every argument whose underscored name is a
+declared option of that command, wherever it stands (also right after a boolean:
+`--force --pins-stdin`, which MooX::Options' own rewrite missed). So `--dry-run` and
+`--dry_run` both work for the same option — `--help` only ever prints one spelling,
+which is not evidence the other is rejected — and an unknown dashed name still reaches
+Getopt::Long and is refused. The docs below use the hyphenated form throughout,
+matching `xt/smoke.sh` and `README.md`. **The one shape that never works is a leading
+`--no-`**: MooX::Options peels it off *before* its dash/underscore substitution, as a
+Getopt::Long-style negation marker (`^(\-+)(no\-)?(.*)$`), so `--no-foo` is read as
+"negate a boolean option called `foo`"
 and dies with `Unknown option: foo` unless such an option exists. Every negative flag in
 this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `--nowait`.
 `ocp node add` still accepts `--no_wait` as an alias for `--nowait`. The exception is
@@ -88,8 +94,10 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   diagnostics on STDERR, same exit code. Keys: `cluster`, `config`,
   `deployed` (false before the first apply, exit 0), `spec`, `nodes` (by
   name; `gpu` = `nvidia.com/gpu` allocatable, `gpu_capacity` beside it,
-  k270), `drift` (`fixable` = apply carries a remedy; kind `error` = could
-  not be checked, never fixable, k262), `error` when something was missing,
+  k270), `drift` (`fixable` = `ocp apply` closes it, k312: a remedy, a
+  `self_healing` entry or kind `missing`; report-only entries and kind
+  `error` = could not be checked are never fixable, k262), `error` when
+  something was missing,
   `amd_gpu` only on a cluster with an AMD node (k258).
 - `ocp health [--json]` — one pod scan through the API, no waiting, changes
   nothing (k230). Same classification as the health gate at the end of
@@ -101,10 +109,25 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   unreachable → `error` + empty `pods`, cause on STDERR. A long-stuck pod's
   `reason` carries its minutes, so compare namespace/name/state, not reason.
 - `ocp update [--dry-run] [--component NAME] [--force]` — update components;
-  refuses to run without `status.ocpVersion` (stamped by apply)
-- `ocp destroy [--force] [--keep-status]` — tear down; `--force` skips the
-  confirmation prompt; deletes status.yaml + kubeconfig.yaml afterwards
-  unless `--keep-status`
+  refuses to run without `status.ocpVersion` (stamped by apply). `--force`
+  here means "even if the versions match", not "skip a question". When the
+  version manifest lists manual steps (and not under `--dry-run`) it asks
+  "Manual steps required. Continue?" on STDERR (k303): a person at a
+  terminal answering `y`/`yes`, anything else or EOF → "Aborted", exit 1,
+  nothing changed. Without a terminal it reads nothing from STDIN, says so
+  on STDERR and exits 1; there is no switch that confirms from a script.
+- `ocp destroy [--force] [--keep-status]` — tear down. Before anything is
+  stopped or deleted it asks "Are you sure you want to destroy this
+  cluster?" on STDERR (k301): `y`/`yes` at a terminal confirms, anything
+  else or EOF → "Aborted; nothing was deleted", exit 1. Without a terminal
+  it reads nothing from STDIN (a piped `y` is no confirmation), says on
+  STDERR that it needs a person at a terminal or `--force`, deletes
+  nothing, exit 1. `--force` (`-f`) skips the question and is the only way
+  without a terminal. With no node found it still asks, naming the local
+  files it would remove (k304), and `--force` skips that too; with no
+  file to remove nothing is asked. Afterwards it deletes status.yaml +
+  deployed.yaml unless `--keep-status`; the encrypted kubeconfig.yaml goes
+  either way
 - `ocp kubeconfig` — stdout; `-e` merge (with backup, other clusters kept),
   `-o FILE` write to file; `--refresh` is not implemented (dies: the stored
   kubeconfig.yaml is authoritative)
@@ -144,7 +167,9 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   available — for `--timeout` seconds (default 300, refused without
   `--wait`); a timeout says on STDERR what it still waited for, exit 1.
   `--cluster`/`OCP_CLUSTER` choose nothing: the target is the project's
-  kubeconfig; the name is only printed, and the two disagreeing dies.
+  kubeconfig, so the name is a guard (k293): anything but ocp.yaml's `name`
+  dies before a patch is sent ("is not this project's cluster"), and so do
+  `--cluster` and `OCP_CLUSTER` disagreeing.
 - `ocp inject-key [--timeout SECONDS]` — hand the robo private key to a
   running robocop pod for `robocop.security_level: inject` (PIN1 + PIN2;
   default timeout 30s)
@@ -176,9 +201,12 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   whose running agent registers its Node again). Never implied.
 - `ocp node trust-host NAME [--yes]` — forget an OCPNode's pinned host keys
   (k235), after a rebuilt machine refused with "host key of … changed".
-  Lists the fingerprints on STDERR and reads one line of STDIN: `y`/`yes`
-  confirms, anything else or EOF → "Aborted", exit 1; `--yes` skips the
-  question. Then `status.hostKeys` is merge-patched away, and
+  Lists the fingerprints on STDERR and asks there, at a terminal only
+  (k293): `y`/`yes` confirms, anything else or EOF → "Aborted", exit 1.
+  Without a terminal it reads nothing from STDIN (a piped `y` does not
+  count), says on STDERR that it needs a person at a terminal or `--yes`,
+  keeps the pins, exit 1; `--yes` skips the question and is the only way
+  to confirm from a script (`OCP::Role::Cmd::Confirm`). Then `status.hostKeys` is merge-patched away, and
   `status.message` with it when it is that complaint; the next contact is
   TOFU again. No pins → says so, exit 0. Kubernetes API only, no SSH.
 - `ocp node ls [--json]` — list OCPNode CRs (name, role, phase, provider,
@@ -388,10 +416,28 @@ gpu:
     shorter than /24 (Cilium gives every node a /24), clear of the service
     network `$OCP::Config::SERVICE_CIDR`, the node addresses ocp.yaml names
     and `lb_pool`.
-  - `lb_pool`: its shape and IPv4 addresses. `l2.node_selector`: a non-empty
-    mapping of scalars. `l2.interfaces`: a non-empty list of strings.
-  - An unknown key under `network:` is not reported, unlike under `cilium:`
-    and `gpu.amd:`.
+  - `lb_pool`: its shape and IPv4 addresses, and `start` not after `stop`
+    (compared as addresses; equal is a pool of one, k292). `l2.node_selector`:
+    a non-empty mapping of scalars. `l2.interfaces`: a non-empty list of
+    strings.
+  - An unknown key is refused under `network:`, `network.lb_pool` and
+    `network.l2`, as under `cilium:` and `gpu.amd:` (k292): a misspelt key
+    would leave its default in force.
+  - **The service network** `$OCP::Config::SERVICE_CIDR` (10.43.0.0/16, the
+    built-in service-cidr of RKE2 and K3s) is held against the same
+    addresses as the pod CIDR (k299): control-plane `host`, `public_ip`,
+    `private_ip` and `node_ip`, worker pool hosts, and `network.lb_pool`.
+    One inside it is refused, whatever `pod_cidr` is; ocp.yaml has no key
+    to move the service network, so the line says to use an address
+    outside it.
+  - **Shapes name their key** (k296, k305). A wrong shape gets one line
+    naming it, not a Perl error: `control_planes`, `workers` and their
+    entries, `network`, `cilium`, `gpu`, `gpu.amd`. `gpu: false` is refused
+    with the hint `gpu: { enabled: false }`. A list as `name:` or `robocop:`
+    (or as `robocop.enabled`) is refused, as is `control_planes: []`.
+    `control_planes.nodes` must be a whole number from 1 to 7: above 7 is
+    refused, since every control plane is an etcd member and etcd advises
+    no more (`$OCP::Config::MAX_CONTROL_PLANE_NODES`).
   - **`ocp apply` and `ocp apply --dry-run` call `validate` first** (k255),
     before a PIN, a file, a host or the cluster: every error at once on
     STDERR, one line each, then exit 1 with nothing done. `ocp status` does
@@ -594,7 +640,10 @@ by dropping the bootstrap key, and neither is covered anywhere else.
 1. **Drift detection first** (`OCP::Drift`): Cilium and cert-manager version
    drift carry Rex remedies (`upgrade_cilium`/`upgrade_cert_manager`) and are
    fixed automatically; distribution drift and moved pinned IPs are
-   report-only — a human decides. `ocp status` shows the same drift report.
+   report-only — a human decides. `ocp status` shows the same drift report,
+   and its "N of M can be reconciled automatically" count (and `--json`
+   `fixable`) is what `ocp apply` closes (k312): a remedy, a `self_healing`
+   entry, or kind `missing`; unfound checks (kind `error`) are not counted.
 2. **Hash-based components** (`.ocp/deployed.yaml`, MD5 of generated
    manifests): registry, NFD, GPU operator. cert-manager is tracked by
    component version, not manifest hash.
