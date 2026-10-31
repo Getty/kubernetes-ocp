@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp` flushes STDOUT after every write, so a log that takes both
+      channels (`ocp apply > log 2>&1`, CI, a container log) shows each
+      STDERR line where it happened instead of ahead of the progress it
+      belongs to.
     - `ocp init --hetzner` says why it could not read the Hetzner
       catalogue: what the API answered (`unable to authenticate` for a
       token Hetzner does not accept; the status when the answer carries no

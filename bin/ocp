@@ -9,7 +9,15 @@ use lib "$FindBin::Bin/../lib";
 
 our $VERSION = '0.001';
 
+use IO::Handle ();
 use OCP;
+
+# STDOUT carries the progress, STDERR what went wrong (house rule: output
+# channels), and a log that takes both -- `ocp apply > log 2>&1`, CI, a
+# container log -- must keep them in the order they happened. Into a pipe or
+# a file STDOUT is block-buffered while STDERR is not, so every [!!] line
+# landed ahead of the progress it belongs to (k289).
+STDOUT->autoflush(1);
 
 exit OCP->run_cli;
 
