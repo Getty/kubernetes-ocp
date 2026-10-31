@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-10-31T02:34:02Z
+created: 2026-10-30T21:39:42Z
+id: 244
+priority: low
+started: 2026-10-31T01:32:01Z
+status: done
+tags:
+- agents
+- skills
+title: ocp-infra-worker briefing is over briefing's 64 kB soft cap (74 kB)
+updated: 2026-10-31T02:34:02Z
+---
+
+The briefing hook warns: `agent 'ocp-infra-worker' is briefed with 74 kB of skill text
+(over 64 kB)`. Before `rex` was added it was already ~69 kB, so the cap was crossed
+earlier. Biggest items: ocp-gpu 15.8 kB, ocp-rke2 9.4 kB, ocp-cilium 7.7 kB,
+ocp-core 7.4 kB, rex 6.4 kB, docker-registry 6.3 kB, kubernetes-gpu 6.1 kB.
+
+Options (pick one, don't do both):
+- shrink ocp-gpu (repo-owned, skill `skill-compressor`): move detail into references/
+- split GPU work into its own lane (ocp-gpu + kubernetes-gpu off the infra briefing)
+
+Done when the hook no longer warns for ocp-infra-worker and the GPU knowledge is still
+reachable by whoever owns GPU work.
+
+2026-10-31 02:20 Start (ocp-infra-worker): briefing measured with the 0.5.3 hook's own code: 75893 B (74.1 KiB) over the 65536 B cap; ocp-gpu body 15574 B, ocp-rke2 9207 B. Plan per dispatch: ocp-gpu detail -> references/, AMD side added (mostly in a reference), then ocp-rke2 the same if needed to reach <= 60 KiB. Only ocp-infra-worker briefs either skill.
+
+2026-10-31 02:26 ocp-gpu done: SKILL.md body 15574 -> 4650 B (rules + switches + AMD summary + reference map); detail in references/nvidia-host.md, nvidia-cluster.md, amd.md (new, from code). Briefing now 64969 B: under the cap but over the 60 KiB aim, so ocp-rke2 next.
+
+2026-10-31 02:30 Also found (not fixed; skill text only on this card): (1) OCP::Versions amd_dra_driver comment says the DRA init container runs the DRA image; the lib (rex-rancher branch worktree-k95-amd-gpu, K8s.pm) writes docker.io/busybox:1.36, as the spec says -> infra lane fix. (2) AMDGPU.pm comment 'k258 moves both onto shared variables in OCP::Config' is stale: k258 landed without it (Status.pm says not shared yet) -> apply lane. (3) AMDGPU.pm POD 'Rex::Rancher 0.004 and 0.005 have none': 0.005 is unreleased, so this holds only if the branch is not merged before 0.005 ships. (4) NVIDIA side still counts nvidia.com/gpu from capacity (OCP::Kubernetes, ocp status), although capacity stays stale after a plugin unregisters (rex-rancher k106 hits NVIDIA too) -> status/state lane. (5) ocp-cilium's k161 caveat ('backlog', chart needs disabling) is stale: Rexfile _gateway_api_disable already adds rke2-gateway-api-crd. (6) ocp-usage has no gpu.amd schema. (7) k254 node-ip is in flight in share/Rexfile; once it lands, ocp-rke2 needs a node-ip line. (8) Released Rex::GPU 0.005 marks AMD GPUs compute 0, so AMD hosts end in amd-unsupported; install_amd's amd_class [WARN] is not reached with it.
+
+2026-10-31 02:30 Done: ocp-infra-worker briefing 75893 B -> 59253 B (57.9 KiB, cap 65536), measured with the 0.5.3 hook's own Briefing class. ocp-gpu body 15574 -> 4685 B, ocp-rke2 9207 -> 3456 B; detail moved to .claude/skills/ocp-gpu/references/{nvidia-host,nvidia-cluster,amd}.md and .claude/skills/ocp-rke2/references/install-flow.md. ocp-gpu description now triggers on AMD; AMD side (switches, labels, affinity matrix, kube-system objects, allocatable readiness, removal, drift/pins, status, unreleased libs) written from the code. Stale facts corrected from the code (_gpu_actions/amd-unsupported, robocop kubeconfig k205, heal_bare_containerd_template, the obsolete cilium-CLI handover). Verified: hook run for ocp-infra-worker -> 58 kB, no over-cap warning, no deny, prompt ends with MARKER, both skills injected; briefing-doctor ok for every agent; only ocp-infra-worker briefs ocp-gpu/ocp-rke2. No lib/bin/share/t change. Not committed.
+
+Committed as 8a9971f.
