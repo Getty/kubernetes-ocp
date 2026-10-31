@@ -15,8 +15,12 @@ option label => (
     doc    => 'Filter by label (e.g., ocp-cluster=prod)',
 );
 
-sub execute {
-    my ($self, $args, $chain) = @_;
+# The client the listing reads through. Lazy, so a test hands in one built on
+# a fake IO and nothing reaches the API.
+has cloud => (is => 'lazy');
+
+sub _build_cloud {
+    my ($self) = @_;
 
     # Get token from secrets or environment
     my $secrets = OCP::Secrets->new(project_dir => path('.'));
@@ -27,7 +31,13 @@ sub execute {
             "Set HETZNER_API_TOKEN or run 'ocp init --hetzner' to configure.\n";
     }
 
-    my $cloud = WWW::Hetzner::Cloud->new(token => $token);
+    return WWW::Hetzner::Cloud->new(token => $token);
+}
+
+sub execute {
+    my ($self, $args, $chain) = @_;
+
+    my $cloud = $self->cloud;
 
     my $servers = $self->label
         ? $cloud->servers->list_by_label($self->label)
@@ -52,7 +62,7 @@ sub execute {
             $server->name,
             $server->status,
             $ip,
-            $server->server_type->{name},
+            $server->server_type,
             $labels || '-';
     }
 
@@ -94,6 +104,13 @@ a hint to run C<ocp init --hetzner>.
 
 Filter the listing to servers carrying every label key/value pair given.
 Passes through to L<WWW::Hetzner::Cloud/servers/list_by_label>.
+
+=attr cloud
+
+    my $cmd = OCP::Cmd::Hetzner::List->new(cloud => $cloud);
+
+The L<WWW::Hetzner::Cloud> client the listing reads through.  Lazy: built
+from the token on first use, so a test can hand in a client on a fake IO.
 
 =method execute
 

@@ -1,6 +1,8 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp hetzner list` no longer dies on the first server: the TYPE column
+      reads the server type name WWW::Hetzner returns.
     - OCP no longer re-quotes the SOPS lastmodified timestamp itself; File::SOPS
       0.003+ does it on every write. Files written by the File::SOPS 0.002 that
       older images shipped still open, and are written quoted on their next
