@@ -1,0 +1,64 @@
+---
+claimed_at: 2026-10-31T14:39:21Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T12:32:28Z
+id: 355
+priority: low
+status: in-progress
+tags:
+- validation
+- choices
+title: 'validate() after k340/k347: unknown keys under kubernetes:/ssh:, kubernetes.version,
+  control-plane name/service shape, ssh pool nodes: entries; one rke2/k3s list; four
+  fixtures with kubernetes.distribution'
+updated: 2026-10-31T14:39:21Z
+---
+
+Left over from k340/k347 (choices worker, 2026-10-31). Choices lane; small edits in other files are named per item.
+- Unknown keys under kubernetes: and ssh: are not refused (k347 did this for pools and control planes); the shape of kubernetes.version is not checked.
+- Four test fixtures write `kubernetes: { distribution: k3s }`, a key nothing reads, so they run as rke2 without saying so: t/25, t/39, t/268, t/275. Once unknown kubernetes: keys are refused, these fixtures need `dist: k3s` (or the key dropped, if rke2 is what they test). Check each one's intent first.
+- lib/OCP/Cmd/Init.pm:118-119 and lib/OCP/Robocop/Controller.pm:102 spell out rke2/k3s again instead of reading @OCP::Config::DISTRIBUTIONS (k340). Init.pm is the apply lane and Controller.pm the robocop lane; the change there is only the list.
+- A control plane's name: and service: have no shape check (a list passes).
+- The entries of an ssh pool's nodes: list are not checked for unknown keys.
+
+Done = validate() lines for each shape, with the accessors refusing in the same words (the k331/k340 pattern); the four fixtures fixed to say what they test; tests red first, then a mutation check.
+
+2026-10-31 14:39 k355 done (ocp-choices-worker). Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-choices355/k355.patch (on queued15 c4ae9c4; header has subject, description, Changes bullet; no Changes hunk; git apply --check clean).
+
+What changed:
+- kubernetes: takes dist and version. Any other key gets a validate() line, and with distribution: <rke2|k3s> it says "write kubernetes: { dist: k3s }". kubernetes() refuses in the same words, and so do distribution, version and supervisor_port.
+- kubernetes.version must be a string (empty or absent = the pin). validate() line, and version() refuses it.
+- ssh: unknown key (not private_key or public_key): validate()-ONLY, my choice. Reason: in dev mode ocp destroy reads ssh: (ClusterKey _bootstrap_key -> ssh_private_key_path), and a refusal there skips the RKE2/K3s uninstall on the ssh machines. That is the k347/k323 rule. ssh_config refuses only the k340 shapes.
+- A control plane's name: must be a string (@CP_NAME_KEYS, in the k340 host/address loop). cluster_status refuses it via _first_cp_string.
+- An ssh pool's nodes: entry takes host (node_ip keeps its own line). validate()-only, kept out of _pool_nodes_errors (destroy, k323).
+- ocp init --dist and the robocop Controller check against @OCP::Config::DISTRIBUTIONS. Messages unchanged.
+- service: shape on a control plane: NOT touched, left for k357.
+Files: lib/OCP/Config.pm, lib/OCP/Cmd/Init.pm, lib/OCP/Robocop/Controller.pm, t/296 (claims 31-34), t/355 (new), t/323 (helper), fixtures t/25 t/39 t/268 t/275 t/338.
+
+Fixtures:
+- t/39, t/268, t/275 wrote distribution: k3s, and so did t/338 (a fifth, not on the card). All four now write dist: k3s. Until now they ran as rke2, but none asserts anything dist-dependent, so what they exercise does not change.
+- Run against the new lib, the old t/39 and t/268 die in Drift on the refused key. Old t/275 and t/338 pass either way (they never read kubernetes:).
+- t/25 wrote distribution: rke2 (not k3s, as the card said) and asserts rke2 throughout, so the key is dropped (default rke2). The old t/25 dies at Drift.pm:803.
+- Two existing t/296 claims were adjusted, not dropped:
+  - "ssh, each entry: a host, or a mapping with one" used { name => 'x' }. It keeps "needs a host" and now also has the unknown-key line.
+  - The claim-25 ssh accessor sweep now excludes the unknown-key line (validate-only, above).
+- t/323: nodes_lines (validate()'s nodes lines, compared with destroy's refusal) leaves the unknown-key line out, because destroy does not read it (k323's second point). One assertion says validate() has it.
+
+Evidence (binding, DOCKER_BUILDKIT=0 timeout 1800 make test TESTS=... IMAGE=localhost/ocp-w355, from copies under w-choices355/):
+- Run 3, run.93MN (36 files, 1340 tests): green t/296, t/355, t/25, t/39, t/268, t/275, t/338 and 3 real-config copies (cihq, citiai, amdlab: 0 errors, accessors read, no warnings) are all ok.
+- RED: queued15 Config.pm fails t/296 subtests 26, 48-53, 55 (the new claims plus the adjusted claim 26). queued15 Init.pm fails t/355 1/2, queued15 Controller.pm fails t/355 2/2.
+- MUTANTS: 20/20 killed (14 Config on t/296, 4 Init/Controller on t/355, plus the two below).
+- Run A found that ctrl_msg survived: the regex robocop installs k3s\b also matched the hard-coded "k3s or rke2". The assertion is now anchored at " at ", and ctrl_msg is killed in run 3.
+- Rest of the suite, run.93MN:
+  - B1: 124 files / 1793 tests PASS.
+  - B2: 118 files / 1738 tests, the only failure t/323 subtest 3 (fixed as above).
+- Run 4, run.0JeQ: t/323 + t/326 ok. Red Config and the mutants pool_nodes_in_destroy and pool_node_unknown each fail t/323 subtest 3.
+- No suite skipped itself. Whole suite covered: 36 + 124 + 118 files, all t/*.t.
+
+Also found (not fixed):
+(1) Release form of kubernetes.version: only the shape is checked. Whether it must carry +rke2rN/+k3sN for its dist is a decision. Rex::Rancher parse_release takes v?X.Y.Z(-pre)?(+suffix)?, t/04 claims 'v1.31.3', and generic rules belong in Rex::Rancher.
+(2) OCP::Drift:587 (spec_drift) and Role/Cmd/Machines.pm:153 read $cp->{name} raw. validate() refuses it now, but those readers don't (state / keys lane).
+(3) cluster_status's {name} has no reader in lib/. Its refusal is there for consistency, the way k340 handled public_ip/host.
+(4) Doc lane: docs/configuration.md and the ocp-usage skill could name the refused keys. The Init --dist doc string still spells out "rke2 (default) or k3s".
+(5) Every command that reads kubernetes: (status, update, node add, drift) now refuses distribution: k3s. ocp destroy reads none of it.
