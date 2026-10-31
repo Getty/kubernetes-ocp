@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-31T17:22:17Z
+created: 2026-10-31T15:29:44Z
+id: 386
+priority: low
+started: 2026-10-31T17:22:17Z
+status: done
+tags:
+- tests
+title: 't/95: its ''every command takes --pins-stdin'' check cannot see a command
+  that never consumes OCP::Role::Cmd'
+updated: 2026-10-31T17:22:17Z
+---
+
+From k383 (2026-10-31). t/95 finds the commands that must take --pins-stdin by grepping the source for `with 'OCP::Role::Cmd'`, so a command that never consumes the role (OCP::Cmd::Hetzner::List until k383) is invisible to it, while its comment says a command "cannot quietly miss the flag". t/383 now derives the list from the command map and covers the case. Done = t/95 either derives its list from the command map too (or defers to t/383) and its comment says what it actually checks. Lane: ocp-test-writer. After k383 is committed.
+
+2026-10-31 15:36 Chose to defer, not re-derive: t/95 keeps its role-consumer grep (retitled/commented), completeness is t/383 subtest 1 (command-map walk). Smaller, no duplicate walk. Runs: make test TESTS='t/95 t/383 t/00-load.t + scratch mutant file' IMAGE=localhost/ocp-w386 -> all ok; mutant (List.pm without the role, in a container tmp copy of lib): t/383 fails naming List, t/95 stays green by design. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-test386/tmp.hVUtyWO0is/k386.patch
+
+2026-10-31 15:36 patch at /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-test386/tmp.hVUtyWO0is/k386.patch
+
+Reviewed by main: comment + subtest-title only; t/95 now claims what it checks (every OCP::Role::Cmd consumer) and defers 'every command' to t/383. Mutant (List without the role) caught by t/383. Queued batch 7 (head9).
+
+Committed as 05e6ac1
