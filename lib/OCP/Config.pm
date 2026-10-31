@@ -120,7 +120,12 @@ sub kubernetes {
 # waits for a majority of them, so each member past that slows every write
 # and buys a failure tolerance no one runs (etcd FAQ, "What is maximum
 # cluster size?"; 1, 3, 5 and 7 are the sizes in use). It is also what keeps
-# control_planes() from taking a nodes: of 10^12 as a repeat count.
+# control_planes() from taking a nodes: of 10^12 as a repeat count. Since
+# k315 it bounds the list form too.
+#
+# An even count (2, 4, 6) tolerates no more failures than one less does, but
+# it works, so it is no refusal; and validate() returns errors only, with no
+# channel for a warning. Left for a ticket (k315's notes), not invented here.
 our $MAX_CONTROL_PLANE_NODES = 7;
 
 sub control_planes {
@@ -206,9 +211,20 @@ sub no_cert { shift->spec->{nocert} // 0 }
 #                    mapping at all is an explicit opt-in (as gpu: is), and
 #                    enabled:false is how you keep the mapping but turn it off
 #   absent         → the hetzner auto-on rule
+#
+# Anything else is refused in validate()'s words (k315): read on, robocop: no
+# was a string Perl calls true, and robocop: { enable: false } a mapping
+# without enabled -- both turned robocop on. A croak rather than off, as
+# gpu_config and robocop_security_level do: every reader of the switch asks
+# this method (ocp apply, ocp keys secure, the health gate), and none of them
+# may read the one ocp.yaml another way than validate() does -- not even in
+# the safe direction, where robocop: yes would mean off.
 sub robocop_enabled {
     my $self = shift;
     my $val = $self->spec->{robocop};
+
+    my @errors = _robocop_errors($val);
+    croak join '; ', @errors if @errors;
 
     if (ref $val eq 'HASH') {
         return $val->{enabled} ? 1 : 0 if defined $val->{enabled};
@@ -218,6 +234,52 @@ sub robocop_enabled {
 
     return 1 if $self->_any_hetzner_provider;
     return 0;
+}
+
+# The keys of the mapping form, as the robocop: line and an unknown key name them.
+our @ROBOCOP_KEYS = qw( enabled security_level image );
+
+# What is wrong with robocop: as a switch, one line each, or nothing (k305,
+# k315): validate() lists the lines and robocop_enabled refuses on them, so
+# the two cannot disagree. security_level and image have accessors and lines
+# of their own.
+sub _robocop_errors {
+    my ($val) = @_;
+    return () if !defined $val || _is_switch($val);
+    return 'robocop: must be true, false or a mapping (' . join(', ', @ROBOCOP_KEYS) . '), not '
+        . _shown_value($val) . _boolean_hint('robocop', $val)
+        unless ref $val eq 'HASH';
+
+    my $en = $val->{enabled};
+    return (
+        (defined $en && !_is_switch($en)
+            ? 'robocop.enabled: must be true or false, not ' . _shown_value($en)
+              . _boolean_hint('enabled', $en)
+            : ()),
+        _unknown_keys('robocop', $val, @ROBOCOP_KEYS),
+    );
+}
+
+# A true or false as robocop: takes it (k315): a YAML boolean, or 1 or 0 --
+# how a spec written from Perl spells one, and what robocop: 1 always meant.
+# No other string: Perl calls 'no' true.
+sub _is_switch {
+    my ($value) = @_;
+    return 1 if JSON::MaybeXS::is_bool($value);
+    return defined $value && !ref $value && $value =~ /\A[01]\z/ ? 1 : 0;
+}
+
+# "; write KEY: false" for a string that spells a boolean in YAML 1.1's words
+# -- no, off, n, a quoted or capitalised false -- which YAML::XS reads as the
+# string it is; only a bare true and false are booleans. The gpu: false hint's
+# twin: say what was meant where that is plain, and nothing where it is not.
+sub _boolean_hint {
+    my ($key, $value) = @_;
+    return '' if ref $value || !defined $value;
+    my $meant = $value =~ /\A(?:y|yes|true|on)\z/i  ? 'true'
+              : $value =~ /\A(?:n|no|false|off)\z/i ? 'false'
+              :                                        undef;
+    return defined $meant ? "; write $key: $meant" : '';
 }
 
 =method robocop_arch_warning
@@ -786,15 +848,21 @@ sub validate {
     }
     push @errors, "control_planes: must list at least one control plane, not an empty list"
         if ref $raw_cps eq 'ARRAY' && !@$raw_cps;
+    my $etcd_bound = "every control plane is an etcd member, and etcd advises no more "
+        . "than $MAX_CONTROL_PLANE_NODES";
     if (ref $raw_cps eq 'HASH' && defined(my $nodes = $raw_cps->{nodes})) {
         my $whole = _is_whole_number($nodes);
         push @errors, "control_planes.nodes: must be a whole number from 1 to "
             . "$MAX_CONTROL_PLANE_NODES, not " . _shown_value($nodes)
-            . ($whole && $nodes > $MAX_CONTROL_PLANE_NODES
-                ? "; every control plane is an etcd member, and etcd advises no more "
-                  . "than $MAX_CONTROL_PLANE_NODES" : '')
+            . ($whole && $nodes > $MAX_CONTROL_PLANE_NODES ? "; $etcd_bound" : '')
             unless $whole && $nodes >= 1 && $nodes <= $MAX_CONTROL_PLANE_NODES;
     }
+    # The list form holds no more than nodes: may stand for (k315): the bound
+    # is etcd's, whichever way the control planes are written. Its entries are
+    # still checked below.
+    push @errors, "control_planes: must list at most $MAX_CONTROL_PLANE_NODES control planes, not "
+        . scalar(@$raw_cps) . "; $etcd_bound"
+        if ref $raw_cps eq 'ARRAY' && @$raw_cps > $MAX_CONTROL_PLANE_NODES;
 
     # The mapping form with `nodes: N` is N copies of one entry (see
     # control_planes), so a node_ip there would be every one of them's (k254).
@@ -828,16 +896,29 @@ sub validate {
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
+        # host and server_type (k315): one name each, which the provider is
+        # handed and the OCPNode's spec carries as is. A list passed for being
+        # true, and named the machine ARRAY(0x...). One line for the shape,
+        # not a "required" beside it.
+        my %malformed;
+        for my $s ([ host => 'a host name or IP address' ],
+                   [ server_type => 'a Hetzner server type like cx32' ]) {
+            my ($key, $what) = @$s;
+            my $err = _not_a_string($cp->{$key}, $what) // next;
+            push @errors, "control_planes[$idx].$key: $err";
+            $malformed{$key} = 1;
+        }
+
         if ($prov eq 'hetzner') {
             push @errors, "control_planes[$idx]: server_type required for hetzner"
-                unless $cp->{server_type};
+                unless $cp->{server_type} || $malformed{server_type};
             push @errors, "control_planes[$idx]: location required for hetzner"
                 unless $cp->{location};
         }
 
         if ($prov eq 'ssh') {
             push @errors, "control_planes[$idx]: host required for ssh"
-                unless $cp->{host};
+                unless $cp->{host} || $malformed{host};
         }
 
         # node_ip (k254): the address this control plane registers by, in the
@@ -861,16 +942,11 @@ sub validate {
     push @errors, $self->_validate_pod_cidr($net);
     push @errors, $self->_validate_service_cidr($net);
 
-    # robocop as a list, or a robocop.enabled that is a list or mapping, read
-    # as true and turned robocop on (k305). A scalar is a switch as before.
-    my $robocop = $self->spec->{robocop};
-    push @errors, "robocop: must be true, false or a mapping (enabled, security_level, image), not "
-        . _shown_value($robocop)
-        if ref $robocop eq 'ARRAY';
-    if (ref $robocop eq 'HASH' && ref(my $en = $robocop->{enabled})) {
-        push @errors, "robocop.enabled: must be true or false, not " . _shown_value($en)
-            unless JSON::MaybeXS::is_bool($en);
-    }
+    # robocop as a list, a string, a robocop.enabled that is neither true nor
+    # false, or a key of the mapping that is none of its three: each read as
+    # true and turned robocop on (k305, k315). The lines are robocop_enabled's
+    # refusal too.
+    push @errors, _robocop_errors($self->spec->{robocop});
 
     # robocop.security_level, report-only (k129). The accessor croaks; here
     # we collect one line so `ocp apply` lists it with every other config error.
@@ -918,6 +994,14 @@ sub validate {
             push @errors, "$where: invalid provider " . _shown_value($wprov) . " (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
+
+        # host and nodes (k315), see _pool_nodes_errors. Which nodes: a pool
+        # takes hangs on its provider, so only a known one is asked.
+        if (defined(my $err = _not_a_string($w->{host}, 'a host name or IP address'))) {
+            push @errors, "$where: host $err";
+        }
+        push @errors, $self->_pool_nodes_errors($w, $where)
+            if !ref $wprov && $wprov ne '' && OCP::Provider->known_type($wprov);
 
         # labels / taints (k211): what the pool's OCPNodes carry.
         push @errors, OCP::NodeMeta->label_errors("$where: labels", $w->{labels})
@@ -971,6 +1055,56 @@ sub _pool_where {
     my ($self, $pool, $n) = @_;
     my $name = $pool->{name};
     return defined $name && !ref $name && length $name ? "worker pool '$name'" : "workers[$n]";
+}
+
+# A pool's nodes: as worker_ocpnodes (OCP::Cmd::Apply::CR) reads it (k315),
+# one line per problem. An ssh pool names its machines -- host: for one, or
+# nodes: a list of hosts, each a host name or address or a mapping with host
+# -- and every other provider counts them, nodes: N. Counted, a list
+# numified to its address and ran out of memory building OCPNodes; named, a
+# boolean died inside Perl ("Not a HASH reference"), and a count named no
+# machine at all. Only for a pool whose provider is known.
+sub _pool_nodes_errors {
+    my ($self, $pool, $where) = @_;
+    my $nodes = $pool->{nodes};
+    return () unless defined $nodes;
+
+    if ($pool->{provider} ne 'ssh') {
+        return () if _is_whole_number($nodes);
+        return "$where: nodes must be a whole number (how many machines the pool has), not "
+            . _shown_value($nodes);
+    }
+
+    return "$where: nodes must be a list of hosts for an ssh pool (each a host name or IP "
+        . "address, or a mapping with host), not " . _shown_value($nodes)
+        unless ref $nodes eq 'ARRAY';
+
+    my @errors;
+    for my $n (1 .. @$nodes) {
+        my $entry = $nodes->[$n - 1];
+        if (ref $entry eq 'HASH') {
+            my $host = $entry->{host};
+            if (defined(my $err = _not_a_string($host, 'a host name or IP address'))) {
+                push @errors, "$where: nodes[$n].host $err";
+            }
+            elsif (!length($host // '')) {
+                push @errors, "$where: nodes[$n] needs a host";
+            }
+        }
+        elsif (ref $entry || !length($entry // '')) {
+            push @errors, "$where: nodes[$n] must be a host name or IP address, or a mapping "
+                . "with host, not " . _shown_value($entry);
+        }
+    }
+    return @errors;
+}
+
+# "must be a string (WHAT), not a list" for a list, a mapping or a boolean,
+# else undef (k315): host and server_type are one name each.
+sub _not_a_string {
+    my ($value, $what) = @_;
+    return undef unless ref $value;
+    return "must be a string ($what), not " . _shown_value($value);
 }
 
 # Two control planes with one node-ip register at one address (k254), as the

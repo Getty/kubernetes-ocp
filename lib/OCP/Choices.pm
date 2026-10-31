@@ -4,6 +4,7 @@ package OCP::Choices;
 use strict;
 use warnings;
 
+use JSON::MaybeXS ();
 use Socket ();
 
 # Since k67 an OCP command that refuses input names the input and then
@@ -99,8 +100,15 @@ sub node_ip_error {
     my ($value) = @_;
 
     return undef unless defined $value;
-    return 'must be one string like 10.0.0.1 or 10.0.0.1,fd00::1, not a '
-         . (ref $value eq 'ARRAY' ? 'list' : ref $value eq 'HASH' ? 'mapping' : 'reference')
+
+    # A boolean -- node_ip: true in ocp.yaml, a JSON true in spec.nodeIP -- is
+    # named true or false, as OCP::Config's lines name a value (k315). Called
+    # "a reference", it read as Perl's word for what YAML calls a boolean.
+    return 'must be one string like 10.0.0.1 or 10.0.0.1,fd00::1, not '
+         . (JSON::MaybeXS::is_bool($value) ? ($value ? 'true' : 'false')
+           : ref $value eq 'ARRAY'         ? 'a list'
+           : ref $value eq 'HASH'          ? 'a mapping'
+           :                                 'a reference')
         if ref $value;
     return 'must not be empty; ' . $NODE_IP_FORMS if $value =~ /\A\s*\z/;
 

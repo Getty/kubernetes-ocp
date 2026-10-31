@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses a `robocop:` that is not true, false or a
+      mapping -- `robocop: no`, `off` or `"false"` is a string, and turned
+      robocop on -- and a key under it other than `enabled`,
+      `security_level` and `image` (`robocop: { enable: false }` was on
+      too); a string that spells a boolean is told the one it meant.
+      `ocp keys secure`, which reads the switch only after the keys are
+      switched, stops there with the same line instead of rolling robocop
+      out. `ocp apply` also refuses more than 7 control planes in the list
+      form, a `host` or `server_type` that is a list, a mapping or a
+      boolean, and a worker pool `nodes:` its provider cannot read: an ssh
+      pool lists its hosts, any other counts its machines (a list there
+      ran out of memory). A boolean `node_ip` is called true or false,
+      not "a reference".
     - ocp apply no longer takes a refused or failed read for absence in
       the GPU node list, the GPU and AMD checks after a worker join,
       deployment readiness waits, the registry.local CoreDNS lookup and

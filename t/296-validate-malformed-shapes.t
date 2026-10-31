@@ -47,6 +47,25 @@ use OCP::Provider;
 #   7. no line quotes a value as Perl has it -- ARRAY(0x...), HASH(0x...),
 #      "a array", a boolean as '1' or '0' -- at any key of the sweep.
 #
+# k315, what k305 left:
+#   8. robocop and robocop.enabled are true or false (or 1 and 0) and nothing
+#      else: a string -- no, off, "false" -- is one Perl calls true, and turned
+#      robocop on. A string that spells a boolean gets a hint naming it, as
+#      gpu: false does;
+#   9. a key under robocop: other than enabled, security_level and image is a
+#      line, as under network: and cilium: -- robocop: { enable: false } was a
+#      mapping without enabled, so on;
+#  10. robocop_enabled, which every reader of the switch asks (ocp apply, ocp
+#      keys secure, the health gate), refuses what validate() refuses about
+#      the switch, in its words, and reads what validate() passes the way it
+#      always did -- swept over every shape at robocop and robocop.enabled;
+#  11. a node_ip that is a boolean is called true or false, not "a reference";
+#  12. the list form of control_planes holds at most 7, as nodes: does;
+#  13. a control plane's host and server_type and a pool's host are strings;
+#      an ssh pool's nodes is a list of hosts, each a string or a mapping with
+#      host; any other pool's nodes is a count. A list counted was some 10^14
+#      OCPNodes, and a boolean among the hosts died inside Perl.
+#
 
 local @ARGV = ();
 my $ocp    = OCP->new;
@@ -235,6 +254,8 @@ my @AT = (
     [ 'control_planes[1]'         => sub { +{ control_planes => [ $_[0] ] } } ],
     [ 'control_planes[2]'         => sub { +{ control_planes => [ $cp->(), $_[0] ] } } ],
     [ 'control_planes.nodes'      => sub { +{ control_planes => $cp->(nodes => $_[0]) } } ],
+    # the eighth of a list that holds one too many (k315)
+    [ 'control_planes[8]'         => sub { +{ control_planes => [ (map { $cp->() } 1 .. 7), $_[0] ] } } ],
     (map { my $k = $_;
         [ "control_planes.$k"     => sub { +{ control_planes => $cp->($k => $_[0]) } } ],
         [ "control_planes[1].$k"  => sub { +{ control_planes => [ $cp->($k => $_[0]) ] } } ],
@@ -245,6 +266,10 @@ my @AT = (
         [ "workers[1].$k"         => sub { +{ control_planes => $cp->(), workers => [ $wp->($k => $_[0]) ] } } ],
      } qw( name provider host nodes labels taints node_ip )),
     [ 'workers[1].nodes[1]'       => sub { +{ control_planes => $cp->(), workers => [ $wp->(nodes => [ $_[0] ]) ] } } ],
+    # k315: an entry's host, and the nodes of a pool that counts its machines
+    [ 'workers[1].nodes[1].host'  => sub { +{ control_planes => $cp->(), workers => [ $wp->(nodes => [ { host => $_[0] } ]) ] } } ],
+    [ 'workers[1].nodes, hetzner' => sub { +{ control_planes => $cp->(), workers => [ {
+                                     name => 'w', provider => 'hetzner', server_type => 'cx22', nodes => $_[0] } ] } } ],
     # a host in the pod CIDR, so the pool is named in that line too (k305)
     [ 'workers[1].name, host 10.42.0.5' => sub { +{ control_planes => $cp->(),
                                      workers => [ $wp->(name => $_[0], host => '10.42.0.5') ] } } ],
@@ -272,11 +297,12 @@ my @AT = (
     [ 'robocop'                   => sub { +{ control_planes => $cp->(), robocop => $_[0] } } ],
     (map { my $k = $_;
         [ "robocop.$k"            => sub { +{ control_planes => $cp->(), robocop => { $k => $_[0] } } } ],
-     } qw( enabled security_level image )),
+     } qw( enabled security_level image enable )),    # enable: no key of robocop's (k315)
 );
 
 # Claim 7 rides along: whatever a line says, it never quotes a value the way
-# Perl holds it (k305). A boolean is no '1' or '0' either.
+# Perl holds it (k305). A boolean is no '1' or '0' either, and no "reference"
+# (claim 11, k315): no YAML value is one.
 subtest 'validate() never dies, warns or quotes Perl on a YAML-valid shape' => sub {
     for my $at (@AT) {
         my ($path, $spec_with) = @$at;
@@ -289,7 +315,7 @@ subtest 'validate() never dies, warns or quotes Perl on a YAML-valid shape' => s
             my $ok = eval { @e = $c->validate; 1 };
             ok $ok, "$path: $shown" or diag $@;
             is_deeply \@w, [], "$path: $shown -- no Perl warning" or diag explain \@w;
-            is_deeply [ grep { /\b(?:ARRAY|HASH|CODE|SCALAR|REF|GLOB)\(0x|\ba (?:array|hash)\b|json::pp/i } @e ],
+            is_deeply [ grep { /\b(?:ARRAY|HASH|CODE|SCALAR|REF|GLOB)\(0x|\ba (?:array|hash|reference)\b|json::pp/i } @e ],
                 [], "$path: $shown -- no Perl value in a line";
             is_deeply [ grep { /'[01]'/ } @e ], [], "$path: $shown -- a boolean reads true or false"
                 if JSON::MaybeXS::is_bool($value);
@@ -428,6 +454,196 @@ subtest 'the accessors that croak quote no Perl value either' => sub {
         like $@, qr/, not a list(?: at |;|\z)/, "$m: says a list";
         unlike $@, qr/ARRAY\(0x|a array/, "$m: not as Perl has it";
     }
+};
+
+# --- 8. robocop is true or false ------------------------------------------------
+
+# ocp.yaml as typed, not as YAML::XS::Dump would write it: YAML::XS reads only
+# a bare true and false as booleans, and every other spelling as a string.
+sub config_from_text {
+    my ($text) = @_;
+    my $f = path($tmpdir)->child('t' . int(rand(1_000_000)) . '.yaml');
+    $f->spew_utf8("name: k315\ncontrol_planes:\n  provider: local\n$text");
+    return OCP::Config->new(file => $f->stringify, ocp => $ocp);
+}
+
+my $ROBOCOP_IS = 'robocop: must be true, false or a mapping (enabled, security_level, image), not ';
+
+subtest 'a robocop that is a string is no switch' => sub {
+    for my $case ([ 'no', 'false' ], [ 'off', 'false' ], [ '"false"', 'false' ], [ 'FALSE', 'false' ],
+                  [ 'n', 'false' ], [ 'yes', 'true' ], [ 'on', 'true' ], [ '"true"', 'true' ], [ 'True', 'true' ]) {
+        my ($typed, $meant) = @$case;
+        (my $word = $typed) =~ tr/"//d;
+        is_deeply [ config_from_text("robocop: $typed\n")->validate ],
+            [ "$ROBOCOP_IS'$word'; write robocop: $meant" ], "robocop: $typed -- the $meant it spells";
+    }
+    for my $typed ('foo', '7', '2', "''") {
+        (my $word = $typed) =~ tr/'//d;
+        is_deeply [ config_from_text("robocop: $typed\n")->validate ], [ "$ROBOCOP_IS'$word'" ],
+            "robocop: $typed -- no hint where none would be true";
+    }
+    for my $typed ('true', 'false', '1', '0', '~') {
+        is_deeply [ config_from_text("robocop: $typed\n")->validate ], [], "robocop: $typed passes";
+    }
+};
+
+subtest 'a robocop.enabled that is a string is no switch' => sub {
+    for my $case ([ 'no', 'false' ], [ 'off', 'false' ], [ '"false"', 'false' ], [ 'yes', 'true' ]) {
+        my ($typed, $meant) = @$case;
+        (my $word = $typed) =~ tr/"//d;
+        is_deeply [ config_from_text("robocop:\n  enabled: $typed\n")->validate ],
+            [ "robocop.enabled: must be true or false, not '$word'; write enabled: $meant" ],
+            "enabled: $typed -- the $meant it spells";
+    }
+    is_deeply [ config_from_text("robocop:\n  enabled: foo\n")->validate ],
+        [ "robocop.enabled: must be true or false, not 'foo'" ], 'enabled: foo -- no hint';
+    for my $typed ('true', 'false', '1', '0') {
+        is_deeply [ config_from_text("robocop:\n  enabled: $typed\n")->validate ], [], "enabled: $typed passes";
+    }
+};
+
+# --- 9. robocop's keys ----------------------------------------------------------
+
+subtest 'a key under robocop: that is none of its three' => sub {
+    is_deeply [ config_from_text("robocop:\n  enable: false\n")->validate ],
+        [ 'robocop.enable: unknown key (must be enabled, security_level, or image)' ],
+        'enable: false -- a typo of enabled, and a mapping without enabled is on';
+    is_deeply [ errors_for({ control_planes => $local,
+                             robocop => { enabled => JSON::PP::true, level => 'inject', Image => 'x' } }) ],
+        [ 'robocop.Image: unknown key (must be enabled, security_level, or image)',
+          'robocop.level: unknown key (must be enabled, security_level, or image)' ],
+        'one line each, sorted';
+    is_deeply [ errors_for({ control_planes => $local, robocop => {
+                    enabled => JSON::PP::true, security_level => 'inject', image => 'raudssus/ocp:1.2.3' } }) ],
+        [], 'enabled, security_level and image pass';
+};
+
+# --- 10. robocop_enabled agrees with validate() ----------------------------------
+#
+# Every reader of the switch asks robocop_enabled -- ocp apply (after
+# validate()), ocp keys secure (without it), the health gate. What validate()
+# refuses, robocop_enabled refuses in the same words, so no reader turns a
+# robocop: no on; what validate() passes, it reads as it always has.
+
+subtest 'robocop_enabled reads the switch the way validate() does' => sub {
+    my @extra = ([ "'no'" => 'no' ], [ "'off'" => 'off' ], [ "'false'" => 'false' ], [ '1' => 1 ], [ '0' => 0 ]);
+    for my $at (grep { $_->[0] =~ /\Arobocop(?:\.enabled|\.enable)?\z/ } @AT) {
+        my ($path, $spec_with) = @$at;
+        for my $shape (@SHAPES, @extra) {
+            my ($shown, $value) = @$shape;
+            my $c = config_for($spec_with->($value));
+            my @lines = $c->validate;
+            my $on = eval { $c->robocop_enabled };
+            if (@lines) {
+                ok !defined $on, "$path: $shown -- refused by validate(), not read as on or off";
+                like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$path: $shown -- in validate()'s words";
+                next;
+            }
+            my $want = ref $value eq 'HASH'  ? 1           # robocop: {} -- a mapping opts in
+                     : defined $value        ? ($value ? 1 : 0)
+                     : $path eq 'robocop'    ? 0           # absent, and the control plane is local
+                     :                         1;          # enabled: null -- a mapping without it
+            is $on, $want, "$path: $shown -- passes, and reads $want";
+        }
+    }
+
+    my $c = config_for({ control_planes => { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' } });
+    is $c->robocop_enabled, 1, 'absent: on with a hetzner provider, as before';
+};
+
+# --- 11. a boolean node_ip --------------------------------------------------------
+
+subtest 'a node_ip that is a boolean is true or false, not a reference' => sub {
+    my $is = 'must be one string like 10.0.0.1 or 10.0.0.1,fd00::1, not ';
+    for my $b (JSON::PP::true, JSON::PP::false) {
+        my $shown = $b ? 'true' : 'false';
+        is_deeply [ errors_for({ control_planes => { %$local, node_ip => $b } }) ],
+            [ "control_planes[1].node_ip: $is$shown" ], "control_planes.node_ip: $shown";
+        is OCP::Choices::node_ip_error($b), "$is$shown",
+            "node_ip_error: $shown -- the words ocp node add and spec.nodeIP are refused in";
+    }
+    is OCP::Choices::node_ip_error(JSON::MaybeXS->new->decode('[true]')->[0]), "${is}true",
+        'a JSON true, as an OCPNode spec.nodeIP comes';
+    is OCP::Choices::node_ip_error([ '10.0.0.1' ]), "${is}a list", 'a list: as before';
+    is OCP::Choices::node_ip_error({ a => 1 }), "${is}a mapping", 'a mapping: as before';
+};
+
+# --- 12. the list form's bound -----------------------------------------------------
+
+subtest 'the list form of control_planes holds at most 7' => sub {
+    my $list = sub { [ map { +{ provider => 'ssh', host => "cp$_.k315.test" } } 1 .. $_[0] ] };
+    my $over = 'control_planes: must list at most 7 control planes, not %d; '
+        . 'every control plane is an etcd member, and etcd advises no more than 7';
+
+    is_deeply [ errors_for({ control_planes => $list->(7) }) ], [], '7 pass';
+    is_deeply [ errors_for({ control_planes => $list->($_) }) ], [ sprintf $over, $_ ], "$_: the bound, and why"
+        for 8, 12;
+    is_deeply [ errors_for({ control_planes => [ @{ $list->(7) }, 'foo' ] }) ],
+        [ sprintf($over, 8), "control_planes[8]: must be a mapping (one control plane), not 'foo'" ],
+        'its entries are still checked';
+};
+
+# --- 13. host, server_type and a pool's nodes ---------------------------------------
+
+sub pool_errors { errors_for({ control_planes => $local, workers => [ @_ ] }) }
+
+subtest 'a host or server_type that is no string' => sub {
+    for my $case ([ [ 'a' ], 'a list' ], [ { a => 1 }, 'a mapping' ],
+                  [ JSON::PP::true, 'true' ], [ JSON::PP::false, 'false' ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => { provider => 'ssh', host => $v } }) ],
+            [ "control_planes[1].host: must be a string (a host name or IP address), not $shown" ],
+            "control plane host: $shown -- one line, no \"host required\" beside it";
+        is_deeply [ errors_for({ control_planes => { provider => 'hetzner', location => 'fsn1', server_type => $v } }) ],
+            [ "control_planes[1].server_type: must be a string (a Hetzner server type like cx32), not $shown" ],
+            "control plane server_type: $shown";
+        is_deeply [ pool_errors({ name => 'w', provider => 'ssh', host => $v }) ],
+            [ "worker pool 'w': host must be a string (a host name or IP address), not $shown" ],
+            "pool host: $shown";
+    }
+    is_deeply [ errors_for({ control_planes => [ { provider => 'ssh', host => 'cp.k315.test' },
+                                                 { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' } ],
+                             workers => [ { name => 'w', provider => 'ssh', host => '10.9.0.1' } ] }) ],
+        [], 'strings pass';
+    is_deeply [ errors_for({ control_planes => { provider => 'ssh', host => '' } }) ],
+        [ 'control_planes[1]: host required for ssh' ], "host: '' -- the line it always had";
+};
+
+subtest "a pool's nodes, as its provider reads them" => sub {
+    my $ssh   = sub { +{ name => 'w', provider => 'ssh', @_ } };
+    my $hz    = sub { +{ name => 'w', provider => 'hetzner', server_type => 'cx22', @_ } };
+    my $hosts = 'nodes must be a list of hosts for an ssh pool (each a host name or IP address, '
+        . 'or a mapping with host), not ';
+    my $entry = 'must be a host name or IP address, or a mapping with host, not ';
+
+    is_deeply [ pool_errors($ssh->(nodes => 2, host => '10.9.0.1')) ], [ "worker pool 'w': $hosts'2'" ],
+        'ssh, a count: an ssh pool names its machines';
+    is_deeply [ pool_errors($ssh->(nodes => { host => 'w1.k315.test' })) ], [ "worker pool 'w': ${hosts}a mapping" ],
+        'ssh, one mapping not in a list';
+    is_deeply [ pool_errors($ssh->(nodes => [ 'w1.k315.test', [ 'w2' ], JSON::PP::true, undef, '',
+                                              { host => 'w3.k315.test' }, { name => 'x' },
+                                              { host => [ 'a' ] }, { host => '' } ])) ],
+        [ "worker pool 'w': nodes[2] ${entry}a list",
+          "worker pool 'w': nodes[3] ${entry}true",
+          "worker pool 'w': nodes[4] ${entry}null",
+          "worker pool 'w': nodes[5] $entry''",
+          "worker pool 'w': nodes[7] needs a host",
+          "worker pool 'w': nodes[8].host must be a string (a host name or IP address), not a list",
+          "worker pool 'w': nodes[9] needs a host" ],
+        'ssh, each entry: a host, or a mapping with one';
+    is_deeply [ pool_errors($ssh->(nodes => [ 'w1.k315.test', { host => '10.9.0.2' } ])) ], [], 'ssh: hosts pass';
+
+    for my $case ([ [ 'a' ], 'a list' ], [ { n => 2 }, 'a mapping' ], [ JSON::PP::true, 'true' ],
+                  [ 'two', "'two'" ], [ '2.5', "'2.5'" ], [ -1, "'-1'" ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ pool_errors($hz->(nodes => $v)) ],
+            [ "worker pool 'w': nodes must be a whole number (how many machines the pool has), not $shown" ],
+            "hetzner, nodes: $shown";
+    }
+    is_deeply [ pool_errors($hz->(nodes => $_)) ], [], "hetzner, nodes: $_ passes" for 0, 3;
+    is_deeply [ pool_errors({ name => 'w', provider => 'aws', nodes => [ 'a' ] }) ],
+        [ "worker pool 'w': invalid provider 'aws' (must be " . OCP::Choices::or_list(OCP::Provider->types) . ')' ],
+        'an unknown provider: its line, and no guess at which nodes it would read';
 };
 
 done_testing;
