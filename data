@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-10-31T14:38:24Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:33:28Z
+id: 367
+priority: low
+status: review
+tags:
+- apply
+- output
+title: Count the CR layer's failure [WARN]s in the apply banner (WITH WARNINGS), after
+  k356/k330
+updated: 2026-10-31T14:38:24Z
+---
+
+Left over from k356 (apply worker, 2026-10-31). Some CR-layer [WARN]s report a failure on STDERR but never land in `$self->{_apply_warnings}`:
+- the four that k356 moved: an OCPNode status left unwritten in ensure_cp_ocpnode / migrate_legacy_nodes, and a robocop pod that couldn't be listed or deleted in retire_unannotated_robocop_pods;
+- k330's two read-failure lines.
+
+The closing banner therefore says "CONTROL PLANE DEPLOYED" with no "WITH WARNINGS" while STDERR names a failure. The [WARN] for a worker that isn't Ready yet (CR.pm ~678–704) does count.
+
+Main's call (2026-10-31): count them. "WITH WARNINGS" changes the banner only; the exit code stays 0 (Health.pm ~317). A banner that contradicts STDERR is the inconsistency, not a design choice. Stop and ask instead if counting them would change an exit code or a JSON field a machine reads.
+
+Done = each of those [WARN]s pushes a short tag onto {_apply_warnings}, as the not-Ready worker does. Test: one per site, the banner reads WITH WARNINGS and the exit code is unchanged. Red first, then a mutation check.
+
+Lane: ocp-apply-worker.
+
+2026-10-31 14:38 apply worker 2026-10-31: done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-apply367/k367.patch (on queued16, applies clean). CR.pm: each of the six failure [WARN]s pushes a tag onto {_apply_warnings} (if ref $self, as the k234 worker push): ensure_cp_ocpnode 'OCPNode/<n> address' (k330) and 'OCPNode/<n> status' (k356), migrate_legacy_nodes 'OCPNode/<n> status', retire_unannotated_robocop_pods 'robocop pods' / 'robocop pod <n>', _say_robocop_image_change 'robocop image' (k330; takes $self now, private, one caller). Exit code unchanged: Health::finish exits on unhealthy core or _failed_components only; {_apply_warnings} feeds banner_text alone, no JSON field. New t/367: each site with a real OCP::Cmd::Apply, then _finish_apply over clean health: WITH WARNINGS + exit 0; controls SUCCESSFULLY + exit 0. Red 6/7 subtests (only the banner assertions). Green 28 files / 503 tests PASS (CR/apply/banner/deploy-robocop/keys-secure neighbours). Mutants 7/7 killed (one push removed per site; one push redirected to _failed_components, killed by the exit-code assertion); Rex loaded first, %INC asserted. Out of scope, for main: two more STDERR [WARN]s stay uncounted -- wait_robocop_ready 'robocop not seen ready: <why>' (k330's third) and Deploy.pm worker_step 'robocop not ready after 60s -- falling back to CLI reconcile' (k318); the CLI fallback then drives the workers, so whether they warrant WITH WARNINGS is a call.
+
+2026-10-31 14:38 Ready for review: k367.patch in scratchpad/w-apply367, stacked under k361.patch. Subject: Read WITH WARNINGS in the apply banner when a CR-layer [WARN] named a failure (k367)
