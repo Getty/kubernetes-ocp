@@ -48,6 +48,9 @@ Revision history for OCP
       DaemonSet reads "not deployed"; a failed read says "unknown" and puts
       the API error on STDERR. Clusters without AMD nodes print the section
       unchanged; `--json` does not carry the AMD lines yet.
+    - `ocp status` now prints a kubeconfig that cannot be decrypted, or a
+      cluster API that cannot be reached, on STDERR with its diagnosis. The
+      report stays on STDOUT and the exit code stays 1.
     - Dependencies move to the releases of 2026-10-21, all from CPAN, so the
       image vendors nothing: cpanfile raises the floors to IO::K8s 1.111,
       Kubernetes::REST 1.110, Net::Async::Kubernetes 0.011, File::SOPS 0.005

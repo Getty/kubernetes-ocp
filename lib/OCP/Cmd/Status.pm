@@ -88,9 +88,11 @@ sub execute {
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
     my $kc_content = $secrets->read_kubeconfig;
 
+    # What went wrong and why goes to STDERR (k257); the report on STDOUT ends
+    # where it got to, the API case on the kubeconfig hint a good run ends on.
     unless ($kc_content) {
-        print "ERROR: Cannot decrypt kubeconfig.yaml\n";
-        print "Make sure .ocp/age.key exists.\n";
+        print STDERR "ERROR: Cannot decrypt kubeconfig.yaml\n";
+        print STDERR "Make sure .ocp/age.key exists.\n";
         return 1;
     }
 
@@ -99,8 +101,9 @@ sub execute {
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        print "WARNING: Cannot connect to cluster API\n";
-        print "Error: $error\n";
+        chomp $error;
+        print STDERR "WARNING: Cannot connect to cluster API\n";
+        print STDERR "Error: $error\n";
         print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
@@ -494,6 +497,9 @@ If C<ocp.yaml> is missing the command dies with a hint to run C<ocp init>.
 If the cluster has never been deployed the spec section is printed and the
 status section says so.  The kubeconfig is read through L<OCP::Secrets>, so
 the C<.ocp/age.key> must be present for the live-status section to render.
+When the kubeconfig cannot be decrypted or the API cannot be reached, the
+report on STDOUT stops there, the error and its diagnosis go to STDERR, and
+the exit code is 1.
 
 The command never modifies cluster state.  Drift entries that carry a
 C<remedy> are listed together with the count that C<ocp apply> would resolve.
