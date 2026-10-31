@@ -1,6 +1,17 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` with nothing recorded no longer lists a hetzner control
+      plane from `ocp.yaml` as "Deleting <cluster>-cp-1..." and then
+      deletes nothing: it says that server is found by its `ocp-cluster`
+      label or not at all, and, when no Hetzner token could search for it
+      or the search failed, says on STDERR that it may still run, with the
+      `hcloud` selector to look for it by hand. The report of servers
+      mislabelled before k98 now runs when no node is found as well. A
+      control plane with `host: 0` is no machine named `0`, a hetzner
+      control plane's `host` no longer holds a teardown up, and a worker
+      pool with `provider: false` is skipped as "provider required", the
+      words `ocp apply` refuses it with.
     - `ocp apply` redeploys an AMD GPU DaemonSet (device plugin, labeller,
       DRA driver, metrics exporter) whose image was changed in the cluster
       to another tag than its pin. `ocp status` already counted that as

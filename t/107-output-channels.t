@@ -103,19 +103,28 @@ sub destroy_cmd {
 # ============================================================ ocp destroy
 
 subtest 'destroy: a clean run keeps STDERR empty' => sub {
-    # No nodes, no Hetzner token: the early "No nodes to destroy." return.
-    # A successful command must say nothing on STDERR.
+    # No nodes: the early "No nodes to destroy." return. A successful
+    # command must say nothing on STDERR. The ocp.yaml names no control
+    # plane, which apply reads as one hetzner control plane; the label search
+    # answers that no server carries the label -- progress, on STDOUT. This
+    # run had no Hetzner token until k345: then nothing searched for that
+    # control plane, which destroy says on STDERR since (t/345) -- a run that
+    # cannot tell whether a server still bills is not a clean one.
     my $config = project('empty');
     my $cmd    = destroy_cmd($config);
+    my $fake   = FakeHetzner->new(by_cluster => {});
 
     my $r = capture {
         no warnings 'redefine';
-        local *OCP::Secrets::hetzner_token = sub { undef };
+        local *OCP::Secrets::hetzner_token = sub { 'tok' };
+        local *OCP::Provider::for_spec     = sub { $fake };
         $cmd->execute([], []);
     };
 
     is $r->{ex}, '', 'ran without dying';
     like $r->{out}, qr/No nodes to destroy/, 'progress went to STDOUT';
+    like $r->{out}, qr/no server carries it, nothing to delete/,
+        'the control plane the label search found nothing for: STDOUT too';
     is   $r->{err}, '', 'nothing on STDERR for a clean run';
 };
 

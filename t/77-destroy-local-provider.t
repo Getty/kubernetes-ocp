@@ -273,7 +273,9 @@ subtest 'k146: a hetzner node with no host gets no existing-host uninstall' => s
     # The relaxation is only for providers that resolve their own host. A
     # hetzner CP reconstructed from spec with no host (public_ip '-') and no
     # token has nothing to delete here: it must never fall into the
-    # existing-host branch and be handed an SSH/local uninstall.
+    # existing-host branch and be handed an SSH/local uninstall. Since k345
+    # the fallback does not list it at all -- its server is found by label
+    # or not at all, and the run says so (t/345).
     my $config = project(cp_provider => 'hetzner', cp_no_host => 1);
 
     my $r = run_destroy($config);
@@ -322,8 +324,8 @@ subtest 'regression: the gate is known_type(), not an eq on the literal' => sub 
     # the `eq 'ssh'` form here, the next provider type OCP adds (the only
     # list in OCP::Provider->types) will be silently dropped again. Which
     # pool names its machine by host: is another question, and ssh is the
-    # answer apply gives (worker_ocpnodes); _pool_reads_host says so once
-    # (k341), behind this gate.
+    # answer apply gives (worker_ocpnodes); OCP::Config::_pool_takes_host
+    # says so for validate() and destroy alike (k331, k345), behind this gate.
     my $src = path('lib/OCP/Cmd/Destroy.pm')->slurp;
 
     unlike $src, qr/\$w->\{provider\}\s+eq\s+(['"])ssh\1/,

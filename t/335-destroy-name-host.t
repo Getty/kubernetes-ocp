@@ -38,10 +38,11 @@ use OCP::Config;
 #     (beside a list destroy reads the list and not host, as apply does; a
 #     hetzner or local pool's host apply does not read at all, and since
 #     k341 destroy does not either);
-#   * a control plane's host where the fallback reads it: an entry whose
-#     provider destroy knows. Checked whether or not the fallback runs on
-#     this teardown -- that is known only after the secrets, the cluster
-#     API and the Hetzner search, and the refusal comes before all three;
+#   * a control plane's host where the fallback reads it: an ssh or local
+#     entry (a hetzner one it names by its label since k345, and reads no
+#     host of). Checked whether or not the fallback runs on this teardown --
+#     that is known only after the secrets, the cluster API and the Hetzner
+#     search, and the refusal comes before all three;
 #   * not a pool's or a control plane's server_type, location or image,
 #     which destroy does not read at all.
 #
@@ -366,11 +367,18 @@ subtest 'a control plane with host: [a] -- no machine named ARRAY(0x...)' => sub
 };
 
 subtest 'in the list form, by its place; in nodes: N, once' => sub {
+    # Until k345 control_planes[3]'s host: true was refused as well. The
+    # fallback listed a hetzner control plane by its host then, and deleted
+    # nothing; it names it by its label now and reads no host of it, so that
+    # host no longer holds a teardown up ('a control-plane host the fallback
+    # does not read', below).
     my $list = project(<<'YAML', status => "nodes: []\n");
 control_planes:
   - provider: local
   - provider: ssh
     host: { cp2.lan: 1 }
+  - provider: local
+    host: true
   - provider: hetzner
     server_type: cx32
     location: fsn1
@@ -495,22 +503,35 @@ YAML
 };
 
 subtest 'a control-plane host the fallback does not read' => sub {
-    # An entry with a provider destroy does not know, or with none: the
-    # fallback skips it unread (k116).
+    # An entry with a provider destroy does not know: the fallback skips it
+    # unread (k116). A hetzner one, or one with no provider, which apply
+    # reads as hetzner: the fallback names it by its ocp-cluster label and
+    # lists no machine for it (k345).
     my $config = project(<<'YAML');
 control_planes:
   - provider: hetzner
     server_type: cx32
     location: fsn1
+    host: [ h.lan ]
   - provider: vsphere
     host: [ v.lan ]
   - host: [ n.lan ]
 YAML
     validate_says($config,
+        "control_planes[1].host: must be a string (a host name or IP address), not a list",
         "control_planes[2].host: must be a string (a host name or IP address), not a list",
         "control_planes[3].host: must be a string (a host name or IP address), not a list",
     );
     torn_down(run_destroy($config), $config);
+
+    # And where the fallback runs: nothing listed, nothing refused.
+    my $only = project("control_planes:\n  provider: hetzner\n  server_type: cx32\n"
+                     . "  location: fsn1\n  host: [ h.lan ]\n", status => "nodes: []\n");
+    my $r = run_destroy($only);
+    is $r->{ex}, '', 'with nothing recorded: ran without dying' or diag $r->{ex};
+    unlike $r->{out}.$r->{err}, qr/(?:ARRAY|HASH)\(0x|^Deleting /m,
+        'no machine listed, none named after a reference';
+    is_deeply deleted($r), [], 'nothing deleted';
 };
 
 subtest 'server_type, location and image, which destroy does not read' => sub {
