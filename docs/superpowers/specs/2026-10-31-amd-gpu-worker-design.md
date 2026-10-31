@@ -21,8 +21,8 @@ maintainer is the design author's call. Those choices are marked *(call)*.
   It picks a default for the cluster, and a single node can override it.
 - **Node labels for selection.** These are AMD's labeller labels plus a gfx-target label that
   OCP sets itself, because nothing upstream publishes one.
-- **Pinning and drift.** Every image is pinned in `OCP::Versions`. Report-only drift probes
-  cover the objects OCP writes. `ocp status` shows the AMD GPUs a node can hand out
+- **Pinning and drift.** Every image is pinned in `OCP::Versions`. Drift probes cover the
+  objects OCP writes, and `ocp apply` redeploys a DaemonSet whose image is off its pin (k350). `ocp status` shows the AMD GPUs a node can hand out
   (`status.allocatable`, with capacity beside it).
 - **Mixed clusters work.** The test cluster is an NVIDIA control plane (otho, RTX 3090) with an
   AMD worker (synapse).
@@ -283,8 +283,14 @@ gpu:
 
 ### 5. Drift — `OCP::Drift` (ocp-state-worker)
 
-- Report-only, self-healing probes (`remedy => undef`). They read the image off the four
-  DaemonSets that OCP has the lib write (kube-system, names as in §3). The names live in one
+- Self-healing probes with no remedy task (`remedy => undef`). They read the image off the four
+  DaemonSets that OCP has the lib write (kube-system, names as in §3). The AMD GPU step of
+  `ocp apply` closes what they find:
+  - a pin bump, through its options hash;
+  - an image changed in the cluster, by reading the DaemonSet as the probe does
+    (`OCP::Drift->version_against_pin`, k350).
+
+  Args and other fields are not compared, by either side. The names live in one
   table. Device plugin and labeller are confirmed by the k101 live run; DRA and metrics
   follow the upstream Helm defaults that k102/k103 adopt and are confirmed once those land.
 - All are `optional`. Absence is not drift, because the stack only exists where AMD hardware
