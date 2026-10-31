@@ -15,8 +15,10 @@ Revision history for OCP
       with anything but a 404 (an RBAC denial, an apiserver 5xx) as "not
       deployed". The GPU Operator and the AMD GPU DaemonSets were reported
       as no drift, Cilium, cert-manager, NFD and the Gateway API CRDs as
-      missing. Now it is an error entry, "drift unknown", with the cause on
-      STDERR.
+      missing. The GPU Operator CRD, registry.local DNS and pod CIDR checks
+      behave the same, and the host probes no longer take a failed OCPNode
+      list for a cluster without workers. Now it is an error entry, "drift
+      unknown", with the cause on STDERR.
     - Hetzner server, location and server type lookups now read every page, so
       `ocp destroy`'s orphan sweep, the create idempotency check, `ocp hetzner
       list` and the `ocp init` pickers no longer miss entries past the first

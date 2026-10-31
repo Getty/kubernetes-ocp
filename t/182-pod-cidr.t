@@ -327,6 +327,15 @@ package FakeApi {
         return $obj;
     }
     sub list { +{ items => [] } }
+    # The raw GET of the GPU Operator CRDs, which this cluster has none of:
+    # a 404 response, as the apiserver answers (k268).
+    sub _request { FakeResponse->new }
+}
+
+package FakeResponse {
+    sub new     { bless {}, shift }
+    sub status  { 404 }
+    sub content { '{"kind":"Status","code":404}' }
 }
 
 sub pool_drift {

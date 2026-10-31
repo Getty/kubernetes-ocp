@@ -36,6 +36,17 @@ package FakeApi {
         die $self->{list_die}{$kind} if $self->{list_die}{$kind};
         return $self->{lists}{$kind} // { items => [] };
     }
+
+    # The raw GET the GPU Operator CRDs are read with. These fixtures have
+    # none, and a cluster without them answers 404 -- the only failure
+    # OCP::Drift reads as absent (k268).
+    sub _request { FakeResponse->new(404, '{"kind":"Status","code":404}') }
+}
+
+package FakeResponse {
+    sub new     { my ($class, $status, $content) = @_; bless { status => $status, content => $content }, $class }
+    sub status  { $_[0]{status} }
+    sub content { $_[0]{content} }
 }
 
 sub deployment {

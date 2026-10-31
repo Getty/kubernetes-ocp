@@ -310,13 +310,36 @@ sub gpu_crd_drift {
     require JSON::PP;
     my $api = $self->api;
     # The same raw GET as OCP::Cmd::Apply::K8s::crd_get: a CRD has no
-    # IO::K8s class OCP reads.
+    # IO::K8s class OCP reads. Unlike crd_get, which answers every failure
+    # with undef, only a 404 is a cluster without the CRD here (k268); any
+    # other failure is an error entry, drift unknown. _request hands an HTTP
+    # error status back as the response rather than dying, so the status and
+    # body are the cause; a body that does not decode is one too.
+    my @unknown;
     my $get = sub {
-        my $r = eval { $api->_request('GET', $_[0]) };
-        return undef unless $r && $r->status < 400;
-        return eval { JSON::PP::decode_json($r->content) };
+        my ($path) = @_;
+        my $r = eval { $api->_request('GET', $path) };
+        my $err = $@;
+        if ($r && $r->status < 400) {
+            my $crd = eval { JSON::PP::decode_json($r->content) };
+            return $crd if $crd;
+            $err = "undecodable response body: $@";
+        }
+        elsif ($r) {
+            $err = $r->status . ' ' . ($r->content // '');
+        }
+        (my $name = $path) =~ s{.*/}{};
+        push @unknown, $self->_unknown_drift($err,
+            in        => 'gpu_crd_drift',
+            op        => 'get',
+            object    => "CustomResourceDefinition $name",
+            component => 'gpu_operator_crd',
+            label     => "CRD $name",
+        );
+        return;
     };
-    return map {
+    my @differ = __PACKAGE__->gpu_crds_differing($get);
+    return @unknown, map {
         +{
             kind         => 'version',
             component    => 'gpu_operator_crd',
@@ -325,7 +348,7 @@ sub gpu_crd_drift {
             remedy       => undef,
             self_healing => 1,
         }
-    } __PACKAGE__->gpu_crds_differing($get);
+    } @differ;
 }
 
 sub detect {
@@ -454,30 +477,27 @@ sub component_drift {
         };
         my $err = $@;
 
-        # Only a 404 says the object is not there. Every other failed read --
-        # an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
-        # the component, and used to read as absent all the same: no drift at
-        # all for an optional probe, a 'missing' entry for the others, one
-        # whose remedy installs from nothing (k256, the class of k119). It is
-        # an 'error' entry instead, carped to stderr: drift unknown, not clean.
-        if (!$object && $err && $err !~ /\b404\b/) {
+        unless ($object) {
+            # Only a 404 says the object is not there. Every other failed read
+            # -- an RBAC denial, an apiserver 5xx, a TLS error -- says nothing
+            # about the component, and used to read as absent all the same: no
+            # drift at all for an optional probe, a 'missing' entry for the
+            # others, one whose remedy installs from nothing (k256, the class
+            # of k119). It is an 'error' entry instead: drift unknown, not clean.
             my $where = join '/', grep { defined } $probe->{namespace}, $probe->{name};
-            my $reason = "$err";
-            chomp $reason;
-            carp "OCP::Drift::component_drift: get $probe->{kind} $where failed: $reason";
-            push @drift, {
-                kind      => 'error',
+            my $unknown = $self->_unknown_drift($err,
+                in        => 'component_drift',
+                op        => 'get',
+                object    => "$probe->{kind} $where",
                 component => $probe->{component},
                 label     => $probe->{label},
                 expected  => $expected,
-                actual    => undef,
-                message   => "$probe->{label}: could not read $probe->{kind} $where, drift unknown: $reason",
-                remedy    => undef,
-            };
-            next;
-        }
+            );
+            if ($unknown) {
+                push @drift, $unknown;
+                next;
+            }
 
-        unless ($object) {
             # Not every component belongs on every cluster. Reporting the GPU
             # operator as missing on a machine with no NVIDIA card would put a
             # permanent finding on `ocp status` that nothing should ever act on.
@@ -668,7 +688,24 @@ sub registry_dns_drift {
     for my $name (@COREDNS_CONFIGMAPS) {
         my $cm = eval {
             $self->api->get('ConfigMap', name => $name, namespace => 'kube-system');
-        } or next;
+        };
+        my $err = $@;
+        unless ($cm) {
+            # Only a 404 says this name is not the distribution's (k268). Any
+            # other failed read ends the probe as drift unknown: the writer
+            # takes the first of these names that exists, so the one that
+            # could not be read may well be the one that answers.
+            my $unknown = $self->_unknown_drift($err,
+                in        => 'registry_dns_drift',
+                op        => 'get',
+                object    => "ConfigMap kube-system/$name",
+                component => 'registry_dns',
+                label     => "$REGISTRY_HOSTNAME DNS",
+                expected  => $expected,
+            );
+            return $unknown if $unknown;
+            next;
+        }
         $corefile = _dig($cm, qw(data Corefile));
         last if defined $corefile;
     }
@@ -717,7 +754,22 @@ sub pod_cidr_drift {
 
     my $cm = eval {
         $self->api->get('ConfigMap', name => 'cilium-config', namespace => 'kube-system');
-    } or return;
+    };
+    my $err = $@;
+    unless ($cm) {
+        # A 404 is a cluster without Cilium's ConfigMap: nothing to compare.
+        # Any other failed read is drift unknown, not that (k268).
+        my $unknown = $self->_unknown_drift($err,
+            in        => 'pod_cidr_drift',
+            op        => 'get',
+            object    => 'ConfigMap kube-system/cilium-config',
+            component => 'pod_cidr',
+            label     => 'Pod CIDR',
+            expected  => $self->config->pod_cidr,
+        );
+        return $unknown if $unknown;
+        return;
+    }
     my $live = _dig($cm, qw(data cluster-pool-ipv4-cidr));
     return unless defined $live && $live =~ /\S/;
 
@@ -770,10 +822,15 @@ sub rex_probe_drift {
     my ($self) = @_;
 
     my $prober = $self->rex_prober or return;
-    my @drift;
+
+    # The workers are listed once for every probe. A list that failed is one
+    # error entry, carped once (k268): the control planes are probed all the
+    # same, and the workers' host-side drift is unknown -- not "no workers".
+    my ($workers, $unknown) = $self->_worker_hosts('rex_probe_drift');
+    my @drift = $unknown ? ($unknown) : ();
 
     for my $probe (@REX_PROBES) {
-        for my $host ($self->_probe_hosts($probe->{host_selector})) {
+        for my $host ($self->_probe_hosts($probe->{host_selector}, $workers)) {
             my $result = eval { $prober->($host, $probe->{detection_task}, {}) };
             if (my $err = $@) {
                 chomp $err;
@@ -812,11 +869,12 @@ sub rex_probe_drift {
 # an address of its own (status.publicIP, else spec.host); a Hetzner server or a
 # node robocop alone can reach is not probed (k234: a worker with the bare
 # containerd template went unseen, with the same effect as on a CP). The workers
-# need the API; without it only the control planes are named. A selector this
-# module does not know is a programmer error -- a probe table that named one out
-# of sync -- not a quiet empty list that silently probes nothing.
+# are the caller's, from _worker_hosts: listed once however many probes select
+# them. A selector this module does not know is a programmer error -- a probe
+# table that named one out of sync -- not a quiet empty list that silently
+# probes nothing.
 sub _probe_hosts {
-    my ($self, $selector) = @_;
+    my ($self, $selector, $workers) = @_;
     $selector //= 'control_planes';
 
     croak "OCP::Drift: unknown host_selector '$selector'"
@@ -832,25 +890,57 @@ sub _probe_hosts {
         $add->($cp->{public_ip} // $cp->{host});
     }
 
-    if ($selector eq 'machines' && $self->api) {
-        my $items = eval { $self->api->list('OCPNode', namespace => 'ocp-system')->items } || [];
-        for my $item (@$items) {
-            my $h = eval { $self->api->k8s->object_to_struct($item) } or next;
-            next unless ($h->{spec}{role} // '') eq 'worker';
-            next unless ($h->{spec}{providerRef} // '') =~ /^(?:ssh|local)-/;
-            $add->($h->{status}{publicIP} // $h->{spec}{host});
-        }
+    if ($selector eq 'machines') {
+        $add->($_) for @{ $workers // [] };
     }
     return @hosts;
 }
 
+# The worker machines the 'machines' selector adds, as (\@hosts, $unknown):
+# every worker OCPNode whose provider is ssh or local, by status.publicIP, else
+# spec.host. Listed only with an API and a probe that selects them. A 404 (no
+# OCPNode CRD) names none. Any other failed list names none either, and
+# $unknown is its error entry, carped once under $in, the public sub asking
+# (k268): it used to read as an empty list, a cluster with no workers to probe.
+sub _worker_hosts {
+    my ($self, $in) = @_;
+    return [] unless $self->api
+        && grep { ($_->{host_selector} // 'control_planes') eq 'machines' } @REX_PROBES;
+
+    my $list = eval { $self->api->list('OCPNode', namespace => 'ocp-system') };
+    my $err = $@;
+    unless ($list) {
+        return [], $self->_unknown_drift($err,
+            in        => $in,
+            op        => 'list',
+            object    => 'OCPNode in ocp-system',
+            component => 'worker_host_probes',
+            label     => 'Worker host probes',
+        );
+    }
+
+    # An IO::K8s::List or a plain hash, read alike, as distribution_drift does.
+    my $items = _dig($list, 'items');
+    my @hosts;
+    for my $item (ref $items eq 'ARRAY' ? @$items : ()) {
+        my $h = eval { $self->api->k8s->object_to_struct($item) } or next;
+        next unless ($h->{spec}{role} // '') eq 'worker';
+        next unless ($h->{spec}{providerRef} // '') =~ /^(?:ssh|local)-/;
+        push @hosts, $h->{status}{publicIP} // $h->{spec}{host};
+    }
+    return \@hosts;
+}
+
 # Every machine any host-side probe would look at, once each. Public so the
-# command can name them when it had to skip the probes (k234).
+# command can name them when it had to skip the probes (k234). A failed
+# OCPNode list leaves the workers out; _worker_hosts has carped why, so the
+# list this names is short for a stated reason, not silently.
 sub probe_targets {
     my ($self) = @_;
+    my ($workers) = $self->_worker_hosts('probe_targets');
     my (@hosts, %seen);
     for my $probe (@REX_PROBES) {
-        for my $h ($self->_probe_hosts($probe->{host_selector})) {
+        for my $h ($self->_probe_hosts($probe->{host_selector}, $workers)) {
             push @hosts, $h unless $seen{$h}++;
         }
     }
@@ -860,6 +950,39 @@ sub probe_targets {
 #
 # Helpers
 #
+
+# The entry for a read that failed, or nothing when it did not fail or failed
+# with a 404 -- the one answer that says the object is not there. Any other
+# failure -- an RBAC denial, an apiserver 5xx, a TLS or transport error --
+# says nothing about the object, and every probe used to read it as absent all
+# the same (k256 for the component probes, k268 for the rest; the class of
+# k119). It is an 'error' entry instead: drift unknown, no remedy, and the
+# cause carped to stderr once, here. Every probe goes through this, so all of
+# them draw the line at the same place.
+#
+#   in      the probe's sub, for the diagnosis "OCP::Drift::<in>: ..."
+#   op      'get' or 'list', the call that failed
+#   object  what it asked for: "<Kind> <namespace>/<name>", "<Kind> in <ns>"
+#   component / label / expected   the entry's
+sub _unknown_drift {
+    my ($self, $err, %e) = @_;
+    return unless $err;
+    return if "$err" =~ /\b404\b/;
+
+    my $reason = "$err";
+    chomp $reason;
+    carp "OCP::Drift::$e{in}: $e{op} $e{object} failed: $reason";
+    my $could = $e{op} eq 'get' ? 'read' : $e{op};
+    return {
+        kind      => 'error',
+        component => $e{component},
+        label     => $e{label},
+        expected  => $e{expected},
+        actual    => undef,
+        message   => "$e{label}: could not $could $e{object}, drift unknown: $reason",
+        remedy    => undef,
+    };
+}
 
 # A control plane's address as a dotted quad, or undef when it does not
 # resolve to one.
@@ -1128,6 +1251,11 @@ ConfigMap themselves and reset it on an upgrade or a restart, taking the record
 with them; C<ocp apply> writes it back, so the entry reports the window in
 between rather than a permanent fault, and carries no remedy of its own.
 
+A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
+name is read. Any other failed read ends the probe with one
+C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+L</component_drift>.
+
 =head2 pod_cidr_drift
 
 Compares the pool in Cilium's C<cilium-config> ConfigMap
@@ -1135,6 +1263,10 @@ Compares the pool in Cilium's C<cilium-config> ConfigMap
 C<10.42.0.0/16>). A difference is a C<spec> entry with no remedy and a
 C<manual_step>: the pod network of a running cluster is never moved
 automatically, and C<upgrade_cilium> keeps the live pool.
+
+No C<cilium-config> (a 404) is nothing to compare. Any other failed read is
+one C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+L</component_drift>.
 
 =head2 rex_probe_drift
 
@@ -1150,6 +1282,12 @@ host unreachable, no key, timeout -- is carped to stderr and skipped, never an
 exception and never drift, so a single unreachable machine cannot block
 C<detect> or make C<ocp status> a no-go. The first probe is the obsolete
 pre-k23 containerd config template on the control planes (k45/k71).
+
+The workers a C<machines> probe adds come from one list of the OCPNodes in
+C<ocp-system>. A 404 there (no OCPNode CRD) is no workers. Any other failed
+list is one C<kind =E<gt> 'error'> entry, component C<worker_host_probes>, its
+cause carped to stderr (k268): the control planes are still probed, and the
+workers' drift is unknown rather than reported clean.
 
 =head2 resolve_address
 
