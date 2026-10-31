@@ -32,8 +32,15 @@ Revision history for OCP
       mapping with `host`, or a list on a pool that counts its machines --
       with the same line, before it asks for a PIN or touches the cluster
       or a server. It died inside Perl ("Not a HASH reference") or listed
-      the names as machines to destroy. Nothing else `ocp apply` refuses
-      stops a teardown.
+      the names as machines to destroy.
+    - `ocp destroy` also stops, with `ocp apply`'s line and before it asks
+      for a PIN or touches anything, on a `control_planes` or `workers` it
+      cannot read: a control-plane list entry that is no mapping
+      (`control_planes: [police1]` deleted the servers and removed
+      `.ocp/status.yaml`, then died inside Perl with exit 1 and no report of
+      mislabelled servers), a `control_planes` that is neither a mapping nor
+      a list, a `workers` that is no list, a worker pool that is no mapping.
+      Nothing else `ocp apply` refuses stops a teardown.
     - `ocp apply` refuses a `robocop:` that is not true, false or a
       mapping -- `robocop: no`, `off` or `"false"` is a string, and turned
       robocop on -- and a key under it other than `enabled`,

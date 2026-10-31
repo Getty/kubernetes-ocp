@@ -424,18 +424,67 @@ sub _spec_worker_entries {
 # edits a line that has nothing to do with them. So the gate asks exactly
 # where the read happens: a pool that is a mapping, with a provider destroy
 # knows, and nodes: a list.
+#
+# And the shape the pools are read out of (k326): workers: a list, each pool
+# a mapping. Anything else died inside Perl in _spec_worker_entries, and
+# a string there may be a host someone means, which destroy -- not knowing
+# its provider, and never guessing one (k116) -- could only skip.
 sub _spec_worker_errors {
     my ($self, $config) = @_;
     my $workers = $config->workers;
-    return () unless ref $workers eq 'ARRAY';
+    return 'workers: must be a list of worker pools, not '
+         . OCP::Config::_shown_value($workers)
+        unless ref $workers eq 'ARRAY';
 
     my (@errors, $n);
     for my $w (@$workers) {
         $n++;
-        next unless ref $w eq 'HASH' && ref $w->{nodes} eq 'ARRAY';
+        unless (ref $w eq 'HASH') {
+            push @errors, "workers[$n]: must be a mapping (a worker pool), not "
+                . OCP::Config::_shown_value($w);
+            next;
+        }
+        next unless ref $w->{nodes} eq 'ARRAY';
         next if ref $w->{provider}
              || !OCP::Provider->known_type($w->{provider} // q());
         push @errors, $config->_pool_nodes_errors($w, $config->_pool_where($w, $n));
+    }
+    return @errors;
+}
+
+# What validate() says about the shape of control_planes, in its words
+# (k326). Destroy reads every entry's provider for the k98 report -- on each
+# run with a Hetzner token, AFTER the deletes and the status cleanup -- and
+# the whole entry when the control-plane fallback is the only source left.
+# An entry that is no mapping died in the report: the servers were gone and
+# status.yaml removed, and the run ended on a Perl error, exit 1, no report.
+#
+# Refused, not read around. An entry that is no mapping names no provider,
+# and destroy never guesses one (k116), so it can be named but not read as a
+# machine. Named after the teardown is too late for the case it matters in:
+# when that line is the only record of a control plane, the run ends "No
+# nodes to destroy." and offers to remove the kubeconfig while that machine
+# may still run; and skipped in the report, the line of a hetzner control
+# plane no longer asks for the hetzner-default search that names billing
+# servers. Nor is it a newer validate() standing between a cluster and its
+# teardown: validate() has refused this shape since k296 (and died on it
+# before), and `ocp apply` validates first (k255). Only the shape -- not a
+# provider, a host, a server_type, a count or the bound of seven, which
+# destroy reads around or not at all.
+sub _spec_control_plane_errors {
+    my ($self, $config) = @_;
+    my $cps = $config->spec->{control_planes};
+    return () if !defined $cps || ref $cps eq 'HASH';
+    return 'control_planes: must be a mapping (one control plane, or nodes: N of them) '
+         . 'or a list of mappings, not ' . OCP::Config::_shown_value($cps)
+        unless ref $cps eq 'ARRAY';
+
+    my (@errors, $n);
+    for my $cp (@$cps) {
+        $n++;
+        push @errors, "control_planes[$n]: must be a mapping (one control plane), not "
+            . OCP::Config::_shown_value($cp)
+            unless ref $cp eq 'HASH';
     }
     return @errors;
 }
@@ -479,14 +528,16 @@ sub execute {
     my $config = OCP::Config->new(file => $file);
 
     # First, before a PIN is asked or the cluster or a server is reached
-    # (k323), as `ocp apply` refuses an invalid ocp.yaml (k255).
-    if (my @errors = $self->_spec_worker_errors($config)) {
+    # (k323, k326), as `ocp apply` refuses an invalid ocp.yaml (k255). In
+    # validate()'s order: the control planes, then the pools.
+    if (my @errors = ($self->_spec_control_plane_errors($config),
+                      $self->_spec_worker_errors($config))) {
         my $s = @errors == 1 ? '' : 's';
         die "$file has " . scalar(@errors) . " error$s:\n"
           . join('', map { "  - $_\n" } @errors)
-          . "Nothing was deleted: ocp destroy reads the machines of a worker pool off its "
-          . "nodes: list, and checks that list before it touches the cluster or a server. "
-          . "Fix the line$s above and run it again.\n";
+          . "Nothing was deleted: ocp destroy reads the machines and providers of the "
+          . "control planes and worker pools in ocp.yaml, and checks their shape before "
+          . "it touches the cluster or a server. Fix the line$s above and run it again.\n";
     }
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
@@ -961,8 +1012,15 @@ destroy reads machines off (C<k323>).  A list L<OCP::Config/validate>
 refuses -- an entry that is no host name, address or mapping with C<host>,
 or a list at all on a pool that counts its machines -- stops the teardown
 with C<validate()>'s lines, all at once, on STDERR and exit 1, and nothing
-is deleted.  Only those lists: an F<ocp.yaml> that C<validate()> refuses for a
-key destroy does not read -- C<gpu>, C<robocop>, a pool's count -- is still
+is deleted.  So is the shape those lists and the control planes are read out
+of (C<k326>): a C<control_planes> that is neither a mapping nor a list, a
+C<control_planes> list entry that is no mapping, a C<workers> that is no list,
+a worker pool that is no mapping.  Such an entry names no provider, and
+destroy never guesses one, so it could only be skipped -- and a string there
+may be the host of a control plane that nothing else records.  Only those
+shapes: an F<ocp.yaml> that C<validate()> refuses for a key destroy reads
+around or does not read -- C<gpu>, C<robocop>, a pool's count, an unknown
+provider, a missing C<server_type>, more than seven control planes -- is still
 torn down, so a newer C<validate()> never stands between a cluster and its
 teardown.
 
@@ -1031,7 +1089,9 @@ spec and you want the reconcile path to start from a known-good hash set.
     $cmd->execute($args, $chain)
 
 Dies with the lines of L<OCP::Config/validate> on a worker pool C<nodes:>
-list it cannot read, before it touches anything (C<k323>).  Then lists the
+list it cannot read (C<k323>), or on a C<control_planes> or C<workers> in a
+shape it cannot read, an entry that is no mapping among them (C<k326>),
+before it touches anything.  Then lists the
 candidate nodes, asks for confirmation on a terminal (unless
 C<--force>, the only way without a terminal; without one it returns 1 having
 touched nothing), deletes each via its provider and, on a clean run, removes

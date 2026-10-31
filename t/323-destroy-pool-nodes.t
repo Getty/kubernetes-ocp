@@ -145,8 +145,9 @@ sub refused {
     is $r->{ex},
         "$file has $n error" . ($n == 1 ? '' : 's') . ":\n"
           . join('', map { "  - $_\n" } @lines)
-          . "Nothing was deleted: ocp destroy reads the machines of a worker pool off its "
-          . "nodes: list, and checks that list before it touches the cluster or a server. "
+          . "Nothing was deleted: ocp destroy reads the machines and providers of the "
+          . "control planes and worker pools in ocp.yaml, and checks their shape before "
+          . "it touches the cluster or a server. "
           . "Fix the line" . ($n == 1 ? '' : 's') . " above and run it again.\n",
         'refused with validate()\'s line' . ($n == 1 ? '' : 's');
     is_deeply $r->{events}, [],
