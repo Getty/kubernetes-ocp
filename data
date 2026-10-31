@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-10-31T04:41:48Z
+created: 2026-10-31T00:33:57Z
+id: 255
+priority: medium
+started: 2026-10-31T01:32:20Z
+status: done
+tags:
+- config
+- validation
+title: OCP::Config::validate() has no caller in lib/ or bin/
+updated: 2026-10-31T04:41:48Z
+---
+
+Found during k250 (2026-10-31, ocp-state-worker): validate() is only called by tests, although comments claim that `ocp apply` lists its errors. At runtime only the croaking accessors guard the config (gpu_driver, gpu_amd_*), and only when someone reads them. Also, gpu.driver has no validate() check of its own.
+
+Clarify: should `ocp apply` (and `ocp status`?) call validate() before the first host intervention and report all errors at once (STDERR, exit != 0), or do the comments go? Decide that, then wire it up, plus gpu.driver in validate(). Lanes: state (Config) + apply (call site).
+
+Decision (main agent, my call): yes — ocp apply (and --dry-run) calls OCP::Config::validate() before anything touches a host or the cluster, prints every error at once on STDERR and exits 1; gpu.driver gets its own validate() check. ocp status does not gate on it (read side; it must still report a cluster whose ocp.yaml has a mistake). The comments that claim apply lists the errors then become true.
+
+2026-10-31 04:29 Done (ocp-worker). New lib/OCP/Cmd/Apply/Validate.pm, refuse_invalid_config($config): dies with every validate() error when there are any; OCP::Cmd::Apply::execute calls it right after OCP::Config->new, before banner, secrets, sops repair, PIN, host or cluster, so apply and --dry-run (same execute) refuse alike. Apply.pm 694 -> 697 lines (t/52 budget 700), execute body 188 (< 200). run_cli prints it on STDERR and exits 1, STDOUT empty: 'Error: ocp.yaml has N errors:' / one '  - <validate line>' per error / 'Nothing was done: ocp apply checks ocp.yaml before it touches a host or the cluster. Fix the lines above and run it again.' (singular for 1; file name is the -c path as given). OCP::Config: @GPU_DRIVERS, _validate_gpu_driver -> "gpu.driver: invalid value 'oprator' (must be host or operator)"; gpu_driver accessor checks against @GPU_DRIVERS, croak text unchanged. ocp status untouched (no gate). Per coordinator: .claude/skills/ocp-usage/SKILL.md network-checks bullet 'No command calls validate today' rewritten to what is true now; nothing else in it. Test t/255-apply-validates-config.t (6 subtests, via bin/ocp in a temp dir: exit 1, empty STDOUT, every error line on STDERR, no file written; one-error singular; valid ocp.yaml passes; status not gated) red before. Mutants 6/6 killed (call removed, after banner, skipped on --dry-run, first error only, warn instead of die, no gpu.driver check). Docker run of 40 apply/validate/config files (798 tests): no fixture broke on validate(); t/254-node-ip-apply.t and t/237 failed once in that run and passed alone right after, unchanged on my side -- most likely a concurrent edit under the live mount (K8s.pm/Kubernetes.pm), rechecked at the end. Also found: (1) Bootstrap.pm:399-401 falls back to cx32/fsn1 for a hetzner CP without server_type/location; validate() requires both, so that fallback is now dead for apply, and it disagrees with HETZNER_DEFAULTS (cpx21) anyway -- a hand-written ocp.yaml without them is now refused rather than built as cx32. (2) ocp apply --dry-run on a fresh dev-mode project writes .ocp/age.key before it stops. (3) validate() itself dies (internal error) on some shapes: a control_planes list entry that is no mapping, workers: not a list; and gpu: not a mapping crashes gpu_config readers.
+
+2026-10-31 04:38 Recheck: final Docker make test over 54 files incl. t/255, t/254-node-ip-apply.t and t/237: 1292 tests, PASS. The earlier one-off red in t/254-node-ip-apply/t/237 matches other agents editing lib/OCP/Cmd/Apply/CR.pm, lib/OCP/Cmd/Node/Add.pm and t/254-node-ip-apply.t in the shared tree during that run.
+
+Committed as a245302
