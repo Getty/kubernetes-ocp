@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - An `ocp.yaml` that is empty or no mapping stops every command with
+      one line naming the file instead of an internal error. `ocp apply`
+      also refuses a `kubernetes.dist` other than `rke2` or `k3s` (`dist:
+      rke3` installed RKE2 and went out to robocop as such), an `ssh:`
+      that is no mapping or a key path that is no string, a control
+      plane's `public_ip` or `private_ip` that is a list or mapping, and a
+      `system.timezone` or `system.locale` that is a list or mapping.
     - `ocp destroy` with nothing recorded no longer lists a hetzner control
       plane from `ocp.yaml` as "Deleting <cluster>-cp-1..." and then
       deletes nothing: it says that server is found by its `ocp-cluster`

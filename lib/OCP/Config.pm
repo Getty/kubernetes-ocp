@@ -41,18 +41,49 @@ has project_dir => (
 
 # Spec data (from ocp.yaml)
 has spec => (
-    is      => 'lazy',
-    builder => '_load_spec',
+    is        => 'lazy',
+    builder   => '_load_spec',
+    predicate => '_has_spec',
+);
+
+# ocp.yaml as YAML::XS reads it, whatever its shape (k340); spec is this once
+# it is a mapping. Without a file, the spec a fresh project starts from.
+has _file_spec => (
+    is       => 'lazy',
+    init_arg => undef,
 );
 
 #
 # Loaders
 #
 
-sub _load_spec {
+sub _build__file_spec {
     my ($self) = @_;
     return $self->_default_spec unless -f $self->file;
     return $self->ocp->load_file($self->file);
+}
+
+# An ocp.yaml that is empty or no mapping stops here, in validate()'s line
+# (k340): read on, every accessor died inside Perl ("Not a HASH reference"),
+# and every command -- destroy and apply alike -- ended on "This is an
+# internal error". A die with a newline, not croak: this is the user's file
+# refusing, and OCP::run_cli reads a located error as an internal one (as
+# OCP::Rex's failed task does).
+sub _load_spec {
+    my ($self) = @_;
+    my $err = $self->_spec_error;
+    die "$err\n" if defined $err;
+    return $self->_file_spec;
+}
+
+# What is wrong with ocp.yaml as a whole, one line naming the file, or undef.
+sub _spec_error {
+    my ($self) = @_;
+    my $spec = $self->_has_spec ? $self->spec : $self->_file_spec;
+    return undef if ref $spec eq 'HASH';
+    my $what = 'a mapping (name, control_planes and the other settings)';
+    return defined $spec ? $self->file . ": must be $what, not " . _shown_value($spec)
+                         : $self->file . " is empty: it must be $what";
 }
 
 sub _default_spec {
@@ -110,9 +141,39 @@ sub admin_ssh_key_name { 'ocp-' . shift->name . '-admin' }
 # worker path derive the identical string instead of drifting apart.
 sub robo_ssh_key_name { 'ocp-' . shift->name . '-robo' }
 
+# kubernetes: (k340). A kubernetes: that is no mapping is refused here in
+# validate()'s words, as gpu_config refuses a gpu: of the wrong shape: read
+# on, distribution and version died inside Perl on a string.
+our @KUBERNETES_KEYS = qw( dist version );
+
+# The distributions OCP installs: OCP::Rex picks the k3s tasks for k3s and the
+# RKE2 ones for anything else, so dist: rke3 installed RKE2 -- and went out to
+# robocop as OCP_DISTRIBUTION=rke3, which it refuses.
+our @DISTRIBUTIONS = qw( rke2 k3s );
+
 sub kubernetes {
     my ($self) = @_;
-    return $self->spec->{kubernetes} // {};
+    my $k8s = $self->spec->{kubernetes};
+    my $err = _kubernetes_shape_error($k8s);
+    croak $err if defined $err;
+    return $k8s // {};
+}
+
+# What is wrong with the value of kubernetes:, or undef. kubernetes: k3s is
+# the likely slip, and the line says what was meant.
+sub _kubernetes_shape_error {
+    my ($k8s) = @_;
+    return undef if !defined $k8s || ref $k8s eq 'HASH';
+    return 'kubernetes: must be a mapping (' . join(', ', @KUBERNETES_KEYS) . '), not ' . _shown_value($k8s)
+        . (_is_choice($k8s, @DISTRIBUTIONS) ? "; write kubernetes: { dist: $k8s }" : '');
+}
+
+# kubernetes.dist's line, or undef: absent is rke2.
+sub _dist_error {
+    my ($dist) = @_;
+    return undef if !defined $dist || _is_choice($dist, @DISTRIBUTIONS);
+    return 'kubernetes.dist: invalid value ' . _shown_value($dist)
+        . ' (must be ' . OCP::Choices::or_list(@DISTRIBUTIONS) . ')';
 }
 
 # The most control planes `nodes: N` stands for (k305). Every RKE2/K3s
@@ -154,7 +215,36 @@ sub control_planes {
 
 sub workers { shift->spec->{workers} // [] }
 
-sub ssh_config { shift->spec->{ssh} // {} }
+# ssh: (k340), the bootstrap key's two paths. An ssh: that is no mapping, or a
+# path that is no string, is refused here in validate()'s words: read on, a
+# string died inside Perl where ocp destroy (and apply in dev mode) fetched
+# the key, and a list was the path ARRAY(0x...).
+our @SSH_KEYS = (
+    [ private_key => 'a path like .ocp/id_ed25519' ],
+    [ public_key  => 'a path like .ocp/id_ed25519.pub' ],
+);
+
+sub ssh_config {
+    my ($self) = @_;
+    my @errors = _ssh_errors($self->spec->{ssh});
+    croak join '; ', @errors if @errors;
+    return $self->spec->{ssh} // {};
+}
+
+# What is wrong with ssh:, one line each, or nothing: validate() lists the
+# lines and ssh_config refuses on them, so the two cannot disagree.
+sub _ssh_errors {
+    my ($ssh) = @_;
+    return () unless defined $ssh;
+    return 'ssh: must be a mapping (' . join(', ', map { $_->[0] } @SSH_KEYS) . '), not ' . _shown_value($ssh)
+        unless ref $ssh eq 'HASH';
+    return map {
+        my ($key, $what) = @$_;
+        my $err = _not_a_string($ssh->{$key}, $what);
+        defined $err ? "ssh.$key: $err" : ();
+    } @SSH_KEYS;
+}
+
 sub single_node {
     my $self = shift;
     my $cps = $self->control_planes;
@@ -162,9 +252,16 @@ sub single_node {
     return (scalar(@$cps) <= 1 && scalar(@$workers) == 0);
 }
 
+# Refused in validate()'s words (k340): every reader asks this -- ocp apply,
+# ocp keys secure, ocp node add, ocp update, the robocop Deployment's
+# OCP_DISTRIBUTION -- and none of them may read the one ocp.yaml another way
+# than validate() does.
 sub distribution {
     my ($self) = @_;
-    return $self->kubernetes->{dist} // 'rke2';
+    my $dist = $self->kubernetes->{dist};
+    my $err = _dist_error($dist);
+    croak $err if defined $err;
+    return $dist // 'rke2';
 }
 
 sub version {
@@ -186,7 +283,7 @@ sub supervisor_port { shift->distribution eq 'k3s' ? 6443 : 9345 }
 # and its later ones via the IP (k185).
 sub join_host {
     my ($self, $advertised) = @_;
-    my $ip = ($self->control_planes->[0] // {})->{public_ip};
+    my $ip = $self->_first_cp_string(($self->control_planes->[0] // {}), 'public_ip');
     return defined $ip && length $ip ? $ip : $advertised;
 }
 
@@ -565,6 +662,13 @@ sub system_config {
     return $self->spec->{system} // {};
 }
 
+# timezone and locale are one name each (k340): a list passed, and reached
+# the Rexfile and the provider CR, whose CRD types both as strings.
+our @SYSTEM_STRINGS = (
+    [ timezone => 'a time zone like Europe/Berlin' ],
+    [ locale   => 'a locale like en_US.UTF-8' ],
+);
+
 # What is wrong with system:, one line each, or nothing: validate() lists the
 # lines and system_config refuses on them, so the two cannot disagree.
 sub _system_errors {
@@ -572,7 +676,14 @@ sub _system_errors {
     return () unless defined $system;
     return 'system: must be a mapping (' . join(', ', @SYSTEM_KEYS) . '), not ' . _shown_value($system)
         unless ref $system eq 'HASH';
-    return _unknown_keys('system', $system, @SYSTEM_KEYS);
+    return (
+        (map {
+            my ($key, $what) = @$_;
+            my $err = _not_a_string($system->{$key}, $what);
+            defined $err ? "system.$key: $err" : ();
+        } @SYSTEM_STRINGS),
+        _unknown_keys('system', $system, @SYSTEM_KEYS),
+    );
 }
 
 sub timezone      { shift->system_config->{timezone} // 'UTC' }
@@ -745,11 +856,11 @@ sub _gpu_amd_choice {
 }
 
 # Whether $value is one of @choices. A reference never is: a list, a mapping,
-# or a YAML boolean, which is a JSON::PP::Boolean. Until OCP.pm fixed the eq
-# overload Cpanel::JSON::XS gives that class (k314), `'secret' eq $true` was
-# true for any string Perl calls true, and this guard alone kept `true` from
-# being every choice (k305). It stays, so the answer does not hang on that
-# overload.
+# or a YAML boolean, which is a JSON::PP::Boolean. Until OCP::BooleanEq
+# corrected the eq overload Cpanel::JSON::XS gives that class (k316),
+# `'secret' eq $true` was true for any string Perl calls true, and this guard
+# alone kept `true` from being every choice (k305, k314). It stays, so the
+# answer does not hang on that overload.
 sub _is_choice {
     my ($value, @choices) = @_;
     return 0 if ref $value;
@@ -826,7 +937,7 @@ sub cluster_status {
     }
 
     my $cp = $self->control_planes->[0] // {};
-    my $ip = $cp->{public_ip} // $cp->{host};
+    my $ip = $self->_first_cp_string($cp, 'public_ip') // $self->_first_cp_string($cp, 'host');
 
     # A local control plane resolves its own address rather than the operator
     # pinning it. The machine ocp runs on IS the control plane, so its provider
@@ -910,9 +1021,34 @@ our @ONE_NAME_KEYS = (
     [ image       => 'an image name like debian-13' ],
 );
 
+# A control plane's own addresses (k340), one each as host is: public_ip is
+# the address workers join at (join_host) and the cluster is reached at
+# (cluster_status); private_ip is held against the cluster networks.
+our @CP_ADDRESS_KEYS = (
+    [ public_ip  => 'an IP address' ],
+    [ private_ip => 'an IP address' ],
+);
+
+# The first control plane's $key -- its address, as join_host and
+# cluster_status read it -- refused in validate()'s words when it is no
+# string (k340): read on, a list was the address workers joined at,
+# ARRAY(0x...).
+sub _first_cp_string {
+    my ($self, $cp, $key) = @_;
+    my ($what) = map { $_->[1] } grep { $_->[0] eq $key } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS;
+    my $err = _not_a_string($cp->{$key}, $what);
+    croak "control_planes[1].$key: $err" if defined $err;
+    return $cp->{$key};
+}
+
 sub validate {
     my ($self) = @_;
     my @errors;
+
+    # An ocp.yaml that is empty or no mapping holds no key to check (k340):
+    # its line is the only one, the one every other reader stops with.
+    my $spec_err = $self->_spec_error;
+    return ($spec_err) if defined $spec_err;
 
     # A name that is a list or mapping passed (k305), and every key name the
     # cluster derives from it said ARRAY(0x...).
@@ -923,6 +1059,13 @@ sub validate {
     else {
         push @errors, "name is required" unless $self->name && $self->name =~ /\S/;
     }
+
+    # kubernetes: and its dist (k340), the lines kubernetes and distribution
+    # refuse on. dist: rke3 passed, installed RKE2 and told robocop rke3.
+    my $k8s = $self->spec->{kubernetes};
+    my $k8s_err = _kubernetes_shape_error($k8s);
+    push @errors, $k8s_err if defined $k8s_err;
+    push @errors, _dist_error($k8s->{dist}) // () if ref $k8s eq 'HASH';
 
     my $cps = $self->control_planes;
 
@@ -991,8 +1134,9 @@ sub validate {
         # which the provider is handed and the OCPNode's spec carries as is. A
         # list passed for being true, and named the machine ARRAY(0x...). One
         # line for the shape, not a "required" beside it.
+        # public_ip and private_ip (k340) the same way.
         my %malformed;
-        for my $s (@ONE_NAME_KEYS) {
+        for my $s (@ONE_NAME_KEYS, @CP_ADDRESS_KEYS) {
             my ($key, $what) = @$s;
             my $err = _not_a_string($cp->{$key}, $what) // next;
             push @errors, "control_planes[$idx].$key: $err";
@@ -1035,6 +1179,9 @@ sub validate {
 
     # system: (k331), the lines system_config refuses on.
     push @errors, _system_errors($self->spec->{system});
+
+    # ssh: (k340), the lines ssh_config refuses on.
+    push @errors, _ssh_errors($self->spec->{ssh});
 
     # The switches (k320): true or false, as robocop: is; each line is its
     # accessor's refusal too (_switch). Read through mappings only: a gpu: or

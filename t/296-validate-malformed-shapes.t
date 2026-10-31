@@ -110,6 +110,26 @@ use OCP::Provider;
 #      nothing said so. One line whatever the host's shape, and such a host is
 #      held against no network, as it is no machine's address.
 #
+# k340, what k315 and k331 left:
+#  23. a control plane's public_ip and private_ip are strings, as its host is:
+#      a list there was the address workers joined at, ARRAY(0x...);
+#  24. join_host and cluster_status, which the readers of the control plane's
+#      address ask, refuse a public_ip (or the host cluster_status falls back
+#      to) that is no string, in validate()'s words;
+#  25. ssh: is a mapping, its private_key and public_key strings; a string
+#      there died inside Perl when ocp destroy fetched the key. The key path
+#      accessors refuse what validate() says about ssh:, in its words;
+#  26. system.timezone and system.locale are strings: a list reached the
+#      Rexfile and the provider CR, whose CRD types both as strings. The
+#      system accessors refuse it as validate() does (claim 21);
+#  27. kubernetes: is a mapping, and kubernetes.dist rke2 or k3s: rke3 passed,
+#      installed RKE2 and went out to robocop as OCP_DISTRIBUTION.
+#      distribution, which every reader of it asks, refuses what validate()
+#      says, in its words;
+#  28. an ocp.yaml that is empty or no mapping is one line naming the file --
+#      validate()'s only one, and what every other reader stops with, as a
+#      message to the user rather than "This is an internal error".
+#
 
 local @ARGV = ();
 my $ocp    = OCP->new;
@@ -358,6 +378,15 @@ my @AT = (
     (map { my $k = $_;
         [ "system.$k"             => sub { +{ control_planes => $cp->(), system => { $k => $_[0] } } } ],
      } qw( timezone locale time_zone )),    # time_zone: no key of system's (k331)
+    # k340
+    [ 'kubernetes'                => sub { +{ control_planes => $cp->(), kubernetes => $_[0] } } ],
+    (map { my $k = $_;
+        [ "kubernetes.$k"         => sub { +{ control_planes => $cp->(), kubernetes => { $k => $_[0] } } } ],
+     } qw( dist version )),
+    [ 'ssh'                       => sub { +{ control_planes => $cp->(), ssh => $_[0] } } ],
+    (map { my $k = $_;
+        [ "ssh.$k"                => sub { +{ control_planes => $cp->(), ssh => { $k => $_[0] } } } ],
+     } qw( private_key public_key )),
 );
 
 # Claim 7 rides along: whatever a line says, it never quotes a value the way
@@ -580,10 +609,11 @@ subtest 'a key under robocop: that is none of its three' => sub {
 
 # --- 10. robocop_enabled agrees with validate() ----------------------------------
 #
-# Every reader of the switch asks robocop_enabled -- ocp apply (after
-# validate()), ocp keys secure (without it), the health gate. What validate()
-# refuses, robocop_enabled refuses in the same words, so no reader turns a
-# robocop: no on; what validate() passes, it reads as it always has.
+# Every reader of the switch asks robocop_enabled -- ocp apply and ocp keys
+# secure, each after all of validate() (keys secure since k321), and the
+# health gate. What validate() refuses, robocop_enabled refuses in the same
+# words, so no reader turns a robocop: no on; what validate() passes, it reads
+# as it always has.
 
 subtest 'robocop_enabled reads the switch the way validate() does' => sub {
     my @extra = ([ "'no'" => 'no' ], [ "'off'" => 'off' ], [ "'false'" => 'false' ], [ '1' => 1 ], [ '0' => 0 ]);
@@ -1104,5 +1134,258 @@ subtest 'a pool that is not ssh takes no host' => sub {
             "$pool->{provider}: ... and no OCPNode carries the host";
     }
 };
+
+# --- 23. a control plane's public_ip and private_ip -----------------------------------------------
+
+my @NO_STRING = ([ [ '10.9.0.1' ], 'a list' ], [ { a => 1 }, 'a mapping' ],
+                 [ JSON::PP::true, 'true' ], [ JSON::PP::false, 'false' ]);
+
+subtest "a control plane's public_ip or private_ip that is no string" => sub {
+    my $ssh = { provider => 'ssh', host => 'cp.k340.test' };
+    for my $case (@NO_STRING) {
+        my ($v, $shown) = @$case;
+        for my $key (qw( public_ip private_ip )) {
+            my $line = "$key: must be a string (an IP address), not $shown";
+            is_deeply [ errors_for({ control_planes => { %$ssh, $key => $v } }) ],
+                [ "control_planes[1].$line" ], "$key: $shown";
+            is_deeply [ errors_for({ control_planes => [ $local, { %$ssh, $key => $v } ] }) ],
+                [ "control_planes[2].$line" ], "$key: $shown -- the list form, by its place";
+            is_deeply [ errors_for({ control_planes => { %$ssh, $key => $v, nodes => 3 } }) ],
+                [ "control_planes[1].$line" ], "$key: $shown -- with nodes: 3, once";
+        }
+    }
+    is_deeply [ errors_for({ control_planes => { %$ssh, public_ip => '10.9.0.1', private_ip => '10.9.0.2' } }) ],
+        [], 'strings pass';
+    is_deeply [ errors_for({ control_planes => { %$ssh, public_ip => undef } }) ], [], 'null: as absent';
+};
+
+# --- 24. join_host and cluster_status agree with validate() ---------------------------------------
+#
+# The control plane's address is read through these two: join_host for the
+# URL workers join at, cluster_status for every command that reaches the
+# cluster (ocp node add, ocp update, the drift remedies). What validate() says
+# about the key they read, they refuse in its words; what it passes, they
+# read as before.
+
+subtest "join_host and cluster_status read the control plane's address the way validate() does" => sub {
+    for my $key (qw( public_ip host )) {
+        for my $shape (@SHAPES) {
+            my ($shown, $value) = @$shape;
+            my $cp = { provider => 'ssh', host => 'cp.k340.test', $key => $value };
+            my $c  = config_for({ control_planes => $cp });
+            my ($line) = grep { /\Acontrol_planes\[1\]\.\Q$key\E: / } $c->validate;
+
+            # cluster_status reads public_ip, else host; join_host public_ip alone.
+            for my $m ('cluster_status', ($key eq 'public_ip' ? 'join_host' : ())) {
+                my $got = eval { $m eq 'join_host' ? $c->join_host('adv.k340.test') : $c->cluster_status };
+                if (defined $line) {
+                    ok !defined $got, "$m, $key: $shown -- refused, as validate() refuses it";
+                    like $@, qr/\A\Q$line\E at /, "$m, $key: $shown -- in validate()'s words";
+                    next;
+                }
+                is $@, '', "$m, $key: $shown -- reads on";
+                my $ip = $key eq 'public_ip' ? $value : undef;
+                my $want = $m eq 'join_host'
+                    ? (defined $ip && length $ip ? $ip : 'adv.k340.test')
+                    : do { my $a = $ip // $cp->{host}; defined $a && length $a ? { name => 'cp-1', public_ip => $a } : {} };
+                is_deeply $got, $want, "$m, $key: $shown -- as before";
+            }
+        }
+    }
+};
+
+# --- 25. ssh: --------------------------------------------------------------------------------------
+
+my %SSH_WHAT = (private_key => 'a path like .ocp/id_ed25519', public_key => 'a path like .ocp/id_ed25519.pub');
+
+subtest 'an ssh: that is no mapping, or a key path that is no string' => sub {
+    my $is = 'ssh: must be a mapping (private_key, public_key), not ';
+    for my $case ([ 'foo', "'foo'" ], [ [ 'a' ], 'a list' ], [ JSON::PP::true, 'true' ],
+                  [ JSON::PP::false, 'false' ], [ 7, "'7'" ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, ssh => $v }) ], [ "$is$shown" ], "ssh: $shown";
+    }
+    for my $key (sort keys %SSH_WHAT) {
+        for my $case (@NO_STRING) {
+            my ($v, $shown) = @$case;
+            is_deeply [ errors_for({ control_planes => $local, ssh => { $key => $v } }) ],
+                [ "ssh.$key: must be a string ($SSH_WHAT{$key}), not $shown" ], "ssh.$key: $shown";
+        }
+    }
+    is_deeply [ errors_for({ control_planes => $local, ssh => { private_key => [ 'a' ], public_key => {} } }) ],
+        [ "ssh.private_key: must be a string ($SSH_WHAT{private_key}), not a list",
+          "ssh.public_key: must be a string ($SSH_WHAT{public_key}), not a mapping" ], 'one line each';
+    is_deeply [ errors_for({ control_planes => $local, ssh => undef }) ], [], 'null: as absent';
+    is_deeply [ errors_for({ control_planes => $local, ssh => {} }) ], [], '{}: the defaults';
+    is_deeply [ errors_for({ control_planes => $local,
+                             ssh => { private_key => 'keys/id', public_key => 'keys/id.pub' } }) ], [], 'paths pass';
+};
+
+subtest 'the ssh key accessors read ssh: the way validate() does' => sub {
+    for my $at (grep { $_->[0] =~ /\Assh(?:\.|\z)/ } @AT) {
+        my ($path, $spec_with) = @$at;
+        for my $shape (@SHAPES) {
+            my ($shown, $value) = @$shape;
+            my $c     = config_for($spec_with->($value));
+            my @lines = $c->validate;
+            my $ssh   = $c->spec->{ssh};
+            my %set   = ref $ssh eq 'HASH' ? %$ssh : ();
+            my %want  = (
+                ssh_private_key_path => $c->project_dir->child($set{private_key} // '.ocp/id_ed25519')->stringify,
+                ssh_public_key_path  => $c->project_dir->child($set{public_key} // '.ocp/id_ed25519.pub')->stringify,
+            );
+            for my $m (qw( ssh_config ssh_private_key_path ssh_public_key_path )) {
+                my $got = eval { $c->$m };
+                if (@lines) {
+                    ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
+                    like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                    next;
+                }
+                is $@, '', "$m, $path: $shown -- reads on";
+                is $got, $want{$m}, "$m, $path: $shown -- as before" if $want{$m};
+            }
+        }
+    }
+};
+
+# --- 26. system.timezone and system.locale ---------------------------------------------------------
+
+subtest 'a system.timezone or system.locale that is no string' => sub {
+    my %what = (timezone => 'a time zone like Europe/Berlin', locale => 'a locale like en_US.UTF-8');
+    for my $key (sort keys %what) {
+        for my $case (@NO_STRING) {
+            my ($v, $shown) = @$case;
+            my $line = "system.$key: must be a string ($what{$key}), not $shown";
+            is_deeply [ errors_for({ control_planes => $local, system => { $key => $v } }) ], [ $line ],
+                "system.$key: $shown";
+            my $c = config_for({ control_planes => $local, system => { $key => $v } });
+            for my $m (qw( system_config timezone locale ntp_enabled )) {
+                ok !eval { $c->$m; 1 }, "$m refuses system.$key: $shown";
+                like $@, qr/\A\Q$line\E at /, "$m: in validate()'s words";
+            }
+        }
+    }
+    is_deeply [ errors_for({ control_planes => $local, system => { timezone => [ 'a' ], time_zone => 'UTC' } }) ],
+        [ "system.timezone: must be a string ($what{timezone}), not a list",
+          "system.time_zone: unknown key (must be $SYSTEM_KEYS)" ], 'beside an unknown key: a line each';
+    my $c = config_for({ control_planes => $local, system => { timezone => 'Europe/Berlin', locale => 'de_DE.UTF-8' } });
+    is_deeply [ $c->validate ], [], 'strings pass';
+    is_deeply [ $c->timezone, $c->locale ], [ 'Europe/Berlin', 'de_DE.UTF-8' ], '... and read as set';
+};
+
+# --- 27. kubernetes: and kubernetes.dist -----------------------------------------------------------
+
+subtest 'kubernetes: is a mapping, and kubernetes.dist rke2 or k3s' => sub {
+    my $is = 'kubernetes: must be a mapping (dist, version), not ';
+    for my $case ([ 'rke2', "'rke2'; write kubernetes: { dist: rke2 }" ], [ 'k3s', "'k3s'; write kubernetes: { dist: k3s }" ],
+                  [ 'foo', "'foo'" ], [ [ 'rke2' ], 'a list' ], [ JSON::PP::true, 'true' ], [ JSON::PP::false, 'false' ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, kubernetes => $v }) ], [ "$is$shown" ],
+            'kubernetes: ' . (ref $v eq 'ARRAY' ? 'a list' : "$v");
+    }
+    my $dist = 'kubernetes.dist: invalid value %s (must be rke2 or k3s)';
+    for my $case ([ 'rke3', "'rke3'" ], [ 'RKE2', "'RKE2'" ], [ '', "''" ], [ [ 'rke2' ], 'a list' ],
+                  [ { rke2 => 1 }, 'a mapping' ], [ JSON::PP::true, 'true' ], [ JSON::PP::false, 'false' ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, kubernetes => { dist => $v } }) ],
+            [ sprintf $dist, $shown ], "dist: $shown";
+    }
+    is_deeply [ config_from_text("kubernetes:\n  dist: rke3\n  version: ''\n")->validate ],
+        [ sprintf $dist, "'rke3'" ], 'dist: rke3 as typed -- installed RKE2, and robocop was told rke3';
+    for my $ok ('rke2', 'k3s', undef) {
+        is_deeply [ errors_for({ control_planes => $local, kubernetes => { dist => $ok, version => '' } }) ], [],
+            'dist: ' . ($ok // 'null') . ' passes';
+    }
+    is_deeply [ errors_for({ control_planes => $local, kubernetes => undef }) ], [], 'kubernetes: null passes';
+};
+
+subtest 'distribution reads kubernetes.dist the way validate() does' => sub {
+    my @extra = ([ "'rke2'" => 'rke2' ], [ "'k3s'" => 'k3s' ], [ "'rke3'" => 'rke3' ]);
+    for my $at (grep { $_->[0] =~ /\Akubernetes(?:\.dist)?\z/ } @AT) {
+        my ($path, $spec_with) = @$at;
+        for my $shape (@SHAPES, @extra) {
+            my ($shown, $value) = @$shape;
+            my $c     = config_for($spec_with->($value));
+            my @lines = $c->validate;
+            my $k8s   = $c->spec->{kubernetes};
+            my $set   = ref $k8s eq 'HASH' ? $k8s->{dist} : undef;
+            # kubernetes and version read the mapping only; its dist is distribution's.
+            my @refusing = (qw( distribution supervisor_port ), ($path eq 'kubernetes' ? qw( kubernetes version ) : ()));
+            for my $m (qw( distribution supervisor_port kubernetes version )) {
+                my $got = eval { $c->$m };
+                if (@lines && grep { $_ eq $m } @refusing) {
+                    ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
+                    like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                    next;
+                }
+                is $@, '', "$m, $path: $shown -- reads on";
+                my $d = $set // 'rke2';
+                is $got, $d, "$m, $path: $shown -- reads $d" if $m eq 'distribution';
+                is $got, ($d eq 'k3s' ? 6443 : 9345), "$m, $path: $shown -- as before" if $m eq 'supervisor_port';
+            }
+        }
+    }
+    is config_for({ control_planes => $local })->distribution, 'rke2', 'absent: rke2, as before';
+};
+
+# --- 28. an ocp.yaml that is no mapping ------------------------------------------------------------
+
+sub config_from_file_text {
+    my ($text) = @_;
+    my $f = path($tmpdir)->child('f' . int(rand(1_000_000)) . '.yaml');
+    $f->spew_utf8($text);
+    return OCP::Config->new(file => $f->stringify, ocp => $ocp);
+}
+
+my $SETTINGS = 'a mapping (name, control_planes and the other settings)';
+
+subtest 'an ocp.yaml that is empty or no mapping is one line naming the file' => sub {
+    for my $case ([ '' => undef ], [ "---\n" => undef ], [ "# nothing yet\n" => undef ], [ "~\n" => undef ],
+                  [ "- name: k340\n" => 'a list' ], [ "k340\n" => "'k340'" ], [ "true\n" => 'true' ]) {
+        my ($text, $shown) = @$case;
+        my $c    = config_from_file_text($text);
+        my $file = $c->file;
+        my $line = defined $shown ? "$file: must be $SETTINGS, not $shown" : "$file is empty: it must be $SETTINGS";
+        (my $typed = $text) =~ s/\n/\\n/g;
+        is_deeply [ $c->validate ], [ $line ], "\"$typed\": validate()'s one line";
+        for my $m (qw( spec name control_planes workers robocop_enabled distribution )) {
+            ok !eval { $c->$m; 1 }, "\"$typed\": $m stops";
+            is $@, "$line\n", "\"$typed\": $m -- with that line";
+            my ($msg, $internal) = OCP::_clean_message($@);
+            is $internal, 0, "\"$typed\": $m -- a message to the user, not an internal error";
+        }
+    }
+
+    my $c = OCP::Config->new(file => path($tmpdir)->child('none.yaml')->stringify, ocp => $ocp);
+    is $c->name, 'mycluster', 'no file at all: the default spec, as before';
+    my $ok = config_from_file_text("name: k340\ncontrol_planes:\n  provider: local\n");
+    is_deeply [ $ok->validate ], [], 'a mapping: as before';
+};
+
+subtest 'ocp apply --dry-run on a list: the line on STDERR, exit 1' => sub {
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew_utf8("- name: k340\n  control_planes:\n    provider: local\n");
+    my ($out, $err) = map { $dir->parent->child("k340-$$-$_") } qw( out err );
+    my $pid = fork // die "fork: $!";
+    unless ($pid) {
+        chdir $dir or die "chdir: $!";
+        local $ENV{HOME} = $dir->stringify;
+        open STDIN,  '<', '/dev/null' or die;
+        open STDOUT, '>', "$out"      or die;
+        open STDERR, '>', "$err"      or die;
+        exec $^X, "-I$lib", $bin, 'apply', '--dry-run' or die "exec: $!";
+    }
+    waitpid $pid, 0;
+    my $rc = $? >> 8;
+    my ($o, $e) = ($out->slurp_utf8, $err->slurp_utf8);
+    $_->remove for $out, $err;
+
+    is $rc, 1, 'exit 1';
+    is $o, '', 'nothing on STDOUT';
+    is $e, "Error: ocp.yaml has 1 error:\n  - ocp.yaml: must be $SETTINGS, not a list\n"
+        . "Nothing was done: ocp apply checks ocp.yaml before it touches a host or the cluster. "
+        . "Fix the lines above and run it again.\n", 'the line, and no internal error';
+};
+
 
 done_testing;
