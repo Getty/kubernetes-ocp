@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` and `ocp node add --gpu` now wait up to five minutes after
+      the GPU Operator step until every NVIDIA node shows `nvidia.com/gpu`
+      in its allocatable resources, so "GPU stack ready" means a pod can get
+      the GPU. A node that does not get there is warned about on STDERR
+      with what it shows instead (no GPU, a capacity left standing, or a
+      read that failed); the apply and the join still succeed.
     - `control_planes[].node_ip` in ocp.yaml and `ocp node add --node_ip`
       set the address a node registers as its InternalIP (the RKE2/K3s
       node-ip), for hosts with more than one network address. Invalid

@@ -764,6 +764,12 @@ sub _ssh_keys_note {
 # GPU Operator with the next `ocp apply`. gpu.enabled: false needs no label:
 # the GPU Operator check skips at once, as in apply.
 #
+# The GPU Operator check waits for nvidia.com/gpu in status.allocatable on the
+# NVIDIA nodes it detects, this one among them (k273,
+# OCP::Cmd::Apply::Workloads wait_gpu_allocatable). It says a node that does
+# not get there itself, as a [WARN]. No `ocp apply` hint is added: an apply
+# would only wait again.
+#
 # Never fatal: the node is Ready, which is what `ocp node add` promised. No GPU
 # in time or a failed rollout is said on STDERR together with the way to get
 # the stack anyway, `ocp apply`. Returns whether the checks completed.
@@ -908,6 +914,14 @@ there without C<amd.com/gpu> or C<nvidia.com/gpu> until the next one (k220,
 k251).  When that cannot be done -- no GPU shown in time, a failed rollout, or
 C<--nowait> -- it says so on STDERR and names C<ocp apply> as the way to get
 the stack; the exit code still reflects only whether the node is Ready.
+
+After that, the GPU Operator check waits up to five minutes for
+C<nvidia.com/gpu> in C<status.allocatable> (not capacity) on every NVIDIA
+node, this one among them, as it does in C<ocp apply> (k273).  A node that
+does not show it gets a C<[WARN]> on STDERR that says what the node shows
+instead.  The exit code does not change:
+
+    [WARN] NVIDIA GPU not ready after 300s: node 'brain' shows no nvidia.com/gpu in status.allocatable
 
 Pass C<--nowait> to write the CR and return immediately.  The older
 C<--no_wait> spelling is kept as an alias.  There is deliberately no

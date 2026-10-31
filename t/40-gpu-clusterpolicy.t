@@ -377,7 +377,14 @@ sub on_the_wire { JSON::PP->new->utf8->decode($WIRE->encode($_[0])) }
     package GpuClusterApi;
     sub new  { bless {}, shift }
     sub list { GpuNodeList->new }
-    sub get  { die "404 not found\n" }
+    # crag has its GPU allocatable (k273: the step waits for it); nothing
+    # else exists.
+    sub get {
+        my ($self, $kind, @rest) = @_;
+        return { metadata => { name => 'crag' }, status => { allocatable => { 'nvidia.com/gpu' => '1' } } }
+            if $kind eq 'Node' && "@rest" eq 'name crag';
+        die "404 not found\n";
+    }
 }
 
 # Everything setup_gpu_operator hands to server-side apply, in order, after a

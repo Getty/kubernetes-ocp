@@ -208,6 +208,14 @@ subtest 'Registry: an unreadable registry is neither running nor gone' => sub {
     package GpuApi;
     our @ISA = ('ReadApi');
     sub list { GpuNodeList->new }
+    # crag has its GPU allocatable, so the wait after the rollout (k273,
+    # pinned in t/273) is over at once.
+    sub get {
+        my ($self, $kind, @rest) = @_;
+        return { metadata => { name => 'crag' }, status => { allocatable => { 'nvidia.com/gpu' => '1' } } }
+            if $kind eq 'Node' && "@rest" eq 'name crag';
+        return $self->SUPER::get($kind, @rest);
+    }
 }
 
 my $CP_PATH = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';

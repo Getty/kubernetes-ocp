@@ -9,7 +9,9 @@ use JSON::PP ();
 use Path::Tiny qw(path);
 
 use OCP::Drift ();
+use OCP::Kubernetes;
 use OCP::Versions;
+use OCP::Cmd::Apply::AMDGPU ();
 
 =head1 SYNOPSIS
 
@@ -35,6 +37,14 @@ that holds both the record and the cluster's answer, so anyone judging from
 the hash file afterwards is guessing. C<setup_gpu_operator> has a fifth
 answer, C<skipped> — no NVIDIA card, or C<gpu.enabled: false> — for the
 cluster where this component is not part of the spec at all.
+
+Every C<setup_gpu_operator> that does not skip, C<unchanged> included,
+then waits (300 s, C<gpu_ready_timeout>) until C<status.allocatable> shows
+C<nvidia.com/gpu> above 0 on every NVIDIA node it detected. That is what a pod
+can get, unlike capacity, which the kubelet keeps after a device plugin
+unregisters. A node that does not get there is a C<[WARN]> on STDERR with
+why, and the step's verdict stands: the operator is deployed and the node
+is up.
 
 L<OCP::Cmd::Apply> re-exports these as thin forwarders so the test surface
 (t/40-gpu-clusterpolicy.t) keeps working.
@@ -520,6 +530,9 @@ sub setup_gpu_operator {
     if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running
         && !@crd_differ && !@cp_differ) {
         print "      GPU Operator already deployed (up to date)\n";
+        # Up to date says nothing about the nodes: one that joined since
+        # (`ocp node add --gpu`) gets its device plugin only now.
+        wait_gpu_allocatable($self, $api, @gpu_names);
         return 'unchanged';
     }
 
@@ -576,7 +589,69 @@ sub setup_gpu_operator {
 
     $self->_save_deployed_hash($config, 'gpu-operator', $hash);
 
+    wait_gpu_allocatable($self, $api, @gpu_names);
+
     return $outcome;
+}
+
+# k273: the GPU Operator is done with a node once a pod can get its GPU,
+# which means the device plugin has registered nvidia.com/gpu and
+# status.allocatable shows it. A ready ClusterPolicy does not prove that.
+# Neither does capacity: the kubelet keeps it after a device plugin
+# unregisters (k106/k270; capacity 1, allocatable 0 on amdlab). The budget
+# is the AMD device plugin's (OCP::Cmd::Apply::AMDGPU ready_timeout). The
+# operands pull their images cold through the registry cache, and the
+# validator holds the plugin back until the toolkit is in place.
+sub gpu_ready_timeout  { 300 }
+sub gpu_ready_interval { 10 }
+
+# Waits up to gpu_ready_timeout until every node of @names shows
+# nvidia.com/gpu above 0 in status.allocatable. Progress goes to STDOUT.
+# Each node that does not get there is a [WARN] on STDERR with why, in the
+# AMD device plugin's words (AMDGPU not_ready). It is a warning and not a
+# failed step: the operator is deployed and the node is up, and whatever
+# holds the plugin back (the driver, the validator, the kubelet) is on the
+# node. A read that fails is polled again; when the last one failed too,
+# its cause is the why (k269). Returns the names that did not get there.
+sub wait_gpu_allocatable {
+    my ($self, $api, @names) = @_;
+    my $k8s = OCP::Kubernetes->new(api => $api);
+
+    print "      Waiting for nvidia.com/gpu on " . join(', ', @names) . "...\n";
+    my $interval = gpu_ready_interval();
+    my $tries    = int(gpu_ready_timeout() / $interval);
+    my @waiting  = @names;
+    my %why;
+    for my $try (0 .. $tries) {
+        @waiting = grep { defined($why{$_} = gpu_not_allocatable($k8s, $api, $_)) } @waiting;
+        last unless @waiting;
+        $self->wait_seconds($interval) if $try < $tries;
+    }
+
+    my %short = map { $_ => 1 } @waiting;
+    my @ready = grep { !$short{$_} } @names;
+    print "      nvidia.com/gpu allocatable on " . join(', ', @ready) . "\n" if @ready;
+    print STDERR "  [WARN] NVIDIA GPU not ready after " . gpu_ready_timeout() . "s: $why{$_}\n"
+        for @waiting;
+    return @waiting;
+}
+
+# Why node $name cannot hand out an NVIDIA GPU yet, or undef when it can.
+# The count is OCP::Kubernetes node_gpu_count (allocatable). Capacity only
+# explains a 0: when it stands above allocatable, the plugin has gone or
+# devices are unhealthy.
+sub gpu_not_allocatable {
+    my ($k8s, $api, $name) = @_;
+    my ($node, $why) = OCP::Cmd::Apply::AMDGPU::read_or_why("Node '$name'",
+        sub { $api->get('Node', name => $name) });
+    return $why if $why;
+    return "Node '$name' not found" unless $node;
+    return undef if $k8s->node_gpu_count($node) =~ /\A([0-9]+)/ && $1 > 0;
+    my $capacity = $k8s->node_gpu_capacity($node) // '0';
+    return "node '$name' shows no nvidia.com/gpu in status.allocatable"
+        . ($capacity =~ /\A([0-9]+)/ && $1 > 0
+            ? " (capacity $capacity: stale after a device plugin unregisters, or unhealthy devices)"
+            : '');
 }
 
 # Where the live ClusterPolicy differs from the one in $manifest (the
