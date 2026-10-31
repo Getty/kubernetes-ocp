@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys secure` masks the Hetzner API token when storing the keys
+      in the Hetzner project fails, as `ocp init` does: an error that
+      carries the request no longer shows the token.
     - On a fresh clone of a secure-mode project (encrypted files committed,
       no `.ocp/`), the first PIN1 no longer ends in "Cannot create
       .ocp/age.key securely: No such file or directory": `ocp keys ...`,

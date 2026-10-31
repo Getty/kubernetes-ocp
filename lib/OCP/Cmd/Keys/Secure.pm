@@ -12,6 +12,7 @@ use OCP::Cmd::Apply::CR ();
 use OCP::Cmd::Apply::Deploy ();
 use OCP::Cmd::Apply::K8s ();
 use OCP::Config;
+use OCP::ErrorLine ();
 use OCP::Keys;
 use OCP::Password;
 use OCP::Provider;
@@ -419,7 +420,10 @@ sub _upload_to_hetzner {
         1;
     };
     unless ($ok) {
-        print STDERR "[!!] Could not store the keys in the Hetzner project: ".$self->_oneline($@)."\n"
+        # The token masked (k362), as ocp init masks it (k265): an API or LWP
+        # error can carry the request, Authorization header and all.
+        print STDERR "[!!] Could not store the keys in the Hetzner project: "
+          . OCP::ErrorLine::one_line($@, mask => $token) . "\n"
           . "     Servers created from now on would get the old key. Add them in the\n"
           . "     Hetzner console under " . $config->admin_ssh_key_name . " and "
           . $config->robo_ssh_key_name . ".\n";

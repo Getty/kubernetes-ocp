@@ -18,6 +18,8 @@
 #   * after the switch robocop's Secret carries the new robo key (one PIN2 for
 #     the whole run), a running robocop is restarted; without a cluster that
 #     step is skipped with a pointer to `ocp apply`; Hetzner gets both keys
+#   * a Hetzner upload that fails is named on STDERR in one line, the API
+#     token masked wherever the error carries it (k362), exit 1
 #   * a robocop Deployment read that fails other than with a 404 is not "no
 #     robocop": the robocop part stops with its cause on STDERR, nothing
 #     written for it, exit 1; the switch stands (k329)
@@ -132,6 +134,18 @@ package FakeApi {
 package FakeHetzner {
     sub new { bless { uploads => [] }, shift }
     sub upload_ssh_key { push @{ $_[0]{uploads} }, [ $_[1], $_[2] ]; 1 }
+}
+
+# An API that refuses the upload with the request in its error, the token in
+# the URL and in the Authorization header -- as an HTTP client's error can.
+package FakeHetznerDown {
+    sub new { bless { token => $_[1] }, $_[0] }
+    sub upload_ssh_key {
+        my ($self) = @_;
+        die "POST https://api.hetzner.cloud/v1/ssh_keys?token=$self->{token} failed:\n"
+          . "  401 Unauthorized (Authorization: Bearer $self->{token})"
+          . " at /usr/share/perl5/LWP/UserAgent.pm line 1077.\n";
+    }
 }
 
 package main;
@@ -570,6 +584,30 @@ subtest 'never deployed: local switch; Hetzner gets both keys' => sub {
     is_deeply $hz->{uploads},
         [ [ 'ocp-k96-admin', $admin->{public} ], [ 'ocp-k96-robo', $robo->{public} ] ],
         'admin and robo key stored under the names servers are created with';
+};
+
+subtest 'k362: a Hetzner upload that fails is named without the token' => sub {
+    my $token = 'hzTOKEN-k362-AbCdEf0123456789';
+    my $dir = dev_project(
+        control_planes => { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' },
+        workers        => [],
+    );
+    delete local $ENV{HETZNER_API_TOKEN};
+    OCP::Secrets->new(project_dir => $dir)->set_hetzner_token($token);
+    %HOSTS = ();
+
+    my $r = run_secure($dir, hetzner => FakeHetznerDown->new($token));
+
+    is $r->{rv}, 1, 'exit 1' or diag $r->{err}, $r->{died};
+    ok -f $dir->child('keys.yaml'), 'the switch itself stands';
+    my ($line) = $r->{err} =~ /^(\[!!\] Could not store the keys in the Hetzner project: .*)$/m;
+    ok defined $line, 'the failure on STDERR' or diag $r->{err};
+    is $line, '[!!] Could not store the keys in the Hetzner project: POST'
+            . ' https://api.hetzner.cloud/v1/ssh_keys?token=******** failed: 401 Unauthorized'
+            . ' (Authorization: Bearer ********)',
+        'in one line, the token masked every time it is there, no Perl location';
+    unlike join("\n", $r->{out}, $r->{err}, $r->{died}), qr/\Q$token\E/,
+        'the token nowhere on STDOUT or STDERR';
 };
 
 subtest 'Hetzner without a token: deferred when nothing is deployed, an error when it is' => sub {
