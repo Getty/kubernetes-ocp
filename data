@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-10-31T02:30:05Z
+id: 266
+priority: low
+status: todo
+tags:
+- secrets
+- apply
+- dry-run
+title: 'ocp apply --dry-run: say which SOPS files a real run would repair'
+updated: 2026-10-31T02:30:05Z
+---
+
+Follow-up from k259 (e0ad1be). `ocp apply` repairs SOPS files with a bare lastmodified, but `--dry-run` skips that silently, while the rest of the dry run names what a real run would change.
+
+Done when OCP::Secrets has a read-only check returning the files that are still bare (secrets lane; it can reuse _sops_lastmodified_bare), and --dry-run prints "would repair <file>" for each (apply lane), touching nothing; tests for both. Lanes: ocp-secrets-worker, then ocp-apply-worker (Apply.pm is at ~694 of t/52's 700 lines).
