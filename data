@@ -1,0 +1,40 @@
+---
+class: standard
+completed: 2026-10-31T09:00:52Z
+created: 2026-10-31T08:03:49Z
+id: 319
+priority: low
+started: 2026-10-31T09:00:52Z
+status: done
+tags:
+- apply
+- robustness
+title: 'Apply path: more reads that take a failure for absence or lose its cause (after
+  k277)'
+updated: 2026-10-31T09:00:52Z
+---
+
+Found under k277 (apply worker, 2026-10-31), the same class as k269/k277 (only a 404 is absent, any other failure is reported with its cause), in places k277 did not cover:
+- lib/OCP/Cmd/Apply/Drift.pm ~819: any failed read of the robocop Deployment is reported as "missing".
+- lib/OCP/Cmd/Apply/Workloads.pm ~120 and ~131: the nfd-worker wait and the NFD-label wait lose the cause of a failed read.
+- lib/OCP/Cmd/Apply/Registry.pm ~142: `switch_to_recreate` treats a failed Deployment read as "not there".
+- lib/OCP/Cmd/Apply/Bootstrap.pm ~582: the node-Ready wait loses the cause of a failed Node list.
+- `configure_registry_dns` with BOTH CoreDNS ConfigMaps at 404 still says "up to date".
+- lib/OCP/Cmd/Apply/CR.pm: several reads swallow their failure.
+
+Done = each uses OCP::Cmd::Apply::K8s `read_or_absent` / `read_or_why` / `crd_get` as fits, tests pin 404 vs 403/500 per place.
+
+2026-10-31 08:39 Worked in a scratch worktree (HEAD 1f5ff77 + k318.patch), shared tree untouched. Each place now reads through OCP::Cmd::Apply::K8s::read_or_absent, 404 = absent only:
+- Drift.pm robocop_dry_run: 403/500 on the robocop Deployment is '[robocop] Deployment/robocop could not be checked' (STDOUT) + '[!!] Deployment/robocop not checked: <cause>' (STDERR), an {kind=>error} entry counted under 'could not be checked', not as an action; $is_unknown made ref-safe (robocop's other findings are plain names).
+- Workloads.pm setup_nfd: nfd-worker wait names its last failed read on STDERR when it runs out ('[WARN] nfd-worker not seen ready within 120s; the last read failed: <cause>'); the label wait's death appends '; the last read failed: <cause>'. 404 and no-pod-ready stay quiet as before.
+- Registry.pm switch_to_recreate: a failed read dies with its cause (registry step reports it) instead of 'not there' and a later 422.
+- Bootstrap.pm node-Ready wait: after the 600s, '[WARN] Node state unknown via the API; the last read failed: <cause>' on STDERR when the last list failed.
+- Network.pm configure_registry_dns: both ConfigMaps 404 dies 'found no CoreDNS ConfigMap in kube-system (tried coredns, rke2-coredns-rke2-coredns)' -> both callers say it as [WARN] on STDERR, not 'up to date'. This replaces t/269's k277 claim '404 on both: no death, nothing to patch' (said so in the test).
+- CR.pm point NOT done: left for later per dispatcher (file belongs to the k309/k311 worker).
+Tests: new t/319-apply-read-cause.t (Registry, NFD x2, Bootstrap; 404 vs 403/500 each), t/38 robocop dry-run subtest, t/269 DNS claim. All reproduced red before the fix. 13 mutants, all compile, all killed.
+
+2026-10-31 08:39 Also found (card suggestions, not done): (1) Deploy.pm robocop_step: $had_deployment = eval { get } ? 1 : 0 swallows a 403/500 as 'no Deployment' (counts an update; the dry run's 'a real run would not complete' is therefore not exact for robocop until this is fixed). (2) OCP::Role::Cmd::RobocopCredentials _robocop_credentials_state: Secret read -> 'missing' on any failure, and the dry run's // 'outdated' (secrets-worker lane). (3) corefile_with_host with no root server block: 'up to date' silently. (4) Bootstrap.pm: 'WARNING: API server may not be reachable' and '[WARN] Node not Ready after 600s via API' are on STDOUT (channel rule); also the SSH fallback runs the node's own kubectl over SSH (check vs the no-kubectl invariant). (5) CR.pm missing_worker_ocpnodes host-match case prints '[ok] Every worker in ocp.yaml has an OCPNode' over a mismatch. (6) setup_nfd's nfd-worker wait still says nothing when it runs out on 0 ready pods (label wait decides).
+
+2026-10-31 08:53 Done except the CR.pm point (left for later, it is the k309/k311 worker's file). Uncommitted. Patch: scratchpad/w-apply318/k319.patch against HEAD+k318. Both patches stack cleanly onto the shared tree as it stands. 8 files: lib/OCP/Cmd/Apply/Bootstrap.pm, Drift.pm, Network.pm, Registry.pm, Workloads.pm, new t/319-apply-read-cause.t, t/38, t/269. In t/269 the k277 claim '404 on both CoreDNS ConfigMaps: no death' is replaced on purpose. Verified: every new test failed before its fix. Docker make test on 19 files (touched + neighbours): 322 tests, PASS. Full make test on HEAD+k318+k319: Files=226, Tests=3590, PASS, no file skipped. 13 mutants, all compile, all killed. The finds outside this card are in the note above.
+
+Committed as 29e7a85
