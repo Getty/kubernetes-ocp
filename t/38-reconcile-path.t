@@ -1360,5 +1360,80 @@ YAML
     is scalar(grep { $_ eq 'AMD GPU DRA driver' } @{ $d->{failed} }), 1, 'and its failure counted';
 };
 
+#
+# k267: a probe OCP::Drift could not read (k119, k256) is a kind => 'error'
+# entry -- no remedy, drift unknown, its cause already carped to STDERR by the
+# detector. The reconcile handled it like report-only drift: sent the operator
+# to `ocp update`, left it out of the exit, and the dry run called it "report
+# only". Next to it a report-only entry that keeps that treatment, so the
+# difference is the entry's kind and nothing else.
+#
+
+subtest 'k267: a drift probe that could not be read is not up to date' => sub {
+    my $unknown = {
+        kind => 'error', component => 'cilium', label => 'Cilium',
+        expected => '1.18.2', actual => undef, remedy => undef,
+        message => 'Cilium: could not read DaemonSet kube-system/cilium, drift unknown: '
+                 . '403 forbidden: User "ocp-ci" cannot get resource "daemonsets"',
+    };
+    my $report_only = {
+        kind => 'spec', component => 'pod_cidr', label => 'Pod CIDR',
+        expected => '10.42.0.0/16', actual => '10.0.0.0/8', remedy => undef,
+        message => 'Cilium pod pool is 10.0.0.0/8, ocp.yaml expects 10.42.0.0/16',
+    };
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub { return () };
+    my @found;
+    local *OCP::Drift::detect = sub { [ map { +{ %$_ } } @found ] };
+    my $yaml = "nocert: true\n";   # cert-manager would count as updated here
+
+    # The control: the report-only entry alone keeps the run up to date.
+    @found = ($report_only);
+    my $alone = reconcile(yaml => $yaml);
+    like   $alone->{out}, qr/No automatic step for this/, 'control: report-only is sent to ocp update';
+    like   $alone->{out}, qr/All \d+ component\(s\) up to date/, 'control: the run is up to date';
+    is_deeply $alone->{failed}, [], 'control: nothing counted for the exit';
+
+    @found = ($unknown, $report_only);
+    my $r = reconcile(yaml => $yaml);
+    like $r->{out}, qr/^  \[drift\] could not be checked: \Q$unknown->{message}\E$/m,
+        'real run: said as could not be checked, with its cause';
+    is scalar(() = $r->{out} =~ /No automatic step for this/g), 1,
+        'real run: only the report-only entry is sent to ocp update';
+    is_deeply $r->{failed}, ['Cilium drift check'], 'real run: counted for the exit, by name';
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'real run: not summarised as up to date';
+    like   $r->{out}, qr/\d+ component\(s\) checked, none updated\./, 'real run: checked, none updated';
+    unlike $r->{err}, qr/403 forbidden/, 'real run: the cause is not repeated on STDERR';
+
+    # The exit: Health::finish over what the reconcile left unresolved.
+    my $apply = bless { _failed_components => [ @{ $r->{failed} } ] }, 'OCP::Cmd::Apply';
+    my ($ferr, $rc) = ('');
+    {
+        open my $efh, '>', \$ferr or die $!;
+        local *STDERR = $efh;
+        (undef, $rc) = capture_stdout {
+            $apply->_finish_apply(config => FakeConfig->new,
+                api => HealthApi->new(pods => [$healthy_pod]),
+                cp_name => 'cortex', cp_ip => '10.230.30.155');
+        };
+    }
+    is $rc, 1, 'real run: the apply exits non-zero over a healthy cluster';
+    like $ferr, qr/^Apply did not complete: Cilium drift check failed\.$/m,
+        'real run: the closing summary names it';
+
+    my $dry = reconcile(yaml => $yaml, dry_run => 1);
+    like $dry->{out}, qr/^  \[drift\] could not be checked: \Q$unknown->{message}\E$/m,
+        'dry run: said as could not be checked';
+    is scalar(() = $dry->{out} =~ /report only, a real run leaves it as it is/g), 1,
+        'dry run: only the report-only entry is called report only';
+    like $dry->{out}, qr/^  0 difference\(s\) a real run would act on\.$/m,
+        'dry run: no action counted for it';
+    like $dry->{out}, qr/^  1 more reported only /m, 'dry run: the report-only entry counted alone';
+    like $dry->{out},
+        qr/^  1 more could not be checked -- a real run would not complete until it can be read\.$/m,
+        'dry run: counted as could not be checked';
+    unlike $dry->{err}, qr/403 forbidden/, 'dry run: the cause is not repeated on STDERR';
+};
+
 
 done_testing;

@@ -141,6 +141,17 @@ sub reconcile_components {
         }
 
         for my $entry (@$drift) {
+            # A probe OCP::Drift could not read (k119, k256) found no drift:
+            # nothing is known about what it names, so there is no step to
+            # advise and no "up to date" to claim (k267). Said here on STDOUT
+            # with its message, which carries the cause -- OCP::Drift has
+            # already carped that to STDERR -- and counted for the exit.
+            if (($entry->{kind} // '') eq 'error') {
+                print "  [drift] could not be checked: $entry->{message}\n";
+                push @unresolved, ($entry->{label} // $entry->{component}) . ' drift check';
+                next;
+            }
+
             print "  [drift] $entry->{message}\n";
 
             unless ($entry->{remedy}) {
@@ -554,12 +565,16 @@ sub dry_run_report {
     my $drift = $detector->detect;
     print $self->host_probe_warning($detector);
 
+    # A probe that could not be read (k119, k256) is neither: nothing is known
+    # about it, and a real run ends short of spec over it (k267).
+    my $is_unknown = sub { ($_[0]{kind} // '') eq 'error' };
     # An entry with no remedy that the run does not re-apply either (not
     # self_healing, not missing) is report-only -- the pod CIDR (k182): a real
     # run names it and leaves it, so it is not counted as an action (k188).
     my $is_report_only = sub {
         my $e = shift;
-        return !$e->{remedy} && !$e->{self_healing} && ($e->{kind} // '') ne 'missing';
+        return !$e->{remedy} && !$e->{self_healing} && ($e->{kind} // '') ne 'missing'
+            && !$is_unknown->($e);
     };
     # The GPU findings are asked first, silently: "No drift detected" is only
     # true when they find nothing either (k234). They are printed below.
@@ -567,6 +582,10 @@ sub dry_run_report {
     print "  [ok] No drift detected\n" unless @$drift || @gpu_found;
 
     for my $entry (@$drift) {
+        if ($is_unknown->($entry)) {
+            print "  [drift] could not be checked: $entry->{message}\n";
+            next;
+        }
         print "  [drift] $entry->{message}\n";
         if ($entry->{remedy}) {
             print +($entry->{remedy}{type} // 'rex') eq 'api'
@@ -617,7 +636,8 @@ sub dry_run_report {
     my @gpu = gpu_dry_run($self, $config);
 
     my $report_only = scalar grep { $is_report_only->($_) } @$drift;
-    my $actions     = scalar(@$drift) - $report_only
+    my $unknown     = scalar grep { $is_unknown->($_) } @$drift;
+    my $actions     = scalar(@$drift) - $report_only - $unknown
         + scalar(@missing) + scalar(@relabel) + scalar(@robocop) + scalar(@gpu);
 
     print "\n";
@@ -625,6 +645,9 @@ sub dry_run_report {
     print "  $report_only more reported only -- a real run leaves "
         . ($report_only == 1 ? "it" : "them") . " as they are.\n"
         if $report_only;
+    print "  $unknown more could not be checked -- a real run would not complete until "
+        . ($unknown == 1 ? "it" : "they") . " can be read.\n"
+        if $unknown;
     print "  It would also re-apply any component whose manifest changed at an\n";
     print "  unchanged version — the one difference a read-only pass cannot see.\n";
     print "\n";

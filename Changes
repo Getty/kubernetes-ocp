@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` no longer treats a drift probe it could not read (RBAC
+      denial, API 5xx, TLS) as report-only drift. It says the component
+      "could not be checked", no longer points at `ocp update`, and ends
+      the run incomplete with a non-zero exit instead of "All N
+      component(s) up to date". `--dry-run` says the same and counts it
+      apart from the differences it would act on.
     - `ocp status` and `ocp apply` no longer read a drift probe that fails
       with anything but a 404 (an RBAC denial, an apiserver 5xx) as "not
       deployed". The GPU Operator and the AMD GPU DaemonSets were reported
