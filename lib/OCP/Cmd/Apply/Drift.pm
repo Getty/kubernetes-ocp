@@ -65,9 +65,14 @@ On a secure-mode clone without F<.ocp/> the dry run writes no project key
 (L<OCP::Secrets/unlock_age_key>) instead of F<.ocp/age.key>, and the
 kubeconfig and the robo key for the robocop check are read with that key.
 F<.ocp/age.pub> is not restored either, on a checkout that has the key on
-disk too. The host probes are not given the key: their first contact records
-the host key in F<.ocp/known_hosts>, so on a clone they stay skipped, as the
-C<[WARN] host probes skipped> line says.
+disk too. The host probes read the robo key with it as well.
+
+The host probes of a dry run record no host key (k374). They contact only a
+machine whose key F<.ocp/known_hosts> holds already, and check it against
+that key as a real run does; a key that no longer matches is said on STDERR.
+A machine not recorded yet -- every one, on a fresh clone -- is skipped
+without a connection, since its first contact would record the key, and the
+C<[WARN] host probes skipped> line says so.
 
 A drift probe that L<OCP::Drift> could not read (an RBAC denial, an
 apiserver 5xx, anything but a 404) comes back as an entry with
@@ -658,9 +663,10 @@ sub reconcile_components {
 # Printed as a caveat rather than left for the user to find out.
 #
 # $secrets is the run's OCP::Secrets, the project key unlocked into it on a
-# clone (k349); the robocop check reads the robo key with it. The host probes
-# do not: their first contact records the host key in .ocp/known_hosts, a
-# write, so on a clone they stay skipped as before.
+# clone (k349); the robocop check and the host probes read the robo key with
+# it. The probes contact only a machine whose host key .ocp/known_hosts holds
+# already (k374): the first contact with any other records its key there, a
+# write. Such a machine is skipped, and the skip line says why.
 sub dry_run_report {
     my ($self, $config, $cp_ip, $secrets) = @_;
 
@@ -669,7 +675,8 @@ sub dry_run_report {
     my $detector = OCP::Drift->new(
         config     => $config,
         api        => $self->_k8s_api,
-        rex_prober => $self->rex_prober($config),
+        rex_prober => $self->rex_prober($config,
+            pinned_only => 1, age_key => $secrets && $secrets->age_key),
     );
     my $drift = $detector->detect;
     print $self->host_probe_warning($detector);

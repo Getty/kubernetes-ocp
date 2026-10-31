@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply --dry-run` records no host key in `.ocp/known_hosts` any
+      more: its host probes contact only machines whose key is recorded,
+      checked against it, and skip the others with that reason; on a clone
+      they read the robo key with the key PIN1 opened. A changed host key is
+      reported on STDERR also when a probe used the robo key.
     - `ocp keys operator add|rm`, `ocp keys secure --drop-bootstrap` and
       `ocp node ls` no longer run out of memory on a worker pool whose
       `nodes:` is a list, or a huge number on a pool whose provider is

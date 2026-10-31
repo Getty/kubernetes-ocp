@@ -272,11 +272,26 @@ sub cluster_ssh_key_if_known {
 # runs inside the status/drift report, where that would be noise on the payload
 # channel. The task's real stdout still comes back in the result hashref (IPC::Run
 # collects it over its own pipes, not through Perl's STDOUT).
+#
+# pinned_only => 1 is the dry run's (k374): only a machine whose host key the
+# known_hosts file holds already is contacted. OCP::Rex records the key of any
+# other on first contact -- OCP::SSH's accept-new, into the project's
+# .ocp/known_hosts --, and a dry run writes nothing. So such a machine is
+# skipped before any connection, and said. A recorded one is checked against
+# its key as on every run; libssh verifies and records nothing. Trusting the
+# key into a throwaway file instead would have the dry run read a machine no
+# recorded key vouches for, and forget the key again: the first real run
+# would trust anew, maybe another one. age_key is the project key a dry run
+# holds in memory on a clone (k349), for the robo key.
 sub rex_prober {
     my ($self, $config, %opt) = @_;
 
+    require OCP::KnownHosts;
     require OCP::Rex;
     require OCP::ClusterKey;
+
+    my $pinned_only = delete $opt{pinned_only};
+    my $age_key     = delete $opt{age_key};
 
     my $key      = $self->cluster_ssh_key_if_known($config, %opt);
     my $key_file = $key ? $key->path : undef;
@@ -308,7 +323,7 @@ sub rex_prober {
     # skipped and said once -- see host_probe_warning -- not an error.
     my $robo = 0;
     unless (defined $key_file) {
-        my $pair = $self->_robo_probe_key($config);
+        my $pair = $self->_robo_probe_key($config, $age_key);
         if ($pair) {
             $key_file = $pair->path;
             $robo     = 1;
@@ -333,6 +348,13 @@ sub rex_prober {
             quiet    => 1,
         );
 
+        if ($pinned_only
+            && !OCP::KnownHosts->new(file => $rex->known_hosts)->knows($host)) {
+            $self->{_probe_skipped}{$host} = 'its host key is not in ' . $rex->known_hosts
+                . ' yet, and a dry run records none (the first ocp apply or ocp status does)';
+            return undef;
+        }
+
         my $sink = '';
         my $result = eval {
             local *STDOUT;
@@ -347,7 +369,11 @@ sub rex_prober {
                     = 'the name does not resolve from here (not a key problem)';
                 return undef;
             }
-            die $err unless $robo;
+            # A host key that no longer matches the recorded one is the
+            # machine's identity in question, not the key refused: said as
+            # that whatever key was offered (k374). With the robo key it read
+            # as "not accepted" below.
+            die $err if !$robo || (ref $err && $err->isa('OCP::SSH::HostKeyChanged'));
             $self->{_probe_skipped}{$host} = 'the robo key was not accepted (it is not authorised everywhere; the admin key needs PIN2)';
             return undef;
         }
@@ -358,14 +384,16 @@ sub rex_prober {
 # The robo (automation) key as a key file for the host probes, or undef when
 # the project has none (dev mode, no keys.yaml) or it cannot be read without a
 # prompt. Held on the command so the temp file lives as long as the command.
+# $age_key, when given, is the project key in memory (a dry run on a clone,
+# k349/k374); without it, OCP::Keys reads .ocp/age.key.
 sub _robo_probe_key {
-    my ($self, $config) = @_;
+    my ($self, $config, $age_key) = @_;
 
     return $self->{_robo_probe_key} if $self->{_robo_probe_key};
 
     require OCP::Keys;
     require OCP::TempKeyPair;
-    my $keys = OCP::Keys->new(project_dir => $config->project_dir);
+    my $keys = OCP::Keys->new(project_dir => $config->project_dir, age_key => $age_key);
     return undef unless eval { $keys->has_keys_file };
     my $robo = eval { $keys->get_automation_key } or return undef;
     return undef unless defined $robo->{private} && length $robo->{private};
@@ -375,9 +403,10 @@ sub _robo_probe_key {
 }
 
 # The one line for host probes that did not run, or '' when all did (k234).
-# Hosts the robo key was refused on, or -- with no key at all -- every machine
-# the probes would have looked at. A skipped probe is not drift and not a
-# failure; it only must not read as "no drift".
+# Hosts the prober skipped -- the robo key refused, a name that does not
+# resolve, a dry run's host with no recorded key (k374) --, or -- with no key
+# at all -- every machine the probes would have looked at. A skipped probe is
+# not drift and not a failure; it only must not read as "no drift".
 sub host_probe_warning {
     my ($self, $drift) = @_;
 
@@ -601,6 +630,21 @@ the next key.  With none, it returns C<undef> and L<OCP::Drift> skips its SSH
 detection mode, which is the graceful degradation C<ocp status> needs when a
 host is unreachable.  The narration L<OCP::Rex> prints is captured so it does
 not land on the report's STDOUT.
+
+A host whose key no longer matches the one recorded in known_hosts dies out of
+the prober with L<OCP::SSH>'s C<HostKeyChanged>, whatever key was offered;
+L<OCP::Drift> says it on STDERR.  Other failures with the robo key are a skip,
+named on the C<[WARN] host probes skipped> line.
+
+    my $prober = $self->rex_prober($config,
+        pinned_only => 1, age_key => $secrets->age_key);   # ocp apply --dry-run
+
+C<pinned_only> contacts only a machine whose host key the known_hosts file
+already holds (k374): the first contact with any other records its key, and a
+dry run writes nothing.  Such a machine is skipped, before any connection, and
+the skip line says why.  C<age_key> is the project key held in memory
+(L<OCP::Secrets/unlock_age_key>), to read the robo key with when
+F<.ocp/age.key> is not on disk.
 
 =method require_admin_approval
 
