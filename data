@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T11:18:35Z
+created: 2026-10-31T06:36:27Z
+id: 311
+priority: low
+started: 2026-10-31T11:18:35Z
+status: done
+tags:
+- apply
+- crd
+title: ocp deploy-robocop writes OCP's CRDs over a newer one, unlike ensure_crds since
+  k291
+updated: 2026-10-31T11:18:35Z
+---
+
+Found under k291 (2026-10-31). Since k291, `OCP::Cmd::Apply::CR::ensure_crds` leaves a cluster CRD that declares fields this ocp does not know (newer than this ocp) as it is, so the API server does not drop those fields from every OCPNode. `OCP::Cmd::DeployRobocop::_apply_manifests` (ocp deploy-robocop) still writes the OCPNode/OCPNodeProvider CRDs via `ensure()` with no such check, so an older ocp running deploy-robocop overwrites a newer CRD.
+
+Done = deploy-robocop judges each CRD by `OCP::Drift->crd_schema_diff` like ensure_crds (one shared helper, not a copy), prints the same `[skip] … newer than this ocp` line, and a test shows a newer CRD is left alone and an older one is updated.
+
+2026-10-31 06:45 Plan: the judgement moves out of ensure_crds into one function in Apply/CR.pm, skip_newer_crd($self, $api, $doc): raw read via $self->_crd_get (undef only for a 404, dies otherwise, k269), OCP::Drift->crd_schema_diff, the [skip] line, true when skipped. ensure_crds and DeployRobocop::_apply_manifests both call it; DeployRobocop gets a _crd_get forwarder like OCP::Cmd::Apply's. CR.pm because ensure_crds and its wording live there and DeployRobocop already borrows retire_unannotated_robocop_pods from it. deploy-robocop keeps writing with ensure() -- the write path is not what the card is about.
+
+2026-10-31 10:46 Taken over (worker before hung on a shell command). Reviewed the tree state against the plan note: complete. skip_newer_crd($self, $api, $doc) in Apply/CR.pm makes the one judgement, used by ensure_crds and DeployRobocop::_apply_manifests. A newer CRD (one that declares fields this ocp's does not, by OCP::Drift->crd_schema_diff) is left alone with the [skip] line on STDOUT. A 404 is applied via ensure(). Any other read failure (403, 500, transport, a body that is no JSON) dies with the cause through crd_get (k269). DeployRobocop got a _crd_get forwarder. The t/129, t/186 and t/227 fixtures answer the raw read with a 404. Gap found: t/311 could not tell a word-for-word copy of the judgement in DeployRobocop from the shared helper (mutant survived). Added the subtest 'both writers ask OCP::Cmd::Apply::CR::skip_newer_crd, and do what it says': it overrides the helper with local, and deploy-robocop and ensure_crds both follow. Mutants on fresh copies vs t/311 + t/291: 11/11 killed by assertions after the new subtest (before it: 10/10 of the ones that ran, plus the copy, which survived). They were: drop the call in deploy-robocop; a verbatim copy; eval around the read in the helper; eval in the forwarder; judging by lacks instead of extra; a non-CRD taken as skipped; print [skip] but still write; [skip] on STDERR; judging after the write; ensure_crds dropping the call; no forwarder. Binding: make test on 61 neighbour files PASS (954 tests). t/311 + t/220 + t/291 PASS after the new subtest. k311.patch alone on HEAD 984e43c: t/311 t/129 t/186 t/227 t/291 t/20 t/00 PASS (121 tests). Full suite on a clean HEAD + k309 + k311: Files=233, Tests=3655, PASS, no skips. Also found (not done, outside this card): README.md:446 and skill ocp-usage only say deploy-robocop deploys 'the controller and its CRDs'. They could add that a newer CRD is left alone (doc-writer). OCP::Drift's k291 comment names only ensure_crds as the writer that leaves a newer CRD alone (state lane). Its manual_step text ('This one does not write its own CRD over it') is now true for deploy-robocop as well.
+
+2026-10-31 10:46 Done: ocp deploy-robocop leaves an OCPNode/OCPNodeProvider CRD a newer ocp installed as it is, with ocp apply's [skip] line, through one shared OCP::Cmd::Apply::CR::skip_newer_crd. An older or absent CRD is still written. A CRD it cannot read stops it with the cause. Patch: k311.patch (lib/OCP/Cmd/Apply/CR.pm, lib/OCP/Cmd/DeployRobocop.pm, new t/311-deploy-robocop-newer-crd.t, fixtures in t/129, t/186, t/227) against HEAD 984e43c. Proposed subject: Leave a newer OCPNode/OCPNodeProvider CRD alone in ocp deploy-robocop too, by the judgement ocp apply makes (k311). Verified: neighbours + full suite in the image PASS; 11/11 mutants killed.
+
+README.md (main, prose lane, 2026-10-31): after the deploy-robocop/deploy-image block, a sentence that a newer OCPNode/OCPNodeProvider CRD stays as it is ([skip]) and an unreadable CRD stops the command. Commit with k311.
+
+Committed as cb25f5a
