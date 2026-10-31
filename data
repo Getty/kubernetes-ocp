@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-10-31T12:47:54Z
+created: 2026-10-31T08:55:23Z
+id: 329
+priority: low
+started: 2026-10-31T12:47:54Z
+status: done
+tags:
+- keys
+- robustness
+title: _robocop_credentials_state takes a failed Secret read for missing
+updated: 2026-10-31T12:47:54Z
+---
+
+Found under k319 (apply worker, 2026-10-31): `_robocop_credentials_state` turns any failed read of robocop's credentials Secret into "missing", and the dry run then reports the credentials as outdated. A 403/500 is not absence (k269/k277/k319 class).
+
+Done = only a 404 is "missing"; any other failure is reported with its cause on STDERR and counted as unknown in the dry run (test, 404 vs 403/500).
+
+2026-10-31 (main, from k328): lib/OCP/Cmd/Keys/Secure.pm _reroll_robocop has its own `$had = eval { get Deployment } ? 1 : 0` -- the same 403-taken-for-absent shape. Fix it with this card (same lane, same file; after k321, which holds Secure.pm). With k328 a 403 fails robocop_step, and Secure then says only robocop is behind -- consistent, but the read itself should say its cause.
+
+2026-10-31 11:17 secrets worker: cause confirmed and reproduced on HEAD+k321 (new t/329): a 403/500/transport error on the Secret read is 'missing' -> robocop_step goes for the write (PIN2 prompt, SSH token read, Secret+Deployment ensured); an operator run (SOPS_AGE_KEY_FILE) is told the Secret 'does not exist'; the dry run says 'missing, would write it'. Decision: _robocop_credentials_state reads via OCP::Cmd::Apply::K8s::read_or_absent (the role loads it cleanly: leaf deps only, no cycle) and dies 'could not read Secret ocp-system/robocop-credentials: <cause>'; robocop_step reports that on STDERR (step failed, nothing written). Dry run needs a small Apply/Drift.pm hunk (robocop_dry_run: death -> kind=>error entry, mirrors the k319 Deployment block). Secure _reroll_robocop: read_or_absent too; a non-404 stops the robocop part with its cause (the real bug there: a 500 the step's own read then got past left the running pod unrestarted, exit 0).
+
+2026-10-31 12:01 Done (secrets worker). Patch: scratchpad/w-secrets329/k329.patch (header has subject, description, Changes bullet); applies with git apply on HEAD 12d049a (k321 committed), not applied to the shared tree. Changed: lib/OCP/Role/Cmd/RobocopCredentials.pm (_robocop_credentials_state reads via OCP::Cmd::Apply::K8s::read_or_absent: 404 = missing, else dies 'could not read Secret ocp-system/robocop-credentials: <cause>' -> robocop_step '[!!] robocop deploy failed: ...' on STDERR, no PIN2/SSH/write); lib/OCP/Cmd/Apply/Drift.pm robocop_dry_run (separate 12-line hunk: death -> kind=>error entry, 'could not be checked' + cause on STDERR, replaces // 'outdated'); lib/OCP/Cmd/Keys/Secure.pm _reroll_robocop (read_or_absent; non-404 stops the robocop part with its cause, exit 1, switch stands; _robocop_behind helper); t/329-robocop-credentials-read.t (new), t/96 k329 subtest. Verified: red on HEAD+k321 (t/329 4/4 subtests fail, t/96 k329 subtest fails; controls green), green on HEAD 12d049a+patch (12 files/215 tests PASS), affected set 23 files/352 tests PASS on 781a9a2+k321+patch; 8/8 mutants killed (any-error-missing, 404-dies, drift outdated/not-error/cause-on-stdout, secure any-absent/no-stop/404-fails). Full suite not run: loadguard refused (4/4 slots busy).
+
+Committed as 4f945b1
