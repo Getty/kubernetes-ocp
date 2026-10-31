@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T17:21:44Z
+created: 2026-10-31T15:06:04Z
+id: 383
+priority: low
+started: 2026-10-31T17:21:44Z
+status: done
+tags:
+- hetzner
+- cli
+title: ocp hetzner list can ask for PIN1 since k370 but has no --pins-stdin
+updated: 2026-10-31T17:21:44Z
+---
+
+From k370 (secrets worker, 2026-10-31). Without HETZNER_API_TOKEN, ocp hetzner list reads the token from secrets.yaml; on a clone, k370 now unlocks the project key there with a PIN1 prompt. The other PIN-asking commands take --pins-stdin (one line per prompt, for scripts and tests); hetzner list does not, so it cannot be run unattended on a clone.
+
+Done = ocp hetzner list takes --pins-stdin as the other commands do (same option, same semantics), documented in its POD; test that a PIN1 on STDIN gets the listing past the decrypt with a fake transport. Lane: ocp-provider-worker (OCP::Cmd::Hetzner::List). After k370 is committed.
+
+2026-10-31 15:27 Cause: --pins-stdin is declared once, in OCP::Role::Cmd (option pins_stdin, trigger sets $OCP::Password::PINS_STDIN; around parse_options normalizes --pins-stdin/--pins_stdin, k167). OCP::Cmd::Hetzner::List was the only command reachable from ocp that did not consume the role, so 'ocp hetzner list --pins-stdin' died 'Unknown option: pins_stdin'. Fix: List does 'with OCP::Role::Cmd' (reuse, nothing copied) + =opt pins_stdin POD pointing at the role. t/383-hetzner-list-pins-stdin.t: (1) every command reachable from ocp takes --pins-stdin, derived from the command map; (2) on a clone with PIN1 as the one STDIN line: PIN1 asked on STDERR, read off STDIN (Term::ReadKey untouched), listing goes out with the token from secrets.yaml (fake wire as t/373, answers only that token), printed, key cached in .ocp/; also --label ... --pins_stdin; (3) empty STDIN refused by name, no terminal fallback, no request, nothing cached. t/370 run_ocp no longer leaves --pins-stdin off for hetzner list (its comment said the command had none). Also found: t/95's 'every command' subtest lists classes by grepping for "with 'OCP::Role::Cmd'", so it cannot see a command that never consumes the role (how this slipped); t/383 claim 1 closes that, t/95's comment ('cannot quietly miss the flag') stays overstated -- for the test-writer lane, ocp board.
+
+2026-10-31 15:27 Done: patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-prov383/k383.patch against queued22 (lib/OCP/Cmd/Hetzner/List.pm, new t/383-hetzner-list-pins-stdin.t, t/370 run_ocp). Verified via make test in Docker: red on queued22 = t/383 3/5 subtests fail ('Unknown option: pins_stdin'; claim 1 fails only for OCP::Cmd::Hetzner::List of 35 reachable commands); green = 13 files / 587 tests PASS (t/00-load, 383, 373, 370, 245, 246, 26, 95, 96-option-spellings, 03, 216, 51-pod, 76); mutants 2/2 killed (role not consumed; trigger not switching OCP::Password), control passes, %INC asserted with Rex loaded first. Patch applies cleanly to a fresh clone of queued22.
+
+2026-10-31 15:27 Correction to the handoff note: claim 1 walks 34 reachable command classes (36 tests incl. 2 walk checks), not 35; red failed only OCP::Cmd::Hetzner::List.
+
+Reviewed by main: List consumes OCP::Role::Cmd; the role adds only pins_stdin, the parse_options spelling hook and helper methods, with no name clash with label/cloud/execute. t/370 runner simplified. Applies on HEAD 682e86a + batch 6 + k377 (head7). Queued for batch 7.
+
+Committed as da7c4d1
