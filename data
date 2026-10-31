@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-10-31T01:54:36Z
+created: 2026-10-30T21:54:43Z
+id: 247
+priority: low
+started: 2026-10-31T01:32:15Z
+status: done
+tags:
+- docs
+- secrets
+- robocop
+title: Library notes in OCP that no longer match Crypt::Age, File::SOPS and Net::Async::Kubernetes
+updated: 2026-10-31T01:54:36Z
+---
+
+Found while writing the consumer skills perl-crypt-age, perl-file-sops and perl-net-async-kubernetes (their boards k50, k205, k82):
+
+- lib/OCP/Keys.pm line 478 says the password layer runs "via Crypt::Age password mode". Crypt::Age has no passphrase mode; the layer is OCP's own PBKDF2 + AES-GCM (_double_encrypt), age-encrypted to recipients afterwards. The comment should say that.
+- lib/OCP.pm lines 74-90 (quote_sops_lastmodified) rest on "File::SOPS before 0.004 emits lastmodified bare". Only 0.002 wrote it bare; 0.003 and later write it quoted, and the cpanfile pins File::SOPS 0.005. quote_sops_lastmodified and its five call sites (Keys.pm 613, Secrets.pm 677, 784, 910, 967) can go; a document still carrying a bare value is rewritten by File::SOPS->rotate.
+- lib/OCP/Robocop/Controller.pm lines 113-116 and 404-408 say the watcher retries every second without a word. Net::Async::Kubernetes::Watcher backs off from 1s to 30s and reports every failed attempt to on_error (warn without one); it retries forever unless max_retries is set, so the API check stays useful. Wiring on_error into robocop's logging makes a broken watch visible on its own.
+
+Done when: the comments describe the libraries as they are, and the lastmodified workaround is gone with its test adjusted.
+
+2026-10-31 01:41 robocop part (ocp-robocop-worker): Verified against the installed Net::Async::Kubernetes::Watcher 0.011 (cpanfile.snapshot, raudssus/ocp:latest, /opt/ocp/install/perl5/lib/perl5/Net/Async/Kubernetes/Watcher.pm). The card is right: _watch_failed backs off from reconnect_delay 1s, doubling to max_reconnect_delay 30s, with jitter 0.2 that only shortens the delay. Every failed attempt goes to on_error as a WatchFailed Status, or to warn when there is no on_error. max_retries is undef, so it retries forever. Mid-stream ERROR events reach on_error as the raw Status; 410 is silent. This arrived in NAK 0.009 (2026-10-01). k170 (e84f362, 2026-09-24) was written against 0.008, so the comments were true then and went stale with the 0.009 bump. on_error was already wired to log_error ('watch ERROR: ...', STDERR, timestamp) since ce6dacd, so no wiring change was needed. Changed: Controller.pm comments at the api_check attribute and in run(), plus the POD 'Startup and API checks' paragraph, which said the same thing. Added a comment on the on_error handler. t/155 header corrected. New subtest in t/155: a fake watcher fires a WatchFailed Status and a 403 ERROR Status. Both are asserted as timestamped 'watch ERROR:' lines on STDERR, run() does not die, no max_retries is set, and no bare warn. Mutation checks: with on_error unwired, 3/6 asserts go red; with max_retries => 3 added, 1 goes red. DOCKER_BUILDKIT=0 make test TESTS=t/155-robocop-loud-failure.t: PASS, Files=1, Tests=6 (23 asserts). Left as is: Controller.pm line 471 'a pod that silently retries shows up as nothing' is a general claim about pods, not about the library.
+
+2026-10-31 01:50 Secrets part (ocp-secrets-worker), tree left uncommitted:
+
+1. Keys.pm _double_encrypt: the Layer 1 comment now says what the code does: OCP's own PIN2 layer (PBKDF2-HMAC-SHA256, 100_000 rounds, random 16-byte salt, AES-256-GCM; salt . nonce . ciphertext . tag, base64). Crypt::Age has no passphrase mode. The age layer after it goes to the project key's recipient ONLY (_get_age_recipient), not to every SOPS recipient as the card text says. The Layer 2 comment already says so and stays.
+
+2. quote_sops_lastmodified is gone from OCP.pm, along with all five call sites (Keys.pm _write_keys_file_encrypted, Secrets.pm rotate_sops_files/create_secrets/save_kubeconfig/encrypt_file).
+Verified first, against the File::SOPS 0.005 the image has (cpanfile.snapshot File-SOPS-0.005):
+- p5-file-sops tags (read-only): _quote_sops_timestamp is absent in 0.001/0.002 and present in 0.003-0.005, so the card is right. OCP.pm's "before 0.004" was wrong.
+- OCP's snapshot DID carry File::SOPS 0.002 from 0219cfa (2026-02-23) to 80f3b36 (2026-09-23), so real projects can have bare timestamps committed.
+- Fixture: genuine 0.002 (git archive of tag 0.002) wrote keys.yaml (automation + admin/PIN2 key), secrets.yaml, kubeconfig.yaml and extra.yaml. 0.005 reads all of them through every OCP read path, the MAC verifies, and both inner key layers open. It carps the PLAIN-scalar advisory on each read. sops -d refuses them (exit 1). File::SOPS->rotate, OCP's write paths and rotate_sops_files all rewrite them quoted (sops -d then exits 0). 42/42 checks pass both with and without the workaround. The workaround only ever touched write paths, so removing it cannot change what OCP can read.
+- Note: rotate_sops_files skips a file whose recipients already match, so a legacy file is repaired on its next OCP write or recipients change, not by itself. Unchanged by this card.
+
+t/153 rewritten. It asserts: (1) all four OCP write paths emit quoted lastmodified and round-trip, plus sops -d exit 0 in the image; (2) a genuine File::SOPS 0.002 project (embedded fixture, test-only age key) still opens via read_secret, the automation key and the admin key with PIN2; (3) update_secret/add_key repair it (quoted, values intact, no advisory warning, sops -d refuses before and reads after). Dropped: the unit tests of the removed helper. t/212 'lastmodified quoted as OCP writes it' is unchanged and now checks File::SOPS's own rotate output.
+Mutation check (scratch tree copies, not the shared tree): bare write in create_secrets -> 5 fail; bare write in keys.yaml -> 5 fail; keys read refusing a bare timestamp -> 2 fail; read_secret refusing one -> 1 fail.
+Tests: DOCKER_BUILDKIT=0 make test TESTS="<13 Secrets/Keys files>" -> Files=13, Tests=295, PASS. After the final test tidy: make test TESTS="t/153 t/212" -> Files=2, Tests=32, PASS. t/153 verbose: 24/24, both sops subtests ran.
+
+Both parts are back. Robocop: the comments and POD now describe Net::Async::Kubernetes 0.011 as it behaves (backoff 1s to 30s, on_error, no max_retries); on_error was already wired to log_error, and t/155-robocop-loud-failure.t now pins it. Secrets: quote_sops_lastmodified is removed, verified against real 0.002-era files (0.005 reads them, the next write quotes them), t/153 rewritten; the Keys.pm Layer-1 comment is corrected. Also, .claude/agents/ocp-robocop-worker.md had the stale claim that robocop polls; the main agent corrected it.
+
+2026-10-31 01:54 Committed: robocop notes 9a98de4, secrets (lastmodified quoting dropped) 42a9771.
