@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-10-31T02:29:55Z
+id: 264
+priority: medium
+status: todo
+tags:
+- hetzner
+- config
+title: Check the Hetzner default server type cpx21 against the live catalogue
+updated: 2026-10-31T02:29:55Z
+---
+
+Found by k260 (ocp-apply-worker). OCP::Config %HETZNER_DEFAULTS has server_type cpx21. Batch `ocp init` (no TTY) writes that default unchecked, without reading the catalogue. If Hetzner deprecated cpx21 with its 2025 line change, a batch init writes a type that cannot be ordered, and the first `ocp apply` fails at server creation.
+
+Done when the default is confirmed against the catalogue (per-location `locations[].deprecation`, k246), or replaced by a current type orderable in the default location, with a comment naming the source and date; any test pinning cpx21 follows. A live read of the catalogue needs a token: ask the maintainer for one (read-only) instead of guessing. Lane: ocp-state-worker.
