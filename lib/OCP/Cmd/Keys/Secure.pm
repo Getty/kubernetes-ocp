@@ -91,6 +91,9 @@ sub _migrate {
     my $dir     = $config->project_dir;
     my $staging = $dir->child('.ocp', $STAGING);
 
+    # ocp.yaml as `ocp apply` checks it, before anything else (k321).
+    $self->_refuse_invalid_config($config);
+
     # Every path below prompts -- PIN2 always, PIN1 unless age.key.enc exists.
     # Without anybody to answer, say so before anything happens, the way
     # OCP::ClusterKey refuses instead of blocking on an invisible prompt.
@@ -172,6 +175,45 @@ sub _migrate {
     }
 
     return $rc;
+}
+
+# Every line validate() has, all at once, before the terminal check, the age
+# key, a PIN, a machine or a file (k321). After the switch this command does
+# `ocp apply`'s work from ocp.yaml, with apply's code: robocop_step rolls
+# robocop out -- robocop_enabled and robocop_security_level croak there on
+# what validate() refuses, robocop_image fails the rollout, network.pod_cidr
+# goes into robocop's env as written -- and the keys are stored at Hetzner
+# under names made of name:, which a list made ocp-ARRAY(0x...)-admin. Each
+# of those got past both PINs and the switch -- keys.yaml and age.key.enc
+# written -- and stopped there, or misread.
+#
+# All of validate(), not the lines of what is read (as ocp destroy has it,
+# k323). What this command reads is most of ocp.yaml -- name, the control
+# planes, the pools, the robocop block, the pod CIDR -- and grows with
+# apply's robocop step, which is not this command's code: a gate for the
+# keys read today misses the one read tomorrow. And the cost destroy weighs
+# is not here: destroy may be the last command an ocp.yaml sees, this one is
+# followed by `ocp apply`, which refuses the same lines. A line refused now
+# is a fix due anyway, made before the switch instead of after it.
+#
+# Not on a project that is secure already (--drop-bootstrap alone, from
+# execute): that path reads only the machines and the key files, writes
+# nothing made of ocp.yaml, and takes a key off a machine only where the
+# admin key has just logged in -- the step a leaked bootstrap key needs, not
+# to be held up by a line it does not read.
+sub _refuse_invalid_config {
+    my ( $self, $config ) = @_;
+
+    my @errors = $config->validate;
+    return unless @errors;
+
+    my $file = $config->file;
+    my $s    = @errors == 1 ? '' : 's';
+    die "$file has " . scalar(@errors) . " error$s:\n"
+      . join('', map { "  - $_\n" } @errors)
+      . "Nothing was changed: ocp keys secure checks $file as ocp apply does, before it "
+      . "asks for a PIN or touches a machine -- after the switch it rolls robocop out and "
+      . "stores the keys at Hetzner from it. Fix the line$s above and run it again.\n";
 }
 
 # The admin and robo key this run moves to: the staged ones from an earlier,
@@ -632,6 +674,16 @@ PIN1 twice (when F<age.key.enc> does not exist yet), then PIN2 twice -- or
 once, when continuing with staged keys. C<--pins-stdin> reads them as lines
 in that order. Without a terminal and without C<--pins-stdin> the command
 refuses before doing anything.
+
+So does an F<ocp.yaml> that L<OCP::Config/validate> finds errors in, as
+C<ocp apply> refuses it: every line is named on STDERR and the exit code is
+1, before a PIN is asked, a machine touched or a file written. After the
+switch the command does apply's work from F<ocp.yaml> -- it rolls robocop
+out and stores the keys at Hetzner under the cluster's name -- so a mistake
+in it stopped the command halfway, with the PINs set and F<keys.yaml>
+written (C<k321>). C<--drop-bootstrap> on a project that is already secure does not
+check F<ocp.yaml>: it reads only the machines, and removes the bootstrap key
+only where the admin key has just logged in.
 
 =head1 SEE ALSO
 

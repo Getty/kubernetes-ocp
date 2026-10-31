@@ -18,6 +18,13 @@
 #   * after the switch robocop's Secret carries the new robo key (one PIN2 for
 #     the whole run), a running robocop is restarted; without a cluster that
 #     step is skipped with a pointer to `ocp apply`; Hetzner gets both keys
+#   * an ocp.yaml that validate() refuses stops the command before the first
+#     prompt and before any file is written or machine touched, with every
+#     one of validate()'s lines on STDERR, exit 1 (k321) -- robocop:, name:
+#     and network.pod_cidr are read after the switch, which stopped halfway
+#     or misread them; a line about a key the command does not read
+#     (gpu.driver) too, as `ocp apply` refuses it. --drop-bootstrap on a
+#     project that is secure already does not check ocp.yaml
 #
 # Network-free and cluster-free. The machines are directories with an
 # authorized_keys file each: OCP::SSH::run/run_script are replaced by a fake
@@ -31,6 +38,7 @@ use Test::More;
 
 use Cwd qw( getcwd );
 use Crypt::Age;
+use JSON::MaybeXS ();
 use MIME::Base64 ();
 use Path::Tiny ();
 
@@ -535,7 +543,7 @@ subtest 'no cluster: the control plane only, robocop deferred to ocp apply, --dr
 
 subtest 'never deployed: local switch; Hetzner gets both keys' => sub {
     my $dir = dev_project(
-        control_planes => { provider => 'hetzner', location => 'fsn1' },
+        control_planes => { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' },
         workers        => [],
     );
     OCP::Secrets->new(project_dir => $dir)->set_hetzner_token('hz-token');
@@ -557,7 +565,8 @@ subtest 'never deployed: local switch; Hetzner gets both keys' => sub {
 };
 
 subtest 'Hetzner without a token: deferred when nothing is deployed, an error when it is' => sub {
-    my %hz = (control_planes => { provider => 'hetzner', location => 'fsn1' }, workers => []);
+    my %hz = (control_planes => { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' },
+              workers        => []);
 
     my $fresh = dev_project(%hz);
     %HOSTS = ();
@@ -593,6 +602,171 @@ subtest 'no terminal and no --pins-stdin: refused before anything' => sub {
     like $r->{died}, qr/--pins-stdin/, 'naming the way to feed PINs';
     is_deeply $r->{prompts}, [], 'nothing asked';
     is scalar(@{ $r->{ssh} }), 0, 'nothing touched';
+};
+
+# --- An ocp.yaml validate() refuses (k321) -----------------------------------
+#
+# After the switch the command does `ocp apply`'s work from ocp.yaml:
+# _reroll_robocop asks robocop_enabled, the robocop step
+# robocop_security_level and the manifest robocop_image and the pod CIDR; the
+# Hetzner upload names the keys after name:. Since k315 the first refuses
+# robocop: no, and the second croaked on a typo all along -- both after
+# keys.yaml and age.key.enc were written and PIN1 and PIN2 set; a name: that
+# is a list stored the keys as ocp-ARRAY(0x...)-admin, and a pod CIDR
+# validate() refuses went into robocop's env. So validate() is asked first,
+# all of it, as `ocp apply` asks it.
+
+# Every file of the project, as bytes: what "nothing was written" compares.
+sub project_files {
+    my ($dir) = @_;
+    my %files;
+    my $it = $dir->iterator({ recurse => 1 });
+    while (defined(my $p = $it->())) {
+        $files{ $p->relative($dir)->stringify } = $p->slurp_raw if -f $p;
+    }
+    return \%files;
+}
+
+# validate()'s lines, which the refusal has to quote.
+sub validate_lines {
+    my ($dir) = @_;
+    return OCP::Config->new(file => $dir->child('ocp.yaml')->stringify)->validate;
+}
+
+my %HZ_CP = (control_planes => { provider => 'hetzner', location => 'fsn1', server_type => 'cx32',
+                                 host => 'cp.k96.test' });
+
+# [ what, ocp.yaml over dev_project's, the key validate()'s line names ]
+my @INVALID = (
+    [ 'robocop: no'                    => { robocop => 'no' },                       qr/\Arobocop: / ],
+    [ 'robocop.enabled: off'           => { robocop => { enabled => 'off' } },       qr/\Arobocop\.enabled: / ],
+    [ 'robocop: { enable: false }'     => { robocop => { enable => JSON::MaybeXS::false() } },
+                                                                                     qr/\Arobocop\.enable: / ],
+    [ 'robocop.security_level: secrte' => { robocop => { enabled => 1, security_level => 'secrte' } },
+                                                                                     qr/\Arobocop\.security_level: / ],
+    [ 'robocop.image without a tag'    => { robocop => { enabled => 1, image => 'raudssus/ocp' } },
+                                                                                     qr/\Arobocop\.image: / ],
+    # Read after the switch: the Hetzner key names.
+    [ 'name: a list'                   => { %HZ_CP, name => [ 'k96' ] },             qr/\Aname: / ],
+    # Read after the switch: robocop's OCP_POD_CIDR.
+    [ 'network.pod_cidr: /33'          => { network => { pod_cidr => '10.0.0.0/33' } },
+                                                                                     qr/\Anetwork\.pod_cidr: / ],
+    # Read before the prompts: died inside Perl there (Machines.pm,
+    # worker_ocpnodes), and as the machine ARRAY(0x...) the keys went to.
+    [ 'control_planes: [ a host ]'     => { control_planes => [ 'cp.k96.test' ] },   qr/\Acontrol_planes\[1\]: / ],
+    [ 'workers: a host'                => { workers => 'w1.k96.test' },               qr/\Aworkers: / ],
+    [ 'control_planes host: a list'    => { control_planes => { provider => 'ssh',
+                                                host => [ 'cp.k96.test', 'cp2.k96.test' ] } },
+                                                                                     qr/\Acontrol_planes\[1\]\.host: / ],
+    # Not read here at all; refused as `ocp apply` refuses it.
+    [ 'gpu.driver: oprator'            => { gpu => { driver => 'oprator' } },        qr/\Agpu\.driver: / ],
+);
+
+subtest 'an ocp.yaml validate() refuses stops before the first prompt, and nothing is written' => sub {
+    for my $case (@INVALID) {
+        my ($what, $spec, $key) = @$case;
+        my $dir = dev_project(%$spec);
+        cluster_hosts($dir);
+        OCP::Secrets->new(project_dir => $dir)->set_hetzner_token('hz-token')
+            if $spec == $INVALID[5][1];    # name: a list, with its Hetzner control plane
+        my $api = FakeApi->new(nodes => cluster_nodes(), deployment => 1);
+        my $hz  = FakeHetzner->new;
+
+        my @lines = validate_lines($dir);
+        is scalar(@lines), 1, "$what: validate() has one line, for it" or diag explain \@lines;
+        like $lines[0] // '', $key, "$what: about that key";
+
+        my $before = project_files($dir);
+        my $r = run_secure($dir, api => $api, hetzner => $hz);
+
+        ok !defined $r->{rv}, "$what: refused";
+        like $r->{died}, qr/\Aocp\.yaml has 1 error:\n/, "$what: naming the file";
+        like $r->{died}, qr/^  - \Q$_\E$/m, "$what: in validate()'s words" for @lines;
+        unlike $r->{died}, qr/ line \d+\.$/m, "$what: a refusal, not a Perl error";
+        like $r->{died}, qr/Nothing was changed/, "$what: and says nothing changed";
+        is_deeply $r->{prompts}, [], "$what: no PIN asked";
+        is scalar(@{ $r->{ssh} }), 0, "$what: no machine touched";
+        is_deeply [ @{ $api->{log} }, @{ $api->{deleted} } ], [], "$what: nothing written to the cluster";
+        is_deeply $hz->{uploads}, [], "$what: no key stored at Hetzner";
+        is_deeply project_files($dir), $before, "$what: no file written or changed";
+        is $r->{out}, '', "$what: nothing on STDOUT";
+    }
+};
+
+subtest 'every line at once, in validate()\'s order' => sub {
+    my $dir = dev_project(robocop => 'no', gpu => { driver => 'oprator' });
+    cluster_hosts($dir);
+    my @lines = validate_lines($dir);
+    is scalar(@lines), 2, 'validate() has two lines' or diag explain \@lines;
+
+    my $r = run_secure($dir, api => FakeApi->new(nodes => cluster_nodes()));
+    like $r->{died}, qr/\Aocp\.yaml has 2 errors:\n\Q${\ join '', map { "  - $_\n" } @lines }\E/,
+        'both, one after the other';
+    like $r->{died}, qr/Fix the lines above/, 'lines, plural';
+    is_deeply $r->{prompts}, [], 'no PIN asked';
+    ok !-f $dir->child('keys.yaml'), 'not switched';
+};
+
+subtest '--drop-bootstrap on a project that is secure already does not check ocp.yaml' => sub {
+    # It reads the machines and removes the bootstrap key where the admin key
+    # just logged in -- the step a leaked bootstrap key needs; a line it does
+    # not read must not hold it up.
+    my $dir = dev_project();
+    cluster_hosts($dir);
+    my $api = FakeApi->new(nodes => cluster_nodes());
+    run_secure($dir, api => $api);
+    ok -f $dir->child('keys.yaml'), 'switched';
+
+    my $file = $dir->child('ocp.yaml')->stringify;
+    my $spec = $ocp->load_file($file);
+    $spec->{gpu} = { driver => 'oprator' };
+    $ocp->dump_file($file, $spec);
+    ok scalar(validate_lines($dir)), 'validate() refuses ocp.yaml now';
+
+    my $r = run_secure($dir, api => $api, drop => 1);
+    is $r->{died}, '', 'no exception' or diag $r->{died};
+    is $r->{rv}, 0, 'exit 0';
+    my $boot = blob_of(bootstrap_public($dir));
+    is count_blob($_, $boot), 0, "$_: bootstrap key removed" for @MACHINES;
+};
+
+subtest 'ocp keys secure with an ocp.yaml validate() refuses -- its line on STDERR, exit 1' => sub {
+    # The never-deployed shape: no kubeconfig, no machine, no token -- nothing
+    # this run could reach, whatever it got past.
+    my $dir = dev_project(
+        control_planes => { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' },
+        workers        => [],
+        robocop        => 'no',
+    );
+    my ($line) = validate_lines($dir);
+    my $before = project_files($dir);
+
+    my ($out, $err) = map { Path::Tiny->tempfile } 1 .. 2;
+    my $bin = Path::Tiny::path('bin/ocp')->absolute;
+    my $lib = Path::Tiny::path('lib')->absolute;
+    my $pid = fork // die "fork: $!";
+    unless ($pid) {
+        chdir $dir or die "chdir: $!";
+        local $ENV{HOME} = $dir->stringify;
+        open STDIN,  '<', '/dev/null' or die;
+        open STDOUT, '>', "$out"      or die;
+        open STDERR, '>', "$err"      or die;
+        # No terminal and no --pins-stdin: ocp.yaml is checked before that,
+        # so its line is what the operator reads, not "run it interactively"
+        # to meet the line after.
+        exec $^X, "-I$lib", "$bin", 'keys', 'secure' or die "exec: $!";
+    }
+    waitpid $pid, 0;
+    my $rc = $? >> 8;
+    my ($o, $e) = ($out->slurp_utf8, $err->slurp_utf8);
+
+    is $rc, 1, 'exit 1';
+    is $o, '', 'nothing on STDOUT';
+    like $e, qr/\AError: ocp\.yaml has 1 error:\n/, 'the refusal, on STDERR';
+    like $e, qr/^  - \Q$line\E$/m, "validate()'s line: $line";
+    unlike $e, qr/terminal/, 'before the terminal check';
+    unlike $e, qr/internal error|line \d+\./, 'no Perl error';
+    is_deeply project_files($dir), $before, 'no file written or changed';
 };
 
 subtest 'dispatches as `ocp keys secure`' => sub {

@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys secure` checks `ocp.yaml` as `ocp apply` does before it
+      asks for a PIN, reads the age key or touches a machine: every line
+      `validate()` has goes to STDERR at once with "Nothing was changed", and
+      the command exits 1. A malformed `name`, pod CIDR or robocop block no
+      longer gets past both PINs and the switch to stop half way after
+      `keys.yaml` and `age.key.enc` are written. `--drop-bootstrap` on a
+      project that is secure already is not held up by it.
     - `ocp`, `robocop` and the Rexfile compare a YAML or CR true/false the
       same on either side of `eq` and `ne`: the correction for
       Cpanel::JSON::XS's operand swap now lives in `OCP::BooleanEq`, which
