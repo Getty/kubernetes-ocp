@@ -77,6 +77,13 @@ C<wait_robocop_ready> and C<poll_nodes_until_terminal>, read again and name
 the last read's why when they run out; C<cli_reconcile_workers> fails the
 worker with it instead of reporting its CR as not found.
 
+Those two C<[WARN]>s, and the ones for an OCPNode status left unwritten
+(C<ensure_cp_ocpnode>, C<migrate_legacy_nodes>) and a robocop pod that could
+not be listed or deleted (C<retire_unannotated_robocop_pods>), are counted in
+the apply's C<{_apply_warnings}>, as a worker not Ready yet is: the closing
+banner reads WITH WARNINGS, and the exit code stays as it was (k367,
+L<OCP::Cmd::Apply::Health>).
+
 L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
 forwarder — the existing test surface (t/20-apply-refactor.t,
 t/36-ocpnode-status.t, t/38-reconcile-path.t) keeps working.
@@ -348,9 +355,12 @@ sub ensure_cp_ocpnode {
     # (a 404) falls back to it; one that could not be read leaves publicIP out
     # of the merge patch, so the recorded address stays, and says why on
     # STDERR (k330) -- the configured host is no answer to "could not look".
+    # Each [WARN] of this sub is counted in {_apply_warnings}: the banner
+    # reads WITH WARNINGS, the exit code stays 0 (k367).
     my $ip = eval { k8s_node_ip($self, $api, $name) };
     if (my $err = $@) {
         print STDERR "  [WARN] OCPNode/$name keeps the address it has: $err";
+        push @{ $self->{_apply_warnings} }, "OCPNode/$name address" if ref $self;
     } else {
         $ip //= $cp_info->{host};
     }
@@ -377,6 +387,7 @@ sub ensure_cp_ocpnode {
         print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
     } else {
         print STDERR "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: $@";
+        push @{ $self->{_apply_warnings} }, "OCPNode/$name status" if ref $self;
     }
 }
 
@@ -505,8 +516,8 @@ sub migrate_legacy_nodes {
 
         # Separate write: the ensure above cannot carry status past the
         # status subresource (see OCP::K8s::patch_status). One that failed is
-        # a [WARN] on STDERR, with the cause; the [migrated] line on STDOUT
-        # follows it all the same (k356).
+        # a [WARN] on STDERR, with the cause, counted in {_apply_warnings}
+        # (k367); the [migrated] line on STDOUT follows it all the same (k356).
         eval {
             OCP::K8s->patch_status($api,
                 kind      => 'OCPNode',
@@ -519,7 +530,10 @@ sub migrate_legacy_nodes {
                 },
             );
             1;
-        } or print STDERR "  [WARN] status for migrated OCPNode/$name stayed unwritten: $@";
+        } or do {
+            print STDERR "  [WARN] status for migrated OCPNode/$name stayed unwritten: $@";
+            push @{ $self->{_apply_warnings} }, "OCPNode/$name status" if ref $self;
+        };
 
         printf "  [migrated] %s (%s, %s)\n", $name,
                $cr->{spec}{role}, $public_ip // 'no-ip';
@@ -827,7 +841,7 @@ sub ensure_robocop {
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
             my $shaped = OCP::Robocop::Manifest->for_config($doc, $config);
-            _say_robocop_image_change($api, $config, $shaped);
+            _say_robocop_image_change($self, $api, $config, $shaped);
             $api->ensure($shaped);
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }
@@ -844,7 +858,8 @@ sub ensure_robocop {
 # deleted with a 30 s grace period instead, said on STDOUT. A pod that has the
 # annotation is never touched, so this does nothing once the transition is
 # over. Best effort: a failure is a [WARN] on STDERR, with its cause, not a
-# failed apply (k356).
+# failed apply (k356) -- counted in {_apply_warnings}, so the banner reads
+# WITH WARNINGS (k367).
 sub retire_unannotated_robocop_pods {
     my ($self, $api) = @_;
 
@@ -860,6 +875,7 @@ sub retire_unannotated_robocop_pods {
     if (my $err = $@) {
         chomp $err;
         print STDERR "  [WARN] could not check for robocop pods without SIGTERM handling: $err\n";
+        push @{ $self->{_apply_warnings} }, 'robocop pods' if ref $self;
         return;
     }
 
@@ -878,6 +894,7 @@ sub retire_unannotated_robocop_pods {
         else {
             my $err = $@; chomp $err;
             print STDERR "  [WARN] could not delete robocop pod $name (no SIGTERM handling): $err\n";
+            push @{ $self->{_apply_warnings} }, "robocop pod $name" if ref $self;
         }
     }
     return;
@@ -888,7 +905,7 @@ sub retire_unannotated_robocop_pods {
 # on the live Deployment is replaced here -- and the operator should read that
 # on STDOUT, not find it out from a pod that rolled back.
 sub _say_robocop_image_change {
-    my ($api, $config, $doc) = @_;
+    my ($self, $api, $config, $doc) = @_;
     return unless ($doc->{kind} // '') eq 'Deployment' && ($doc->{metadata}{name} // '') eq 'robocop';
 
     if (defined(my $notice = OCP::Robocop::Manifest->image_notice($config))) {
@@ -897,13 +914,14 @@ sub _say_robocop_image_change {
 
     # No Deployment yet (a 404) replaces nothing. One that cannot be read is
     # written all the same -- this read only adds the line -- and says so on
-    # STDERR with the cause (k330).
+    # STDERR with the cause (k330), counted in {_apply_warnings} (k367).
     my $want = OCP::Robocop::Manifest->image($config);
     my $ns   = $doc->{metadata}{namespace} // 'ocp-system';
     my $dep  = eval { OCP::Cmd::Apply::K8s::read_or_absent("Deployment $ns/robocop",
         sub { $api->get('Deployment', 'robocop', namespace => $ns) }) };
     if (my $err = $@) {
         print STDERR "  [WARN] robocop image $want, not compared with the running one: $err";
+        push @{ $self->{_apply_warnings} }, 'robocop image' if ref $self;
         return;
     }
     return unless $dep;

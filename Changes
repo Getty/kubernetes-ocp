@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply`'s closing banner reads WITH WARNINGS, not SUCCESSFULLY,
+      when an OCPNode status could not be written, an old robocop pod could
+      not be listed or deleted, or the control plane's Node or the robocop
+      Deployment could not be read; the exit code stays 0.
     - An error from the Hetzner API no longer shows the API token, and no
       longer ends in "This is an internal error": `ocp apply`, `ocp
       destroy`, `ocp hetzner list`, `ocp node rm` and robocop (which writes
