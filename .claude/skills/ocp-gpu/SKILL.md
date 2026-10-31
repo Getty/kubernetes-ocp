@@ -71,9 +71,22 @@ gpu:
   - `share/gpu-operator/crds/` holds NVIDIA's files from the pinned tag. Never
     stub them.
   - `CONTAINERD_SET_AS_DEFAULT` and `CONTAINERD_RUNTIME_CLASS` stay unset.
-- **Drift probes read only workloads OCP writes, report only.**
+- **Drift probes read only workloads OCP writes, and every GPU probe is
+  self-healing.**
   - Probed: `nfd`, `gpu_operator` (optional) and the four AMD DaemonSets
-    (optional).
+    (optional). All six carry `self_healing` in `@OCP::Drift::COMPONENT_PROBES`
+    and no `remedy`: `ocp apply` closes the drift, no Rex task does.
+  - The four AMD DaemonSets since k350, NFD (`nfd-master`) and the GPU Operator
+    (`gpu-operator`) since k351. Their apply step re-deploys (AMD) or
+    re-applies the manifest (NFD, GPU Operator) when the image tag is off its
+    pin, even at an unchanged hash.
+  - What counts: the first container's image tag against the pin, read by
+    `OCP::Drift->version_against_pin`, the one helper probe and step share.
+    A pin bump and an image changed in the cluster both count.
+  - What does not: args and any other field, on either side. An untagged image
+    is not compared either.
+  - Nothing GPU-related is report-only. The `nfd-worker` DaemonSet image is not
+    probed at all (open card k369).
   - Never guess an operator-owned DaemonSet name for the other NVIDIA pins.
 - **A GPU is ready when it shows in `status.allocatable`, never in capacity.**
   The kubelet keeps capacity after a device plugin unregisters. The final

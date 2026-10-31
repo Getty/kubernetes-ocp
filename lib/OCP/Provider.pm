@@ -38,7 +38,8 @@ sub known_type {
 # never sees ocp.yaml: the provider CR is the one channel through which the
 # cluster-wide gpu.enabled / gpu.driver reach a worker robocop joins (k31).
 # `ocp apply` writes them there (OCP::Cmd::Apply::CR::ensure_provider_cr);
-# from_cr's two callers -- OCP::Robocop::Controller and the CLI reconcile path
+# from_cr's callers -- OCP::Robocop::Controller, the CLI reconcile path of
+# `ocp apply`, and (since k358) `ocp node add`'s own join (robocop off)
 # -- read them back here and hand them to OCP::Node as gpu_enabled / gpu_driver.
 #
 # It lives at the factory layer, next to from_cr, and reads only spec.gpu --
@@ -354,8 +355,11 @@ splat into C<< OCP::Node->from_cr >>.  They live on the provider CR because
 robocop never sees F<ocp.yaml>: this is the only channel through which the
 cluster's C<gpu.enabled> / C<gpu.driver> reach a worker robocop joins (k31).
 C<ocp apply> copies them there from F<ocp.yaml>
-(L<OCP::Cmd::Apply::CR/ensure_provider_cr>), and both callers of L</from_cr>
-read them back with this method.
+(L<OCP::Cmd::Apply::CR/ensure_provider_cr>), and all three callers of
+L</from_cr> read them back with this method: robocop's controller, the CLI
+reconcile path of C<ocp apply>, and, since k358, C<ocp node add>'s own join
+(robocop off).  Under C<gpu_enabled> 0 the cluster kill
+switch wins over a node's C<--gpu> on each of them.
 
 Normalised like the matching L<OCP::Config> accessors: C<gpu_enabled>,
 C<gpu_toolkit> and C<gpu_amd_integrated> are 0/1 (the CR stores JSON

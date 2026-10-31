@@ -192,6 +192,10 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   — create an OCPNode CR (`--no_wait` is kept as an alias, see above).
   `--node-ip` becomes `spec.nodeIP` (see "node_ip" below). `--gpu` sets
   `spec.gpu: true` and opens the integrated-GPU gate (see "gpu.amd" below).
+  Under `gpu.enabled: false` the kill switch wins over `--gpu` and no GPU is
+  set up on the node (k358 for the CLI's own join without robocop, k31 for
+  robocop's join); `gpu.driver: operator` leaves the NVIDIA driver to the GPU
+  Operator on that join too (k358).
   Once the node is Ready, it also deploys the node's GPU stack (skill
   `ocp-gpu`).
 - `ocp node rm NAME [--keep-machine]` — drain + remove (OCP::Node->teardown):
@@ -266,6 +270,11 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   running robocop pods deleted to re-read env. `--drop-bootstrap` removes the
   bootstrap blob's lines with the admin key, only where it works; never
   deletes `.ocp/id_ed25519`. Already secure: `[ok]`, or only the drop step.
+  Before PIN1 it checks ocp.yaml: a migration runs all of `validate()` (k321);
+  `--drop-bootstrap` on a project that is already secure checks only the shape
+  of what the machine lookup reads (`control_planes`, `workers`, hosts, a
+  pool's `nodes`), in validate()'s words (k346). Errors go to STDERR, exit 1,
+  before PIN1, the cluster or SSH.
 - `ocp keys recipients ls|add AGE1|rm AGE1` — age recipients of the SOPS
   files (k212): project key always, plus the governing `.sops.yaml`'s rule.
   add/rm rewrite the project's own `.sops.yaml` (never one further up — edit
@@ -278,7 +287,10 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   `ocp keys operator rm NAME` — a Leitstand (operator) that runs `ocp apply`
   unattended (k216). Run where the project key is (PIN1, PIN2 for the admin
   key; an operator/other `SOPS_AGE_KEY_FILE` identity is refused). add:
-  name `[a-z0-9][a-z0-9-]*` (≤63), checks before any PIN; SSH public key onto
+  name `[a-z0-9][a-z0-9-]*` (≤63), checks before any PIN (its arguments, and
+  the shape of what the machine lookup reads in ocp.yaml, in validate()'s
+  words, k346: STDERR, exit 1, before PIN1, the cluster or SSH; rm checks the
+  same shapes); SSH public key onto
   every machine (`OCP::Role::Cmd::Machines`, same walk as `keys secure`) with
   the admin key FIRST — a failed host → STDERR, exit 1, nothing recorded,
   re-run idempotent; then `.sops.yaml` gets AGE1 (external `.sops.yaml` →
@@ -307,7 +319,9 @@ control_planes:             # Hash, Hash + "nodes: N", or Array of hashes
   server_type: cx32
   location: fsn1
   image: debian-13
-  # host / service / network_interface / public_ip (pinned after apply)
+  # host / private_ip / public_ip / name / service (pinned after apply);
+  # `nodes: N` on the mapping form only. Any other key is
+  # refused (k347), `count:` and `network_interface:` included
   node_ip: 10.0.0.5         # optional, never defaulted; see "node_ip" below
 workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
@@ -695,7 +709,12 @@ by dropping the bootstrap key, and neither is covered anywhere else.
    entry, or kind `missing`; unfound checks (kind `error`) are not counted.
 2. **Hash-based components** (`.ocp/deployed.yaml`, MD5 of generated
    manifests): registry, NFD, GPU operator. cert-manager is tracked by
-   component version, not manifest hash.
+   component version, not manifest hash. NFD and the GPU Operator are also
+   self-healing (k351): their step reads the image the drift probe reads
+   (`OCP::Drift->version_against_pin`) and re-applies the manifest when the
+   tag is off its pin, even at an unchanged hash; args and other fields are
+   not compared. `--dry-run` says "would re-apply the NFD manifest" (or the
+   GPU Operator's, under `gpu.enabled`).
 3. Apply stamps `status.ocpVersion` at the end — `ocp update` and
    `ocp version` depend on it.
 

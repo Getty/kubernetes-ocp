@@ -83,6 +83,13 @@ ocp keys secure                     # PIN1, PIN1, PIN2, PIN2
 ocp keys secure --drop-bootstrap    # and remove the bootstrap key afterwards
 ```
 
+Before it asks for a PIN, the command checks `ocp.yaml`. A migration runs the
+whole check `ocp apply` runs and lists every error at once on STDERR. On a
+project that is already secure, `--drop-bootstrap` checks only the shape of
+what it reads to find the machines (`control_planes`, `workers`, their hosts
+and a pool's `nodes`), with the same lines. Either way a mistake exits 1
+before PIN1, the cluster or any machine is touched.
+
 If a machine fails, the command names it on STDERR and exits 1; the project
 stays in dev mode, the staged keys stay in `.ocp/`. Fix the machine and run it
 again: it continues with the same keys (PIN2 once, to unlock them).
@@ -127,6 +134,11 @@ ssh-keygen -t ed25519 -f ~/.ssh/ocp-leitstand
 ocp keys operator add --name leitstand \
     --ssh-pubkey ocp-leitstand.pub --age age1...
 ```
+
+Before PIN1, `add` and `rm` check the shape of what they read of `ocp.yaml` to
+find the machines (`control_planes`, `workers`, their hosts and a pool's
+`nodes`). A mistake there is listed on STDERR with the same lines `ocp apply`
+gives, exit 1, and nothing is asked or touched.
 
 `add` first appends the SSH public key to `/root/.ssh/authorized_keys` on every
 machine of the cluster — the control planes and every worker an OCPNode names —

@@ -71,6 +71,13 @@ gpu:
                                # none, and OCP writes the CDI specs on every
                                # node with a GPU (via the provider CR on
                                # workers) -- only those that do not resolve
+  amd:                         # optional; absent = the defaults below. An
+                               # unknown key or value is refused
+    allocation: device-plugin  # device-plugin | dra | none
+    resource_naming: single    # single | mixed, for the device plugin
+    labeller: true             # AMD's node labeller
+    metrics: false             # AMD's device-metrics-exporter
+    integrated: false          # set up an integrated AMD GPU on every node
 
 ssl:
   email: admin@example.com     # enables Let's Encrypt issuers; omit for
@@ -152,6 +159,15 @@ These shapes used to be read wrongly and are refused:
   whatever it holds (`host is read for an ssh pool only, and names no machine
   of a hetzner pool, … -- remove host`; for `local` the line adds `or name
   another machine in an ssh pool`).
+- **An unknown key in a control plane or a worker pool** is refused, so a
+  misspelt key cannot leave its default in force. A control plane takes
+  `provider`, `host`, `public_ip`, `private_ip`, `node_ip`, `server_type`,
+  `location`, `image`, `name` and `service` (and `nodes` on the mapping form); a
+  worker pool takes `name`, `provider`, `nodes`, `host`, `server_type`,
+  `location`, `image`, `labels` and `taints`. `count:` gets a hint
+  (`count is read by nothing -- how many control planes there are is nodes:
+  N`), and `network_interface:`, which nothing has read since k138, is refused
+  like any other unknown key.
 - **An unknown key under `gpu:` or `system:`** is refused, because a
   misspelt key left its default in force (`system: { time_zone: Europe/Berlin
   }` left every node on UTC). `gpu:` takes `enabled`, `driver`, `toolkit` and
@@ -159,6 +175,36 @@ These shapes used to be read wrongly and are refused:
   `system.time_zone: unknown key (must be timezone, locale, or ntp)`. A
   `system:` that is not a mapping is refused too: `system: must be a mapping
   (timezone, locale, or ntp), not 'UTC'`.
+
+## `gpu.amd:` — AMD GPU nodes
+
+`gpu.amd:` shapes the AMD side of the GPU stack. The block is optional, and
+every key in it too: without it the defaults below hold. A key outside the five
+below, or a value outside its list, is refused by `ocp apply` (`gpu.amd.X:
+unknown key …`, `gpu.amd.allocation: invalid value … (must be device-plugin,
+dra, or none)`).
+
+| Key | Values | Default | What it does |
+|---|---|---|---|
+| `allocation` | `device-plugin`, `dra`, `none` | `device-plugin` | How the cluster hands AMD GPUs to pods: ROCm's device plugin (`amd.com/gpu`), ROCm's DRA driver (experimental, needs Kubernetes 1.34+), or neither. A node can override it with the label `ocp.internal/amd-gpu.allocation`, which OCP never sets itself. |
+| `resource_naming` | `single`, `mixed` | `single` | Handed to the device plugin as is. `single` names every GPU `amd.com/gpu`; `mixed` names partitioned resources `amd.com/<partition>`. |
+| `labeller` | `true`, `false` | `true` | Runs AMD's node labeller, which adds the `amd.com/gpu.*` descriptive labels. |
+| `metrics` | `true`, `false` | `false` | Runs AMD's device-metrics-exporter (`/metrics` on port 5000). Upstream supports Instinct and Radeon AI, not Ryzen APUs. |
+| `integrated` | `true`, `false` | `false` | Sets up an integrated AMD GPU (the iGPU of a Ryzen CPU or APU) on every node. Without it, only a node joined with `ocp node add --gpu` gets its iGPU set up. |
+
+`integrated` reaches every node through the `OCPNodeProvider` CR: `ocp apply`
+writes it to `spec.gpu.amd.integrated`, and robocop, `ocp apply`'s worker
+reconcile and `ocp node add` read it from there. The first control plane gets it
+from `ocp.yaml` directly. It takes effect at a node's next install: a node that
+joined through an `OCPNode` and is Ready is only verified, so it has to be
+joined again. `allocation`, `resource_naming`, `labeller` and `metrics` shape
+the cluster's AMD stack, not a node's install, so they do not travel through the
+CR.
+
+`gpu.enabled: false` overrides all of it: no GPU is detected or set up on any
+node, whatever `integrated` says, and an AMD stack already deployed is removed.
+It wins over `ocp node add --gpu` as well. The switches take only `true` or
+`false` (`1` and `0` too), like the other on/off switches above.
 
 ## Provider modes
 

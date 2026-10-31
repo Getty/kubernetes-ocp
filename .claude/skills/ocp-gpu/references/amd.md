@@ -213,9 +213,14 @@ components AND an allocation term on top:
   - The options are `version` and `affinity`. The device plugin adds
     `resource_naming`, `wait => 0` and `node_labeller => 0`, because OCP
     deploys the labeller as its own component.
-  - An equal hash with the DaemonSet present means `unchanged`. Otherwise the
-    outcome is `deployed` (not recorded before), `restored` (DaemonSet gone) or
-    `updated`.
+  - An equal hash with the DaemonSet present and running its pin means
+    `unchanged`. Otherwise the outcome is `deployed` (not recorded before),
+    `restored` (DaemonSet gone) or `updated`.
+  - **The pin is read as the drift probe reads it** (k350):
+    `OCP::Drift->version_against_pin`, the first container's image tag against
+    the pin. A DaemonSet whose tag is off its pin is redeployed even at an
+    equal hash, so a pin bump and an image changed in the cluster both end in
+    `updated`. Args and other fields are not compared, on either side.
   - `unchanged` still runs the readiness wait (k286): a node that joined
     since gets its pod only now. A wait that runs out keeps the recorded hash,
     so the next apply redeploys nothing and waits again.
@@ -294,7 +299,10 @@ correct.
 - `OCP::Drift` has four probe entries, each `kind => 'DaemonSet'` and spread
   from `%AMD_GPU_DAEMONSETS`. All are `remedy => undef`, `optional` (absence is
   never drift) and `self_healing`, because `ocp apply` re-deploys them at the
-  pin.
+  pin. The probe and the apply step share `OCP::Drift->version_against_pin`
+  (k350), so what status counts as drift is what apply redeploys, and no
+  AMD probe is report-only. Only the image tag counts, never the args or any
+  other field.
   - `amd_device_plugin` is probed twice: the plugin, and the labeller with
     `tag_prefix => 'labeller-'`. The whole tag is compared, so the labeller
     image under a plain tag is drift.
