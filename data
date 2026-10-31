@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T06:25:42Z
+created: 2026-10-31T04:46:10Z
+id: 300
+priority: low
+started: 2026-10-31T06:25:42Z
+status: done
+tags:
+- apply
+- output
+- cilium
+title: ocp apply says "Creating Cilium Gateway..." on every run, also when the Gateway
+  is unchanged
+updated: 2026-10-31T06:25:42Z
+---
+
+Found live on amdlab (2026-10-31). Every `ocp apply` prints "Creating Cilium Gateway..." (OCP::Cmd::Apply::Network::setup_cilium_gateway, line ~217), then waits for Accepted, then "[ok] Cilium Gateway up to date". The Gateway itself was untouched: it is a server-side apply, created 2026-10-30T23:54:28Z, generation 1 after six applies. Every other component says "already deployed (up to date)", so the progress report contradicts itself.
+
+Done = the line says what happens: either "Applying Cilium Gateway..." or, better, read it first and print "created" vs "up to date" like the other components. Skip the Accepted wait when nothing changed, if that is cheap. Plus a test pinning both wordings.
+
+2026-10-31 06:00 Started (apply worker). Plan: read the Gateway first via crd_get (404 = absent, anything else dies with its cause, k269), always server-side apply, read again: generation unchanged = up to date, moved = updated, absent before = created. Return the report_component outcome. Skip the Accepted wait only when the fresh read already says Accepted for the current generation.
+
+2026-10-31 06:21 Done in lib/OCP/Cmd/Apply/Network.pm: setup_cilium_gateway reads the Gateway (crd_get: undef only for a 404, any other failure dies with its cause - no new helper needed, read_or_why not used), says 'Creating Cilium Gateway...' only when absent, still server-side applies (the forced apply takes back changed fields; the API server decides), reads again and compares metadata.generation: unmoved = '      Cilium Gateway already deployed (up to date)' (the registry/NFD/GPU operator/AMD wording), moved = '      Cilium Gateway updated (spec changed)'. Returns 'deployed'/'updated'/'unchanged' (report_component vocabulary). Accepted wait skipped only when the read after the apply already shows Accepted=True for the current generation (new gateway_accepted() checks observedGeneration when the condition carries one) - a never-accepted or stale-accepted Gateway is still waited for, so the skip hides nothing. Tightening: an updated Gateway is now waited for until the controller accepts the new generation, not passed on the old generation's Accepted. NOT DONE (other worker's file this round): lib/OCP/Cmd/Apply/Drift.pm still prints '  [ok] Cilium Gateway up to date' after the step whatever it did, and does not count a create/update in $updated. Proposed 1-line follow-up there: replace the eval/if with `eval { $updated += $self->_report_component('Cilium Gateway', $self->_setup_cilium_gateway($config)); 1 }` keeping the STDERR else-branch. Deploy.pm's '[ok] Cilium Gateway ready' is right in every case. Tests: t/300-cilium-gateway-outcome.t (new, pins both wordings), t/269 Gateway subtests adjusted (pre-read failure now dies at once with its cause, 1 read, nothing applied; the wait's tolerance claim kept). make test green; 7 mutants all killed.
+
+2026-10-31 06:22 Network.pm: Gateway read first, created/updated/up to date, outcome returned, Accepted wait skipped only for a Gateway accepted at its current generation; t/300 new, t/269 adjusted; make test green, mutants killed. Open: the 1-line caller change in Apply/Drift.pm (see note) so reconcile's [ok] line and count follow the outcome.
+
+Committed as 09b2f4d
