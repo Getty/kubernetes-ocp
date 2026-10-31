@@ -384,8 +384,9 @@ ocp destroy
 ```
 
 > **This deletes the real servers this project created** (or uninstalls
-> Kubernetes from an `ssh`/`local` host). There is a confirmation prompt;
-> `--force` skips it. Never point this at a cluster you still need.
+> Kubernetes from an `ssh`/`local` host). It asks first, at the terminal;
+> from a script or a pipe it refuses unless you pass `--force`, which also
+> skips the question. Never point this at a cluster you still need.
 
 `ocp apply` and `ocp destroy` are the only two commands in this guide that
 touch paid infrastructure or a live install. Everything else is safe to run
