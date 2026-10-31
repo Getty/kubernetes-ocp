@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-10-31T11:19:54Z
+created: 2026-10-31T09:24:18Z
+id: 334
+priority: low
+started: 2026-10-31T11:19:54Z
+status: done
+tags:
+- docs
+title: 'Docs: the k320/k322 refusals (switches only true/false, ssh pool host or nodes,
+  string shapes)'
+updated: 2026-10-31T11:19:54Z
+---
+
+After k320/k322 (2026-10-31): the docs do not describe the new refusals yet (k324 did k315's).
+- k320: gpu.enabled, gpu.toolkit, gpu.amd.labeller/metrics/integrated, lbipam, nocert, system.ntp take only true/false (or 1/0); a string like no is refused with a hint.
+- k322: an ssh pool names its machines with host: OR nodes: (a list), not neither and not both; nodes: [] means no machines yet; location, image and a pool's server_type must be strings.
+
+Where: docs/configuration.md (k324 added a "What ocp apply refuses in these keys" section), the ocp-usage skill (.claude/skills/ocp-usage/SKILL.md), docs/gpu*.md / the ocp-gpu skill where the gpu switches are described. Words as validate() says them (lib/OCP/Config.pm).
+
+2026-10-31 (main, from k331): add k331 too -- validate() refuses an unknown key under gpu: (enabled, driver, toolkit, amd) or system: (timezone, locale, ntp), a system: that is no mapping, and a host on a hetzner or local pool (only an ssh pool reads host).
+
+Committed as f276d35
