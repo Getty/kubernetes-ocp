@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` reads a worker pool's `host` only on an ssh pool, as
+      `ocp apply` does: a hetzner pool's `host` is no longer listed as a
+      machine to destroy, a local pool's no longer sends the uninstall to
+      127.0.0.1, and `host: 0` names no machine. A pool, or a control
+      plane in the last-resort fallback, that destroy skips for a provider
+      it does not know is named on STDERR instead of skipped without a
+      word.
     - `ocp` flushes STDOUT after every write, so a log that takes both
       channels (`ocp apply > log 2>&1`, CI, a container log) shows each
       STDERR line where it happened instead of ahead of the progress it

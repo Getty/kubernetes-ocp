@@ -69,6 +69,22 @@ use OCP::Config;
     }
 }
 
+# The cluster API, for the one subtest that needs it: an OCPNode list and an
+# empty OCPNodeProvider list, the robocop scale-down accepted.
+{
+    package FakeList;
+    sub new   { my ($c, @i) = @_; bless { items => [@i] }, $c }
+    sub items { $_[0]{items} }
+}
+{
+    package FakeK8s;
+    sub new { my ($c, %a) = @_; bless {%a}, $c }
+    sub k8s { $_[0] }
+    sub object_to_struct { $_[1] }
+    sub list  { my ($self, $kind) = @_; FakeList->new(@{ $self->{$kind} // [] }) }
+    sub patch { 1 }
+}
+
 # Project fixture. The default shape is provider: local in control_planes;
 # workers/status are optional to cover the fallback-vs-status distinction.
 sub project {
@@ -87,11 +103,11 @@ sub project {
              . "  provider: $cp_provider\n";
     $yaml .= "  host: 127.0.0.1\n" unless $args{cp_no_host};
 
-    # The pool names its machine in the single-host form: a local pool
-    # counts its machines, and a nodes: list there is a shape validate()
-    # refuses since k315 and `ocp destroy` since k323. A name of its own,
-    # not the control plane's 127.0.0.1, so the plan shows which of the two
-    # it lists.
+    # A local pool with a host of its own, not the control plane's
+    # 127.0.0.1, so the plan shows whether destroy lists it. A local pool
+    # counts its machines: a nodes: list there is a shape validate() refuses
+    # since k315 and `ocp destroy` since k323, and a host is read by neither
+    # apply nor, since k341, destroy.
     if ($args{workers}) {
         $yaml .= <<'YAML';
 
@@ -112,12 +128,13 @@ YAML
 }
 
 sub run_destroy {
-    my ($config) = @_;
+    my ($config, %a) = @_;
 
     my @deleted;
     my $destroy = OCP::Cmd::Destroy->new(
         command_chain => [ FakeOcp->new(config => $config->file) ],
         force         => 1,
+        ($a{k8s} ? (k8s => $a{k8s}) : ()),
     );
 
     # Capture STDOUT while running. STDERR leaks via $@ separately; both
@@ -190,25 +207,47 @@ subtest 'fallback path: a local CP is not relabelled ssh and is added to the lis
         'against the host recorded in ocp.yaml';
 };
 
-subtest 'fallback path: a local worker pool reaches the delete loop' => sub {
+subtest 'a local worker reaches the delete loop by its OCPNode, not by the pool\'s host' => sub {
     # The literal `$w->{provider} eq 'ssh'` gate on the worker fallback
-    # dropped this pool wholesale. The pool wasn't even in the destruction
-    # list, so there was nothing for the loop to skip.
-    #
-    # The worker has a name of its own: with the pool dropped, the plan
-    # falls back to the control plane, which is local at 127.0.0.1 too.
-    my $config = project(workers => 1);
+    # dropped a local pool wholesale (k116). Until k341 this subtest held
+    # that the pool's host: worker.local was listed and uninstalled through
+    # the local provider. But apply reads a local pool's host nowhere -- its
+    # OCPNodes carry none, and the local provider uninstalls on 127.0.0.1
+    # whatever it is told -- so reading it sent the uninstall to the machine
+    # ocp runs on, on the strength of a key nothing else reads. The local
+    # worker apply makes is an OCPNode; that is what reaches the delete
+    # loop, through the local provider, not relabelled ssh.
+    my $config = project(workers => 1, status => <<'YAML');
+nodes:
+  - name: cp-1
+    provider: local
+    public_ip: 127.0.0.1
+YAML
+    my $k8s = FakeK8s->new(OCPNode => [ {
+        metadata => { name => 'local-pool-1', namespace => 'ocp-system' },
+        spec     => { role => 'worker', providerRef => 'local-default' },
+        status   => { phase => 'Ready' },
+    } ]);
 
-    my $r = run_destroy($config);
+    my $r = run_destroy($config, k8s => $k8s);
     is $r->{err}, '', 'ran clean' or diag $r->{out};
 
-    like $r->{out}, qr/worker\.local \(local,/,
-        'the local worker is named in the destruction plan';
+    like $r->{out}, qr/local-pool-1 \(local,/,
+        'the local worker is named in the destruction plan, as local';
+    unlike $r->{out}, qr/worker\.local/, 'the pool\'s host is not';
     ok !(grep { $_->{type} eq 'ssh' } @{ $r->{deleted} }),
         'no ssh provider was asked to do anything';
+    is_deeply [ map { "$_->{type} $_->{host}" } @{ $r->{deleted} } ],
+        [ 'local 127.0.0.1', 'local 127.0.0.1' ],
+        'the worker, then the control plane, uninstalled through the local provider';
 
-    my ($local) = grep { $_->{type} eq 'local' } @{ $r->{deleted} };
-    ok $local, 'the worker pool was destroyed through the local provider';
+    # No API and nothing recorded: the pool's host is still no machine.
+    # The plan falls back to the control plane, local at 127.0.0.1, once.
+    $r = run_destroy(project(workers => 1));
+    is $r->{err}, '', 'ran clean' or diag $r->{out};
+    unlike $r->{out}, qr/worker\.local/, 'without the API, the pool\'s host is not listed either';
+    is_deeply [ map { "$_->{type} $_->{host}" } @{ $r->{deleted} } ], [ 'local 127.0.0.1' ],
+        'one uninstall on 127.0.0.1: the control plane\'s';
 };
 
 subtest 'k146: a spec-fallback local CP with no host still uninstalls on the box' => sub {
@@ -281,7 +320,10 @@ subtest 'delete dispatch: local and ssh share the same role and the same branch'
 subtest 'regression: the gate is known_type(), not an eq on the literal' => sub {
     # Same shape k103 used in six other places. If anyone re-hardcodes
     # the `eq 'ssh'` form here, the next provider type OCP adds (the only
-    # list in OCP::Provider->types) will be silently dropped again.
+    # list in OCP::Provider->types) will be silently dropped again. Which
+    # pool names its machine by host: is another question, and ssh is the
+    # answer apply gives (worker_ocpnodes); _pool_reads_host says so once
+    # (k341), behind this gate.
     my $src = path('lib/OCP/Cmd/Destroy.pm')->slurp;
 
     unlike $src, qr/\$w->\{provider\}\s+eq\s+(['"])ssh\1/,

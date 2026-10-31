@@ -9,6 +9,7 @@ use Kubernetes::REST::Kubeconfig;
 use Path::Tiny qw(path);
 
 use OCP;
+use OCP::Choices;
 use OCP::Config;
 use OCP::K8s;
 use OCP::Provider;
@@ -203,11 +204,23 @@ sub _collect_nodes {
     # dropped on the floor -- the same seam k103 found in six other input
     # checks. A missing or unknown provider is skipped rather than relabelled
     # ssh: a literal `// 'ssh'` would put an unsupported node on the
-    # destruction list (k116).
+    # destruction list (k116). An entry skipped for its provider is said, on
+    # STDERR (k341): this is the last source, so it may be the only record of
+    # a machine, and "No nodes to destroy." was then the only word. With
+    # nodes: N it is N copies of one entry, said once, as validate() says it
+    # (k322).
     unless (@nodes) {
-        my $idx = 0;
-        for my $cp (@{ $config->control_planes }) {
-            next unless OCP::Provider->known_type($cp->{provider} // q());
+        my $cps    = $config->control_planes;
+        my $shared = $config->_control_planes_shared;
+        my $idx    = 0;
+        for my $i (0 .. $#$cps) {
+            my $cp = $cps->[$i];
+            unless (OCP::Provider->known_type($cp->{provider} // q())) {
+                $self->_say_unknown_provider('control_planes[' . ($i + 1) . ']',
+                    $cp->{provider}, 'that control plane is')
+                    unless $shared && $i;
+                next;
+            }
             $idx++;
             $add->({
                 name      => $cp->{host} // ($config->name . "-cp-$idx"),
@@ -391,14 +404,34 @@ sub _no_token_reason {
 # single-host `host:` form alike -- as [ node entry ]. A pool that gives a
 # count (`nodes: 2`) names no machine; its servers are found by label or by
 # OCPNode, not here.
+#
+# The single host is read where `ocp apply` reads it (k341): on an ssh pool
+# with no nodes: list, and only when Perl calls it true, as
+# OCP::Cmd::Apply::CR::worker_ocpnodes does -- host: 0 is no machine named 0.
+# A hetzner pool's machines are servers Hetzner creates, at addresses it
+# hands out, and a local pool is the machine ocp runs on: apply puts no host
+# on their OCPNodes. Read anyway, a hetzner pool's host was listed as a
+# machine to destroy and deleted nothing, and a local pool's sent the
+# uninstall to 127.0.0.1. A nodes: list is read on every pool whose provider
+# destroy knows: on one that counts its machines it is refused before this
+# (k323).
+#
+# A pool whose provider destroy does not know is skipped, never guessed
+# (k116), and said, on STDERR (k341).
 sub _spec_worker_entries {
     my ($self, $config) = @_;
     my @entries;
+    my $n = 0;
     for my $w (@{ $config->workers }) {
-        next unless OCP::Provider->known_type($w->{provider} // q());
+        $n++;
+        unless (OCP::Provider->known_type($w->{provider} // q())) {
+            $self->_say_unknown_provider($config->_pool_where($w, $n),
+                $w->{provider}, 'a machine it names is');
+            next;
+        }
         my @hosts = ref $w->{nodes} eq 'ARRAY'
             ? map { ref $_ ? $_->{host} : $_ } @{ $w->{nodes} }
-            : ($w->{host} // ());
+            : ($self->_pool_reads_host($w) && $w->{host} ? ($w->{host}) : ());
         for my $host (grep { defined && length } @hosts) {
             push @entries, [ {
                 name      => $host,
@@ -409,6 +442,29 @@ sub _spec_worker_entries {
         }
     }
     return @entries;
+}
+
+# Whether a pool with no nodes: list names its machine by host: an ssh pool,
+# the one provider apply reads it for (k341). The one place destroy says so;
+# a provider that is no string is none.
+sub _pool_reads_host {
+    my ($self, $pool) = @_;
+    my $prov = $pool->{provider};
+    return !ref $prov && ($prov // '') eq 'ssh';
+}
+
+# One line on STDERR for a control plane or pool destroy skips because it
+# does not know its provider (k341), in validate()'s words for it, then what
+# that leaves running. It was skipped without a word. A provider that is not
+# set is not said: validate() and apply read a control plane without one as
+# hetzner, whose servers the label search finds, and apply read such a pool
+# as hetzner too, which names no machine destroy could read.
+sub _say_unknown_provider {
+    my ($self, $where, $prov, $left) = @_;
+    return unless ref $prov || length($prov // '');
+    print STDERR "[!!] $where: invalid provider " . OCP::Config::_shown_value($prov)
+               . ' (must be ' . OCP::Choices::or_list(OCP::Provider->types) . ")"
+               . " -- skipped: $left NOT torn down.\n";
 }
 
 # What validate() says about the nodes: lists _spec_worker_entries reads, in
@@ -430,11 +486,13 @@ sub _spec_worker_entries {
 # a string there may be a host someone means, which destroy -- not knowing
 # its provider, and never guessing one (k116) -- could only skip.
 #
-# And the pool's own host where _spec_worker_entries reads it (k335): no
-# nodes: list beside it. A list, a mapping or a boolean there became one
-# machine named ARRAY(0x...) (or 0, or 1), and for an ssh pool the run asked
-# for PIN2 to uninstall RKE2 on it. Beside a nodes: list, host is not read,
-# as apply does not read it.
+# And the pool's own host where _spec_worker_entries reads it (k335): an ssh
+# pool with no nodes: list beside it (k341). A list, a mapping or a boolean
+# there became one machine named ARRAY(0x...) (or 0, or 1), and the run
+# asked for PIN2 to uninstall RKE2 on it. Beside a nodes: list, or on a
+# hetzner or local pool, host is not read, as apply does not read it, and
+# its shape is not checked: a refusal there would hold a teardown up over a
+# key it never reads.
 sub _spec_worker_errors {
     my ($self, $config) = @_;
     my $workers = $config->workers;
@@ -456,7 +514,8 @@ sub _spec_worker_errors {
         if (ref $w->{nodes} eq 'ARRAY') {
             push @errors, $config->_pool_nodes_errors($w, $where);
         }
-        elsif (defined(my $err = $self->_host_error($w->{host}))) {
+        elsif ($self->_pool_reads_host($w)
+               && defined(my $err = $self->_host_error($w->{host}))) {
             push @errors, "$where: host $err";
         }
     }
@@ -1074,9 +1133,10 @@ C<name>, or a C<host> where destroy reads one, that is a list, a mapping or
 a boolean (C<k335>): the name is the C<ocp-cluster> label the servers are
 searched by, and C<name: [prod]> missed every server under C<prod> that
 F<.ocp/status.yaml> does not record; a host became a machine named
-C<ARRAY(0x...)>.  A pool's C<host> is read when its provider is one destroy
-knows and C<nodes:> is no list, a control plane's when its provider is one
-destroy knows.  Only those: an F<ocp.yaml> that C<validate()> refuses for a
+C<ARRAY(0x...)>.  A pool's C<host> is read on an ssh pool whose C<nodes:> is
+no list -- never on a hetzner or local pool, where C<ocp apply> does not read
+it either (C<k341>) -- a control plane's when its provider is one destroy
+knows.  Only those: an F<ocp.yaml> that C<validate()> refuses for a
 key destroy reads around or does not read -- C<gpu>, C<robocop>, a pool's
 count, an unknown provider, a missing C<server_type>, a C<server_type>,
 C<location> or C<image> of the wrong shape, more than seven control planes,
@@ -1089,9 +1149,14 @@ control planes); every OCPNode in the cluster, all roles, while the
 cluster API answers (the only record of the workers robocop or
 C<ocp node add> brought up); the Hetzner servers carrying this cluster's
 label (L<OCP::Provider::Hetzner/list_servers_by_cluster>); and the worker
-pools of C<ocp.yaml> that name their machines, in the C<nodes: [...]> and the
-single C<host:> form.  The C<control_planes> section of C<ocp.yaml> is a last
-resort, used only when nothing else found a node.  An API that does not
+pools of C<ocp.yaml> that name their machines: the C<nodes: [...]> list, and
+the single C<host:> of an ssh pool, read as C<ocp apply> reads it -- a host
+Perl calls false, such as C<0>, names no machine (C<k341>).  A hetzner pool's
+machines are found by label or by OCPNode, a local pool's by OCPNode.  The
+C<control_planes> section of C<ocp.yaml> is a last resort, used only when
+nothing else found a node.  A worker pool, or a control plane in that last
+resort, whose provider destroy does not know is skipped and named on STDERR
+with C<validate()>'s words for its provider (C<k341>).  An API that does not
 answer is reported on STDERR and the teardown continues from the other
 sources (C<k177>).
 

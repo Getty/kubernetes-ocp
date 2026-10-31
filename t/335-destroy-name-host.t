@@ -34,15 +34,22 @@ use OCP::Config;
 #     ('', 0) is a label like any other and is searched as written: a
 #     cluster applied under it before `ocp apply` validated (k255) carries
 #     it, and no other name would find its servers;
-#   * a pool's host where it is read: a pool whose provider destroy knows,
-#     and whose nodes: is no list (beside a list destroy reads the list and
-#     not host, as apply does);
+#   * a pool's host where it is read: an ssh pool whose nodes: is no list
+#     (beside a list destroy reads the list and not host, as apply does; a
+#     hetzner or local pool's host apply does not read at all, and since
+#     k341 destroy does not either);
 #   * a control plane's host where the fallback reads it: an entry whose
 #     provider destroy knows. Checked whether or not the fallback runs on
 #     this teardown -- that is known only after the secrets, the cluster
 #     API and the Hetzner search, and the refusal comes before all three;
 #   * not a pool's or a control plane's server_type, location or image,
 #     which destroy does not read at all.
+#
+# k341 narrowed the pool's host to where apply reads it, an ssh pool: a
+# hetzner or local pool's host, of any shape, is neither refused nor read
+# -- no machine listed, no uninstall on 127.0.0.1 -- and host: 0 names no
+# machine. A pool, or a control plane in the fallback, that destroy skips
+# for a provider it does not know is said on STDERR, in validate()'s words.
 #
 
 {
@@ -262,11 +269,15 @@ YAML
     refused(run_destroy($config), $config, @lines);
 };
 
-subtest 'a pool host of the wrong shape, whatever provider destroy knows' => sub {
-    # A hetzner pool's host was listed as a machine to destroy -- beside a
-    # count too, which is no list destroy reads instead; a local pool's
-    # named the local machine after it. A boolean is a reference too: host:
-    # false became a machine named 0.
+subtest 'an ssh pool\'s host: false is refused; a hetzner or local pool\'s host is not read' => sub {
+    # A boolean is a reference too: host: false on an ssh pool became a
+    # machine named 0, and PIN2 was asked for its key.
+    #
+    # Until k341 this refused the hetzner pool's host: [ h1 ] and the local
+    # pool's host: { a: b } as well, with validate()'s shape line -- destroy
+    # read a pool's host for every provider it knows. It reads it for an ssh
+    # pool only now, as apply does (k341), so their shape no longer holds a
+    # teardown up, and the refusal is the ssh pool's alone.
     my $config = project(<<"YAML");
 ${CP}workers:
   - name: big
@@ -281,13 +292,64 @@ ${CP}workers:
   - provider: ssh
     host: false
 YAML
-    my @lines = (
-        "worker pool 'big': host must be a string (a host name or IP address), not a list",
-        "worker pool 'lp': host must be a string (a host name or IP address), not a mapping",
-        "workers[3]: host must be a string (a host name or IP address), not false",
-    );
+    # validate() refuses all three. Its words for big's and lp's host differ
+    # with k331 (a shape line before, "read for an ssh pool only" after), so
+    # only that it names them is the fixture here.
+    for my $pool ('big', 'lp') {
+        ok scalar(grep { /^worker pool '$pool': host / } $config->validate),
+            "the fixture: validate() refuses $pool\'s host";
+    }
+    my @lines = ("workers[3]: host must be a string (a host name or IP address), not false");
     validate_says($config, @lines);
     refused(run_destroy($config), $config, @lines);
+};
+
+subtest 'a hetzner or local pool\'s host, of any shape: no entry, no uninstall on 127.0.0.1' => sub {
+    # The card's case (k341). A hetzner pool's machines are servers Hetzner
+    # creates at addresses it hands out, and a local pool is the machine ocp
+    # runs on: apply puts no host on their OCPNodes. Read anyway, the hetzner
+    # pool's host was "Deleting h1.lan..." with no server id, deleting
+    # nothing, and the local pool's sent the uninstall to 127.0.0.1.
+    #
+    # One pool per run: two pools with one host are one machine to destroy,
+    # and the hetzner entry would hide the local pool's uninstall.
+    my %pool = (
+        hetzner => "  - name: big\n    provider: hetzner\n    server_type: cx22\n"
+                 . "    location: fsn1\n    nodes: 2\n",
+        local   => "  - name: lp\n    provider: local\n",
+    );
+    for my $prov (sort keys %pool) {
+        for my $host ('h1.lan', '[ h1 ]', '{ a: b }', 'true', 'false', '0') {
+            my $config = project("${CP}workers:\n$pool{$prov}    host: $host\n");
+            my $r = run_destroy($config);
+            torn_down($r, $config);
+            is_deeply deleted($r), [ 'hetzner 111' ],
+                "$prov, host: $host -- the control plane is deleted, nothing else: "
+                . 'no uninstall on 127.0.0.1';
+            is_deeply [ $r->{out} =~ /^Deleting (.*)\.\.\.$/mg ], [ 'police1' ],
+                "$prov, host: $host -- no machine listed for the pool";
+            ok !(grep { $_->[0] eq 'ssh key' } @{ $r->{events} }), "$prov, host: $host -- no PIN2 asked";
+        }
+    }
+};
+
+subtest 'an ssh pool\'s host: 0 names no machine, as apply reads it' => sub {
+    # worker_ocpnodes reads a host Perl calls false as none; validate() says
+    # the pool has no machine (k322). Destroy listed one named 0, and asked
+    # PIN2 for its key.
+    my $config = project(<<"YAML");
+${CP}workers:
+  - name: edge
+    provider: ssh
+    host: 0
+YAML
+    ok scalar(grep { /^worker pool 'edge': an ssh pool needs host/ } $config->validate),
+        'the fixture: validate() says the pool has no machine';
+    my $r = run_destroy($config);
+    torn_down($r, $config);
+    is_deeply deleted($r), [ 'hetzner 111' ], 'nothing uninstalled on a machine named 0';
+    unlike $r->{out}, qr/^Deleting 0\.\.\.$/m, 'no machine named 0 listed';
+    ok !(grep { $_->[0] eq 'ssh key' } @{ $r->{events} }), 'no PIN2 asked';
 };
 
 # ------------------------------------------------------- refused: a control plane's host
@@ -411,7 +473,8 @@ subtest 'a name validate() calls missing is searched as written' => sub {
 
 subtest 'a pool host destroy does not read' => sub {
     # Beside a nodes: list destroy reads the list, as apply does; a pool whose
-    # provider destroy does not know is skipped unread (k116).
+    # provider destroy does not know is skipped unread (k116), and said
+    # (k341, below).
     my $config = project(<<"YAML");
 ${CP}workers:
   - name: edge
@@ -497,6 +560,87 @@ YAML
     is $r->{ret}, 0, 'exit 0';
     is_deeply deleted($r), [ 'ssh cp1.lan' ], 'the control plane\'s host is uninstalled';
     like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends on Cluster destroyed.';
+};
+
+# ------------------------------------------------------- said: an entry skipped for its provider
+
+# validate()'s lines for the providers in this fixture, which destroy's
+# STDERR line starts with: the same words, then what is left running.
+sub provider_lines { grep { /: invalid provider / } $_[0]->validate }
+
+subtest 'a pool skipped for its provider is said on STDERR, once' => sub {
+    # k341: destroy skips a pool whose provider it does not know, never
+    # guessing one (k116) -- without a word, so c.lan and d.lan kept their
+    # install and the run said nothing about them.
+    my $config = project(<<"YAML");
+${CP}workers:
+  - name: v
+    provider: vsphere
+    host: c.lan
+  - name: l
+    provider: [ ssh ]
+    host: d.lan
+  - name: none
+    host: e.lan
+YAML
+    my @lines = provider_lines($config);
+    is_deeply \@lines, [
+        "worker pool 'v': invalid provider 'vsphere' (must be hetzner, ssh, or local)",
+        "worker pool 'l': invalid provider a list (must be hetzner, ssh, or local)",
+    ], 'the fixture: validate()\'s provider lines, a pool with none set has "provider required"';
+    my $r = run_destroy($config);
+    torn_down($r, $config);
+    is_deeply deleted($r), [ 'hetzner 111' ], 'neither pool\'s host is touched';
+    is_deeply [ $r->{err} =~ /^\[!!\] (.*) -- skipped: a machine it names is NOT torn down\.$/mg ],
+        \@lines, 'each named once on STDERR, in validate()\'s words, with what it leaves running';
+    unlike $r->{out}, qr/invalid provider/, 'nothing of it on STDOUT';
+    unlike $r->{err}, qr/'none'|workers\[3\]/,
+        'a pool with no provider is not said: apply read it as hetzner, which names no machine by host';
+};
+
+subtest 'a control plane skipped in the last resort: not "No nodes to destroy." alone' => sub {
+    # Nothing recorded, so the control-plane fallback is the only source,
+    # and it skips both entries for their provider: the run said "No nodes
+    # to destroy." and nothing else while v.lan and w.lan kept running.
+    my $config = project(<<'YAML', status => "nodes: []\n");
+control_planes:
+  - provider: vsphere
+    host: v.lan
+  - provider: [ ssh ]
+    host: w.lan
+YAML
+    my @lines = provider_lines($config);
+    is_deeply \@lines, [
+        "control_planes[1]: invalid provider 'vsphere' (must be hetzner, ssh, or local)",
+        "control_planes[2]: invalid provider a list (must be hetzner, ssh, or local)",
+    ], 'the fixture: validate()\'s provider lines';
+    my $r = run_destroy($config);
+    is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
+    is $r->{out}, "No nodes to destroy.\nRemoved status.yaml.\nRemoved deployed.yaml.\n"
+                . "Encrypted kubeconfig removed.\n",
+        'No nodes to destroy. on STDOUT, then the k304 cleanup it was forced to';
+    is_deeply [ $r->{err} =~ /^\[!!\] (.*) -- skipped: that control plane is NOT torn down\.$/mg ],
+        \@lines, 'and on STDERR each control plane it skipped, in validate()\'s words';
+    is_deeply deleted($r), [], 'nothing deleted';
+
+    # nodes: N is N copies of one entry: said once, as validate() says it.
+    my $shared = project("control_planes:\n  provider: vsphere\n  host: v.lan\n  nodes: 3\n",
+                         status => "nodes: []\n");
+    @lines = provider_lines($shared);
+    is_deeply \@lines, [ "control_planes[1]: invalid provider 'vsphere' (must be hetzner, ssh, or local)" ],
+        'the fixture: validate() says it once';
+    $r = run_destroy($shared);
+    is_deeply [ $r->{err} =~ /^\[!!\] (.*) -- skipped: that control plane is NOT torn down\.$/mg ],
+        \@lines, 'said once';
+};
+
+subtest 'control planes not read are not said' => sub {
+    # The control-plane fallback reads ocp.yaml only when nothing else found
+    # a node; with police1 recorded it does not run, and skips nothing.
+    my $config = project("control_planes:\n  - provider: vsphere\n    host: v.lan\n");
+    my $r = run_destroy($config);
+    torn_down($r, $config);
+    unlike $r->{err}, qr/invalid provider/, 'nothing said';
 };
 
 done_testing;
