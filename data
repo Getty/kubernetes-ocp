@@ -1,0 +1,42 @@
+---
+class: standard
+completed: 2026-10-31T14:00:09Z
+created: 2026-10-31T12:19:25Z
+id: 351
+priority: medium
+started: 2026-10-31T14:00:09Z
+status: done
+tags:
+- drift
+- gpu
+- apply
+title: 'NFD and GPU Operator: ocp status promises a fix for a changed image that the
+  apply step does not make (hash-only compare, as k350 for AMD)'
+updated: 2026-10-31T14:00:09Z
+---
+
+Found under k350 (apply worker, 2026-10-31). OCP::Drift's probes for NFD (DaemonSet node-feature-discovery/nfd-worker) and the GPU Operator (Deployment gpu-operator/gpu-operator) are self_healing: ocp status counts an image changed in the cluster (kubectl set image, an edit) as drift that `ocp apply` closes. But setup_nfd and setup_gpu_operator in lib/OCP/Cmd/Apply/Workloads.pm only compare the recorded options hash in .ocp/deployed.yaml and check presence. So the real run says up to date, deploys nothing, and the drift stays; the dry run says the same. That is the shape k350 fixed for the four AMD GPU DaemonSets.
+
+Fix as k350 did: read the object the way the probe does, through OCP::Drift->version_against_pin (added in k350). On an off-pin tag, redeploy and report "ran X, expected Y"; the dry run says "runs X, expected Y / would update it". If a redeploy cannot restore the pinned image for one of them, mark that probe report-only instead, and say why.
+
+Lane: ocp-apply-worker. Needs k350 committed (version_against_pin).
+
+Done = for a changed image on both NFD and the GPU Operator, ocp status, the dry run and the real run agree, covered by tests shaped like t/251's k350 subtests: red first, then a mutation check.
+
+2026-10-31 12:47 Reproduced (apply worker). New t/351-workload-image-drift.t runs status (OCP::Drift component_drift + Status->_drift_fixable), the dry run (dry_run_report) and the real steps (setup_nfd/setup_gpu_operator) against one fake cluster that holds what server-side apply writes. On the queued base, image set to :v0.0.1 under an unchanged deployed.yaml hash: status 'NFD runs v0.0.1, expected v0.18.3' / 'GPU Operator runs v0.0.1, expected v26.3.3', fixable; the dry run prints that [drift] line with no action and counts it among 'a real run would act on'; the real run returns 'unchanged', applies nothing, image stays v0.0.1, probe still finds it. Red: 18 failures in t/351 (2 of 3 subtests; the 'probe does not call it drift' subtest is green as a guard), plus new plumbing subtests in t/38 (GPU Operator [ok] line on reconcile + fresh deploy) and t/228 (gpu_after_join). Note: the NFD probe reads Deployment node-feature-discovery/nfd-master, not the nfd-worker DaemonSet the card body names. The deploy is SSA force=true fieldManager ocp, so a re-apply restores the pinned image: both probes stay self_healing, no report-only needed.
+
+Fix done in a copy, nothing in the shared tree. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-apply351/k351.patch (header: subject, description, Changes bullet). Against the queued stack of base13.sh; git apply --check is also clean on the shared tree at 909b350.
+
+What: setup_nfd and setup_gpu_operator now also read the Deployment their OCP::Drift probe reads (nfd-master, gpu-operator) through OCP::Drift->version_against_pin (k350). Off its pin, the step re-applies the manifest (SSA with force takes the image back) and reports 'updated (ran X, expected Y)'. The reconcile path, the fresh deploy and gpu_after_join pass that reason to report_component. Dry run: 'would re-apply the NFD manifest', or the GPU Operator's under gpu.enabled only (the gate gpu_dry_run uses for the same line; setup_gpu_operator skips otherwise). A Deployment read that is not a 404 makes the step die with its cause and apply nothing (k269). No probe needed report-only. OCP::Drift untouched.
+
+Files: lib/OCP/Cmd/Apply/Workloads.pm, lib/OCP/Cmd/Apply/Drift.pm, lib/OCP/Cmd/Apply/Deploy.pm, t/351-workload-image-drift.t (new), t/38-reconcile-path.t, t/228-gpu-after-join.t.
+
+Tests (guarded make test): red on base: 3 files, 81 tests; t/351 failed 2/3 subtests, t/38 1/67, t/228 1/11. Green: 36 files (the three plus 33 neighbours), all ok, none skipped. Mutants: 18/18 killed (Files=1, Tests=60, PASS); m00 = the pre-fix tree, red on all three final tests.
+
+Harness pitfall: Rex.pm 1.16.1 rebuilds @INC at load with getcwd()/lib in front. A PERL5OPT/@INC shadow (the k346 runner pattern) therefore silently loses for every module loaded after Rex. My first mutant run showed 0 kills on t/38 and t/351 because of it. Mutants are now full hardlinked trees, run as cwd.
+
+Out of scope, for the dispatcher: (1) the nfd-worker DaemonSet image has no probe, so a hand change there is drift nowhere (the card body names nfd-worker; the probe reads nfd-master). (2) A GPU Operator off its pin under gpu.enabled false or with no NVIDIA node: status counts it fixable, the dry run counts it as an action, the real run skips (status/state lane). (3) gpu_dry_run's ClusterPolicy 'would re-apply' line has the same no-NVIDIA-node gap. (4) OCP::Drift's version_against_pin comment names only the AMD step as its caller (state lane).
+
+Ready for review: k351.patch in scratchpad/w-apply351. Green 36/36 files, mutants 18/18 killed. Details in the note above.
+
+Committed as 6a7fc53
