@@ -327,16 +327,6 @@ sub _report_phase {
     return $phase;
 }
 
-# gpu_toolkit (k223) and gpu_amd_integrated (k253) out of
-# OCP::Provider->gpu_flags_from_cr; each one absent when the provider CR
-# predates its field.
-sub _gpu_install_flags {
-    my ($self, $provider_h) = @_;
-    my %gpu = OCP::Provider->gpu_flags_from_cr($provider_h);
-    return map { exists $gpu{$_} ? ($_ => $gpu{$_}) : () }
-        qw( gpu_toolkit gpu_amd_integrated );
-}
-
 sub _cli_reconcile {
     my ($self, $cr, $api, $config, $secrets) = @_;
 
@@ -429,12 +419,15 @@ sub _cli_reconcile {
         # ocp.yaml's system: block, off the provider CR like robocop reads it
         # (k217) -- one source for every join path.
         ($provider_h ? OCP::Provider->system_flags_from_cr($provider_h) : ()),
-        # gpu.toolkit off the same CR (k223): false has the install task
-        # write the node's CDI specs. gpu.amd.integrated too (k253): true
-        # sets up the node's integrated AMD GPU without --gpu. Only these
-        # two of the GPU switches -- gpu.enabled / gpu.driver have never
-        # been read on this path.
-        ($provider_h ? $self->_gpu_install_flags($provider_h) : ()),
+        # ocp.yaml's gpu: switches off the same CR, all of them, as robocop
+        # and `ocp apply` hand them over (k31): gpu.enabled false is the
+        # cluster kill switch, which wins over this node's spec.gpu (--gpu)
+        # here as it does when robocop joins the node; gpu.driver operator
+        # leaves the driver to the GPU Operator; gpu.toolkit (k223) and
+        # gpu.amd.integrated (k253) as before. Each absent from a CR that
+        # predates its field. Until k358 only those last two came here: k31
+        # wired the robocop and apply paths and left this one out.
+        ($provider_h ? OCP::Provider->gpu_flags_from_cr($provider_h) : ()),
         # Its warnings as this command's own (k254), the line `ocp apply`
         # hands it too (OCP::Cmd::Apply::CR::node_logger).
         logger        => OCP::Cmd::Apply::CR::node_logger(),
@@ -1077,6 +1070,13 @@ there without C<amd.com/gpu> or C<nvidia.com/gpu> until the next one (k220,
 k251).  When that cannot be done -- no GPU shown in time, a failed rollout, or
 C<--nowait> -- it says so on STDERR and names C<ocp apply> as the way to get
 the stack; the exit code still reflects only whether the node is Ready.
+
+The join takes the C<gpu:> switches of F<ocp.yaml> off the OCPNodeProvider
+CR, as a join by robocop does (k358). Under C<gpu.enabled: false> the node's
+host step sets up no GPU, C<--gpu> or not; C<gpu.driver: operator> leaves the
+NVIDIA driver to the GPU Operator. Otherwise C<--gpu> also sets up the node's
+integrated AMD GPU (a Ryzen iGPU or APU), which a node without it gets only
+under C<gpu.amd.integrated: true>.
 
 Before any of that -- before the kubeconfig is decrypted (PIN1), the cluster
 is asked anything, the OCPNode is written or the host is probed or joined --

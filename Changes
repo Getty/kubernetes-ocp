@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add` (without robocop) honours `gpu.enabled: false` and
+      `gpu.driver: operator` from `ocp.yaml` on the node it joins, as
+      robocop does: no GPU detection under the kill switch, `--gpu`
+      included, and no host driver under the operator driver.
     - `ocp apply` and `ocp deploy-robocop` say on STDERR, with the cause,
       when the status of the control plane's or a migrated node's OCPNode
       could not be written, or when robocop pods from before SIGTERM
