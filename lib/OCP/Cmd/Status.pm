@@ -159,7 +159,7 @@ sub execute {
 
         # A check that could not be made found no drift: not counted (k262).
         my @found   = grep { !$self->_drift_unknown($_) } @$drift;
-        my $fixable = grep { $_->{remedy} } @found;
+        my $fixable = grep { $self->_drift_fixable($_) } @found;
         print "\n$fixable of ", scalar(@found),
               " can be reconciled automatically: run 'ocp apply'.\n" if $fixable;
     }
@@ -263,7 +263,7 @@ sub _collect_json {
             actual      => $_->{actual},
             message     => $_->{message} // '',
             manual_step => $_->{manual_step},
-            fixable     => ($_->{remedy} ? JSON::MaybeXS::true() : JSON::MaybeXS::false()),
+            fixable     => ($self->_drift_fixable($_) ? JSON::MaybeXS::true() : JSON::MaybeXS::false()),
         }
     } @$drift ];
 
@@ -313,6 +313,19 @@ sub _detect_drift {
 sub _drift_unknown {
     my ($self, $entry) = @_;
     return ($entry->{kind} // '') eq 'error';
+}
+
+# A drift entry `ocp apply` closes, for the text count and --json's fixable
+# alike (k312): one with a remedy it runs, a self_healing one whose manifest
+# it re-applies anyway, a missing one it deploys. Counting remedies alone left
+# out every entry whose message says "ocp apply updates it". The line is the
+# one `ocp apply --dry-run` draws between what a real run acts on and what it
+# only reports (k188), so the two commands count the same entries. A check
+# that could not be made is none of the three (OCP::Drift gives it no remedy).
+sub _drift_fixable {
+    my ($self, $entry) = @_;
+    return 1 if $entry->{remedy} || $entry->{self_healing};
+    return ($entry->{kind} // '') eq 'missing' ? 1 : 0;
 }
 
 # The drift section's lines. A check that could not be made reads as `ocp
@@ -647,8 +660,19 @@ When the kubeconfig cannot be decrypted or the API cannot be reached, the
 report on STDOUT stops there, the error and its diagnosis go to STDERR, and
 the exit code is 1.
 
-The command never modifies cluster state.  Drift entries that carry a
-C<remedy> are listed together with the count that C<ocp apply> would resolve.
+The command never modifies cluster state.  Every drift entry is listed,
+followed by the count of those C<ocp apply> closes:
+
+    5 of 8 can be reconciled automatically: run 'ocp apply'.
+
+An entry counts when C<ocp apply> carries a C<remedy> for it, when it is
+C<self_healing> (C<ocp apply> re-applies that manifest anyway: NFD, the GPU
+stack, the GPU Operator CRDs, OCP's own CRDs) or when it is of kind
+C<missing> (C<ocp apply> deploys it).  The rest is report only: C<ocp apply>
+names it and leaves it, among them a distribution upgrade, a moved address,
+the pod CIDR and a CRD newer than this C<ocp>.  These are the entries
+C<ocp apply --dry-run> counts as "a real run would act on" and as "reported
+only".  Earlier builds counted only the entries with a C<remedy>.
 A check L<OCP::Drift> could not make (an entry of kind C<error>: an RBAC
 denial, an apiserver 5xx) is listed as C<could not be checked> with its
 cause, and is not counted as drift:
@@ -745,9 +769,12 @@ else 0.
     }
 
 C<nodes> are sorted by name, C<drift> by component and message; a drift
-entry's C<fixable> says whether C<ocp apply> carries a remedy for it.  The
-drift list includes the C<< kind => 'error' >> entry that
-L<OCP::Drift> reports when the API call behind a check failed: drift unknown
+entry's C<fixable> says whether C<ocp apply> closes it, true for exactly the
+entries the text form counts: a C<remedy>, C<self_healing> or kind
+C<missing>.  Earlier builds set C<fixable> only for an entry with a remedy,
+so a self-healing or missing entry that C<ocp apply> closes read C<false>; a
+report-only entry is C<false> as before.  The drift list includes the
+C<< kind => 'error' >> entry that L<OCP::Drift> reports when the API call behind a check failed: drift unknown
 for what it names, never C<fixable>.  When drift detection itself dies, the
 list is not empty but holds one such entry with C<component> C<drift>, and
 C<error> says C<Cannot detect drift: ...>.  An empty list means no drift was

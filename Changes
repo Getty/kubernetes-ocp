@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` counts drift that `ocp apply` closes without a remedy
+      task -- a self-healing entry (NFD, the GPU stack, the GPU Operator
+      CRDs, OCP's own CRDs) or a missing one (registry.local in CoreDNS)
+      -- into "N of M can be reconciled automatically", and `--json` sets
+      its `fixable` to true: `fixable` now means "ocp apply closes it",
+      not "carries a remedy". Both count the entries `ocp apply --dry-run`
+      would act on; report-only drift stays out.
     - `ocp status` and `ocp apply` (dry run included) report an OCPNode or
       OCPNodeProvider CRD in the cluster that lacks fields this ocp declares
       (the API server drops them without an error, as it did `spec.nodeIP`)
