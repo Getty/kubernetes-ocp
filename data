@@ -1,0 +1,50 @@
+---
+class: standard
+completed: 2026-10-31T13:05:29Z
+created: 2026-10-31T10:53:16Z
+id: 345
+priority: low
+started: 2026-10-31T13:05:29Z
+status: done
+tags:
+- destroy
+- robustness
+title: 'ocp destroy fallback after k341: local pool with the API down, control plane
+  host: 0, a hetzner CP''s delete line that deletes nothing'
+updated: 2026-10-31T13:05:29Z
+---
+
+Left over from k341 (destroy worker, 2026-10-31), destroy lane:
+- With the cluster API down, ocp.yaml no longer leads to an uninstall of a local pool's worker; its only record is its OCPNode. Before k341 that happened only by accident, when the pool had a host:. Decide: should the last-resort fallback list a local pool (count 1, the machine ocp runs on) the way it lists control planes? If yes, a test with the API down.
+- A control plane in the fallback with host: 0 is still listed as a machine named "0" (k341 covered pools only); apply reads it as no host.
+- A hetzner control plane in the fallback is listed as "Deleting <cluster>-cp-N..." and deletes nothing (older than k341): say it is found by label or not at all, instead of a delete line that does nothing.
+- provider: false on a pool: validate() says "provider required", destroy's skip line says "invalid provider false" -- one wording.
+- Cleanup once k331 is in: Destroy::_pool_reads_host could ask Config::_pool_takes_host behind destroy's own known-provider check (not a drop-in: that one returns 1 for an unknown provider).
+
+2026-10-31 11:53 Work in progress (destroy worker). Points 2-5 coded in a scratch copy, new test t/345-destroy-cp-fallback.t, t/335 adjusted; waiting on a load-guard slot for the red (HEAD) and green runs. Point 3 consequence found: with a hetzner CP no longer listed, a hetzner-only fallback lands on 'No nodes to destroy.', which never ran the k98 report -- the delete line that deleted nothing was what took this shape to the report. So the report now runs on the no-nodes path too (before the k304 question). Second consequence: the fallback no longer reads a hetzner CP's host, so destroy stops refusing its shape (t/335 fixture moved to the not-refused side, as k341 did for hetzner/local pools). Point 1: analysed, not built; options follow with the handoff.
+
+Point 1 (list a local pool in the last-resort fallback?) -- NOT built, a decision for the maintainer.
+Facts: apply's worker_ocpnodes makes nodes // 1 OCPNodes <pool>-N for a local pool, providerRef local-default, no host. ensure_provider_cr writes no local-default CR, so apply never reconciles a local pool unless someone ran `ocp provider add --type local --name local-default`. validate() accepts a local pool beside a local CP (the same machine as the RKE2 server) and nodes > 1 on a local pool. The Rex::Rancher uninstall on 127.0.0.1 removes every RKE2/K3s install there, server and agent alike, and is idempotent. With the API up today a local worker's OCPNode goes first and takes a local CP's RKE2 down through the worker path, then the CP's uninstall runs again (t/77 pins the two 127.0.0.1 uninstalls). The CP fallback exists for "nothing recorded" (k116/k146) and runs only when no node was found at all.
+Options:
+(A) Leave it as k341 left it. Never a wrong uninstall. Beside a local CP nothing is lost (the CP's uninstall clears the machine). With a remote CP, a local pool and the API down, this machine keeps its agent and nothing says so.
+(A') A plus one STDERR line when the API is down and ocp.yaml has a local pool: its worker (this machine) is found by its OCPNode only and is NOT torn down; run rke2-uninstall.sh here. Small, names what is left, deletes nothing on a guess.
+(B) List a local pool in the last resort only. Almost never helps (a remote CP is usually recorded or labelled; a local CP already clears the machine) and adds a second uninstall.
+(C) List a local pool from ocp.yaml on every run, one entry <pool>-1 that merges with its OCPNode. Uninstalls this machine with the API down, but: a non-empty node list suppresses the CP fallback (an ssh CP only ocp.yaml records would then be skipped); a pool apply never reconciled (its default, no local-default CR) still wipes whatever RKE2/K3s this machine runs, another project's cluster included; run from another machine or inside the Docker image it hits the wrong target or nothing. It brings back the guess-uninstall on 127.0.0.1 that k341 removed.
+(D) Upstream, other lanes (choices/state/apply): validate() refuses a local pool beside a local CP and nodes > 1 on a local pool; apply writes a local-default CR or refuses a local pool.
+Recommendation: A or A'. Not C. A' and D would be new cards; the dispatcher files them if wanted.
+
+Destroy worker, done: points 2-5 built, point 1 left as a decision (note above). Patch w-destroy345/k345.patch (subject, description, Changes bullet at its top), applied to the tree: lib/OCP/Cmd/Destroy.pm, t/345-destroy-cp-fallback.t (new), t/335-destroy-name-host.t, t/77-destroy-local-provider.t (comments), t/107-output-channels.t (fixture). Not committed.
+- (3) A hetzner control plane in the fallback (and one with no provider, which apply reads as hetzner) is no longer listed as "Deleting <cluster>-cp-N...". When the label search answered: STDOUT "control_planes[1]: a hetzner control plane is found by its ocp-cluster=<name> label or not at all; no server carries it, nothing to delete." When none did: STDERR "[!!] ... and no Hetzner token searched for it" (or "the label search failed: <error>") "-- if it runs, it is NOT torn down.", plus the hcloud selector. Consequences handled: a hetzner-only fallback now lands on "No nodes to destroy.", so the k98 mislabelled-server report runs on that path too; destroy no longer shape-checks a hetzner control plane's host, since the fallback reads none.
+- (2) A control plane's host: 0 or '' is no host in the fallback (<cluster>-cp-N, address -), as apply's cp_identity reads it.
+- (4) A pool's provider: false is skipped as "provider required" (validate()'s words). A control plane's provider: false stays "invalid provider false", as validate() says it.
+- (5) _pool_reads_host is gone: OCP::Config::_pool_takes_host is asked behind destroy's own known-provider gate.
+- t/107 "a clean run keeps STDERR empty": the claim is kept, the fixture changed. It had no token and an ocp.yaml with no control plane (apply reads that as one hetzner CP), so it is no longer a clean run. It now has a token and a label search that finds nothing.
+Verified with make test (Docker, IMAGE=localhost/ocp-w345): k341's 17 files plus t/345, 18 files, Tests=272, all ok. HEAD's Destroy.pm, loaded as mutant M0, is red on t/107 subtest 1, t/335 subtests 8 and 14, and t/345 subtests 1-2, 4-6 and 8. All 10 mutants are killed, and each copy logged the path it loaded. Rex rewrites @INC when it loads, so each mutant copy loads Destroy before Rex.
+Leftovers for the dispatcher, not built:
+- An ssh control plane with no host is still listed in the fallback and skipped without a word (the ssh analogue of point 3).
+- provider '' on a CP or pool goes unsaid by destroy, while validate() names it.
+- A label search that fails outside the fallback is still silent.
+- Skip and unsearched lines keep exit 0 (k341's precedent).
+- The API-down line still names ocp.yaml as a worker source, though a local pool's worker is not found there.
+
+Committed as a0a72fe
