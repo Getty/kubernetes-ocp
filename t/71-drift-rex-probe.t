@@ -16,7 +16,8 @@ use OCP::Drift;
 # task over SSH on the hosts a probe selects and reads its stdout for a marker.
 # Its failure modes are the ones the API path does not have -- host down, no
 # key, slow -- and none of them is drift: a probe that cannot run is carped and
-# skipped, never blocks detect(), never claims a clean host.
+# is an error entry, drift unknown (k380), never blocks detect(), never claims
+# a clean host.
 #
 # The prober is injected exactly like `api` is. Here it is a coderef that
 # records its calls and hands back canned OCP::Rex-shaped results; the real one
@@ -122,27 +123,55 @@ sub prober_for {
 }
 
 #
-# A probe that throws (host unreachable, no key, timeout) is carped and
-# skipped -- never an exception, never drift, never blocking the rest.
+# A probe that throws (host unreachable, no key, timeout) is carped and is one
+# error entry, drift unknown (k380) -- never an exception, never drift, never
+# blocking the rest, and not "no drift" either: it used to be no entry, which
+# every command read as a clean host.
 #
 {
     my $config = write_config(spec => $TWO_CP);
     my @warn;
     local $SIG{__WARN__} = sub { push @warn, $_[0] };
 
+    my @probed;
     my $prober = sub {
         my ($host, $task, $params) = @_;
-        die "ssh: connect to host $host port 22: Connection timed out\n"
+        push @probed, $host;
+        die "ssh: connect to host $host port 22: Connection timed out\nsecond line of the cause\n"
             if $host eq '10.0.0.1';
         return { stdout => "", exit => 0 };
     };
 
     my @drift = OCP::Drift->new(config => $config, rex_prober => $prober)->rex_probe_drift;
 
-    is_deeply(\@drift, [], 'an unreachable host yields no drift, and no crash');
-    ok(@warn, 'the failure was carped to stderr, not swallowed');
+    is_deeply(\@probed, ['10.0.0.1', '10.0.0.2'], 'no crash: the other host is probed all the same');
+    is(scalar @drift, 1, 'an unreachable host is one entry');
+    is($drift[0]{kind}, 'error', 'of kind error: drift unknown, not drift');
+    is($drift[0]{component}, 'legacy_containerd_template', 'the probe that failed');
+    is($drift[0]{label}, 'Legacy containerd template', 'with its label');
+    is($drift[0]{host}, '10.0.0.1', 'and the host it could not probe');
+    ok(!$drift[0]{remedy}, 'no remedy: nothing is known to fix');
+    is($drift[0]{message},
+        'Legacy containerd template: could not probe 10.0.0.1, drift unknown:'
+        . ' ssh: connect to host 10.0.0.1 port 22: Connection timed out',
+        'one line: the first of the cause');
+    is(scalar @warn, 1, 'the failure was carped to stderr once, not swallowed');
     like($warn[0], qr/10\.0\.0\.1/, 'the warning names the host that could not be reached');
     like($warn[0], qr/detect_legacy_containerd_template/, 'and the probe that failed');
+    like($warn[0], qr/second line of the cause/, 'and the whole cause');
+}
+
+#
+# A probe the prober skipped (it returned nothing -- the command names it on
+# its skip line) is no entry, and nothing on stderr.
+#
+{
+    my $config = write_config(spec => $ONE_CP);
+    my @warn;
+    local $SIG{__WARN__} = sub { push @warn, $_[0] };
+    my @drift = OCP::Drift->new(config => $config, rex_prober => sub { undef })->rex_probe_drift;
+    is_deeply(\@drift, [], 'a skipped probe is no entry');
+    is_deeply(\@warn, [], 'and no warning');
 }
 
 #

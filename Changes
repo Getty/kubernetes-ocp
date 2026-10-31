@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A host probe that fails (a changed host key, a machine that does not
+      answer) no longer reads as no drift: `ocp status`, `ocp apply` and
+      `ocp apply --dry-run` name it as could not be checked, with the cause
+      on STDERR, and a real `ocp apply` now ends short of spec, with a
+      non-zero exit, over it, as over any drift check it could not make.
     - `ocp keys operator add|rm` and `ocp keys secure --drop-bootstrap`
       refuse a control plane whose `public_ip` or `name` is a list, a
       mapping or a boolean, with `validate()`'s line for it and before PIN1,

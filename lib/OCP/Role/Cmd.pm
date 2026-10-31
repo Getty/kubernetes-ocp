@@ -710,7 +710,8 @@ not land on the report's STDOUT.
 
 A host whose key no longer matches the one recorded in known_hosts dies out of
 the prober with L<OCP::SSH>'s C<HostKeyChanged>, whatever key was offered;
-L<OCP::Drift> says it on STDERR.  Other failures with the robo key are a skip,
+L<OCP::Drift> says it on STDERR and reports the probe as could not be checked
+(an C<error> entry, k380).  Other failures with the robo key are a skip,
 named on the C<[WARN] host probes skipped> line.
 
     my $prober = $self->rex_prober($config,

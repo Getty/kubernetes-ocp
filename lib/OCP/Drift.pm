@@ -1144,13 +1144,16 @@ sub pod_cidr_drift {
 # This is the SSH-side detection mode. Where component_drift asks the apiserver,
 # this runs a read-only Rex task on each host a probe selects and reads its
 # stdout for $REX_DRIFT_MARKER. Its failure modes are the ones the API path does
-# not have -- the host is down, the key needs a PIN, the link is slow -- and
-# none of them is drift: a probe that cannot run is carped to stderr and
-# skipped, so `ocp status` on an unreachable machine degrades to "could not
-# check" rather than blocking or reporting a clean host. Only a host that
-# answers with the marker becomes an entry, and that entry carries the cleanup
-# task as its remedy, with the host it drifted on, so the reconcile loop runs
-# the fix where the drift is.
+# not have -- the host is down, the key needs a PIN, the link is slow, the host
+# key changed -- and none of them is drift. A probe the prober skipped (it
+# returns nothing; OCP::Role::Cmd says why on its skip line) is no entry. A
+# probe that threw is one error entry, drift unknown, the cause carped to
+# stderr once (k380): it used to be no entry at all, and every command then
+# read the host as clean -- "[ok] No drift detected" under the error. So `ocp
+# status` on an unreachable machine degrades to "could not be checked" rather
+# than blocking or reporting a clean host. A host that answers with the marker
+# becomes an entry that carries the cleanup task as its remedy, with the host
+# it drifted on, so the reconcile loop runs the fix where the drift is.
 sub rex_probe_drift {
     my ($self) = @_;
 
@@ -1168,6 +1171,21 @@ sub rex_probe_drift {
             if (my $err = $@) {
                 chomp $err;
                 carp "OCP::Drift: probe '$probe->{detection_task}' on $host failed: $err";
+                # The entry's message is one line: the cause's first. The
+                # whole of it -- a changed host key's ssh-keygen -R line --
+                # is the carp above.
+                my ($cause) = grep { /\S/ } split /\n/, "$err";
+                push @drift, {
+                    kind      => 'error',
+                    component => $probe->{component},
+                    label     => $probe->{label},
+                    expected  => undef,
+                    actual    => undef,
+                    host      => $host,
+                    message   => "$probe->{label}: could not probe $host, drift unknown: "
+                               . ($cause // 'no reason given'),
+                    remedy    => undef,
+                };
                 next;
             }
             next unless $result;
@@ -1498,9 +1516,9 @@ Each entry is a hashref:
 =item * B<kind> - C<spec>, C<version>, C<missing>, C<error> or C<rex_probe>.
 C<error> is a query that could not be made -- revoked token, RBAC denial, TLS
 failure, apiserver 5xx, a switch in F<ocp.yaml> that is neither true nor
-false -- rather than a comparison that came back wrong: the
-drift of what it names is unknown, and the cause was carped to stderr. It
-carries no remedy.
+false, a host probe that threw -- rather than a comparison that came back
+wrong: the drift of what it names is unknown, and the cause was carped to
+stderr. It carries no remedy.
 C<rex_probe> is host-side drift found over SSH rather than through the API.
 
 =item * B<component> - key in the version manifest, or the node name for spec drift
@@ -1510,6 +1528,9 @@ C<rex_probe> is host-side drift found over SSH rather than through the API.
 =item * B<expected> / B<actual> - the two versions or values
 
 =item * B<message> - one-line description
+
+=item * B<host> - the machine a C<rex_probe> entry, or the C<error> entry of a
+host probe that threw, is about
 
 =item * B<remedy> - C<< { type => 'rex', task => ..., params => {...} } >>, or undef
 when no automatic fix exists
@@ -1538,8 +1559,9 @@ A L<Kubernetes::REST> API object. Without it, only spec drift is detected.
 
 A coderef, called as C<< $prober->($host, $task, \%params) >>, that runs a
 read-only detection task over SSH on C<$host> and returns L<OCP::Rex>'s result
-(C<< { stdout => ..., exit => ... } >>), or throws when the host cannot be
-reached. This is the second, SSH-side detection mode; without it, host-side
+(C<< { stdout => ..., exit => ... } >>), throws when the probe could not run
+(the host does not answer, its host key changed), or returns nothing for a
+probe it skipped. This is the second, SSH-side detection mode; without it, host-side
 probes are skipped just as spec-only detection skips the API when C<api> is
 absent. L<OCP::Role::Cmd/rex_prober> builds it, non-prompting, so C<ocp status>
 and the top of C<ocp apply> never grow a password prompt.
@@ -1755,10 +1777,15 @@ C<kind =E<gt> 'rex_probe'> entry naming the host it drifted on and carrying the
 cleanup task as its C<remedy> (with that same host), so
 L<OCP::Cmd::Apply::Drift> runs the fix where the drift is.
 
-Needs L</rex_prober>; without it, nothing is probed. A probe that throws --
-host unreachable, no key, timeout -- is carped to stderr and skipped, never an
-exception and never drift, so a single unreachable machine cannot block
-C<detect> or make C<ocp status> a no-go. The first probe is the obsolete
+Needs L</rex_prober>; without it, nothing is probed. A probe the prober
+skipped (it returned nothing) is no entry; the command says why on its skip
+line (L<OCP::Role::Cmd/host_probe_warning>). A probe that throws -- host
+unreachable, timeout, a host key that no longer matches the recorded one -- is
+carped to stderr, the whole cause once, and is one C<kind =E<gt> 'error'>
+entry with the probe's C<component> and C<label>, the C<host>, and the first
+line of the cause in its C<message> (k380): drift unknown, never drift and
+never an exception, so a single unreachable machine cannot block C<detect> or
+make C<ocp status> a no-go, and is not read as a clean host either. The first probe is the obsolete
 pre-k23 containerd config template on the control planes (k45/k71).
 
 The workers a C<machines> probe adds come from one list of the OCPNodes in
