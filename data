@@ -1,0 +1,26 @@
+---
+class: standard
+created: 2026-10-31T13:24:19Z
+id: 364
+priority: low
+status: todo
+tags:
+- docs
+- pod
+- dist
+title: 'dzil build: 50 more files carry a hand-written =head1 NAME next to # ABSTRACT
+  (after k317)'
+updated: 2026-10-31T13:24:19Z
+---
+
+Left over from k317 (2026-10-31). k317 removed the hand-written `=head1 NAME` next to `# ABSTRACT:` in lib/OCP.pm and lib/OCP/Config.pm, because Pod::Weaver builds NAME from the ABSTRACT and the built POD had NAME twice.
+
+50 more files still have it: bin/ocp, bin/robocop, 47 modules in lib/, and lib/OCP/ErrorLine.pm, new in k342.
+- In 37 of them the hand-written text matches the ABSTRACT, so it can just go.
+- In 12 the texts differ and one wording has to be chosen, either as the new ABSTRACT or dropped: bin/ocp, bin/robocop, OCP::Cmd::Apply, OCP::Cmd::Kubeconfig, OCP::K8s, OCP::K8s::OCPNode, OCP::K8s::OCPNodeProvider, OCP::Keys, OCP::Role::Cmd::Operator, OCP::Role::Cmd::Recipients, OCP::Secrets, OCP::SSH. The hand-written SSH text says "using IPC::Open3", which is out of date.
+
+OCP::ErrorLine (k342) also uses `=head2 one_line` under `=head1 FUNCTIONS`; the house format is `=method`/`=func` (skill getty-perl-pod).
+
+Done = `dzil build` produces exactly one NAME per built file (count `^=head1 NAME` in .build/ or the tarball), no POD section is lost (diff pod2text of each built file before and after; only the NAME block may change), and t/51-pod.t passes. For each of the 12, the card note says which wording was kept.
+
+Lane: ocp-doc-writer (POD only). The doc-writer has no Bash, so the main agent or the release manager runs dzil build and the before/after comparison.
