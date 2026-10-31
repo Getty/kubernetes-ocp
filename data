@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-10-31T03:04:36Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T03:04:36Z
+created: 2026-10-31T02:32:19Z
+id: 269
+priority: medium
+started: 2026-10-31T03:04:36Z
+status: done
+tags:
+- apply
+- k8s
+- bug
+- amd
+title: Apply/K8s.pm resource_exists and crd_get read any failure as absent
+updated: 2026-10-31T03:04:41Z
+---
+
+Found by k256. lib/OCP/Cmd/Apply/K8s.pm resource_exists and crd_get turn every failed read into "not there". resource_exists backs OCP::Cmd::Apply::AMDGPU::ds_present, so a 403 there makes apply redeploy (or remove) an AMD component it could not see, and AMDGPU::not_ready reports any failed read as "not found".
+
+Done when only a 404 is absent, any other failure dies or is reported with its cause (callers decide; check every caller of both), AMDGPU says "could not read" instead of "not found", and tests pin 404 vs 403 vs 500. Lane: ocp-apply-worker.
+
+2026-10-31 02:46 Change in: K8s.pm resource_exists dies 'could not read KIND ns/name: <cause>' unless the exception matches /\b404\b/; crd_get returns undef only on status 404, dies on transport error, any other >=400 (HTTP status + body excerpt) and on a 200 that is no JSON. Callers: AMDGPU setup's remove decision catches ds_present per component (unreadable -> that component's error result, nothing removed, others carry on); ensure needs no change (ds_present dies inside setup's per-component eval -> no deploy, no restored/updated); not_ready gets read_or_why: 404 '<what> not found', else 'could not read <what>: <cause>' for the DaemonSet, the Node and the ResourceSlices reads (poll reads again, wait_ready dies with the last why). Workloads post-deploy ClusterPolicy state poll and Network Gateway Accepted poll eval their read, poll again, and name the last failed read (WARN on STDERR / in the death). Registry running, NFD, GPU operator running/toolkit/CRD/ClusterPolicy diff reads: no code change, they now die and their step reports [!!].
+
+2026-10-31 02:59 For lib/OCP/Cmd/Apply/Drift.pm (not edited, k267's file; line numbers as of f04fdf5): (1) L316 cert-manager reconcile _resource_exists: needs nothing -- a non-404 now dies inside the step's eval and prints '[!!] cert-manager setup failed: could not read Deployment cert-manager/cert-manager: <cause>' on STDERR, counted in _failed_components (before: a 403 read as not running and reinstalled cert-manager). (2) gpu_dry_run L671 'return () unless eval { _resource_exists(gpu-operator) }': a non-404 now dies inside that eval and the dry run says nothing about the GPU Operator -- unknown read as absent, silently. Needs: keep the death apart from a false answer (my $running = eval {...}; if ($@) { say on STDERR 'GPU Operator: could not read Deployment gpu-operator/gpu-operator, drift unknown: <cause>' and decide whether it counts as a finding }). (3) L673 'my @paths = eval { cluster_policy_differences(...) }': cluster_policy_differences now dies on a non-404 ClusterPolicy read; the eval turns it into 'no differences'. Needs the same: report $@ as drift unknown. (4) L679 'my $cp = eval { _crd_get(ClusterPolicy) }' for toolkit_switch_warning: a death means 'could not read', not 'no ClusterPolicy' -- report it (or reuse the read of 3). L340/L354 (_setup_cilium_gateway, _setup_lb_ipam in eval): no change needed, the death now carries the read cause.
+
+2026-10-31 02:59 Also found (outside this card, same class -- for the dispatcher to file): (a) lib/OCP/Drift.pm gpu_crd_drift has its own copy of the old crd_get ('return undef unless $r && $r->status < 400'): a 403/500 on a GPU CRD read is 'no CRD', no drift (k268's file); and gpu_crds_differing's 'or next' skips a CRD that is 404 while the operator runs. (b) AMDGPU::after_join: eval { get Node } / eval { get OCPNode } swallow every failure, an unreadable Node reads as 'not AMD' and the re-check is skipped silently. (c) Workloads::setup_gpu_operator GPU node detection eval { list Node } swallows failures -> 'No GPU nodes detected' -> skipped; setup_gpu_operator_after_join's OCPNode/Node gets the same; setup_nfd's nfd-worker/label polls lose the cause. (d) K8s.pm poll_deployment_ready: eval { get } swallows -> callers die 'not ready within Ns' without the cause. (e) Network.pm configure_registry_dns: eval { get ConfigMap } -> 'return 0 unless $cm' -> the reconcile path prints '[ok] registry.local DNS up to date' for a CoreDNS ConfigMap it could not read; setup_lb_ipam's CiliumLoadBalancerIPPool wait ('status < 400') loops 300s on a 403 and dies without the cause. (f) cluster_policy_differences: a 404 ClusterPolicy with the operator running yields no difference, so the step can say 'unchanged' with the ClusterPolicy gone. (g) STDOUT [WARN]s for failures: Deploy.pm registry.local DNS / LB-IPAM, Apply/Drift.pm NFD / LB-IPAM (the STDERR rule).
+
+2026-10-31 03:00 Done, uncommitted. Changed: lib/OCP/Cmd/Apply/{K8s,AMDGPU,Workloads,Network,Registry}.pm, t/251-amd-gpu-stack.t (fakes: get_fails, fail_after_deploy, slices_status; 3 k269 subtests), new t/269-apply-read-not-absent.t (both helpers 404/403/500/transport/no-JSON + forwarders; Registry running; GPU Operator ClusterPolicy state poll; Gateway Accepted poll). Apply.pm untouched (694 lines). Verified: DOCKER_BUILDKIT=0 make test over 25 files (00-load, 52, 251, 269, 40, 228x3, 233, 220, 83, 78, 210, 39, 47, 33-registry, 38, 71, 198, 216, 152, 169, 182, 259, 79): 393 tests PASS, no skips. Red check: new tests against HEAD's five lib files fail in exactly the k269 assertions (404 cases + old subtests green). Mutation check in a tree copy, image raudssus/ocp:latest: 17/17 mutants killed. Proposed subject: 'Read only a 404 as absent in the apply path's cluster reads (k269)'.
+
+Committed as a84922e
