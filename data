@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-10-31T13:33:34Z
+id: 368
+priority: low
+status: backlog
+tags:
+- decision
+- output
+title: 'Decide: two deliberate [WARN]s on STDOUT in CR.pm (Failed OCPNode not in ocp.yaml,
+  worker not Ready yet)'
+updated: 2026-10-31T13:33:34Z
+---
+
+Decide (maintainer). From k356 (apply worker, 2026-10-31). The output-channel rule (.claude/rules/ocp-rules.md) says exceptions and disputed cases belong in a ticket. Two [WARN]s in lib/OCP/Cmd/Apply/CR.pm print on STDOUT on purpose, each with a comment saying why:
+1. "OCPNode <n> is Failed and not in ocp.yaml"
+2. "worker <n> is <phase>, not Ready yet". t/38 pins this one on STDOUT. It is counted in {_apply_warnings} (banner WITH WARNINGS, exit 0).
+
+The case for STDOUT: both are part of the apply narrative (a state report, not something this run failed to do). The case for STDERR: the rule says STDERR carries everything that went wrong, and a Failed OCPNode is something wrong.
+
+Options: keep both on STDOUT and list them as named exceptions in the rules file; move one or both to STDERR; or split them, a short [WARN] on STDOUT plus the diagnosis on STDERR.
+Not to be built before the maintainer answers.
