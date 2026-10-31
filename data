@@ -1,0 +1,34 @@
+---
+class: standard
+completed: 2026-10-31T11:04:36Z
+created: 2026-10-31T10:13:40Z
+id: 341
+priority: medium
+started: 2026-10-31T11:04:36Z
+status: done
+tags:
+- destroy
+- robustness
+title: ocp destroy reads a hetzner or local pool's host (uninstall on 127.0.0.1),
+  and skips an unknown provider silently
+updated: 2026-10-31T11:04:36Z
+---
+
+Found under k331 (choices worker) and k335 (destroy worker), 2026-10-31, destroy lane:
+- Destroy::_spec_worker_entries reads a pool's host for every provider. Since k331 validate() refuses host on a hetzner or local pool (neither reads it), but destroy does not validate: a hetzner pool's host shows up as a "Deleting X..." entry with no server id and deletes nothing; a local pool's host leads to an uninstall on 127.0.0.1 -- the machine ocp runs on.
+- A control plane or pool skipped for an unknown or list provider is skipped without a word; when it is the only record, the run says "No nodes to destroy." (optional).
+- cosmetic: a pool with host: 0 is listed as a machine named "0" and then left alone; apply reads it as no machine.
+
+Fix: read host only where apply does (an ssh pool without a nodes: list), as worker_ocpnodes does; say a skipped entry on STDERR. Done = tests for the hetzner and local host cases (no entry, no uninstall on 127.0.0.1) and a line for a skipped entry.
+
+Taken together with k331's red t/335 (2026-10-31): with k331 staged, validate() no longer gives a shape line for host on a hetzner/local pool, only the 'read for an ssh pool only' line, so t/335 test 4 ('a pool host of the wrong shape, whatever provider destroy knows') fails. k341 resolves it: destroy reads host only on ssh pools, so it no longer checks the shape on hetzner/local either (k323).
+
+2026-10-31 10:33 Progress (destroy worker): Destroy.pm now reads a pool's single host only on an ssh pool (new _pool_reads_host, the one ssh check, as worker_ocpnodes) and only when Perl calls it true (host: 0 = no machine); _spec_worker_errors checks that host's shape only there. A pool, or a CP in the last-resort fallback, skipped for a provider destroy does not know is said once on STDERR in validate()'s words ('[!!] <where>: invalid provider ... -- skipped: ... NOT torn down.'); a provider not set is not said (CP = hetzner by default, pool = hetzner per apply). No k331 helper used. t/335 test 4 rewritten + new subtests; t/77 test 3 rewritten (it asserted a local pool's host: worker.local was uninstalled). Work in scratchpad/w-destroy341/head.* and k331.*; waiting on loadguard slots for Docker runs.
+
+2026-10-31 10:52 Verified (destroy worker). Binding Docker runs, IMAGE=localhost/ocp-w341, 17 destroy-related files (00, 107, 108, 177, 180, 181, 296, 29, 301, 304, 323, 326, 335, 47, 71, 74, 77): HEAD + k341 -> PASS, 259 tests; HEAD + k341 + k331 (staged diff) -> PASS, 263 tests. k331 on top of k341 applies cleanly. Control: HEAD + k331 alone -> old t/335 test 4 red, as reported. Mutations, each in its own copy: _pool_reads_host returning true for every provider -> t/335 tests 4+5 and t/77 test 3 red; host: 0 read as a machine -> t/335 test 6 red; skip line never said -> t/335 tests 17+18 red. t/335 test 4 used to assert that a hetzner pool's host: [h1] and a local pool's host: {a: b} are refused with validate()'s shape line. Now: only the ssh pool's host: false is refused; the other two are only shown to be refused by validate() (its wording changes with k331). t/77 test 3 used to assert that a local pool's host: worker.local is listed and uninstalled. Now: the local worker reaches the loop through its OCPNode (local-default), and the pool's host is never listed. Patch: scratchpad/w-destroy341/k341.patch (Destroy.pm, t/335, t/77), applied unstaged to the shared tree; k331's staged index untouched.
+
+2026-10-31 10:52 Also found, left alone (suggestions, not scope): (1) once k331 lands, Destroy::_pool_reads_host could be replaced by Config::_pool_takes_host behind destroy's known_type gate. Note that _pool_takes_host returns 1 for an unknown provider, so it is not a drop-in. (2) With the API down, a local pool's worker is no longer uninstalled through ocp.yaml. Before k341 that happened only by accident, when the pool had a host:. Its only record is the OCPNode. (3) A control plane in the fallback with host: 0 is still listed as a machine named 0 (only pools were in scope). A hetzner CP in the fallback is listed as 'Deleting <cluster>-cp-N...' and deletes nothing, which is pre-existing. (4) A skipped entry leaves the exit code unchanged, as the OCPNode 'unknown provider' line does. In the only-record case, k304's --force cleanup still removes the kubeconfig. (5) For a pool, provider: false gets destroy's 'invalid provider false' line, while validate() says 'provider required'.
+
+2026-10-31 10:52 Done: ocp destroy reads a pool's single host: only on an ssh pool without a nodes: list, and only when Perl calls it true, as worker_ocpnodes does. A hetzner pool's host no longer becomes a 'Deleting X' entry, a local pool's no longer sends the uninstall to 127.0.0.1, and host: 0 names no machine. The k335 host-shape refusal applies only there. A pool, or a control plane in the last-resort fallback, that is skipped for a provider destroy does not know is said once on STDERR, in validate()'s provider words. Tests: t/335 test 4 rewritten, plus 5 new subtests; t/77 test 3 rewritten. Docker make test is green on HEAD (259) and on HEAD+k331 (263); 3 mutants each went red. Patch at scratchpad/w-destroy341/k341.patch, applied unstaged to the shared tree. Proposed commit and Changes text are in the worker report.
+
+Committed as fea8460
