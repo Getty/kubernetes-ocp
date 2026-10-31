@@ -49,6 +49,14 @@ auto-true when any hetzner provider is configured.
 3. **cpanfile is the source of truth** for dependencies. Getty-authored deps
    are pinned (WWW::Hetzner, Crypt::Age, File::SOPS, IO::K8s,
    Kubernetes::REST, Net::Async::Kubernetes, Rex::Interface::Connection::LibSSH).
+4. **Every true/false ocp reads is a `JSON::PP::Boolean`, and `eq` against one
+   is safe only after `OCP` is loaded.** Cpanel::JSON::XS (the image's JSON
+   backend, 4.40 pinned, still in 4.80) re-overloads `eq`/`ne` on that class and
+   swaps the operands when the boolean is on the right, so `'hetzner' eq $true`
+   was true; `OCP.pm` corrects this at load. `bin/ocp` and robocop's controller
+   load it first, the Rexfile child process does not (k316). Never test a choice
+   with a bare `eq` against a value that may be a reference: refuse refs first,
+   as `OCP::Config::_is_choice` does (k305, k314).
 
 ## Spec vs Status separation
 

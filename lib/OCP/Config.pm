@@ -602,10 +602,12 @@ sub _gpu_amd_choice {
     return $value;
 }
 
-# Whether $value is one of @choices. A reference never is: a YAML boolean
-# is a JSON::PP::Boolean, and the eq overload Cpanel::JSON::XS gives that
-# class swaps its operands, so `'secret' eq $true` is true for any string
-# Perl calls true (k305) -- grep { $_ eq $value } takes `true` for any choice.
+# Whether $value is one of @choices. A reference never is: a list, a mapping,
+# or a YAML boolean, which is a JSON::PP::Boolean. Until OCP.pm fixed the eq
+# overload Cpanel::JSON::XS gives that class (k314), `'secret' eq $true` was
+# true for any string Perl calls true, and this guard alone kept `true` from
+# being every choice (k305). It stays, so the answer does not hang on that
+# overload.
 sub _is_choice {
     my ($value, @choices) = @_;
     return 0 if ref $value;
@@ -819,7 +821,8 @@ sub validate {
         # spelled out a second time here (k103). Same three words, one
         # source -- a fourth provider type appears in this message the moment
         # OCP::Provider can construct it.
-        # !ref: a YAML true passes known_type, see _is_choice (k305).
+        # !ref: a boolean is no provider, whatever eq on it says; see
+        # _is_choice (k305, k314).
         unless (!ref $prov && OCP::Provider->known_type($prov)) {
             push @errors, "control_planes[$idx]: invalid provider " . _shown_value($prov) . " (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";

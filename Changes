@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A `true` or `false` from ocp.yaml or from an OCPNode or
+      OCPNodeProvider no longer equals every word it is checked against:
+      with Cpanel::JSON::XS loaded, as in the image, `'hetzner' eq true`
+      held, so `provider: true` counted as a provider type wherever ocp
+      compared that way (k305 closed `ocp apply`'s checks; this closes
+      the rest). A boolean now equals only true and 1, or false, 0 and
+      the empty string, on either side of the comparison.
     - `ocp status` counts drift that `ocp apply` closes without a remedy
       task -- a self-healing entry (NFD, the GPU stack, the GPU Operator
       CRDs, OCP's own CRDs) or a missing one (registry.local in CoreDNS)
