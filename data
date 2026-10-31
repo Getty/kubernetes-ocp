@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-10-31T06:06:43Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T06:06:49Z
+created: 2026-10-31T04:40:55Z
+id: 299
+priority: low
+started: 2026-10-31T06:06:49Z
+status: done
+tags:
+- config
+- validation
+- network
+title: Node addresses are checked against the pod CIDR but not the service CIDR (10.43.0.0/16)
+updated: 2026-10-31T06:06:49Z
+---
+
+Found under k279 (2026-10-31). validate() refuses a network.pod_cidr that contains a node address (host, public_ip, and since k279 control_planes[].node_ip). It never checks the same addresses against the service network: RKE2/K3s default 10.43.0.0/16, or the configured value if ocp.yaml has one. A node address inside the service CIDR breaks routing just as badly.
+
+Done = the same check against the service CIDR, in the same words as the pod-CIDR lines, with a test. If ocp.yaml has no service-CIDR key, check against the default and say so in the line, as the pod-CIDR line does ("default 10.42.0.0/16").
+
+2026-10-31 04:54 ocp.yaml has no service-CIDR key: grep service_cidr/cluster_cidr/service-cidr over lib/ share/ bin/ finds only $OCP::Config::SERVICE_CIDR (10.43.0.0/16, 'the service network OCP never changes') used by _validate_pod_cidr and OCP::Drift; the Rexfile passes only cluster_cidr. So node addresses get checked against that constant, the line says 'default'.
+
+2026-10-31 05:10 Implemented: _taken_addresses (moved out of _validate_pod_cidr unchanged) feeds both _validate_pod_cidr and new _validate_service_cidr. Includes network.lb_pool too (my call: the pod check holds the same list, and an LB IP inside 10.43/16 can be a ClusterIP). t/299-service-cidr.t red before, green after.
+
+2026-10-31 06:00 Done (lib/OCP/Config.pm + t/299-service-cidr.t, not committed). No service-CIDR key in ocp.yaml, so the check uses $OCP::Config::SERVICE_CIDR and the line says default: 'the service network (default 10.43.0.0/16) overlaps X -- ocp.yaml has no key to move it; use an address outside it', where X is the same label the pod-CIDR line uses (control_planes[N].host/public_ip/private_ip/node_ip, a worker pool host or nodes host, network.lb_pool cidr/start/stop). _taken_addresses moved out of _validate_pod_cidr unchanged and feeds both checks. The check runs even when pod_cidr is invalid. Verified: t/299 red before / green after; 12/12 mutants killed; binding make test on 27 config files PASS; full suite as noted on k296; cihq/citiai/amdlab still 0/0/0. Commit after k296. Docs drift for the doc-writer: the Config.pm POD node_ip item names only pod_cidr.
+
+Committed as 29a5136
