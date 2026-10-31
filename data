@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-10-31T14:29:09Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T14:26:29Z
+id: 374
+priority: medium
+status: in-progress
+tags:
+- apply
+- dry-run
+- ssh
+title: ocp apply --dry-run host probes write .ocp/known_hosts under the dry-run banner
+updated: 2026-10-31T14:29:09Z
+---
+
+Found by the apply worker during k349 (2026-10-31), not yet reproduced by a test (t/297 never reaches the probes).
+
+On a full checkout with reachable hosts, the host probes in `ocp apply --dry-run` (Apply/Drift.pm dry_run_report) record each host key in .ocp/known_hosts on first contact. That is a write under a run that ends "[Dry run - no changes made]", the same class as the .ocp/age.key write k349 removed.
+
+Second half, same path: on a clone the probes stay skipped (k349 deliberately did not hand them the in-memory key, because their first contact would create .ocp/). The skip line then says "no SSH key to probe with that needs no PIN2", which names the wrong reason: after PIN1 the robo key is in memory; what is missing is a known_hosts the probe may write to.
+
+Done =
+- The dry run records no host key: probe with a throwaway known_hosts (e.g. a temp file, or StrictHostKeyChecking against the existing file only, accept-new into a temp copy), or skip with a reason. Say which and why in the note.
+- A host the project already pinned is still checked against the pin; a mismatch is still reported.
+- The clone skip line names the real reason.
+- Regression test: dry run against a fake reachable host leaves the project dir byte-for-byte unchanged (t/297 style), red first, then a mutation check.
+
+Lanes: ocp-apply-worker (dry_run_report); OCP::SSH known_hosts handling is provider lane if it needs a change, list it in the note.
+
+2026-10-31 14:29 Started (ocp-apply-worker) on base18 (queued17 + k349-apply), work under scratchpad/w-apply374.
