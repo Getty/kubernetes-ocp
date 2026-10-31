@@ -1,0 +1,45 @@
+---
+class: standard
+completed: 2026-10-31T09:30:38Z
+created: 2026-10-31T08:10:40Z
+id: 322
+priority: low
+started: 2026-10-31T09:30:38Z
+status: done
+tags:
+- config
+- validation
+title: 'validate(): an ssh pool with no host gets no worker silently, and location/image/pool
+  server_type are not shape-checked'
+updated: 2026-10-31T09:30:38Z
+---
+
+Found under k315 (2026-10-31), validate() gaps that k315 left on purpose (its scope was host, server_type, pool host/nodes):
+- ssh pool semantics: a pool with neither host nor nodes gets no worker, silently; with both, host is ignored; nodes: [] gets no worker. Refuse or warn, each with its reason (Apply/CR.pm worker_ocpnodes is what reads them).
+- shapes: control_planes[N].location and .image, a pool's server_type, location and image are not shape-checked; a list reaches the OCPNode spec and the Hetzner API (k315's _not_a_string fits).
+- cosmetic, pre-existing: the mapping form with nodes: N repeats every per-entry line N times (control_planes[1..N]: server_type required ...); one line would do.
+
+Done = each is an ordinary validate() line (t/296 sweep), the three real configs still give 0 errors.
+
+2026-10-31 09:20 Work done (ocp-choices-worker): lib/OCP/Config.pm and t/296. The patch is w-choices320/k322.patch against 1f5ff77+k320; nothing is committed.
+- ssh pool, decided case by case:
+  - neither host nor nodes (or host '' / 0, nodes null): REFUSED. worker_ocpnodes makes no OCPNode from it, and nothing said so. No code, doc, test or history uses this as a placeholder. The line points to nodes: [] as the way to say "none yet".
+  - host and a nodes list, [] included: REFUSED. worker_ocpnodes reads nodes and drops host, so a host beside [] is no worker either.
+  - nodes: [] alone: ACCEPTED as the explicit zero, the way k315 accepts nodes: 0 for a counted pool.
+  - A host, or a nodes entry, that Perl calls false (0) counts as no machine, because worker_ocpnodes reads it that way. Before, host: 0 alone passed and got no worker, and a nodes entry 0 made an OCPNode with no host.
+  - QUESTION for the maintainer: should a host-less ssh pool stay possible as a placeholder, and is nodes: [] the right spelling for that?
+- The neither and both lines live in a new helper, _ssh_pool_machines_errors, which only validate() calls. They are not in _pool_nodes_errors, because k323's working-tree Destroy.pm asks _pool_nodes_errors for destroy's own gate; with the both line there, ocp destroy would refuse host beside a nodes list, a key destroy never reads. _pool_nodes_errors gains only the entry-0 reading, so destroy now also refuses a nodes entry 0 ("names no host", the k323 case). t/323 and t/77 from the working tree pass against this Config.pm (host run).
+- Shapes: control_planes[N].location and .image, and a pool's server_type, location and image, all go through _not_a_string. They share one table, @ONE_NAME_KEYS, with host and server_type. A malformed location no longer also says "location required".
+- Cosmetic: the mapping form (nodes: N) checks its one entry once, as [1]. That includes the pod/service CIDR lines (_taken_addresses).
+- Tests: t/296 claims 16 (an ssh pool names its machines one way, plus a subtest that every pool validate() passes is the workers the real worker_ocpnodes makes of it, and a guard that _pool_nodes_errors stays without the one-way lines), 17 (location and image) and 18 (nodes: N says a line once). Red on HEAD+k320, green on k322. Two older fixtures (claims 1 and 5) used host-less ssh pools and got a host; what they assert is unchanged. Mutants: 17/17 killed. Real configs cihq, citiai and amdlab: 0 errors.
+- Binding: make test on a clean copy of HEAD+k320+k322 PASS, Files=225, Tests=3588, exit 0. A first run printed the same PASS summary but hit timeout 900 (exit 124) under host load, so it was rerun with timeout 1800. No file skipped itself; non-verbose prove does not list skips inside a test.
+- Also found (suggestions for new cards, not done here):
+  (1) A hetzner pool's host is silently ignored by worker_ocpnodes.
+  (2) ocp status shows "Workers (w): 0 (ssh)" for a host-only ssh pool (Status.pm:66); status lane.
+  (3) The docs (k324 lane) don't describe the k320/k322 refusals yet.
+
+2026-10-31 09:20 To review: k322.patch (scratchpad w-choices320) against 1f5ff77+k320, so commit after k320. Proposed subject: "Refuse an ssh pool that names its machines neither or both ways, and a location, image or pool server_type of the wrong shape; say a nodes: N line once (k322)". It touches _pool_nodes_errors, which k323's uncommitted Destroy.pm calls; see the note.
+
+2026-10-31 09:22 HEAD has since moved to 29e7a85, with k323, k318 and k319 committed; none of them touches Config.pm, t/296 or CR.pm. k320.patch and then k322.patch apply to 29e7a85 cleanly. Binding make test TESTS="t/296 t/323 t/77 t/15" on a clean 29e7a85+k320+k322: PASS, 4 files, 104 tests, exit 0. With k322, destroy refuses a nodes entry 0 (no host) and leaves host beside nodes alone.
+
+Committed as 2e013f4
