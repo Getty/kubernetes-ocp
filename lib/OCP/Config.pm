@@ -201,7 +201,7 @@ sub api_url {
 }
 
 # Add-on flags (default: enabled, set to true to disable)
-sub no_cert { shift->spec->{nocert} // 0 }
+sub no_cert { my ($self) = @_; return $self->_switch('nocert', $self->spec) }
 
 # robocop may be a scalar toggle (robocop: true) or a mapping that also
 # carries security_level (robocop: { enabled: true, security_level: secret }).
@@ -250,12 +250,8 @@ sub _robocop_errors {
         . _shown_value($val) . _boolean_hint('robocop', $val)
         unless ref $val eq 'HASH';
 
-    my $en = $val->{enabled};
     return (
-        (defined $en && !_is_switch($en)
-            ? 'robocop.enabled: must be true or false, not ' . _shown_value($en)
-              . _boolean_hint('enabled', $en)
-            : ()),
+        _switch_error('robocop.enabled', $val->{enabled}) // (),
         _unknown_keys('robocop', $val, @ROBOCOP_KEYS),
     );
 }
@@ -280,6 +276,48 @@ sub _boolean_hint {
               : $value =~ /\A(?:n|no|false|off)\z/i ? 'false'
               :                                        undef;
     return defined $meant ? "; write $key: $meant" : '';
+}
+
+# The other on/off switches of ocp.yaml (k320), by key path, with what an
+# absent one means. Each is true or false as robocop: is (_is_switch), and
+# nothing else: Perl calls a string true, so gpu: { enabled: no } turned the
+# GPU stack on, lbipam: off LB-IPAM, and nocert: no left cert-manager out.
+# validate() lists a line for each that is neither, and its accessor refuses
+# with that line (_switch): ocp update, ocp node add and ocp status' drift
+# check read them without validate(), and none of them may read one another
+# way than validate() does.
+our %SWITCH_DEFAULTS = (
+    'gpu.enabled'        => 1,
+    'gpu.toolkit'        => 1,
+    'gpu.amd.labeller'   => 1,
+    'gpu.amd.metrics'    => 0,
+    'gpu.amd.integrated' => 0,
+    'lbipam'             => 0,
+    'nocert'             => 0,
+    'system.ntp'         => 1,
+);
+
+# The switch at $path as its accessor returns it: 0 or 1, the default when
+# absent. $in is the mapping that holds it, as the accessor has it -- the
+# gpu_config and gpu_amd_config that refuse a gpu: or gpu.amd: of the wrong
+# shape in their own words. Croaks with validate()'s line on anything else.
+sub _switch {
+    my ($self, $path, $in) = @_;
+    my ($key) = $path =~ /([^.]+)\z/;
+    my $value = $in->{$key};
+    my $err = _switch_error($path, $value);
+    croak $err if defined $err;
+    return defined $value ? ($value ? 1 : 0) : $SWITCH_DEFAULTS{$path};
+}
+
+# "PATH: must be true or false, not X" for a switch that is neither, with the
+# hint for a string that spells one (k315, k320); undef for true, false, 1, 0
+# and absent. robocop.enabled's line too.
+sub _switch_error {
+    my ($path, $value) = @_;
+    return undef if !defined $value || _is_switch($value);
+    my ($key) = $path =~ /([^.]+)\z/;
+    return "$path: must be true or false, not " . _shown_value($value) . _boolean_hint($key, $value);
 }
 
 =method robocop_arch_warning
@@ -390,7 +428,7 @@ sub _any_hetzner_provider {
 # + L2 announcement) makes Cilium hijack ARP for the host IP, which breaks
 # host-bound ports like sshd and kube-apiserver. Enable only when you have
 # a proper design for exposing LoadBalancer services.
-sub lbipam { shift->spec->{lbipam} // 0 }
+sub lbipam { my ($self) = @_; return $self->_switch('lbipam', $self->spec) }
 
 # Registry configuration
 sub registry_config      { shift->spec->{registry} // {} }
@@ -513,7 +551,7 @@ sub ssl_email { shift->spec->{ssl}{email} // '' }
 sub system_config { shift->spec->{system} // {} }
 sub timezone      { shift->system_config->{timezone} // 'UTC' }
 sub locale        { shift->system_config->{locale} // 'en_US.UTF-8' }
-sub ntp_enabled   { shift->system_config->{ntp} // 1 }
+sub ntp_enabled   { my ($self) = @_; return $self->_switch('system.ntp', $self->system_config) }
 
 # GPU configuration
 #
@@ -555,9 +593,10 @@ sub _gpu_shape_error {
 
 # Normalised to 0/1: these travel to the Rexfile as JSON and into a
 # ClusterPolicy as a YAML boolean, and YAML::XS hands back JSON::PP::Boolean
-# objects that neither destination should have to know about.
-sub gpu_enabled { my $v = shift->gpu_config->{enabled}; return 1 unless defined $v; return $v ? 1 : 0 }
-sub gpu_toolkit { my $v = shift->gpu_config->{toolkit}; return 1 unless defined $v; return $v ? 1 : 0 }
+# objects that neither destination should have to know about. Anything but
+# true or false is refused (_switch, k320).
+sub gpu_enabled { my ($self) = @_; return $self->_switch('gpu.enabled', $self->gpu_config) }
+sub gpu_toolkit { my ($self) = @_; return $self->_switch('gpu.toolkit', $self->gpu_config) }
 
 our @GPU_DRIVERS = qw( host operator );
 
@@ -650,10 +689,10 @@ sub gpu_amd_resource_naming {
     return $self->_gpu_amd_choice('resource_naming', 'single', @GPU_AMD_RESOURCE_NAMING);
 }
 
-# 0/1 for the same reason gpu_toolkit is.
-sub gpu_amd_labeller   { my $v = shift->gpu_amd_config->{labeller};   return 1 unless defined $v; return $v ? 1 : 0 }
-sub gpu_amd_metrics    { my $v = shift->gpu_amd_config->{metrics};    return 0 unless defined $v; return $v ? 1 : 0 }
-sub gpu_amd_integrated { my $v = shift->gpu_amd_config->{integrated}; return 0 unless defined $v; return $v ? 1 : 0 }
+# 0/1 for the same reason gpu_toolkit is, and refused the same way.
+sub gpu_amd_labeller   { my ($self) = @_; return $self->_switch('gpu.amd.labeller',   $self->gpu_amd_config) }
+sub gpu_amd_metrics    { my ($self) = @_; return $self->_switch('gpu.amd.metrics',    $self->gpu_amd_config) }
+sub gpu_amd_integrated { my ($self) = @_; return $self->_switch('gpu.amd.integrated', $self->gpu_amd_config) }
 
 sub _gpu_amd_choice {
     my ($self, $key, $default, @choices) = @_;
@@ -938,6 +977,17 @@ sub validate {
     push @errors, "gpu: $gpu_err" if defined $gpu_err;
     push @errors, $self->_validate_gpu_driver;
     push @errors, $self->_validate_gpu_amd;
+
+    # The switches (k320): true or false, as robocop: is; each line is its
+    # accessor's refusal too (_switch). Read through mappings only: a gpu: or
+    # gpu.amd: that is none has its own line above.
+    for my $path (sort keys %SWITCH_DEFAULTS) {
+        my $value = $self->spec;
+        $value = ref $value eq 'HASH' ? $value->{$_} : undef for split /\./, $path;
+        my $err = _switch_error($path, $value);
+        push @errors, $err if defined $err;
+    }
+
     my $net = ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {};
     push @errors, $self->_validate_pod_cidr($net);
     push @errors, $self->_validate_service_cidr($net);

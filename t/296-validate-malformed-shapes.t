@@ -66,6 +66,18 @@ use OCP::Provider;
 #      host; any other pool's nodes is a count. A list counted was some 10^14
 #      OCPNodes, and a boolean among the hosts died inside Perl.
 #
+# k320, the same gap at the other switches:
+#  14. gpu.enabled, gpu.toolkit, gpu.amd.labeller, gpu.amd.metrics,
+#      gpu.amd.integrated, lbipam, nocert and system.ntp are true or false (or 1
+#      and 0), as robocop is: a string -- no, off, "false" -- is one Perl calls
+#      true, and gpu: { enabled: no } turned the GPU stack on. A string that
+#      spells a boolean gets the hint naming it;
+#  15. each switch's accessor, which every reader of it asks (ocp apply, ocp
+#      update, ocp node add, ocp status' drift check), refuses what validate()
+#      refuses about the switch, in its words, and reads what validate() passes
+#      as a plain 0 or 1, its default when absent -- swept over every shape at
+#      each, and over every switch OCP::Config has.
+#
 
 local @ARGV = ();
 my $ocp    = OCP->new;
@@ -293,11 +305,16 @@ my @AT = (
      } qw( enabled driver toolkit amd )),
     (map { my $k = $_;
         [ "gpu.amd.$k"            => sub { +{ control_planes => $cp->(), gpu => { amd => { $k => $_[0] } } } } ],
-     } qw( allocation resource_naming )),
+     } qw( allocation resource_naming labeller metrics integrated )),
     [ 'robocop'                   => sub { +{ control_planes => $cp->(), robocop => $_[0] } } ],
     (map { my $k = $_;
         [ "robocop.$k"            => sub { +{ control_planes => $cp->(), robocop => { $k => $_[0] } } } ],
      } qw( enabled security_level image enable )),    # enable: no key of robocop's (k315)
+    # the other switches (k320)
+    (map { my $k = $_;
+        [ $k                      => sub { +{ control_planes => $cp->(), $k => $_[0] } } ],
+     } qw( lbipam nocert system )),
+    [ 'system.ntp'                => sub { +{ control_planes => $cp->(), system => { ntp => $_[0] } } } ],
 );
 
 # Claim 7 rides along: whatever a line says, it never quotes a value the way
@@ -644,6 +661,102 @@ subtest "a pool's nodes, as its provider reads them" => sub {
     is_deeply [ pool_errors({ name => 'w', provider => 'aws', nodes => [ 'a' ] }) ],
         [ "worker pool 'w': invalid provider 'aws' (must be " . OCP::Choices::or_list(OCP::Provider->types) . ')' ],
         'an unknown provider: its line, and no guess at which nodes it would read';
+};
+
+# --- 14. the other switches are true or false --------------------------------------
+
+# Each switch OCP::Config has besides robocop, the accessor every reader of it
+# asks, and what that reads when the switch is absent.
+my %SWITCH = (
+    'gpu.enabled'        => [ gpu_enabled        => 1 ],
+    'gpu.toolkit'        => [ gpu_toolkit        => 1 ],
+    'gpu.amd.labeller'   => [ gpu_amd_labeller   => 1 ],
+    'gpu.amd.metrics'    => [ gpu_amd_metrics    => 0 ],
+    'gpu.amd.integrated' => [ gpu_amd_integrated => 0 ],
+    'lbipam'             => [ lbipam             => 0 ],
+    'nocert'             => [ no_cert            => 0 ],
+    'system.ntp'         => [ ntp_enabled        => 1 ],
+);
+
+# The ocp.yaml lines that set $path to $typed: 'gpu.amd.labeller', 'off' is
+# gpu:, amd: and labeller: off below it.
+sub yaml_at {
+    my ($path, $typed) = @_;
+    my @keys = split /\./, $path;
+    my $leaf = pop @keys;
+    my $text = '';
+    $text .= ('  ' x $_) . "$keys[$_]:\n" for 0 .. $#keys;
+    return $text . ('  ' x @keys) . "$leaf: $typed\n";
+}
+
+# The spec that sets $path to $value, beside one local control plane.
+sub spec_at {
+    my ($path, $value) = @_;
+    my $spec = { control_planes => { provider => 'local' } };
+    my @keys = split /\./, $path;
+    my $leaf = pop @keys;
+    my $h = $spec;
+    $h = $h->{$_} = {} for @keys;
+    $h->{$leaf} = $value;
+    return $spec;
+}
+
+subtest 'every switch is true or false' => sub {
+    for my $path (sort keys %SWITCH) {
+        my ($key) = $path =~ /([^.]+)\z/;
+        my $is = "$path: must be true or false, not ";
+        for my $case ([ 'no', 'false' ], [ 'off', 'false' ], [ '"false"', 'false' ], [ 'N', 'false' ],
+                      [ 'yes', 'true' ], [ 'on', 'true' ], [ '"true"', 'true' ], [ 'True', 'true' ]) {
+            my ($typed, $meant) = @$case;
+            (my $word = $typed) =~ tr/"//d;
+            is_deeply [ config_from_text(yaml_at($path, $typed))->validate ],
+                [ "$is'$word'; write $key: $meant" ], "$path: $typed -- the $meant it spells";
+        }
+        for my $typed ('foo', '2', "''") {
+            (my $word = $typed) =~ tr/'//d;
+            is_deeply [ config_from_text(yaml_at($path, $typed))->validate ], [ "$is'$word'" ],
+                "$path: $typed -- no hint where none would be true";
+        }
+        is_deeply [ config_from_text(yaml_at($path, '[ a ]'))->validate ], [ "${is}a list" ], "$path: a list";
+        is_deeply [ config_from_text(yaml_at($path, '{ a: 1 }'))->validate ], [ "${is}a mapping" ],
+            "$path: a mapping";
+        for my $typed ('true', 'false', '1', '0', '~') {
+            is_deeply [ config_from_text(yaml_at($path, $typed))->validate ], [], "$path: $typed passes";
+        }
+    }
+};
+
+# --- 15. the switch accessors agree with validate() -----------------------------------
+#
+# ocp apply reads the switches after validate(); ocp update, ocp node add and
+# the drift check of ocp status read them without it. What validate() refuses,
+# the accessor refuses in the same words, so no reader turns a gpu.enabled: no
+# on; what validate() passes, it reads as 0 or 1, the default when absent.
+
+subtest 'each switch accessor reads the switch the way validate() does' => sub {
+    is_deeply [ sort keys %SWITCH ], [ sort keys %OCP::Config::SWITCH_DEFAULTS ],
+        'every switch OCP::Config has is swept here, and none it does not have';
+
+    my @extra = ([ "'no'" => 'no' ], [ "'off'" => 'off' ], [ "'false'" => 'false' ], [ "'yes'" => 'yes' ],
+                 [ '1' => 1 ], [ '0' => 0 ]);
+    for my $path (sort keys %SWITCH) {
+        my ($m, $default) = @{ $SWITCH{$path} };
+        for my $shape (@SHAPES, @extra) {
+            my ($shown, $value) = @$shape;
+            my $c = config_for(spec_at($path, $value));
+            my @lines = $c->validate;
+            my $got = eval { $c->$m };
+            if (@lines) {
+                ok !defined $got, "$m, $path: $shown -- refused by validate(), not read as on or off";
+                like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                next;
+            }
+            my $want = defined $value ? ($value ? 1 : 0) : $default;
+            is $got, $want, "$m, $path: $shown -- passes, and reads $want";
+            ok defined $got && !ref $got, "$m, $path: $shown -- a plain 0 or 1, no boolean object";
+        }
+        is config_for({ control_planes => $local })->$m, $default, "$m: absent reads $default, as before";
+    }
 };
 
 done_testing;

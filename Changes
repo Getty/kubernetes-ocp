@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses `gpu.enabled`, `gpu.toolkit`, `gpu.amd.labeller`,
+      `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`, `nocert` and
+      `system.ntp` when they are not true or false -- `gpu: { enabled: no }`
+      is a string, and turned the GPU stack on -- and tells a string that
+      spells a boolean the one it meant. `ocp update`, `ocp node add --gpu`
+      and `ocp status`' drift check stop with the same line instead of
+      reading the string as on.
     - `ocp apply` no longer takes a read it could not make (an RBAC denial,
       an apiserver error) for a missing object: `--dry-run` says the robocop
       Deployment could not be checked instead of that it would roll it out,
