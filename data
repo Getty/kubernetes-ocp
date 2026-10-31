@@ -1,0 +1,23 @@
+---
+block_reason: needs a live NVIDIA host; crag/brain/cortex only after the maintainer's
+  go
+blocked: true
+class: standard
+created: 2026-10-31T04:00:58Z
+id: 285
+priority: medium
+status: todo
+tags:
+- gpu
+- nvidia
+- decision
+title: 'ocp apply: should an NVIDIA node without nvidia.com/gpu allocatable be a failed
+  component, as on AMD?'
+updated: 2026-10-31T04:01:04Z
+---
+
+Since k273, `ocp apply` waits up to 300 s for `nvidia.com/gpu` in status.allocatable after the GPU Operator step; a node that does not get there is a `[WARN]` on STDERR and the apply still succeeds. On AMD (k251) the same situation is a failed component: `— APPLY INCOMPLETE`, exit non-zero. `ocp node add` is non-fatal for both vendors.
+
+Main agent's call for k273 (mine, not the maintainer's): keep NVIDIA at [WARN] for now. Reasons: no live NVIDIA check of the wait yet; the resource name can differ (time-slicing with renameByDefault → nvidia.com/gpu.shared, MIG mixed → nvidia.com/mig-*), so a hard gate could turn green production applies red with no live evidence.
+
+Done = a live run on an NVIDIA node (crag/brain/cortex — only with the maintainer's go) shows what the operator publishes there, then either parity with AMD (failed component, ADR 0017 amended) or the asymmetry recorded in ADR 0017 with its reason.
