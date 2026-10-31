@@ -29,11 +29,11 @@ Never `git commit`: leave the tree commit-ready and report what changed and why,
 
 ## Repo facts that live in no skill
 
-- **Robocop currently polls in a loop — it does not watch.**
-  `Net::Async::Kubernetes` is declared in the cpanfile but unused, and
-  `ocp inject-key` (needs `port_forward`) is disabled. Moving to watches is a
-  deliberate architecture step, not a drive-by refactor: if a task touches
-  this, surface it and get a ticket, don't slip it in.
+- **Robocop watches, it does not poll** (since ce6dacd, k33/k1): the watch
+  stream runs on `Net::Async::Kubernetes::Watcher` (backoff 1 s → 30 s, every
+  failed attempt reaches `on_error` → `log_error`, no `max_retries`), the
+  reconcile side stays on `Kubernetes::REST`. `ocp inject-key` exists
+  (`OCP::Cmd::InjectKey`, security_level inject).
 - The reconcile state machine lives in `OCP::Node` and is shared with the CLI
   (`ocp apply`). Controller-specific behavior belongs in
   `OCP::Robocop::Controller`, not in `OCP::Node`.

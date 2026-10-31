@@ -113,8 +113,10 @@ has verbose => (
 
 # The watch client's API check (k170): how long one may take, and how many
 # failed checks in a row end the process. Net::Async::Kubernetes::Watcher
-# retries a failed watch request every second without telling anyone, so these
-# checks are the only way a broken watch transport becomes visible.
+# reports every failed watch attempt to on_error, which run() logs, and retries
+# it with a backoff from 1s up to 30s, forever: robocop sets no max_retries. So
+# a broken watch transport shows in the log, but only these checks end the
+# process over it.
 has api_check_timeout => (
     is      => 'ro',
     default => 30,
@@ -403,8 +405,10 @@ sub run {
     $loop->add($kube);
 
     # The watch client has to reach the API before anything else starts. The
-    # watcher itself would retry a failing request forever without a word --
-    # a missing IO::Async::SSL left robocop silent in every cluster (k170).
+    # watcher alone would log a failing request and retry it forever, and
+    # robocop would run on without reconciling anything. Before
+    # Net::Async::Kubernetes 0.009 it did not even report the failure: a
+    # missing IO::Async::SSL left robocop silent in every cluster (k170).
     my $check = $self->_check_api;
     $loop->await($check);
     my $err = $check->failure;
@@ -427,6 +431,9 @@ sub run {
         timeout     => $self->watch_timeout,
         on_added    => sub { $wself && $wself->_handle_watch_object($_[0]) },
         on_modified => sub { $wself && $wself->_handle_watch_object($_[0]) },
+        # Both kinds of report the watcher makes: a failed watch attempt (a
+        # Status with reason WatchFailed, its message naming the next delay)
+        # and an ERROR event on the stream (the API server's raw Status).
         on_error    => sub {
             my ($status) = @_;
             return unless $wself;
@@ -1390,9 +1397,11 @@ namespace, distribution and pod CIDR, with STDOUT unbuffered, so a running pod a
 has a log. It then lists OCPNodes once over the watch client -- the same
 client, TLS stack and credentials the watch uses -- and dies with the reason
 if that fails or takes longer than C<api_check_timeout> seconds (default 30).
-The watch client itself retries a failing watch request forever without
-reporting it, so this check repeats every C<resync_interval> seconds while
-the controller runs: each failure is logged to STDERR, and
+The watch itself logs every failed attempt and every C<ERROR> event on its
+stream to STDERR (C<watch ERROR: ...>) and retries with a backoff from 1 up
+to 30 seconds for as long as the controller runs; it never gives up on its
+own. So this check repeats every C<resync_interval> seconds while the
+controller runs: each failure is logged to STDERR, and
 C<max_api_check_failures> failures in a row (default 3) end C<run> with an
 exception. L<robocop> turns that into exit status 1.
 

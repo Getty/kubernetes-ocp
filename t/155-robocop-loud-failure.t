@@ -4,9 +4,11 @@
 # In the field robocop ran with no log output at all and never touched an
 # OCPNode. Two things hid that:
 #
-#   * Net::Async::Kubernetes::Watcher answers a failed watch request by
-#     retrying it a second later, forever, without calling any callback. With
-#     IO::Async::SSL missing every request failed that way.
+#   * Net::Async::Kubernetes::Watcher (0.008 then) answered a failed watch
+#     request by retrying it a second later, forever, without calling any
+#     callback. With IO::Async::SSL missing every request failed that way.
+#     Since 0.009 it backs off up to 30s and reports every failed attempt to
+#     on_error, which robocop logs (k247).
 #   * print to a piped STDOUT is block-buffered, so even the startup lines
 #     never reached the pod log.
 #
@@ -46,11 +48,17 @@ package FakeAsyncKube {
         return defined $answer ? $f->fail($answer) : $f->done([]);
     }
 
+    # Keeps the arguments run() hands the watcher; a test's on_watch gets them
+    # once the loop runs.
     sub watcher {
-        my ($self) = @_;
+        my ($self, $kind, %args) = @_;
         $self->{watchers}++;
+        $self->{watcher_args} = \%args;
         my $w = IO::Async::Notifier->new;
         $self->add_child($w);
+        if (my $cb = $self->{on_watch}) {
+            $self->loop->later(sub { $cb->(%args) });
+        }
         return $w;
     }
 }
@@ -155,6 +163,55 @@ subtest 'a successful check resets the count' => sub {
     like($r->{died}, qr/\(2 checks in a row\): down/,
         'only two failures in a row end it, not two in total');
     is($c->async_kube->lists, 5, 'after exactly that many checks');
+};
+
+# k247: what Net::Async::Kubernetes::Watcher (0.011 in cpanfile.snapshot) hands
+# on_error -- the Status it builds for a failed watch attempt, and the API
+# server's raw Status for an ERROR event on the stream. The fake reports both
+# the way the watcher does: to on_error, or as a warning without one.
+subtest 'a failing watch reaches the log on its own' => sub {
+    my $c = controller(script => [undef]);
+    my @reports = (
+        {
+            kind       => 'Status',
+            apiVersion => 'v1',
+            status     => 'Failure',
+            reason     => 'WatchFailed',
+            code       => 0,
+            message    => 'watch OCPNode failed, retrying in 3.2s: Connection refused',
+            details    => { kind => 'OCPNode', retryAfterSeconds => 3.2 },
+        },
+        {
+            kind       => 'Status',
+            apiVersion => 'v1',
+            status     => 'Failure',
+            reason     => 'Forbidden',
+            code       => 403,
+            message    => 'ocpnodes.ocp.internal is forbidden: cannot watch',
+        },
+    );
+    $c->async_kube->{on_watch} = sub {
+        my (%args) = @_;
+        for my $status (@reports) {
+            if (my $cb = $args{on_error}) { $cb->($status) }
+            else                          { warn $status->{message} . "\n" }
+        }
+        $c->shutdown('TERM');
+    };
+    my @warnings;
+    local $SIG{__WARN__} = sub { push @warnings, @_ };
+    my $r = run_captured($c);
+
+    is($r->{died}, undef, 'a failed watch attempt does not end run()');
+    ok(!exists $c->async_kube->{watcher_args}{max_retries},
+        'the watch has no max_retries, so it retries for as long as robocop runs');
+    like($r->{stderr},
+        qr/^\[[^\]]+\] watch ERROR: watch OCPNode failed, retrying in 3\.2s: Connection refused$/m,
+        'a failed watch attempt is a timestamped line on STDERR');
+    like($r->{stderr}, qr/^\[[^\]]+\] watch ERROR: ocpnodes\.ocp\.internal is forbidden: cannot watch$/m,
+        'so is an ERROR event on the stream');
+    unlike($r->{stdout}, qr/watch ERROR/, 'and neither is on STDOUT');
+    is_deeply(\@warnings, [], 'nothing is left to a bare warning');
 };
 
 # bin/robocop turns the dying run() into exit 1. No kubeconfig, no service
