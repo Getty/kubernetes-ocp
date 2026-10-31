@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T13:06:12Z
+created: 2026-10-31T11:01:56Z
+id: 347
+priority: medium
+started: 2026-10-31T13:06:12Z
+status: done
+tags:
+- validate
+- config
+title: 'validate() accepts any key on a worker pool: count: (read by nothing since
+  February) and typos pass silently'
+updated: 2026-10-31T13:06:12Z
+---
+
+Found under k339 (status worker, 2026-10-31): validate() accepts any key on a worker pool without a word -- `count: 5` on a hetzner pool passes, though nothing has read count: since a5a598d (2026-02-16; apply builds `nodes // 1`), and until k339 ocp status showed 5 machines for it. A typo (`server_typ:`, `lables:`) passes the same way and silently does nothing.
+
+Fix as k331 did under gpu: and system: (`_unknown_keys`): refuse an unknown key on a worker pool -- and look at a control plane entry the same way -- naming the keys a pool takes. `count:` gets a hint (use nodes:). Check every key apply, destroy, status and robocop read from a pool before listing them (grep the readers, don't guess), and that the three real configs (cihq, citiai, amdlab) still give 0 errors.
+
+Done = validate() lines for an unknown pool key and count: (t/296 sweep), the real configs unchanged.
+
+2026-10-31 12:25 Patch ready (choices worker), on top of k340: lib/OCP/Config.pm + t/296 (claims 29-30). Readers grepped on HEAD 12d049a. Pool keys taken (@OCP::Config::POOL_KEYS): name (worker_ocpnodes OCPNode names, status, node ls _pools_of), provider (worker_ocpnodes/ensure_providers, Machines::_uses_hetzner, Config::_any_hetzner_provider/_pool_takes_host, destroy k98 report/_spec_worker_entries, status), nodes (worker_ocpnodes, destroy _spec_worker_entries, status _pool_machines, _taken_addresses), host (ssh pools: worker_ocpnodes, destroy, status, _taken_addresses), server_type/location/image (worker_ocpnodes spec), labels/taints (worker_ocpnodes -> sync_worker_meta). node_ip keeps its own refusal. count: read by apply never (nodes // 1); in HEAD only status _pool_machines (display), which k339 drops. Control-plane keys (@OCP::Config::CONTROL_PLANE_KEYS): provider, host, public_ip, private_ip, node_ip, server_type, location, image (Bootstrap cp_identity/cp_tls_sans/cp_node_ip/placement, CR ensure_control_plane_ocpnodes, Drift spec_drift/_hosts, Machines, ocp ssh, destroy fallback, join_host/cluster_status/_taken_addresses), name (Drift spec_drift, Machines, cluster_status), service (written by ocp init --provider local --service; read by nothing), nodes on the mapping form only (control_planes()). robocop, Node.pm and the providers read no ocp.yaml pool/CP key (for_spec: provider only). Lines: 'workers[n].KEY: unknown key (must be name, provider, nodes, host, server_type, location, image, labels, or taints)', count: adds '; count is read by nothing -- write nodes: N, how many machines the pool has; without nodes it has one' (ssh pool: '... -- an ssh pool names its machines: host for one, or nodes, a list of hosts'); 'control_planes[n].KEY: unknown key (must be provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, or service)' (+ ', service, or nodes' on the mapping form), with hints for count: and for nodes: in a list entry. No accessor refuses them (destroy must not be held up by a key nothing reads, k323). Verified on HEAD 12d049a + k340 + k347: make test (Docker) run A 68 files (27 validate tests + 14 neighbours + 27 t/296 mutants + real configs): all real tests green, red347 (k340 Config.pm) fails exactly the two new subtests, 11/11 k347 mutants killed; run B 98 files (every test with control_planes/workers/apply/validate) PASS. cihq, citiai, amdlab: 0 errors.
+
+2026-10-31 12:29 CONFLICT with k339 (uncommitted in the shared tree, status lane): t/339-status-pool-count.t's @NAMED asserts validate() accepts { provider: hetzner, count: 5 } and { provider: local, nodes: 3, count: 5 }; with k347 both are refused, so t/339 fails exactly those two ('... validate() accepts it'), verified by make test on a copy of the shared tree's state (the 8 other files run with it, k345's t/345 included, pass). The claim t/339 makes (status counts the workers apply makes) still holds; those two rows have to go or become 'refused' rows, in whichever of k339/k347 is committed second -- t/339 is not my file, not touched. Leftovers: (1) .claude/skills/ocp-usage/SKILL.md:310 still names network_interface as a control-plane key; nothing reads it since 20547db (k138), so validate() now refuses it (doc lane). (2) service: is written by ocp init --provider local --service and read by nothing, on any provider; kept as a taken key -- whether it should stay is a decision. (3) control_planes[n].name and service have no shape check (a list name becomes the spec-drift label ARRAY(0x...)). (4) The mapping entries of an ssh pool's nodes: list take any key; only host is read (node_ip refused) -- not checked here.
+
+2026-10-31 12:29 Done: validate() refuses a key on a worker pool or a control plane that nothing reads, in _unknown_keys' words, naming @OCP::Config::POOL_KEYS / @CONTROL_PLANE_KEYS (lists grepped from every reader, sources in the notes); count: and a list entry's nodes: carry a hint; node_ip keeps its own line. t/296 claims 29-30 plus sweep paths. Verified with make test in Docker on HEAD 12d049a + k340 + k347: 166 files green, red347 fails exactly the new subtests, 11/11 mutants killed; real configs 0 errors. In the shared tree, uncommitted, on top of k340. Commit-order conflict with k339's t/339 (see note).
+
+2026-10-31 12:30 Correction to the handoff note: '166 files green' was loose. Exactly: run A, 68 files (41 real tests all ok + 27 t/296 mutant wrappers, which are meant to fail) Tests=2206; run B, 98 files (every test naming control_planes/workers/apply/validate) Tests=1296 PASS. No skips in either.
+
+2026-10-31 12:37 t/339 conflict closed inside k347, without touching the shared tree's t/339: k347-t339.patch (scratchpad w-choices340/, a git diff of t/339 only, against k339's version; apply after k339 is committed, in the k347 commit). The two count: rows leave @NAMED for a subtest of their own: validate() refuses each with one line, workers[1].count's with the hint to write nodes:, and worker_ocpnodes and ocp status (text and --json) still count 1 and 3. Comments at @COUNT and @NAMED say why. Verified: make test on 12d049a + k339.patch + k340.patch + k347.patch + this patch, t/339 t/296 t/332 ok (Files=6, Tests=66 incl. 3 mutant wrappers). red (k340's Config, no k347): t/339 fails only the new subtest, on the refusal. Status reading count: again (nodes // count, and count // nodes): fails only the new subtest -- the sweep no longer asks count: shapes, so this subtest is what guards k339's fix now.
+
+Committed as 3be7b4f
