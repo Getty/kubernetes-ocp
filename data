@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-10-31T13:54:21Z
+id: 372
+priority: low
+status: backlog
+tags:
+- decision
+- secrets
+title: 'Decide: .ocp/ directory mode (0755 from mkpath vs 0700)'
+updated: 2026-10-31T13:54:21Z
+---
+
+Decide (maintainer). From k360 (secrets worker, 2026-10-31). `.ocp/` is created with Path::Tiny's mkpath default, 0777 minus the umask (0755 under 022), by every one of its ~10 creators, now including the first PIN1 unlock on a clone (k360). The secrets inside are each 0600: age.key, the decrypted kubeconfig, the SSH keys. A 0755 directory still exposes their names and lets other local users list it.
+
+Options: keep it (each secret file's own 0600 is the protection); make `.ocp/` 0700 on creation everywhere (one helper); or also tighten an existing `.ocp/` (chmod on every run, which changes the mode on users' machines).
+Not to be built before the maintainer answers.
