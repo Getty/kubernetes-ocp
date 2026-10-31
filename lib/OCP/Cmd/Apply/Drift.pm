@@ -822,10 +822,18 @@ sub robocop_dry_run {
     my $level = $config->robocop_security_level;
     my @found;
 
+    # The Secret the same way (k329): a read that is no 404 dies in the
+    # state, and is no "missing, would write it".
     my $secret = eval {
         $self->_robocop_credentials_state($api, $config, undef, $level, host => $cp_ip);
-    } // 'outdated';
-    if ($secret eq 'unreadable') {
+    };
+    if (my $err = $@) {
+        chomp(my $cause = $err);
+        print "  [robocop] Secret/robocop-credentials could not be checked\n";
+        print STDERR "  [!!] Secret/robocop-credentials not checked: $cause\n";
+        push @found, { kind => 'error', label => 'Secret/robocop-credentials', cause => $cause,
+                       message => "Secret/robocop-credentials: $cause" };
+    } elsif ($secret eq 'unreadable') {
         # k216: an operator's identity cannot read the robo key to compare,
         # and a real run leaves the Secret as it is (with a warning).
         print "  [robocop] Secret/robocop-credentials cannot be checked with this age\n"

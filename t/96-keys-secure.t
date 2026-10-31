@@ -18,6 +18,9 @@
 #   * after the switch robocop's Secret carries the new robo key (one PIN2 for
 #     the whole run), a running robocop is restarted; without a cluster that
 #     step is skipped with a pointer to `ocp apply`; Hetzner gets both keys
+#   * a robocop Deployment read that fails other than with a 404 is not "no
+#     robocop": the robocop part stops with its cause on STDERR, nothing
+#     written for it, exit 1; the switch stands (k329)
 #   * an ocp.yaml that validate() refuses stops the command before the first
 #     prompt and before any file is written or machine touched, with every
 #     one of validate()'s lines on STDERR, exit 1 (k321) -- robocop:, name:
@@ -75,7 +78,8 @@ package FakeApi {
     sub new {
         my ($class, %opt) = @_;
         my $self = bless { log => [], objects => {}, nodes => $opt{nodes} // [],
-                           deleted => [], fail_list => $opt{fail_list} }, $class;
+                           deleted => [], fail_list => $opt{fail_list},
+                           refuse => $opt{refuse} // {} }, $class;
         $self->{objects}{'Deployment/ocp-system/robocop'} = { kind => 'Deployment' }
             if $opt{deployment};
         return $self;
@@ -99,6 +103,10 @@ package FakeApi {
     sub get {
         my ($self, $kind, $name, %opt) = @_;
         my $key = join '/', $kind, $opt{namespace} // '-', $name;
+        # A read the cluster refuses (k329): the next error queued for $key;
+        # once the queue is empty the read answers as before.
+        my $refused = shift @{ $self->{refuse}{$key} // [] };
+        die $refused if $refused;
         return $self->{objects}{$key} // die "404 $key\n";
     }
 
@@ -602,6 +610,54 @@ subtest 'no terminal and no --pins-stdin: refused before anything' => sub {
     like $r->{died}, qr/--pins-stdin/, 'naming the way to feed PINs';
     is_deeply $r->{prompts}, [], 'nothing asked';
     is scalar(@{ $r->{ssh} }), 0, 'nothing touched';
+};
+
+# k329: _reroll_robocop read the robocop Deployment as `eval { get } ? 1 : 0`
+# to know whether a running pod has to be restarted for the new Secret. A
+# read that failed -- a 500 the robocop step's own read got past a moment
+# later -- said "no robocop": the Secret was rewritten, the pod was not
+# restarted and ran on with the old credentials, exit 0. Only a 404 is no
+# robocop; any other failure stops the robocop part with its cause, before
+# anything is written for it. The switch itself stands.
+subtest 'k329: a robocop Deployment that cannot be read is not "no robocop"' => sub {
+    {
+        my $dir = dev_project();
+        cluster_hosts($dir);
+        my $api = FakeApi->new(nodes => cluster_nodes());
+        my $r = run_secure($dir, api => $api);
+        is $r->{rv}, 0, 'control, a 404: exit 0' or diag $r->{err}, $r->{died};
+        ok $api->secret, 'control, a 404: the Secret is written';
+        ok( (grep { $_ eq 'Deployment/ocp-system/robocop' } @{ $api->{log} }),
+            'control, a 404: robocop is rolled out' );
+        is_deeply $api->{deleted}, [], 'control, a 404: nothing to restart';
+    }
+
+    for my $case (
+        [ 'a 500, then the read gets through',
+          [ "500 Internal Server Error: etcdserver: request timed out\n" ], qr/500 Internal Server Error/ ],
+        [ 'a 403 every time',
+          [ ("403 forbidden: User \"ocp-ci\" cannot get resource \"deployments\"\n") x 3 ], qr/403 forbidden/ ],
+    ) {
+        my ($what, $refuse, $cause) = @$case;
+        my $dir = dev_project();
+        cluster_hosts($dir);
+        my $api = FakeApi->new(nodes => cluster_nodes(), deployment => 1,
+            refuse => { 'Deployment/ocp-system/robocop' => [ @$refuse ] });
+        my $r = run_secure($dir, api => $api);
+
+        is $r->{died}, '', "$what: no exception" or diag $r->{died};
+        is $r->{rv}, 1, "$what: exit 1";
+        ok -f $dir->child('keys.yaml'), "$what: the switch stands";
+        like $r->{err}, qr{^\[!!\] could not read Deployment ocp-system/robocop: $cause}m,
+            "$what: the read and its cause, on STDERR";
+        like $r->{err}, qr/The switch to secure mode stands; only robocop is behind/,
+            "$what: robocop said to be behind";
+        unlike $r->{out}, qr/could not read/, "$what: nothing of it on STDOUT";
+        ok !$api->secret, "$what: robocop's Secret not written";
+        ok !(grep { $_ eq 'Deployment/ocp-system/robocop' } @{ $api->{log} }),
+            "$what: the Deployment not re-applied";
+        is_deeply $api->{deleted}, [], "$what: no pod restarted";
+    }
 };
 
 # --- An ocp.yaml validate() refuses (k321) -----------------------------------

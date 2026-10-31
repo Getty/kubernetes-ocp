@@ -5,6 +5,7 @@ use Moo::Role;
 
 use MIME::Base64 ();
 
+use OCP::Cmd::Apply::K8s ();   # read_or_absent: only a 404 is no Secret
 use OCP::Keys;
 use OCP::Node ();      # for the join-token file paths ($RKE2_TOKEN_PATH etc.)
 use OCP::Secrets;
@@ -32,7 +33,8 @@ my $ROBOCOP_NAMESPACE  = 'ocp-system';
 # it unconditionally when it has to be refreshed.
 #
 # Returns 'current', 'written' or 'kept'. Dies, writing nothing, when the
-# Secret has to be written and cannot be (no host, no key, refused PIN2, empty
+# Secret cannot be read -- anything but a 404, see _robocop_credentials_state
+# -- or has to be written and cannot be (no host, no key, refused PIN2, empty
 # token).
 #
 # 'kept' is a run under an age identity that cannot read the robo private key
@@ -187,9 +189,17 @@ sub _robocop_credentials_current {
 
 # 'current', 'missing' (no Secret to read) or 'outdated' (a Secret that says
 # something else than a write would). Read-only -- `ocp apply --dry-run`
-# reports it as is (k173). Any other failure to tell -- a read error, no host,
-# no robo key -- is 'outdated': the write that follows then fails loud with the
-# real reason, instead of a skip hiding it.
+# reports it as is (k173). A failure to tell on this side -- no host, no robo
+# key -- is 'outdated': the write that follows then fails loud with the real
+# reason, instead of a skip hiding it.
+#
+# Only a 404 is 'missing'. A read that fails otherwise -- an RBAC denial, an
+# apiserver 5xx, a broken connection -- says nothing about the Secret and
+# dies "could not read Secret ocp-system/robocop-credentials: <cause>", for
+# the caller to report (k329). Taken for 'missing', the dry run announced a
+# write, a real run went for one -- PIN2 and the SSH token read included --
+# over a Secret it could not see, and an operator run was told it does not
+# exist.
 #
 # One more, 'unreadable' (k216): a Secret is there, and this run's identity
 # cannot read the robo private key it would be compared with (see
@@ -198,9 +208,10 @@ sub _robocop_credentials_current {
 sub _robocop_credentials_state {
     my ($self, $api, $config, $secrets, $level, %opt) = @_;
 
-    my $obj = eval {
-        $api->get('Secret', $CREDENTIALS_SECRET, namespace => $ROBOCOP_NAMESPACE);
-    } or return 'missing';
+    my $obj = OCP::Cmd::Apply::K8s::read_or_absent(
+        "Secret $ROBOCOP_NAMESPACE/$CREDENTIALS_SECRET",
+        sub { $api->get('Secret', $CREDENTIALS_SECRET, namespace => $ROBOCOP_NAMESPACE) },
+    ) or return 'missing';
 
     $secrets //= OCP::Secrets->new(project_dir => $config->project_dir);
     return 'unreadable' if $self->_robo_key_unreadable($config, $secrets, $level);
@@ -402,6 +413,8 @@ read of the token.
 
 C<_ensure_robocop_credentials> skips the write when the Secret already carries
 the level's key set, the current robo key and join URL, and a non-empty token.
+Only a 404 makes the Secret missing: a read that fails otherwise dies with its
+cause, before anything is written, prompted for or read over SSH.
 A run whose age identity cannot read the robo private key (C<SOPS_AGE_KEY_FILE>
 of an operator, k216) leaves an existing Secret of the C<secret> levels as it
 is, with a C<[WARN]> on STDERR, and fails on a missing one: writing it is the

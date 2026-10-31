@@ -10,6 +10,7 @@ use Path::Tiny qw( path );
 use OCP::ClusterKey;
 use OCP::Cmd::Apply::CR ();
 use OCP::Cmd::Apply::Deploy ();
+use OCP::Cmd::Apply::K8s ();
 use OCP::Config;
 use OCP::Keys;
 use OCP::Password;
@@ -450,18 +451,26 @@ sub _reroll_robocop {
     # keys.yaml exists now, so this is the admin key -- and the one in hand.
     $self->cluster_ssh_key($config, admin_key => $admin);
 
-    my $had = eval { $api->get('Deployment', 'robocop', namespace => 'ocp-system') } ? 1 : 0;
+    # Only a 404 is no robocop (k329). A read that fails otherwise says
+    # nothing about the Deployment: taken for "none", a 500 the step's own
+    # read got past a moment later left the running pod unrestarted, on its
+    # old credentials. It stops the robocop part here, with its cause, before
+    # anything is written for it -- as robocop_step does on that read (k328).
+    my $had = eval {
+        OCP::Cmd::Apply::K8s::read_or_absent('Deployment ocp-system/robocop',
+            sub { $api->get('Deployment', 'robocop', namespace => 'ocp-system') }) ? 1 : 0;
+    };
+    unless (defined $had) {
+        print STDERR "[!!] ".$self->_oneline($@)."\n";
+        return $self->_robocop_behind;
+    }
 
     print "\n";
     my $step = OCP::Cmd::Apply::Deploy::robocop_step($self, $api, $config, {
         secrets => $secrets,
     });
 
-    if ($step->{state} eq 'failed') {
-        print STDERR "[!!] The switch to secure mode stands; only robocop is behind.\n"
-          . "     Roll it out with 'ocp deploy-robocop' (or 'ocp apply').\n";
-        return 0;
-    }
+    return $self->_robocop_behind if $step->{state} eq 'failed';
 
     if ($had && $step->{changed}) {
         my $ok = eval { $self->_restart_robocop($api); 1 };
@@ -477,6 +486,13 @@ sub _reroll_robocop {
     }
 
     return 1;
+}
+
+# What a robocop that could not be rolled out leaves: false, after saying so.
+sub _robocop_behind {
+    print STDERR "[!!] The switch to secure mode stands; only robocop is behind.\n"
+      . "     Roll it out with 'ocp deploy-robocop' (or 'ocp apply').\n";
+    return 0;
 }
 
 # The Deployment's pods are deleted; the ReplicaSet starts a new one, which
@@ -652,7 +668,9 @@ deployed leaves this to its first C<ocp apply>, which uploads both anyway.
 With robocop enabled and a cluster to reach, the C<robocop-credentials>
 Secret is written with the new robo key (the token read reuses this run's
 admin key, no second PIN2) and the Deployment is ensured; a robocop that was
-running is restarted to read it.
+running is restarted to read it. Whether one was running is read first: a
+read that fails other than with a 404 writes nothing for robocop and is
+reported as the failure below.
 
 =back
 
