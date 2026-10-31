@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-10-31T14:30:41Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:19:33Z
+id: 361
+priority: medium
+status: in-progress
+tags:
+- apply
+- validation
+- bug
+title: 'worker_ocpnodes counts nodes: on a pool of unknown or missing provider: a
+  list or huge count runs out of memory in the keys commands'
+updated: 2026-10-31T14:30:41Z
+---
+
+Found by the secrets worker during k346 (2026-10-31).
+
+`OCP::Cmd::Apply::CR::worker_ocpnodes` counts a pool's `nodes:` even on a pool whose provider is unknown or missing. A pool without provider is read as hetzner (see the k339 note on k306). A list there numifies to its address; a huge number is taken as is. Both loop building OCPNodes until the host runs out of memory.
+
+`ocp apply` is safe because validate() refuses an unknown provider first. The commands that don't run validate() and walk the machines are not:
+- `ocp keys operator add|rm`
+- `ocp keys secure --drop-bootstrap` on a secure project (OCP::Role::Cmd::Machines::_machines)
+- possibly `ocp status`
+
+k346's new pre-PIN1 gate (`_machines_spec_errors`) skips pools with an unknown or missing provider "as ocp destroy does", so it doesn't close this.
+
+Done = worker_ocpnodes doesn't build OCPNodes from a `nodes:` it can't count. It takes a whole number within the bound, as control_planes() does with `$MAX_CONTROL_PLANE_NODES` (k296/k305), and otherwise follows what validate() would say. Either that, or every caller gates first. Say which, and why. Regression test: a pool `{provider: foo, nodes: [a, b]}` and `{nodes: 1e12}` without provider through `ocp keys operator add` (fake cluster) and worker_ocpnodes directly. It must stop at once with no allocation storm. Run it under a timeout.
+
+Lane: ocp-apply-worker (CR.pm). Coordinate with k306 (the read-side shape gate).
