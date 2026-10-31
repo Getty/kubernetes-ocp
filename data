@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-10-31T17:55:19Z
+created: 2026-10-31T15:45:18Z
+id: 388
+priority: low
+started: 2026-10-31T17:55:19Z
+status: done
+tags:
+- json
+- ux
+title: ocp node ls --json prints nothing on STDOUT when the API cannot be reached;
+  status --json and health --json print a JSON object with an error field
+updated: 2026-10-31T17:55:19Z
+---
+
+From k384 (2026-10-31). On failure ocp status --json and ocp health --json put the line into an error field of the JSON they print; ocp node ls --json prints nothing on STDOUT and only the line on STDERR. A machine reader of --json cannot tell "no nodes" from "could not ask". Decide (here, not silently): node ls --json prints {"error": "..."} with exit 1 like status/health. Done = the same shape for the three, tested. Lane: ocp-worker (no lane owns node ls). After k375 and the non-599 card.
+
+After k387: node ls's list calls go through cluster_api_call (Node/Ls.pm), which dies with the one line. For --json, catch that and print the object with an error field like status/health --json do.
+
+2026-10-31 17:02 Shape decision (k388): the error object REPLACES the array, it does not wrap it. node ls --json prints {"error": "<message>"} (canonical, pretty) on STDOUT, exit 1; STDERR keeps the line exactly as without --json ("Error: ..." from OCP.pm: the error is printed, then re-died). Why: the success contract is a JSON array (POD JSON OUTPUT, xt/smoke-worker.pl pick reads it); turning it into {nodes:[...]} to make room for error would break every reader for the sake of the failure case. Status/health add error to their own success object; node ls success is an array, which has no place for a key, so the type tells them apart: array = inventory ([] = no OCPNodes), object = could not list. No "nodes": [] beside error: health keeps pods: [] because pods is a key of its success object; node ls has none. Caught: everything the --json listing dies with, as health does (API lines of reach_cluster_api/cluster_api_call for the OCPNode AND the Node list; also no ocp.yaml / no kubeconfig). error = the message chomped, as health. OCP::Role::Cmd helpers unchanged. Claims replaced: t/384 + t/387 asserted node ls --json prints nothing on STDOUT; now the object, line as its error, nothing else.
+
+2026-10-31 17:03 Also found (for this board, not fixed here): (1) xt/smoke.sh:266 + xt/smoke-worker.pl:67 — left="$(ocp node ls --json 2>/dev/null | helper pick ... || true)"; an empty $left passes "the OCPNode is gone". A node ls that could not ask (before: empty STDOUT, now: the error object) makes pick die, so the step passes falsely; pick_node could refuse an object with error now that it is in-band. (2) lib/OCP/Cmd/Node/Ls.pm:47 — node ls builds its client with Kubernetes::REST::Kubeconfig (resource_map_from_cluster on), so Node resolves only through discovery; a discovery without core nodes made --json end in "unknown resource Node ... This is an internal error" (seen with the test fake; a real API server serves nodes, low). (3) lib/OCP/Secrets.pm:986 no_kubeconfig_refusal carries its own "ERROR: " label and indented continuation lines; the JSON error field of health --json (Health.pm:78) and now node ls --json keep them, while STDERR strips the label. (4) status/health --json say "ERROR: line" on STDERR, node ls --json "Error: line" (OCP.pm) — kept as the brief asked.
+
+2026-10-31 17:03 Done: OCP::Cmd::Node::Ls --json prints {"error": "<message>"} on STDOUT and exits 1 when the nodes cannot be listed; STDERR unchanged (re-die to OCP.pm); success array unchanged. POD JSON OUTPUT + README sentence. Patch: scratchpad w-ocp388/k388.patch (header: subject, description, Changes bullet; no Changes hunk). Verified with make test in Docker (IMAGE=localhost/ocp-w388): red on queued-head19 without the fix — t/384 node ls --json 599 + no-ocp.yaml, t/387 node ls --json 401/403/500 + Nodes-denied failed on STDOUT/JSON only; [] control passed. Green with the fix: t/18 t/36 t/230 t/370 t/375 t/384 t/387, Files=7 Tests=128 PASS, no skips. No mutation run (output change, no new logic).
+
+Committed as a90a2ec
