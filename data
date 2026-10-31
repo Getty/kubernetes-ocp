@@ -1,0 +1,40 @@
+---
+class: standard
+completed: 2026-10-31T13:25:51Z
+created: 2026-10-30T23:58:18Z
+depends_on:
+- 249
+- 250
+id: 253
+priority: medium
+started: 2026-10-30T23:58:32Z
+status: done
+tags:
+- gpu
+- amd
+title: 'AMD: gpu.amd.integrated cluster-wide through the provider-CR channel'
+updated: 2026-10-31T13:25:51Z
+---
+
+gpu.amd.integrated (k250: Config accessor gpu_amd_integrated, default false) has to reach the Rexfile on every join path, through the same channel gpu.toolkit uses (k223, commit 1c60db5):
+- OCP::Cmd::Apply::CR writes spec.gpu.amd.integrated onto the OCPNodeProvider CR
+- share/robocop/crds/ocpnodeprovider.yaml declares the field
+- OCP::Provider->gpu_flags_from_cr reads it back (gpu_amd_integrated 0/1, absent stays absent)
+- OCP::Node attribute gpu_amd_integrated (k250 prepares it, ORed with spec.gpu true) -> Rex param gpu_amd_integrated
+- OCP::Cmd::Apply::Bootstrap (control planes from ocp.yaml) and OCP::Cmd::Node::Add (CLI join) pass it on
+- OCP::Rex lets the param through, if it filters
+
+Why: the integrated gate (spec docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md §1) hands AMD iGPUs/APUs to install_driver only on opt-in. Per node, `ocp node add --gpu` already does that (k250). Cluster-wide (pools, control planes) only this card does.
+
+Lanes: apply (CR.pm, Bootstrap, Add), provider (Provider.pm, Rex.pm), state (Node.pm), infra (CRD). They run one after another, because all of them touch the same params channel. Tests on the model of t/223-gpu-toolkit-cdi.t.
+Needs k249 and k250 (Rexfile reads the param, Config accessor exists).
+
+Found under k271 (2026-10-31): when the Rexfile's install_amd skips an integrated GPU, its message tells the user to 'set gpu.amd.integrated: true' — a setting that reaches no node today. The Rexfile, OCP::Config and the AMD design spec make the same claim in comments. This card either wires the setting through, or the advice and the comments get dropped/rewritten to name 'ocp node add --gpu' as the only path until it is.
+
+2026-10-31 12:54 Worker (ocp-worker): wired on gpu.toolkit's path (k223) in a copy of the pinned base (12d049a + 13 queued). CR.pm writes spec.gpu.amd.integrated (JSON bool, always, default false); CRD declares spec.gpu.amd.integrated (no default); gpu_flags_from_cr -> gpu_amd_integrated 0/1, absent stays absent; robocop + apply worker reconcile already splat the whole flag set (no code change); node add's toolkit-only helper -> _gpu_install_flags (toolkit + amd_integrated); Bootstrap -> install_server; OCP::Rex install_server/install_agent pass it 0/1 (absent 0). Rexfile already reads it (k249/k250), its skip line is now true. Red: new t/253 9/9 subtests fail on base. Green: 68 related files / 1106 tests PASS, no skips. Mutants: 11/11 killed, control passes. Final verify run on patch-applied fresh base pending.
+
+2026-10-31 13:02 Also found (out of scope, for the dispatcher to file on kubernetes-ocp): (1) ocp node add reads neither gpu.enabled nor gpu.driver off the provider CR (only gpu_toolkit, now + gpu_amd_integrated): the gpu.enabled:false kill switch and gpu.driver:operator do not hold for nodes joined with ocp node add -- detection runs and host drivers get installed there, unlike robocop/apply joins. (2) Changing gpu.amd.integrated reaches only installs that run afterwards: police1 on the next ocp apply, a joined worker/police2+ only when re-joined; true->false removes nothing; ocp status says nothing about nodes installed under the other value. (3) docs/configuration.md documents no gpu.amd block at all (docs lane).
+
+2026-10-31 13:02 Done. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-amd253/k253.patch (against the queued base; header carries subject, description, Changes bullet). Files: lib/OCP/Cmd/Apply/CR.pm (writes spec.gpu.amd.integrated, JSON bool, default false), share/robocop/crds/ocpnodeprovider.yaml (spec.gpu.amd.integrated boolean, no default), lib/OCP/Provider.pm (gpu_flags_from_cr -> gpu_amd_integrated 0/1, absent stays absent), lib/OCP/Cmd/Node/Add.pm (_gpu_install_flags: toolkit + amd_integrated), lib/OCP/Cmd/Apply/Bootstrap.pm (-> install_server), lib/OCP/Rex.pm (install_server/install_agent pass it 0/1, absent 0), lib/OCP/Node.pm (comment/POD only; logic was k250's), robocop: no code change (splats all gpu flags already; tested). Comments/docs: t/250 header, AMD design spec s2, skills ocp-gpu (+references/amd.md) and ocp-usage; Rexfile and OCP::Config comments were already true once wired, left as is. Tests: new t/253-gpu-amd-integrated-cr.t, t/19 CRD inventory +1 leaf. Red: t/253 9/9 subtests fail on base. Green: 68 related files / 1106 tests PASS, no skips (make test in image, IMAGE=localhost/ocp-w253); same on the patch applied to a fresh base. Mutants: 11/11 killed (CR write, JSON bool, CRD, read-back, absent-as-0, node add, Rex server/agent, Rex default, bootstrap, Node OR), control green. Full suite not run.
+
+Committed as 909b350
