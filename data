@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T17:25:22Z
+created: 2026-10-31T15:45:12Z
+id: 387
+priority: medium
+started: 2026-10-31T17:25:22Z
+status: done
+tags:
+- ux
+- errors
+title: Non-599 API errors (401/403/500, an expired token) still end in 'internal error'
+  in node ls, provider ls and health; status prints them raw
+updated: 2026-10-31T17:25:22Z
+---
+
+From k384 (2026-10-31). k384 made a 599 (API does not answer) one clean line through OCP::Role::Cmd::reach_cluster_api / cluster_api_unreachable. An API that answers with an error (401 expired or wrong token, 403, 500) still reaches OCP.pm with the Kubernetes::REST APIError text and its source locations, so node ls, provider ls and health say "This is an internal error"; ocp status's non-599 branch prints the raw text, locations included ("WARNING: Cannot connect to cluster API" + "Error: ...").
+Also seen: Kubernetes::REST's own discovery warning (with a location) still appears when an API lookup fails partway through a run; the 599 reason repeats "Connection refused" twice because LWP's text has it twice (OCP::ErrorLine::one_line keeps both).
+Done = one line per answered error naming server, status and the API's message (e.g. "The cluster API at X refused the credentials (401 Unauthorized): ..."), no source location, in these four commands; one regression test per status code through bin/ocp with a fake server. Lane: ocp-status-worker (helper in OCP::Role::Cmd, as k384). After k375 lands (it touches the same four commands).
+
+2026-10-31 16:21 Red on queued-head14 (t/387, bin/ocp against a local API server per status: 401 to every request; 403 and 500 to the resources after /version and discovery answered): all 21 command runs fail. status: 'WARNING: Cannot connect to cluster API' + raw 'Kubernetes API error (list Node): 401 {...} at .../OCP/Kubernetes.pm line 161.' (JSON error the same); node ls under 401: Kubernetes::REST 'Falling back to the built-in resource map: ... at .../Node/Ls.pm line 60.' then 'This is an internal error'; node ls/provider ls/health under 403/500: 'Error: Kubernetes API error (list X): 403 {...}' + internal error. Fix: OCP::Role::Cmd cluster_api_error (replaces cluster_api_unreachable; one line for every APIError, words by status: 599 could not be reached, 401 refused the credentials in the kubeconfig, 403 denied the request, 5xx failed, other answered; status + Status reason in words + API message, deduped; 599 reason = first line of the transport text, so 'Connection refused' once), cluster_api_call (wraps a call, APIError -> the line as user error), reach_cluster_api now check_response's /version so any error status stops there before discovery could warn. Sites: Status.pm both list_nodes sites (rename); cross-lane Node/Ls.pm (list OCPNode, list Node), Provider/Ls.pm (both lists) via cluster_api_call, Health.pm execute classifies the caught error. Green run next, then one guarded mutant run (5 mutants).
+
+2026-10-31 16:39 Done: patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-status387/k387.patch (git diff against queued-head14, header: subject, description, status->words decision, Changes bullet; no Changes hunk). Sites: lib/OCP/Role/Cmd.pm cluster_api_error (replaces cluster_api_unreachable), cluster_api_call (new), reach_cluster_api (check_response on /version); Status.pm both list_nodes sites; cross-lane: Node/Ls.pm (list OCPNode, list Node --json) and Provider/Ls.pm (both lists) via cluster_api_call, Health.pm execute classifies its caught error; t/384 unit section follows the rename and new probe contract (+ 'Connection refused' once in the bin/ocp runs); new t/387. Words: 599 could not be reached (first line of the transport text), 401 refused the credentials in the kubeconfig, 403 denied the request, 5xx failed, other answered; '(code Reason-in-words): API message', message dropped when it repeats the reason. Runs (make test, IMAGE=localhost/ocp-w384): red on queued-head14 - all 21 t/387 command runs fail; green - 28 files/577 tests PASS (t/387, t/384, t/370, t/375, t/257, t/230-*, t/18, t/19, t/11, status suites, t/23, t/26, t/95, t/216, t/263, t/291, t/351); mutation - one guarded run, 5 mutants + control (Rex first, %INC asserted): control and t/00-load pass, M1 probe unchecked / M2 node ls unwrapped / M3 health unclassified / M4 599 whole text / M5 500 not failed each killed by failed t/387 assertions. Kubernetes::REST discovery warning: not fixable here (no way to pass constructor options through Kubeconfig->api; the warning is a carp) - in the report for the kubernetes-rest board.
+
+Committed as 5935cc5
