@@ -1,0 +1,62 @@
+---
+class: standard
+completed: 2026-10-31T02:19:00Z
+created: 2026-10-30T23:43:59Z
+depends_on:
+- 248
+id: 251
+priority: high
+started: 2026-10-31T02:19:00Z
+status: done
+tags:
+- gpu
+- amd
+- apply
+title: 'AMD-GPU: Cluster-Stack (Device-Plugin/Labeller/DRA/Metrics) + Apply-Wiring'
+updated: 2026-10-31T02:19:08Z
+---
+
+Design docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md, Abschnitt 3 (+ ocp update kennt die AMD-Komponenten). Lane ocp-apply-worker. Startet nach Config/Versions und Live-Spike. Teil von k248.
+
+Change from spike/design (see spec §3): do NOT build your own DaemonSets. Call the Rex::Rancher::K8s functions (deploy_amd_device_plugin/_node_labeller/_dra_driver/_metrics_exporter + remove_amd_*, rex-rancher k95/k101-103, branch worktree-k95-amd-gpu, unreleased). Namespace kube-system. OCP provides affinity (marker ocp.internal/amd-gpu.present + allocation terms), version from OCP::Versions, wait=>0, hash, drift/status. node add --gpu on an AMD node currently reports 'no NFD NVIDIA label … run ocp apply': make it AMD-aware (wait for the marker, ensure the AMD stack).
+
+2026-10-31 rex-rancher k101 (0b6e1b3) ran live on amdlab: device plugin and labeller deploy, remove (idempotent) and redeploy all work. The PyTorch smoke against the lib's plugin passed. Notes for the build:
+- Object names: DRA DS k8s-gpu-dra-driver-kubeletplugin, DeviceClass gpu.amd.com, VAP/VAPB resourceslices-policy-k8s-gpu-dra-driver (k102, not committed yet). Metrics DS amdgpu-metrics-exporter, ConfigMap amdgpu-metrics-exporter-config (k103, planned). Full list in the spec, §3 components table.
+- The Ready check must use pod Ready plus status.allocatable, never status.capacity. The kubelet leaves capacity stale after a plugin unregisters; that is the bug in the lib's wait (rex-rancher k106). Keep passing wait => 0.
+- mixed naming on an unpartitioned GPU still registers amd.com/gpu.
+- Don't read the plugin version off its log. Image 1.31.0.11 reports v1.25.2.7-137-g1de16818.
+
+2026-10-31 01:23 ocp-apply-worker started. Plan: new module OCP::Cmd::Apply::AMDGPU (trigger on the marker, affinity matrix, per-component hash in deployed.yaml, remove what is no longer selected, own Ready check on DS ready/desired + allocatable / ResourceSlice), wired into Deploy.pm + Drift.pm (step + after-join), node add --gpu made vendor-aware. Lib calls behind a can() guard, kubeconfig = the temp file Apply::K8s already builds the api from.
+
+2026-10-31 01:42 Progress: OCP::Cmd::Apply::AMDGPU written (device plugin, DRA driver, labeller, and now the metrics exporter per rex-rancher 4f2f3ca, so the 'metrics unwired' marker is gone). Wired into Deploy.pm + Drift.pm (step + after_join), and node add --gpu is vendor-aware. New t/251; t/220/38/47/71 adjusted. Waiting on test slots for verification.
+
+2026-10-31 02:10 ocp-apply-worker: k251 done, tree commit-ready (not committed).
+
+Changed: new lib/OCP/Cmd/Apply/AMDGPU.pm (the stack: device plugin, DRA driver, node labeller, metrics exporter). Wiring: Apply/Deploy.pm, Apply/Drift.pm (step after the GPU Operator block, after_join after the worker step). Helpers: Apply/K8s.pm (kubeconfig_path), Apply/DeployedHash.pm (forget, the 'removed' outcome). Node/Add.pm: --gpu is vendor-aware, POD fixed. Tests: new t/251-amd-gpu-stack.t; adjusted t/220, t/38, t/47, t/71.
+
+My calls:
+- Its own module, with no Apply.pm forwarders: t/52 holds Apply.pm under 700 lines, and Workloads stays NVIDIA-only.
+- Removal: a component no marker node selects is removed if OCP recorded it OR its DaemonSet is in the cluster. That covers the last AMD node gone, gpu.enabled false, labeller/metrics off, and a switched allocation. This is asymmetric with the NVIDIA operator, which nothing removes. Reasons: a plugin left on a node switched to dra would hand out the GPU twice, and these are only a few kube-system objects. A Node list that fails removes nothing.
+- Order: removals first (DRA before the plugin), then the narrow In component, then the default's NotIn component, then labeller and metrics. A switch never puts both allocation components on one node.
+- Hash = md5 of canonical JSON {call, options (version, affinity, resource_naming, wait, node_labeller), Rex::Rancher::K8s $VERSION}. A Rex::Rancher upgrade therefore re-applies each component once. Unchanged = same hash AND DaemonSet present. The hash is saved only after Ready.
+- Ready check (300s, 10s interval): DaemonSet observedGeneration/desired>0/numberReady/updatedNumberScheduled. Plugin: status.allocatable amd.com/gpu (mixed: any amd.com/*) > 0 on every node its affinity selects. DRA: a ResourceSlice of driver gpu.amd.com per such node. Labeller and metrics: the DaemonSet only; /metrics is not probed. Capacity is never read.
+- The can guard checks every function this run needs before any call. If one is missing: one [WARN] on STDERR, nothing deployed or removed, not a failure.
+- DRA without resource.k8s.io/v1: [!!] on STDERR with the lib's message plus a hint (no GPU on dra nodes until 1.34; use device-plugin meanwhile). Counts as a failed component; the others carry on.
+- An allocation label that is none of the three values: [WARN] per node; the node gets the default (what NotIn does anyway).
+- after_join: runs again only if the first step ran clean (no failure, no warn) and a joined Ready node carries the marker. No polling: the marker comes at registration.
+- node add --gpu: polls for the AMD marker or the NFD NVIDIA label (300s). It ensures the AMD stack and/or the GPU Operator, whatever shows at the first poll that shows anything. A mixed host whose marker shows first gets the GPU Operator only with the next ocp apply. If neither shows: STDERR names both labels and says what each means.
+- Metrics: wired per rex-rancher 4f2f3ca (marker affinity only, gated by gpu.amd.metrics, else removed). The "unwired" marker is gone.
+- amd.com/gpu, amd.com/ and gpu.amd.com are local variables in AMDGPU.pm with a k258 comment. OCP::Config is ocp-state-worker's lane.
+
+Lib gaps (rex-rancher board):
+- deploy_amd_dra_driver and deploy_amd_metrics_exporter use the init image busybox:1.36. It is unpinned in OCP::Versions and has no override option, which contradicts the spec's "nothing unpinned".
+- _wait_for_gpu_resource (deploy_amd_device_plugin wait=>1) polls status.capacity, not allocatable. OCP passes wait=>0, so OCP is unaffected.
+- The image ships Rex::Rancher 0.004 (cpanfile requires 0.004). No released Rex::Rancher has the AMD functions. Until a release plus a cpanfile/snapshot bump, an AMD cluster gets the [WARN] and nothing is deployed.
+
+Drift found (for the dispatcher, not in scope):
+- ocp apply --dry-run returns before the AMD step. It shows AMD DaemonSet version drift via the OCP::Drift probes (k250) but not which components a real run would deploy or remove.
+
+Verified: DOCKER_BUILDKIT=0 make test, full suite: Files=196 Tests=3089 PASS, no skips. After a POD-only link fix in AMDGPU.pm, t/251 + t/00-load re-run in the image: PASS. 40 mutations over AMDGPU/Node::Add/Deploy/Drift/DeployedHash: all killed.
+Proposed commit: "Deploy the AMD GPU cluster stack from ocp apply and node add --gpu (k251)
+
+2026-10-31 02:18 Committed as 4d90591. Verified on that commit alone (detached worktree, host prove -l): t/251, t/220, t/38, t/47, t/71, t/00-load, 6 files, 196 tests, PASS. Released Rex::Rancher 0.004 has no AMD functions: until a release with them and a pin bump the step prints one [WARN] and deploys nothing. Live acceptance on the amdlab test cluster is tracked on k248 (umbrella, stays in-progress). Follow-ups: k261 (dry-run), k263 (shared constants).
