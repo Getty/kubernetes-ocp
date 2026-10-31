@@ -31,12 +31,27 @@ cluster whether the deployment is actually there, and only then decide
 lesson registry paid for the hard way — without it, an `ocp destroy` left
 a record of a workload the next apply happily skipped.
 
+An equal hash says what OCP deployed, not what the cluster runs. So the
+step also reads the image of the Deployment the L<OCP::Drift> probe reads
+(C<nfd-master>, C<gpu-operator>), the way that probe reads it
+(L<OCP::Drift/version_against_pin>). An image changed in the cluster
+(C<kubectl set image>, an edit) is the drift C<ocp status> counts as one
+C<ocp apply> closes, and this step closes it: C<updated>, the manifest
+re-applied. A server-side apply with force takes the image back from
+whoever set it (k351). What that probe does not read, such as the args, is
+not compared.
+
 That decision is the return value, and the caller reports it through
 L<OCP::Cmd::Apply::DeployedHash/report_component>: here is the only place
 that holds both the record and the cluster's answer, so anyone judging from
-the hash file afterwards is guessing. C<setup_gpu_operator> has a fifth
+the hash file afterwards is guessing. In list context an C<updated> for an
+image that was not the pin comes with why, C<ran v0.0.1, expected v0.18.3>,
+for C<report_component>'s line. C<setup_gpu_operator> has a fifth
 answer, C<skipped> — no NVIDIA card, or C<gpu.enabled: false> — for the
 cluster where this component is not part of the spec at all.
+
+A Deployment whose image cannot be read (anything but a 404) is no verdict:
+the step dies with the cause and applies nothing (k269).
 
 Every C<setup_gpu_operator> that does not skip, C<unchanged> included,
 then waits (300 s, C<gpu_ready_timeout>) until C<status.allocatable> shows
@@ -90,8 +105,15 @@ sub setup_nfd {
         $self->_resource_exists($api, 'Deployment', 'nfd-master', namespace => 'node-feature-discovery');
 
     my $recorded = exists $deployed->{nfd};
+    my $current  = ($deployed->{nfd} // '') eq $hash && $nfd_running;
 
-    if (($deployed->{nfd} // '') eq $hash && $nfd_running) {
+    # The hash is what OCP deployed, not what the cluster runs: an image
+    # changed since (kubectl set image, an edit) leaves it as it was. The NFD
+    # probe of OCP::Drift reads that image, and ocp status counts what it
+    # finds as drift ocp apply closes; this step asks the same (k351).
+    my $off = $current ? off_pin($self, $api, 'nfd') : undef;
+
+    if ($current && !$off) {
         print "      NFD already deployed (up to date)\n";
         return 'unchanged';
     }
@@ -159,7 +181,42 @@ sub setup_nfd {
 
     $self->_save_deployed_hash($config, 'nfd', $hash);
 
-    return $outcome;
+    return wantarray && $off ? ($outcome, $off) : $outcome;
+}
+
+# Why $component's workload is re-applied although its hash has not moved:
+# "ran X, expected Y" when the object its OCP::Drift probe reads runs another
+# image than the pin, read as that probe reads it (OCP::Drift
+# version_against_pin: the first container's tag, a leading v alike) -- so
+# the step and ocp status cannot tell two stories (k351). undef when it runs
+# the pin, carries no tag, or is gone. Only a 404 is gone: any other failed
+# read dies with its cause (k269).
+sub off_pin {
+    my ($self, $api, $component) = @_;
+    my ($probe) = grep { $_->{component} eq $component } @OCP::Drift::COMPONENT_PROBES;
+    die "OCP::Drift has no probe for $component\n" unless $probe;
+
+    my $object = OCP::Cmd::Apply::K8s::read_or_absent("$probe->{kind} $probe->{namespace}/$probe->{name}",
+        sub { $api->get($probe->{kind}, name => $probe->{name}, namespace => $probe->{namespace}) })
+        or return;
+    my ($actual, $want, $same) = OCP::Drift->version_against_pin($probe, $object,
+        OCP::Versions->get_component_version($component));
+    return if !length $actual || $same;
+    return "ran $actual, expected $want";
+}
+
+# Whether drift entry $entry is one setup_nfd or setup_gpu_operator closes by
+# re-applying its manifest: the probe on its Deployment found another image
+# than the pin -- a pin that moved, or an image changed in the cluster
+# (k351). The dry run says so under the entry. Not for the GPU Operator under
+# gpu.enabled: false, where setup_gpu_operator skips; the gate is
+# gpu_dry_run's for the same line.
+sub reapplies {
+    my ($entry, $config) = @_;
+    return 0 unless ($entry->{kind} // '') eq 'version';
+    my $component = $entry->{component} // '';
+    return 1 if $component eq 'nfd';
+    return $component eq 'gpu_operator' && $config->gpu_enabled ? 1 : 0;
 }
 
 # Why the nfd-worker wait of setup_nfd ended without a ready pod, as the end
@@ -562,8 +619,13 @@ sub setup_gpu_operator {
         : ();
     print "      " . cluster_policy_difference($_) . ", re-applying\n" for @cp_differ;
 
-    if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running
-        && !@crd_differ && !@cp_differ) {
+    # And for the operator's own image, as setup_nfd asks it (k351): the
+    # GPU Operator probe of OCP::Drift reads it, and ocp status counts an
+    # image changed in the cluster as drift ocp apply closes.
+    my $same_hash = ($deployed->{'gpu-operator'} // '') eq $hash;
+    my $off       = $same_hash && $gpu_running ? off_pin($self, $api, 'gpu_operator') : undef;
+
+    if ($same_hash && $gpu_running && !@crd_differ && !@cp_differ && !$off) {
         print "      GPU Operator already deployed (up to date)\n";
         # Up to date says nothing about the nodes: one that joined since
         # (`ocp node add --gpu`) gets its device plugin only now.
@@ -626,7 +688,7 @@ sub setup_gpu_operator {
 
     wait_gpu_allocatable($self, $api, @gpu_names);
 
-    return $outcome;
+    return wantarray && $off ? ($outcome, $off) : $outcome;
 }
 
 # k273: the GPU Operator is done with a node once a pod can get its GPU,

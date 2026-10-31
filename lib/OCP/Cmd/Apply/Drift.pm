@@ -53,6 +53,10 @@ without writing either. Disabling robocop does not remove it.
 
 Under C<--dry-run> the walk is replaced by C<dry_run_report>: the detector
 runs, its findings are printed, and not one write leaves the process.
+NFD or the GPU Operator running another image than its pin is followed by
+C<would re-apply the NFD manifest> (or the GPU Operator's, under
+C<gpu.enabled>): their steps read the image as the probe does and re-apply
+at an unchanged hash too (k351).
 C<reconcile_components> then returns false, which is how the dispatcher
 knows to stop without stamping a version.
 
@@ -330,9 +334,10 @@ sub reconcile_components {
             # evidence — it never saw an operator that had gone missing from
             # the cluster and was put back at an unchanged hash, and called
             # that "up to date". 'skipped' is the fifth answer, for the
-            # cluster this component is not part of.
-            my $outcome = $self->_setup_gpu_operator($config);
-            $updated += $self->_report_component('GPU Operator', $outcome);
+            # cluster this component is not part of. With it comes why an
+            # update was made, when the image ran off its pin (k351).
+            my ($outcome, $changed) = $self->_setup_gpu_operator($config);
+            $updated += $self->_report_component('GPU Operator', $outcome, $changed);
             # Checked again after the worker join (k228 after skipped, k287
             # for an NVIDIA worker after a check that ran).
             $self->{_gpu_outcome} = $outcome;
@@ -681,6 +686,11 @@ sub dry_run_report {
         }
         print "          report only, a real run leaves it as it is\n"
             if $is_report_only->($entry);
+        # NFD or the GPU Operator off its pin: its step reads the image as the
+        # probe does and re-applies the manifest, at an unchanged hash too
+        # (k351).
+        print "          would re-apply the $entry->{label} manifest\n"
+            if OCP::Cmd::Apply::Workloads::reapplies($entry, $config);
     }
 
     # Workers without an OCPNode (k26): named, not created. The list is the

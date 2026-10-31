@@ -143,7 +143,7 @@ sub deploy {
     # cluster with no NVIDIA card), so both apply paths close the block with
     # the same line instead of the deploy path having none at all.
     print "  [..] Checking GPU Operator...\n";
-    my $gpu_outcome = eval { $self->_setup_gpu_operator($config) };
+    my ($gpu_outcome, $gpu_changed) = eval { $self->_setup_gpu_operator($config) };
     if ($@) {
         # Only a real failure gets here ('skipped' is a return value), and it
         # leaves a cluster that has GPU nodes without GPU workloads. Said on
@@ -151,7 +151,7 @@ sub deploy {
         print STDERR "  [!!] GPU Operator setup failed: $@";
         push @{ $self->{_failed_components} }, 'GPU Operator';
     } else {
-        $self->_report_component('GPU Operator', $gpu_outcome);
+        $self->_report_component('GPU Operator', $gpu_outcome, $gpu_changed);
         # The worker step comes later; gpu_after_join checks again after the
         # worker join (k228 after skipped, k287 for an NVIDIA worker after a
         # check that ran).
@@ -326,7 +326,7 @@ sub gpu_after_join {
     my @joined = map { $_->{name} } grep { ($_->{phase} // '') eq 'Ready' } @{ $results // [] };
     return 1 unless @joined;
 
-    my $outcome = eval {
+    my ($outcome, $changed) = eval {
         $self->_setup_gpu_operator_after_join($config, $self->{_gpu_outcome}, @joined)
     };
     if (my $err = $@) {
@@ -334,7 +334,7 @@ sub gpu_after_join {
         return 0;
     }
     return 1 unless defined $outcome;    # no second check needed
-    $self->_report_component('GPU Operator', $outcome);
+    $self->_report_component('GPU Operator', $outcome, $changed);
     $self->{_gpu_outcome} = $outcome;
     return 1;
 }

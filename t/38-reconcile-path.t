@@ -1847,4 +1847,29 @@ subtest 'k261: the dry run names the AMD GPU parts a real run would remove, each
 };
 
 
+#
+# k351: setup_nfd and setup_gpu_operator re-apply a manifest whose hash did
+# not move when the image runs off its pin, and say why as a second value in
+# list context. Both apply paths put it on their [ok] line, as the AMD GPU
+# step does (k350); asked for one value, the steps give the outcome, as
+# before. The fresh deploy reports NFD as "ready", whatever it did.
+#
+subtest 'k351: an image put back at its pin is said as that, on both apply paths' => sub {
+    my $why = 'ran v0.0.1, expected v9.9.9';
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_setup_nfd = sub {
+        push @touched, '_setup_nfd';
+        return wantarray ? ('updated', $why) : 'updated';
+    };
+    local *OCP::Cmd::Apply::_setup_gpu_operator = sub {
+        push @touched, '_setup_gpu_operator';
+        return wantarray ? ('updated', $why) : 'updated';
+    };
+    my $r = reconcile();
+    like $r->{out}, qr/^  \[ok\] NFD updated \(\Q$why\E\)$/m, 'reconcile: NFD, and why';
+    like $r->{out}, qr/^  \[ok\] GPU Operator updated \(\Q$why\E\)$/m, 'reconcile: the GPU Operator, and why';
+    my $d = deploy();
+    like $d->{out}, qr/^  \[ok\] GPU Operator updated \(\Q$why\E\)$/m, 'fresh deploy: the GPU Operator, and why';
+};
+
 done_testing;

@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` re-applies NFD or the GPU Operator when its Deployment
+      was changed in the cluster to another image tag than its pin. `ocp
+      status` already counted that as drift `ocp apply` fixes, but both
+      steps compared only what they had recorded and called it up to date;
+      the dry run now says it would re-apply the manifest, and status, the
+      dry run and the real run agree.
     - `ocp node add` (without robocop) honours `gpu.enabled: false` and
       `gpu.driver: operator` from `ocp.yaml` on the node it joins, as
       robocop does: no GPU detection under the kill switch, `--gpu`

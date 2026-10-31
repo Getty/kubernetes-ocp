@@ -279,4 +279,21 @@ subtest 'k277: the Node -- a refusal is no worker without a GPU' => sub {
     }
 };
 
+#
+# k351: the second check's outcome can carry why (setup_gpu_operator in list
+# context: an image put back at its pin); gpu_after_join reports both.
+#
+subtest 'k351: gpu_after_join passes on why the GPU Operator was updated' => sub {
+    my $why = 'ran v0.0.1, expected v9.9.9';
+    no warnings 'redefine';
+    my @reported;
+    local *FakeApply::_setup_gpu_operator_after_join = sub { wantarray ? ('updated', $why) : 'updated' };
+    local *FakeApply::_report_component = sub { shift; push @reported, [@_]; 1 };
+    my $apply = FakeApply->new(_gpu_outcome => 'unchanged');
+    ok OCP::Cmd::Apply::Deploy::gpu_after_join($apply, FakeConfig->new,
+        [ { name => 'crag', phase => 'Ready' } ]), 'true';
+    is_deeply \@reported, [ [ 'GPU Operator', 'updated', $why ] ], 'the outcome, and why';
+    is $apply->{_gpu_outcome}, 'updated', 'the outcome kept';
+};
+
 done_testing;
