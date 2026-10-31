@@ -9,6 +9,7 @@ use OCP::Provider;
 use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use Carp qw(croak);
+use Socket ();
 use YAML::XS ();
 
 # The Hetzner control-plane defaults a fresh spec gets. Kept here because two
@@ -695,6 +696,18 @@ sub validate {
     push @errors, "name is required" unless $self->name && $self->name =~ /\S/;
 
     my $cps = $self->control_planes;
+
+    # The mapping form with `nodes: N` is N copies of one entry (see
+    # control_planes), so a node_ip there would be every one of them's (k254).
+    # Refused once, not per copy; its syntax is not worth a line then.
+    my $raw_cps = $self->spec->{control_planes};
+    my $shared  = ref $raw_cps eq 'HASH' && @$cps > 1;
+    push @errors, "control_planes: node_ip with nodes: " . scalar(@$cps)
+        . " would give all " . scalar(@$cps) . " control planes the same address; "
+        . "list them one by one (control_planes: as a list), each with its own node_ip"
+        if $shared && defined $raw_cps->{node_ip};
+
+    my %node_ip_at;    # address (as an IP) => the control plane that has it
     for my $i (0 .. $#$cps) {
         my $cp = $cps->[$i];
         my $idx = $i + 1;
@@ -720,6 +733,16 @@ sub validate {
         if ($prov eq 'ssh') {
             push @errors, "control_planes[$idx]: host required for ssh"
                 unless $cp->{host};
+        }
+
+        # node_ip (k254): the address this control plane registers by, in the
+        # words `ocp node add --node_ip` and an OCPNode's spec.nodeIP are
+        # refused with.
+        if (!$shared && defined $cp->{node_ip}) {
+            my $err = OCP::Choices::node_ip_error($cp->{node_ip});
+            push @errors, "control_planes[$idx].node_ip: $err" if defined $err;
+            push @errors, $self->_node_ip_clashes($cp->{node_ip}, $idx, \%node_ip_at)
+                unless defined $err;
         }
     }
 
@@ -771,9 +794,58 @@ sub validate {
                 }
             }
         }
+
+        # node_ip (k254) is one machine's address, so a pool takes none; nor
+        # does an entry of its nodes list, which apply does not read it from.
+        # Refused rather than ignored: ignored, the node would join on its
+        # default route's address, which is what node_ip is there to prevent.
+        my $per_node = 'set it per node: ocp node add NAME --node_ip ADDRESS, '
+            . 'or spec.nodeIP on its OCPNode';
+        push @errors, "$where: node_ip cannot be set on a pool, one address cannot be "
+            . "every machine's; $per_node"
+            if defined $w->{node_ip};
+        if (ref $w->{nodes} eq 'ARRAY') {
+            for my $n (0 .. $#{ $w->{nodes} }) {
+                my $entry = $w->{nodes}[$n];
+                push @errors, "$where: nodes[" . ($n + 1) . "].node_ip is not read from "
+                    . "a pool's nodes; $per_node"
+                    if ref $entry eq 'HASH' && defined $entry->{node_ip};
+            }
+        }
     }
 
     return @errors;
+}
+
+# Two control planes with one node-ip register at one address (k254), as the
+# mapping form with nodes: N would. Compared address by address and as IPs,
+# so '10.0.0.1,fd00::1' clashes with '10.0.0.1', and 'FD00::1' is 'fd00::1'.
+# $seen maps each address to the first control plane that has it; one line
+# per earlier control plane this one shares an address with.
+sub _node_ip_clashes {
+    my ($self, $node_ip, $idx, $seen) = @_;
+    my %with;
+    for my $part (split /,/, $node_ip) {
+        my $key = $self->_node_ip_key($part);
+        if (defined(my $other = $seen->{$key})) { push @{ $with{$other} }, $part }
+        else                                    { $seen->{$key} = $idx }
+    }
+    return map {
+        "control_planes[$idx].node_ip: " . join(' and ', @{ $with{$_} })
+            . (@{ $with{$_} } > 1 ? ' are' : ' is')
+            . " control_planes[$_].node_ip too; two control planes cannot register at one address"
+    } sort { $a <=> $b } keys %with;
+}
+
+# An IP in one spelling: the packed address, as OCP::Node->node_ip_mismatch
+# compares them. Only for values node_ip_error passed, so always an IP.
+sub _node_ip_key {
+    my ($self, $ip) = @_;
+    for my $af (Socket::AF_INET(), Socket::AF_INET6()) {
+        my $packed = Socket::inet_pton($af, $ip);
+        return $af . ':' . $packed if defined $packed;
+    }
+    return $ip;
 }
 
 # network.lb_pool / network.l2 validation (k127). Report-only: returns a
@@ -1164,5 +1236,40 @@ OCP::Config manages two files:
 
 The spec file is meant to be version controlled. The status file is
 meant to be gitignored as it changes frequently during operations.
+
+=head2 control_planes[].node_ip
+
+    control_planes:
+      - provider: ssh
+        host: otho.lab
+        node_ip: 10.230.30.52          # or "10.230.30.52,fd00::52"
+
+The address a control plane registers as its C<InternalIP> -- RKE2's and
+K3s's C<node-ip> (k254). Without it the node registers the address of its
+default route, which on a multi-homed host (a second NIC, a VLAN) may be one
+the other nodes cannot reach: the node shows Ready while Cilium's tunnel to it
+is broken. One IPv4 or IPv6 literal, or one of each joined by a comma for
+dual-stack; C<validate> refuses anything else with the line
+L<OCP::Choices/node_ip_error> gives, prefixed C<control_planes[N].node_ip: >.
+It is never guessed: unset, no node-ip is passed at all.
+
+Only where it names one machine:
+
+=over 4
+
+=item * the mapping form of C<control_planes> takes it as long as it is one
+control plane; with C<nodes: N> above 1 it would be every copy's address and
+is refused -- list the control planes one by one instead;
+
+=item * in the list form, no two control planes may share an address. They
+are compared address by address and as IPs, so C<10.0.0.1,fd00::1> clashes
+with C<10.0.0.1>, and C<FD00::1> with C<fd00::1>; the line names both
+entries;
+
+=item * a C<workers> pool takes none, and neither does an entry of a pool's
+C<nodes> list. Both are refused rather than ignored, and the line points to
+C<ocp node add NAME --node_ip ADDRESS> or C<spec.nodeIP> on the OCPNode.
+
+=back
 
 =cut

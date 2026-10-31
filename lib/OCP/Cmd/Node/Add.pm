@@ -11,6 +11,7 @@ use Socket ();
 use Kubernetes::REST::Kubeconfig;
 use OCP::Choices;
 use OCP::Cmd::Apply::AMDGPU ();
+use OCP::Cmd::Apply::CR ();
 use OCP::Config;
 use OCP::Secrets;
 use OCP::K8s;
@@ -85,6 +86,14 @@ option taint => (
     repeatable => 1,
     default    => sub { [] },
     doc        => 'Node taint key=value:Effect or key:Effect (repeatable)',
+);
+
+# spec.nodeIP (k254): the address the node registers as its InternalIP. Only
+# ever what is given here -- absent, no node-ip is asked for at all.
+option node_ip => (
+    is     => 'ro',
+    format => 's',
+    doc    => 'Address the node registers by (RKE2/K3s node-ip): one IP, or v4,v6',
 );
 
 # Spelled without a dash on purpose, like --nogit and --nopassword in
@@ -229,6 +238,7 @@ sub _build_cr {
         ($self->gpu         ? (gpu        => JSON::PP::true)     : ()),
         (%labels            ? (labels     => \%labels)           : ()),
         (@taints            ? (taints     => \@taints)           : ()),
+        ($self->node_ip     ? (nodeIP     => $self->node_ip)     : ()),
     );
 
     return {
@@ -419,6 +429,9 @@ sub _cli_reconcile {
         # write the node's CDI specs. Only this one of the GPU switches --
         # gpu.enabled / gpu.driver have never been read on this path.
         ($provider_h ? _gpu_toolkit_flag($provider_h) : ()),
+        # Its warnings as this command's own (k254), the line `ocp apply`
+        # hands it too (OCP::Cmd::Apply::CR::node_logger).
+        logger        => OCP::Cmd::Apply::CR::node_logger(),
     );
 
     # No budget named here: OCP::Node owns it ($OCP::Node::READY_TIMEOUT), and
@@ -426,10 +439,18 @@ sub _cli_reconcile {
     # regardless of who is watching. The 600 this used to name did not cover
     # the sum of the waits underneath it.
     my $reported = '';
+    my $unready;
     my $ok = $node->reconcile_until_ready(on_phase => sub {
         my ($phase, $message) = @_;
+        $unready = 1 if $phase ne 'Ready';
         $reported = $self->_report_phase($reported, $phase, $message);
     });
+
+    # It was seen short of Ready and then Ready: OCP::Node made the Ready
+    # transition in this run, and said a node-ip mismatch through
+    # its logger as it did. A node Ready from the start was turned Ready by
+    # an earlier run, so nothing was said, and _check_node_ip asks.
+    $self->{_ready_said} = 1 if $ok && $unready;
 
     # Ran out of budget rather than reaching a verdict. Worth separating: the
     # node is not broken, nobody rolled anything back, and the very next run
@@ -494,6 +515,10 @@ sub execute {
         my $err = OCP::NodeMeta->taint_error($t);
         die "--taint: $err\n" if defined $err;
     }
+    # --node_ip likewise (k254), in the words ocp.yaml and OCP::Node use.
+    if (defined(my $err = OCP::Choices::node_ip_error($self->node_ip))) {
+        die "--node_ip: $err\n";
+    }
 
     my $api           = $self->_k8s;
     my $provider_hash = $self->_resolve_provider($api);
@@ -557,7 +582,41 @@ sub execute {
     }
 
     print "Node '" . $self->name . "' is Ready.\n";
+    $self->_check_node_ip($api);
     $self->_ensure_gpu_stack($api, $config // $self->_config) if $self->gpu;
+    return 0;
+}
+
+# Did the node register at the --node_ip it was given (k254)? Asked once it is
+# Ready, of the Node the cluster holds (OCP::Node->node_ip_mismatch), and said
+# as a [WARN] on STDERR -- the very line OCP::Node writes when it turns a node
+# Ready in this process, which is why that case is left to it (_ready_said):
+# said once. Asked here when robocop did the join, whose own warning goes to
+# its log, and for a node that was Ready already. Held against what this
+# command asked for, not status.nodeIP: a robocop that predates k254 hands no
+# node-ip and records none, and its node registers elsewhere all the same.
+#
+# Never fatal: the node is Ready, and only a human can say which address is
+# right. Returns 1 when it registered there or nothing was asked.
+sub _check_node_ip {
+    my ($self, $api) = @_;
+    my $node_ip = $self->node_ip;
+    return 1 unless $node_ip;
+    return 1 if $self->{_ready_said};
+
+    my $k8s_name = $self->_kubernetes_node_name($api);
+    my $node     = eval { $api->get('Node', name => $k8s_name) };
+    unless ($node) {
+        my $err = $@ || "not found\n";
+        $err .= "\n" unless $err =~ /\n\z/;
+        print STDERR '[WARN] ' . $self->name . ': InternalIP not checked against --node_ip '
+            . $node_ip . ": Node '$k8s_name' could not be read: $err";
+        return 0;
+    }
+
+    my $diag = OCP::Node->node_ip_mismatch($api->k8s->object_to_struct($node), $node_ip);
+    return 1 unless defined $diag;
+    print STDERR '[WARN] ' . $self->name . ': ' . $diag . "\n";
     return 0;
 }
 
@@ -823,6 +882,7 @@ OCP::Cmd::Node::Add - Add an OCPNode CR and optionally reconcile it
     ocp node add worker-2 --role worker --nowait
     ocp node add crag-gpu --role worker --host 10.230.30.250 \
         --label ai.citilan.de/node-class=rtx3090 --taint nvidia.com/gpu=present:NoSchedule
+    ocp node add synapse  --provider ssh-default --host 10.230.30.50 --node_ip 10.230.30.50
 
 =head1 DESCRIPTION
 
@@ -863,6 +923,31 @@ the OCPNode's C<spec.labels> and C<spec.taints>.  Malformed ones are refused
 before the cluster is asked anything.  L<OCP::Node> passes the labels the
 kubelet may set itself to the join and puts all labels and taints on the
 Kubernetes Node once it registers; see L<OCP::NodeMeta>.
+
+=head1 NODE IP
+
+C<--node_ip> is the address the node registers as its C<InternalIP> --
+RKE2's and K3s's C<node-ip> -- written to the OCPNode's C<spec.nodeIP>: one
+IP address, or C<v4,v6> for dual-stack (one of each family), with no
+whitespace.  Give it on a multi-homed host: without it the node registers the
+address of its default route, which the other nodes may not reach, and the
+node still turns Ready -- live, C<synapse> joined by 10.230.30.50 registered
+192.168.0.165 and its Cilium tunnel broke (k254).  It is only ever what is
+given here; without it no node-ip is asked for.  A value that is no such
+address -- a hostname, a CIDR, loopback, link-local -- is refused before the
+cluster is asked anything, in the words of L<OCP::Choices/node_ip_error>.
+
+Once the node is Ready its C<InternalIP>s are held against the node-ip.  A
+node that did not register there says so on STDERR, once, whoever did the
+join:
+
+    [WARN] synapse: registered InternalIP 192.168.0.165, not the node-ip 10.230.30.50 it was installed with
+
+On the CLI path that line is L<OCP::Node>'s, written as it turns the node
+Ready; with Robocop running, or for a node that was Ready already, this
+command asks the Node itself (L<OCP::Node/node_ip_mismatch>).  It changes
+nothing else: the node joined, the exit code is that of a Ready node, and
+only a human can say which address is right.
 
 =head1 CHOOSING THE PROVIDER
 

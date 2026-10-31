@@ -60,6 +60,13 @@ spec:
                 type: string
                 description: "SSH user override"
 
+              # node-ip (k254). No default, as for gpu below: absent leaves the
+              # choice to RKE2/K3s, and a schema default would be stamped into
+              # every CR and read as asked for.
+              nodeIP:
+                type: string
+                description: "Address the node registers as its InternalIP (RKE2/K3s node-ip): one IP, or \"v4,v6\" for dual-stack (one per family). Absent: RKE2/K3s choose it themselves, the address of the node's default route"
+
               # GPU support. No default on purpose (k208): an absent gpu
               # follows the cluster-wide gpu.enabled, and only an explicit
               # value is a per-node decision. A schema default would be
@@ -125,6 +132,10 @@ spec:
               privateIP:
                 type: string
                 description: "Private IP address (if applicable)"
+
+              nodeIP:
+                type: string
+                description: "The spec.nodeIP OCP handed the installer, set when it passed one; the address the node is expected to register as its InternalIP"
 
               kubernetesNodeName:
                 type: string

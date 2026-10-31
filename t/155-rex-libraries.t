@@ -97,6 +97,26 @@ subtest 'Rex::GPU::AMD entry points, once Rex::GPU carries them' => sub {
     }
 };
 
+# node_ip (k254) goes to Rex::Rancher only where it has node_ip support,
+# Rex::Rancher::Distribution->can('node_addresses') (rex-rancher k100); before
+# that the Rexfile refuses one (t/254-node-ip-install.t). Once the
+# pin has it, the two forms OCP hands over are held here against the
+# library's own check, and the agent's config.yaml against what it writes.
+subtest 'node_ip in the forms OCP hands over, once Rex::Rancher carries it' => sub {
+    plan skip_all => "Rex::Rancher $Rex::Rancher::Distribution::VERSION has no node_ip support yet (rex-rancher k100)"
+        unless Rex::Rancher::Distribution->can('node_addresses');
+    require Rex::Rancher::Options;
+    is_deeply(Rex::Rancher::Options->check_node_addresses(node_ip => '10.230.30.50'),
+        ['10.230.30.50'], 'one IP');
+    is_deeply(Rex::Rancher::Options->check_node_addresses(node_ip => '10.230.30.50,fd00:30::50'),
+        ['10.230.30.50', 'fd00:30::50'], '"v4,v6" for dual-stack');
+    ok !eval { Rex::Rancher::Options->check_node_addresses(node_ip => 'synapse.ai.citilan.de'); 1 },
+        'a hostname is refused, before the host is touched';
+    my $config = Rex::Rancher::Agent::_build_agent_config(
+        server => 'https://203.0.113.1:9345', token => 't', node_ip => ['10.230.30.50']);
+    is_deeply $config->{'node-ip'}, ['10.230.30.50'], "the agent's config.yaml carries it as node-ip";
+};
+
 subtest 'every library function OCP\'s own classes call exists' => sub {
     for my $fq (qw(
         Rex::Rancher::Server::patch_kubeconfig_server

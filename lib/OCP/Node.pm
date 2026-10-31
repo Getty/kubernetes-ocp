@@ -3,11 +3,14 @@ package OCP::Node;
 
 use Moo;
 use File::Temp ();
+use Socket ();
 use Time::Piece ();
 # The distribution's display name for the Joining message. OCP::Cmd::Apply::
 # Bootstrap::dist_label gives the same answer, but lives in the CLI; this
 # module is robocop's too.
 use Rex::Rancher::Distribution;
+# spec.nodeIP is refused in the words --node_ip and ocp.yaml are (k254).
+use OCP::Choices;
 use OCP::K8s;
 use OCP::KnownHosts;
 use OCP::NodeMeta;
@@ -614,8 +617,8 @@ sub _pin_unpinned {
         # Pinned by someone else -- the CLI's trust on first use -- after a
         # failed attempt here left its note (k239): the note goes, once.
         return unless ($self->cr->{status}{message} // '')
-            =~ /\ANode joined and Ready; host key not pinned/;
-        eval { $self->_patch_status(message => 'Node joined and Ready'); 1 } or do {
+            =~ /\ANode joined and Ready(?:; .*?)?; host key not pinned/s;
+        eval { $self->_patch_status(message => $self->_ready_base); 1 } or do {
             my $err = $@;
             chomp $err;
             warn '[node] could not clear the unpinned note of ' . $self->name . ": $err\n";
@@ -640,7 +643,7 @@ sub _pin_unpinned {
 
     # A message left by an earlier failed attempt goes with the success.
     my $had_note = ($self->cr->{status}{message} // '') =~ /; host key not pinned: /;
-    my %clear = $had_note ? (message => 'Node joined and Ready') : ();
+    my %clear = $had_note ? (message => $self->_ready_base) : ();
     eval { $self->_patch_status(hostKeys => \@pins, %clear); 1 } or do {
         my $err = $@;
         chomp $err;
@@ -653,6 +656,27 @@ sub _pin_unpinned {
         . join(', ', map { $_->{fingerprint} . ' (' . $_->{type} . ')' } @pins) . "\n";
     $self->_log_pinned($host) if $had_note;
     return;
+}
+
+# A Ready node's status.message is one line holding up to two notes, in a
+# fixed order:
+#
+#   Node joined and Ready[; <node-ip note>][; host key not pinned: <reason>]
+#
+# The node-ip note (k254) is written once, at the Ready transition, and only
+# that transition knows it; the host-key note (k239) comes and goes on later
+# passes. So the host-key code writes and clears only its own part, at the
+# end, and keeps what stands before it -- this. Without it, noting or
+# clearing an unpinned key would wipe the node-ip warning from the one place
+# it is kept, while the Ready transition, which writes the whole line, runs
+# before any host-key note can exist. A message that is no Ready line at all
+# gives the plain one, as the host-key code always wrote.
+sub _ready_base {
+    my ($self) = @_;
+    my $message = $self->cr->{status}{message} // '';
+    return 'Node joined and Ready' unless $message =~ /\ANode joined and Ready(?:;|\z)/;
+    $message =~ s/; host key not pinned: .*\z//s;
+    return $message;
 }
 
 # One line through the logger, or a plain warn with the '[node] ' prefix.
@@ -680,7 +704,7 @@ sub _note_unpinned {
         : OCP::SSH->name_unresolved($err)      ? $self->_name_unresolved_message($host)
         :                                        $err;
     $reason =~ s/\s+\z//;
-    my $msg = 'Node joined and Ready; host key not pinned: ' . $reason;
+    my $msg = $self->_ready_base . '; host key not pinned: ' . $reason;
     # robocop forks per reconcile, so "already said" lives in status.message.
     return if ($self->cr->{status}{message} // '') eq $msg;
     $self->_emit('warn', 'host key of ' . $self->name . ' (' . $host . ') not pinned: ' . $reason);
@@ -774,6 +798,11 @@ sub _install_kubernetes {
 
     my $name = $self->name;
     my $role = $self->role;
+
+    # spec.nodeIP (k254), the address the node is to register by: refused
+    # already, if it is no node-ip, before reconcile dispatched here
+    # (_refuse_bad_node_ip). Explicit only -- absent, no node_ip is passed.
+    my $node_ip = $self->cr->{spec}{nodeIP};
 
     my $host = eval { $self->_resolve_host };
     unless (defined $host && length $host) {
@@ -875,6 +904,7 @@ sub _install_kubernetes {
         ntp       => $self->ntp // 1,
         (defined $self->timezone ? (timezone => $self->timezone) : ()),
         (defined $self->locale   ? (locale   => $self->locale)   : ()),
+        (defined $node_ip        ? (node_ip  => $node_ip)        : ()),
     );
 
     # Two GPU inputs meet here. spec.gpu on the OCPNode is per-node: `ocp node
@@ -978,6 +1008,14 @@ sub _install_kubernetes {
     my $label = Rex::Rancher::Distribution->new_for(
         $self->distribution eq 'k3s' ? 'k3s' : 'rke2')->label;
     $self->_patch_status(phase => 'Joining',
+        # status.nodeIP is what this install was handed (k254), the address
+        # the Ready check holds the registered InternalIP against -- not
+        # spec.nodeIP, which may be edited after the install. One left by an
+        # earlier install goes when this one was handed none (a merge patch:
+        # undef deletes), or the check would hold the node to it.
+        (defined $node_ip                       ? (nodeIP => $node_ip)
+          : defined $self->cr->{status}{nodeIP} ? (nodeIP => undef)
+          :                                       ()),
         message => $label . ($is_cp ? ' server' : ' agent')
             . ' installed, waiting for node registration');
 }
@@ -1022,16 +1060,79 @@ sub _wait_ready {
             last if $address;
         }
 
+        # Registered where it was told to (k254)? A node-ip the install was
+        # handed but the node does not carry -- a Rex::Rancher without
+        # node_ip support, a node-ip in config.yaml.d that wins -- leaves the
+        # node Ready on its default route's address, unreachable from the
+        # other nodes. Not a failure: the node did join, and only a human can
+        # say which address is right. Said once: robocop forks per reconcile,
+        # so "already said" is the message being there already, as for the
+        # unpinned host key. The note stays in status.message; see
+        # _ready_base for how the host-key note keeps it.
+        my $diag    = $self->node_ip_mismatch($node_hash, $self->cr->{status}{nodeIP});
+        my $message = 'Node joined and Ready' . (defined $diag ? '; ' . $diag : '');
+        $self->_emit('warn', $name . ': ' . $diag)
+            if defined $diag && ($self->cr->{status}{message} // '') ne $message;
+
         $self->_patch_status(
             phase              => 'Ready',
             kubernetesNodeName => $k8s_name,
             ($address ? (address => $address) : ()),
             joinedAt           => _rfc3339_now(),
-            message            => 'Node joined and Ready',
+            message            => $message,
         );
     }
 
     return $ready;
+}
+
+# What is wrong with where a node registered (k254): undef when it carries
+# every address of the node-ip it was installed with as an InternalIP, or no
+# node-ip was given; otherwise one line, without the node's name. A class
+# method and pure -- the Ready transition above asks it, and so does `ocp
+# apply` for the control plane it bootstraps without an OCPNode.
+sub node_ip_mismatch {
+    my ($self, $node_hash, $node_ip) = @_;
+    return undef unless defined $node_ip && length $node_ip;
+
+    my $status = ref $node_hash eq 'HASH' ? $node_hash->{status} : undef;
+    my $addrs  = ref $status eq 'HASH' ? $status->{addresses} : undef;
+    my @internal = grep { defined && length }
+        map  { $_->{address} }
+        grep { ref $_ eq 'HASH' && ($_->{type} // '') eq 'InternalIP' }
+        @{ ref $addrs eq 'ARRAY' ? $addrs : [] };
+
+    my @want    = split /,/, $node_ip;
+    my %have    = map { $self->_ip_key($_) => 1 } @internal;
+    my @missing = grep { !$have{ $self->_ip_key($_) } } @want;
+    return undef unless @missing;
+
+    # The way out, the same for every case. A registered node keeps its
+    # address until RKE2/K3s comes up again with the node-ip in config.yaml,
+    # and Cilium's agent on the node keeps the old one in its CiliumNode until
+    # that pod restarts too: live on synapse the tunnel stayed broken one way
+    # until it did.
+    my $fix = ' until it rejoins: re-run its install so config.yaml carries the node-ip '
+        . 'and rke2/k3s restarts, then restart the Cilium agent pod on the node';
+
+    return 'registered no InternalIP, though it was installed with the node-ip ' . $node_ip
+         . ', and has none' . $fix
+        unless @internal;
+    return 'registered InternalIP' . (@internal > 1 ? 's ' : ' ') . join(' and ', @internal)
+         . ', not the node-ip ' . $node_ip . ' it was installed with'
+         . (@missing < @want ? ' (' . join(' and ', @missing) . ' missing)' : '')
+         . ', and keeps ' . (@internal > 1 ? 'those addresses' : 'that address') . $fix;
+}
+
+# One spelling per address, so 'FD00:0::5' is the 'fd00::5' the kubelet
+# reports: the packed address, or the text when it is no IP literal.
+sub _ip_key {
+    my ($self, $ip) = @_;
+    for my $af ([ 4 => Socket::AF_INET() ], [ 6 => Socket::AF_INET6() ]) {
+        my $packed = Socket::inet_pton($af->[1], $ip);
+        return 'v' . $af->[0] . ':' . $packed if defined $packed;
+    }
+    return 'text:' . $ip;
 }
 
 # Is $name the name OCP derives from an IP spec.host (10.230.30.250 ->
@@ -1095,6 +1196,23 @@ sub _install_under_lease {
     return;
 }
 
+# spec.nodeIP (k254) that is no node-ip fails the node, in the words `ocp node
+# add --node_ip` refuses it with: that command checks it, a CR written by hand
+# was checked by nobody. Asked once, ahead of the dispatch, for the phases
+# still to provision or install -- so a Hetzner node is refused before a
+# server is ordered, not after it has been and is billed -- and not for a
+# node that is Joining or Ready: its install has run, and a spec edited since
+# changes nothing that did. Lease-free, like reconcile's own Failed: nothing
+# is started. True when it failed the node.
+sub _refuse_bad_node_ip {
+    my ($self) = @_;
+    return 0 unless grep { $_ eq $self->phase } qw( Pending Provisioning Installing );
+    my $err = OCP::Choices::node_ip_error($self->cr->{spec}{nodeIP});
+    return 0 unless defined $err;
+    $self->_patch_status(phase => 'Failed', message => 'spec.nodeIP: ' . $err);
+    return 1;
+}
+
 sub reconcile {
     my $self = shift;
     my $p = $self->phase;
@@ -1102,6 +1220,10 @@ sub reconcile {
     $self->_set_lease_conflict(undef);
     $self->_set_host_key_mismatch(undef);
     return 0 if $p eq 'Failed' || $p eq 'Terminating';
+
+    # Before the first step that costs: _provision orders a server, the
+    # install contacts the machine (k254).
+    return 0 if $self->_refuse_bad_node_ip;
 
     eval {
         # 'Installing' means "the server exists, Kubernetes is going on it" --
@@ -1721,6 +1843,44 @@ time each phase is seen — including the C<Ready> or C<Failed> the loop returns
 on.  It exists because this class must not print: C<ocp node add> has an
 operator waiting and passes a sink, Robocop passes none.
 
+=head2 The node-ip
+
+C<spec.nodeIP> is the address the node is to register as its C<InternalIP>
+-- RKE2's and K3s's C<node-ip> (k254): one IP literal, or C<"v4,v6"> for
+dual-stack.  It is explicit only, written by C<ocp node add --node_ip> (or
+by hand); absent, the install is handed no C<node_ip> and the node registers
+the address of its default route, as before.
+
+C<reconcile> checks it first, with L<OCP::Choices/node_ip_error>, for a
+node that is C<Pending>, C<Provisioning> or C<Installing>: a value that does
+not pass fails the node with C<spec.nodeIP: E<lt>whyE<gt>> before a server
+is ordered, an address resolved, a machine contacted or anything installed.
+A node that is C<Joining> or C<Ready> is not checked -- its install has run.
+One that passes goes to the install task as its C<node_ip> parameter, and
+the C<Joining> write records it as C<status.nodeIP> -- what this install was
+handed, which C<spec.nodeIP> need not stay.  An install handed none removes
+a C<status.nodeIP> an earlier one left.
+
+At the C<Ready> transition the Node's C<InternalIP>s are held against
+C<status.nodeIP> (L</node_ip_mismatch>).  A node that did not register there
+-- an image whose L<Rex::Rancher> cannot set a node-ip, a C<node-ip> in
+F<config.yaml.d> that wins -- still turns C<Ready>, but its message says so,
+C<Node joined and Ready; E<lt>diagnosisE<gt>>, and the same diagnosis goes
+out once as a warning naming the node (robocop's log, or STDERR in the
+CLI).  Once: the message is the memory, as for the unpinned host key,
+because robocop forks per reconcile.
+
+The message of a C<Ready> node holds both notes in a fixed order, the
+node-ip note first and the host-key note (L</Host keys>) last:
+
+    Node joined and Ready; registered InternalIP 192.168.0.165, not the node-ip 10.230.30.50 it was installed with, and keeps that address until it rejoins: ...; host key not pinned: ssh-keyscan found no host key
+
+Pinning a host key later, or failing to, rewrites only the host-key part and
+keeps the node-ip note in front of it.  Nothing clears the node-ip note: it
+records how the node joined, and a node fixed by hand afterwards (C<node-ip>
+in its F<config.yaml>, a restart of the service and of the node's Cilium
+agent pod) keeps it until it joins again.
+
 =head2 Teardown
 
     $node->teardown;   # 1, or dies
@@ -2016,6 +2176,35 @@ enum and asserts it against this list, so the two cannot drift.
     die ... unless OCP::Node->known_role($role);
 
 True if C<$role> is one of L</roles>.  C<undef> is not.
+
+=head2 node_ip_mismatch
+
+    my $diag = OCP::Node->node_ip_mismatch($node_hash, $node_ip);
+    warn "[WARN] $name: $diag\n" if defined $diag;
+
+Whether a Kubernetes Node, as a plain hash (C<object_to_struct>), registered
+at the node-ip it was installed with (k254).  C<undef> when C<$node_ip> is
+undef or empty, or when every address of it -- both, for C<"v4,v6"> -- is
+one of the Node's C<status.addresses> of type C<InternalIP>; addresses
+compare as IPs, so C<FD00:0::5> is C<fd00::5>.  Otherwise one line, without
+the node's name, for the caller to prefix: what it registered, what it was
+installed with, and the way out, which is the same every time -- the node
+keeps its address until RKE2/K3s comes up again with the node-ip in
+F<config.yaml>, and Cilium's agent keeps the old one until its pod on the
+node restarts as well:
+
+    registered InternalIP 192.168.0.165, not the node-ip 10.230.30.50 it was installed with, and keeps that address until it rejoins: re-run its install so config.yaml carries the node-ip and rke2/k3s restarts, then restart the Cilium agent pod on the node
+
+The address part of the other cases (the way out follows as above):
+
+    registered InternalIPs 192.168.0.165 and fd00::1, not the node-ip 10.230.30.50 it was installed with, and keeps those addresses until it rejoins: ...
+    registered InternalIP 10.230.30.50, not the node-ip 10.230.30.50,fd00::5 it was installed with (fd00::5 missing), and keeps that address until it rejoins: ...
+    registered no InternalIP, though it was installed with the node-ip 10.230.30.50, and has none until it rejoins: ...
+
+Pure: no I/O, no state.  The Ready transition asks it with
+C<status.nodeIP>, and C<ocp apply> can for the control plane it bootstraps
+without an OCPNode.  C<$node_ip> is taken as L<OCP::Choices/node_ip_error>
+accepts it (no whitespace).
 
 =head1 SEE ALSO
 

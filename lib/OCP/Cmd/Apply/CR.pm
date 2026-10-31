@@ -250,6 +250,12 @@ sub k8s_node_ip {
 # Spec and status are two writes on purpose. The CRD enables the status
 # subresource, so the API server drops status from the ensure (see
 # OCP::K8s::patch_status) — it has to go to /status separately.
+#
+# The node-ip (k254) as on a joined node: $cp_info->{node_ip} is what ocp.yaml
+# asks for (control_planes[0].node_ip, spec.nodeIP), $cp_info->{handed_node_ip}
+# what the bootstrap's install was handed (status.nodeIP) -- given only by the
+# caller that ran that install. The status write is a merge patch, so a later
+# call without it keeps the one recorded.
 sub ensure_cp_ocpnode {
     my ($self, $api, $cp_info) = @_;
     my $ns   = 'ocp-system';
@@ -263,6 +269,7 @@ sub ensure_cp_ocpnode {
         spec       => {
             role        => 'control-plane',
             providerRef => "$type-default",
+            ($cp_info->{node_ip} ? (nodeIP => $cp_info->{node_ip}) : ()),
         },
     });
 
@@ -279,6 +286,7 @@ sub ensure_cp_ocpnode {
             status    => {
                 phase              => 'Ready',
                 ($ip ? (publicIP => $ip) : ()),
+                ($cp_info->{handed_node_ip} ? (nodeIP => $cp_info->{handed_node_ip}) : ()),
                 kubernetesNodeName => $name,
                 reconciler         => 'cli',
             },
@@ -328,6 +336,8 @@ sub ensure_control_plane_ocpnodes {
         $spec->{serverType} = $cp->{server_type} if $cp->{server_type};
         $spec->{image}      = $cp->{image}       if $cp->{image};
         $spec->{location}   = $cp->{location}    if $cp->{location};
+        # control_planes[].node_ip (k254), which OCP::Node hands the install.
+        $spec->{nodeIP}     = $cp->{node_ip}     if $cp->{node_ip};
 
         my $cr = {
             apiVersion => 'ocp.internal/v1',
@@ -877,6 +887,19 @@ sub poll_nodes_until_terminal {
     return @results;
 }
 
+# The line OCP::Node hands its warnings and notes to on the CLI path (k254),
+# here and in `ocp node add`. A warning is a [WARN] on STDERR -- the node-ip
+# mismatch it finds at the Ready transition, "<name>: <diagnosis>", is the one
+# this path can reach -- a note goes out as OCP::Node itself writes it without
+# a logger. Robocop hands its own (OCP::Robocop::Controller::_node_logger).
+sub node_logger {
+    return sub {
+        my ($level, $msg) = @_;
+        print STDERR ($level eq 'warn' ? '[WARN] ' : '[node] ') . $msg . "\n";
+        return;
+    };
+}
+
 sub cli_reconcile_workers {
     my ($self, $api, $config, $names, $deps) = @_;
     my $ns = 'ocp-system';
@@ -1013,6 +1036,9 @@ sub cli_reconcile_workers {
                 ? (tls_san => \@cp_sans, pod_cidr => $config->pod_cidr) : ()),
             %gpu_flags,
             %system_flags,
+            # An additional control plane's node-ip mismatch as a [WARN] of
+            # this run's (k254), worded as `ocp node add` says it.
+            logger       => node_logger(),
         );
 
         # The interval is this path's own (workers are driven one after the

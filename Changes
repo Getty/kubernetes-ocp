@@ -1,6 +1,15 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `control_planes[].node_ip` in ocp.yaml and `ocp node add --node_ip`
+      set the address a node registers as its InternalIP (the RKE2/K3s
+      node-ip), for hosts with more than one network address. Invalid
+      values are refused before anything is installed or ordered. A node
+      that registers under another address is warned about once, with the
+      fix. Without a node_ip nothing changes.
+    - Setting a node_ip needs a Rex::Rancher with node_ip support; until
+      the image ships one, a node with a node_ip is refused with a clear
+      message before the host is touched.
     - `ocp status` counts NVIDIA GPUs by `nvidia.com/gpu` allocatable, so a
       node whose device plugin is gone shows 0 with its stale capacity
       beside it. In `--json`, `nodes[].gpu` now means allocatable (it was

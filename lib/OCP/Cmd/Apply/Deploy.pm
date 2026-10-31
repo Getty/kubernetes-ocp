@@ -5,6 +5,7 @@ use strict;
 use warnings;
 
 use OCP::Cmd::Apply::AMDGPU ();
+use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Registry;
@@ -220,10 +221,15 @@ sub deploy {
     $self->_ensure_crds($api);
     $self->_ensure_providers($api, $config, $secrets);
     $self->_migrate_legacy_nodes($api);
+    # deploy runs right after the bootstrap, which handed its install exactly
+    # this node-ip (k254), so it is both what is asked and what was handed.
+    my $cp_node_ip = OCP::Cmd::Apply::Bootstrap::cp_node_ip($config);
     $self->_ensure_cp_ocpnode($api, {
-        name     => $cp_name,
-        provider => $provider,
-        host     => $cp_ip,
+        name           => $cp_name,
+        provider       => $provider,
+        host           => $cp_ip,
+        node_ip        => $cp_node_ip,
+        handed_node_ip => $cp_node_ip,
     });
 
     # Additional control planes (police2+) join police1's embedded-etcd cluster

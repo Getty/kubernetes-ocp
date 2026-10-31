@@ -627,6 +627,10 @@ task "install_k3s_agent", sub {
 sub _install_server {
     my ($distribution, $params) = @_;
 
+    # First: a node_ip this Rex::Rancher cannot set dies before anything on
+    # the host is read or changed (k254, see _node_ip_opt).
+    my @node_ip = _node_ip_opt($params);
+
     # tls-san arrives as a JSON array (the list OCP::Rex/OCP::Node build) or,
     # for a hand-run `rex ... --tls_san=1.2.3.4`, as a bare scalar.
     my $tls_san = $params->{tls_san};
@@ -653,6 +657,7 @@ sub _install_server {
     my %opts = (
         _server_opts($distribution, $params, \@tls_sans),
         cluster_cidr => (defined $running_cidr && length $running_cidr) ? $running_cidr : $wanted_cidr,
+        @node_ip,
     );
 
     # Everything install_server would refuse, asked before prepare_node
@@ -768,7 +773,8 @@ sub _install_agent {
     $params->{server} or die "server URL required\n";
     $params->{token}  or die "token required\n";
 
-    my %opts = _agent_opts($distribution, $params);
+    # node_ip first, as for a server (see _node_ip_opt): it may die.
+    my %opts = (_node_ip_opt($params), _agent_opts($distribution, $params));
 
     # Everything install_agent would refuse, before prepare_node touches the
     # host (rex-rancher k78), as for a server (see _install_server): the Cilium
@@ -806,6 +812,43 @@ sub _node_labels {
     my ($params) = @_;
     my $l = $params->{node_labels};
     return ref $l eq 'ARRAY' && @$l ? [ @$l ] : undef;
+}
+
+# node_ip (k254): the address the node registers as its InternalIP -- one IP,
+# or "v4,v6" for dual-stack -- as OCP::Node and OCP::Rex hand it over, only
+# when the operator asked for one: OCPNode spec.nodeIP (`ocp node add
+# --node_ip`) or control_planes[].node_ip. Never defaulted. Without it RKE2/K3s
+# register the address of the default route, which on a multi-homed host the
+# other nodes may not reach. Live (2026-10-31): synapse, joined by
+# 10.230.30.50, registered 192.168.0.165, and Cilium's tunnel to it broke in
+# one direction while the node showed Ready.
+#
+# Rex::Rancher writes it to config.yaml as node-ip (rex-rancher k100, after
+# 0.004), refuses bad syntax in the preflight, and on a re-run keeps the
+# node-ip config.yaml holds when none is given, or warns naming the old and
+# the new value when it changes (the Cilium agent pod then needs a restart by
+# hand). That warning is a Rex::Logger WARN, which OCP::Rex surfaces as a
+# [WARN] line like every library warning. Handed over only when set.
+#
+# A Rex::Rancher before k100 ignores an option it does not know -- 0.004 reads
+# only its own keys -- so the node would join on its default-route address
+# without a word: Ready, and broken exactly as asked not to be. So it dies,
+# before the install task reads or changes anything on the host; robocop puts
+# the OCPNode in Failed with this message. Asked by capability, not version (a
+# dev build can carry the next version number without it).
+sub _node_ip_opt {
+    my ($params) = @_;
+    my $ip = $params->{node_ip};
+    return () unless defined $ip && (ref $ip eq 'ARRAY' ? @$ip : length $ip);
+    return (node_ip => $ip) if Rex::Rancher::Distribution->can('node_addresses');
+
+    my $shown = ref $ip eq 'ARRAY' ? join(',', @$ip) : $ip;
+    die "node_ip $shown cannot be set: this image's Rex::Rancher "
+      . ($Rex::Rancher::Distribution::VERSION // '?')
+      . " has no node_ip support (rex-rancher k100), and the node would register "
+      . "the address of its default route instead. Nothing was changed on the host. "
+      . "Fix: an OCP/robocop image whose Rex::Rancher supports node_ip, or leave "
+      . "node_ip out\n";
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and

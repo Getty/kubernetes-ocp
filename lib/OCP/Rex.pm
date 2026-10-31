@@ -395,6 +395,7 @@ sub install_server {
     my $task = $distribution eq 'k3s' ? 'install_k3s_server' : 'install_rke2_server';
 
     $self->run_task($task,
+        _node_ip_param($opts{node_ip}),
         token             => $token,
         version           => $version,
         tls_san           => $tls_san,
@@ -504,6 +505,7 @@ sub install_agent {
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
     $self->run_task($task,
+        _node_ip_param($opts{node_ip}),
         server            => $server,
         token             => $token,
         version           => $version,
@@ -522,6 +524,15 @@ sub install_agent {
     );
 
     return 1;
+}
+
+# node_ip as a task parameter (k254), only when the operator asked for one
+# (there is no default), or nothing: absent stays absent, so the Rexfile hands
+# Rex::Rancher no node_ip and the distribution's own choice -- or, on a
+# re-run, the node-ip config.yaml already holds -- stands.
+sub _node_ip_param {
+    my ($node_ip) = @_;
+    return defined $node_ip && length $node_ip ? (node_ip => $node_ip) : ();
 }
 
 # The cluster token a control plane is already sealed with, read straight off
@@ -646,6 +657,7 @@ Execute a Rex task with parameters.
         gpu_toolkit  => 1,       # 0: no operator toolkit, so write CDI specs
         pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
         cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
+        node_ip      => '10.230.30.50',  # optional; or "v4,v6"
     );
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
@@ -661,6 +673,20 @@ C<10.42.0.0/16>. A Cilium that already runs keeps the pool it has.
 C<cilium_helm_values> (F<ocp.yaml>'s C<cilium:>, merged by
 C<OCP::Config-E<gt>cilium_helm_values>) goes to C<install_cilium> as its
 C<helm_values>; an empty or missing hash passes none.
+
+C<node_ip> is the address the node registers as its C<InternalIP> (RKE2/K3s
+C<node-ip>): one IP, or C<"v4,v6"> for dual-stack, one per family -- only
+what the operator asked for (C<control_planes[].node_ip>), never a default.
+Pass it on a multi-homed host, where the default route's address -- what
+the node registers without it -- may not be reachable from the other nodes.
+It goes to the Rexfile as the C<node_ip> task parameter, and from there to
+Rex::Rancher, which writes it to C<config.yaml>. Omitted or empty, no
+C<node_ip> is passed at all, RKE2/K3s choose the address themselves, and
+Rex::Rancher keeps the C<node-ip> the node's C<config.yaml> already holds. A
+Rex::Rancher without node_ip support (rex-rancher k100) cannot set it: the
+task dies before it changes anything on the host. A re-run that changes the
+value is a C<[WARN]> from Rex::Rancher, since the node's Cilium agent pod then
+needs a restart.
 
 The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
 C<server> are C<advertised_host>. On k3s Cilium reaches the API server at
@@ -681,9 +707,11 @@ Returns hashref with C<token> and C<kubeconfig>.
         distribution => 'rke2',
         server       => 'https://cp-ip:9345',
         token        => '...',
+        node_ip      => '10.230.30.50',  # optional; or "v4,v6"
     );
 
-Join node to cluster as worker.
+Join node to cluster as worker. C<node_ip> is the address the agent
+registers by, as for L</install_server>; omitted or empty, none is passed.
 
 =head2 fetch_kubeconfig_ssh
 

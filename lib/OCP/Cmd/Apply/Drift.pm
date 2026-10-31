@@ -5,6 +5,7 @@ use strict;
 use warnings;
 
 use OCP::Cmd::Apply::AMDGPU ();
+use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Deploy;
 use OCP::Cmd::Apply::Network;
@@ -382,10 +383,15 @@ sub reconcile_components {
             $self->_ensure_crds($api);
             $self->_ensure_providers($api, $config, $secrets);
             $self->_migrate_legacy_nodes($api);
+            # control_planes[0].node_ip as spec.nodeIP (k254): the ensure
+            # replaces the spec, so a run that left it out took it off the
+            # OCPNode the deploy wrote it to. Nothing installs here, so no
+            # handed_node_ip -- status.nodeIP keeps what the bootstrap handed.
             $self->_ensure_cp_ocpnode($api, {
                 name     => $cp_name,
                 provider => $cp_id->{provider},
                 host     => $cp_ip,
+                node_ip  => OCP::Cmd::Apply::Bootstrap::cp_node_ip($config),
             });
             1;
         } or print "  [WARN] node CR reconcile failed: $@";

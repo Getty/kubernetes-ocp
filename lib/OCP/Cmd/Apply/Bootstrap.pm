@@ -7,6 +7,7 @@ use warnings;
 use OCP::ClusterKey;
 use OCP::Config;
 use OCP::Keys;
+use OCP::Node;
 use OCP::Provider;
 use OCP::Rex;
 use OCP::Secrets;
@@ -30,6 +31,10 @@ use OCP::Versions;
     # bootstrap itself.
     my $cp_id = OCP::Cmd::Apply::Bootstrap::cp_identity($config);
     my $label = OCP::Cmd::Apply::Bootstrap::dist_label($distribution);
+
+    # The node-ip police1 is installed with (control_planes[0].node_ip), or
+    # undef (k254).
+    my $node_ip = OCP::Cmd::Apply::Bootstrap::cp_node_ip($config);
 
     # Mutating helper: pick the SSH key the rest of the deploy will use
     # (OCP::ClusterKey decides which), publish its path on the command
@@ -158,6 +163,38 @@ sub cp_tls_sans {
     push @addrs, @extra;
     my %seen;
     return sort grep { defined && length && !$seen{$_}++ } @addrs;
+}
+
+# The node-ip the first control plane is installed with (k254):
+# control_planes[0].node_ip, or undef when ocp.yaml sets none -- then the
+# install is handed none and the node registers the address of its default
+# route. Only ever explicit; OCP::Config has refused a malformed one already.
+# Bootstrap passes it to install_server, Deploy records it on the control
+# plane's OCPNode, and both ask here so they cannot disagree.
+sub cp_node_ip {
+    my ($config) = @_;
+    my $ip = ($config->control_planes->[0] // {})->{node_ip};
+    return defined $ip && length $ip ? $ip : undef;
+}
+
+# Once the first control plane is Ready (k254): is $node_ip among the
+# InternalIPs of its Node, $cp_name in $nodes (the list the Ready wait read)?
+# A mismatch -- an image whose Rex::Rancher cannot set a node-ip, a node-ip in
+# config.yaml.d that wins -- leaves the cluster up on an address the other
+# nodes may not reach, so it is said on STDERR, and changes nothing else: the
+# control plane is Ready, and only a human can say which address is right.
+# The diagnosis is OCP::Node's, the one a joined node's Ready transition gives.
+sub warn_node_ip_mismatch {
+    my ($api, $nodes, $cp_name, $node_ip) = @_;
+    return unless defined $node_ip;
+
+    my ($node) = grep { ($_->{metadata}{name} // '') eq $cp_name }
+                 map  { $api->k8s->object_to_struct($_) } @{ $nodes->items };
+    my $diag = $node
+        ? OCP::Node->node_ip_mismatch($node, $node_ip)
+        : "InternalIP not checked against node_ip $node_ip: no Node named '$cp_name'";
+    print STDERR "  [WARN] $cp_name: $diag\n" if defined $diag;
+    return;
 }
 
 # Display name for a distribution id. Apply hardcoded "RKE2" in its
@@ -472,6 +509,9 @@ sub bootstrap_control_plane {
     # addresses yet and police1's is the only one known at this point.
     my @tls_sans = cp_tls_sans($config, $advertised);
 
+    # The address police1 registers by, when ocp.yaml names one (k254).
+    my $node_ip = cp_node_ip($config);
+
     my $result;
     eval {
         $result = $rex->install_server(
@@ -492,6 +532,7 @@ sub bootstrap_control_plane {
             gpu_toolkit       => $config->gpu_toolkit,
             pod_cidr          => $config->pod_cidr,
             cilium_helm_values => $config->cilium_helm_values,
+            (defined $node_ip ? (node_ip => $node_ip) : ()),
         );
     };
     if ($@) {
@@ -541,6 +582,7 @@ sub bootstrap_control_plane {
             }
             if ($is_ready) {
                 print "  [ok] Node is Ready after ~${\ ($i * 10)}s\n";
+                warn_node_ip_mismatch($api, $nodes, $cp_name, $node_ip);
                 $node_ready = 1;
                 last;
             }
