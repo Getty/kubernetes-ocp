@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T06:35:10Z
+created: 2026-10-31T04:01:34Z
+id: 288
+priority: low
+started: 2026-10-31T06:35:10Z
+status: done
+tags:
+- refactor
+title: read_or_why lives in OCP::Cmd::Apply::AMDGPU but serves both GPU vendors
+updated: 2026-10-31T06:35:10Z
+---
+
+Since k273, `OCP::Cmd::Apply::Workloads` (NVIDIA allocatable wait) calls `OCP::Cmd::Apply::AMDGPU::read_or_why`, the "only a 404 is absent" read helper from k269. A vendor-neutral helper belongs with the other apply-path reads in `OCP::Cmd::Apply::K8s`.
+
+Done = moved there, both callers use it, no behaviour change (the k269/k273 tests stay green unchanged).
+
+2026-10-31 04:58 Moved read_or_why from OCP::Cmd::Apply::AMDGPU to OCP::Cmd::Apply::K8s (next to resource_exists, same 'only a 404 is absent' rule), signature unchanged ($what, $read). Callers: AMDGPU not_ready (3 reads) and Workloads gpu_not_allocatable now call OCP::Cmd::Apply::K8s::read_or_why; Workloads loads OCP::Cmd::Apply::K8s instead of OCP::Cmd::Apply::AMDGPU (read_or_why was its only use of it). K8s.pm DESCRIPTION names the helper. No Apply.pm forwarder, like kubeconfig_path. Verified: DOCKER_BUILDKIT=0 make test TESTS='t/251 t/269 t/273 t/263 t/40 t/220 t/228-gpu-after-join' -> PASS, 81 tests, test files unchanged.
+
+2026-10-31 05:15 Also found: OCP::Cmd::Apply::K8s DESCRIPTION says OCP::Cmd::Apply re-exports every helper as a _method forwarder; kubeconfig_path (k251) never had one and read_or_why has none either (both callers are module functions, no test surface needs one). Left as is; a one-line POD correction for the doc lane.
+
+2026-10-31 06:31 Done: read_or_why moved from OCP::Cmd::Apply::AMDGPU to OCP::Cmd::Apply::K8s (comment + DESCRIPTION line there); AMDGPU's not_ready (3 reads) and Workloads' gpu_not_allocatable (k273) call OCP::Cmd::Apply::K8s::read_or_why; Workloads now loads OCP::Cmd::Apply::K8s instead of AMDGPU. No behaviour change, no test changed. Files: lib/OCP/Cmd/Apply/K8s.pm, the read_or_why hunks of lib/OCP/Cmd/Apply/AMDGPU.pm and lib/OCP/Cmd/Apply/Workloads.pm (patch alone: scratchpad w-gpuwait/k288.patch). Verified: make test t/251 t/269 t/273 t/263 t/40 t/220 t/228-gpu-after-join -> PASS (81); HEAD+k288 alone on t/251 t/228 t/273 t/38 t/220 t/269 t/40 -> PASS (133). Mutant: changed the 404 wording in K8s::read_or_why -> t/251 and t/273 fail (killed). Full suite with all three cards: 223 files, 3540 tests, only t/296 failed, the choices worker's in-flight file (passes on the current tree with my files in place).
+
+Committed as 44a5e3b
