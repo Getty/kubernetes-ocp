@@ -164,6 +164,45 @@ sub identities {
     return @ids;
 }
 
+# The identities a read of the project's own files decrypts with (k370):
+# identities, after the project key is unlocked the way ensure_age_key does
+# it -- PIN1, from age.key.enc, cached in .ocp/age.key -- when that key is the
+# one this run reads and this checkout has no copy of it. A clone has none:
+# .ocp/ is gitignored, and `ocp status`, `ocp kubeconfig`, `ocp node ls` and
+# the rest read kubeconfig.yaml or secrets.yaml as their first decrypt. With
+# no age.key.enc to unlock either, a refusal that says where the key comes
+# from, in place of Path::Tiny's "Error open (<) on '.ocp/age.key'".
+#
+# Only the reads -- read_all_secrets, read_kubeconfig, decrypt_file.
+# identities itself never prompts: repair_sops_lastmodified,
+# _derive_project_recipient and OCP::Keys (under _robo_probe_key) try it
+# under eval because it does not.
+sub _read_identities {
+    my ($self, $file) = @_;
+
+    unless ($self->sops_age_key_file || defined $self->age_key || $self->has_age_key) {
+        die $self->_no_age_key_refusal($file) unless $self->has_age_key_enc;
+        $self->ensure_age_key;
+    }
+    return $self->identities;
+}
+
+# $file is encrypted, there is no .ocp/age.key, and no age.key.enc to unlock
+# it from. Not "run ocp init": a new key opens none of the committed files.
+sub _no_age_key_refusal {
+    my ($self, $file) = @_;
+
+    return "ERROR: ".$file." is encrypted, and this checkout has no age key to open it:\n"
+         . "       no .ocp/age.key, and no age.key.enc to unlock it from with PIN1.\n\n"
+         . ".ocp/ is gitignored, so a clone never carries the key. Either\n"
+         . "  - check out age.key.enc, which a secure-mode project commits, and run\n"
+         . "    again: PIN1 unlocks it;\n"
+         . "  - copy .ocp/age.key from whoever set the project up: a dev-mode project\n"
+         . "    (ocp init --nopassword) has the key nowhere else; or\n"
+         . "  - point SOPS_AGE_KEY_FILE at your own age identity, if the project's\n"
+         . "    files are encrypted to it as well.\n";
+}
+
 # The recipients (public keys) of those identities.
 sub identity_recipients {
     my ($self) = @_;
@@ -936,7 +975,7 @@ sub read_all_secrets {
 
     return {} unless $self->has_secrets_file;
 
-    my @identities = $self->identities;
+    my @identities = $self->_read_identities($self->secrets_file->basename);
     # The same guard the write paths use: a foreign key in .ocp/age.key
     # must surface as the named-recipients error, not as File::SOPS's
     # opaque "could not decrypt data key" line (k118).
@@ -1053,7 +1092,7 @@ sub read_kubeconfig {
 
     return undef unless $self->has_kubeconfig;
 
-    my @identities = $self->identities;
+    my @identities = $self->_read_identities($self->kubeconfig_file->basename);
     # Same guard as the write paths — k118.
     $self->_assert_key_matches_project(@identities);
 
@@ -1112,7 +1151,7 @@ sub decrypt_file {
     my $file_path = $self->project_dir->child($file);
     return undef unless -f $file_path;
 
-    my @identities = $self->identities;
+    my @identities = $self->_read_identities($file);
     # Same guard as the write paths — k118.
     $self->_assert_key_matches_project(@identities);
 
@@ -1181,6 +1220,14 @@ An object holding the project key in memory (L</age_key>, k349) reads that
 in its place.
 
 =back
+
+The reads of the project's files -- C<read_all_secrets> (and through it
+C<read_secret> and C<hetzner_token>), C<read_kubeconfig>, C<decrypt_file> --
+unlock the project key first when this checkout has none, as
+L</ensure_age_key> does: PIN1, and the key cached in F<.ocp/age.key> (k370).
+A clone has none, since F<.ocp/> is gitignored. With no F<age.key.enc> to
+unlock either, they die with a message that names the file and the ways to
+the key. C<identities> itself never asks for PIN1.
 
 Under another identity the project's recipient (L</age_recipient>) is read
 off the committed files, never taken from that identity: a write must stay

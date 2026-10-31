@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - On a fresh clone, `ocp status`, `ocp kubeconfig`, `ocp node ls`,
+      `ocp health`, `ocp provider ls`, `ocp deploy-robocop`, `ocp hetzner
+      list` and the other commands that read `kubeconfig.yaml` or
+      `secrets.yaml` first now ask for PIN1 and unlock the project key,
+      instead of dying with "Error open (<) on '.ocp/age.key'". Without
+      `age.key.enc` they say where the key comes from.
     - `ocp apply --dry-run` records no host key in `.ocp/known_hosts` any
       more: its host probes contact only machines whose key is recorded,
       checked against it, and skip the others with that reason; on a clone
