@@ -23,7 +23,8 @@ use OCP::Kubernetes ();
 Small helpers that the in-cluster components share: build a L<Kubernetes::REST>
 api from a kubeconfig string, server-side apply a hash, parse and apply a
 multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path,
-and the read a readiness wait makes, which tells a 404 from a read that failed.
+and the reads a readiness wait and a single lookup make, which tell a 404 from
+a read that failed.
 L<OCP::Cmd::Apply> re-exports every helper as a C<_method> thin forwarder so
 the existing test surface (C<local *OCP::Cmd::Apply::_server_side_apply = ...>)
 keeps working.
@@ -181,17 +182,29 @@ sub apply_yaml_file {
     apply_yaml_string($self, $api, path($file_path)->slurp_raw);
 }
 
+# 1 once the Deployment has an available replica, 0 when it has none within
+# $timeout -- one that is not there (a 404) included: the caller says "not
+# ready" in its words. A read that fails otherwise is polled again; when the
+# last one failed too, this dies with its cause instead (k277).
 sub poll_deployment_ready {
     my ($self, $api, $name, $namespace, $timeout) = @_;
     $timeout //= 120;
 
     my $polls = int($timeout / 5) || 1;
+    my $read_err;
     for my $i (1..$polls) {
         my $deploy = eval { $api->get('Deployment', $name, namespace => $namespace) };
+        $read_err = $@;
+        $read_err = undef if $read_err && "$read_err" =~ /\b404\b/;
         if ($deploy && $deploy->status && ($deploy->status->availableReplicas // 0) > 0) {
             return 1;
         }
         $self->wait_seconds(5);
+    }
+    if ($read_err) {
+        my $reason = "$read_err";
+        chomp $reason;
+        die "Deployment $namespace/$name not ready within ${timeout}s; the last read failed: $reason\n";
     }
     return 0;
 }
@@ -226,6 +239,20 @@ sub read_or_why {
     my $reason = "$err";
     chomp $reason;
     return (undef, $reason =~ /\b404\b/ ? "$what not found" : "could not read $what: $reason");
+}
+
+# A read asked once: what $read returns, or undef for a 404 -- and only for
+# one. Any other failure says nothing about the object and dies "could not
+# read <what>: <cause>"; the step it is part of reports it (k277). A wait
+# that reads again takes read_or_why.
+sub read_or_absent {
+    my ($what, $read) = @_;
+    my $object = eval { $read->() };
+    my $err = $@ or return $object;
+    my $reason = "$err";
+    chomp $reason;
+    return undef if $reason =~ /\b404\b/;
+    die "could not read $what: $reason\n";
 }
 
 # A raw GET of $resource_path (a CRD's object has no IO::K8s class OCP

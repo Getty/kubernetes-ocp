@@ -2,6 +2,7 @@
 use strict;
 use warnings;
 use Test::More;
+use Kubernetes::REST::APIError;
 use Path::Tiny qw(path);
 
 use lib 'lib';
@@ -36,6 +37,11 @@ use OCP::Cmd::Apply::Deploy;
     sub get {
         my ($self, $kind, %a) = @_;
         push @{ $self->{gets} }, "$kind/$a{name}";
+        # A read that fails the way the test says (k277): { "Kind/name" =>
+        # error, or a sub that returns one -- or undef to read after all }.
+        my $fail = $self->{fails}{"$kind/$a{name}"};
+        $fail = $fail->() if ref $fail eq 'CODE';
+        die $fail if $fail;
         if ($kind eq 'OCPNode') {
             return { status => { kubernetesNodeName => $self->{k8s_name}{ $a{name} } // $a{name} } };
         }
@@ -61,6 +67,14 @@ use OCP::Cmd::Apply::Deploy;
     sub _report_component { my ($s, $l, $o) = @_; push @{ $s->{reported} }, "$l=$o"; 0 }
 }
 
+# What Kubernetes::REST dies with for an HTTP error status (as in t/269).
+sub api_error {
+    my ($code, $reason) = @_;
+    return Kubernetes::REST::APIError->new(code => $code, context => 'get',
+        body => qq({"kind":"Status","status":"Failure","reason":"$reason","code":$code}));
+}
+my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
+
 my $NFD_ONLY = { 'feature.node.kubernetes.io/system-os_release.ID' => 'ubuntu' };
 my $NFD_GPU  = { %$NFD_ONLY, 'feature.node.kubernetes.io/pci-0300_10de.present' => 'true' };
 
@@ -76,18 +90,20 @@ sub run_after_join {
     local *OCP::Cmd::Apply::Workloads::gpu_label_interval = sub { 10 };
     local *OCP::Cmd::Apply::Workloads::gpu_label_timeout  = sub { 30 };
     my $apply = FakeApply->new(api => FakeApi->new(labels => $o{labels} // {},
-                                                  k8s_name => $o{k8s_name} // {}));
+                                                  k8s_name => $o{k8s_name} // {},
+                                                  fails => $o{fails} // {}));
     my ($out, $err) = ('', '');
-    my $got;
+    my ($got, $died);
     {
         local *STDOUT;
         local *STDERR;
         open STDOUT, '>', \$out or die;
         open STDERR, '>', \$err or die;
-        $got = OCP::Cmd::Apply::Workloads::setup_gpu_operator_after_join(
-            $apply, FakeConfig->new(%{ $o{config} // {} }), $o{first}, @{ $o{names} // [] });
+        $got = eval { OCP::Cmd::Apply::Workloads::setup_gpu_operator_after_join(
+            $apply, FakeConfig->new(%{ $o{config} // {} }), $o{first}, @{ $o{names} // [] }) };
+        $died = $@;
     }
-    return { got => $got, calls => $calls, apply => $apply, out => $out, err => $err };
+    return { got => $got, calls => $calls, apply => $apply, out => $out, err => $err, died => $died };
 }
 
 subtest 'no second check when it is not needed' => sub {
@@ -204,6 +220,63 @@ subtest 'both apply paths run it after their worker step' => sub {
     like $drift, qr/Deploy::worker_step\(.*?Deploy::gpu_after_join\(\$self, \$config, \\\@results\)/s,
         'reconcile';
     like $drift, qr/\$self->\{_gpu_outcome\} = \$outcome/, 'the reconcile keeps the first verdict';
+};
+
+#
+# k277: the after-join check read the OCPNode and the Node through an eval
+# that took every failure for absence -- an OCPNode it could not read for one
+# without a Kubernetes name, a Node it could not read for one without labels,
+# so after a first check that ran, "No NVIDIA GPU on the new worker(s)". Only
+# a 404 is absent. An OCPNode read that fails otherwise dies (the step's
+# [!!]); a Node read is polled again, the last failed one is named, and a node
+# that could not be read is checked rather than called GPU-less.
+#
+
+subtest 'k277: the OCPNode -- a 404 leaves its name, a refusal fails the check' => sub {
+    my $r = run_after_join(first => 'skipped', names => ['crag'], labels => { crag => $NFD_GPU },
+        fails => { 'OCPNode/crag' => api_error(404, 'NotFound') });
+    is $r->{died}, '', '404: no death';
+    ok( (grep { $_ eq 'Node/crag' } @{ $r->{apply}{api}{gets} }), '404: the Node read by the OCPNode\'s name');
+    is $r->{calls}, 1, '404: checked';
+
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        $r = run_after_join(first => 'skipped', names => ['crag'], labels => { crag => $NFD_GPU },
+            fails => { 'OCPNode/crag' => api_error($code, $reason) });
+        like $r->{died}, qr{\Acould not read OCPNode ocp-system/crag: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+            "$code: dies with the cause (gpu_after_join says it, [!!], counted)";
+        ok !$r->{calls}, "$code: no check on a guessed name";
+        ok !(grep { $_ eq 'Node/crag' } @{ $r->{apply}{api}{gets} }), "$code: no Node read under the OCPNode's name";
+    }
+};
+
+subtest 'k277: the Node -- a refusal is no worker without a GPU' => sub {
+    my $r = run_after_join(first => 'deployed', names => ['crag'],
+        fails => { 'Node/crag' => api_error(404, 'NotFound') });
+    is $r->{apply}{waited}, 30, '404 throughout: the whole budget';
+    like $r->{err}, qr/^  \[WARN\] NFD has not labelled crag after 30s; checking with what is there\n\z/,
+        '404 throughout: the NFD line, and no failed read named';
+    ok !$r->{calls}, '404 throughout: no Node, no NVIDIA label, no second check';
+
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        $r = run_after_join(first => 'deployed', names => ['crag'], verdict => 'unchanged',
+            fails => { 'Node/crag' => api_error($code, $reason) });
+        is $r->{died}, '', "$code throughout: no death";
+        is $r->{apply}{waited}, 30, "$code throughout: read again for the whole budget";
+        like $r->{err}, qr{^  \[WARN\] NFD has not labelled crag after 30s; checking with what is there\n {9}the last read failed: could not read Node 'crag': Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            "$code throughout: the last failed read named, on STDERR";
+        unlike $r->{out}, qr/No NVIDIA GPU/, "$code throughout: not called GPU-less";
+        is $r->{calls}, 1, "$code throughout: checked, setup_gpu_operator decides on what it sees";
+        is $r->{got}, 'unchanged', "$code throughout: its verdict";
+
+        my $seen = 0;
+        $r = run_after_join(first => 'deployed', names => ['crag'], labels => { crag => $NFD_ONLY },
+            fails => { 'Node/crag' => sub { $seen++ ? undef : api_error($code, $reason) } });
+        is $r->{err}, '', "$code once, then read: nothing on STDERR";
+        like $r->{out}, qr/No NVIDIA GPU on the new worker\(s\)/, "$code once, then read: decided on the read";
+        ok !$r->{calls}, "$code once, then read: no second check";
+    }
 };
 
 done_testing;

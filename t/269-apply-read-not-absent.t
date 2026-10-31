@@ -302,4 +302,252 @@ subtest 'Cilium Gateway: the Accepted wait reads again, then dies with the last 
     like $res->{out}, qr/Gateway is accepted/, 'said';
 };
 
+#
+# k277: the reads k269 did not reach, the same rule. A read asked once dies
+# with its cause (its step says it on STDERR); a poll reads again and names
+# its last failed read when it gives up. Only a 404 is absent.
+#
+
+subtest 'k277 read_or_absent: the object, undef for a 404, a death for the rest' => sub {
+    my $read = \&OCP::Cmd::Apply::K8s::read_or_absent;
+    is_deeply $read->('ConfigMap kube-system/coredns', sub { { kind => 'ConfigMap' } }),
+        { kind => 'ConfigMap' }, 'read: the object';
+    is $read->('ConfigMap kube-system/coredns', sub { die api_error(404, 'NotFound') }), undef,
+        '404 (the APIError): undef';
+    is $read->('ConfigMap kube-system/coredns', sub { die "404 ConfigMap/coredns not found\n" }), undef,
+        '404 (the plain death): undef';
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        my $rv = eval { $read->('ConfigMap kube-system/coredns', sub { die api_error($code, $reason) }) };
+        like $@, qr{\Acould not read ConfigMap kube-system/coredns: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            "$code: dies, naming what and why";
+        ok !defined $rv, "$code: no answer";
+    }
+};
+
+subtest 'k277 GPU Operator: a Node list that fails is not "no GPU nodes"' => sub {
+    no warnings 'redefine';
+    local *GpuApi::list = sub { die api_error(404, 'NotFound') };
+    my $none = gpu_setup([ 200, '{"status":{"state":"ready"}}' ]);
+    is $none->{died}, '', '404: no death';
+    is $none->{outcome}, 'skipped', '404: no GPU nodes, skipped';
+    like $none->{out}, qr/No GPU nodes detected/, '404: said so';
+
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        local *GpuApi::list = sub { die api_error($code, $reason) };
+        my $res = gpu_setup([ 200, '{"status":{"state":"ready"}}' ]);
+        like $res->{died},
+            qr{\Acould not read Nodes labelled feature\.node\.kubernetes\.io/pci-0300_10de\.present=true: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+            "$code: dies with the cause, so the step is [!!] instead of skipped";
+        unlike $res->{out}, qr/No GPU nodes detected/, "$code: not called no GPU nodes";
+        ok !defined $res->{outcome}, "$code: no verdict";
+    }
+};
+
+{
+    package PollStatus;
+    sub new { my ($c, $n) = @_; bless { n => $n }, $c }
+    sub availableReplicas { $_[0]{n} }
+    package PollDeployment;
+    sub new { my ($c, $n) = @_; bless { s => PollStatus->new($n) }, $c }
+    sub status { $_[0]{s} }
+    # get() answers from a queue, the last answer repeating: a number is the
+    # Deployment's availableReplicas, anything else is what the read dies with.
+    package PollApi;
+    sub new { my ($c, @a) = @_; bless { answers => [ @a ], gets => 0 }, $c }
+    sub get {
+        my ($self, $kind, $name, %o) = @_;
+        $self->{gets}++;
+        my $q = $self->{answers};
+        my $answer = @$q > 1 ? shift @$q : $q->[0];
+        die $answer unless !ref $answer && $answer =~ /\A[0-9]+\z/;
+        return PollDeployment->new($answer);
+    }
+}
+
+sub poll {
+    my (@answers) = @_;
+    my $api = PollApi->new(@answers);
+    my $waited = 0;
+    my $apply = new_apply($api);
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::wait_seconds = sub { $waited += $_[1] };
+    my ($rv, $out, $err, $died) = capture {
+        OCP::Cmd::Apply::K8s::poll_deployment_ready($apply, $api, 'ocp-cache', 'ocp-system', 20)
+    };
+    return { ready => $rv, died => $died, gets => $api->{gets}, waited => $waited };
+}
+
+subtest 'k277 poll_deployment_ready: names the last failed read when it gives up' => sub {
+    my $r = poll(1);
+    is $r->{ready}, 1, 'an available replica: ready';
+    is $r->{died}, '', 'and no death';
+
+    $r = poll(0);
+    is $r->{ready}, 0, 'never available: not ready';
+    is $r->{died}, '', 'and no death: the caller says "not ready" in its words';
+
+    $r = poll(api_error(404, 'NotFound'));
+    is $r->{ready}, 0, '404 throughout: not ready, the Deployment is not there';
+    is $r->{died}, '', '404 throughout: no death';
+    is $r->{gets}, 4, '404 throughout: read for the whole wait';
+
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        $r = poll(api_error($code, $reason));
+        like $r->{died},
+            qr{\ADeployment ocp-system/ocp-cache not ready within 20s; the last read failed: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            "$code throughout: dies with the cause, not \"not ready\"";
+        is $r->{gets}, 4, "$code throughout: read for the whole wait";
+
+        $r = poll(api_error($code, $reason), 1);
+        is $r->{ready}, 1, "$code once, then available: ready";
+        is $r->{died}, '', "$code once, then available: no death";
+
+        $r = poll(api_error($code, $reason), 0);
+        is $r->{ready}, 0, "$code once, then read and not available: not ready";
+        is $r->{died}, '', "$code once, then read: the last read did not fail, no death";
+    }
+};
+
+{
+    package DnsCm;
+    sub new  { my ($c, $d) = @_; bless { data => $d }, $c }
+    sub data { $_[0]{data} }
+    # ReadApi dies with any object that is no plain hash; a ConfigMap here
+    # is one (configure_registry_dns calls ->data on it).
+    package DnsApi;
+    our @ISA = ('ReadApi');
+    sub get {
+        my ($self, $kind, $name, %o) = @_;
+        my $answer = $self->{objects}{ join '/', $kind, $o{namespace} // '-', $name };
+        return $answer if ref $answer eq 'DnsCm';
+        return $self->SUPER::get($kind, $name, %o);
+    }
+}
+
+sub registry_dns {
+    my (%objects) = @_;
+    my $api = DnsApi->new(objects => { %objects });
+    my $apply = new_apply($api);
+    my @applied;
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_server_side_apply = sub { push @applied, $_[2]; 1 };
+    my ($rv, $out, $err, $died) = capture {
+        OCP::Cmd::Apply::Network::configure_registry_dns($apply, '10.230.30.155')
+    };
+    return { patched => $rv, out => $out, died => $died, applied => \@applied };
+}
+
+subtest 'k277 registry.local DNS: a CoreDNS ConfigMap that cannot be read is not "up to date"' => sub {
+    my ($first, $second) = @OCP::Cmd::Apply::Network::COREDNS_CONFIGMAPS;
+    my $cm = DnsCm->new({ Corefile => ".:53 {\n    forward . /etc/resolv.conf\n}\n" });
+
+    my $r = registry_dns("ConfigMap/kube-system/$second" => $cm);
+    is $r->{died}, '', "404 on $first: no death";
+    is $r->{patched}, 1, "404 on $first: the next name is read and patched";
+    is $r->{applied}[0]{metadata}{name}, $second, "404 on $first: $second written";
+
+    $r = registry_dns();
+    is $r->{died}, '', '404 on both: no death';
+    is $r->{patched}, 0, '404 on both: nothing to patch';
+
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        $r = registry_dns("ConfigMap/kube-system/$first"  => api_error($code, $reason),
+                          "ConfigMap/kube-system/$second" => $cm);
+        like $r->{died},
+            qr{\Acould not read ConfigMap kube-system/$first: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+            "$code on $first: dies with the cause";
+        ok !defined $r->{patched}, "$code on $first: no verdict, so not \"up to date\"";
+        is scalar @{ $r->{applied} }, 0, "$code on $first: and $second is not written over it";
+    }
+};
+
+my $POOL_PATH = '/apis/cilium.io/v2/ciliumloadbalancerippools';
+
+# setup_lb_ipam on a single-node cluster up to the pool apply; the pool API's
+# reads are answered by @answers (the last repeating).
+sub lb_wait {
+    my (@answers) = @_;
+    my $api = ReadApi->new(responses => { $POOL_PATH => [ @answers ] });
+    my $apply = new_apply($api);
+    my ($applied, $waited) = (0, 0);
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_server_side_apply_all = sub { $applied++; 1 };
+    local *OCP::Cmd::Apply::wait_seconds          = sub { $waited += $_[1] };
+    local *OCP::Cmd::Apply::Network::lb_ipam_resources = sub {
+        [ { kind => 'CiliumLoadBalancerIPPool', spec => { blocks => [ { cidr => '10.230.30.155/32' } ] } } ]
+    };
+    my ($rv, $out, $err, $died) = capture {
+        OCP::Cmd::Apply::Network::setup_lb_ipam($apply, '10.230.30.155', FakeConfig->new); 1
+    };
+    return { ok => $rv, died => $died, applied => $applied, waited => $waited,
+             reads => scalar grep { $_ eq $POOL_PATH } @{ $api->{reads} } };
+}
+
+subtest 'k277 LB-IPAM: the pool API wait names its last failed read' => sub {
+    my $r = lb_wait([ 200, '{"kind":"CiliumLoadBalancerIPPoolList","items":[]}' ]);
+    is $r->{died}, '', 'served: no death';
+    is $r->{applied}, 1, 'served: the pool applied';
+
+    $r = lb_wait([ 404, '{}' ]);
+    is $r->{died}, "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s\n",
+        '404 throughout: not served, as before';
+    is $r->{reads}, 30, '404 throughout: read for the whole wait';
+    is $r->{applied}, 0, '404 throughout: nothing applied';
+
+    for my $code (403, 500) {
+        $r = lb_wait([ $code, 'refused' ]);
+        is $r->{died}, "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s;"
+            . " the last read failed: GET $POOL_PATH failed: HTTP $code refused\n",
+            "$code throughout: the cause, not only \"not served\"";
+        is $r->{reads}, 30, "$code throughout: read for the whole wait";
+
+        $r = lb_wait([ $code, 'refused' ], [ 404, '{}' ]);
+        is $r->{died}, "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s\n",
+            "$code once, then 404: the last read did not fail";
+
+        $r = lb_wait([ $code, 'refused' ], [ 200, '{"items":[]}' ]);
+        is $r->{died}, '', "$code once, then served: no death";
+        is $r->{applied}, 1, "$code once, then served: the pool applied";
+    }
+};
+
+subtest 'k277 GPU Operator: a running operator without its ClusterPolicy is not up to date' => sub {
+    my $config = FakeConfig->new;
+    my $api    = GpuApi->new(responses => { $CP_PATH => [ [ 404, '{}' ] ] });
+    my $apply  = new_apply($api);
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::K8s::server_side_apply = sub { 1 };
+    local *OCP::Cmd::Apply::_poll_deployment_ready = sub { 1 };
+    local *OCP::Cmd::Apply::wait_seconds           = sub { };
+    # The CRDs are compared elsewhere (t/228-gpu-crd-drift.t): as shipped here.
+    local *OCP::Drift::gpu_crds_differing          = sub { () };
+    my $run = sub { [ capture { OCP::Cmd::Apply::Workloads::setup_gpu_operator($apply, $config) } ] };
+
+    my $r = $run->();
+    is $r->[0], 'deployed', 'premise: the first run deploys and records its hash' or diag $r->[3];
+
+    $api->{objects}{'Namespace/-/gpu-operator'}            = { kind => 'Namespace' };
+    $api->{objects}{'Deployment/gpu-operator/gpu-operator'} = { kind => 'Deployment' };
+    my ($cp) = grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'ClusterPolicy' }
+        YAML::XS::Load(OCP::Cmd::Apply::Workloads::generate_gpu_operator_manifest($apply, $config));
+    $api->{responses}{$CP_PATH} = [ [ 200, JSON::PP->new->encode($cp) ] ];
+    $r = $run->();
+    is $r->[0], 'unchanged', 'control: running, the ClusterPolicy as applied: up to date' or diag $r->[1], $r->[3];
+
+    $api->{responses}{$CP_PATH} = [ [ 404, '{}' ] ];
+    $r = $run->();
+    is $r->[3], '', '404: no death';
+    is $r->[0], 'updated', '404: re-applied, not up to date';
+    like $r->[1], qr/^ {6}ClusterPolicy is not on the cluster \(or has no spec\), re-applying$/m, '404: said';
+    unlike $r->[1], qr/already deployed \(up to date\)/, '404: not called up to date';
+
+    $api->{responses}{$CP_PATH} = [ [ 403, 'refused' ] ];
+    $r = $run->();
+    is $r->[3], "GET $CP_PATH failed: HTTP 403 refused\n", '403: dies with the cause, as since k269';
+};
+
 done_testing;

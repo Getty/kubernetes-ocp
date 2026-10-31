@@ -572,16 +572,30 @@ sub after_join {
     return unless @joined;
 
     my $api = $self->_k8s_api;
-    my @amd = grep {
-        my $node   = eval { $api->get('Node', name => $_) };
-        my $labels = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
-        ($labels->{$OCP::Config::AMD_GPU_PRESENT_LABEL} // '') eq 'true';
-    } map {
-        my $name = $_;
-        my $cr = eval { $api->get('OCPNode', name => $name, namespace => 'ocp-system') };
-        my $h  = $cr ? $api->k8s->object_to_struct($cr) : {};
-        $h->{status}{kubernetesNodeName} // $name;
-    } @joined;
+    # Only a 404 is absent: an OCPNode that is not there leaves the name, a
+    # Node that is not there carries no marker. A read that fails otherwise
+    # answers nothing about the marker: the check is not made, said with its
+    # cause and counted (k277).
+    my @amd = eval {
+        grep {
+            my $n      = $_;
+            my $node   = OCP::Cmd::Apply::K8s::read_or_absent("Node '$n'",
+                sub { $api->get('Node', name => $n) });
+            my $labels = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
+            ($labels->{$OCP::Config::AMD_GPU_PRESENT_LABEL} // '') eq 'true';
+        } map {
+            my $name = $_;
+            my $cr = OCP::Cmd::Apply::K8s::read_or_absent("OCPNode ocp-system/$name",
+                sub { $api->get('OCPNode', name => $name, namespace => 'ocp-system') });
+            my $h  = $cr ? $api->k8s->object_to_struct($cr) : {};
+            $h->{status}{kubernetesNodeName} // $name;
+        } @joined;
+    };
+    if (my $err = $@) {
+        $err .= "\n" unless $err =~ /\n\z/;
+        print STDERR "  [!!] AMD GPU stack not checked after the worker join: $err";
+        return ('AMD GPU stack');
+    }
     return unless @amd;
 
     print "  [..] Checking AMD GPU stack again, after the worker join (" . join(', ', @amd) . ")...\n";

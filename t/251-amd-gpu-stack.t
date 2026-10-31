@@ -968,4 +968,48 @@ subtest 'k286 ocp node add --gpu: an AMD node joined into an up-to-date stack is
         'the cause and the way on, on STDERR, as for a failed rollout';
 };
 
+#
+# k277: after_join read the joined worker's OCPNode and Node through an eval
+# that took every failure for absence: a refused read was a node without the
+# marker, and the AMD check after the join was quietly not made. Only a 404
+# is absent -- an OCPNode that is not there leaves the name, a Node that is
+# not there carries no marker. Any other failure: the check is not made, said
+# on STDERR with its cause, and counted.
+#
+
+subtest 'k277 after the worker join: a read that fails is not "no AMD node"' => sub {
+    for my $case ([ OCPNode => 'OCPNode ocp-system/synapse' ], [ Node => "Node 'synapse'" ]) {
+        my ($kind, $what) = @$case;
+        my $api = AmdApi->new;
+        $api->node('cpu1');
+        my $dir   = project();
+        my $first = run_step($api, dir => $dir);
+        $api->node('synapse', $MARKER => 'true');
+        my $joined = [ { name => 'synapse', phase => 'Ready' } ];
+
+        $api->{get_fails} = { "$kind/synapse" => api_error(404, 'NotFound') };
+        my $res = run_step($api, dir => $dir, apply => $first->{apply}, after_join => $joined);
+        is $res->{err}, '', "$kind 404: nothing on STDERR";
+        is_deeply $res->{r}, [], "$kind 404: nothing failed";
+        if ($kind eq 'OCPNode') {
+            like $res->{out}, qr/Checking AMD GPU stack again, after the worker join \(synapse\)/,
+                'OCPNode 404: the OCPNode\'s name is the Node\'s, checked';
+        } else {
+            is $res->{out}, '', 'Node 404: no Node, no marker, nothing';
+        }
+
+        for my $refusal (@REFUSALS) {
+            my ($code, $reason) = @$refusal;
+            $api->{get_fails} = { "$kind/synapse" => api_error($code, $reason) };
+            $res = run_step($api, dir => $dir, apply => $first->{apply}, after_join => $joined);
+            like $res->{err},
+                qr{\A  \[!!\] AMD GPU stack not checked after the worker join: could not read \Q$what\E: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+                "$kind $code: [!!] with the cause, on STDERR";
+            is_deeply $res->{r}, ['AMD GPU stack'], "$kind $code: counted";
+            is_deeply $res->{fns}, [], "$kind $code: nothing deployed on a guess";
+            unlike $res->{out}, qr/Checking AMD GPU stack again/, "$kind $code: no check";
+        }
+    }
+};
+
 done_testing;

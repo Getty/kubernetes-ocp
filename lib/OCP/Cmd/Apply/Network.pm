@@ -439,19 +439,24 @@ sub setup_lb_ipam {
     # CiliumL2AnnouncementPolicy is still v2alpha1. This matches the typed
     # classes in IO::K8s::Cilium 1.100.
     print "      Waiting for CiliumLoadBalancerIPPool API...\n";
-    my $crd_ready = 0;
+    # A 404 is the API not served yet. A read that fails otherwise is polled
+    # again too; when the last one failed, the death says its cause (k277).
+    my ($crd_ready, $read_err) = (0);
     for my $i (1..30) {
-        my $resp = eval {
-            $api->_request('GET', '/apis/cilium.io/v2/ciliumloadbalancerippools');
+        my $served = eval {
+            $self->_crd_get($api, '/apis/cilium.io/v2/ciliumloadbalancerippools');
         };
-        if ($resp && $resp->status < 400) {
+        $read_err = $@;
+        if ($served) {
             $crd_ready = 1;
             last;
         }
         print "      ... waiting for Cilium operator (${i}/30)\n" if $i % 5 == 0;
         $self->wait_seconds(10);
     }
-    die "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s\n"
+    chomp $read_err if $read_err;
+    die "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s"
+        . ($read_err ? "; the last read failed: $read_err" : '') . "\n"
         unless $crd_ready;
 
     $self->_server_side_apply_all($api, @$resources);
@@ -480,7 +485,10 @@ sub configure_registry_dns {
     # Get current CoreDNS ConfigMap
     my ($cm_name, $cm);
     for my $candidate (@COREDNS_CONFIGMAPS) {
-        $cm = eval { $api->get('ConfigMap', $candidate, namespace => 'kube-system') };
+        # Only a 404 is "not under this name"; a read that fails otherwise
+        # dies with its cause instead of reading as "up to date" (k277).
+        $cm = OCP::Cmd::Apply::K8s::read_or_absent("ConfigMap kube-system/$candidate",
+            sub { $api->get('ConfigMap', $candidate, namespace => 'kube-system') });
         next unless $cm;
         $cm_name = $candidate;
         last;

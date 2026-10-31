@@ -74,7 +74,8 @@ outside quiet mode reads the ClusterPolicy again for the C<gpu.toolkit>
 warning. It returns entries of the same shape: one C<< kind =E<gt> 'spec' >>
 entry per ClusterPolicy path that differs, and one C<< kind =E<gt> 'error' >>
 entry for each read that failed with anything but a 404 (k276). A 404 is an
-answer (no operator, no ClusterPolicy) and finds nothing. Any other failure
+answer: no operator finds nothing; no ClusterPolicy while the operator runs
+is one C<spec> entry for the whole spec (k277). Any other failure
 is neither a finding nor the absence of one: it is printed as "could not be
 checked" with its cause, the cause goes to STDERR once, and both apply paths
 count it the way they count an unreadable drift probe. When the ClusterPolicy
@@ -770,7 +771,7 @@ sub gpu_dry_run {
     };
     return $unread->('GPU Operator ClusterPolicy', $@) if $@;
     my @found = map { +{ kind => 'spec', path => $_,
-        message => "GPU Operator ClusterPolicy differs from the spec at $_" } } @paths;
+        message => 'GPU Operator ' . OCP::Cmd::Apply::Workloads::cluster_policy_difference($_) } } @paths;
     return @found if $opt{quiet};
     print "  [drift] $_->{message}\n"
         . "          would re-apply the GPU Operator manifest\n" for @found;

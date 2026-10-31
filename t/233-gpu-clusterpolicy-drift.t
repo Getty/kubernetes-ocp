@@ -69,7 +69,9 @@ is_deeply diffs(live(sub { $_[0]{spec}{toolkit}{version} = 'v1.18.0' })), ['spec
 is_deeply diffs(live(sub { $_[0]{spec}{cdi}{enabled} = JSON::PP::false })), ['spec.cdi.enabled'],
     'a boolean flipped';
 is_deeply diffs(live(sub { delete $_[0]{spec}{toolkit} })), ['spec.toolkit'], 'a section gone';
-is_deeply diffs(undef), [], 'no ClusterPolicy to read: nothing said here';
+# k277: asked only while the operator runs, which has nothing to run its
+# operands by without one: no ClusterPolicy (a 404) differs as a whole.
+is_deeply diffs(undef), ['spec'], 'no ClusterPolicy while the operator runs: the whole spec differs';
 
 {
     open my $fh, '<', 'lib/OCP/Cmd/Apply/Workloads.pm' or die;
@@ -219,10 +221,16 @@ subtest 'k276: the operator Deployment -- a 404 is no operator, a 403 is not kno
     is $quiet->{out} . $quiet->{err}, '', 'quiet 403: said nowhere, the caller says it';
 };
 
-subtest 'k276: the ClusterPolicy -- a 404 is no differences, a 403 is not known' => sub {
+# k277 replaces k276's claim for the 404: with the operator running, a
+# ClusterPolicy that is not there is a difference (the whole spec), not none.
+subtest 'k276/k277: the ClusterPolicy -- a 404 is missing, a 403 is not known' => sub {
     my $none = read_dry(api => { cp => [ [404, $MISSING] ] });
-    is_deeply $none->{found}, [], '404: no differences';
-    is $none->{out} . $none->{err}, '', '404: nothing said';
+    is_deeply [ map { "$_->{kind} $_->{path}" } @{ $none->{found} } ], ['spec spec'],
+        '404: one finding, the whole spec';
+    is $none->{out}, "  [drift] GPU Operator ClusterPolicy is not on the cluster (or has no spec)\n"
+                   . "          would re-apply the GPU Operator manifest\n",
+        '404: said as missing, with the remedy';
+    is $none->{err}, '', '404: nothing on STDERR, it is an answer';
 
     my $denied = read_dry(api => { cp => [ [403, $DENIED] ] });
     is_deeply kinds($denied), ['error'], '403: one error entry, not "no differences"';

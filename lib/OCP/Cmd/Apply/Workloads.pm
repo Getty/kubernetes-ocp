@@ -461,12 +461,13 @@ sub setup_gpu_operator {
 
     my $api = $self->_k8s_api;
 
-    # Check if any node has NVIDIA GPU via NFD labels (@NVIDIA_LABELS).
+    # Check if any node has NVIDIA GPU via NFD labels (@NVIDIA_LABELS). A list
+    # that fails is no "no GPU nodes": it dies with its cause, and the step is
+    # [!!] instead of skipped (k277). A 404 lists nothing.
     my @gpu_nodes;
     for my $label (@NVIDIA_LABELS) {
-        my $list = eval {
-            $api->list('Node', labelSelector => "$label=true")
-        };
+        my $list = OCP::Cmd::Apply::K8s::read_or_absent("Nodes labelled $label=true",
+            sub { $api->list('Node', labelSelector => "$label=true") });
         if ($list && $list->items) {
             push @gpu_nodes, @{ $list->items };
         }
@@ -527,7 +528,7 @@ sub setup_gpu_operator {
     my @cp_differ = $gpu_running
         ? cluster_policy_differences($self, $config, $api, $manifest)
         : ();
-    print "      ClusterPolicy differs from the spec at $_, re-applying\n" for @cp_differ;
+    print "      " . cluster_policy_difference($_) . ", re-applying\n" for @cp_differ;
 
     if (($deployed->{'gpu-operator'} // '') eq $hash && $gpu_running
         && !@crd_differ && !@cp_differ) {
@@ -660,8 +661,9 @@ sub gpu_not_allocatable {
 # generated operator manifest), as paths like spec.toolkit.env. Only what OCP
 # sets is compared: the apiserver fills in the CRD's defaults, and the
 # operator never writes spec, so a key OCP does not name is not drift. A list
-# (toolkit.env) must match as a whole. Empty when the cluster has no
-# ClusterPolicy (a 404): whether the operator runs is asked elsewhere. Dies
+# (toolkit.env) must match as a whole. Asked only while the operator runs,
+# which has nothing to run its operands by without a ClusterPolicy: one the
+# cluster does not have (a 404) differs as a whole, at 'spec' (k277). Dies
 # when it cannot be read (k269).
 sub cluster_policy_differences {
     my ($self, $config, $api, $manifest) = @_;
@@ -671,10 +673,19 @@ sub cluster_policy_differences {
         YAML::XS::Load($manifest);
     return () unless $want;
     my $live = $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy')
-        or return ();
+        or return ('spec');
     my @paths;
     _differ($want->{spec}, $live->{spec}, 'spec', \@paths);
     return @paths;
+}
+
+# A path of cluster_policy_differences as it is said. 'spec' as a whole is a
+# ClusterPolicy the cluster does not have, or one without a spec.
+sub cluster_policy_difference {
+    my ($path) = @_;
+    return $path eq 'spec'
+        ? 'ClusterPolicy is not on the cluster (or has no spec)'
+        : "ClusterPolicy differs from the spec at $path";
 }
 
 sub _differ {
@@ -748,9 +759,12 @@ sub setup_gpu_operator_after_join {
     return undef unless @ocpnode_names;
 
     my $api = $self->_k8s_api;
+    # An OCPNode that is not there (a 404) leaves its name; one that cannot be
+    # read otherwise dies with the cause, as the step does (k277).
     my @k8s_names = map {
         my $name = $_;
-        my $cr = eval { $api->get('OCPNode', name => $name, namespace => 'ocp-system') };
+        my $cr = OCP::Cmd::Apply::K8s::read_or_absent("OCPNode ocp-system/$name",
+            sub { $api->get('OCPNode', name => $name, namespace => 'ocp-system') });
         my $h  = $cr ? $api->k8s->object_to_struct($cr) : {};
         $h->{status}{kubernetesNodeName} // $name;
     } @ocpnode_names;
@@ -759,22 +773,35 @@ sub setup_gpu_operator_after_join {
     my $interval = gpu_label_interval();
     my $tries    = int(gpu_label_timeout() / $interval);
     my @waiting  = @k8s_names;
-    my %labels;
+    # A Node that is not there (a 404) has no labels yet. A read that fails
+    # otherwise is polled again; $unread{name} is the last one's cause (k277).
+    my (%labels, %unread);
     for my $try (0 .. $tries) {
         @waiting = grep {
-            my $node = eval { $api->get('Node', name => $_) };
-            $labels{$_} = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
-            !grep { index($_, 'feature.node.kubernetes.io/') == 0 } keys %{ $labels{$_} };
+            my $n = $_;
+            my $node = eval { OCP::Cmd::Apply::K8s::read_or_absent("Node '$n'",
+                sub { $api->get('Node', name => $n) }) };
+            $unread{$n} = $@ || undef;
+            $labels{$n} = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
+            !grep { index($_, 'feature.node.kubernetes.io/') == 0 } keys %{ $labels{$n} };
         } @waiting;
         last unless @waiting;
         $self->wait_seconds($interval) if $try < $tries;
     }
     # STDERR (k278): a label that did not come is something that went wrong.
-    print STDERR "  [WARN] NFD has not labelled " . join(', ', @waiting) . " after "
-        . gpu_label_timeout() . "s; checking with what is there\n" if @waiting;
+    if (@waiting) {
+        print STDERR "  [WARN] NFD has not labelled " . join(', ', @waiting) . " after "
+            . gpu_label_timeout() . "s; checking with what is there\n";
+        print STDERR "         the last read failed: $unread{$_}" for grep { $unread{$_} } @waiting;
+    }
 
     if ($first_outcome ne 'skipped') {
-        my @nvidia = grep { my $l = $labels{$_}; grep { ($l->{$_} // '') eq 'true' } @NVIDIA_LABELS } @k8s_names;
+        # A node that could not be read is no node without a GPU: the check
+        # runs for it, and decides on what it sees (k277).
+        my @nvidia = grep {
+            my $l = $labels{$_};
+            $unread{$_} || grep { ($l->{$_} // '') eq 'true' } @NVIDIA_LABELS
+        } @k8s_names;
         unless (@nvidia) {
             print "      No NVIDIA GPU on the new worker(s)\n";
             return undef;

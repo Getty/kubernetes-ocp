@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - ocp apply no longer takes a refused or failed read for absence in
+      the GPU node list, the GPU and AMD checks after a worker join,
+      deployment readiness waits, the registry.local CoreDNS lookup and
+      the LB-IPAM pool wait; it reports the cause. A GPU Operator whose
+      ClusterPolicy is missing while the operator runs is re-applied.
     - ocp apply on an existing cluster says whether it created, updated or
       left the Cilium Gateway alone, and counts a change in its summary.
     - ocp apply reports a failed LB-IPAM setup or node-CR reconcile on
