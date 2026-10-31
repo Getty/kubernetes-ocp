@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-10-31T09:56:48Z
+id: 336
+priority: medium
+status: backlog
+tags:
+- apply
+- decision
+title: 'Decide: does a control plane that never gets Ready fail ocp apply (with k285:
+  what node readiness counts as failure)'
+updated: 2026-10-31T09:56:48Z
+---
+
+A decision for the maintainer (found under k327, apply worker, 2026-10-31): should a control plane that is still not Ready after the first deploy's 600 s wait end `ocp apply` APPLY INCOMPLETE (non-zero exit), or WITH WARNINGS, or go on as today (STDERR line since k327, run continues, exit 0)?
+
+ADR 0017 does not settle it: its principle (the banner is a statement about the cluster) points to failing; its pod scan takes Pending as "still starting" (an accepted consequence); its amendment handles node readiness case by case and provisionally (AMD: a failed component; NVIDIA: a warning, open on k285). In code, k226 already counts police2+ and workers that are not Ready as failed components -- only the first control plane is not.
+
+Related: k285 (an NVIDIA node without nvidia.com/gpu allocatable: failed component?). Both are the same question -- what node-level readiness counts as failure -- and could be decided together, then recorded as an ADR 0017 amendment.
