@@ -5,8 +5,10 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 use JSON::MaybeXS ();
+use Scalar::Util ();
 
 use OCP;
+use OCP::Choices;
 use OCP::Config;
 use OCP::Drift;
 use OCP::Kubernetes;
@@ -125,15 +127,19 @@ sub execute {
             $name, $ready, $roles, $version, $internal_ip;
     }
 
-    # GPU Status
+    # GPU Status. NVIDIA nodes are read off their capacity as before; AMD
+    # nodes (k252) follow in a block of their own, and a cluster without one
+    # prints exactly what it printed before and reads nothing more.
     my $gpu_nodes = $k8s->gpu_nodes;
-    if (@$gpu_nodes) {
+    my @amd_nodes = grep { $self->_amd_gpu_node($_) } @nodes;
+    if (@$gpu_nodes || @amd_nodes) {
         print "\n=== GPU Status ===\n";
         for my $gnode (@$gpu_nodes) {
             my $gname = $k8s->node_name($gnode);
             my $gcount = $k8s->node_gpu_count($gnode);
             printf "  %s: %dx NVIDIA GPU\n", $gname, $gcount;
         }
+        $self->_print_amd_gpu($config, $k8s, \@amd_nodes) if @amd_nodes;
     }
 
     # Drift between what ocp.yaml/the version manifest say and what runs.
@@ -167,7 +173,8 @@ sub execute {
 }
 
 # The --json form of the report. Same data as the text form, one object, and
-# nothing else on STDOUT; whatever went wrong is told on STDERR as well.
+# nothing else on STDOUT; whatever went wrong is told on STDERR as well. The
+# AMD GPU lines (k252) are text-only so far: their JSON shape is not decided.
 sub _execute_json {
     my ($self, $config, $file) = @_;
 
@@ -263,6 +270,209 @@ sub _collect_json {
     return 0;
 }
 
+#
+# AMD GPU nodes in the GPU section (k252; design spec 2026-10-31, section 6)
+#
+
+# The resource the AMD device plugin registers and the name of AMD's DRA
+# driver. The stack itself comes from Rex::Rancher::K8s; this is only where
+# its objects are read back.
+my $AMD_GPU_RESOURCE   = 'amd.com/gpu';
+my $AMD_GPU_DRA_DRIVER = 'gpu.amd.com';
+
+# A node with an AMD GPU: the host step's marker label, or amd.com/gpu on the
+# node at all (a node labelled by hand or before k249). Under DRA allocatable
+# is 0 and only the marker is left; whether a count is real is the count
+# line's business, not this test's.
+sub _amd_gpu_node {
+    my ($self, $node) = @_;
+    return 1 if ($self->_node_labels($node)->{$OCP::Config::AMD_GPU_PRESENT_LABEL} // '') eq 'true';
+    return 1 if $self->_amd_gpu_quantity($node, 'allocatable');
+    return 1 if $self->_amd_gpu_quantity($node, 'capacity');
+    return 0;
+}
+
+sub _print_amd_gpu {
+    my ($self, $config, $k8s, $nodes) = @_;
+
+    my $default = $self->_amd_gpu_default_allocation($config);
+    for my $node (@$nodes) {
+        print '  '.$k8s->node_name($node).": AMD GPU\n";
+        print '    '.$AMD_GPU_RESOURCE.': '.$self->_amd_gpu_count($node)."\n";
+        print '    gfx target:  '.$self->_amd_gpu_gfx_targets($node)."\n";
+        print '    allocation:  '.$self->_amd_gpu_allocation($node, $default)."\n";
+    }
+
+    my $api = $k8s->api;
+    print '  '.$_."\n" for $self->_amd_gpu_slice_lines($api);
+
+    print "  AMD DaemonSets:\n";
+    for my $role (sort keys %OCP::Drift::AMD_GPU_DAEMONSETS) {
+        my $ds = $OCP::Drift::AMD_GPU_DAEMONSETS{$role};
+        print '    '.$ds->{namespace}.'/'.$ds->{name}
+            .($role eq 'dra' ? ' [experimental]' : '')
+            .': '.$self->_amd_gpu_daemonset($api, $ds)."\n";
+    }
+}
+
+# Allocatable is the count: it is what the scheduler hands out. Capacity
+# stands beside it only, because the kubelet keeps it after a device plugin
+# unregisters (seen live 2026-10-31) -- capacity never says the plugin runs.
+sub _amd_gpu_count {
+    my ($self, $node) = @_;
+    my $allocatable = $self->_amd_gpu_quantity($node, 'allocatable') // 0;
+    my $capacity    = $self->_amd_gpu_quantity($node, 'capacity');
+    my $count = $allocatable.' allocatable';
+    return $count unless defined $capacity;
+    return $count.' (capacity '.$capacity.')' if $capacity eq $allocatable;
+    return $count.' (capacity '.$capacity.': stale after a device plugin unregisters,'
+        .' or unhealthy devices; only allocatable schedules)';
+}
+
+sub _amd_gpu_quantity {
+    my ($self, $node, $field) = @_;
+    my $resources = $self->_dig($node, 'status', $field);
+    return ref $resources eq 'HASH' ? $resources->{$AMD_GPU_RESOURCE} : undef;
+}
+
+# Both forms the host step writes: one target as the label's value, several
+# as one label per target (key plus ".<gfx>") valued with the count.
+sub _amd_gpu_gfx_targets {
+    my ($self, $node) = @_;
+    my $labels = $self->_node_labels($node);
+    my $key    = $OCP::Config::AMD_GPU_GFX_TARGET_LABEL;
+    my @targets = (
+        (defined $labels->{$key} && length $labels->{$key} ? $labels->{$key} : ()),
+        (map { $labels->{$_}.'x '.substr($_, length($key) + 1) }
+            sort grep { index($_, $key.'.') == 0 } keys %$labels),
+    );
+    return @targets ? join(', ', @targets) : 'not labelled';
+}
+
+# The node's override label wins, else gpu.amd.allocation; the line names
+# which. A label value OCP does not know is shown as it is and said to be
+# unknown -- what the stack's affinity terms make of it is theirs to decide.
+sub _amd_gpu_allocation {
+    my ($self, $node, $default) = @_;
+    my $label  = $OCP::Config::AMD_GPU_ALLOCATION_LABEL;
+    my $value  = $self->_node_labels($node)->{$label};
+    my $source = defined $value ? 'node label '.$label : 'cluster default gpu.amd.allocation';
+    $value //= $default;
+    return 'unknown (gpu.amd.allocation is invalid, see STDERR)' unless defined $value;
+
+    my @known = @OCP::Config::GPU_AMD_ALLOCATIONS;
+    return (length $value ? $value : "''")
+        .($value eq 'dra' ? ' [experimental]' : '')
+        .' ('.$source
+        .(grep({ $_ eq $value } @known) ? '' : '; not one of '.OCP::Choices::or_list(@known))
+        .')';
+}
+
+# gpu.amd.allocation, or undef when ocp.yaml holds a value OCP::Config
+# refuses. The reason goes to STDERR once and the report goes on: a read-only
+# command that died on a typo would hide everything else it can tell.
+sub _amd_gpu_default_allocation {
+    my ($self, $config) = @_;
+    my $allocation = eval { $config->gpu_amd_allocation };
+    return $allocation if defined $allocation;
+    (my $err = "$@") =~ s/ at .+? line \d+\.?\n*\z//s;
+    print STDERR 'WARNING: '.$err.'; AMD nodes without their own '
+        .$OCP::Config::AMD_GPU_ALLOCATION_LABEL." label show their allocation as unknown\n";
+    return undef;
+}
+
+# The header line, then one line per node. A 404 on the list means the
+# cluster does not serve resource.k8s.io/v1: a state, not a fault.
+sub _amd_gpu_slice_lines {
+    my ($self, $api) = @_;
+    my $head = 'AMD DRA ResourceSlices (driver '.$AMD_GPU_DRA_DRIVER.') [experimental]:';
+
+    my $list = eval { $api->list('ResourceSlice') };
+    if (my $err = $@) {
+        return $head." not served (this cluster's API has no resource.k8s.io/v1)" if $err =~ /\b404\b/;
+        $self->_amd_gpu_read_failed('ResourceSlices', $err);
+        return $head.' unknown (read failed, see STDERR)';
+    }
+
+    my $devices = $self->_amd_gpu_slice_devices($list->items);
+    return $head.' none published' unless %$devices;
+    return $head, map {
+        '  '.$_.': '.$devices->{$_}.($devices->{$_} == 1 ? ' device' : ' devices')
+    } sort keys %$devices;
+}
+
+# Devices per node over the slices of AMD's driver. A pool republishes under
+# a higher generation and only the newest one counts (the scheduler ignores
+# the rest), so a slice of the old generation still listed is not added.
+sub _amd_gpu_slice_devices {
+    my ($self, $slices) = @_;
+    my @ours = grep { ($self->_dig($_, qw(spec driver)) // '') eq $AMD_GPU_DRA_DRIVER } @$slices;
+
+    my %newest;
+    for my $slice (@ours) {
+        my $pool = $self->_dig($slice, qw(spec pool name)) // '';
+        my $gen  = $self->_dig($slice, qw(spec pool generation)) // 0;
+        $newest{$pool} = $gen if !defined $newest{$pool} || $gen > $newest{$pool};
+    }
+
+    my %devices;
+    for my $slice (@ours) {
+        my $pool = $self->_dig($slice, qw(spec pool name)) // '';
+        next if ($self->_dig($slice, qw(spec pool generation)) // 0) < $newest{$pool};
+        my $node = $self->_dig($slice, qw(spec nodeName)) // $pool;
+        my $list = $self->_dig($slice, qw(spec devices));
+        $devices{$node} += ref $list eq 'ARRAY' ? scalar @$list : 0;
+    }
+    return \%devices;
+}
+
+# ready/desired of one DaemonSet of %OCP::Drift::AMD_GPU_DAEMONSETS. The
+# stack exists only where an AMD card and gpu.enabled are, and gpu.amd picks
+# which of the four run: one that is not there is "not deployed", not a fault.
+sub _amd_gpu_daemonset {
+    my ($self, $api, $ds) = @_;
+    my $object = eval {
+        $api->get('DaemonSet', name => $ds->{name}, namespace => $ds->{namespace});
+    };
+    if (my $err = $@) {
+        return 'not deployed' if $err =~ /\b404\b/;
+        $self->_amd_gpu_read_failed('DaemonSet '.$ds->{namespace}.'/'.$ds->{name}, $err);
+        return 'unknown (read failed, see STDERR)';
+    }
+    return ($self->_dig($object, qw(status numberReady)) // 0).'/'
+        .($self->_dig($object, qw(status desiredNumberScheduled)) // 0).' ready';
+}
+
+sub _amd_gpu_read_failed {
+    my ($self, $what, $err) = @_;
+    my $reason = "$err";
+    chomp $reason;
+    print STDERR 'WARNING: Cannot read '.$what.': '.$reason."\n";
+}
+
+sub _node_labels {
+    my ($self, $node) = @_;
+    my $labels = $self->_dig($node, qw(metadata labels));
+    return ref $labels eq 'HASH' ? $labels : {};
+}
+
+# A field of a node, DaemonSet or ResourceSlice, whether the api handed over
+# IO::K8s objects or plain hashes -- the way OCP::Kubernetes reads nodes.
+sub _dig {
+    my ($self, $value, @path) = @_;
+    for my $part (@path) {
+        return undef unless defined $value;
+        if (ref $value eq 'HASH') {
+            $value = $value->{$part};
+        } elsif (Scalar::Util::blessed($value) && $value->can($part)) {
+            $value = $value->$part;
+        } else {
+            return undef;
+        }
+    }
+    return $value;
+}
+
 1;
 
 __END__
@@ -287,6 +497,36 @@ the C<.ocp/age.key> must be present for the live-status section to render.
 
 The command never modifies cluster state.  Drift entries that carry a
 C<remedy> are listed together with the count that C<ocp apply> would resolve.
+
+=head1 GPU SECTION
+
+NVIDIA nodes are listed with their C<nvidia.com/gpu> capacity.  Below them
+comes every AMD GPU node, i.e. a node with the marker label
+C<ocp.internal/amd-gpu.present=true> or an C<amd.com/gpu> resource:
+
+=over 4
+
+=item * C<amd.com/gpu> allocatable.  Capacity is shown beside it only: the
+kubelet keeps capacity after a device plugin unregisters, so capacity never
+says that the plugin runs.
+
+=item * its gfx target, from C<ocp.internal/amd-gpu.gfx-target> or, on a node
+with several targets, from one C<ocp.internal/amd-gpu.gfx-target.E<lt>gfxE<gt>>
+label per target with its count;
+
+=item * its effective allocation and where it comes from: the node label
+C<ocp.internal/amd-gpu.allocation> if set, else C<gpu.amd.allocation>.
+
+=back
+
+Then the devices per node in the ResourceSlices of driver C<gpu.amd.com>
+(C<resource.k8s.io/v1>), and ready/desired of the AMD DaemonSets named in
+C<%OCP::Drift::AMD_GPU_DAEMONSETS>.  DRA is marked C<[experimental]>.  A
+DaemonSet that does not exist is "not deployed", a cluster that does not
+serve C<resource.k8s.io/v1> says so; a read that fails shows "unknown" in the
+report and the API error on STDERR.  A cluster without an AMD node prints the
+section as before and reads none of these objects.  The AMD lines are in the
+text form only; C<--json> does not carry them yet.
 
 =head1 JSON OUTPUT
 

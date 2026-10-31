@@ -18,6 +18,16 @@ Revision history for OCP
       `amd_dra_driver` v1.0.1 and `amd_metrics_exporter` v1.5.3. Integrated
       AMD GPUs are only set up on nodes joined with `--gpu` or when
       `gpu.amd.integrated` is set.
+    - `ocp status` lists AMD GPU nodes in its GPU section: per node
+      `amd.com/gpu` allocatable (capacity only beside it: the kubelet keeps
+      it after a device plugin unregisters), the gfx target label(s) and the
+      effective allocation with its source (node label
+      `ocp.internal/amd-gpu.allocation` or `gpu.amd.allocation`); then the
+      devices per node in the ResourceSlices of driver `gpu.amd.com` and
+      ready/desired of the AMD DaemonSets, DRA marked experimental. A missing
+      DaemonSet reads "not deployed"; a failed read says "unknown" and puts
+      the API error on STDERR. Clusters without AMD nodes print the section
+      unchanged; `--json` does not carry the AMD lines yet.
     - Dependencies move to the releases of 2026-10-21, all from CPAN, so the
       image vendors nothing: cpanfile raises the floors to IO::K8s 1.111,
       Kubernetes::REST 1.110, Net::Async::Kubernetes 0.011, File::SOPS 0.005
