@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-10-31T05:55:04Z
+created: 2026-10-31T05:29:37Z
+id: 304
+priority: low
+started: 2026-10-31T05:55:04Z
+status: done
+tags:
+- destroy
+- safety
+title: ocp destroy with no nodes removes status.yaml, deployed.yaml and the encrypted
+  kubeconfig without asking
+updated: 2026-10-31T05:55:09Z
+---
+
+Found under k301 (2026-10-31). lib/OCP/Cmd/Destroy.pm (~line 517): when destroy finds no nodes, it prints "No nodes to destroy." and calls _cleanup_project_state, terminal or not and with no confirmation. That path came from k78 (state left behind after an out-of-band teardown). Since k301 the main path asks on a terminal or needs --force; this path removes the cluster's kubeconfig without either.
+
+Provisional call (mine, the maintainer may override): ask the same way, through the k301 `_confirmed` (terminal or --force), before the cleanup. The question names what will be removed. `--keep_status` stays as it is. Reason: an empty node list can be stale or a read failure while the cluster is alive, and the kubeconfig is the way in.
+
+Done = that, with tests for a terminal yes/no, a pipe, and --force, and k78's case still cleaned up with --force. Alternative, if the maintainer prefers: keep it unasked, but say on STDOUT exactly which files were removed.
+
+2026-10-31 05:41 Implemented (ocp-worker), binding run pending (loadguard). The no-nodes path in Destroy.pm now asks through OCP::Role::Cmd::Confirm (the k303 helper): terminal or --force, the question naming the files that would go (relative to the project dir), 'Aborted; nothing was removed.' + exit 1 on a no. Nothing to remove -> nothing asked, exit 0 (was: return undef, also exit 0). --keep_status unchanged: the question then names kubeconfig.yaml alone, and with no kubeconfig there is nothing to ask. _cleanup_project_state now removes exactly _project_state_files(), the list the question names, so they cannot drift. k78 tests: t/47 (the 3 k78 subtests + 2 keep-status ones) and t/107 'clean run keeps STDERR empty' all construct Destroy with force => 1 already, so they need no change and keep their claim (k78's out-of-band case is cleaned up with --force). t/74 calls _report_mislabelled_servers directly and is unaffected. xt/smoke.sh only runs destroy --force.
+
+2026-10-31 05:53 Done (ocp-worker), not committed; builds on k303's OCP::Role::Cmd::Confirm, so commit after k303. Destroy.pm no-nodes path: 'No nodes to destroy.' on STDOUT as before. Then, unless --force, STDERR asks "Remove the local state of cluster 'NAME' (.ocp/status.yaml, .ocp/deployed.yaml, kubeconfig.yaml)? [y/N] ", listing only the files that exist. Without a terminal it says "No terminal to confirm on: removing the local state of cluster 'NAME' (...) needs a person at a terminal, or --force." A no or a refusal prints "Aborted; nothing was removed." and exits 1 with every file kept. --keep_status is unchanged: the list is then kubeconfig.yaml alone. Nothing to remove means nothing is asked, exit 0. _cleanup_project_state removes exactly _project_state_files(), the list the question names. POD updated (description + =opt force). k78 tests: t/47 (3 k78 subtests + 2 keep-status) and t/107 already use force => 1, so they are unchanged and still pass; mutants m5 (force ignored) and m6 (keep_status ignored) turn t/47 red, so it still holds the k78 claim under --force. New t/304: piped y, real -t check, closed STDIN, tty y/YES/n/other/EOF, --force, --keep_status (y/n/pipe/--force), nothing to remove. All 11 subtests fail on HEAD. In two of them (--force, nothing to remove) the only failing check is the return value, undef vs explicit 0, which is the same exit code. Mutants killed: force ignored, keep_status ignored, asking with nothing to remove, path left unasked. Binding make test PASS (see k303). Changes: bullet added.
+
+2026-10-31 05:55 Committed as 494ab7d
