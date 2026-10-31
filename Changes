@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - OCP no longer re-quotes the SOPS lastmodified timestamp itself; File::SOPS
+      0.003+ does it on every write. Files written by the File::SOPS 0.002 that
+      older images shipped still open, and are written quoted on their next
+      rewrite.
     - Host-side AMD GPU support: the Rexfile detects AMD GPUs and installs the
       amdgpu driver through Rex::GPU::AMD under `gpu.driver: host`, and
       registers AMD nodes with `ocp.internal/amd-gpu.present` and gfx-target

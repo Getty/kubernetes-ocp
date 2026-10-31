@@ -674,7 +674,6 @@ sub rotate_sops_files {
             recipients => $want,
             format     => 'yaml',
         );
-        $file->spew($self->ocp->quote_sops_lastmodified($file->slurp));
         push @done, $file->basename;
     }
     return @done;
@@ -781,7 +780,7 @@ sub create_secrets {
         format     => 'yaml',
     );
 
-    $self->secrets_file->spew($self->ocp->quote_sops_lastmodified($encrypted));
+    $self->secrets_file->spew($encrypted);
     return 1;
 }
 
@@ -907,7 +906,7 @@ sub save_kubeconfig {
         format     => 'yaml',
     );
 
-    $self->kubeconfig_file->spew($self->ocp->quote_sops_lastmodified($encrypted));
+    $self->kubeconfig_file->spew($encrypted);
     return 1;
 }
 
@@ -964,7 +963,7 @@ sub encrypt_file {
         format     => 'yaml',
     );
 
-    $file_path->spew($self->ocp->quote_sops_lastmodified($encrypted));
+    $file_path->spew($encrypted);
 
     return 1;
 }

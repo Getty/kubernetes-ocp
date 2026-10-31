@@ -475,8 +475,10 @@ sub _inner_decrypt {
 sub _double_encrypt {
     my ($self, $plaintext, $password) = @_;
 
-    # Layer 1: Password-based encryption (AES-256-GCM via Crypt::Age password mode)
-    # We'll use a simple password-based encryption with salt
+    # Layer 1: the PIN2 layer, OCP's own -- Crypt::Age has no passphrase mode.
+    # PBKDF2-HMAC-SHA256 (100_000 rounds) over a random 16-byte salt derives
+    # the AES-256-GCM key (_derive_key, _aes_encrypt); the salt goes in front
+    # of nonce . ciphertext . tag, and the whole is base64.
     my $salt = _random_bytes(16);
     my $key = _derive_key($password, $salt);
     my $encrypted_pw = _aes_encrypt($plaintext, $key);
@@ -610,7 +612,7 @@ sub _write_keys_file_encrypted {
         format     => 'yaml',
     );
 
-    $self->keys_file->spew($self->ocp->quote_sops_lastmodified($encrypted));
+    $self->keys_file->spew($encrypted);
     return 1;
 }
 
