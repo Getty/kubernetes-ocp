@@ -1,0 +1,34 @@
+---
+class: standard
+completed: 2026-10-31T17:22:51Z
+created: 2026-10-31T15:06:09Z
+id: 384
+priority: medium
+started: 2026-10-31T17:22:51Z
+status: done
+tags:
+- status
+- ux
+- bug
+title: An unreachable cluster API ends ocp status, node ls, health and provider ls
+  in 'This is an internal error'
+updated: 2026-10-31T17:22:51Z
+---
+
+From k370 (secrets worker, 2026-10-31), seen while running the read-only commands through bin/ocp on a clone. When the Kubernetes API cannot be reached, ocp status, ocp node ls, ocp health and ocp provider ls end with an error that carries a Perl source location, so OCP.pm labels it "This is an internal error. Run again with --verbose". An unreachable API is the most ordinary operational failure there is.
+
+Done = each of the four says, on STDERR, that the cluster API at <server from the kubeconfig> could not be reached and why (the transport reason, one line, OCP::ErrorLine), exits non-zero, and no "internal error" line. ocp status keeps what it can show from ocp.yaml and the local state on STDOUT (its POD: shows what it can). Test per command with a kubeconfig pointing at a closed local port, red first, then a mutation check.
+
+Lanes: ocp-status-worker for status (and health if it is status-shaped); node ls / provider ls are ocp-worker unless a lane claims them. Related: k379 (accessor croaks), k375 (wrong PIN1).
+
+2026-10-31 15:16 Cause (status worker): Kubernetes::REST 1.110 returns an unanswered API as status 599 (APIError code 599, body = LWP text with its own ' at .../LWP/Protocol/http.pm line N.'). node ls / provider ls / health let it die -> OCP.pm 'internal error'; node ls / provider ls also carp a discovery-fallback warning with a location first (list('OCPNode') misses the built-in map and forces discovery). status catches it but prints the raw text with locations. Plan: one shared helper in OCP::Role::Cmd -- reach_cluster_api (GET /version probe, dies with one line on 599) for the three commands that build their client, cluster_api_unreachable (classifies a caught 599) for status. Red run on queued22 in progress.
+
+2026-10-31 15:22 Red on queued22 (t/384, bin/ocp against a bound-but-not-listening 127.0.0.1 port): 7 of 7 subtests fail. status: 'WARNING: Cannot connect to cluster API / Error: Kubernetes API error (list Node): 599 Can't connect ... at .../LWP/Protocol/http.pm line 49. at .../OCP/Kubernetes.pm line 161.' (JSON error the same). node ls / provider ls: discovery-fallback carp with a location, then 'Error: ... 599 ...' + 'This is an internal error'. health: 'Error: ... (list Pod): 599 ...' + internal error; health --json error field carries both locations. Fix written; green and mutation runs next.
+
+2026-10-31 15:39 Sites and fixes (patch against queued22). Shared: lib/OCP/Role/Cmd.pm gains reach_cluster_api($api) (one GET /version; status 599 dies with 'The cluster API at <server->endpoint> could not be reached: <OCP::ErrorLine::one_line of LWP's text>' + newline, a user error; any answer 401/403/404/500 returns the client) and cluster_api_unreachable($client, $err) (same line for a caught APIError code 599, nothing otherwise; the client is asked of an OCP::Kubernetes only for a 599 so a died build is not re-run). ocp status (lib/OCP/Cmd/Status.pm, mine): text and --json list_nodes failure -> 'ERROR: <line>' on STDERR, line as JSON error; report from ocp.yaml/local state stays on STDOUT, exit 1; non-599 keeps the old WARNING/Error. Cross-lane, one call each: ocp node ls (lib/OCP/Cmd/Node/Ls.pm _k8s) and ocp provider ls (lib/OCP/Cmd/Provider/Ls.pm _k8s) probe before OCP::K8s->register and the first list, so the discovery-fallback carp never fires on an unreachable API; ocp health (lib/OCP/Cmd/Health.pm _api) probes after building the client. t/370 (k370's test): status assertion matched the old wording 'Cannot connect to cluster API', now matches the server 127.0.0.1:9 - same claim, new wording. OCP.pm _clean_message untouched; none of the forbidden files touched. Green: 25 files / 514 tests PASS earlier, t/384 re-run green after tightening one unit check (55 tests incl. t/00-load). Mutation bundle (12 mutants + control) re-running.
+
+2026-10-31 15:43 Done: patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-status384/k384.patch (git diff against queued22 with header: subject, description, Changes bullet; no Changes hunk). Sites as in the previous note: shared helper in OCP::Role::Cmd (reach_cluster_api, cluster_api_unreachable); Status.pm text + --json; cross-lane one-line probes in Node/Ls.pm, Provider/Ls.pm, Health.pm; t/370 wording. New test t/384-api-unreachable.t. Runs (make test, image localhost/ocp-w384): red on queued22 - t/384 7/7 bin/ocp subtests fail (status raw 599 text with LWP + OCP::Kubernetes locations; node ls/provider ls discovery carp + internal error; health internal error; health --json both locations). Green - 25 files/514 tests PASS (t/00-load, t/384, t/370, t/257, t/230-*-json, t/18, t/19, t/11, t/23, t/26, t/95 and others), t/384 re-run PASS after one unit check was made an assertion instead of a crash. Mutation - 12 mutants + control in one bundle, Rex loaded first, %INC asserted on the mutant lib: control and t/00-load pass, M1-M12 each killed by failed t/384 assertions (no harness or crash kills). Also found (not fixed): non-599 API errors (401/403/500) still end in 'internal error' for node ls/provider ls/health, and status's non-599 branch still prints raw text with locations; ocp node ls --json prints nothing on STDOUT on failure while status/health print a JSON error object; the probe costs one GET /version per run of node ls/provider ls/health; other commands that build clients the same way (Node::TrustHost, Node::Add, Machines, Destroy (k353), Apply _k8s_api, SSH.pm) are not covered; the discovery-fallback carp from Kubernetes::REST carries a location whenever discovery fails mid-run. The patch's t/370 hunk needs k370's queued commit; the rest applies on main 682e86a.
+
+Reviewed by main: reach_cluster_api / cluster_api_unreachable in OCP::Role::Cmd use only documented Kubernetes::REST 1.110 API (=attr io, =method prepare_request, =attr server, Server =attr endpoint, the 599 contract). Only a 599 counts as unreachable. The extra GET /version per node ls / provider ls / health run is accepted (cheap; it is what keeps the discovery warning with a location from printing first). Applies on head10 -> head11. Queued for the next batch; k375 told to rebase onto head11. Findings -> new cards.
+
+Committed as d699b27
