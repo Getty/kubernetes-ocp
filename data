@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-10-31T02:18:44Z
+created: 2026-10-31T01:45:40Z
+id: 258
+priority: medium
+started: 2026-10-31T02:18:44Z
+status: done
+tags:
+- gpu
+- amd
+- status
+- json
+title: 'ocp status --json: carry the AMD GPU section'
+updated: 2026-10-31T02:18:44Z
+---
+
+Follow-up to k252. The text form of `ocp status` shows the AMD GPU nodes (allocatable/capacity, gfx targets, effective allocation and its source), the ResourceSlices of driver gpu.amd.com, and the AMD DaemonSets. `--json` (a machine interface, see k230) does not carry them yet.
+
+Shape (main agent's call): extend the existing GPU part of the JSON object in the style of the NVIDIA keys. Per AMD node: name, allocatable, capacity, gfx_targets (list), allocation, allocation_source (node-label|config). Then resource_slices per node (device count), and daemonsets keyed like %OCP::Drift::AMD_GPU_DAEMONSETS with namespace, name, ready, desired and state (ready|partial|not-deployed|unknown). Keep it canonical with sorted keys. Clusters without AMD nodes must produce byte-identical output.
+
+Also consolidate the constants: `amd.com/gpu` and `gpu.amd.com` are local to Status.pm. If k251 also needs them, move them to OCP::Config next to $AMD_GPU_PRESENT_LABEL (state lane), so there is no second copy. Lane: ocp-status-worker (+ state for the constants).
+
+2026-10-31 02:12 Shape decision (ocp-status-worker; card asked to say why if nesting differs): the JSON has no GPU object to extend. The only GPU key is nodes[].gpu, the per-node nvidia.com/gpu capacity. The AMD part has cluster-level pieces (slices, DaemonSets) that cannot live in a node entry, and the card's per-node entries carry their own name. So it is one top-level 'amd_gpu' object { nodes[], resource_slices, daemonsets }, present only when the cluster has an AMD node (same test as the text form). nodes[].gpu stays the NVIDIA count. Choices made here, not by the maintainer: allocatable defaults to 0 and capacity to null when absent (the text form treats them the same way). gfx_targets is the sorted, unique target names; per-target counts are not carried (the text form shows them). resource_slices is {state: served|not-served|unknown, devices: {node: n}}; the state wrapper exists because the card's rule wants state 'unknown' on a read error. devices is {} when not served and null when unknown. DaemonSet state 'ready' includes 0 of 0. ready and desired are null unless the DaemonSet was read.
+Constants: lib/OCP/Config.pm is unchanged (git diff empty), so I kept the local copies in Status.pm and did not touch Config. k251's lib/OCP/Cmd/Apply/AMDGPU.pm now holds a second local copy (amd.com/gpu, gpu.amd.com, plus amd.com/), and its comment says 'k258 moves both onto shared variables in OCP::Config'. k258 did not do that, so the consolidation is still open, for the state lane.
+
+2026-10-31 02:12 Done: lib/OCP/Cmd/Status.pm. _collect_json adds amd_gpu via the new _amd_gpu_json. The text helpers became formatters over shared data helpers (_amd_gpu_gfx_target_labels, _amd_gpu_effective_allocation, _amd_gpu_slices, _amd_gpu_daemonset_status), so text and JSON read the cluster through the same code and STDERR reports a failed read in the same order. Read errors: JSON stays on STDOUT, the diagnosis goes to STDERR, state is unknown, exit code unchanged. The POD (GPU SECTION, JSON OUTPUT) and the _execute_json comment are updated. New t/258-status-json-amd-gpu.t: the no-AMD object pinned to the byte against the pre-k258 shape; amd_gpu pinned to the byte (numbers as numbers, nulls); the node-label vs config source; sorted, deduped gfx; slice generations and other drivers; every DaemonSet state; invalid config; slices 404/403; second run byte-identical. Verified: DOCKER_BUILDKIT=0 make test TESTS='t/00-load.t t/11-status-command.t t/230-status-json.t t/252-status-amd-gpu.t t/257-status-text-stderr.t t/258-status-json-amd-gpu.t' → 6 files, 160 tests, PASS. t/258 against the k257-only Status.pm: 8+ asserts red, and the no-AMD byte pin passes there. Mutation check: 20 of 21 killed. One equivalent mutant survives (dropping the +0 on ready, which the >= comparison numifies again); stringifying ready after the comparison is killed.
+
+2026-10-31 02:12 Correction to the handoff count: there were 20 valid mutants, not 21. 19 were killed and 1 equivalent survived. One mutant from the first batch was a syntax error in my own substitution, so I did not count it; it was rerun correctly as the extra-key mutant, which was killed.
+
+2026-10-31 02:18 Committed as fc315f4; git diff HEAD on Status.pm is empty afterwards. Verified on that commit alone (host prove -l): t/257, t/258, t/11, t/230, t/252, t/00-load, 6 files, 160 tests, PASS. Moving the constants into OCP::Config is split off as k263.
