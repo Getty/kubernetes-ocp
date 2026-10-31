@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T06:37:56Z
+created: 2026-10-31T04:12:47Z
+id: 291
+priority: medium
+started: 2026-10-31T06:37:56Z
+status: done
+tags:
+- drift
+- crd
+title: 'Drift: an OCPNode/OCPNodeProvider CRD older than the image is not reported'
+updated: 2026-10-31T06:37:56Z
+---
+
+Found live on amdlab, 2026-10-31 (k290). The cluster's ocpnodes.ocp.internal CRD came from an older OCP and had no spec.nodeIP; `ocp apply --dry-run` and the real run's drift check both said "No drift detected". Only the later "Checking node CRs" step re-applied it, silently. Meanwhile `ocp node add --node_ip` against that CRD lost the field (k290).
+
+Done = OCP::Drift (or the apply pre-check) compares the live CRD schemas of OCP's own CRDs with share/robocop/crds/*.yaml (at least: which spec/status properties the image knows that the cluster does not) and reports a difference as drift with remedy `ocp apply`; `ocp status` shows it; a newer live schema than the image (downgrade) is reported, not "fixed"; tests for both directions.
+
+From k290 (2026-10-31), two small items for the same lane: (1) OCP::Cmd::Apply::CR::ensure_crds returns silently when the CRD directory (share/robocop/crds) is missing, so a packaging error would install no CRD and say nothing. It should die with the path. (2) The OCP::Node POD for spec.nodeIP/status.nodeIP could add one sentence: an OCPNode CRD from before k254 drops both fields without an error, and OCP::Node only ever sees the stored CR (`ocp node add --node_ip` refuses that case since k290).
+
+2026-10-31 05:28 Reproduced (t/291-ocp-crd-drift.t, subtest 'k291 reproduced'): OCP::Drift->detect against a fake cluster serving the pre-k254 ocpnodes.ocp.internal (no spec/status.nodeIP) returns no entry naming the CRD. Plan: ocp_crd_drift in OCP::Drift comparing property paths under spec/status (per version, recursive through properties and items) of share/robocop/crds with the live CRDs; one CRD reader shared with gpu_crd_drift (404 = absent, else _unknown_drift). Image-only fields = version entry, self_healing (node CR step re-applies). Cluster-only fields = CRD newer than this ocp: report-only with manual_step, and ensure_crds leaves it as it is ([skip]) instead of taking the newer schema back -- otherwise a real apply would 'fix' it and the dry run's 'report only, a real run leaves it as it is' would be false. Absent (404) = missing, self_healing; any other failure = error entry.
+
+2026-10-31 05:57 Implemented: OCP::Drift ocp_crd_drift (+ crd_schema_diff, crd_property_paths, shipped_ocp_crds, shared _read_crd also used by gpu_crd_drift) hooked into detect; ensure_crds dies naming the missing dir, reads each CRD first (crd_get: 404 = absent, else dies with cause) and [skip]s one newer than this ocp; POD in Drift, Apply::CR, Node. t/291 green in Docker. Found: t/38 hangs in the shared work tree with my patch reversed, passes in 4s on a clean HEAD export -- another worker's in-flight change, not k291. Running the full suite on HEAD+my patch in isolation now.
+
+2026-10-31 06:34 Done, ready for review (not committed). OCP::Drift::ocp_crd_drift (in detect, API only) compares the property paths under spec/status of share/robocop/crds with the cluster's OCPNode/OCPNodeProvider CRDs. Cluster lacks paths: kind version, self_healing ('... lacks spec.nodeIP, status.nodeIP, which this ocp declares, and the API server drops what it does not declare; ocp apply updates it'). Cluster declares extra paths (downgrade): report-only, manual_step 'Run ocp apply with the ocp that installed it ...'; ensure_crds now [skip]s such a CRD instead of writing it back. 404: missing, self_healing. Other failure, or shipped CRDs unreadable: error entry with cause, carped once (k269). gpu_crd_drift shares the reader (_read_crd). ensure_crds dies naming share/.../robocop/crds when missing, and dies with the cause on an unreadable CRD (crd_get). POD: Drift (ocp_crd_drift, crd_schema_diff, crd_property_paths, shipped_ocp_crds), Apply::CR DESCRIPTION, OCP::Node node-ip sentence. Tests: new t/291 (20 subtests); t/20 and t/25 fakes now answer the CRD GET (404 / the shipped CRDs). Verified: make test full suite PASS on the work tree (223 files, 3540 tests); HEAD+this patch alone also full-suite clean apart from the t/20/t/25 fakes since fixed; 11 mutants on a scratch copy all red in t/291 (one survivor found and killed with a new subtest). t/38 hang in the shared tree was the GPU-wait worker's k287 NFD wait (reproduced on HEAD+their four lib files only; they have since stubbed wait_seconds in t/38); HEAD+this patch passes t/38 in 5s. Found, for other boards/lanes: (1) DeployRobocop::_apply_manifests writes the CRDs via ensure(), unguarded -- it would take a newer CRD back (apply lane). (2) ocp status's 'N of M can be reconciled automatically' and JSON fixable ignore self_healing entries (status lane, pre-existing). (3) Trap: once OCP drops a field from its CRDs, every cluster reads as newer. k278: easier -- an unreadable CRD is now also a counted error entry in the drift step; the node CR step's new failure causes (CRD read, missing dir) still land in k278's uncounted [WARN] until k278 is fixed.
+
+Committed as 53fce56
