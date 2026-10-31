@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T04:42:09Z
+created: 2026-10-31T02:15:09Z
+id: 263
+priority: low
+started: 2026-10-31T04:42:09Z
+status: done
+tags:
+- amd
+- gpu
+- config
+title: AMD GPU names as shared variables in OCP::Config (k258 remainder)
+updated: 2026-10-31T04:42:09Z
+---
+
+k258 asked to consolidate the AMD names into OCP::Config; that file is the state lane, so k258 (status) and k251 (apply) each kept a local copy: `amd.com/gpu`, `amd.com/` (mixed-naming prefix) and `gpu.amd.com` (DRA driver name on ResourceSlices) in lib/OCP/Cmd/Status.pm and lib/OCP/Cmd/Apply/AMDGPU.pm (both comments point at each other / at this move).
+
+Done when: OCP::Config carries them next to AMD_GPU_PRESENT_LABEL / AMD_GPU_ALLOCATION_LABEL, and both modules read them from there (no local copies left, grep clean). Lanes: ocp-state-worker for Config, then status + apply switch their reads (small, can be one follow-up each or one ocp-worker pass).
+
+Also fix two AMD comments the code overtook (k244 finding): lib/OCP/Versions.pm amd_dra_driver comment says the DRA init container runs the driver image — the lib writes busybox:1.36 (rex-rancher k108); lib/OCP/Cmd/Apply/AMDGPU.pm POD says "0.004 and 0.005 have none" of the AMD functions — 0.005 is the unreleased branch that has them, so say "a Rex::Rancher without the AMD functions (0.004, the released one)".
+
+2026-10-31 04:38 Done (ocp-worker). lib/OCP/Config.pm: $AMD_GPU_RESOURCE ('amd.com/gpu'), $AMD_GPU_RESOURCE_PREFIX ('amd.com/'), $AMD_GPU_DRA_DRIVER ('gpu.amd.com') beside the AMD_GPU_*_LABEL variables, with a comment saying what each is. lib/OCP/Cmd/Status.pm and lib/OCP/Cmd/Apply/AMDGPU.pm: local copies and their 'k258 moves this' comments removed, every use reads $OCP::Config::... (the local $AMD_GPU_PREFIX is now $OCP::Config::AMD_GPU_RESOURCE_PREFIX). grep -rnE "['\"](amd\.com/gpu|amd\.com/|gpu\.amd\.com)['\"]" lib/ bin/ -> only the three Config.pm lines. No user-visible text changes. Comments: Versions.pm amd_dra_driver now says the pin is the plugin image only and the init container runs upstream's docker.io/busybox:1.36, written by Rex::Rancher with no option (rex-rancher k108; checked on its worktree-k95-amd-gpu branch, K8s.pm ~1487); AMDGPU.pm POD 'without the AMD functions (0.004, the released one)'. Test t/263-amd-names-shared.t (5 subtests: names in Config, no literal in either reader's code, both read them at run time via local overrides -- status _amd_gpu_quantity/_amd_gpu_slice_devices, apply not_ready for device_plugin single/mixed and dra), red before (5/5). Mutants 5/5 killed. Final Docker make test over 54 files (all three cards' tests plus status/AMD/apply/config ones): 1292 tests, PASS.
+
+Committed as 296b008
