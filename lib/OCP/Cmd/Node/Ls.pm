@@ -43,7 +43,8 @@ sub _k8s {
     my $api = Kubernetes::REST::Kubeconfig->new(
         kubeconfig_path => $kc_fh->filename,
     )->api;
-    # An API that does not answer is said here, in one line (k384).
+    # An API that does not answer, or answers /version with an error, is
+    # said here, in one line (k384, k387).
     $self->reach_cluster_api($api);
 
     OCP::K8s->register($api);
@@ -57,7 +58,8 @@ sub execute {
     my $api = $self->_k8s;
     my $ns  = 'ocp-system';
 
-    my $list = $api->list('OCPNode', namespace => $ns);
+    # An error the API answers with is one line naming the server (k387).
+    my $list = $self->cluster_api_call($api, sub { $api->list('OCPNode', namespace => $ns) });
     my @nodes = map { $api->k8s->object_to_struct($_) } @{ $list->items // [] };
 
     if ($self->json) {
@@ -111,7 +113,7 @@ sub _execute_json {
     my ($self, $api, $ocpnodes, $pool_of) = @_;
     $pool_of //= {};
 
-    my $nlist = $api->list('Node');
+    my $nlist = $self->cluster_api_call($api, sub { $api->list('Node') });
     my %k8s_node;
     for my $item (@{ $nlist->items // [] }) {
         my $n = $api->k8s->object_to_struct($item);

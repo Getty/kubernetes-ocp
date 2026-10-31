@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status`, `ocp node ls`, `ocp health` and `ocp provider ls` say
+      in one line, naming the server, the status and the API's message,
+      when the cluster API answers with an error -- a 401 for credentials it
+      does not know, a 403 for RBAC that denies the call, a 500 for an API
+      server in trouble -- instead of the client's error with a Perl source
+      location, which `node ls`, `health` and `provider ls` labelled "This
+      is an internal error".
     - A `network:`, `cilium:`, `registry:` or `ssl:` in `ocp.yaml` that is
       no mapping, or a `registry:`/`ssl:` key that is a list, a mapping or a
       boolean, is now refused as a line naming the key -- by `ocp apply`

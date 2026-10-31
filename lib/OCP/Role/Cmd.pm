@@ -211,47 +211,79 @@ sub provider_cr {
         $self->provider_choices(@providers), hint => $type_hint);
 }
 
-# k384: the API server the kubeconfig names does not answer -- the connect is
-# refused, there is no route, the TLS handshake fails, the request times out.
-# Kubernetes::REST returns that as status 599 (its "Error contract"); a call
-# dies with an APIError of code 599 whose body is LWP's text. That text has
-# LWP's own " at FILE line N." in it and the APIError adds the caller's, so
-# where it reached OCP.pm it read "This is an internal error". Before it, the
-# first lookup of an OCP Kind (OCPNode, OCPNodeProvider) warned that discovery
-# had failed, with a location of its own. An API that does not answer is the
-# most ordinary failure there is: one line, naming the server and the reason.
+# k384, k387: what became of a request to the API server the kubeconfig
+# names, as one line naming that server. Kubernetes::REST dies with an
+# APIError: for an answer of 400 and up, and with code 599 for no answer at
+# all (its "Error contract"). Its text carries the caller's source location,
+# and a 599's body LWP's own as well, so where it reached OCP.pm it read "This
+# is an internal error". By the code:
+#   599       no answer (refused, no route, TLS, a timeout): "could not be
+#             reached", and the first line of the transport reason. LWP says
+#             it there whole; the lines after it say it again, with LWP's
+#             own location ("Connection refused" twice, k387).
+#   401       "refused the credentials in the kubeconfig": a token or a client
+#             certificate it does not know, or no longer.
+#   403       "denied the request": the credentials are good, RBAC says no.
+#   500-598   "failed": the API server could not do it.
+#   any other "answered" -- a 404 too: an answer, never "could not be
+#             reached", and nothing here makes it "absent".
+# Behind the words the status, with the reason of a Kubernetes Status body in
+# words ("403 Forbidden", "500 Internal Error"), then the API's message, unless
+# it only repeats that reason (a 401 says "Unauthorized" twice). A body that
+# is no Status object (a proxy's page, Go's "404 page not found") is the
+# message, as one line; no body, no message.
 #
-# Only a 599 means "could not be reached". Any answer from the API server --
-# 401, 403, 404, 500 -- means it was reached, and the caller reads that one.
-#
-# $client is read only for a 599, which only a built client can give: the
-# client itself, or the OCP::Kubernetes that holds it (ocp status). Asking
-# an OCP::Kubernetes for its client earlier would run its builder again when
-# the build was what died.
-sub cluster_api_unreachable {
+# $client is read only for an APIError, which only a built client can give:
+# the client itself, or the OCP::Kubernetes that holds it (ocp status).
+# Asking an OCP::Kubernetes for its client earlier would run its builder
+# again when the build was what died.
+sub cluster_api_error {
     my ($self, $client, $err) = @_;
     return unless Scalar::Util::blessed($err)
-        && $err->isa('Kubernetes::REST::APIError') && $err->code == 599;
-    my $api = $client->can('server') ? $client : $client->api;
-    return $self->_cluster_api_unreachable($api, $err->body);
+        && $err->isa('Kubernetes::REST::APIError');
+    my $api  = $client->can('server') ? $client : $client->api;
+    my $at   = 'The cluster API at '.$api->server->endpoint;
+    my $code = $err->code;
+    if ($code == 599) {
+        my ($why) = $err->body =~ /^(.*\S.*)$/m;
+        return "$at could not be reached: ".OCP::ErrorLine::one_line($why);
+    }
+    my $what = $code == 401 ? 'refused the credentials in the kubeconfig'
+             : $code == 403 ? 'denied the request'
+             : $code >= 500 ? 'failed'
+             :                'answered';
+    (my $reason = $err->reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    my $message = OCP::ErrorLine::one_line($err->message // $err->body, empty => '');
+    $message = '' if lc $message eq lc $reason;
+    return "$at $what (".join(' ', $code, length $reason ? $reason : ())
+        .')'.(length $message ? ": $message" : '');
+}
+
+# $call (a sub that talks to the API through $client) and its result; an
+# APIError it dies with dies again as the line above (a user error), anything
+# else as it came.
+sub cluster_api_call {
+    my ($self, $client, $call) = @_;
+    my $result;
+    return $result if eval { $result = $call->(); 1 };
+    my $err  = $@;
+    my $line = $self->cluster_api_error($client, $err);
+    die defined $line ? "$line\n" : $err;
 }
 
 # One GET /version, before the first call of a command that built its client
-# from the kubeconfig, so an API that does not answer is said before anything
-# else is asked of it (the discovery warning included). Any answer is enough:
-# the server answers /version even to a token it refuses.
+# from the kubeconfig. Every client may read /version, one without credentials
+# too, so whatever error comes back here -- no answer, an expired token's 401
+# -- is what every call after it would get: it ends the command now, in one
+# line, before Kubernetes::REST's discovery for an OCP Kind could warn about
+# it with a source location of its own.
 sub reach_cluster_api {
     my ($self, $api) = @_;
-    my $res = $api->io->call($api->prepare_request('GET', '/version'));
-    die $self->_cluster_api_unreachable($api, $res->content)."\n"
-        if $res->status == 599;
+    $self->cluster_api_call($api, sub {
+        $api->check_response(
+            $api->io->call($api->prepare_request('GET', '/version')), 'GET /version');
+    });
     return $api;
-}
-
-sub _cluster_api_unreachable {
-    my ($self, $api, $why) = @_;
-    return 'The cluster API at '.$api->server->endpoint.' could not be reached: '
-        .OCP::ErrorLine::one_line($why);
 }
 
 # Which private key reaches this cluster's machines — see OCP::ClusterKey for
@@ -750,32 +782,78 @@ provider names and provider types are separate namespaces and may collide.
     my $api = Kubernetes::REST::Kubeconfig->new(kubeconfig_path => $kc)->api;
     $self->reach_cluster_api($api);
 
-Sends one C<GET /version> through the client.  When the API server the
-kubeconfig names does not answer (the connect is refused, there is no route,
-TLS fails, the request times out: a transport failure, status C<599> in
-L<Kubernetes::REST>), it dies with one line and no Perl source location:
+Sends one C<GET /version> through the client and returns C<$api> when it is
+answered.  When it is not -- the API server the kubeconfig names does not
+answer (a transport failure, status C<599> in L<Kubernetes::REST>), or answers
+with an error status -- it dies with the line of L</cluster_api_error>, a user
+error without a Perl source location:
 
-    The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused) ...
+    The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
+    The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)
 
-Any answer from the API server, an error status included, counts as reached;
-it returns C<$api>.  For a command that builds its client from the
-kubeconfig, before its first call: C<ocp node ls>, C<ocp provider ls>,
-C<ocp health> (k384).
+Every client may read C</version>, so an error there is the one every later
+call would get.  For a command that builds its client from the kubeconfig,
+before its first call: C<ocp node ls>, C<ocp provider ls>, C<ocp health>
+(k384, k387).
 
-=method cluster_api_unreachable
+=method cluster_api_call
+
+    my $list = $self->cluster_api_call($api, sub { $api->list('OCPNode', namespace => $ns) });
+
+Runs the sub and returns its result.  A L<Kubernetes::REST::APIError> it dies
+with dies again as the line of L</cluster_api_error> (a user error); anything
+else dies as it came.  Used by C<ocp node ls> and C<ocp provider ls> around
+their calls (k387).
+
+=method cluster_api_error
 
     my $nodes = eval { $k8s->list_nodes };
-    if (my $line = $self->cluster_api_unreachable($k8s, $@)) {
+    if (my $line = $self->cluster_api_error($k8s, $@)) {
         print STDERR "ERROR: $line\n";
     }
 
-The same line, for an error a call already caught: when C<$err> is a
-L<Kubernetes::REST::APIError> of code C<599>, the line naming the server
-(C<< ->server->endpoint >> of the client) and the transport reason, made one
-line by L<OCP::ErrorLine/one_line>.  The client is a L<Kubernetes::REST>, or
-an L<OCP::Kubernetes> holding one.  For anything else it returns nothing and
-does not touch the client, so a client whose build died is not built again.
-Used by C<ocp status> (k384).
+For an error a call already caught: when C<$err> is a
+L<Kubernetes::REST::APIError>, one line naming the server
+(C<< ->server->endpoint >> of the client), what became of the request, and
+why.  The client is a L<Kubernetes::REST>, or an L<OCP::Kubernetes> holding
+one.
+
+=over
+
+=item 599, no answer
+
+C<could not be reached:> and the first line of the transport reason.
+
+=item 401
+
+C<refused the credentials in the kubeconfig>: a token or client certificate
+the API server does not know, or no longer.
+
+=item 403
+
+C<denied the request>: the credentials are good, RBAC says no.
+
+=item 500 and up
+
+C<failed>.
+
+=item any other status
+
+C<answered>; a C<404> too, which is an answer, never "could not be reached".
+
+=back
+
+Behind the words, for an answer: the status in brackets, with the C<reason>
+of a Kubernetes C<Status> body in words (C<403 Forbidden>, C<500 Internal
+Error>), then the API's C<message> -- or the body, when it is no C<Status>
+object -- as one line by L<OCP::ErrorLine/one_line>, left out when it only
+repeats the reason:
+
+    The cluster API at https://10.0.0.1:6443 denied the request (403 Forbidden): nodes is forbidden: User "dev" cannot list resource "nodes" ...
+
+For anything that is no APIError it returns nothing and does not touch the
+client, so a client whose build died is not built again.  Used by
+C<ocp status> and C<ocp health> (k384, k387).
 
 =method wait_seconds
 

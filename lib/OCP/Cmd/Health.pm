@@ -51,7 +51,8 @@ sub _api {
     die OCP::Secrets->no_kubeconfig_refusal
         unless $kc;
 
-    # An API that does not answer is said here, in one line (k384).
+    # An API that does not answer, or answers /version with an error, is
+    # said here, in one line (k384, k387).
     my $api = OCP::Kubernetes->new(kubeconfig => $kc)->api;
     $self->reach_cluster_api($api);
     return $self->api($api);
@@ -71,6 +72,9 @@ sub execute {
     my $health = eval { $self->_health($self->_api) };
     unless ($health) {
         my $error = $@ || 'Unknown error';
+        # An error the API answered the scan with is one line naming the
+        # server (k387); anything else is said as it came.
+        $error = $self->cluster_api_error($self->api, $error) // $error;
         chomp $error;
         # The JSON form still answers on STDOUT; the diagnosis goes to STDERR.
         if ($self->json) {
@@ -130,9 +134,11 @@ C<critical> is a durable fault in C<kube-system> (fatal, exit code 1),
 C<warning> a durable fault elsewhere, C<starting> a pod that is still coming
 up.  Unlike the gate it does not wait for the cluster to settle, and it never
 changes anything.  Exit code: 1 when a critical pod exists (or the cluster
-cannot be reached), else 0.  An API server that does not answer at all is
-one line on STDERR, naming the server from the kubeconfig and the reason
-(L<OCP::Role::Cmd/reach_cluster_api>).
+cannot be read), else 0.  An API server that does not answer, or answers
+with an error status (a token it refuses, RBAC that denies the pod list), is
+one line on STDERR naming the server from the kubeconfig, what became of the
+request and why (L<OCP::Role::Cmd/cluster_api_error>); with C<--json> the
+same line is the C<error> of the object.
 
 =head1 JSON OUTPUT
 

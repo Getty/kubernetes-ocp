@@ -97,11 +97,12 @@ sub execute {
 
     my $k8s = OCP::Kubernetes->new(kubeconfig => $kc_content);
 
-    # An API that does not answer is one line naming the server and why (k384).
+    # An API that does not answer, or answers with an error, is one line
+    # naming the server, what became of the request and why (k384, k387).
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        if (my $line = $self->cluster_api_unreachable($k8s, $error)) {
+        if (my $line = $self->cluster_api_error($k8s, $error)) {
             print STDERR "ERROR: $line\n";
         } else {
             chomp $error;
@@ -233,7 +234,7 @@ sub _collect_json {
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        if (my $line = $self->cluster_api_unreachable($k8s, $error)) {
+        if (my $line = $self->cluster_api_error($k8s, $error)) {
             $out->{error} = $line;
             print STDERR "ERROR: $line\n";
         } else {
@@ -688,13 +689,15 @@ status section says so.  The kubeconfig is read through L<OCP::Secrets>, so
 the C<.ocp/age.key> must be present for the live-status section to render.
 When the kubeconfig cannot be decrypted or the API cannot be reached, the
 report on STDOUT stops there, the error and its diagnosis go to STDERR, and
-the exit code is 1.  An API server that does not answer at all is one line,
-naming the server from the kubeconfig and the reason:
+the exit code is 1.  An API server that does not answer, or answers with an
+error status, is one line naming the server from the kubeconfig, what became
+of the request and why (L<OCP::Role::Cmd/cluster_api_error>):
 
-    ERROR: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused) ...
+    ERROR: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
+    ERROR: The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)
 
 Earlier builds printed the client's error as it came, Perl source locations
-included.
+included, under C<WARNING: Cannot connect to cluster API>.
 
 The command never modifies cluster state.  Every drift entry is listed,
 followed by the count of those C<ocp apply> closes:
