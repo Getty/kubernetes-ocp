@@ -41,10 +41,10 @@ use OCP::Cmd::SSH;
     package FakeAPI;
     sub new {
         my ($c, %a) = @_;
-        bless { ocpnodes => {}, nodes => {}, calls => [], resource_map => {}, %a }, $c;
+        bless { ocpnodes => {}, nodes => {}, calls => [], %a }, $c;
     }
     sub k8s          { FakeIO->new }
-    sub resource_map { $_[0]{resource_map} }
+    sub with         { $_[0]{with} //= [] }
     sub get {
         my ($self, $kind, %args) = @_;
         push @{ $self->{calls} }, [ get => $kind, $args{name} ];

@@ -77,13 +77,6 @@ sub in_cluster_kubeconfig {
         '';
 }
 
-# OCPNode and OCPNodeProvider as an IO::K8s provider map: the entries
-# OCP::K8s->register writes, see _build_api.
-my %OCP_KINDS = (
-    OCPNode         => '+OCP::K8s::OCPNode',
-    OCPNodeProvider => '+OCP::K8s::OCPNodeProvider',
-);
-
 sub _build_api {
     my ($self) = @_;
 
@@ -105,17 +98,13 @@ sub _build_api {
     my $api = Kubernetes::REST::Kubeconfig->new(%args)->api;
     $self->register_resource_providers($api);
 
-    # OCP's own CRD classes, which the apply api gets from OCP::K8s->register.
-    # Without them list('OCPNode') on a cluster that does not serve the CRD
-    # died "unknown resource" before any request, and OCP::Drift read that as
-    # drift unknown instead of the 404 that says no OCPNode is recorded
-    # (k275). On the `with` list rather than through register: register
-    # writes into $api->resource_map, which fetches discovery right here --
-    # against an API that does not answer, one more request and a "Falling
-    # back to the built-in resource map" warning ahead of the error `ocp
-    # status` reports -- and invalidate_discovery drops what it wrote. `with`
-    # is read when the map is first needed and survives every rebuild.
-    push @{ $api->with }, { %OCP_KINDS };
+    # OCP's own CRD classes, as on the apply api. Without them list('OCPNode')
+    # on a cluster that does not serve the CRD died "unknown resource" before
+    # any request, and OCP::Drift read that as drift unknown instead of the
+    # 404 that says no OCPNode is recorded (k275). register puts them on the
+    # `with` list and asks the cluster nothing (k283): against an API that
+    # does not answer, `ocp status` says so once, from list_nodes.
+    OCP::K8s->register($api);
 
     return $api;
 }
@@ -143,7 +132,7 @@ sub register_resource_providers {
     my ($self, $api) = @_;
 
     # Mutate the arrayref the accessor returns -- the same durable-registration
-    # pattern OCP::K8s::register uses on $api->resource_map -- skipping any
+    # pattern OCP::K8s::register uses for OCP's own Kinds -- skipping any
     # provider a caller already listed. In the common path (called straight from
     # _build_api) the inner IO::K8s has not been built yet, so `with` is read for
     # the first time only once these are in place; drop an already-built instance

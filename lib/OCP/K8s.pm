@@ -11,10 +11,35 @@ use Carp qw(croak);
 use OCP::K8s::OCPNode ();
 use OCP::K8s::OCPNodeProvider ();
 
+# OCPNode and OCPNodeProvider as an IO::K8s provider map, the form an entry of
+# the Kubernetes::REST `with` list takes.
+my %KINDS = (
+    OCPNode         => '+OCP::K8s::OCPNode',
+    OCPNodeProvider => '+OCP::K8s::OCPNodeProvider',
+);
+
+# On the client's `with` list, not in $api->resource_map (k283). The default
+# client builds that map from the cluster's discovery, and invalidate_discovery
+# -- what Kubernetes::REST's ensure_crd ends with, and what its docs prescribe
+# after a CRD is installed -- throws a built map away and builds the next one
+# from discovery again, without what was written into the old one: OCPNode was
+# then an unknown resource, or an IO::K8s::Unstructured. The inner IO::K8s
+# merges `with` every time it is built, so the Kinds survive every rebuild, the
+# way OCP::Kubernetes registers the CRD providers. It also leaves the map
+# unbuilt: writing into it fetched discovery right here, one request ahead of
+# the caller's own -- and against an API that does not answer, a warning too.
+#
+# The entry is %KINDS itself, so a second register finds it and adds nothing:
+# robocop's controller and ocp ssh register on top of the api OCP::Kubernetes
+# registered on already. An inner IO::K8s built before this call read `with`
+# without the Kinds, so it is dropped and built again on next use, as in
+# OCP::Kubernetes::register_resource_providers.
 sub register {
     my ($class, $api) = @_;
-    $api->resource_map->{OCPNode}         = '+OCP::K8s::OCPNode';
-    $api->resource_map->{OCPNodeProvider} = '+OCP::K8s::OCPNodeProvider';
+    return $api if grep { ref $_ && $_ == \%KINDS } @{ $api->with };
+    push @{ $api->with }, \%KINDS;
+    $api->_clear_k8s if $api->can('_clear_k8s') && $api->can('_has_k8s')
+        && $api->_has_k8s;
     return $api;
 }
 
@@ -123,11 +148,12 @@ OCP::K8s - Register OCP CRD classes with a Kubernetes::REST api instance
 
 =head1 DESCRIPTION
 
-Registers L<OCP::K8s::OCPNode> and L<OCP::K8s::OCPNodeProvider> into the
-resource map of a L<Kubernetes::REST> instance so that C<get>, C<list>,
-C<ensure>, and C<delete> calls return typed objects instead of bare hashes.
+Registers L<OCP::K8s::OCPNode> and L<OCP::K8s::OCPNodeProvider> with a
+L<Kubernetes::REST> instance so that C<get>, C<list>, C<ensure>, and C<delete>
+calls return typed objects instead of bare hashes.
 
-Call C<register> once per API instance before issuing any CRD requests.
+Call C<register> on an API instance before issuing any CRD requests. The api
+L<OCP::Kubernetes> builds has them registered already.
 
 =head1 METHODS
 
@@ -135,7 +161,15 @@ Call C<register> once per API instance before issuing any CRD requests.
 
     OCP::K8s->register($api);
 
-Registers OCP's CRD classes into C<$api>'s resource map.
+Puts OCP's CRD classes on C<$api>'s C<with> list, the provider list
+L<Kubernetes::REST> merges into its inner L<IO::K8s> every time it builds one.
+So the two Kinds survive C<invalidate_discovery>, which C<ensure_crd> calls and
+which rebuilds the resource map from the cluster's discovery: written into
+C<< $api->resource_map >> they were lost there, and C<OCPNode> became an
+unknown resource or an L<IO::K8s::Unstructured>.
+
+Makes no request: the resource map is built when a name is first resolved, not
+here. Registering an api a second time adds nothing. Returns C<$api>.
 
 =head2 patch_status
 
