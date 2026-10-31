@@ -725,14 +725,7 @@ sub component_drift {
             next;
         }
 
-        my $actual;
-        if (my $annotation = $probe->{version_annotation}) {
-            $actual = _dig($object, qw(metadata annotations), $annotation) // '';
-        } else {
-            my $image = _dig($object, qw(spec template spec containers)) || [];
-            $image = ref $image eq 'ARRAY' ? _dig($image->[0], 'image') : undef;
-            $actual = image_version($image);
-        }
+        my ($actual, $want_tag, $same) = $self->version_against_pin($probe, $object, $expected);
 
         next unless length $actual;
 
@@ -744,9 +737,6 @@ sub component_drift {
                 if defined $have && $have ne $want->{$annotation};
         }
 
-        # The tag the pin stands for; the entry keeps the pin as written.
-        my $want_tag = ($probe->{tag_prefix} // '') . $expected;
-        my $same = _same_version($actual, $want_tag);
         next if $same && !@wrong;
 
         push @drift, {
@@ -779,6 +769,29 @@ sub _probe_remedy {
         task   => $probe->{remedy},
         params => $self->remedy_params($self->config, $probe->{component}, $expected),
     };
+}
+
+# What $object runs against $probe's pin $expected, read the way
+# component_drift reads every probe: ($actual, $want_tag, $same). $actual is
+# the version annotation, or the tag of the first container's image -- ''
+# when there is none, which is not compared. $want_tag is the tag the pin
+# stands for (the entry keeps the pin as written), $same whether the two are
+# one version. The AMD GPU step of ocp apply asks the same before it calls a
+# DaemonSet up to date (k350), so status and apply read it one way.
+sub version_against_pin {
+    my ($class, $probe, $object, $expected) = @_;
+
+    my $actual;
+    if (my $annotation = $probe->{version_annotation}) {
+        $actual = _dig($object, qw(metadata annotations), $annotation) // '';
+    } else {
+        my $image = _dig($object, qw(spec template spec containers)) || [];
+        $image = ref $image eq 'ARRAY' ? _dig($image->[0], 'image') : undef;
+        $actual = image_version($image);
+    }
+
+    my $want_tag = ($probe->{tag_prefix} // '') . $expected;
+    return ($actual, $want_tag, _same_version($actual, $want_tag));
 }
 
 # The Kubernetes distribution itself. Upgrading it is a node-by-node dance,
@@ -1456,7 +1469,11 @@ L<Rex::Rancher::K8s> deploys them under, all in C<kube-system> (the C<dra> and
 C<metrics> entries are upstream's Helm defaults, which no released Rex::Rancher
 deploys yet). All four
 are optional — they exist only on clusters with an AMD card, and C<gpu.amd>
-decides which of them run — and report-only.
+decides which of them run — and C<self_healing>: the AMD GPU step of
+C<ocp apply> redeploys a DaemonSet that runs another tag than its pin. It
+sees a pin bump in its options hash, and an image changed in the cluster by
+reading the DaemonSet as this probe does, through L</version_against_pin>
+(k350).
 
 Only a 404 on a probe's read counts as "not there" (k256). Any other failed
 read -- an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
@@ -1545,6 +1562,18 @@ C<helm_values> from F<ocp.yaml>'s C<cilium:>, so an upgrade keeps them).
 Callable on the class. Both a drift remedy and
 L<OCP::Cmd::Update> build their Rex params here, so the two paths drive a
 task the same way.
+
+=head2 version_against_pin
+
+    my ($actual, $want_tag, $same) = OCP::Drift->version_against_pin($probe, $object, $expected);
+
+What C<$object> runs against the pin C<$expected> of C<$probe> (an entry of
+C<@COMPONENT_PROBES>), read as L</component_drift> reads it: the version
+annotation or the tag of the first container's image (C<''> when there is
+none, which is not compared), the tag the pin stands for with the probe's
+C<tag_prefix>, and whether the two are one version. Callable on the class.
+L<OCP::Cmd::Apply::AMDGPU> asks it before it calls a DaemonSet up to date
+(k350).
 
 =head2 distribution_drift
 

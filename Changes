@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` redeploys an AMD GPU DaemonSet (device plugin, labeller,
+      DRA driver, metrics exporter) whose image was changed in the cluster
+      to another tag than its pin. `ocp status` already counted that as
+      drift `ocp apply` fixes, but the AMD step only compared what it had
+      recorded and left it, and the dry run called it up to date; status,
+      the dry run and the real run now agree.
     - `ocp apply` takes robocop's credentials Secret for missing only when
       the cluster answers 404: a read it refuses or fails (403, 5xx, a
       broken connection) fails the robocop step with its cause on STDERR,

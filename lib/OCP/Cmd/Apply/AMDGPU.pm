@@ -69,7 +69,12 @@ on a node whose allocation switched to DRA would hand out the same GPU twice.
 
 Each component's options (version pin, affinity, resource naming) are hashed
 into C<.ocp/deployed.yaml>; an equal hash with the DaemonSet still in the
-cluster is C<unchanged>, anything else re-deploys. Either way the step then
+cluster, running its pin, is C<unchanged>, anything else re-deploys. Its pin
+is read as the drift probe on that DaemonSet reads it
+(L<OCP::Drift/version_against_pin>): an image changed in the cluster with the
+hash unchanged is the drift C<ocp status> counts as one C<ocp apply> closes,
+and this step closes it, C<updated> (k350). What that probe does not read,
+such as the args, is not compared. Either way the step then
 waits for the component to be ready by OCP's own check (300 s,
 C<ready_timeout>; 600 s, C<join_ready_timeout>, for a node that just joined): the DaemonSet
 rolled out, then C<status.allocatable> C<amd.com/gpu> on every node the plugin
@@ -200,7 +205,9 @@ says the step runs for a node that just joined: each readiness wait then has
 C<join_ready_timeout> instead of C<ready_timeout>. Returns one
 result per component it acted on or confirmed: C<< { label, outcome } >> with
 an outcome for L<OCP::Cmd::Apply::DeployedHash/report_component>
-(C<removed> included), or C<< { label, error, hint } >> for one that failed.
+(C<removed> included) and, for an image that was not the pin, C<changed>
+(C<ran 0.0.1, expected 1.31.0.11>), or C<< { label, error, hint } >> for one
+that failed.
 A cluster with nothing to do is one C<skipped> result for C<AMD GPU stack>,
 and so is a Rex::Rancher without the AMD functions (with C<warned>). Dies
 only when the Nodes cannot be listed: then nothing is removed either.
@@ -245,13 +252,14 @@ sub setup {
     }
 
     for my $c (deploy_order($plan)) {
-        my $opts    = deploy_options($config, $plan, $c);
-        my $outcome = eval { ensure($self, $config, $api, $kubeconfig, $c, $opts, $plan->{for}{$c}, $budget) };
+        my $opts = deploy_options($config, $plan, $c);
+        my ($outcome, $changed) = eval { ensure($self, $config, $api, $kubeconfig, $c, $opts, $plan->{for}{$c}, $budget) };
         if (my $err = $@) {
             push @results, { label => $COMPONENT{$c}{label}, error => $err,
                              hint  => $c eq 'dra' ? dra_hint($err) : undef };
         } else {
-            push @results, { label => $COMPONENT{$c}{label}, outcome => $outcome };
+            push @results, { label => $COMPONENT{$c}{label}, outcome => $outcome,
+                             ($changed ? (changed => $changed) : ()) };
         }
     }
 
@@ -453,26 +461,58 @@ sub options_hash {
 }
 
 # What ensure does with component $c and $opts: 'unchanged' (the recorded
-# hash is this one, the DaemonSet is there), 'deployed' (no record),
-# 'restored' (recorded, gone from the cluster) or 'updated'. Returns
-# (outcome, hash, present). Dies when the DaemonSet cannot be read (k269).
+# hash is this one, the DaemonSet is there and runs its pin), 'deployed' (no
+# record), 'restored' (recorded, gone from the cluster) or 'updated' (other
+# options, or another image). Returns (outcome, hash, present, off): off is
+# [ actual, wanted ] tag when the image is what makes it 'updated'. Dies when
+# the DaemonSet cannot be read (k269).
 sub outcome {
     my ($self, $config, $api, $c, $opts) = @_;
     my $hash     = options_hash($c, $opts);
     my $recorded = $self->_load_deployed_hashes($config)->{ $COMPONENT{$c}{key} };
     my $present  = ds_present($self, $api, $c);
+    # The hash is what OCP deployed, not what the cluster runs: an image
+    # changed since (kubectl set image, an edit) leaves it as it was. The
+    # k250 probe reads that image, and ocp status counts what it finds as
+    # drift ocp apply closes; this step asks the same (k350).
+    my $off      = defined $recorded && $present && $recorded eq $hash
+                 ? off_pin($self, $api, $c, $opts) : undef;
     my $outcome  = !defined $recorded ? 'deployed'
                  : !$present          ? 'restored'
                  : $recorded ne $hash ? 'updated'
+                 : $off               ? 'updated'
                  :                      'unchanged';
-    return ($outcome, $hash, $present);
+    return ($outcome, $hash, $present, $off);
 }
 
+# [ actual, wanted ] tag when component $c's DaemonSet runs another image
+# than the pin it is deployed with, read as the k250 probe on that DaemonSet
+# reads it (OCP::Drift version_against_pin: the first container's tag, the
+# probe's tag_prefix, a leading v alike); undef when it runs the pin, carries
+# no tag, or is gone. Dies when it cannot be read (k269).
+sub off_pin {
+    my ($self, $api, $c, $opts) = @_;
+    my $ref = $OCP::Drift::AMD_GPU_DAEMONSETS{$c};
+    my ($probe) = grep {
+        $_->{kind} eq 'DaemonSet' && $_->{name} eq $ref->{name} && $_->{namespace} eq $ref->{namespace}
+    } @OCP::Drift::COMPONENT_PROBES;
+    die "OCP::Drift has no probe for DaemonSet $ref->{namespace}/$ref->{name}\n" unless $probe;
+
+    my $ds = OCP::Cmd::Apply::K8s::read_or_absent("DaemonSet $ref->{namespace}/$ref->{name}",
+        sub { $api->get('DaemonSet', name => $ref->{name}, namespace => $ref->{namespace}) })
+        or return;
+    my ($actual, $want, $same) = OCP::Drift->version_against_pin($probe, $ds, $opts->{version});
+    return if !length $actual || $same;
+    return [ $actual, $want ];
+}
+
+# Component $c as $opts asks, then ready on $nodes: (outcome, what changed)
+# -- the latter only for an image that was not the pin (k350).
 sub ensure {
     my ($self, $config, $api, $kubeconfig, $c, $opts, $nodes, $budget) = @_;
     my $comp = $COMPONENT{$c};
 
-    my ($outcome, $hash) = outcome($self, $config, $api, $c, $opts);
+    my ($outcome, $hash, undef, $off) = outcome($self, $config, $api, $c, $opts);
 
     # Up to date says nothing about the nodes: one that joined since (`ocp
     # node add --gpu`, the worker step) gets its pod only now, so it is waited
@@ -490,7 +530,7 @@ sub ensure {
     wait_ready($self, $api, $c, $opts, $nodes, $budget);
 
     $self->_save_deployed_hash($config, $comp->{key}, $hash);
-    return $outcome;
+    return ($outcome, $off ? "ran $off->[0], expected $off->[1]" : undef);
 }
 
 # Waits up to $budget seconds (ready_timeout when not given) until component
@@ -610,7 +650,7 @@ sub step {
             next;
         }
         $r->{warned} = 1 if $res->{warned};
-        $r->{changed} += $self->_report_component($res->{label}, $res->{outcome});
+        $r->{changed} += $self->_report_component($res->{label}, $res->{outcome}, $res->{changed});
     }
 
     $self->{_amd_gpu_step} = $r;
@@ -667,7 +707,7 @@ sub dry_run {
     for my $c (deploy_order($plan)) {
         my $label = $COMPONENT{$c}{label};
         my $opts  = deploy_options($config, $plan, $c);
-        my ($outcome, undef, $present) = eval { outcome($self, $config, $api, $c, $opts) };
+        my ($outcome, undef, $present, $off) = eval { outcome($self, $config, $api, $c, $opts) };
         if (my $err = $@) {
             push @found, unchecked($label, $err);
             next;
@@ -678,6 +718,7 @@ sub dry_run {
             next;
         }
         my ($is, $verb) = $outcome eq 'restored' ? ('is gone from the cluster', 'redeploy')
+                        : $off                   ? ("runs $off->[0], expected $off->[1]", 'update')
                         : $outcome eq 'updated'  ? ('was deployed with other options', 'update')
                         : $present               ? ('has no record in .ocp/deployed.yaml', 'deploy')
                         :                          ('is not deployed', 'deploy');

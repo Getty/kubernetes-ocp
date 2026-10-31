@@ -14,7 +14,9 @@ use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::AMDGPU;
 use OCP::Cmd::Apply::DeployedHash;
 use OCP::Cmd::Node::Add;
+use OCP::Cmd::Status;
 use OCP::Config;
+use OCP::Drift;
 use OCP::Versions;
 
 # Loaded before any glob below is set, so its own subs cannot replace them.
@@ -51,6 +53,14 @@ my %FN_DS = (
     remove_amd_metrics_exporter => 'metrics',
 );
 my @LIB_FNS = sort keys %FN_DS;
+# The first container's image as Rex::Rancher::K8s writes it, before the
+# version (rex-rancher k95, k101-k103): what the k250 probes read.
+my %IMAGE = (
+    device_plugin => 'rocm/k8s-device-plugin:',
+    labeller      => 'rocm/k8s-device-plugin:labeller-',
+    dra           => 'docker.io/rocm/k8s-gpu-dra-driver:',
+    metrics       => 'docker.io/rocm/device-metrics-exporter:',
+);
 
 sub capture (&) {
     my ($code) = @_;
@@ -177,7 +187,8 @@ sub fake_lib {
                 if $api->{fail_after_deploy}{$c};
             $api->{ds}{ $DS{$c} } = {
                 metadata => { name => $DS{$c}, generation => $gen },
-                spec     => { affinity => $o{affinity} },
+                spec     => { affinity => $o{affinity}, template => { spec => { containers => [
+                                  { name => 'c', image => $IMAGE{$c} . $o{version} } ] } } },
                 status   => { observedGeneration => $gen, desiredNumberScheduled => scalar @on,
                               numberReady => $ready, updatedNumberScheduled => scalar @on },
             };
@@ -1242,6 +1253,142 @@ subtest 'k261: a Rex::Rancher without the functions -- the WARN, and a real run 
         'on STDOUT: what a real run would do';
     unlike $dry->{out}, qr/would deploy/, 'and no deploy it would not make';
     is_deeply $dry->{r}, [], 'nothing counted';
+};
+
+
+#
+# k350: a DaemonSet of the stack that runs another image than its pin while
+# .ocp/deployed.yaml still holds the hash OCP deployed it with -- changed
+# outside OCP (kubectl set image, an edit). The k250 probe names it as drift a
+# real run closes (self_healing), and ocp status counts it so. The step judged
+# by the hash alone: up to date, nothing deployed, and the next ocp status
+# named the same drift again. The claims:
+#   1. ocp status, the dry run and the real run say the same about it: the
+#      probe's entry is one status counts as fixable, the dry run would update
+#      the component, the real run redeploys it and nothing else -- and the
+#      probe finds nothing afterwards.
+#   2. the step reads the image as the probe does: a tag the probe takes for
+#      the pin (a leading v), an image without a tag and what the probe does
+#      not read (the args) are left as they are, and none of the three names
+#      them.
+#
+
+my %LABEL = (
+    device_plugin => 'AMD GPU device plugin',
+    labeller      => 'AMD GPU node labeller',
+    dra           => 'AMD GPU DRA driver',
+    metrics       => 'AMD device metrics exporter',
+);
+my %PIN = (
+    device_plugin => $V{amd_device_plugin},
+    labeller      => $V{amd_device_plugin},
+    dra           => $V{amd_dra_driver},
+    metrics       => $V{amd_metrics_exporter},
+);
+# The ocp.yaml gpu: block that has the component deployed on synapse.
+my %GPU_FOR = (
+    device_plugin => undef,
+    labeller      => undef,
+    dra           => "gpu:\n  amd:\n    allocation: dra\n",
+    metrics       => "gpu:\n  amd:\n    metrics: true\n",
+);
+my %DEPLOY_FN = map { $FN_DS{$_} => $_ } grep { /^deploy_/ } keys %FN_DS;
+
+# What ocp status reads off the cluster for the AMD GPU stack: the k250
+# probes' entries, by label.
+sub amd_drift {
+    my ($api, $dir, $gpu) = @_;
+    my $detector = OCP::Drift->new(config => config_for($dir, $gpu), api => $api);
+    return { map { $_->{label} => $_ } grep { ($_->{label} // '') =~ /\AAMD / } $detector->component_drift };
+}
+
+sub set_container {
+    my ($api, $c, %field) = @_;
+    my $container = $api->{ds}{ $DS{$c} }{spec}{template}{spec}{containers}[0];
+    @{$container}{ keys %field } = values %field;
+}
+
+subtest 'k350: an image changed outside OCP -- status, the dry run and the real run agree' => sub {
+    for my $c (qw( device_plugin labeller dra metrics )) {
+        my ($gpu, $label) = ($GPU_FOR{$c}, $LABEL{$c});
+        my ($api, $first) = deployed_for_synapse($gpu);
+        my $dir = $first->{dir};
+        is_deeply amd_drift($api, $dir, $gpu), {}, "$c: as OCP deployed it, the probes find nothing";
+
+        my $prefix = $c eq 'labeller' ? 'labeller-' : '';
+        set_container($api, $c, image => $IMAGE{$c} . '0.0.1');
+
+        my $entry = amd_drift($api, $dir, $gpu)->{$label};
+        like $entry && $entry->{message}, qr/\A\Q$label\E runs ${prefix}0\.0\.1, expected \Q$prefix$PIN{$c}\E\z/,
+            "$c: status names the image";
+        ok $entry && OCP::Cmd::Status->_drift_fixable($entry), "$c: and counts it as drift ocp apply closes";
+
+        my $dry = dry_step($api, dir => $dir, gpu => $gpu);
+        untouched($dry, "$c dry run");
+        like $dry->{out}, qr/^  \[amd\] \Q$label\E runs ${prefix}0\.0\.1, expected \Q$prefix$PIN{$c}\E\n {10}would update it \(\Q$PIN{$c}\E\) on synapse$/m,
+            "$c: the dry run would update it, in the probe's words";
+        is_deeply dry_changes($dry), { $label => 'updated' }, "$c: one change, this one";
+
+        my $res = run_step($api, dir => $dir, gpu => $gpu);
+        is_deeply $res->{fns}, [ $DEPLOY_FN{$c} ], "$c: the real run redeploys it and nothing else";
+        like $res->{out}, qr/^  \[ok\] \Q$label\E updated \(ran ${prefix}0\.0\.1, expected \Q$prefix$PIN{$c}\E\)$/m,
+            "$c: and says why";
+        is $res->{r}{changed}, 1, "$c: one change counted";
+        is_deeply $res->{r}{failed}, [], "$c: nothing failed";
+        is_deeply $res->{hashes}, $first->{hashes}, "$c: the record as it was: the options did not move";
+        is_deeply amd_drift($api, $dir, $gpu), {}, "$c: then the probes find nothing";
+        is_deeply dry_changes(dry_step($api, dir => $dir, gpu => $gpu)), {}, "$c: nor does the next dry run";
+    }
+};
+
+subtest 'k350: what the probe does not call drift, the step leaves -- all three agree' => sub {
+    my %case = (
+        'a leading v on the pin'  => [ image => $IMAGE{device_plugin} . "v$PIN{device_plugin}" ],
+        'an image without a tag'  => [ image => 'rocm/k8s-device-plugin@sha256:' . ('a' x 64) ],
+        'args the probe does not read' => [ args => [ '-resource_naming_strategy=mixed' ] ],
+    );
+    for my $what (sort keys %case) {
+        my ($api, $first) = deployed_for_synapse();
+        my $dir = $first->{dir};
+        set_container($api, 'device_plugin', @{ $case{$what} });
+        is_deeply amd_drift($api, $dir), {}, "$what: status names nothing";
+        my $dry = dry_step($api, dir => $dir);
+        like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin is up to date on synapse$/m, "$what: the dry run, up to date";
+        is_deeply $dry->{r}, [], "$what: no entry";
+        my $res = run_step($api, dir => $dir);
+        is_deeply $res->{fns}, [], "$what: the real run deploys nothing";
+        like $res->{out}, qr/^  \[ok\] AMD GPU device plugin up to date$/m, "$what: up to date";
+    }
+};
+
+subtest 'k350: a DaemonSet whose image cannot be read is no verdict either way' => sub {
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        my ($api, $first) = deployed_for_synapse();
+        my $dir = $first->{dir};
+        set_container($api, 'device_plugin', image => $IMAGE{device_plugin} . '0.0.1');
+        # Readable for the presence check, refused on the read after it.
+        my $reads = 0;
+        my $get   = AmdApi->can('get');
+        no warnings 'redefine';
+        local *AmdApi::get = sub {
+            my ($self, $kind, @rest) = @_;
+            my %a = @rest % 2 ? (name => @rest) : @rest;
+            die api_error($code, $reason)
+                if $kind eq 'DaemonSet' && $a{name} eq $DS{device_plugin} && $reads++;
+            return $get->(@_);
+        };
+        my $dry = dry_step($api, dir => $dir);
+        like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin could not be checked$/m, "$code: the dry run could not check it";
+        like $dry->{err}, qr{\[!!\] AMD GPU device plugin not checked: could not read DaemonSet kube-system/\Q$DS{device_plugin}\E: },
+            "$code: its cause on STDERR";
+        $reads = 0;
+        my $res = run_step($api, dir => $dir);
+        is_deeply $res->{fns}, [], "$code: the real run deploys nothing it could not see";
+        like $res->{err}, qr{\[!!\] AMD GPU device plugin setup failed: could not read DaemonSet kube-system/\Q$DS{device_plugin}\E: },
+            "$code: and fails the component with the cause";
+        is_deeply $res->{r}{failed}, ['AMD GPU device plugin'], "$code: counted as failed";
+    }
 };
 
 done_testing;
