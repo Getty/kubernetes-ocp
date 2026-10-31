@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys operator add|rm` and `ocp keys secure --drop-bootstrap`
+      refuse a control plane whose `public_ip` or `name` is a list, a
+      mapping or a boolean, with `validate()`'s line for it and before PIN1,
+      as they already did for such a `host`. It became a machine called
+      `ARRAY(0x...)` that SSH was asked to log in to, or, with no control
+      plane recorded in `.ocp/status.yaml`, the command died after PIN1 with
+      a Perl source location.
     - `ocp node ls --json` prints `{"error": "..."}` on STDOUT and exits 1
       when the nodes cannot be listed (the cluster API does not answer or
       answers with an error, no `ocp.yaml`, no kubeconfig), as `ocp status
