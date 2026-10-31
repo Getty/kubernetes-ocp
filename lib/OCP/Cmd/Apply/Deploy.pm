@@ -124,8 +124,10 @@ sub deploy {
     eval {
         $self->_configure_registry_dns($cp_ip);
     };
-    if ($@) {
-        print "  [WARN] registry.local DNS setup failed: $@\n";
+    if (my $err = $@) {
+        # STDERR with its cause (k278), not counted, as on the reconcile path.
+        $err .= "\n" unless $err =~ /\n\z/;
+        print STDERR "  [WARN] registry.local DNS setup failed: $err";
     }
 
     # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically.
@@ -149,8 +151,9 @@ sub deploy {
         push @{ $self->{_failed_components} }, 'GPU Operator';
     } else {
         $self->_report_component('GPU Operator', $gpu_outcome);
-        # The worker step comes later; a 'skipped' here is checked again once
-        # workers joined (k228, gpu_after_join).
+        # The worker step comes later; gpu_after_join checks again after the
+        # worker join (k228 after skipped, k287 for an NVIDIA worker after a
+        # check that ran).
         $self->{_gpu_outcome} = $gpu_outcome;
     }
 
@@ -189,8 +192,12 @@ sub deploy {
         eval {
             $self->_setup_lb_ipam($cp_ip, $config);
         };
-        if ($@) {
-            print "  [WARN] LB-IPAM setup failed: $@\n";
+        if (my $err = $@) {
+            # STDERR with its cause, and counted: the run ends APPLY
+            # INCOMPLETE and non-zero (k278), as the reconcile path does.
+            $err .= "\n" unless $err =~ /\n\z/;
+            print STDERR "  [!!] LB-IPAM setup failed: $err";
+            push @{ $self->{_failed_components} }, 'LB-IPAM';
         } else {
             print "  [ok] LB-IPAM ready\n";
         }
@@ -306,8 +313,9 @@ sub deploy {
     return $step;
 }
 
-# The GPU check once more after workers came up, when the one before the
-# worker step found no GPU node (k228 point 2; the node-add side is k220).
+# The GPU check once more after workers came up: when the one before the
+# worker step found no GPU node (k228 point 2; the node-add side is k220), and
+# for an NVIDIA worker after a check that ran (k287).
 # Both apply paths call it with the worker step's results. Returns false when
 # the check failed -- said on STDERR here, counted by the caller -- and true
 # otherwise, including when there was nothing to do.

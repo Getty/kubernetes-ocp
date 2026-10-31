@@ -669,7 +669,7 @@ subtest 'reconcile: police1 keeps spec.nodeIP, and status.nodeIP what was handed
 
     my $r = reconcile_cp_ocpnode(config_for($RECON . "  node_ip: 10.230.30.52\n"), $api);
     is $r->{died}, '', 'the reconcile ran' or return diag $r->{died};
-    unlike $r->{out}, qr/node CR reconcile failed/, 'its CR block went through' or diag $r->{out};
+    unlike $r->{out} . $r->{err}, qr/node CR reconcile failed/, 'its CR block went through' or diag $r->{err};
     is ocpnode_ensures($api, 'otho'), 2, 'premise: the reconcile re-ensured the OCPNode';
     is $api->{ocpnodes}{otho}{spec}{nodeIP}, '10.230.30.52', 'spec.nodeIP is still there';
     is $api->{ocpnodes}{otho}{status}{nodeIP}, '10.230.30.52', 'and so is status.nodeIP';

@@ -77,15 +77,17 @@ sub run_after_join {
     local *OCP::Cmd::Apply::Workloads::gpu_label_timeout  = sub { 30 };
     my $apply = FakeApply->new(api => FakeApi->new(labels => $o{labels} // {},
                                                   k8s_name => $o{k8s_name} // {}));
-    my $out = '';
+    my ($out, $err) = ('', '');
     my $got;
     {
         local *STDOUT;
+        local *STDERR;
         open STDOUT, '>', \$out or die;
+        open STDERR, '>', \$err or die;
         $got = OCP::Cmd::Apply::Workloads::setup_gpu_operator_after_join(
             $apply, FakeConfig->new(%{ $o{config} // {} }), $o{first}, @{ $o{names} // [] });
     }
-    return { got => $got, calls => $calls, apply => $apply, out => $out };
+    return { got => $got, calls => $calls, apply => $apply, out => $out, err => $err };
 }
 
 subtest 'no second check when it is not needed' => sub {
@@ -158,7 +160,10 @@ subtest 'NFD never labels: warned, checked anyway' => sub {
     my $r = run_after_join(first => 'skipped', names => ['crag'], labels => { crag => {} },
         verdict => 'skipped');
     is $r->{apply}{waited}, 30, 'the whole budget';
-    like $r->{out}, qr/\[WARN\] NFD has not labelled crag after 30s/, 'said';
+    # k278: on STDERR -- the label that did not come is something that went wrong.
+    like   $r->{err}, qr/^  \[WARN\] NFD has not labelled crag after 30s; checking with what is there$/m,
+        'said, on STDERR';
+    unlike $r->{out}, qr/NFD has not labelled/, 'not on STDOUT';
     is $r->{calls}, 1, 'still checked';
 };
 

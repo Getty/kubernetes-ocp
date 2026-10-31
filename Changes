@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - ocp apply reports a failed LB-IPAM setup or node-CR reconcile on
+      STDERR and ends APPLY INCOMPLETE with a non-zero exit; before, it
+      printed a [WARN] on STDOUT and exited 0. The registry.local DNS, NFD
+      and NFD-label warnings go to STDERR with their cause.
     - A `true` or `false` from ocp.yaml or from an OCPNode or
       OCPNodeProvider no longer equals every word it is checked against:
       with Cpanel::JSON::XS loaded, as in the image, `'hetzner' eq true`

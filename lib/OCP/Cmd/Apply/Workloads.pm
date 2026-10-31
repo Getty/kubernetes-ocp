@@ -769,7 +769,8 @@ sub setup_gpu_operator_after_join {
         last unless @waiting;
         $self->wait_seconds($interval) if $try < $tries;
     }
-    print "  [WARN] NFD has not labelled " . join(', ', @waiting) . " after "
+    # STDERR (k278): a label that did not come is something that went wrong.
+    print STDERR "  [WARN] NFD has not labelled " . join(', ', @waiting) . " after "
         . gpu_label_timeout() . "s; checking with what is there\n" if @waiting;
 
     if ($first_outcome ne 'skipped') {

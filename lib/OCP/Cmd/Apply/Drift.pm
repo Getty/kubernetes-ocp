@@ -288,7 +288,13 @@ sub reconcile_components {
                 print "  [ok] registry.local DNS up to date\n";
             }
             1;
-        } or print "  [WARN] registry.local DNS setup failed: $@";
+        } or do {
+            # STDERR with its cause (k278); not counted -- registry.local
+            # names the local registry, the pull-through cache works without.
+            my $err = $@;
+            $err .= "\n" unless $err =~ /\n\z/;
+            print STDERR "  [WARN] registry.local DNS setup failed: $err";
+        };
     }
 
     # NFD (Node Feature Discovery) — always deployed
@@ -298,8 +304,10 @@ sub reconcile_components {
         eval {
             $updated += $self->_report_component('NFD', $self->_setup_nfd($config));
         };
-        if ($@) {
-            print "  [WARN] NFD setup failed: $@\n";
+        if (my $err = $@) {
+            # STDERR with its cause (k278).
+            $err .= "\n" unless $err =~ /\n\z/;
+            print STDERR "  [WARN] NFD setup failed: $err";
         }
     }
 
@@ -317,7 +325,8 @@ sub reconcile_components {
             # cluster this component is not part of.
             my $outcome = $self->_setup_gpu_operator($config);
             $updated += $self->_report_component('GPU Operator', $outcome);
-            # Checked again after the worker step when it skipped (k228).
+            # Checked again after the worker join (k228 after skipped, k287
+            # for an NVIDIA worker after a check that ran).
             $self->{_gpu_outcome} = $outcome;
         };
         if ($@) {
@@ -396,9 +405,17 @@ sub reconcile_components {
     if ($config->lbipam && $cp_ip) {
         $checked++;
         print "  [..] Checking LB-IPAM (opt-in)...\n";
-        eval { $self->_setup_lb_ipam($cp_ip, $config); 1 }
-            ? print "  [ok] LB-IPAM up to date\n"
-            : print "  [WARN] LB-IPAM setup failed: $@";
+        if (eval { $self->_setup_lb_ipam($cp_ip, $config); 1 }) {
+            print "  [ok] LB-IPAM up to date\n";
+        } else {
+            # An opt-in that is not there: STDERR, with its cause, and the
+            # run is not complete (k278) -- a refused pool (k281) is the
+            # user's to fix, not something a SUCCESSFULLY banner may hide.
+            my $err = $@;
+            $err .= "\n" unless $err =~ /\n\z/;
+            print STDERR "  [!!] LB-IPAM setup failed: $err";
+            push @unresolved, 'LB-IPAM';
+        }
     }
 
     # The CR layer: CRDs, provider CRs and the observational control-plane
@@ -427,7 +444,16 @@ sub reconcile_components {
                 node_ip  => OCP::Cmd::Apply::Bootstrap::cp_node_ip($config),
             });
             1;
-        } or print "  [WARN] node CR reconcile failed: $@";
+        } or do {
+            # STDERR with its cause, and not complete (k278): this block is
+            # what puts a newer OCPNode/OCPNodeProvider CRD on the cluster
+            # (k291), the update `ocp node add --node_ip` sends the user to
+            # `ocp apply` for (k290).
+            my $err = $@;
+            $err .= "\n" unless $err =~ /\n\z/;
+            print STDERR "  [!!] node CR reconcile failed: $err";
+            push @unresolved, 'node CRs';
+        };
     }
 
     # robocop (k173). `robocop.enabled` means robocop runs, so every reconcile

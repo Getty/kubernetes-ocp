@@ -815,7 +815,11 @@ workers:
 YAML
 
 subtest 'k26: a worker without an OCPNode is created, the others are left alone' => sub {
-    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    # pinky joins as a Node NFD has looked at: without one, the GPU check after
+    # the join waits out NFD's budget and says so on STDERR (k278).
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain'],
+        objects => { 'Node/-/pinky' => { metadata => { labels => {
+            'feature.node.kubernetes.io/system-os_release.ID' => 'ubuntu' } } } });
 
     ok scalar(grep { $_ eq 'ENSURE OCPNode/pinky' } @{ $r->{writes} }),
         'the missing worker gets its OCPNode';
@@ -1544,6 +1548,96 @@ subtest 'k276: a GPU Operator the cluster refuses to show is not "no drift"' => 
         qr/^  1 more could not be checked -- a real run would not complete until it can be read\.$/m,
         'dry run: counted as could not be checked';
     is_deeply $dry->{writes}, [], 'dry run: still nothing written';
+};
+
+#
+# k278: failure diagnoses that went to STDOUT as [WARN] lines, against the
+# house rule that STDERR is everything that went wrong, with its cause. Two of
+# them also left the run complete: an LB-IPAM that could not be set up (k281:
+# multi-node without network.lb_pool) and a node-CR block that failed -- the
+# OCPNode/OCPNodeProvider CRD update `ocp node add --node_ip` sends the user
+# to `ocp apply` for (k290, k291). Those two are [!!] and counted now, the way
+# the Cilium Gateway is (k231). registry.local DNS, and NFD on the reconcile
+# path, are said on STDERR and counted as before: not at all.
+#
+
+my $LB_REFUSED = "LB-IPAM: refusing to use the node IP (10.230.30.155) as the pool on a "
+               . "multi-node cluster - set network.lb_pool (cidr, or start+stop) in ocp.yaml\n";
+
+subtest 'k278: reconcile -- an LB-IPAM that cannot be set up is unfinished, on STDERR' => sub {
+    my $ok = reconcile(yaml => "nocert: true\n");
+    like $ok->{out}, qr/^  \[ok\] LB-IPAM up to date$/m, 'control: up to date on STDOUT';
+    is_deeply $ok->{failed}, [], 'control: nothing counted';
+
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_setup_lb_ipam = sub { die $LB_REFUSED };
+    my $r = reconcile(yaml => "nocert: true\n");
+    like   $r->{err}, qr/^  \[!!\] LB-IPAM setup failed: \Q$LB_REFUSED\E/m, '[!!] with its cause, on STDERR';
+    unlike $r->{out}, qr/LB-IPAM setup failed|\[ok\] LB-IPAM/, 'nothing of it on STDOUT';
+    is_deeply $r->{failed}, ['LB-IPAM'], 'counted for the exit';
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'not summarised as up to date';
+};
+
+subtest 'k278: reconcile -- a node-CR block that fails is unfinished, on STDERR' => sub {
+    my $ok = reconcile(yaml => "nocert: true\n");
+    unlike $ok->{out} . $ok->{err}, qr/node CR reconcile failed/, 'control: the block went through';
+
+    for my $case (
+        [ _ensure_crds       => "share/robocop/crds not found: this ocp ships no OCP CRDs\n" ],
+        [ _ensure_providers  => "apply OCPNodeProvider/ssh-default failed: HTTP 403 forbidden\n" ],
+        [ _ensure_cp_ocpnode => "apply OCPNode/cortex failed: HTTP 422 spec.nodeIP: field not declared\n" ],
+    ) {
+        my ($step, $death) = @$case;
+        no strict 'refs';
+        no warnings 'redefine';
+        local *{"OCP::Cmd::Apply::$step"} = sub { die $death };
+        my $r = reconcile(yaml => "nocert: true\n");
+        like   $r->{err}, qr/^  \[!!\] node CR reconcile failed: \Q$death\E/m, "$step: [!!] with its cause, on STDERR";
+        unlike $r->{out}, qr/node CR reconcile failed/, "$step: nothing of it on STDOUT";
+        is_deeply $r->{failed}, ['node CRs'], "$step: counted for the exit";
+        unlike $r->{out}, qr/All \d+ component\(s\) up to date/, "$step: not summarised as up to date";
+    }
+};
+
+subtest 'k278: reconcile -- registry.local DNS and NFD failures are said on STDERR, not counted' => sub {
+    for my $case (
+        [ _configure_registry_dns => 'registry.local DNS', "could not read ConfigMap kube-system/coredns: 403 forbidden\n" ],
+        [ _setup_nfd              => 'NFD',                "nfd-master not ready within 300s\n" ],
+    ) {
+        my ($step, $label, $death) = @$case;
+        no strict 'refs';
+        no warnings 'redefine';
+        local *{"OCP::Cmd::Apply::$step"} = sub { die $death };
+        my $r = reconcile(yaml => "nocert: true\n");
+        like   $r->{err}, qr/^  \[WARN\] \Q$label\E setup failed: \Q$death\E/m, "$label: with its cause, on STDERR";
+        unlike $r->{err}, qr/\n\n/, "$label: one line, no blank one after it";
+        unlike $r->{out}, qr/\Q$label\E setup failed/, "$label: nothing of it on STDOUT";
+        is_deeply $r->{failed}, [], "$label: not counted (k278 leaves that as it was)";
+    }
+};
+
+subtest 'k278: fresh deploy -- LB-IPAM unfinished, registry.local DNS said, both on STDERR' => sub {
+    my $ok = deploy(yaml => "lbipam: true\n");
+    like $ok->{out}, qr/^  \[ok\] LB-IPAM ready$/m, 'control: ready on STDOUT';
+    is_deeply $ok->{failed}, [], 'control: nothing counted';
+
+    no warnings 'redefine';
+    {
+        local *OCP::Cmd::Apply::_setup_lb_ipam = sub { die $LB_REFUSED };
+        my $r = deploy(yaml => "lbipam: true\n");
+        like   $r->{err}, qr/^  \[!!\] LB-IPAM setup failed: \Q$LB_REFUSED\E/m, 'LB-IPAM: [!!] with its cause, on STDERR';
+        unlike $r->{out}, qr/LB-IPAM setup failed|\[ok\] LB-IPAM ready/, 'LB-IPAM: nothing of it on STDOUT';
+        is_deeply $r->{failed}, ['LB-IPAM'], 'LB-IPAM: counted for the exit';
+    }
+    {
+        my $death = "could not read ConfigMap kube-system/coredns: 500 etcdserver: request timed out\n";
+        local *OCP::Cmd::Apply::_configure_registry_dns = sub { die $death };
+        my $r = deploy();
+        like   $r->{err}, qr/^  \[WARN\] registry\.local DNS setup failed: \Q$death\E/m, 'DNS: with its cause, on STDERR';
+        unlike $r->{err}, qr/\n\n/, 'DNS: one line, no blank one after it';
+        unlike $r->{out}, qr/registry\.local DNS setup failed/, 'DNS: nothing of it on STDOUT';
+        is_deeply $r->{failed}, [], 'DNS: not counted';
+    }
 };
 
 
