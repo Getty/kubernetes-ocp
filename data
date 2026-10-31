@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T17:21:27Z
+created: 2026-10-31T14:41:51Z
+id: 377
+priority: low
+started: 2026-10-31T17:21:27Z
+status: done
+tags:
+- docs
+title: 'Docs after k355: name the keys validate() refuses under kubernetes:, ssh:
+  and on an ssh pool''s machine'
+updated: 2026-10-31T17:21:27Z
+---
+
+From k355 (2026-10-31). validate() now refuses:
+- a key under kubernetes: other than dist/version, with the hint "write kubernetes: { dist: k3s }" for distribution:;
+- a key under ssh: other than private_key/public_key;
+- a key on an ssh pool machine (a mapping in nodes:) other than host (node_ip has its own line);
+- a kubernetes.version or a control plane name that is no string.
+
+docs/configuration.md and the ocp-usage skill (.claude/skills/ocp-usage/SKILL.md, repo-owned) do not say so. Also: the --dist option doc string in lib/OCP/Cmd/Init.pm still spells out "rke2 (default) or k3s" by hand; @OCP::Config::DISTRIBUTIONS is the list now. Leave it as prose if POD cannot read the list, but keep it in step.
+
+Done = both docs name the accepted keys per block, and the Init.pm doc string matches @DISTRIBUTIONS. Lane: ocp-doc-writer. After k355 is committed.
+
+Done by ocp-doc-writer, reviewed by main: docs/configuration.md (2 bullets under 'What ocp apply refuses') + ocp-usage skill (1 bullet in the validate list). The quoted lines match Config.pm and t/296. Init.pm --dist doc already matches @DISTRIBUTIONS, untouched. Patch: scratchpad w-doc377/k377.patch (on HEAD 682e86a + batch 6), no Changes bullet. Gaps beyond the card -> new card.
+
+patch w-doc377/k377.patch, docs only, queued for batch 7
+
+Committed as 86becca
