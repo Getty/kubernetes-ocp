@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T13:59:08Z
+created: 2026-10-31T07:30:45Z
+id: 317
+priority: low
+started: 2026-10-31T13:59:08Z
+status: done
+tags:
+- docs
+- release
+title: 'dzil build: doubled =head1 NAME in OCP.pm and Config.pm, MetaProvides warning
+  for OCP::SSH::HostKeyChanged'
+updated: 2026-10-31T13:59:08Z
+---
+
+Found by the k314 worker's `dzil build` (2026-10-31), predates k314:
+- lib/OCP.pm and lib/OCP/Config.pm each end up with two `=head1 NAME`, one hand-written and one from PodWeaver ([@Author::GETTY]); drop the hand-written one (doc lane, skill getty-perl-pod).
+- MetaProvides warns that `OCP::SSH::HostKeyChanged` maps to no .pm file. Find where that package is declared (an exception class inside another file?) and either hide it from the indexer the house way or give it its own file.
+
+Done = `dzil build` shows neither, and no POD section is lost.
+
+2026-10-31 13:22 Done in a copy of queued+k253 (base14). Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-dzil317/k317.patch (3 files: lib/OCP.pm, lib/OCP/Config.pm, lib/OCP/SSH.pm; no Changes hunk, Changes: none).
+- OCP.pm, Config.pm: dropped the hand-written =head1 NAME. The text matched # ABSTRACT word for word, so nothing is lost.
+- OCP::SSH::HostKeyChanged: hidden from the indexer the way lib/OCP/BooleanEq.pm hides its inner package ({ package # comment / newline / name; ... }), and moved below OCP::SSH's code. It used to be the file's first package and first ABSTRACT, so Pod::Weaver named the built OCP::SSH POD 'OCP::SSH::HostKeyChanged - The exception for a host key...'; now the built NAME is 'OCP::SSH - SSH operations for OCP'. The class is otherwise unchanged; it now compiles under Moo's strict/warnings.
+dzil before: '[@Author::GETTY/MetaProvides::Package] 1 provide map entries did not map to .pm files and may not be loadable at install time: OCP::SSH::HostKeyChanged' (x2). After: no such line. META provides has no HostKeyChanged entry.
+POD (built, before vs after): heading lists differ only by the one dropped NAME in OCP.pm and Config.pm. pod2text diff shows only that and SSH.pm's corrected NAME. podchecker: 'pod syntax OK' before and after on all 3; the one remaining warning (empty SUPPORT) was there before too.
+Tests: make test (Docker, IMAGE=localhost/ocp-w317) with 14 files (00-load 51-pod 07-ssh 168 171 235 77-dist-version-finder 04-config 16-node 204 226 229-ssh-command 237 23-cli-errors): 315 tests PASS, 0 skipped.
+Also found (not fixed, for new cards): (1) 49 more built files have a doubled NAME (bin/ocp, bin/robocop and 47 lib/ modules). In 37 the texts match; in 12 they differ, e.g. bin/ocp, Cmd::Apply, Secrets, SSH ('using IPC::Open3', which is stale), and someone has to pick the wording. (2) Every built file has an empty =head1 SUPPORT (podchecker 'empty section'): bundle/no_cpan matter. (3) dzil prints "git: 'svn' is not a git command". (4) Suggested regression test (test-writer lane): every package that Module::Metadata finds in lib/ maps to its own file.
+
+2026-10-31 13:23 Done: hand-written NAME dropped from OCP.pm and Config.pm; OCP::SSH::HostKeyChanged hidden from the indexer and moved below OCP::SSH (built SSH NAME corrected). dzil build: MetaProvides warning gone. Built POD loses only the duplicate NAMEs. 14 test files, 315 tests, PASS in Docker. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-dzil317/k317.patch
+
+Committed as 50e3ec6
