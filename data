@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-10-31T04:56:20Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:56:20Z
+created: 2026-10-31T04:22:34Z
+id: 294
+priority: low
+started: 2026-10-31T04:56:20Z
+status: done
+tags:
+- skills
+title: 'Skills follow-up from k281/k282: ocp-usage flags, ocp-registry ocp dev, ocp-cilium
+  LB-IPAM wording'
+updated: 2026-10-31T04:56:20Z
+---
+
+Found under k281/k282 (2026-10-31), skill text only:
+- ocp-usage: `ocp hetzner [--list]` is wrong (it is the subcommand `ocp hetzner list`); `ocp kubeconfig --readonly/--name/--server/--revoke` (k230) missing; `ocp provider add --ssh-key-name` and `--pins-stdin` (k166) missing; the PIN2 list lacks `ocp node rm` on ssh nodes.
+- ocp-registry still documents `ocp dev` and `OCP::DevRegistry`; neither exists.
+- ocp-cilium says a multi-node cluster without lb_pool "dies": lb_ipam_resources dies, but ocp apply catches it as a STDOUT [WARN] (k278) — say both.
+Done = each checked against lib/ and fixed.
+
+2026-10-31 04:53 Checked against lib/: ocp hetzner is the subcommand 'list' (OCP::Cmd::Hetzner dies without one); Kubeconfig.pm has --readonly/--name/--server/--revoke and --refresh dies 'not implemented' (skill says re-fetch: wrong too); Provider/Add.pm has --ssh-key-name (hetzner only, default ocp-<cluster>-admin) and --type ssh|local; --pins-stdin is OCP::Role::Cmd's, on every command; node rm asks the cluster key (PIN2) for type ssh only, not local (skill's node rm bullet says ssh/local). PIN2 list also lacks deploy-robocop, keys secure, keys operator add|rm. OCP::DevRegistry removed in 33a03ae, no ocp dev, no Kaniko (NFD = registry.k8s.io release image). lb_ipam_resources dies; Deploy.pm and Apply/Drift.pm catch it as [WARN] LB-IPAM setup failed. k255/k279/k283 contradict nothing in ocp-usage/ocp-core; k290 refusal needs one line in node_ip.
+
+2026-10-31 04:55 Done, skill text only (.claude/skills/ocp-usage, ocp-registry, ocp-cilium; uncommitted). ocp-usage: hetzner list; kubeconfig --refresh = not implemented, new --readonly/--name/--server/--revoke bullet (k230); provider add --type hetzner|ssh|local + --ssh-key-name; node rm bullet: only ssh nodes take the cluster key (not local); PIN2 list + deploy-robocop, keys secure, keys operator add|rm, node rm of an ssh node; --pins-stdin bullet (k166); node_ip: one bullet on the k290 CRD refusal; verified-header names k294. ocp-registry: Dev Registry section removed (OCP::DevRegistry went in 33a03ae, no ocp dev), Kaniko/nfd:master refs and 'OCP-built images (robocop, NFD)' fixed (NFD = registry.k8s.io release image). ocp-cilium: multi-node no-pool -> lb_ipam_resources dies, ocp apply reports a warning and continues (channel-neutral for k278). k255/k279/k283 contradict nothing in ocp-usage/ocp-core. Verified by reading lib/ (Cmd::Hetzner, Kubeconfig, Provider/Add, Role/Cmd, Password, Node/Rm, Destroy, RobocopCredentials, Keys/Operator, Apply/Network, Apply/Deploy, Apply/Drift, Apply/Registry, Apply/Workloads, Node/Add); no test reads .claude/skills, make test not run. Not touched: the dash/underscore paragraph still credits MooX::Options::Role, though since k167 OCP::Role::Cmd::_option_argv_spelled settles the spelling (true in effect, stale attribution).
+
+2026-10-31 04:56 Committed as 4d2e163
