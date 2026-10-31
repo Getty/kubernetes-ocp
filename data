@@ -1,0 +1,39 @@
+---
+class: standard
+completed: 2026-10-31T17:23:55Z
+created: 2026-10-31T15:05:44Z
+id: 381
+priority: medium
+started: 2026-10-31T17:23:55Z
+status: done
+tags:
+- apply
+- dry-run
+- secrets
+- clone
+title: 'Dry run on a clone after k370: prove no reader opens its own OCP::Secrets
+  and caches the key'
+updated: 2026-10-31T17:23:55Z
+---
+
+From k370 (secrets worker, 2026-10-31). Since k370 the reads read_all_secrets (and hetzner_token, read_secret), read_kubeconfig and decrypt_file unlock the project key on a clone the way ensure_age_key does: PIN1, and the key cached in .ocp/age.key. k349 makes ocp apply --dry-run unlock into memory on its own OCP::Secrets in reconcile_components and hand that object on. Any reader on the dry-run path that builds a second OCP::Secrets and reads through it would now ask PIN1 a second time and write .ocp/age.key, under "[Dry run - no changes made]".
+
+Checked by main: host probes are safe (OCP::Keys under _robo_probe_key uses identities(), which never prompts; k374 passes the memory key). Not checked: the drift readers, missing_worker_ocpnodes, sync_worker_meta(dry_run), gpu_dry_run, AMDGPU::dry_run, Workloads::reapplies, and the CR.pm hetzner_token read (CR.pm around line 247, probably write-path only).
+
+Done = every OCP::Secrets->new / OCP::Keys->new reachable from dry_run_report and reconcile_components on --dry-run listed, each either handed the run's $secrets / age_key or shown unreachable. One end-to-end test: a dry run on a clone fixture with every branch on (hetzner and ssh workers, robocop, NVIDIA and AMD gpu, registry) asks PIN1 once and leaves the project dir byte-for-byte unchanged, in t/297 / t/349 style. Red if a second reader is found, then a mutation check.
+
+Lane: ocp-apply-worker. After k370 and k349 are committed (k349 is in batch 5, k370 in batch 6).
+
+2026-10-31 15:07 Started (ocp-apply-worker) on base22 (queued21 + k374 + k370 + k371), work under scratchpad/w-apply381.
+
+2026-10-31 16:04 Finding: no second reader on the --dry-run path. Every OCP::Secrets->new / OCP::Keys->new reachable from reconcile_components + dry_run_report (base22): Apply.pm:93 dispatcher Secrets (only repair_sops_lastmodified, gated !dry_run -> no read); Apply/Drift.pm:140 the run's own (unlock_age_key, then read_kubeconfig with the key in memory); Role/Cmd.pm:396 _robo_probe_key Keys gets the run's age_key (k374; identities() only); ClusterKey.pm:253/278/281 via operator_probe_key make their own only with OCP_OPERATOR_KEY AND SOPS_AGE_KEY_FILE set (that file is the identity, no PIN1, nothing written); RobocopCredentials.pm:217 is the run's $secrets (read_only), :353 _robo_key_entry Keys gets its age_key. None in OCP::Drift detect, gpu_dry_run, Workloads::reapplies/cluster_policy_differences, CR::missing_worker_ocpnodes, CR::sync_worker_meta(dry_run), AMDGPU::dry_run (K8s API, ocp.yaml, share/ only). Unreachable on --dry-run: CR.pm hetzner_token in ensure_provider_cr and read_kubeconfig in cli_reconcile_workers (write path), RobocopCredentials.pm:50, Role/Cmd.pm:505 require_admin_approval, ClusterKey.pm:344/504/527, Bootstrap.pm:349, Apply.pm:192 (bootstrap branch), cluster_ssh_key in reconcile_components/run_remedy past the dry run's return. No CR.pm handover needed.
+
+2026-10-31 16:04 Test t/381-dry-run-clone-every-branch.t (test only, no lib change): clone of a secure-mode project, ssh CP + hetzner and ssh worker pools, robocop secret, gpu operator + gpu.amd, registry; through OCP::Cmd::Apply::execute against a fake cluster serving each branch's reads (CoreDNS, ClusterPolicy, OCPNodes, robocop Secret/Deployment, AMD node); fake ssh/rex on PATH. Asserts PIN1 once, each branch reached, nothing on STDERR, no cluster writes, project dir byte-for-byte (no .ocp/); second subtest with hosts pinned in a known_hosts outside the project so the probes run with the robo key. One stub beyond API/prompt: AMDGPU::lib_too_old -> 0 (image has Rex::Rancher::K8s 0.004 without the AMD deploy functions, which ended the AMD plan before outcome(); dry run calls none of them). Green on base22 at first run = the proof. Mutation: 12 mutants (own OCP::Secrets in robocop_dry_run/gpu_dry_run/AMDGPU::dry_run/missing_worker_ocpnodes/sync_worker_meta/registry_dns_drift/reapplies/dispatcher, memory unlock dropped, age_key dropped in _robo_probe_key/_robo_key_entry/dry_run_report) all killed (39/39 PASS). Final: 11 files/174 tests PASS, no skips.
+
+2026-10-31 16:04 Also found (not in scope): the Docker image's Rex::Rancher::K8s 0.004 lacks deploy_amd_device_plugin/deploy_amd_node_labeller/deploy_amd_metrics_exporter, so on this snapshot a real apply and the dry run deploy no AMD GPU component ([WARN] on STDERR). Probably already known (the k133 sibling-release / snapshot line); flag for whoever owns the snapshot (build lane).
+
+2026-10-31 16:04 Done, test only: scratchpad/w-apply381/k381.patch (new t/381-dry-run-clone-every-branch.t, header with the reader list, no Changes hunk) against queued22. No second reader exists; t/381 is the proof, 12/12 mutants killed. Touches neither Apply.pm nor Secrets.pm.
+
+Reviewed by main: test only, reader table checked against the worker's audit. Applies on head13 (HEAD + batch 6/7 + k306-1 + k384 + k266 + k375); the RM's combined suite for batch 8 runs it there. Note: since k266 the dispatcher's Secrets object also calls bare_sops_lastmodified_files on -n (read-only, no key, no PIN), so the t/381 header line 'only for repair_sops_lastmodified' is slightly narrow but the claim holds.
+
+Committed as d1f041b
