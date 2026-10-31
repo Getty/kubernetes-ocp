@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T10:05:38Z
+created: 2026-10-31T08:55:12Z
+id: 327
+priority: medium
+started: 2026-10-31T10:05:38Z
+status: done
+tags:
+- apply
+- output
+title: 'Bootstrap node-Ready wait: warnings on STDOUT, a never-Ready node continues,
+  rke2 kubectl path on k3s'
+updated: 2026-10-31T10:05:38Z
+---
+
+Found under k319 (apply worker, 2026-10-31). lib/OCP/Cmd/Apply/Bootstrap.pm, the node-Ready wait of the first deploy (~line 608):
+- "WARNING: API server may not be reachable" and "[WARN] Node not Ready after 600s via API, checking via SSH..." / "[WARN] Node genuinely not Ready, continuing anyway..." go to STDOUT -- against the output-channel rule (.claude/rules/ocp-rules.md).
+- A node that never gets Ready: bootstrap continues and nothing counts it as unfinished -- check against ADR 0017 (success is a statement about the cluster): should the run end APPLY INCOMPLETE?
+- The SSH fallback runs /var/lib/rancher/rke2/bin/kubectl and /etc/rancher/rke2/rke2.yaml -- an rke2 path also on a k3s cluster. ADR 0007 exempts the distribution's bundled kubectl over SSH during bootstrap, so the call itself is allowed; the hard-coded rke2 path is not right for k3s.
+
+Done = the warnings on STDERR with their cause, a decision (and test) whether a never-Ready control plane fails the run, the fallback uses the distribution's own kubectl/kubeconfig path or is dropped.
+
+2026-10-31 09:53 Decisions (apply worker). (1) SSH fallback DROPPED, not ported to k3s paths: the wait already reads the Node over the API (60 polls), the condition docs/superpowers/specs/2026-04-14-node-lifecycle-design.md named for replacing the fallback; its verdict decided nothing (it only picked which line got printed, the run went on either way); in the common case it asked the same apiserver again and parsed text (the cost ADR 0007 rejects); in the failed-list case k319 already names the cause, and every later step uses the same API handle; k3s's own kubectl/kubeconfig paths belong to Rex::Rancher::Distribution (k196, ADR 0012), not a copy in Bootstrap.pm; ADR 0007's exemption names the Rexfile where OCP has no kubeconfig yet, and here OCP has just saved one and built its API. Diagnosis instead: the Ready condition's status, reason and message on STDERR. (2) Never-Ready control plane -> APPLY INCOMPLETE? ADR 0017 does NOT answer it: its principle (the banner is a statement about the cluster) points to failing, its mechanism (the pod scan, Pending = still starting, an accepted consequence) points to not failing, and the amendment handles node-level readiness waits case by case and provisionally (AMD a failed component, NVIDIA a warning, open on k285). Code precedent: k226 counts police2+ and workers short of Ready as failed components. Not decided by me: behaviour left as it was (no failed component, no apply warning, banner and exit code unchanged), and no test pins it. Maintainer's call.
+
+2026-10-31 09:54 Done (apply worker), as a patch, nothing in the shared tree: scratchpad w-apply327/k327.patch against HEAD (made on 29e7a85, applies unchanged on 89102c9). lib/OCP/Cmd/Apply/Bootstrap.pm: the API-not-reachable warning and the never-Ready line go to STDERR with their cause -- 'Node X not seen Ready within 600s: Ready is False (KubeletNotReady: ...)', ': it reports no Ready condition', ': no Node listed', or '; the last read failed: could not read Nodes: ...' (new node_not_ready_why). The SSH fallback (RKE2 kubectl + cilium status over SSH, also on k3s) is gone; the run goes on as before. Tests: new t/327-bootstrap-node-ready.t (k3s and rke2: nothing over SSH, no rancher path anywhere; every condition shape; 403/500 reads); t/319 claims replaced where they pinned the SSH fallback (no SSH run now, one STDERR line). Red on HEAD; 11/11 mutants killed. Binding Docker run (make test, 33 files incl. t/169 t/226 t/298 t/196 t/231): Files=33 Tests=539 PASS. Full suite on clean HEAD 89102c9 + k327 + k328: Files=229 Tests=3609 PASS, no skips. Proposed subject: Say a control plane not Ready after the bootstrap wait on STDERR with its Ready condition, and drop the SSH fallback that ran RKE2's kubectl on k3s too (k327). Open: the APPLY INCOMPLETE question (note above) for the maintainer; ADR 0007's exemption paragraph now covers no code (ADR auditor).
+
+Committed as 53d34eb
