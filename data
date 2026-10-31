@@ -1,0 +1,41 @@
+---
+class: standard
+completed: 2026-10-31T13:58:06Z
+created: 2026-10-31T10:59:32Z
+id: 346
+priority: low
+started: 2026-10-31T13:58:06Z
+status: done
+tags:
+- secrets
+- robustness
+title: ocp keys operator add|rm and keys secure --drop-bootstrap die inside Perl on
+  a control plane or pool that is no mapping
+updated: 2026-10-31T13:58:06Z
+---
+
+Left over from k321 (secrets worker, 2026-10-31), secrets lane. k321 makes `ocp keys secure` run all of validate() first. Two paths stay unchecked on purpose and still die inside Perl ("Not a HASH reference ... internal error") before PIN2 on `control_planes: ['host']` or `workers: 'host'`:
+- `ocp keys secure --drop-bootstrap` on a project that is secure already (deliberately not gated by k321: it is the step after a leaked bootstrap key);
+- `ocp keys operator add|rm`, which uses the same machine lookup.
+Nothing changes on disk or on a machine, but the user gets an internal error instead of validate()'s line.
+
+Fix as k323 did for destroy: check only what those paths read (the machine lookup's shapes), with validate()'s words, before anything is asked or touched. Done = tests for both shapes on both paths: validate()'s line, exit 1, no prompt, no SSH.
+
+2026-10-31 13:11 Done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets349/k346.patch (on base 12d049a + k339/k343/k338/k261/k297/k329 + k349-secrets.patch; git apply --check clean, result identical to the working copy). Not committed.
+
+What: the Machines role checks what its machine lookup reads, in validate()'s words, before PIN1, the cluster API, PIN2 or SSH: control_planes a mapping or a list of mappings, each entry's host a string (once for nodes: N, k322), workers a list of mappings, a known-provider pool's nodes as worker_ocpnodes reads them (Config::_pool_nodes_errors), an ssh pool's host where no nodes: list stands beside it. Every line is one validate() has for the same ocp.yaml; all at once, then "Nothing was changed: <command> reads the machines ...". Called first in Secure::_drop_in_secure_mode and right after the config load in Operator::operator_project. What the lookup does not read (gpu.driver, a host beside a hetzner pool, an ssh pool's host beside a nodes: list) holds nothing up. Pools of an unknown/missing provider are skipped, as destroy does (k323/k326/k335).
+Files: lib/OCP/Role/Cmd/Machines.pm (_machines_spec_errors, _machine_host_error, _refuse_unreadable_machines, POD), lib/OCP/Cmd/Keys/Secure.pm (gate call, k321 comment, --drop-bootstrap POD), lib/OCP/Role/Cmd/Operator.pm (requires + gate call, POD), t/346-keys-machines-shapes.t (new).
+
+Verified (make test in the image, through the load guard):
+- red, final t/346 on base+k349 (red346f): 15 subtests, 11 failed -- all 9 shapes (Can't use string as a HASH ref at Machines.pm:65 / as an ARRAY ref at Apply/CR.pm:503, PIN1 asked, .ocp/age.key written, control_planes string taken for no control plane), all-at-once, bin/ocp; the gate-itself subtest dies (no method); the 3 unread cases pass before and after, by design.
+- green: t/346 + 14 related files (t/96, t/216 x2, t/296, t/101, t/209, t/237, t/241, t/71, t/329, t/00-load, t/95, t/107, t/326): 15 files, 289 tests, PASS (older t/346 draft); final t/346 green as the unmutated control in each mutant run (15/15) and in the k342 green on the full stack (22 files, 742 tests, PASS).
+- mutants: 17/17 killed. m05-m16 (Machines.pm: each check dropped, CP host on every nodes: N copy, gate = all of validate(), own words, warn not die, ssh host beside nodes) killed in-process with failing lines specific to each. m00-m04 rerun with a fixed harness (below): pre-fix tree 190 failing lines; no gate / gate after PIN1, drop and operator path each, killed in-process too, every sub of each mutated file proven loaded from the mutant.
+- Harness note: the first harness (-I / use lib shadow) was defeated in-process for Secure.pm and Operator.pm -- Rex rewrites @INC with $cwd/lib (the real lib) in front when Machines.pm pulls it in -- so m01-m04 had been killed only through the bin/ocp subtest and m00 died of a mixed load. Second harness preloads the mutant modules after Rex; a control shows the first one loaded the real Operator.pm.
+
+Proposed Changes bullet: `ocp keys operator add|rm` and `ocp keys secure --drop-bootstrap` stop on a control plane or worker pool in ocp.yaml that is no mapping, a control_planes or workers of the wrong shape, a host that is a list, or a pool's nodes its provider cannot read -- with validate()'s line on STDERR and exit 1, before PIN1 is asked, the cluster is read or a machine is touched -- instead of an internal error after PIN1, or taking a control_planes string for no control plane.
+
+Also found (not fixed): worker_ocpnodes (Apply/CR.pm) counts nodes on a pool of unknown/missing provider -- a list or a huge number there loops to OOM in these commands (validate()'s line there is the provider's, so this gate skips such pools as destroy does); fix belongs in worker_ocpnodes (apply lane). Docs: docs/security.md and the ocp-usage skill do not yet say these commands check the machines' shape before PIN1 (nor that keys secure runs validate(), k321) -- doc lane.
+
+2026-10-31 13:11 Done: shape gate for the machine lookup before PIN1 on both paths (operator add|rm, keys secure --drop-bootstrap), validate()'s lines, exit 1, no prompt/SSH/API/file. Red on base+k349 (11/15 subtests fail), green (15 files 289 tests; full stack 22 files 742 tests), 17/17 mutants killed in-process. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets349/k346.patch (stacks on k349-secrets.patch). Not committed.
+
+Committed as 60dae93
