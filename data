@@ -1,0 +1,34 @@
+---
+class: standard
+completed: 2026-10-31T17:24:28Z
+created: 2026-10-31T11:44:40Z
+id: 348
+priority: low
+started: 2026-10-31T17:24:28Z
+status: done
+tags:
+- dns
+- registry
+- drift
+title: 'registry.local DNS after k338: k3s coredns-custom snippets unseen, ConfigMap
+  without Corefile key, duplicate-hosts crash not probed'
+updated: 2026-10-31T17:24:28Z
+---
+
+Left over from k338 (2026-10-31), where the registry.local writer and its drift probe now read the Corefile through one parser (OCP::Corefile):
+- k3s `coredns-custom` ConfigMap `*.server` snippets: CoreDNS on k3s imports server blocks from that second ConfigMap. Neither the writer nor the probe looks at it, so a snippet that answers registry.local (or shadows it) is invisible to both. ADR 0022 treats this as solved; it is not. Decide: read coredns-custom on k3s too (and through OCP::Corefile), or say in the ADR that it is out of scope.
+- A CoreDNS ConfigMap with no `Corefile` key: the writer dies (k328, a [WARN] on STDERR), the probe moves on or reports nothing. They still disagree there.
+- The writer repairs the duplicate-hosts Corefile that crashes CoreDNS; the probe does not detect it.
+- Server-block keys with a port are matched by zone only (as before k338) -- fine for :53, say so if another port appears.
+
+Done = writer and probe agree on each case (t/338 extended), or an ADR line saying which case is deliberately not handled.
+
+2026-10-31 12:15 Started (ocp-state-worker). Plan: (1) coredns-custom: OCP::Corefile learns top-level 'import' expansion from given files; writer and probe read kube-system/coredns-custom only when the Corefile imports from /etc/coredns/custom (k3s stock does, RKE2's chart does not -- so no distribution switch); only a 404 is absent. (2) no Corefile key: probe takes the first ConfigMap that exists, like the writer, and reports kind spec + manual_step; writer names the missing key. (3) duplicate hosts: drop logic moves into OCP::Corefile so the probe asks the writer's question. (4) port: only plain-DNS keys on :53 answer cluster queries. Work in a scratch copy, no shared-tree edits.
+
+2026-10-31 13:16 Implementation done in scratch (WIP: w-state348/wip.diff): OCP::Corefile gains imports/origin/file (top-level import expansion), on_cluster_port, hosts_lines, without_added_hosts (moved from Network::corefile_drop_added_hosts), import_patterns; OCP::Drift gains $COREDNS_CUSTOM_CONFIGMAP/$COREDNS_CUSTOM_DIR, corefile_imports_custom, coredns_custom_files, corefile_block_name, and registry_dns_drift reads the first ConfigMap that exists, coredns-custom when imported, and the root block's hosts count; Network::configure_registry_dns does the same (dies -> [WARN] on STDERR). t/338 extended (27 new agreement cases + unit subtests), t/328's no-Corefile-key message updated. Apply/Drift.pm untouched. Waiting for a loadguard slot for red/green/mutant runs.
+
+k348 done, patch at /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-state348/k348.patch (git diff vs queued 27dd48f; header has subject + Changes bullet). Files: lib/OCP/Corefile.pm (top-level import expansion with per-block file, on_cluster_port, hosts_lines, without_added_hosts, import_patterns), lib/OCP/Drift.pm (registry_dns_drift reads coredns-custom when imported, no-Corefile-key = spec, duplicate-hosts = missing/spec; corefile_imports_custom, coredns_custom_files, corefile_block_name), lib/OCP/Cmd/Apply/Network.pm (configure_registry_dns reads coredns-custom via read_or_absent, names the missing Corefile key, refuses a doubled hosts plugin; drop logic moved into OCP::Corefile), t/338 (+k348 cases, writer and probe agree on each), t/328 (no-Corefile-key message). Apply/Drift.pm not touched. All four bullets handled in code; no case left unhandled. Runs: red = base + new t/338: exit 2, 22 k348 subtests failed, then died on missing on_cluster_port. Green = 43 files / 976 tests: 42 ok, t/338 died on a test-only parse bug (is OCP::Corefile->... indirect-object call), fixed with parens; t/338 then ok (51 subtests). Mutants (5 + unmutated control, one guarded run): control ok; writer-skips-custom, probe-skips-custom, probe-next-name-on-missing-key, probe-no-dup-check, any-port all killed on the intended subtests. ADR 0022 lines 57-60 now read stale -- amendment text in the report for the adr-auditor.
+
+Ready for review: patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-state348/k348.patch against queued 27dd48f. Green on t/338 + 42 neighbouring files; 5 mutants killed. Needs ADR 0022 amendment (adr-auditor) and a Changes bullet (in the patch header).
+
+Committed as 79e24e3
