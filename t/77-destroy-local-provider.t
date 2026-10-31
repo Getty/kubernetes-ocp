@@ -286,9 +286,9 @@ subtest 'k146: a hetzner node with no host gets no existing-host uninstall' => s
 };
 
 subtest 'k146: an ssh node with no host is still skipped, no SSH uninstall' => sub {
-    # ssh is the existing-host provider that DOES need a host. Reconstructed
-    # from spec with no host (public_ip '-'), its resolve_host dies and the
-    # node is skipped -- exactly as before the local relaxation. This is the
+    # ssh is the existing-host provider that DOES need a host. Found in the
+    # spec with no host, it is skipped -- since k353 by the fallback itself,
+    # which says so on STDERR and does not list it (t/353). This is the
     # guard that the widened gate did not start SSHing to a hostless node.
     my $config = project(cp_provider => 'ssh', cp_no_host => 1);
 

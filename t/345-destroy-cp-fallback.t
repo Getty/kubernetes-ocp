@@ -183,8 +183,13 @@ subtest 'a control plane with host: 0 or \'\' names no machine, as apply reads i
             . 'it reads no host';
         my $r = run_destroy($ssh);
         is $r->{ex}, '', "ssh, host: $host -- ran without dying" or diag $r->{ex};
-        like $r->{out}, qr/^  - prod-cp-1 \(ssh, -\)$/m,
-            "ssh, host: $host -- listed under the fallback's name, with no address";
+        # Until k353 listed as prod-cp-1 (ssh, -) and then skipped without a
+        # word: an ssh control plane is reached at its host. Said now, with
+        # validate()'s line for it, and not listed (t/353).
+        is $r->{err}, "[!!] control_planes[1]: host required for ssh -- skipped: "
+                    . "that control plane is NOT torn down.\n",
+            "ssh, host: $host -- said as no host, on STDERR";
+        is $r->{out}, $NO_NODES, "ssh, host: $host -- not listed";
         unlike $r->{out}, qr/^  - 0 |^Deleting 0\.\.\.$|^  -  \(/m, "ssh, host: $host -- no machine named 0 or ''";
         is_deeply deleted($r), [], "ssh, host: $host -- nothing uninstalled";
         ok !(grep { $_->[0] eq 'ssh key' } @{ $r->{events} }), "ssh, host: $host -- no PIN2 asked";

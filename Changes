@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` now names on STDERR what it does not tear down: an ssh
+      control plane with no host, a control plane or pool with `provider:
+      ''`, and a Hetzner label search that failed, with its cause, the
+      selector, and the OCPNodeProvider whose token it used. It refuses a
+      local control plane's `public_ip` that is not a string before it
+      touches anything. The SSH-key refusal and the search error lose their
+      croak location, and the API-down warning no longer says workers come
+      from all of `ocp.yaml`.
     - `ocp status`, `ocp node ls`, `ocp health` and `ocp provider ls` say
       in one line, naming the server, the status and the API's message,
       when the cluster API answers with an error -- a 401 for credentials it

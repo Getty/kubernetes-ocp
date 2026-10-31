@@ -11,6 +11,7 @@ use Path::Tiny qw(path);
 use OCP;
 use OCP::Choices;
 use OCP::Config;
+use OCP::ErrorLine ();
 use OCP::K8s;
 use OCP::Provider;
 use OCP::Secrets;
@@ -177,13 +178,14 @@ sub _collect_nodes {
     # another Hetzner project than the local token does. A find remembers the
     # CR whose token found it, so the same token deletes it. Whether a search
     # answered, and why one did not, is kept for the control-plane fallback
-    # below (k345).
-    my ($announced, $searched, $search_error);
+    # below (k345), and for the line a failed one gets when the fallback does
+    # not say it (k353).
+    my ($announced, $searched, @failed);
     for my $source ($self->_hetzner_sources($hetzner_prov)) {
         my ($ref, $prov) = @$source;
         my $servers = eval { $prov->list_servers_by_cluster($config->name) || [] };
         unless ($servers) {
-            $search_error //= $@;
+            push @failed, [ $ref, $@ ];
             next;
         }
         $searched++;
@@ -226,6 +228,17 @@ sub _collect_nodes {
     # A host Perl calls false (0, '') is no host, as apply reads it
     # (cp_identity, ensure_control_plane_ocpnodes) -- not a machine named 0
     # (k345, as k341 for a pool's).
+    #
+    # An ssh control plane is reached at its host and nowhere else: one with
+    # none is said, in validate()'s line for it, and not listed (k353), as a
+    # control plane whose provider destroy does not know. Listed, it was
+    # "Deleting <cluster>-cp-N..." and nothing more: the uninstall had nowhere
+    # to go, and nothing said that the machine, if it runs, keeps its install.
+    # A local one needs no host -- its uninstall runs on 127.0.0.1 (k146) --
+    # and without one is listed by its public_ip, whose shape is checked up
+    # front (k353).
+    my $search_error = @failed ? $failed[0][1] : undef;
+    my $search_said;
     unless (@nodes) {
         my $cps    = $config->control_planes;
         my $shared = $config->_control_planes_shared;
@@ -243,9 +256,16 @@ sub _collect_nodes {
             if ($prov eq 'hetzner') {
                 $self->_say_hetzner_control_plane($config, $where, $searched, $search_error)
                     unless $shared && $i;
+                # That line carries the failed search when none answered.
+                $search_said ||= !$searched;
                 next;
             }
             my $host = $cp->{host} || undef;
+            if (!defined $host && $prov eq 'ssh') {
+                $self->_say_skipped($where, 'host required for ssh', 'that control plane is')
+                    unless $shared && $i;
+                next;
+            }
             $add->({
                 name      => $host // ($config->name . "-cp-$idx"),
                 provider  => $prov,
@@ -254,6 +274,12 @@ sub _collect_nodes {
             });
         }
     }
+
+    # A label search that failed and that the fallback did not say (k353):
+    # some source found nodes, so the fallback did not run, or it had no
+    # hetzner control plane to say it for, or another search answered there.
+    # A server only that search would find stays up, and nothing named it.
+    $self->_say_failed_search($config, @$_) for $search_said ? () : @failed;
 
     my @workers = grep { ($_->{role} // '') eq 'worker' } @nodes;
     my @rest    = grep { ($_->{role} // '') ne 'worker' } @nodes;
@@ -286,6 +312,11 @@ sub _node_keys {
 # _report_mislabelled_servers relies on). A node neither answers is named on
 # STDERR: it keeps running, and saying nothing about it is the bug this
 # closes.
+#
+# When the API does not answer, the warning says where the workers come from
+# instead. ocp.yaml names the machines of its ssh pools only: a local pool's
+# worker, like one `ocp node add` brought up, is found by its OCPNode alone
+# (k353; _spec_worker_entries).
 sub _ocpnode_entries {
     my ($self, $api) = @_;
     return unless $api;
@@ -297,9 +328,10 @@ sub _ocpnode_entries {
         chomp $why;
         print STDERR "[!!] Could not read the OCPNodes from the cluster API:\n";
         print STDERR "     $why\n";
-        print STDERR "     Workers come from .ocp/status.yaml, Hetzner labels and\n";
-        print STDERR "     ocp.yaml only; a worker added with `ocp node add` may be\n";
-        print STDERR "     missed and keep running.\n";
+        print STDERR "     Workers come from .ocp/status.yaml, Hetzner labels and the\n";
+        print STDERR "     hosts of ocp.yaml's ssh pools only; a worker only its OCPNode\n";
+        print STDERR "     records -- a local pool's, or one added with `ocp node add` --\n";
+        print STDERR "     may be missed and keep running.\n";
         return;
     }
 
@@ -485,14 +517,40 @@ sub _spec_worker_entries {
 # (k345). Asked with the test validate() makes, so the two cannot part. A
 # control plane's false is invalid in validate() too: it reads a control
 # plane's provider as hetzner only when it is absent.
+#
+# provider: '' is set, and said (k353): "provider required" on a pool, as
+# false is, and "invalid provider ''" on a control plane. It was taken for
+# one not set, and skipped without a word.
 sub _say_unknown_provider {
     my ($self, $where, $prov, $left, %as) = @_;
-    return unless ref $prov || length($prov // '');
+    return unless defined $prov;
     my $what = $as{pool} && $prov eq ''
         ? 'provider required'
         : 'invalid provider ' . OCP::Config::_shown_value($prov)
           . ' (must be ' . OCP::Choices::or_list(OCP::Provider->types) . ')';
+    $self->_say_skipped($where, $what, $left);
+}
+
+# The line for a control plane or pool destroy skips (k341): where, why in
+# validate()'s words, and what that leaves running.
+sub _say_skipped {
+    my ($self, $where, $what, $left) = @_;
     print STDERR "[!!] $where: $what -- skipped: $left NOT torn down.\n";
+}
+
+# A label search that failed where the control-plane fallback does not say it
+# (k353), as the fallback says it (k345): the cause, what it may leave
+# running, the label to look by. The provider whose token it ran under is
+# named when it is not the local one: hcloud looks in one project at a time.
+sub _say_failed_search {
+    my ($self, $config, $ref, $err) = @_;
+    my $label = 'ocp-cluster=' . $config->name;
+    my $with  = defined $ref ? " with OCPNodeProvider/${ref}'s token" : '';
+    print STDERR "[!!] The label search for $label$with failed: "
+               . OCP::ErrorLine::one_line($err)
+               . " -- a server only it would find is NOT torn down.\n";
+    print STDERR "     Fix the cause and run `ocp destroy` again, or look by hand:\n";
+    print STDERR "       hcloud server list -l $label\n";
 }
 
 # What the control-plane fallback says for a hetzner control plane, in place
@@ -506,6 +564,9 @@ sub _say_unknown_provider {
 # the label to look for it by. The k98 report after the teardown searches
 # the hetzner-default label with the same tokens; with none it has nothing
 # to search with either.
+#
+# The search's error is one line without its croak location, as
+# _say_failed_search says it (k353): Hetzner's carries one.
 sub _say_hetzner_control_plane {
     my ($self, $config, $where, $searched, $search_error) = @_;
     my $label = 'ocp-cluster=' . $config->name;
@@ -514,9 +575,8 @@ sub _say_hetzner_control_plane {
         print "$found; no server carries it, nothing to delete.\n";
         return;
     }
-    my ($error) = split /\n/, $search_error // '';
-    my ($why, $fix) = defined $error && length $error
-        ? ("the label search failed: $error", 'Fix the cause')
+    my ($why, $fix) = defined $search_error
+        ? ('the label search failed: ' . OCP::ErrorLine::one_line($search_error), 'Fix the cause')
         : ('no Hetzner token searched for it', "Put the project's Hetzner token into secrets.yaml");
     print STDERR "[!!] $found, and $why -- if it runs, it is NOT torn down.\n";
     print STDERR "     $fix and run `ocp destroy` again, or look by hand:\n";
@@ -629,6 +689,11 @@ sub _spec_name_errors {
 # control plane's host is not read since k345 -- the fallback names it by
 # its label, and lists no machine for it -- so its shape is not checked.
 #
+# And an entry's public_ip where the fallback reads it (k353): one it lists
+# with no host, a local one (an ssh one without a host it says, not lists).
+# A list there became the address the machine was listed and matched by,
+# ARRAY(0x...), while validate() has refused it since k340.
+#
 # Not a provider, a server_type, a location, an image, a count or the bound
 # of seven, which destroy reads around or not at all.
 sub _spec_control_plane_errors {
@@ -650,8 +715,13 @@ sub _spec_control_plane_errors {
         }
         my $prov = $cp->{provider} // 'hetzner';
         next if ref $prov || !OCP::Provider->known_type($prov) || $prov eq 'hetzner';
-        my $err = $self->_host_error($cp->{host}) // next;
-        push @errors, "control_planes[$idx].host: $err";
+        if (defined(my $err = $self->_host_error($cp->{host}))) {
+            push @errors, "control_planes[$idx].host: $err";
+            next;
+        }
+        next if $cp->{host} || $prov eq 'ssh';
+        my $err = OCP::Config::_not_a_string($cp->{public_ip}, 'an IP address') // next;
+        push @errors, "control_planes[$idx].public_ip: $err";
     }
     return @errors;
 }
@@ -841,7 +911,10 @@ sub execute {
     #     teardown must not grow a PIN2 prompt it never had.
     #
     # A failure here therefore downgrades to "the uninstall script did not
-    # run on those machines", which is recoverable by hand, and says so.
+    # run on those machines", which is recoverable by hand, and says so. Its
+    # reason is one line without a croak location (k353, OCP::ErrorLine):
+    # ssh_config's refusal of an ssh: key came with "at .../ClusterKey.pm
+    # line N." on it.
     my $needs_ssh_key = grep {
         ($_->{provider} // '') eq 'ssh'
             && $_->{public_ip} && $_->{public_ip} ne '-'
@@ -856,11 +929,10 @@ sub execute {
             );
         };
         unless ($ssh_key) {
-            my $why = $@ || "unknown error\n";
-            chomp $why;
+            my $why = OCP::ErrorLine::one_line($@);
             print STDERR "\n";
             print STDERR "[!!] Could not obtain the SSH key for the ssh-provider nodes:\n";
-            print STDERR join('', map { "     $_\n" } split /\n/, $why);
+            print STDERR "     $why\n";
             print STDERR "     Their RKE2/K3s uninstall will be SKIPPED. Everything\n";
             print STDERR "     that costs money is deleted through the provider API\n";
             print STDERR "     and is unaffected.\n";
@@ -1205,7 +1277,9 @@ F<.ocp/status.yaml> does not record; a host became a machine named
 C<ARRAY(0x...)>.  A pool's C<host> is read on an ssh pool whose C<nodes:> is
 no list -- never on a hetzner or local pool, where C<ocp apply> does not read
 it either (C<k341>) -- a control plane's on an ssh or local one, which the
-fallback below lists (a hetzner one it does not, since C<k345>).  Only
+fallback below lists (a hetzner one it does not, since C<k345>).  So is the
+C<public_ip> of a local control plane with no C<host>, which the fallback
+lists it by (C<k353>).  Only
 those: an F<ocp.yaml> that C<validate()> refuses for a key destroy reads
 around or does not read -- C<gpu>, C<robocop>, a pool's
 count, an unknown provider, a missing C<server_type>, a C<server_type>,
@@ -1227,15 +1301,21 @@ C<control_planes> section of C<ocp.yaml> is a last resort, used only when
 nothing else found a node.  A worker pool, or a control plane in that last
 resort, whose provider destroy does not know is skipped and named on STDERR
 with C<validate()>'s words for its provider (C<k341>) -- for a pool's
-C<provider: false> that is C<provider required> (C<k345>).  A control plane
+C<provider: false> or C<provider: ''> that is C<provider required> (C<k345>,
+C<k353>).  A control plane
 there is read as C<ocp apply> reads it (C<k345>): with no C<provider> it is
-hetzner, and a C<host> Perl calls false, such as C<0>, names no machine.  A
+hetzner, and a C<host> Perl calls false, such as C<0>, names no machine.  An
+ssh one with no host is skipped and named on STDERR the same way, with
+C<validate()>'s C<host required for ssh> (C<k353>): there is nowhere to send
+its uninstall.  A
 hetzner one is not listed: there is no server id to delete it by, and its
 server is found by its C<ocp-cluster> label -- the search before the last
 resort, which found nothing if it runs -- or not at all.  The run says so,
 on STDOUT when that search answered, and on STDERR, with the C<hcloud>
 selector to look for it by hand, when none did (no token, or the search
-failed): then it may still run.  An API that does not
+failed): then it may still run.  A label search that fails anywhere else is
+named on STDERR the same way, with its cause and the selector (C<k353>): a
+server only it would have found keeps running.  An API that does not
 answer is reported on STDERR and the teardown continues from the other
 sources (C<k177>).
 
