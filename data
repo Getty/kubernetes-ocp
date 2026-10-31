@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T04:10:26Z
+created: 2026-10-31T02:48:12Z
+id: 274
+priority: low
+started: 2026-10-31T04:10:26Z
+status: done
+tags:
+- adr
+- gpu
+title: 'ADR 0015/0017: GPU usability is allocatable, not capacity'
+updated: 2026-10-31T04:10:26Z
+---
+
+Found while doing k270 (NVIDIA count now reads status.allocatable; AMD has since k251/k252).
+
+ADR 0015 (lines ~61-63, ~101) names OCP::Kubernetes::node_gpu_count reading capacity as the proof a GPU is usable, and ADR 0017 (~82) refers to it. The kubelet keeps capacity standing after a device plugin unregisters (rex-rancher k106, live on amdlab 2026-10-31: capacity 1, allocatable 0), so that statement is no longer true.
+
+Done when: ocp-adr-auditor records the change the house way (amendment or superseding note, never a silent rewrite), with the reason and the commits (k270, k252).
+
+2026-10-31 03:35 Convention: amendment, not supersession (docs/adr/README.md). 0015's decision (ask the machine; the device plugin's published resource is the after-cluster answer) still holds, only the field was wrong; 0015 already carries a Decision-bullet amendment (2026-09-26) in the same form. Each file gains '## Amendment 2026-10-31' quoting the old text, inline '*(amended 2026-10-31, see below)*' markers at 0015 Decision (node_gpu_count sentence) + Consequences (proof sentence) and 0017's last Consequence. Original text unchanged (one reflow in 0015 to place the marker). Evidence verified: rex-rancher k106 card (amdlab synapse cap 1/alloc 0, discriminating DRA run 24 polls no ok), cf10698; OCP commits 4d90591 (k251), 45b81fe (k252), fc315f4 (k258), f2d9de6 (k270) via git show. README index/provenance untouched (titles unchanged; recent amendments 0015/k191, 0029, 0030 added no provenance entry either). Also found (out of scope): 0017's Decision lists three banner variants; k203 (aa7ecac) added '— APPLY INCOMPLETE' and failed components driving the exit code, never recorded in 0017 — candidate for its own amendment.
+
+2026-10-31 03:36 Done: docs/adr/0015-decide-about-gpus-from-the-machine.md and docs/adr/0017-success-is-a-statement-about-the-cluster.md amended (## Amendment 2026-10-31 + inline markers): GPU usability is status.allocatable, not capacity; live amdlab evidence (rex-rancher k106, cf10698) and commits k251 4d90591, k252 45b81fe, k258 fc315f4, k270 f2d9de6. 0017 amendment also records that AMD allocatable is now part of apply's verdict (failed component), NVIDIA still not. NVIDIA stale-capacity stated as inference, not live-verified. Verified: git diff docs/adr shows only these two files, 89+/4-. Not committed. Suggested subject: Amend ADR 0015 and 0017: a GPU is usable by allocatable, not capacity (k274)
+
+2026-10-31 04:06 Follow-up (coordinator, after k273 7e786ce): 0017 amendment's NVIDIA paragraph rewritten. It no longer says nothing waits; it says setup_gpu_operator (unchanged included) and ocp node add --gpu wait up to 300 s (gpu_ready_timeout) for nvidia.com/gpu > 0 in allocatable, a short node is one [WARN] on STDERR, verdict/banner/exit code unchanged, so the proof is checked but outside the gate. New closing paragraph names the NVIDIA-warn / AMD-failed asymmetry as a provisional k273 call, open on k285, without arguing it. Verified against git show 7e786ce (call sites at Workloads.pm unchanged + deploy paths, return value ignored). 0015 untouched: its amendment makes no claim about NVIDIA in apply. Card stays in review, not committed.
+
+Committed as 725e10f
