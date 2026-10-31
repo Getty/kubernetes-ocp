@@ -7,6 +7,7 @@ use Kubernetes::REST::Kubeconfig;
 use OCP::Cmd::Apply::Bootstrap ();
 use OCP::Cmd::Apply::CR ();
 use OCP::Config ();
+use OCP::ErrorLine ();
 use OCP::K8s;
 use OCP::Provider ();
 use OCP::SSH;
@@ -357,13 +358,11 @@ sub _ssh_failure {
     return $self->_oneline($why);
 }
 
+# As OCP::Cmd::Init says a failure (k342). Nothing left stays '': the callers
+# put their own words in front ("unexpected answer: ").
 sub _oneline {
     my ( $self, $s ) = @_;
-    $s = '' unless defined $s;
-    $s =~ s/ at \S+ line \d+\.?\s*\z//;
-    $s =~ s/\s+/ /g;
-    $s =~ s/\A\s+|\s+\z//g;
-    return $s;
+    return OCP::ErrorLine::one_line($s, empty => '');
 }
 
 1;

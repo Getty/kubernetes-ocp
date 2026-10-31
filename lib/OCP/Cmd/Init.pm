@@ -10,6 +10,7 @@ use File::Copy qw(copy move);
 use OCP;
 use OCP::Choices;
 use OCP::Config;
+use OCP::ErrorLine ();
 use OCP::Hetzner::Picker;
 use OCP::Keys;
 use OCP::Password;
@@ -970,17 +971,11 @@ sub _prompt_hetzner_control_plane {
 # WWW::Hetzner raised -- the API's message, or the status and body text when
 # the body has none; a transport failure arrives as LWP's reason -- without
 # the Perl source locations croak and LWP append, and with the token masked
-# should an answer ever echo it back.
+# should an answer ever echo it back. OCP::ErrorLine, shared with the keys
+# commands since k342.
 sub _catalogue_error {
     my ($self, $err, $token) = @_;
-
-    my $line = defined $err ? "$err" : '';
-    $line =~ s/\Q$token\E/********/g if defined $token && length $token;
-    $line =~ s/ at \S+ line \d+\.?//g;
-    $line =~ s/\s+/ /g;
-    $line =~ s/\A | \z//g;
-
-    return length $line ? $line : 'unknown error';
+    return OCP::ErrorLine::one_line($err, mask => $token);
 }
 
 # Print a { label, value } list and read one choice from STDIN. Accepts the

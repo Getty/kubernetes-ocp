@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp keys secure` and `ocp keys operator add|rm` name why a machine
+      failed without any Perl source location in it, as `ocp init` does:
+      one in the middle of a wrapped error no longer stays in the line.
     - `ocp keys operator add|rm` and `ocp keys secure --drop-bootstrap` stop
       on a control plane or worker pool in `ocp.yaml` that is no mapping, a
       `control_planes` or `workers` of the wrong shape, a host that is a
