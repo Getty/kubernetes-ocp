@@ -1,270 +1,93 @@
 ---
 name: ocp-gpu
-description: Use when working on OCP's GPU stack — OCP::Versions pinning, the ocp.yaml switches, the ClusterPolicy OCP generates, NFD and drift probes. Generic GPU setup: skill kubernetes-gpu.
+description: Use when working on OCP's GPU stack, NVIDIA or AMD — detect_gpu, install_nvidia or install_amd in the Rexfile, the ocp.yaml gpu block (gpu.amd included), the ClusterPolicy OCP generates, NFD, the AMD device plugin, DRA driver, labeller or metrics exporter, GPU pins in OCP::Versions, GPU drift probes. Generic GPU setup: skills kubernetes-gpu and rocm-engineering.
 model: sonnet
 ---
 
 # GPU Stack for OCP
 
-## Version Pinning — `OCP::Versions` is the only source
+One `gpu:` block covers two vendors.
 
-Never carry component versions in this file: a stale number here is how a wrong
-pin gets argued back into the code. Read them:
+- **NVIDIA:** Rex::GPU installs the host driver. In the cluster the GPU Operator
+  runs under OCP's ClusterPolicy, beside OCP's own NFD.
+- **AMD:** Rex::GPU::AMD installs the host driver. In the cluster a few
+  DaemonSets go into `kube-system`, from Rex::Rancher::K8s. There is no operator.
 
-```perl
-OCP::Versions->get_component_version('gpu_operator')
-```
+Read the reference for the side you change **before** you change it.
 
-Components pinned there: `gpu_operator`, `nvidia_toolkit`, `nvidia_driver`,
-`nvidia_device_plugin`, `dcgm_exporter`, `nvidia_dcgm`, `nfd`.
-
-Constraints that outlive any single pin:
-
-- **Every enabled ClusterPolicy component needs repository + image + version.**
-  OCP hand-rolls the operator Deployment instead of using the Helm chart, so it
-  sets none of the `*_IMAGE` env the chart sets. `imagePath()` then errors out
-  and the DaemonSet never starts. `t/40-gpu-clusterpolicy.t` enforces this.
-- **No separate validator pin.** The standalone
-  `nvcr.io/nvidia/cloud-native/gpu-operator-validator` image stops at v25.3.4;
-  from v25.10 the operator image itself carries `/usr/bin/nvidia-validator`, and
-  upstream tags it with the operator's own version. Pinning it separately
-  produces five DaemonSets in `Init:ImagePullBackOff` — the validator is their
-  init container.
-- **Device plugin floor for GB10/Grace-Blackwell: v0.17.4.** Older plugins
-  mishandle the unified memory those parts expose (NVIDIA/gpu-operator#1794).
-- **`nvidia_driver` only matters when `gpu.driver: operator`.** Keep it equal to
-  `driver.version` in the operator chart's bundled `values.yaml` for the pinned
-  operator version.
-- **The CRD bundle moves with `gpu_operator`.** `share/gpu-operator/crds/`
-  holds NVIDIA's `nvidia.com_clusterpolicies.yaml` and
-  `nvidia.com_nvidiadrivers.yaml` (as `clusterpolicy-crd.yaml` /
-  `nvidiadriver-crd.yaml`), unchanged from `deployments/gpu-operator/crds/` at
-  the pinned tag, under a `# Source:` header that names it. A pin bump means
-  fetching both again from the new tag — `t/40-gpu-clusterpolicy.t` stays red
-  until the header's tag equals the pin, and checks every field the generated
-  ClusterPolicy sets against the CRD `setup_gpu_operator` sends (declared,
-  required, type, enum, pattern; `preserve-unknown-fields` does not count as
-  declared). Never stub or hand-edit the CRD: the stub OCP shipped until
-  2026-09-27 had no `cdi`, and the live apply died with `.spec.cdi: field not
-  declared in schema`. The real CRD requires `spec.daemonsets`, which OCP sends
-  empty.
-- **`OCP::Drift` probes the GPU operator and NFD, and nothing else in the
-  stack.** Both read the image off a Deployment OCP writes itself, so the
-  version is honestly measurable; both are report-only (`remedy => undef`,
-  `self_healing`) because a plain `ocp apply` re-applies the manifest that
-  carries the version. The GPU operator probe is `optional` — absence is not
-  drift, since the operator only exists where a card and `gpu.enabled` are. The
-  rest (`nvidia_toolkit`, `nvidia_device_plugin`, `dcgm_exporter`,
-  `nvidia_dcgm`, `nvidia_driver`) is deliberately unprobed: OCP puts those
-  versions into the ClusterPolicy, and the operator turns them into DaemonSets
-  whose names and layouts it owns and changes between releases. Measuring them
-  honestly means reading the ClusterPolicy spec, not guessing a DaemonSet name.
-
-## Detection Chain
-
-Two detections, at two times, asking two different questions.
-
-**1. Before the cluster — Rex `detect_gpu` (`share/Rexfile`).** Question: does
-this host need an NVIDIA driver?
-
-- `Rex::GPU::Detect::Sysfs->detect` (rex-gpu k73, experimental; since k196)
-  reads **sysfs**, not `lspci`: vendor, class, device and subsystem IDs of
-  every device under `/sys/bus/pci/devices`, in one read-only command, once per
-  host — `detect_gpu` hands the result to `install_nvidia`. Vendor `10de`,
-  class `0300` (VGA) or `0302` (3D controller). It returns the full hashes
-  (`compute`, `device_id`, `vgpu`/`vgpu_type`, NVSwitches under `nvswitch`),
-  and **dies** for a host whose sysfs it cannot read instead of calling it
-  GPU-less.
-- There is **no model whitelist**, and it must not come back. `lspci` prints
-  the name from the host's `pci.ids` database, which is always older than the
-  newest card: a DGX Spark prints `Device [10de:2e12]` for its GB10, and no list
-  of marketing names can match that. Vendor and class come from the hardware.
-- Virtual display adapters (`1af4` virtio, `1b36` QEMU, `15ad` VMware, `80ee`
-  VirtualBox) are skipped by the library, per device, so they never hide a
-  passed-through card.
-- `_driver_gpus` is OCP's decision (k194): every NVIDIA GPU except
-  `compute => 0` — Kepler or older, whose last driver is the EOL 470 branch
-  Rex::GPU refuses on every OS. `compute => undef` (no generation row, and
-  sysfs has no name to judge by: a card newer than the table) **is** handed
-  on; `install_driver` takes it as an unknown GPU without a constraint.
-  `_gpu_action`: `nvidia` / `unsupported` (only Kepler-or-older: no driver, no
-  toolkit, no GPU node) / `amd` / `none`. `install_driver` is never called
-  with an empty list — that would install a GPU-agnostic driver, not skip.
-- A working driver (nvidia-smi enumerates GPUs **and** `libcuda.so.1` is in
-  the linker cache) is left alone by `install_driver`. Package state is the
-  wrong question — vendor appliances install outside the distro's package
-  namespace.
-- Whether a card is worth *scheduling* on is answered later, by the device
-  plugin.
-
-**2. After the cluster — NFD labels.** `_setup_gpu_operator` looks for
-`feature.node.kubernetes.io/pci-0300_10de.present` or `pci-0302_10de.present`.
-Same evidence as sysfs, from the other side.
-
-**3. Authoritative — `nvidia.com/gpu` in the node capacity.** Published by the
-device plugin. This, plus a CUDA smoke pod, is the only proof the stack works;
-everything before it is a prediction.
-
-## Host Driver Install (`install_nvidia`)
-
-Every OS, Ubuntu included since k191 (rex-gpu k69): one call,
-`Rex::GPU::NVIDIA::install_driver(gpus => \@gpus, [nvswitches => ...], $setup)`,
-handed the GPUs `_driver_gpus` kept, as detected (vGPU keys included, so a
-vGPU guest without its licensed driver is refused; NVSwitches make it
-install Fabric Manager). It skips a
-working driver (nvidia-smi + libcuda.so.1 already there), installs only the
-running kernel's headers — never `linux-headers-generic`, which on a vendor
-kernel (a DGX Spark runs `6.17.0-1029-nvidia`) is a different kernel and
-would leave DKMS building against the wrong tree — loads the module and
-verifies the result. The toolkit is always
-`install_container_toolkit(binaries_suffice => 1)` (rex-gpu k74). With
-`gpu_toolkit => 0` (ocp.yaml `gpu.toolkit: false`, k223) `install_nvidia` then
-calls `Rex::GPU::NVIDIA::generate_cdi_specs()` before `verify_nvidia`: no
-operator toolkit writes `/run/cdi` then, and the library writes only the
-devices that do not resolve (rex-gpu k76, Rex::GPU >= 0.004). Toolkit true:
-no CDI of OCP's — a static `/etc/cdi/nvidia.yaml` next to the operator's
-`/run/cdi` would define the kind twice. Never any containerd config.
-
-- **Everywhere but Ubuntu**: no `$setup` is passed. Rex::GPU picks the
-  branch/module by GPU generation from the device IDs alone (Debian: non-free
-  `nvidia-driver nvidia-smi libcuda1`, Blackwell from NVIDIA's CUDA repo), and
-  dies before touching the host for Kepler or incompatible GPU mixes.
-- **Ubuntu**: `setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers'`. Deliberately
-  *not* the same as everywhere else, and a deliberate departure from ADR
-  0015's original "not OCP's decision" for this one question — see its
-  2026-09-26 amendment. Only the **branch** is asked of `ubuntu-drivers`; the
-  **kernel-module flavour** (open vs proprietary) comes from the same
-  device-ID table Rex::GPU already uses for every other OS: open for
-  Blackwell (GB10 among them) and Grace Hopper (GH200), proprietary where
-  the table names nothing (the rest of Turing through Hopper), and for
-  Maxwell, Pascal and Volta the
-  `580-server` branch is installed directly, without asking `ubuntu-drivers`
-  at all. `ubuntu-drivers list --gpgpu` only *names* the package for that
-  flavour (read-only); `apt-get` installs it and `dpkg` verifies it.
-  `ubuntu-drivers install` is **never** run. `ubuntu-drivers` missing, failing,
-  or naming nothing for the card dies before any driver package goes in — no
-  package name is guessed, and a package that cannot drive the card
-  (proprietary offered for a Blackwell, say) is refused rather than accepted.
-  - R535 reached end of life in June 2026; on Ubuntu 24.04 `nvidia-driver-535`
-    is a transitional package that pulls 580, so the old pin pinned nothing.
-  - amd64 and arm64 do not carry the same package names (arm64 comes from
-    the ports archive) — `ubuntu-drivers` still resolves that from the card.
-- The container toolkit comes from NVIDIA's `libnvidia-container` apt repo —
-  unless `nvidia-container-runtime` and `nvidia-ctk` are on the PATH and
-  `nvidia-ctk --version` runs (`binaries_suffice`), in which case neither the
-  apt source nor the package is touched. A DGX has both from its vendor image,
-  and OCP has no business deciding where such a host gets its packages from
-  afterwards.
-
-## containerd — OCP writes nothing
-
-k3s and RKE2 share the same agent code. At **startup** it scans `PATH` for
-`nvidia-container-runtime` (with `/usr/local/nvidia/toolkit` and
-`/opt/kwasm/bin` prepended, which is where the operator's toolkit DaemonSet
-installs), writes what it finds into its own containerd config, and k3s also
-ships the matching RuntimeClass objects. Verified on a DGX Spark: runtime and
-`nvidia` RuntimeClass both present, OCP having done nothing.
-
-- The scan runs **only at service start**. Install the runtime before the
-  service, or restart it.
-- Neither distribution makes nvidia the **default** runtime. Workloads use
-  `runtimeClassName: nvidia`, or the cluster opts in with `--default-runtime`.
-- **Never write a `config.toml.tmpl` / `config-v3.toml.tmpl` without
-  `{{ template "base" . }}`.** Both render the template *instead of* their
-  generated config, so a partial template silently drops the registry mirrors,
-  the sandbox image and the CNI settings. OCP used to ship exactly that.
-- RKE2's unit sets no `PATH` at all, so Rex::Rancher writes one into
-  `/etc/default/rke2-{server,agent}` (`nvidia_runtime_path => 1`, which OCP
-  always passes; only when the runtime is on the host; docs.rke2.io/add-ons/gpu_operators).
-  k3s needs nothing.
+| Reference | Holds |
+|---|---|
+| `references/nvidia-host.md` | `detect_gpu`, `_gpu_actions`/`_driver_gpus`, `install_nvidia` (Ubuntu vs. the rest), toolkit, CDI, containerd/PATH, the `gpu.toolkit` CR channel |
+| `references/nvidia-cluster.md` | NVIDIA pins and their coupling rules, the CRD bundle, the ClusterPolicy table, `toolkit.env`, NFD, drift, status |
+| `references/amd.md` | `install_amd`, the integrated gate, all AMD labels, the component/object table, the affinity matrix, reconcile, readiness, removal, drift, pins, status, live traps |
 
 ## ocp.yaml switches
 
 ```yaml
 gpu:
-  enabled: true      # false: no detection on any node, no operator deployed
-  driver: host       # host = Rex installs it; operator = the driver DaemonSet does
-  toolkit: true      # false on hosts that already ship the toolkit (DGX OS)
+  enabled: true        # false: no detection, no operator; the AMD stack is removed
+  driver: host         # both vendors: who installs the kernel driver (host | operator)
+  toolkit: true        # NVIDIA only; false where the host ships one (DGX OS)
+  amd:
+    allocation: device-plugin   # device-plugin | dra | none: default per AMD node
+    resource_naming: single     # single | mixed, handed to the device plugin
+    labeller: true
+    metrics: false              # Instinct / Radeon AI only, not APUs
+    integrated: false           # iGPU/APU on every node; not wired to nodes yet
 ```
 
-`OCP::Config` normalises `enabled`/`toolkit` to 0/1 and rejects an unknown
-`driver` value rather than falling back to `host` in silence. `driver: operator`
-turns the Rex-side install off *and* `ClusterPolicy.driver.enabled` on — the two
-halves must never both be active.
+`OCP::Config` normalises booleans to 0/1. It croaks on an unknown `driver`,
+`amd.allocation` or `amd.resource_naming`, and never falls back in silence.
 
-On DGX-class hosts NVIDIA's guidance is `driver.enabled=false` **and**
-`toolkit.enabled=false`: the vendor image already has both, and the toolkit
-DaemonSet would rewrite a containerd config that already works.
+## Rules for every GPU change
 
-`gpu.toolkit` reaches the hosts too (k223), the k31/k217 channel:
-`ensure_provider_cr` writes `spec.gpu.toolkit` (JSON boolean) onto the
-OCPNodeProvider CR, `OCP::Provider->gpu_flags_from_cr` returns `gpu_toolkit`
-0/1 (absent when the CR predates it), robocop / apply CLI / `ocp node add`
-hand it to `OCP::Node`, the bootstrap passes `$config->gpu_toolkit` to
-`OCP::Rex::install_server`. Absent everywhere means true.
+- **Pins live only in `OCP::Versions`**, read with `get_component_version`.
+  - NVIDIA: `gpu_operator`, `nvidia_toolkit`, `nvidia_driver`,
+    `nvidia_device_plugin`, `dcgm_exporter`, `nvidia_dcgm`, `nfd`.
+  - AMD: `amd_device_plugin` (its labeller is tag `labeller-<pin>`),
+    `amd_dra_driver`, `amd_metrics_exporter`.
+  - Never copy a pinned number into skills or comments.
+- **Detect from sysfs** (`Rex::GPU::Detect::Sysfs`), by vendor + class. Never
+  use a model list or `lspci`.
+- **Never call `install_driver` with an empty list.** NVIDIA's would install a
+  GPU-agnostic driver. Filter with `_driver_gpus` first.
+- **OCP writes no containerd config and no `config.toml.tmpl`.** The only CDI
+  OCP writes is NVIDIA's under `gpu.toolkit: false`.
+- **Host and operator never both install the driver.** With NVIDIA under
+  `operator`, Rex installs nothing and `ClusterPolicy.driver.enabled` is on.
+  AMD has no operator: under `operator` OCP installs no AMD driver, but it
+  still detects and labels the GPU.
+- **`t/40-gpu-clusterpolicy.t` guards the ClusterPolicy.**
+  - Every enabled component needs repository + image + version.
+  - `share/gpu-operator/crds/` holds NVIDIA's files from the pinned tag. Never
+    stub them.
+  - `CONTAINERD_SET_AS_DEFAULT` and `CONTAINERD_RUNTIME_CLASS` stay unset.
+- **Drift probes read only workloads OCP writes, report only.**
+  - Probed: `nfd`, `gpu_operator` (optional) and the four AMD DaemonSets
+    (optional).
+  - Never guess an operator-owned DaemonSet name for the other NVIDIA pins.
+- **A GPU is ready when it shows in `status.allocatable`, never in capacity.**
+  The kubelet keeps capacity after a device plugin unregisters. The final
+  proof is a smoke pod.
 
-## GPU Operator ClusterPolicy (`_generate_gpu_operator_manifest`)
+## AMD in short
 
-| Component | State | Why |
-|---|---|---|
-| `driver` | follows `gpu.driver` | never both sides at once |
-| `toolkit` | follows `gpu.toolkit` | off where the host already has one |
-| `devicePlugin` | on | publishes `nvidia.com/gpu` |
-| `dcgm` + `dcgmExporter` | on | the operator runs its own hostengine on :5555 in the `nvidia-dcgm` container; the exporter connects there, not to a host engine. Expect a few exporter restarts racing the starting hostengine |
-| `gfd` | off | NFD does feature discovery |
-| `nfd` | not sent | not a ClusterPolicy field (the CRD rejects it); NFD is a Helm subchart the operator never deploys, OCP deploys it itself |
-| `migManager` | off | MIG does not exist on GB10 |
-| `validator` | always runs, operator image | no `enabled` field exists; see the pinning rules |
-| `nodeStatusExporter` | off | |
-| `daemonsets` | `{}` | required by the CRD; empty is the operator's zero value, what it ran with before |
-
-### `toolkit.env` — two variables, and two that are left out on purpose
-
-OCP sets `CONTAINERD_SOCKET` and `CONTAINERD_CONFIG`, both node paths. The
-socket is `/run/k3s/containerd/containerd.sock` on **both** distributions (RKE2
-runs k3s' agent code and inherits its containerd invocation; the RKE2 GPU docs
-name that path explicitly). Only the config path follows the distribution:
-`/var/lib/rancher/{k3s,rke2}/agent/etc/containerd/config.toml`.
-
-They stay because they are the operator's **input**, not decoration: it reads
-both, derives `RUNTIME_SOCKET` / `RUNTIME_CONFIG` from them, and mounts the
-*directory* of each into the toolkit DaemonSet. Leave them out and it falls back
-to `/etc/containerd/...` and `/run/containerd/...`, right on neither
-distribution. Because it is the directory that gets mounted, a wrong path that
-happens to exist is the worst case: the hostPath mounts cleanly and the failure
-only surfaces when the toolkit tries to reach containerd through it.
-`RUNTIME_CONFIG_SOURCE` and `RUNTIME_DROP_IN_CONFIG` need no help — the operator
-sets those itself.
-
-`CONTAINERD_SET_AS_DEFAULT` and `CONTAINERD_RUNTIME_CLASS` are deliberately
-**not** set. The runtime class only ever restated the default: the operator
-overwrites whatever the ClusterPolicy says with `operator.runtimeClass`
-(`nvidia`). Set-as-default is the one with teeth. OCP does not make the nvidia
-runtime the node's default — management pods reach it through RuntimeClass,
-everything else keeps runc — and sending `1` here is exactly that decision taken
-sideways. It is not obsolete upstream either: the toolkit still accepts it as a
-source for `--set-as-default`, behind `NVIDIA_RUNTIME_SET_AS_DEFAULT` in the
-same first-set-wins chain. It loses today only because `cdi.enabled` defaults to
-true, which makes the operator hand the toolkit
-`NVIDIA_RUNTIME_SET_AS_DEFAULT=false` ahead of it — measured on the DGX Spark,
-where `crictl` reported `defaultRuntimeName runc` while OCP was still sending
-`1`. So the variable was never dead, only outvoted.
-
-Leaving it out is **not** a guard, though: the toolkit's own default for
-`--set-as-default` is true. What keeps runc the default is CDI being on, and OCP
-takes that from the CRD default without writing `cdi.enabled: true` into the
-spec. `t/40-gpu-clusterpolicy.t` asserts the absence of both variables, so
-neither can come back unnoticed.
-
-## NFD (Node Feature Discovery)
-
-Deployed by OCP itself, not by the operator (which never deploys NFD; the
-ClusterPolicy has no `nfd` field), into the `node-feature-discovery` namespace from
-`registry.k8s.io/nfd/node-feature-discovery`. nfd-master (Deployment) labels,
-nfd-worker (DaemonSet) detects. The RBAC in `_generate_nfd_manifest` mirrors
-upstream exactly — every rule is load-bearing.
-
-## GPU Status
-
-`ocp status` shows a GPU section when GPU nodes exist: nodes carrying
-`nvidia.com/gpu` in capacity, GPU Operator status, device plugin pod count.
+- **Host.** `install_amd` takes the AMD GPUs that Rex::GPU does not mark
+  `compute => 0`. An integrated GPU needs `gpu_amd_integrated`, which today
+  comes only from `ocp node add --gpu`. OCP never reboots and installs no ROCm.
+- **Labels.** At registration, an accepted GPU puts
+  `ocp.internal/amd-gpu.present=true` and `ocp.internal/amd-gpu.gfx-target=<gfx>`
+  on the node. Use the `$OCP::Config::AMD_GPU_*_LABEL` constants for both.
+- **Cluster stack.** `OCP::Cmd::Apply::AMDGPU` selects on that marker, never on
+  NFD's `pci-*_1002`. Node label `ocp.internal/amd-gpu.allocation` overrides
+  `gpu.amd.allocation` through affinity terms, so each node gets either the
+  device plugin or the DRA driver (experimental). A component that no node
+  selects is removed again.
+- **Unreleased libraries.**
+  - Rex::GPU::AMD is on rex-gpu branch `worktree-k1-amd-driver`. Without it,
+    the released detection marks AMD GPUs `compute => 0`, so no driver and no
+    labels.
+  - The `deploy_amd_*`/`remove_amd_*` functions are on rex-rancher branch
+    `worktree-k95-amd-gpu`. Without them, apply prints one `[WARN]` and
+    deploys nothing.
+  - Neither case ever fails a run.

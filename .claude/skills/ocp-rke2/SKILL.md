@@ -4,184 +4,63 @@ description: Use when OCP provisions RKE2 or K3s — the config.yaml and registr
 model: sonnet
 ---
 
-# RKE2/K3s Configuration for OCP
+# RKE2/K3s for OCP
 
-## RKE2 Server Config
+The Rexfile's install tasks are thin wrappers around **Rex::Rancher** and
+**Rex::GPU** (k155). Rex::Rancher owns config.yaml, registries.yaml, the
+service, the version hold and the uninstall. `share/Rexfile` keeps only OCP's
+policy, and each gap names the library card that would move it. Close generic
+gaps in the libraries, not in the Rexfile (k196).
 
-Location: `/etc/rancher/rke2/config.yaml`
+Read `references/install-flow.md` before you change an install task. It holds
+the config.yaml and registries.yaml OCP gets, the task-by-task flow
+(preflight, `prepare_node`, GPU step, server/agent install, API wait,
+kubeconfig, Cilium), the legacy containerd-template drift, and the ssh/local
+uninstall.
 
-```yaml
-cni: none                    # OCP uses Cilium instead
-disable-kube-proxy: true     # Cilium replaces kube-proxy via eBPF
-token: <join-token>
-node-name: police1
-tls-san:
-  - <public-ip>
-disable:
-  - rke2-ingress-nginx       # OCP uses Cilium Gateway API
-```
+## What OCP asks of every node
 
-Key decisions:
-- `cni: none` — Cilium is installed separately after RKE2 starts
-- `disable-kube-proxy: true` — Cilium's eBPF kube-proxy replacement is more efficient
-- No ingress-nginx — Cilium Gateway API handles ingress
-
-## RKE2 Agent Config
-
-```yaml
-server: https://<cp-ip>:9345
-token: <join-token>
-node-name: worker-1
-```
-
-## registries.yaml
-
-Location: `/etc/rancher/rke2/registries.yaml` (same path for agents)
-
-```yaml
-mirrors:
-  docker.io:
-    endpoint:
-      - http://localhost:30500    # ocp-cache (pull-through)
-  registry.local:
-    endpoint:
-      - http://localhost:30501    # ocp-registry (local)
-  ocp.internal:
-    endpoint:
-      - http://localhost:30501    # ocp-registry (alias)
-```
-
-Built as a hash by `_registries()` in the Rexfile and written (0600) by
-Rex::Rancher's `install_server`/`install_agent`. RKE2 servers and agents get it;
-K3s nodes get none (never did).
-
-External registries override localhost endpoints when configured in ocp.yaml:
-```yaml
-registry:
-  cache: http://external-cache:5000     # replaces localhost:30500
-  upstream: http://external-reg:5000    # replaces localhost:30501
-  name: ocp.internal                    # internal registry name
-```
-
-## Cilium Integration
-
-1. RKE2 starts with `cni: none` (no networking)
-2. Node shows NotReady until CNI is installed
-3. Cilium CLI is installed on the node
-4. `cilium install` with:
-   - `kubeProxyReplacement=true` (replaces disabled kube-proxy)
-   - `k8sServiceHost=localhost`, `k8sServicePort=6443`
-   - `gatewayAPI.enabled=true`
-5. Node becomes Ready once Cilium is running
-
-## K3s Differences
-
-- Config: `/etc/rancher/k3s/` (instead of rke2)
-- Kubeconfig: `/etc/rancher/k3s/k3s.yaml`
-- Binary: `kubectl` directly (not `/var/lib/rancher/rke2/bin/kubectl`)
-- Install: `curl -sfL https://get.k3s.io | sh -s - server --disable=traefik --disable=servicelb`
-- Agent: `K3S_URL=... K3S_TOKEN=... sh -s - agent`
-- Token: `/var/lib/rancher/k3s/server/node-token`
-
-## Installation Flow (Rex)
-
-Since k155 the Rexfile tasks are thin wrappers around **Rex::Rancher** and
-**Rex::GPU** (both from CPAN, floors in cpanfile, exact versions in cpanfile.snapshot); what stays
-in the Rexfile is OCP's own, each gap marked with the library card that would
-move it.
-
-0. Before anything touches the host, every install task runs the library's
-   read-only checks with the options the install gets:
-   `Rex::Rancher::Server::preflight_server(%opts)` /
-   `Rex::Rancher::Agent::preflight_agent(%opts)` (rex-rancher k78). First
-   read of the host is `check_cilium_residue` (rex-rancher k71): a host
-   carrying Cilium's pins, its cgroup2 mount or `cilium_host` but no RKE2/K3s
-   is refused with a request to reboot (k190: the old socket LB hangs every
-   image pull). Then the version to hold and its skew (with `kubeconfig`
-   against the control plane), and on a server the cluster-cidr of one
-   already set up (rex-rancher k67). `install_server`/`install_agent` run the
-   same checks again, first thing — their log lines appear twice.
-   Both installs get `hold_running => 1` (rex-rancher k77, k193): a running
-   server or agent keeps the version it runs, a stopped one its installed
-   binary's, only a host with neither gets the pin; a pin that loses is a
-   warning on every run, and the service restarts only for a changed config
-   (k3s included). OCP never rolls or refuses a node over its pin:
-   distribution upgrades are manual, node by node (OCP::Drift reports them).
-1. `prepare_node` — since Rex::Rancher 0.003 (rex-rancher k42) this is just
-   `Rex::Rancher::Node::prepare_node(hostname, domain, timezone, locale, ntp
-   => $ntp)`. OCP hands the library
-   its parameters and does nothing of the library's steps itself any more:
-   the library does the apt refresh, hostname, the `/etc/hosts` entry without
-   a domain (only when no line names the host already), timezone, the locale
-   enabled in `/etc/locale.gen` and generated before it is set, swap off,
-   `br_netfilter`/overlay, the Kubernetes sysctls, **and** NTP — a clock
-   `timedatectl` already reports synchronised is left alone, otherwise
-   chrony, falling back to systemd-timesyncd on a failed chrony install, and
-   warning (not dying) when neither is available. `ntp` defaults on; OCP
-   passes `ntp => 0` only to skip it entirely.
-2. `detect_gpu` — `Rex::GPU::Detect::Sysfs->detect` once (rex-gpu k73), OCP's
-   `_driver_gpus` drops Kepler-or-older (k194); `install_nvidia` calls
-   `Rex::GPU::NVIDIA::install_driver(gpus => ..., setup => 'Rex::GPU::NVIDIA::Setup::UbuntuDrivers')`
-   on Ubuntu (since k191, rex-gpu k69), plain `install_driver(gpus => ...)`
-   elsewhere (never with an empty list); toolkit via
-   `install_container_toolkit(binaries_suffice => 1)` (rex-gpu k74). See
-   skill `ocp-gpu`.
-3. `install_{rke2,k3s}_server` — `cluster_cidr` is passed straight into
-   `Rex::Rancher::Server::install_server`, which writes it as config.yaml's
-   own `cluster-cidr` (rex-rancher k41; both distributions). The
-   `config.yaml.d/50-ocp-cluster-cidr.yaml` drop-in OCP used to write itself
-   is no longer created — a leftover from before 0.003 is removed only when
-   its content states exactly the `cluster_cidr` now passed (it would
-   otherwise keep overriding config.yaml on every node set up before); a
-   drop-in that disagrees is kept, with a message, because the cluster is
-   running on what it says. `install_server` also carries config.yaml 0600,
-   token reuse, Cilium-only CNI keys, the default disable list,
-   `nvidia_runtime_path`, and a bounded service wait with journal (RKE2 with
-   a pin uses `install_method => 'artifact'`; a running rke2 server restarts
-   only when its config actually changed, rex-rancher k49). Right before the
-   start it removes a bare containerd `config.toml.tmpl` (only `imports` +
-   `version = 2`, what OCP before k23 wrote; any other template stays) and
-   restarts a running service still on its output once (rex-rancher k72,
-   agents too). `cleanup_legacy_containerd_template` is only OCP::Drift's
-   remedy: `$dist->remove_bare_containerd_template` for every distribution,
-   restarting nothing; the read-only probe `detect_legacy_containerd_template`
-   (k189) reports what `$dist->is_bare_template_output` recognises. OCP keeps
-   no template content or path list of its own (k196). Then
-   `Rex::Rancher::K8s::wait_for_api` waits for the API from the machine
-   running Rex, through the node's admin kubeconfig (no kubectl on the node;
-   the library returns false on its 5-minute timeout, so OCP dies itself,
-   k196). The kubeconfig comes from `Rex::Rancher::Server::fetch_kubeconfig`
-   (rex-rancher k73: read off the node, `server` patched to the Rex host,
-   saved 0600); OCP's policy — CA dropped for `insecure-skip-tls-verify` — is
-   its `filter` (`_kubeconfig_policy`), and `OCP::Rex::fetch_kubeconfig_ssh`
-   applies the same after the library's pure `patch_kubeconfig_server`.
-   `install_{rke2,k3s}_agent` — plain
-   `Rex::Rancher::Agent::install_agent`; the join URL in a failed join's error
-   is the library's own since 0.003 (rex-rancher k44), OCP adds nothing to it.
-   With a `kubeconfig` task param the library first checks the agent against
-   the control plane's version; `ocp apply`/`ocp node add` pass one via
-   OCP::Node, robocop has none (k196).
-4. `install_cilium` / `upgrade_cilium` — `Rex::Rancher::Cilium` with a local
-   kubeconfig fetched off the node, `gateway_api_channel => 'standard'`,
-   `cluster_cidr` passed only on a fresh install (the pool of a running
-   Cilium is the library's to keep), IPAM mode always stated as
-   `cluster-pool`, and `wait => 1, wait_duration => 600|300` — the library's
-   own readiness wait since 0.003 (rex-rancher k43), replacing OCP's `cilium
-   status --wait`. `update_gateway_api` goes through the library too
-   (`Rex::Rancher::Cilium::ensure_gateway_api_crds`), so there is no kubectl
-   apply left in the Rexfile. See skill `ocp-cilium` for the detail.
-
-## Uninstall (ssh/local hosts)
-
-`OCP::Role::Provider::ExistingHost::delete_server` runs
-`Rex::Rancher::Uninstall->uninstall_cmd` through the provider's own channel
-(`run_command`: SSH, or the local shell) — every RKE2/K3s uninstaller on the
-host, the leftovers (Cilium CLI, `/opt/cni`, `/run/k3s`), Cilium's datapath
-and ip rules — and dies with `"$host: " . uninstall_failure($exit, $stderr)`
-when the line's own outcome check fails (RKE2/K3s still on PATH, k175;
-Cilium state that survived, asking for a reboot, k190). The line's
-`uninstall_warnings($stdout, $stderr)` (no `tc`, no iptables backend: that
-part of the datapath went unchecked) go to STDERR as `"$host: <warning>"`
-and fail nothing (rex-rancher k79). The line's content is
-the library's (rex-rancher k71); OCP holds what it does on a host in
-`t/29-destroy-cleanup.t` and `t/190-cilium-leftovers.t`.
+- **Cilium is the only CNI.**
+  - RKE2 gets `cni: none` and `disable-kube-proxy: true`. K3s gets
+    `flannel-backend: none`, `disable-network-policy` and `disable-kube-proxy`.
+  - The bundled ingress is off through the distribution's default `disable`
+    list. On RKE2, OCP adds the `rke2-gateway-api-crd` chart to that list
+    (k161), because OCP owns the Gateway API CRDs (skill `ocp-cilium`).
+- **registries.yaml goes to RKE2 servers and agents only**, from
+  `_registries()`. K3s gets none. The mirrors are in skill `ocp-registry`.
+- **OCP installs a distribution; it never upgrades one.** Every install passes
+  `hold_running => 1` (rex-rancher k77, k193).
+  - A running node keeps the version it runs, and a stopped one its binary's.
+    Only an empty host gets the pin.
+  - A pin that loses warns on every run.
+  - Distribution upgrades stay manual, node by node. OCP::Drift reports them.
+- **Check before you change.** `preflight_server`/`preflight_agent` run with
+  the install's own options before `prepare_node`, so a refused host stays
+  untouched (Cilium residue → reboot, version skew, cluster-cidr).
+- **`cluster_cidr` belongs to a fresh server only.** A server already set up
+  keeps its own, with a `[WARN]`.
+- **The token lives only in config.yaml (0600).** The sealed token is reused,
+  never put on a command line, never rotated. Pass empty values as undef,
+  never `''`.
+- **No kubectl on the node.**
+  - The API wait is `Rex::Rancher::K8s::wait_for_api`. It returns false, so OCP
+    dies itself.
+  - The kubeconfig comes from `Rex::Rancher::Server::fetch_kubeconfig`, with
+    OCP's `_kubeconfig_policy` as its filter.
+  - The Cilium tasks also run from the machine running Rex, through
+    Kubernetes::REST.
+- **GPU labels join at registration.** The GPU step runs after preflight and
+  `prepare_node`, called as a function: `do_task` forks and loses the return
+  value. Its labels (AMD marker, gfx target) go into `node_labels`, which
+  Rex::Rancher writes as `node-label`. Skill `ocp-gpu` has the detail.
+- **No containerd template of OCP's.** The library removes a bare pre-k23
+  `config.toml.tmpl`. OCP keeps neither template content nor a path list.
+- **An agent is checked against the control plane's version** when a
+  `kubeconfig` param comes. `ocp apply`/`ocp node add` pass the project's;
+  robocop passes its service account's (k205).
+- **The Cilium handover.** Nodes stay NotReady until `install_cilium` runs,
+  and that is expected. On k3s, `k8s_service_host` is the join address
+  (`node_api_host`, k178). RKE2 must not get one: the library uses
+  127.0.0.1:6443 there.
+- **With a pin, RKE2 installs from the checksum-verified tarball**
+  (`install_method => 'artifact'`). K3s keeps the install script.
