@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T06:49:41Z
+created: 2026-10-31T06:36:33Z
+id: 312
+priority: low
+started: 2026-10-31T06:49:41Z
+status: done
+tags:
+- status
+- drift
+title: 'ocp status: the fixable count and JSON fixable leave out self-healing drift'
+updated: 2026-10-31T06:49:41Z
+---
+
+Found under k291 (2026-10-31), predates it. In `ocp status`, the "N of M can be reconciled automatically" count and the JSON `fixable` field leave out drift entries marked `self_healing` (fixed by `ocp apply` itself, no Rex remedy): the CRD drift from k291, the GPU CRD drift, others. So status undercounts what `ocp apply` fixes.
+
+Done = the count and `fixable` include self-healing entries (or the summary says them separately, e.g. "N fixable by ocp apply"), the human text and the JSON agree, and a test pins both. Check the JSON contract change against the k270 notes before changing a field meaning.
+
+2026-10-31 06:40 Red reproduced (ocp-status-worker): new t/312-status-fixable.t feeds ocp status (text + --json) and ocp apply --dry-run the same realistic OCP::Drift entries. Before the fix: mixed report says '1 of 8 can be reconciled automatically' and JSON fixable is false for NFD (self_healing), the older OCPNode CRD (self_healing, k291), the GPU Operator CRD (self_healing) and registry.local DNS (kind missing, 'ocp apply restores it'), while ocp apply --dry-run on the same entries already says '5 difference(s) a real run would act on' (its k188 report-only line: no remedy, not self_healing, not missing). So status and apply --dry-run disagree today.
+
+2026-10-31 06:45 Decision (ocp-status-worker): option (a), one predicate OCP::Cmd::Status::_drift_fixable for both the text count and JSON fixable: remedy OR self_healing OR kind missing; report-only (no remedy, not self_healing, not missing -- kubelet version, moved IP, pod CIDR, k291's newer-CRD manual_step entry) and error entries never. Why (a) not (b): fixable's only useful meaning to a consumer is 'ocp apply closes it' -- false on an entry whose message says 'ocp apply updates it' is the bug; 'carries a Rex remedy' is an apply-internal detail (cert-manager's remedy is already an API one, k198), and the text line says 'run ocp apply' for both, so a split count adds nothing actionable. Same contract-change handling as k270: said in the POD + a Changes bullet. Why missing too (beyond the card's self_healing wording): it is exactly ocp apply --dry-run's k188 line (Apply/Drift.pm $is_report_only), registry_dns's missing entry says 'ocp apply restores it' and reconcile does (registry.local DNS step), a missing cert-manager is installed by reconcile's cert-manager step -- leaving missing out would keep the same undercount and keep status disagreeing with apply --dry-run. If self_healing-only is wanted: drop the last line of _drift_fixable and the registry_dns case in t/312.
+
+2026-10-31 06:45 Also found (not in my lane, for the dispatcher): (1) .claude/skills/ocp-usage/SKILL.md:91 still says '`fixable` = apply carries a remedy' -- repo-owned skill, needs the new meaning. (2) lib/OCP/Drift.pm:61-63 (remedy_if_missing doc) says a missing component without it 'waits for a full deploy, which reconcile never runs' -- not true for cert-manager, which reconcile installs when missing (Apply/Drift.pm cert-manager step); state-worker's. (3) The 'what ocp apply closes' line now lives twice: Status::_drift_fixable and Apply::Drift::dry_run_report's $is_report_only closure; one OCP::Drift helper both call would make it one judge (state-worker + apply-worker follow-up). t/312 pins that the two agree meanwhile. (4) t/262's @MIXED NFD fixture lacks self_healing (real NFD entries carry it); still passes, claim intact, left alone.
+
+2026-10-31 06:45 Done (uncommitted, tree commit-ready for my files): lib/OCP/Cmd/Status.pm (new _drift_fixable used by the text count and --json fixable; POD description + JSON OUTPUT say the new meaning and that earlier builds counted remedies only), new t/312-status-fixable.t (each entry class alone + mixed report, text and JSON, plus ocp apply --dry-run on the same entries). Before: '1 of 8 can be reconciled automatically', NFD/OCP CRD/GPU CRD/registry DNS fixable false; a lone self-healing entry printed no count line. After: '5 of 8 ...' (= dry run's '5 difference(s) a real run would act on', '3 more reported only'), lone self-healing: '1 of 1 ...'. Verified: DOCKER_BUILDKIT=0 make test TESTS='t/00-load.t t/312 t/11 t/226 t/230 t/252 t/257 t/258 t/262 t/270 t/275 t/32 t/36 t/291' -> Files=14 Tests=265 PASS. Red first on host (prove -l t/312: 5/11 failed on HEAD code). Mutants on scratch copies, all killed: no self_healing clause, no missing clause, JSON on old remedy test, text on old remedy test, missing->'ne version', M over all entries incl. errors, everything fixable, error entries fixable.
+
+Committed as c1d8951
