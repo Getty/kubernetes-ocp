@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-10-31T17:24:12Z
+created: 2026-10-31T13:24:30Z
+id: 366
+priority: low
+started: 2026-10-31T17:24:12Z
+status: done
+tags:
+- tests
+- dist
+title: Test that every package in lib/ has its own file or is hidden from the indexer
+  (after k317)
+updated: 2026-10-31T17:24:12Z
+---
+
+Left over from k317 (2026-10-31). k317 kept OCP::SSH::HostKeyChanged out of the META provides map. It declares the class with `package # comment` + newline + name, as lib/OCP/BooleanEq.pm does. Before that, MetaProvides warned "1 provide map entries did not map to .pm files and may not be loadable at install time". Nothing in t/ would catch a new inner package declared the plain way.
+
+Done = a test in t/ that walks lib/ and checks that every package Module::Metadata finds in a file (it reads them the way MetaProvides::Package does) is the file's own package, or is listed as allowed with a reason. It must be red when one of the two hidden packages is declared plainly, which is the mutation check.
+
+Lane: ocp-test-writer. Low priority.
+
+2026-10-31 16:26 Test t/366-inner-packages-hidden.t added (patch scratchpad/w-test366/k366.patch). Green: t/00-load.t + t/366 via make test. Mutant (plain 'package' form in lib/OCP/SSH.pm and lib/OCP/BooleanEq.pm, one run): red, failure line shows 'OCP/BooleanEq.pm: JSON::PP::Boolean' (is_deeply prints only the first diff; the SSH one is in the same list, not shown). Module::Metadata is in cpanfile.snapshot but not declared in cpanfile.
+
+2026-10-31 16:27 Done: new t/366-inner-packages-hidden.t, green, red with plain-form mutant. Test-only.
+
+Committed as ef83ef6
