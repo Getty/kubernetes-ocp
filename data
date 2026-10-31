@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-10-31T11:45:01Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T09:56:53Z
+id: 337
+priority: low
+status: in-progress
+tags:
+- docs
+- adr
+title: 'Docs after k327/k328: ADR 0007 exemption now covers no code, node-lifecycle
+  spec note, Network/Deploy POD'
+updated: 2026-10-31T11:45:01Z
+---
+
+After k327 (2026-10-31), docs that no longer match the code:
+- ADR 0007 (docs/adr/0007-no-kubectl-in-any-code-path.md), last paragraph, exempts the distribution's bundled kubectl over SSH during bootstrap (share/Rexfile). k327 dropped the only such call that remained in OCP's code (Bootstrap.pm's SSH fallback); the Rexfile mentions kubectl only in a message for the user. The exemption now covers no code: amend or narrow it (ocp-adr-auditor).
+- docs/superpowers/specs/2026-04-14-node-lifecycle-design.md has a note about replacing that fallback -- now done (k327).
+- POD: Network.pm could list corefile_has_root_block (k328); the Deploy/Drift POD could say that a robocop Deployment read that is no 404 fails the step (k328) (ocp-doc-writer).
+
+Spec note done (main, prose lane): docs/superpowers/specs/2026-04-14-node-lifecycle-design.md, 'kubectl Removal' section, dated update: the Apply.pm:375 follow-up is done by k327 (53d34eb). Verified with git grep: no kubectl process in lib/ share/ bin/, only hints/POD and the restartedAt annotation. Open: ADR 0007 (adr-auditor running), Network/Deploy POD (after k338, Network.pm).
+
+2026-10-31 10:27 ADR 0007: amended, not superseded (README amendment form). Exemption paragraph kept as written + inline marker '*(amended 2026-10-31, see below)*'; new '## Amendment 2026-10-31' at the end quotes it and says: since k327 it covers no code path, the rule has no exception (no kubectl on this machine or on a node). History: ~20 Rexfile kubectl calls at ADR time went in k191 (6f5b5c1, Cilium/Gateway API -> Rex::Rancher::Cilium), k196 (72690cd, API wait via Rex::Rancher::K8s::wait_for_api with the fetched admin kubeconfig; callerless untaint tasks dropped), k198 (b3af9b0, cert-manager -> SSA from the CLI); k327 (53d34eb) dropped the Bootstrap.pm SSH fallback. Removed rather than narrowed: k196 made the premise 'OCP has no kubeconfig yet' false; remaining mentions are text for humans (Rexfile _cilium_upgrade_refused k206, Apply::Health), already covered. Guards named: t/196 + t/327. Verified: grep -rn kubectl lib bin share/Rexfile -> only comments/POD/annotation key/user messages; git grep kubectl in rex-rancher tag 0.004 (the cpanfile pin) -> no calls. Only docs/adr/0007 changed, not committed. Also found: lib/OCP/Drift.pm:617 comment says the upgrade tasks 'pick kubectl and kubeconfig by it and fall back to RKE2's' -- stale since k198, no Rexfile task picks kubectl (lib/, not my lane).
+
+Partly committed as 6a50140: ADR 0007 amendment and node-lifecycle spec note. Still open: Network.pm/Deploy POD bullet (after k338); card stays in-progress.
+
+After k338 (OCP::Corefile, 2026-10-31): the POD bullet now means Network.pm's corefile_* functions as k338 left them, plus a review of the new OCP::Corefile POD (written by the worker). And for the adr-auditor: docs/adr/0022 says corefile_host_address 'reads the mapping regardless of which block the line sits in' -- wrong since k338, it reads the block that answers the name. Do both after k338 is committed.
