@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T02:31:24Z
+created: 2026-10-31T02:01:12Z
+depends_on:
+- 246
+id: 260
+priority: medium
+started: 2026-10-31T02:31:24Z
+status: done
+tags:
+- hetzner
+- init
+title: 'ocp init: pass the chosen location to the server type picker'
+updated: 2026-10-31T02:31:24Z
+---
+
+Follow-up to k246. `OCP::Hetzner::Picker->server_type_options(architecture => …, location => $name)` now takes an optional `location` filter. With the filter it offers only types whose locations entry for that location is available and carries no deprecation; without it, a type orderable in at least one location is offered. `ocp init` (lib/OCP/Cmd/Init.pm around line 919) still fetches the type list before the location prompt and without a location, so the picker can offer a type that cannot be ordered in the chosen location.
+
+Done when Init asks for the location first (it already does) and then fetches the types with `location => $chosen`. A test (t/41-init-scaffold.t / t/42-hetzner-options.t pattern, fake IO from t/lib/OCPTest/HetznerIO.pm) shows that a type deprecated or unavailable only in the chosen location is not offered. Lane: ocp-apply-worker.
+
+2026-10-31 02:19 Read: Init has no --location/--server_type flag (options: hetzner force nogit name dist provider nopassword host service ssh_key); batch runs never read the catalogue. The only server-type paths are the interactive _pick: Enter/EOF/not-on-list all keep HETZNER_DEFAULTS{server_type} (cpx21) even when the chosen location cannot order it. Plan: read both catalogues before asking (keeps 'unreadable → ask nothing'), offer only locations with at least one orderable type, then server_type_options(location => chosen); a default not on the list is not preselected — Enter asks again, EOF abandons to the defaults with a STDERR diagnosis.
+
+2026-10-31 02:28 Decisions: (1) no --server_type/--location flag exists, none added -- nothing to refuse; batch runs (no TTY) still never read the catalogue and write OCP::Config defaults unchecked, because reading it there would break init's offline batch contract (t/41 batch test runs with a fake token). (2) Both catalogues are read before the first question (Picker caches), so an unreadable type catalogue still asks nothing. (3) Locations with no orderable type are not offered. (4) _pick: a default not on the list is not preselected; Enter / off-list answer ask again; closed STDIN → no half placement, both defaults kept, STDERR '[!!] No server type|location chosen — keeping the defaults (cpx21 in fsn1)'. With the default on the list, behavior is unchanged (Enter/EOF/off-list keep it).
+
+2026-10-31 02:29 Also found (not fixed, for the dispatcher): (a) OCP::Config HETZNER_DEFAULTS server_type is cpx21; if Hetzner has deprecated cpx21 in the 2025 line change (unverified, no API access here), batch init writes an unorderable default and the picker shows 'No default' -- ocp-state-worker board item if confirmed. (b) '[!!] Could not read the Hetzner catalogue' drops $@, so a 401 or network error gets no diagnosis on STDERR.
+
+2026-10-31 02:29 Done: lib/OCP/Cmd/Init.pm -- _prompt_hetzner_control_plane asks the location first, then server_type_options(location => chosen); locations with nothing orderable are not offered; _pick no longer preselects a default that is not on the list (re-asks, EOF keeps both defaults with a STDERR diagnosis); POD paragraph updated. t/260-init-location-server-types.t new (HetznerIO fake: type deprecated/unavailable only in the chosen location is not offered there, still offered in fsn1; fails 6/6 against HEAD Init). t/41-init-scaffold.t fake_picker types orderable in hel1 too. Verified: DOCKER_BUILDKIT=0 make test TESTS='t/260-init-location-server-types.t t/41-init-scaffold.t t/42-hetzner-options.t t/246-hetzner-picker-locations.t t/00-load.t' → PASS, 82 tests, no skips.
+
+2026-10-31 02:31 Done: committed as 0f36ba5. Verified in a detached worktree: prove -l on t/260, t/41, t/42, t/246, t/00 passed, 5 files, 82 tests. Follow-ups: k264 (verify the default cpx21), k265 (catalogue read error gets no diagnosis).
