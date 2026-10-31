@@ -4,6 +4,8 @@ use warnings;
 use Test::More;
 use File::Temp qw(tempdir);
 use Path::Tiny qw(path);
+use JSON::PP ();
+use YAML::XS ();
 
 use OCP;
 use OCP::Config;
@@ -37,10 +39,21 @@ package FakeApi {
         return $self->{lists}{$kind} // { items => [] };
     }
 
-    # The raw GET the GPU Operator CRDs are read with. These fixtures have
-    # none, and a cluster without them answers 404 -- the only failure
-    # OCP::Drift reads as absent (k268).
-    sub _request { FakeResponse->new(404, '{"kind":"Status","code":404}') }
+    # The raw GET the CRDs are read with. These fixtures have no GPU
+    # Operator CRDs, and a cluster without them answers 404 -- the only
+    # failure OCP::Drift reads as absent (k268). OCP's own CRDs are the ones
+    # share/robocop/crds ships, which every apply installs: t/291 is where
+    # they differ (k291).
+    my %OCP_CRDS = map { $_->{metadata}{name} => $_ }
+        map { YAML::XS::LoadFile("$_") }
+        Path::Tiny::path(__FILE__)->parent->parent->child(qw(share robocop crds))->children(qr/\.yaml$/);
+    sub _request {
+        my ($self, $method, $path) = @_;
+        (my $name = $path) =~ s{.*/}{};
+        return FakeResponse->new(200, JSON::PP->new->canonical->utf8->encode($OCP_CRDS{$name}))
+            if $path =~ m{/customresourcedefinitions/} && $OCP_CRDS{$name};
+        return FakeResponse->new(404, '{"kind":"Status","code":404}');
+    }
 }
 
 package FakeResponse {

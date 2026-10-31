@@ -10,6 +10,7 @@ use Path::Tiny qw(path);
 use YAML::XS ();
 
 use OCP::Cmd::Apply::Bootstrap;
+use OCP::Drift ();
 use OCP::K8s;
 use OCP::Node;
 use OCP::NodeMeta;
@@ -54,6 +55,15 @@ inside Robocop, which joins with the robo key and has no C<ocp keys show> to
 point anybody at. The hint changes nothing about the result rows — a worker
 that did not come up is still C<Failed>.
 
+C<ensure_crds> writes the OCPNode and OCPNodeProvider CRDs from
+F<share/robocop/crds> over the cluster's, and dies naming that directory when
+it is not there (k291). It leaves a cluster CRD as it is, with a C<[skip]>
+line, when that CRD declares fields this ocp's does not -- one a newer ocp
+installed, whose fields the API server would otherwise drop from every
+object; L<OCP::Drift/ocp_crd_drift> reports it, and both judge by
+L<OCP::Drift/crd_schema_diff>. A CRD it cannot read is not written over
+blind: it dies with the cause.
+
 L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
 forwarder — the existing test surface (t/20-apply-refactor.t,
 t/36-ocpnode-status.t, t/38-reconcile-path.t) keeps working.
@@ -64,7 +74,9 @@ sub ensure_crds {
     my ($self, $api) = @_;
     my $share_dir = $self->_find_share_dir;
     my $crd_dir   = $share_dir->child('robocop', 'crds');
-    return unless -d $crd_dir;
+    # A share directory without them is a broken package, not a cluster that
+    # needs none: returning quietly installed no CRD and said nothing (k291).
+    die "OCP's CRDs not found: $crd_dir is not a directory\n" unless -d $crd_dir;
 
     # Server-side apply the CRDs as raw manifests instead of ensure().
     #
@@ -78,10 +90,28 @@ sub ensure_crds {
     #
     # Nothing here needs a typed round-trip; the NFD and GPU CRDs already go the
     # same way via _apply_yaml_file.
+    #
+    # A CRD in the cluster that declares fields this one does not is newer
+    # than this ocp, and is left as it is (k291): written over, the API server
+    # would drop those fields from every OCPNode a newer ocp or robocop wrote
+    # -- the nodeIP k291 lost, the other way round. OCP::Drift reports it,
+    # with the way out, and judges it by the same crd_schema_diff. Only a 404
+    # is "not there"; a CRD that cannot be read is not written over blind
+    # (crd_get dies with the cause, k269).
     for my $file_path (sort $crd_dir->children(qr/\.ya?ml$/)) {
         my @docs = YAML::XS::LoadFile($file_path->stringify);
         for my $doc (@docs) {
             next unless ref $doc eq 'HASH' && $doc->{kind} && $doc->{metadata}{name};
+            if ($doc->{kind} eq 'CustomResourceDefinition') {
+                my $live = $self->_crd_get($api,
+                    '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/' . $doc->{metadata}{name});
+                my (undef, $extra) = $live ? OCP::Drift->crd_schema_diff($live, $doc) : ();
+                if ($extra && @$extra) {
+                    print "  [skip] $doc->{kind}/$doc->{metadata}{name} is newer than this ocp"
+                        . ' (it declares ' . join(', ', @$extra) . "); left as it is\n";
+                    next;
+                }
+            }
             $self->_server_side_apply($api, $doc);
             print "  [ok] ensured $doc->{kind}/$doc->{metadata}{name}\n";
         }

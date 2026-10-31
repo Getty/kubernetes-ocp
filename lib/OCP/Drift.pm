@@ -307,36 +307,17 @@ sub gpu_crds_differing {
 
 sub gpu_crd_drift {
     my ($self) = @_;
-    require JSON::PP;
-    my $api = $self->api;
-    # The same raw GET as OCP::Cmd::Apply::K8s::crd_get: a CRD has no
-    # IO::K8s class OCP reads. Unlike crd_get, which answers every failure
-    # with undef, only a 404 is a cluster without the CRD here (k268); any
-    # other failure is an error entry, drift unknown. _request hands an HTTP
-    # error status back as the response rather than dying, so the status and
-    # body are the cause; a body that does not decode is one too.
     my @unknown;
     my $get = sub {
         my ($path) = @_;
-        my $r = eval { $api->_request('GET', $path) };
-        my $err = $@;
-        if ($r && $r->status < 400) {
-            my $crd = eval { JSON::PP::decode_json($r->content) };
-            return $crd if $crd;
-            $err = "undecodable response body: $@";
-        }
-        elsif ($r) {
-            $err = $r->status . ' ' . ($r->content // '');
-        }
         (my $name = $path) =~ s{.*/}{};
-        push @unknown, $self->_unknown_drift($err,
+        my ($crd, $unknown) = $self->_read_crd($name,
             in        => 'gpu_crd_drift',
-            op        => 'get',
-            object    => "CustomResourceDefinition $name",
             component => 'gpu_operator_crd',
             label     => "CRD $name",
         );
-        return;
+        push @unknown, $unknown if $unknown;
+        return $crd;
     };
     my @differ = __PACKAGE__->gpu_crds_differing($get);
     return @unknown, map {
@@ -351,6 +332,218 @@ sub gpu_crd_drift {
     } @differ;
 }
 
+# The cluster's CRD $name, as ($crd, $unknown): the decoded CRD, or undef
+# when the cluster has none -- a 404, and only a 404 (k268). Any other failure
+# leaves $crd undef and makes $unknown its error entry (drift unknown, the
+# cause carped once), built from %e: in, component, label. The same raw GET
+# as OCP::Cmd::Apply::K8s::crd_get, which the writers use: a CRD has no
+# IO::K8s class OCP reads. _request hands an HTTP error status back as the
+# response rather than dying, so the status and body are the cause; a body
+# that does not decode is one too.
+sub _read_crd {
+    my ($self, $name, %e) = @_;
+    require JSON::PP;
+    my $r = eval {
+        $self->api->_request('GET', "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$name")
+    };
+    my $err = $@;
+    if ($r && $r->status < 400) {
+        my $crd = eval { JSON::PP::decode_json($r->content) };
+        return $crd if $crd;
+        $err = "undecodable response body: $@";
+    }
+    elsif ($r) {
+        $err = $r->status . ' ' . ($r->content // '');
+    }
+    return (undef, $self->_unknown_drift($err,
+        %e,
+        op     => 'get',
+        object => "CustomResourceDefinition $name",
+    ));
+}
+
+#
+# OCP's own CRDs (k291)
+#
+# OCPNode and OCPNodeProvider, as share/robocop/crds ships them: the files
+# OCP::Cmd::Apply::CR::ensure_crds applies on every ocp apply, deploy and
+# reconcile alike. A cluster whose copy an older OCP installed went unnoticed:
+# the drift check did not look, and only the node CR step re-applied the CRD,
+# silently -- while the API server dropped, without an error, every field the
+# old schema did not declare. Live on amdlab: spec.nodeIP from `ocp node add
+# --node_ip` against a CRD from before k254 (k290).
+#
+# Compared are property paths, not schemas as text, for crd_fingerprint's
+# reason: the apiserver stores a CRD normalised. The names are also exactly
+# what decides what it keeps of an object. Two directions:
+#
+#   the image declares what the cluster does not -- the cluster's CRD is
+#     older: drift that the node CR step of ocp apply closes (self_healing).
+#   the cluster declares what the image does not -- it is newer than this
+#     ocp. Reported, not "fixed": writing this ocp's CRD over it would drop
+#     those fields from every object, which is the bug above the other way
+#     round, so ensure_crds leaves such a CRD as it is (crd_schema_diff is its
+#     judge as well). The flip side: the day OCP drops a field from its own
+#     CRDs, every cluster will read as newer than the image that dropped it,
+#     until something better than field names tells the two apart.
+
+# Every CustomResourceDefinition in share/robocop/crds, in the order
+# ensure_crds applies them. Dies when the directory is not there.
+sub shipped_ocp_crds {
+    my ($class) = @_;
+    require OCP::Share;
+    require YAML::XS;
+    my $dir = OCP::Share->dir->child('robocop', 'crds');
+    die "OCP's CRDs not found: $dir is not a directory\n" unless -d $dir;
+    return grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'CustomResourceDefinition' }
+        map { YAML::XS::LoadFile($_->stringify) } sort $dir->children(qr/\.ya?ml$/);
+}
+
+# Every property path a CRD's schema declares under spec and status, as
+# { version name => { path => 1 } }. A path names a property from the top of
+# the object, the items of an array through []: spec.nodeIP,
+# status.hostKeys[].fingerprint. spec and status count themselves.
+sub crd_property_paths {
+    my ($class, $crd) = @_;
+    my %paths;
+    for my $version (@{ _dig($crd, qw(spec versions)) // [] }) {
+        next unless ref $version eq 'HASH';
+        my $root = _dig($version, qw(schema openAPIV3Schema properties));
+        my %p;
+        for my $part (qw(spec status)) {
+            my $schema = ref $root eq 'HASH' ? $root->{$part} : undef;
+            next unless ref $schema eq 'HASH';
+            $p{$part} = 1;
+            $class->_schema_paths($schema, $part, \%p);
+        }
+        $paths{ $version->{name} // '?' } = \%p;
+    }
+    return \%paths;
+}
+
+sub _schema_paths {
+    my ($class, $schema, $path, $into) = @_;
+    return unless ref $schema eq 'HASH';
+    $class->_schema_paths($schema->{items}, $path . '[]', $into)
+        if ref $schema->{items} eq 'HASH';
+    my $props = $schema->{properties};
+    return unless ref $props eq 'HASH';
+    for my $name (keys %$props) {
+        $into->{"$path.$name"} = 1;
+        $class->_schema_paths($props->{$name}, "$path.$name", $into);
+    }
+}
+
+# What two CRDs' schemas do not share, as (\@want_only, \@have_only): the
+# property paths only $want declares (the shipped CRD) and only $have
+# declares (the cluster's), sorted. A path under one that is missing as well
+# is left out -- spec.hetzner stands for everything under it. Each carries its
+# version ("v1:spec.nodeIP") only where the two hold more than one version
+# between them.
+sub crd_schema_diff {
+    my ($class, $have, $want) = @_;
+    my $h = $class->crd_property_paths($have);
+    my $w = $class->crd_property_paths($want);
+    my @versions = do { my %v = map { $_ => 1 } keys %$h, keys %$w; sort keys %v };
+    my $only = sub {
+        my ($in, $not) = @_;
+        my @out;
+        for my $v (@versions) {
+            my %there = %{ $not->{$v} // {} };
+            my %diff  = map { $_ => 1 } grep { !$there{$_} } keys %{ $in->{$v} // {} };
+            for my $path (sort keys %diff) {
+                (my $parent = $path) =~ s/(?:\A[^.]*|\.[^.]*)\z//;
+                $parent =~ s/(?:\[\])+\z//;
+                next if length $parent && $diff{$parent};
+                push @out, (@versions > 1 ? "$v:" : '') . $path;
+            }
+        }
+        return \@out;
+    };
+    return ($only->($w, $h), $only->($h, $w));
+}
+
+sub ocp_crd_drift {
+    my ($self) = @_;
+
+    my @shipped = eval { $self->shipped_ocp_crds };
+    if (my $err = $@) {
+        # A package without them is no cluster without drift: unknown.
+        chomp $err;
+        carp "OCP::Drift::ocp_crd_drift: $err";
+        return {
+            kind      => 'error',
+            component => 'ocp_crd',
+            label     => 'OCP CRDs',
+            expected  => undef,
+            actual    => undef,
+            message   => "OCP CRDs: could not read the ones this ocp ships, drift unknown: $err",
+            remedy    => undef,
+        };
+    }
+
+    my @drift;
+    for my $want (@shipped) {
+        my $name  = _dig($want, qw(metadata name)) or next;
+        my $kind  = _dig($want, qw(spec names kind)) // $name;
+        my $label = "$kind CRD";
+        my ($have, $unknown) = $self->_read_crd($name,
+            in        => 'ocp_crd_drift',
+            component => 'ocp_crd',
+            label     => $label,
+        );
+        if ($unknown) {
+            push @drift, $unknown;
+            next;
+        }
+
+        my %entry = (
+            component => 'ocp_crd',
+            label     => $label,
+            expected  => undef,
+            actual    => undef,
+            remedy    => undef,
+        );
+
+        # Every apply installs them, with or without robocop.
+        unless ($have) {
+            push @drift, { %entry,
+                kind         => 'missing',
+                message      => "$label ($name) is not installed; ocp apply installs it",
+                self_healing => 1,
+            };
+            next;
+        }
+
+        my ($lacks, $extra) = $self->crd_schema_diff($have, $want);
+        next unless @$lacks || @$extra;
+
+        if (@$extra) {
+            push @drift, { %entry,
+                kind        => 'version',
+                message     => "$label ($name) in the cluster declares " . join(', ', @$extra)
+                    . ', which this ocp does not know'
+                    . (@$lacks ? ', and lacks ' . join(', ', @$lacks) . ', which it declares' : '')
+                    . ': newer than this ocp, which leaves it as it is',
+                manual_step => 'Run ocp apply with the ocp that installed it. This one does not'
+                    . ' write its own CRD over it: the API server would drop '
+                    . (@$extra == 1 ? 'that field' : 'those fields') . " from every $kind.",
+            };
+            next;
+        }
+
+        push @drift, { %entry,
+            kind         => 'version',
+            message      => "$label ($name) in the cluster lacks " . join(', ', @$lacks)
+                . ', which this ocp declares, and the API server drops what it does not declare;'
+                . ' ocp apply updates it',
+            self_healing => 1,
+        };
+    }
+
+    return @drift;
+}
+
 sub detect {
     my ($self) = @_;
 
@@ -358,6 +551,7 @@ sub detect {
     if ($self->api) {
         push @drift, $self->component_drift;
         push @drift, $self->gpu_crd_drift;
+        push @drift, $self->ocp_crd_drift;
         push @drift, $self->registry_dns_drift;
         push @drift, $self->pod_cidr_drift;
     }
@@ -1218,6 +1412,68 @@ remedy, whose message names the object and the exception, and the same
 exception is carped to stderr. That holds for the optional probes, which
 would otherwise report nothing, and for the others, which would otherwise
 report the component missing.
+
+=head2 ocp_crd_drift
+
+    my @entries = $detector->ocp_crd_drift;
+
+OCP's own CRDs, C<OCPNode> and C<OCPNodeProvider>, compared with the ones
+this ocp ships in F<share/robocop/crds> (k291). The API server drops every
+field of an object that the stored CRD does not declare, without an error, so
+an OCPNode CRD from before k254 lost C<spec.nodeIP> from C<ocp node add
+--node_ip> while the drift check said nothing. Compared are the property
+paths under C<spec> and C<status> (L</crd_schema_diff>), not the schemas as
+text, which the API server stores normalised. One entry per CRD that
+differs, C<component =E<gt> 'ocp_crd'>, label C<"$kind CRD">, no remedy:
+
+=over 4
+
+=item * The cluster's CRD lacks paths the shipped one declares: it is older.
+C<kind =E<gt> 'version'>, C<self_healing>: the node CR step of C<ocp apply>
+writes the shipped one over it.
+
+=item * The cluster's CRD declares paths the shipped one does not: it is
+newer than this ocp (a downgrade). C<kind =E<gt> 'version'>, with a
+C<manual_step>, and reported only: L<OCP::Cmd::Apply::CR> leaves such a CRD
+as it is, because writing this one over it would drop those fields from every
+object. The flip side: once OCP drops a field from its own CRDs, every
+cluster reads as newer than the ocp that dropped it.
+
+=item * The cluster has no such CRD (a 404, and only a 404): C<kind =E<gt>
+'missing'>, C<self_healing>.
+
+=item * It cannot be read, or the shipped CRDs cannot: one C<kind =E<gt>
+'error'> entry naming the cause, carped to stderr, as for the probes of
+L</component_drift>.
+
+=back
+
+=head2 crd_schema_diff
+
+    my ($want_only, $have_only) = OCP::Drift->crd_schema_diff($live, $shipped);
+
+The property paths only C<$shipped> declares and those only C<$live>
+declares, each a sorted arrayref. A path whose parent is in the same list is
+left out (C<spec.hetzner> stands for everything under it), and a path
+carries its version (C<v1:spec.nodeIP>) only when the two CRDs hold more than
+one version between them. L</ocp_crd_drift> and
+L<OCP::Cmd::Apply::CR/ensure_crds> judge by it alike.
+
+=head2 crd_property_paths
+
+    my $paths = OCP::Drift->crd_property_paths($crd);
+    # { v1 => { spec => 1, 'spec.nodeIP' => 1, 'status.hostKeys[].fingerprint' => 1, ... } }
+
+Every property path a CRD's schema declares under C<spec> and C<status>, per
+version name. The items of an array are named by C<[]>; C<spec> and
+C<status> count themselves.
+
+=head2 shipped_ocp_crds
+
+    my @crds = OCP::Drift->shipped_ocp_crds;
+
+Every C<CustomResourceDefinition> in F<share/robocop/crds>, decoded, in file
+order. Dies with the path when the directory is not there.
 
 =head2 remedy_params
 

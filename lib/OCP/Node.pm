@@ -1849,7 +1849,12 @@ C<spec.nodeIP> is the address the node is to register as its C<InternalIP>
 -- RKE2's and K3s's C<node-ip> (k254): one IP literal, or C<"v4,v6"> for
 dual-stack.  It is explicit only, written by C<ocp node add --node_ip> (or
 by hand); absent, the install is handed no C<node_ip> and the node registers
-the address of its default route, as before.
+the address of its default route, as before.  An OCPNode CRD from before
+k254 declares neither C<spec.nodeIP> nor C<status.nodeIP>, and the API server
+drops both without an error; this class only ever sees the stored CR, so a
+dropped C<spec.nodeIP> reads as none asked for (C<ocp node add --node_ip>
+refuses such a cluster since k290, L<OCP::Drift/ocp_crd_drift> reports it
+since k291).
 
 C<reconcile> checks it first, with L<OCP::Choices/node_ip_error>, for a
 node that is C<Pending>, C<Provisioning> or C<Installing>: a value that does

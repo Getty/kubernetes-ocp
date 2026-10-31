@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` and `ocp apply` (dry run included) report an OCPNode or
+      OCPNodeProvider CRD in the cluster that lacks fields this ocp declares
+      (the API server drops them without an error, as it did `spec.nodeIP`)
+      or declares fields it does not know; `ocp apply` updates the older one
+      and leaves the newer one as it is instead of writing it back.
+    - `ocp apply` dies naming the directory when the package has no
+      share/robocop/crds, instead of installing no CRD and saying nothing.
     - `ocp apply` now waits for `nvidia.com/gpu` in the allocatable of an
       NVIDIA worker that joins during the run also when the GPU Operator
       check before the join already ran; a node that does not get there

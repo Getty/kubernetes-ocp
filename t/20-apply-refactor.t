@@ -64,9 +64,11 @@ use YAML::XS ();
         return 1;
     }
     # _server_side_apply falls back to a hand-built path when the kind is not
-    # a registered class, then PATCHes the raw manifest.
+    # a registered class, then PATCHes the raw manifest. ensure_crds reads
+    # each CRD first (k291): this cluster has none yet, which is a 404.
     sub _request {
         my ($self, $method, $path, $body, %opts) = @_;
+        return FakeResponse->new(404, '{"kind":"Status","code":404}') if $method eq 'GET';
         push @{$self->{calls}},
             [lc($method), $body->{kind}, $body->{metadata}{name}, $body, \%opts];
         return $body;
@@ -106,6 +108,13 @@ use YAML::XS ();
     package FakeK8s;
     sub new { bless {}, shift }
     sub object_to_struct { $_[1] }
+}
+
+{
+    package FakeResponse;
+    sub new     { my ($c, $status, $content) = @_; bless { status => $status, content => $content }, $c }
+    sub status  { $_[0]{status} }
+    sub content { $_[0]{content} }
 }
 
 {
