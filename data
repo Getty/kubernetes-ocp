@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-10-31T03:38:46Z
+id: 280
+priority: medium
+status: todo
+tags:
+- build
+- docker
+title: 'Dockerfile: the vendor step (k222) lacks --configure-timeout=600, IO-Tty times
+  out under load'
+updated: 2026-10-31T03:38:46Z
+---
+
+The snapshot pass got `--configure-timeout=600` on 2026-10-22 because IO-Tty's Makefile.PL symbol probe outruns cpm's 60s default on a loaded builder. The vendor step (k222, `RUN if [ -s vendor/ORDER ]`) runs FIRST and installs each vendored dist's dependencies from scratch, Rex and therefore IO-Tty included, with the 60s default.
+
+Seen 2026-10-31 building `live-20bec47` (Rex-GPU-0.006 + Rex-Rancher-0.005 vendored), host load ~2.4 on 8 cores, parallel worker test runs: `IO-Tty-1.27| Timed out (> 60s). Failed to configure distribution` → `FAIL install Rex-1.16.1` → `FAIL install file:///opt/ocp/src/vendor/Rex-GPU-0.006.tar.gz`, build exit 1. Earlier live builds passed only because that layer came from the cache.
+
+Fix: the same `--configure-timeout=600` on the vendor-step cpm call, with the existing comment extended or pointed to. Done = the flag is there and `make build` with a non-empty vendor/ passes (the live build in the scratch clone passed with exactly this one-flag change).
