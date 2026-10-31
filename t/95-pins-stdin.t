@@ -30,7 +30,10 @@ use OCP::Cmd::InjectKey;
 #     expected — never undef, which callers would read as "wrong PIN", and
 #     never a quiet fallback to the terminal (Term::ReadKey is not touched)
 #   * the prompt text still goes to STDERR, so STDOUT stays the payload
-#   * the flag is a MooX::Options option on every command (OCP::Role::Cmd)
+#   * the flag is a MooX::Options option on every command class that consumes
+#     OCP::Role::Cmd. That those classes are every command is NOT checked
+#     here (a command that never consumes the role is invisible to a source
+#     grep): t/383 walks the command map of `ocp` for that
 #   * the "no terminal, refuse before asking" guard in OCP::ClusterKey counts
 #     --pins-stdin as someone to ask
 #   * secure-mode `ocp init` runs end to end off STDIN: PIN1, confirm, PIN2,
@@ -137,11 +140,13 @@ subtest 'without --pins-stdin the terminal path is unchanged' => sub {
     ok $TTY_READS > 0, 'which was reached';
 };
 
-subtest '--pins-stdin is an option on every command' => sub {
+subtest '--pins-stdin is an option on every OCP::Role::Cmd consumer' => sub {
     local $OCP::Password::PINS_STDIN;
 
     # Every class that consumes OCP::Role::Cmd, found in the source rather
-    # than listed, so a new command cannot quietly miss the flag.
+    # than listed, so a new consumer cannot quietly lose the flag. A command
+    # that never consumes the role is not found this way; t/383 covers it
+    # from the command map.
     my @classes;
     path('lib/OCP/Cmd')->visit(sub {
         my ($file) = @_;
