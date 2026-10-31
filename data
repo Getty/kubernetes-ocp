@@ -1,0 +1,49 @@
+---
+class: standard
+completed: 2026-10-31T08:13:57Z
+created: 2026-10-31T06:48:48Z
+id: 315
+priority: low
+started: 2026-10-31T08:13:57Z
+status: done
+tags:
+- config
+- validation
+title: 'validate(): robocop: no turns robocop on, and the other gaps left after k305'
+updated: 2026-10-31T08:13:57Z
+---
+
+Left over from k305 (2026-10-31), noted on that card:
+- `robocop: no`, `robocop: off` or `robocop: "false"` turns robocop ON: a non-empty string is true. So does a typo like `robocop: { enable: false }`, because the unknown key is ignored and enabled defaults to on. The likely fix: refuse anything but true/false/mapping, and unknown keys under robocop:.
+- a boolean `node_ip` is called "not a reference" (wording in OCP::Choices::node_ip_error); it should say `true`/`false` like `_shown_value`.
+- the list form of `control_planes` has no upper bound; k305 caps `nodes:` at 7 (etcd advises no more than 7 members). The list form should get the same bound, and an even count (2, 4, 6) could at least be warned about, since it adds no fault tolerance.
+- `host`, `server_type` and a worker pool's `host`/`nodes` are not shape-checked (a list or mapping there).
+
+Done = each is an ordinary validate() line, the t/296 sweep covers it, and the three real configs (cihq, citiai, amdlab) still give 0 errors.
+
+2026-10-31 07:38 ocp-choices-worker started. Readers of robocop on/off: all go through Config::robocop_enabled -- Apply/Deploy.pm:279, Apply/Drift.pm:475/699, Apply/Health.pm:201 (in an eval), Keys/Secure.pm:398, Config::robocop_arch_warning (Apply.pm, after validate). ocp status reads none; ocp deploy-robocop deploys regardless and reads only robocop_security_level. Pool nodes is provider-dependent (Apply/CR.pm worker_ocpnodes): ssh pool = host or nodes: [string | {host}], every other provider = nodes: N, a count. A list there on a hetzner pool is 1 .. ARRAY(0x...) -- out of memory, the k305 failure again.
+
+2026-10-31 07:44 Reproduced on a clean HEAD copy: (1) t/296 extended with claims 8-13 (robocop string/enabled string/unknown key, accessor agreement swept, boolean node_ip, list bound, host/server_type/pool host/nodes) -- all red on HEAD. (2) workers: [{provider: hetzner, nodes: [a]}] passes validate() and worker_ocpnodes then dies 'Out of memory' (ulimit -v 600000); workers: [{provider: ssh, nodes: [w1.lan, true]}] passes validate() and dies 'Not a HASH reference at lib/OCP/Cmd/Apply/CR.pm line 497'.
+
+2026-10-31 08:08 Decisions (ocp-choices-worker), each also commented in code:
+- robocop: true/false, 1/0, or a mapping of enabled/security_level/image; nothing else. 1/0 stay: write-from-Perl specs and the suite spell it so (t/17, t/96, t/129 ...), and k305 kept them. A string that spells a YAML 1.1 boolean (no/off/n/yes/on/y, quoted or capitalised true/false; YAML::XS reads only a bare true/false as boolean) gets '; write robocop: false' / '; write enabled: false', like the gpu: false hint. Unknown keys under robocop: in _unknown_keys words (k292).
+- One helper Config::_robocop_errors: validate() lists its lines, robocop_enabled croaks with them joined by '; '. A croak, not off: house pattern of gpu_config/robocop_security_level, and 'robocop: yes' must not quietly mean off either. Readers checked: Apply/Deploy.pm:279, Apply/Drift.pm:475/699, Apply/Health.pm:201 (in an eval), Keys/Secure.pm:398, Config::robocop_arch_warning -- all through the accessor. ocp status reads no switch; ocp deploy-robocop deploys regardless. No other file needed a change.
+- List form bound: refused above $MAX_CONTROL_PLANE_NODES (7), same etcd reason and wording as nodes:. Even count NOT warned: validate() returns errors only, no warning channel; not invented (see also-found).
+- Shapes: control plane host/server_type and pool host must be strings (a list/mapping/boolean is one line, and no 'required' line beside it). Pool nodes per provider, as Apply/CR.pm worker_ocpnodes reads it: an ssh pool = list of hosts, each a non-empty string or a mapping with a host string; any other provider = a whole number (0 allowed). Checked only for a known provider. The brief's rule (list of strings/mappings) holds for ssh pools only -- hetzner pools count (docs: nodes: 3).
+- node_ip_error: a boolean is 'not true'/'not false'; a scalar ref still 'a reference' (t/254-node-ip-validate.t:75).
+Verified: t/296 claims 8-13 + sweep extension (control_planes[8], workers[1].nodes[1].host, a hetzner pool's nodes, robocop.enable, 'a reference' banned for booleans, and robocop_enabled vs validate() agreement swept over every shape) red on HEAD, green after. 16 mutants on copies in scratchpad/w-choices3, all killed by the claim aimed at them. Binding: make test on 19 config-related files incl. t/314 PASS (336 tests); full binding suite on clean HEAD + this change PASS (225 files, 3568 tests, no skips). cihq, citiai, amdlab: 0 errors each, robocop_enabled 0 as before.
+
+2026-10-31 08:08 Also found (outside this card; for the dispatching agent to file or drop):
+1. ocp-secrets-worker: Keys/Secure.pm _reroll_robocop reads robocop_enabled only AFTER the switch to secure mode, and `ocp keys secure` never runs validate(). A malformed robocop now croaks there with validate()'s line (before: robocop: no read as on and robocop's credentials were rolled out). Suggest reading robocop_enabled (or validate()) before the first PIN.
+2. ocp-apply-worker / main: even control-plane count (2/4/6) warning. validate() returns errors only; the precedent for a warning is a separate [WARN] method (Config::robocop_arch_warning) that Apply.pm prints. Needs Apply.pm, so not done here.
+3. No upper bound on a counted pool's nodes: workers: [{provider: hetzner, nodes: 1000000000000}] passes validate() and worker_ocpnodes builds that many OCPNodes (OOM). No etcd reason for a number; a policy choice (Hetzner project limit).
+4. Same 'any string is true' gap outside robocop: gpu.enabled, gpu.toolkit, gpu.amd.labeller/metrics/integrated, lbipam, nocert, system.ntp -- gpu: { enabled: no } turns the GPU stack on.
+5. ssh pool semantics, not shapes: neither host nor nodes -> no worker, silently; both -> host ignored; nodes: [] -> no worker.
+6. Same shape gap at keys not on this card: control_planes location/image, a pool's server_type/location/image (a list reaches the OCPNode spec / Hetzner API).
+7. ocp-destroy-worker: Destroy.pm:399 reads pool nodes like worker_ocpnodes (a boolean entry dies 'Not a HASH reference'); ocp destroy runs no validate().
+8. ocp-doc-writer: docs/configuration.md, docs/robocop.md and the ocp-usage skill do not say robocop takes only true/false (or a mapping of its three keys), nor the ssh-list vs count rule for pool nodes, nor the list-form bound.
+9. Pre-existing: the mapping form with nodes: N repeats every per-entry line N times (control_planes[1..N]: server_type required ...); the new host/server_type lines follow that pattern.
+
+2026-10-31 08:08 Done, uncommitted, tree commit-ready: lib/OCP/Config.pm, lib/OCP/Choices.pm, t/296-validate-malformed-shapes.t. Proposed subject: Refuse robocop: no and an unknown robocop key, more than 7 listed control planes and a host or pool nodes of the wrong shape, and call a boolean node_ip true or false (k315). Binding full suite on clean HEAD + change PASS (225 files, 3568 tests); targeted make test PASS; 16/16 mutants killed; three real configs 0 errors. Decisions and also-found in the notes above.
+
+Committed as c46f5f1
