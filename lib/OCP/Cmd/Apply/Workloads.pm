@@ -11,7 +11,7 @@ use Path::Tiny qw(path);
 use OCP::Drift ();
 use OCP::Kubernetes;
 use OCP::Versions;
-use OCP::Cmd::Apply::AMDGPU ();
+use OCP::Cmd::Apply::K8s ();
 
 =head1 SYNOPSIS
 
@@ -642,7 +642,7 @@ sub wait_gpu_allocatable {
 # devices are unhealthy.
 sub gpu_not_allocatable {
     my ($k8s, $api, $name) = @_;
-    my ($node, $why) = OCP::Cmd::Apply::AMDGPU::read_or_why("Node '$name'",
+    my ($node, $why) = OCP::Cmd::Apply::K8s::read_or_why("Node '$name'",
         sub { $api->get('Node', name => $name) });
     return $why if $why;
     return "Node '$name' not found" unless $node;

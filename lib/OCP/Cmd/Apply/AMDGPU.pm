@@ -417,19 +417,6 @@ sub wait_ready {
     die "$COMPONENT{$c}{label} not ready after " . ready_timeout() . "s: $short\n";
 }
 
-# A read for not_ready: what $read returns, or undef and why not -- "<what>
-# not found" for a 404, "could not read <what>: <cause>" for any other
-# failure, which is no verdict on the object (k269). Not a death: the wait
-# reads again, and says the last why when it runs out.
-sub read_or_why {
-    my ($what, $read) = @_;
-    my $object = eval { $read->() };
-    my $err = $@ or return ($object, undef);
-    my $reason = "$err";
-    chomp $reason;
-    return (undef, $reason =~ /\b404\b/ ? "$what not found" : "could not read $what: $reason");
-}
-
 # Why component $c is not ready yet, or undef when it is. Readiness is what
 # a workload can use: the DaemonSet rolled out, and for the plugin the GPU in
 # status.allocatable (not capacity, which a failing plugin leaves standing),
@@ -442,7 +429,7 @@ sub not_ready {
     my $ds_ref = $OCP::Drift::AMD_GPU_DAEMONSETS{$c};
     my $where  = "DaemonSet $ds_ref->{namespace}/$ds_ref->{name}";
 
-    my ($ds, $why) = read_or_why($where,
+    my ($ds, $why) = OCP::Cmd::Apply::K8s::read_or_why($where,
         sub { $api->get('DaemonSet', name => $ds_ref->{name}, namespace => $ds_ref->{namespace}) });
     return $why if $why;
     return "$where not found" unless $ds;
@@ -460,7 +447,7 @@ sub not_ready {
     if ($c eq 'device_plugin') {
         my $mixed = ($opts->{resource_naming} // 'single') eq 'mixed';
         for my $n (@$nodes) {
-            my ($node, $why) = read_or_why("Node '$n->{name}'", sub { $api->get('Node', name => $n->{name}) });
+            my ($node, $why) = OCP::Cmd::Apply::K8s::read_or_why("Node '$n->{name}'", sub { $api->get('Node', name => $n->{name}) });
             return $why if $why;
             my $alloc = $node ? ($api->k8s->object_to_struct($node)->{status}{allocatable} // {}) : {};
             my @gpu   = grep { $mixed ? index($_, $OCP::Config::AMD_GPU_RESOURCE_PREFIX) == 0
@@ -472,7 +459,7 @@ sub not_ready {
         }
     }
     elsif ($c eq 'dra') {
-        my ($slices, $why) = read_or_why('ResourceSlices',
+        my ($slices, $why) = OCP::Cmd::Apply::K8s::read_or_why('ResourceSlices',
             sub { $self->_crd_get($api, '/apis/resource.k8s.io/v1/resourceslices') });
         return $why if $why;
         $slices //= {};

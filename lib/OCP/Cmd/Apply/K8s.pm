@@ -22,7 +22,8 @@ use OCP::Kubernetes ();
 
 Small helpers that the in-cluster components share: build a L<Kubernetes::REST>
 api from a kubeconfig string, server-side apply a hash, parse and apply a
-multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path.
+multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path,
+and the read a readiness wait makes, which tells a 404 from a read that failed.
 L<OCP::Cmd::Apply> re-exports every helper as a C<_method> thin forwarder so
 the existing test surface (C<local *OCP::Cmd::Apply::_server_side_apply = ...>)
 keeps working.
@@ -211,6 +212,20 @@ sub resource_exists {
         die "could not read $kind $where: $reason\n";
     }
     return defined $obj;
+}
+
+# A read for a readiness wait (the AMD GPU stack's not_ready, the NVIDIA
+# allocatable wait in OCP::Cmd::Apply::Workloads): what $read returns, or
+# undef and why not -- "<what> not found" for a 404, "could not read <what>:
+# <cause>" for any other failure, which is no verdict on the object (k269).
+# Not a death: the wait reads again, and says the last why when it runs out.
+sub read_or_why {
+    my ($what, $read) = @_;
+    my $object = eval { $read->() };
+    my $err = $@ or return ($object, undef);
+    my $reason = "$err";
+    chomp $reason;
+    return (undef, $reason =~ /\b404\b/ ? "$what not found" : "could not read $what: $reason");
 }
 
 # A raw GET of $resource_path (a CRD's object has no IO::K8s class OCP
