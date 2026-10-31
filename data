@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T01:47:01Z
+created: 2026-10-30T23:44:04Z
+depends_on:
+- 248
+id: 252
+priority: high
+started: 2026-10-31T01:47:01Z
+status: done
+tags:
+- gpu
+- amd
+- status
+title: 'AMD-GPU: Status-Abschnitt (amd.com/gpu, gfx-Target, DRA-Slices)'
+updated: 2026-10-31T01:47:01Z
+---
+
+Design docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md, Abschnitt 6. Lane ocp-status-worker. Startet nach Config. Teil von k248.
+
+2026-10-31 01:21 ocp-status-worker started. IO::K8s question answered: the image's IO::K8s 1.111 maps ResourceSlice -> IO::K8s::Api::Resource::V1::ResourceSlice (resource.k8s.io/v1, plural resourceslices) and inflates a live-shaped gpu.amd.com slice (attributes, capacity memory 128Gi, pool); Kubernetes::REST 1.110 lists it through the resource map. No gap, nothing to file on io-k8s-p5/kubernetes-rest. Plan: extend the existing GPU section in OCP::Cmd::Status only (NVIDIA lines unchanged, AMD block only when an AMD node exists), test t/252-status-amd-gpu.t.
+
+2026-10-31 01:29 Implemented in lib/OCP/Cmd/Status.pm (GPU section extended, NVIDIA lines untouched; AMD block only when a node has the marker label or amd.com/gpu). t/252-status-amd-gpu.t 40/40 green in Docker; the NVIDIA-only golden was verified green on the pre-change code first. Mutation check: 18 flips of the new branches, all 18 go red. Running the full binding suite next.
+
+2026-10-31 01:30 Also found (not in scope, for the dispatcher): (1) ocp status --json carries none of the AMD lines; its shape (k230 machine interface) is a design call, so JSON is unchanged and the POD/comment say so. (2) OCP::Drift::component_drift treats ANY failed get of an optional probe as absent, so a 403/5xx on the AMD DaemonSets (or gpu_operator) is silently 'no drift'. That's the k119 family, state-worker lane. Status itself tells 404 from other errors. (3) The pre-existing text-path errors of ocp status ('WARNING: Cannot connect to cluster API', 'ERROR: Cannot decrypt kubeconfig') still go to STDOUT; untouched, karr k105 tracks it. (4) 'amd.com/gpu' and 'gpu.amd.com' are file-local constants in Status.pm; if k251 needs them too, OCP::Config is the natural home (state-worker).
+
+2026-10-31 01:44 Done. lib/OCP/Cmd/Status.pm: the GPU section now lists each AMD GPU node (marker label or amd.com/gpu). For each it shows amd.com/gpu allocatable with capacity only alongside, the gfx target(s) in both label forms, and the effective allocation with its source (node label or gpu.amd.allocation; an unknown value is named as such). Then devices per node from the gpu.amd.com ResourceSlices: newest pool generation only, 404 = not served, other errors = unknown + STDERR. Then ready/desired of the four %OCP::Drift::AMD_GPU_DAEMONSETS: 404 = not deployed, other errors = unknown + STDERR. DRA is marked [experimental]. An invalid gpu.amd.allocation is a STDERR warning and the report carries on. NVIDIA output is byte-identical without AMD nodes, and no extra API reads happen then. --json is unchanged. POD: new GPU SECTION. New t/252-status-amd-gpu.t uses real IO::K8s objects over a fake api. Verified: the NVIDIA golden passed on the pre-change code; 18/18 mutations go red; DOCKER_BUILDKIT=0 make test: Files=191, Tests=3027, Result: PASS, no skips. Uncommitted; the spec doc diff in the tree is not mine.
+
+2026-10-31 01:46 Committed as 45b81fe
