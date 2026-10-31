@@ -1,0 +1,32 @@
+---
+claimed_at: 2026-10-31T04:04:26Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:04:26Z
+created: 2026-10-31T02:45:12Z
+id: 272
+priority: low
+started: 2026-10-31T04:04:26Z
+status: done
+tags:
+- apply
+- drift
+- ux
+title: 'ocp apply: ''see the [!!] lines above'' when only a drift check is unresolved,
+  and a dry-run grammar slip'
+updated: 2026-10-31T04:04:26Z
+---
+
+Found while doing k267 (OCP::Cmd::Apply::Drift).
+
+1. Health::finish says "Apply did not complete: <X>. See the [!!] lines above". When the only unresolved item is a drift check that could not be read (k267: "  [drift] could not be checked: ..."), there is no [!!] line to see. The pointer should name the line that is actually there, or the drift line should carry the marker.
+2. The dry-run summary has an older grammar slip: "a real run leaves it as they are".
+3. The POD of OCP::Cmd::Apply::Drift does not mention error entries (kind => error) yet (ocp-doc-writer).
+
+Done when: the pointer names a line that is printed in every unresolved case, the grammar is fixed, the POD describes error entries, and tests pin 1 and 2.
+
+2026-10-31 03:50 Decision (1): the pointer changes; the drift line keeps its k267 shape. Why: the [!!] marker is not uniform even without the drift case. A worker the drive leaves short of Ready but not Failed prints '    [..] NAME — Installing' (CR.pm print_worker_status, on STDERR), is counted as 'worker NAME', and has no [!!] line. So marking the drift line alone would not make the old pointer true in every case, and CR.pm is not in this lane. The only line every unfinished run prints is the closing STDERR line 'Apply did not complete: X failed.'. Health::finish now says: "Not every component reached its spec: 'Apply did not complete' below" / "names each one, and the lines above say why.". (2) The grammar is fixed: 'leaves it as it is' / 'leaves them as they are'. (3) The POD of OCP::Cmd::Apply::Drift now describes kind=>error entries and gpu_dry_run (k276). Tests: t/38 (the scenario where only the drift check is unresolved, plus the grammar for one and two entries) and t/203 (the named line is printed for three failure sets).
+
+2026-10-31 03:59 Done, commit-ready, not committed. (1) Health::finish's unfinished branch now prints: "Not every component reached its spec: 'Apply did not complete' below" / "names each one, and the lines above say why." -- that STDERR line is printed by every run with _failed_components (decision noted above). (2) dry_run_report: '  1 more reported only -- a real run leaves it as it is.' / '  N more reported only -- a real run leaves them as they are.' (3) POD DESCRIPTION of OCP::Cmd::Apply::Drift: kind=>error entries (k267) and gpu_dry_run (k276). Files: lib/OCP/Cmd/Apply/Health.pm, lib/OCP/Cmd/Apply/Drift.pm (grammar, POD; the misplaced robocop-dry-run comment moved to its sub), t/38-reconcile-path.t (only a Cilium drift check unresolved: no [!!] anywhere, the pointer names a line, finish prints it; the grammar for one and two), t/203-banner-failed-component.t (the named line is printed for three failure sets). Binding: same run as k276, Files=26, Tests=463, Result: PASS. Mutations: pointer reverted -> killed (t/38, t/203); grammar slip reverted -> killed (t/38). Observed, not in scope: the CLI never autoflushes STDOUT, so in 'ocp apply > log 2>&1' the STDERR lines (every [!!], 'Apply did not complete') land before buffered STDOUT text. On a terminal the order holds. Predates this card; candidate card. Proposed subject: Point an unfinished ocp apply at the line it printed, fix a dry-run grammar slip (k272)
+
+2026-10-31 04:04 Committed 44dbf87 (with k276). Follow-up: k289.
