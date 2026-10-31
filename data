@@ -1,0 +1,28 @@
+---
+claimed_at: 2026-10-31T13:38:52Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T12:26:42Z
+id: 353
+priority: low
+status: in-progress
+tags:
+- destroy
+- robustness
+title: 'ocp destroy after k345: ssh control plane without host skipped silently, provider
+  '''' unsaid, a failed label search outside the fallback silent, API-down warning
+  names ocp.yaml for local workers'
+updated: 2026-10-31T13:38:52Z
+---
+
+Left over from k345 (destroy worker, 2026-10-31). Destroy lane. Each item is small; fix them with validate()'s words and the k323 principle (destroy checks only what it reads):
+- An ssh control plane without a host is still listed in the control-plane fallback, then skipped without a word. Say it on STDERR, as k341 does for an unknown provider: that control plane is NOT torn down, and validate()'s line for the missing host.
+- `provider: ''` on a control plane or a worker pool: validate() names it, destroy says nothing.
+- A Hetzner label search that fails outside the control-plane fallback (some source found nodes, so the fallback does not run) is still silent. A server that only that search would have found stays up without a word. Say it on STDERR with the cause and the `hcloud server list -l ocp-cluster=<name>` selector, as k345 does in the fallback.
+- The API-down warning still names ocp.yaml as a source for workers. A local pool's worker is found only by its OCPNode, not in ocp.yaml, so the warning's list is wrong for it.
+
+Done = a test per item: red first, the line on STDERR, nothing else changed. Then a mutation check.
+
+More from k340 (choices worker, 2026-10-31): Destroy.pm's control-plane fallback reads public_ip without the shape check (around line 229 at 12d049a; k340 refuses a list/mapping public_ip in validate() and join_host/cluster_status). And the cluster_ssh_key eval in execute (around line 785) prints the ssh: refusal from ssh_config with a croak location ('at ... line N.') -- strip it, as k265's _catalogue_error does (see k342 for the shared helper).
+
+2026-10-31 13:38 Red: new t/353-destroy-said-lines.t against queued15 -- 11/13 subtests fail, the 2 controls pass. Each item reproduced: ssh CP no host listed 'prod-cp-1 (ssh, -)' + 'Deleting' + nothing said; provider '' silent (CP and pool); failed label search with police1 recorded silent; API-down text names ocp.yaml for workers; local CP public_ip [..] listed as ARRAY(0x..); key refusal printed '... not a list at /src/lib/OCP/ClusterKey.pm line 426.'. Also found: the k345 fallback line prints the same kind of location for a real Hetzner croak ('... at .../OCP/Provider/Hetzner.pm line 421.'), since it takes the error's first line. Plan: one_line there too, so both lines name the search failure alike.
