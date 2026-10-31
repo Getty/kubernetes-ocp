@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-10-31T06:07:00Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T06:07:05Z
+created: 2026-10-31T04:22:22Z
+id: 292
+priority: low
+started: 2026-10-31T06:07:05Z
+status: done
+tags:
+- config
+- validation
+- network
+title: 'network: block — unknown keys silently ignored, lb_pool start after stop unchecked'
+updated: 2026-10-31T06:07:05Z
+---
+
+Found under k281 (2026-10-31). OCP::Config accepts unknown keys under `network:` (a typo like `pod_cdir` or `l2.interface` is silently ignored) and never checks that `network.lb_pool` start is not after stop. Done = both refused with a diagnosis in the house style (OCP::Choices / validate()), tests pin a typo key and start > stop. Check k255 has landed first (validate() gets a caller there).
+
+2026-10-31 04:54 k255 has landed (a245302). Keys lib/ reads under network: (grep of network_config/lb_pool_config/l2_config/{network} over lib/ bin/ share/): pod_cidr; lb_pool.{cidr,start,stop}; l2.{node_selector,interfaces}. Nothing outside OCP::Config reads {network} directly. cihq and citiai use exactly these keys.
+
+2026-10-31 06:00 Done (lib/OCP/Config.pm + t/292-network-keys.t, not committed). Known keys are @NETWORK_KEYS (pod_cidr lb_pool l2), @LB_POOL_KEYS (cidr start stop), @L2_KEYS (node_selector interfaces), next to the accessors that read them. New lines, one per key, sorted: 'network.pod_cdir: unknown key (must be pod_cidr, lb_pool, or l2)', 'network.lb_pool.K: unknown key (must be cidr, start, or stop)', 'network.l2.K: unknown key (must be node_selector or interfaces)'; and 'network.lb_pool: start 'A' is after stop 'B' (the pool runs from start up to stop)', checked only when both are valid IPv4 and compared as addresses (10.0.0.9 before 10.0.0.10; start == stop is a pool of one). t/292 has a drift guard: a source scan makes every key the accessors read be in the lists, and nothing in lib/ but OCP/Config.pm reads {network}. Verified: t/292 red before / green after; 12/12 mutants killed; binding make test on 27 config files PASS; full suite as noted on k296; cihq/citiai/amdlab still 0/0/0. Applies on its own (independent of k296/k299). Docs drift for the doc-writer: .claude/skills/ocp-usage/SKILL.md (~line 375) still says an unknown key under network: is not reported.
+
+Committed as f360776
