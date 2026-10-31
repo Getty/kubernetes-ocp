@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-31T06:06:27Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T06:06:33Z
+created: 2026-10-31T04:40:39Z
+id: 296
+priority: medium
+started: 2026-10-31T06:06:33Z
+status: done
+tags:
+- config
+- validation
+title: OCP::Config::validate() dies with an internal error on some malformed ocp.yaml
+  shapes
+updated: 2026-10-31T06:06:33Z
+---
+
+Found under k255 (2026-10-31, confirmed in the image). Since k255, `ocp apply` and `ocp apply --dry-run` call validate() first. So a crash inside validate() is now the first thing a user sees: a Perl error instead of a line naming the bad key. Confirmed shapes:
+- a `control_planes` list entry that is not a mapping (e.g. `- foo`);
+- `workers: foo` (a scalar where a list/mapping is expected);
+- a `gpu:` that is not a mapping. This also crashes the gpu_* readers.
+
+Done = validate() reports each of these as an ordinary error line ("control_planes[2]: must be a mapping, not ..."), never dies on any YAML-valid shape of the top-level keys it reads, and `refuse_invalid_config` lists them like any other error. Tests for each shape, plus a sweep (a scalar, a list and a mapping at each top-level key validate() reads) that only asserts "no die".
+
+2026-10-31 04:54 Reproduced in raudssus/ocp:latest (tree a245302+): control_planes list entry 'foo' / [a,b] dies at Config.pm:729 ($cp->{provider}); workers: foo / {name: w} die at :1061 (_validate_pod_cidr's @{$self->workers}); workers: [foo] dies at :786. gpu: foo / false / [a] does NOT crash validate() -- it passes with 0 errors -- and then every gpu_* reader dies (Config.pm:456/457/463/531). Also found while probing: control_planes: { nodes: [3] } numifies the list ref into the repeat count -> 'Out of memory during stack extend' in control_planes() (Config.pm:129), and nodes: foo warns 3x 'isn't numeric'. control_planes: foo gives two misleading 'server_type required for hetzner' lines. Baseline on cihq/citiai/amdlab ocp.yaml: 0/0/0 errors.
+
+2026-10-31 05:10 Fixed in lib/OCP/Config.pm (validate + control_planes accessor + gpu_config), test t/296-validate-malformed-shapes.t: red before (13 fails + OOM abort), green after; 15/15 mutants killed. Sweep: 59 key paths x 10 YAML shapes = 590 cases, no die, no Perl warning. Decision (mine): gpu_config croaks with validate()'s line ('gpu must be a mapping, not false; write gpu: { enabled: false }') rather than returning {} -- read as absent, gpu: false would mean enabled in ocp update / ocp node add, which do not validate first. Same pattern as gpu_amd_config. Also fixed: a pool without name warned 'Use of uninitialized value' (Config.pm worker loop) -- the sweep found it.
+
+2026-10-31 05:46 Also found (not my lane, for the dispatcher): the full binding run on the SHARED tree hangs in t/38-reconcile-path.t (prints '[!!] kube-system/coredns — CrashLoopBackOff' twice, then blocks, ~4s CPU in 10+ min). Bisected in scratch copies: current tree with Config.pm reverted to HEAD -> hangs; clean HEAD + only my Config.pm -> t/38 passes (56 tests, 5s). So it comes from the other in-progress files (Apply/AMDGPU.pm, CR.pm, K8s.pm, Workloads.pm, Node/Add.pm, Drift.pm). Two other workers' make test runs were stuck there too (left running, not touched).
+
+2026-10-31 06:00 Done (lib/OCP/Config.pm + t/296-validate-malformed-shapes.t, not committed). New lines: 'control_planes[N]: must be a mapping (one control plane), not X'; 'control_planes: must be a mapping (one control plane, or nodes: N of them) or a list of mappings, not X'; 'control_planes.nodes: must be a whole number of 1 or more, not X'; 'workers: must be a list of worker pools, not X'; 'workers[N]: must be a mapping (a worker pool), not X'; 'gpu: must be a mapping, not X' (+ '; write gpu: { enabled: false }' for a boolean). gpu_* readers croak 'gpu must be a mapping, not ...' with the same words. The control_planes accessor counts a non-whole nodes as 1 (no more OOM on nodes: [3]). An unnamed pool's provider line no longer warns. Verified: t/296 red before / green after; 15/15 mutants killed; sweep 59 key paths x 10 shapes, no die, no warning; binding make test on 27 config files PASS (465 tests); full suite on clean HEAD + my changes 216/218, and the two that failed there (copy had no xt/, no dist.ini) pass bindingly in the real tree; cihq/citiai/amdlab still 0/0/0 errors. Residual, not fixed: name: [a] and robocop: [a] pass silently; robocop.security_level list shows ARRAY(0x..); network.pod_cidr list shows 'a array'; control_planes: [] passes with zero CPs; a huge integer nodes: (10^11) still OOMs in the accessor; commands that read control_planes/workers without validating first (e.g. Status.pm:53) can still die on these shapes. Must be committed before k299 (k299's moved block holds this card's guard).
+
+Committed as ec28236
