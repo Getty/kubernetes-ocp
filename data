@@ -1,0 +1,26 @@
+---
+class: standard
+created: 2026-10-31T13:19:44Z
+id: 363
+priority: low
+status: todo
+tags:
+- cli
+- cleanup
+title: Route the remaining hand-made error one-liners through OCP::ErrorLine (after
+  k342)
+updated: 2026-10-31T13:33:44Z
+---
+
+Left over from k342 (secrets worker, 2026-10-31). k342 made `OCP::ErrorLine::one_line` the one helper that turns an exception into a single STDERR line. Two callers use it so far: Init's `_catalogue_error` and the Machines role's `_oneline`. Other places still strip Perl source locations by hand. The line numbers below are on the k342 base:
+
+- lib/OCP/Cmd/Apply/Drift.pm:1229
+- lib/OCP/Cmd/Status.pm:531
+- lib/OCP/Cmd/Init.pm:741 and :800
+- lib/OCP.pm:235 (run_cli: check first whether its job differs, since it tells user errors from internal ones by the location)
+
+Done = each one either calls `one_line` (with `mask =>` where a secret is in play), or has a comment saying why it can't. Only the visible edge case changes: a wrapped error's inner " at FILE line N." no longer stays in the line. Tests: the callers' existing tests stay green; add one case per converted site where a location in the middle used to survive.
+
+Lane: cross-cutting → ocp-worker. Low priority. Depends on k342 being committed.
+
+2026-10-31 (main, from k356): CR.pm's [WARN]s print the raw $@ (croak location included): ensure_cp_ocpnode, migrate_legacy_nodes, retire_unannotated_robocop_pods. Same treatment.
