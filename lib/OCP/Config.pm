@@ -820,8 +820,9 @@ sub validate {
     push @errors, "gpu: $gpu_err" if defined $gpu_err;
     push @errors, $self->_validate_gpu_driver;
     push @errors, $self->_validate_gpu_amd;
-    push @errors, $self->_validate_pod_cidr(
-        ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {});
+    my $net = ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {};
+    push @errors, $self->_validate_pod_cidr($net);
+    push @errors, $self->_validate_service_cidr($net);
 
     # robocop.security_level, report-only (k129). The accessor croaks; here
     # we collect one line so `ocp apply` lists it with every other config error.
@@ -1108,7 +1109,37 @@ sub _validate_pod_cidr {
         . "so the pod CIDR needs a shorter prefix than /24 (e.g. /16)")
         if $bits >= 24;
 
-    my @taken = ([ "the service network $SERVICE_CIDR", $SERVICE_CIDR ]);
+    my @taken = ([ "the service network $SERVICE_CIDR", $SERVICE_CIDR ], $self->_taken_addresses($net));
+
+    my $hint = $set ? '' : ' -- set network.pod_cidr to a range nothing else uses';
+    my @errors;
+    for my $t (@taken) {
+        push @errors, "$what overlaps $t->[0]$hint"
+            if _cidrs_overlap($cidr, $t->[1]);
+    }
+    return @errors;
+}
+
+# The service network (k299): RKE2's and K3s's built-in service-cidr, which
+# ocp.yaml has no key for. Held against the addresses the pod CIDR is held
+# against, in the same words: one of them inside it can be handed to a
+# Service as its ClusterIP. Checked whatever the pod CIDR is.
+sub _validate_service_cidr {
+    my ($self, $net) = @_;
+    my $what = "the service network (default $SERVICE_CIDR)";
+    my $hint = ' -- ocp.yaml has no key to move it; use an address outside it';
+    return map { "$what overlaps $_->[0]$hint" }
+        grep { _cidrs_overlap($SERVICE_CIDR, $_->[1]) } $self->_taken_addresses($net);
+}
+
+# The addresses ocp.yaml names that a cluster network must stay clear of
+# (k182, k279, k299), as [ what, CIDR ]: each control plane's host,
+# public_ip, private_ip and node_ip, each worker pool host, the LB pool. An
+# address that is no IPv4 literal is not counted -- a host name is not
+# resolved, a refused node_ip has its own line.
+sub _taken_addresses {
+    my ($self, $net) = @_;
+    my @taken;
     my $cps = $self->control_planes;
     for my $i (0 .. $#$cps) {
         next unless ref $cps->[$i] eq 'HASH';    # validate() has its line (k296)
@@ -1119,8 +1150,8 @@ sub _validate_pod_cidr {
         }
 
         # node_ip (k279), the address the node registers by: each part, the
-        # IPv4 one against this IPv4 pod CIDR. Only a value validate()
-        # accepted counts; a refused one has its own line already.
+        # IPv4 one, as both networks held against it are IPv4. Only a value
+        # validate() accepted counts; a refused one has its own line already.
         my $node_ip = $cps->[$i]{node_ip};
         next if !defined $node_ip || $self->_control_planes_shared
             || defined OCP::Choices::node_ip_error($node_ip);
@@ -1142,14 +1173,7 @@ sub _validate_pod_cidr {
                 if _looks_like_ipv4($lb->{$key});
         }
     }
-
-    my $hint = $set ? '' : ' -- set network.pod_cidr to a range nothing else uses';
-    my @errors;
-    for my $t (@taken) {
-        push @errors, "$what overlaps $t->[0]$hint"
-            if _cidrs_overlap($cidr, $t->[1]);
-    }
-    return @errors;
+    return @taken;
 }
 
 # (network address as an integer, prefix length) of a valid IPv4 CIDR.

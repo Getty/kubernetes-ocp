@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses a node address (a control plane's `host`,
+      `public_ip`, `private_ip` or `node_ip`, a worker pool host) or
+      `network.lb_pool` inside the service network 10.43.0.0/16, the
+      RKE2/K3s default that OCP does not change.
     - `ocp apply` names a `control_planes` entry, a `workers` value or
       entry, or a `gpu:` that is not the shape it must be
       (`control_planes[2]: must be a mapping (one control plane), not
