@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-10-31T04:41:59Z
+created: 2026-10-31T03:13:23Z
+id: 279
+priority: low
+started: 2026-10-31T04:41:59Z
+status: done
+tags:
+- config
+- network
+- node-ip
+title: Pod-CIDR overlap check (k182) does not count control_planes[].node_ip
+updated: 2026-10-31T04:41:59Z
+---
+
+Found while doing k254. OCP::Config checks network.pod_cidr against the node addresses it knows (k182, ~line 936: control_planes[].public_ip/host). The node-ip a control plane registers by (control_planes[].node_ip, k254) is not among them, though it is the address that matters most: a node-ip inside the pod CIDR breaks routing on that node.
+
+Done when: every address of control_planes[].node_ip (both parts for "v4,v6", the IPv4 one against the IPv4 pod CIDR) is checked like the other node addresses, with the same diagnosis style, and a test pins it.
+
+2026-10-31 04:10 Done (ocp-worker). lib/OCP/Config.pm _validate_pod_cidr: every part of control_planes[].node_ip that is IPv4 now goes on the taken list like host/public_ip, so the IPv4 part of v4,v6 or v6,v4 is held against the IPv4 pod CIDR; an IPv6 part has nothing to overlap. Line, validate() (apply prints it via k255): "network.pod_cidr (default 10.42.0.0/16) overlaps control_planes[1].node_ip 10.42.0.5 -- set network.pod_cidr to a range nothing else uses" / "network.pod_cidr: '10.0.0.0/12' overlaps control_planes[2].node_ip 10.5.10.9". Counted only when node_ip_error passes (an invalid value has its own line) and not for the mapping form with nodes: N > 1 (refused once already) -- that condition is now one helper _control_planes_shared, also used by validate(). POD item under control_planes[].node_ip. Test: t/182-pod-cidr.t subtest 'a control plane's node_ip is a node address too' (7 asserts), red before the fix (3 of 7 failed). Docker make test t/182 t/254-node-ip-config t/254-node-ip-validate t/15-config-validation t/04-config: 5 files, 147 tests, PASS. Mutants killed (4/4): drop shared gate, drop syntax gate, first part only, label without the address. Also found (no card): node addresses (host/public_ip/node_ip) are only held against the pod CIDR, never against the service network 10.43.0.0/16.
+
+Committed as 503acef
