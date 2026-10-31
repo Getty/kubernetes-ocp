@@ -100,8 +100,9 @@ has gpu_driver    => (is => 'ro');
 # leaves the Rexfile's default (toolkit true, no CDI of OCP's) in charge.
 has gpu_toolkit   => (is => 'ro');
 # gpu.amd.integrated (k250): set up integrated AMD GPUs on every node of the
-# cluster. Its CR channel is still to come; until then nobody sets it, and a
-# node's own spec.gpu is the only way in. See _install_kubernetes.
+# cluster. Carried on the OCPNodeProvider CR like gpu_toolkit (k253) and
+# OR-ed with the node's own spec.gpu, see _install_kubernetes. Undef (a
+# provider CR predating the field) leaves spec.gpu the only way in.
 has gpu_amd_integrated => (is => 'ro');
 
 # ocp.yaml's system: block, cluster-wide like the GPU switches above and
@@ -2041,8 +2042,10 @@ F<ocp.yaml>'s C<gpu.amd.integrated> (k250), 0/1: set up integrated AMD GPUs
 C<spec.gpu> — a node joined with C<ocp node add --gpu> opts in by itself — into
 the install task's C<gpu_amd_integrated =E<gt> 1>.  Nothing is passed when
 neither says yes, or when C<gpu> is 0 for the node; the Rexfile then leaves
-integrated AMD GPUs alone.  No caller sets it yet: the OCPNodeProvider CR
-channel that carries it is still to come.
+integrated AMD GPUs alone.  It is carried like C<gpu_toolkit> (k253): C<ocp
+apply> writes C<spec.gpu.amd.integrated> onto the OCPNodeProvider CR and the
+caller reads it back with L<OCP::Provider/gpu_flags_from_cr>.  Unset (a
+provider CR predating the field) leaves C<spec.gpu> the only way in.
 
 =item timezone / locale / ntp
 

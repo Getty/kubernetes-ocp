@@ -373,6 +373,9 @@ subtest 'every field the OCPNodeProvider CRD declares is read or written' => sub
         # gpu.toolkit (k223), read as `$gpu->{toolkit}` -- anchored to the
         # variable: Workloads reads ocp.yaml's own gpu_config->{toolkit}.
         'spec.gpu.toolkit'                 => qr/\$gpu->\{toolkit\}/,
+        # gpu.amd.integrated (k253), read off `$gpu->{amd}` -- anchored to the
+        # variable like toolkit: AMDGPU and Config read ocp.yaml's own gpu.amd.
+        'spec.gpu.amd.integrated'          => qr/\$gpu->\{amd\}/,
         # ocp.yaml's system: block (k217): OCP::Provider::system_flags_from_cr
         # reads `$system->{...}`, ensure_provider_cr writes `$spec->{system}`.
         'spec.system.timezone'             => qr/\$system->\{timezone\}/,

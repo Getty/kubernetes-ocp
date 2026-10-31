@@ -215,10 +215,19 @@ sub ensure_provider_cr {
     # runs no toolkit DaemonSet and nothing writes the node's CDI specs, so the
     # install task has to -- on a worker robocop joins as much as on the
     # control plane.
+    #
+    # amd.integrated (k253) too: without it the Rexfile leaves an integrated
+    # AMD GPU (a Ryzen iGPU or APU) alone on every node not joined with
+    # --gpu, and robocop, `ocp apply` and `ocp node add` learn it from this
+    # CR only. Only integrated of the gpu.amd keys: the others shape the
+    # cluster's AMD stack, not a node's install.
     $spec->{gpu} = {
         enabled => $config->gpu_enabled ? JSON::PP::true : JSON::PP::false,
         driver  => $config->gpu_driver,
         toolkit => $config->gpu_toolkit ? JSON::PP::true : JSON::PP::false,
+        amd     => {
+            integrated => $config->gpu_amd_integrated ? JSON::PP::true : JSON::PP::false,
+        },
     };
 
     # ocp.yaml's system: block, same channel and same reason as gpu above:

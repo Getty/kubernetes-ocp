@@ -1,6 +1,15 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `gpu.amd.integrated: true` in `ocp.yaml` reaches every node, not
+      only one joined with `ocp node add --gpu`: `ocp apply` writes it
+      onto the OCPNodeProvider CR as `spec.gpu.amd.integrated`, robocop,
+      `ocp apply` and `ocp node add` hand it to the join, and the first
+      control plane gets it from the bootstrap. The line for a skipped
+      integrated AMD GPU told the user to set it while nothing read it. A
+      worker (or a second control plane) that has already joined gets it
+      only when it is joined again; a provider CR an older `ocp` wrote
+      reads as false.
     - `ocp apply` no longer says every worker in `ocp.yaml` has an OCPNode
       when one of them matches an OCPNode only by its host.
     - `ocp apply` takes only a 404 for a Node, OCPNode or robocop

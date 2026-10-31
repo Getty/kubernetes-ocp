@@ -15,8 +15,8 @@ use lib 'lib';
 #
 # OCP::Node decides that parameter for a join. A node joined as a GPU node on
 # purpose (`ocp node add --gpu`, spec.gpu true) is consent for its iGPU; so is
-# gpu.amd.integrated for every node, as the gpu_amd_integrated attribute (its
-# CR channel is a card of its own, so nobody sets it yet). The two are OR-ed.
+# gpu.amd.integrated for every node, as the gpu_amd_integrated attribute (read
+# off the OCPNodeProvider CR since k253, t/253). The two are OR-ed.
 # Neither, or a node with no GPU detection at all, passes nothing: the
 # Rexfile's default (0) decides. What the Rexfile does with it is k249's.
 #

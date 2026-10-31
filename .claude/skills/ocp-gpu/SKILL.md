@@ -33,7 +33,7 @@ gpu:
     resource_naming: single     # single | mixed, handed to the device plugin
     labeller: true
     metrics: false              # Instinct / Radeon AI only, not APUs
-    integrated: false           # iGPU/APU on every node; not wired to nodes yet
+    integrated: false           # iGPU/APU on every node (provider CR, k253)
 ```
 
 `OCP::Config` normalises booleans to 0/1. It croaks on an unknown `driver`,
@@ -82,8 +82,9 @@ gpu:
 ## AMD in short
 
 - **Host.** `install_amd` takes the AMD GPUs that Rex::GPU does not mark
-  `compute => 0`. An integrated GPU needs `gpu_amd_integrated`, which today
-  comes only from `ocp node add --gpu`. OCP never reboots and installs no ROCm.
+  `compute => 0`. An integrated GPU needs `gpu_amd_integrated`, which comes
+  from `ocp node add --gpu` or from `gpu.amd.integrated` (k253). OCP never
+  reboots and installs no ROCm.
 - **Labels.** At registration, an accepted GPU puts
   `ocp.internal/amd-gpu.present=true` and `ocp.internal/amd-gpu.gfx-target=<gfx>`
   on the node. Use the `$OCP::Config::AMD_GPU_*_LABEL` constants for both.

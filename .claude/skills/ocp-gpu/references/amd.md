@@ -12,12 +12,12 @@ ROCm questions (images, HIP, `HSA_OVERRIDE_GFX_VERSION`) belong to skill
 |---|---|
 | Host step: driver and node labels | `share/Rexfile` `detect_gpu`, `install_amd`, `_amd_gfx_labels` |
 | Switches, label names | `OCP::Config` (`gpu_amd_*`, `$AMD_GPU_*_LABEL`, `@GPU_AMD_*`) |
-| Integrated-GPU opt-in per node | `OCP::Node` (`gpu_amd_integrated`, `_install_kubernetes`) |
+| Integrated-GPU opt-in | `OCP::Node` (`gpu_amd_integrated`, `_install_kubernetes`); cluster-wide over the OCPNodeProvider CR (`spec.gpu.amd.integrated`, k253) |
 | Cluster stack | `OCP::Cmd::Apply::AMDGPU`, called from `Apply/Deploy.pm`, `Apply/Drift.pm`, `Node/Add.pm` |
 | DaemonSet names | `%OCP::Drift::AMD_GPU_DAEMONSETS`, the one table for drift, apply and status |
 | Pins | `OCP::Versions`: `amd_device_plugin`, `amd_dra_driver`, `amd_metrics_exporter` |
 | Status | `OCP::Cmd::Status` `_print_amd_gpu`, `_amd_gpu_json` (lane: ocp-status-worker) |
-| Tests | `t/249-amd-gpu-host.t`, `t/250-gpu-amd-integrated.t`, `t/251-amd-gpu-stack.t`, `t/252-status-amd-gpu.t`, `t/258-status-json-amd-gpu.t` |
+| Tests | `t/249-amd-gpu-host.t`, `t/250-gpu-amd-integrated.t`, `t/251-amd-gpu-stack.t`, `t/252-status-amd-gpu.t`, `t/253-gpu-amd-integrated-cr.t`, `t/258-status-json-amd-gpu.t` |
 
 ## The libraries are not released yet
 
@@ -104,10 +104,19 @@ Rexfile writes the label keys out literally, because it runs under rex without
   true (`ocp node add --gpu`) **or** its `gpu_amd_integrated` attribute is set.
   It passes nothing where `gpu` is 0, because there no detection runs at all.
   The Rexfile's default is 0.
-- **ocp.yaml `gpu.amd.integrated` reaches no node yet.** `OCP::Node`'s
-  attribute has no caller, and its OCPNodeProvider CR channel (the k223 path
-  that `gpu.toolkit` takes) is still to come. The control-plane bootstrap never
-  passes it. Today an iGPU is set up only through `ocp node add --gpu`.
+- **ocp.yaml `gpu.amd.integrated` reaches every node** (k253), on the path
+  `gpu.toolkit` takes (k223). `ocp apply` writes it onto the OCPNodeProvider
+  CR as `spec.gpu.amd.integrated` (a JSON boolean, always written, false by
+  default). `OCP::Provider->gpu_flags_from_cr` reads it back as
+  `gpu_amd_integrated` 0/1. robocop, `ocp apply`'s worker reconcile and
+  `ocp node add` hand it to `OCP::Node`. The bootstrap hands
+  `$config->gpu_amd_integrated` to `OCP::Rex::install_server` for police1.
+  A CR an older ocp wrote has no `spec.gpu.amd`: that reads as absent, and
+  only `--gpu` opens the gate.
+- It takes effect at the node's next install. The first control plane gets
+  one on every `ocp apply`. A node that joined through an OCPNode (a worker,
+  or police2 and later) does not: a Ready node is only verified, so it has to
+  be joined again.
 
 ## Labels
 

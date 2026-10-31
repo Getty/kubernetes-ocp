@@ -83,6 +83,21 @@ spec:
                       (a host bringing its own toolkit, e.g. DGX/GB10) has the
                       Rexfile write them instead. Absent counts as true.
                       Mirrors ocp.yaml gpu.toolkit.
+                  amd:
+                    type: object
+                    description: >-
+                      The AMD switches a node's install needs. The rest of
+                      ocp.yaml's gpu.amd block shapes the cluster's AMD stack
+                      and is not carried here.
+                    properties:
+                      integrated:
+                        type: boolean
+                        description: >-
+                          Whether the Rexfile sets up integrated AMD GPUs
+                          (the iGPU of a Ryzen CPU or APU) on every node of
+                          this provider. Absent counts as false: then only a
+                          node joined with `ocp node add --gpu` gets its
+                          iGPU set up. Mirrors ocp.yaml gpu.amd.integrated.
 
               system:
                 type: object

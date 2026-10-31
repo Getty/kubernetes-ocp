@@ -168,8 +168,9 @@ gpu:
   `gpu_amd_metrics` and `gpu_amd_integrated`.
 - `integrated` reaches the Rexfile through the same OCPNodeProvider CR channel that
   `gpu.toolkit` uses (k223: CR.pm, Provider `gpu_flags_from_cr`, Node attribute, Bootstrap,
-  Add, CRD). That channel is its own card. Until it exists, only the per-node route works:
-  `ocp node add --gpu`. OCP::Node ORs the two together.
+  Add, CRD). That channel is k253: `ocp apply` writes `spec.gpu.amd.integrated` onto the
+  OCPNodeProvider CR. Before k253, only the per-node route worked: `ocp node add --gpu`.
+  OCP::Node ORs the two together.
 - Booleans are normalised to 0/1, as `gpu_toolkit` is.
 - An unknown value croaks, as `gpu_driver` does.
 - An absent `gpu.amd` means the defaults above.

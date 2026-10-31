@@ -327,12 +327,14 @@ sub _report_phase {
     return $phase;
 }
 
-# gpu_toolkit alone out of OCP::Provider->gpu_flags_from_cr (k223); empty
-# when the provider CR predates the field.
-sub _gpu_toolkit_flag {
-    my ($provider_h) = @_;
+# gpu_toolkit (k223) and gpu_amd_integrated (k253) out of
+# OCP::Provider->gpu_flags_from_cr; each one absent when the provider CR
+# predates its field.
+sub _gpu_install_flags {
+    my ($self, $provider_h) = @_;
     my %gpu = OCP::Provider->gpu_flags_from_cr($provider_h);
-    return exists $gpu{gpu_toolkit} ? (gpu_toolkit => $gpu{gpu_toolkit}) : ();
+    return map { exists $gpu{$_} ? ($_ => $gpu{$_}) : () }
+        qw( gpu_toolkit gpu_amd_integrated );
 }
 
 sub _cli_reconcile {
@@ -428,9 +430,11 @@ sub _cli_reconcile {
         # (k217) -- one source for every join path.
         ($provider_h ? OCP::Provider->system_flags_from_cr($provider_h) : ()),
         # gpu.toolkit off the same CR (k223): false has the install task
-        # write the node's CDI specs. Only this one of the GPU switches --
-        # gpu.enabled / gpu.driver have never been read on this path.
-        ($provider_h ? _gpu_toolkit_flag($provider_h) : ()),
+        # write the node's CDI specs. gpu.amd.integrated too (k253): true
+        # sets up the node's integrated AMD GPU without --gpu. Only these
+        # two of the GPU switches -- gpu.enabled / gpu.driver have never
+        # been read on this path.
+        ($provider_h ? $self->_gpu_install_flags($provider_h) : ()),
         # Its warnings as this command's own (k254), the line `ocp apply`
         # hands it too (OCP::Cmd::Apply::CR::node_logger).
         logger        => OCP::Cmd::Apply::CR::node_logger(),

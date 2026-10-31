@@ -395,6 +395,9 @@ sub install_server {
     # gpu.toolkit (k223): false has install_nvidia write the CDI specs no
     # operator toolkit writes. Absent means true, as in the Rexfile.
     my $gpu_toolkit = $opts{gpu_toolkit} // 1;
+    # gpu.amd.integrated (k253): true has install_amd set up an integrated
+    # AMD GPU too. Absent means false, as in the Rexfile.
+    my $gpu_amd_integrated = $opts{gpu_amd_integrated} // 0;
 
     # network.pod_cidr (k182): the server's cluster-cidr and Cilium's pool,
     # both from this one value. Empty leaves the Rexfile's fallback in charge.
@@ -424,6 +427,7 @@ sub install_server {
         gpu               => $gpu ? 1 : 0,
         gpu_driver        => $gpu_driver,
         gpu_toolkit       => $gpu_toolkit ? 1 : 0,
+        gpu_amd_integrated => $gpu_amd_integrated ? 1 : 0,
         pod_cidr          => $pod_cidr,
     );
 
@@ -514,6 +518,9 @@ sub install_agent {
     # gpu.toolkit (k223): false has install_nvidia write the CDI specs no
     # operator toolkit writes. Absent means true, as in the Rexfile.
     my $gpu_toolkit = $opts{gpu_toolkit} // 1;
+    # gpu.amd.integrated (k253): true has install_amd set up an integrated
+    # AMD GPU too. Absent means false, as in the Rexfile.
+    my $gpu_amd_integrated = $opts{gpu_amd_integrated} // 0;
 
     my $task = $distribution eq 'k3s' ? 'install_k3s_agent' : 'install_rke2_agent';
 
@@ -534,6 +541,7 @@ sub install_agent {
         gpu               => $gpu ? 1 : 0,
         gpu_driver        => $gpu_driver,
         gpu_toolkit       => $gpu_toolkit ? 1 : 0,
+        gpu_amd_integrated => $gpu_amd_integrated ? 1 : 0,
     );
 
     return 1;
@@ -668,6 +676,7 @@ Execute a Rex task with parameters.
         gpu          => 1,       # 0 skips GPU detection entirely
         gpu_driver   => 'host',  # 'operator' leaves the host driver alone
         gpu_toolkit  => 1,       # 0: no operator toolkit, so write CDI specs
+        gpu_amd_integrated => 0, # 1: set up an integrated AMD GPU too
         pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
         cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
         node_ip      => '10.230.30.50',  # optional; or "v4,v6"
@@ -677,7 +686,9 @@ Install Kubernetes control plane. Detects NVIDIA hardware and installs the
 driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
 C<operator>.  With C<gpu_toolkit> false (F<ocp.yaml> C<gpu.toolkit: false>,
 k223) it also writes the node's CDI specs, which the GPU Operator's toolkit
-DaemonSet writes otherwise.
+DaemonSet writes otherwise.  An integrated AMD GPU (the iGPU of a Ryzen CPU
+or APU) is set up only with C<gpu_amd_integrated> true (F<ocp.yaml>
+C<gpu.amd.integrated: true>, k253); omitted, it is left alone.
 
 C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
 is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to

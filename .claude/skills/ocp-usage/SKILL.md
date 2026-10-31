@@ -365,7 +365,7 @@ gpu:
     resource_naming: single    # single | mixed, for the device plugin
     labeller: true             # AMD's node labeller
     metrics: false             # device-metrics-exporter
-    integrated: false          # parsed, but reaches no node yet
+    integrated: false          # iGPU/APU on every node
 ```
 
 ### node_ip — the address a node registers by (k254)
@@ -499,9 +499,11 @@ gpu:
 - **The per-node override.** `ocp.internal/amd-gpu.allocation`, with the
   same values as `gpu.amd.allocation`, overrides the default for that node.
   Set it with `ocp node add --label`. OCP itself never sets it.
-- **Integrated GPUs** (a Ryzen iGPU or APU) are set up only on a node joined
-  with `ocp node add --gpu`. `gpu.amd.integrated` is not wired to any node
-  yet.
+- **Integrated GPUs** (a Ryzen iGPU or APU) are set up on a node joined with
+  `ocp node add --gpu`, or on every node with `gpu.amd.integrated: true`
+  (k253). A node gets the setting at its next install: the first control
+  plane on the next `ocp apply`, a node that has already joined through an
+  OCPNode (a worker, police2 and later) only when it is joined again.
 - **The rest** (components, affinity, readiness, status, the full label
   table) is in skill `ocp-gpu` (`references/amd.md`).
 

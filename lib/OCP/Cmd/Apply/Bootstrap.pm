@@ -600,6 +600,7 @@ sub bootstrap_control_plane {
             gpu               => $config->gpu_enabled,
             gpu_driver        => $config->gpu_driver,
             gpu_toolkit       => $config->gpu_toolkit,
+            gpu_amd_integrated => $config->gpu_amd_integrated,
             pod_cidr          => $config->pod_cidr,
             cilium_helm_values => $config->cilium_helm_values,
             (defined $node_ip ? (node_ip => $node_ip) : ()),
