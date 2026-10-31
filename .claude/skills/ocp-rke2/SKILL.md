@@ -12,6 +12,11 @@ service, the version hold and the uninstall. `share/Rexfile` keeps only OCP's
 policy, and each gap names the library card that would move it. Close generic
 gaps in the libraries, not in the Rexfile (k196).
 
+A hand-run of a task (`rex -f share/Rexfile ...`) needs OCP's `lib/` for the
+Rexfile's `use OCP::BooleanEq` (k316): rex looks in `<cwd>/lib`, so from the
+checkout root it is found; from anywhere else set `PERL5LIB=<checkout>/lib`.
+`OCP::Rex` sets that itself on its runs.
+
 Read `references/install-flow.md` before you change an install task. It holds
 the config.yaml and registries.yaml OCP gets, the task-by-task flow
 (preflight, `prepare_node`, GPU step, server/agent install, API wait,

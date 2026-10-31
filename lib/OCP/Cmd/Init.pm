@@ -1189,6 +1189,15 @@ from the list is taken. The step is skipped altogether when STDIN is not a
 terminal, when no token is available, or when the catalogue cannot be read —
 it never blocks a batch run and never fails an init.
 
+When the catalogue cannot be read at a terminal, init says why on STDERR in
+one line, C<[!!] Could not read the Hetzner catalogue: ... -- keeping the
+defaults>: the message the Hetzner API returned, or the HTTP status and body
+text when the answer has none, or the reason the connection failed. The Perl
+source locations are left out, and the API token is masked should an answer
+ever echo it back. The init then continues with the defaults C<OCP::Config>
+writes. A catalogue that was read, but in which no location offers a server
+type that can be ordered, gets a line of its own and the same outcome.
+
 =head2 The project age key
 
 F<.ocp/> is gitignored; F<keys.yaml>, F<secrets.yaml> and F<age.key.enc> are

@@ -71,7 +71,12 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
 
 - `ocp init` — project init (keys, config, git)
   - `--hetzner` — interactive Hetzner token setup (NOT the same as
-    `--provider hetzner`, which skips the token prompt)
+    `--provider hetzner`, which skips the token prompt). Then, at a terminal,
+    location and server-type pickers from the live catalogue. When the
+    catalogue cannot be read, STDERR says why (`[!!] Could not read the
+    Hetzner catalogue: …`: the API's message, the status, or the failed
+    connection, token masked; `_catalogue_error`, k265) and init keeps the
+    defaults.
   - `--provider hetzner|ssh|local` — **default is hetzner**, matching the
     spec-wide default in `OCP::Config` (an absent provider reads as hetzner
     everywhere else too). A bare `ocp init` therefore stays offline and ends
@@ -150,7 +155,12 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   diagnosis (`OCP::SSH::rejection_message`: which key, how to install it);
   `migration_hint` only for such a real refusal. Never blocks — hands over
   to ssh anyway.
-- `ocp deploy-robocop` — robocop + CRDs standalone
+- `ocp deploy-robocop` — robocop + CRDs standalone. An OCPNode/OCPNodeProvider
+  CRD in the cluster that declares fields this ocp's does not (one a newer ocp
+  installed) is left as it is, with the `[skip]` line `ocp apply` gives it
+  (`OCP::Cmd::Apply::CR::skip_newer_crd`, k311; `OCP::Drift::crd_schema_diff`
+  judges both). A CRD it cannot read (anything but a 404) stops the command
+  with the cause rather than being written over blind.
 - `ocp deploy-image (--image REF | --tag TAG [--repo REPO]) [--wait
   [--timeout SECONDS]] [--no-restart] [--namespace NS] [--cluster NAME]`
   — roll a robocop image into the running Deployment (`ocp-system/robocop`,
@@ -448,6 +458,29 @@ gpu:
     hosts (strings, or mappings with `host`); every other provider counts its
     machines (`nodes: 3`, a whole number). Wrong: "nodes must be a list of
     hosts for an ssh pool" / "nodes must be a whole number".
+  - **The other switches** (k320): `gpu.enabled`, `gpu.toolkit`,
+    `gpu.amd.labeller`, `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`,
+    `nocert` and `system.ntp` take only true/false (or 1/0), as `robocop:`
+    does (`OCP::Config::_is_switch`). A string such as `no` is refused:
+    `gpu.enabled: must be true or false, not 'no'; write enabled: false`
+    (`_switch_error`; the hint, `_boolean_hint`, names the last key segment and
+    appears only for a string that spells a boolean). The accessors
+    (`gpu_enabled`, `lbipam`, `no_cert`, `ntp_enabled`, …) croak with the same
+    line, since `ocp update`, `ocp node add` and `ocp status`' drift check read
+    them without `validate`.
+  - **An ssh pool's machines** (k322, `_ssh_pool_machines_errors`): `host`
+    (one) or `nodes` (a list), not neither and not both. `nodes: []` passes and
+    means "no machines yet"; a `host` Perl calls false (`0`, empty) counts as
+    none. `host`, `server_type`, `location` and `image` must be strings, in a
+    control plane and in a pool (`_not_a_string`).
+  - **Unknown keys under `gpu:` and `system:`, a `system:` that is no
+    mapping, and `host:` on a hetzner or local pool** (k331). `gpu:` takes
+    `enabled`, `driver`, `toolkit`, `amd`; `system:` takes `timezone`,
+    `locale`, `ntp` (`_unknown_keys`, `_system_errors`; `gpu_config` and
+    `system_config` croak on the same lines). `host:` is read for an ssh pool
+    only (`_pool_host_error`, `_pool_takes_host`): beside any other known
+    provider it is refused whatever it holds, and a pool that takes none adds
+    no host to the service-network/pod-CIDR address checks.
   - **At most 7 control planes** (`$OCP::Config::MAX_CONTROL_PLANE_NODES`):
     `control_planes.nodes` must be a whole number from 1 to 7, and the list
     form holds at most 7 entries ("must list at most 7 control planes"),

@@ -111,7 +111,7 @@ on an existing cluster changes nothing.
 ## What `ocp apply` refuses in these keys
 
 `ocp apply` checks `ocp.yaml` first and lists every error at once on STDERR.
-Three shapes that used to be read wrongly are refused:
+These shapes used to be read wrongly and are refused:
 
 - **`robocop:`** takes only `true` or `false` (`1` and `0` too) or a mapping of
   `enabled`, `security_level` and `image`. A string like `no` or `off` is
@@ -124,6 +124,41 @@ Three shapes that used to be read wrongly are refused:
 - **`control_planes:`** holds at most 7 control planes, as a list just as with
   `nodes: N`: every control plane is an etcd member, and etcd advises no more
   than 7.
+- **The other on/off switches** take only `true` or `false` (`1` and `0` too),
+  as `robocop:` does: `gpu.enabled`, `gpu.toolkit`, `gpu.amd.labeller`,
+  `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`, `nocert` and `system.ntp`.
+  A string such as `no` or `off` is refused, because it used to count as true
+  (`gpu: { enabled: no }` left the GPU stack on, `nocert: no` left cert-manager
+  out). The line names the key and, for a string that spells a boolean, what
+  was meant: `gpu.enabled: must be true or false, not 'no'; write enabled:
+  false`. Any other string, a list or a mapping gets the same line without the
+  hint.
+- **An ssh pool names its machines with `host:` or with `nodes:`**, not with
+  neither and not with both. `host:` is one machine and `nodes:` a list of
+  them. With neither, the pool got no worker and nothing said so; with both,
+  `nodes:` is read and `host:` is not. `nodes: []` is allowed and means the
+  pool has no machines yet. The lines read `an ssh pool needs host (one
+  machine) or nodes (a list of machines); with neither it gets no worker --
+  nodes: [] says it has none yet` and `an ssh pool takes host (one machine) or
+  nodes (a list of machines), not both; beside nodes, host is not read`. A
+  `host:` that is `0` or empty names no machine, so it counts as none.
+- **`host:`, `server_type:`, `location:` and `image:`** are one name each, in
+  a control plane and in a worker pool: a string. A list, a mapping or a
+  boolean is refused (`worker pool 'p': location must be a string (a Hetzner
+  location like fsn1), not a list`) instead of becoming the name of a machine.
+- **`host:` belongs to an ssh pool only.** On a `hetzner` or `local` worker
+  pool it names no machine: Hetzner creates its servers at the addresses it
+  hands out, and a `local` pool is the machine `ocp` runs on. It is refused
+  whatever it holds (`host is read for an ssh pool only, and names no machine
+  of a hetzner pool, … -- remove host`; for `local` the line adds `or name
+  another machine in an ssh pool`).
+- **An unknown key under `gpu:` or `system:`** is refused, because a
+  misspelt key left its default in force (`system: { time_zone: Europe/Berlin
+  }` left every node on UTC). `gpu:` takes `enabled`, `driver`, `toolkit` and
+  `amd`; `system:` takes `timezone`, `locale` and `ntp`. The line is
+  `system.time_zone: unknown key (must be timezone, locale, or ntp)`. A
+  `system:` that is not a mapping is refused too: `system: must be a mapping
+  (timezone, locale, or ntp), not 'UTC'`.
 
 ## Provider modes
 
@@ -133,7 +168,7 @@ into existence:
 | Provider | What it does |
 |---|---|
 | `hetzner` | Creates and destroys real Hetzner Cloud servers via the API. Idempotent, matched by label. |
-| `ssh` | Uses an existing server you already have. Requires `host:`. OCP never creates or deletes this machine — it only installs and uninstalls Kubernetes on it. You put its public keys into root's `authorized_keys`: in secure mode the admin key on a control plane, the admin **and** the robo key on a worker (`ocp keys authorized-keys` prints them; see [security](security.md)). |
+| `ssh` | Uses an existing server you already have. Requires `host:` (a worker pool may list `nodes:` instead). OCP never creates or deletes this machine — it only installs and uninstalls Kubernetes on it. You put its public keys into root's `authorized_keys`: in secure mode the admin key on a control plane, the admin **and** the robo key on a worker (`ocp keys authorized-keys` prints them; see [security](security.md)). |
 | `local` | Same as `ssh`, but provider operations (checks, uninstall) run directly on this machine instead of over SSH. The Kubernetes install itself still goes through Rex over SSH to `127.0.0.1`, so the admin public key must still be in this machine's `~/.ssh/authorized_keys`. |
 
 Providers can also be registered imperatively, without touching `ocp.yaml`:

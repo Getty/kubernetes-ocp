@@ -53,8 +53,16 @@ auto-true when any hetzner provider is configured.
    is safe only after `OCP` is loaded.** Cpanel::JSON::XS (the image's JSON
    backend, 4.40 pinned, still in 4.80) re-overloads `eq`/`ne` on that class and
    swaps the operands when the boolean is on the right, so `'hetzner' eq $true`
-   was true; `OCP.pm` corrects this at load. `bin/ocp` and robocop's controller
-   load it first, the Rexfile child process does not (k316). Never test a choice
+   was true. `OCP::BooleanEq` (`lib/OCP/BooleanEq.pm`, k316) corrects this when
+   it is loaded: it loads JSON::PP, then JSON::MaybeXS (so Cpanel's overload is
+   in place first), and wraps Cpanel's `eq`/`ne` handlers on
+   `JSON::PP::Boolean` to pass the boolean first with the swap flag dropped, so
+   it compares the same on either side. Class, truth, `is_bool` and JSON/YAML
+   output are unchanged; it exports nothing. `OCP.pm` loads it, so `bin/ocp`
+   and robocop's controller have it. The Rexfile loads it itself (`use
+   OCP::BooleanEq ()`): that rex child loads no `OCP.pm` and cannot see `lib/`
+   in the image, so `OCP::Rex::run_task` puts the `lib/` tree it was loaded from
+   first on the child's `PERL5LIB` (`$OCP_LIB`). Never test a choice
    with a bare `eq` against a value that may be a reference: refuse refs first,
    as `OCP::Config::_is_choice` does (k305, k314).
 

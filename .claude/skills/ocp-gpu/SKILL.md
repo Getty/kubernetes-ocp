@@ -39,6 +39,15 @@ gpu:
 `OCP::Config` normalises booleans to 0/1. It croaks on an unknown `driver`,
 `amd.allocation` or `amd.resource_naming`, and never falls back in silence.
 
+- **The switches take true/false only** (k320): `enabled`, `toolkit`,
+  `amd.labeller`, `amd.metrics` and `amd.integrated` accept true, false, 1 or
+  0. A string like `no` is refused (`gpu.enabled: must be true or false, not
+  'no'; write enabled: false`), by `validate` and by the accessor alike. It
+  used to read as true, so `enabled: no` left the GPU stack on.
+- **Unknown keys are refused** (k331): `gpu:` takes `enabled`, `driver`,
+  `toolkit`, `amd`; `gpu.amd:` takes the five shown above. `gpu: false` is
+  refused with the hint `gpu: { enabled: false }`.
+
 ## Rules for every GPU change
 
 - **Pins live only in `OCP::Versions`**, read with `get_component_version`.

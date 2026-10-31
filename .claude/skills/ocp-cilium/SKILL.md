@@ -166,7 +166,10 @@ The Rexfile carries no version constants of its own to drift out of sync.
 `OCP::Rex` (`install_server`) passes all three explicitly into the
 `install_cilium` task params — the Rexfile's env var fallback
 (`OCP_CILIUM_VERSION`, `OCP_CILIUM_CLI_VERSION`, `OCP_GATEWAY_API_VERSION`)
-is only for hand-runs outside that path.
+is only for hand-runs outside that path. A hand-run (`rex -f share/Rexfile
+...`) needs OCP's `lib/` for the Rexfile's `use OCP::BooleanEq` (k316): rex
+looks in `<cwd>/lib`, so from the checkout root it is found; from anywhere else
+set `PERL5LIB=<checkout>/lib`. `OCP::Rex` sets that itself on its runs.
 
 `upgrade_cilium` re-applies the Gateway API CRDs before the Helm upgrade
 (k160), through the library like `install_cilium`.
