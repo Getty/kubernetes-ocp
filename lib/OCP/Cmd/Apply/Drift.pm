@@ -84,6 +84,12 @@ could not be read, it is not read a second time for the warning. The real run
 asks C<gpu_dry_run> before it prints "No drift detected" (k234), so a GPU read
 that failed holds that line back as well.
 
+The AMD GPU stack is covered by L<OCP::Cmd::Apply::AMDGPU/dry_run>, from
+the plan its step acts on (k261): per component, what a real run would
+deploy, update or remove and on which nodes, with no call into
+Rex::Rancher::K8s and no write to F<.ocp/deployed.yaml>. A component a drift
+entry already names is not counted a second time.
+
 C<run_remedy> is the only step here that leaves the process over SSH, and
 therefore the only one that can cost a PIN2 prompt (see L<OCP::ClusterKey>).
 It asks for the key at the point of use rather than up front, so a reconcile
@@ -712,10 +718,17 @@ sub dry_run_report {
     # checked (k276).
     my @gpu = gpu_dry_run($self, $config);
 
+    # The AMD GPU stack (k261): what its step would deploy, update or remove,
+    # and on which nodes. A component a drift entry already names -- the k250
+    # probes read the same DaemonSets -- is that entry's difference, not a
+    # second one.
+    my %named = map { ($_->{label} // '') => 1 } @$drift;
+    my @amd   = grep { !$named{ $_->{label} } } OCP::Cmd::Apply::AMDGPU::dry_run($self, $config);
+
     my $report_only = scalar grep { $is_report_only->($_) } @$drift;
-    my $unknown     = scalar grep { $is_unknown->($_) } @$drift, @gpu, @robocop;
-    my $actions     = scalar(@$drift) + scalar(@gpu) + scalar(@robocop) - $report_only - $unknown
-        + scalar(@missing) + scalar(@relabel);
+    my $unknown     = scalar grep { $is_unknown->($_) } @$drift, @gpu, @robocop, @amd;
+    my $actions     = scalar(@$drift) + scalar(@gpu) + scalar(@robocop) + scalar(@amd)
+        - $report_only - $unknown + scalar(@missing) + scalar(@relabel);
 
     print "\n";
     print "  $actions difference(s) a real run would act on.\n";

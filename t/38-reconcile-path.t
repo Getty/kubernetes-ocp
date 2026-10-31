@@ -1772,4 +1772,57 @@ subtest 'k318: robocop not ready in time -- the fallback warning is on STDERR' =
 };
 
 
+#
+# k261: the dry run returned short of the AMD GPU step. It now says what the
+# step would deploy, update or remove -- read-only, the step itself is not
+# reached -- and counts it with the rest. An AMD component a drift entry
+# already names (the k250 probes read the same DaemonSets) is that entry's
+# difference, not a second one.
+#
+
+subtest 'k261: the dry run names the AMD GPU parts a real run would remove, each counted once' => sub {
+    # The AMD functions as a Rex::Rancher that has them, whichever one the
+    # suite runs with (the image's has none): each one a call would reach.
+    require Rex::Rancher::K8s;
+    my @called;
+    no strict 'refs';
+    no warnings qw( redefine once );
+    local (*Rex::Rancher::K8s::deploy_amd_device_plugin, *Rex::Rancher::K8s::deploy_amd_node_labeller,
+           *Rex::Rancher::K8s::deploy_amd_dra_driver,    *Rex::Rancher::K8s::deploy_amd_metrics_exporter,
+           *Rex::Rancher::K8s::remove_amd_device_plugin, *Rex::Rancher::K8s::remove_amd_node_labeller,
+           *Rex::Rancher::K8s::remove_amd_dra_driver,    *Rex::Rancher::K8s::remove_amd_metrics_exporter);
+    for my $fn (map { ("deploy_amd_$_", "remove_amd_$_") } qw( device_plugin node_labeller dra_driver metrics_exporter )) {
+        *{"Rex::Rancher::K8s::$fn"} = sub { push @called, $fn; 1 };
+    }
+
+    my $count = sub { ($_[0]{out} =~ /(\d+) difference\(s\) a real run would act on/)[0] };
+    my $base  = reconcile(dry_run => 1);
+
+    my $r = reconcile(dry_run => 1, objects => {
+        # At a version that is not the pin: a drift entry of its own.
+        'DaemonSet/kube-system/amdgpu-device-plugin-daemonset' => { spec => { template => { spec => {
+            containers => [ { image => 'docker.io/rocm/k8s-device-plugin:1.0.0' } ] } } } },
+        # No image to read a version off: no drift entry.
+        'DaemonSet/kube-system/amdgpu-metrics-exporter' => { metadata => { name => 'amdgpu-metrics-exporter' } },
+    });
+    like $r->{out}, qr/\[drift\] AMD GPU device plugin runs 1\.0\.0/, 'the probe names the plugin';
+    like $r->{out}, qr/^  \[amd\] AMD GPU device plugin is no longer selected \(no AMD GPU node left\)\n {10}would remove it$/m,
+        'the AMD step would remove it: no node carries the marker';
+    like $r->{out}, qr/^  \[amd\] AMD device metrics exporter is no longer selected \(no AMD GPU node left\)\n {10}would remove it$/m,
+        'and the exporter, for the same reason';
+    is $count->($r), $count->($base) + 2,
+        'two differences: the plugin once, through its drift entry, and the exporter';
+    is touched($r, 'AMDGPU::setup'), 0, 'the AMD step itself is not reached';
+    is_deeply $r->{writes}, [], 'nothing but GETs reached the API';
+    ok scalar(grep { $_ eq 'LIST Node' } @{ $r->{reads} }), 'the AMD GPU nodes were asked for';
+
+    my $denied = reconcile(dry_run => 1, denied => {
+        'DaemonSet/kube-system/amdgpu-metrics-exporter' => "403 Forbidden\n" });
+    like $denied->{out}, qr/^  \[amd\] AMD device metrics exporter could not be checked$/m,
+        'a DaemonSet it cannot read: could not be checked';
+    like $denied->{out}, qr/^  1 more could not be checked/m, 'counted as such, once';
+    is_deeply \@called, [], 'no Rex::Rancher::K8s call';
+};
+
+
 done_testing;

@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply --dry-run` says what the AMD GPU step would do: per
+      component (device plugin, DRA driver, labeller, metrics exporter),
+      that a real run would deploy, redeploy, update or remove it, at
+      which pin and on which nodes, or that it is up to date. It reads the
+      Nodes, `.ocp/deployed.yaml` and the DaemonSets and changes none of
+      them; a read it cannot make is "could not be checked", with the
+      cause on STDERR.
     - `ocp apply` and `ocp status` read `registry.local` in the CoreDNS
       Corefile the same way, from the server block CoreDNS answers it
       from. A Corefile without a root block whose own `registry.local`

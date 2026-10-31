@@ -125,12 +125,15 @@ my @UNKNOWN     = qw( unknown );
     sub node_gpu_count { 0 }
     sub node_gpu_capacity { undef }
 }
-# The dry run's api. detect is faked; the GPU step's read finds no operator.
+# The dry run's api. detect is faked; the GPU step's read finds no operator,
+# the AMD GPU step's (k261) no node with the marker.
 {
     package Local::FakeApi;
     sub new { bless {}, $_[0] }
     sub get { die "Kubernetes API error (get $_[1]): 404 NotFound\n" }
+    sub list { bless { items => [] }, 'Local::FakeList' }
 }
+{ package Local::FakeList; sub items { $_[0]{items} } }
 
 my $tmp = tempdir(CLEANUP => 1);
 my $n = 0;

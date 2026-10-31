@@ -1012,4 +1012,236 @@ subtest 'k277 after the worker join: a read that fails is not "no AMD node"' => 
     }
 };
 
+
+#
+# k261: `ocp apply --dry-run` returned before the AMD GPU step. Through the
+# k250 probes it showed a version that drifted, never which component a real
+# run would deploy, update or remove, nor where: after a switched allocation,
+# a node label, gpu.enabled: false over a stack that is still there.
+# OCP::Cmd::Apply::AMDGPU::dry_run says it, from the plan setup acts on. The
+# claims:
+#   1. per component, on STDOUT, what a real run would do and on which nodes;
+#      a component nothing selects and nothing has is not named;
+#   2. no call into Rex::Rancher::K8s, .ocp/deployed.yaml byte for byte as it
+#      was;
+#   3. the real run that follows changes exactly what the dry run said;
+#   4. a read it could not make is "could not be checked" with its cause on
+#      STDERR and an error entry -- never a guess either way.
+#
+
+my %V = map { $_ => OCP::Versions->get_component_version($_) }
+        qw( amd_device_plugin amd_dra_driver amd_metrics_exporter );
+
+# The dry run against $api (%o as for run_step), with deployed.yaml as it was
+# before and after.
+sub dry_step {
+    my ($api, %o) = @_;
+    my $dir    = $o{dir} // project();
+    my $file   = $dir->child('.ocp', 'deployed.yaml');
+    my $before = -f $file ? $file->slurp_raw : undef;
+    my $res    = run_step($api, %o, dir => $dir,
+        run => sub { [ OCP::Cmd::Apply::AMDGPU::dry_run(@_) ] });
+    $res->{deployed_before} = $before;
+    $res->{deployed_after}  = -f $file ? $file->slurp_raw : undef;
+    return $res;
+}
+
+# The real step's results against the same state: what the dry run is held to.
+sub real_step {
+    my ($api, %o) = @_;
+    return run_step($api, %o, run => sub { [ OCP::Cmd::Apply::AMDGPU::setup(@_) ] })->{r};
+}
+
+# label => outcome of what a real run changed, and of what a dry run said it would.
+sub real_changes {
+    my ($results) = @_;
+    return { map { $_->{label} => $_->{outcome} }
+             grep { defined $_->{outcome} && $_->{outcome} !~ /\A(?:unchanged|skipped)\z/ } @$results };
+}
+sub dry_changes {
+    my ($dry) = @_;
+    return { map { $_->{label} => $_->{outcome} } grep { $_->{kind} eq 'amd' } @{ $dry->{r} } };
+}
+
+sub untouched {
+    my ($dry, $what) = @_;
+    is_deeply $dry->{fns}, [], "$what: no Rex::Rancher::K8s call";
+    is $dry->{deployed_after}, $dry->{deployed_before}, "$what: .ocp/deployed.yaml as it was";
+}
+
+subtest 'k261: a fresh AMD node -- the deploys and where, none of them made' => sub {
+    my $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    $api->node('cpu1');
+    my $dry = dry_step($api);
+    untouched($dry, 'fresh');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node\(s\): synapse \(device-plugin\)$/m,
+        'the node and its allocation';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin is not deployed\n {10}would deploy it \(\Q$V{amd_device_plugin}\E\) on synapse$/m,
+        'the plugin: deploy, its pin, on synapse';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node labeller is not deployed\n {10}would deploy it \(\Q$V{amd_device_plugin}\E\) on synapse$/m,
+        'the labeller likewise';
+    unlike $dry->{out}, qr/DRA|metrics/, 'nothing about what no node selects and nothing has';
+    is $dry->{err}, '', 'nothing on STDERR';
+    is_deeply dry_changes($dry), { 'AMD GPU device plugin' => 'deployed', 'AMD GPU node labeller' => 'deployed' },
+        'two changes returned';
+    is_deeply real_changes(real_step($api, dir => $dry->{dir})), dry_changes($dry),
+        'the real run then makes exactly these';
+};
+
+subtest 'k261: nothing changed -- up to date, on its nodes, no entry' => sub {
+    my ($api, $first) = deployed_for_synapse();
+    my $dry = dry_step($api, dir => $first->{dir});
+    untouched($dry, 'up to date');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin is up to date on synapse$/m, 'the plugin';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node labeller is up to date on synapse$/m, 'the labeller';
+    unlike $dry->{out}, qr/would/, 'nothing a real run would do';
+    is_deeply $dry->{r}, [], 'no entry';
+    is_deeply real_changes(real_step($api, dir => $first->{dir})), {}, 'and the real run changes nothing';
+};
+
+subtest 'k261: a switched allocation, a node label -- what goes, what comes, where' => sub {
+    my ($api, $first) = deployed_for_synapse();
+    my $dra = "gpu:\n  amd:\n    allocation: dra\n";
+    my $dry = dry_step($api, dir => $first->{dir}, gpu => $dra);
+    untouched($dry, 'allocation dra');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node\(s\): synapse \(dra\)$/m, 'synapse under its new allocation';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin is no longer selected \(no AMD GPU node has allocation device-plugin\)\n {10}would remove it$/m,
+        'the plugin goes, and why';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU DRA driver is not deployed\n {10}would deploy it \(\Q$V{amd_dra_driver}\E\) on synapse$/m,
+        'the DRA driver comes, on synapse';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node labeller is up to date on synapse$/m, 'the labeller stays';
+    is_deeply dry_changes($dry), { 'AMD GPU device plugin' => 'removed', 'AMD GPU DRA driver' => 'deployed' },
+        'one removal, one deploy';
+    is_deeply real_changes(real_step($api, dir => $first->{dir}, gpu => $dra)), dry_changes($dry),
+        'the real run makes exactly these';
+
+    ($api, $first) = deployed_for_synapse();
+    $api->node('nova', $MARKER => 'true', $ALLOC => 'dra');
+    $dry = dry_step($api, dir => $first->{dir});
+    untouched($dry, 'node label');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node\(s\): nova \(dra\), synapse \(device-plugin\)$/m,
+        'each node with its allocation';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU DRA driver is not deployed\n {10}would deploy it \(\Q$V{amd_dra_driver}\E\) on nova$/m,
+        'the DRA driver for the labelled node only';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin is up to date on synapse$/m, 'the plugin stays on synapse';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node labeller is up to date on nova, synapse$/m, 'the labeller on both';
+    is_deeply real_changes(real_step($api, dir => $first->{dir})), dry_changes($dry),
+        'the real run makes exactly this';
+};
+
+subtest 'k261: gpu.enabled false over a stack that is still there -- every part goes' => sub {
+    my ($api, $first) = deployed_for_synapse("gpu:\n  amd:\n    metrics: true\n");
+    my $off = "gpu:\n  enabled: false\n";
+    my $dry = dry_step($api, dir => $first->{dir}, gpu => $off);
+    untouched($dry, 'gpu off');
+    for my $label ('AMD GPU device plugin', 'AMD GPU node labeller', 'AMD device metrics exporter') {
+        like $dry->{out}, qr/^  \[amd\] \Q$label\E is no longer selected \(gpu\.enabled is false\)\n {10}would remove it$/m,
+            "$label: would go";
+    }
+    unlike $dry->{out}, qr/node\(s\)|DRA/, 'no node line, nothing about what is not there';
+    is_deeply real_changes(real_step($api, dir => $first->{dir}, gpu => $off)), dry_changes($dry),
+        'the real run removes exactly these';
+};
+
+subtest 'k261: a DaemonSet gone, an option changed, one OCP never recorded' => sub {
+    my ($api, $first) = deployed_for_synapse();
+    delete $api->{ds}{ $DS{device_plugin} };
+    my $dry = dry_step($api, dir => $first->{dir});
+    untouched($dry, 'gone');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin is gone from the cluster\n {10}would redeploy it \(\Q$V{amd_device_plugin}\E\) on synapse$/m,
+        'gone: redeployed';
+    is_deeply real_changes(real_step($api, dir => $first->{dir})), dry_changes($dry), 'as the real run does';
+
+    my $mixed = "gpu:\n  amd:\n    resource_naming: mixed\n";
+    $dry = dry_step($api, dir => $first->{dir}, gpu => $mixed);
+    untouched($dry, 'option');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin was deployed with other options\n {10}would update it \(\Q$V{amd_device_plugin}\E\) on synapse$/m,
+        'resource_naming: updated';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node labeller is up to date on synapse$/m, 'the labeller is not';
+    is_deeply real_changes(real_step($api, dir => $first->{dir}, gpu => $mixed)), dry_changes($dry),
+        'as the real run does';
+
+    $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    $api->{ds}{ $DS{device_plugin} } = { metadata => { name => $DS{device_plugin} } };
+    $api->{ds}{ $DS{labeller} }      = { metadata => { name => $DS{labeller} } };
+    my $nolab = "gpu:\n  amd:\n    labeller: false\n";
+    $dry = dry_step($api, gpu => $nolab);
+    untouched($dry, 'unrecorded');
+    like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin has no record in \.ocp\/deployed\.yaml\n {10}would deploy it \(\Q$V{amd_device_plugin}\E\) on synapse$/m,
+        'in the cluster, not recorded, selected: deployed';
+    like $dry->{out}, qr/^  \[amd\] AMD GPU node labeller is no longer selected \(gpu\.amd\.labeller is false\)\n {10}would remove it$/m,
+        'in the cluster, not recorded, not selected: removed';
+    is_deeply real_changes(real_step($api, dir => $dry->{dir}, gpu => $nolab)), dry_changes($dry),
+        'as the real run does';
+};
+
+subtest 'k261: a cluster without the stack: not a line' => sub {
+    my $api = AmdApi->new;
+    $api->node('cpu1');
+    my $dry = dry_step($api);
+    untouched($dry, 'no stack');
+    is $dry->{out}, '', 'nothing on STDOUT';
+    is $dry->{err}, '', 'nothing on STDERR';
+    is_deeply $dry->{r}, [], 'no entry';
+};
+
+subtest 'k261: a read the dry run cannot make -- could not be checked, its cause on STDERR' => sub {
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+
+        # The DRA driver: nothing selects it, nothing recorded -- the cluster decides.
+        my $api = AmdApi->new;
+        $api->node('synapse', $MARKER => 'true');
+        $api->{ds}{ $DS{dra} } = { metadata => { name => $DS{dra} } };
+        $api->{get_fails}{"DaemonSet/$DS{dra}"} = api_error($code, $reason);
+        my $dry = dry_step($api);
+        untouched($dry, "$code to remove");
+        like $dry->{out}, qr/^  \[amd\] AMD GPU DRA driver could not be checked$/m, "$code: said on STDOUT";
+        unlike $dry->{out}, qr/DRA driver (?:is|was|has)\b/, "$code: neither there nor gone";
+        like $dry->{err}, qr{\A  \[!!\] AMD GPU DRA driver not checked: could not read DaemonSet kube-system/\Q$DS{dra}\E: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            "$code: the cause, once, on STDERR";
+        my @e = grep { $_->{kind} eq 'error' } @{ $dry->{r} };
+        is_deeply [ map { $_->{label} } @e ], ['AMD GPU DRA driver'], "$code: one error entry";
+        like $dry->{out}, qr/AMD GPU device plugin is not deployed\n {10}would deploy/, "$code: the others carry on";
+
+        # A recorded component the plan selects.
+        my $first;
+        ($api, $first) = deployed_for_synapse();
+        $api->{get_fails}{"DaemonSet/$DS{device_plugin}"} = api_error($code, $reason);
+        $dry = dry_step($api, dir => $first->{dir});
+        untouched($dry, "$code to deploy");
+        like $dry->{out}, qr/^  \[amd\] AMD GPU device plugin could not be checked$/m, "$code: selected, unreadable";
+        unlike $dry->{out}, qr/device plugin (?:is|was|has)\b/, "$code: no verdict on it";
+        like $dry->{err}, qr{\A  \[!!\] AMD GPU device plugin not checked: could not read DaemonSet kube-system/\Q$DS{device_plugin}\E: },
+            "$code: the cause on STDERR";
+        like $dry->{out}, qr/AMD GPU node labeller is up to date on synapse/, "$code: the labeller carries on";
+        is_deeply [ map { $_->{kind} } @{ $dry->{r} } ], ['error'], "$code: one entry, the error";
+    }
+
+    my ($api, $first) = deployed_for_synapse();
+    $api->{list_dies} = "503 apiserver unavailable\n";
+    my $dry = dry_step($api, dir => $first->{dir});
+    untouched($dry, 'list');
+    is $dry->{out}, "  [amd] AMD GPU stack could not be checked\n", 'the Node list: one line, nothing guessed';
+    is $dry->{err}, "  [!!] AMD GPU stack not checked: 503 apiserver unavailable\n", 'its cause on STDERR';
+    is_deeply [ map { "$_->{kind} $_->{label}" } @{ $dry->{r} } ], ['error AMD GPU stack'], 'one error entry';
+};
+
+subtest 'k261: a Rex::Rancher without the functions -- the WARN, and a real run does nothing' => sub {
+    my $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    my $dry = dry_step($api, missing => ['deploy_amd_node_labeller']);
+    untouched($dry, 'old lib');
+    my @warn = $dry->{err} =~ /^.*\[WARN\].*$/mg;
+    is scalar @warn, 1, 'one WARN on STDERR';
+    like $warn[0], qr/needs a newer Rex::Rancher: Rex::Rancher::K8s \S+ has no deploy_amd_node_labeller; nothing deployed or removed/,
+        'the real run\'s, naming the missing function';
+    like $dry->{out}, qr/^  \[amd\] A real run deploys and removes nothing: Rex::Rancher is too old for the AMD GPU stack$/m,
+        'on STDOUT: what a real run would do';
+    unlike $dry->{out}, qr/would deploy/, 'and no deploy it would not make';
+    is_deeply $dry->{r}, [], 'nothing counted';
+};
+
 done_testing;

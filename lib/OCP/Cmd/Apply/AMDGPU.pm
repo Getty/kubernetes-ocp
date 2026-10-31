@@ -23,6 +23,9 @@ use OCP::Cmd::Apply::K8s ();
     # once the worker step brought nodes up
     push @failed, OCP::Cmd::Apply::AMDGPU::after_join($apply, $config, \@results);
 
+    # ocp apply --dry-run: what the step would do, nothing done
+    my @found = OCP::Cmd::Apply::AMDGPU::dry_run($apply, $config);
+
 =head1 DESCRIPTION
 
 What a cluster runs on its AMD GPU nodes, once the host step installed the
@@ -207,8 +210,71 @@ only when the Nodes cannot be listed: then nothing is removed either.
 sub setup {
     my ($self, $config, %opt) = @_;
 
-    my $budget  = $opt{joined} ? join_ready_timeout() : ready_timeout();
-    my $api     = $self->_k8s_api;
+    my $budget = $opt{joined} ? join_ready_timeout() : ready_timeout();
+    my $api    = $self->_k8s_api;
+    my $plan   = plan($self, $config, $api);
+    report_nodes($plan, '      ');
+
+    my @unreadable = @{ $plan->{unreadable} };
+    unless (@{ $plan->{remove} } || @{ $plan->{deploy} }) {
+        return @unreadable if @unreadable;
+        print !$config->gpu_enabled
+            ? "      gpu.enabled is false — nothing to deploy\n"
+            : !@{ $plan->{nodes} }
+            ? "      No AMD GPU nodes (no node carries $OCP::Config::AMD_GPU_PRESENT_LABEL=true)\n"
+            : "      No AMD GPU node selects a component (allocation none, labeller and metrics off)\n";
+        return ({ label => 'AMD GPU stack', outcome => 'skipped' });
+    }
+
+    return (@unreadable, { label => 'AMD GPU stack', outcome => 'skipped', warned => 1 })
+        if lib_too_old($plan);
+
+    my $kubeconfig = OCP::Cmd::Apply::K8s::kubeconfig_path($self);
+    my @results = @unreadable;
+
+    for my $c (@{ $plan->{remove} }) {
+        my $comp = $COMPONENT{$c};
+        print "      Removing $comp->{label} (" . remove_why($config, $plan, $c) . ")...\n";
+        my $ok = eval {
+            lib_call($comp->{remove}, kubeconfig => $kubeconfig);
+            OCP::Cmd::Apply::DeployedHash::forget($self, $config, $comp->{key});
+            1;
+        };
+        push @results, $ok ? { label => $comp->{label}, outcome => 'removed' }
+                           : { label => $comp->{label}, error => $@ };
+    }
+
+    for my $c (deploy_order($plan)) {
+        my $opts    = deploy_options($config, $plan, $c);
+        my $outcome = eval { ensure($self, $config, $api, $kubeconfig, $c, $opts, $plan->{for}{$c}, $budget) };
+        if (my $err = $@) {
+            push @results, { label => $COMPONENT{$c}{label}, error => $err,
+                             hint  => $c eq 'dra' ? dra_hint($err) : undef };
+        } else {
+            push @results, { label => $COMPONENT{$c}{label}, outcome => $outcome };
+        }
+    }
+
+    return @results;
+}
+
+# What the stack needs on this cluster, read off ocp.yaml, the Nodes, the
+# record and the DaemonSets -- the one reading both setup and dry_run act
+# on, so a dry run cannot say other than the run does:
+#
+#   nodes       the marker nodes
+#   affinity    per component, what goes to the cluster
+#   for         per component, the marker nodes it selects
+#   remove      the components nothing selects that OCP recorded or the
+#               cluster has
+#   deploy      the components something selects
+#   unreadable  { label, error } of a component nothing selects whose
+#               DaemonSet could not be read
+#
+# Dies when the Nodes cannot be listed.
+sub plan {
+    my ($self, $config, $api) = @_;
+
     my $default = $config->gpu_amd_allocation;
     my @nodes   = $config->gpu_enabled ? marker_nodes($api) : ();
 
@@ -219,16 +285,6 @@ sub setup {
     }
     $for{labeller} = [] unless $config->gpu_amd_labeller;
     $for{metrics}  = [] unless $config->gpu_amd_metrics;
-
-    if (@nodes) {
-        my %alloc = map { $_->{name} => 'none' } @nodes;
-        for my $c (qw(device_plugin dra)) {
-            $alloc{ $_->{name} } = $COMPONENT{$c}{allocation} for @{ $for{$c} };
-        }
-        print "      AMD GPU node(s): "
-            . join(', ', map { "$_->{name} ($alloc{ $_->{name} })" } @nodes) . "\n";
-        warn_bad_allocation_labels($default, @nodes);
-    }
 
     # A component nothing selects goes when OCP recorded it or the cluster has
     # its DaemonSet. A DaemonSet that cannot be read is neither: that
@@ -248,79 +304,84 @@ sub setup {
         }
         push @remove, $c if $present;
     }
-    my @deploy = grep { @{ $for{$_} } } @COMPONENTS;
 
-    unless (@remove || @deploy) {
-        return @unreadable if @unreadable;
-        print !$config->gpu_enabled
-            ? "      gpu.enabled is false — nothing to deploy\n"
-            : !@nodes
-            ? "      No AMD GPU nodes (no node carries $OCP::Config::AMD_GPU_PRESENT_LABEL=true)\n"
-            : "      No AMD GPU node selects a component (allocation none, labeller and metrics off)\n";
-        return ({ label => 'AMD GPU stack', outcome => 'skipped' });
+    return {
+        default    => $default,
+        nodes      => \@nodes,
+        affinity   => \%affinity,
+        for        => \%for,
+        remove     => \@remove,
+        deploy     => [ grep { @{ $for{$_} } } @COMPONENTS ],
+        unreadable => \@unreadable,
+    };
+}
+
+# The marker nodes with the allocation each one gets, after $lead on STDOUT;
+# an allocation label that is none of the values, on STDERR.
+sub report_nodes {
+    my ($plan, $lead) = @_;
+    my @nodes = @{ $plan->{nodes} } or return;
+    my %alloc = map { $_->{name} => 'none' } @nodes;
+    for my $c (qw(device_plugin dra)) {
+        $alloc{ $_->{name} } = $COMPONENT{$c}{allocation} for @{ $plan->{for}{$c} };
     }
+    print $lead . "AMD GPU node(s): "
+        . join(', ', map { "$_->{name} ($alloc{ $_->{name} })" } @nodes) . "\n";
+    warn_bad_allocation_labels($plan->{default}, @nodes);
+    return;
+}
 
-    # One look before any call: a Rex::Rancher that lacks one function this
-    # run needs gets no call at all, rather than half a stack.
-    my @need    = ((map { $COMPONENT{$_}{remove} } @remove), (map { $COMPONENT{$_}{deploy} } @deploy));
-    my @missing = lib_missing(@need);
-    if (@missing) {
-        my $version = do { no strict 'refs'; ${"${LIB}::VERSION"} } // 'not loadable';
-        print STDERR "  [WARN] The AMD GPU stack needs a newer Rex::Rancher: $LIB $version has no "
-            . join(', ', @missing) . "; nothing deployed or removed\n";
-        return (@unreadable, { label => 'AMD GPU stack', outcome => 'skipped', warned => 1 });
-    }
+# One look before any call: a Rex::Rancher that lacks one function the plan
+# needs gets no call at all, rather than half a stack. Says so on STDERR and
+# returns true then.
+sub lib_too_old {
+    my ($plan) = @_;
+    my @need    = ((map { $COMPONENT{$_}{remove} } @{ $plan->{remove} }),
+                   (map { $COMPONENT{$_}{deploy} } @{ $plan->{deploy} }));
+    my @missing = lib_missing(@need) or return 0;
+    my $version = do { no strict 'refs'; ${"${LIB}::VERSION"} } // 'not loadable';
+    print STDERR "  [WARN] The AMD GPU stack needs a newer Rex::Rancher: $LIB $version has no "
+        . join(', ', @missing) . "; nothing deployed or removed\n";
+    return 1;
+}
 
-    my $kubeconfig = OCP::Cmd::Apply::K8s::kubeconfig_path($self);
-    my @results = @unreadable;
+# Why the plan removes component $c.
+sub remove_why {
+    my ($config, $plan, $c) = @_;
+    return !$config->gpu_enabled   ? 'gpu.enabled is false'
+         : !@{ $plan->{nodes} }    ? 'no AMD GPU node left'
+         : $c eq 'labeller'        ? 'gpu.amd.labeller is false'
+         : $c eq 'metrics'         ? 'gpu.amd.metrics is false'
+         :                           "no AMD GPU node has allocation $COMPONENT{$c}{allocation}";
+}
 
-    for my $c (@remove) {
-        my $comp = $COMPONENT{$c};
-        my $why  = !$config->gpu_enabled                 ? 'gpu.enabled is false'
-                 : !@nodes                               ? 'no AMD GPU node left'
-                 : $c eq 'labeller'                      ? 'gpu.amd.labeller is false'
-                 : $c eq 'metrics'                       ? 'gpu.amd.metrics is false'
-                 :                                         "no AMD GPU node has allocation $comp->{allocation}";
-        print "      Removing $comp->{label} ($why)...\n";
-        my $ok = eval {
-            lib_call($comp->{remove}, kubeconfig => $kubeconfig);
-            OCP::Cmd::Apply::DeployedHash::forget($self, $config, $comp->{key});
-            1;
-        };
-        push @results, $ok ? { label => $comp->{label}, outcome => 'removed' }
-                           : { label => $comp->{label}, error => $@ };
-    }
+# The components to deploy, in the order they go: the one that narrows to In
+# first, the default's NotIn after it -- a switched allocation takes the old
+# one off a node before the new one lands there.
+sub deploy_order {
+    my ($plan) = @_;
+    my @deploy     = @{ $plan->{deploy} };
+    my %is_default = map { $_ => ($COMPONENT{$_}{allocation} // '') eq $plan->{default} } @deploy;
+    return ((grep { $COMPONENT{$_}{allocation} && !$is_default{$_} } @deploy),
+            (grep { $is_default{$_} } @deploy),
+            (grep { !$COMPONENT{$_}{allocation} } @deploy));
+}
 
-    # The component that narrows to In first, the default's NotIn after it: a
-    # switched allocation takes the old one off a node before the new one
-    # lands there.
-    my %is_default = map { $_ => ($COMPONENT{$_}{allocation} // '') eq $default } @deploy;
-    my @order = ((grep { $COMPONENT{$_}{allocation} && !$is_default{$_} } @deploy),
-                 (grep { $is_default{$_} } @deploy),
-                 (grep { !$COMPONENT{$_}{allocation} } @deploy));
-
-    for my $c (@order) {
-        my %opts = (
-            version  => OCP::Versions->get_component_version($COMPONENT{$c}{version}),
-            affinity => $affinity{$c},
-            ($c eq 'device_plugin' ? (
-                resource_naming => $config->gpu_amd_resource_naming,
-                # OCP waits by its own check (wait_ready), and deploys the
-                # labeller as its own component.
-                wait            => 0,
-                node_labeller   => 0,
-            ) : ()),
-        );
-        my $outcome = eval { ensure($self, $config, $api, $kubeconfig, $c, \%opts, $for{$c}, $budget) };
-        if (my $err = $@) {
-            push @results, { label => $COMPONENT{$c}{label}, error => $err,
-                             hint  => $c eq 'dra' ? dra_hint($err) : undef };
-        } else {
-            push @results, { label => $COMPONENT{$c}{label}, outcome => $outcome };
-        }
-    }
-
-    return @results;
+# What component $c is deployed with: its pin, its affinity, and for the
+# plugin the resource naming.
+sub deploy_options {
+    my ($config, $plan, $c) = @_;
+    return {
+        version  => OCP::Versions->get_component_version($COMPONENT{$c}{version}),
+        affinity => $plan->{affinity}{$c},
+        ($c eq 'device_plugin' ? (
+            resource_naming => $config->gpu_amd_resource_naming,
+            # OCP waits by its own check (wait_ready), and deploys the
+            # labeller as its own component.
+            wait            => 0,
+            node_labeller   => 0,
+        ) : ()),
+    };
 }
 
 # The Nodes with the marker, as { name, labels }, sorted by name. The label
@@ -391,28 +452,37 @@ sub options_hash {
     }));
 }
 
+# What ensure does with component $c and $opts: 'unchanged' (the recorded
+# hash is this one, the DaemonSet is there), 'deployed' (no record),
+# 'restored' (recorded, gone from the cluster) or 'updated'. Returns
+# (outcome, hash, present). Dies when the DaemonSet cannot be read (k269).
+sub outcome {
+    my ($self, $config, $api, $c, $opts) = @_;
+    my $hash     = options_hash($c, $opts);
+    my $recorded = $self->_load_deployed_hashes($config)->{ $COMPONENT{$c}{key} };
+    my $present  = ds_present($self, $api, $c);
+    my $outcome  = !defined $recorded ? 'deployed'
+                 : !$present          ? 'restored'
+                 : $recorded ne $hash ? 'updated'
+                 :                      'unchanged';
+    return ($outcome, $hash, $present);
+}
+
 sub ensure {
     my ($self, $config, $api, $kubeconfig, $c, $opts, $nodes, $budget) = @_;
     my $comp = $COMPONENT{$c};
 
-    my $hash     = options_hash($c, $opts);
-    my $deployed = $self->_load_deployed_hashes($config);
-    my $recorded = defined $deployed->{ $comp->{key} };
-    my $present  = ds_present($self, $api, $c);
+    my ($outcome, $hash) = outcome($self, $config, $api, $c, $opts);
 
     # Up to date says nothing about the nodes: one that joined since (`ocp
     # node add --gpu`, the worker step) gets its pod only now, so it is waited
     # for like a deploy (k286). A wait that runs out keeps the record: the
     # next apply has nothing to redeploy, and waits again.
-    if ($recorded && $deployed->{ $comp->{key} } eq $hash && $present) {
+    if ($outcome eq 'unchanged') {
         print "      $comp->{label} already deployed (up to date)\n";
         wait_ready($self, $api, $c, $opts, $nodes, $budget);
         return 'unchanged';
     }
-
-    my $outcome = !$recorded ? 'deployed'
-                : !$present  ? 'restored'
-                :              'updated';
 
     print "      Deploying $comp->{label} $opts->{version}...\n";
     lib_call($comp->{deploy}, kubeconfig => $kubeconfig, %$opts);
@@ -545,6 +615,89 @@ sub step {
 
     $self->{_amd_gpu_step} = $r;
     return $r;
+}
+
+=head2 dry_run
+
+    my @found = OCP::Cmd::Apply::AMDGPU::dry_run($apply, $config);   # ocp apply --dry-run
+
+What L</setup> would do, said and not done (k261): the same plan, the same
+comparison against F<.ocp/deployed.yaml> and the cluster, then no call into
+Rex::Rancher::K8s and no write. On STDOUT, under C<[amd]>: the marker nodes
+with their allocation, and per component that a real run would deploy,
+redeploy, update or remove, what it finds and what it would do, with the pin
+and the nodes; a component it would leave as it is, up to date on its nodes.
+A component nothing selects and nothing has is not named, so a cluster
+without the stack prints nothing.
+
+Returns one C<< { kind =E<gt> 'amd', label, outcome } >> per change (an
+outcome of L<OCP::Cmd::Apply::DeployedHash/report_component>), and one
+C<< { kind =E<gt> 'error', label, cause, message } >> per read it could not
+make -- the Node list, a DaemonSet -- which is "could not be checked" on
+STDOUT and its cause on STDERR, the shape
+L<OCP::Cmd::Apply::Drift/dry_run_report> counts with the drift probes it
+could not read. A Rex::Rancher without the AMD functions is the real run's
+C<[WARN]> on STDERR, and on STDOUT that a real run deploys and removes
+nothing; nothing is counted for it.
+
+=cut
+
+sub dry_run {
+    my ($self, $config) = @_;
+    my $api = $self->_k8s_api;
+
+    my $plan = eval { plan($self, $config, $api) };
+    return unchecked('AMD GPU stack', $@) if $@;
+    report_nodes($plan, '  [amd] ');
+
+    my @found = map { unchecked($_->{label}, $_->{error}) } @{ $plan->{unreadable} };
+    return @found unless @{ $plan->{remove} } || @{ $plan->{deploy} };
+    if (lib_too_old($plan)) {
+        print "  [amd] A real run deploys and removes nothing: Rex::Rancher is too old for the AMD GPU stack\n";
+        return @found;
+    }
+
+    for my $c (@{ $plan->{remove} }) {
+        my $label = $COMPONENT{$c}{label};
+        print "  [amd] $label is no longer selected (" . remove_why($config, $plan, $c) . ")\n"
+            . "          would remove it\n";
+        push @found, { kind => 'amd', label => $label, outcome => 'removed' };
+    }
+
+    for my $c (deploy_order($plan)) {
+        my $label = $COMPONENT{$c}{label};
+        my $opts  = deploy_options($config, $plan, $c);
+        my ($outcome, undef, $present) = eval { outcome($self, $config, $api, $c, $opts) };
+        if (my $err = $@) {
+            push @found, unchecked($label, $err);
+            next;
+        }
+        my $on = join ', ', map { $_->{name} } @{ $plan->{for}{$c} };
+        if ($outcome eq 'unchanged') {
+            print "  [amd] $label is up to date on $on\n";
+            next;
+        }
+        my ($is, $verb) = $outcome eq 'restored' ? ('is gone from the cluster', 'redeploy')
+                        : $outcome eq 'updated'  ? ('was deployed with other options', 'update')
+                        : $present               ? ('has no record in .ocp/deployed.yaml', 'deploy')
+                        :                          ('is not deployed', 'deploy');
+        print "  [amd] $label $is\n"
+            . "          would $verb it ($opts->{version}) on $on\n";
+        push @found, { kind => 'amd', label => $label, outcome => $outcome };
+    }
+
+    return @found;
+}
+
+# A read dry_run could not make: "could not be checked" on STDOUT, the cause
+# on STDERR, and the entry the dry-run report counts as such.
+sub unchecked {
+    my ($label, $err) = @_;
+    my $cause = "$err";
+    chomp $cause;
+    print "  [amd] $label could not be checked\n";
+    print STDERR "  [!!] $label not checked: $cause\n";
+    return { kind => 'error', label => $label, cause => $cause, message => "$label: $cause" };
 }
 
 =head2 after_join
