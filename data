@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T08:16:46Z
+created: 2026-10-31T08:10:51Z
+id: 324
+priority: low
+started: 2026-10-31T08:16:46Z
+status: done
+tags:
+- docs
+title: 'Docs: robocop takes only true/false or its mapping, pool nodes per provider,
+  at most 7 listed control planes (after k315)'
+updated: 2026-10-31T08:16:46Z
+---
+
+Found under k315 (2026-10-31). The docs do not say what k315 made validate() enforce:
+- robocop: takes only true/false (or 1/0) or a mapping of enabled, security_level and image; a string like no or off is refused.
+- a worker pool's nodes: an ssh pool lists its hosts (strings, or mappings with host), every other provider counts its machines (nodes: 3).
+- the list form of control_planes holds at most 7 entries (etcd), as nodes: does.
+
+Where: docs/configuration.md, docs/robocop.md, the ocp-usage skill (.claude/skills/ocp-usage/SKILL.md, repo-owned). ocp-doc-writer for the docs; the skill text also goes through an ocp-* agent.
+
+Done = all three say it, in the words validate() uses.
+
+Committed as 1f5ff77
