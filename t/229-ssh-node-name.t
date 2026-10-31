@@ -44,7 +44,6 @@ use OCP::Cmd::SSH;
         bless { ocpnodes => {}, nodes => {}, calls => [], %a }, $c;
     }
     sub k8s          { FakeIO->new }
-    sub with         { $_[0]{with} //= [] }
     sub get {
         my ($self, $kind, %args) = @_;
         push @{ $self->{calls} }, [ get => $kind, $args{name} ];

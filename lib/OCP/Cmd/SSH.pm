@@ -8,7 +8,6 @@ use OCP;
 use OCP::Choices;
 use OCP::ClusterKey;
 use OCP::Config;
-use OCP::K8s;
 use OCP::Kubernetes;
 use OCP::Node;
 use OCP::Secrets;
@@ -233,7 +232,6 @@ sub _node_names {
 
     my $crs = eval {
         my $api = $k8s->api;
-        OCP::K8s->register($api);
         [ map { $api->k8s->object_to_struct($_) }
               @{ $api->list('OCPNode', namespace => 'ocp-system')->items // [] } ];
     } // [];
@@ -338,7 +336,6 @@ sub _lookup_by_name {
     my ($cr, $node);
     my $ok = eval {
         my $api = $k8s->api;
-        OCP::K8s->register($api);
         $cr   = $self->_get_or_undef($api, 'OCPNode', name => $name, namespace => 'ocp-system');
         $node = $self->_get_or_undef($api, 'Node',    name => $name);
         1;

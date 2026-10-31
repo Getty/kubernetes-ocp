@@ -304,15 +304,13 @@ has async_kube => (
 # iteration.
 #
 # Client construction belongs to OCP::Kubernetes, which is how the CLI already
-# reaches a cluster: Kubernetes::REST::Kubeconfig->new(...)->api. The
-# controller adds only the CRD registration, without which OCPNode and
-# OCPNodeProvider are not addressable.
+# reaches a cluster: Kubernetes::REST::Kubeconfig->new(...)->api. Its api
+# comes with OCPNode and OCPNodeProvider registered (OCP::K8s->register, k283),
+# so the controller adds nothing to it (k295).
 sub _build_kube {
     my ($self) = @_;
 
-    my $api = OCP::Kubernetes->new($self->_kube_source)->api;
-    OCP::K8s->register($api);
-    return $api;
+    return OCP::Kubernetes->new($self->_kube_source)->api;
 }
 
 # Where the credentials come from, as a plain decision with no I/O of its own.

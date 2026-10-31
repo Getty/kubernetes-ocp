@@ -219,7 +219,6 @@ subtest '(a) a scan that finds nothing pins nothing and does not fail the reconc
     package FakeAPI;
     sub new { my ($c, %a) = @_; bless { ocpnodes => {}, %a }, $c }
     sub k8s          { FakeIO->new }
-    sub with         { $_[0]{with} //= [] }
     sub get {
         my ($self, $kind, %args) = @_;
         return $self->{ocpnodes}{ $args{name} } // die "404 Not Found: $kind $args{name}\n"

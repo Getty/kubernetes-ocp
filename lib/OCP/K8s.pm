@@ -30,10 +30,10 @@ my %KINDS = (
 # the caller's own -- and against an API that does not answer, a warning too.
 #
 # The entry is %KINDS itself, so a second register finds it and adds nothing:
-# robocop's controller and ocp ssh register on top of the api OCP::Kubernetes
-# registered on already. An inner IO::K8s built before this call read `with`
-# without the Kinds, so it is dropped and built again on next use, as in
-# OCP::Kubernetes::register_resource_providers.
+# calling it on an api OCP::Kubernetes built, which is registered already, is
+# harmless -- and unneeded (k295). An inner IO::K8s built before this call
+# read `with` without the Kinds, so it is dropped and built again on next
+# use, as in OCP::Kubernetes::register_resource_providers.
 sub register {
     my ($class, $api) = @_;
     return $api if grep { ref $_ && $_ == \%KINDS } @{ $api->with };
