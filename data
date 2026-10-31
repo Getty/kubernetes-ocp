@@ -1,0 +1,25 @@
+---
+claimed_at: 2026-10-31T14:28:40Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:24:25Z
+id: 365
+priority: low
+status: in-progress
+tags:
+- dist
+- release
+title: 'dzil build: empty =head1 SUPPORT in every built file, and git: ''svn'' is
+  not a git command'
+updated: 2026-10-31T14:28:40Z
+---
+
+Left over from k317 (2026-10-31): two oddities in `dzil build`, cause not yet known.
+1. Every built file (89) has an empty `=head1 SUPPORT` section, which `podchecker` flags. It is probably the @Author::GETTY bundle's Pod::Weaver config, maybe tied to `no_cpan = 1` in dist.ini.
+2. dzil prints `git: 'svn' is not a git command` during the build.
+
+Done = for each one, say whether the cause is OCP's dist.ini/weaver.ini or the bundle (../p5-dist-zilla-pluginbundle-author-getty).
+- If it's OCP: fix it here, and the next `dzil build` has neither.
+- If it's the bundle: file a card on that repo's board (`karr --dir ../p5-dist-zilla-pluginbundle-author-getty create ... `, it lands in backlog), naming what OCP's build shows. Then close this one with a note naming the new card.
+
+Lane: ocp-release-manager (release audit). Read-only on the bundle repo.
