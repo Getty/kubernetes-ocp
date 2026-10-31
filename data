@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T17:21:11Z
+created: 2026-10-31T14:56:33Z
+id: 378
+priority: low
+started: 2026-10-31T17:21:11Z
+status: done
+tags:
+- apply
+- ux
+title: Count robocop not being Ready in the apply banner (the k330/k318 [WARN]s k367
+  left out)
+updated: 2026-10-31T17:21:11Z
+---
+
+From k367 (apply worker, 2026-10-31). k367 counts six CR-layer failure [WARN]s in {_apply_warnings}, so the banner reads WITH WARNINGS (exit code unchanged). Two STDERR [WARN]s still do not count:
+- CR.pm wait_robocop_ready: "robocop not seen ready" (k330);
+- Deploy.pm worker_step: "robocop not ready after 60s -- falling back to CLI reconcile" (k318).
+
+Both say the same thing: robocop, the in-cluster controller, is not running. The CLI fallback brings the workers up anyway, so the apply succeeded, but every later worker change through robocop will not happen until it is fixed.
+
+Main call (mine, the maintainer may overrule): count it, once. One tag such as "robocop not ready" when robocop was not seen Ready, not one per line, since the fallback line is the consequence of the same cause. Banner WITH WARNINGS, exit code unchanged (as k367).
+
+Done = the banner reads WITH WARNINGS when robocop was not seen Ready, with a single tag. Test red first, then mutation check. Lane: ocp-apply-worker.
+
+2026-10-31 15:12 Apply worker, 2026-10-31: delivered as $S/w-apply378/k378.patch against queued21 (base21 = queued20 + k367 + k361); git apply --check on a fresh base21 is clean, no Changes hunk. New OCP::Cmd::Apply::CR::note_robocop_not_ready pushes the one tag 'robocop not ready' into {_apply_warnings}, deduplicated and guarded by ref $self, and both [WARN] sites call it: wait_robocop_ready when its wait ends on a failed read (k330), and Deploy.pm worker_step's fallback to the CLI (k318). The banner reads WITH WARNINGS, and the exit code is unchanged (Health::finish reads only critical health and _failed_components). Not counted: a wait ending on a readable Deployment with no pod Ready, with no [WARN] (robocop_step's instant look, the inject level). t/378 pins that as a control. Apply/Drift.pm untouched. Red: t/378 3/3 subtests failed, only on the tag and banner assertions. Green: make test, 60 files / 953 tests, PASS, nothing skipped. Mutants 5/5 killed, Rex loaded first and %INC asserted: call removed in the wait; call removed in worker_step; dedup dropped; note outside if($why); push into _failed_components.
+
+2026-10-31 15:12 Ready for review: $S/w-apply378/k378.patch (queued21). Proposed subject: Read WITH WARNINGS in the apply banner when robocop was not seen Ready, once for both of its [WARN]s (k378)
+
+Reviewed (main, 2026-10-31): w-apply378/k378.patch accepted, applies on queued22; batch 6 after k371. A readable Deployment with no pod Ready prints no [WARN] in the wait, but then worker_step's fallback [WARN] counts it, so the not-Ready case is covered either way.
+
+Committed as 736b3b0
