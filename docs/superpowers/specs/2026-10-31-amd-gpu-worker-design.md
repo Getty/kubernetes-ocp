@@ -22,7 +22,8 @@ maintainer is the design author's call. Those choices are marked *(call)*.
 - **Node labels for selection.** These are AMD's labeller labels plus a gfx-target label that
   OCP sets itself, because nothing upstream publishes one.
 - **Pinning and drift.** Every image is pinned in `OCP::Versions`. Report-only drift probes
-  cover the objects OCP writes. `ocp status` shows AMD capacity.
+  cover the objects OCP writes. `ocp status` shows the AMD GPUs a node can hand out
+  (`status.allocatable`, with capacity beside it).
 - **Mixed clusters work.** The test cluster is an NVIDIA control plane (otho, RTX 3090) with an
   AMD worker (synapse).
 
@@ -193,7 +194,9 @@ gpu:
   - Namespace: `kube-system`, the lib's choice. The `amd-gpu` namespace from the first version
     of this spec is dropped.
   - Lib functions:
-    - `deploy_amd_device_plugin(kubeconfig, version, affinity, resource_naming, wait)`
+    - `deploy_amd_device_plugin(kubeconfig, version, affinity, resource_naming, wait,
+      node_labeller)`: OCP passes `wait => 0` and `node_labeller => 0`, and deploys the
+      labeller as its own component
     - `deploy_amd_node_labeller(kubeconfig, version, affinity)`
     - `deploy_amd_dra_driver(…)`
     - `deploy_amd_metrics_exporter(…)`
@@ -203,13 +206,15 @@ gpu:
     unmerged.
   - OCP needs a released Rex::Rancher with these functions, so the cpanfile pin waits for a
     release (maintainer).
-  - OCP passes `wait => 0` and checks Ready itself. The lib's wait reads `status.capacity`,
-    which the kubelet leaves stale after a plugin unregisters, so it reports success on a
-    redeploy before the pod is up (rex-rancher k106). Ready means pod Ready plus
-    `status.allocatable`, never capacity.
+  - OCP passes `wait => 0` and checks Ready itself. The lib's wait read `status.capacity`,
+    which the kubelet leaves stale after a plugin unregisters, so it reported success on a
+    redeploy before the pod was up (rex-rancher k106, fixed in cf10698 to read allocatable,
+    unreleased). Ready means pod Ready plus `status.allocatable`, never capacity.
 - Reconcile works like the NVIDIA operator: a manifest hash in deployed hashes, plus a running
-  check. A second look runs after a worker join (`setup_gpu_operator_after_join` pattern; it
-  waits for the marker, not for an NFD label).
+  check. A second look runs after a worker join (`setup_gpu_operator_after_join` pattern):
+  it checks the marker on the workers that came up Ready, once, without waiting, because the
+  marker comes with the node's registration (no NFD label to wait for). Only
+  `ocp node add --gpu` waits, for the marker or NFD's NVIDIA label (k251).
 
 **AMD node match** (used by every DaemonSet below)
 
@@ -255,7 +260,9 @@ gpu:
   - The lib installs upstream's ValidatingAdmissionPolicy + Binding, which restricts the
     plugin's ResourceSlice writes to its own node. It needs `ServiceAccountTokenPodNodeInfo`
     (GA from 1.32), and the lib checks for `resource.k8s.io/v1` before deploying *(call,
-    accepted for rex-rancher k102)*. The webhook stays out: it needs cert-manager wiring.
+    accepted for rex-rancher k102)*. Its resourceRules also name `v1` since rex-rancher k107;
+    before that it blocked nothing on 1.36 (see "Lib run"). The webhook stays out: it needs cert-manager
+    wiring.
 - **Metrics:** off by default. Document that it is Instinct / Radeon AI only. Upstream does
   not support the exporter on APUs (upstream issues 281 and 353); on synapse many fields read
   0, so a run there proves the deployment, not the metrics.
@@ -287,7 +294,8 @@ gpu:
 ### 6. Status — `OCP::Cmd::Status` (ocp-status-worker)
 
 The GPU section also shows:
-- each node with `amd.com/gpu` capacity;
+- each AMD node (the marker, or any `amd.com/gpu` quantity) with its `amd.com/gpu`
+  allocatable, capacity beside it;
 - its `ocp.internal/amd-gpu.gfx-target` label(s);
 - its effective allocation;
 - the ResourceSlices of driver `gpu.amd.com` (count of devices);
@@ -363,7 +371,11 @@ setting the marker and gfx-target labels by hand. The smoke test is
     GID 0 under DRA. That is input for the deferred non-root topic (rex-rancher k96).
 - Cluster findings along the way, not AMD-specific:
   - The node registered with the default route's address (eno1 192.168.0.165) instead of the
-    join address on vlan30. OCP sets no `node-ip`: k254, which needs rex-rancher k100.
+    join address on vlan30. At the time of the spike, OCP set no `node-ip`. k254 adds an
+    explicit one (ocp.yaml `control_planes[].node_ip`, `ocp node add --node_ip`). It needs
+    rex-rancher k100. An automatic default (the route to the join server, computed on the
+    host) is rex-rancher k111. A default taken from the ssh target was dropped: a NAT
+    address is not on the node.
   - After setting `node-ip` by hand, the Cilium agent on the node also had to be restarted.
     Until then CiliumNode kept the old address, the tunnel was broken in one direction, and
     every pull through the `ocp-cache` mirror ran into a 2.5 min timeout before containerd
@@ -390,16 +402,36 @@ allocation `In [dra]`. Labeller affinity: marker only.
 | `remove_amd_dra_driver`, twice | First run deletes DaemonSet, DeviceClass, VAPB, VAP, ClusterRoleBinding, ClusterRole, SA; second run reports all seven as not there, exit 0. The kubelet removes the ResourceSlice about 30 s after the DaemonSet goes |
 | Label removed again | The plugin pod returns on its own, registers again, allocatable back to 1 |
 
-- k102's ValidatingAdmissionPolicy (from upstream chart v1.0.1) blocks nothing on 1.36: its
-  resourceRules name only `v1beta1`, the cluster serves `resource.k8s.io` only as `v1`, and a
+- k102's ValidatingAdmissionPolicy (from upstream chart v1.0.1) blocked nothing on 1.36: its
+  resourceRules named only `v1beta1`, the cluster serves `resource.k8s.io` only as `v1`, and a
   server dry-run of a foreign-node ResourceSlice as the plugin's SA was admitted. Upstream main
-  is not fixed either. rex-rancher k107 (backlog) adds `v1` or drops the policy; OCP's view:
-  better none than an ineffective one.
+  is not fixed either. rex-rancher k107 (057cef4) names `["v1beta1","v1"]`; live on amdlab:
+  - The policy's typeChecking is empty, and the binding is set to Deny.
+  - Plain impersonation of the plugin's SA is denied, but only through an evaluation error
+    ("no such key: extra") plus failurePolicy Fail, because an impersonated user carries no
+    node extra.
+  - With the node extra set: `synapse` writing a slice for `otho` is denied by the rule itself
+    ("may not modify resourceslices on node 'otho'"), and `otho` writing its own slice is
+    admitted. Both were dry-runs.
+  - The plugin's own slice was deleted and then recreated under the active policy, with no
+    Denied entry in its log.
 - The plugin binary in image 1.31.0.11 reports itself as `v1.25.2.7-137-g1de16818`. Never read
   the version off its log.
 - The lib's wait reported success one second into a redeploy while the pod was still
   ContainerCreating: it reads stale `status.capacity` (rex-rancher k106; also hits the NVIDIA
-  path). OCP is unaffected because it passes `wait => 0` (§3).
+  path). OCP is unaffected because it passes `wait => 0` (§3). Fixed in cf10698 to read
+  allocatable. Live before the redeploy: capacity 1, allocatable 0, which confirms the bug's
+  precondition. A redeploy run gave `[ok]` about 4 s after the plugin registered, but that run
+  does not tell old and new code apart. The discriminating run (057cef4) did:
+  - Setup: allocation `dra` on synapse, so no plugin pod, capacity 1, allocatable 0.
+  - `deploy_amd_device_plugin` with wait polled "No allocatable GPU yet" 24 times, about 5 s
+    apart.
+  - It then warned "amd.com/gpu resource did not appear — check device plugin" about 2 min
+    after the apply. No `[ok]`.
+  - The old code would have said `[ok]` on its first poll.
+  - Rex::Logger sends everything to STDERR, INFO included.
+  - The lib still logs "AMD GPU device plugin ready" right after the warning (rex-rancher
+    k110, NVIDIA alike). OCP is not affected (`wait => 0`).
 - k103 (4f2f3ca), metrics exporter v1.5.3, marker affinity: pod only on synapse, "serving
   requests on 0.0.0.0:5000"; `/metrics` through the API-server proxy to the Service returned
   117 `amd_` series with the ConfigMap's `cluster_name`, many of them unsupported/0 on the APU.
@@ -407,10 +439,39 @@ allocation `In [dra]`. Labeller affinity: marker only.
   remove twice, then redeploy, both clean. Upstream has no readinessProbe: the pod is Ready a
   few seconds before port 5000 listens (a 502 in that window).
 
+## OCP run (2026-10-31, same cluster, OCP image `live-20bec47`)
+
+The OCP image was built from main at 20bec47 (k254). It carries the unreleased libs: Rex::Rancher 0.005 from rex-rancher 057cef4, and Rex::GPU 0.006 from rex-gpu fed6101. The cluster's OCPNode CRD came from an older image, without `nodeIP` in its schema. `gpu.amd.metrics` is false.
+
+| Step | Result |
+|---|---|
+| `ocp node rm synapse` | RKE2 uninstalled. `/etc/rancher` and `/var/lib/rancher` are gone. The Node and its OCPNode are deleted |
+| `ocp node add synapse … --gpu --node_ip 10.230.30.50` (old CRD) | Host step (k249): the node registers with `ocp.internal/amd-gpu.present=true` and `gfx-target=gfx1151`, set through the config.yaml `node-label`. Wiring (k251): it removed the metrics exporter ("no longer selected") and deployed the labeller. The device plugin failed after 300 s (`0 of 1 pod(s) ready`, "Run `ocp apply`"). Two causes: Cilium sandbox failures on the fresh node, and a 4 min image pull over 192.168.0.165. The apiserver pruned `spec.nodeIP` because the old CRD schema lacks it, so the node registered on 192.168.0.165 and nothing said so (k290) |
+| `ocp apply --dry-run` | "No drift detected", although the CRD was outdated (k291) |
+| `ocp apply` | exit 0. It deployed the device plugin ("was missing"); the labeller was up to date. It brought the node CRDs up to date (`nodeIP` now in the schema). "CONTROL PLANE DEPLOYED SUCCESSFULLY" |
+| `ocp status` (k252, k258, k270) | otho `1x NVIDIA GPU`. synapse: `amd.com/gpu: 1 allocatable (capacity 1)`, gfx target gfx1151, allocation `device-plugin (cluster default gpu.amd.allocation)`. DaemonSets: device plugin 1/1, labeller 1/1, DRA and metrics exporter not deployed, no ResourceSlices. JSON `amd_gpu` gives the same, with `allocation_source: config` |
+| Second `node rm` + `node add --node_ip 10.230.30.50` (current CRD) | `spec.nodeIP` and `status.nodeIP` are 10.230.30.50, config.yaml carries `node-ip: [10.230.30.50]`, and the node's InternalIP is 10.230.30.50, with no mismatch warning: k254 works end to end. The AMD step reported both DaemonSets "already deployed (up to date)" and did not wait (k286). `amd.com/gpu` allocatable 1 appeared about 300 s after `node add` returned, about 7 min after the node registered. Cilium's agent on synapse was Ready at 04:15:15, but sandboxes failed (`buildPermitAcquisition`) until 04:20:44. After that the image pulled in 3.4 s |
+
+After the second join, the rest of the acceptance list, all through OCP, with no lib function called by hand:
+
+| Step | Result |
+|---|---|
+| Smoke via `amd.com/gpu: 1` (OCP's device plugin) | passed for fp32, fp16 and bf16 with SDPA, `AMD Radeon 8065S`, gfx1151, torch 2.9.1+rocm7.2.4. The image (10.4 GB) pulled in 15:39 min because the RKE2 uninstall had emptied containerd. `/dev/kfd` and `renderD128` carry the host render GID 993 in the pod |
+| Node label `ocp.internal/amd-gpu.allocation=dra`, then `ocp apply` | exit 0, about 1 min. "AMD GPU node(s): synapse (dra)". It removed the device plugin ("no AMD GPU node has allocation device-plugin") and deployed DRA driver v1.0.1; the labeller was up to date. DeviceClass `gpu.amd.com` and a ResourceSlice for synapse (`gpu-0-128`) appeared; `amd.com/gpu` allocatable 0 |
+| Smoke via ResourceClaim (DeviceClass `gpu.amd.com`) | passed for fp32, fp16 and bf16 with SDPA, gfx1151. Devices `root:root` in the pod |
+| `ocp status` under dra | `amd.com/gpu: 0 allocatable (capacity 1: stale after a device plugin unregisters, or unhealthy devices; only allocatable schedules)`, `allocation: dra [experimental] (node label ocp.internal/amd-gpu.allocation)`, ResourceSlices: synapse 1 device, DRA kubelet plugin 1/1, device plugin not deployed |
+| Label removed, then `ocp apply` | exit 0. It removed the DRA driver ("no AMD GPU node has allocation dra") and deployed the device plugin again. DeviceClass and ResourceSlice are gone, allocatable 1 |
+| `ocp apply` once more | exit 0, "No drift detected", every component "up to date". The AMD DaemonSets and the GPU Operator's DaemonSets kept their resourceVersion and generation. Only the Cilium Gateway step prints "Creating Cilium Gateway..." on every run; the Gateway itself stays unchanged (server-side apply, generation 1). That is wording, filed as its own card |
+
+So acceptance items 1 and 3 to 7 hold live through OCP. Item 2 (`install_amd` reports `present`) is covered by the labels the host step set. The check that a node without `--gpu` gets no AMD label ran only in `t/`: the cluster has no second AMD host to leave out.
+
+- On a fresh node, the AMD pods wait on the CNI. A device plugin and labeller on `hostNetwork` would not (rex-rancher k112, backlog). A timeout budget for fresh nodes in OCP is k286.
+- A `node add --node_ip` against a cluster whose OCPNode CRD predates k254 loses the address without a word, until the next `ocp apply` refreshes the CRD. k290 makes `node add` refuse instead.
+
 ## Open / unverified
 
-- The OCP host step (k249) and OCP's own wiring (k251) have not yet run live. All lib
-  functions (rex-rancher k101–k103) have.
+- The OCP host step (k249) and OCP's own wiring (k251) ran live, device plugin and DRA alike (see "OCP run"). The DRA switch was tested by the node label only; `gpu.amd.allocation: dra` as the cluster default goes through the same per-node computation, but did not run live.
+- The libs OCP ran with are unreleased (Rex::Rancher 0.005 on rex-rancher's `worktree-k95-amd-gpu`, Rex::GPU 0.006 on rex-gpu's `worktree-k1-amd-driver`). The cpanfile stays at the released versions until those are out.
 - DRA memory capacity on the APU: 128Gi is the carve-out the driver reports, not "usable
   RAM" (the OS sees 62 GiB). Whether a claim with a memory request behaves sensibly is
   untested. DRA stays experimental.
