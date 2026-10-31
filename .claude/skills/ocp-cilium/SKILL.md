@@ -46,8 +46,8 @@ my $gateway = {
 };
 ```
 
-Gateway API CRDs are pinned in `OCP::Versions` (`gateway_api`, currently
-v1.6.1 — version-locked to Cilium, bump both together) and applied BEFORE
+Gateway API CRDs are pinned in `OCP::Versions` (`gateway_api`, version-locked
+to Cilium, bump both together; see "Cilium Versions") and applied BEFORE
 Cilium by `Rex::Rancher::Cilium` (`install_cilium`/`upgrade_cilium` with
 `gateway_api => 1, gateway_api_channel => 'standard'` — the library defaults to
 experimental, so OCP always passes the channel; k155). **Standard channel only — never experimental on top of
@@ -55,8 +55,8 @@ it.** From Gateway API v1.5, both bundles ship the
 `safe-upgrades.gateway.networking.k8s.io` ValidatingAdmissionPolicy, which
 refuses experimental CRDs applied over standard ones (the reverse stays
 allowed). OCP used to apply standard and then experimental with errors
-swallowed; under the v1.6.1 pin the experimental apply was silently denied
-and nobody noticed (k157). Standard alone is enough: from v1.5 it carries
+swallowed; under the pin of the time, v1.6.1, the experimental apply was
+silently denied and nobody noticed (k157). Standard alone is enough: from v1.5 it carries
 TLSRoute v1 and BackendTLSPolicy v1, and from v1.6 also TCPRoute and
 UDPRoute — everything Cilium 1.20 needs.
 
@@ -141,10 +141,24 @@ when the API is still not served after 300 s, and server-side-applies both.
 
 ## Cilium Versions
 
-Single source of truth: `OCP::Versions` (`components`, current OCP version):
-- Cilium: 1.20.0
-- Cilium CLI: v0.19.7
-- Gateway API CRDs: v1.6.1 (version-locked to Cilium — bump together)
+Single source of truth: `OCP::Versions`, the `components` of the current OCP
+version: `cilium`, `cilium_cli`, `gateway_api`. This section copies no number
+from there, so it cannot fall behind a bump. Read the current values:
+
+- in the source, `lib/OCP/Versions.pm` (`$VERSIONS->{<OCP version>}{components}`);
+- in code, `OCP::Versions->get_component_version('cilium')` (the current OCP
+  version unless one is passed);
+- from the CLI, `ocp version` for a project not deployed yet (the manifest it
+  will install); on a deployed cluster a version drift in `ocp status` names
+  the pin as `expected`.
+
+Bump rules:
+
+- `gateway_api` is version-locked to `cilium`: bump both together, to the
+  Gateway API release Cilium's docs name for that Cilium release.
+- A new `cilium` pin also ends `@OCP::Versions::CILIUM_STATIONS`, one station
+  per minor with the pin itself last (`t/236-cilium-stations.t`): upgrades
+  walk a cluster through the minors in between (k195).
 
 The Rexfile carries no version constants of its own to drift out of sync.
 `OCP::Rex` (`install_server`) passes all three explicitly into the
