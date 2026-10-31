@@ -1,0 +1,31 @@
+---
+class: standard
+created: 2026-10-31T06:46:26Z
+id: 313
+priority: low
+status: todo
+tags:
+- drift
+- status
+- apply
+title: One rule for what ocp apply closes, shared by ocp status and the dry run
+updated: 2026-10-31T13:35:06Z
+---
+
+Found under k312 (2026-10-31). What `ocp apply` closes now lives in two places that must agree:
+- `OCP::Cmd::Status::_drift_fixable` (k312): a remedy, `self_healing`, or kind `missing`;
+- the `$is_report_only` check in the `ocp apply --dry-run` report (k188).
+
+t/312 checks that the two agree, but the rule should be one `OCP::Drift` helper both call.
+
+While there:
+- lib/OCP/Drift.pm:61-63 says a missing component without `remedy_if_missing` "waits for a full deploy, which reconcile never runs". That is wrong for cert-manager, which reconcile installs when it is missing.
+- t/262's NFD test entry lacks `self_healing`, unlike real NFD entries. Make the fixture match the real shape.
+
+Done = one helper in OCP::Drift (state lane), called by Status.pm and the apply dry-run report (apply lane); the comment says what reconcile does; t/312 still passes unchanged.
+
+While in Drift.pm (from k337's ADR audit, 2026-10-31): lib/OCP/Drift.pm:617 says the upgrade tasks 'pick kubectl and kubeconfig by it and fall back to RKE2's' -- false since k198 (b3af9b0), no task runs kubectl. Fix the comment to say what the distribution param picks today.
+
+While in Drift.pm (from k311, 2026-10-31): the k291 comment in OCP::Drift names only ensure_crds as leaving a newer CRD alone; since k311 ocp deploy-robocop does too (Apply::CR::skip_newer_crd). Its manual_step hint is already true for both.
+
+2026-10-31 (main, from k351): two more cases for the one rule. (1) GPU Operator off its pin under gpu.enabled: false, or with no NVIDIA node: status calls it fixable and the dry run counts it as an action, but the real run skips the step. (2) gpu_dry_run's ClusterPolicy 'would re-apply' line has the same gap when there is no NVIDIA node. k351 added Workloads::reapplies($entry, $config) for the dry run's 'would re-apply the X manifest' line, gated on gpu.enabled only. Also: OCP::Drift's comment on version_against_pin names only the AMD step as a caller; setup_nfd/setup_gpu_operator (Workloads::off_pin) use it too since k351.
