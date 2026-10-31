@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply --dry-run` names each SOPS file whose `lastmodified` a real
+      run would re-quote ("A real run would repair keys.yaml: ..."), and
+      still writes nothing.
     - `ocp status`, `ocp node ls`, `ocp health` and `ocp provider ls` say
       in one line on STDERR that the cluster API at the kubeconfig's server
       could not be reached, and why, when it does not answer -- instead of

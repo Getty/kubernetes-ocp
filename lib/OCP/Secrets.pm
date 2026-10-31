@@ -766,7 +766,7 @@ my $PLAIN_LASTMODIFIED_WARNING = qr/\Asops:lastmodified: this timestamp is writt
 sub repair_sops_lastmodified {
     my ($self) = @_;
 
-    my @bare = grep { -f $_ && $self->_sops_lastmodified_bare($_->slurp_raw) } $self->_sops_files;
+    my @bare = map { $self->project_dir->child($_) } $self->bare_sops_lastmodified_files;
     return () unless @bare;
 
     my @identities = eval {
@@ -804,6 +804,16 @@ sub repair_sops_lastmodified {
           . '     its lastmodified line by hand repairs it as well.'."\n";
     }
     return @done;
+}
+
+# The project's SOPS files whose lastmodified is still bare, by name, in
+# sops_file_names order (k266): the selection repair_sops_lastmodified rewrites,
+# read off the text -- no key, no decrypt, no write -- so that
+# ocp apply --dry-run can name them.
+sub bare_sops_lastmodified_files {
+    my ($self) = @_;
+    return map  { $_->basename }
+           grep { -f $_ && $self->_sops_lastmodified_bare($_->slurp_raw) } $self->_sops_files;
 }
 
 # Does this SOPS document carry its lastmodified as a bare timestamp? Read off
@@ -1382,6 +1392,16 @@ touched. Runs only with the key the run already holds (F<.ocp/age.key>, or
 C<SOPS_AGE_KEY_FILE>), and never asks for PIN1. Prints an C<[ok]> line per
 repaired file on STDOUT, and a failure with its diagnosis on STDERR without
 dying. Returns the file names it repaired.
+
+=head2 bare_sops_lastmodified_files
+
+    my @names = $secrets->bare_sops_lastmodified_files;
+
+The names of the project's SOPS files whose C<lastmodified> is still a bare
+timestamp, in C<sops_file_names> order: the files
+L</repair_sops_lastmodified> rewrites (k266). Read off the text alone -- it
+needs no key, decrypts nothing and writes nothing -- so
+C<ocp apply --dry-run> can name them.
 
 =head2 restore_age_recipient
 

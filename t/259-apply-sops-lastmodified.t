@@ -18,7 +18,8 @@ use OCP::Secrets;
 #   - before the fork into bootstrap / reconcile, so both paths repair, and
 #     before either path's first decrypt;
 #   - after the banner, its [ok] lines set off by a blank line;
-#   - never under --dry-run, which writes nothing;
+#   - never under --dry-run, which writes nothing: it names each file a real
+#     run would repair instead, where the [ok] lines would be (k266);
 #   - a project OCP writes today goes through byte for byte.
 #
 # Neither path gets further than its first step: the reconcile and the
@@ -162,6 +163,11 @@ subtest 'reconcile path under --dry-run: nothing is rewritten' => sub {
     is_deeply( bytes_of($d), $before, 'every file byte-identical' );
     like( $d->child($_)->slurp_raw, $bare_qr, "$_ still bare" ) for @owned;
     unlike( $r->{out}, qr/Repaired/, 'no [ok] Repaired line' );
+    is_deeply( [ $r->{out} =~ /^\[\.\.\] A real run would repair (\S+):/mg ], \@owned,
+               'one would-repair line per file on STDOUT, naming it (k266)' );
+    like( $r->{out},
+          qr/^\[\.\.\] A real run would repair kubeconfig\.yaml:[^\n]*\n\n\[ok\] Cluster already exists/m,
+          'a blank line, then the reconcile path' );
     is( $r->{err}, '', 'nothing on STDERR' );
 };
 
@@ -197,6 +203,9 @@ subtest 'bootstrap path under --dry-run: nothing is rewritten' => sub {
     like( $r->{out}, qr/^\[Dry run - no changes made\]$/m, 'the dry run runs to its end' );
     is_deeply( bytes_of($d), $before, 'every file byte-identical' );
     unlike( $r->{out}, qr/Repaired/, 'no [ok] Repaired line' );
+    like( $r->{out},
+          qr/^Cluster: k259\n\n\[\.\.\] A real run would repair keys\.yaml:[^\n]*\n\[\.\.\] A real run would repair secrets\.yaml:[^\n]*\n\nStep 1: /m,
+          'each file a real run would repair named after the banner, before Step 1 (k266)' );
     is( $r->{err}, '', 'nothing on STDERR' );
     ok( only_bare_warnings($r->{warned}), 'warnings only about the bare timestamp it left' )
         or diag $r->{warned};

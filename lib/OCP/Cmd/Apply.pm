@@ -39,6 +39,7 @@ use OCP::Cmd::Apply::Health;
 use OCP::Cmd::Apply::K8s;
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Registry;
+use OCP::Cmd::Apply::SopsRepair;
 use OCP::Cmd::Apply::Validate;
 use OCP::Cmd::Apply::Workloads;
 
@@ -104,8 +105,8 @@ sub execute {
         push @{ $self->{_apply_warnings} }, 'robocop arch';
     }
 
-    # k259: re-quote a bare sops lastmodified before either path decrypts; it writes, so not on -n.
-    print "\n" if !$self->dry_run && $secrets->repair_sops_lastmodified;
+    # k259: re-quote a bare sops lastmodified before either path decrypts; -n names them (k266).
+    OCP::Cmd::Apply::SopsRepair::repair_sops_files($self, $secrets);
 
     # Check if cluster already exists
     if ($config->cluster_exists) {
