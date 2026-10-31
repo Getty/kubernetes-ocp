@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-10-31T08:10:56Z
+id: 325
+priority: low
+status: backlog
+tags:
+- config
+- decision
+title: 'Decide: an upper bound for a counted worker pool, and whether to warn on an
+  even control-plane count'
+updated: 2026-10-31T08:10:56Z
+---
+
+Found under k315 (2026-10-31), a policy choice for the maintainer, not a bug fix:
+- a counted worker pool (any provider but ssh) has no upper bound: `workers: [{provider: hetzner, nodes: 1000000000000}]` passes validate() and worker_ocpnodes builds that many OCPNodes (out of memory). There is no etcd reason for a number, as there is for control planes (7). Options: a fixed cap, the Hetzner project server limit, or none.
+- an even control-plane count (2, 4, 6) tolerates no more failures than one less, but works. Warn or not? validate() returns errors only; the precedent for a warning is a separate [WARN] method that Apply.pm prints (Config::robocop_arch_warning).
