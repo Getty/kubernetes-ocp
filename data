@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T17:55:42Z
+created: 2026-10-31T15:05:39Z
+id: 380
+priority: medium
+started: 2026-10-31T17:55:42Z
+status: done
+tags:
+- drift
+- status
+- bug
+title: A host probe that fails is said on STDERR but leaves no drift entry, so the
+  report ends in [ok] No drift detected
+updated: 2026-10-31T17:55:42Z
+---
+
+From k374 (apply worker, 2026-10-31). When a host probe fails (for example a changed host key, which k374 now rethrows whatever key the probe used), OCP::Drift prints the error on STDERR but records no entry. ocp apply, ocp apply --dry-run and ocp status then print "[ok] No drift detected" under that error. That breaks the k234 rule: a probe that did not run must not read as "no drift".
+
+Done = a failed host probe becomes an entry of kind error ("could not be checked", the cause named once on STDERR), the way k268/k319 handle a drift read that fails, or at least joins the "[WARN] host probes skipped" line (OCP::Role::Cmd host_probe_warning). Say which and why. No "[ok] No drift detected" after a probe error in any of the three commands. Test: the fake ssh/rex harness from t/374-dry-run-host-keys.t with a changed host key, red first, then a mutation check.
+
+Lane: ocp-state-worker (OCP::Drift); OCP::Role::Cmd host_probe_warning if the fix lands there. After k374 is committed.
+
+2026-10-31 16:52 Chose the error entry, not the skip line. In OCP::Drift::rex_probe_drift a probe that throws is now one kind=error entry (component/label of the probe, host, no remedy, message '<label>: could not probe <host>, drift unknown: <first line of the cause>'); the whole cause stays on STDERR, carped once as before. Why: every command already handles an error entry (status text+--json 'could not be checked', dry run counts it apart and drops 'No drift detected', real run prints the same and counts '<label> drift check' for the exit, k267/k268) -- no command-side code. The skip line would not do: it does not suppress '[ok] No drift detected', ocp status prints no skip line at all, and a skip means 'deliberately not attempted' (no key, robo key refused, dry-run host with no recorded key), while a changed host key is a probe attempted and failed. Behaviour change to note: a real ocp apply over a host whose probe failed now ends short of spec (non-zero), as over any drift check it could not make. A skipped probe (prober returns nothing) is unchanged. Also found: ocp status never prints the '[WARN] host probes skipped' line (OCP::Role::Cmd host_probe_warning is called only from OCP::Cmd::Apply::Drift), so a skipped probe in ocp status still reads as silence -- separate card for the status lane.
+
+2026-10-31 16:52 Done, patch at scratchpad w-state380/k380.patch (diff vs queued-head18; header has subject, description, Changes bullet). Files: lib/OCP/Drift.pm (error entry + comment/POD), lib/OCP/Role/Cmd.pm (one POD sentence), t/380-host-probe-failed.t (new: t/374's fake ssh/rex harness, changed host key, dry run + real apply + status text + status --json, control with the recorded key), t/71-drift-rex-probe.t (claim 'a throwing probe yields no drift' replaced by the error entry; skipped probe keeps 'no entry'). Verified in Docker (make test, IMAGE=localhost/ocp-w380): red first -- t/380 failed 4/5 subtests on the base ('[ok] No drift detected' printed, no entry, apply complete); green -- 19 files reaching the drift/prober path, 497 tests, PASS; mutation -- 5 mutants on OCP::Drift (no entry, kind rex_probe, whole cause in message, host not named, no carp), all 5 killed by t/380 (and by t/71), unmutated control passes, %INC asserted with Rex loaded.
+
+Committed as 7cc87ac
