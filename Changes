@@ -28,6 +28,12 @@ Revision history for OCP
     - Setting a node_ip needs a Rex::Rancher with node_ip support; until
       the image ships one, a node with a node_ip is refused with a clear
       message before the host is touched.
+    - `ocp node add --node_ip` reads the cluster's OCPNode CRD first and
+      refuses, before writing anything or contacting the host, when it
+      cannot store `spec.nodeIP`; the message says to run `ocp apply`,
+      which updates the CRD. An unreadable CRD refuses too, with the
+      cause. Once the node is Ready, an OCPNode stored without the
+      requested `spec.nodeIP` gets a `[WARN]` on STDERR.
     - `ocp status` counts NVIDIA GPUs by `nvidia.com/gpu` allocatable, so a
       node whose device plugin is gone shows 0 with its stale capacity
       beside it. In `--json`, `nodes[].gpu` now means allocatable (it was

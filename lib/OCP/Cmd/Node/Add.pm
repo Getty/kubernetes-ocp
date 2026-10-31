@@ -12,6 +12,7 @@ use Kubernetes::REST::Kubeconfig;
 use OCP::Choices;
 use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::CR ();
+use OCP::Cmd::Apply::K8s ();
 use OCP::Config;
 use OCP::Secrets;
 use OCP::K8s;
@@ -450,7 +451,13 @@ sub _cli_reconcile {
     # transition in this run, and said a node-ip mismatch through
     # its logger as it did. A node Ready from the start was turned Ready by
     # an earlier run, so nothing was said, and _check_node_ip asks.
-    $self->{_ready_said} = 1 if $ok && $unready;
+    #
+    # Only if what it held the node against was this --node_ip: it holds it
+    # against status.nodeIP, what the install was handed off the stored
+    # OCPNode. One stored without spec.nodeIP (k290) is handed none, records
+    # none and so checks nothing -- and _check_node_ip has to ask.
+    $self->{_ready_said} = 1 if $ok && $unready
+        && ($node->cr->{status}{nodeIP} // '') eq ($self->node_ip // '');
 
     # Ran out of budget rather than reaching a verdict. Worth separating: the
     # node is not broken, nobody rolled anything back, and the very next run
@@ -528,6 +535,10 @@ sub execute {
 
     $self->_validate_flags($provider_type, $provider_name);
 
+    # Before the first write, and before the host preflight's SSH probe and
+    # its PIN2 (k290).
+    $self->_refuse_unstored_node_ip($api);
+
     # Who drives the node decides what happens to a host that cannot be
     # reached (k238). Asked only with --host: without it --nowait never reads
     # the Deployment, and the value read here is reused further down, not read
@@ -598,13 +609,30 @@ sub execute {
 #
 # Never fatal: the node is Ready, and only a human can say which address is
 # right. Returns 1 when it registered there or nothing was asked.
+#
+# First, though, whether the OCPNode holds it at all (k290): the CRD was read
+# before the write (_refuse_unstored_node_ip), but an API server can serve an
+# updated CRD a moment before it stores by it, and every install reads the
+# node-ip off the stored OCPNode. Said when it holds none -- the trace a
+# pruned field leaves -- and not when it cannot be read; the Node check below
+# goes on with the OCPNode's name then, as before.
 sub _check_node_ip {
     my ($self, $api) = @_;
     my $node_ip = $self->node_ip;
     return 1 unless $node_ip;
     return 1 if $self->{_ready_said};
 
-    my $k8s_name = $self->_kubernetes_node_name($api);
+    my $ok = 1;
+    my $h  = $self->_stored_ocpnode($api);
+    if ($h && !length($h->{spec}{nodeIP} // '')) {
+        print STDERR '[WARN] ' . $self->name . ': OCPNode ' . $self->name
+            . ' holds no spec.nodeIP, though --node_ip ' . $node_ip . ' was given: the API '
+            . 'server dropped the field, as an OCPNode CRD from an older ocp does, and every '
+            . "install reads the node-ip from there. `ocp apply` updates the CRD.\n";
+        $ok = 0;
+    }
+
+    my $k8s_name = $self->_kubernetes_node_name($api, $h);
     my $node     = eval { $api->get('Node', name => $k8s_name) };
     unless ($node) {
         my $err = $@ || "not found\n";
@@ -615,9 +643,75 @@ sub _check_node_ip {
     }
 
     my $diag = OCP::Node->node_ip_mismatch($api->k8s->object_to_struct($node), $node_ip);
-    return 1 unless defined $diag;
+    return $ok unless defined $diag;
     print STDERR '[WARN] ' . $self->name . ': ' . $diag . "\n";
     return 0;
+}
+
+# Can this cluster store spec.nodeIP (k290)? Asked with --node_ip only. An
+# OCPNode CRD from before k254 does not declare it, and the API server drops a
+# field its structural schema does not declare without an error: the OCPNode
+# is stored without it, the install (which reads the stored OCPNode) is handed
+# no node-ip, and the node registers the address of its default route --
+# live on amdlab, with nothing said. So the CRD is read before the first write
+# and a CRD that cannot store it refuses the command, on STDERR via bin/ocp.
+#
+# Read, never re-applied from here: an ocp older than the cluster's CRD would
+# take the newer schema back. `ocp apply` updates it, in its "Checking node
+# CRs" step; `ocp deploy-robocop` does too, but deploys robocop with it.
+#
+# Read rather than a server-side dry-run create: one GET whether the OCPNode
+# exists or not (a dry-run create of an existing one is a 409, a dry-run
+# update needs its resourceVersion), and the refusal names the cause. v1 is
+# the only version the CRD ever had and the one ocp writes.
+#
+# Only a 404 is "no CRD" (crd_get, k269); any other failed read refuses with
+# its cause -- a CRD nobody could read is not one that is fine.
+my $OCPNODE_CRD = 'ocpnodes.ocp.internal';
+
+sub _refuse_unstored_node_ip {
+    my ($self, $api) = @_;
+    return 1 unless $self->node_ip;
+
+    my $crd = eval {
+        OCP::Cmd::Apply::K8s::crd_get($self, $api,
+            '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/' . $OCPNODE_CRD);
+    };
+    if (my $err = $@) {
+        $err .= "\n" unless $err =~ /\n\z/;
+        die "--node_ip: could not check that this cluster stores spec.nodeIP: $err"
+          . "  Nothing was written.\n";
+    }
+
+    die "--node_ip: this cluster has no OCPNode CRD ($OCPNODE_CRD), so nothing can store\n"
+      . "  spec.nodeIP. Run `ocp apply` first: it installs the CRD. Then run this command\n"
+      . "  again. Nothing was written.\n"
+        unless $crd;
+
+    return 1 if $self->_crd_declares_node_ip($crd);
+
+    die "--node_ip: this cluster's OCPNode CRD ($OCPNODE_CRD) has no spec.nodeIP -- an\n"
+      . "  older ocp installed it -- so the API server would drop the field without an error\n"
+      . "  and the node would register the address of its default route.\n"
+      . "  Run `ocp apply` first: it updates the CRD. Then run this command again.\n"
+      . "  Nothing was written.\n";
+}
+
+# spec.nodeIP in the schema of the CRD's v1, which must be served.
+sub _crd_declares_node_ip {
+    my ($self, $crd) = @_;
+    my $versions = ref $crd eq 'HASH' && ref $crd->{spec} eq 'HASH'
+        ? $crd->{spec}{versions} : undef;
+    my ($v1) = grep { ref $_ eq 'HASH' && ($_->{name} // '') eq 'v1' }
+        @{ ref $versions eq 'ARRAY' ? $versions : [] };
+    return 0 unless $v1 && $v1->{served};
+
+    my $at = $v1;
+    for my $key (qw( schema openAPIV3Schema properties spec properties nodeIP )) {
+        return 0 unless ref $at eq 'HASH';
+        $at = $at->{$key};
+    }
+    return ref $at eq 'HASH' ? 1 : 0;
 }
 
 # Robocop off, `--host` given (k238): look at the host BEFORE the OCPNode is
@@ -832,11 +926,19 @@ sub _ensure_amd_gpu_stack {
     return 0;
 }
 
+# The Node's name as the stored OCPNode records it ($h when that was read
+# already), the OCPNode's own until it records one.
 sub _kubernetes_node_name {
+    my ($self, $api, $h) = @_;
+    $h //= $self->_stored_ocpnode($api) // {};
+    return $h->{status}{kubernetesNodeName} // $self->name;
+}
+
+# The OCPNode as stored, or undef when it cannot be read.
+sub _stored_ocpnode {
     my ($self, $api) = @_;
     my $cr = eval { $api->get('OCPNode', name => $self->name, namespace => 'ocp-system') };
-    my $h  = $cr ? $api->k8s->object_to_struct($cr) : {};
-    return $h->{status}{kubernetesNodeName} // $self->name;
+    return $cr ? $api->k8s->object_to_struct($cr) : undef;
 }
 
 # The GPU vendors node $k8s_name shows, as soon as it shows one: 'amd' for the
@@ -951,6 +1053,29 @@ given here; without it no node-ip is asked for.  A value that is no such
 address -- a hostname, a CIDR, loopback, link-local -- is refused before the
 cluster is asked anything, in the words of L<OCP::Choices/node_ip_error>.
 
+With C<--node_ip> the command then reads the cluster's OCPNode CRD,
+C<ocpnodes.ocp.internal>, and refuses when it cannot store C<spec.nodeIP> --
+before anything is written, before the host is probed over SSH, before PIN2
+is asked for.  A CRD that an older C<ocp> installed does not declare the
+field, and the API server drops a field its schema does not declare without
+an error: the OCPNode would be stored without it, the install, which reads
+the stored OCPNode, would be handed no node-ip, and the node would register
+the address of its default route with nothing said (k290, live on amdlab).
+The refusal goes to STDERR, exit 1:
+
+    Error: --node_ip: this cluster's OCPNode CRD (ocpnodes.ocp.internal) has no spec.nodeIP -- an
+      older ocp installed it -- so the API server would drop the field without an error
+      and the node would register the address of its default route.
+      Run `ocp apply` first: it updates the CRD. Then run this command again.
+      Nothing was written.
+
+C<ocp apply> updates the CRD in its "Checking node CRs" step, with or
+without Robocop.  This command only reads the CRD and never applies it: an
+C<ocp> older than the cluster's CRD would take the newer schema back.  A
+cluster with no OCPNode CRD is refused the same way, and so is a CRD that
+cannot be read -- a 403, a 5xx, no answer -- with the cause: only a 404 says
+the CRD is not there.  Without C<--node_ip> the CRD is not read.
+
 Once the node is Ready its C<InternalIP>s are held against the node-ip.  A
 node that did not register there says so on STDERR, once, whoever did the
 join:
@@ -958,10 +1083,27 @@ join:
     [WARN] synapse: registered InternalIP 192.168.0.165, not the node-ip 10.230.30.50 it was installed with
 
 On the CLI path that line is L<OCP::Node>'s, written as it turns the node
-Ready; with Robocop running, or for a node that was Ready already, this
-command asks the Node itself (L<OCP::Node/node_ip_mismatch>).  It changes
-nothing else: the node joined, the exit code is that of a Ready node, and
-only a human can say which address is right.
+Ready, when it held the node against this node-ip; with Robocop running, for
+a node that was Ready already, or when the install was handed no node-ip,
+this command asks the Node itself (L<OCP::Node/node_ip_mismatch>).  It
+changes nothing else: the node joined, the exit code is that of a Ready
+node, and only a human can say which address is right.
+
+An OCPNode that holds no C<spec.nodeIP> though C<--node_ip> was given -- an
+API server can serve an updated CRD a moment before it stores by it -- is
+said as well, before that line and whether or not the node registered
+elsewhere:
+
+    [WARN] synapse: OCPNode synapse holds no spec.nodeIP, though --node_ip 10.230.30.50 was given: the API server dropped the field, as an OCPNode CRD from an older ocp does, and every install reads the node-ip from there. `ocp apply` updates the CRD.
+
+An OCPNode written by hand onto a cluster whose CRD predates C<spec.nodeIP>
+loses the field the same way.  C<kubectl> refuses it with its default
+C<--validate=strict>; with C<--validate=ignore> (or C<false>) it is dropped
+silently, and from a client that does not ask for strict field validation
+the API server drops it with no more than a warning header the client may
+never show.  Nothing downstream can tell: L<OCP::Node>, on the CLI path and
+inside Robocop, only ever sees the OCPNode as stored.  Run C<ocp apply>
+first.
 
 =head1 CHOOSING THE PROVIDER
 

@@ -10,7 +10,9 @@ BEGIN { *CORE::GLOBAL::sleep = sub { 0 } }
 
 use Test::More;
 use File::Temp qw(tempdir);
+use JSON::PP ();
 use Path::Tiny qw(path);
+use YAML::XS ();
 
 use lib 'lib';
 
@@ -108,17 +110,36 @@ ok !defined OCP::Node->node_ip_mismatch(node_with('x', $ASKED), $ASKED),
 
 package FakeIO   { sub new { bless {}, shift } sub object_to_struct { $_[1] } }
 package FakeList { sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
+package FakeResponse {
+    sub new     { my ($c, $status, $content) = @_; bless { status => $status, content => $content }, $c }
+    sub status  { $_[0]{status} }
+    sub content { $_[0]{content} }
+}
 
 # A cluster with one ssh provider, OCPNodes and Nodes. ensure() replaces an
 # OCPNode's spec and keeps its status (the status subresource); patch_status()
 # merges into the status, undef deleting -- the API server's two writes.
+#
+# Its OCPNode CRD is the one this OCP ships, which stores spec.nodeIP: node
+# add reads it before it writes an OCPNode with one (k290). A cluster whose
+# CRD cannot store it is t/290's.
 package AddApi {
     my $io = FakeIO->new;
+    my ($crd) = grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'CustomResourceDefinition' }
+        YAML::XS::LoadFile('share/robocop/crds/ocpnode.yaml');
+    my $crd_json = JSON::PP->new->canonical->encode($crd);
     sub new {
         my ($c, %a) = @_;
         return bless { ocpnodes => {}, nodes => {}, calls => [], %a }, $c;
     }
     sub k8s { $io }
+    sub _request {
+        my ($self, $method, $path) = @_;
+        push @{ $self->{calls} }, [ 'request', $method, $path ];
+        return $path eq '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ocpnodes.ocp.internal'
+            ? FakeResponse->new(200, $crd_json)
+            : FakeResponse->new(404, '{}');
+    }
     sub list {
         my ($self, $kind) = @_;
         push @{ $self->{calls} }, [ 'list', $kind ];

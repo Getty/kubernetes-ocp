@@ -256,6 +256,10 @@ sub k8s_node_ip {
 # what the bootstrap's install was handed (status.nodeIP) -- given only by the
 # caller that ran that install. The status write is a merge patch, so a later
 # call without it keeps the one recorded.
+#
+# Only a CRD that declares nodeIP stores it; one from before k254 drops it
+# without an error (k290). Nothing here reads the CRD: both callers run
+# ensure_crds first, in the same step, and t/290 holds them to that order.
 sub ensure_cp_ocpnode {
     my ($self, $api, $cp_info) = @_;
     my $ns   = 'ocp-system';
@@ -336,7 +340,9 @@ sub ensure_control_plane_ocpnodes {
         $spec->{serverType} = $cp->{server_type} if $cp->{server_type};
         $spec->{image}      = $cp->{image}       if $cp->{image};
         $spec->{location}   = $cp->{location}    if $cp->{location};
-        # control_planes[].node_ip (k254), which OCP::Node hands the install.
+        # control_planes[].node_ip (k254), which OCP::Node hands the install
+        # off the stored CR -- stored because deploy ran ensure_crds before
+        # this (k290, as for ensure_cp_ocpnode).
         $spec->{nodeIP}     = $cp->{node_ip}     if $cp->{node_ip};
 
         my $cr = {
