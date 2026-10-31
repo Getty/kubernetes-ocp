@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T06:25:26Z
+created: 2026-10-31T04:40:50Z
+id: 298
+priority: low
+started: 2026-10-31T06:25:26Z
+status: done
+tags:
+- apply
+- hetzner
+- cleanup
+title: Bootstrap.pm builds a Hetzner control plane without server_type/location as
+  cx32 in fsn1, which disagrees with HETZNER_DEFAULTS
+updated: 2026-10-31T06:25:26Z
+---
+
+Found under k255 (2026-10-31). lib/OCP/Cmd/Apply/Bootstrap.pm (around lines 399-401) falls back to cx32 / fsn1 for a Hetzner control plane without server_type or location. validate() requires both, and since k255 `ocp apply` refuses such an ocp.yaml up front. So the fallback is dead for apply, and it disagreed with HETZNER_DEFAULTS (cpx21) anyway.
+
+Done = drop the fallback, or have it read the one default that exists. Check whether any other caller (ocp init, node add, robocop) still relies on it first. One source of Hetzner defaults remains.
+
+2026-10-31 06:00 Started (apply worker). Only caller of bootstrap_control_plane is ocp apply's deploy path, after validate() (k255). ocp init writes ocp.yaml only; robocop and node add provision through OCP::Node::_provision (spec => CR spec), never Bootstrap. ssh/local create_server (ExistingHost) read only host/spec.host.
+
+2026-10-31 06:21 Done in lib/OCP/Cmd/Apply/Bootstrap.pm: create_server gets server_type/image/location exactly as ocp.yaml says; for a hetzner CP only, what is left out comes from $OCP::Config::HETZNER_DEFAULTS (on the apply path only the image can be missing, validate() requires the other two - the image default debian-13 is unchanged). ssh/local CPs are now handed undef for the three instead of cx32/debian-13/fsn1; their create_server (ExistingHost -> resolve_host) reads only host/spec.host, so nothing changes for them. No user-visible change, no Changes bullet. Test: t/298-bootstrap-placement.t (Hetzner exact, Hetzner without image, Hetzner unvalidated -> HETZNER_DEFAULTS not cx32, ssh and local through their real create_server). make test green; 4 mutants all killed. Also found (provider lane, ocp-provider-worker's): OCP::Provider::Hetzner::create_server's last-rank constants are still cx32/debian-13/fsn1 - reached by ocp node add / robocop for a Hetzner node whose OCPNode spec and OCPNodeProvider CR both name no serverType, so such a worker gets cx32 while a CP default is cpx21. Whether workers should share the CP default is a decision, not a cleanup.
+
+2026-10-31 06:21 Bootstrap.pm: one source of Hetzner defaults (HETZNER_DEFAULTS), ssh/local get no placement; t/298 new; make test green, mutants killed. No Changes bullet.
+
+Committed as 96aec16
