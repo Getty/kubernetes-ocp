@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-10-31T13:06:58Z
+created: 2026-10-31T08:55:29Z
+id: 330
+priority: low
+started: 2026-10-31T13:06:58Z
+status: done
+tags:
+- apply
+- robustness
+title: 'CR.pm: reads that swallow their failure, and an [ok] for workers matched only
+  by host (k319 left-over)'
+updated: 2026-10-31T13:06:58Z
+---
+
+Left over from k319 (CR.pm was another worker's file at the time) plus one find (apply worker, 2026-10-31):
+- lib/OCP/Cmd/Apply/CR.pm: several reads swallow their failure (k319's card list: "CR.pm: several reads swallow their failure") -- only a 404 is absent, any other failure named with its cause.
+- missing_worker_ocpnodes: when a worker matches an OCPNode only by host, it still prints "[ok] Every worker in ocp.yaml has an OCPNode" even where they do not match.
+
+After k309/k311 (they hold CR.pm). Done = each read uses read_or_absent / read_or_why / crd_get as fits with a 404-vs-403/500 test, the [ok] line only when it is true (test).
+
+2026-10-31 12:00 Worked in scratch copies on f276d35 (shared tree untouched). CR.pm reads now via OCP::Cmd::Apply::K8s: k8s_node_ip read_or_absent (ensure_cp_ocpnode: 404 -> configured host as before; 403/500 -> publicIP left out of the merge patch + [WARN] on STDERR); migrate_legacy_nodes both lists read_or_absent (403/500 dies, step reports); sync_worker_meta 409 re-read (404 = gone, skipped; else its own cause); ensure_robocop image notice ([WARN] STDERR, Deployment still written); wait_robocop_ready + poll_nodes_until_terminal read_or_why (last why on STDERR / in the timeout message); cli_reconcile_workers (cause instead of 'CR not found after ensure'). Red on HEAD: new t/330 8/8 subtests failed, controls/404-as-before passed. Green: 43 files, 693 tests PASS. The [ok] half needs lib/OCP/Cmd/Apply/Drift.pm (the dry-run worker's file this round) -> prepared as a separate held-back patch k330-ok.patch (Drift.pm + t/38); red: only the new [ok] claim failed; green: 14 files, 267 tests PASS.
+
+2026-10-31 12:13 Also found (not done, channel rule): in CR.pm three [WARN]s for things that went wrong still go to STDOUT -- ensure_cp_ocpnode 'ensured OCPNode/X, but its status stayed unwritten', migrate_legacy_nodes 'status for migrated OCPNode/X stayed unwritten', retire_unannotated_robocop_pods 'could not check for robocop pods without SIGTERM handling' and 'could not delete robocop pod X'. Candidate card for this board (apply lane).
+
+2026-10-31 12:31 Done, uncommitted. Two patches against f276d35 (each with subject, description, Changes bullet), independent of each other and of k333: scratchpad/w-apply333/k330.patch (lib/OCP/Cmd/Apply/CR.pm + new t/330-cr-read-cause.t, the reads) and scratchpad/w-apply333/k330-ok.patch (lib/OCP/Cmd/Apply/Drift.pm + t/38, the [ok] line) -- held back as its own patch because Drift.pm/t/38 are the dry-run worker's files this round (k261/k297); it applies with k261.patch and k297.patch in either order. Verified: red on HEAD (t/330 8/8 subtests; t/38 only the new [ok] claim); green: 43 files/693 tests (k330), 14 files/267 tests (k330-ok); full docker make test on f276d35+k333+k330+k330-ok: Files=237, Tests=3712, PASS, none skipped. Mutants: 15 for CR.pm, 2 for Drift.pm (incl. HEAD's files), all killed, controls pass.
+
+Committed as 1d954ca (CR reads); the [ok] half follows in a second commit
+
+Committed as b0900f0
