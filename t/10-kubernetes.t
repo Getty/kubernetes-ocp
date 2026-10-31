@@ -62,13 +62,32 @@ package Resp {
 
 package main;
 
+# Aggregated discovery (/api, /apis), which Kubernetes::REST fetches next to
+# /openapi/v2. Without an answer it warns "Falling back to the built-in resource
+# map" -- the client then works from a map the fixture never meant to give it.
+# The core group serves Node, nothing else: the typed providers under test are
+# registered by OCP::Kubernetes, not discovered.
+sub discovery {
+    return (
+        '/api' => {
+            kind  => 'APIGroupDiscoveryList',
+            items => [ { metadata => { name => '' }, versions => [
+                { version => 'v1', resources => [
+                    { resource => 'nodes', responseKind => { kind => 'Node' }, scope => 'Cluster' },
+                ] },
+            ] } ],
+        },
+        '/apis' => { kind => 'APIGroupDiscoveryList', items => [] },
+    );
+}
+
 # Replaces the HTTP transport of every Kubernetes::REST in the process, which
 # is what it takes here: OCP::Kubernetes builds its client inside
 # Kubernetes::REST::Kubeconfig, so there is no `io` argument to hand in.
 # A path with no answer is a 404 rather than a silent empty body, so a test
 # that aims at the wrong URL says so.
 sub loopback_io {
-    my (%answers) = @_;
+    my (%answers) = (discovery(), @_);
     return sub {
         my ($self, $req) = @_;
         my $path = $req->url;
@@ -390,19 +409,26 @@ subtest 'an api that cannot answer list() is not an empty cluster' => sub {
 };
 
 subtest 'the typed CRD providers are registered, or nothing is' => sub {
-    my $api = do {
+    # $api->k8s builds the inner IO::K8s lazily, and that build is what talks
+    # to the transport (resource-map discovery). It must happen while the
+    # loopback is installed, or it resolves k8s.example for real.
+    my ($cilium, $issuer, $gateway);
+    {
         no warnings 'redefine';
         local *Kubernetes::REST::LWPIO::call = loopback_io();
-        OCP::Kubernetes->new(kubeconfig_path => "$KUBECONFIG")->api;
-    };
+        my $api = OCP::Kubernetes->new(kubeconfig_path => "$KUBECONFIG")->api;
+        $cilium  = $api->k8s->expand_class('CiliumNetworkPolicy');
+        $issuer  = $api->k8s->expand_class('ClusterIssuer');
+        $gateway = $api->k8s->expand_class('Gateway');
+    }
 
-    is $api->k8s->expand_class('CiliumNetworkPolicy'),
+    is $cilium,
         'IO::K8s::Cilium::V2::CiliumNetworkPolicy',
         'IO::K8s::Cilium is registered';
-    is $api->k8s->expand_class('ClusterIssuer'),
+    is $issuer,
         'IO::K8s::CertManager::V1::ClusterIssuer',
         'IO::K8s::CertManager is registered';
-    is $api->k8s->expand_class('Gateway'),
+    is $gateway,
         'IO::K8s::GatewayAPI::V1::Gateway',
         'IO::K8s::GatewayAPI is registered';
 
