@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T10:10:07Z
+created: 2026-10-31T09:24:09Z
+id: 332
+priority: low
+started: 2026-10-31T10:10:07Z
+status: done
+tags:
+- status
+title: 'ocp status: a malformed nocert blanks the whole drift report, and a host-only
+  ssh pool counts 0 workers'
+updated: 2026-10-31T10:10:07Z
+---
+
+Found under k320/k322 (choices worker, 2026-10-31), status lane:
+- since k320 the nocert accessor refuses a non-boolean; `ocp status` drift detection then fails as a whole ("Cannot detect drift: nocert: ..."), where before it quietly skipped the cert-manager check. One malformed switch should not blank the whole drift report: report the config line once (STDERR) and run the checks that do not need it -- or say why status should stop.
+- `ocp status` shows "Workers (w): 0 (ssh)" for an ssh pool that names its machine with host: (no nodes: list); it counts nodes only.
+
+Done = tests for both: a malformed nocert gives its line and the rest of the drift report; a host-only ssh pool counts 1.
+
+2026-10-31 09:43 Status lane (ocp-status-worker), in progress. Cause 1: OCP::Drift::component_drift called the cert-manager probe's skip_if (no_cert) bare; since k320 that accessor croaks on nocert: no, so detect died and ocp status printed only 'Cannot detect drift: nocert: ...', exit 1. Of the k320 switches the status/drift path reads only nocert (via skip_if); gpu.*, lbipam and system.ntp are not read by Status.pm, Drift.pm, rex_prober or OCP::Kubernetes. Decision: report the line once on STDERR and run the other checks, not stop with validate()'s lines. Reasons: status is read-only, and apply stops only because acting on a misread switch would change the cluster. Status.pm already does this for gpu.amd.allocation (k252), and Destroy refuses only keys it reads (k323). Fix goes on skip_if, not on nocert: a predicate OCP::Config refuses becomes a kind error entry (drift unknown, validate()'s line as cause, carped once) and the other probes run. Cause 2: Status counts nodes: only, so a host-only ssh pool showed 0. One _pool_machines helper now serves both forms. Red test t/332 is in place.
+
+2026-10-31 10:06 Also found, not fixed, for the dispatcher to decide: (a) a hetzner or local worker pool without nodes: passes validate() and ocp apply makes one OCPNode for it (worker_ocpnodes: nodes // 1), but ocp status shows 'Workers (hz): 0 (hetzner)' (_pool_machines falls back to count // 0). Confirmed on HEAD plus the patch; this is the same class as this card's ssh case, but a different pool kind. (b) workers: [ just-a-string ], which validate() refuses, still kills ocp status inside Perl ('Can't use string as a HASH ref') before any report. This was already true at HEAD (line 71); the patch only moves it into _pool_machines. (c) Changes: the k320 bullet in {{$NEXT}} says 'ocp status' drift check stop[s] with the same line', which this patch makes untrue. That bullet needs amending (unreleased), alongside the new k332 bullet.
+
+2026-10-31 10:06 Done, as a patch for the release manager to commit: scratchpad w-status332/k332.patch (subject 'Keep ocp status' drift report whole over a switch it cannot read, and count an ssh pool's host: as one worker (k332)'). Drift.pm: when a skip_if predicate croaks (a switch that OCP::Config refuses), that probe becomes a kind error entry. The entry is drift unknown, has no remedy, takes validate()'s line as its cause, and the line is carped once; the other probes run. ocp status: exit 0, the drift report is whole, and the cert-manager entry reads 'could not be checked'; --json stays parseable with no error key. Status.pm: _pool_machines for both forms, so an ssh pool without a nodes: list counts its host: as one machine. Verified: the new t/332 was red on HEAD (5 of 7 subtests) and is green with the patch. 12 of 12 mutants killed. Binding make test on 44 status/drift neighbour files: 953 tests, PASS, no skips. Full make test on a fresh HEAD copy plus the patch: 228 files, 3611 tests, PASS, no skips.
+
+Committed as 87b31b5
