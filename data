@@ -1,0 +1,21 @@
+---
+claimed_at: 2026-10-31T14:28:45Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:24:30Z
+id: 366
+priority: low
+status: in-progress
+tags:
+- tests
+- dist
+title: Test that every package in lib/ has its own file or is hidden from the indexer
+  (after k317)
+updated: 2026-10-31T14:28:45Z
+---
+
+Left over from k317 (2026-10-31). k317 kept OCP::SSH::HostKeyChanged out of the META provides map. It declares the class with `package # comment` + newline + name, as lib/OCP/BooleanEq.pm does. Before that, MetaProvides warned "1 provide map entries did not map to .pm files and may not be loadable at install time". Nothing in t/ would catch a new inner package declared the plain way.
+
+Done = a test in t/ that walks lib/ and checks that every package Module::Metadata finds in a file (it reads them the way MetaProvides::Package does) is the file's own package, or is listed as allowed with a reason. It must be red when one of the two hidden packages is declared plainly, which is the mutation check.
+
+Lane: ocp-test-writer. Low priority.
