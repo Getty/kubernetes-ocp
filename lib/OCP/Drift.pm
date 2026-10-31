@@ -4,6 +4,7 @@ package OCP::Drift;
 use Moo;
 use Socket;
 use Carp qw(croak carp);
+use OCP::Corefile;
 use OCP::Versions;
 use OCP::Config ();
 
@@ -921,6 +922,36 @@ sub registry_dns_drift {
     my $actual = corefile_host_address($corefile, $REGISTRY_HOSTNAME);
     return if defined $actual && $actual eq $expected;
 
+    # The writer puts the record only into the root block, and only where
+    # that block is the one answering for the name (k338). Read through the
+    # same OCP::Corefile, so this says what that run does: a block of its own
+    # that answers otherwise, or no block that answers at all, stays as it is
+    # -- 'spec' with a manual step, not 'missing': no ocp apply closes it.
+    my $block = OCP::Corefile->new(text => $corefile)->block_for($REGISTRY_HOSTNAME);
+    unless ($block && $block->{root}) {
+        my $keys = $block ? join(' ', @{ $block->{keys} }) : undef;
+        return {
+            kind        => 'spec',
+            component   => 'registry_dns',
+            label       => "$REGISTRY_HOSTNAME DNS",
+            expected    => $expected,
+            actual      => $actual,
+            message     => !$block
+                ? "$REGISTRY_HOSTNAME does not resolve from the CoreDNS Corefile (expected $expected):"
+                  . " it has no server block for the root zone (.), the one ocp apply writes the record into"
+                : (defined $actual
+                    ? "$REGISTRY_HOSTNAME resolves to $actual, expected $expected, from the server block $keys"
+                    : "$REGISTRY_HOSTNAME does not resolve from the server block $keys that answers for it"
+                      . " (expected $expected)")
+                  . '; ocp apply writes the record only into the root block, which that one shadows',
+            manual_step => $block
+                ? "Map $REGISTRY_HOSTNAME to $expected in the CoreDNS server block $keys"
+                : "Give the CoreDNS Corefile a server block for the root zone (.), or map"
+                  . " $REGISTRY_HOSTNAME to $expected in a server block for it",
+            remedy      => undef,
+        };
+    }
+
     my $what = defined $actual
         ? "$REGISTRY_HOSTNAME resolves to $actual, expected $expected"
         : "$REGISTRY_HOSTNAME is missing from the CoreDNS Corefile (expected $expected)";
@@ -1229,27 +1260,18 @@ sub resolve_address {
 
 # The address a Corefile maps a name to, or undef when it maps none.
 #
-# A hosts-plugin record is a line whose first token is an address and whose
-# remaining tokens are names, wherever in the file that line sits. OCP writes
-# it into the block the distribution already runs, but a server block someone
-# added by hand answers for the name just as well — and a probe that only
-# looked where OCP writes would call a working cluster drifted.
+# Read from the server block CoreDNS answers the name from (OCP::Corefile,
+# k338). OCP writes the record into the root block the distribution already
+# runs, but a server block someone added for the name answers just as well —
+# a probe that only looked where OCP writes would call a working cluster
+# drifted. And it answers instead: a record anywhere else in the file is not
+# what the cluster resolves the name to (ADR 0022 measured the shadowing).
 sub corefile_host_address {
     my ($corefile, $hostname) = @_;
     return undef unless defined $corefile && defined $hostname;
 
-    for my $line (split /\n/, $corefile) {
-        my @token = split ' ', $line;
-        next unless @token >= 2;
-
-        # An address, not a plugin name: hex digits, dots and colons only,
-        # and at least one separator (`cache 30` is not a record).
-        next unless $token[0] =~ /^[0-9a-fA-F.:]+$/ && $token[0] =~ /[.:]/;
-
-        return $token[0] if grep { $_ eq $hostname } @token[1 .. $#token];
-    }
-
-    return undef;
+    my $address = OCP::Corefile->new(text => $corefile)->address_of($hostname);
+    return $address;
 }
 
 # Tag of a container image reference, digest and registry port aware.
@@ -1544,6 +1566,12 @@ ConfigMap themselves and reset it on an upgrade or a restart, taking the record
 with them; C<ocp apply> writes it back, so the entry reports the window in
 between rather than a permanent fault, and carries no remedy of its own.
 
+The record is read from the server block that answers for the name
+(L<OCP::Corefile>), as the writer reads it. When that is not the root block
+(a block of its own for the name that maps it elsewhere, or none at all),
+C<ocp apply> does not write it, and the entry is C<kind =E<gt> 'spec'> with a
+C<manual_step> instead (k338).
+
 A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
 name is read. Any other failed read ends the probe with one
 C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
@@ -1596,7 +1624,8 @@ drifted.
 
     my $ip = OCP::Drift::corefile_host_address($corefile, 'registry.local');
 
-The address a Corefile maps a name to, or C<undef> when it maps none.
+The address a Corefile maps a name to, or C<undef> when it maps none: the
+record in the server block that answers for the name (L<OCP::Corefile>).
 
 =head2 image_version
 

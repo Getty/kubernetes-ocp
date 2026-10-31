@@ -1,6 +1,15 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` and `ocp status` read `registry.local` in the CoreDNS
+      Corefile the same way, from the server block CoreDNS answers it
+      from. A Corefile without a root block whose own `registry.local`
+      block maps the name to the control plane is up to date instead of a
+      "no server block for the root zone" warning. A block of its own that
+      maps it elsewhere, which shadows the record `ocp apply` writes into
+      the root block, is named by both -- on STDERR by `ocp apply`, and by
+      `ocp status` as drift `ocp apply` does not close, with what to change
+      -- and `ocp apply` no longer writes a record there that nothing reads.
     - A Rex task that dies before rex runs -- IPC::Run not finding rex,
       say -- no longer leaves its environment behind in the process that
       started it: the task parameters (a join token among them), the key

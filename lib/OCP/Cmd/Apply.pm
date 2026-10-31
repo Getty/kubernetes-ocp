@@ -359,10 +359,6 @@ sub _corefile_drop_added_hosts {
     return OCP::Cmd::Apply::Network::corefile_drop_added_hosts(@_);
 }
 
-sub _corefile_root_block {
-    return OCP::Cmd::Apply::Network::corefile_root_block(@_);
-}
-
 # t/39 reads the writer's list of CoreDNS ConfigMap names from the apply
 # package — make sure the array at OCP::Cmd::Apply::COREDNS_CONFIGMAPS is
 # the same object (alias, not copy) that lives in the Network module.

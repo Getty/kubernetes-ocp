@@ -11,6 +11,7 @@ use JSON::PP ();
 # into an address now go through OCP::Drift::resolve_address, and an import
 # sitting here unused is how the second copy grows back.
 use OCP::Config ();
+use OCP::Corefile;
 use OCP::Drift;
 use OCP::Versions;
 use OCP::Cmd::Apply::K8s;
@@ -504,6 +505,21 @@ sub configure_registry_dns {
         unless $cm;
 
     my $corefile = $cm->data->{Corefile} // '';
+    # The record goes into the root block only (ADR 0016, 0022). A server
+    # block of its own for the name, or for a zone above it, answers in the
+    # root block's place and shadows its record: that block is where the name
+    # resolves from, and the one OCP::Drift's probe reads too (k338). Mapping
+    # the name to this node is up to date; anything else is not ours to fix.
+    my $answers = OCP::Corefile->new(text => $corefile);
+    my $block   = $answers->block_for('registry.local');
+    if ($block && !$block->{root}) {
+        my $at = $answers->address_of('registry.local');
+        return 0 if defined $at && $at eq $node_ip;
+        die "ConfigMap kube-system/$cm_name: registry.local is answered by the server block "
+          . join(' ', @{ $block->{keys} }) . ', which '
+          . (defined $at ? "maps it to $at" : 'has no record for it')
+          . "; ocp apply writes the record only into the root block, which that block shadows\n";
+    }
     # corefile_with_host leaves a Corefile with no server block for the root
     # zone as it is, with no place for the record, and unchanged read as
     # "up to date" (k328). The step says this on STDERR, like any failure here.
@@ -546,31 +562,21 @@ sub corefile_with_host {
     # "already configured" and re-running apply would leave CoreDNS down.
     $corefile = corefile_drop_added_hosts($corefile, $hostname);
 
-    my @lines = split /\n/, $corefile, -1;
+    # Lines and the brace depth at the start of each (OCP::Corefile)
+    my $parsed = OCP::Corefile->new(text => $corefile);
+    my @lines  = @{ $parsed->lines };
+    my @depth  = @{ $parsed->depth };
 
-    # Brace depth at the start of each line: 0 on a server block header,
-    # 1 on the plugin lines inside it, 2 inside a plugin's config block.
-    my @depth;
-    my $level = 0;
-    for my $i (0 .. $#lines) {
-        $depth[$i] = $level;
-        my $opens  = () = $lines[$i] =~ /\{/g;
-        my $closes = () = $lines[$i] =~ /\}/g;
-        $level += $opens - $closes;
-    }
-
-    my ($from, $to) = corefile_root_block(\@lines, \@depth);
-    return $corefile unless defined $from;
+    my $root = $parsed->root_block or return $corefile;
+    my ($from, $to) = @{$root}{qw(from to)};
 
     # Already listed somewhere in the block: only the address may need fixing
-    for my $i ($from + 1 .. $to) {
-        my ($indent, $rest) = $lines[$i] =~ /^(\s*)(\S.*?)\s*$/ or next;
-        my @token = split /\s+/, $rest;
-        next unless @token >= 2 && $token[0] =~ /^[0-9a-fA-F.:]+$/;
-        next unless grep { $_ eq $hostname } @token[1 .. $#token];
-        return $corefile if $token[0] eq $ip;
-        $token[0] = $ip;
-        $lines[$i] = $indent . join ' ', @token;
+    my $listed = $parsed->record_index($root, $hostname);
+    if (defined $listed) {
+        my ($address, @names) = $parsed->record($lines[$listed]);
+        return $corefile if $address eq $ip;
+        my ($indent) = $lines[$listed] =~ /^(\s*)/;
+        $lines[$listed] = $indent . join ' ', $ip, @names;
         return join "\n", @lines;
     }
 
@@ -630,19 +636,12 @@ sub corefile_with_host {
 sub corefile_drop_added_hosts {
     my ($corefile, $hostname) = @_;
 
-    my @lines = split /\n/, $corefile, -1;
+    my $parsed = OCP::Corefile->new(text => $corefile);
+    my @lines  = @{ $parsed->lines };
+    my @depth  = @{ $parsed->depth };
 
-    my @depth;
-    my $level = 0;
-    for my $i (0 .. $#lines) {
-        $depth[$i] = $level;
-        my $opens  = () = $lines[$i] =~ /\{/g;
-        my $closes = () = $lines[$i] =~ /\}/g;
-        $level += $opens - $closes;
-    }
-
-    my ($from, $to) = corefile_root_block(\@lines, \@depth);
-    return $corefile unless defined $from;
+    my $root = $parsed->root_block or return $corefile;
+    my ($from, $to) = @{$root}{qw(from to)};
 
     my @hosts = grep { $depth[$_] == 1 && $lines[$_] =~ /^\s*hosts\b/ } ($from + 1 .. $to);
     return $corefile if @hosts < 2;
@@ -667,39 +666,7 @@ sub corefile_drop_added_hosts {
 # corefile_with_host puts a record in (k328).
 sub corefile_has_root_block {
     my ($corefile) = @_;
-
-    my @lines = split /\n/, $corefile, -1;
-    my @depth;
-    my $level = 0;
-    for my $i (0 .. $#lines) {
-        $depth[$i] = $level;
-        my $opens  = () = $lines[$i] =~ /\{/g;
-        my $closes = () = $lines[$i] =~ /\}/g;
-        $level += $opens - $closes;
-    }
-
-    my ($from) = corefile_root_block(\@lines, \@depth);
-    return defined $from ? 1 : 0;
-}
-
-# First server block serving the root zone (".", ".:53", "dns://.:53"),
-# as ($header_line, $closing_brace_line).
-sub corefile_root_block {
-    my ($lines, $depth) = @_;
-
-    my $from;
-    for my $i (0 .. $#$lines) {
-        if (!defined $from) {
-            next unless $depth->[$i] == 0 && $lines->[$i] =~ /^(.*?)\{\s*$/;
-            my $zones = $1;
-            next unless grep { m{^(?:[a-z]+://)?\.(?::\d+)?$} } split ' ', $zones;
-            $from = $i;
-            next;
-        }
-        return ($from, $i) if $depth->[$i] == 1 && $lines->[$i] =~ /^\s*\}\s*$/;
-    }
-
-    return;
+    return OCP::Corefile->new(text => $corefile)->root_block ? 1 : 0;
 }
 
 1;
