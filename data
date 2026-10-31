@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-10-31T14:28:51Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:54:26Z
+id: 373
+priority: medium
+status: in-progress
+tags:
+- security
+- hetzner
+title: Mask the Hetzner token in the remaining Hetzner error paths (apply bootstrap,
+  destroy, hetzner list, provider factory)
+updated: 2026-10-31T14:28:51Z
+---
+
+Found by the secrets worker during k362 (2026-10-31). k362 masks the Hetzner API token in `ocp keys secure`'s one Hetzner error, as `ocp init` does (k265), through `OCP::ErrorLine::one_line($err, mask => $token)` from k342. Other Hetzner callers still print API/LWP errors without masking the token:
+- the `ocp apply` bootstrap (lib/OCP/Cmd/Apply/Bootstrap.pm);
+- `ocp destroy`;
+- `ocp hetzner list`;
+- the OCP::Provider factory (the Hetzner provider's errors).
+
+A WWW::Hetzner/LWP error can carry the request, Authorization header included.
+
+Done = every place OCP prints or dies with an error that came from a Hetzner call masks the token, via one_line with mask, or a die message that already went through it. Find them all (grep the WWW::Hetzner calls) and list them in the note. One test per command, where the fake Hetzner dies with the token in its message; the token appears nowhere on STDOUT/STDERR. Red first, then a mutation check.
+
+Lanes: ocp-provider-worker (factory, Hetzner provider), with the apply/destroy sites in the same patch if they are only the print line (cross-lane edits named in the note).
