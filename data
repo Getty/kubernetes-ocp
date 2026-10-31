@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-10-31T11:00:39Z
+created: 2026-10-31T04:01:40Z
+id: 289
+priority: low
+started: 2026-10-31T11:00:39Z
+status: done
+tags:
+- cli
+- output
+title: 'ocp CLI: STDOUT is not flushed before STDERR lines, so a 2>&1 log is out of
+  order'
+updated: 2026-10-31T11:00:39Z
+---
+
+Found under k276/k272 (2026-10-31). The CLI never sets autoflush on STDOUT. On a terminal the order holds (line-buffered), but `ocp apply > log 2>&1` (CI, our own live runs) gets every STDERR line — each `[!!]`, `[WARN]`, "Apply did not complete" — ahead of the STDOUT progress it belongs to.
+
+Done = STDOUT autoflushed in the CLI entry point (bin/ocp or the dispatcher) and robocop checked for the same; a test that interleaves both into one pipe and checks the order.
+
+2026-10-31 10:45 Done as a patch, not committed. Patch (against 87b31b5 + k265.patch, applies unchanged on 984e43c): /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-init265/k289.patch. Changes: bin/ocp sets STDOUT->autoflush(1) (with use IO::Handle ()) before OCP->run_cli. I chose bin/ocp over run_cli because the executable owns the process's stdio (the image's ENTRYPOINT is bin/ocp), while tests call run_cli in-process with STDOUT localized onto a scalar. OCP.pm was also frozen under k316. STDERR is unbuffered already, so it is untouched. Rex output does not need it: OCP::Rex captures it via IPC::Run and the parent prints it again. Robocop checked, nothing to change: Controller::run autoflushes STDOUT and STDERR before its first line (k170), _spawn does the same in every forked child, and bin/robocop writes only to STDERR before run. Test: new t/289-cli-stdout-order.t runs `ocp init --nopassword --nogit --hetzner --pins-stdin` with no token, offline. It goes STDOUT progress, then the token prompt and "[!!] No token provided" on STDERR, then STDOUT again. One run puts both channels into one pipe (2>&1) and checks the order; a second run with STDERR discarded pins which line is on which channel. It skips only without ssh-keygen, and it ran in Docker. Red first: on HEAD, "Hetzner Cloud API Token required." came after the STDERR prompt. Mutants 4/4 killed (line removed, STDERR instead of STDOUT, autoflush(0), set after run_cli). Full binding suite on HEAD+k265+k289: PASS, 234 files, 3648 tests, no file skipped.
+
+Committed as 7158d59
