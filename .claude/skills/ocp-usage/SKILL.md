@@ -5,11 +5,14 @@ description: Use when running the ocp CLI or writing ocp.yaml — commands and f
 
 # OCP Usage & Workflows
 
-Verified against the code 2026-08-16 (OCP::Config, OCP::Cmd::*, OCP::Drift, OCP::Keys,
-OCP::Secrets, OCP::ClusterKey), including live runs of each command in the shipped
-Docker image (not `--help` text or source inspection alone — see the note on
-dash/underscore flags below, where `--help` output alone would have been actively
-misleading).
+Verified against the code 2026-10-31: the `network:` block and the commands
+`status --json`, `health`, `node ls --json`, `node rm --keep-machine`,
+`node trust-host` and `deploy-image`, by source and POD only (OCP::Config,
+OCP::Cmd::*), no live run. The rest was verified 2026-08-16 (OCP::Config,
+OCP::Cmd::*, OCP::Drift, OCP::Keys, OCP::Secrets, OCP::ClusterKey), including live
+runs of each command in the shipped Docker image (not `--help` text or source
+inspection alone — see the note on dash/underscore flags below, where `--help`
+output alone would have been actively misleading).
 
 Not on CPAN: `dist.ini` sets `no_cpan = 1`, so `cpanm OCP` finds nothing. Run `ocp` via
 the Docker image (`docker pull raudssus/ocp`) or a git checkout with
@@ -53,7 +56,9 @@ rejected. The docs below use the hyphenated form throughout, matching `xt/smoke.
 (`^(\-+)(no\-)?(.*)$`), so `--no-foo` is read as "negate a boolean option called `foo`"
 and dies with `Unknown option: foo` unless such an option exists. Every negative flag in
 this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `--nowait`.
-`ocp node add` still accepts `--no_wait` as an alias for `--nowait`.
+`ocp node add` still accepts `--no_wait` as an alias for `--nowait`. The exception is
+an option declared `negatable`: `ocp deploy-image --no-restart`/`--no-wait` work, and
+so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
 
 - `ocp init` — project init (keys, config, git)
   - `--hetzner` — interactive Hetzner token setup (NOT the same as
@@ -73,7 +78,26 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   - `--service systemd|none` — for provider local
   - `--force` — overwrite existing config
 - `ocp apply [--only control-planes|workers|NODE] [--dry-run]` — deploy/reconcile
-- `ocp status` — cluster state incl. drift report
+- `ocp status [--json]` — spec summary, then (once deployed) nodes, GPUs and
+  the drift report; read-only. Exit 1 when the kubeconfig cannot be
+  decrypted, the API does not answer or drift detection dies (cause on
+  STDERR), else 0. `--json` (k230): one canonical object on STDOUT (sorted
+  keys, no timestamps: an unchanged cluster gives identical bytes),
+  diagnostics on STDERR, same exit code. Keys: `cluster`, `config`,
+  `deployed` (false before the first apply, exit 0), `spec`, `nodes` (by
+  name; `gpu` = `nvidia.com/gpu` allocatable, `gpu_capacity` beside it,
+  k270), `drift` (`fixable` = apply carries a remedy; kind `error` = could
+  not be checked, never fixable, k262), `error` when something was missing,
+  `amd_gpu` only on a cluster with an AMD node (k258).
+- `ocp health [--json]` — one pod scan through the API, no waiting, changes
+  nothing (k230). Same classification as the health gate at the end of
+  `ocp apply` (`OCP::Cmd::Apply::Health`): `critical` = durable fault in
+  `kube-system`, `warning` = one elsewhere, `starting` = still coming up.
+  Exit 1 on a critical pod or when the cluster cannot be reached, else 0.
+  `--json`: `{fatal, healthy, pods: [{namespace, name, state, reason}]}`,
+  pods by namespace then name, `healthy` true only with no pod listed;
+  unreachable → `error` + empty `pods`, cause on STDERR. A long-stuck pod's
+  `reason` carries its minutes, so compare namespace/name/state, not reason.
 - `ocp update [--dry-run] [--component NAME] [--force]` — update components;
   refuses to run without `status.ocpVersion` (stamped by apply)
 - `ocp destroy [--force] [--keep-status]` — tear down; `--force` skips the
@@ -93,6 +117,24 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   `migration_hint` only for such a real refusal. Never blocks — hands over
   to ssh anyway.
 - `ocp deploy-robocop` — robocop + CRDs standalone
+- `ocp deploy-image (--image REF | --tag TAG [--repo REPO]) [--wait
+  [--timeout SECONDS]] [--no-restart] [--namespace NS] [--cluster NAME]`
+  — roll a robocop image into the running Deployment (`ocp-system/robocop`,
+  container `controller`) through the API. REF is `REPO:TAG` or
+  `REPO@sha256:<64hex>`; `--image` excludes `--repo` and `--tag`; the repo
+  defaults to `raudssus/ocp`, or `OCP_IMAGE_REPO`. One strategic-merge patch
+  sets the image together with `OCP_DISTRIBUTION`/`OCP_POD_CIDR` from
+  ocp.yaml (k187), then a `restartedAt` annotation patch unless
+  `--no-restart`. No Deployment → dies, pointing at `ocp deploy-robocop`.
+  An override, not a setting (k227): the next `ocp apply`/`deploy-robocop`
+  writes `robocop.image` (else the CLI's own version) back, and the command
+  prints `[WARN] ad-hoc override` when the image differs from that.
+  `--wait` (off by default) waits the way `kubectl rollout status` does —
+  new generation observed, every replica updated, no old pod left, all
+  available — for `--timeout` seconds (default 300, refused without
+  `--wait`); a timeout says on STDERR what it still waited for, exit 1.
+  `--cluster`/`OCP_CLUSTER` choose nothing: the target is the project's
+  kubeconfig; the name is only printed, and the two disagreeing dies.
 - `ocp inject-key [--timeout SECONDS]` — hand the robo private key to a
   running robocop pod for `robocop.security_level: inject` (PIN1 + PIN2;
   default timeout 30s)
@@ -105,12 +147,40 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
   `spec.gpu: true` and opens the integrated-GPU gate (see "gpu.amd" below).
   Once the node is Ready, it also deploys the node's GPU stack (skill
   `ocp-gpu`).
-- `ocp node rm NAME` — drain + remove (OCP::Node->teardown). For ssh/local
-  nodes it checks the machine's host key against the pins first (k235): a
-  changed key refuses before lease, cordon or drain — nothing is touched.
-  A Ready worker without pins (pre-pinning install, or after `trust-host`)
-  is pinned by TOFU on its next reconcile (`OCP::Node::_pin_unpinned`).
-- `ocp node ls` — list OCPNode CRs (name, role, phase, provider, IP, age)
+- `ocp node rm NAME [--keep-machine]` — drain + remove (OCP::Node->teardown):
+  cordon, drain, delete the Hetzner server or uninstall RKE2/K3s (ssh/local,
+  with the cluster key — PIN2 in secure mode), then the Node and the
+  OCPNode. For ssh/local nodes it checks the machine's host key against the
+  pins first (k235): a changed key refuses before lease, cordon or drain —
+  nothing is touched. A Ready worker without pins (pre-pinning install, or
+  after `trust-host`) is pinned by TOFU on its next reconcile
+  (`OCP::Node::_pin_unpinned`). A node that could not be taken off its
+  machine is not removed (k175): STDERR, exit 1, the OCPNode stays `Failed`,
+  a re-run retries. A lease robocop holds refuses with the holder named.
+  When the machine cleanup itself failed, the error ends with the way out:
+  `--keep-machine` (k229), the same teardown minus the server delete or
+  uninstall — no provider built, no cluster key, no PIN2, no host-key check,
+  and a missing OCPNodeProvider does not stop it. STDOUT then says what was
+  left (a Hetzner server that keeps billing, by id; an RKE2/K3s install
+  whose running agent registers its Node again). Never implied.
+- `ocp node trust-host NAME [--yes]` — forget an OCPNode's pinned host keys
+  (k235), after a rebuilt machine refused with "host key of … changed".
+  Lists the fingerprints on STDERR and reads one line of STDIN: `y`/`yes`
+  confirms, anything else or EOF → "Aborted", exit 1; `--yes` skips the
+  question. Then `status.hostKeys` is merge-patched away, and
+  `status.message` with it when it is that complaint; the next contact is
+  TOFU again. No pins → says so, exit 0. Kubernetes API only, no SSH.
+- `ocp node ls [--json]` — list OCPNode CRs (name, role, phase, provider,
+  IP = `status.address`, else `status.publicIP`, age). `--json` (k230): an
+  array, one object per OCPNode by name, canonical, on STDOUT and nothing
+  else; Kubernetes API only, no SSH. Every key is always there (null when
+  unknown): `name role pool host address publicIP phase reconciler
+  kubernetesNodeName labels gpu runtime kubelet os kernel`, joined with the
+  Kubernetes Node (`status.kubernetesNodeName`, else the OCPNode's name).
+  `gpu` is `nvidia.com/gpu` allocatable, always a number; `reconciler` is
+  `cli` or `robocop@POD`; `pool` comes from annotation `ocp.internal/pool`,
+  else from ocp.yaml's pools by the names apply gives their OCPNodes (null
+  for an `ocp node add` node).
 - `ocp provider add --name NAME --type hetzner --token-file FILE
   [--location LOC] [--server-type TYPE] [--image IMG] [--default]`
   — OCPNodeProvider CR + Secret
@@ -203,6 +273,14 @@ robocop: true               # default false; auto-true when a hetzner
                             # provider is configured
 lbipam: true                # opt-in LB-IPAM + L2 announcements (ARP takeover
                             # on the node network — know what you're doing)
+network:                    # optional; see "network" below
+  pod_cidr: 10.42.0.0/16    # cluster-cidr + Cilium pool, install time only
+  lb_pool:                  # LB-IPAM pool, read only with lbipam: true
+    cidr: 10.0.0.240/28     # or start: + stop:, never both
+  l2:                       # L2 announcement policy, lbipam: true only
+    interfaces: ['^eth[0-9]+$']   # replaces the default regexes
+    node_selector:          # only these nodes announce
+      ai.citilan.de/l2-announce: "true"
 cilium:                     # optional Cilium Helm values, install + upgrade
   devices: [enP7s7.30]      # Helm `devices` (keep Cilium off fabric NICs)
   helm_values: {}           # anything else; not ipam (OCP's)
@@ -263,6 +341,41 @@ gpu:
   `ocp node add` prints one `[WARN]` on STDERR that names the fix. The same
   note stays in the OCPNode's `status.message`, whoever did the join. It is
   never fatal.
+
+### network — pod CIDR, LB-IPAM pool, L2 announcements (k182, k127, k210)
+
+- **`pod_cidr`** (k182) is one value for two things: the RKE2/K3s
+  `cluster-cidr` and Cilium's cluster pool. Unset, it is
+  `$OCP::Config::DEFAULT_POD_CIDR`, the built-in cluster-cidr of both
+  distributions (Cilium's own default overlaps most host LANs).
+  - **Install time only.** A fresh server and a fresh Cilium take it; a
+    running cluster keeps its pool. `OCP::Drift` reports a difference,
+    report-only: state the running pool in ocp.yaml, or rebuild.
+  - A control plane joining as another RKE2 server repeats it (k184);
+    robocop gets it as `OCP_POD_CIDR`.
+- **`lb_pool`** (k127) is the `CiliumLoadBalancerIPPool` block: `cidr`, or
+  `start` + `stop`, never both, IPv4 only. Read only under `lbipam: true`.
+  Unset, the pool is the node IP as a `/32`, on a single-node cluster only.
+  On a multi-node cluster the LB-IPAM step refuses ("set network.lb_pool"),
+  and `ocp apply` prints that as `[WARN] LB-IPAM setup failed` and carries on.
+- **`l2`** (k127) shapes the `CiliumL2AnnouncementPolicy`, also only under
+  `lbipam: true`.
+  - `interfaces` (Go/RE2 regexes) replaces
+    `$OCP::Config::DEFAULT_L2_INTERFACES` (k210): `eth*` and `en*`, VLAN
+    suffix allowed, minus switchdev `…np<N>` fabric ports.
+  - `node_selector` (label → value) becomes the policy's
+    `nodeSelector.matchLabels`, so only those nodes announce.
+- **The checks** live in `OCP::Config::validate`.
+  - `pod_cidr`, the default too: an IPv4 CIDR, no host bits, a prefix
+    shorter than /24 (Cilium gives every node a /24), clear of the service
+    network `$OCP::Config::SERVICE_CIDR`, the node addresses ocp.yaml names
+    and `lb_pool`.
+  - `lb_pool`: its shape and IPv4 addresses. `l2.node_selector`: a non-empty
+    mapping of scalars. `l2.interfaces`: a non-empty list of strings.
+  - An unknown key under `network:` is not reported, unlike under `cilium:`
+    and `gpu.amd:`.
+  - **No command calls `validate` today** (only `t/` does), so `ocp apply`
+    does not refuse a bad value before it uses it.
 
 ### gpu.amd — AMD GPU nodes (k249–k252)
 
