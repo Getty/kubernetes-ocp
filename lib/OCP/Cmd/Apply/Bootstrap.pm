@@ -390,15 +390,24 @@ sub bootstrap_control_plane {
         push @ssh_key_names, $name;
     }
 
+    # Where the machine goes: what ocp.yaml says. A Hetzner control plane takes
+    # what it leaves out from the one default there is, OCP::Config's
+    # %HETZNER_DEFAULTS -- the image, in practice: validate() requires
+    # server_type and location before `ocp apply` gets here (k255). This used
+    # to fall back to cx32 of its own, which no spec ever said (k298). The ssh
+    # and local providers read none of the three.
+    my %placement = map { $_ => $first_cp->{$_} } qw( server_type image location );
+    if ($provider eq 'hetzner') {
+        $placement{$_} //= $OCP::Config::HETZNER_DEFAULTS{$_} for keys %placement;
+    }
+
     # Create server (idempotent for Hetzner — checks labels first)
     my $server_info = $prov->create_server(
         name        => $cp_hostname,
         cluster     => $config->name,
         node        => $cp_name,
         role        => 'control-plane',
-        server_type => $first_cp->{server_type} // 'cx32',
-        image       => $first_cp->{image} // 'debian-13',
-        location    => $first_cp->{location} // 'fsn1',
+        %placement,
         ssh_keys    => \@ssh_key_names,
         host        => $first_cp->{host},
     );
