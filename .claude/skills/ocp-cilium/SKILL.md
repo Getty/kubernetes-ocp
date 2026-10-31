@@ -102,40 +102,26 @@ dies naming their state otherwise (k178: a Cilium that never became ready
 used to cost the full wait and then report success). There is no `cilium
 status --wait` and no kubectl on the node for any of this any more.
 
-Caveat: RKE2 >= v1.37 ships its own `rke2-gateway-api-crd` Helm chart, which
-would fight this apply. Today's RKE2 pin is v1.36, so it's dormant; the
-chart needs disabling (or OCP's apply needs dropping) when RKE2 is bumped
-past that (k161, backlog).
+RKE2 >= v1.37 ships its own `rke2-gateway-api-crd` chart, which would fight
+this apply. The Rexfile puts that chart on every RKE2 server's `disable`
+list, whatever the pin (k161). Skill `ocp-rke2` has the detail.
 
-## LB-IPAM (LoadBalancer IP Address Management)
+## LB-IPAM (opt-in: `lbipam: true`)
 
-For bare-metal/single-node clusters, Cilium provides LoadBalancer support:
+`type: LoadBalancer` on bare metal: a pool plus L2 (ARP) announcements, both
+built by `OCP::Cmd::Apply::Network::lb_ipam_resources` (pure; `t/78`, `t/210`).
 
-```perl
-# CiliumLoadBalancerIPPool — defines available IPs
-{
-    apiVersion => 'cilium.io/v2alpha1',
-    kind       => 'CiliumLoadBalancerIPPool',
-    metadata   => { name => 'default-pool' },
-    spec       => { blocks => [{ cidr => "$node_ip/32" }] },
-}
-
-# CiliumL2AnnouncementPolicy — announces IPs via ARP
-{
-    apiVersion => 'cilium.io/v2alpha1',
-    kind       => 'CiliumL2AnnouncementPolicy',
-    metadata   => { name => 'default-l2' },
-    spec       => {
-        interfaces      => $config->l2_interfaces,   # network.l2.interfaces, or
-                         # $OCP::Config::DEFAULT_L2_INTERFACES: ethN / en* (VLANs ok)
-                         # without switchdev "np" ports like enp1s0f0np0 (k210)
-        externalIPs     => true,
-        loadBalancerIPs => true,
-    },
-}
-```
-
-This makes `type: LoadBalancer` services work on bare metal by assigning the node's IP and using L2 (ARP) announcements.
+- `CiliumLoadBalancerIPPool` `default-pool`, **`cilium.io/v2`**. Its blocks
+  come from `network.lb_pool` (`cidr`, or `start` + `stop`; k127). Without a
+  pool, the blocks are the node IP as a `/32`, but only on a single-node
+  cluster. A multi-node cluster dies rather than announce a node's own
+  address.
+- `CiliumL2AnnouncementPolicy` `default-l2`, `cilium.io/v2alpha1`, with
+  `externalIPs` and `loadBalancerIPs`.
+  - `interfaces` is `$config->l2_interfaces`: `network.l2.interfaces`, or
+    `$OCP::Config::DEFAULT_L2_INTERFACES`. The default takes ethN and en*
+    (VLANs ok) but no switchdev "np" ports like enp1s0f0np0 (k210).
+  - `nodeSelector` comes from `network.l2.node_selector`, when that is set.
 
 ## Cilium Helm values from ocp.yaml (k210)
 
@@ -148,15 +134,10 @@ drop what the install set. IPAM stays OCP's: see the IPAM paragraph above.
 
 ## CRD Wait Pattern
 
-Cilium operator registers CRDs asynchronously. Wait before applying CiliumLoadBalancerIPPool:
-
-```perl
-for my $i (1..30) {
-    last if $self->_resource_exists($api, 'CustomResourceDefinition',
-        'ciliumloadbalancerippools.cilium.io');
-    sleep 10;
-}
-```
+The Cilium operator registers its CRDs asynchronously. `setup_lb_ipam`
+builds both objects first, so a refused pool fails before the wait. It then
+polls `GET /apis/cilium.io/v2/ciliumloadbalancerippools` (30 × 10 s), dies
+when the API is still not served after 300 s, and server-side-applies both.
 
 ## Cilium Versions
 
@@ -166,7 +147,7 @@ Single source of truth: `OCP::Versions` (`components`, current OCP version):
 - Gateway API CRDs: v1.6.1 (version-locked to Cilium — bump together)
 
 The Rexfile carries no version constants of its own to drift out of sync.
-`OCP::Rex` (`install_control_plane`) passes all three explicitly into the
+`OCP::Rex` (`install_server`) passes all three explicitly into the
 `install_cilium` task params — the Rexfile's env var fallback
 (`OCP_CILIUM_VERSION`, `OCP_CILIUM_CLI_VERSION`, `OCP_GATEWAY_API_VERSION`)
 is only for hand-runs outside that path.

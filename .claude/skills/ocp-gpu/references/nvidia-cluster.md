@@ -57,8 +57,8 @@ argued back in.
 2. **Authoritative**: `nvidia.com/gpu` in the node's `status.allocatable`,
    published by the device plugin, plus a CUDA smoke pod.
    - Not capacity: the kubelet leaves capacity standing after a plugin
-     unregisters (see `amd.md`). Note that `OCP::Kubernetes` and `ocp status`
-     still count NVIDIA GPUs from capacity.
+     unregisters (see `amd.md`). `OCP::Kubernetes` `node_gpu_count` and
+     `ocp status` count allocatable (k270).
    - Everything before this is a prediction.
 
 ## ClusterPolicy (`_generate_gpu_operator_manifest`)
@@ -140,6 +140,15 @@ load-bearing. AMD's stack does not gate on NFD (see `amd.md`).
 
 ## Status
 
-When nodes carry `nvidia.com/gpu` in capacity, `ocp status` shows a GPU
-section: those nodes, the GPU Operator status, and the device plugin pod count.
-The AMD block sits next to it (see `amd.md`).
+`ocp status` shows a GPU section when a node has `nvidia.com/gpu` in
+allocatable or capacity (`OCP::Kubernetes::gpu_nodes`). A node whose plugin
+is gone stays listed, so the reader sees it.
+
+- Per node it shows one line with the `nvidia.com/gpu` **allocatable** (k270).
+- Capacity appears beside it only where the two differ, marked as stale.
+- There is no GPU Operator status and no device-plugin pod count.
+- `--json`: `nodes[].gpu` is the allocatable count (0 when the node has
+  none). `nodes[].gpu_capacity` is the capacity (`null` when the node has
+  none).
+
+The AMD block follows (see `amd.md`).

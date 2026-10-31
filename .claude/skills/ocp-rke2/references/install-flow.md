@@ -15,6 +15,7 @@ node-name: police1
 tls-san:
   - <public-ip>              # every control-plane address, one entry each (k137)
 cluster-cidr: <pod_cidr>     # fresh server only; one already set up keeps its own
+node-ip: <node_ip>           # only when asked for (k254); see "node-ip" below
 disable:
   - rke2-ingress-nginx       # the distribution's default list, + rke2-gateway-api-crd (k161)
 ```
@@ -33,6 +34,7 @@ Agent:
 server: https://<cp-ip>:9345
 token: <join-token>
 node-name: worker-1
+node-ip: <node_ip>           # as on a server
 ```
 
 `/etc/rancher/rke2/registries.yaml` is RKE2-only, on servers and agents alike.
@@ -47,7 +49,9 @@ replace them. K3s nodes get no registries.yaml, and never did. Skill
 Since k155 every install task is a thin wrapper around Rex::Rancher and
 Rex::GPU (CPAN; floors in `cpanfile`, exact versions in `cpanfile.snapshot`).
 
-0. **Preflight, before the host is touched.**
+0. **Preflight, before the host is touched.** First of all the Rexfile's
+   `_node_ip_opt`: a `node_ip` this Rex::Rancher cannot set dies here (see
+   "node-ip" below). Then
    `Rex::Rancher::Server::preflight_server(%opts)` or
    `Rex::Rancher::Agent::preflight_agent(%opts)` (rex-rancher k78) runs with the
    options the install gets. The checks:
@@ -138,6 +142,41 @@ Rex::GPU (CPAN; floors in `cpanfile`, exact versions in `cpanfile.snapshot`).
    the service. `update_gateway_api` is
    `Rex::Rancher::Cilium::ensure_gateway_api_crds`. No kubectl apply is left in
    the Rexfile. Detail: skill `ocp-cilium`.
+
+## node-ip (k254)
+
+- **The chain.** `spec.nodeIP` (`OCP::Node`) or `control_planes[0].node_ip`
+  (`OCP::Cmd::Apply::Bootstrap::cp_node_ip`) → `OCP::Rex`
+  `install_server`/`install_agent` (`_node_ip_param`, only when set) → the
+  Rexfile's `node_ip` task param → `_node_ip_opt` → Rex::Rancher, which
+  writes `node-ip` to config.yaml. Unset, nothing is passed, and a
+  Rex::Rancher with node_ip support keeps the `node-ip` that config.yaml
+  already holds. What values pass, and that there is no default: skill
+  `ocp-usage`.
+- **The library needs node_ip support (rex-rancher k100, unreleased).** The
+  Rexfile asks for it by capability, not by version
+  (`Rex::Rancher::Distribution->can('node_addresses')`). Without it the
+  install dies before anything on the host is read or changed, and the
+  OCPNode ends in `Failed` with that message. A library without the
+  option would ignore it, and the node would join on the wrong address
+  without a word.
+- **The multi-homed case.** Without a node-ip, RKE2/K3s register the address
+  of the default route as the InternalIP. If the default route is not on
+  the cluster network, the other nodes cannot reach that address. The node
+  still turns Ready, but Cilium's tunnel to it breaks. Live: synapse joined
+  by 10.230.30.50 and registered 192.168.0.165.
+- **Fixing a node that registered wrong** takes two restarts:
+  - Re-run its install, so that config.yaml carries the node-ip and
+    rke2/k3s restarts. The node keeps its old address until then.
+  - Then restart the Cilium agent pod on the node by hand. Until it
+    restarts, its CiliumNode keeps the old address.
+
+  A re-run that changes the value warns from Rex::Rancher, and `OCP::Rex`
+  shows that as a `[WARN]`.
+- **The check at Ready.** `OCP::Node->node_ip_mismatch` holds the Node's
+  InternalIPs against `status.nodeIP`, the address the install was handed,
+  and its line names this fix. `ocp apply` runs the same check for police1.
+  Where the warning appears: skill `ocp-usage`.
 
 ## Legacy containerd template (drift)
 

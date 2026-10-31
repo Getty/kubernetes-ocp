@@ -99,8 +99,12 @@ this CLI is therefore spelled without the dash — `--nogit`, `--nopassword`, `-
 - `ocp hetzner [--list] [--label KEY=VAL]` — Hetzner debugging
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu]
-  [--label K=V]... [--taint K=V:Effect]... [--nowait]`
-  — create an OCPNode CR (`--no_wait` is kept as an alias, see above)
+  [--node-ip IP] [--label K=V]... [--taint K=V:Effect]... [--nowait]`
+  — create an OCPNode CR (`--no_wait` is kept as an alias, see above).
+  `--node-ip` becomes `spec.nodeIP` (see "node_ip" below). `--gpu` sets
+  `spec.gpu: true` and opens the integrated-GPU gate (see "gpu.amd" below).
+  Once the node is Ready, it also deploys the node's GPU stack (skill
+  `ocp-gpu`).
 - `ocp node rm NAME` — drain + remove (OCP::Node->teardown). For ssh/local
   nodes it checks the machine's host key against the pins first (k235): a
   changed key refuses before lease, cordon or drain — nothing is touched.
@@ -181,6 +185,7 @@ control_planes:             # Hash, Hash + "nodes: N", or Array of hashes
   location: fsn1
   image: debian-13
   # host / service / network_interface / public_ip (pinned after apply)
+  node_ip: 10.0.0.5         # optional, never defaulted; see "node_ip" below
 workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
     provider: hetzner       # robocop or the CLI fallback
@@ -220,7 +225,59 @@ gpu:
   toolkit: true             # default true; NVIDIA container toolkit via the
                             # operator — set false on hosts that already
                             # have it (e.g. DGX vendor images)
+  amd:                      # optional; absent = these defaults. An unknown
+                            # key or value is a validate error
+    allocation: device-plugin  # device-plugin | dra | none
+    resource_naming: single    # single | mixed, for the device plugin
+    labeller: true             # AMD's node labeller
+    metrics: false             # device-metrics-exporter
+    integrated: false          # parsed, but reaches no node yet
 ```
+
+### node_ip — the address a node registers by (k254)
+
+`control_planes[].node_ip`, and `ocp node add --node-ip` (the OCPNode's
+`spec.nodeIP`), set the InternalIP a node registers by. That is the RKE2/K3s
+`node-ip`.
+
+- **The value** is one IP, or `v4,v6` (one address per family), with no
+  whitespace. A hostname, a CIDR, loopback or link-local is refused before
+  anything is ordered or installed. `ocp node add`, ocp.yaml and a
+  hand-written `spec.nodeIP` refuse a value in the same words
+  (`OCP::Choices::node_ip_error`).
+- **Explicit only, no default.** Without it, no node-ip is passed, and the
+  node registers the address of its default route. On a multi-homed host
+  that can be the wrong address. Skill `ocp-rke2`
+  (`references/install-flow.md`) has why and how to fix it.
+- **It names one machine.** It is refused:
+  - on a `workers:` pool and on the entries of its `nodes:` list (set it per
+    node with `ocp node add` instead);
+  - on a `control_planes:` mapping with `nodes:` above 1 (list the control
+    planes one by one instead);
+  - when two control planes share an address.
+- **It needs a Rex::Rancher with node_ip support** (rex-rancher k100,
+  unreleased). Until the image has one, the install of a node with a
+  node_ip dies with the reason before its host is touched, and its OCPNode
+  ends in `Failed`. Nodes without a node_ip install as before.
+- **Registered elsewhere anyway?** Once the node is Ready, `ocp apply` or
+  `ocp node add` prints one `[WARN]` on STDERR that names the fix. The same
+  note stays in the OCPNode's `status.message`, whoever did the join. It is
+  never fatal.
+
+### gpu.amd — AMD GPU nodes (k249–k252)
+
+- **Labels OCP sets.** When the host step accepts an AMD GPU, the node
+  registers with `ocp.internal/amd-gpu.present=true`, the marker the AMD
+  stack selects on. It also gets `ocp.internal/amd-gpu.gfx-target=<gfx>`
+  once the driver reports one.
+- **The per-node override.** `ocp.internal/amd-gpu.allocation`, with the
+  same values as `gpu.amd.allocation`, overrides the default for that node.
+  Set it with `ocp node add --label`. OCP itself never sets it.
+- **Integrated GPUs** (a Ryzen iGPU or APU) are set up only on a node joined
+  with `ocp node add --gpu`. `gpu.amd.integrated` is not wired to any node
+  yet.
+- **The rest** (components, affinity, readiness, status, the full label
+  table) is in skill `ocp-gpu` (`references/amd.md`).
 
 ## Provider Modes
 
@@ -442,6 +499,6 @@ There is no project-local `.kube/` — `ocp kubeconfig -e` merges into
 | Controller | `robocop` |
 | First control plane | `police1` (hostname `<cluster>-police1`) |
 
-For ssh providers the CP is named after the host instead. Note: apply
-currently only deploys `control_planes[0]` — police2+ (multi-CP) is not
-implemented yet.
+For ssh providers the first CP is named after the host instead. On RKE2,
+`control_planes[1..]` join as `police2`, `police3`, … (Pending OCPNodes with
+role control-plane, k8). k3s builds only police1 and warns on STDERR.

@@ -15,8 +15,8 @@ gaps in the libraries, not in the Rexfile (k196).
 Read `references/install-flow.md` before you change an install task. It holds
 the config.yaml and registries.yaml OCP gets, the task-by-task flow
 (preflight, `prepare_node`, GPU step, server/agent install, API wait,
-kubeconfig, Cilium), the legacy containerd-template drift, and the ssh/local
-uninstall.
+kubeconfig, Cilium), the node-ip, the legacy containerd-template drift, and
+the ssh/local uninstall.
 
 ## What OCP asks of every node
 
