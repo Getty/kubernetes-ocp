@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add --gpu` refuses an `ocp.yaml` that is empty or no
+      mapping before it asks for the kubeconfig (PIN1) or writes the
+      OCPNode, with the line `ocp apply` refuses it with; it went on to the
+      join before.
     - `ocp apply` and `ocp status` now agree on `registry.local` in more
       Corefiles: a k3s `coredns-custom` `*.server` snippet that answers the
       name is read by both (one that maps it elsewhere is named, not written

@@ -872,11 +872,17 @@ sub _ssh_keys_note {
 #
 # Not with --nowait, which reads none of the block: it leaves the GPU stack to
 # `ocp apply`, and that refuses the same lines before it touches anything
-# (k255). The lines are validate()'s for the key path gpu, or under it.
+# (k255). The lines are validate()'s for the key path gpu, or under it, as
+# spec_errors('gpu') has them without running the rest of validate() (k306).
+# An ocp.yaml that is empty or no mapping holds no gpu: block: spec_errors
+# stops with the file's line, so that is refused here too. A filter over
+# validate() dropped that line: the command went on to the kubeconfig (PIN1)
+# and the OCPNode write, and stopped where a reader came to the spec first --
+# in the join without robocop, at the GPU stack after the join with it.
 sub _refuse_invalid_gpu_config {
     my ($self) = @_;
     my $config = $self->_config;
-    my @errors = grep { /\Agpu[.:]/ } $config->validate;
+    my @errors = $config->spec_errors('gpu');
     return 1 unless @errors;
 
     my $file = $config->file;
@@ -1090,9 +1096,11 @@ after the node had joined:
     Nothing was done: ocp node add --gpu sets up the node's GPU stack from that block once the node is Ready, and checks it before it asks the cluster anything or touches a machine. Fix the line above and run it again.
 
 Only that block: a line C<validate()> has elsewhere in F<ocp.yaml> is none
-this command reads, and C<ocp apply> refuses it.  With C<--nowait> the block
-is neither read nor checked; the stack is left to C<ocp apply>, which checks
-it first.
+this command reads, and C<ocp apply> refuses it.  An F<ocp.yaml> that is
+empty or no mapping has no C<gpu:> block: C<--gpu> refuses it before
+anything, with the one line C<ocp apply> refuses it with too (k306).  With
+C<--nowait> the block is neither read nor checked; the stack is left to
+C<ocp apply>, which checks it first.
 
 After that, the GPU Operator check waits up to five minutes for
 C<nvidia.com/gpu> in C<status.allocatable> (not capacity) on every NVIDIA

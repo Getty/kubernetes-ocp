@@ -140,8 +140,8 @@ sub api_error {
     sub gpu_driver            { 'host' }
     sub gpu_toolkit           { 1 }
     sub gpu_enabled           { 1 }
-    # ocp node add --gpu checks the gpu: block first (k333): a valid one.
-    sub validate              { () }
+    # ocp node add --gpu checks the gpu: block first (k333, k306): a valid one.
+    sub spec_errors           { () }
     sub has_external_cache    { 0 }
     sub has_external_upstream { 0 }
     sub project_dir           { $_[0]{dir} }

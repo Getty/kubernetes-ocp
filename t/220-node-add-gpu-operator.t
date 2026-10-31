@@ -106,8 +106,8 @@ sub capture (&) {
     package FakeConfig;
     sub new          { my ($c, %a) = @_; bless { gpu => $a{gpu} // 1 }, $c }
     sub gpu_enabled  { $_[0]{gpu} }
-    # ocp node add --gpu checks the gpu: block first (k333): a valid one.
-    sub validate     { () }
+    # ocp node add --gpu checks the gpu: block first (k333, k306): a valid one.
+    sub spec_errors  { () }
     sub project_dir  { require Path::Tiny; Path::Tiny->tempdir }
     sub distribution { 'rke2' }
     # k238: no control-plane address recorded -> the SSH preflight probe of

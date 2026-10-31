@@ -286,4 +286,109 @@ subtest 'bin/ocp node add --gpu: validate()\'s line on STDERR, exit 1, nothing w
     is_deeply [ sort map { "$_" } $dir->children ], \@before, 'no file written in the project';
 };
 
+# --- 6. the lines are spec_errors('gpu') (k306) --------------------------------
+
+# k306 step 2c: the refusal takes its lines from OCP::Config::spec_errors('gpu')
+# instead of filtering all of validate() by /\Agpu[.:]/. On a mapping both are
+# the same lines in the same order: held here on every gpu shape t/296 sweeps,
+# alone and beside a line in every other section, where a line outside gpu:
+# still holds nothing up. An ocp.yaml that is empty or no mapping is where they
+# part: validate() has the file's line alone, the filter dropped it, and node
+# add went on -- PIN1, the OCPNode, the join -- until a reader came to the spec.
+# spec_errors stops with that line, so --gpu refuses it before anything.
+
+# t/296's @SHAPES, at each key under gpu: t/296's sweep has.
+my @VALUES = (
+    [ "'foo'" => 'foo' ], [ '7' => 7 ], [ 'true' => JSON::PP::true() ], [ 'false' => JSON::PP::false() ],
+    [ 'null' => undef ], [ '[]' => [] ], [ "['foo']" => [ 'foo' ] ], [ '[{}]' => [ {} ] ],
+    [ '{}' => {} ], [ '{foo: bar}' => { foo => 'bar' } ],
+);
+my @GPU_AT = (
+    [ 'gpu' => sub { +{ gpu => $_[0] } } ],
+    (map { my $k = $_; [ "gpu.$k" => sub { +{ gpu => { $k => $_[0] } } } ] }
+        qw( enabled driver toolkit amd enable )),
+    (map { my $k = $_; [ "gpu.amd.$k" => sub { +{ gpu => { amd => { $k => $_[0] } } } } ] }
+        qw( allocation resource_naming labeller metrics integrated alocation )),
+);
+# A line in every section but gpu:, the switches beside it among them.
+my %ELSEWHERE = (name => [ 'a' ], control_planes => [ 'x' ], workers => [ 'x' ], kubernetes => 'foo',
+                 network => 'foo', cilium => 'foo', system => 'foo', ssh => 'foo', robocop => 'foo',
+                 lbipam => 'off', nocert => 'no');
+
+subtest "spec_errors('gpu') is the filter's lines, on every gpu shape t/296 sweeps" => sub {
+    my ($refused, $passed) = (0, 0);
+    for my $at (@GPU_AT) {
+        my ($path, $spec_with) = @$at;
+        for my $v (@VALUES) {
+            my ($shown, $value) = @$v;
+            my $alone = $spec_with->($value);
+            my @want  = gpu_lines(project($alone));
+            for my $case ([ alone => $alone ], [ 'beside a line in every other section' => { %ELSEWHERE, %$alone } ]) {
+                my ($beside, $spec) = @$case;
+                my $what = "$path: $shown, $beside";
+                my $dir  = project($spec);
+                my $c    = config_of($dir);
+                my @all  = $c->validate;
+                ok scalar(grep { !/\Agpu[.:]/ } @all), "$what: validate() has lines outside gpu:"
+                    if $beside ne 'alone';
+                is_deeply [ $c->spec_errors('gpu') ], [ grep { /\Agpu[.:]/ } @all ], "$what: the filter's lines"
+                    or diag explain \@all;
+                is_deeply [ grep { /\Agpu[.:]/ } @all ], \@want, "$what: what it has alone";
+
+                my $r = add($dir, gpu => 1);
+                is_deeply { rc    => $r->{rc}, lines => [ $r->{err} =~ /^  - (.*)$/mg ],
+                            steps => scalar @{ $r->{steps} } },
+                    { rc => @want ? 1 : 0, lines => \@want, steps => @want ? 0 : 7 },
+                    "$what: node add --gpu " . (@want ? 'refuses on them, nothing done' : 'goes on')
+                    or diag explain [ @$r{qw( rc out err steps )} ];
+            }
+            @want ? $refused++ : $passed++;
+        }
+    }
+    # Neither side of the sweep is empty: a shape refused, a shape that goes on.
+    cmp_ok $refused, '>', 50, "refused: $refused shapes";
+    cmp_ok $passed, '>', 10, "gone on: $passed shapes";
+};
+
+subtest 'an ocp.yaml that is empty or no mapping: --gpu refuses with its line, before anything' => sub {
+    for my $case ([ 'empty' => '' ], [ 'a list' => "- name: k333\n" ], [ 'a string' => "foo\n" ]) {
+        my ($what, $text) = @$case;
+        my $dir = path(tempdir(CLEANUP => 1));
+        $dir->child('ocp.yaml')->spew_utf8($text);
+        my @all = config_of($dir)->validate;
+        is scalar(@all), 1, "$what: validate() has one line" or diag explain \@all;
+        like $all[0], qr/\A\Q$dir\E\/ocp\.yaml(?::| is empty:) /, "$what: the file's";
+
+        for my $robocop (0, 1) {
+            my $how = $robocop ? 'robocop path' : 'CLI path';
+            my $r = add($dir, gpu => 1, robocop => $robocop, real_stack => 1);
+            is $r->{rc}, 1, "$what, $how: exit 1";
+            is_deeply $r->{steps}, [], "$what, $how: nothing done: no kubeconfig (PIN1), no cluster read or "
+                . 'write, no SSH probe (PIN2), no join, no GPU stack' or diag explain $r->{steps};
+            is $r->{out}, '', "$what, $how: nothing on STDOUT";
+            is $r->{err}, "$all[0]\n", "$what, $how: STDERR is that line, alone";
+        }
+
+        # Unchanged: --nowait reads no gpu: key (section 4).
+        is add($dir, gpu => 1, nowait => 1)->{rc}, 0, "$what: --gpu --nowait goes on";
+    }
+};
+
+subtest 'bin/ocp node add --gpu on an ocp.yaml that is no mapping: its line, whatever the file is called' => sub {
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew_utf8('');
+    $dir->child('gpu.yaml')->spew_utf8("- name: k333\n");
+    my @before = sort map { "$_" } $dir->children;
+    my $what = 'a mapping (name, control_planes and the other settings)';
+    for my $case ([ [], "ocp.yaml is empty: it must be $what" ],
+                  [ [ '-c', 'gpu.yaml' ], "gpu.yaml: must be $what, not a list" ]) {
+        my ($c, $line) = @$case;
+        my ($out, $err, $rc) = ocp_in($dir, @$c, 'node', 'add', 'brain', '--host', '10.0.0.5', '--gpu');
+        is $rc, 1, "$line: exit 1";
+        is $out, '', "$line: nothing on STDOUT";
+        is $err, "Error: $line\n", "$line: STDERR is the line, and not a gpu: block's";
+    }
+    is_deeply [ sort map { "$_" } $dir->children ], \@before, 'no file written in the project';
+};
+
 done_testing;
