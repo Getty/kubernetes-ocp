@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-10-31T04:10:37Z
+created: 2026-10-31T03:56:23Z
+id: 284
+priority: low
+started: 2026-10-31T04:10:37Z
+status: done
+tags:
+- tests
+title: t/10-kubernetes.t makes a real DNS request to k8s.example
+updated: 2026-10-31T04:10:37Z
+---
+
+Found under k275 (2026-10-31). t/10-kubernetes.t line ~399 calls `$api->k8s` after its fake transport is no longer in effect, so it resolves k8s.example for real; its fake also answers neither `/api` nor `/apis` discovery. Happens on HEAD as well. The suite is meant to be network-free.
+
+Done = the test stays inside its fake transport (or the fake answers discovery), and a run with no network gives the same result.
+
+2026-10-31 04:07 t/10-kubernetes.t: moved the three $api->k8s calls inside the local loopback scope (results captured, asserted after); loopback_io now answers /api and /apis discovery (Node only). Docker make test: t/10 + t/275 green (31 tests); also green with docker --network=none; Falling back lines gone. Old test under --network=none prints 'Temporary failure in name resolution' at line 399 (still passed).
+
+2026-10-31 04:07 Done: t/10-kubernetes.t stays in its fake transport and answers discovery; verified normal + docker --network=none
+
+Committed as d1094fd
