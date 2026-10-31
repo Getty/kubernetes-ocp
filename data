@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-10-31T05:13:20Z
+created: 2026-10-31T04:22:28Z
+id: 293
+priority: low
+started: 2026-10-31T05:13:20Z
+status: done
+tags:
+- pod
+- cli
+title: Small code/POD mismatches found by k281 (DeployImage, Node::Ls, TrustHost)
+updated: 2026-10-31T05:13:20Z
+---
+
+Found under k281 (2026-10-31), each small:
+1. lib/OCP/Cmd/DeployImage.pm `_resolve_cluster`: the error string interpolates "$self->cluster" inside quotes, so it prints the object, not the value; its POD claims a check against the spec name the code does not make.
+2. lib/OCP/Cmd/Node/Ls.pm POD says `pool` comes only from the `ocp.internal/pool` annotation; the code also falls back to ocp.yaml's pools, and nothing sets that annotation.
+3. lib/OCP/Cmd/Node/TrustHost.pm comment says a non-terminal STDIN answers "no", but a piped `y` confirms. Decide which is intended (scriptable trust vs. refuse without a terminal), make code and comment agree, test it.
+Done = each fixed or the doc corrected, with a test for 1 and 3.
+
+2026-10-31 04:55 Progress (ocp-worker): (1) DeployImage _resolve_cluster: the contradiction message now concatenates the value. POD 'Must match the spec name', execute POD 'Dies loud on a mismatching --cluster' and the e83f4fd Changes/commit text all claim a spec-name check; it is cheap and the name selects nothing (the target is always the project kubeconfig), so I ADDED the check (my call): --cluster/OCP_CLUSTER naming another cluster than ocp.yaml's name dies before anything is sent; names from a speculative clusters: list stay accepted. (2) Node::Ls POD corrected to the code (ocp.yaml pool by apply's OCPNode naming, annotation wins, OCP never writes it); behaviour unchanged, 282c7c5 made annotation-wins deliberate, not a bug. (3) TrustHost: --yes exists, so a non-terminal STDIN now refuses (my call, the comment's intent and ADR 0030's 'never replace a key without an operator's action'); new _interactive attribute (-t STDIN) as the test seam. Tests: t/54, t/171 extended. Binding run pending.
+
+2026-10-31 05:11 Done (ocp-worker). (1) lib/OCP/Cmd/DeployImage.pm _resolve_cluster: the contradiction message concatenates the value now (it used to print OCP::Cmd::DeployImage=HASH(..)->cluster). MY CALL: ADDED the spec-name check rather than trimming the POD. The opt POD ('Must match the spec name'), the execute POD ('Dies loud on a mismatching --cluster') and the e83f4fd Changes text all promise it; it costs a few lines; and the name selects nothing (the target is always the project kubeconfig), so the check is the only thing --cluster can do. --cluster/OCP_CLUSTER naming another cluster than the ocp.yaml name now dies before any request; names from the speculative clusters: list are still accepted. Opt POD, --help doc string and header comment updated. (2) lib/OCP/Cmd/Node/Ls.pm: POD corrected. pool = named ocp.yaml workers: pool matched by the OCPNode names apply gives; the ocp.internal/pool annotation wins but OCP never writes one; null otherwise or without a readable ocp.yaml. Behaviour unchanged: 282c7c5 made annotation-wins deliberate, so it is not a bug. (3) lib/OCP/Cmd/Node/TrustHost.pm: --yes exists, so MY CALL: a non-terminal STDIN now refuses (this is the comment's intent, and ADR 0030 says never replace a key without an operator's action). New lazy _interactive attribute (-t STDIN) is the seam. Without a terminal it does not read STDIN, says why on STDERR (naming --yes), keeps the pins, exits 1. POD documents it. Tests: t/54 tightens the mismatch subtest (value, not object, nothing sent) and adds two subtests (foreign name refused for --cluster and OCP_CLUSTER, own name passes). t/171: the old y/n cases now run with _interactive=>1; new: a piped y without a terminal is refused, STDIN unread, STDERR names --yes, STDOUT empty; also checks the real builder on an in-memory STDIN. Mutants in scratchpad copy, all killed: old interpolation, no spec check, OCP_CLUSTER unchecked, terminal guard removed, builder always 1. Binding: DOCKER_BUILDKIT=0 make test on t/54 t/171 t/230 t/231 t/00 t/76 + neighbours: PASS. Also found (for the dispatcher): (a) skill ocp-usage lines 136-137 (deploy-image: 'the name is only printed') and 177-180 (trust-host 'reads one line of STDIN') are now stale (skills lane). (b) README.md:335 has the same wrong pool claim as the old Ls POD (prose, main agent or doc-writer). (c) OCP::Cmd::Destroy's confirmation (line ~515) also takes a piped y, and prompts on STDOUT (destroy lane; it has --force). (d) Node::Ls.pm _pools_of is a bare sub with a runtime require, against house style; I left it.
+
+Committed d5baab2 (code, Changes) and d6b72ef (README)
