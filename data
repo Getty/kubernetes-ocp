@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-10-31T10:19:10Z
+created: 2026-10-31T09:33:52Z
+id: 335
+priority: medium
+started: 2026-10-31T10:19:10Z
+status: done
+tags:
+- destroy
+- validation
+title: 'ocp destroy: a list as name misses the cluster''s servers, a list as host
+  becomes a machine named ARRAY(0x...)'
+updated: 2026-10-31T10:19:10Z
+---
+
+Found under k326 (destroy worker, 2026-10-31). `ocp destroy` runs no validate() (on purpose, k323: only what destroy reads), and three shapes it reads still go through unchecked -- all exit 0, no Perl error, so nothing says anything went wrong:
+1. `name: [prod]`: the server search uses the label value ARRAY(0x...), so an unrecorded server labelled prod is missed while the run says "Cluster destroyed." -- a server can be left billing. validate() refuses a list as name since k305.
+2. A worker pool's own `host: [a, b]` becomes one machine named ARRAY(0x...) (k323 covered hosts inside nodes: only).
+3. A control plane's `host: [a]` does the same in the control-plane fallback.
+
+Fix: extend k323/k326's up-front check (Destroy::_spec_*_errors) to name and host, in validate()'s words, before the PIN and before anything is touched. A public OCP::Config shape helper (k306) would let destroy stop re-spelling validate()'s lines.
+
+Done = tests for the three: destroy stops with validate()'s line and touches nothing.
+
+2026-10-31 09:43 Red on HEAD e8c24ba with t/335-destroy-name-host.t (network-free fakes): name: [prod] searched ocp-cluster=ARRAY(0x...), missed the unrecorded prod-w9, deleted police1 and ended 'Cluster destroyed.' exit 0; ssh pool host: [a,b] -> 'Deleting ARRAY(0x...)', PIN2 asked, uninstall sent to ARRAY(0x...); CP host: [a] in the fallback likewise; host: false/true became machines named 0/1. 9 refusal subtests red, 5 read-around subtests green. Fix: extend Destroy's up-front check (name, then control planes incl. host, then pools incl. host) in validate()'s words.
+
+2026-10-31 10:10 Keys destroy reads from ocp.yaml, and status after k335: name (label search, Hetzner adapters, k98 compare, fallback name) -- list/mapping/boolean now refused; '' and 0, which validate() calls 'name is required', are searched as written on purpose (a cluster applied under them before k255 carries that label, and no other name would find it). control_planes / entries shape -- k326. control_planes[n].host -- now refused where the fallback reads it (known provider), checked whether or not the fallback runs, nodes: N said once. control_planes[n].provider and workers[n].provider -- ref/unknown are skipped (k116; t/326 pins provider: [hetzner] as torn down), not changed. control_planes[n].public_ip (fallback address when host is unset) -- NOT covered: validate() has no shape line for it (Config gap, card for Config/k306). workers / pools shape -- k326. workers[n].nodes list + nodes[m].host -- k323. workers[n].host -- now refused where read (known provider, nodes: not a list; a count beside it counts). server_type/location/image/labels/taints/node_ip/name of a pool and server_type/location/image/node_ip of a control plane -- not read by destroy, pinned as torn down in t/335. ssh.private_key/public_key -- read via cluster_ssh_key in dev mode only when an ssh node is listed; a non-mapping ssh: dies inside Perl inside that eval and is printed as the reason (uninstall skipped, exit 1, nothing billed affected); validate() has no ssh: line -- card for Config + secrets lane. Also found: an empty or non-mapping ocp.yaml ends every command (destroy and apply alike, unchanged from HEAD) on 'Not a HASH reference ... internal error' -- card for Config. Pool host: 0 is listed as a machine named 0 and then left alone (apply reads it as no machine) -- cosmetic, not fixed. A control plane or pool skipped for an unknown/ref provider is skipped without a word; when it is the only record the run says 'No nodes to destroy.' -- possible card (destroy lane).
+
+2026-10-31 10:10 Done. lib/OCP/Cmd/Destroy.pm: new _spec_name_errors (name that is a list, mapping or boolean, validate()'s k305 line) and _host_error; _spec_control_plane_errors also checks control_planes[n].host for entries with a known provider (iterating as validate() does, nodes: N once); _spec_worker_errors also checks a pool's own host where _spec_worker_entries reads it (known provider, nodes: not a list). Order: name, control planes, pools, as validate(). Refusal sentence now names the cluster's name (t/323, t/326 expected strings follow). POD updated. New t/335-destroy-name-host.t (14 subtests): red on HEAD for all 9 refusals, 5 read-around cases green before and after. 14 mutants on scratch copies, all killed (one surviving mutant -- host ignored beside nodes: N -- closed by a fixture). Binding make test on a clean git-archive of HEAD e8c24ba + k335.patch: Files=229, Tests=3628, PASS, no file skipped. Calls Config privates _not_a_string and _control_planes_shared (new) besides _shown_value/_pool_where/_pool_nodes_errors -- k331 should keep them. Changes: k326 bullet's last sentence ('Nothing else ocp apply refuses stops a teardown.') moves to the k335 bullet.
+
+Committed as 984e43c
