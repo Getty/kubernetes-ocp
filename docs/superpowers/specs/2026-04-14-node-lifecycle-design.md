@@ -325,6 +325,8 @@ Audit result (grep `kubectl` under `lib/`):
 
 Goal 6 restated: **no new kubectl shell-outs; remove `Apply.pm:375` in a follow-up once an API-server path exists.**
 
+**Update 2026-10-31 (k327, commit `53d34eb`):** that follow-up is done. The SSH fallback, which had moved to `OCP::Cmd::Apply::Bootstrap` by then, is gone. It ran RKE2's bundled kubectl on k3s too. The bootstrap wait now reads node readiness through the API only, and a control plane that is not Ready after the wait is reported on STDERR with its Ready condition. With that, no code path in `lib/` or `share/` runs kubectl, local or over SSH; the Rexfile mentions it only in a hint for the user. ADR 0007's exemption for the distribution's bundled kubectl during bootstrap covers no code any more (k337).
+
 ## Testing
 
 - Unit: `OCP::Node` state machine with mocked `provider`, `k8s`, `ssh`. `t/07-node.t`.
