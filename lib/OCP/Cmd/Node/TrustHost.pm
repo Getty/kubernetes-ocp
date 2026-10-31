@@ -27,6 +27,15 @@ option yes => (
 
 has k8s => (is => 'rw');
 
+# Whether someone at a terminal can answer the prompt. Forgetting the pins
+# lets the next contact trust whatever key the machine presents, so the
+# answer has to come from a person: a pipe, a CI job or a here-string is no
+# one, and the way to confirm without a terminal is --yes (k293). An
+# attribute so tests can stand in for the terminal.
+has _interactive => (is => 'lazy');
+
+sub _build__interactive { -t STDIN ? 1 : 0 }
+
 sub _k8s {
     my $self = shift;
     return $self->k8s if $self->k8s;
@@ -61,9 +70,15 @@ sub _node_names {
                 @{ $list->items // [] };
 }
 
-# Stdin is the confirmation; a closed or non-terminal stdin answers "no".
+# A terminal's stdin is the confirmation; a closed or non-terminal stdin
+# answers "no", whatever it carries -- a piped "y" does not count.
 sub _confirmed {
     my ($self, $name, $keys) = @_;
+    unless ($self->_interactive) {
+        print STDERR "No terminal to confirm on: forgetting the pinned host keys of node '"
+                   . $name . "' needs a person at a terminal, or --yes.\n";
+        return 0;
+    }
     print STDERR "Forget the pinned host keys of node '$name'?\n";
     print STDERR '  ' . $_->{fingerprint} . ' (' . $_->{type} . ")\n" for @$keys;
     print STDERR "The next contact trusts whatever key the machine presents then. [y/N] ";
@@ -140,10 +155,15 @@ If the machine was rebuilt on purpose, this command deletes C<status.hostKeys>
 (after a confirmation, or at once with C<--yes>); the next contact is trust on
 first use again and pins whatever the machine presents then.
 
+The confirmation is asked on a terminal only. Without one (a pipe, a CI job)
+the command does not read STDIN at all: it says so on STDERR, leaves the pins
+and exits C<1>; a piped C<y> is not a confirmation. C<--yes> is the way to
+confirm from a script.
+
 =head1 OPTIONS
 
 =head2 --yes
 
-Skip the confirmation.
+Skip the confirmation; the only way to forget the pins without a terminal.
 
 =cut

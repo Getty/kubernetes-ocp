@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp deploy-image --cluster NAME` (or `OCP_CLUSTER`) refuses a name
+      other than the cluster in `ocp.yaml` before it sends anything, as
+      documented; the target was always the project's kubeconfig. The
+      error for a `--cluster` contradicting `OCP_CLUSTER` names the value.
+    - `ocp node trust-host` without a terminal no longer takes a piped `y`
+      as confirmation: it exits 1 and keeps the pins; use `--yes` in scripts.
     - `ocp apply` refuses a `network.pod_cidr` (or the default
       10.42.0.0/16) that contains a control plane's `node_ip`, the IPv4
       part of a dual-stack value included, as it already does for `host`

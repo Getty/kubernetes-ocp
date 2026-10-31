@@ -25,7 +25,9 @@ with 'OCP::Role::Cmd';
 #   containers[0].name: controller
 #
 # OCP today is a one-cluster-per-spec tool, so --cluster has nothing to choose
-# between -- but it does let CI override the target without rewriting the spec.
+# between: the target is always the project's kubeconfig. It is a guard -- CI
+# names the cluster it means, and a checkout of another project is refused
+# instead of patched (_resolve_cluster).
 #
 # The image repo defaults to raudssus/ocp (the project's public registry).
 # Override via --repo on the CLI or OCP_IMAGE_REPO in the environment; this is
@@ -89,15 +91,19 @@ option repo => (
 
     --cluster NAME
 
-Cluster name to operate on (default: the single cluster in C<ocp.yaml>,
-or C<OCP_CLUSTER>). Must match the spec name.
+Cluster name to operate on (default: C<OCP_CLUSTER>, else the C<name> in
+C<ocp.yaml>). Must match the spec name: the target is always the cluster of
+the project's C<kubeconfig.yaml>, so the name selects nothing and guards
+against the wrong checkout. A C<--cluster> or C<OCP_CLUSTER> that names
+another cluster dies before anything is sent, as does a C<--cluster> that
+contradicts C<OCP_CLUSTER>.
 
 =cut
 
 option cluster => (
     is     => 'ro',
     format => 's',
-    doc    => 'Cluster name (default: ocp.yaml spec, or OCP_CLUSTER env)',
+    doc    => 'Cluster name, must match ocp.yaml (default: OCP_CLUSTER env, else the ocp.yaml name)',
 );
 
 =opt namespace
@@ -416,7 +422,23 @@ sub _resolve_cluster {
     my $chosen = $self->cluster // $ENV{OCP_CLUSTER} // $spec_name;
 
     if ($self->cluster && defined $ENV{OCP_CLUSTER} && $self->cluster ne $ENV{OCP_CLUSTER}) {
-        die "--cluster '$self->cluster' contradicts OCP_CLUSTER='$ENV{OCP_CLUSTER}'\n";
+        die "--cluster '".$self->cluster."' contradicts OCP_CLUSTER='".$ENV{OCP_CLUSTER}."'\n";
+    }
+
+    # The name picks nothing: the patch goes to the cluster of this project's
+    # kubeconfig whatever it says. A name that is not this project's cluster
+    # is a wrong checkout or a stale variable, so it is refused before
+    # anything is sent instead of being printed as the target (k293).
+    my @known = ($spec_name,
+        map { ref $_ eq 'HASH' && defined $_->{name} ? $_->{name} : () } @spec_clusters);
+    unless (grep { $_ eq $chosen } @known) {
+        my $given = defined $self->cluster
+            ? "--cluster '".$chosen."'"
+            : "OCP_CLUSTER='".$chosen."'";
+        die $given." is not this project's cluster: ocp.yaml names '".$spec_name
+          . "', and its kubeconfig is the cluster deploy-image patches.\n"
+          . "Run it from the project of '".$chosen."', or "
+          . (defined $self->cluster ? 'drop --cluster' : 'unset OCP_CLUSTER').".\n";
     }
 
     return $chosen;

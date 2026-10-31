@@ -77,6 +77,10 @@ package FakeResp {
 
 package main;
 
+# OCP_CLUSTER from the runner's environment would pick the cluster for every
+# subtest below; the ones about it set it themselves.
+delete $ENV{OCP_CLUSTER};
+
 # Build a fake project dir + cluster name. Caller can add extra YAML
 # (e.g. multi-cluster) via extra_yaml.
 sub make_project {
@@ -343,8 +347,52 @@ subtest '--cluster mismatch with OCP_CLUSTER fails loud' => sub {
     );
 
     ok($r->{error}, 'execute dies on cluster mismatch');
-    like($r->{error}, qr/contradicts|mismatch|production|staging/i,
-         'mentions both clusters');
+    # The value, not the object: "$self->cluster" inside quotes printed
+    # OCP::Cmd::DeployImage=HASH(0x...)->cluster (k293).
+    like($r->{error}, qr/\A--cluster 'staging' contradicts OCP_CLUSTER='production'$/m,
+         'names both clusters by value');
+    unlike($r->{error}, qr/HASH\(|->cluster/, 'and not the command object');
+    is(scalar @{ $r->{transport}->requests }, 0, 'nothing was sent');
+};
+
+# --cluster/OCP_CLUSTER select nothing -- the target is the project's
+# kubeconfig -- so the name must be the project's own (k293).
+subtest '--cluster or OCP_CLUSTER naming another cluster is refused' => sub {
+    delete local $ENV{OCP_CLUSTER};
+    my $r = run_cmd(tag => 'v1.2.3', cluster => 'staging',
+                    respond => sub { (200, deployment()) });
+    like($r->{error}, qr/\A--cluster 'staging' is not this project's cluster: ocp\.yaml names 'mycluster'/,
+         '--cluster: says which name and which cluster the project has');
+    like($r->{error}, qr/drop --cluster/, 'and the way out');
+    is(scalar @{ $r->{transport}->requests }, 0, 'nothing was sent');
+    unlike($r->{output}, qr/Cluster:/, 'and staging was not announced as the target');
+
+    local $ENV{OCP_CLUSTER} = 'staging';
+    $r = run_cmd(tag => 'v1.2.3', respond => sub { (200, deployment()) });
+    like($r->{error}, qr/\AOCP_CLUSTER='staging' is not this project's cluster: ocp\.yaml names 'mycluster'/,
+         'OCP_CLUSTER: the same, naming the variable');
+    like($r->{error}, qr/unset OCP_CLUSTER/, 'and its way out');
+    is(scalar @{ $r->{transport}->requests }, 0, 'nothing was sent');
+};
+
+subtest '--cluster or OCP_CLUSTER naming this project goes through' => sub {
+    my $respond = sub {
+        my ($m, $p) = @_;
+        return (200, deployment()) if $m eq 'GET' || $m eq 'PATCH';
+        return (404, { message => "unexpected $m $p" });
+    };
+    delete local $ENV{OCP_CLUSTER};
+    my $r = run_cmd(tag => 'v1.2.3', cluster => 'mycluster', respond => $respond);
+    is($r->{error}, '', '--cluster mycluster: no error');
+    is($r->{result}, 0, 'exit 0');
+    like($r->{output}, qr/^Cluster:\s+mycluster$/m, 'the target is announced');
+
+    local $ENV{OCP_CLUSTER} = 'mycluster';
+    $r = run_cmd(tag => 'v1.2.3', respond => $respond);
+    is($r->{error}, '', 'OCP_CLUSTER=mycluster: no error');
+
+    $r = run_cmd(tag => 'v1.2.3', cluster => 'mycluster', respond => $respond);
+    is($r->{error}, '', 'both, agreeing: no error');
 };
 
 subtest 'multi-cluster spec without --cluster fails loud with names listed' => sub {

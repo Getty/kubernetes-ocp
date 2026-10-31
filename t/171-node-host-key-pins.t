@@ -191,17 +191,42 @@ subtest 'trust-host removes the pins, with --yes or confirmation' => sub {
     ok exists $patches[0]{message} && !defined $patches[0]{message}, 'the changed-key message goes with it';
     like $out, qr/trusts on first use/, 'says what happens next';
 
+    # _interactive => 1 stands in for the terminal the in-memory STDIN is not.
     @patches = ();
-    $cmd = OCP::Cmd::Node::TrustHost->new(k8s => FakeApi->new($cr), name => 'w1');
+    $cmd = OCP::Cmd::Node::TrustHost->new(k8s => FakeApi->new($cr), name => 'w1', _interactive => 1);
     { open my $in, '<', \"n\n"; local *STDIN = $in; open my $e, '>', \my $err; local *STDERR = $e;
       is $cmd->execute([], []), 1, 'declined: exit 1'; }
     is scalar(@patches), 0, 'nothing patched';
 
     @patches = ();
-    $cmd = OCP::Cmd::Node::TrustHost->new(k8s => FakeApi->new($cr), name => 'w1');
+    $cmd = OCP::Cmd::Node::TrustHost->new(k8s => FakeApi->new($cr), name => 'w1', _interactive => 1);
     { open my $in, '<', \"y\n"; local *STDIN = $in; open my $e, '>', \my $err; local *STDERR = $e;
-      is $cmd->execute([], []), 0, 'confirmed: ok'; }
+      is $cmd->execute([], []), 0, 'confirmed on a terminal: ok'; }
     is scalar(@patches), 1, 'patched';
+
+    # k293: a host-key trust prompt answered by a pipe is no one's answer.
+    # Without a terminal a piped "y" is refused, STDIN is not read, and --yes
+    # (above) is the way to confirm from a script.
+    @patches = ();
+    $cmd = OCP::Cmd::Node::TrustHost->new(k8s => FakeApi->new($cr), name => 'w1', _interactive => 0);
+    my ($err, $out2, $rest) = ('', '');
+    { open my $in, '<', \"y\n"; local *STDIN = $in; open my $e, '>', \$err; local *STDERR = $e;
+      open my $o, '>', \$out2; local *STDOUT = $o;
+      is $cmd->execute([], []), 1, 'piped y without a terminal: exit 1';
+      $rest = <STDIN>; }
+    is scalar(@patches), 0, 'nothing patched';
+    is $rest, "y\n", 'STDIN was not read';
+    like $err, qr/No terminal to confirm on.*node 'w1'.*--yes/, 'says why on STDERR, and the way out';
+    like $err, qr/Aborted; the pinned host keys stay/, 'and that the pins stay';
+    unlike $err, qr/\[y\/N\]/, 'no question nobody can answer';
+    is $out2, '', 'nothing on STDOUT';
+
+    # The real check, not the stand-in: an in-memory STDIN is no terminal.
+    {
+        open my $in, '<', \"y\n"; local *STDIN = $in;
+        is(OCP::Cmd::Node::TrustHost->new(name => 'w1')->_interactive, 0,
+           'a non-terminal STDIN is not interactive');
+    }
 
     @patches = ();
     $cmd = OCP::Cmd::Node::TrustHost->new(k8s => FakeApi->new({ metadata => { name => 'w1' }, status => {} }), yes => 1, name => 'w1');

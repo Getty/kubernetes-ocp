@@ -213,9 +213,14 @@ C<nvidia.com/gpu> allocatable of the Kubernetes Node (0 when it has none or
 the Node is not joined yet), C<runtime>, C<kubelet>, C<os> and C<kernel> its
 C<status.nodeInfo>.
 
-B<pool> may be null today: the OCPNode CR carries no pool name (only
-C<providerRef>), so C<pool> is read from the annotation C<ocp.internal/pool>
-and is null where that annotation is absent.
+B<pool> is the named C<workers:> pool of C<ocp.yaml> the OCPNode belongs to.
+The OCPNode CR carries no pool name (only C<providerRef>), so the OCPNode's
+name is matched against the names C<ocp apply> gives the OCPNodes of each
+pool. An annotation C<ocp.internal/pool> on the OCPNode takes precedence;
+OCP itself never writes one. Without it, C<pool> is null for a node no named
+pool produces (a control plane, a worker C<ocp node add> created under a name
+of its own, the nodes of a pool without C<name>), and for every node when
+there is no readable C<ocp.yaml>.
 
 =head1 SEE ALSO
 
