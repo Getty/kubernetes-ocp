@@ -20,6 +20,16 @@ The default is `false`, but it flips to `true` automatically whenever any
 control plane or worker pool uses the `hetzner` provider — because that is the
 case where nodes appear and disappear without a human present.
 
+`robocop:` takes only `true` or `false` (`1` and `0` too, as a spec written
+from Perl spells them), or a mapping of `enabled`, `security_level` and
+`image`. Anything else is refused, with the line `robocop: must be true, false
+or a mapping (enabled, security_level, image), not '...'`. That includes a
+string such as `no`, `off` or `yes`: YAML::XS reads only a bare `true` and
+`false` as booleans, and Perl calls the string `no` true, so it would have
+turned robocop on. For a string that spells a boolean the line ends with the
+fix (`; write robocop: false`). Inside the mapping, `enabled` takes the same
+true or false, and a key other than those three is refused too.
+
 Prerequisite: the robocop image is published for amd64 only. At least one
 control plane has to be amd64 (Hetzner `cpx`/`cx`, not `cax`), or the robocop
 pod stays Pending and no worker joins through robocop. When every control

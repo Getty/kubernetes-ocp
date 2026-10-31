@@ -34,7 +34,8 @@ ocp destroy                 # tear down cluster (real servers!)
 ```
 
 The robocop image is amd64 only: with only `cax*` (ARM) control planes `ocp apply` warns (pod stays Pending).
-`ocp apply` deploys robocop itself when `robocop` is enabled and workers exist;
+`ocp apply` deploys robocop itself when `robocop` is enabled, with or without
+workers listed, unless `--only` narrows the run to anything but `workers`;
 if robocop isn't ready within 60s, apply falls back to CLI-side reconcile via
 `OCP::Node`. `ocp deploy-robocop` still exists as a manual/standalone step.
 
@@ -302,7 +303,8 @@ workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
     provider: hetzner       # robocop or the CLI fallback
     server_type: cpx21
-    nodes: 3
+    nodes: 3                # a count; an ssh pool lists hosts (strings or
+                            # {host: …}) instead, see "Shapes" below
     labels:                 # optional, onto each Node (OCPNode spec.labels)
       ai.citilan.de/node-class: general
     taints: ["dedicated=ml:NoSchedule"]   # optional, kubectl syntax
@@ -312,7 +314,9 @@ ssh:
   private_key: .ocp/id_ed25519
   public_key: .ocp/id_ed25519.pub
 robocop: true               # default false; auto-true when a hetzner
-                            # provider is configured
+                            # provider is configured. true/false (or 1/0) or
+                            # a mapping {enabled, security_level, image};
+                            # a string like no/off is refused
 lbipam: true                # opt-in LB-IPAM + L2 announcements (ARP takeover
                             # on the node network — know what you're doing)
 network:                    # optional; see "network" below
@@ -433,11 +437,21 @@ gpu:
   - **Shapes name their key** (k296, k305). A wrong shape gets one line
     naming it, not a Perl error: `control_planes`, `workers` and their
     entries, `network`, `cilium`, `gpu`, `gpu.amd`. `gpu: false` is refused
-    with the hint `gpu: { enabled: false }`. A list as `name:` or `robocop:`
-    (or as `robocop.enabled`) is refused, as is `control_planes: []`.
-    `control_planes.nodes` must be a whole number from 1 to 7: above 7 is
-    refused, since every control plane is an etcd member and etcd advises
-    no more (`$OCP::Config::MAX_CONTROL_PLANE_NODES`).
+    with the hint `gpu: { enabled: false }`. A list as `name:` is refused, as
+    is `control_planes: []`.
+  - **`robocop:`** (k315) takes only true/false (or 1/0) or a mapping of
+    `enabled`, `security_level` and `image`; `enabled` takes true/false too.
+    A string like `no` or `off` is refused, with the hint `write robocop:
+    false`: `robocop: must be true, false or a mapping (enabled,
+    security_level, image), not 'no'`. A key outside the three is refused.
+  - **A pool's `nodes:`** (k315) hangs on its provider. An `ssh` pool lists its
+    hosts (strings, or mappings with `host`); every other provider counts its
+    machines (`nodes: 3`, a whole number). Wrong: "nodes must be a list of
+    hosts for an ssh pool" / "nodes must be a whole number".
+  - **At most 7 control planes** (`$OCP::Config::MAX_CONTROL_PLANE_NODES`):
+    `control_planes.nodes` must be a whole number from 1 to 7, and the list
+    form holds at most 7 entries ("must list at most 7 control planes"),
+    since every control plane is an etcd member and etcd advises no more.
   - **`ocp apply` and `ocp apply --dry-run` call `validate` first** (k255),
     before a PIN, a file, a host or the cluster: every error at once on
     STDERR, one line each, then exit 1 with nothing done. `ocp status` does

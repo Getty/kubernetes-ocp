@@ -22,6 +22,8 @@ kubernetes:
 control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
   provider: hetzner            # CPs), or an Array of hashes (mixed).
   server_type: cx32            # rke2 deploys every entry; k3s only the first.
+                               # At most 7 either way (etcd): `nodes:` and the
+                               # list both.
   location: fsn1               # No HA client endpoint yet — see "Limits" in README.
   image: debian-13
 
@@ -29,7 +31,7 @@ workers:                       # optional pools; each becomes Pending OCPNode
   - name: pool1                # CRs on `ocp apply` (CR-first — see below)
     provider: hetzner
     server_type: cpx21
-    nodes: 3
+    nodes: 3                   # a count; an ssh pool lists its hosts instead
 
 ssh:
   private_key: .ocp/id_ed25519
@@ -37,6 +39,8 @@ ssh:
 
 robocop: true                  # optional; default false, auto-true when any
                                # control plane or worker pool uses hetzner
+                               # true/false (or 1/0) or a mapping, never a
+                               # string like no or off
                                # mapping form: robocop: { image: repo:tag }
                                # pins the robocop image (default: raudssus/ocp:
                                # <version of this ocp>, see docs/robocop.md)
@@ -103,6 +107,23 @@ ocp node rm worker-1
 …or by editing the CRs directly. The robocop controller — or the CLI fallback
 when robocop is not running — reconciles them. Editing `workers:` in `ocp.yaml`
 on an existing cluster changes nothing.
+
+## What `ocp apply` refuses in these keys
+
+`ocp apply` checks `ocp.yaml` first and lists every error at once on STDERR.
+Three shapes that used to be read wrongly are refused:
+
+- **`robocop:`** takes only `true` or `false` (`1` and `0` too) or a mapping of
+  `enabled`, `security_level` and `image`. A string like `no` or `off` is
+  refused: `robocop: must be true, false or a mapping (enabled,
+  security_level, image), not 'no'; write robocop: false`.
+- **A worker pool's `nodes:`** depends on its provider. An `ssh` pool lists its
+  hosts, each a host name or IP address or a mapping with `host`:
+  `nodes: [w1.example, { host: 10.0.0.7 }]`. Every other provider counts its
+  machines: `nodes: 3`, a whole number.
+- **`control_planes:`** holds at most 7 control planes, as a list just as with
+  `nodes: N`: every control plane is an etcd member, and etcd advises no more
+  than 7.
 
 ## Provider modes
 
