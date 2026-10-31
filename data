@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T02:34:17Z
+created: 2026-10-31T01:45:31Z
+id: 256
+priority: medium
+started: 2026-10-31T02:34:17Z
+status: done
+tags:
+- bug
+- drift
+- k8s
+title: OCP::Drift::component_drift treats a failed read of an optional probe as absent
+updated: 2026-10-31T02:34:17Z
+---
+
+Found during k252 (2026-10-31, ocp-status-worker). component_drift reads optional probes (the AMD GPU DaemonSets, gpu_operator, NFD) and maps every failed read to "not there". A 403 or 5xx is therefore reported as "no drift" instead of an error. This is the same class of bug as k119, which covered distribution_drift.
+
+Done when only a 404 counts as absent. Any other read error gets a diagnosis on STDERR and is reported as "drift unknown", not as clean. A test covers 404, 403 and 500 for an optional probe. Lane: ocp-state-worker.
+
+2026-10-31 02:20 Design (ocp-state-worker): component_drift now captures $@ after the probe GET. No object + an error that does not match /\b404\b/ (the repo convention, Node.pm/_get_cr, Status.pm k252) -> one kind=>'error' entry (k119's shape: component, label, expected, actual undef, remedy undef, message '<label>: could not read <Kind> <ns>/<name>, drift unknown: <err>') plus a carp to STDERR. A 404, or an undef with no error, stays absent as before. Applied to every probe, not only the optional ones: for a required probe a 403 used to read as 'missing', and for Cilium/Gateway API that entry carries remedy_if_missing, i.e. reconcile would run an install over a cluster it could not read.
+
+2026-10-31 02:30 Caller follow-up, APPLY lane (ocp-apply-worker), lib/OCP/Cmd/Apply/Drift.pm — the state side is done; callers were not touched. A kind=>'error' entry today (k119's distribution entry as well as the new k256 probe entries) goes through the reconcile loop like report-only drift: it prints '[drift] <msg>' and then 'No automatic step for this — see ocp update', which is the wrong advice for a read that failed. It is not pushed onto @unresolved, so the summary can say 'All N component(s) up to date' and Health::finish exits 0 over a cluster it could not read. Needed: (1) for kind eq 'error', skip the 'see ocp update' hint and say that drift is unknown (optionally an [!!] on STDERR; OCP::Drift has already carped the cause there). (2) Push the entry's label onto @unresolved so the summary and the exit code do not report a clean run. (3) In dry_run_report, $is_report_only labels an error entry 'report only, a real run leaves it as it is'; it should say 'could not be checked' instead. STATUS lane (ocp-status-worker), lib/OCP/Cmd/Status.pm: no change strictly needed. The text form lists the entry under === Drift === (the message says 'drift unknown'), JSON carries kind:'error' with fixable:false (already in its POD since k119), and the diagnosis is on STDERR. Optional: exit non-zero when an error entry is present. AMDGPU.pm does not consume component_drift, only %AMD_GPU_DAEMONSETS, so it needs no follow-up for this card.
+
+2026-10-31 02:30 Also found (same class, outside this card; for the dispatcher to file): (a) STATE lane, lib/OCP/Drift.pm: gpu_crd_drift's $get returns undef for every status >= 400 and any exception, so a 403 on a GPU Operator CRD reads as 'CRD not there, no drift'. registry_dns_drift (`eval {get ConfigMap} or next`) and pod_cidr_drift (`eval {...} or return`) do the same, and so does _probe_hosts' OCPNode list (`|| []`, which silently probes only the CPs). (b) APPLY lane, lib/OCP/Cmd/Apply/K8s.pm: resource_exists is `defined eval { get }`, so a 403 reads as absent; it backs AMDGPU::ds_present, i.e. a 403 reads as 'restored' and triggers a redeploy. crd_get returns undef for any status >= 400. AMDGPU::not_ready reports any failed GET as '<DaemonSet> not found'.
+
+2026-10-31 02:30 Done (ocp-state-worker). lib/OCP/Drift.pm component_drift: only a failure matching /\b404\b/ (or an undef with no error) counts as absent. Any other read error becomes one kind=>'error' entry (remedy undef, actual undef, message '<label>: could not read <Kind> <ns>/<name>, drift unknown: <err>') plus a carp to STDERR. This applies to every probe, so a denied Cilium read no longer becomes a 'missing' entry carrying the install remedy. POD updated. Tests: t/25-drift.t covers 404, 403 and 500 (Kubernetes::REST::APIError) for the GPU Operator and the AMD device plugin, a plain-string failure, and Cilium 403; all of these are red against HEAD's Drift.pm (34 failures). The FakeApi absences in t/25, t/182 and t/39 now die with a 404 the way Kubernetes::REST does; before, they died with a bare 'not found'. Binding: DOCKER_BUILDKIT=0 make test TESTS="t/00-load.t t/25-drift.t t/182-pod-cidr.t t/39-coredns-registry-host.t t/228-gpu-crd-drift.t t/71-drift-rex-probe.t t/233-gpu-clusterpolicy-drift.t t/28-distribution-version.t t/38-reconcile-path.t" -> Files=9, Tests=375, PASS. Caller follow-up (apply lane) is in the note above.
+
+Committed as 37b4c98; prove -l on a detached worktree: 9 files, 375 tests, PASS.
