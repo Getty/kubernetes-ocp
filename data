@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T11:18:57Z
+created: 2026-10-31T06:33:21Z
+id: 310
+priority: low
+started: 2026-10-31T11:18:57Z
+status: done
+tags:
+- docs
+- gpu
+title: 'Docs after k286/k287/k288: ADR 0017 amendment, ocp-gpu references, K8s.pm
+  DESCRIPTION'
+updated: 2026-10-31T11:18:57Z
+---
+
+Docs left behind by k286/k287/k288 (2026-10-31):
+- ADR 0017 amendment (docs/adr/) still says the AMD step waits 300 s. Since k286 an up-to-date AMD stack also waits for a node that joined, with 600 s (join_ready_timeout) for a fresh node. Since k287 NVIDIA waits for a worker that joins after a check that ran. Lane: ocp-adr-auditor.
+- ocp-gpu skill, references/amd.md and references/nvidia-cluster.md, describe the old waits. Lane: the agent that owns skill text (as for k302).
+- lib/OCP/Cmd/Apply/K8s.pm DESCRIPTION claims OCP::Cmd::Apply re-exports every helper; false for kubeconfig_path and read_or_why (moved there in k288). Lane: ocp-doc-writer.
+
+Done = each says what the code does now, naming k286/k287/k288 where the doc carries card ids.
+
+Skill part done by ocp-doc-writer (uncommitted): ocp-gpu references/amd.md (up-to-date stack waits for a fresh node, 600 s join budget vs 300 s, Cilium first BPF compile; node add bullet says 600 s as the tree has k309) and references/nvidia-cluster.md (k287 recheck after a check that ran, 600 s NFD wait). Commit amd.md only with or after k309. Still open: ADR 0017 amendment (adr-auditor running), K8s.pm DESCRIPTION (after the k277 worker frees Apply/K8s.pm).
+
+ADR part done by ocp-adr-auditor (uncommitted): docs/adr/0017 amendment now says k286 (bd5233d) AMD waits on unchanged too, 600 s join_ready_timeout for joined => 1 from node add and after_join; k287 (fc5740b) NVIDIA checks again after a first check that ran when a joined worker carries the NFD NVIDIA label; the k285 asymmetry unchanged. Checked against git show and HEAD. Only K8s.pm DESCRIPTION left.
+
+Committed as 781a9a2
