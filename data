@@ -1,0 +1,33 @@
+---
+claimed_at: 2026-10-31T03:57:47Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T03:57:52Z
+created: 2026-10-31T02:57:33Z
+id: 275
+priority: low
+started: 2026-10-31T03:57:52Z
+status: done
+tags:
+- status
+- drift
+title: 'ocp status: OCP::Kubernetes never registers OCP''s CRD kinds, so list(''OCPNode'')
+  dies ''unknown resource'''
+updated: 2026-10-31T03:57:52Z
+---
+
+Found while doing k268.
+
+OCP::Kubernetes builds the api for ocp status without OCP::K8s->register. On a cluster that does not serve the OCPNode CRD (an apply that never got that far), list(OCPNode) dies with "unknown resource" instead of a 404. Since k268 the host probes report that as a worker_host_probes error entry ("drift unknown"), which is wrong: the honest answer there is "no OCPNode CRD, so no workers recorded".
+
+Done when: the ocp status api knows OCP kinds the same way the apply api does (register, or an equivalent), an absent CRD reads as absent (404 path), and a test pins it. Status lane (OCP::Kubernetes).
+
+2026-10-31 03:37 Cause: lib/OCP/Kubernetes.pm _build_api calls register_resource_providers but not OCP::K8s->register; the apply api (OCP::Cmd::Apply::K8s::api) calls both. Unregistered, list('OCPNode') goes through expand_class rung 5 and croaks 'unknown resource' before any request when the cluster does not serve ocp.internal/v1. Plan: copy apply's OCP::K8s->register($api) into _build_api.
+
+2026-10-31 03:48 Decision: registered on the Kubernetes::REST 'with' list as a plain provider map { OCPNode => '+OCP::K8s::OCPNode', OCPNodeProvider => '+OCP::K8s::OCPNodeProvider' }, the same mechanism register_resource_providers uses in the same file, rather than copying OCP::K8s->register. Measured why: register writes into $api->resource_map, which forces the discovery fetch at api build -- against an API that does not answer, ocp status then makes one extra request (each up to LWPIO's 310s timeout on a blackholed host) and prints 'Falling back to the built-in resource map: ... at lib/OCP/K8s.pm line 16.' ahead of its k257 'WARNING: Cannot connect to cluster API'; and invalidate_discovery drops a resource_map entry again (verified: after invalidate, OCPNode resolves to IO::K8s::OCPNode). 'with' is lazy and survives rebuilds. Robocop's Controller, which calls OCP::K8s->register on top, still resolves both Kinds with no warning (checked). Also found (not in scope, for the state/apply lane): OCP::K8s->register's resource_map write is lost on invalidate_discovery (ensure_crd calls it), so the apply api and the other ~15 register callers lose OCPNode/OCPNodeProvider after an ensure_crd -- worth a card on this board.
+
+2026-10-31 03:55 Also found (pre-existing, unchanged by this card; verified by running t/10 against HEAD's Kubernetes.pm): t/10-kubernetes.t 'the typed CRD providers are registered' calls $api->k8s after its local LWPIO::call loopback has gone out of scope, so it makes a real HTTP/DNS request to k8s.example (warning 'Can't connect to k8s.example:6443 (Name or service not known) at t/10-kubernetes.t line 399'), and its loopback answers /openapi/v2 but not the /api,/apis discovery Kubernetes::REST 1.110 uses, so 'Falling back to the built-in resource map' is warned too. Test-writer lane.
+
+2026-10-31 03:55 Done. lib/OCP/Kubernetes.pm: _build_api pushes { OCPNode => '+OCP::K8s::OCPNode', OCPNodeProvider => '+OCP::K8s::OCPNodeProvider' } onto $api->with (lazy, survives invalidate_discovery) instead of OCP::K8s->register (forces discovery at build: +1 request and a 'Falling back to the built-in resource map' warning ahead of status's own error on a down API; lost on invalidate) -- see earlier note; 'use OCP::K8s;' added; =attr api POD says so. t/275-status-ocpnode-crd.t new: real Kubernetes::REST via OCP::Kubernetes, transport replaced: Kinds resolve (and after invalidate_discovery); down API = one request, no warning; no CRD -> list asks /apis/ocp.internal/v1/namespaces/ocp-system/ocpnodes and gets an APIError 404; rex_probe_drift/probe_targets then give no entry, CP only, nothing on stderr; controls: served CRD probes the worker, 403 still a worker_host_probes error entry. Verified: red on HEAD (3 of 6 subtests); mutants N1 (no registration), N2 (OCP::K8s->register instead), N3 (OCPNode left out) each killed. Binding make test: 27 files / 689 tests PASS (incl. t/10, t/79, t/45, t/33, t/205); robocop Controller's extra OCP::K8s->register on the same api checked to resolve both Kinds with no warning.
+
+2026-10-31 03:57 Committed as 2452046. Follow-ups: k283, k284.
