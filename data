@@ -1,0 +1,36 @@
+---
+claimed_at: 2026-10-31T03:40:55Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T03:42:36Z
+created: 2026-10-31T02:32:42Z
+id: 271
+priority: low
+started: 2026-10-31T03:42:36Z
+status: done
+tags:
+- skills
+- docs
+title: 'Skills overtaken: ocp-usage lacks gpu.amd, ocp-cilium k161 caveat, ocp-rke2
+  node-ip'
+updated: 2026-10-31T03:42:42Z
+---
+
+Found by k244. Repo-owned skill text that the code has overtaken:
+- ocp-usage has no `gpu.amd` schema (allocation, resource_naming, labeller, metrics, integrated) and no AMD node labels;
+- ocp-cilium still calls the k161 RKE2 chart caveat backlog, but the Rexfile already disables that chart;
+- ocp-rke2 needs a node-ip line once k254 lands (node_ip in config.yaml, ocp.yaml control_planes[].node_ip, OCPNode spec.nodeIP).
+
+Done when the three skills match the code (facts from code, not memory), ocp-rke2 after k254 is committed. Keep the briefed SKILL.md sizes in check (ocp-infra-worker briefing is at 58 kB of 64 after k244): detail goes into references/. Lanes: ocp-infra-worker (ocp-cilium, ocp-rke2), ocp-apply-worker or ocp-doc-writer (ocp-usage).
+
+From k270: .claude/skills/ocp-gpu/references/nvidia-cluster.md:143 says ocp status shows the GPU operator status and a device-plugin pod count; it shows neither. Since k270 it shows nvidia.com/gpu allocatable with a stale capacity beside it, and --json nodes[].gpu is allocatable plus gpu_capacity.
+
+2026-10-31 03:40 Also found, NOT fixed (outside the card, for whoever routes it):
+1) Code drift, share/Rexfile install_amd (infra lane) + OCP::Config comment (state lane): the integrated-GPU skip line tells the user "join the node with --gpu or set gpu.amd.integrated: true", but gpu.amd.integrated reaches no node (no caller sets OCP::Node gpu_amd_integrated, OCP::Provider gpu_flags_from_cr carries no integrated; OCP::Node POD: "No caller sets it yet"). Either wire the OCPNodeProvider CR channel or drop that advice. Rexfile:178 and OCP::Config:485 comments claim the same, and so does the AMD design spec ("also true when gpu.amd.integrated: true is set cluster-wide"). Board: this one.
+2) ocp-usage gaps (doc lane): the schema has no network: block (pod_cidr, lb_pool, l2.interfaces/node_selector); the command reference lacks ocp status --json, ocp health [--json], ocp node ls --json, ocp node rm --keep-machine, ocp node trust-host, ocp deploy-image; the header still says "Verified against the code 2026-08-16".
+3) ocp-cilium copies the OCP::Versions pins (cilium 1.20.0, cilium_cli v0.19.7, gateway_api v1.6.1 in "Cilium Versions" and the Gateway API section). They match today, but ocp-gpu forbids exactly this ("never copy a pinned number"). Drift risk on the next bump.
+Fixed beyond the card because the text was wrong and in a skill this card covers: ocp-cilium LB-IPAM (the pool is cilium.io/v2 not v2alpha1, its blocks come from network.lb_pool, the node-IP /32 only on a single node and multi-node dies, L2 nodeSelector), the ocp-cilium CRD wait (it polls /apis/cilium.io/v2/ciliumloadbalancerippools, not a CRD lookup), install_control_plane renamed to install_server, ocp-usage "multi-CP not implemented" (k8 does RKE2 HA), nvidia-cluster.md "OCP::Kubernetes/ocp status still count from capacity" (k270).
+
+2026-10-31 03:40 Done (skill text only, uncommitted): ocp-usage got the gpu.amd schema (allocation, resource_naming, labeller, metrics, integrated, each with its default), a gpu.amd section (labels OCP sets, the allocation override label, the integrated gate only via --gpu, pointer to ocp-gpu amd.md), control_planes[].node_ip in the schema, --node-ip on ocp node add, and a node_ip section (format, no default, refused on pools/nodes>1/shared address, needs Rex::Rancher k100, [WARN] + status.message on mismatch). ocp-rke2 install-flow.md: node-ip in both config.yaml blocks, _node_ip_opt as the first preflight step, and a node-ip section (the chain OCP::Node/Bootstrap -> OCP::Rex _node_ip_param -> Rexfile _node_ip_opt -> Rex::Rancher, the capability check, the multi-homed case, the two-restart fix incl. the Cilium agent pod, node_ip_mismatch). SKILL.md pointer names it. ocp-cilium: the k161 caveat is now "the Rexfile disables the chart on every RKE2 server, skill ocp-rke2"; plus the fixes in the note above. ocp-gpu nvidia-cluster.md Status: allocatable (k270), stale capacity beside it, no operator status/pod count, --json gpu + gpu_capacity; amd.md already said allocatable (checked against _amd_gpu_count), unchanged. Verified against lib/ and share/ at 20bec47 and rex-rancher cb950e5 (k100: node_addresses keep/warn behaviour); --node-ip dash form checked in MooX::Options::Role. Briefed size: ocp-cilium -141 B, ocp-rke2 SKILL +13 B. make test not run: no code changed and no test reads skill files (checked with grep of t/ and xt/).
+
+2026-10-31 03:42 Committed as 29bab83. Follow-ups: k281, k282, note on k253.
