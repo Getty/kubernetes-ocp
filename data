@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T11:20:10Z
+created: 2026-10-31T10:48:05Z
+id: 344
+priority: medium
+started: 2026-10-31T11:20:10Z
+status: done
+tags:
+- docs
+title: 'Docs after k265/k311/k316: ocp-core invariant 4 (OCP::BooleanEq), Rexfile
+  hand-run PERL5LIB, Init.pm POD, deploy-robocop leaves a newer CRD'
+updated: 2026-10-31T11:20:10Z
+---
+
+Docs after k265 and k316 (2026-10-31):
+- skill ocp-core, "Hard invariants" 4: still says OCP.pm corrects the Cpanel::JSON::XS boolean eq and the Rexfile child does not. Since k316 the correction is OCP::BooleanEq: OCP.pm loads it (so bin/ocp and robocop have it), the Rexfile loads it through the PERL5LIB OCP::Rex::run_task sets.
+- skills ocp-cilium / ocp-rke2 where they show a hand-run `rex -f share/Rexfile ...`: from outside the checkout root that now needs PERL5LIB=<checkout>/lib (the Rexfile's comment says so).
+- lib/OCP/Cmd/Init.pm POD: `ocp init --hetzner` says on STDERR why it could not read the Hetzner catalogue (k265), and still goes on with the defaults.
+
+Words as the code says them. ocp-doc-writer.
+
+Added from k311 (2026-10-31): skill ocp-usage says only that `ocp deploy-robocop` deploys "the controller and its CRDs" -- since k311 it leaves an OCPNode/OCPNodeProvider CRD that a newer ocp installed as it is, with the `[skip]` line `ocp apply` gives it, and stops on a CRD it cannot read. (README.md:446 is done by main, prose lane.)
+
+Committed as f276d35
