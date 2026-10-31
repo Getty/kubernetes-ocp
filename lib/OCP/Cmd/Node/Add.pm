@@ -527,6 +527,9 @@ sub execute {
     if (defined(my $err = OCP::Choices::node_ip_error($self->node_ip))) {
         die "--node_ip: $err\n";
     }
+    # --gpu: the gpu: block of ocp.yaml, before the kubeconfig (PIN1) and the
+    # cluster are asked anything (k333).
+    $self->_refuse_invalid_gpu_config if $self->gpu && !$self->nowait;
 
     my $api           = $self->_k8s;
     my $provider_hash = $self->_resolve_provider($api);
@@ -848,6 +851,46 @@ sub _ssh_keys_note {
       . "`ocp node rm`. `ocp keys authorized-keys` prints both.\n";
 }
 
+# validate()'s lines for the gpu: block of ocp.yaml, all at once, with --gpu
+# and without --nowait (k333): before the kubeconfig is decrypted (PIN1), the
+# provider looked up, the OCPNode written, the host probed (PIN2) or joined.
+# The block is read once the node is Ready -- gpu.enabled by _ensure_gpu_stack
+# below, gpu.driver and gpu.toolkit by the GPU Operator check, gpu.amd by the
+# AMD GPU stack -- and since k320 a malformed gpu.enabled croaked there,
+# outside an eval, with the node in the cluster; a malformed gpu.driver or
+# gpu.amd key failed its check there, for a line validate() had before
+# anything began. Dies "\n"-terminated: bin/ocp prints it on STDERR, exit 1.
+#
+# Only those lines, not all of validate() as `ocp keys secure` has it (k321).
+# Its reasons do not carry over: node add is how a node joins a running
+# cluster between two `ocp apply` runs, not a command one follows, and it
+# reads little else of ocp.yaml -- the kubeconfig alone with robocop; the
+# control plane's address, the key, the distribution and the pod CIDR without
+# it. A refusal over a cilium: or lbipam: line it never reads, or one a newer
+# validate() adds, would hold a node up over something that has nothing to do
+# with it. What else the GPU steps read, apply's code, they read inside their
+# evals: a failure there is a stack "not ensured", said with `ocp apply`, not
+# a command that dies after the join. The control_planes and workers shapes
+# this command reads are k306's.
+#
+# Not with --nowait, which reads none of the block: it leaves the GPU stack to
+# `ocp apply`, and that refuses the same lines before it touches anything
+# (k255). The lines are validate()'s for the key path gpu, or under it.
+sub _refuse_invalid_gpu_config {
+    my ($self) = @_;
+    my $config = $self->_config;
+    my @errors = grep { /\Agpu[.:]/ } $config->validate;
+    return 1 unless @errors;
+
+    my $file = $config->file;
+    my $s    = @errors == 1 ? '' : 's';
+    die "$file has " . scalar(@errors) . " error$s in its gpu: block:\n"
+      . join('', map { "  - $_\n" } @errors)
+      . "Nothing was done: ocp node add --gpu sets up the node's GPU stack from that block once "
+      . "the node is Ready, and checks it before it asks the cluster anything or touches a "
+      . "machine. Fix the line$s above and run it again.\n";
+}
+
 # k220, k251: a GPU node joined after the last `ocp apply` gets its GPU stack
 # here, by the very checks `ocp apply` runs -- not a second copy of them: the
 # GPU Operator (OCP::Cmd::Apply::Workloads::setup_gpu_operator) for an NVIDIA
@@ -1030,6 +1073,22 @@ there without C<amd.com/gpu> or C<nvidia.com/gpu> until the next one (k220,
 k251).  When that cannot be done -- no GPU shown in time, a failed rollout, or
 C<--nowait> -- it says so on STDERR and names C<ocp apply> as the way to get
 the stack; the exit code still reflects only whether the node is Ready.
+
+Before any of that -- before the kubeconfig is decrypted (PIN1), the cluster
+is asked anything, the OCPNode is written or the host is probed or joined --
+C<--gpu> checks the C<gpu:> block of F<ocp.yaml> the stack is set up from, and
+refuses on every line L<OCP::Config/validate> has for it, all at once, on
+STDERR with exit 1 (k333).  A malformed switch used to stop the command only
+after the node had joined:
+
+    Error: ocp.yaml has 1 error in its gpu: block:
+      - gpu.enabled: must be true or false, not 'no'; write enabled: false
+    Nothing was done: ocp node add --gpu sets up the node's GPU stack from that block once the node is Ready, and checks it before it asks the cluster anything or touches a machine. Fix the line above and run it again.
+
+Only that block: a line C<validate()> has elsewhere in F<ocp.yaml> is none
+this command reads, and C<ocp apply> refuses it.  With C<--nowait> the block
+is neither read nor checked; the stack is left to C<ocp apply>, which checks
+it first.
 
 After that, the GPU Operator check waits up to five minutes for
 C<nvidia.com/gpu> in C<status.allocatable> (not capacity) on every NVIDIA
