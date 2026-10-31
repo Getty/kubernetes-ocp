@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T12:46:58Z
+created: 2026-10-31T02:15:00Z
+id: 261
+priority: low
+started: 2026-10-31T12:46:58Z
+status: done
+tags:
+- apply
+- amd
+- gpu
+title: ocp apply --dry-run returns before the AMD GPU step
+updated: 2026-10-31T12:46:58Z
+---
+
+Found by k251 (ocp-apply-worker). `ocp apply --dry-run` returns before OCP::Cmd::Apply::AMDGPU runs. It shows the AMD version drift through the k250 probes, but not which AMD components (device plugin / DRA driver / labeller / metrics exporter) a real run would deploy, update or remove — e.g. after switching gpu.amd.allocation or a node label, or with gpu.enabled: false on a cluster that still has the stack.
+
+Done when: --dry-run prints, per AMD component, what a real run would do (deploy/update/remove/unchanged, and on which nodes), without calling Rex::Rancher::K8s or writing deployed.yaml; covered by a test. Lane: ocp-apply-worker.
+
+Also found, not fixed (by reading, not reproduced; for a card on this board): an AMD DaemonSet whose image was changed outside OCP while the recorded options hash still matches the pin. Its k250 probe (OCP::Drift, self_healing => 1) reports version drift, which the dry run counts as a difference a real run acts on. The AMD step compares only the recorded hash and the DaemonSet's presence, so it says "already deployed (up to date)" and does not redeploy. The drift is counted as fixed and the real run leaves it. In the dry run that shows as "[drift] AMD GPU device plugin runs X, expected Y" next to "[amd] AMD GPU device plugin is up to date on ...". Either the step compares the running image with the pin, or the probes stop being self_healing. Related doc drift: the OCP::Drift POD calls the four AMD probes "report-only", the probe table marks them self_healing.
+
+Patch (not applied to the shared tree): /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-dry261/k261.patch; opens with subject, description and Changes bullet. Applies on HEAD cb25f5a, independent of k297.patch. OCP::Cmd::Apply::AMDGPU: plan() and outcome() are now shared by setup()/ensure() and the new dry_run(). Per component, dry_run() prints under [amd] what a real run would deploy, redeploy, update or remove, with the pin and the nodes, or that it is up to date. It makes no Rex::Rancher::K8s call and does not write .ocp/deployed.yaml. A read it cannot make is 'could not be checked', with the cause on STDERR. OCP::Cmd::Apply::Drift::dry_run_report counts the AMD changes; an AMD component a drift entry already names is not counted twice. Tests: t/251 (+9 k261 subtests, each dry run held to the real run's results), t/38 (+1), t/312 (its fake API answers the new Node list with no nodes; its claims are unchanged). Red on fea8460: t/251 died (no dry_run), t/38's new subtest failed. Green on cb25f5a + both patches: make test on 18 files, 331 tests, PASS. Mutation: 13 of 13 killed in one guarded run, control passing. Full suite not run.
+
+Committed as 8de9306
