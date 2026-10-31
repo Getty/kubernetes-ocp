@@ -136,6 +136,8 @@ subtest 'k319 Registry: a Deployment that cannot be read is not "not there"' => 
 # NFD: after the rollout, a wait for an nfd-worker pod (which goes on to the
 # label wait whatever it saw) and a wait for NFD's labels (which dies when
 # none come). Both read every failure as "not yet" and said nothing of it.
+# Since k328 the nfd-worker wait says on STDERR why it ran out in every case,
+# a failed read here; the rest of it is t/328.
 #
 
 {
@@ -143,6 +145,7 @@ subtest 'k319 Registry: a Deployment that cannot be read is not "not there"' => 
     sub new         { my ($c, $n) = @_; bless { n => $n }, $c }
     sub status      { $_[0] }
     sub numberReady { $_[0]{n} }
+    sub desiredNumberScheduled { 1 }
     package NfdMeta;
     sub new    { my ($c, $l) = @_; bless { l => $l }, $c }
     sub labels { $_[0]{l} }
@@ -205,7 +208,7 @@ subtest 'k319 NFD: the nfd-worker wait names its last failed read' => sub {
         $r = nfd(ds => [ $answer ]);
         is $r->{rv}, 'deployed', "$what throughout: the label wait decides, as before";
         is $r->{ds_reads}, 12, "$what throughout: read for the whole wait";
-        is $r->{err}, '', "$what throughout: no read failed, nothing on STDERR";
+        unlike $r->{err}, qr/read failed|could not read/, "$what throughout: no read failed, none named";
     }
 
     for my $refusal (@REFUSALS) {
@@ -223,7 +226,7 @@ subtest 'k319 NFD: the nfd-worker wait names its last failed read' => sub {
         is $r->{err}, '', "$code once, then ready: nothing on STDERR";
 
         $r = nfd(ds => [ api_error($code, $reason), 0 ]);
-        is $r->{err}, '', "$code once, then read and not ready: the last read did not fail";
+        unlike $r->{err}, qr/read failed|could not read/, "$code once, then read and not ready: the last read did not fail";
     }
 };
 

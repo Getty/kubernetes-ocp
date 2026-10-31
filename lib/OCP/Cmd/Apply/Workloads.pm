@@ -115,24 +115,25 @@ sub setup_nfd {
         or die "nfd-master not ready within ${nfd_timeout}s\n";
 
     # Wait for nfd-worker DaemonSet. A DaemonSet that is not there (a 404) has
-    # no pod ready yet. A read that fails otherwise is polled again; when the
-    # last one failed too, its cause goes to STDERR (k319) -- a last read that
-    # found the worker ready did not fail. The label wait below decides either
-    # way.
+    # no pod ready yet. A read that fails otherwise is polled again. A wait
+    # that runs out says why on STDERR: the last read's cause when it failed
+    # (k319), the 404 or the pods ready otherwise (k328) -- it used to run out
+    # without a word. The label wait below decides either way.
     print "      Waiting for nfd-worker...\n";
-    my $read_err;
+    my ($read_err, $ds, $seen);
     for my $i (1..12) {
-        my $ds = eval { OCP::Cmd::Apply::K8s::read_or_absent('DaemonSet node-feature-discovery/nfd-worker',
+        $ds = eval { OCP::Cmd::Apply::K8s::read_or_absent('DaemonSet node-feature-discovery/nfd-worker',
             sub { $api->get('DaemonSet', 'nfd-worker', namespace => 'node-feature-discovery') }) };
         $read_err = $@;
         if ($ds && $ds->status && ($ds->status->numberReady // 0) > 0) {
             print "      NFD worker running on " . $ds->status->numberReady . " node(s)\n";
+            $seen = 1;
             last;
         }
         $self->wait_seconds(10);
     }
-    print STDERR "  [WARN] nfd-worker not seen ready within 120s; the last read failed: $read_err"
-        if $read_err;
+    print STDERR "  [WARN] nfd-worker not seen ready within 120s" . nfd_worker_why($ds, $read_err) . "\n"
+        unless $seen;
 
     # Wait for NFD to label nodes (needs a few seconds after worker starts).
     # As above: a failed read is polled again, and the death names the last
@@ -159,6 +160,23 @@ sub setup_nfd {
     $self->_save_deployed_hash($config, 'nfd', $hash);
 
     return $outcome;
+}
+
+# Why the nfd-worker wait of setup_nfd ended without a ready pod, as the end
+# of its [WARN] on STDERR (k328): the last read's failure (k319), the
+# DaemonSet not there (a 404, $ds undef), or how many of the pods it wants
+# are ready -- 0 of 0 is a DaemonSet no node takes.
+sub nfd_worker_why {
+    my ($ds, $read_err) = @_;
+    if ($read_err) {
+        my $reason = "$read_err";
+        chomp $reason;
+        return "; the last read failed: $reason";
+    }
+    return ': DaemonSet node-feature-discovery/nfd-worker not found' unless $ds;
+    return ': the DaemonSet reports no status yet' unless $ds->status;
+    return ': ' . ($ds->status->numberReady // 0) . ' of '
+        . ($ds->status->desiredNumberScheduled // 0) . ' pod(s) ready';
 }
 
 sub ensure_nfd_image {

@@ -7,6 +7,7 @@ use warnings;
 use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::CR;
+use OCP::Cmd::Apply::K8s ();
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Registry;
 use OCP::Cmd::Apply::Workloads;
@@ -370,12 +371,14 @@ sub robocop_step {
 
     print "  [..] Deploying robocop controller ($level)...\n";
 
-    my $had_deployment = eval {
-        $api->get('Deployment', 'robocop', namespace => 'ocp-system');
-    } ? 1 : 0;
-
-    my $secret;
+    # Only a 404 is no Deployment. A read that fails otherwise said "none" too,
+    # and the step reported a rollout it could not tell from a re-apply; now
+    # it fails the step with its cause, before anything is written -- what
+    # the dry run says a real run does (k328, k319).
+    my ($had_deployment, $secret);
     my $deployed = eval {
+        $had_deployment = OCP::Cmd::Apply::K8s::read_or_absent('Deployment ocp-system/robocop',
+            sub { $api->get('Deployment', 'robocop', namespace => 'ocp-system') }) ? 1 : 0;
         $secret = $self->_ensure_robocop_credentials($api, $config, $deps->{secrets},
             $level, host => $deps->{cp_ip});
         $self->_ensure_robocop($api, $config);

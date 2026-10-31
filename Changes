@@ -620,3 +620,9 @@ Revision history for OCP
       runs RKE2's kubectl and `cilium status` over SSH as a fallback,
       which on a k3s cluster called a path that is not there. The run
       goes on as before.
+    - `ocp apply` fails the robocop step with its cause when the robocop
+      Deployment cannot be read (an RBAC denial, an apiserver error)
+      instead of taking it for absent, and writes nothing; registry.local
+      DNS warns about a CoreDNS Corefile with no root server block instead
+      of calling it up to date; the nfd-worker wait says why it ran out --
+      how many of its pods were ready, no status yet, or no DaemonSet.

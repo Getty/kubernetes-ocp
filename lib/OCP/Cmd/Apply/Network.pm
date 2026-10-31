@@ -504,6 +504,12 @@ sub configure_registry_dns {
         unless $cm;
 
     my $corefile = $cm->data->{Corefile} // '';
+    # corefile_with_host leaves a Corefile with no server block for the root
+    # zone as it is, with no place for the record, and unchanged read as
+    # "up to date" (k328). The step says this on STDERR, like any failure here.
+    die "ConfigMap kube-system/$cm_name: its Corefile has no server block for the "
+      . "root zone (.), so registry.local has no place in it\n"
+        unless corefile_has_root_block($corefile);
     my $patched  = corefile_with_host($corefile, $node_ip, 'registry.local');
 
     # Already resolves to this node
@@ -655,6 +661,25 @@ sub corefile_drop_added_hosts {
     }
 
     return join "\n", @lines;
+}
+
+# Whether $corefile has a server block for the root zone, the block
+# corefile_with_host puts a record in (k328).
+sub corefile_has_root_block {
+    my ($corefile) = @_;
+
+    my @lines = split /\n/, $corefile, -1;
+    my @depth;
+    my $level = 0;
+    for my $i (0 .. $#lines) {
+        $depth[$i] = $level;
+        my $opens  = () = $lines[$i] =~ /\{/g;
+        my $closes = () = $lines[$i] =~ /\}/g;
+        $level += $opens - $closes;
+    }
+
+    my ($from) = corefile_root_block(\@lines, \@depth);
+    return defined $from ? 1 : 0;
 }
 
 # First server block serving the root zone (".", ".:53", "dns://.:53"),
