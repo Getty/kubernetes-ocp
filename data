@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T08:06:20Z
+created: 2026-10-31T03:01:06Z
+id: 277
+priority: medium
+started: 2026-10-31T08:06:20Z
+status: done
+tags:
+- apply
+- robustness
+title: 'Apply path: remaining reads that swallow their failure or lose its cause'
+updated: 2026-10-31T08:06:20Z
+---
+
+Found while doing k269. Same bug class as k256/k268/k269, in places k269 did not cover:
+- AMDGPU::after_join, the GPU node list in setup_gpu_operator, and setup_gpu_operator_after_join swallow every failed read
+- poll_deployment_ready loses the cause of a failed read
+- configure_registry_dns prints "up to date" for a CoreDNS ConfigMap it could not read
+- the CiliumLoadBalancerIPPool wait loses the cause
+- a ClusterPolicy that answers 404 while the operator is running counts as "no difference"
+
+Done when: in each place, only a 404 means absent; any other failure is reported with its cause on STDERR (a step [!!], or a poll that names its last failed read), and tests pin 404 vs 403/500.
+
+More of the same, found under k276: Workloads setup_gpu_operator treats a failed read of the GPU node list as 'no GPU nodes' and skips the GPU step (the k269 shape).
+
+2026-10-31 07:23 Started after k278/k307 (both in review). Plan: OCP::Cmd::Apply::K8s::read_or_absent (object, undef for a 404, dies 'could not read WHAT: cause' otherwise) for the single reads; the polls keep reading and name their last failed read. ClusterPolicy 404 with the operator running becomes the difference 'spec' (re-applied, dry run finds it). Tests 404 vs 403/500 per place in t/269, t/228, t/251, t/233.
+
+2026-10-31 07:49 Also found (not in this card's list, left alone, for the dispatcher to file or fold in): (1) Drift.pm:819 gpu/robocop dry run -- any failed read of Deployment/robocop prints '[robocop] Deployment/robocop is missing / would roll it out' (the k269 shape, dry-run side). (2) Workloads.pm setup_nfd: the nfd-worker DaemonSet wait (:120) swallows failed reads and falls through after 120s without a word; the NFD-label wait (:131) dies 'NFD labels not detected' without the last read's cause. (3) Registry.pm:142 switch_to_recreate takes any failed Deployment read for 'not there' and skips the Recreate patch. (4) Bootstrap.pm:582 node-Ready wait loses the cause of a failed Node list. (5) configure_registry_dns with both CoreDNS ConfigMaps at 404 returns 0, and the reconcile says '[ok] registry.local DNS up to date' about a cluster with no CoreDNS ConfigMap to patch. (6) CR.pm has several eval-swallowed reads (274, 411, 419, 728, 872, 915, 1033) -- another worker's file, in progress in the tree, not touched. (7) Network.pm:417 loopback fallback already noted on k278. Full-suite note: the run on the shared tree failed t/296 and t/78 from 'Undefined subroutine &OCP::Config::_not_a_string at Config.pm line 907' -- Config.pm/OCP.pm mid-edit by another worker after the k314 commit, none of my files; rerunning the full suite on a scratch tree of HEAD d3cbe90 + k278/k307/k277 patches only.
+
+2026-10-31 08:02 Done. New OCP::Cmd::Apply::K8s::read_or_absent (object; undef only for a 404; else dies 'could not read WHAT: cause'). Places: AMDGPU::after_join reads OCPNode+Node through it, a failed read prints '[!!] AMD GPU stack not checked after the worker join: <cause>' on STDERR and returns the component (counted). setup_gpu_operator's GPU node list goes through it (the GPU step's [!!] reports it instead of 'no GPU nodes'). setup_gpu_operator_after_join: OCPNode read dies on a non-404 (gpu_after_join's [!!]); the Node poll keeps reading, names the last failed read on STDERR under the NFD WARN ('the last read failed: ...'), and a node it could not read is checked, not called GPU-less. poll_deployment_ready dies 'Deployment NS/NAME not ready within Ns; the last read failed: <cause>' when its last read failed (a 404 still returns 0; every caller already died on 0). configure_registry_dns reads each CoreDNS ConfigMap through read_or_absent (a 403/500 is the step's failure, not 'up to date'). LB-IPAM pool wait names the last failed read on its timeout. ClusterPolicy 404 while the operator runs: cluster_policy_differences returns ('spec'), apply re-applies and prints 'ClusterPolicy is not on the cluster (or has no spec), re-applying'; the dry run says '[drift] GPU Operator ClusterPolicy is not on the cluster (or has no spec)'. This replaces t/233's k276 claim ('404: no differences') on purpose. Tests: t/269 (+read_or_absent, GPU list, poll, registry DNS, LB wait, ClusterPolicy 404 subtests), t/228, t/251, t/233 -- 404 vs 403/500 each; red before the fix. Mutants: 18/18 killed. Full suite on HEAD d3cbe90 + k278/k307/k277 patches only: Files=225, Tests=3574, PASS. On the shared tree t/296 and t/78 failed from Config.pm mid-edit by another worker (_not_a_string undefined), not from these files. Patch: scratchpad w-apply277/k277.patch (applies after k278.patch, k307.patch on d3cbe90).
+
+Committed as 0881a53
