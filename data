@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-10-31T12:33:49Z
+id: 357
+priority: low
+status: backlog
+tags:
+- decision
+- validation
+title: 'Decide: a control plane''s service: key (written by ocp init --provider local
+  --service, read by nothing)'
+updated: 2026-10-31T12:33:49Z
+---
+
+Decide (maintainer). From k347 (choices worker, 2026-10-31): a control plane's `service:` key is written by `ocp init --provider local --service` and read by nothing in lib/, bin/ or share/. Since k347, validate() still accepts it, as one of the keys it lists. Options:
+- drop it: init stops writing it, and validate() refuses it with a hint;
+- keep it as a placeholder (say what for);
+- make it mean something (what, with --service).
+Not to be built before the maintainer answers.
