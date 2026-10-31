@@ -291,7 +291,7 @@ subtest '--single is gone, and so is its caller' => sub {
 {
     package FakeType;
     sub new { my ($class, %a) = @_; bless {%a}, $class }
-    for my $field (qw(name cores memory disk cpu_type architecture deprecated)) {
+    for my $field (qw(name cores memory disk cpu_type architecture locations)) {
         no strict 'refs';
         *{"FakeType::$field"} = sub { $_[0]{$field} };
     }
@@ -306,9 +306,11 @@ sub fake_picker {
         ],
         _server_types => [
             FakeType->new(name => 'cpx21', cores => 3, memory => 4, disk => 80,
-                cpu_type => 'shared', architecture => 'x86', deprecated => 0),
+                cpu_type => 'shared', architecture => 'x86',
+                locations => [ { name => 'fsn1', available => 1, deprecation => undef } ]),
             FakeType->new(name => 'cax21', cores => 4, memory => 8, disk => 80,
-                cpu_type => 'shared', architecture => 'arm', deprecated => 0),
+                cpu_type => 'shared', architecture => 'arm',
+                locations => [ { name => 'fsn1', available => 1, deprecation => undef } ]),
         ],
     );
 }

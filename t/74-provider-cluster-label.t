@@ -138,9 +138,9 @@ package FakeHzServer {
 
 package FakeHzServers {
     sub new { my ($c, %a) = @_; bless { created => [], queries => [], %a }, $c }
-    sub list_by_label {
-        my ($self, $selector) = @_;
-        push @{ $self->{queries} }, $selector;
+    sub list_all {
+        my ($self, %filter) = @_;
+        push @{ $self->{queries} }, $filter{label_selector};
         return $self->{existing} // [];
     }
     sub create {

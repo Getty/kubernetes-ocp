@@ -240,7 +240,7 @@ subtest 'Hetzner create_server passes both names through to the API' => sub {
         sub id   { 'SRV-1' }
         sub ipv4 { undef }
         package FakeHzServers101;
-        sub list_by_label { [] }
+        sub list_all { [] }
         sub create {
             my ($s, %p) = @_;
             push @{ $s->{created} }, \%p;

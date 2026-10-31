@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Hetzner server, location and server type lookups now read every page, so
+      `ocp destroy`'s orphan sweep, the create idempotency check, `ocp hetzner
+      list` and the `ocp init` pickers no longer miss entries past the first
+      page. The server type picker decides deprecation and availability per
+      location instead of on the top-level `deprecated` flag, which Hetzner
+      removes from its API on 2026-11-02, and takes an optional location
+      filter.
     - `ocp hetzner list` no longer dies on the first server: the TYPE column
       reads the server type name WWW::Hetzner returns.
     - OCP no longer re-quotes the SOPS lastmodified timestamp itself; File::SOPS

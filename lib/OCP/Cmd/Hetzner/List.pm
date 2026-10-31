@@ -39,9 +39,9 @@ sub execute {
 
     my $cloud = $self->cloud;
 
-    my $servers = $self->label
-        ? $cloud->servers->list_by_label($self->label)
-        : $cloud->servers->list;
+    my $servers = $cloud->servers->list_all(
+        $self->label ? ( label_selector => $self->label ) : (),
+    );
 
     if (!@$servers) {
         print "No servers found.\n";
@@ -103,7 +103,8 @@ a hint to run C<ocp init --hetzner>.
     --label ocp-cluster=prod[,key=value,...]
 
 Filter the listing to servers carrying every label key/value pair given.
-Passes through to L<WWW::Hetzner::Cloud/servers/list_by_label>.
+Passed to the API as the C<label_selector> of
+L<WWW::Hetzner::Cloud::API::Servers/list_all>, which reads every page.
 
 =attr cloud
 

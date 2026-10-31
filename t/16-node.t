@@ -252,7 +252,7 @@ package FakeHetznerServer {
 
 package FakeHetznerServers {
     sub new { my ($c, %a) = @_; bless { created => [], waited => [], %a }, $c }
-    sub list_by_label { $_[0]{existing} // [] }
+    sub list_all { $_[0]{existing} // [] }
     sub delete {
         my ($self, $id) = @_;
         die "injected Hetzner API failure\n" if $self->{delete_fails};

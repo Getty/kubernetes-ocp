@@ -14,22 +14,29 @@ use OCP::Hetzner::Picker;
 {
     package FakeServerType;
     sub new { my ($class, %a) = @_; bless {%a}, $class }
-    for my $field (qw(name cores memory disk cpu_type architecture deprecated)) {
+    for my $field (qw(name cores memory disk cpu_type architecture locations)) {
         no strict 'refs';
         *{"FakeServerType::$field"} = sub { $_[0]{$field} };
     }
 }
 
+# Deprecation is per location (k246): the entries of a type's `locations`, as
+# WWW::Hetzner::Cloud::ServerType hands them through from the API.
+my $orderable  = [ { name => 'fsn1', available => 1, deprecation => undef } ];
+my $deprecated = [ { name => 'fsn1', available => 1, deprecation => {
+    announced => '2026-09-01T00:00:00Z', unavailable_after => '2026-12-01T00:00:00Z',
+} } ];
+
 sub types {
     return [
         FakeServerType->new(name => 'cax11', cores => 2, memory => 4, disk => 40,
-            cpu_type => 'shared', architecture => 'arm', deprecated => 0),
+            cpu_type => 'shared', architecture => 'arm', locations => $orderable),
         FakeServerType->new(name => 'cax21', cores => 4, memory => 8, disk => 80,
-            cpu_type => 'shared', architecture => 'arm', deprecated => 0),
+            cpu_type => 'shared', architecture => 'arm', locations => $orderable),
         FakeServerType->new(name => 'cpx11', cores => 2, memory => 2, disk => 40,
-            cpu_type => 'shared', architecture => 'x86', deprecated => 0),
+            cpu_type => 'shared', architecture => 'x86', locations => $orderable),
         FakeServerType->new(name => 'cx11', cores => 1, memory => 2, disk => 20,
-            cpu_type => 'shared', architecture => 'x86', deprecated => 1),
+            cpu_type => 'shared', architecture => 'x86', locations => $deprecated),
     ];
 }
 

@@ -185,7 +185,7 @@ package FakeHzServer {
 
 package FakeHzServers {
     sub new { my ($c, %a) = @_; bless { created => [], %a }, $c }
-    sub list_by_label { $_[0]{existing} // [] }
+    sub list_all { $_[0]{existing} // [] }
     sub create {
         my ($self, %params) = @_;
         push @{ $self->{created} }, \%params;

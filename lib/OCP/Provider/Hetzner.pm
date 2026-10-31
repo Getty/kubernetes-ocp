@@ -112,8 +112,8 @@ sub server_exists {
     my $cluster = $self->cluster_name;
     return unless $cluster;
 
-    my $servers = $self->cloud->servers->list_by_label(
-        "ocp-cluster=$cluster,ocp-node=$node_name"
+    my $servers = $self->cloud->servers->list_all(
+        label_selector => "ocp-cluster=$cluster,ocp-node=$node_name",
     );
 
     return $servers->[0] if @$servers;
@@ -418,7 +418,9 @@ C<ocp destroy> to find orphans that C<.ocp/status.yaml> did not record
 sub list_servers_by_cluster {
     my ($self, $cluster_name) = @_;
     $cluster_name //= $self->cluster_name;
-    return $self->cloud->servers->list_by_label("ocp-cluster=$cluster_name");
+    return $self->cloud->servers->list_all(
+        label_selector => "ocp-cluster=$cluster_name",
+    );
 }
 
 1;
