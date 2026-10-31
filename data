@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T12:46:10Z
+created: 2026-10-31T10:47:59Z
+id: 343
+priority: low
+started: 2026-10-31T12:46:10Z
+status: done
+tags:
+- rex
+- robustness
+title: OCP::Rex::run_task restores the rex child's %ENV only when IPC::Run returns,
+  not when it dies
+updated: 2026-10-31T12:46:10Z
+---
+
+Found under k316 (infra worker, 2026-10-31): OCP::Rex::run_task saves REX_PRIVATE_KEY, REX_PUBLIC_KEY, REX_TASK_PARAMS, OCP_KNOWN_HOSTS and (since k316) PERL5LIB, sets them for the rex child, and restores them after IPC::Run::run returns. If run dies (spawn failure, a timeout that throws), nothing is restored: the next run_task, or anything else in the process, sees the previous task's params and key paths and the prepended lib/.
+
+Fix: `local $ENV{...}` for each (or one guard object), so a die restores them too. Test: a run that dies leaves %ENV as it was.
+
+Note from the same review (no fix asked): if OCP is ever installed into a shared site_perl instead of the image, k316's prepended lib/ is that site_perl and could hide a local::lib's modules from the rex child. In the image and a checkout lib/ holds only OCP.
+
+2026-10-31 11:09 Working in a clean copy (HEAD + k316.patch). Probed (host perl 5.40, image is 5.42): local $ENV{X}='v' reaches a child (%ENV magic calls setenv; the old 'Must NOT use local' comment is wrong), and on scope exit by return or die restores the old value, or deletes the element if it was absent. delete local $ENV{X} + later assignment is restored the same way. Real IPC::Run (20260402.0, as pinned) dies in-process when rex is not on PATH (_open_pipes -> _search_path croak, before fork): a network-free, rex-free spawn failure for the test. New test t/343-rex-env-on-die.t: stand-in run that records the child env and dies (timeout shape), values-set and values-absent cases, plus the real IPC::Run spawn failure with PATH empty.
+
+2026-10-31 11:32 Fix: run_task sets all five with local: local $ENV{OCP_KNOWN_HOSTS}, local $ENV{PERL5LIB} (k316's prepend), local $ENV{REX_PRIVATE_KEY}/REX_PUBLIC_KEY 'if $self->key_file' (untouched without a key file, as before), 'delete local $ENV{REX_TASK_PARAMS}' then assigned when there are params. The hand restore block is gone, and so is the wrong 'Must NOT use local' comment. The restore point moves from after run() to run_task's exit; nothing in between starts a process. Red on base (7158d59+k316.patch): t/343 3/3 subtests fail (5 'back to what it was', 5 'gone again', real IPC::Run case). Mutants (one var back on the old save/restore pattern, wrapper tests in a scratch copy, one guarded run): M1 TASK_PARAMS, M2 KNOWN_HOSTS, M3 PERL5LIB, M4 keys each red 3/3 on exactly their var; M0 control (fix unchanged) green. k316 landed as 7805d8b in the meantime; k343.patch applies clean there with identical files. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-rex343/k343.patch
+
+2026-10-31 11:32 Done, not applied to the shared tree: k343.patch (scratchpad w-rex343/) touches lib/OCP/Rex.pm (run_task: the five rex-child env vars via local / delete local, restored on return and on die) and adds t/343-rex-env-on-die.t. Verified in Docker (IMAGE=localhost/ocp-w343): red on base 3/3. Green: t/343 + t/314 + t/316 + every test driving run_task or IPC::Run, 68 files / 850 tests PASS, no skips, on both 7158d59+k316.patch and 7805d8b+k343. Mutation: 4/4 mutants red, control green. Proposed subject and Changes bullet are at the top of the patch. site_perl note: no fix, as the card says.
+
+Committed as d946a03
