@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-10-31T09:35:20Z
+created: 2026-10-31T08:47:33Z
+id: 326
+priority: medium
+started: 2026-10-31T09:35:20Z
+status: done
+tags:
+- destroy
+- robustness
+title: ocp destroy dies after a finished teardown on a control-plane entry that is
+  a string
+updated: 2026-10-31T09:35:20Z
+---
+
+Found under k323 (ocp-destroy-worker, 2026-10-31), reproduced with fakes: with `control_planes: [police1]` (a string entry instead of a mapping) and a Hetzner token, `ocp destroy` deletes the servers and removes .ocp/status.yaml, then dies in `_report_mislabelled_servers`. No "Cluster destroyed.", exit 1, and the report of mislabelled servers is skipped -- the teardown happened, but the command says it failed.
+
+Also: `workers: foo` and a pool that is no mapping still crash inside Perl in destroy (before anything is deleted) -- the k306 shape.
+
+Fix: read control_planes entries the way _spec_worker_entries guards pools (skip or name a non-mapping entry), so a finished teardown ends as one; or refuse the shape up front with validate()'s line, as k323 does for pool nodes: (only what destroy reads -- see the k323 rationale: a newer validate() must not stand between a cluster and its teardown).
+
+Done = test: a string control-plane entry either stops destroy before it deletes anything with a line naming it, or the teardown completes with exit 0 and the report.
+
+2026-10-31 08:56 Reproduced on HEAD e2b7b1a with fakes (t/326-destroy-spec-shapes.t, red: 8 of 10 subtests). control_planes: [police1] + token: police1 deleted, status/deployed/kubeconfig removed, then 'Can't use string ("police1") as a HASH ref' at Destroy.pm:74 (_report_mislabelled_servers). Same entry on the no-nodes path dies at :210 (the control-plane fallback, before anything is deleted). workers: foo / workers: {mapping} die at :397, a pool that is a boolean at :398 (_spec_worker_entries), after the secrets read and the OCPNode list. Plan: refuse up front with validate()'s shape lines (control_planes not mapping/list, a list entry no mapping, workers no list, a pool no mapping), folded into the k323 gate.
+
+2026-10-31 09:19 Decision: REFUSE up front, not read around. Destroy reads control_planes in two places: every entry's provider for the k98 report (each run with a token, after the deletes) and the whole entry in the control-plane fallback. An entry that is no mapping names no provider, and destroy never guesses one (k116), so it can only be named, not read as a machine. Naming it after the teardown is too late in the one case it matters: when that line is the only record of a control plane (fallback), the run ends 'No nodes to destroy.' and offers to remove the kubeconfig while the machine may still run. And if the report skipped it, a hetzner CP line would no longer trigger the hetzner-default search that names billing servers. This is not a newer validate() standing in the way: validate() has refused the shape since k296 (and died on it before that), and apply validates first (k255). Only the shape is gated: control_planes neither mapping nor list, a list entry that is no mapping, workers that is no list, a pool that is no mapping (the last two fit the k323 gate naturally and are folded in). Not gated (t/326 covers this): an unknown provider, a missing server_type/location, more than 7 CPs, a nodes count, no control_planes at all. Those are torn down with exit 0 and the report. The lines re-spell validate()'s three inline strings via OCP::Config::_shown_value. t/326 compares the refusal against validate()'s own output, so wording drift breaks the test.
+
+2026-10-31 09:19 Also found (not fixed, outside card scope; destroy lane, same gate would take them): (1) name: [prod]: the label search runs under 'ARRAY(0x...)', so an orphan labelled ocp-cluster=prod that is not in status/OCPNodes is missed while the run says 'Cluster destroyed.' (money). validate() line: 'name: must be a string (the cluster's name), not a list'. (2) A pool's own host: [a.lan, b.lan] (not nodes:) is read by _spec_worker_entries as one machine named ARRAY(0x...); k323 gated only nodes-entry hosts. (3) A control_planes host: [a.lan] in the fallback does the same. All three were probed with fakes on HEAD+patch: exit 0, no Perl error. Suggestion for ocp-state-worker / k306: a public OCP::Config helper for the container shapes (name, control_planes/workers shape, pool mapping, host strings) that validate() calls first, so Destroy and the read-side commands stop re-spelling validate()'s words. Destroy now depends on OCP::Config::_shown_value, _pool_nodes_errors and _pool_where; renaming any of them breaks it. k306 (status, update, node add/ls, kubeconfig) is untouched.
+
+2026-10-31 09:32 Done: Destroy.pm checks the shapes it reads its control planes and pools from, as part of the k323 gate, before the PIN, the API or any provider. New _spec_control_plane_errors catches control_planes that is neither a mapping nor a list, and a list entry that is no mapping. _spec_worker_errors now also catches workers that is no list and a pool that is no mapping. The refusal uses validate()'s lines, in validate()'s order, and a new trailer that names both control planes and pools. POD updated. t/326-destroy-spec-shapes.t is new: 10 subtests, 8 red on HEAD e2b7b1a (police1 deleted then 'Can't use string ... as a HASH ref' at :74, fallback crash at :210, workers crashes at :397/:398); 2 guard the no-lockout side (report runs, exit 0, Cluster destroyed.). In t/323 only the trailer string changes; its claim (validate()'s lines, nothing touched) is kept. Mutants: 13 on Destroy.pm, all killed. Verified: make test on 15 destroy files (208 tests) PASS; full make test on a clean HEAD+patch copy: Files=227, Tests=3603, PASS, exit 0, no skips. A first full run also printed PASS but hit the outer timeout 900 (exit 124, build plus 813s), so it was rerun with timeout 1500. Patch: scratchpad w-destroy326/k326.patch. Changes: the k323 bullet's 'Nothing else ocp apply refuses stops a teardown.' is no longer true; fold it into the new bullet.
+
+Committed as e8c24ba
