@@ -104,18 +104,37 @@ sub _report_mislabelled_servers {
     }
 }
 
-# The cluster API, or undef when there is none to ask. Nothing here may die:
-# a teardown has to run on a project whose kubeconfig is already gone, whose
-# age key is missing, or whose control plane is half down -- that is when
-# people run it. Whether the API really answers is only known at the first
+# The cluster API, or undef when there is none to ask. A teardown has to run
+# on a project whose kubeconfig is already gone, whose age key is missing, or
+# whose control plane is half down -- that is when people run it -- so none of
+# that dies here. Whether the API really answers is only known at the first
 # call; _ocpnode_entries makes that call and says so when it fails.
+#
+# The key is the exception (k382). A PIN1 that does not open age.key.enc, an
+# empty one, an empty age.key.enc, or a key this project's files are not
+# bound to is the user's to hear, in OCP::Secrets' words (k375), and stops
+# the run before anything is touched -- as it does where secrets.yaml is read
+# for the Hetzner token. With HETZNER_API_TOKEN set that read does not happen,
+# PIN1 was asked inside the eval below, and a mistyped one was taken for a
+# cluster that does not answer: the teardown went on without the OCPNodes.
+# So the key is unlocked, or checked, first and outside the eval, as
+# read_kubeconfig would: PIN1 only when age.key.enc is where the key comes
+# from; a key already here is checked against the project. No key at all
+# stays a missing API, as before.
 sub _cluster_api {
     my ($self, $config) = @_;
     return $self->k8s if $self->k8s;
 
+    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    return unless $secrets->has_kubeconfig;
+    if (!$secrets->sops_age_key_file && !$secrets->has_age_key && $secrets->has_age_key_enc) {
+        $secrets->ensure_age_key;
+    } else {
+        $secrets->check_local_age_key;
+    }
+
     my $api = eval {
-        my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-        my $kc      = $secrets->read_kubeconfig or return;
+        my $kc = $secrets->read_kubeconfig or return;
 
         my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
         print {$kc_fh} $kc;
@@ -1317,7 +1336,11 @@ failed): then it may still run.  A label search that fails anywhere else is
 named on STDERR the same way, with its cause and the selector (C<k353>): a
 server only it would have found keeps running.  An API that does not
 answer is reported on STDERR and the teardown continues from the other
-sources (C<k177>).
+sources (C<k177>).  The key that opens C<kubeconfig.yaml> is not such a
+failure: a PIN1 that does not open C<age.key.enc>, an empty PIN1 or
+C<age.key.enc>, or a key this project's files are not bound to stops the run
+before anything is listed or touched, with L<OCP::Secrets>' refusal --
+C<HETZNER_API_TOKEN> set or not (C<k382>).
 
 Workers are torn down before the control planes, and robocop is scaled to
 zero first so it does not provision a replacement for a worker it sees

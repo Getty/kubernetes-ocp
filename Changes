@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` with `HETZNER_API_TOKEN` set stops on a wrong PIN1 and
+      says so in OCP::Secrets' words. It no longer takes the failure for an
+      unreachable cluster API and tears down without the OCPNodes. The same
+      holds for an empty PIN1, an empty `age.key.enc`, an age key this
+      project's files are not bound to, and a `SOPS_AGE_KEY_FILE` that does
+      not open them: they stop `ocp destroy` even when the token is set.
     - A host probe that fails (a changed host key, a machine that does not
       answer) no longer reads as no drift: `ocp status`, `ocp apply` and
       `ocp apply --dry-run` name it as could not be checked, with the cause
