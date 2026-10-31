@@ -10,10 +10,12 @@ Revision history for OCP
       filter.
     - `ocp hetzner list` no longer dies on the first server: the TYPE column
       reads the server type name WWW::Hetzner returns.
-    - OCP no longer re-quotes the SOPS lastmodified timestamp itself; File::SOPS
-      0.003+ does it on every write. Files written by the File::SOPS 0.002 that
-      older images shipped still open, and are written quoted on their next
-      rewrite.
+    - File::SOPS 0.003+ writes the SOPS lastmodified timestamp quoted on every
+      write, so OCP no longer re-quotes it itself. `ocp apply` re-encrypts
+      keys.yaml, secrets.yaml and kubeconfig.yaml whose lastmodified is still
+      the bare timestamp File::SOPS 0.002 wrote (images 0219cfa to 80f3b36),
+      so `sops -d` reads them again and File::SOPS stops warning; values and
+      recipients are unchanged, and nothing is rewritten under `--dry-run`.
     - Host-side AMD GPU support: the Rexfile detects AMD GPUs and installs the
       amdgpu driver through Rex::GPU::AMD under `gpu.driver: host`, and
       registers AMD nodes with `ocp.internal/amd-gpu.present` and gfx-target

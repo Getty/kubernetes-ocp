@@ -680,6 +680,93 @@ sub rotate_sops_files {
 }
 
 #
+# A bare sops lastmodified (k259)
+#
+# File::SOPS 0.001 and 0.002 wrote `lastmodified` as a PLAIN scalar, and OCP
+# images from 0219cfa to 80f3b36 carried 0.002. go-yaml resolves a bare
+# RFC3339 scalar to a time.Time where sops wants a string, so `sops -d`
+# refuses such a file (exit 1), and File::SOPS 0.005 warns on every read.
+# Every write since 0.003 quotes it -- but OCP rewrites a file only when its
+# content or its recipients change, so a project at rest stays bare.
+#
+# This rewrites those files: File::SOPS->rotate with the document's own
+# recipients, so the values, their types, the recipients and the encryption
+# rules come out as they went in, with a new data key and a quoted timestamp.
+# A file that is already quoted is never touched, so a second run is a no-op.
+#
+# Only with the key this run already holds (.ocp/age.key, or
+# SOPS_AGE_KEY_FILE): a cosmetic repair is no reason to ask for PIN1. A key
+# that cannot be read or does not open the project is skipped without a word,
+# because the run's own decrypt reports exactly that, by name (k118), and an
+# earlier line about a cosmetic repair would only bury it. A file that fails
+# to rewrite is said on STDERR and left as it was (rotate writes temp file +
+# rename): the run goes on.
+#
+# Prints one progress line per repaired file on STDOUT; returns their names.
+
+my $PLAIN_LASTMODIFIED_WARNING = qr/\Asops:lastmodified: this timestamp is written as a PLAIN scalar/;
+
+sub repair_sops_lastmodified {
+    my ($self) = @_;
+
+    my @bare = grep { -f $_ && $self->_sops_lastmodified_bare($_->slurp_raw) } $self->_sops_files;
+    return () unless @bare;
+
+    my @identities = eval {
+        my @ids = $self->identities;
+        $self->_assert_key_matches_project(@ids);
+        @ids;
+    };
+    return () unless @identities;
+
+    my @done;
+    for my $file (@bare) {
+        my $name = $file->basename;
+        my $ok = eval {
+            # The read inside rotate warns about the very scalar it is fixing.
+            local $SIG{__WARN__} = sub { warn @_ unless $_[0] =~ $PLAIN_LASTMODIFIED_WARNING };
+            File::SOPS->rotate(
+                file       => $file->stringify,
+                identities => \@identities,
+                format     => 'yaml',
+            );
+            1;
+        };
+        if ($ok) {
+            print '[ok] Repaired '.$name.': sops lastmodified quoted, as sops -d needs it'
+                . " (re-encrypted, values and recipients unchanged)\n";
+            push @done, $name;
+            next;
+        }
+        my $err = $@;
+        $err =~ s/\s+\z//;
+        print STDERR '[!!] Could not repair '.$name.': '.$err."\n"
+          . '     Its sops lastmodified is a bare timestamp (File::SOPS 0.002), which'."\n"
+          . '     sops -d refuses; OCP itself is not affected by that. The file is'."\n"
+          . '     unchanged, and the next run tries again. Quoting the timestamp on'."\n"
+          . '     its lastmodified line by hand repairs it as well.'."\n";
+    }
+    return @done;
+}
+
+# Does this SOPS document carry its lastmodified as a bare timestamp? Read off
+# the text, because the parsed value is the same string either way. Only the
+# root `sops:` mapping counts -- `sops:` at column 0, through the indented
+# lines below it -- so a user's own `lastmodified` elsewhere never matches. A
+# quoted ("...", '...') or tagged (!!str) value never matches, which is what
+# keeps a second run a no-op. Shapes OCP never writes (flow style, the value
+# on the next line) do not match either: missing those leaves a file bare,
+# while a false match would rewrite a file for nothing.
+sub _sops_lastmodified_bare {
+    my ($self, $raw) = @_;
+
+    my ($block) = $raw =~ /^sops:[ \t]*\n((?:[ \t][^\n]*\n?|\n)*)/m
+        or return 0;
+    return $block =~ /^[ \t]+lastmodified:[ \t]+\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)[ \t]*$/m
+        ? 1 : 0;
+}
+
+#
 # Password-encrypted age.key (Defense in Depth!)
 #
 
@@ -1024,7 +1111,8 @@ and does not require any external CLI tools.
 =head1 WHICH IDENTITY DECRYPTS
 
 Every decrypt -- C<read_all_secrets>, C<read_kubeconfig>, C<decrypt_file>,
-C<rotate_sops_files>, and L<OCP::Keys> -- takes its age identities from
+C<rotate_sops_files>, C<repair_sops_lastmodified>, and L<OCP::Keys> -- takes
+its age identities from
 C<identities> (k216):
 
 =over 4
@@ -1150,6 +1238,18 @@ Re-encrypts every SOPS file whose recipients differ from L</recipients_for>
 with a new data key (L<File::SOPS/rotate>). Needs an identity that opens the
 files (F<.ocp/age.key>, or C<SOPS_AGE_KEY_FILE>). Returns the file names it
 rewrote.
+
+=head2 repair_sops_lastmodified
+
+Rewrites every SOPS file of the project whose C<sops> section carries
+C<lastmodified> as a bare timestamp, as File::SOPS 0.002 wrote it (k259):
+C<sops -d> refuses such a file, and File::SOPS warns on every read. The
+rewrite is L<File::SOPS/rotate> with the document's own recipients, so values,
+types and recipients stay as they are; a file that is already quoted is never
+touched. Runs only with the key the run already holds (F<.ocp/age.key>, or
+C<SOPS_AGE_KEY_FILE>), and never asks for PIN1. Prints an C<[ok]> line per
+repaired file on STDOUT, and a failure with its diagnosis on STDERR without
+dying. Returns the file names it repaired.
 
 =head2 restore_age_recipient
 

@@ -101,6 +101,9 @@ sub execute {
         push @{ $self->{_apply_warnings} }, 'robocop arch';
     }
 
+    # k259: re-quote a bare sops lastmodified before either path decrypts; it writes, so not on -n.
+    print "\n" if !$self->dry_run && $secrets->repair_sops_lastmodified;
+
     # Check if cluster already exists
     if ($config->cluster_exists) {
         print "[ok] Cluster already exists (kubeconfig.yaml found)\n";
