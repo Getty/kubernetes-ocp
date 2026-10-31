@@ -4,6 +4,7 @@ package OCP::Secrets;
 use Moo;
 use OCP;
 use OCP::Password;
+use OCP::StateDir;
 use Path::Tiny qw(path);
 use Carp qw(croak);
 use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
@@ -78,7 +79,7 @@ sub _spew_secure {
     my ($self, $path, $content) = @_;
 
     $path = path($path);
-    $path->parent->mkpath;    # no-op if it is there
+    OCP::StateDir::make_parent($path);    # and .ocp/.gitignore (k371)
     $path->remove;    # clear the way for an O_EXCL create (no-op if absent)
 
     sysopen my $fh, $path->stringify, O_WRONLY | O_CREAT | O_EXCL, 0600
@@ -1016,8 +1017,8 @@ sub generate_ssh_key {
     my $key_path = $self->project_dir->child('.ocp', $name);
     my $pub_path = $self->project_dir->child('.ocp', "$name.pub");
 
-    # Ensure .ocp directory exists
-    $key_path->parent->mkpath;
+    # Ensure .ocp directory exists, with its .gitignore (k371)
+    OCP::StateDir::make_parent($key_path);
 
     # Remove existing file to avoid ssh-keygen "Overwrite?" prompt
     unlink $key_path->stringify if -f $key_path;

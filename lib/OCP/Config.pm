@@ -6,6 +6,7 @@ use OCP;
 use OCP::Choices;
 use OCP::NodeMeta;
 use OCP::Provider;
+use OCP::StateDir;
 use JSON::MaybeXS;
 use Path::Tiny qw(path);
 use Carp qw(croak);
@@ -1913,7 +1914,7 @@ sub save_node_status {
 sub _save_status {
     my ($self, $status) = @_;
     my $file = path($self->status_file);
-    $file->parent->mkpath unless -d $file->parent;
+    OCP::StateDir::make_parent($file);    # .ocp/, with its .gitignore (k371)
     $self->ocp->dump_file($file->stringify, $status);
 }
 

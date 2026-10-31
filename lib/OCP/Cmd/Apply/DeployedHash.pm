@@ -5,6 +5,7 @@ use strict;
 use warnings;
 
 use Path::Tiny qw(path);
+use OCP::StateDir;
 
 =head1 SYNOPSIS
 
@@ -44,7 +45,7 @@ sub save {
     my $hashes = load($self, $config);
     $hashes->{$component} = $hash;
     my $path = hashes_path($self, $config);
-    $path->parent->mkpath unless -d $path->parent;
+    OCP::StateDir::make_parent($path);    # .ocp/, with its .gitignore (k371)
 
     $self->ocp->dump_file($path->stringify, $hashes);
 }

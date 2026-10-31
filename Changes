@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A clone's `.ocp/` now gets the `.gitignore` `ocp init` writes, from
+      whichever command makes the directory first (the first PIN1 unlock,
+      status, known_hosts), so the decrypted age key stays out of git even
+      where the project's own `.gitignore` does not cover it.
     - On a fresh clone, `ocp status`, `ocp kubeconfig`, `ocp node ls`,
       `ocp health`, `ocp provider ls`, `ocp deploy-robocop`, `ocp hetzner
       list` and the other commands that read `kubeconfig.yaml` or

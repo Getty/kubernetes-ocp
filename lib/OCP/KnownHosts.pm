@@ -7,6 +7,7 @@ use Digest::SHA qw( sha256 hmac_sha1 );
 use MIME::Base64 qw( decode_base64 encode_base64 );
 use Path::Tiny qw( path );
 use OCP::Exec qw( capture_command );
+use OCP::StateDir;
 
 # One file, two readers (k168). OCP::SSH hands it to the OpenSSH client as
 # UserKnownHostsFile with StrictHostKeyChecking=accept-new, which is what
@@ -185,10 +186,11 @@ sub remove_hint {
 
 # The directory has to exist before OpenSSH is asked to record into the file:
 # with it missing, ssh only warns "Failed to add the host" and carries on, and
-# the Rex connection after it fails for an unknown key.
+# the Rex connection after it fails for an unknown key. The project's file
+# lives in .ocp/, which then gets its .gitignore (k371).
 sub ensure_dir {
     my ($self) = @_;
-    path($self->file)->parent->mkpath;
+    OCP::StateDir::make_parent($self->file);
     return;
 }
 

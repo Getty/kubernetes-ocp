@@ -16,6 +16,7 @@ use OCP::Keys;
 use OCP::Password;
 use OCP::Provider;
 use OCP::Secrets;
+use OCP::StateDir;
 
 with 'OCP::Role::Cmd';
 
@@ -218,12 +219,10 @@ sub execute {
 
     # .ocp/ ignores itself (k215): holds whatever rules the project or a
     # surrounding repository has, and survives a lost project .gitignore.
-    # Written before any key lands in .ocp/.
-    my $ocp_ignore = path('.ocp', '.gitignore');
-    unless (-f $ocp_ignore) {
-        $ocp_ignore->spew("# Decrypted OCP state - never commit (written by ocp init)\n*\n");
-        print "[ok] Created .ocp/.gitignore\n";
-    }
+    # Written before any key lands in .ocp/ -- here, and by whatever else
+    # makes .ocp/ first on a clone (OCP::StateDir, k371).
+    print "[ok] Created .ocp/.gitignore\n"
+        if OCP::StateDir::write_gitignore(path('.ocp'));
 
     #
     # Step 4: Age key
