@@ -42,6 +42,10 @@ Revision history for OCP
       `error` field instead of an empty list. A drift check that could not
       be read is shown as `ocp apply` shows it, "could not be checked" with
       its cause, and is no longer counted as drift.
+    - `ocp status` knows OCP's own OCPNode and OCPNodeProvider kinds. On a
+      cluster without the OCPNode CRD the host probes no longer report
+      "drift unknown" for the workers; no CRD now reads as no workers
+      recorded.
     - Hetzner server, location and server type lookups now read every page, so
       `ocp destroy`'s orphan sweep, the create idempotency check, `ocp hetzner
       list` and the `ocp init` pickers no longer miss entries past the first

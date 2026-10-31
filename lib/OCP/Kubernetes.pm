@@ -5,6 +5,7 @@ use Moo;
 use Carp qw(croak);
 use File::Temp ();
 use Kubernetes::REST::Kubeconfig;
+use OCP::K8s;
 
 has kubeconfig => (
     is => 'ro',
@@ -76,6 +77,13 @@ sub in_cluster_kubeconfig {
         '';
 }
 
+# OCPNode and OCPNodeProvider as an IO::K8s provider map: the entries
+# OCP::K8s->register writes, see _build_api.
+my %OCP_KINDS = (
+    OCPNode         => '+OCP::K8s::OCPNode',
+    OCPNodeProvider => '+OCP::K8s::OCPNodeProvider',
+);
+
 sub _build_api {
     my ($self) = @_;
 
@@ -96,6 +104,18 @@ sub _build_api {
 
     my $api = Kubernetes::REST::Kubeconfig->new(%args)->api;
     $self->register_resource_providers($api);
+
+    # OCP's own CRD classes, which the apply api gets from OCP::K8s->register.
+    # Without them list('OCPNode') on a cluster that does not serve the CRD
+    # died "unknown resource" before any request, and OCP::Drift read that as
+    # drift unknown instead of the 404 that says no OCPNode is recorded
+    # (k275). On the `with` list rather than through register: register
+    # writes into $api->resource_map, which fetches discovery right here --
+    # against an API that does not answer, one more request and a "Falling
+    # back to the built-in resource map" warning ahead of the error `ocp
+    # status` reports -- and invalidate_discovery drops what it wrote. `with`
+    # is read when the map is first needed and survives every rebuild.
+    push @{ $api->with }, { %OCP_KINDS };
 
     return $api;
 }
@@ -327,7 +347,10 @@ Defaults to false.
 
 Lazy-built L<Kubernetes::REST> client.  Built once on first access; do
 not construct it directly — it relies on C<register_resource_providers>
-being run.
+being run.  It also knows OCP's own Kinds, C<OCPNode> and C<OCPNodeProvider>
+(L<OCP::K8s::OCPNode>, L<OCP::K8s::OCPNodeProvider>), on the same C<with>
+list: on a cluster that does not serve their CRD a C<list> or C<get> is
+answered with a 404, not refused as an unknown resource.
 
 =method register_resource_providers
 
