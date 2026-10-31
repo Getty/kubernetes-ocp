@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` keeps its drift report over a `nocert` that is neither
+      true nor false: the cert-manager check reads "could not be checked"
+      with the line `ocp apply` gives, said once on STDERR, every other
+      check runs and the exit code is 0 (`--json`: one entry of kind
+      `error`). A worker pool that names its one machine with `host:`
+      counts 1, where the spec summary said 0.
     - `ocp apply` fails the robocop step with its cause when the robocop
       Deployment cannot be read (an RBAC denial, an apiserver error)
       instead of taking it for absent, and writes nothing; registry.local
@@ -25,9 +31,8 @@ Revision history for OCP
       `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`, `nocert` and
       `system.ntp` when they are not true or false -- `gpu: { enabled: no }`
       is a string, and turned the GPU stack on -- and tells a string that
-      spells a boolean the one it meant. `ocp update`, `ocp node add --gpu`
-      and `ocp status`' drift check stop with the same line instead of
-      reading the string as on.
+      spells a boolean the one it meant. `ocp update` and `ocp node add --gpu`
+      stop with the same line instead of reading the string as on.
     - `ocp apply` no longer takes a read it could not make (an RBAC denial,
       an apiserver error) for a missing object: `--dry-run` says the robocop
       Deployment could not be checked instead of that it would roll it out,

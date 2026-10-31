@@ -61,7 +61,9 @@ our %AMD_GPU_DAEMONSETS = (
 #   remedy_if_missing  the remedy installs from nothing too, so a 'missing'
 #                entry carries it. Without this a missing component waits for
 #                a full deploy, which reconcile never runs.
-#   skip_if      config predicate: this cluster asked not to have the thing
+#   skip_if      config predicate: this cluster asked not to have the thing.
+#                One that croaks (a switch OCP::Config refuses) makes the
+#                probe an error entry, drift unknown (k332)
 #   optional     absence is not drift — the component only exists on some
 #                clusters, so "not deployed" is a normal state and not a fault
 #   self_healing a plain `ocp apply` re-applies this component's manifest, so
@@ -658,7 +660,16 @@ sub component_drift {
         croak "skip_if target not found on OCP::Config: $skip"
             if $skip && !$config->can($skip);
 
-        next if $skip && $config->$skip;
+        # A predicate OCP::Config refuses -- a switch that is neither true nor
+        # false (k320), nocert: no -- says neither skip nor check. detect died
+        # on it, and ocp status had no drift report at all (k332). The probe
+        # is a check that could not be made instead, and the others run.
+        my $skipped = $skip ? eval { $config->$skip ? 1 : 0 } : 0;
+        unless (defined $skipped) {
+            push @drift, $self->_refused_drift($@, $probe);
+            next;
+        }
+        next if $skipped;
 
         my $expected = OCP::Versions->get_component_version($probe->{component});
         next unless defined $expected;
@@ -1178,6 +1189,25 @@ sub _unknown_drift {
     };
 }
 
+# The entry for a probe whose skip_if OCP::Config refused (k332): whether
+# this cluster has the thing at all is not known, so its drift is not either.
+# The cause is validate()'s line, as the accessor croaks it, without the
+# croak's location, carped once, here, as _unknown_drift carps its cause.
+sub _refused_drift {
+    my ($self, $err, $probe) = @_;
+    (my $line = "$err") =~ s/ at .+? line \d+\.?\n*\z//s;
+    carp "OCP::Drift::component_drift: $probe->{label} not checked: $line";
+    return {
+        kind      => 'error',
+        component => $probe->{component},
+        label     => $probe->{label},
+        expected  => undef,
+        actual    => undef,
+        message   => "$probe->{label}: ocp.yaml does not say whether to check it, drift unknown: $line",
+        remedy    => undef,
+    };
+}
+
 # A control plane's address as a dotted quad, or undef when it does not
 # resolve to one.
 #
@@ -1313,7 +1343,8 @@ Each entry is a hashref:
 
 =item * B<kind> - C<spec>, C<version>, C<missing>, C<error> or C<rex_probe>.
 C<error> is a query that could not be made -- revoked token, RBAC denial, TLS
-failure, apiserver 5xx -- rather than a comparison that came back wrong: the
+failure, apiserver 5xx, a switch in F<ocp.yaml> that is neither true nor
+false -- rather than a comparison that came back wrong: the
 drift of what it names is unknown, and the cause was carped to stderr. It
 carries no remedy.
 C<rex_probe> is host-side drift found over SSH rather than through the API.
@@ -1412,6 +1443,12 @@ remedy, whose message names the object and the exception, and the same
 exception is carped to stderr. That holds for the optional probes, which
 would otherwise report nothing, and for the others, which would otherwise
 report the component missing.
+
+A probe whose switch in F<ocp.yaml> L<OCP::Config> refuses -- cert-manager
+under a C<nocert> that is neither true nor false, such as C<nocert: no>
+(k320) -- is neither skipped nor read: it is one C<kind =E<gt> 'error'> entry
+too, whose message carries the line L<OCP::Config/validate> gives, carped to
+stderr once, and the other probes run (k332).
 
 =head2 ocp_crd_drift
 

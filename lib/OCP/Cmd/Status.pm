@@ -68,7 +68,7 @@ sub execute {
           join(', ', ($cp_type ? $cp_type : ()), $cp_provider), ")\n";
 
     for my $pool (@workers) {
-        my $nodes = ref($pool->{nodes}) eq 'ARRAY' ? scalar(@{$pool->{nodes}}) : ($pool->{nodes} // $pool->{count} // 0);
+        my $nodes = $self->_pool_machines($pool);
         my $provider = $pool->{provider} // 'ssh';
         print "Workers ($pool->{name}): $nodes ($provider)\n";
     }
@@ -199,7 +199,7 @@ sub _execute_json {
                 +{
                     name     => $_->{name},
                     provider => ($_->{provider} // 'ssh'),
-                    nodes    => (ref($_->{nodes}) eq 'ARRAY' ? scalar(@{$_->{nodes}}) : ($_->{nodes} // $_->{count} // 0)) + 0,
+                    nodes    => $self->_pool_machines($_) + 0,
                 }
             } @workers ],
         },
@@ -275,6 +275,18 @@ sub _collect_json {
     }
 
     return 0;
+}
+
+# How many machines a worker pool has, for both forms. An ssh pool names
+# them (k322): a nodes: list, else host: for one, as ocp apply reads it
+# (worker_ocpnodes). A host-only pool read 0 here, where apply makes it one
+# worker (k332). Any other pool counts them, and its host: is not read.
+sub _pool_machines {
+    my ($self, $pool) = @_;
+    my $nodes = $pool->{nodes};
+    return scalar @$nodes if ref $nodes eq 'ARRAY';
+    return 1 if ($pool->{provider} // 'ssh') eq 'ssh' && $pool->{host};
+    return $nodes // $pool->{count} // 0;
 }
 
 # OCP::Drift's entries, the same for both forms, and the cause when detection
@@ -651,6 +663,9 @@ worker pools) from C<ocp.yaml> and, when the cluster has been deployed, the
 live state from the Kubernetes API: node name, Ready/NotReady, role labels,
 kubelet version, InternalIP, the GPUs each node can hand out and any
 L<OCP::Drift> entries that the spec or version manifest disagree with.
+A worker pool shows how many machines it has, in both forms: an ssh pool the
+ones it names, its C<nodes:> list or its one C<host:> (earlier builds showed
+0 for a pool with C<host:>), any other pool its C<nodes:> count.
 
 If C<ocp.yaml> is missing the command dies with a hint to run C<ocp init>.
 If the cluster has never been deployed the spec section is printed and the
@@ -678,6 +693,13 @@ denial, an apiserver 5xx) is listed as C<could not be checked> with its
 cause, and is not counted as drift:
 
     [drift] could not be checked: Worker host probes: could not list OCPNode in ocp-system, drift unknown: 403 ...
+
+So is the check that reads a switch F<ocp.yaml> sets to neither true nor
+false: C<nocert: no> leaves the cert-manager check undecided, and its line
+from L<OCP::Config/validate> goes to STDERR once.  The rest of the report
+runs and the exit code stays 0, as for any check that could not be made:
+
+    [drift] could not be checked: cert-manager: ocp.yaml does not say whether to check it, drift unknown: nocert: must be true or false, not 'no'; write nocert: false
 
 When drift detection itself dies, the cause goes to STDERR
 (C<WARNING: Cannot detect drift: ...>), the drift section says that drift
