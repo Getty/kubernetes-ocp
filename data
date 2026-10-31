@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T08:06:03Z
+created: 2026-10-31T06:23:17Z
+id: 307
+priority: low
+started: 2026-10-31T08:06:03Z
+status: done
+tags:
+- apply
+- output
+title: 'Cilium Gateway: the reconcile [ok] line ignores the k300 outcome'
+updated: 2026-10-31T08:06:03Z
+---
+
+Follow-up to k300 (2026-10-31). Since k300, `OCP::Cmd::Apply::Network::setup_cilium_gateway` returns 'deployed', 'updated' or 'unchanged' and prints the matching line. The reconcile caller in lib/OCP/Cmd/Apply/Drift.pm (around line 385) ignores that and always prints `[ok] Cilium Gateway up to date`, even after it created or updated the Gateway, and the run's update count misses it.
+
+Fix proposed by the k300 worker (one line, keep the STDERR else-branch):
+    eval { $updated += $self->_report_component('Cilium Gateway', $self->_setup_cilium_gateway($config)); 1 }
+Check that `_report_component` prints the `[ok]` line in the house wording for each outcome and that `$updated` is the counter the run summary uses.
+
+Done = the [ok] line and the update count follow the outcome; a test pins all three. Waits for k291 (Apply/Drift.pm is in that change).
+
+2026-10-31 07:17 Started after k278 (handed to review). Plan: Drift.pm Gateway block reports the setup_cilium_gateway outcome through _report_component and adds it to the update count; t/38 stubs _setup_cilium_gateway as 'unchanged'; a test pins unchanged/updated/deployed.
+
+2026-10-31 07:22 Also found (not fixed): report_component says 'Cilium Gateway updated (manifest changed)' while the step itself says 'Cilium Gateway updated (spec changed)' -- for a Gateway whose live spec drifted the manifest did not change; report_component's wording is shared by every component, so left alone. The fresh-deploy path still prints a fixed '[ok] Cilium Gateway ready' (outside k307).
+
+2026-10-31 07:23 Done, commit-ready (no commit). Patch on top of k278: scratchpad w-apply277/k307.patch (Apply/Drift.pm, t/38, t/47); k278 then k307 apply cleanly to a HEAD index (checked with a scratch GIT_INDEX_FILE). Drift.pm Gateway block: eval { $updated += $self->_report_component('Cilium Gateway', $self->_setup_cilium_gateway($config)); 1 } or do { the unchanged k231 STDERR [!!] branch }. So unchanged -> '[ok] Cilium Gateway up to date' (not counted), updated -> '[ok] Cilium Gateway updated (manifest changed)' (+1), deployed -> '[ok] Cilium Gateway deployed (was missing)' (+1). t/38: %STUB_RETURN gives _setup_cilium_gateway 'unchanged' (the stub's 1 would now count as an update); new subtest pins the three outcomes' line, one line each, and the summary count -- red first (4/12 failed before the fix). t/47's Gateway stub returns 'unchanged' instead of 1 (else '[ok] Cilium Gateway 1'). Mutants 3/3 killed (count dropped, outcome ignored, failure uncounted vs t/71). Binding: make test on 17 neighbour files (t/38 t/47 t/71x2 t/52 t/300 t/269 t/231 t/226x2 t/254 t/228 t/251 t/273 t/290 t/291 t/233) 311 tests PASS. Full suite not rerun for this state alone (it ran green at k278, 3565 tests); it runs again at the k277 state, which includes this.
+
+Committed as b33e7de
