@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` takes only a 404 for a Node, OCPNode or robocop
+      Deployment that is not there in its CR steps; a 403 or 500 is named
+      with its cause on STDERR or in the worker's result instead.
     - `ocp node add --gpu` checks the `gpu:` block of `ocp.yaml` before it
       asks the cluster anything or touches the machine, and refuses a
       malformed one -- such as `gpu.enabled: no` -- naming every line,

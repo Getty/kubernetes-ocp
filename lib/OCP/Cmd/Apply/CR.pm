@@ -10,6 +10,7 @@ use Path::Tiny qw(path);
 use YAML::XS ();
 
 use OCP::Cmd::Apply::Bootstrap;
+use OCP::Cmd::Apply::K8s ();
 use OCP::Drift ();
 use OCP::K8s;
 use OCP::Node;
@@ -66,6 +67,15 @@ L<OCP::Drift/crd_schema_diff>. A CRD it cannot read is not written over
 blind: it dies with the cause. C<skip_newer_crd> is that judgement for one
 CRD document, and C<ocp deploy-robocop> (L<OCP::Cmd::DeployRobocop>) makes it
 too (k311).
+
+Every read here takes only a 404 for "not there" (k330); any other failure
+is named with its cause, through L<OCP::Cmd::Apply::K8s>. C<migrate_legacy_nodes>
+dies with it, for its step to report. C<ensure_cp_ocpnode> keeps the address
+the OCPNode has, and C<ensure_robocop> writes the Deployment without saying
+which image it replaces -- each with a C<[WARN]> on STDERR. The waits,
+C<wait_robocop_ready> and C<poll_nodes_until_terminal>, read again and name
+the last read's why when they run out; C<cli_reconcile_workers> fails the
+worker with it instead of reporting its CR as not found.
 
 L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
 forwarder — the existing test surface (t/20-apply-refactor.t,
@@ -267,11 +277,13 @@ sub ensure_provider_cr {
 }
 
 # Address of a Kubernetes Node object: ExternalIP wins, InternalIP is the
-# fallback. Returns undef when the Node is not (yet) registered.
+# fallback. Returns undef when the Node is not (yet) registered -- a 404, and
+# only that: any other failed read dies with its cause (k330).
 sub k8s_node_ip {
     my ($self, $api, $name) = @_;
 
-    my $node = eval { $api->get('Node', $name) } or return undef;
+    my $node = OCP::Cmd::Apply::K8s::read_or_absent("Node '$name'", sub { $api->get('Node', $name) })
+        or return undef;
     my $hash = ref($node) eq 'HASH' ? $node : $api->k8s->object_to_struct($node);
 
     for my $want (qw(ExternalIP InternalIP)) {
@@ -323,8 +335,16 @@ sub ensure_cp_ocpnode {
 
     # Prefer the address the Node object reports, so `ocp node ls` and
     # `ocp status` agree. cp_info->{host} is whatever the user configured and
-    # is frequently a DNS name rather than an IP.
-    my $ip = k8s_node_ip($self, $api, $name) // $cp_info->{host};
+    # is frequently a DNS name rather than an IP. A Node that is not there yet
+    # (a 404) falls back to it; one that could not be read leaves publicIP out
+    # of the merge patch, so the recorded address stays, and says why on
+    # STDERR (k330) -- the configured host is no answer to "could not look".
+    my $ip = eval { k8s_node_ip($self, $api, $name) };
+    if (my $err = $@) {
+        print STDERR "  [WARN] OCPNode/$name keeps the address it has: $err";
+    } else {
+        $ip //= $cp_info->{host};
+    }
 
     my $ok = eval {
         OCP::K8s->patch_status($api,
@@ -405,19 +425,23 @@ sub ensure_control_plane_ocpnodes {
 # For each k8s Node not yet tracked by an OCPNode CR, synthesize an
 # observational OCPNode CR with phase=Ready and providerRef=legacy.
 # Safe to run on every apply — already-synthesized CRs are no-ops via ensure.
+#
+# Only a 404 -- no OCPNode CRD, no Node list -- is nothing to migrate. Any other
+# failed list dies with its cause, which the step it runs in reports (k330):
+# "could not look" is no "nothing untracked".
 sub migrate_legacy_nodes {
     my ($self, $api) = @_;
 
-    my $cr_list = eval { $api->list('OCPNode', namespace => 'ocp-system') };
-    return unless $cr_list;
+    my $cr_list = OCP::Cmd::Apply::K8s::read_or_absent('OCPNodes in ocp-system',
+        sub { $api->list('OCPNode', namespace => 'ocp-system') }) or return;
 
     my %tracked = map {
         my $n = $api->k8s->object_to_struct($_);
         ($n->{metadata}{name} => 1);
     } @{ $cr_list->items // [] };
 
-    my $node_list = eval { $api->list('Node') };
-    return unless $node_list;
+    my $node_list = OCP::Cmd::Apply::K8s::read_or_absent('Nodes', sub { $api->list('Node') })
+        or return;
 
     my @untracked;
     for my $obj (@{ $node_list->items // [] }) {
@@ -705,7 +729,7 @@ sub sync_worker_meta {
         my $name = $want->{metadata}{name};
         my $cr   = $have{$name} or next;      # missing ones are k26's business
 
-        my $err;
+        my ($err, $gone);
         for my $attempt (1 .. 3) {
             my $patch = OCP::NodeMeta->spec_patch($cr, $want->{spec}{labels}, $want->{spec}{taints});
             last unless $patch;
@@ -725,9 +749,17 @@ sub sync_worker_meta {
             }
             $err = $@ || "patch returned nothing\n";
             last unless $err =~ /\b409\b/ && $attempt < 3;
-            my $fresh = eval { $api->get('OCPNode', $name, namespace => 'ocp-system') } or last;
+            # The re-read after the conflict: a 404 is an OCPNode deleted in
+            # the meantime, nothing left to patch (a missing one is k26's
+            # business); any other failure is what the patch failed with, not
+            # the 409 it re-read for (k330).
+            my $fresh = eval { OCP::Cmd::Apply::K8s::read_or_absent("OCPNode ocp-system/$name",
+                sub { $api->get('OCPNode', $name, namespace => 'ocp-system') }) };
+            if ($@) { $err = $@; last }
+            unless ($fresh) { ($err, $gone) = (undef, 1); last }
             $cr = ref($fresh) eq 'HASH' ? $fresh : $api->k8s->object_to_struct($fresh);
         }
+        next if $gone;
         if ($err) {
             chomp $err;
             push @{ $result{failed} }, "$name: $err";
@@ -849,13 +881,21 @@ sub _say_robocop_image_change {
         print "  $notice\n";
     }
 
+    # No Deployment yet (a 404) replaces nothing. One that cannot be read is
+    # written all the same -- this read only adds the line -- and says so on
+    # STDERR with the cause (k330).
     my $want = OCP::Robocop::Manifest->image($config);
-    my $live = eval {
-        my $dep = $api->get('Deployment', 'robocop', namespace => $doc->{metadata}{namespace} // 'ocp-system');
-        my $h   = $api->k8s->object_to_struct($dep);
-        my ($c) = grep { ($_->{name} // '') eq 'controller' } @{ $h->{spec}{template}{spec}{containers} // [] };
-        $c && $c->{image};
-    };
+    my $ns   = $doc->{metadata}{namespace} // 'ocp-system';
+    my $dep  = eval { OCP::Cmd::Apply::K8s::read_or_absent("Deployment $ns/robocop",
+        sub { $api->get('Deployment', 'robocop', namespace => $ns) }) };
+    if (my $err = $@) {
+        print STDERR "  [WARN] robocop image $want, not compared with the running one: $err";
+        return;
+    }
+    return unless $dep;
+    my $h    = $api->k8s->object_to_struct($dep);
+    my ($c)  = grep { ($_->{name} // '') eq 'controller' } @{ $h->{spec}{template}{spec}{containers} // [] };
+    my $live = $c && $c->{image};
     print "  [..] robocop image $live -> $want\n" if $live && $live ne $want;
     return;
 }
@@ -863,13 +903,20 @@ sub _say_robocop_image_change {
 # Looks at least once, so a timeout of 0 is "is it ready right now" -- what
 # the inject level asks (k169): its pod is Ready only once a key was injected,
 # which no amount of waiting inside this apply brings about.
+#
+# A read that failed is read again like a pod not ready yet. When the wait
+# ends on one -- a 403/500, or a 404 for the Deployment just written -- its why
+# goes to STDERR (k330, as k319's waits): the callers say "not ready", which
+# without it reads as a robocop that is merely slow.
 sub wait_robocop_ready {
     my ($self, $api, $timeout) = @_;
     $timeout //= 60;
 
     my $deadline = time + $timeout;
+    my $why;
     while (1) {
-        my $dep = eval { $api->get('Deployment', 'robocop', namespace => 'ocp-system') };
+        (my $dep, $why) = OCP::Cmd::Apply::K8s::read_or_why('Deployment ocp-system/robocop',
+            sub { $api->get('Deployment', 'robocop', namespace => 'ocp-system') });
         if ($dep) {
             my $ready = eval { $dep->status->readyReplicas } // 0;
             return 1 if $ready && $ready >= 1;
@@ -877,6 +924,7 @@ sub wait_robocop_ready {
         last if time >= $deadline;
         $self->wait_seconds(5);
     }
+    print STDERR "  [WARN] robocop not seen ready: $why\n" if $why;
     return 0;
 }
 
@@ -901,18 +949,22 @@ sub drive_workers {
     return cli_reconcile_workers($self, $api, $config, \@names, $deps);
 }
 
+# A read that fails is read again like an OCPNode still on its way; a worker
+# that times out on one has the last read's why in its message -- "OCPNode ...
+# not found" for a 404, the cause for any other failure (k330).
 sub poll_nodes_until_terminal {
     my ($self, $api, $names, $timeout) = @_;
     $timeout //= 600;
     my $ns = 'ocp-system';
 
     my $deadline = time + $timeout;
-    my %terminal;
+    my (%terminal, %why);
 
     while (time < $deadline && scalar(keys %terminal) < scalar(@$names)) {
         for my $name (@$names) {
             next if $terminal{$name};
-            my $cr = eval { $api->get('OCPNode', $name, namespace => $ns) };
+            (my $cr, $why{$name}) = OCP::Cmd::Apply::K8s::read_or_why("OCPNode $ns/$name",
+                sub { $api->get('OCPNode', $name, namespace => $ns) });
             my $hash = $cr
                 ? (ref($cr) eq 'HASH' ? $cr : $api->k8s->object_to_struct($cr))
                 : undef;
@@ -931,7 +983,8 @@ sub poll_nodes_until_terminal {
         push @results, $terminal{$name} // {
             name    => $name,
             phase   => 'Unknown',
-            message => "timed out waiting for phase (after ${timeout}s)",
+            message => "timed out waiting for phase (after ${timeout}s)"
+                     . ($why{$name} ? "; $why{$name}" : ''),
         };
     }
     return @results;
@@ -1030,7 +1083,15 @@ sub cli_reconcile_workers {
 
     my @results;
     for my $name (@$names) {
-        my $cr = eval { $api->get('OCPNode', $name, namespace => $ns) };
+        # Only a 404 is the CR not there; any other failed read is named with
+        # its cause (k330).
+        my $cr = eval { OCP::Cmd::Apply::K8s::read_or_absent("OCPNode $ns/$name",
+            sub { $api->get('OCPNode', $name, namespace => $ns) }) };
+        if (my $err = $@) {
+            chomp $err;
+            push @results, { name => $name, phase => 'Failed', message => $err };
+            next;
+        }
         my $hash = $cr
             ? (ref($cr) eq 'HASH' ? $cr : $api->k8s->object_to_struct($cr))
             : undef;
