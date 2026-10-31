@@ -442,6 +442,11 @@ sub generate_nfd_manifest {
     return $self->ocp->dump(@resources);
 }
 
+# NFD v0.17 labels use the format pci-{CLASS}_{VENDOR}.present:
+#   0300 = VGA controller (consumer/workstation GPUs: RTX, GTX, Quadro)
+#   0302 = 3D controller  (datacenter GPUs: Tesla, A100, H100, L40)
+my @NVIDIA_LABELS = map { "feature.node.kubernetes.io/pci-${_}.present" } qw(0300_10de 0302_10de);
+
 sub setup_gpu_operator {
     my ($self, $config) = @_;
 
@@ -456,14 +461,11 @@ sub setup_gpu_operator {
 
     my $api = $self->_k8s_api;
 
-    # Check if any node has NVIDIA GPU via NFD labels.
-    # NFD v0.17 labels use the format pci-{CLASS}_{VENDOR}.present:
-    #   0300 = VGA controller (consumer/workstation GPUs: RTX, GTX, Quadro)
-    #   0302 = 3D controller  (datacenter GPUs: Tesla, A100, H100, L40)
+    # Check if any node has NVIDIA GPU via NFD labels (@NVIDIA_LABELS).
     my @gpu_nodes;
-    for my $pci_class (qw(0300_10de 0302_10de)) {
+    for my $label (@NVIDIA_LABELS) {
         my $list = eval {
-            $api->list('Node', labelSelector => "feature.node.kubernetes.io/pci-${pci_class}.present=true")
+            $api->list('Node', labelSelector => "$label=true")
         };
         if ($list && $list->items) {
             push @gpu_nodes, @{ $list->items };
@@ -720,10 +722,18 @@ sub toolkit_switch_warning {
 # node it inspects (system-os_release, cpu-*), so a worker without a GPU does
 # not hold the run for the whole budget, only a node NFD never reaches does.
 #
+# k287: a first check that ran covered the NVIDIA nodes it detected, and the
+# operator's DaemonSets come to a new one by themselves -- but nothing waited
+# for that node's nvidia.com/gpu in allocatable until the next apply. So after
+# the same wait for NFD the check runs once more when a joined worker carries
+# an NFD NVIDIA label: up to date, setup_gpu_operator waits for it (k273).
+#
 # Returns undef when no second check is needed (gpu.enabled false, the first
-# check did not skip, or nobody joined), else the step's verdict like
-# setup_gpu_operator, and dies like it on a real failure. A node NFD has not labelled in
-# time is said and checked anyway: setup_gpu_operator decides on what it sees.
+# check failed, nobody joined, or the first check ran and no joined worker
+# shows an NVIDIA GPU), else the step's verdict like setup_gpu_operator, and
+# dies like it on a real failure. After a skipped check, a node NFD has not
+# labelled in time is said and checked anyway: setup_gpu_operator decides on
+# what it sees.
 # 600: on a freshly joined node NFD's worker pod waits for the CNI first --
 # brain needed 4-5 minutes before its sandbox got a network (lab note 25), and
 # the old 300 s ran out with the GPU node missing from the check.
@@ -734,7 +744,7 @@ sub setup_gpu_operator_after_join {
     my ($self, $config, $first_outcome, @ocpnode_names) = @_;
 
     return undef unless $config->gpu_enabled;
-    return undef unless defined $first_outcome && $first_outcome eq 'skipped';
+    return undef unless defined $first_outcome;    # failed: said already, not retried here
     return undef unless @ocpnode_names;
 
     my $api = $self->_k8s_api;
@@ -749,17 +759,26 @@ sub setup_gpu_operator_after_join {
     my $interval = gpu_label_interval();
     my $tries    = int(gpu_label_timeout() / $interval);
     my @waiting  = @k8s_names;
+    my %labels;
     for my $try (0 .. $tries) {
         @waiting = grep {
-            my $node   = eval { $api->get('Node', name => $_) };
-            my $labels = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
-            !grep { index($_, 'feature.node.kubernetes.io/') == 0 } keys %$labels;
+            my $node = eval { $api->get('Node', name => $_) };
+            $labels{$_} = $node ? ($api->k8s->object_to_struct($node)->{metadata}{labels} // {}) : {};
+            !grep { index($_, 'feature.node.kubernetes.io/') == 0 } keys %{ $labels{$_} };
         } @waiting;
         last unless @waiting;
         $self->wait_seconds($interval) if $try < $tries;
     }
     print "  [WARN] NFD has not labelled " . join(', ', @waiting) . " after "
         . gpu_label_timeout() . "s; checking with what is there\n" if @waiting;
+
+    if ($first_outcome ne 'skipped') {
+        my @nvidia = grep { my $l = $labels{$_}; grep { ($l->{$_} // '') eq 'true' } @NVIDIA_LABELS } @k8s_names;
+        unless (@nvidia) {
+            print "      No NVIDIA GPU on the new worker(s)\n";
+            return undef;
+        }
+    }
 
     print "  [..] Checking GPU Operator again, after the worker join...\n";
     return setup_gpu_operator($self, $config);

@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` now waits for `nvidia.com/gpu` in the allocatable of an
+      NVIDIA worker that joins during the run also when the GPU Operator
+      check before the join already ran; a node that does not get there
+      is the usual `[WARN]`.
     - `ocp node add --gpu` and `ocp apply` now wait for an AMD node that
       joined an up-to-date AMD GPU stack until `amd.com/gpu` shows in its
       allocatable (a ResourceSlice under DRA), with 10 minutes for a

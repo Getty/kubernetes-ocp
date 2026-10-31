@@ -536,6 +536,11 @@ my (@driven, $key_asked);
         return bless { path => '/nonexistent/cluster-key' }, 'FakeClusterKey';
     };
     *FakeClusterKey::path = sub { $_[0]{path} };
+    # And every pause a run makes, which is not slept here. A worker that
+    # joins after the GPU Operator check is waited for until NFD labels it,
+    # 'unchanged' included (k287), and DryRunApi has no Node to label: without
+    # this, 600s of real sleep per joined worker.
+    *OCP::Cmd::Apply::wait_seconds = sub { };
 }
 
 sub reconcile {

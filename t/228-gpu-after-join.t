@@ -16,6 +16,13 @@ use OCP::Cmd::Apply::Deploy;
 # check skipped and workers came up, the check runs again once NFD has looked
 # at the new nodes.
 #
+# k287: a first check that ran (did not skip) covered the NVIDIA nodes it
+# detected; one that joined later in the run was not waited for until the
+# next apply. Now the check runs again for it too, once NFD labelled it as
+# an NVIDIA node: setup_gpu_operator, up to date, waits for its
+# nvidia.com/gpu in allocatable (k273). A worker without one gets no second
+# check.
+#
 
 {
     package FakeK8s;
@@ -84,11 +91,11 @@ sub run_after_join {
 subtest 'no second check when it is not needed' => sub {
     my $r = run_after_join(config => { gpu => 0 }, first => 'skipped', names => ['crag']);
     ok !defined $r->{got} && !$r->{calls}, 'gpu.enabled false';
-    $r = run_after_join(first => 'deployed', names => ['crag']);
-    ok !defined $r->{got} && !$r->{calls}, 'the first check deployed: its DaemonSets cover new nodes';
-    $r = run_after_join(first => 'unchanged', names => ['crag']);
-    ok !defined $r->{got} && !$r->{calls}, 'the first check found it up to date';
-    $r = run_after_join(first => undef, names => ['crag']);
+    $r = run_after_join(first => 'deployed', names => ['cpu1'], labels => { cpu1 => $NFD_ONLY });
+    ok !defined $r->{got} && !$r->{calls}, 'the first check deployed, and the worker has no NVIDIA GPU';
+    $r = run_after_join(first => 'unchanged', names => ['cpu1'], labels => { cpu1 => $NFD_ONLY });
+    ok !defined $r->{got} && !$r->{calls}, 'the first check found it up to date, and the worker has no NVIDIA GPU';
+    $r = run_after_join(first => undef, names => ['crag'], labels => { crag => $NFD_GPU });
     ok !defined $r->{got} && !$r->{calls}, 'the first check failed: said already, not retried here';
     $r = run_after_join(first => 'skipped', names => []);
     ok !defined $r->{got} && !$r->{calls}, 'nobody joined';
@@ -102,6 +109,36 @@ subtest 'skipped before the join: checked again once NFD labelled the node' => s
     is $r->{calls}, 1, 'setup_gpu_operator ran once';
     is $r->{apply}{waited}, 10, 'waited one interval for NFD';
     like $r->{out}, qr/Checking GPU Operator again, after the worker join/, 'said';
+};
+
+subtest 'k287: the first check ran: checked again for a worker NFD labels as NVIDIA' => sub {
+    for my $first (qw( deployed updated restored unchanged )) {
+        my $seen = 0;
+        my $r = run_after_join(first => $first, names => ['crag'], verdict => 'unchanged',
+            labels => { crag => sub { $seen++ ? $NFD_GPU : {} } });
+        is $r->{calls}, 1, "first $first: setup_gpu_operator ran again, for its allocatable wait";
+        is $r->{got}, 'unchanged', "first $first: its verdict";
+        is $r->{apply}{waited}, 10, "first $first: after NFD labelled the node";
+        like $r->{out}, qr/Waiting for NFD on the new worker\(s\): crag\n.*Checking GPU Operator again, after the worker join/s,
+            "first $first: said";
+    }
+
+    my $r = run_after_join(first => 'deployed', names => [qw( cpu1 crag )], verdict => 'unchanged',
+        labels => { cpu1 => $NFD_ONLY, crag => $NFD_GPU });
+    is $r->{calls}, 1, 'one NVIDIA worker among others is enough';
+
+    $r = run_after_join(first => 'deployed', names => ['cpu1'], labels => { cpu1 => $NFD_ONLY });
+    is $r->{apply}{waited}, 0, 'a worker without one: no wait beyond NFD\'s first look';
+    like $r->{out}, qr/Waiting for NFD on the new worker\(s\): cpu1\n {6}No NVIDIA GPU on the new worker\(s\)\n\z/,
+        'and the wait answered on STDOUT';
+
+    $r = run_after_join(first => 'deployed', names => ['crag'], labels => { crag => {} });
+    is $r->{apply}{waited}, 30, 'NFD never labels: the whole budget';
+    ok !$r->{calls}, 'and no second check: nothing says the node has an NVIDIA GPU';
+
+    $r = run_after_join(first => 'deployed', names => ['crag'], k8s_name => { crag => '10-230-30-250' },
+        verdict => 'unchanged', labels => { '10-230-30-250' => $NFD_GPU });
+    is $r->{calls}, 1, 'the label is read on the Node the OCPNode names';
 };
 
 subtest 'a worker without GPU does not hold the run for the budget' => sub {

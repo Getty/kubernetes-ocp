@@ -31,6 +31,10 @@ use OCP::Cmd::Node::Add;
 # the join. A read that fails is read again, and only a 404 means the node
 # is absent (k269).
 #
+# k287: the same for an NVIDIA worker that joins later in the run, when the
+# first check did not skip: the check after the worker join runs again for
+# it (t/228 has when), and waits for it like for the others.
+#
 
 sub capture (&) {
     my ($code) = @_;
@@ -295,6 +299,43 @@ subtest 'apply: the budget and the interval are gpu_ready_timeout and gpu_ready_
     my $r = gpu_step(deployed => 1, nodes => { crag => [ $STALE ] });
     is_deeply $r->{waits}, [ (5) x 6 ], 'six waits of 5s';
     like $r->{err}, qr/NVIDIA GPU not ready after 30s: /, 'and the WARN names that budget';
+};
+
+subtest 'apply k287: a worker that joins after a check that ran is waited for' => sub {
+    # The first check rolled the operator out for brain. crag joins in the
+    # worker step, NFD labels it, and its plugin registers a while later.
+    my $api    = NvApi->new;
+    my $config = FakeConfig->new;
+    my $apply  = new_apply($api);
+    $api->{nodes} = { brain => [ $ONE ] };
+    my (undef, $first) = with_cluster(sub {
+        capture { OCP::Cmd::Apply::Workloads::setup_gpu_operator($apply, $config) } });
+    is $first, 'deployed', 'the first check deployed';
+    @$api{qw( running reads )} = (1, {});
+
+    my $after_join = sub {
+        my (@answers) = @_;
+        $api->{nodes}{crag} = [ @answers ];
+        my ($waits, $rv, $out, $err, $died) = with_cluster(sub { capture {
+            OCP::Cmd::Apply::Workloads::setup_gpu_operator_after_join($apply, $config, $first, 'crag')
+        } });
+        return { outcome => $rv, out => $out, err => $err, died => $died, waits => $waits };
+    };
+
+    my $r = $after_join->($NONE, $NONE, $STALE, $ONE);
+    is $r->{died}, '', 'no death';
+    is $r->{outcome}, 'unchanged', 'checked again: up to date';
+    like $r->{out}, qr/Checking GPU Operator again, after the worker join\.\.\.\n.*Waiting for nvidia\.com\/gpu on brain, crag\.\.\.\n\s+nvidia\.com\/gpu allocatable on brain, crag\n/s,
+        'and waited for the new worker, on STDOUT';
+    is $r->{err}, '', 'nothing on STDERR';
+    is sum0(@{ $r->{waits} }), 2 * OCP::Cmd::Apply::Workloads::gpu_ready_interval(), 'until its plugin registered';
+
+    $r = $after_join->($STALE);
+    is $r->{died}, '', 'never: not a failed step';
+    is $r->{outcome}, 'unchanged', 'the verdict stands';
+    is $r->{err}, $WARN . "node 'crag' shows no nvidia.com/gpu in status.allocatable"
+        . " (capacity 1: stale after a device plugin unregisters, or unhealthy devices)\n",
+        'the WARN, on STDERR';
 };
 
 #
