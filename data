@@ -1,0 +1,41 @@
+---
+claimed_at: 2026-10-31T04:46:30Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-30T23:24:57Z
+id: 248
+priority: high
+status: in-progress
+tags:
+- gpu
+- amd
+- needs:rex-gpu#1
+- needs:rex-rancher#95
+title: 'AMD-GPU-Worker: Host-Install + wählbarer k8s-Stack (Device-Plugin/DRA/Operator)'
+updated: 2026-10-31T04:46:30Z
+---
+
+AMD-GPU-Worker in OCP: ein AMD-Node (Testhost synapse, gfx1151 APU) soll regulär als GPU-Worker einem OCP-Cluster beitreten. Maintainer-Go 2026-10-31. Die Betriebspolitik (wer welche GPU bekommt) entscheidet später das GPM über einen anderen Agenten — OCP soll alle Optionen anbieten, keine festlegen.
+
+Stand: Rex::GPU::Detect::Sysfs erkennt synapse (amd, Klasse 0380), share/Rexfile _gpu_action liefert 'amd' und druckt nur "driver support not yet implemented".
+
+Teile:
+1. Host: share/Rexfile install_amd über Rex::GPU::AMD (rex-gpu k1), gpu.driver host|operator gilt herstellerneutral.
+2. Kubernetes: AMD-Stack wählbar — Device-Plugin (amd.com/gpu) und DRA (ResourceClaims), Node-Labeller (amd.com/gpu.*-Labels für die Auswahl), Metrics-Exporter; AMD GPU Operator als Alternative, falls tragfähig. Pins in OCP::Versions, ocp.yaml-Schalter, Drift-Probes für das, was OCP selbst schreibt, Status-Abschnitt amd.com/gpu.
+3. Live: CP otho (10.230.30.52, NVIDIA RTX 3090) + Worker synapse (AMD) = gemischter Cluster.
+
+Design-Spec folgt in docs/superpowers/specs/ nach Recherche + Spike; Kind-Karten pro Lane dann. Hängt an rex-gpu k1 und rex-rancher (AMD in der gpu-Pipeline).
+
+2026-10-31 API von rex-gpu k1 (Session rex-gpu-amd, Stand vor Feinschliff): Rex::GPU::AMD exportiert nichts — voll qualifiziert aufrufen. install_driver(gpus => \@amd [detect()-Form, kein compute-Filter], method => 'auto'|'inbox'|'dkms', reboot => 0|1) liefert 'present'|'inbox'|'dkms', stirbt vor jeder Host-Änderung bei falschen Argumenten/nicht unterstützter OS-Kernel-Kombination. verify_amd([gpus => ...]) warnt, stirbt nie, liefert { ok, gpus => [{ slot, device_id, gfx_target, vram_bytes, kfd_node }] } (synapse: gfx1151, vram_bytes = 128-GiB-UMA-Carve-out). install_rocm optional, nie von gpu_setup. Detect: AMD bekommt device_id + gfx_target, compute 1/0/undef wie NVIDIA. gpu_setup: AMD mit compute 1 -> install_driver + verify_amd; gemischter Host beide Vendors, NVIDIA zuerst. Feature-Flag: Rex::GPU->can('amd_class'). Änderungen kommen als Notiz in rex-gpu k1.
+
+2026-10-31 Recherche (ocp-infra-worker, read-only; Volltext scratchpad research/amd-gpu-k8s-upstream-2026-10-31.md der Session 40f58f97): Device-Plugin + Labeller rocm/k8s-device-plugin 1.31.0.11 = einziger Modus mit Evidenz für gfx1151 (AMD: 'can be used in our AI MAX 395 clusters'). DRA rocm/k8s-gpu-dra-driver v1.0.1 läuft auf 1.36 (resource.k8s.io/v1, CDI via containerd 2.x default), APU-VRAM unbewiesen (#84). Operator v1.5.1: nur Instinct validiert, Bug #665 trifft OCPs externes NFD, NodeFeatureRule ohne 1586 -> zurückstellen. Metrics-Exporter v1.5.3: APUs explizit nicht unterstützt -> nur Instinct/Radeon AI; APU-Fallback node_exporter --collector.drm. Kein gfx-Target-Label upstream -> OCP setzt es selbst aus Rex::GPU verify_amd. NFD-Default deckt 0380 ab (pci-0380_1002). amd-ctk für k8s irrelevant.
+
+k253 created: gpu.amd.integrated cluster-wide (CR channel like k223). Integrated gate + marker label ocp.internal/amd-gpu.present added to the spec (rex-gpu now delivers integrated=1|0|undef; protects AX42 iGPUs). k249/k250 have the delta. Cilium-leftover cleanup without reboot: rex-rancher k97.
+
+Live spike 2026-10-31 otho+synapse (RKE2 1.36.4): device plugin unprivileged → amd.com/gpu 1; PyTorch smoke (fp32/fp16/bf16, SDPA vs CPU) passed via amd.com/gpu AND via DRA ResourceClaim (gpu.amd.com, ResourceSlice gpu-0-128, no gfx attribute). Labeller needs privileged (unprivileged only device-id). Per-node switch dp↔dra via the ocp.internal/amd-gpu.allocation label works both ways, slice gets cleaned up after ~25s. Device-plugin image without ENTRYPOINT: args alone breaks it, command required. Details in spec section 'Spike result'. Design switched: AMD objects come from Rex::Rancher::K8s (rex-rancher k95/k101-103), OCP keeps policy.
+
+Closing todo for the AMD round: update the repo-owned skill ocp-gpu (drift probes for the AMD DaemonSets, gpu.amd keys, integrated gate, marker label, lib-first). The skill still says drift only probes GPU operator + NFD (k250 finding). Lane: ocp-doc-writer or infra, after k251.
+
+2026-10-31 02:18 Design doc update committed as caf0454 (lib run on amdlab, object names, DRA/metrics/wait details, busybox:1.36 correction). Card stays in-progress; stack deploy is k251 (4d90591).
+
+2026-10-31 04:46 Docs commit 03e299b: OCP's own live run on amdlab recorded in the AMD GPU worker design. Epic stays in progress.
