@@ -87,14 +87,18 @@ sub project {
              . "  provider: $cp_provider\n";
     $yaml .= "  host: 127.0.0.1\n" unless $args{cp_no_host};
 
+    # The pool names its machine in the single-host form: a local pool
+    # counts its machines, and a nodes: list there is a shape validate()
+    # refuses since k315 and `ocp destroy` since k323. A name of its own,
+    # not the control plane's 127.0.0.1, so the plan shows which of the two
+    # it lists.
     if ($args{workers}) {
         $yaml .= <<'YAML';
 
 workers:
   - name: local-pool
     provider: local
-    nodes:
-      - 127.0.0.1
+    host: worker.local
 YAML
     }
 
@@ -190,12 +194,15 @@ subtest 'fallback path: a local worker pool reaches the delete loop' => sub {
     # The literal `$w->{provider} eq 'ssh'` gate on the worker fallback
     # dropped this pool wholesale. The pool wasn't even in the destruction
     # list, so there was nothing for the loop to skip.
+    #
+    # The worker has a name of its own: with the pool dropped, the plan
+    # falls back to the control plane, which is local at 127.0.0.1 too.
     my $config = project(workers => 1);
 
     my $r = run_destroy($config);
     is $r->{err}, '', 'ran clean' or diag $r->{out};
 
-    like $r->{out}, qr/127\.0\.0\.1 \(local,/,
+    like $r->{out}, qr/worker\.local \(local,/,
         'the local worker is named in the destruction plan';
     ok !(grep { $_->{type} eq 'ssh' } @{ $r->{deleted} }),
         'no ssh provider was asked to do anything';

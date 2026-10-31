@@ -411,6 +411,35 @@ sub _spec_worker_entries {
     return @entries;
 }
 
+# What validate() says about the nodes: lists _spec_worker_entries reads, in
+# its own words (k323): an entry that names no host died there inside Perl
+# ("Not a HASH reference"), a host that is a list became a machine named
+# ARRAY(0x...), and a hetzner pool's list was read as host names it then
+# never deleted.
+#
+# Only those lists, not all of validate(). Destroy is the way out of a
+# cluster: a refusal there for a key it never reads -- a gpu.driver typo, a
+# robocop key a newer validate() refuses (k315), a pool count, which destroy
+# does not read at all -- would keep paid servers running until someone
+# edits a line that has nothing to do with them. So the gate asks exactly
+# where the read happens: a pool that is a mapping, with a provider destroy
+# knows, and nodes: a list.
+sub _spec_worker_errors {
+    my ($self, $config) = @_;
+    my $workers = $config->workers;
+    return () unless ref $workers eq 'ARRAY';
+
+    my (@errors, $n);
+    for my $w (@$workers) {
+        $n++;
+        next unless ref $w eq 'HASH' && ref $w->{nodes} eq 'ARRAY';
+        next if ref $w->{provider}
+             || !OCP::Provider->known_type($w->{provider} // q());
+        push @errors, $config->_pool_nodes_errors($w, $config->_pool_where($w, $n));
+    }
+    return @errors;
+}
+
 # robocop reconciles OCPNodes: left running, it would see a worker vanish
 # under it and provision a replacement -- a new paid server, created after the
 # label search, that nothing is left to delete. Scaled to zero before the
@@ -448,6 +477,18 @@ sub execute {
     }
 
     my $config = OCP::Config->new(file => $file);
+
+    # First, before a PIN is asked or the cluster or a server is reached
+    # (k323), as `ocp apply` refuses an invalid ocp.yaml (k255).
+    if (my @errors = $self->_spec_worker_errors($config)) {
+        my $s = @errors == 1 ? '' : 's';
+        die "$file has " . scalar(@errors) . " error$s:\n"
+          . join('', map { "  - $_\n" } @errors)
+          . "Nothing was deleted: ocp destroy reads the machines of a worker pool off its "
+          . "nodes: list, and checks that list before it touches the cluster or a server. "
+          . "Fix the line$s above and run it again.\n";
+    }
+
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
     # Initialize Hetzner provider if token available
     my $hetzner_token = $secrets->hetzner_token;
@@ -914,6 +955,17 @@ Hetzner project.  The printed C<hcloud> selector is the way to inspect and
 remove them by hand, and it is also the way to find servers under a provider
 that was added with C<ocp provider add --name> rather than by C<ocp apply>.
 
+Before anything else -- before a PIN is asked, the cluster API or a provider
+is reached -- the C<nodes:> lists of the worker pools are checked, the lists
+destroy reads machines off (C<k323>).  A list L<OCP::Config/validate>
+refuses -- an entry that is no host name, address or mapping with C<host>,
+or a list at all on a pool that counts its machines -- stops the teardown
+with C<validate()>'s lines, all at once, on STDERR and exit 1, and nothing
+is deleted.  Only those lists: an F<ocp.yaml> that C<validate()> refuses for a
+key destroy does not read -- C<gpu>, C<robocop>, a pool's count -- is still
+torn down, so a newer C<validate()> never stands between a cluster and its
+teardown.
+
 The node list is merged from every source, one entry per machine
 (matched by name, address or provider id): C<.ocp/status.yaml> (the
 control planes); every OCPNode in the cluster, all roles, while the
@@ -978,7 +1030,9 @@ spec and you want the reconcile path to start from a known-good hash set.
 
     $cmd->execute($args, $chain)
 
-Lists the candidate nodes, asks for confirmation on a terminal (unless
+Dies with the lines of L<OCP::Config/validate> on a worker pool C<nodes:>
+list it cannot read, before it touches anything (C<k323>).  Then lists the
+candidate nodes, asks for confirmation on a terminal (unless
 C<--force>, the only way without a terminal; without one it returns 1 having
 touched nothing), deletes each via its provider and, on a clean run, removes
 the local state and the encrypted kubeconfig and returns 0.  A failed or skipped SSH/local
