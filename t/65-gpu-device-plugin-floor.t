@@ -97,8 +97,18 @@ subtest 'the DRA driver has the same UMA bug and is still unfixed upstream -- OC
     # component matching this name ever shows up in OCP::Versions it needs
     # the same floor-or-avoid treatment as nvidia_device_plugin above, not
     # a blind pin -- see k25.
+    #
+    # NVIDIA's only: AMD's DRA driver (amd_dra_driver, k248/k249) is another
+    # project, rocm/k8s-gpu-dra-driver, which asks no NVML and is pinned on
+    # purpose. The name match is narrowed to NVIDIA's for that; the claim is
+    # unchanged, and the matcher is held below so it still catches the names
+    # NVIDIA's driver would be pinned under.
+    my $nvidia_dra = qr/nvidia.*dra|dra.*nvidia/i;
+    ok 'nvidia_dra_driver'       =~ $nvidia_dra, 'the matcher catches nvidia_dra_driver';
+    ok 'dra_driver_nvidia_gpu'   =~ $nvidia_dra, 'and dra_driver_nvidia_gpu';
+    ok 'amd_dra_driver'          !~ $nvidia_dra, 'but not AMD\'s amd_dra_driver';
     my @components = OCP::Versions->list_components();
-    ok !(grep { /dra.?driver/i } @components),
+    ok !(grep { $_ =~ $nvidia_dra } @components),
         'no dra-driver-nvidia-gpu (or similarly named) component is pinned in OCP::Versions';
 };
 

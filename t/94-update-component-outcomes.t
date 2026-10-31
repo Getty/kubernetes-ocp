@@ -168,7 +168,8 @@ for my $dist (qw( rke2 k3s )) {
         like $out, qr/^\s*cilium_cli\b.*with cilium/m,      'cilium_cli: moves with cilium';
         like $out, qr/^\s*gateway_api\b.*with cilium/m,     'gateway_api: applied with cilium';
         for my $comp (qw( nfd gpu_operator nvidia_toolkit nvidia_driver
-                          nvidia_device_plugin dcgm_exporter nvidia_dcgm )) {
+                          nvidia_device_plugin dcgm_exporter nvidia_dcgm
+                          amd_device_plugin amd_dra_driver amd_metrics_exporter )) {
             like $out, qr/^\s*$comp\b.*ocp apply/m, "$comp: rolled out by ocp apply";
         }
         is stamped($file), $CURRENT, 'the version stamp stays';

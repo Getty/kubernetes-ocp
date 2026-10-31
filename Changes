@@ -1,6 +1,16 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Host-side AMD GPU support: the Rexfile detects AMD GPUs and installs the
+      amdgpu driver through Rex::GPU::AMD under `gpu.driver: host`, and
+      registers AMD nodes with `ocp.internal/amd-gpu.present` and gfx-target
+      labels, under `operator` too. Integrated GPUs are gated by the opt-in
+      above. A detection failure under `operator` is a warning, under `host`
+      it still fails. `ocp apply` does not deploy the AMD cluster stack yet.
+    - `ocp update` knows the AMD GPU stack pins (`amd_device_plugin`,
+      `amd_dra_driver`, `amd_metrics_exporter`): like NFD and the NVIDIA
+      stack it leaves them to `ocp apply` and skips them when `gpu.enabled`
+      is false.
     - ocp.yaml gains `gpu.amd` (allocation, resource_naming, labeller,
       metrics, integrated). `ocp status` and `ocp apply` report version drift
       of the AMD GPU DaemonSets (device plugin, node labeller, DRA driver,

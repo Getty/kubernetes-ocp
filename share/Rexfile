@@ -11,7 +11,8 @@ use JSON::MaybeXS;
 # (k155): node preparation, the RKE2/K3s server and agent installs with their
 # checks up front (rex-rancher k78), Cilium with the Gateway API CRDs, the wait
 # for the Kubernetes API, GPU detection from sysfs (rex-gpu k73), the NVIDIA
-# driver and container toolkit, the Cilium leftover guard and the removal of
+# driver and container toolkit, the AMD kernel driver (rex-gpu k1, once
+# Rex::GPU ships it), the Cilium leftover guard and the removal of
 # the bare containerd template (rex-rancher k71, k72), the node's kubeconfig
 # (k73). This file keeps what is OCP's own -- the parameter hand-over, the pod
 # network, the kubeconfig policy, which GPUs get a driver, the legacy-file
@@ -28,6 +29,10 @@ use Rex::Rancher::Distribution ();
 use Rex::Rancher::K8s ();
 use Rex::GPU::Detect::Sysfs ();
 use Rex::GPU::NVIDIA ();
+# Rex::GPU itself only for its feature flag: Rex::GPU->can('amd_class') says
+# whether this Rex::GPU carries Rex::GPU::AMD (rex-gpu k1). Rex::GPU::AMD is
+# loaded only when it does -- see install_amd.
+use Rex::GPU ();
 
 # Authentication — Rex::Interface::Connection::LibSSH (Net::LibSSH).
 # Pure libssh in-process: no ssh client subprocess, no SFTP subsystem,
@@ -161,24 +166,63 @@ sub _node_params {
 # goes along to install_nvidia: false means the GPU Operator runs no toolkit
 # DaemonSet, so nothing in the cluster writes CDI specs for this node. Missing
 # means true, the behaviour before k223.
+#
+# gpu.driver says who installs the kernel driver, for either vendor (k248).
+# Under `operator` NVIDIA stays the GPU Operator's exactly as before: no
+# install_nvidia. OCP has no AMD operator, so an AMD GPU's amdgpu driver has
+# to be on the host already -- but the AMD GPUs are still detected and the
+# node still gets its AMD labels (see install_amd), or an operator-mode
+# cluster could never use an AMD node. That is why detection runs under
+# `operator` too, where it used not to.
+#
+# gpu_amd_integrated (k250: `ocp node add --gpu`, or gpu.amd.integrated) goes
+# along to install_amd, which leaves an integrated AMD GPU alone without it.
+# Missing means false.
+#
+# Returns the node labels the GPU step found (an arrayref, possibly empty) --
+# an AMD node's marker and gfx-target labels -- for the install to register
+# the node with. That is why detect_gpu is called as a function here and not
+# through do_task: do_task runs a task in a forked child, whose return value
+# never comes back (Rex 1.16.1, Rex::TaskList::Base::run). Called as a
+# function, Rex runs the task in this process, on this connection, and a die
+# in it stops the install task.
 sub _maybe_detect_gpu {
     my ($params) = @_;
 
     unless ($params->{gpu} // 1) {
         say "GPU handling disabled (gpu.enabled: false) — skipping detection";
-        return;
+        return [];
     }
 
     my $driver = $params->{gpu_driver} || 'host';
-    unless ($driver eq 'host') {
-        say "GPU driver mode '$driver' — the GPU Operator installs driver and toolkit, skipping host install";
-        return;
-    }
+    say "GPU driver mode '$driver' — the GPU Operator installs the NVIDIA driver and toolkit, "
+      . "skipping host install"
+        unless $driver eq 'host';
 
-    do_task "detect_gpu", { gpu_toolkit => ($params->{gpu_toolkit} // 1) ? 1 : 0 };
+    my $labels = detect_gpu({
+        gpu_toolkit        => ($params->{gpu_toolkit} // 1) ? 1 : 0,
+        gpu_driver         => $driver,
+        gpu_amd_integrated => $params->{gpu_amd_integrated} ? 1 : 0,
+    });
+    return ref $labels eq 'ARRAY' ? $labels : [];
 }
 
-desc "Detect NVIDIA GPU hardware and install drivers";
+# The install's node_labels with the GPU step's labels added. Rex::Rancher
+# writes them to config.yaml as node-label, which the kubelet reads when the
+# node registers -- and only then: no API write, and the label is on the Node
+# from its first moment. OCP::Node's convergence removes only labels it set
+# itself (ocp.internal/managed-labels), so a re-apply leaves it alone. A key
+# the spec already sets keeps the spec's value.
+sub _with_gpu_labels {
+    my ($opts, $labels) = @_;
+    my @have = @{ $opts->{node_labels} || [] };
+    my %key  = map { (split /=/, $_, 2)[0] => 1 } @have;
+    my @add  = grep { !$key{ (split /=/, $_, 2)[0] } } @{ $labels || [] };
+    $opts->{node_labels} = [ @have, @add ] if @add;
+    return;
+}
+
+desc "Detect GPU hardware (NVIDIA, AMD) and install drivers";
 task "detect_gpu", sub {
     my $params = task_params(shift);
 
@@ -194,48 +238,94 @@ task "detect_gpu", sub {
     # NVSwitches next to NVIDIA GPUs, marks vGPU guest devices, and dies --
     # before anything is installed -- for a host whose sysfs it cannot read,
     # instead of calling it GPU-less.
-    my $detected = Rex::GPU::Detect::Sysfs->detect;
-    my $action   = _gpu_action($detected);
+    #
+    # Under gpu.driver operator nothing is installed and the detection is
+    # there only for the AMD labels (see _maybe_detect_gpu), which it did not
+    # even run for before k249: a detection that dies there is a warning, and
+    # the node joins without AMD labels, as it did before. Under host it stays
+    # the failure it is.
+    my $driver = $params->{gpu_driver} || 'host';
+    my $detected;
+    if ($driver eq 'host') {
+        $detected = Rex::GPU::Detect::Sysfs->detect;
+    }
+    elsif (!eval { $detected = Rex::GPU::Detect::Sysfs->detect; 1 }) {
+        (my $error = $@ || 'unknown error') =~ s/\s+\z//;
+        $error =~ s/\s*\n\s*/; /g;    # one line, as OCP::Rex surfaces [WARN] lines
+        say "[WARN] GPU detection failed under gpu.driver '$driver': $error -- "
+          . "AMD GPU labels not set, the node joins without AMD labels";
+        return [];
+    }
+    my @labels;
 
-    if ($action eq 'nvidia') {
-        say "NVIDIA GPU present: " . join(', ', map { $_->{name} } _driver_gpus($detected));
-        do_task "install_nvidia", {
-            detected    => $detected,
-            gpu_toolkit => ($params->{gpu_toolkit} // 1) ? 1 : 0,
-        };
+    for my $action (_gpu_actions($detected)) {
+        # gpu.driver operator: NVIDIA is the GPU Operator's (see
+        # _maybe_detect_gpu), as it was before AMD.
+        next if $driver ne 'host' && ($action eq 'nvidia' || $action eq 'unsupported');
+
+        if ($action eq 'nvidia') {
+            say "NVIDIA GPU present: " . join(', ', map { $_->{name} } _driver_gpus($detected));
+            do_task "install_nvidia", {
+                detected    => $detected,
+                gpu_toolkit => ($params->{gpu_toolkit} // 1) ? 1 : 0,
+            };
+        }
+        elsif ($action eq 'unsupported') {
+            say "NVIDIA GPU present, but only of a generation no driver Rex::GPU installs supports "
+              . "(Kepler or older): " . join(', ', map { $_->{name} } @{ $detected->{nvidia} })
+              . " — no driver, no container toolkit; this is no NVIDIA GPU node";
+        }
+        elsif ($action eq 'amd') {
+            # In this process, like detect_gpu itself (see _maybe_detect_gpu):
+            # its labels come back.
+            my $amd = install_amd({
+                detected           => $detected,
+                gpu_driver         => $driver,
+                gpu_amd_integrated => $params->{gpu_amd_integrated} ? 1 : 0,
+            });
+            push @labels, @$amd if ref $amd eq 'ARRAY';
+        }
+        elsif ($action eq 'amd-unsupported') {
+            say "AMD GPU present, but none Rex::GPU knows to be compute-capable: "
+              . join(', ', map { $_->{name} // '?' } @{ $detected->{amd} })
+              . " — no driver; this is no AMD GPU node";
+        }
+        else {
+            say "No GPU found";
+        }
     }
-    elsif ($action eq 'unsupported') {
-        say "NVIDIA GPU present, but only of a generation no driver Rex::GPU installs supports "
-          . "(Kepler or older): " . join(', ', map { $_->{name} } @{ $detected->{nvidia} })
-          . " — no driver, no container toolkit; this is no GPU node";
-    }
-    elsif ($action eq 'amd') {
-        say "AMD GPU detected — driver support not yet implemented";
-    }
-    else {
-        say "No NVIDIA GPU found";
-    }
+
+    return \@labels;
 };
 
 # What should the bootstrap do about the GPUs Rex::GPU::Detect::Sysfs found?
-# 'nvidia' (install the driver), 'unsupported' (NVIDIA cards, none a driver is
-# installed for), 'amd' or 'none'.
+# One answer per vendor, NVIDIA first: 'nvidia' (install the driver) or
+# 'unsupported' (NVIDIA cards, none a driver is installed for); then 'amd' or
+# 'amd-unsupported' the same way; 'none' when there is neither. A host with
+# both vendors' cards gets both drivers, NVIDIA's first.
 #
 # Before the cluster exists there is exactly one question worth asking: does
-# this host need an NVIDIA driver? That is "a card a driver can be installed
-# for" plus "no working driver yet", and install_driver answers the second
-# half. Whether the card is worth scheduling on is decided later and
-# elsewhere, by the device plugin publishing nvidia.com/gpu.
-sub _gpu_action {
+# this host need a driver? That is "a card a driver can be installed for"
+# plus "no working driver yet", and install_driver answers the second half.
+# Whether the card is worth scheduling on is decided later and elsewhere, by
+# the device plugin publishing nvidia.com/gpu or amd.com/gpu.
+sub _gpu_actions {
     my ($detected) = @_;
-    return 'nvidia'      if _driver_gpus($detected);
-    return 'unsupported' if @{ $detected->{nvidia} // [] };
-    return 'amd'         if @{ $detected->{amd}    // [] };
-    return 'none';
+    my @actions;
+    if (@{ $detected->{nvidia} // [] }) {
+        push @actions, _driver_gpus($detected) ? 'nvidia' : 'unsupported';
+    }
+    if (@{ $detected->{amd} // [] }) {
+        push @actions, _driver_gpus($detected, 'amd') ? 'amd' : 'amd-unsupported';
+    }
+    return @actions ? @actions : ('none');
 }
 
-# The NVIDIA GPUs a driver is installed for (k194): every one the detection
-# does not know to be unsupported. compute 0 is Kepler or older -- the newest
+# The GPUs of a vendor ('nvidia', the default, or 'amd') a driver is
+# installed for.
+#
+# NVIDIA (k194): every one the detection does not know to be unsupported.
+# compute 0 is Kepler or older -- the newest
 # driver for those is the end-of-life 470 branch, which Rex::GPU refuses to
 # install, on every OS -- and such a card gets no driver and makes no GPU
 # node. compute undef is a card the generation table has no row for and sysfs
@@ -245,9 +335,13 @@ sub _gpu_action {
 # driver of the OS's first source -- rather than leaving a new card without
 # a driver. (Rex::GPU's own gpu_setup installs nothing for it; OCP takes the
 # caller's side the library leaves open.)
+#
+# AMD by the same rule: Rex::GPU's compute verdict means the same for an AMD
+# GPU (rex-gpu k1) -- 0 is a card it knows to be no compute GPU, which gets
+# no driver; undef is one its table has no row for, and is handed on.
 sub _driver_gpus {
-    my ($detected) = @_;
-    return grep { !defined $_->{compute} || $_->{compute} } @{ $detected->{nvidia} // [] };
+    my ($detected, $vendor) = @_;
+    return grep { !defined $_->{compute} || $_->{compute} } @{ $detected->{ $vendor // 'nvidia' } // [] };
 }
 
 desc "Install NVIDIA GPU drivers and container toolkit";
@@ -341,6 +435,128 @@ task "install_nvidia", sub {
 
     say "NVIDIA GPU installation complete";
 };
+
+# The AMD kernel driver, and the labels the node registers with.
+#
+# Kubernetes needs no more of the host than the amdgpu kernel driver with
+# /dev/kfd and /dev/dri: no ROCm on the host (containers bring their own; OCP
+# never calls Rex::GPU::AMD::install_rocm), no container toolkit, no CDI, no
+# containerd configuration. The device plugin hands kubelet the device nodes
+# itself, the DRA driver writes its own CDI specs.
+#
+# Which GPUs: those detect_gpu's compute verdict hands on (_driver_gpus), and
+# of those an integrated one -- the iGPU of a Ryzen CPU or APU, Rex::GPU's
+# `integrated => 1` -- only with gpu_amd_integrated. Detection runs on every
+# node, control planes included, and a Hetzner AX42's Phoenix iGPU (gfx1103)
+# is nobody's GPU node unless someone said so: `ocp node add --gpu` or
+# gpu.amd.integrated (k250). Rex::GPU's own gpu_setup gates the same way
+# (amd_integrated); OCP calls install_driver itself, so the gate is OCP's
+# here. integrated 0 or undef is handed on.
+#
+# Rex::GPU::AMD::install_driver leaves a working driver alone ('present'),
+# otherwise takes the distribution's inbox amdgpu where it serves the card
+# ('inbox') or AMD's DKMS module ('dkms') -- method auto picks -- and dies
+# before the host is touched for a combination of OS and kernel it does not
+# support. OCP never reboots a node (reboot => 0): a DKMS module that needs
+# one is reported, and the reboot is the operator's. Under gpu.driver
+# operator it is not called at all: OCP has no AMD operator, the driver has
+# to be there already.
+#
+# Returns the labels for the node (an arrayref), empty when no AMD GPU was
+# accepted:
+#   - ocp.internal/amd-gpu.present=true, the marker the AMD cluster stack
+#     selects on (k251) -- NFD's PCI labels cannot tell a skipped iGPU from an
+#     accepted GPU. Set once one GPU is accepted, verified or not: a DKMS
+#     module waiting for its reboot is still an AMD GPU node.
+#   - ocp.internal/amd-gpu.gfx-target=<gfx> for the gfx target every verified
+#     GPU shares, or ocp.internal/amd-gpu.gfx-target.<gfx>=<count> per target
+#     when they differ -- the shape of AMD's labeller (amd.com/gpu.*), which
+#     publishes no gfx target at all. A GPU verify_amd reports without a gfx
+#     target (no KFD node yet: no working driver) adds none.
+#
+# Until Rex::GPU carries Rex::GPU::AMD (rex-gpu k1; Rex::GPU->can('amd_class')
+# is its flag) the task says so and installs and labels nothing; it never dies
+# over it. (Before k1, Rex::GPU knows no AMD GPU to be compute-capable and
+# says nothing of integrated ones, so the gate could not be applied anyway.)
+desc "Install the AMD GPU kernel driver";
+task "install_amd", sub {
+    my $params = task_params(shift);
+    my $driver_mode = $params->{gpu_driver} || 'host';
+
+    # detect_gpu hands over what it detected; a hand-run detects here.
+    my $detected = $params->{detected} || Rex::GPU::Detect::Sysfs->detect;
+
+    my @gpus;
+    for my $gpu (_driver_gpus($detected, 'amd')) {
+        if ($gpu->{integrated} && !$params->{gpu_amd_integrated}) {
+            say "integrated AMD GPU " . ($gpu->{slot} // $gpu->{name} // '?')
+              . " (" . ($gpu->{gfx_target} // 'gfx target unknown') . ") not set up — "
+              . "join the node with --gpu or set gpu.amd.integrated: true";
+            next;
+        }
+        push @gpus, $gpu;
+    }
+
+    # As for NVIDIA: never install_driver with an empty list.
+    unless (@gpus) {
+        say "No AMD GPU to set up — nothing to install";
+        return [];
+    }
+
+    my $names = join ', ', map { $_->{name} // '?' } @gpus;
+    unless (Rex::GPU->can('amd_class')) {
+        say "[WARN] AMD GPU present ($names), but Rex::GPU "
+          . ($Rex::GPU::VERSION // '?') . " has no AMD support (Rex::GPU::AMD, rex-gpu k1): "
+          . "no driver installed, no AMD GPU node labels";
+        return [];
+    }
+    require Rex::GPU::AMD;
+
+    say "AMD GPU present: $names";
+    my $driver;
+    if ($driver_mode eq 'host') {
+        $driver = Rex::GPU::AMD::install_driver(gpus => \@gpus, method => 'auto', reboot => 0);
+        say "AMD GPU driver: $driver";
+    }
+    else {
+        say "GPU driver mode '$driver_mode' — OCP has no AMD operator and installs no AMD driver: "
+          . "the amdgpu driver must already be on this host";
+    }
+
+    # Warns, never dies: the node still joins, as it does after verify_nvidia.
+    my $verified = Rex::GPU::AMD::verify_amd(gpus => \@gpus) // {};
+    unless ($verified->{ok}) {
+        say "[WARN] the AMD GPU driver did not verify on this host"
+          . (!defined $driver ? " -- with gpu.driver '$driver_mode' it is yours to install"
+             : $driver eq 'dkms' ? ' -- the DKMS module may need a reboot, which OCP leaves to you'
+             : '');
+    }
+
+    # $OCP::Config::AMD_GPU_PRESENT_LABEL (k250), written out: the Rexfile runs
+    # under rex, without OCP's lib/ (t/249 holds the two equal).
+    my @labels = ('ocp.internal/amd-gpu.present=true', _amd_gfx_labels(@{ $verified->{gpus} // [] }));
+    say "AMD GPU node label: $_" for @labels;
+    return \@labels;
+};
+
+# The gfx-target labels for the GPUs verify_amd reported (see install_amd).
+# Only a gfx target shaped like one (gfx1151, gfx90a, gfx942) becomes a label;
+# anything else would be refused as a label by the registration.
+sub _amd_gfx_labels {
+    my (@gpus) = @_;
+    # $OCP::Config::AMD_GPU_GFX_TARGET_LABEL (k250), written out as above.
+    my $key = 'ocp.internal/amd-gpu.gfx-target';
+    my (%count, @odd);
+    for my $gfx (grep { defined } map { $_->{gfx_target} } @gpus) {
+        if ($gfx =~ /\Agfx[0-9a-z]{1,40}\z/) { $count{$gfx}++ }
+        else                                 { push @odd, $gfx }
+    }
+    say "[WARN] AMD GPU gfx target '$_' is no label value -- not labelled" for @odd;
+
+    my @targets = sort keys %count;
+    return ("$key=$targets[0]") if @targets == 1;
+    return map { "$key.$_=$count{$_}" } @targets;
+}
 
 #
 # RKE2 / K3s Tasks
@@ -456,7 +672,9 @@ sub _install_server {
     Rex::Rancher::Server::preflight_server(%opts);
 
     do_task "prepare_node", _node_params($params);
-    _maybe_detect_gpu($params);
+    # The GPU step's node labels join the install's after the checks up front,
+    # which read no node_labels (install_server asks them again, with them).
+    _with_gpu_labels(\%opts, _maybe_detect_gpu($params));
 
     Rex::Rancher::Server::install_server(%opts);
 
@@ -560,7 +778,8 @@ sub _install_agent {
     Rex::Rancher::Agent::preflight_agent(%opts);
 
     do_task "prepare_node", _node_params($params);
-    _maybe_detect_gpu($params);
+    # The GPU step's node labels, after the checks as for a server.
+    _with_gpu_labels(\%opts, _maybe_detect_gpu($params));
 
     Rex::Rancher::Agent::install_agent(%opts);
 }

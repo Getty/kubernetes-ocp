@@ -33,7 +33,7 @@ my $src = OCPTest::Rexfile->rexfile->slurp_utf8;
 # named — assertions about what must not come back have to look at the code.
 my $code = join '', grep { !/^\s*#/ } split /^/, $src;
 
-my $gpu_action       = OCPTest::Rexfile->helper('_gpu_action');
+my $gpu_actions      = OCPTest::Rexfile->helper('_gpu_actions');
 my $driver_gpus      = OCPTest::Rexfile->helper('_driver_gpus');
 my $maybe_detect_gpu = OCPTest::Rexfile->helper('_maybe_detect_gpu');
 
@@ -64,11 +64,13 @@ sub detected {
     return { nvidia => [], amd => [], nvswitch => [], %d };
 }
 
+# The tasks the guard runs. detect_gpu is called as a function since k249 --
+# its node labels have to come back, and do_task forks -- so both are asked.
 sub detect_tasks_after {
     my ($params) = @_;
     OCPTest::Rexfile->reset;
     { local *STDOUT; open STDOUT, '>', \my $sink; $maybe_detect_gpu->($params); }
-    return [ map { $_->{args}[0] } OCPTest::Rexfile->calls('do_task') ];
+    return [ map { $_->{args}[0] } OCPTest::Rexfile->calls('do_task'), OCPTest::Rexfile->calls('task_call') ];
 }
 
 # detect_gpu, and install_nvidia behind it, on a host whose detection says
@@ -129,12 +131,13 @@ subtest 'a host whose sysfs cannot be read fails, it is not GPU-less' => sub {
 #
 
 subtest 'the GB10 that the whitelist could not name gets a driver' => sub {
-    is $gpu_action->(detected(nvidia => [ $GB10 ])), 'nvidia',
+    is_deeply [ $gpu_actions->(detected(nvidia => [ $GB10 ])) ], [ 'nvidia' ],
         'and nobody asked what the card is called';
 };
 
 subtest 'a Kepler-only host gets no driver, no toolkit, and is no GPU node (k194)' => sub {
-    is $gpu_action->(detected(nvidia => [ $KEPLER ])), 'unsupported', 'decided as unsupported';
+    is_deeply [ $gpu_actions->(detected(nvidia => [ $KEPLER ])) ], [ 'unsupported' ],
+        'decided as unsupported';
 
     my $out = detect_gpu_on(detected(nvidia => [ $KEPLER ]));
     is count('Rex::GPU::NVIDIA::install_driver'), 0, 'install_driver is never called';
@@ -143,7 +146,8 @@ subtest 'a Kepler-only host gets no driver, no toolkit, and is no GPU node (k194
         'install_nvidia does not run';
     like $out, qr/10de:128b/, 'the card is named';
     like $out, qr/Kepler or older/, 'with the reason';
-    like $out, qr/no GPU node/, 'and what it means for the node';
+    # "no NVIDIA GPU node" since k249: an AMD GPU next to it may still make one.
+    like $out, qr/no NVIDIA GPU node/, 'and what it means for the node';
 
     for my $os (qw( Ubuntu Debian )) {
         detect_gpu_on(detected(nvidia => [ $KEPLER ]), os => $os);
@@ -194,12 +198,20 @@ subtest 'install_driver never gets an empty list' => sub {
 };
 
 subtest 'the other outcomes' => sub {
-    is $gpu_action->(detected(amd => [ { vendor => 'amd', compute => 0 } ])), 'amd',
-        'AMD is recognised but unimplemented';
-    is $gpu_action->(detected()), 'none', 'nothing found means nothing to do';
+    # AMD was "recognised but unimplemented" (one answer, 'amd') until k249;
+    # since then it is decided like NVIDIA, by Rex::GPU's compute verdict. What
+    # install_amd does with it is held in t/249-amd-gpu-host.t.
+    is_deeply [ $gpu_actions->(detected(amd => [ { vendor => 'amd', compute => 0 } ])) ],
+        [ 'amd-unsupported' ], 'an AMD GPU Rex::GPU knows to be no compute GPU gets no driver';
+    is_deeply [ $gpu_actions->(detected(amd => [ { vendor => 'amd', compute => undef } ])) ],
+        [ 'amd' ], 'one it has no verdict for is handed on, as for NVIDIA';
+    is_deeply [ $gpu_actions->(detected(nvidia => [ $GB10 ], amd => [ { vendor => 'amd', compute => 1 } ])) ],
+        [ 'nvidia', 'amd' ], 'both vendors on one host: both answers, NVIDIA first';
+    is_deeply [ $gpu_actions->(detected()) ], [ 'none' ], 'nothing found means nothing to do';
     # Virtual display adapters never reach OCP: Rex::GPU::Detect::Sysfs skips
     # them without hiding a passed-through card (t/155-rex-libraries.t).
-    is $gpu_action->(detected(nvidia => [ $H100 ])), 'nvidia', 'a 3D controller is a GPU as well';
+    is_deeply [ $gpu_actions->(detected(nvidia => [ $H100 ])) ], [ 'nvidia' ],
+        'a 3D controller is a GPU as well';
 };
 
 #
@@ -220,20 +232,40 @@ subtest 'the spec can switch the host-side GPU work off' => sub {
 
     is_deeply detect_tasks_after({ gpu => 0 }), [],
         'gpu.enabled: false: no detection, so no driver install';
-    is_deeply detect_tasks_after({ gpu => 1, gpu_driver => 'operator' }), [],
-        'gpu.driver: operator: the operator installs driver and toolkit, Rex stays off the host';
+
+    # gpu.driver: operator kept Rex off the host entirely until k249. AMD has
+    # no operator, and an AMD node still needs its labels there, so detection
+    # runs now -- NVIDIA stays the GPU Operator's, exactly as before.
+    is_deeply detect_tasks_after({ gpu => 1, gpu_driver => 'operator' }), ['detect_gpu'],
+        'gpu.driver: operator: detection runs (for the AMD labels)';
+
+    OCPTest::Rexfile->reset;
+    local $OCPTest::Rexfile::LIB_CODE{'Rex::GPU::Detect::Sysfs::detect'} = sub { detected(nvidia => [ $GB10 ]) };
+    local $OCPTest::Rexfile::FOLLOW{detect_gpu}     = 1;
+    local $OCPTest::Rexfile::FOLLOW{install_nvidia} = 1;
+    my $out = '';
+    { local *STDOUT; open STDOUT, '>', \$out; $maybe_detect_gpu->({ gpu => 1, gpu_driver => 'operator' }); }
+    is_deeply [ OCPTest::Rexfile->calls('do_task') ], [],
+        'gpu.driver: operator on an NVIDIA host: install_nvidia does not run';
+    is count('Rex::GPU::NVIDIA::install_driver'), 0, 'no NVIDIA driver';
+    is count('Rex::GPU::NVIDIA::install_container_toolkit'), 0, 'no toolkit';
+    like $out, qr/GPU driver mode 'operator' — the GPU Operator installs the NVIDIA driver and toolkit, skipping host install/,
+        'and it says who installs them';
 };
 
 subtest 'every install task goes through the guard' => sub {
-    my $direct = () = $code =~ /do_task "detect_gpu"/g;
+    # Called as a function since k249 (see detect_tasks_after), never through
+    # do_task, whose forked child would keep the node labels.
+    my $direct = () = $code =~ /\bdetect_gpu\(/g;
     is $direct, 1, 'the only call to detect_gpu is the one inside the guard';
+    unlike $code, qr/do_task "detect_gpu"/, 'and it is no do_task';
 
     for my $task (qw( install_rke2_server install_rke2_agent install_k3s_server install_k3s_agent )) {
-        for my $case ([ { gpu => 0 }, 0 ], [ { gpu => 1, gpu_driver => 'operator' }, 0 ], [ {}, 1 ]) {
+        for my $case ([ { gpu => 0 }, 0 ], [ { gpu => 1, gpu_driver => 'operator' }, 1 ], [ {}, 1 ]) {
             my ($extra, $want) = @$case;
             OCPTest::Rexfile->reset;
             OCPTest::Rexfile->run_task($task, { token => 't', server => 'https://x:9345', %$extra });
-            my $detect = grep { $_->{args}[0] eq 'detect_gpu' } OCPTest::Rexfile->calls('do_task');
+            my $detect = OCPTest::Rexfile->task_calls('detect_gpu');
             is $detect, $want, "$task, " . join(',', map { "$_=$extra->{$_}" } sort keys %$extra)
                 . ': detect_gpu ' . ($want ? 'runs' : 'does not run');
         }
@@ -349,7 +381,7 @@ subtest 'gpu_toolkit travels from the install task to install_nvidia' => sub {
 
         OCPTest::Rexfile->reset;
         { local *STDOUT; open STDOUT, '>', \my $sink; $maybe_detect_gpu->({ %$extra }); }
-        my ($detect) = grep { $_->{args}[0] eq 'detect_gpu' } OCPTest::Rexfile->calls('do_task');
+        my ($detect) = OCPTest::Rexfile->task_calls('detect_gpu');
         is $detect->{args}[1]{gpu_toolkit}, $want, "$label: detect_gpu gets gpu_toolkit $want";
 
         for my $task (qw( install_rke2_agent install_k3s_server )) {

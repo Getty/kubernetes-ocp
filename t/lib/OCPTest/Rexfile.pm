@@ -24,6 +24,7 @@ use Path::Tiny qw( path );
 #   my $fetch = OCPTest::Rexfile->lib_opts('Rex::Rancher::Server::fetch_kubeconfig');
 #   my %opts = @{ $call->{args} };
 #   my $code = OCPTest::Rexfile->helper('_cilium_opts');
+#   my @detect = OCPTest::Rexfile->task_calls('detect_gpu');   # called as a function
 
 our $SANDBOX = 'OCPTest::Rexfile::Sandbox';
 
@@ -53,7 +54,8 @@ our $SERVER = '203.0.113.7';
 # Distribution::established_cluster_cidr); undef = no server set up here yet.
 our $ESTABLISHED_CIDR;
 
-# Tasks do_task runs for real instead of only recording (by name).
+# Tasks do_task -- or a call of the task as a function -- runs for real
+# instead of only recording (by name).
 our %FOLLOW;
 
 our @LIBRARY = qw(
@@ -74,6 +76,8 @@ our @LIBRARY = qw(
   Rex::GPU::NVIDIA::install_container_toolkit
   Rex::GPU::NVIDIA::generate_cdi_specs
   Rex::GPU::NVIDIA::verify_nvidia
+  Rex::GPU::AMD::install_driver
+  Rex::GPU::AMD::verify_amd
 );
 
 # What a recorder returns without %LIB_CODE: 1, except where the Rexfile uses
@@ -82,6 +86,11 @@ our %LIB_DEFAULT = (
   'Rex::GPU::Detect::Sysfs::detect' => sub { +{ nvidia => [], amd => [], nvswitch => [] } },
   # A node without the bare template: nothing removed, nothing restarted.
   'Rex::Rancher::Distribution::heal_bare_containerd_template' => sub { +{ removed => 0, restarted => 0 } },
+  # Rex::GPU::AMD (rex-gpu k1): a driver already there, verified, no GPU
+  # reported. Whether install_amd gets that far is Rex::GPU->can('amd_class'),
+  # which a test switches with `local *Rex::GPU::amd_class`.
+  'Rex::GPU::AMD::install_driver' => sub { 'present' },
+  'Rex::GPU::AMD::verify_amd'     => sub { +{ ok => 1, gpus => [] } },
 );
 
 my $loaded;
@@ -178,6 +187,24 @@ sub load {
     *{$SANDBOX.'::'.$name} = $stub{$name};
   }
 
+  # A task called as a function (`detect_gpu({...})`): Rex runs it in this
+  # process, on the current connection, and hands back its value -- which
+  # needs a connection the sandbox does not have. Recorded like do_task, as
+  # { name => 'task_call', args => [ $task, $params ] }, and run for real only
+  # when %FOLLOW names it; otherwise it returns nothing.
+  ( my $prefix = $SANDBOX ) =~ s/::/:/g;
+  for my $task ( map { s/^\Q$prefix\E://r } grep { /^\Q$prefix\E:/ } Rex::TaskList->create->get_tasks ) {
+    next unless $SANDBOX->can($task);
+    no strict 'refs';
+    no warnings 'redefine';
+    *{$SANDBOX.'::'.$task} = sub {
+      my ( $params ) = @_;
+      push @CALLS, { name => 'task_call', args => [ $task, $params ] };
+      return $class->task($task)->($params) if $FOLLOW{$task};
+      return;
+    };
+  }
+
   return $loaded = 1;
 }
 
@@ -234,6 +261,12 @@ sub helper {
 sub calls {
   my ( $class, $name ) = @_;
   return grep { $_->{name} eq $name } @CALLS;
+}
+
+# The calls of a task as a function (see load), by task name, in order.
+sub task_calls {
+  my ( $class, $task ) = @_;
+  return grep { $_->{args}[0] eq $task } $class->calls('task_call');
 }
 
 # The options of the one call to a library function, as a hash; undef if none.

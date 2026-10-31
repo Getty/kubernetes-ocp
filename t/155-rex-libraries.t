@@ -82,6 +82,21 @@ subtest 'every entry point the Rexfile calls exists' => sub {
         'the Ubuntu setup install_nvidia names is a Rex::GPU::NVIDIA::Setup';
 };
 
+# install_amd (k249) calls Rex::GPU::AMD only where Rex::GPU->can('amd_class')
+# says the release carries it (rex-gpu k1); before that it installs nothing
+# and says so (t/249-amd-gpu-host.t). Once the pin has it, its entry points
+# are held here like the others.
+subtest 'Rex::GPU::AMD entry points, once Rex::GPU carries them' => sub {
+    require Rex::GPU;
+    plan skip_all => "Rex::GPU $Rex::GPU::VERSION has no Rex::GPU::AMD yet (rex-gpu k1)"
+        unless Rex::GPU->can('amd_class');
+    require Rex::GPU::AMD;
+    for my $fq (qw( Rex::GPU::AMD::install_driver Rex::GPU::AMD::verify_amd )) {
+        no strict 'refs';
+        ok defined &{$fq}, $fq;
+    }
+};
+
 subtest 'every library function OCP\'s own classes call exists' => sub {
     for my $fq (qw(
         Rex::Rancher::Server::patch_kubeconfig_server

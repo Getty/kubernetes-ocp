@@ -217,9 +217,14 @@ sub execute {
 # re-applies: a pin bump changes the manifest hash and apply rolls it out
 # (OCP::Drift marks NFD and the GPU operator self_healing for the same
 # reason). No Rex task upgrades them, so ocp update leaves them to apply.
+# The AMD GPU stack (k249) is the same shape: apply deploys it at the pinned
+# images through Rex::Rancher::K8s, hash-reconciled like the GPU operator
+# (k251), and no Rex task upgrades it. Like the NVIDIA stack it sits behind
+# gpu.enabled.
 our %APPLIED_BY_APPLY = map { $_ => 1 } qw(
     nfd gpu_operator nvidia_toolkit nvidia_driver
     nvidia_device_plugin dcgm_exporter nvidia_dcgm
+    amd_device_plugin amd_dra_driver amd_metrics_exporter
     registry
 );
 
@@ -497,7 +502,8 @@ C<nocert>.
 =item * B<registry> (registry.local and the ocp-cache) - like NFD, from the
 manifest C<ocp apply> re-applies.
 
-=item * B<nfd> and the GPU stack (C<gpu_operator>, C<nvidia_*>, C<dcgm_*>) -
+=item * B<nfd> and the GPU stack (C<gpu_operator>, C<nvidia_*>, C<dcgm_*>,
+C<amd_*>) -
 their versions live in manifests C<ocp apply> re-applies, so C<ocp update>
 leaves them to it and names them at the end. The GPU stack is skipped when
 C<gpu.enabled> is false.

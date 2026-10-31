@@ -66,8 +66,10 @@ subtest 'the Rexfile declares the tasks OCP runs, and no others' => sub {
         # OCP::Drift's read-only probe and its remedy
         detect_legacy_containerd_template  => 1,
         cleanup_legacy_containerd_template => 1,
-        # do_task inside the install tasks
-        prepare_node => 1, detect_gpu => 1, install_nvidia => 1,
+        # inside the install tasks: do_task (prepare_node, install_nvidia), or
+        # called as a function where the value has to come back (detect_gpu,
+        # install_amd: the GPU node labels, k249)
+        prepare_node => 1, detect_gpu => 1, install_nvidia => 1, install_amd => 1,
     );
     is_deeply [ OCPTest::Rexfile->task_names ], [ sort keys %runs ],
         'every declared task has a caller';
