@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-10-31T17:22:00Z
+created: 2026-10-31T15:28:52Z
+id: 385
+priority: low
+started: 2026-10-31T17:22:00Z
+status: done
+tags:
+- docs
+title: 'docs/configuration.md: name the remaining validate() refusals (network:, cilium:,
+  robocop: unknown keys; kubernetes.dist value; ssh key strings; node_ip)'
+updated: 2026-10-31T17:22:00Z
+---
+
+Found by the doc-writer on k377 (2026-10-31). validate() refuses these, docs/configuration.md does not say so:
+- unknown keys under network: (lb_pool, l2 too), cilium:, robocop: (k292, k315). The ocp-usage skill covers network: and robocop:, but mentions cilium: only in passing.
+- kubernetes.dist: invalid value ... (must be rke2 or k3s); ssh.private_key / ssh.public_key must be strings (k340).
+- the node_ip refusals: on a pool, on a pool's nodes: entries, and on a control_planes mapping with nodes above 1. The skill has them, configuration.md has only the k377 pointer for pool machines.
+
+Done = configuration.md names each with the line validate() prints (quote it from lib/OCP/Config.pm, not from memory), and the skill names cilium: like the others. Lane: ocp-doc-writer. Base on HEAD after k377 lands (same section).
+
+Done by ocp-doc-writer, reviewed by main: 3 bullets in configuration.md, cilium: bullet in the ocp-usage skill. Every quoted line checked against Config.pm (keys tables, _unknown_keys/or_list, _dist_error, _pool_where, node_ip lines); dist and node_ip also match t/296 assertions. Patch w-doc385/k385.patch, no Changes bullet. Not covered (no doc names it): network.lb_pool / network.l2 as non-mappings -- left as is, minor.
+
+patch w-doc385/k385.patch, docs only, batch 7
+
+Committed as 21fb980
