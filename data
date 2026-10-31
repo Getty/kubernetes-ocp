@@ -1,0 +1,43 @@
+---
+class: standard
+completed: 2026-10-31T02:28:01Z
+created: 2026-10-31T01:51:17Z
+id: 259
+priority: low
+started: 2026-10-31T02:28:01Z
+status: done
+tags:
+- secrets
+- sops
+title: Repair SOPS files with a bare lastmodified proactively
+updated: 2026-10-31T02:28:01Z
+---
+
+Follow-up to k247, from the ocp-secrets-worker on 2026-10-31.
+
+**Problem.** Projects whose encrypted files were written by File::SOPS 0.002 carry a bare `lastmodified`. That covers OCP images from 0219cfa (2026-02-23) to 80f3b36 (2026-09-23). Such files cause two problems:
+- File::SOPS 0.005 warns on every read.
+- The `sops` CLI refuses them (`sops -d` exits 1). So a user who opens their keys.yaml or secrets.yaml with plain sops cannot.
+
+OCP rewrites a file in quoted form only when it next writes it. `rotate_sops_files` skips files whose recipients already match.
+
+**Done when:**
+- An OCP run that already decrypts these files (e.g. `ocp apply`, or the rotate pass) detects a bare `lastmodified` and rewrites the file quoted, with values and recipients unchanged.
+- It reports this on STDOUT as a progress line naming the file.
+- A test uses a 0.002-shaped fixture, like the one in t/153.
+
+Lane: ocp-secrets-worker.
+
+2026-10-31 02:06 Done in lane: detection reads the raw text, scoped to the root sops: block, matching a bare RFC3339 value only (quoted, single-quoted and !!str never match; neither does a user's own plain lastmodified before or after sops:). Rewrite: File::SOPS->rotate with the document's own recipients. Only with a key already at hand (.ocp/age.key or SOPS_AGE_KEY_FILE), never PIN1. [ok] line on STDOUT per file; a failure goes to STDERR with its diagnosis, does not die, and leaves the file unchanged. Tests: t/153 section 4, plus a genuine 0.002 kubeconfig.yaml added to its fixture.
+
+2026-10-31 02:17 Also found (for the p5-file-sops board, optional): File::SOPS::Format::YAML::_plain_lastmodified is the ground-truth detector but private. A public predicate would let OCP drop its text regex.
+
+Unblocked by the main agent: Secrets side is done (repair_sops_lastmodified, t/153 section 4). The call site in lib/OCP/Cmd/Apply.pm execute() before cluster_exists, plus an apply-level test, goes to ocp-apply-worker on this card.
+
+2026-10-31 02:24 Apply side (ocp-apply-worker): call placed in OCP::Cmd::Apply::execute after the banner + k197 arch warning, before cluster_exists, so both paths repair before their first decrypt (nothing earlier in execute decrypts: Config/Secrets construction, name, robocop_arch_warning read only ocp.yaml). Line: print "\n" if !$self->dry_run && $secrets->repair_sops_lastmodified; -- the blank line sets the [ok] Repaired lines off from Step 1 / [ok] Cluster already exists, like the arch warning. Apply.pm 691 -> 694 lines. New t/259-apply-sops-lastmodified.t (fixture = verbatim copy of t/153's legacy_fixture): reconcile + bootstrap paths repaired before the stubbed reconcile/bootstrap starts, --dry-run byte-identical on both, a today-written project byte-identical. Host prove: red before the line (subtests 1,3), green after; mutations caught: line removed (1,3 fail), dry-run guard removed (2,4), line moved into the reconcile branch (3), blank line dropped (1,3). Binding Docker run next.
+
+2026-10-31 02:26 Also found (no scope taken): (1) --dry-run skips the repair silently, while the reconcile dry run otherwise names what a real run would change; a public predicate on OCP::Secrets (secrets lane) would let it say 'would repair keys.yaml'. (2) A secure-mode first deploy from a fresh clone holds no key before PIN1, so that run does not repair; the next apply (reconcile path, .ocp/age.key now unlocked) does -- by the method's no-PIN1 design. (3) t/259 carries a verbatim copy of t/153's legacy_fixture; both could share one in t/lib/OCPTest/ once t/153 is free (ocp-test-writer).
+
+2026-10-31 02:26 Done (apply side): lib/OCP/Cmd/Apply.pm +3 lines (comment, call, blank) before cluster_exists -> 694 lines (t/52 < 700). New t/259-apply-sops-lastmodified.t. Binding: DOCKER_BUILDKIT=0 make test TESTS='t/259-apply-sops-lastmodified.t t/153-sops-lastmodified.t t/52-apply-dispatcher.t t/00-load.t t/76-apply-dev-mode-bound.t' -> All tests successful, Files=5, Tests=90; prove -lv in the image: no skips, t/153's sops -d subtests ran. Mutations (host, @INC overlay): call removed / guard removed / moved into reconcile branch / blank line dropped -- each fails t/259. Commit set for k259: lib/OCP/Cmd/Apply.pm, lib/OCP/Secrets.pm, t/153-sops-lastmodified.t, t/259-apply-sops-lastmodified.t (other dirty files in the tree belong to k256/k260/k244).
+
+2026-10-31 02:27 Committed as e0ad1be. Not done, follow-ups from the worker: (1) --dry-run does not say it would repair; (2) a first deploy in secure mode repairs only on the next apply; (3) t/153 and t/259 could share one fixture.
