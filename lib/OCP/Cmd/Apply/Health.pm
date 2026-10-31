@@ -381,7 +381,13 @@ sub finish {
         print "not functional. Inspect them before using it:\n";
         print "  ocp status\n\n";
     } elsif (@failed) {
-        print "Not every component reached its spec; see the [!!] lines above.\n";
+        # Pointed at the closing line, the one line every unfinished run
+        # prints (k272). "See the [!!] lines above" sent a run whose only
+        # unresolved item was a drift probe it could not read ("[drift] could
+        # not be checked", k267) to a line it never printed, and a worker the
+        # drive left short of Ready says "[..]".
+        print "Not every component reached its spec: 'Apply did not complete' below\n";
+        print "names each one, and the lines above say why.\n";
         print "  ocp status\n\n";
     } else {
         print "Next steps:\n";

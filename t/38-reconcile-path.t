@@ -415,6 +415,8 @@ package DryRunApi {
         $name //= $opts{name};
         my $key = join '/', $kind, $opts{namespace} // '-', $name // '';
         push @{ $self->{reads} }, "GET $key";
+        # A read the cluster refuses (k276): $self->{denied}{$key} is the error.
+        die $self->{denied}{$key} if $self->{denied} && $self->{denied}{$key};
         my $obj = $self->{objects}{$key} or die "404 $key\n";
         return $obj;
     }
@@ -575,6 +577,7 @@ YAML
                       ($opt{no_cilium} ? () : ($CILIUM_KEY => cilium_operator(
                           OCP::Versions->get_component_version('cilium')))),
                       %{ $opt{objects} // {} } },
+        denied   => $opt{denied} // {},
         ocpnodes => { map { $_ => {
             apiVersion => 'ocp.internal/v1',
             kind       => 'OCPNode',
@@ -1251,9 +1254,9 @@ subtest 'k234 point 30: "No drift detected" only when the ClusterPolicy agrees t
     local *OCP::Drift::detect = sub { [] };
     local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub {
         my ($self, $config, %o) = @_;
-        print "  [drift] GPU Operator ClusterPolicy differs from the spec at spec.toolkit.env\n"
-            unless $o{quiet};
-        return ('spec.toolkit.env');
+        my $msg = 'GPU Operator ClusterPolicy differs from the spec at spec.toolkit.env';
+        print "  [drift] $msg\n" unless $o{quiet};
+        return ({ kind => 'spec', path => 'spec.toolkit.env', message => $msg });
     };
     my $real = reconcile();
     unlike $real->{out}, qr/\[ok\] No drift detected/, 'real run: not said over a differing ClusterPolicy';
@@ -1433,6 +1436,109 @@ subtest 'k267: a drift probe that could not be read is not up to date' => sub {
         qr/^  1 more could not be checked -- a real run would not complete until it can be read\.$/m,
         'dry run: counted as could not be checked';
     unlike $dry->{err}, qr/403 forbidden/, 'dry run: the cause is not repeated on STDERR';
+};
+
+#
+# k272: Health::finish pointed an unfinished run at "the [!!] lines above". A
+# run whose only unresolved item is a drift probe it could not read (k267)
+# prints no such line -- "[drift] could not be checked" is the report, its
+# cause OCP::Drift's carp -- and neither does a worker the drive left short of
+# Ready ("[..]"). The pointer names the closing line, which every unfinished
+# run prints.
+#
+
+subtest 'k272: the closing pointer names a line the run printed' => sub {
+    my $unknown = {
+        kind => 'error', component => 'cilium', label => 'Cilium',
+        expected => '1.18.2', actual => undef, remedy => undef,
+        message => 'Cilium: could not read DaemonSet kube-system/cilium, drift unknown: 403 forbidden',
+    };
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub { return () };
+    local *OCP::Drift::detect = sub { [ { %$unknown } ] };
+    my $r = reconcile(yaml => "nocert: true\n");
+    is_deeply $r->{failed}, ['Cilium drift check'], 'only the drift check is unresolved';
+
+    my $apply = bless { _failed_components => [ @{ $r->{failed} } ] }, 'OCP::Cmd::Apply';
+    my ($fout, $ferr, $rc) = ('', '');
+    {
+        open my $efh, '>', \$ferr or die $!;
+        local *STDERR = $efh;
+        ($fout, $rc) = capture_stdout {
+            $apply->_finish_apply(config => FakeConfig->new,
+                api => HealthApi->new(pods => [$healthy_pod]),
+                cp_name => 'cortex', cp_ip => '10.230.30.155');
+        };
+    }
+    is $rc, 1, 'the run ends incomplete';
+    unlike join('', $r->{out}, $r->{err}, $ferr), qr/\[!!\]/,
+        'the case: not one [!!] line in the run';
+    unlike $fout, qr/\[!!\] lines/, 'so the pointer does not send anyone to one';
+    my ($named) = $fout =~ /'([^']+)' below/;
+    ok defined $named, 'the pointer names a line' or diag $fout;
+    like $ferr, qr/^\Q$named\E: Cilium drift check failed\.$/m,
+        'and that line is printed, naming what is unresolved';
+};
+
+subtest 'k272: the dry run says "it as it is" for one, "them as they are" for more' => sub {
+    my $pod = sub {
+        my ($n) = @_;
+        return { kind => 'spec', component => "pod_cidr$n", label => 'Pod CIDR',
+                 expected => '10.42.0.0/16', actual => '10.0.0.0/8', remedy => undef,
+                 message => "Cilium pod pool $n is 10.0.0.0/8, ocp.yaml expects 10.42.0.0/16" };
+    };
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub { return () };
+    my @found;
+    local *OCP::Drift::detect = sub { [ map { +{ %$_ } } @found ] };
+
+    @found = ($pod->(1));
+    like reconcile(dry_run => 1)->{out},
+        qr/^  1 more reported only -- a real run leaves it as it is\.$/m, 'one';
+    @found = ($pod->(1), $pod->(2));
+    like reconcile(dry_run => 1)->{out},
+        qr/^  2 more reported only -- a real run leaves them as they are\.$/m, 'two';
+};
+
+#
+# k276: the GPU half of the drift check (k234) asked for the operator's
+# Deployment and read a refused read as "no operator": "No drift detected",
+# and the dry run counted nothing. It is "could not be checked" now on both
+# paths, its cause on STDERR once, and counted like an unreadable drift probe
+# (k267). The run's default -- a 404, no operator -- is the control. The
+# three reads one by one, 404 against 403: t/233.
+#
+
+subtest 'k276: a GPU Operator the cluster refuses to show is not "no drift"' => sub {
+    no warnings 'redefine';
+    local *OCP::Drift::detect = sub { [] };
+    my %deny = (denied => { 'Deployment/gpu-operator/gpu-operator' =>
+        qq(403 forbidden: User "ocp-ci" cannot get resource "deployments"\n) });
+    my $yaml = "nocert: true\n";
+    my $line = qr{^  \[drift\] could not be checked: GPU Operator: could not read Deployment gpu-operator/gpu-operator: 403 forbidden}m;
+
+    my $ok = reconcile(yaml => $yaml);
+    like   $ok->{out}, qr/\[ok\] No drift detected/, 'control, real run: a 404 is no operator';
+    unlike $ok->{out} . $ok->{err}, qr/could not be checked|not checked/, 'control: nothing unknown';
+    is_deeply $ok->{failed}, [], 'control: nothing counted';
+
+    my $real = reconcile(yaml => $yaml, %deny);
+    unlike $real->{out}, qr/\[ok\] No drift detected/, 'real run: no "No drift detected" over it';
+    like   $real->{out}, $line, 'real run: could not be checked, with the cause';
+    is scalar(() = $real->{err} =~ /403 forbidden/g), 1, 'real run: the cause on STDERR, once';
+    is_deeply $real->{failed}, ['GPU Operator drift check'], 'real run: counted for the exit';
+    unlike $real->{out}, qr/All \d+ component\(s\) up to date/, 'real run: not summarised as up to date';
+
+    my $dry = reconcile(yaml => $yaml, dry_run => 1, %deny);
+    unlike $dry->{out}, qr/\[ok\] No drift detected/, 'dry run: no "No drift detected" over it';
+    like   $dry->{out}, $line, 'dry run: could not be checked, with the cause';
+    is scalar(() = $dry->{err} =~ /403 forbidden/g), 1,
+        'dry run: the cause on STDERR once, though the report asks twice';
+    like $dry->{out}, qr/^  0 difference\(s\) a real run would act on\.$/m, 'dry run: no action counted';
+    like $dry->{out},
+        qr/^  1 more could not be checked -- a real run would not complete until it can be read\.$/m,
+        'dry run: counted as could not be checked';
+    is_deeply $dry->{writes}, [], 'dry run: still nothing written';
 };
 
 

@@ -90,7 +90,7 @@ subtest 'dry-run says both' => sub {
             FakeApply->new(cp => live(sub { pop @{ $_[0]{spec}{toolkit}{env} } })),
             FakeConfig->new(toolkit => 0));
     }
-    is_deeply \@r, ['spec.toolkit.env'], 'one action';
+    is_deeply [ map { "$_->{kind} $_->{path}" } @r ], ['spec spec.toolkit.env'], 'one action';
     like $out, qr/\[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.toolkit\.env/, 'named';
     like $out, qr/\[WARN\] gpu\.toolkit changed \(true -> false\)/, 'the toolkit switch is announced';
 
@@ -116,8 +116,157 @@ subtest 'quiet: the same finding, said nowhere (k234)' => sub {
             FakeApply->new(cp => live(sub { pop @{ $_[0]{spec}{toolkit}{env} } })),
             FakeConfig->new(toolkit => 0), quiet => 1);
     }
-    is_deeply \@r, ['spec.toolkit.env'], 'found, so "No drift detected" can be held back';
+    is_deeply [ map { "$_->{kind} $_->{path}" } @r ], ['spec spec.toolkit.env'],
+        'found, so "No drift detected" can be held back';
     is $out, '', 'and nothing printed';
+};
+
+#
+# k276: gpu_dry_run makes three reads -- the operator's Deployment, the
+# ClusterPolicy for its differences, the ClusterPolicy again for the
+# gpu.toolkit warning -- and each one took a failed read for a false answer:
+# no operator, no differences, no ClusterPolicy. Since k269 the helpers die on
+# anything but a 404. Here, through those very helpers, a 404 stays the answer
+# it is and a 403 is "could not be checked", with its cause on STDERR once.
+#
+
+use Kubernetes::REST::APIError;
+use OCP::Cmd::Apply::K8s;
+
+my $CP_PATH = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';
+
+{
+    # The apply object with the real read helpers of OCP::Cmd::Apply::K8s.
+    package ReadApply;
+    sub new { my ($c, %o) = @_; bless { %o }, $c }
+    sub _k8s_api { $_[0]{api} }
+    sub _resource_exists { my $self = shift; OCP::Cmd::Apply::K8s::resource_exists($self, @_) }
+    sub _crd_get         { my $self = shift; OCP::Cmd::Apply::K8s::crd_get($self, @_) }
+}
+{
+    # get(): the operator Deployment, or the error it dies with. _request():
+    # the ClusterPolicy GETs, one [status, body] per call in order, then 404s.
+    package ReadApi;
+    sub new { my ($c, %o) = @_; bless { deployment => { kind => 'Deployment' }, cp => [], gets => 0, %o }, $c }
+    sub get {
+        my ($self) = @_;
+        die $self->{deployment} unless ref $self->{deployment} eq 'HASH';
+        return $self->{deployment};
+    }
+    sub _request {
+        my ($self, $method, $path) = @_;
+        die "unexpected $method $path\n" unless $method eq 'GET' && $path eq $CP_PATH;
+        $self->{gets}++;
+        return ReadResponse->new(@{ shift @{ $self->{cp} } // [404, '{}'] });
+    }
+}
+{
+    package ReadResponse;
+    sub new     { my ($c, $status, $body) = @_; bless { status => $status, body => $body }, $c }
+    sub status  { $_[0]{status} }
+    sub content { $_[0]{body} }
+}
+
+# What Kubernetes::REST dies with for an HTTP error status (as in t/269).
+sub api_error {
+    my ($code, $reason) = @_;
+    return Kubernetes::REST::APIError->new(code => $code, context => 'get',
+        body => qq({"kind":"Status","status":"Failure","reason":"$reason","code":$code}));
+}
+my $DENIED  = qq({"kind":"Status","status":"Failure","reason":"Forbidden","code":403});
+my $MISSING = qq({"kind":"Status","status":"Failure","reason":"NotFound","code":404});
+my $LIVE    = JSON::PP::encode_json(live());
+
+sub read_dry {
+    my (%a) = @_;
+    my $api = ReadApi->new(%{ $a{api} // {} });
+    my ($out, $err) = ('', '');
+    my @r;
+    {
+        no warnings 'redefine';
+        local *OCP::Cmd::Apply::Workloads::generate_gpu_operator_manifest = sub { $MANIFEST };
+        open my $o, '>', \$out or die;
+        open my $e, '>', \$err or die;
+        local *STDOUT = $o;
+        local *STDERR = $e;
+        @r = OCP::Cmd::Apply::Drift::gpu_dry_run(ReadApply->new(api => $api),
+            FakeConfig->new(toolkit => 0), %{ $a{opt} // {} });
+    }
+    return { found => \@r, out => $out, err => $err, gets => $api->{gets} };
+}
+sub kinds { [ map { $_->{kind} } @{ $_[0]{found} } ] }
+sub count { my ($text, $re) = @_; scalar(() = $text =~ /$re/g) }
+
+subtest 'k276: the operator Deployment -- a 404 is no operator, a 403 is not known' => sub {
+    my $none = read_dry(api => { deployment => api_error(404, 'NotFound') });
+    is_deeply $none->{found}, [], '404: nothing found';
+    is $none->{out} . $none->{err}, '', '404: nothing said';
+    is $none->{gets}, 0, '404: no ClusterPolicy asked for';
+
+    my $denied = read_dry(api => { deployment => api_error(403, 'Forbidden') });
+    is_deeply kinds($denied), ['error'], '403: one error entry, not "no operator"';
+    is $denied->{found}[0]{label}, 'GPU Operator', '403: named';
+    like $denied->{out},
+        qr{^  \[drift\] could not be checked: GPU Operator: could not read Deployment gpu-operator/gpu-operator: Kubernetes API error \(get\): 403 }m,
+        '403: could not be checked, with the cause';
+    like $denied->{err}, qr{^  \[!!\] GPU Operator not checked: could not read Deployment gpu-operator/gpu-operator: .*"Forbidden"}m,
+        '403: the cause on STDERR';
+    is count($denied->{err}, qr/Forbidden/), 1, '403: once';
+    is $denied->{gets}, 0, '403: nothing read past it';
+
+    my $quiet = read_dry(api => { deployment => api_error(403, 'Forbidden') }, opt => { quiet => 1 });
+    is_deeply kinds($quiet), ['error'], 'quiet 403: the same entry';
+    is $quiet->{out} . $quiet->{err}, '', 'quiet 403: said nowhere, the caller says it';
+};
+
+subtest 'k276: the ClusterPolicy -- a 404 is no differences, a 403 is not known' => sub {
+    my $none = read_dry(api => { cp => [ [404, $MISSING] ] });
+    is_deeply $none->{found}, [], '404: no differences';
+    is $none->{out} . $none->{err}, '', '404: nothing said';
+
+    my $denied = read_dry(api => { cp => [ [403, $DENIED] ] });
+    is_deeply kinds($denied), ['error'], '403: one error entry, not "no differences"';
+    is $denied->{found}[0]{label}, 'GPU Operator ClusterPolicy', '403: named';
+    like $denied->{out},
+        qr{^  \[drift\] could not be checked: GPU Operator ClusterPolicy: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+        '403: could not be checked, with the cause';
+    like $denied->{err}, qr{^  \[!!\] GPU Operator ClusterPolicy not checked: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+        '403: the cause on STDERR';
+    is count($denied->{err}, qr/Forbidden/), 1, '403: once';
+    is $denied->{gets}, 1, '403: not asked again for the gpu.toolkit warning';
+    unlike $denied->{out}, qr/differs from the spec/, '403: no difference claimed';
+
+    my $quiet = read_dry(api => { cp => [ [403, $DENIED] ] }, opt => { quiet => 1 });
+    is_deeply kinds($quiet), ['error'], 'quiet 403: the same entry';
+    is $quiet->{out} . $quiet->{err}, '', 'quiet 403: said nowhere';
+};
+
+subtest 'k276: the gpu.toolkit read -- a 404 is no ClusterPolicy, a 403 is not known' => sub {
+    # gpu.toolkit is false here and the live ClusterPolicy has the toolkit on:
+    # the warning is due whenever the second read sees it.
+    my $read = read_dry(api => { cp => [ [200, $LIVE], [200, $LIVE] ] });
+    is_deeply $read->{found}, [], 'control: nothing differs';
+    like $read->{out}, qr/\[WARN\] gpu\.toolkit changed \(true -> false\)/,
+        'control: the second read decides the warning';
+
+    my $none = read_dry(api => { cp => [ [200, $LIVE], [404, $MISSING] ] });
+    is_deeply $none->{found}, [], '404: nothing found';
+    is $none->{out} . $none->{err}, '', '404: no ClusterPolicy, nothing to warn about';
+
+    my $denied = read_dry(api => { cp => [ [200, $LIVE], [403, $DENIED] ] });
+    is_deeply kinds($denied), ['error'], '403: one error entry, not "no ClusterPolicy"';
+    is $denied->{found}[0]{label}, 'gpu.toolkit switch', '403: named';
+    like $denied->{out},
+        qr{^  \[drift\] could not be checked: gpu\.toolkit switch: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+        '403: could not be checked, with the cause';
+    like $denied->{err}, qr{^  \[!!\] gpu\.toolkit switch not checked: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+        '403: the cause on STDERR';
+    is count($denied->{err}, qr/Forbidden/), 1, '403: once';
+    unlike $denied->{out}, qr/\[WARN\]/, '403: no warning made up';
+
+    my $both = read_dry(api => { cp => [
+        [200, JSON::PP::encode_json(live(sub { pop @{ $_[0]{spec}{toolkit}{env} } }))], [403, $DENIED] ] });
+    is_deeply kinds($both), ['spec', 'error'], 'a difference and a failed warning read: both kept';
 };
 
 

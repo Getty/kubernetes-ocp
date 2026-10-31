@@ -1,6 +1,18 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` and `ocp apply --dry-run` no longer take a GPU Operator
+      read the cluster refuses (an RBAC denial, an apiserver 5xx) for "no
+      GPU Operator", "no ClusterPolicy differences" or "no ClusterPolicy";
+      only a 404 means that. The read is reported as "could not be checked"
+      with its cause on STDERR, "No drift detected" is held back, the dry
+      run counts it with the checks that could not be made, and a real run
+      ends incomplete over it.
+    - When `ocp apply` does not complete, its closing hint points at the
+      "Apply did not complete" line, which names what is unresolved,
+      instead of "[!!] lines" a run without them (an unreadable drift
+      check, a worker still Installing) never printed. `--dry-run` says "a
+      real run leaves it as it is" for one report-only entry.
     - `ocp apply` and `ocp node add --gpu` now wait up to five minutes after
       the GPU Operator step until every NVIDIA node shows `nvidia.com/gpu`
       in its allocatable resources, so "GPU stack ready" means a pod can get

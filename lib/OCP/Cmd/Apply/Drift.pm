@@ -55,6 +55,33 @@ runs, its findings are printed, and not one write leaves the process.
 C<reconcile_components> then returns false, which is how the dispatcher
 knows to stop without stamping a version.
 
+A drift probe that L<OCP::Drift> could not read (an RBAC denial, an
+apiserver 5xx, anything but a 404) comes back as an entry with
+C<< kind =E<gt> 'error' >>: no remedy, drift unknown, and a message that names
+the object and the cause. The detector has already carped that cause to
+STDERR. C<reconcile_components> prints the entry as
+C<[drift] could not be checked: MESSAGE> and does not send anyone to
+C<ocp update> over it. It counts the entry as unresolved
+(C<LABEL drift check>), so the run ends incomplete and non-zero instead of
+"All N component(s) up to date" (k267). C<dry_run_report> prints the same
+line and counts these entries apart from the differences a real run would act
+on and from the ones it only reports, as "could not be checked -- a real run
+would not complete until it can be read".
+
+C<gpu_dry_run> covers the GPU step the same way, read-only. It reads the GPU
+Operator's Deployment, then compares its ClusterPolicy against the spec, and
+outside quiet mode reads the ClusterPolicy again for the C<gpu.toolkit>
+warning. It returns entries of the same shape: one C<< kind =E<gt> 'spec' >>
+entry per ClusterPolicy path that differs, and one C<< kind =E<gt> 'error' >>
+entry for each read that failed with anything but a 404 (k276). A 404 is an
+answer (no operator, no ClusterPolicy) and finds nothing. Any other failure
+is neither a finding nor the absence of one: it is printed as "could not be
+checked" with its cause, the cause goes to STDERR once, and both apply paths
+count it the way they count an unreadable drift probe. When the ClusterPolicy
+could not be read, it is not read a second time for the warning. The real run
+asks C<gpu_dry_run> before it prints "No drift detected" (k234), so a GPU read
+that failed holds that line back as well.
+
 C<run_remedy> is the only step here that leaves the process over SSH, and
 therefore the only one that can cost a PIN2 prompt (see L<OCP::ClusterKey>).
 It asks for the key at the point of use rather than up front, so a reconcile
@@ -131,15 +158,21 @@ sub reconcile_components {
         # The ClusterPolicy is checked by the GPU step further down, but a
         # run that says "No drift detected" and then names a drift tells two
         # stories (k234): asked here, read-only, before the line is printed.
+        # A read it could not make is no "no drift" either (k276): said and
+        # counted like a probe OCP::Drift could not read, the cause on
+        # STDERR -- the dry run tells the operator this run would not
+        # complete over it.
         my @gpu = @$drift ? () : gpu_dry_run($self, $config, quiet => 1);
-        if (@gpu) {
-            print "  [drift] GPU Operator ClusterPolicy differs from the spec at $_\n"
-                . "          the GPU Operator check below re-applies the manifest\n"
-                for @gpu;
+        for my $g (@gpu) {
+            if ($g->{kind} eq 'error') {
+                _say_unchecked($g);
+                push @unresolved, "$g->{label} drift check";
+                next;
+            }
+            print "  [drift] $g->{message}\n"
+                . "          the GPU Operator check below re-applies the manifest\n";
         }
-        elsif (!@$drift) {
-            print "  [ok] No drift detected\n";
-        }
+        print "  [ok] No drift detected\n" unless @$drift || @gpu;
 
         for my $entry (@$drift) {
             # A probe OCP::Drift could not read (k119, k256) found no drift:
@@ -639,17 +672,19 @@ sub dry_run_report {
     # The GPU Operator's ClusterPolicy (lab notes 24, 27): its content against
     # the spec, and a gpu.toolkit switch -- both said by the real run's GPU
     # step, so the read-only pass says them too. Only where the operator runs.
+    # A read it could not make is counted with the probes that could not be
+    # checked (k276).
     my @gpu = gpu_dry_run($self, $config);
 
     my $report_only = scalar grep { $is_report_only->($_) } @$drift;
-    my $unknown     = scalar grep { $is_unknown->($_) } @$drift;
-    my $actions     = scalar(@$drift) - $report_only - $unknown
-        + scalar(@missing) + scalar(@relabel) + scalar(@robocop) + scalar(@gpu);
+    my $unknown     = scalar grep { $is_unknown->($_) } @$drift, @gpu;
+    my $actions     = scalar(@$drift) + scalar(@gpu) - $report_only - $unknown
+        + scalar(@missing) + scalar(@relabel) + scalar(@robocop);
 
     print "\n";
     print "  $actions difference(s) a real run would act on.\n";
     print "  $report_only more reported only -- a real run leaves "
-        . ($report_only == 1 ? "it" : "them") . " as they are.\n"
+        . ($report_only == 1 ? 'it as it is' : 'them as they are') . ".\n"
         if $report_only;
     print "  $unknown more could not be checked -- a real run would not complete until "
         . ($unknown == 1 ? "it" : "they") . " can be read.\n"
@@ -662,32 +697,73 @@ sub dry_run_report {
     return;
 }
 
-# The robocop half of the dry run: prints what robocop_step would write and
-# returns one entry per difference. A Deployment that is there is not
-# compared -- a real run re-applies it anyway, like every other manifest.
-# One entry per ClusterPolicy path that differs from the spec; the
-# gpu.toolkit warning is printed but is no action of its own (the real run
+# The GPU half of the drift check, read-only: what the GPU step of a real run
+# would act on, and only where the operator runs. One entry per ClusterPolicy
+# path that differs from the spec, { kind => 'spec', path, message }. The
+# gpu.toolkit warning is printed but is no entry of its own (the real run
 # only warns as well).
+#
+# A read that fails with anything but a 404 is no answer (k276). The three
+# here -- the operator's Deployment, the ClusterPolicy for its differences,
+# the ClusterPolicy again for the warning -- each took one for a false
+# answer: no operator, no differences, no ClusterPolicy. Each is now an
+# { kind => 'error', label, cause, message } entry, drift unknown, the shape
+# of a probe OCP::Drift could not read (k267); the real run's GPU step makes
+# the same reads and fails on them. A ClusterPolicy that could not be read is
+# not asked for again for the warning: one cause, said once.
+#
+# quiet: nothing printed, the caller says what was found. Otherwise every
+# entry is said here, an error's cause on STDERR.
 sub gpu_dry_run {
     my ($self, $config, %opt) = @_;
     return () unless $config->gpu_enabled;
-    # Read-only and best effort, like the rest of this report: a cluster that
-    # cannot be asked has no GPU finding here.
+    # No API at all is no cluster to ask; the reconcile has built it by now.
     my $api = eval { $self->_k8s_api } or return ();
-    return () unless eval { $self->_resource_exists($api, 'Deployment', 'gpu-operator',
+
+    my $unread = sub {
+        my ($label, $err) = @_;
+        my $cause = "$err";
+        chomp $cause;
+        my $entry = { kind => 'error', label => $label, cause => $cause,
+                      message => "$label: $cause" };
+        _say_unchecked($entry) unless $opt{quiet};
+        return $entry;
+    };
+
+    my $running = eval { $self->_resource_exists($api, 'Deployment', 'gpu-operator',
         namespace => 'gpu-operator') };
+    return $unread->('GPU Operator', $@) if $@;
+    return () unless $running;
+
     my @paths = eval {
         OCP::Cmd::Apply::Workloads::cluster_policy_differences($self, $config, $api)
     };
-    return @paths if $opt{quiet};
-    print "  [drift] GPU Operator ClusterPolicy differs from the spec at $_\n"
-        . "          would re-apply the GPU Operator manifest\n" for @paths;
+    return $unread->('GPU Operator ClusterPolicy', $@) if $@;
+    my @found = map { +{ kind => 'spec', path => $_,
+        message => "GPU Operator ClusterPolicy differs from the spec at $_" } } @paths;
+    return @found if $opt{quiet};
+    print "  [drift] $_->{message}\n"
+        . "          would re-apply the GPU Operator manifest\n" for @found;
+
     my $cp = eval { $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy') };
+    return (@found, $unread->('gpu.toolkit switch', $@)) if $@;
     my $warning = OCP::Cmd::Apply::Workloads::toolkit_switch_warning($cp, $config->gpu_toolkit);
     print $warning if $warning;
-    return @paths;
+    return @found;
 }
 
+# A GPU read gpu_dry_run could not make (k276), said the way an unreadable
+# drift probe is (k267): "could not be checked" on STDOUT, the cause on STDERR.
+sub _say_unchecked {
+    my ($entry) = @_;
+    print "  [drift] could not be checked: $entry->{message}\n";
+    print STDERR "  [!!] $entry->{label} not checked: $entry->{cause}\n";
+    return;
+}
+
+# The robocop half of the dry run: prints what robocop_step would write and
+# returns one entry per difference. A Deployment that is there is not
+# compared -- a real run re-applies it anyway, like every other manifest.
 sub robocop_dry_run {
     my ($self, $config, $cp_ip) = @_;
     my $api   = $self->_k8s_api;

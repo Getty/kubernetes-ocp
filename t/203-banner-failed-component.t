@@ -55,6 +55,30 @@ subtest 'finish prints the incomplete banner and returns 1' => sub {
     like   $err, qr/Apply did not complete: GPU Operator failed/, 'STDERR as before';
 };
 
+subtest 'the pointer names a line finish prints, whatever failed (k272)' => sub {
+    # "see the [!!] lines above" assumed every unresolved item had one; a drift
+    # probe that could not be read and a worker left Installing have none.
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_check_cluster_health = sub { $clean };
+    local *OCP::Cmd::Apply::_stamp_ocp_version    = sub { };
+    for my $failed (['GPU Operator'], ['Cilium drift check'], ['worker pinky', 'robocop']) {
+        my $apply = bless { _failed_components => [@$failed] }, 'OCP::Cmd::Apply';
+        my ($out, $err) = ('', '');
+        {
+            open my $o, '>', \$out or die $!;
+            open my $e, '>', \$err or die $!;
+            local *STDOUT = $o;
+            local *STDERR = $e;
+            $apply->_finish_apply(config => bless({}, 'Fake::Config'), api => undef);
+        }
+        my $what = join ', ', @$failed;
+        unlike $out, qr/\[!!\] lines/, "$what: no [!!] line promised";
+        my ($named) = $out =~ /'([^']+)' below/;
+        ok defined $named, "$what: the pointer names a line" or diag $out;
+        like $err, qr/^\Q$named\E: \Q$what\E failed\.$/m, "$what: and finish prints it";
+    }
+};
+
 subtest 'a banner with a dash keeps the box width' => sub {
     # The em dash is three bytes in OCP's UTF-8 source; padding by bytes left
     # every "—" banner two columns short (lab 2026-10-15).
