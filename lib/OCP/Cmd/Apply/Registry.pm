@@ -103,7 +103,8 @@ sub setup {
 # The registry as the cluster has it: the namespace, plus whichever of the two
 # deployments this configuration actually rolls out. Mirrors generate_manifest
 # — an external cache or upstream means OCP deploys nothing for that half and
-# must not expect it to be there.
+# must not expect it to be there. A read that fails with anything but a 404
+# dies (k269): a registry nobody could read is neither running nor gone.
 sub running {
     my ($self, $config) = @_;
 

@@ -223,13 +223,28 @@ sub setup {
         warn_bad_allocation_labels($default, @nodes);
     }
 
+    # A component nothing selects goes when OCP recorded it or the cluster has
+    # its DaemonSet. A DaemonSet that cannot be read is neither: that
+    # component fails with the cause, nothing is removed for it, and the
+    # others carry on (k269).
     my $deployed = $self->_load_deployed_hashes($config);
-    my @remove = grep {
-        !@{ $for{$_} } && (defined $deployed->{ $COMPONENT{$_}{key} } || ds_present($self, $api, $_))
-    } @COMPONENTS;
+    my (@remove, @unreadable);
+    for my $c (grep { !@{ $for{$_} } } @COMPONENTS) {
+        if (defined $deployed->{ $COMPONENT{$c}{key} }) {
+            push @remove, $c;
+            next;
+        }
+        my $present = eval { ds_present($self, $api, $c) };
+        if (my $err = $@) {
+            push @unreadable, { label => $COMPONENT{$c}{label}, error => $err };
+            next;
+        }
+        push @remove, $c if $present;
+    }
     my @deploy = grep { @{ $for{$_} } } @COMPONENTS;
 
     unless (@remove || @deploy) {
+        return @unreadable if @unreadable;
         print !$config->gpu_enabled
             ? "      gpu.enabled is false — nothing to deploy\n"
             : !@nodes
@@ -246,11 +261,11 @@ sub setup {
         my $version = do { no strict 'refs'; ${"${LIB}::VERSION"} } // 'not loadable';
         print STDERR "  [WARN] The AMD GPU stack needs a newer Rex::Rancher: $LIB $version has no "
             . join(', ', @missing) . "; nothing deployed or removed\n";
-        return ({ label => 'AMD GPU stack', outcome => 'skipped', warned => 1 });
+        return (@unreadable, { label => 'AMD GPU stack', outcome => 'skipped', warned => 1 });
     }
 
     my $kubeconfig = OCP::Cmd::Apply::K8s::kubeconfig_path($self);
-    my @results;
+    my @results = @unreadable;
 
     for my $c (@remove) {
         my $comp = $COMPONENT{$c};
@@ -331,6 +346,9 @@ sub warn_bad_allocation_labels {
     return;
 }
 
+# Whether the cluster has component $c's DaemonSet. Dies when it cannot be
+# read (anything but a 404): an unreadable DaemonSet is neither there nor
+# gone, so it can decide no deploy, no removal and no outcome (k269).
 sub ds_present {
     my ($self, $api, $c) = @_;
     my $ds = $OCP::Drift::AMD_GPU_DAEMONSETS{$c};
@@ -407,6 +425,19 @@ sub wait_ready {
     die "$COMPONENT{$c}{label} not ready after " . ready_timeout() . "s: $short\n";
 }
 
+# A read for not_ready: what $read returns, or undef and why not -- "<what>
+# not found" for a 404, "could not read <what>: <cause>" for any other
+# failure, which is no verdict on the object (k269). Not a death: the wait
+# reads again, and says the last why when it runs out.
+sub read_or_why {
+    my ($what, $read) = @_;
+    my $object = eval { $read->() };
+    my $err = $@ or return ($object, undef);
+    my $reason = "$err";
+    chomp $reason;
+    return (undef, $reason =~ /\b404\b/ ? "$what not found" : "could not read $what: $reason");
+}
+
 # Why component $c is not ready yet, or undef when it is. Readiness is what
 # a workload can use: the DaemonSet rolled out, and for the plugin the GPU in
 # status.allocatable (not capacity, which a failing plugin leaves standing),
@@ -419,7 +450,9 @@ sub not_ready {
     my $ds_ref = $OCP::Drift::AMD_GPU_DAEMONSETS{$c};
     my $where  = "DaemonSet $ds_ref->{namespace}/$ds_ref->{name}";
 
-    my $ds = eval { $api->get('DaemonSet', name => $ds_ref->{name}, namespace => $ds_ref->{namespace}) };
+    my ($ds, $why) = read_or_why($where,
+        sub { $api->get('DaemonSet', name => $ds_ref->{name}, namespace => $ds_ref->{namespace}) });
+    return $why if $why;
     return "$where not found" unless $ds;
     my $h = $api->k8s->object_to_struct($ds);
     my $st = $h->{status} // {};
@@ -435,7 +468,8 @@ sub not_ready {
     if ($c eq 'device_plugin') {
         my $mixed = ($opts->{resource_naming} // 'single') eq 'mixed';
         for my $n (@$nodes) {
-            my $node  = eval { $api->get('Node', name => $n->{name}) };
+            my ($node, $why) = read_or_why("Node '$n->{name}'", sub { $api->get('Node', name => $n->{name}) });
+            return $why if $why;
             my $alloc = $node ? ($api->k8s->object_to_struct($node)->{status}{allocatable} // {}) : {};
             my @gpu   = grep { $mixed ? index($_, $AMD_GPU_PREFIX) == 0 : $_ eq $AMD_GPU_RESOURCE } keys %$alloc;
             next if grep { ($alloc->{$_} // '0') =~ /\A([0-9]+)/ && $1 > 0 } @gpu;
@@ -444,7 +478,10 @@ sub not_ready {
         }
     }
     elsif ($c eq 'dra') {
-        my $slices = $self->_crd_get($api, '/apis/resource.k8s.io/v1/resourceslices') // {};
+        my ($slices, $why) = read_or_why('ResourceSlices',
+            sub { $self->_crd_get($api, '/apis/resource.k8s.io/v1/resourceslices') });
+        return $why if $why;
+        $slices //= {};
         my %has = map { ($_->{spec}{nodeName} // '') => 1 }
                   grep { ($_->{spec}{driver} // '') eq $AMD_GPU_DRA_DRIVER } @{ $slices->{items} // [] };
         for my $n (@$nodes) {

@@ -195,17 +195,50 @@ sub poll_deployment_ready {
     return 0;
 }
 
+# Whether the cluster has $kind $name. Only a 404 says it has not: the client
+# dies on every error status, and an RBAC denial, an apiserver 5xx or a TLS
+# error says nothing about the object. Those die with their cause instead of
+# reading as absent -- which made apply redeploy what it could not see, or
+# remove it (k269, the class of k256). The caller's step reports the death.
 sub resource_exists {
     my ($self, $api, $kind, $name, %opts) = @_;
     my $obj = eval { $api->get($kind, $name, %opts) };
+    if (my $err = $@) {
+        return 0 if $err =~ /\b404\b/;
+        my $reason = "$err";
+        chomp $reason;
+        my $where = join '/', grep { defined } $opts{namespace}, $name;
+        die "could not read $kind $where: $reason\n";
+    }
     return defined $obj;
 }
 
+# A raw GET of $resource_path (a CRD's object has no IO::K8s class OCP
+# reads), decoded. undef only for a 404; a failed request, any other error
+# status and a body that is no JSON die with the cause (k269).
 sub crd_get {
     my ($self, $api, $resource_path) = @_;
     my $response = eval { $api->_request('GET', $resource_path) };
-    return undef unless $response && $response->status < 400;
-    return eval { decode_json($response->content) };
+    unless ($response) {
+        my $reason = "$@" || 'no response';
+        chomp $reason;
+        die "GET $resource_path failed: $reason\n";
+    }
+    my $status = $response->status;
+    return undef if $status == 404;
+    if ($status >= 400) {
+        my $body = eval { $response->content } // '';
+        $body =~ s/\s+/ /g;
+        $body = substr($body, 0, 400);
+        die "GET $resource_path failed: HTTP $status $body\n";
+    }
+    my $object = eval { decode_json($response->content) };
+    unless ($object) {
+        my $reason = "$@" || 'empty body';
+        chomp $reason;
+        die "GET $resource_path: the answer is no JSON: $reason\n";
+    }
+    return $object;
 }
 
 1;

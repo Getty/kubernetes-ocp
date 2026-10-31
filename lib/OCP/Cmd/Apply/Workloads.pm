@@ -550,17 +550,26 @@ sub setup_gpu_operator {
     $self->_poll_deployment_ready($api, 'gpu-operator', 'gpu-operator', 120)
         or die "gpu-operator not ready within 120s\n";
 
-    # Check ClusterPolicy status via raw API (CRD, no IO::K8s class)
+    # Check ClusterPolicy status via raw API (CRD, no IO::K8s class). A read
+    # that fails is polled again like a state that is not ready yet; when the
+    # last one failed too, its cause is the answer, on STDERR (k269).
     my $cp_path = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';
     for my $i (1..12) {
-        my $cp = $self->_crd_get($api, $cp_path);
+        my $cp = eval { $self->_crd_get($api, $cp_path) };
+        my $read_err = $@;
         if ($cp && $cp->{status} && ($cp->{status}{state} // '') eq 'ready') {
             print "      ClusterPolicy state: ready\n";
             last;
         }
         if ($i == 12) {
-            my $state = ($cp && $cp->{status}) ? ($cp->{status}{state} // 'unknown') : 'unknown';
-            print "      ClusterPolicy state: $state (may still be reconciling)\n";
+            if ($read_err) {
+                chomp $read_err;
+                print STDERR "  [WARN] ClusterPolicy state unknown: could not read ClusterPolicy"
+                    . " gpu-cluster-policy: $read_err\n";
+            } else {
+                my $state = ($cp && $cp->{status}) ? ($cp->{status}{state} // 'unknown') : 'unknown';
+                print "      ClusterPolicy state: $state (may still be reconciling)\n";
+            }
         }
         $self->wait_seconds(10);
     }
@@ -574,8 +583,9 @@ sub setup_gpu_operator {
 # generated operator manifest), as paths like spec.toolkit.env. Only what OCP
 # sets is compared: the apiserver fills in the CRD's defaults, and the
 # operator never writes spec, so a key OCP does not name is not drift. A list
-# (toolkit.env) must match as a whole. Empty when the ClusterPolicy cannot be
-# read: whether the operator runs is asked elsewhere.
+# (toolkit.env) must match as a whole. Empty when the cluster has no
+# ClusterPolicy (a 404): whether the operator runs is asked elsewhere. Dies
+# when it cannot be read (k269).
 sub cluster_policy_differences {
     my ($self, $config, $api, $manifest) = @_;
     $manifest //= generate_gpu_operator_manifest($self, $config);

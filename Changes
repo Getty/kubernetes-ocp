@@ -19,6 +19,13 @@ Revision history for OCP
       behave the same, and the host probes no longer take a failed OCPNode
       list for a cluster without workers. Now it is an error entry, "drift
       unknown", with the cause on STDERR.
+    - `ocp apply` no longer takes a failed Kubernetes read for "not there"
+      when it deploys: only a 404 is. An RBAC denial or an apiserver 5xx on
+      the registry, NFD, GPU Operator, cert-manager or AMD GPU checks fails
+      that component, with the cause on STDERR, instead of redeploying or
+      removing it. The readiness waits (AMD GPU stack, ClusterPolicy state,
+      Cilium Gateway) name the read they could not make instead of saying
+      "not found".
     - Hetzner server, location and server type lookups now read every page, so
       `ocp destroy`'s orphan sweep, the create idempotency check, `ocp hetzner
       list` and the `ocp init` pickers no longer miss entries past the first

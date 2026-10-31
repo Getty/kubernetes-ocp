@@ -4,6 +4,7 @@ use warnings;
 use Test::More;
 use File::Temp ();
 use JSON::PP ();
+use Kubernetes::REST::APIError;
 use Path::Tiny qw(path);
 use YAML::XS ();
 
@@ -120,6 +121,8 @@ sub scheduler_selects {
         my $name = @rest % 2 ? shift @rest : undef;
         my %a = @rest;
         $name //= $a{name};
+        # A read that fails the way the test says: { "Kind/name" => error }.
+        if (my $fail = $self->{get_fails}{"$kind/$name"}) { die $fail }
         if ($kind eq 'DaemonSet') { return $self->{ds}{$name} // die "404 DaemonSet/$name\n" }
         if ($kind eq 'Node')      { return $self->{nodes}{$name} // die "404 Node/$name\n" }
         if ($kind eq 'OCPNode') {
@@ -130,6 +133,8 @@ sub scheduler_selects {
     sub _request {
         my ($self, $method, $path) = @_;
         return FakeResponse->new(status => 404, content => '') unless $path =~ m{/resourceslices\z};
+        return FakeResponse->new(status => $self->{slices_status}, content => 'slices refused')
+            if $self->{slices_status};
         return FakeResponse->new(status => 200,
             content => JSON::PP::encode_json({ items => $self->{slices} }));
     }
@@ -166,6 +171,9 @@ sub fake_lib {
                      values %{ $api->{nodes} };
             my $gen = ($api->{ds}{ $DS{$c} }{metadata}{generation} // 0) + 1;
             my $ready = $api->{pods_unready}{$c} ? 0 : scalar @on;
+            # The DaemonSet that cannot be read once it is there.
+            $api->{get_fails}{"DaemonSet/$DS{$c}"} = $api->{fail_after_deploy}{$c}
+                if $api->{fail_after_deploy}{$c};
             $api->{ds}{ $DS{$c} } = {
                 metadata => { name => $DS{$c}, generation => $gen },
                 spec     => { affinity => $o{affinity} },
@@ -584,6 +592,128 @@ subtest 'after the worker join: once more for a joined AMD node, and only then' 
     $res = run_step($api, dir => $dir, apply => new_apply($api),
         after_join => [ { name => 'synapse', phase => 'Ready' } ]);
     is $res->{out}, '', 'the first check did not run: nothing';
+};
+
+#
+# k269: only a 404 says a DaemonSet is not there. An RBAC denial or an
+# apiserver 5xx says nothing about it, and used to read as absent all the
+# same: a recorded component was redeployed as "restored", one the cluster
+# might hold was never removed, and the readiness wait said "not found".
+#
+
+# What Kubernetes::REST dies with for an HTTP error status (as in t/25).
+sub api_error {
+    my ($code, $reason) = @_;
+    return Kubernetes::REST::APIError->new(
+        code    => $code,
+        context => 'get',
+        body    => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}),
+    );
+}
+my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
+
+subtest 'k269: an unreadable DaemonSet of a component to remove: it fails, the others carry on' => sub {
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        my $api = AmdApi->new;
+        $api->node('synapse', $MARKER => 'true');
+        # The DRA driver: no node selects it, no record -- the cluster decides.
+        $api->{ds}{ $DS{dra} } = { metadata => { name => $DS{dra} } };
+        $api->{get_fails}{"DaemonSet/$DS{dra}"} = api_error($code, $reason);
+        my $res = run_step($api);
+        is_deeply $res->{fns}, [qw(deploy_amd_device_plugin deploy_amd_node_labeller)],
+            "$code: no removal, and the plugin and the labeller still deployed";
+        like $res->{err}, qr{\[!!\] AMD GPU DRA driver setup failed: could not read DaemonSet kube-system/\Q$DS{dra}\E: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+            "$code: the failure, with its cause, on STDERR";
+        is_deeply $res->{r}{failed}, ['AMD GPU DRA driver'], "$code: counted as failed";
+        ok $api->{ds}{ $DS{dra} }, "$code: the DaemonSet is left in the cluster";
+    }
+
+    my $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    $api->{get_fails}{"DaemonSet/$DS{dra}"} = api_error(404, 'NotFound');
+    my $res = run_step($api);
+    is_deeply $res->{fns}, [qw(deploy_amd_device_plugin deploy_amd_node_labeller)], '404: nothing to remove';
+    is_deeply $res->{r}{failed}, [], '404: no failure';
+    is $res->{err}, '', '404: nothing on STDERR';
+
+    $api = AmdApi->new;
+    $api->{get_fails}{"DaemonSet/$DS{metrics}"} = api_error(403, 'Forbidden');
+    $res = run_step($api);
+    is_deeply $res->{fns}, [], 'no AMD node at all: no call';
+    is_deeply $res->{r}{failed}, ['AMD device metrics exporter'], 'and the one it could not read failed';
+    unlike $res->{out}, qr/AMD GPU stack skipped/, 'not called skipped: whether it is to remove is unknown';
+
+    $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    $api->{get_fails}{"DaemonSet/$DS{dra}"} = api_error(403, 'Forbidden');
+    $res = run_step($api, missing => ['deploy_amd_node_labeller']);
+    is_deeply $res->{fns}, [], 'a Rex::Rancher without the functions: no call';
+    ok $res->{r}{warned}, 'warned';
+    is_deeply $res->{r}{failed}, ['AMD GPU DRA driver'], 'and the unreadable one failed all the same';
+};
+
+subtest 'k269: a recorded component whose DaemonSet cannot be read is not redeployed' => sub {
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        my $api = AmdApi->new;
+        $api->node('synapse', $MARKER => 'true');
+        my $first = run_step($api);
+        $api->{get_fails}{"DaemonSet/$DS{device_plugin}"} = api_error($code, $reason);
+        my $res = run_step($api, dir => $first->{dir});
+        is_deeply $res->{fns}, [], "$code: no deploy for a DaemonSet nobody could see";
+        unlike $res->{out}, qr/device plugin (?:redeployed|updated)/, "$code: neither restored nor updated";
+        like $res->{err}, qr{\[!!\] AMD GPU device plugin setup failed: could not read DaemonSet kube-system/\Q$DS{device_plugin}\E: Kubernetes API error \(get\): $code },
+            "$code: the failure, with its cause";
+        is_deeply $res->{r}{failed}, ['AMD GPU device plugin'], "$code: counted as failed";
+        like $res->{out}, qr/\[ok\] AMD GPU node labeller up to date/, "$code: the labeller carries on";
+        ok defined $res->{hashes}{'amd-gpu-device-plugin'}, "$code: the record stays";
+    }
+};
+
+subtest 'k269: the readiness wait names a read it could not make, not "not found"' => sub {
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        my $api = AmdApi->new(fail_after_deploy => { labeller => api_error($code, $reason) });
+        $api->node('synapse', $MARKER => 'true');
+        my $res = run_step($api);
+        like $res->{err}, qr{AMD GPU node labeller not ready after 300s: could not read DaemonSet kube-system/\Q$DS{labeller}\E: Kubernetes API error \(get\): $code },
+            "$code: DaemonSet -- what could not be read, and why";
+        unlike $res->{err}, qr/not found/, "$code: DaemonSet -- not called not found";
+        is $res->{waited}, OCP::Cmd::Apply::AMDGPU::ready_timeout(), "$code: read again for the whole budget";
+        like $res->{out}, qr/\[ok\] AMD GPU device plugin deployed/, "$code: the plugin is not held by it";
+
+        $api = AmdApi->new;
+        $api->node('synapse', $MARKER => 'true');
+        $api->{get_fails}{'Node/synapse'} = api_error($code, $reason);
+        $res = run_step($api, gpu => "gpu:\n  amd:\n    labeller: false\n");
+        like $res->{err}, qr{AMD GPU device plugin not ready after 300s: could not read Node 'synapse': Kubernetes API error \(get\): $code },
+            "$code: Node -- not called a node without the GPU";
+
+        $api = AmdApi->new(slices_status => $code);
+        $api->node('synapse', $MARKER => 'true');
+        $res = run_step($api, gpu => "gpu:\n  amd:\n    labeller: false\n    allocation: dra\n");
+        like $res->{err}, qr{AMD GPU DRA driver not ready after 300s: could not read ResourceSlices: GET /apis/resource\.k8s\.io/v1/resourceslices failed: HTTP $code slices refused},
+            "$code: ResourceSlices -- not called a node without a slice";
+    }
+
+    my $api = AmdApi->new(fail_after_deploy => { labeller => api_error(404, 'NotFound') });
+    $api->node('synapse', $MARKER => 'true');
+    my $res = run_step($api);
+    like $res->{err}, qr{AMD GPU node labeller not ready after 300s: DaemonSet kube-system/\Q$DS{labeller}\E not found\n},
+        '404: DaemonSet not found';
+
+    $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    $api->{get_fails}{'Node/synapse'} = api_error(404, 'NotFound');
+    $res = run_step($api, gpu => "gpu:\n  amd:\n    labeller: false\n");
+    like $res->{err}, qr{AMD GPU device plugin not ready after 300s: Node 'synapse' not found\n}, '404: Node not found';
+
+    $api = AmdApi->new(slices_status => 404);
+    $api->node('synapse', $MARKER => 'true');
+    $res = run_step($api, gpu => "gpu:\n  amd:\n    labeller: false\n    allocation: dra\n");
+    like $res->{err}, qr{AMD GPU DRA driver not ready after 300s: no ResourceSlice of driver gpu\.amd\.com for node 'synapse'},
+        '404: no ResourceSlice';
 };
 
 subtest 'DeployedHash: forget drops a record, removed is a change' => sub {

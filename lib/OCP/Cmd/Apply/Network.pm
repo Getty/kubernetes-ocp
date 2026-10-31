@@ -259,9 +259,13 @@ sub setup_cilium_gateway {
     # Gateway is a CRD (gateway.networking.k8s.io), not a core resource —
     # $api->get('Gateway', ...) fails silently because Kubernetes::REST has
     # no IO::K8s class for it. Use raw API path instead.
+    # A read that fails is polled again like a Gateway not Accepted yet; when
+    # the last one failed too, the death says its cause (k269).
     my $gw_path = '/apis/gateway.networking.k8s.io/v1/namespaces/kube-system/gateways/cilium-gateway';
+    my $read_err;
     for my $i (1..30) {
-        my $gw = $self->_crd_get($api, $gw_path);
+        my $gw = eval { $self->_crd_get($api, $gw_path) };
+        $read_err = $@;
         if ($gw && $gw->{status} && $gw->{status}{conditions}) {
             for my $cond (@{ $gw->{status}{conditions} }) {
                 if ($cond->{type} eq 'Accepted' && $cond->{status} eq 'True') {
@@ -272,7 +276,9 @@ sub setup_cilium_gateway {
         }
         $self->wait_seconds(2);
     }
-    die "Gateway 'cilium-gateway' did not become Accepted within 60s\n";
+    chomp $read_err if $read_err;
+    die "Gateway 'cilium-gateway' did not become Accepted within 60s"
+        . ($read_err ? "; the last read failed: $read_err" : '') . "\n";
 }
 
 #
