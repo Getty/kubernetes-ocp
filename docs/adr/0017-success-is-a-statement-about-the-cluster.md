@@ -80,4 +80,41 @@ the same class of lie.
 - The banner is now load-bearing for humans and CI alike, so anything that
   weakens the check weakens both.
 - The GPU stack's real proof — `nvidia.com/gpu` in the node capacity — is still
-  not part of the gate (ADR 0015).
+  not part of the gate (ADR 0015) *(amended 2026-10-31, see below)*.
+
+## Amendment 2026-10-31
+
+The last Consequence read:
+
+> The GPU stack's real proof — `nvidia.com/gpu` in the node capacity — is still
+> not part of the gate (ADR 0015).
+
+Capacity was never that proof. The kubelet leaves it standing after a device
+plugin unregisters, and only `status.allocatable` says that a pod can get the
+GPU. This was seen live on amdlab on 2026-10-31 as capacity 1 / allocatable 0
+(rex-rancher k106, cf10698; ADR 0015, amended the same day). The proof is the
+GPU in allocatable.
+
+For NVIDIA the rest of the sentence still holds, though no longer because
+nothing asks. Since k273 (7e786ce), every `setup_gpu_operator` run that does
+not skip, `unchanged` included, waits up to 300 s (`gpu_ready_timeout`). It
+waits for `nvidia.com/gpu` above 0 in `status.allocatable` on every NVIDIA node
+it detected, and `ocp node add --gpu` runs the same check. A node that does not
+get there is one `[WARN] NVIDIA GPU not ready after 300s: …` on STDERR. The
+verdict, the banner and the exit code stay as they were. The proof is checked,
+but outside the gate.
+
+For AMD it no longer holds. This was added alongside the capacity error, not
+caused by it. Since k251 (4d90591), the AMD stack step waits up to 300 s for
+`amd.com/gpu` in `status.allocatable` on every node the device plugin selects
+(for the DRA driver, a ResourceSlice per node). A node that never shows it is a
+failed component: `ocp apply` names it on STDERR, the banner reads
+`— APPLY INCOMPLETE`, and the exit code is non-zero
+(`OCP::Cmd::Apply::Health::finish`). That check is not the pod scan this ADR
+describes. It reaches the same banner and exit code through the
+failed-component list.
+
+The two vendors therefore differ. A node without its GPU in allocatable is a
+warning on NVIDIA and a failed component on AMD. That asymmetry was set in k273
+as a provisional call, not a maintainer decision, and it is open on k285.
+Recorded under k274.

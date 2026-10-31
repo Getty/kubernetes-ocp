@@ -60,8 +60,9 @@ Compute capability is not asked before the cluster at all.
 
 **After the cluster exists** the authoritative answer to "is this GPU usable"
 is `nvidia.com/gpu` in the node's capacity, published by the device plugin;
-`OCP::Kubernetes::node_gpu_count` reads it. The NFD label
-`feature.node.kubernetes.io/pci-0300_10de` is the secondary signal.
+`OCP::Kubernetes::node_gpu_count` reads it *(amended 2026-10-31, see below)*.
+The NFD label `feature.node.kubernetes.io/pci-0300_10de` is the secondary
+signal.
 
 The short blacklist of virtual display adapters (virtio, QEMU, VMware,
 VirtualBox) stays: a list of "definitely not" stays true as hardware moves on,
@@ -99,7 +100,7 @@ a VM with a passed-through card has both, and there the card decides.
   from Rex back into it (k24).
 - Better detection is still only a better prediction. The proof that the GPU
   stack works is `nvidia.com/gpu` in the capacity — which is why ADR 0017
-  matters more than this one.
+  matters more than this one *(amended 2026-10-31, see below)*.
 
 ## Amendment 2026-09-26
 
@@ -145,3 +146,59 @@ first read — only "which package" — but the ADR's own bullet claimed
 `ubuntu-drivers` alone resolved all three questions, and that stopped being
 true the moment flavour became the library's table instead, first for every
 other OS at k155 and now for Ubuntu too.
+
+## Amendment 2026-10-31
+
+This ADR said under `## Decision`:
+
+> **After the cluster exists** the authoritative answer to "is this GPU usable"
+> is `nvidia.com/gpu` in the node's capacity, published by the device plugin;
+> `OCP::Kubernetes::node_gpu_count` reads it.
+
+and under `## Consequences`:
+
+> The proof that the GPU stack works is `nvidia.com/gpu` in the capacity
+
+Capacity is not that answer. After a device plugin unregisters, the kubelet
+leaves the plugin's resource standing in `status.capacity` and drops only
+`status.allocatable` to 0, so capacity keeps reporting a GPU that no pod can
+get. This was seen live on amdlab on 2026-10-31 (RKE2 v1.36.4, AMD node
+synapse). With the device plugin gone, `amd.com/gpu` stood at capacity 1 and
+allocatable 0. Rex::Rancher's plugin wait, which read capacity, reported the
+resource ready after one second while the new plugin pod was still in
+`ContainerCreating` (rex-rancher k106). The wait has read allocatable since
+rex-rancher cf10698. A run on the same node that could tell the two reads
+apart — DRA allocation, so no plugin registers, capacity 1 / allocatable 0 —
+went through all 24 polls and ended in a warning, not in "ready". The capacity
+read would have reported ready on the first poll.
+
+Only `status.allocatable` says what the scheduler can hand out. The same field
+also leaves out devices the plugin reports unhealthy, which capacity still
+counts. The code names that second case, but it was not seen live.
+
+OCP reads allocatable on both vendors now:
+
+- **AMD readiness in `ocp apply`** (k251, 4d90591): the AMD stack step waits
+  for `amd.com/gpu` in `status.allocatable` on every node the device plugin
+  selects. It read allocatable from its first commit.
+- **AMD in `ocp status`** (k252, 45b81fe) and in `ocp status --json` (k258,
+  fc315f4): allocatable is the count, and capacity is shown beside it.
+- **NVIDIA** (k270, f2d9de6): `node_gpu_count` reads `status.allocatable`. The
+  new `node_gpu_capacity` reads capacity, and only for display. `gpu_nodes`
+  keeps listing a node that has capacity but zero allocatable, so the
+  plugin-gone case shows up instead of disappearing. In `ocp status --json`,
+  `nodes[].gpu` changed meaning from capacity to allocatable, with
+  `gpu_capacity` beside it. `ocp node ls` already read allocatable.
+
+The decision does not move. The answer after the cluster exists still comes
+from the machine: the device plugin's own published resource, not a model of
+the hardware. The NFD label is still the secondary signal. What was wrong is
+which of the node's two resource fields carries that answer. Capacity records
+that a plugin once registered the GPU; allocatable says the GPU can be handed
+out now.
+
+Unverified: the stale capacity was seen on an AMD node. That `nvidia.com/gpu`
+stays standing the same way is an inference, because the kubelet keeps the
+field, not the plugin. No NVIDIA node has been seen in that state, and k270 is
+proven by `t/270-status-nvidia-allocatable.t` against fixtures, not on a
+cluster. Recorded under k274.
