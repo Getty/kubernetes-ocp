@@ -115,6 +115,14 @@ sub kubernetes {
     return $self->spec->{kubernetes} // {};
 }
 
+# The most control planes `nodes: N` stands for (k305). Every RKE2/K3s
+# server is an etcd member, and etcd advises no more than seven: a write
+# waits for a majority of them, so each member past that slows every write
+# and buys a failure tolerance no one runs (etcd FAQ, "What is maximum
+# cluster size?"; 1, 3, 5 and 7 are the sizes in use). It is also what keeps
+# control_planes() from taking a nodes: of 10^12 as a repeat count.
+our $MAX_CONTROL_PLANE_NODES = 7;
+
 sub control_planes {
     my ($self) = @_;
     my $raw = $self->spec->{control_planes};
@@ -127,11 +135,12 @@ sub control_planes {
         my %cp = %$raw;
         my $count = delete $cp{nodes} // 1;
 
-        # A nodes: that is no whole number stands for one control plane, so
-        # its entry is still read once; validate() refuses it (k296). Taken
-        # as a repeat count, a list numifies to its address and asks for
-        # some 10^14 copies.
-        $count = 1 unless _is_whole_number($count);
+        # A nodes: that is no whole number, or more than the bound, stands
+        # for one control plane, so its entry is still read once; validate()
+        # refuses it (k296, k305). Taken as a repeat count, a list numifies
+        # to its address and asks for some 10^14 copies, and 10^12 runs out
+        # of memory just the same.
+        $count = 1 unless _is_whole_number($count) && $count <= $MAX_CONTROL_PLANE_NODES;
         return [(%cp ? \%cp : {}) x $count];
     }
 
@@ -264,8 +273,8 @@ sub robocop_security_level {
 
     croak "robocop.security_level must be "
         . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS)
-        . ", not '$level'"
-        unless grep { $_ eq $level } @ROBOCOP_SECURITY_LEVELS;
+        . ", not " . _shown_value($level)
+        unless _is_choice($level, @ROBOCOP_SECURITY_LEVELS);
 
     return $level;
 }
@@ -294,8 +303,8 @@ sub robocop_image {
 # implicit tag -- the same rule `ocp deploy-image` has.
 sub _image_ref_error {
     my ($ref) = @_;
-    return "must be an image reference like raudssus/ocp:1.2.3, not a "
-        . lc(ref $ref) if ref $ref;
+    return "must be an image reference like raudssus/ocp:1.2.3, not "
+        . _shown_value($ref) if ref $ref;
     return "must not be empty" unless length($ref // '');
     return "must not contain whitespace ('$ref')" if $ref =~ /\s/;
     return undef if $ref =~ m{\A[^@\s]+\@sha256:[0-9a-f]{64}\z};
@@ -496,7 +505,7 @@ sub gpu_driver {
 
     # A typo here would silently fall back to 'host' and leave the operator's
     # driver DaemonSet disabled on a cluster that was configured for it.
-    croak "gpu.driver must be 'host' or 'operator', not '$driver'"
+    croak "gpu.driver must be 'host' or 'operator', not " . _shown_value($driver)
         unless _is_choice($driver, @GPU_DRIVERS);
 
     return $driver;
@@ -593,6 +602,10 @@ sub _gpu_amd_choice {
     return $value;
 }
 
+# Whether $value is one of @choices. A reference never is: a YAML boolean
+# is a JSON::PP::Boolean, and the eq overload Cpanel::JSON::XS gives that
+# class swaps its operands, so `'secret' eq $true` is true for any string
+# Perl calls true (k305) -- grep { $_ eq $value } takes `true` for any choice.
 sub _is_choice {
     my ($value, @choices) = @_;
     return 0 if ref $value;
@@ -748,7 +761,15 @@ sub validate {
     my ($self) = @_;
     my @errors;
 
-    push @errors, "name is required" unless $self->name && $self->name =~ /\S/;
+    # A name that is a list or mapping passed (k305), and every key name the
+    # cluster derives from it said ARRAY(0x...).
+    if (ref $self->spec->{name}) {
+        push @errors, "name: must be a string (the cluster's name), not "
+            . _shown_value($self->spec->{name});
+    }
+    else {
+        push @errors, "name is required" unless $self->name && $self->name =~ /\S/;
+    }
 
     my $cps = $self->control_planes;
 
@@ -761,10 +782,16 @@ sub validate {
             . "or a list of mappings, not " . _shown_value($raw_cps);
         $cps = [];
     }
+    push @errors, "control_planes: must list at least one control plane, not an empty list"
+        if ref $raw_cps eq 'ARRAY' && !@$raw_cps;
     if (ref $raw_cps eq 'HASH' && defined(my $nodes = $raw_cps->{nodes})) {
-        push @errors, "control_planes.nodes: must be a whole number of 1 or more, not "
-            . _shown_value($nodes)
-            unless _is_whole_number($nodes) && $nodes >= 1;
+        my $whole = _is_whole_number($nodes);
+        push @errors, "control_planes.nodes: must be a whole number from 1 to "
+            . "$MAX_CONTROL_PLANE_NODES, not " . _shown_value($nodes)
+            . ($whole && $nodes > $MAX_CONTROL_PLANE_NODES
+                ? "; every control plane is an etcd member, and etcd advises no more "
+                  . "than $MAX_CONTROL_PLANE_NODES" : '')
+            unless $whole && $nodes >= 1 && $nodes <= $MAX_CONTROL_PLANE_NODES;
     }
 
     # The mapping form with `nodes: N` is N copies of one entry (see
@@ -792,8 +819,9 @@ sub validate {
         # spelled out a second time here (k103). Same three words, one
         # source -- a fourth provider type appears in this message the moment
         # OCP::Provider can construct it.
-        unless (OCP::Provider->known_type($prov)) {
-            push @errors, "control_planes[$idx]: invalid provider '$prov' (must be "
+        # !ref: a YAML true passes known_type, see _is_choice (k305).
+        unless (!ref $prov && OCP::Provider->known_type($prov)) {
+            push @errors, "control_planes[$idx]: invalid provider " . _shown_value($prov) . " (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
@@ -830,11 +858,22 @@ sub validate {
     push @errors, $self->_validate_pod_cidr($net);
     push @errors, $self->_validate_service_cidr($net);
 
+    # robocop as a list, or a robocop.enabled that is a list or mapping, read
+    # as true and turned robocop on (k305). A scalar is a switch as before.
+    my $robocop = $self->spec->{robocop};
+    push @errors, "robocop: must be true, false or a mapping (enabled, security_level, image), not "
+        . _shown_value($robocop)
+        if ref $robocop eq 'ARRAY';
+    if (ref $robocop eq 'HASH' && ref(my $en = $robocop->{enabled})) {
+        push @errors, "robocop.enabled: must be true or false, not " . _shown_value($en)
+            unless JSON::MaybeXS::is_bool($en);
+    }
+
     # robocop.security_level, report-only (k129). The accessor croaks; here
     # we collect one line so `ocp apply` lists it with every other config error.
     my $rl = $self->_raw_robocop_security_level;
-    if (defined $rl && !grep { $_ eq $rl } @ROBOCOP_SECURITY_LEVELS) {
-        push @errors, "robocop.security_level: invalid value '$rl' (must be "
+    if (defined $rl && !_is_choice($rl, @ROBOCOP_SECURITY_LEVELS)) {
+        push @errors, "robocop.security_level: invalid value " . _shown_value($rl) . " (must be "
             . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS) . ")";
     }
 
@@ -858,16 +897,22 @@ sub validate {
             push @errors, "workers[$pool_n]: must be a mapping (a worker pool), not " . _shown_value($w);
             next;
         }
-        push @errors, "worker pool: name required" unless $w->{name};
-        my $where = "worker pool '" . ($w->{name} // '') . "'";
+        if (ref $w->{name}) {
+            push @errors, "workers[$pool_n].name: must be a string (the pool's name), not "
+                . _shown_value($w->{name});
+        }
+        else {
+            push @errors, "worker pool: name required" unless $w->{name};
+        }
+        my $where = $self->_pool_where($w, $pool_n);
         my $wprov = $w->{provider} // '';
         if ($wprov eq '') {
             push @errors, "$where: provider required";
-        } elsif (!OCP::Provider->known_type($wprov)) {
+        } elsif (ref $wprov || !OCP::Provider->known_type($wprov)) {
             # Same set, same source as the control-plane check above --
             # spelling the regex here again is what k103 deleted for
             # the control planes and what k110 made stale (k115).
-            push @errors, "$where: invalid provider '$wprov' (must be "
+            push @errors, "$where: invalid provider " . _shown_value($wprov) . " (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
@@ -914,6 +959,15 @@ sub validate {
 sub _control_planes_shared {
     my ($self) = @_;
     return ref $self->spec->{control_planes} eq 'HASH' && @{ $self->control_planes } > 1 ? 1 : 0;
+}
+
+# How an error line names worker pool $n (1-based): by its name, or by its
+# place when it has none a line can quote, as a control plane is named
+# (k305) -- not "worker pool 'ARRAY(0x...)'", not "worker pool ''".
+sub _pool_where {
+    my ($self, $pool, $n) = @_;
+    my $name = $pool->{name};
+    return defined $name && !ref $name && length $name ? "worker pool '$name'" : "workers[$n]";
 }
 
 # Two control planes with one node-ip register at one address (k254), as the
@@ -971,15 +1025,15 @@ sub _validate_network {
                 push @errors, "network.lb_pool: use either cidr or start+stop, not both";
             }
             elsif ($has_cidr) {
-                push @errors, "network.lb_pool.cidr: '$pool->{cidr}' is not an IPv4 CIDR (e.g. 10.0.0.240/28)"
+                push @errors, "network.lb_pool.cidr: " . _shown_value($pool->{cidr}) . " is not an IPv4 CIDR (e.g. 10.0.0.240/28)"
                     unless _looks_like_cidr($pool->{cidr});
             }
             elsif ($has_start || $has_stop) {
                 push @errors, "network.lb_pool: start and stop must both be set"
                     unless $has_start && $has_stop;
-                push @errors, "network.lb_pool.start: '$pool->{start}' is not an IPv4 address"
+                push @errors, "network.lb_pool.start: " . _shown_value($pool->{start}) . " is not an IPv4 address"
                     if $has_start && !_looks_like_ipv4($pool->{start});
-                push @errors, "network.lb_pool.stop: '$pool->{stop}' is not an IPv4 address"
+                push @errors, "network.lb_pool.stop: " . _shown_value($pool->{stop}) . " is not an IPv4 address"
                     if $has_stop && !_looks_like_ipv4($pool->{stop});
 
                 # Compared as addresses: 10.0.0.9 comes before 10.0.0.10.
@@ -1119,8 +1173,7 @@ sub _validate_pod_cidr {
     my $cidr = $set ? $net->{pod_cidr} : $DEFAULT_POD_CIDR;
     my $what = $set ? "network.pod_cidr: '$cidr'" : "network.pod_cidr (default $cidr)";
 
-    return ("network.pod_cidr: '" . (ref $cidr ? 'a ' . lc(ref $cidr) : $cidr)
-        . "' is not an IPv4 CIDR (e.g. 10.42.0.0/16)")
+    return ("network.pod_cidr: " . _shown_value($cidr) . " is not an IPv4 CIDR (e.g. 10.42.0.0/16)")
         unless _looks_like_cidr($cidr);
 
     my ($net_ip, $bits) = _cidr_range($cidr);
@@ -1183,12 +1236,14 @@ sub _taken_addresses {
             grep { _looks_like_ipv4($_) } split /,/, $node_ip;
     }
     my $workers = $self->workers;
-    for my $pool (ref $workers eq 'ARRAY' ? @$workers : ()) {
+    my @pools = ref $workers eq 'ARRAY' ? @$workers : ();
+    for my $n (1 .. @pools) {
+        my $pool = $pools[$n - 1];
         next unless ref $pool eq 'HASH';
         my @hosts = ($pool->{host},
             map { ref $_ eq 'HASH' ? $_->{host} : $_ } @{ ref $pool->{nodes} eq 'ARRAY' ? $pool->{nodes} : [] });
-        my $name = $pool->{name} // '?';
-        push @taken, map { [ "worker pool '$name' host $_", "$_/32" ] } grep { _looks_like_ipv4($_) } @hosts;
+        my $where = $self->_pool_where($pool, $n);
+        push @taken, map { [ "$where host $_", "$_/32" ] } grep { _looks_like_ipv4($_) } @hosts;
     }
     if (ref(my $lb = $net->{lb_pool}) eq 'HASH') {
         push @taken, [ "network.lb_pool $lb->{cidr}", $lb->{cidr} ] if _looks_like_cidr($lb->{cidr});

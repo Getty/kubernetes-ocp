@@ -4,14 +4,18 @@ use warnings;
 use Test::More;
 use File::Temp qw( tempdir );
 use FindBin;
+use JSON::MaybeXS ();
 use JSON::PP ();
 use Path::Tiny qw( path );
+use POSIX ();
 use YAML::XS ();
 
 use lib 'lib';
 use OCP;
+use OCP::Choices;
 use OCP::Config;
 use OCP::Cmd::Apply::Validate;
+use OCP::Provider;
 
 #
 # k296: since k255 `ocp apply` calls OCP::Config::validate() before anything,
@@ -32,6 +36,16 @@ use OCP::Cmd::Apply::Validate;
 #   4. validate() never dies on any YAML-valid shape at any key it reads, nor
 #      warns: a sweep puts a scalar, a boolean, null, a list and a mapping at
 #      each. (A pool without a name warned "Use of uninitialized value".)
+#
+# k305, what k296 left: some shapes still passed, and some lines quoted Perl.
+#   5. a name, a robocop (or robocop.enabled) and a pool name of the wrong
+#      shape, and an empty control_planes list, are a line each instead of
+#      passing;
+#   6. control_planes.nodes is at most 7, the most etcd members etcd advises,
+#      and control_planes() never takes a bigger one as a repeat count (10^12
+#      ran out of memory);
+#   7. no line quotes a value as Perl has it -- ARRAY(0x...), HASH(0x...),
+#      "a array", a boolean as '1' or '0' -- at any key of the sweep.
 #
 
 local @ARGV = ();
@@ -79,14 +93,15 @@ subtest 'a control_planes that is neither form' => sub {
         'one line, not "server_type required for hetzner" for a control plane nobody wrote';
 };
 
-subtest 'control_planes.nodes is a whole number of 1 or more' => sub {
+# Since k305 the claim is 1 to 7, not 1 or more: see claim 6.
+subtest 'control_planes.nodes is a whole number from 1 to 7' => sub {
     for my $case ([ 'foo', "'foo'" ], [ [ 3 ], 'a list' ], [ { n => 3 }, 'a mapping' ],
                   [ 0, "'0'" ], [ -1, "'-1'" ], [ '2.5', "'2.5'" ], [ JSON::PP::true, 'true' ]) {
         my ($nodes, $shown) = @$case;
         my @w;
         local $SIG{__WARN__} = sub { push @w, @_ };
         is_deeply [ errors_for({ control_planes => { %$local, nodes => $nodes } }) ],
-            [ "control_planes.nodes: must be a whole number of 1 or more, not $shown" ],
+            [ "control_planes.nodes: must be a whole number from 1 to 7, not $shown" ],
             "nodes: $shown";
         is_deeply \@w, [], "nodes: $shown -- and no Perl warning on the way";
     }
@@ -230,6 +245,9 @@ my @AT = (
         [ "workers[1].$k"         => sub { +{ control_planes => $cp->(), workers => [ $wp->($k => $_[0]) ] } } ],
      } qw( name provider host nodes labels taints node_ip )),
     [ 'workers[1].nodes[1]'       => sub { +{ control_planes => $cp->(), workers => [ $wp->(nodes => [ $_[0] ]) ] } } ],
+    # a host in the pod CIDR, so the pool is named in that line too (k305)
+    [ 'workers[1].name, host 10.42.0.5' => sub { +{ control_planes => $cp->(),
+                                     workers => [ $wp->(name => $_[0], host => '10.42.0.5') ] } } ],
     [ 'network'                   => sub { +{ control_planes => $cp->(), network => $_[0] } } ],
     (map { my $k = $_;
         [ "network.$k"            => sub { +{ control_planes => $cp->(), network => { $k => $_[0] } } } ],
@@ -257,7 +275,9 @@ my @AT = (
      } qw( enabled security_level image )),
 );
 
-subtest 'validate() never dies on a YAML-valid shape' => sub {
+# Claim 7 rides along: whatever a line says, it never quotes a value the way
+# Perl holds it (k305). A boolean is no '1' or '0' either.
+subtest 'validate() never dies, warns or quotes Perl on a YAML-valid shape' => sub {
     for my $at (@AT) {
         my ($path, $spec_with) = @$at;
         for my $shape (@SHAPES) {
@@ -265,10 +285,148 @@ subtest 'validate() never dies on a YAML-valid shape' => sub {
             my $c = config_for($spec_with->($value));
             my @w;
             local $SIG{__WARN__} = sub { push @w, @_ };
-            my $ok = eval { my @e = $c->validate; 1 };
+            my @e;
+            my $ok = eval { @e = $c->validate; 1 };
             ok $ok, "$path: $shown" or diag $@;
             is_deeply \@w, [], "$path: $shown -- no Perl warning" or diag explain \@w;
+            is_deeply [ grep { /\b(?:ARRAY|HASH|CODE|SCALAR|REF|GLOB)\(0x|\ba (?:array|hash)\b|json::pp/i } @e ],
+                [], "$path: $shown -- no Perl value in a line";
+            is_deeply [ grep { /'[01]'/ } @e ], [], "$path: $shown -- a boolean reads true or false"
+                if JSON::MaybeXS::is_bool($value);
         }
+    }
+};
+
+# --- 5. the shapes that passed ------------------------------------------------
+
+subtest 'a name that is no string' => sub {
+    for my $case ([ [ 'a' ], 'a list' ], [ { a => 1 }, 'a mapping' ],
+                  [ JSON::PP::true, 'true' ], [ JSON::PP::false, 'false' ]) {
+        my ($name, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, name => $name }) ],
+            [ "name: must be a string (the cluster's name), not $shown" ], "name: $shown";
+    }
+    is_deeply [ errors_for({ control_planes => $local, name => 7 }) ], [], 'a number is a name';
+    is_deeply [ errors_for({ control_planes => $local, name => ' ' }) ], [ 'name is required' ],
+        'blank: the line it always had';
+};
+
+subtest 'a robocop that is no switch' => sub {
+    is_deeply [ errors_for({ control_planes => $local, robocop => [ 'a' ] }) ],
+        [ 'robocop: must be true, false or a mapping (enabled, security_level, image), not a list' ],
+        'a list';
+    is_deeply [ errors_for({ control_planes => $local, robocop => { enabled => [ 'a' ] } }) ],
+        [ 'robocop.enabled: must be true or false, not a list' ], 'enabled: a list';
+    is_deeply [ errors_for({ control_planes => $local, robocop => { enabled => {} } }) ],
+        [ 'robocop.enabled: must be true or false, not a mapping' ], 'enabled: a mapping';
+
+    for my $ok (JSON::PP::true, JSON::PP::false, 1, 0, {}, { enabled => JSON::PP::false }, { enabled => 1 }) {
+        my $shown = ref $ok eq 'HASH' ? 'a mapping' : "$ok";
+        is_deeply [ errors_for({ control_planes => $local, robocop => $ok }) ], [], "robocop: $shown passes";
+    }
+};
+
+# A YAML true is a JSON::PP::Boolean, and the eq overload Cpanel::JSON::XS
+# gives it makes `'hetzner' eq $true` true: provider: true was a known
+# provider, security_level: true a level (k305).
+subtest 'a YAML true is no choice' => sub {
+    my $types = OCP::Choices::or_list(OCP::Provider->types);
+    is_deeply [ errors_for({ control_planes => { provider => JSON::PP::true } }) ],
+        [ "control_planes[1]: invalid provider true (must be $types)" ], 'control_planes.provider';
+    is_deeply [ errors_for({ control_planes => $local,
+                             workers => [ { name => 'w', provider => JSON::PP::true } ] }) ],
+        [ "worker pool 'w': invalid provider true (must be $types)" ], 'a pool provider';
+    is_deeply [ errors_for({ control_planes => $local, robocop => { security_level => JSON::PP::true } }) ],
+        [ 'robocop.security_level: invalid value true (must be secret, secret_approved, or inject)' ],
+        'robocop.security_level';
+    my $c = config_for({ control_planes => $local, robocop => { security_level => JSON::PP::true } });
+    ok !eval { $c->robocop_security_level; 1 }, 'the accessor refuses it too';
+    like $@, qr/^robocop\.security_level must be .*, not true at /, 'in its words';
+};
+
+subtest 'an empty control_planes list' => sub {
+    is_deeply [ errors_for({ control_planes => [] }) ],
+        [ 'control_planes: must list at least one control plane, not an empty list' ], '[]';
+    is_deeply [ errors_for({ control_planes => [ $local ] }) ], [], 'one passes';
+};
+
+# A pool is named by its name; one without a name that can be quoted is
+# named by its place, as a control plane is -- not 'ARRAY(0x...)', not ''.
+subtest 'a pool name that is no string' => sub {
+    is_deeply [ errors_for({ control_planes => $local,
+                             workers => [ { name => [ 'a' ], provider => 'aws' } ] }) ],
+        [ "workers[1].name: must be a string (the pool's name), not a list",
+          "workers[1]: invalid provider 'aws' (must be "
+          . OCP::Choices::or_list(OCP::Provider->types) . ')' ],
+        'a list: its own line, and the pool by its place';
+    is_deeply [ errors_for({ control_planes => $local,
+                             workers => [ { name => JSON::PP::true, provider => 'ssh' } ] }) ],
+        [ "workers[1].name: must be a string (the pool's name), not true" ], 'true';
+    is_deeply [ errors_for({ control_planes => $local, workers => [ {}, { name => 'w2' } ] }) ],
+        [ 'worker pool: name required', 'workers[1]: provider required',
+          "worker pool 'w2': provider required" ],
+        "no name: by its place, not worker pool ''";
+    is_deeply [ errors_for({ control_planes => $local, workers => [ { name => '' } ] }) ],
+        [ 'worker pool: name required', 'workers[1]: provider required' ], "name: '' the same";
+    is_deeply [ errors_for({ control_planes => $local,
+                             workers => [ { name => [ 'a' ], provider => 'ssh', host => '10.42.0.5' } ] }) ],
+        [ 'network.pod_cidr (default 10.42.0.0/16) overlaps workers[1] host 10.42.0.5 '
+          . '-- set network.pod_cidr to a range nothing else uses',
+          "workers[1].name: must be a string (the pool's name), not a list" ],
+        'the pod CIDR line names it the same way';
+};
+
+# --- 6. the upper bound on nodes ----------------------------------------------
+
+# In a child of its own: a repeat count taken as is asks Perl for some 10^12
+# entries, and running out of memory is nothing an eval catches.
+sub in_child {
+    my ($code) = @_;
+    pipe(my $r, my $w) or die "pipe: $!";
+    my $pid = fork // die "fork: $!";
+    unless ($pid) {
+        close $r;
+        my @out = eval { $code->() };
+        print {$w} $@ ? "died: $@" : join "\n", @out;
+        close $w;
+        POSIX::_exit(0);
+    }
+    close $w;
+    my $out = do { local $/; <$r> };
+    waitpid $pid, 0;
+    return ($? >> 8, $out);
+}
+
+subtest 'control_planes.nodes is at most 7' => sub {
+    is_deeply [ errors_for({ control_planes => { %$local, nodes => 7 } }) ], [], '7 passes';
+
+    my $over = "control_planes.nodes: must be a whole number from 1 to 7, not '%s'; "
+        . 'every control plane is an etcd member, and etcd advises no more than 7';
+    is_deeply [ errors_for({ control_planes => { %$local, nodes => 8 } }) ],
+        [ sprintf $over, 8 ], '8: the bound, and why';
+    is scalar @{ config_for({ control_planes => { %$local, nodes => 8 } })->control_planes }, 1,
+        'control_planes() counts it as one control plane';
+
+    my $huge = '1000000000000';
+    my ($rc, $out) = in_child(sub { config_for({ control_planes => { %$local, nodes => $huge } })->validate });
+    is $rc, 0, '10^12: validate() returns';
+    is $out, sprintf($over, $huge), '10^12: the same line';
+    ($rc, $out) = in_child(sub {
+        scalar @{ config_for({ control_planes => { %$local, nodes => $huge } })->control_planes } });
+    is $rc, 0, '10^12: control_planes() returns';
+    is $out, 1, '10^12: one control plane, not a repeat count';
+};
+
+# --- 7. the accessors -----------------------------------------------------------
+
+subtest 'the accessors that croak quote no Perl value either' => sub {
+    for my $case ([ robocop_security_level => { robocop => { security_level => [ 'a' ] } } ],
+                  [ robocop_image          => { robocop => { image => [ 'a' ] } } ],
+                  [ gpu_driver             => { gpu => { driver => [ 'a' ] } } ]) {
+        my ($m, $spec) = @$case;
+        ok !eval { config_for({ control_planes => $local, %$spec })->$m; 1 }, "$m refuses a list";
+        like $@, qr/, not a list(?: at |;|\z)/, "$m: says a list";
+        unlike $@, qr/ARRAY\(0x|a array/, "$m: not as Perl has it";
     }
 };
 
