@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T12:48:18Z
+created: 2026-10-31T11:46:02Z
+id: 350
+priority: medium
+started: 2026-10-31T12:48:18Z
+status: done
+tags:
+- gpu
+- amd
+- drift
+title: 'AMD GPU DaemonSet changed outside OCP: status promises a fix the AMD step
+  does not make (hash-only compare)'
+updated: 2026-10-31T12:48:18Z
+---
+
+Found under k261 (apply worker, 2026-10-31, by reading the code, not reproduced): an AMD GPU DaemonSet (device plugin, DRA driver, labeller, metrics exporter) changed outside OCP shows in ocp status / the dry run as drift a real run fixes (self_healing), but the AMD step compares only the recorded hash in .ocp/deployed.yaml and leaves the changed DaemonSet as it is. Related: the OCP::Drift POD calls those probes "report-only", while the code marks them self_healing.
+
+First reproduce it (a test: a DaemonSet whose image or args differ from what OCP rendered, recorded hash unchanged). Then decide by what the step can know: compare the live object with what OCP would render (and redeploy), or mark the probe as report-only so status stops promising it. Done = status, dry run and the real run agree on that case (test), and the POD says what the code does.
+
+2026-10-31 12:17 Reproduced (t/251, fakes; base HEAD 12d049a + k338 + k261, new test only): DaemonSet image set to 0.0.1, recorded hash unchanged. ocp status: 'AMD GPU device plugin runs rocm/k8s-device-plugin:0.0.1, expected rocm/k8s-device-plugin:1.31.0.11', counted fixable (self_healing). AMD step dry run: '[amd] AMD GPU device plugin is up to date on synapse', no change (the full dry run also prints the [drift] line and counts it as an action, so it contradicts itself). Real run: 'already deployed (up to date)' / '[ok] AMD GPU device plugin up to date', no deploy call, 0 changes, and the probe still finds the drift afterwards. Same for the labeller, the DRA driver and the metrics exporter. Red: t/251 2/41 subtests failed.
+
+2026-10-31 12:17 Decision: (a), narrowed to what the probe reads. The step reads the DaemonSet as the k250 probe does (first container's image tag vs the pin, tag_prefix, leading v alike) through a shared OCP::Drift->version_against_pin and redeploys on a difference ('updated', 'ran X, expected Y'). Why not (b) report-only: a pin bump IS healed via the options hash, so report-only would make status wrong for the common case. Why not a full render: the full objects live in private Rex::Rancher _amd_*_specs, which OCP cannot see. Matches the k277 ClusterPolicy (compare only what OCP sets, re-apply on a difference) and ADR 0008 (hash never evidence alone, witness read). Args/other fields are neither reported by status nor healed by apply (tested), so the three agree there too. A refused image read = no verdict: the real run fails the component with the cause, the dry run says 'could not be checked' (k269).
+
+2026-10-31 12:17 Also found (not in scope): NFD and the gpu-operator Deployment have the same false promise: their probes are self_healing, but Apply/Workloads.pm gates them on hash + presence only, so a hand-changed image is reported as apply-fixable and left. The skills/docs still say the AMD probes are report-only: .claude/skills/ocp-gpu/SKILL.md:74, .claude/skills/ocp-gpu/references/amd.md:287, docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md:24,286 (doc-writer).
+
+2026-10-31 12:17 Done, not applied to the shared tree, not committed: patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-amd350/k350.patch (base HEAD + k338 + k261; git apply --check also clean with k297 underneath). Changes: lib/OCP/Cmd/Apply/AMDGPU.pm (off_pin read in outcome/ensure/dry_run, 'ran X, expected Y' reported, POD) and t/251 (3 k350 subtests). State lane, kept minimal: lib/OCP/Drift.pm extracts version_against_pin out of component_drift (no behaviour change, t/25 + probe tests green) and the POD now says self_healing instead of report-only. Verified via guarded make test (IMAGE=localhost/ocp-w350): red t/251 2/41 failed; green 27 files / 768 tests pass (t/00, 249, 250, 251, 252, 258, 38, 312, 25, 47, 263, 220, 198, 291, 39, 71-drift-rex-probe, 155, 182, 332, 262, 268, 44, 290, 314, 71-cluster-ssh-key, 254 + mutation runner). Mutation: control passes, red tree fails, 10/10 mutants killed.
+
+Committed as e31d25a
