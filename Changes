@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` fails the robocop step with its cause when the robocop
+      Deployment cannot be read (an RBAC denial, an apiserver error)
+      instead of taking it for absent, and writes nothing; registry.local
+      DNS warns about a CoreDNS Corefile with no root server block instead
+      of calling it up to date; the nfd-worker wait says why it ran out --
+      how many of its pods were ready, no status yet, or no DaemonSet.
+    - `ocp apply`'s first deploy says on STDERR when the control plane is
+      not Ready after its 600s wait, with the Ready condition's status,
+      reason and message -- or that no Node was listed, or the read that
+      failed -- and says an unreachable API server there too. It no longer
+      runs RKE2's kubectl and `cilium status` over SSH as a fallback,
+      which on a k3s cluster called a path that is not there. The run
+      goes on as before.
     - `ocp apply` refuses an ssh worker pool with neither `host` nor
       `nodes`, which got no worker and said nothing, and one with both,
       whose `host` was never read; `nodes: []` says a pool has no machines
@@ -613,16 +626,3 @@ Revision history for OCP
       diagnostics on STDERR. `ocp kubeconfig --readonly [--name NAME]
       [--revoke]` prints a kubeconfig for a read-only ServiceAccount (view plus
       nodes and the OCP CRDs), without SSH and without stored state.
-    - `ocp apply`'s first deploy says on STDERR when the control plane is
-      not Ready after its 600s wait, with the Ready condition's status,
-      reason and message -- or that no Node was listed, or the read that
-      failed -- and says an unreachable API server there too. It no longer
-      runs RKE2's kubectl and `cilium status` over SSH as a fallback,
-      which on a k3s cluster called a path that is not there. The run
-      goes on as before.
-    - `ocp apply` fails the robocop step with its cause when the robocop
-      Deployment cannot be read (an RBAC denial, an apiserver error)
-      instead of taking it for absent, and writes nothing; registry.local
-      DNS warns about a CoreDNS Corefile with no root server block instead
-      of calling it up to date; the nfd-worker wait says why it ran out --
-      how many of its pods were ready, no status yet, or no DaemonSet.
