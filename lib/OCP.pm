@@ -9,8 +9,10 @@ use OCP::KnownHosts;
 use Path::Tiny ();
 use YAML::XS ();
 use JSON::PP ();
-use JSON::MaybeXS ();
-use overload ();
+# A YAML or CR true/false compares the same on either side of eq and ne:
+# corrects Cpanel::JSON::XS's operand swap on JSON::PP::Boolean (k314). Loaded
+# before anything is read; share/Rexfile loads it for the rex child (k316).
+use OCP::BooleanEq ();
 
 # Enable proper YAML boolean serialization (JSON::PP::true/false → true/false)
 #
@@ -19,44 +21,6 @@ use overload ();
 # has to resolve at compile time. 'JSON::PP' below is also a fixed YAML::XS
 # mode name, not a module choice.
 $YAML::XS::Boolean = 'JSON::PP';
-
-# Every true and false ocp reads is a JSON::PP::Boolean: from YAML through the
-# line above, from a CR because Kubernetes::REST decodes with JSON::MaybeXS.
-# Cpanel::JSON::XS -- JSON::MaybeXS's backend wherever it is installed, so in
-# the image -- re-overloads eq and ne on that class when it loads, and its
-# handler swaps the operands when the boolean stands on the RIGHT: the plain
-# string is then taken for the boolean and only its truth compared. So
-# `'hetzner' eq $true` was 1 for any string Perl calls true, and
-# `grep { $_ eq $value } @choices` took a `true` for every choice (k305, k314).
-# With the boolean on the left it was right all along. Cpanel's POD says what
-# eq means -- true eq 'true' or 1, false eq 'false', '' or 0 -- and its own
-# tests only ever put the boolean on the left. Seen in Cpanel::JSON::XS 4.40
-# (the pin) and still in 4.80; the handler dates from 4.06.
-#
-# eq and ne are symmetric, so the fix is to hand Cpanel's own handlers the
-# operands as overload passes them, the boolean first, and drop the swap flag.
-# Nothing else changes: the class, truth, is_bool, and true/false in JSON and
-# in YAML are as before, which is why this beats switching $YAML::XS::Boolean
-# to builtin booleans -- those are no references, so the k305 `ref` guards
-# would take `nodes: true` for 1 and `name: true` for '1', and a CR's booleans
-# would still be JSON::PP::Boolean. Fixed here because bin/ocp and robocop's
-# controller both load OCP before they read anything; `use JSON::MaybeXS`
-# above has loaded Cpanel first, and it overloads only on its first load. On
-# a fixed Cpanel this is a harmless wrapper; without Cpanel there is no
-# handler and nothing to fix. t/314-boolean-eq.t holds both orders.
-{
-    package    # not OCP's package; hidden from the indexer, as Cpanel hides it
-        JSON::PP::Boolean;
-    my $eq = overload::Method(__PACKAGE__, 'eq');
-    my $ne = overload::Method(__PACKAGE__, 'ne');
-    if ($eq && $ne) {
-        overload->unimport(qw( eq ne ));    # no "redefined" warning under -w
-        overload->import(
-            eq => sub { $eq->($_[0], $_[1], '') },
-            ne => sub { $ne->($_[0], $_[1], '') },
-        );
-    }
-}
 
 our $VERSION = '0.001';
 

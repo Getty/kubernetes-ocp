@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp`, `robocop` and the Rexfile compare a YAML or CR true/false the
+      same on either side of `eq` and `ne`: the correction for
+      Cpanel::JSON::XS's operand swap now lives in `OCP::BooleanEq`, which
+      `ocp` and `robocop` load and the Rexfile loads through the library
+      path `ocp` hands the rex child, so a boolean on the right of `eq`
+      no longer matches every string Perl calls true.
     - `ocp deploy-robocop` leaves an OCPNode or OCPNodeProvider CRD that a
       newer `ocp` installed as it is, with `ocp apply`'s `[skip]` line,
       judged by the one check both commands share. An older or absent CRD

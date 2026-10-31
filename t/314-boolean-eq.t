@@ -24,8 +24,9 @@ use OCP::Provider;
 # handler swaps the operands when the boolean stands on the right: then the
 # plain string is taken for the boolean and only its truth is compared. So
 # `'hetzner' eq $true` was 1, and `grep { $_ eq $value } @choices` took a
-# `true` for every choice. OCP.pm now calls Cpanel's handler with the operands
-# as they are; the boolean stays a JSON::PP::Boolean.
+# `true` for every choice. OCP::BooleanEq, which OCP.pm loads, now calls
+# Cpanel's handler with the operands as they are (k316 moved the fix there
+# from OCP.pm); the boolean stays a JSON::PP::Boolean.
 #
 # The claims here, with OCP loaded as bin/ocp and robocop load it:
 #   1. a boolean from YAML and one from JSON compare the same under eq and ne

@@ -6,6 +6,13 @@ use Rex::Commands::File;
 use Rex::Commands::Service;
 use File::Temp ();
 use JSON::MaybeXS;
+# A true or false in REX_TASK_PARAMS decodes to a JSON::PP::Boolean, and
+# without this Cpanel::JSON::XS took `'hetzner' eq $true` for true. The same
+# correction OCP.pm loads for ocp and robocop (k314); this process loads no
+# OCP.pm (k316). From OCP's lib/: OCP::Rex puts that tree on the child's
+# PERL5LIB, and rex itself looks in <cwd>/lib, so a hand-run from the checkout
+# root finds it too -- from anywhere else, PERL5LIB=<checkout>/lib.
+use OCP::BooleanEq ();
 
 # The install itself lives in Rex::Rancher and Rex::GPU, which exist for OCP
 # (k155): node preparation, the RKE2/K3s server and agent installs with their

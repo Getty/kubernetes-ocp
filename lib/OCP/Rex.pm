@@ -15,6 +15,13 @@ use OCP::KnownHosts;
 use OCP::Share;
 use OCP::SSH;
 use OCP::Versions;
+use Config qw(%Config);
+
+# The lib/ tree this module was loaded from, which the rex child needs for
+# share/Rexfile's `use OCP::BooleanEq` (k316) -- see run_task. Taken at load
+# time, while a relative @INC entry still resolves against the directory it
+# was found in.
+my $OCP_LIB = path(__FILE__)->absolute->parent->parent->stringify;
 
 has host => (
     is       => 'ro',
@@ -135,8 +142,18 @@ sub run_task {
     my $old_public_key = $ENV{REX_PUBLIC_KEY};
     my $old_params = $ENV{REX_TASK_PARAMS};
     my $old_known_hosts = $ENV{OCP_KNOWN_HOSTS};
+    my $old_perl5lib = $ENV{PERL5LIB};
 
     $ENV{OCP_KNOWN_HOSTS} = $self->known_hosts;
+
+    # The Rexfile loads OCP::BooleanEq from OCP's lib/ (k316), and in the image
+    # the child cannot see that tree on its own: bin/ocp's `use lib` stays in
+    # this process, the image's PERL5LIB is its local-lib only, and the Rexfile
+    # runs from a temporary copy. So the tree this module came from goes first
+    # on the child's PERL5LIB -- the child loads the same code this process
+    # runs.
+    $ENV{PERL5LIB} = join $Config{path_sep}, $OCP_LIB,
+        (defined $old_perl5lib && length $old_perl5lib ? $old_perl5lib : ());
 
     if ($self->key_file) {
         $ENV{REX_PRIVATE_KEY} = $self->key_file;
@@ -179,6 +196,7 @@ sub run_task {
     if (defined $old_public_key) { $ENV{REX_PUBLIC_KEY} = $old_public_key; } else { delete $ENV{REX_PUBLIC_KEY}; }
     if (defined $old_params) { $ENV{REX_TASK_PARAMS} = $old_params; } else { delete $ENV{REX_TASK_PARAMS}; }
     if (defined $old_known_hosts) { $ENV{OCP_KNOWN_HOSTS} = $old_known_hosts; } else { delete $ENV{OCP_KNOWN_HOSTS}; }
+    if (defined $old_perl5lib) { $ENV{PERL5LIB} = $old_perl5lib; } else { delete $ENV{PERL5LIB}; }
 
     # What a failed task says: Rex's own ERROR lines, each message once, minus
     # the "Error executing task:" header. Rex repeats that message in its log,
