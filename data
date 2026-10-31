@@ -1,0 +1,28 @@
+---
+class: standard
+created: 2026-10-31T06:02:31Z
+id: 306
+priority: low
+status: todo
+tags:
+- config
+- validation
+- cli
+title: Commands that read control_planes or workers without validate() still crash
+  on malformed shapes
+updated: 2026-10-31T13:20:06Z
+---
+
+Left over from k296 (2026-10-31). Since k255 only `ocp apply` validates first. `ocp status`, `ocp update`, `ocp node add/ls`, `ocp kubeconfig` and others read `control_planes`/`workers` directly, and still die inside Perl on the shapes k296 names (e.g. Status.pm:53 on a `control_planes` list entry that is not a mapping, or `workers: foo`). gpu: is already covered: gpu_config croaks with the validate() line (k296).
+
+Done = every command that reads ocp.yaml either runs `OCP::Cmd::Apply::Validate::refuse_invalid_config` (or a read-only equivalent) before it reads, or the accessors refuse the bad shape in the validate() words, so the user always gets the line naming the key. Decide which, and say why: a validate-first gate on read-only commands like `ocp status` may be too strict for a half-edited file. Test: one malformed shape per command, no Perl error text in the output.
+
+2026-10-31 (main, from k323/k326): the destroy worker suggests one public OCP::Config helper that returns validate()'s lines for the shapes every reader depends on (name, control_planes/workers shapes, pool mappings, provider, host, pool nodes); validate() calls it first, read-side commands check it before they read. Destroy (k323/k326) currently calls the private _shown_value/_pool_nodes_errors/_pool_where and re-spells three validate() lines, pinned by t/326. Same pattern for k306: each command refuses only on the lines for what it reads.
+
+2026-10-31 (main, from k332): `workers: [ just-a-string ]` still crashes ocp status inside Perl before any report -- one more read-side command for this card.
+
+From k339 (2026-10-31): ocp status runs without validate(), so on shapes validate() refuses its pool count can still differ from apply's (t/230's ssh pool with nodes: 2 shows 2, apply makes 0); and status shows a pool without provider as ssh where apply reads it as hetzner. Both belong to the read-side shape check this card asks for.
+
+From k333 (apply worker, 2026-10-31): ocp node add --gpu picks validate()'s gpu lines by key-path prefix (/\Agpu[.:]/), tied to validate()'s line format. A public per-path errors helper in OCP::Config (state lane) would replace that, and it fits this card's read-side commands too.
+
+2026-10-31 (main, from k346): OCP::Role::Cmd::Machines::_machines_spec_errors is a third copy of validate()'s shape lines, after Destroy (k323/k326) and node add's gpu prefix (k333). It belongs in the shared helper too. k361 (worker_ocpnodes counting nodes: on a pool of unknown provider) is the OOM case among the read-side shapes.
