@@ -223,7 +223,7 @@ gpu:
 | DaemonSet `amdgpu-device-plugin-daemonset` | `rocm/k8s-device-plugin:<amd_device_plugin>` | AMD nodes whose effective allocation is `device-plugin` |
 | DaemonSet `amdgpu-labeller-daemonset` + SA `node-labeller-sa`/ClusterRole `cr-node-labeller`/Binding `labeller` | `rocm/k8s-device-plugin:labeller-<amd_device_plugin>` | all AMD nodes, if `labeller` |
 | DaemonSet `k8s-gpu-dra-driver-kubeletplugin` + SA `k8s-gpu-dra-driver-service-account`/ClusterRole `k8s-gpu-dra-driver-role`/Binding `k8s-gpu-dra-driver-role-binding` + DeviceClass `gpu.amd.com` (`resource.k8s.io/v1`) + VAP/VAPB `resourceslices-policy-k8s-gpu-dra-driver`; upstream Helm-default names, rex-rancher k102 (not committed yet) | `rocm/k8s-gpu-dra-driver:<amd_dra_driver>` | AMD nodes whose effective allocation is `dra` |
-| DaemonSet `amdgpu-metrics-exporter` + ConfigMap `amdgpu-metrics-exporter-config`; upstream GPU-branch names, rex-rancher k103 (planned) | `rocm/device-metrics-exporter:<amd_metrics_exporter>` | AMD nodes, if `metrics` |
+| DaemonSet, SA, ClusterRole, ClusterRoleBinding and Service (ClusterIP :5000 `http`, internalTrafficPolicy Local), all `amdgpu-metrics-exporter`, + ConfigMap `amdgpu-metrics-exporter-config`; upstream GPU-branch names, rex-rancher k103 (4f2f3ca) | `rocm/device-metrics-exporter:<amd_metrics_exporter>` | AMD nodes, if `metrics` |
 
 **Effective allocation per node**
 
@@ -248,8 +248,10 @@ gpu:
   - `driver-version` stays empty under the inbox driver: there is no module version file.
 - **DRA**
   - Mark it experimental in docs and status output.
-  - Upstream's `busybox:1.36` init container is replaced by the pinned driver image itself
-    (k249: no separate init-image pin). Nothing unpinned.
+  - The init container keeps upstream's `busybox:1.36`, in the DRA driver and in the metrics
+    exporter alike (rex-rancher k102/k103, `Rex::Rancher::K8s`). It is a tag, not a digest,
+    and the caller cannot override it: the one image of the stack that OCP's pins do not cover
+    (open on the rex-rancher board).
   - The lib installs upstream's ValidatingAdmissionPolicy + Binding, which restricts the
     plugin's ResourceSlice writes to its own node. It needs `ServiceAccountTokenPodNodeInfo`
     (GA from 1.32), and the lib checks for `resource.k8s.io/v1` before deploying *(call,
@@ -266,7 +268,8 @@ gpu:
 | `amd_dra_driver` | `v1.0.1` |
 | `amd_metrics_exporter` | `v1.5.3` |
 
-- No init-image pin: the DRA init container reuses the driver image.
+- No init-image pin: the lib writes `busybox:1.36` into the DRA and metrics init containers
+  itself (see §3). OCP gets a pin once the lib takes one.
 - Each pin gets a comment with its source and any floor.
 - All images are amd64-only upstream; say so next to the pin.
 - `ocp update` knows these components.
@@ -366,11 +369,12 @@ setting the marker and gfx-target labels by hand. The smoke test is
     every pull through the `ocp-cache` mirror ran into a 2.5 min timeout before containerd
     fell back to Docker Hub.
 
-## Lib run (2026-10-31, rex-rancher k101 at 0b6e1b3, same cluster)
+## Lib run (2026-10-31, rex-rancher k101 at 0b6e1b3 and k102 at 5310056, same cluster)
 
-The rex-rancher session ran the committed k101 functions against amdlab through a kubeconfig,
-kube-system only. Plugin affinity: marker `In [true]` AND `ocp.internal/amd-gpu.allocation`
-`NotIn [dra, none]`. Labeller affinity: marker only.
+The rex-rancher session ran the committed k101 and k102 functions against amdlab through a
+kubeconfig, kube-system plus node labels only. Plugin affinity: marker `In [true]` AND
+`ocp.internal/amd-gpu.allocation` `NotIn [dra, none]`. DRA affinity: marker `In [true]` AND
+allocation `In [dra]`. Labeller affinity: marker only.
 
 | Check | Result |
 |---|---|
@@ -380,17 +384,33 @@ kube-system only. Plugin affinity: marker `In [true]` AND `ocp.internal/amd-gpu.
 | `mixed` naming | Still registers `amd.com_gpu` on the unpartitioned gfx1151 |
 | Redeploy over an existing DaemonSet | The update path works live |
 | Smoke via `amd.com/gpu: 1` against the lib's plugin | passed for fp32, fp16 and bf16 with SDPA, gfx1151 |
+| Label `allocation=dra` on synapse | Plugin DaemonSet goes to DESIRED 0, allocatable `amd.com/gpu` falls to 0 a few seconds after the pod. The labeller keeps running |
+| `deploy_amd_dra_driver` v1.0.1 | Kubelet plugin only on synapse, 0 restarts. DeviceClass `gpu.amd.com`, VAP/VAPB present. ResourceSlice of driver `gpu.amd.com`, pool `synapse`, device `gpu-0-128`: deviceID 0x1586, CUs 40, simd 80, memory 128Gi, pciBusID 0000:95:00.0; productName empty, no driverVersion (inbox) |
+| Smoke via ResourceClaim against the lib's DRA driver | passed for fp32, fp16 and bf16 with SDPA, gfx1151; devices `root:root` in the pod |
+| `remove_amd_dra_driver`, twice | First run deletes DaemonSet, DeviceClass, VAPB, VAP, ClusterRoleBinding, ClusterRole, SA; second run reports all seven as not there, exit 0. The kubelet removes the ResourceSlice about 30 s after the DaemonSet goes |
+| Label removed again | The plugin pod returns on its own, registers again, allocatable back to 1 |
 
+- k102's ValidatingAdmissionPolicy (from upstream chart v1.0.1) blocks nothing on 1.36: its
+  resourceRules name only `v1beta1`, the cluster serves `resource.k8s.io` only as `v1`, and a
+  server dry-run of a foreign-node ResourceSlice as the plugin's SA was admitted. Upstream main
+  is not fixed either. rex-rancher k107 (backlog) adds `v1` or drops the policy; OCP's view:
+  better none than an ineffective one.
 - The plugin binary in image 1.31.0.11 reports itself as `v1.25.2.7-137-g1de16818`. Never read
   the version off its log.
 - The lib's wait reported success one second into a redeploy while the pod was still
   ContainerCreating: it reads stale `status.capacity` (rex-rancher k106; also hits the NVIDIA
   path). OCP is unaffected because it passes `wait => 0` (§3).
+- k103 (4f2f3ca), metrics exporter v1.5.3, marker affinity: pod only on synapse, "serving
+  requests on 0.0.0.0:5000"; `/metrics` through the API-server proxy to the Service returned
+  117 `amd_` series with the ConfigMap's `cluster_name`, many of them unsupported/0 on the APU.
+  A second deploy is a true no-op (resourceVersion and DaemonSet generation unchanged);
+  remove twice, then redeploy, both clean. Upstream has no readinessProbe: the pod is Ready a
+  few seconds before port 5000 listens (a 502 in that window).
 
 ## Open / unverified
 
-- The lib's DRA and metrics functions (rex-rancher k102/k103) and the OCP host step (k249)
-  have not yet run live. The device plugin and labeller functions (k101) have.
+- The OCP host step (k249) and OCP's own wiring (k251) have not yet run live. All lib
+  functions (rex-rancher k101–k103) have.
 - DRA memory capacity on the APU: 128Gi is the carve-out the driver reports, not "usable
   RAM" (the OS sees 62 GiB). Whether a claim with a memory request behaves sensibly is
   untested. DRA stays experimental.
