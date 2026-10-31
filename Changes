@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A Rex task that dies before rex runs -- IPC::Run not finding rex,
+      say -- no longer leaves its environment behind in the process that
+      started it: the task parameters (a join token among them), the key
+      paths, the known_hosts file and OCP's lib/ on PERL5LIB stayed set
+      for every later child of that process, robocop's included.
     - `ocp status` counts a worker pool's machines the way `ocp apply`
       builds them: the hosts an ssh pool names (its `nodes` list, else one
       for a `host:`), and `nodes` (default 1) for any other pool. A `count:`

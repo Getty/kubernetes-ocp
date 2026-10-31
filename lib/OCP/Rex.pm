@@ -136,15 +136,18 @@ sub run_task {
     push @cmd, '-m';
     push @cmd, '-d' if $debug;
 
-    # Pass SSH keys via environment variables (Rex way)
-    # Must NOT use 'local' as it doesn't propagate to subprocesses!
-    my $old_private_key = $ENV{REX_PRIVATE_KEY};
-    my $old_public_key = $ENV{REX_PUBLIC_KEY};
-    my $old_params = $ENV{REX_TASK_PARAMS};
-    my $old_known_hosts = $ENV{OCP_KNOWN_HOSTS};
+    # What the rex child needs from this process travels in its environment:
+    # the SSH keys (the Rex way), the known_hosts file, PERL5LIB and the task
+    # parameters. Each is set with `local`. The child still sees it -- a
+    # localized %ENV element is the process environment while it lasts -- and
+    # Perl puts back what was there, or removes what was not, however
+    # run_task is left: by its return, or by a die out of run() below --
+    # IPC::Run dies when it cannot start rex at all. Restored by hand after
+    # run() returned, they stayed set after such a die, and the next run_task
+    # inherited this task's parameters and key paths (k343).
     my $old_perl5lib = $ENV{PERL5LIB};
 
-    $ENV{OCP_KNOWN_HOSTS} = $self->known_hosts;
+    local $ENV{OCP_KNOWN_HOSTS} = $self->known_hosts;
 
     # The Rexfile loads OCP::BooleanEq from OCP's lib/ (k316), and in the image
     # the child cannot see that tree on its own: bin/ocp's `use lib` stays in
@@ -152,19 +155,18 @@ sub run_task {
     # runs from a temporary copy. So the tree this module came from goes first
     # on the child's PERL5LIB -- the child loads the same code this process
     # runs.
-    $ENV{PERL5LIB} = join $Config{path_sep}, $OCP_LIB,
+    local $ENV{PERL5LIB} = join $Config{path_sep}, $OCP_LIB,
         (defined $old_perl5lib && length $old_perl5lib ? $old_perl5lib : ());
 
-    if ($self->key_file) {
-        $ENV{REX_PRIVATE_KEY} = $self->key_file;
-        $ENV{REX_PUBLIC_KEY} = $self->key_file . '.pub';
-    }
+    # Without a key file the child gets whatever keys this process has.
+    local $ENV{REX_PRIVATE_KEY} = $self->key_file          if $self->key_file;
+    local $ENV{REX_PUBLIC_KEY}  = $self->key_file . '.pub' if $self->key_file;
 
     # Parameters travel as one JSON blob in the environment, picked up by
     # task_params() in the Rexfile. Not as trailing key=value CLI arguments:
     # those put the RKE2/K3s join token into the command line, where `ps`
     # hands it to every local user, and they flatten nested structures.
-    delete $ENV{REX_TASK_PARAMS};
+    delete local $ENV{REX_TASK_PARAMS};
     if (%params) {
         my $json = JSON::MaybeXS->new(utf8 => 1, canonical => 1, convert_blessed => 1);
         $ENV{REX_TASK_PARAMS} = $json->encode(\%params);
@@ -190,13 +192,6 @@ sub run_task {
     } else {
         $success = run \@cmd, \undef, \$out, \$err;
     }
-
-    # Restore ENV
-    if (defined $old_private_key) { $ENV{REX_PRIVATE_KEY} = $old_private_key; } else { delete $ENV{REX_PRIVATE_KEY}; }
-    if (defined $old_public_key) { $ENV{REX_PUBLIC_KEY} = $old_public_key; } else { delete $ENV{REX_PUBLIC_KEY}; }
-    if (defined $old_params) { $ENV{REX_TASK_PARAMS} = $old_params; } else { delete $ENV{REX_TASK_PARAMS}; }
-    if (defined $old_known_hosts) { $ENV{OCP_KNOWN_HOSTS} = $old_known_hosts; } else { delete $ENV{OCP_KNOWN_HOSTS}; }
-    if (defined $old_perl5lib) { $ENV{PERL5LIB} = $old_perl5lib; } else { delete $ENV{PERL5LIB}; }
 
     # What a failed task says: Rex's own ERROR lines, each message once, minus
     # the "Error executing task:" header. Rex repeats that message in its log,
