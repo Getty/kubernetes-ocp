@@ -255,8 +255,10 @@ subtest 'k319 NFD: the label wait dies with its last failed read' => sub {
 
 #
 # Bootstrap: the wait for police1 to turn Ready lists the Nodes every 10s for
-# 600s, then asks over SSH. A list that failed was "status unknown" and its
-# cause was nowhere -- the very API every step after it needs.
+# 600s (and asked over SSH after that until k327). A list that failed was
+# "status unknown" and its cause was nowhere -- the very API every step after
+# it needs. Since k327 a Node not seen Ready is one [WARN] on STDERR, which
+# names the failed read here; the rest of it is t/327.
 #
 
 {
@@ -271,6 +273,7 @@ subtest 'k319 NFD: the label wait dies with its last failed read' => sub {
     sub cleanup_on_failure { }
     package BootCond;
     sub new { bless { s => $_[1] }, $_[0] } sub type { 'Ready' } sub status { $_[0]{s} }
+    sub reason { undef } sub message { undef }
     package BootStatus;
     sub new { bless { s => $_[1] }, $_[0] } sub conditions { [ BootCond->new($_[0]{s}) ] }
     package BootNode;
@@ -338,9 +341,9 @@ subtest 'k319 Bootstrap: the node-Ready wait names its last failed Node list' =>
         $r = bootstrap($answer);
         is $r->{died}, '', "$what throughout: the bootstrap goes on, as before";
         is $r->{lists}, 60, "$what throughout: listed for the whole wait";
-        like $r->{out}, qr/\[WARN\] Node not Ready after 600s via API, checking via SSH/, "$what throughout: then SSH";
-        is $r->{ssh_runs}, 2, "$what throughout: asked over SSH";
-        is $r->{err}, '', "$what throughout: no list failed, nothing on STDERR";
+        is $r->{ssh_runs}, 0, "$what throughout: not asked over SSH (k327)";
+        like $r->{err}, qr/\A  \[WARN\] Node otho not seen Ready within 600s: /, "$what throughout: said on STDERR (k327)";
+        unlike $r->{err}, qr/read failed|could not read/, "$what throughout: no list failed, none named";
     }
 
     for my $refusal (@REFUSALS) {
@@ -349,7 +352,7 @@ subtest 'k319 Bootstrap: the node-Ready wait names its last failed Node list' =>
         is $r->{died}, '', "$code throughout: the bootstrap goes on, as before";
         is $r->{lists}, 60, "$code throughout: listed for the whole wait";
         like $r->{err},
-            qr{\A  \[WARN\] Node state unknown via the API; the last read failed: could not read Nodes: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\A  \[WARN\] Node otho not seen Ready within 600s; the last read failed: could not read Nodes: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
             "$code throughout: the cause, on STDERR";
         unlike $r->{out}, qr/could not read/, "$code throughout: not on STDOUT";
 
@@ -358,7 +361,7 @@ subtest 'k319 Bootstrap: the node-Ready wait names its last failed Node list' =>
         is $r->{err}, '', "$code once, then Ready: nothing on STDERR";
 
         $r = bootstrap(api_error($code, $reason), 'False');
-        is $r->{err}, '', "$code once, then read and not Ready: the last read did not fail";
+        unlike $r->{err}, qr/read failed|could not read/, "$code once, then read and not Ready: the last read did not fail";
     }
 };
 

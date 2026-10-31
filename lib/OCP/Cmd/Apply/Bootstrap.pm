@@ -198,6 +198,27 @@ sub warn_node_ip_mismatch {
     return;
 }
 
+# Why the node-Ready wait of the first deploy ended without a Ready Node, as
+# the end of its [WARN] on STDERR (k327): the last Node list's failure
+# (k319), or what the Ready condition of the Node the wait judged, the first
+# one, said -- its status, and the reason and message the kubelet gives
+# ("container runtime network not ready: ... cni plugin not initialized").
+# $nodes is that last list, undef for a 404.
+sub node_not_ready_why {
+    my ($nodes, $read_err) = @_;
+    if ($read_err) {
+        my $reason = "$read_err";
+        chomp $reason;
+        return "; the last read failed: $reason";
+    }
+    my $node = $nodes && $nodes->items ? $nodes->items->[0] : undef;
+    return ': no Node listed' unless $node;
+    my ($ready) = grep { $_->type eq 'Ready' } @{ $node->status->conditions || [] };
+    return ': it reports no Ready condition' unless $ready;
+    my $detail = join ': ', grep { length } map { $_ // '' } $ready->reason, $ready->message;
+    return ': Ready is ' . $ready->status . (length $detail ? " ($detail)" : '');
+}
+
 # Display name for a distribution id. Apply hardcoded "RKE2" in its
 # progress lines, so a `dist: k3s` cluster was announced as "Installing
 # RKE2 server..." while install_k3s_server was the task actually
@@ -575,16 +596,19 @@ sub bootstrap_control_plane {
         if ($api_ok) {
             print "      API server reachable\n";
         } else {
-            print "      WARNING: API server may not be reachable: $@\n";
+            my $reason = "$@";
+            chomp $reason;
+            print STDERR "  [WARN] API server may not be reachable: $reason\n";
         }
 
         # A Node list that fails is polled again like a Node not Ready yet;
         # when the last one failed too, its cause goes to STDERR (k319). A
         # 404 lists nothing and is no failure.
-        my ($node_ready, $read_err) = (0);
+        my ($node_ready, $read_err, $last_nodes) = (0);
         for my $i (1..60) {
             my $nodes = eval { OCP::Cmd::Apply::K8s::read_or_absent('Nodes', sub { $api->list('Node') }) };
             $read_err = $@;
+            $last_nodes = $nodes;
             my $is_ready = 0;
             if ($nodes && $nodes->items && @{ $nodes->items }) {
                 for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
@@ -611,23 +635,16 @@ sub bootstrap_control_plane {
             }
             $self->wait_seconds(10);
         }
-        unless ($node_ready) {
-            # Last resort: check via SSH directly on the node
-            print "  [WARN] Node not Ready after 600s via API, checking via SSH...\n";
-            print STDERR "  [WARN] Node state unknown via the API; the last read failed: $read_err"
-                if $read_err;
-            my $ssh_check = $ssh->run("/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1");
-            my $ssh_output = $ssh_check->{stdout} || '';
-            print "      SSH node status: $ssh_output\n";
-            if ($ssh_output =~ /\bReady\b/ && $ssh_output !~ /NotReady/) {
-                print "  [ok] Node is Ready (confirmed via SSH)\n";
-                $node_ready = 1;
-            } else {
-                my $cilium_check = $ssh->run("cilium status --kubeconfig /etc/rancher/rke2/rke2.yaml 2>&1");
-                print "      Cilium status: " . ($cilium_check->{stdout} || 'unknown') . "\n";
-                print "  [WARN] Node genuinely not Ready, continuing anyway...\n";
-            }
-        }
+        # Not Ready within 600s: said on STDERR with what the API said last,
+        # and the bootstrap goes on, as it always has (k327). An SSH fallback
+        # used to follow: RKE2's kubectl and rke2.yaml on the node, on k3s as
+        # well, asking the apiserver this wait has just read, and its answer
+        # only chose the line to print. The Ready condition's reason and
+        # message say why the node is not Ready; a failed list says why
+        # nothing could be read (k319).
+        print STDERR "  [WARN] Node $cp_name not seen Ready within 600s"
+            . node_not_ready_why($last_nodes, $read_err) . "\n"
+            unless $node_ready;
     }
 
     return {

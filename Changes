@@ -613,3 +613,10 @@ Revision history for OCP
       diagnostics on STDERR. `ocp kubeconfig --readonly [--name NAME]
       [--revoke]` prints a kubeconfig for a read-only ServiceAccount (view plus
       nodes and the OCP CRDs), without SSH and without stored state.
+    - `ocp apply`'s first deploy says on STDERR when the control plane is
+      not Ready after its 600s wait, with the Ready condition's status,
+      reason and message -- or that no Node was listed, or the read that
+      failed -- and says an unreachable API server there too. It no longer
+      runs RKE2's kubectl and `cilium status` over SSH as a fallback,
+      which on a k3s cluster called a path that is not there. The run
+      goes on as before.
