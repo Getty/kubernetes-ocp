@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T02:18:26Z
+created: 2026-10-31T01:45:35Z
+id: 257
+priority: medium
+started: 2026-10-31T02:18:26Z
+status: done
+tags:
+- bug
+- status
+- cli
+- convention
+title: ocp status (text form) prints connect and decrypt errors on STDOUT
+updated: 2026-10-31T02:18:26Z
+---
+
+Found during k252 (2026-10-31, ocp-status-worker). Not yet verified by the main agent: confirm before fixing. The text form of `ocp status` reports a failed cluster connect or a failed decrypt on STDOUT. That breaks the STDOUT/STDERR rule in .claude/rules/ocp-rules.md, which was written up in k105 and has k84 as precedent.
+
+Done when the errors and their diagnosis go to STDERR, the report stays on STDOUT, and the exit code matches the outcome. A test pins each channel. Lane: ocp-status-worker.
+
+2026-10-31 01:51 Verified (ocp-status-worker): reproduced in new t/257-status-text-stderr.t, run in Docker. Exit codes are already right (1 for decrypt and connect failure). The channels are wrong: Status.pm execute prints 'ERROR: Cannot decrypt kubeconfig.yaml' + 'Make sure .ocp/age.key exists.' and 'WARNING: Cannot connect to cluster API' + 'Error: …' on STDOUT, and STDERR stays empty. 4/15 red (tests 4-5, 10-11). The --json form already gets this right (t/230).
+
+2026-10-31 01:56 Decision (mine, not the maintainer's): the 'Kubeconfig available. Export with: ocp kubeconfig -e' line after a failed connect stays on STDOUT. It is the report's kubeconfig hint, the same one a good run ends on, and not a diagnosis of the failure. Also chomp the API error, so STDERR does not get a blank line after 'Error: …'.
+Also found (out of scope, not fixed): in both the text and the JSON form, the drift eval in execute/_collect_json is 'eval { OCP::Drift->new(...)->detect } // []', so if OCP::Drift itself dies, ocp status shows no drift and says nothing on STDERR. The kind=>'error' entries cover API failures inside detect, but not a die out of new/detect. Candidate card for the status lane.
+
+2026-10-31 01:56 Done: lib/OCP/Cmd/Status.pm execute(). The decrypt failure (ERROR + age.key hint) and the connect failure (WARNING + 'Error: <cause>', now chomped) print to STDERR. The report on STDOUT is unchanged and the exit code stays 1. POD =description names the channels. New t/257-status-text-stderr.t pins each channel exactly (decrypt, API down, clean run with empty STDERR) plus the exit codes. Verified: DOCKER_BUILDKIT=0 make test TESTS='t/257-status-text-stderr.t t/11-status-command.t t/230-status-json.t t/252-status-amd-gpu.t' → 4 files, 91 tests, PASS. Before the fix t/257 was 4/15 red. Mutation check 8/8 killed (each STDERR print reverted to STDOUT, chomp dropped, hint moved to STDERR, both return 1→0).
+
+2026-10-31 02:18 Committed as 007817a (k257 hunks of Status.pm only, split patch applied to the index). Verified on that commit alone (host prove -l): t/257, t/11, t/230, t/252, t/00-load, 5 files, 136 tests, PASS. Follow-up: k262 (Drift exception swallowed).
