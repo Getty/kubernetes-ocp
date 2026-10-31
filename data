@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-10-31T06:52:15Z
+created: 2026-10-31T06:02:25Z
+id: 305
+priority: low
+started: 2026-10-31T06:52:15Z
+status: done
+tags:
+- config
+- validation
+title: 'validate(): name/robocop as a list, control_planes: [], a huge nodes:, raw
+  Perl values in error lines'
+updated: 2026-10-31T06:52:15Z
+---
+
+Left over from k296 (choices worker, 2026-10-31). validate() still passes or misreports these YAML-valid shapes:
+- `name: [a]` and `robocop: [a]` pass with no error.
+- `control_planes: []` passes with zero control planes.
+- a huge whole-number `control_planes.nodes:` (e.g. 10^12) still runs out of memory in control_planes(); the repeat count is taken as is.
+- some error lines quote a list or mapping as a raw Perl value (`ARRAY(0x…)`) or as "a array"; `_shown_value` exists for this.
+
+Done = each is an ordinary error line naming the key and the expected shape, `nodes:` has a sane upper bound (say why that bound), and the k296 sweep in t/296 grows to cover them (no die, no warning, no raw ref in any line).
+
+2026-10-31 06:14 choices worker: red first. t/296 extended (claims 5-7: name/robocop/robocop.enabled/pool-name shapes, control_planes: [], nodes bound 7, no Perl value in any sweep line incl. booleans as '1'/'0', accessor croaks). Against HEAD Config.pm 8 subtests red: the nodes claim (1..7 instead of 1-or-more), sweep (ARRAY(0x/HASH(0x/'a array'/'a json::pp::boolean'/'0'/'1' at control_planes.provider, workers[1].provider, network.lb_pool.cidr|start|stop, network.pod_cidr, robocop.image, robocop.security_level, pool name in the pod-CIDR line), each card shape, 10^12 nodes dies 'Out of memory during stack extend' at Config.pm:135, accessor croaks. Bound chosen: 7 = etcd's advised max cluster size (every RKE2/K3s server is an etcd member). Now fixing Config.pm.
+
+2026-10-31 06:35 Also found (not fixed, for whoever routes it):
+(1) Cpanel::JSON::XS (4.40 in the image, 4.53 on the host) overloads JSON::PP::Boolean's eq with its operands swapped: 'anything-truthy' eq $true is TRUE (only the `$true eq 'x'` order is right). Every grep { $_ eq $value } over a YAML-decoded value takes `true` for any choice. Fixed inside Config.pm's validate (provider x2, security_level + its accessor). Still exposed elsewhere: OCP::Provider->known_type (provider lane; takes true as a known type), OCP::Node line ~200 role check (state lane), OCP::Cmd::Apply::AMDGPU lines ~183/348 (apply lane). Possibly upstream: a bug report for Cpanel-JSON-XS (rurban) -- the maintainer's call, public tracker.
+(2) robocop: any non-empty string but '0' turns robocop ON (`robocop: no`, `robocop: "false"`, `robocop: off`); and a robocop mapping has no unknown-key check, so `robocop: { enable: false }` turns it on too (k292 did this for network:). Left alone: the card named only the list shape.
+(3) OCP::Choices::node_ip_error answers a boolean node_ip with "not a reference" (Choices.pm, outside this card's files).
+(4) The bound is on nodes: N only. A hand-written control_planes list of 8+ entries passes, and so do even counts (2/4/6), which etcd advises against. Whether either should be refused is a separate decision.
+(5) control_planes host/public_ip/private_ip/server_type/location and the pool host/nodes are still not shape-checked: `host: [a]` or `server_type: true` pass validate().
+
+2026-10-31 06:46 Done (choices worker), lib/OCP/Config.pm + t/296, uncommitted. New lines: 'name: must be a string (the cluster's name), not a list|a mapping|true|false'; 'robocop: must be true, false or a mapping (enabled, security_level, image), not a list'; 'robocop.enabled: must be true or false, not a list|a mapping'; 'control_planes: must list at least one control plane, not an empty list'; 'workers[N].name: must be a string (the pool's name), not ...'; nodes: 'must be a whole number from 1 to 7, not X' (+ '; every control plane is an etcd member, and etcd advises no more than 7' when over). Bound: our $MAX_CONTROL_PLANE_NODES = 7, the etcd FAQ maximum, since every RKE2/K3s server is an etcd member; control_planes() counts a nodes: above it as one control plane (10^12 no longer dies with 'Out of memory during stack extend'). Raw values: provider (cp+pool), lb_pool cidr/start/stop, pod_cidr, robocop.image, robocop.security_level, and the robocop_security_level/gpu_driver accessor croaks go through _shown_value. A pool with no quotable name is 'workers[N]' (was worker pool 'ARRAY(0x..)', '' or '?'). Beyond the card: provider: true and security_level: true passed as valid choices (the Cpanel::JSON::XS eq bug, see the note above), now refused via !ref/_is_choice. Verified: red first (8 subtests red against HEAD); binding make test of 30 config files green; full binding suite on clean HEAD + change 220 files/3498 tests PASS, nothing skipped; 29/29 mutants killed (one survived at first, so I added the name:'' test); the three real configs give 0 errors in the image. The unreleased k296 Changes bullet says nodes '1 or more' and needs '1 to 7'.
+
+Committed as 4793b76
