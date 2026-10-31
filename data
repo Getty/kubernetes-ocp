@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T06:35:56Z
+created: 2026-10-31T04:01:29Z
+id: 287
+priority: low
+started: 2026-10-31T06:35:56Z
+status: done
+tags:
+- gpu
+- nvidia
+title: 'ocp apply: an NVIDIA worker that joins during the run is not waited for'
+updated: 2026-10-31T06:35:56Z
+---
+
+Found under k273 (2026-10-31). The GPU Operator step's nvidia.com/gpu allocatable wait covers the NVIDIA nodes it detects at that moment. A worker that joins later in the same `ocp apply` is only re-checked (setup_gpu_operator_after_join) when the first GPU Operator check skipped, so its allocatable is not waited for until the next apply.
+
+Done = decide whether after_join should also wait for newly joined NVIDIA nodes when the first check ran (mirror AMDGPU::after_join), test it, or record why not.
+
+2026-10-31 05:06 Decision: yes, wait (mirror AMDGPU::after_join). When the first GPU Operator check ran (deployed/updated/restored/unchanged), setup_gpu_operator_after_join waits for NFD on the joined workers as for 'skipped' (gpu_label_timeout 600), and runs setup_gpu_operator again only when one of them carries an NFD NVIDIA label; that run, up to date, waits for nvidia.com/gpu in allocatable on every NVIDIA node incl. the new one (k273) and says a shortfall as the [WARN] (classification untouched, k285). A CPU worker gets no second check, one line 'No NVIDIA GPU on the new worker(s)'. Cost: on a cluster with an NVIDIA node, a run that joins workers now waits for NFD's first look at them (any feature label; 600 s cap) -- the same wait every cluster whose first check skipped (all CPU-only clusters, gpu.enabled defaults true) already has since k228. Reproduced first: new subtests in t/228 (when) and t/273 (end to end, real setup_gpu_operator) fail on today's code, existing ones pass. The t/228 cases 'first check deployed: its DaemonSets cover new nodes' / 'found it up to date' made a claim k287 replaces; they now use a CPU worker.
+
+2026-10-31 05:15 Also found (not in scope): (1) setup_gpu_operator_after_join prints '[WARN] NFD has not labelled X after 600s; checking with what is there' on STDOUT (pre-existing, k228) -- a WARN belongs on STDERR per the output-channel rule; t/228 'NFD never labels' captures it on STDOUT. (2) Comments in lib/OCP/Cmd/Apply/Deploy.pm (gpu_after_join: 'when the one before the worker step found no GPU node'; line ~152 'a skipped here is checked again') and Drift.pm (~321 'Checked again after the worker step when it skipped') now understate k287 -- comment-only, not in my file set. (3) skill ocp-gpu references/nvidia-cluster.md 'When that first check skipped and the run joined workers' -- skill text, infra lane.
+
+2026-10-31 06:06 t/38 regression from this change, found and fixed: t/38-reconcile-path.t stubs _setup_gpu_operator to 'unchanged' and runs the real setup_gpu_operator_after_join for a joined worker (subtest 'k26: a worker without an OCPNode is created…', worker pinky). Since k287 the ran path waits for NFD, DryRunApi has no Node, and wait_seconds was not stubbed in t/38: 60 x 10 s = 600 s of real sleep, which hung full suites. Bisect on scratch copies: HEAD -> t/38 PASS in 5 s; HEAD + only k288/k286/k287 -> still running after 120 s (stopped at 3m28s); same + t/38 stub -> PASS in 12.6 s. Fix in t/38 (part of k287): the permanent stub block now also sets *OCP::Cmd::Apply::wait_seconds = sub { } with a comment why. Verified: timeout 600 make test TESTS='t/38 t/228 t/273' -> PASS, 78 tests, 19 s wallclock. The behaviour stays: the NFD wait on the ran path is intended (same wait the skipped path has had since k228).
+
+2026-10-31 06:10 Correction to the t/38 note: the whole-suite probe (Role::Cmd::wait_seconds logging instead of sleeping, every t/*.t on a copy of the shared tree before the t/38 stub) shows 660 real waits of 10 s, all in t/38 via setup_gpu_operator_after_join: 11 after-join calls, ~1h50m of sleep per t/38 run. No other test file reaches an unstubbed wait_seconds.
+
+2026-10-31 06:32 Done (decision: mirror the wait, not record-why-not): Workloads::setup_gpu_operator_after_join now checks again after a first check that ran (deployed/updated/restored/unchanged), not only after 'skipped' -- but only for joined workers NFD labels as NVIDIA (pci-0300_10de / pci-0302_10de, now the @NVIDIA_LABELS constant shared with setup_gpu_operator); a CPU-only worker gets 'No NVIDIA GPU on the new worker(s)' and no second check. A failed first check (undef) is still not retried here. The second setup_gpu_operator waits for nvidia.com/gpu in allocatable on every NVIDIA node incl. the new one; a node that does not get there stays the [WARN] on STDERR (k285 classification untouched). Cost: on an NVIDIA cluster every joined worker waits for NFD (up to gpu_label_timeout 600), as the skipped path has since k228. Files: rest of lib/OCP/Cmd/Apply/Workloads.pm, t/228-gpu-after-join.t (first subtest's claims replaced: ran cases now use a CPU worker; new k287 subtest), t/273-nvidia-gpu-allocatable.t (new apply subtest), t/38-reconcile-path.t (wait_seconds stub, see 06:xx notes) -- patch w-gpuwait/k287.patch on top of k288+k286. Verified: reproduced first (k287 subtests in t/228/t/273 fail on old code); timeout 600 make test t/38 t/228 t/273 -> PASS (78, 19 s); full suite 223 files/3540 tests, only t/296 failed (choices worker's in-flight file, passes on the current tree with my files). Mutants killed: no NVIDIA filter (t/228 2), skipped-only gate (t/228 1, t/273 1), one label only (t/228 1), no NFD wait in ran path (t/228 2); t/38 without the stub hangs (>120 s, stopped at 3m28s). Also-found: earlier notes (NFD WARN on STDOUT; Deploy.pm/Apply::Drift.pm comments still say 'checked again when it skipped'; ocp-gpu nvidia-cluster.md).
+
+Committed as fc5740b
