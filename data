@@ -1,0 +1,27 @@
+---
+class: standard
+created: 2026-10-31T12:26:52Z
+id: 354
+priority: low
+status: backlog
+tags:
+- destroy
+- decision
+title: 'Decide: ocp destroy with the API down and a local worker pool (k345 point
+  1), and whether ''NOT torn down'' lines should exit non-zero'
+updated: 2026-10-31T12:26:52Z
+---
+
+Decide (maintainer). From k345 (destroy worker, 2026-10-31).
+
+1) `ocp destroy` with the cluster API down and a worker pool with `provider: local` in ocp.yaml: list that pool's machine (this host) for teardown in the fallback, or not?
+- A: leave it as k341 did -- nothing is uninstalled on a guess. Next to a local control plane nothing is lost: that uninstall clears the machine. With a remote control plane and the API down, this machine keeps its RKE2 agent, and nothing says so.
+- A': A, plus one STDERR line when the API is down and ocp.yaml has a local pool: its worker is found only by its OCPNode and is NOT torn down.
+- B: list it only when nothing else was found. It rarely helps and adds a second uninstall.
+- C: list it on every run. That uninstalls whatever RKE2/K3s this machine runs -- another project's cluster, one apply never reconciled, or the wrong target when run from another machine or inside the Docker image. It also stops the control-plane fallback from running. It brings back the guess-uninstall on 127.0.0.1 that k341 removed.
+- D: fix it upstream in other lanes: validate() refuses a local pool next to a local control plane and `nodes` > 1 on a local pool; apply writes the local-default provider CR, or refuses local pools. Without that CR apply never manages a local pool.
+The worker recommends A or A', not C. The main agent leans A' (fail loud, no guess).
+
+2) Exit code: destroy's "skipped: ... NOT torn down" lines (k341, k345) and the "no Hetzner token searched for it -- if it runs, it is NOT torn down" line exit 0. Should a teardown that knowingly leaves something possibly running exit non-zero?
+
+Not to be built before the maintainer answers.
