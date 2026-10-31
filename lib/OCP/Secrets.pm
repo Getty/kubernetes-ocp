@@ -66,10 +66,19 @@ has age_key => (
 # window on the inode that ends up as the key. Create-then-write is what
 # OCP::TempKeyPair and OCP::ClusterKey already do (via File::Temp, which opens
 # 0600 with O_EXCL); this is the same pattern for a named file.
+#
+# The directory is made here when it is missing (k360): a clone has no .ocp/
+# (it is gitignored), and the first PIN1 unlock caches .ocp/age.key through
+# this sub -- sysopen alone died "No such file or directory" after PIN1. It
+# gets Path::Tiny's mkpath mode, 0777 less the umask, as from every other
+# writer of .ocp/ (ocp init, generate_age_key, known_hosts, status.yaml...),
+# so its mode does not depend on which command ran first. What is secret in
+# it is each file's own 0600; a directory that is there keeps its mode.
 sub _spew_secure {
     my ($self, $path, $content) = @_;
 
     $path = path($path);
+    $path->parent->mkpath;    # no-op if it is there
     $path->remove;    # clear the way for an O_EXCL create (no-op if absent)
 
     sysopen my $fh, $path->stringify, O_WRONLY | O_CREAT | O_EXCL, 0600

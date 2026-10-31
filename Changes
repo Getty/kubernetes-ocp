@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - On a fresh clone of a secure-mode project (encrypted files committed,
+      no `.ocp/`), the first PIN1 no longer ends in "Cannot create
+      .ocp/age.key securely: No such file or directory": `ocp keys ...`,
+      `ocp ssh`, `ocp inject-key` and a first `ocp apply` make `.ocp/`
+      themselves.
     - `ocp apply` re-applies NFD or the GPU Operator when its Deployment
       was changed in the cluster to another image tag than its pin. `ocp
       status` already counted that as drift `ocp apply` fixes, but both
