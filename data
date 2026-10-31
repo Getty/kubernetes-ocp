@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-31T04:03:41Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:03:41Z
+created: 2026-10-31T02:48:08Z
+id: 273
+priority: medium
+started: 2026-10-31T04:03:41Z
+status: done
+tags:
+- apply
+- gpu
+- nvidia
+title: 'ocp apply / ocp node add --gpu: wait for nvidia.com/gpu allocatable as the
+  AMD path does'
+updated: 2026-10-31T04:03:41Z
+---
+
+Found while doing k270.
+
+For AMD, OCP::Cmd::Apply::AMDGPU waits until amd.com/gpu shows up in status.allocatable (k251, AMDGPU.pm ~412-443). For NVIDIA, Apply/Workloads.pm (~449-469) and Node/Add.pm _wait_gpu_vendors (~778-794) find NVIDIA nodes by their NFD labels and never wait for nvidia.com/gpu at all. So "GPU stack ready" for NVIDIA means "ClusterPolicy applied", not "a pod can get a GPU".
+
+Done when: after the GPU operator step, apply and node add --gpu wait a bounded time for nvidia.com/gpu allocatable > 0 on every NVIDIA node they act on (never capacity, k106/k270), and report a node that does not get there with its diagnosis on STDERR without failing the join. Follow the AMD readiness pattern. Tests pin allocatable 0 -> warn and allocatable 1 -> ok.
+
+2026-10-31 03:40 Plan (ocp-apply-worker): the wait goes into Workloads::setup_gpu_operator itself, at both returns that are not 'skipped' (unchanged and after a rollout). All three apply callers (Deploy, Drift, after-join) and node add (_ensure_gpu_operator -> _setup_gpu_operator) reach it, so Deploy.pm/Drift.pm/Apply.pm stay untouched. It waits for every NVIDIA node the step detected by NFD label; for node add that includes the added node, which the NFD-label wait has already seen. Waiting on 'unchanged' too is my call: node add runs on a deployed operator nearly every time, and the new node's plugin is exactly what has to come. A node that does not get there is a [WARN] on STDERR, not a failed component. Budget gpu_ready_timeout 300 / gpu_ready_interval 10, the same as AMD. Allocatable via OCP::Kubernetes node_gpu_count/node_gpu_capacity; reads via AMDGPU::read_or_why (k269: only a 404 means not found).
+
+2026-10-31 03:59 Also found (outside k273, for whoever routes it): (1) AMD has the same node-add gap: AMDGPU::ensure returns 'unchanged' before wait_ready, so ocp node add --gpu of an AMD node on an already deployed stack never waits for amd.com/gpu on the new node (AMDGPU.pm, left alone as briefed). (2) An NVIDIA worker that joins during ocp apply is not waited for when the first GPU Operator check did not skip: setup_gpu_operator_after_join re-runs only after a skip (k228 design). The next apply covers it. (3) Workloads setup_gpu_operator_after_join prints '[WARN] NFD has not labelled ...' on STDOUT, against the STDOUT/STDERR rule. (4) AMDGPU::read_or_why is now used by both GPU sides and would sit better in OCP::Cmd::Apply::K8s, next to resource_exists/crd_get. (5) Cost: a node that stays at allocatable 0 costs each apply / node add --gpu the 300 s budget. A healthy cluster pays one Node read per NVIDIA node. (6) My first note on this card was refused by the remote on push (local refs intact); the board needs a sync.
+
+2026-10-31 03:59 Done, not committed. Workloads.pm: setup_gpu_operator waits via wait_gpu_allocatable (gpu_ready_timeout 300 / gpu_ready_interval 10, overridable) after a rollout and after 'up to date' alike, for nvidia.com/gpu allocatable > 0 (OCP::Kubernetes node_gpu_count) on every NFD-detected NVIDIA node. A node that does not get there: '[WARN] NVIDIA GPU not ready after 300s: <why>' on STDERR. The why is 'node X shows no nvidia.com/gpu in status.allocatable', plus '(capacity N: stale after a device plugin unregisters, or unhealthy devices)' when capacity stands, 'could not read Node X: <last cause>', or 'Node X not found' (404 only). The step's verdict stands, so neither apply nor join fails. Node/Add.pm: comment + POD only, since node add reaches the wait through _setup_gpu_operator. Tests: new t/273 (apply and node add --gpu: allocatable 1 ok, 0 + capacity 1 warns, 0 then 1 ok, 403/500/404, the last failed read named, budget override); t/40 and t/269 fakes now serve the Node. Verified: DOCKER_BUILDKIT=0 make test on 27 affected files, 448 tests PASS, none skipped. Mutation check: 12 mutants of Workloads.pm, run on an isolated tree copy in the image, all killed.
+
+Reviewed (main agent). Kept the [WARN]-only semantics in ocp apply, which differs from AMD's failed component — my call, recorded with reasons on k285 (blocked on a live NVIDIA check). Follow-ups from this card: k286 (AMD unchanged path never waits), k287, k288; the NFD STDOUT [WARN] noted on k278.
+
+2026-10-31 04:03 Committed 7e786ce. Follow-ups: k285 (blocked decision), k286, k287, k288.
