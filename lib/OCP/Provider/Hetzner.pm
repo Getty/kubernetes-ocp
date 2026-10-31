@@ -2,6 +2,7 @@ package OCP::Provider::Hetzner;
 # ABSTRACT: Hetzner Cloud infrastructure provider
 
 use Moo;
+use OCP::ErrorLine ();
 use OCP::KnownHosts;
 use WWW::Hetzner::Cloud;
 
@@ -75,6 +76,24 @@ has cloud => (
     builder => sub { WWW::Hetzner::Cloud->new(token => shift->token) },
 );
 
+# Every request this adapter makes to the Hetzner API goes through here (k373).
+# WWW::Hetzner's error -- the API's answer, or LWP's reason for not getting
+# one -- can carry the request it was about, the Authorization header with the
+# token in it, and from here it travels far: onto the operator's terminal
+# through `ocp apply` and `ocp destroy` (raw, with --verbose), and into an
+# OCPNode's status.message through OCP::Node and robocop, where whoever can
+# read the CR reads it. So it is masked here, before it leaves the adapter,
+# with the token the request went out with -- only the adapter knows which:
+# `ocp destroy` holds one per provider CR, each with its own. One line, no
+# Perl source location: OCP::ErrorLine, as `ocp init` (k265) and `ocp keys
+# secure` (k362) say theirs.
+sub _api {
+    my ($self, $request) = @_;
+    my $answer;
+    return $answer if eval { $answer = $request->(); 1 };
+    die OCP::ErrorLine::one_line($@, mask => $self->token) . "\n";
+}
+
 =method upload_ssh_key
 
     $prov->upload_ssh_key('ocp-mycluster-admin', $pubkey);
@@ -91,7 +110,7 @@ sub upload_ssh_key {
     die "SSH public key is empty or undefined\n" unless $pubkey && $pubkey =~ /\S/;
     die "SSH key name is required\n" unless $key_name;
 
-    $self->cloud->ssh_keys->ensure($key_name, $pubkey);
+    $self->_api(sub { $self->cloud->ssh_keys->ensure($key_name, $pubkey) });
 }
 
 =method server_exists
@@ -112,9 +131,9 @@ sub server_exists {
     my $cluster = $self->cluster_name;
     return unless $cluster;
 
-    my $servers = $self->cloud->servers->list_all(
+    my $servers = $self->_api(sub { $self->cloud->servers->list_all(
         label_selector => "ocp-cluster=$cluster,ocp-node=$node_name",
-    );
+    ) });
 
     return $servers->[0] if @$servers;
     return;
@@ -268,7 +287,7 @@ sub create_server {
     # materialised schema default is indistinguishable from a chosen value, so
     # it would make "this provider said nothing" unrepresentable and the
     # constant unreachable.
-    my $server = $self->cloud->servers->create(
+    my $server = $self->_api(sub { $self->cloud->servers->create(
         name        => $name,
         server_type => _first_set($opts{server_type}, $spec->{serverType},
                                   $self->default_server_type, 'cx32'),
@@ -282,7 +301,7 @@ sub create_server {
             'ocp-role'    => $opts{role} // 'control-plane',
             'ocp-node'    => $node_name,
         },
-    );
+    ) });
 
     return {
         id            => $server->id,
@@ -332,9 +351,9 @@ sub wait_for_running {
     my ($self, $server_info, $timeout) = @_;
     $timeout //= $ADDRESS_TIMEOUT;
 
-    my $server = $self->cloud->servers->wait_for_status(
+    my $server = $self->_api(sub { $self->cloud->servers->wait_for_status(
         $server_info->{id}, 'running', $timeout
-    );
+    ) });
 
     $server_info->{ip} = $server->ipv4;
 
@@ -359,7 +378,7 @@ the id but not the C<$info> hashref.
 
 sub get_server_ip {
     my ($self, $server_id) = @_;
-    my $server = $self->cloud->servers->get($server_id);
+    my $server = $self->_api(sub { $self->cloud->servers->get($server_id) });
     return $server->ipv4;
 }
 
@@ -380,7 +399,7 @@ teardown on an already-gone node does not cost a round trip.
 sub delete_server {
     my ($self, $server_id, %opts) = @_;
     return unless defined $server_id && length $server_id;
-    $self->cloud->servers->delete($server_id);
+    $self->_api(sub { $self->cloud->servers->delete($server_id) });
 
     # The machine is gone; its host key goes with it (k168).
     OCP::KnownHosts->new->forget($opts{host})
@@ -418,9 +437,9 @@ C<ocp destroy> to find orphans that C<.ocp/status.yaml> did not record
 sub list_servers_by_cluster {
     my ($self, $cluster_name) = @_;
     $cluster_name //= $self->cluster_name;
-    return $self->cloud->servers->list_all(
+    return $self->_api(sub { $self->cloud->servers->list_all(
         label_selector => "ocp-cluster=$cluster_name",
-    );
+    ) });
 }
 
 1;
@@ -457,6 +476,12 @@ created. C<create_server> takes the key from its C<ssh_keys> argument (the
 bootstrap path) or from C<ssh_key_name> (the worker path, filled from the
 OCPNodeProvider CR), and refuses when both are empty — an unreachable
 Hetzner server cannot be repaired after the fact, only deleted and paid for.
+
+Every error a Hetzner API request raises in one of these methods comes out
+as one line ending in a newline, without a Perl source location and with
+C<token> replaced by C<********> wherever the answer or the transport's
+reason carried it (L<OCP::ErrorLine>): callers print it, and OCP::Node writes
+it into an OCPNode's status.
 
 Idempotency is built in: C<create_server> checks the
 C<ocp-cluster>/C<ocp-node> label pair before allocating anything, so a

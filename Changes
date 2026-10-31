@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - An error from the Hetzner API no longer shows the API token, and no
+      longer ends in "This is an internal error": `ocp apply`, `ocp
+      destroy`, `ocp hetzner list`, `ocp node rm` and robocop (which writes
+      it into an OCPNode's status) print it as one line, the token as
+      `********` and without a Perl source location, as `ocp init` and `ocp
+      keys secure` already did. `--verbose` prints the masked line as well.
     - `ocp apply` refuses a key under `kubernetes:` or `ssh:` that is none
       of their own, and one on an ssh pool's machine other than `host`,
       naming the keys taken: `kubernetes: { distribution: k3s }` was read

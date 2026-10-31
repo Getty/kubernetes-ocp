@@ -6,6 +6,7 @@ use MooX::Cmd;
 use MooX::Options;
 use Path::Tiny qw(path);
 
+use OCP::ErrorLine ();
 use OCP::Secrets;
 use WWW::Hetzner::Cloud;
 
@@ -39,9 +40,13 @@ sub execute {
 
     my $cloud = $self->cloud;
 
-    my $servers = $cloud->servers->list_all(
+    # The token masked (k373), as the Hetzner adapter masks it: WWW::Hetzner's
+    # error can carry the request, Authorization header and all, and
+    # OCP::run_cli prints it -- raw, with --verbose. One line, no Perl source
+    # location (OCP::ErrorLine).
+    my $servers = eval { $cloud->servers->list_all(
         $self->label ? ( label_selector => $self->label ) : (),
-    );
+    ) } or die OCP::ErrorLine::one_line($@, mask => $cloud->token) . "\n";
 
     if (!@$servers) {
         print "No servers found.\n";
@@ -96,7 +101,9 @@ directory does not name.
 
 The token is read from C<$HETZNER_API_TOKEN> or the encrypted secrets
 store (set up by C<ocp init --hetzner>); without it the command dies with
-a hint to run C<ocp init --hetzner>.
+a hint to run C<ocp init --hetzner>.  A listing the API refuses, or that
+never reaches it, dies with what WWW::Hetzner said, in one line and with the
+token masked (L<OCP::ErrorLine>).
 
 =opt label
 
