@@ -8,11 +8,13 @@ description: Use when running the ocp CLI or writing ocp.yaml — commands and f
 Verified against the code 2026-10-31: the `network:` block and the commands
 `status --json`, `health`, `node ls --json`, `node rm --keep-machine`,
 `node trust-host` and `deploy-image`, by source and POD only (OCP::Config,
-OCP::Cmd::*), no live run. The rest was verified 2026-08-16 (OCP::Config,
-OCP::Cmd::*, OCP::Drift, OCP::Keys, OCP::Secrets, OCP::ClusterKey), including live
-runs of each command in the shipped Docker image (not `--help` text or source
-inspection alone — see the note on dash/underscore flags below, where `--help`
-output alone would have been actively misleading).
+OCP::Cmd::*), no live run; likewise `hetzner list`, `kubeconfig --readonly`,
+`provider add`, `--pins-stdin` and the PIN2 list (k294). The rest was
+verified 2026-08-16 (OCP::Config, OCP::Cmd::*, OCP::Drift, OCP::Keys,
+OCP::Secrets, OCP::ClusterKey), including live runs of each command in the
+shipped Docker image (not `--help` text or source inspection alone — see
+the note on dash/underscore flags below, where `--help` output alone would
+have been actively misleading).
 
 Not on CPAN: `dist.ini` sets `no_cpan = 1`, so `cpanm OCP` finds nothing. Run `ocp` via
 the Docker image (`docker pull raudssus/ocp`) or a git checkout with
@@ -104,7 +106,15 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   confirmation prompt; deletes status.yaml + kubeconfig.yaml afterwards
   unless `--keep-status`
 - `ocp kubeconfig` — stdout; `-e` merge (with backup, other clusters kept),
-  `-o FILE` write to file, `--refresh` re-fetch from cluster
+  `-o FILE` write to file; `--refresh` is not implemented (dies: the stored
+  kubeconfig.yaml is authoritative)
+- `ocp kubeconfig --readonly [--name NAME] [--server URL] [--revoke]` (k230)
+  — a read-only kubeconfig (ServiceAccount `ocp-readonly-NAME`, default name
+  `leitstand`, bound to `view` plus Nodes/OCPNodes/OCPNodeProviders) on
+  STDOUT, hints on STDERR, nothing saved; the token is a secret. `--server`
+  replaces the admin kubeconfig's API URL; `--revoke` deletes the account and
+  its token. Never with `-e`/`-o`/`--refresh`; `--name`/`--server`/`--revoke`
+  only with `--readonly`.
 - `ocp version` — versions (needs the ocpVersion stamp for "deployed")
 - `ocp ssh --node <name|ip>` — SSH to nodes (admin-key, PIN2). An OCPNode
   target is verified against its `status.hostKeys` pins (one batch-mode
@@ -138,7 +148,8 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
 - `ocp inject-key [--timeout SECONDS]` — hand the robo private key to a
   running robocop pod for `robocop.security_level: inject` (PIN1 + PIN2;
   default timeout 30s)
-- `ocp hetzner [--list] [--label KEY=VAL]` — Hetzner debugging
+- `ocp hetzner list [--label KEY=VAL]` — Hetzner debugging: the servers the
+  token sees (bare `ocp hetzner` dies, a subcommand is required)
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu]
   [--node-ip IP] [--label K=V]... [--taint K=V:Effect]... [--nowait]`
@@ -148,9 +159,9 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   Once the node is Ready, it also deploys the node's GPU stack (skill
   `ocp-gpu`).
 - `ocp node rm NAME [--keep-machine]` — drain + remove (OCP::Node->teardown):
-  cordon, drain, delete the Hetzner server or uninstall RKE2/K3s (ssh/local,
-  with the cluster key — PIN2 in secure mode), then the Node and the
-  OCPNode. For ssh/local nodes it checks the machine's host key against the
+  cordon, drain, delete the Hetzner server or uninstall RKE2/K3s (ssh/local;
+  an ssh node with the cluster key — PIN2 in secure mode), then the Node and
+  the OCPNode. For ssh/local nodes it checks the machine's host key against the
   pins first (k235): a changed key refuses before lease, cordon or drain —
   nothing is touched. A Ready worker without pins (pre-pinning install, or
   after `trust-host`) is pinned by TOFU on its next reconcile
@@ -181,9 +192,12 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   `cli` or `robocop@POD`; `pool` comes from annotation `ocp.internal/pool`,
   else from ocp.yaml's pools by the names apply gives their OCPNodes (null
   for an `ocp node add` node).
-- `ocp provider add --name NAME --type hetzner --token-file FILE
-  [--location LOC] [--server-type TYPE] [--image IMG] [--default]`
-  — OCPNodeProvider CR + Secret
+- `ocp provider add --name NAME --type hetzner|ssh|local [--token-file FILE]
+  [--location LOC] [--server-type TYPE] [--image IMG] [--ssh-key-name NAME]
+  [--default]` — OCPNodeProvider CR (+ token Secret for hetzner, which needs
+  `--token-file`; the other four value flags are hetzner-only too).
+  `--ssh-key-name` is the uploaded key every server boots with, default
+  `ocp-<cluster>-admin`
 - `ocp provider rm NAME` — blocked while OCPNodes reference it
 - `ocp provider ls` — list providers with reference counts
 - `ocp keys show [--purpose admin|automation|general] [--name NAME]` — print
@@ -337,6 +351,10 @@ gpu:
   unreleased). Until the image has one, the install of a node with a
   node_ip dies with the reason before its host is touched, and its OCPNode
   ends in `Failed`. Nodes without a node_ip install as before.
+- **It needs an OCPNode CRD that stores `spec.nodeIP`** (k290). An older
+  ocp's CRD drops the field without an error, so `ocp node add --node-ip`
+  reads the CRD first and refuses (STDERR, exit 1, nothing written, before
+  the SSH probe and PIN2) until `ocp apply` has updated it.
 - **Registered elsewhere anyway?** Once the node is Ready, `ocp apply` or
   `ocp node add` prints one `[WARN]` on STDERR that names the fix. The same
   note stays in the OCPNode's `status.message`, whoever did the join. It is
@@ -488,8 +506,10 @@ gpu:
   left as is, Deployment still ensured; missing → robocop step failed, apply
   exit 1; `inject` needs only the public half → written normally.
 - **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`,
-  `ocp inject-key`, and `ocp destroy` when the node list contains an ssh
-  machine. PIN1 prompts whenever only `age.key.enc` exists. Read-only paths
+  `ocp inject-key`, `ocp deploy-robocop`, `ocp keys secure`, `ocp keys
+  operator add|rm`, `ocp node rm` of an ssh node (not with `--keep-machine`),
+  and `ocp destroy` when the node list contains an ssh machine. PIN1
+  prompts whenever only `age.key.enc` exists. Read-only paths
   (`ocp status`, drift detection, `--dry-run`) never prompt. They use the
   Kubernetes API; the host probe for drift (legacy containerd template) opens
   a read-only SSH connection with a key that needs no prompt — one already in
@@ -497,6 +517,12 @@ gpu:
   `[WARN]` once on STDERR), the project key, else the robo key — and is
   skipped with a `[WARN] host probes skipped` line when none exists. It prints
   no Rex output.
+- **`--pins-stdin`** (k166), on every command after the command word: each
+  PIN prompt of the run (PIN1, PIN2, a new PIN and its confirmation) reads
+  the next line of STDIN instead of the terminal, in prompt order
+  (`ocp apply --pins-stdin < <(pass show x)`). No line left → dies naming the
+  PIN, never falls back to the terminal; it counts as a terminal for the
+  no-terminal PIN2 refusal. There is no argv or env variant.
 - **Dev mode (`--nopassword`)**: single unencrypted key `.ocp/id_ed25519`, no
   PIN prompts — but a plain age.key is still generated and
   **kubeconfig.yaml stays encrypted even in dev mode**. Apply detects dev

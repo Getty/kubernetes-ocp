@@ -114,8 +114,10 @@ built by `OCP::Cmd::Apply::Network::lb_ipam_resources` (pure; `t/78`, `t/210`).
 - `CiliumLoadBalancerIPPool` `default-pool`, **`cilium.io/v2`**. Its blocks
   come from `network.lb_pool` (`cidr`, or `start` + `stop`; k127). Without a
   pool, the blocks are the node IP as a `/32`, but only on a single-node
-  cluster. A multi-node cluster dies rather than announce a node's own
-  address.
+  cluster. On a multi-node cluster `lb_ipam_resources` dies rather than
+  announce a node's own address; `ocp apply` reports it as a warning and
+  continues without LB-IPAM, as it does with every LB-IPAM failure (the
+  CRD wait below too).
 - `CiliumL2AnnouncementPolicy` `default-l2`, `cilium.io/v2alpha1`, with
   `externalIPs` and `loadBalancerIPs`.
   - `interfaces` is `$config->l2_interfaces`: `network.l2.interfaces`, or

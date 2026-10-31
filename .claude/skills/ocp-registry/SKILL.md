@@ -16,7 +16,8 @@ OCP deploys two registries in the `ocp-system` namespace:
    - Storage: `/var/lib/ocp/cache` (hostPath)
 
 2. **ocp-registry** (NodePort 30501) — Local image storage
-   - Stores OCP-built images (robocop, NFD)
+   - Stores images pushed to it (OCP builds none in-cluster; NFD runs
+     the upstream `registry.k8s.io` release image)
    - Used as `registry.local` and `ocp.internal`
    - Storage: `/var/lib/ocp/registry` (hostPath)
 
@@ -67,16 +68,9 @@ This allows pods to resolve `registry.local` to the node IP where the registry N
 
 ## Image References
 
-- In-cluster builds (Kaniko): `ocp-registry.ocp-system.svc:5000/nfd:master`
-- Node-side pulls: `localhost:30501/nfd:master`
+- In-cluster (Service, port 5000): `ocp-registry.ocp-system.svc:5000/myimage:tag`
+- Node-side pulls: `localhost:30501/myimage:tag`
 - Config references: `registry.local/myimage:tag` or `ocp.internal/myimage:tag`
-
-## Dev Registry (Deprecated)
-
-`OCP::DevRegistry` previously managed a separate `dev-registry` namespace. Now:
-- `ocp dev --deploy-registry` is a no-op (registry deployed by `ocp apply`)
-- `ocp dev --build` uses ocp-system registry (NodePort 30501)
-- Kaniko builds target `ocp-registry.ocp-system.svc:5000`
 
 ## Manifest Generation
 
