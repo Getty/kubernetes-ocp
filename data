@@ -1,0 +1,40 @@
+---
+claimed_at: 2026-10-31T14:26:17Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T11:45:56Z
+id: 349
+priority: medium
+status: review
+tags:
+- dry-run
+- secrets
+title: 'ocp apply --dry-run in secure mode writes .ocp/age.key after PIN1: unlock
+  it in memory only'
+updated: 2026-10-31T14:26:17Z
+---
+
+Left over from k297 (apply worker, 2026-10-31): k297 makes a dev-mode dry run write nothing. In secure mode it still does: on a clone that has keys.yaml and age.key.enc but no .ocp/age.key, `ocp apply --dry-run` asks for PIN1 and writes .ocp/age.key and .ocp/age.pub before it stops.
+
+Chosen fix (main, 2026-10-31 -- k297's own done criterion allows "works with the key in memory"): unlock the age key in memory only during a dry run -- OCP::Keys / OCP::Secrets accept an in-memory key instead of reading .ocp/age.key -- so the dry run still checks PIN1 and writes nothing. The alternative (skip PIN1/PIN2 in a dry run, apply lane) was not taken: the dry run would then no longer tell a wrong PIN before the real run.
+
+Lanes: ocp-secrets-worker (in-memory unlock), then ocp-apply-worker (the dry-run call). Done = t/297's directory check extended to a secure-mode fixture (PIN via --pins-stdin): the project dir byte-for-byte unchanged, a wrong PIN1 still refused.
+
+2026-10-31 12:29 Secrets half done (ocp-secrets-worker), card stays in-progress for the apply half. OCP::Secrets: new age_key (rwp, the project key in hand); identities reads it before .ocp/age.key (SOPS_AGE_KEY_FILE still first); new unlock_age_key = ensure_age_key that writes nothing (same PIN1 prompt, same refusals: wrong PIN1, foreign key, no key; a key on disk or in SOPS_AGE_KEY_FILE used as is, age.pub not restored); ensure_age_key on an object holding the key asks nothing, writes nothing. OCP::Keys: new age_key (ro), handed to its OCP::Secrets. No design decision was needed: Crypt::Age/File::SOPS take identities as strings and identities is the single read. Files: lib/OCP/Secrets.pm, lib/OCP/Keys.pm, t/349-unlock-age-key-in-memory.t. Verified (make test, Docker): red on base (t/349 dies: no unlock_age_key); green 67 files/1008 tests (every t/ touching Secrets/Keys/age.key + t/349 + a probe); 8/8 mutants killed. Patch: scratchpad w-secrets349/k349-secrets.patch. Apply half (not done): Apply.pm:179 ensure_age_key -> unlock_age_key on dry run, :188 OCP::Keys->new(... age_key => $secrets->age_key); Drift.pm:122-123 reads kubeconfig without any unlock (dies on a clone before PIN1); Drift.pm:828 passes undef secrets to _robocop_credentials_state, which builds its own and ensure_age_key's at RobocopCredentials.pm:226 (writes), and _robo_key_entry :348 builds OCP::Keys without the key. Line numbers: base 12d049a+queued.
+
+2026-10-31 (main): the secrets worker's open point for the apply half: OCP::Secrets::age_recipient is not derived from an in-memory age_key. A write holding only age_key (no .ocp/age.pub) would croak. No caller does that today, but the dry-run wiring must not start one, or it must derive the recipient. The secrets patch applies cleanly on HEAD 7096407 and is queued with the RM together with k346/k342.
+
+Apply half started (ocp-apply-worker): ocp apply --dry-run in secure mode to unlock_age_key, with the unlocked secrets handed to every reader on the dry-run path; t/297's directory check extended to a secure-mode fixture. Base: base16 (7096407 + batch-4 stack, queued16).
+
+Secrets half committed as aea4be9
+
+2026-10-31 14:22 Apply half (ocp-apply-worker), decisions + findings:
+- Dry run takes PIN1 via unlock_age_key and hands that $secrets down: Apply.pm step 1 (unlock on --dry-run, OCP::Keys for PIN2 gets age_key), Apply/Drift.pm reconcile_components (unlock on --dry-run when there is an age.key.enc; $secrets -> dry_run_report -> robocop_dry_run), RobocopCredentials.pm (_robocop_credentials_state read_only => unlock instead of ensure_age_key; _robo_key_entry builds OCP::Keys with $secrets->age_key). Real runs unchanged.
+- age_recipient: NOT reached, NOT derived. Every dry-run read (read_kubeconfig, get_admin_key, get_automation_key, list_keys) decrypts via identities; age.pub is read only on encrypt/write paths the dry run returns before. Clone fixtures have no age.pub, so a recipient read would croak there.
+- Host probes deliberately NOT given the in-memory key: first contact records the host key in .ocp/known_hosts (OCP::SSH ensure_dir makes .ocp/), a write. On a clone they stay skipped as before.
+- Conflict to settle: the k360 follow-up card (clone with kubeconfig.yaml dies before PIN1, raw Path::Tiny error) overlaps Drift.pm reconcile_components, which the hand-over put in this card for --dry-run. I fixed the DRY RUN only (one line + t/349-apply-dry-run-clone.t); the real run is untouched. If the new card should own the dry run too, drop that line and that test.
+- Also found (kubernetes-ocp board, not fixed): (1) a dry run on a full checkout with reachable hosts records host keys into .ocp/known_hosts under the 'no changes made' banner (pre-existing; t/297 never reaches probes). (2) a wrong PIN1 in ocp apply prints 'Error: Decryption failed. Wrong password?' followed by 'This is an internal error. Run again with --verbose' -- a wrong PIN called an internal error. (3) on a clone the probe-skip reason says 'no SSH key to probe with that needs no PIN2' although the robo key is held after PIN1 -- wording, follows from the known_hosts decision.
+
+2026-10-31 14:22 Apply half done; patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-apply349/k349-apply.patch (on queued16, no Changes hunk; header has subject + Changes bullet). Files: lib/OCP/Cmd/Apply.pm, lib/OCP/Cmd/Apply/Drift.pm, lib/OCP/Role/Cmd/RobocopCredentials.pm, t/297 (secure-mode fixtures from bin/ocp with --pins-stdin: clone without .ocp/ = the k360 shape, clone whose .ocp/ has no key, checkout with age.key but no age.pub, wrong PIN1), t/349-apply-dry-run-clone.t (new, reconcile-branch dry run on a clone with kubeconfig.yaml). Verified (guarded make test, IMAGE=localhost/ocp-w349): red on queued16 -- t/297 4/7 subtests + t/349-apply-dry-run-clone 4/4 fail; red with k360 applied -- the clone without .ocp/ exits 0 and leaves .ocp/age.key + age.pub, caught byte for byte; green -- 32 files / 516 tests PASS, no skips (t/297, both t/349, t/329, t/169, t/129, t/67, t/96, t/216, t/38, t/52, t/20, t/71, t/95, t/234, t/236, t/312, t/351, t/259, t/211x2, t/233, t/251, t/255, t/328, t/290, t/254, t/296, t/303, t/47, t/291, t/53); with k360 on top -- t/297, both t/349, t/360 PASS; mutants -- 11/11 killed in full hardlinked trees, each mutated module asserted in %INC after OCP::Cmd::Apply (Rex) loaded (Files=1 Tests=40 PASS).
+
+Apply half reviewed (main, 2026-10-31): w-apply349/k349-apply.patch accepted, queued for batch 5 after k360/k362 (applies on queued17). Decision: the dry-run line in Apply/Drift.pm reconcile_components (unlock_age_key before read_kubeconfig) and t/349-apply-dry-run-clone.t stay in k349 — the dry run is this card's; the real run's clone read stays with k370. Cross-checked: the first-apply path (Apply.pm step 1) and the cluster-exists path (reconcile_components) are disjoint, so PIN1 is asked once.
