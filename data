@@ -1,0 +1,55 @@
+---
+class: standard
+completed: 2026-10-31T15:21:28Z
+created: 2026-10-31T13:54:26Z
+id: 373
+priority: medium
+started: 2026-10-31T15:21:28Z
+status: done
+tags:
+- security
+- hetzner
+title: Mask the Hetzner token in the remaining Hetzner error paths (apply bootstrap,
+  destroy, hetzner list, provider factory)
+updated: 2026-10-31T15:21:28Z
+---
+
+Found by the secrets worker during k362 (2026-10-31). k362 masks the Hetzner API token in `ocp keys secure`'s one Hetzner error, as `ocp init` does (k265), through `OCP::ErrorLine::one_line($err, mask => $token)` from k342. Other Hetzner callers still print API/LWP errors without masking the token:
+- the `ocp apply` bootstrap (lib/OCP/Cmd/Apply/Bootstrap.pm);
+- `ocp destroy`;
+- `ocp hetzner list`;
+- the OCP::Provider factory (the Hetzner provider's errors).
+
+A WWW::Hetzner/LWP error can carry the request, Authorization header included.
+
+Done = every place OCP prints or dies with an error that came from a Hetzner call masks the token, via one_line with mask, or a die message that already went through it. Find them all (grep the WWW::Hetzner calls) and list them in the note. One test per command, where the fake Hetzner dies with the token in its message; the token appears nowhere on STDOUT/STDERR. Red first, then a mutation check.
+
+Lanes: ocp-provider-worker (factory, Hetzner provider), with the apply/destroy sites in the same patch if they are only the print line (cross-lane edits named in the note).
+
+2026-10-31 14:54 Hetzner error sites, all found by grepping every WWW::Hetzner call and every eval around them (line numbers in the patched tree, base queued18):
+
+FIXED AT THE SOURCE: lib/OCP/Provider/Hetzner.pm. New private method _api (:90) runs each request and on failure dies with OCP::ErrorLine::one_line($@, mask => $self->token) . "\n", which gives one line, no Perl location, token shown as ********. All 7 API calls go through it: upload_ssh_key :113, server_exists :134, create_server :290, wait_for_running :354, get_server_ip :381, delete_server :402, list_servers_by_cluster :440. cleanup_on_failure's warn (:424) relays the already-masked delete_server error. Each adapter masks with ITS OWN token, the one the request went out with. That covers destroy's per-provider-CR adapters, which a command-level mask using the local token would miss.
+
+FIXED: lib/OCP/Cmd/Hetzner/List.pm :47-49 (ocp hetzner list). Calls WWW::Hetzner directly, so eval around list_all, then die one_line($@, mask => $cloud->token).
+
+COVERED BY THE ADAPTER, NO EDIT (each only relays the adapter's die):
+- lib/OCP/Cmd/Apply/Bootstrap.pm :450 upload_ssh_key, :466 create_server, :481 wait_for_running, :613 cleanup_on_failure (warn). Dies to OCP::run_cli, which prints it, raw with --verbose. NO cross-lane edit needed.
+- lib/OCP/Cmd/Destroy.pm: :84 mislabelled search (eval, swallowed, prints nothing); :184/:186 label search into $search_error, printed at :519 'the label search failed: ...'; :914/:918 delete_server, then 'Warning: $@'. For the destroy worker: NOTHING NEEDED; all three get a masked message now. Covered by t/373 destroy subtests (refused delete, refused label search, worker deleted with its provider CR's token).
+- lib/OCP/Node.pm :431 create_server, :512 wait_for_running (into 'Provider said: ...' at :519), :1447 delete_server. These reach OCPNode status.message, robocop's log and ocp node rm/apply output, all already masked.
+- lib/OCP/Cmd/Keys/Secure.pm :418-426 (k362) masks again; one_line is idempotent.
+- OCP::Provider factory (for_spec/from_cr) makes no Hetzner call. Its own dies (from_cr: ... Secret ... / clusterName) carry no token. The adapters it builds mask themselves, and t/373 checks this for both entry points.
+ALREADY MASKED: lib/OCP/Hetzner/Picker.pm :14/:18 (ocp init only) via Init.pm :936/:978 (k265).
+NOT HETZNER: Apply/CR.pm :247 only reads the token into a Secret, no API call.
+
+Tests: t/373-hetzner-token-masked.t. Real WWW::Hetzner::Cloud; only WWW::Hetzner::LWPIO::call is faked: 401 with a body echoing the request headers (Bearer <token>), or the transport dies with them. Subtests: adapter (every method, both failure kinds, plus the cleanup warning), factory, ocp apply bootstrap (via OCP::_report_error with and without --verbose), ocp destroy x3 (via run_cli), ocp hetzner list (run_cli, with and without --verbose).
+Runs (guarded make test, IMAGE=localhost/ocp-w373):
+- RED on queued18: t/373 failed 7/7 subtests, every failure a token/mask/location assertion.
+- GREEN: 36 files (provider, node, destroy, bootstrap, keys-secure, list, picker, init, robocop, pod, output channels) all pass except a too-strict newline assertion in t/373. Fixed the assertion, then t/00-load + t/373 PASS.
+- MUTANTS: runner in a separate tree copy. The clean copy passes; a probe (Rex loaded first) confirms %INC loads the mutant files. 11 of 11 killed: each of the 7 adapter calls unwrapped, _api mask removed, _api raw rethrow, list mask removed, list raw rethrow.
+Also found (not fixed): cleanup_on_failure warns '...: $@\n' with $@ already newline-terminated, so a blank line follows. Destroy :918 'Warning: $@\n' does the same. Cosmetic and pre-existing.
+
+2026-10-31 14:54 Done. The patch is at /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-prov373/k373.patch, a diff against queued18 with a header holding the subject, description and Changes bullet. OCP::Provider::Hetzner masks its own token in every Hetzner API error (one choke point, _api), and ocp hetzner list masks its listing error. Bootstrap, Destroy, Node and robocop relay the masked message unchanged, so neither Bootstrap.pm nor Destroy.pm was edited. New t/373: red 7/7 on queued18, green; 36 reachable test files pass; 11/11 mutants killed. The site list is in the note above.
+
+Reviewed (main, 2026-10-31): w-prov373/k373.patch accepted, applies on queued19; queued for batch 5. Checked that no caller inspects a Hetzner error's text or object (Node.pm's 404 checks are k8s deletes; Destroy/Bootstrap only print), so masking at the adapter (_api) changes no decision. Behaviour change for the release notes: a Hetzner API error is now a one-line user error, no 'internal error' hint. Nothing left for the destroy lane.
+
+Committed as 21f6db7
