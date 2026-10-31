@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T12:47:20Z
+created: 2026-10-31T04:40:45Z
+id: 297
+priority: medium
+started: 2026-10-31T12:47:20Z
+status: done
+tags:
+- apply
+- dry-run
+- secrets
+title: ocp apply --dry-run writes .ocp/age.key on a fresh dev-mode project
+updated: 2026-10-31T12:47:20Z
+---
+
+Found under k255 (2026-10-31). On a fresh dev-mode project, `ocp apply --dry-run` writes `.ocp/age.key` before it stops, although its banner ends "[Dry run - no changes made]". The file is gitignored decrypted state, but a dry run should leave the project dir as it found it.
+
+Done = a dry run writes no file in the project dir: it either works with the key in memory or says on STDOUT that a real run would create it. A test runs --dry-run on a fresh dev-mode fixture and asserts the directory listing is unchanged. Check the other files a first run creates (secrets.yaml, keys.yaml, kubeconfig) the same way. k266 (say which SOPS files a real run would repair) is the neighbouring dry-run card.
+
+Secure mode is not covered (secrets lane, not changed here). A dry run on a clone that has keys.yaml + age.key.enc but no .ocp/age.key (cloned before the first deploy, so no kubeconfig.yaml yet) still writes files. Apply.pm Step 1 calls $secrets->ensure_age_key() (PIN1) -> OCP::Secrets::decrypt_age_key_with_password -> _spew_secure(.ocp/age.key) + restore_age_recipient (.ocp/age.pub), before the dry-run return. Even with age.key present, ensure_age_key -> restore_age_recipient writes a missing .ocp/age.pub. The reconcile path (kubeconfig.yaml present) writes nothing: read_kubeconfig only reads .ocp/age.key. Two ways to close it, for the dispatcher to choose and file: (a) secrets lane: an OCP::Secrets unlock that decrypts age.key.enc with PIN1 into memory only (checked with _assert_key_matches_project, no _spew_secure, no restore_age_recipient), held on the object and returned by identities() before .ocp/age.key. OCP::Keys->get_admin_key would have to read keys.yaml with that same in-memory identity, since OCP::Keys->new(project_dir) opens its own OCP::Secrets. (b) apply lane, a behaviour decision: under --dry-run, secure mode skips PIN1/PIN2, since the bootstrap dry run needs neither key (it announces the control planes and returns), and says that a real run asks for both. Then no PIN is checked by a dry run. Not implemented: (a) is another lane, (b) changes what a dry run verifies, and this card is the dev-mode case.
+
+Patch (not applied to the shared tree): /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-dry261/k297.patch; opens with subject, description and Changes bullet. Applies on HEAD cb25f5a, independent of k261.patch. The dev-mode age-key block moves from OCP::Cmd::Apply::execute to OCP::Cmd::Apply::Bootstrap::ensure_dev_age_key, with the same bound-project refusal. Apply.pm keeps one call and goes from 697 to 677 lines. Under --dry-run it generates nothing and prints '[..] No age key in .ocp/ yet: a real run generates one for kubeconfig encryption'. New t/297 runs bin/ocp apply --dry-run in a fresh dev-mode fixture (HOME = project, STDIN /dev/null). It holds the recursive listing of the project dir, .ocp/ included, with each file's digest, to what it was, and checks that no age.key, age.pub, secrets.yaml, keys.yaml or kubeconfig.yaml appears. It also covers a project that has its key, and a run without an SSH key. Red on fea8460: subtests 1 and 3 failed. Green on cb25f5a + both patches: PASS. Mutants (dry-run branch removed; message removed): both killed. No secrets-lane change was needed for dev mode. Secure mode is still open, see the earlier note: it needs a dispatcher decision and a new card.
+
+Committed as 00619c9
