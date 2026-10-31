@@ -331,8 +331,12 @@ Columns: NAME, ROLE, PHASE, PROVIDER, IP, AGE.
 
 For scripts, `ocp node ls --json` prints the inventory as canonical JSON
 (name, role, pool, host, address, publicIP, phase, labels, GPU count,
-container runtime, kubelet, OS, kernel). It reads only the Kubernetes API.
-`pool` is `null` unless the OCPNode carries an `ocp.internal/pool` annotation.
+container runtime, kubelet, OS, kernel). It reads the Kubernetes API, plus
+`ocp.yaml` for the pool names. `pool` is the named `workers:` pool that
+produced the node. It is `null` for a control plane, for a worker that
+`ocp node add` created under its own name, and when there is no readable
+`ocp.yaml`. An `ocp.internal/pool` annotation on the OCPNode takes precedence,
+but OCP never writes one.
 
 Useful variations:
 
