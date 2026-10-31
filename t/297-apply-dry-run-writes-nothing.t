@@ -249,7 +249,7 @@ subtest 'k349: a wrong PIN1 is refused -- no PIN2 asked, nothing written' => sub
         'apply', '--dry-run', '--pins-stdin');
 
     isnt $rc, 0, 'exit non-zero';
-    like $err, qr/\AEnter PIN1 \(cluster access\): \nError: Decryption failed\. Wrong password\?/,
+    like $err, qr/\AEnter PIN1 \(cluster access\): \nError: PIN1 does not open age\.key\.enc\./,
         'refused on PIN1';
     unlike $err, qr/PIN2/, 'PIN2 not asked';
     unlike $out, qr/Secrets unlocked|Dry run - no changes made/, 'the run went no further';

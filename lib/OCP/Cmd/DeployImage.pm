@@ -449,7 +449,7 @@ sub _build_api {
 
     my $secrets    = OCP::Secrets->new(project_dir => $config->project_dir);
     my $kc_content = $secrets->read_kubeconfig;
-    die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n"
+    die OCP::Secrets->no_kubeconfig_refusal
         unless $kc_content;
 
     my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);

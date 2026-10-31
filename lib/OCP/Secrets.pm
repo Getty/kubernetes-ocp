@@ -500,17 +500,17 @@ sub _assert_key_matches_project {
     my %bound  = map { $_->{recipient} => 1 } @$bound;
     return 1 if grep { $bound{$_} } @public;
 
+    # A user error (k375): the key is the wrong one, not the code.
     my $from = $self->sops_age_key_file;
-    croak
-        "This age key does not belong to this project.\n"
+    die "This age key does not belong to this project.\n"
       . join('', map { "  The key opens:   $_\n" } @public)
       . ($from ? "  (read from SOPS_AGE_KEY_FILE=$from)\n" : '')
       . join('', map { sprintf "  %-16s %s\n", "$_->{file} needs:", $_->{recipient} }
                  @$bound)
-      . "Nothing was done. Use the key those files name.";
+      . "Nothing was done. Use the key those files name.\n";
 }
 
-# Does the key in this checkout open what the project is bound to? Croaks
+# Does the key in this checkout open what the project is bound to? Dies
 # with both recipients named when it does not. That is the state an old
 # `ocp init` left a fresh clone in — a minted key sitting next to committed
 # files it cannot read — and without this the only symptom is "could not
@@ -873,8 +873,9 @@ sub decrypt_age_key_with_password {
 }
 
 # age.key.enc opened with PIN1 and checked against the project, written
-# nowhere: the key, or a croak -- no age.key.enc, a wrong PIN1, or a key the
-# project's files are not bound to.
+# nowhere: the key, or a user error -- no PIN1, an empty age.key.enc, a PIN1
+# that does not open it, or a key the project's files are not bound to (k375).
+# No age.key.enc at all is the caller's to check first, and croaks.
 sub _open_age_key_enc {
     my ($self, $password) = @_;
 
@@ -882,10 +883,22 @@ sub _open_age_key_enc {
         croak "No age.key.enc found.";
     }
 
+    die "No PIN1 given, so age.key.enc stays locked. Nothing was written.\n"
+      . "Run the command again and enter PIN1.\n"
+        unless defined $password && length $password;
+
     my $encrypted = $self->age_key_enc_file->slurp;
     chomp $encrypted;
 
-    my $age_key = OCP::Password::decrypt_age_key($encrypted, $password);
+    die "age.key.enc is empty: there is no key in it for PIN1 to open.\n"
+      . "It is committed with the project -- restore it from git\n"
+      . "(git checkout -- age.key.enc).\n"
+        unless length $encrypted;
+
+    # With both PIN1 and age.key.enc there, the one way decrypt_age_key fails
+    # is a PIN1 that does not authenticate against the file.
+    my $age_key = eval { OCP::Password::decrypt_age_key($encrypted, $password) };
+    die $self->_wrong_pin1_refusal unless defined $age_key;
 
     # Before caching it: is this the key the project's files are bound to?
     # Caching a mismatched key would make has_age_key say yes from then on,
@@ -945,8 +958,34 @@ sub _unlock_age_key {
         return 1;
     }
 
-    # No age.key available
-    croak "No age.key found. Run 'ocp init' first.";
+    # No key anywhere (k375). Committed files encrypted to one: a clone of a
+    # dev-mode project, where a new key from `ocp init` would open none of
+    # them. Nothing encrypted yet: a project `ocp init` has not set up.
+    my ($bound) = map { $_->{file} } @{ $self->age_key_bindings };
+    die $self->_no_age_key_refusal($bound) if defined $bound;
+    die "ERROR: This project has no age key: no .ocp/age.key, no age.key.enc,\n"
+      . "       and nothing encrypted to one yet.\n"
+      . "Run 'ocp init' to set it up.\n";
+}
+
+# PIN1 did not open age.key.enc (k375). What failed and what to do, as a user
+# error: a mistyped PIN is the commonest failure there is, and not internal.
+sub _wrong_pin1_refusal {
+    return "PIN1 does not open age.key.enc. Nothing was unlocked, nothing written.\n\n"
+         . "Run the command again and retype PIN1 (with --pins-stdin: the line that\n"
+         . "answers \"Enter PIN1\"). If PIN1 is right, age.key.enc has changed since it\n"
+         . "was set -- git log age.key.enc shows by what. A forgotten PIN1 cannot be\n"
+         . "recovered: nothing opens age.key.enc without it (docs/security.md,\n"
+         . "\"Losing a PIN\").\n";
+}
+
+# Commands that reach the cluster API read kubeconfig.yaml first. read_kubeconfig
+# unlocks or refuses for the key itself (k370), so undef from it means one
+# thing: there is no kubeconfig.yaml (k375).
+sub no_kubeconfig_refusal {
+    return "ERROR: This project has no kubeconfig.yaml, so there is no cluster API to reach.\n"
+         . "       'ocp apply' writes it when it brings the cluster up. It is committed\n"
+         . "       with the project: on a clone, pull the commit that has it.\n";
 }
 
 #
@@ -1262,8 +1301,19 @@ Makes the project key available: C<SOPS_AGE_KEY_FILE> is checked against the
 project; a key in hand (L</age_key>) or F<.ocp/age.key> is used (and
 F<.ocp/age.pub> restored when missing); otherwise F<age.key.enc> is opened
 with PIN1 and cached to F<.ocp/age.key> and F<.ocp/age.pub>. Dies on a wrong
-PIN1, on a key the project's files are not bound to, and when there is no key
-at all.
+or empty PIN1, an empty F<age.key.enc>, a key the project's files are not
+bound to, and when there is no key at all -- each a message for the user that
+says what failed and what to do, not a Perl error (k375). With no key and
+committed files encrypted to one, that message is the read refusal above;
+with nothing encrypted yet, it says to run C<ocp init>.
+
+=head2 no_kubeconfig_refusal
+
+    my $kc = $secrets->read_kubeconfig
+        or die OCP::Secrets->no_kubeconfig_refusal;
+
+The message for a command that needs the cluster API and finds no
+F<kubeconfig.yaml>: C<read_kubeconfig> returns C<undef> for that alone (k375).
 
 =head2 unlock_age_key
 

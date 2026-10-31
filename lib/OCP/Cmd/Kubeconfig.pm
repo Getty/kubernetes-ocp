@@ -102,7 +102,7 @@ sub _readonly {
 
         my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
         $admin //= $secrets->read_kubeconfig;
-        die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n"
+        die OCP::Secrets->no_kubeconfig_refusal
             unless $admin;
         $cname //= $config->name;
 
@@ -171,7 +171,7 @@ sub execute {
         $kubeconfig = $secrets->read_kubeconfig;
 
         unless ($kubeconfig) {
-            die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n";
+            die OCP::Secrets->no_kubeconfig_refusal;
         }
     }
 

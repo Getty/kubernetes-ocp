@@ -91,8 +91,7 @@ sub execute {
     # What went wrong and why goes to STDERR (k257); the report on STDOUT ends
     # where it got to, the API case on the kubeconfig hint a good run ends on.
     unless ($kc_content) {
-        print STDERR "ERROR: Cannot decrypt kubeconfig.yaml\n";
-        print STDERR "Make sure .ocp/age.key exists.\n";
+        print STDERR OCP::Secrets->no_kubeconfig_refusal;
         return 1;
     }
 

@@ -385,7 +385,7 @@ sub _update_via_api {
     require OCP::Cmd::Apply::Network;
 
     my $kubeconfig = OCP::Secrets->new(project_dir => $config->project_dir)->read_kubeconfig
-        or die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n";
+        or die OCP::Secrets->no_kubeconfig_refusal;
     my $api = OCP::Cmd::Apply::K8s::api($self, $kubeconfig);
 
     OCP::Cmd::Apply::Network::upgrade_cert_manager($self, $api, $version);

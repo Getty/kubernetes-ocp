@@ -258,7 +258,7 @@ subtest 'a wrong PIN1 is refused before the kubeconfig is read' => sub {
 
     my $r = dry_run_in($dir, pin => 'wrong-k349');
 
-    like $r->{died}, qr/\ADecryption failed\. Wrong password\?/, 'refused';
+    like $r->{died}, qr/\APIN1 does not open age\.key\.enc\./, 'refused';
     is_deeply $r->{prompts}, [ 'Enter PIN1 (cluster access): ' ], 'on PIN1';
     is_deeply $r->{kubeconfigs}, [], 'no kubeconfig decrypted, no API built';
     unlike $r->{out}, qr/Checking for drift/, 'the run went no further';

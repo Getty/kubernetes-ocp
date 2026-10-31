@@ -48,7 +48,7 @@ sub _api {
         unless $config->cluster_exists;
 
     my $kc = OCP::Secrets->new(project_dir => $config->project_dir)->read_kubeconfig;
-    die "Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n"
+    die OCP::Secrets->no_kubeconfig_refusal
         unless $kc;
 
     # An API that does not answer is said here, in one line (k384).

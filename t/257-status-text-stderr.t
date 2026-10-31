@@ -93,7 +93,9 @@ sub run_status {
     unlike $out, qr/decrypt|age\.key|ERROR/i, 'STDOUT: neither the error nor its diagnosis';
 
     # STDERR: the error and its diagnosis, nothing else.
-    is $err, "ERROR: Cannot decrypt kubeconfig.yaml\nMake sure .ocp/age.key exists.\n",
+    # read_kubeconfig is undef for no kubeconfig.yaml alone (k375): a key it
+    # lacks is unlocked or refused inside it (k370).
+    is $err, OCP::Secrets->no_kubeconfig_refusal,
         'STDERR: the error with its diagnosis, and only that';
 }
 

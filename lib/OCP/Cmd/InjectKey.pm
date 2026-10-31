@@ -114,7 +114,7 @@ sub _async_kube {
     my ($self, $secrets) = @_;
 
     my $kc = $secrets->read_kubeconfig;
-    die "ERROR: Cannot decrypt kubeconfig.yaml. Make sure .ocp/age.key exists.\n"
+    die OCP::Secrets->no_kubeconfig_refusal
         unless $kc;
 
     my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);

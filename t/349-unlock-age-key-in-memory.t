@@ -137,11 +137,11 @@ subtest 'a wrong PIN1 is refused: nothing held, nothing written' => sub {
 
     my $err;
     my $asked = prompted('not-the-pin', sub { $err = eval { $s->unlock_age_key; 1 } ? '' : $@ });
-    like $err, qr/\ADecryption failed\. Wrong password\?/, 'prompted: refused, as ensure_age_key refuses it';
+    like $err, qr/\APIN1 does not open age\.key\.enc\./, 'prompted: refused, as ensure_age_key refuses it';
     is scalar @$asked, 1, 'after one PIN1 prompt';
 
     ok !eval { $s->unlock_age_key('not-the-pin'); 1 }, 'given: refused';
-    like $@, qr/\ADecryption failed\. Wrong password\?/, 'with the same words';
+    like $@, qr/\APIN1 does not open age\.key\.enc\./, 'with the same words';
 
     ok !defined $s->age_key, 'no key held';
     ok !eval { $s->read_secret('hetzner_token'); 1 }, 'and nothing reads';
@@ -206,7 +206,8 @@ subtest 'no key anywhere: refused as ensure_age_key refuses it' => sub {
     my $dir = path(tempdir(CLEANUP => 1));
     my $s   = OCP::Secrets->new(project_dir => $dir, ocp => $ocp);
     ok !eval { $s->unlock_age_key($PIN1); 1 }, 'refused';
-    like $@, qr/\ANo age\.key found\. Run 'ocp init' first\./, 'with the same words';
+    like $@, qr/\AERROR: This project has no age key: .*Run 'ocp init' to set it up\.\n\z/s,
+        'with the same words';
     is_deeply listing($dir), {}, 'nothing written';
 };
 

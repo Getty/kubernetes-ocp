@@ -235,7 +235,7 @@ subtest 'a wrong PIN1 on a read is refused, and nothing is written' => sub {
     my $asked = prompted('not-the-pin', sub { $refused = !eval { $s->read_kubeconfig; 1 }; $err = $@ });
     is_deeply $asked, [$PROMPT], 'PIN1 asked';
     ok $refused, 'read_kubeconfig refuses';
-    like $err, qr/\ADecryption failed\. Wrong password\?/, 'naming why';
+    like $err, qr/\APIN1 does not open age\.key\.enc\./, 'naming why';
     ok !-e $clone->child('.ocp'), 'no .ocp/';
 };
 

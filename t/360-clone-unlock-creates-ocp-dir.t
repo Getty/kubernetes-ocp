@@ -153,7 +153,7 @@ subtest 'a wrong PIN1 is refused, and nothing is written' => sub {
     my ($refused, $err);
     prompted('not-the-pin', sub { $refused = !eval { $s->ensure_age_key; 1 }; $err = $@ });
     ok $refused, 'ensure_age_key refuses';
-    like $err, qr/\ADecryption failed\. Wrong password\?/, 'naming why';
+    like $err, qr/\APIN1 does not open age\.key\.enc\./, 'naming why';
     ok !-e $clone->child('.ocp'), 'no .ocp/';
 };
 
