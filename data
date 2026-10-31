@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T13:06:39Z
+created: 2026-10-31T09:24:13Z
+id: 333
+priority: medium
+started: 2026-10-31T13:06:39Z
+status: done
+tags:
+- node-add
+- validation
+title: ocp node add --gpu reads the GPU switch only after the join, and dies there
+  on a malformed one since k320
+updated: 2026-10-31T13:06:39Z
+---
+
+Found under k320 (choices worker, 2026-10-31): `ocp node add --gpu` reads Config::gpu_enabled only after the node has joined and is Ready, outside an eval. Since k320 a malformed gpu.enabled (e.g. `no`) makes the command die there -- after the join, with the node in the cluster. Before k320 it read the string as on and rolled the GPU stack out.
+
+Fix: read the GPU switches (or the relevant part of validate()) before the join, so a malformed ocp.yaml stops `ocp node add` before it touches the machine. Related: k306 (commands that read the spec without validate()), k309 (Node/Add.pm).
+
+Done = a malformed gpu switch stops `ocp node add --gpu` before any SSH/join step, with validate()'s line on STDERR (test).
+
+2026-10-31 12:00 Worked in scratch copies on f276d35 (shared tree untouched). Decision: ocp node add --gpu (without --nowait) checks only validate()'s gpu:/gpu.* lines, all at once, as the first thing after the option checks -- before _k8s (PIN1), the provider lookup, the OCPNode write, the SSH probe (PIN2) and the join. Not all of validate() as k321 (node add reads little else of ocp.yaml; a cilium:/lbipam: line would hold a node up over something it never reads), not only gpu.enabled (gpu.driver/toolkit/amd.* and, since k331, unknown gpu keys fail the GPU steps after the join too). Not with --nowait (reads none of the block; ocp apply refuses the same lines, k255). control_planes/workers shapes stay k306's. Red on base: t/333 16/33 failed (full run incl. join, then the croak at Add.pm line 888).
+
+2026-10-31 12:13 Also found (not done): the gate picks validate()'s lines by their key-path prefix (grep /\Agpu[.:]/), the one coupling to validate()'s line format; a public per-path errors helper in OCP::Config (state lane, fits k306) would replace it.
+
+2026-10-31 12:31 Done, uncommitted. Patch: scratchpad/w-apply333/k333.patch against f276d35 (header: subject, description, Changes bullet); applies to the shared tree as it stands (git apply --check), stacks with k330.patch, k330-ok.patch, k261.patch, k297.patch in either order. 4 files: lib/OCP/Cmd/Node/Add.pm (_refuse_invalid_gpu_config + POD), t/220 and t/273 (FakeConfig validate), new t/333-node-add-gpu-config.t (11 gpu: shapes incl. k331's unknown key, both join paths, e2e through bin/ocp, --nowait / no --gpu / valid-block / lines-outside-gpu boundaries). Verified: red on base (t/333 16/33), docker make test full suite on f276d35+k333: Files=236, Tests=3703, PASS, none skipped; full suite on f276d35+k333+k330+k330-ok: Files=237, Tests=3712, PASS. 8 mutants (no gate, gate after _k8s, gpu.enabled only, all of validate(), with --nowait, without --gpu, first line only, warn instead of die): all killed, control passes.
+
+Committed as c2d719f
