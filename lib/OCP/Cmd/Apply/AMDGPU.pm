@@ -66,11 +66,13 @@ on a node whose allocation switched to DRA would hand out the same GPU twice.
 
 Each component's options (version pin, affinity, resource naming) are hashed
 into C<.ocp/deployed.yaml>; an equal hash with the DaemonSet still in the
-cluster is C<unchanged>, anything else re-deploys, then waits for the
-component to be ready by OCP's own check (300 s, C<ready_timeout>): the DaemonSet
+cluster is C<unchanged>, anything else re-deploys. Either way the step then
+waits for the component to be ready by OCP's own check (300 s,
+C<ready_timeout>; 600 s, C<join_ready_timeout>, for a node that just joined): the DaemonSet
 rolled out, then C<status.allocatable> C<amd.com/gpu> on every node the plugin
 selects, or a ResourceSlice of driver C<gpu.amd.com> for every node the DRA
-driver selects. The labeller and the metrics exporter are ready with their
+driver selects. C<unchanged> waits too, because a node that joined since
+gets its pods only now (k286). The labeller and the metrics exporter are ready with their
 DaemonSet (the exporter has no readinessProbe upstream, so its pods turn
 Ready a few seconds before port 5000 answers; apply does not probe it).
 
@@ -127,6 +129,16 @@ my $LIB = 'Rex::Rancher::K8s';
 sub ready_timeout  { 300 }
 sub ready_interval { 10 }
 
+# The budget of a step that runs for a node that just joined (`ocp node add
+# --gpu`, after_join; k286). The marker is there from registration, so the
+# wait starts while Cilium is still on its first BPF compile for the fresh
+# node, and no pod there gets a sandbox until it is done: on synapse
+# (amdlab, 2026-10-31) that took ~5.5 min, and the plugin pod came up ~7 min
+# after registration, which ran out the 300 s. The NVIDIA side waits for
+# NFD's label first (OCP::Cmd::Apply::Workloads gpu_label_timeout, also 600
+# for the same cause), so its 300 s start on a node whose CNI works.
+sub join_ready_timeout { 600 }
+
 =head1 FUNCTIONS
 
 =head2 affinity
@@ -178,9 +190,11 @@ sub selects {
 
 =head2 setup
 
-    my @results = OCP::Cmd::Apply::AMDGPU::setup($apply, $config);
+    my @results = OCP::Cmd::Apply::AMDGPU::setup($apply, $config, %opt);
 
-Brings the stack to what C<$config> and the marker nodes ask for. Returns one
+Brings the stack to what C<$config> and the marker nodes ask for. C<< joined => 1 >>
+says the step runs for a node that just joined: each readiness wait then has
+C<join_ready_timeout> instead of C<ready_timeout>. Returns one
 result per component it acted on or confirmed: C<< { label, outcome } >> with
 an outcome for L<OCP::Cmd::Apply::DeployedHash/report_component>
 (C<removed> included), or C<< { label, error, hint } >> for one that failed.
@@ -191,8 +205,9 @@ only when the Nodes cannot be listed: then nothing is removed either.
 =cut
 
 sub setup {
-    my ($self, $config) = @_;
+    my ($self, $config, %opt) = @_;
 
+    my $budget  = $opt{joined} ? join_ready_timeout() : ready_timeout();
     my $api     = $self->_k8s_api;
     my $default = $config->gpu_amd_allocation;
     my @nodes   = $config->gpu_enabled ? marker_nodes($api) : ();
@@ -296,7 +311,7 @@ sub setup {
                 node_labeller   => 0,
             ) : ()),
         );
-        my $outcome = eval { ensure($self, $config, $api, $kubeconfig, $c, \%opts, $for{$c}) };
+        my $outcome = eval { ensure($self, $config, $api, $kubeconfig, $c, \%opts, $for{$c}, $budget) };
         if (my $err = $@) {
             push @results, { label => $COMPONENT{$c}{label}, error => $err,
                              hint  => $c eq 'dra' ? dra_hint($err) : undef };
@@ -377,7 +392,7 @@ sub options_hash {
 }
 
 sub ensure {
-    my ($self, $config, $api, $kubeconfig, $c, $opts, $nodes) = @_;
+    my ($self, $config, $api, $kubeconfig, $c, $opts, $nodes, $budget) = @_;
     my $comp = $COMPONENT{$c};
 
     my $hash     = options_hash($c, $opts);
@@ -385,8 +400,13 @@ sub ensure {
     my $recorded = defined $deployed->{ $comp->{key} };
     my $present  = ds_present($self, $api, $c);
 
+    # Up to date says nothing about the nodes: one that joined since (`ocp
+    # node add --gpu`, the worker step) gets its pod only now, so it is waited
+    # for like a deploy (k286). A wait that runs out keeps the record: the
+    # next apply has nothing to redeploy, and waits again.
     if ($recorded && $deployed->{ $comp->{key} } eq $hash && $present) {
         print "      $comp->{label} already deployed (up to date)\n";
+        wait_ready($self, $api, $c, $opts, $nodes, $budget);
         return 'unchanged';
     }
 
@@ -397,24 +417,27 @@ sub ensure {
     print "      Deploying $comp->{label} $opts->{version}...\n";
     lib_call($comp->{deploy}, kubeconfig => $kubeconfig, %$opts);
 
-    print "      Waiting for $comp->{label} on " . join(', ', map { $_->{name} } @$nodes) . "...\n";
-    wait_ready($self, $api, $c, $opts, $nodes);
+    wait_ready($self, $api, $c, $opts, $nodes, $budget);
 
     $self->_save_deployed_hash($config, $comp->{key}, $hash);
     return $outcome;
 }
 
+# Waits up to $budget seconds (ready_timeout when not given) until component
+# $c is ready on $nodes; dies with the last why when it is not.
 sub wait_ready {
-    my ($self, $api, $c, $opts, $nodes) = @_;
+    my ($self, $api, $c, $opts, $nodes, $budget) = @_;
+    $budget //= ready_timeout();
+    print "      Waiting for $COMPONENT{$c}{label} on " . join(', ', map { $_->{name} } @$nodes) . "...\n";
     my $interval = ready_interval();
-    my $tries    = int(ready_timeout() / $interval);
+    my $tries    = int($budget / $interval);
     my $short;
     for my $try (0 .. $tries) {
         $short = not_ready($self, $api, $c, $opts, $nodes);
         return 1 unless defined $short;
         $self->wait_seconds($interval) if $try < $tries;
     }
-    die "$COMPONENT{$c}{label} not ready after " . ready_timeout() . "s: $short\n";
+    die "$COMPONENT{$c}{label} not ready after ${budget}s: $short\n";
 }
 
 # Why component $c is not ready yet, or undef when it is. Readiness is what
@@ -487,8 +510,9 @@ sub dra_hint {
 =head2 step
 
     my $r = OCP::Cmd::Apply::AMDGPU::step($apply, $config);
+    my $r = OCP::Cmd::Apply::AMDGPU::step($apply, $config, joined => 1);   # ocp node add --gpu
 
-L</setup>, reported: one C<[ok]> line per result on STDOUT, a failure as
+L</setup> (C<%opt> goes to it), reported: one C<[ok]> line per result on STDOUT, a failure as
 C<[!!]> on STDERR with its cause. Never dies. Returns
 C<< { changed, failed => [labels], warned } >>, also kept on the command
 object for L</after_join>. The caller prints the C<[..] Checking AMD GPU
@@ -497,10 +521,10 @@ stack...> line in front of it.
 =cut
 
 sub step {
-    my ($self, $config) = @_;
+    my ($self, $config, %opt) = @_;
 
     my $r = { changed => 0, failed => [], warned => 0 };
-    my @results = eval { setup($self, $config) };
+    my @results = eval { setup($self, $config, %opt) };
     if (my $err = $@) {
         $err .= "\n" unless $err =~ /\n\z/;
         print STDERR "  [!!] AMD GPU stack setup failed: $err";
@@ -529,8 +553,10 @@ sub step {
 
 The AMD check once more after the worker step, when a worker that came up
 Ready carries the marker: its allocation may need a component the first
-check had no node for. The marker is set at registration, so there is
-nothing to wait for. Not run when the first check failed or warned (said
+check had no node for, and an up-to-date one still has to come up on it. The
+marker is set at registration, so there is no label to wait for; the step
+runs with C<< joined => 1 >> and waits for the new node's readiness with
+C<join_ready_timeout> (k286). Not run when the first check failed or warned (said
 already), or did not run. Returns the labels that failed, empty otherwise.
 
 =cut
@@ -559,7 +585,7 @@ sub after_join {
     return unless @amd;
 
     print "  [..] Checking AMD GPU stack again, after the worker join (" . join(', ', @amd) . ")...\n";
-    return @{ step($self, $config)->{failed} };
+    return @{ step($self, $config, joined => 1)->{failed} };
 }
 
 1;

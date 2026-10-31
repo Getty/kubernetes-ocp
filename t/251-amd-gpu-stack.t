@@ -13,6 +13,7 @@ use lib 'lib';
 use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::AMDGPU;
 use OCP::Cmd::Apply::DeployedHash;
+use OCP::Cmd::Node::Add;
 use OCP::Config;
 use OCP::Versions;
 
@@ -236,7 +237,10 @@ sub new_apply {
 
 # One AMD GPU stack step against $api with the fake library; %o: gpu (the
 # gpu: block of ocp.yaml), dir (the project, kept across runs), missing (lib
-# functions this Rex::Rancher lacks), impl (functions replaced), apply.
+# functions this Rex::Rancher lacks), impl (functions replaced), apply, step
+# (the step's options), on_wait (called with the seconds waited so far after
+# each wait: the cluster moving on), run (called with the apply command and
+# the config instead of the step).
 sub run_step {
     my ($api, %o) = @_;
     my $dir    = $o{dir} // project();
@@ -256,11 +260,14 @@ sub run_step {
             next if grep { $_ eq $fn } @{ $o{missing} // [] };
             *{"Rex::Rancher::K8s::$fn"} = $impl{$fn};
         }
-        local *OCP::Cmd::Apply::wait_seconds = sub { $waited += $_[1] };
+        local *OCP::Cmd::Apply::wait_seconds = sub {
+            $waited += $_[1];
+            $o{on_wait}->($waited) if $o{on_wait};
+        };
         ($r, $out, $err) = capture {
-            $o{after_join}
-                ? [ OCP::Cmd::Apply::AMDGPU::after_join($apply, $config, $o{after_join}) ]
-                : OCP::Cmd::Apply::AMDGPU::step($apply, $config)
+              $o{run}        ? $o{run}->($apply, $config)
+            : $o{after_join} ? [ OCP::Cmd::Apply::AMDGPU::after_join($apply, $config, $o{after_join}) ]
+            :                  OCP::Cmd::Apply::AMDGPU::step($apply, $config, %{ $o{step} // {} })
         };
     }
     my @calls = @{ $api->{calls} };
@@ -742,6 +749,223 @@ subtest 'both apply paths run the step and the after-join check' => sub {
         like $src, qr/OCP::Cmd::Apply::AMDGPU::after_join\(\$self, \$config, \\\@results\)/,
             "$file: after the worker step";
     }
+};
+
+#
+# k286: "up to date" said nothing about a node that joined since. On amdlab
+# (2026-10-31) a second `ocp node add synapse --gpu` into a deployed stack
+# printed "[ok] AMD GPU device plugin up to date" and returned while synapse
+# had no amd.com/gpu at all; allocatable 1 came ~300 s later. An unchanged
+# component now waits like a deployed one, on every node it selects. A step
+# that runs for a node that just joined (`ocp node add --gpu`, the check after
+# the worker join) gets join_ready_timeout: the marker is there from
+# registration, so the wait starts while Cilium is still on its first BPF
+# compile for the fresh node, which failed every sandbox there for ~5.5 min
+# (the plugin pod came up ~7 min after registration).
+#
+
+# A marker node that joins a cluster whose stack is deployed. Each DaemonSet
+# that selects it schedules a pod there at once. The pods turn ready after
+# `pod` seconds of waiting; the plugin's GPU shows in allocatable, and the
+# DRA driver's slice is published, after `gpu` seconds (default: with the
+# pods). undef means never. Returns the on_wait hook for run_step.
+sub join_node {
+    my ($api, $name, %o) = @_;
+    $api->node($name, $MARKER => 'true');
+    my $n  = $api->{nodes}{$name};
+    my @on = grep { my $ds = $api->{ds}{ $DS{$_} };
+                    $ds && scheduler_selects($ds->{spec}{affinity}, $n->{metadata}{labels}) } sort keys %DS;
+    for my $c (@on) {
+        $api->{ds}{ $DS{$c} }{status}{$_}++ for qw(desiredNumberScheduled updatedNumberScheduled);
+    }
+    my $gpu = exists $o{gpu} ? $o{gpu} : $o{pod};
+    my ($pod_done, $gpu_done);
+    my $hook = sub {
+        my ($waited) = @_;
+        if (defined $o{pod} && $waited >= $o{pod} && !$pod_done++) {
+            $api->{ds}{ $DS{$_} }{status}{numberReady}++ for @on;
+        }
+        if (defined $gpu && $waited >= $gpu && !$gpu_done++) {
+            for my $c (@on) {
+                $n->{status}{$_}{'amd.com/gpu'} = '1' for $c eq 'device_plugin' ? qw(capacity allocatable) : ();
+                push @{ $api->{slices} }, { spec => { driver => 'gpu.amd.com', nodeName => $name } }
+                    if $c eq 'dra';
+            }
+        }
+    };
+    $hook->(0);
+    return $hook;
+}
+
+my $NOLAB  = "gpu:\n  amd:\n    labeller: false\n";
+my $BUDGET = OCP::Cmd::Apply::AMDGPU::ready_timeout();
+my $JOINED = OCP::Cmd::Apply::AMDGPU::join_ready_timeout();
+
+# A cluster with the stack deployed for synapse, as $gpu asks.
+sub deployed_for_synapse {
+    my ($gpu) = @_;
+    my $api = AmdApi->new;
+    $api->node('synapse', $MARKER => 'true');
+    my $first = run_step($api, gpu => $gpu);
+    die "the first deploy failed\n" if @{ $first->{r}{failed} };
+    return ($api, $first);
+}
+
+subtest 'k286: up to date waits for a node that joined, on every node the plugin selects' => sub {
+    my ($api, $first) = deployed_for_synapse($NOLAB);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB,
+        on_wait => join_node($api, 'nova', pod => 60, gpu => 120));
+    is_deeply $res->{fns}, [], 'nothing deployed: the stack is up to date';
+    like $res->{out}, qr/AMD GPU device plugin already deployed \(up to date\)\n {6}Waiting for AMD GPU device plugin on nova, synapse\.\.\.\n/,
+        'and still waited, on both nodes, in the words of a deploy';
+    is $res->{waited}, 120, 'past the pod turning ready, until amd.com/gpu showed in allocatable';
+    like $res->{out}, qr/\[ok\] AMD GPU device plugin up to date/, 'then up to date';
+    is $res->{r}{changed}, 0, 'no change counted';
+    is_deeply $res->{r}{failed}, [], 'nothing failed';
+    is $res->{err}, '', 'nothing on STDERR';
+};
+
+subtest 'k286: a joined node that never shows its GPU fails the unchanged component' => sub {
+    my ($api, $first) = deployed_for_synapse($NOLAB);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB,
+        on_wait => join_node($api, 'nova', pod => 0, gpu => undef));
+    is $res->{waited}, $BUDGET, 'the whole budget';
+    like $res->{err}, qr/\A  \[!!\] AMD GPU device plugin setup failed: AMD GPU device plugin not ready after ${BUDGET}s: node 'nova' shows no amd\.com\/gpu in status\.allocatable\n\z/,
+        'the failure a deploy has, on STDERR';
+    unlike $res->{out}, qr/\[ok\] AMD GPU device plugin/, 'no [ok] for it';
+    is_deeply $res->{r}{failed}, ['AMD GPU device plugin'], 'a failed component';
+    ok defined $res->{hashes}{'amd-gpu-device-plugin'}, 'the record stays: there is nothing to redeploy';
+
+    my $again = run_step($api, dir => $first->{dir}, gpu => $NOLAB);
+    is_deeply $again->{fns}, [], 'the next apply deploys nothing';
+    is $again->{waited}, $BUDGET, 'and waits again';
+
+    ($api, $first) = deployed_for_synapse($NOLAB);
+    $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, on_wait => join_node($api, 'nova', pod => undef));
+    like $res->{err}, qr{not ready after ${BUDGET}s: DaemonSet kube-system/\Q$DS{device_plugin}\E has 1 of 2 pod\(s\) ready\n},
+        'a pod that never turns ready: the DaemonSet\'s count';
+};
+
+subtest 'k286: under DRA the unchanged driver waits for the new node\'s ResourceSlice' => sub {
+    my $dra = "gpu:\n  amd:\n    labeller: false\n    allocation: dra\n";
+    my ($api, $first) = deployed_for_synapse($dra);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $dra,
+        on_wait => join_node($api, 'nova', pod => 0, gpu => 40));
+    like $res->{out}, qr/AMD GPU DRA driver already deployed \(up to date\)\n {6}Waiting for AMD GPU DRA driver on nova, synapse\.\.\.\n/,
+        'waited on both nodes';
+    is $res->{waited}, 40, 'until the slice was there, not just the pod';
+    is_deeply $res->{r}{failed}, [], 'nothing failed';
+
+    ($api, $first) = deployed_for_synapse($dra);
+    $res = run_step($api, dir => $first->{dir}, gpu => $dra, on_wait => join_node($api, 'nova', pod => 0, gpu => undef));
+    like $res->{err}, qr/AMD GPU DRA driver not ready after ${BUDGET}s: no ResourceSlice of driver gpu\.amd\.com for node 'nova'\n/,
+        'no slice: failed';
+};
+
+subtest 'k286: the labeller waits for the new node\'s pod too' => sub {
+    my $lab = "gpu:\n  amd:\n    allocation: none\n";
+    my ($api, $first) = deployed_for_synapse($lab);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $lab, on_wait => join_node($api, 'nova', pod => 50));
+    like $res->{out}, qr/AMD GPU node labeller already deployed \(up to date\)\n {6}Waiting for AMD GPU node labeller on nova, synapse\.\.\.\n/,
+        'waited';
+    is $res->{waited}, 50, 'until its pod there was ready';
+
+    ($api, $first) = deployed_for_synapse($lab);
+    $res = run_step($api, dir => $first->{dir}, gpu => $lab, on_wait => join_node($api, 'nova', pod => undef));
+    like $res->{err}, qr{AMD GPU node labeller not ready after ${BUDGET}s: DaemonSet kube-system/\Q$DS{labeller}\E has 1 of 2 pod\(s\) ready},
+        'never: failed';
+};
+
+subtest 'k286: a step for a node that just joined has join_ready_timeout' => sub {
+    cmp_ok $JOINED, '>=', 420, 'the budget covers synapse\'s ~7 min from registration to the plugin pod';
+    cmp_ok $BUDGET, '<', 420, 'the step before the worker join keeps its own, shorter budget';
+
+    my ($api, $first) = deployed_for_synapse($NOLAB);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, on_wait => join_node($api, 'nova', pod => 420));
+    like $res->{err}, qr/not ready after ${BUDGET}s: /, 'the plain step: the fresh node runs out of its budget';
+
+    ($api, $first) = deployed_for_synapse($NOLAB);
+    $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, step => { joined => 1 },
+        on_wait => join_node($api, 'nova', pod => 420));
+    is $res->{waited}, 420, 'joined: the same node is waited for';
+    is_deeply $res->{r}{failed}, [], 'and is ready';
+    is $res->{err}, '', 'nothing on STDERR';
+
+    ($api, $first) = deployed_for_synapse($NOLAB);
+    $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, step => { joined => 1 },
+        on_wait => join_node($api, 'nova', pod => 0, gpu => undef));
+    is $res->{waited}, $JOINED, 'joined, never: the whole join budget';
+    like $res->{err}, qr/AMD GPU device plugin not ready after ${JOINED}s: node 'nova' shows no amd\.com\/gpu/,
+        'and the failure names it';
+
+    # A deploy for a node that just joined (the check after the worker join
+    # with no AMD node before it): its pod turns ready after 420 s as well.
+    $api = AmdApi->new(pods_unready => { device_plugin => 1 }, no_allocatable => 1);
+    $api->node('nova', $MARKER => 'true');
+    $res = run_step($api, gpu => $NOLAB, step => { joined => 1 }, on_wait => sub {
+        return if $_[0] < 420;
+        $api->{ds}{ $DS{device_plugin} }{status}{numberReady} = 1;
+        $api->{nodes}{nova}{status}{allocatable}{'amd.com/gpu'} = '1';
+    });
+    is_deeply $res->{fns}, ['deploy_amd_device_plugin'], 'a deploy';
+    is $res->{waited}, 420, 'a deploy for a node that just joined has the same budget';
+    is_deeply $res->{r}{failed}, [], 'and is ready';
+};
+
+subtest 'k286 ocp apply: a second AMD node joined by the worker step is waited for' => sub {
+    my ($api, $first) = deployed_for_synapse($NOLAB);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, apply => $first->{apply},
+        on_wait    => join_node($api, 'nova', pod => 0, gpu => 420),
+        after_join => [ { name => 'nova', phase => 'Ready' } ]);
+    like $res->{out}, qr/Checking AMD GPU stack again, after the worker join \(nova\)/, 'the check after the join';
+    like $res->{out}, qr/already deployed \(up to date\)\n {6}Waiting for AMD GPU device plugin on nova, synapse\.\.\.\n/,
+        'waits although the stack is up to date';
+    is $res->{waited}, 420, 'with the join budget: the fresh node gets there';
+    is_deeply $res->{r}, [], 'nothing failed';
+
+    ($api, $first) = deployed_for_synapse($NOLAB);
+    $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, apply => $first->{apply},
+        on_wait    => join_node($api, 'nova', pod => 0, gpu => undef),
+        after_join => [ { name => 'nova', phase => 'Ready' } ]);
+    is_deeply $res->{r}, ['AMD GPU device plugin'], 'never: a failed component of the apply';
+    like $res->{err}, qr/not ready after ${JOINED}s: node 'nova' shows no amd\.com\/gpu/, 'said on STDERR';
+};
+
+subtest 'k286 ocp node add --gpu: an AMD node joined into an up-to-date stack is waited for' => sub {
+    # _ensure_gpu_stack is what `ocp node add --gpu` runs once the node is
+    # Ready (t/220 drives it from execute). Here it runs the real step.
+    my $node_add = sub {
+        my ($api) = @_;
+        my $label_waits = 0;
+        my $add = OCP::Cmd::Node::Add->new(name => 'nova', gpu => 1, command_chain => [ FakeOcp->new ]);
+        $add->{_kc_temp} = $KC;
+        return (sub {
+            my ($apply, $config) = @_;
+            no warnings 'redefine';
+            local *OCP::Cmd::Node::Add::wait_seconds = sub { $label_waits++ };
+            return $add->_ensure_gpu_stack($api, $config);
+        }, \$label_waits);
+    };
+
+    my ($api, $first) = deployed_for_synapse($NOLAB);
+    my ($run, $label_waits) = $node_add->($api);
+    my $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, run => $run,
+        on_wait => join_node($api, 'nova', pod => 0, gpu => 420));
+    is $res->{r}, 1, 'ensured';
+    is $$label_waits, 0, 'the marker is there from registration: no label wait';
+    like $res->{out}, qr/Waiting for node 'nova' to show its GPU\.\.\.\n  \[\.\.\] Checking AMD GPU stack\.\.\.\n.*AMD GPU device plugin already deployed \(up to date\)\n {6}Waiting for AMD GPU device plugin on nova, synapse\.\.\.\n  \[ok\] AMD GPU device plugin up to date\n/s,
+        'the check, up to date, and the wait for the new node';
+    is $res->{waited}, 420, 'the fresh node\'s plugin within the join budget';
+    is $res->{err}, '', 'nothing on STDERR';
+
+    ($api, $first) = deployed_for_synapse($NOLAB);
+    ($run) = $node_add->($api);
+    $res = run_step($api, dir => $first->{dir}, gpu => $NOLAB, run => $run,
+        on_wait => join_node($api, 'nova', pod => 0, gpu => undef));
+    ok !$res->{r}, 'never: not ensured';
+    is $res->{waited}, $JOINED, 'after the join budget';
+    like $res->{err}, qr/\[!!\] AMD GPU device plugin setup failed: AMD GPU device plugin not ready after ${JOINED}s: node 'nova' shows no amd\.com\/gpu in status\.allocatable\n {7}AMD GPU stack not ensured\. Run `ocp apply` to deploy it\.\n/,
+        'the cause and the way on, on STDERR, as for a failed rollout';
 };
 
 done_testing;

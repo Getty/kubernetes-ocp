@@ -862,7 +862,11 @@ sub _ssh_keys_note {
 # NVIDIA nodes it detects, this one among them (k273,
 # OCP::Cmd::Apply::Workloads wait_gpu_allocatable). It says a node that does
 # not get there itself, as a [WARN]. No `ocp apply` hint is added: an apply
-# would only wait again.
+# would only wait again. The AMD GPU stack check waits for amd.com/gpu in
+# status.allocatable (a ResourceSlice under DRA) on every node its components
+# select, this one among them and up to date or not, with the budget of a
+# freshly joined node (k286, OCP::Cmd::Apply::AMDGPU join_ready_timeout). A
+# node that does not get there fails the component, said with `ocp apply`.
 #
 # Never fatal: the node is Ready, which is what `ocp node add` promised. No GPU
 # in time or a failed rollout is said on STDERR together with the way to get
@@ -914,12 +918,14 @@ sub _ensure_gpu_operator {
 }
 
 # The step reports each component itself, a failure on STDERR with its cause;
-# what is left to say is the way to try again.
+# what is left to say is the way to try again. It waits for the node that
+# just joined, up to date or not, with the budget of a fresh node (k286,
+# OCP::Cmd::Apply::AMDGPU join_ready_timeout).
 sub _ensure_amd_gpu_stack {
     my ($self, $api, $config) = @_;
 
     print "  [..] Checking AMD GPU stack...\n";
-    my $r = OCP::Cmd::Apply::AMDGPU::step($self->_apply_cmd($api), $config);
+    my $r = OCP::Cmd::Apply::AMDGPU::step($self->_apply_cmd($api), $config, joined => 1);
     return 0 if $r->{warned};
     return 1 unless @{ $r->{failed} };
     print STDERR "       AMD GPU stack not ensured. Run `ocp apply` to deploy it.\n";
@@ -1024,6 +1030,15 @@ does not show it gets a C<[WARN]> on STDERR that says what the node shows
 instead.  The exit code does not change:
 
     [WARN] NVIDIA GPU not ready after 300s: node 'brain' shows no nvidia.com/gpu in status.allocatable
+
+The AMD GPU stack check waits up to ten minutes, also when the stack was up
+to date, for C<amd.com/gpu> in C<status.allocatable> (for the DRA driver, a
+ResourceSlice) on every AMD node its components select, this one among them
+(k286).  The budget is that of a freshly joined node, whose pods get no
+sandbox until Cilium is done with it.  A node that does not get there fails
+the component, with the cause and C<ocp apply> named on STDERR:
+
+    [!!] AMD GPU device plugin setup failed: AMD GPU device plugin not ready after 600s: node 'synapse' shows no amd.com/gpu in status.allocatable
 
 Pass C<--nowait> to write the CR and return immediately.  The older
 C<--no_wait> spelling is kept as an alias.  There is deliberately no

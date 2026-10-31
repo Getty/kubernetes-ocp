@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add --gpu` and `ocp apply` now wait for an AMD node that
+      joined an up-to-date AMD GPU stack until `amd.com/gpu` shows in its
+      allocatable (a ResourceSlice under DRA), with 10 minutes for a
+      freshly joined node instead of 5; before, they said "up to date"
+      and returned while the node had no GPU.
     - `ocp apply` reads the Cilium Gateway first and says what it did:
       "Creating Cilium Gateway..." only when there is none, "already
       deployed (up to date)" when the apply changed nothing. A Gateway
