@@ -263,17 +263,32 @@ sub gateway_setup {
     my $api = ReadApi->new(responses => { $GW_PATH => [ @answers ] });
     my $apply = new_apply($api);
     no warnings 'redefine';
-    local *OCP::Cmd::Apply::_server_side_apply = sub { 1 };
+    my $applied = 0;
+    local *OCP::Cmd::Apply::_server_side_apply = sub { $applied++; 1 };
     local *OCP::Cmd::Apply::wait_seconds = sub { };
     my ($rv, $out, $err, $died) = capture { OCP::Cmd::Apply::Network::setup_cilium_gateway($apply, FakeConfig->new); 1 };
-    return { ok => $rv, out => $out, died => $died,
+    return { ok => $rv, out => $out, died => $died, applied => $applied,
              reads => scalar grep { $_ eq $GW_PATH } @{ $api->{reads} } };
 }
 
-subtest 'Cilium Gateway: the Accepted wait reads again, then dies with the last read failure' => sub {
+# Since k300 the Gateway is read before the apply and once after it, to tell
+# created from updated from up to date; the Accepted wait comes after that.
+my $GW_THERE = [ 200, '{"metadata":{"generation":1}}' ];
+
+subtest 'Cilium Gateway: a read before the apply that fails dies with its cause' => sub {
     for my $code (403, 500) {
         my $res = gateway_setup([ $code, 'refused' ]);
-        is $res->{reads}, 30, "$code: read for the whole wait";
+        is $res->{died}, "GET $GW_PATH failed: HTTP $code refused\n", "$code: the death names the cause";
+        is $res->{reads}, 1, "$code: not polled";
+        is $res->{applied}, 0, "$code: and not applied as if there were none";
+        unlike $res->{out}, qr/Creating Cilium Gateway/, "$code: not called missing";
+    }
+};
+
+subtest 'Cilium Gateway: the Accepted wait reads again, then dies with the last read failure' => sub {
+    for my $code (403, 500) {
+        my $res = gateway_setup($GW_THERE, $GW_THERE, [ $code, 'refused' ]);
+        is $res->{reads}, 2 + 30, "$code: read for the whole wait";
         is $res->{died}, "Gateway 'cilium-gateway' did not become Accepted within 60s;"
             . " the last read failed: GET $GW_PATH failed: HTTP $code refused\n", "$code: the death names the cause";
     }
@@ -281,7 +296,7 @@ subtest 'Cilium Gateway: the Accepted wait reads again, then dies with the last 
     my $res = gateway_setup([ 404, '{}' ]);
     is $res->{died}, "Gateway 'cilium-gateway' did not become Accepted within 60s\n", '404: no read failure to name';
 
-    $res = gateway_setup([ 500, 'blip' ],
+    $res = gateway_setup($GW_THERE, $GW_THERE, [ 500, 'blip' ],
         [ 200, '{"status":{"conditions":[{"type":"Accepted","status":"True"}]}}' ]);
     ok $res->{ok}, 'a 500 once, then Accepted: done';
     like $res->{out}, qr/Gateway is accepted/, 'said';

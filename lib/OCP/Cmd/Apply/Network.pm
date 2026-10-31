@@ -206,15 +206,15 @@ sub acme_issuer {
     };
 }
 
+# Puts the Cilium Gateway in place and says what that took: 'deployed' (there
+# was none), 'updated' (the apply changed its spec) or 'unchanged' -- the
+# vocabulary of OCP::Cmd::Apply::DeployedHash::report_component.
 sub setup_cilium_gateway {
     my ($self, $config) = @_;
 
     my $api = $self->_k8s_api;
 
     # Gateway API CRDs are already installed by Rexfile (before Cilium)
-
-    # Create Cilium Gateway via server-side apply
-    print "      Creating Cilium Gateway...\n";
 
     my $gateway = {
         apiVersion => 'gateway.networking.k8s.io/v1',
@@ -247,7 +247,34 @@ sub setup_cilium_gateway {
         },
     };
 
+    # Gateway is a CRD (gateway.networking.k8s.io), not a core resource —
+    # $api->get('Gateway', ...) fails silently because Kubernetes::REST has
+    # no IO::K8s class for it. Use raw API path instead.
+    my $gw_path = '/apis/gateway.networking.k8s.io/v1/namespaces/kube-system/gateways/cilium-gateway';
+
+    # Read first, so the progress report says what this run does: it said
+    # "Creating Cilium Gateway..." on every apply, over a Gateway created once
+    # and never changed since (k300). Only a 404 is "there is none"; any other
+    # failed read dies with its cause, which the caller reports on STDERR --
+    # a Gateway nobody could read is neither missing nor up to date (k269).
+    my $before = $self->_crd_get($api, $gw_path);
+    print "      Creating Cilium Gateway...\n" unless $before;
+
+    # Applied on every run all the same: the forced server-side apply is what
+    # takes back a field someone else changed, and only the API server knows
+    # whether the apply changed the spec. metadata.generation says so -- it
+    # moves on a spec change and on nothing else (amdlab's Gateway: generation
+    # 1 after six applies).
     $self->_server_side_apply($api, $gateway);
+    my $after = $self->_crd_get($api, $gw_path);
+
+    my ($was, $now) = map { ref $_ eq 'HASH' && ref $_->{metadata} eq 'HASH'
+                                ? $_->{metadata}{generation} : undef } $before, $after;
+    my $outcome = !$before ? 'deployed'
+                : defined $was && defined $now && $was eq $now ? 'unchanged'
+                : 'updated';
+    print "      Cilium Gateway already deployed (up to date)\n" if $outcome eq 'unchanged';
+    print "      Cilium Gateway updated (spec changed)\n"        if $outcome eq 'updated';
 
     # Wait for the Gateway resource to be *Accepted* by the Cilium gateway
     # controller. We deliberately do NOT wait for Programmed=True: the HTTPS
@@ -255,30 +282,48 @@ sub setup_cilium_gateway {
     # point, so Programmed stays False until cert-manager finishes its work
     # later. Accepted is the "controller has claimed this Gateway" signal and
     # is enough for our setup ordering.
+    #
+    # Not waited for when the read after the apply already says Accepted for
+    # the spec as it stands -- the up-to-date run (k300). A Gateway the
+    # controller never accepted, or accepted only in an earlier generation,
+    # is still waited for, so skipping the wait hides nothing.
+    return $outcome if gateway_accepted($after);
+
     print "      Waiting for Gateway to be Accepted by Cilium...\n";
-    # Gateway is a CRD (gateway.networking.k8s.io), not a core resource —
-    # $api->get('Gateway', ...) fails silently because Kubernetes::REST has
-    # no IO::K8s class for it. Use raw API path instead.
     # A read that fails is polled again like a Gateway not Accepted yet; when
     # the last one failed too, the death says its cause (k269).
-    my $gw_path = '/apis/gateway.networking.k8s.io/v1/namespaces/kube-system/gateways/cilium-gateway';
     my $read_err;
     for my $i (1..30) {
         my $gw = eval { $self->_crd_get($api, $gw_path) };
         $read_err = $@;
-        if ($gw && $gw->{status} && $gw->{status}{conditions}) {
-            for my $cond (@{ $gw->{status}{conditions} }) {
-                if ($cond->{type} eq 'Accepted' && $cond->{status} eq 'True') {
-                    print "      Gateway is accepted (Programmed will follow once cert-manager provides the Secret)\n";
-                    return;
-                }
-            }
+        if (gateway_accepted($gw)) {
+            print "      Gateway is accepted (Programmed will follow once cert-manager provides the Secret)\n";
+            return $outcome;
         }
         $self->wait_seconds(2);
     }
     chomp $read_err if $read_err;
     die "Gateway 'cilium-gateway' did not become Accepted within 60s"
         . ($read_err ? "; the last read failed: $read_err" : '') . "\n";
+}
+
+# Whether the Gateway $gw, as read, is Accepted by its controller: a condition
+# Accepted=True, written for the generation the Gateway has now when the
+# condition says which one it was written for. One from an earlier generation
+# speaks for a spec that is no longer there (Gateway API conditions carry
+# observedGeneration, and its conformance suite checks that a controller
+# bumps it: GatewayObservedGenerationBump).
+sub gateway_accepted {
+    my ($gw) = @_;
+    return 0 unless ref $gw eq 'HASH' && ref $gw->{status} eq 'HASH';
+    my $generation = ref $gw->{metadata} eq 'HASH' ? $gw->{metadata}{generation} : undef;
+    for my $cond (@{ $gw->{status}{conditions} // [] }) {
+        next unless ref $cond eq 'HASH'
+            && ($cond->{type} // '') eq 'Accepted' && ($cond->{status} // '') eq 'True';
+        return 1 unless defined $generation && defined $cond->{observedGeneration};
+        return 1 if $cond->{observedGeneration} >= $generation;
+    }
+    return 0;
 }
 
 #

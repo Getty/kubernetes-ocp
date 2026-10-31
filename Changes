@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` reads the Cilium Gateway first and says what it did:
+      "Creating Cilium Gateway..." only when there is none, "already
+      deployed (up to date)" when the apply changed nothing. A Gateway
+      already accepted at its current spec is not waited on again. A
+      read failing with anything but a 404 fails the Gateway step at
+      once, with its cause.
     - `ocp apply` refuses an unknown key under `network:`,
       `network.lb_pool` and `network.l2` (a typo like `pod_cdir` leaves
       the default in force), and a `network.lb_pool` whose `start` is
