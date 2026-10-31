@@ -1,0 +1,55 @@
+---
+claimed_at: 2026-10-31T04:24:54Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:24:59Z
+created: 2026-10-31T03:42:04Z
+id: 281
+priority: low
+started: 2026-10-31T04:24:59Z
+status: done
+tags:
+- skills
+- docs
+title: 'ocp-usage skill: no network: block in the schema, six commands missing, stale
+  verified header'
+updated: 2026-10-31T04:24:59Z
+---
+
+Found under k271 (2026-10-31) while catching ocp-usage up with node_ip and gpu.amd.
+
+- The ocp.yaml schema has no `network:` block: `pod_cidr`, `lb_pool` (cidr, or start+stop, k127), `l2` (interfaces, node_selector, k210).
+- The command reference is missing `ocp status --json`, `ocp health`, `ocp node ls --json`, `ocp node rm --keep-machine`, `ocp node trust-host` and `ocp deploy-image`.
+- The "verified 2026-08-16" header is stale.
+
+Done = each item checked against lib/ (OCP::Config, the Cmd classes) and in the skill; the header re-dated to the check. Skill text, so an ocp-* agent (infra or doc lane) edits it, not the main agent.
+
+2026-10-31 04:13 Code findings while checking (not fixed, not in scope):
+1. OCP::Config::validate has no caller in lib/ or bin/ -- only t/ runs it. ocp apply never reports a config error up front: network.* (lb_pool, l2, pod_cidr overlaps), cilium:, gpu.amd:, robocop.security_level, control_planes[].node_ip. Code that relies on it: Bootstrap.pm cp_node_ip ('OCP::Config has refused a malformed one already'), Config.pm comment ('so ocp apply lists it with every other config error'). The skill's node_ip paragraph ('refused before anything is ordered') and the gpu.amd 'validate error' line therefore hold only once validate is wired in; state lane.
+2. LB-IPAM failure (e.g. multi-node without network.lb_pool) prints '[WARN] LB-IPAM setup failed' on STDOUT, deploy path (Apply/Deploy.pm) and reconcile path (Apply/Drift.pm), and is not counted as a failed component -- unlike the Cilium Gateway (STDERR + counted, k231). Against the STDOUT/STDERR rule and ADR 0017.
+3. _validate_network reports no unknown key under network:, lb_pool, l2 (a typo like network.lbpool is silently ignored), unlike cilium: and gpu.amd:. Also no start<=stop check on lb_pool.
+4. DeployImage.pm _resolve_cluster: die "--cluster '$self->cluster' contradicts ..." interpolates the object (OCP::Cmd::DeployImage=HASH(...)->cluster), not the value. Its POD also says --cluster 'must match the spec name' / 'dies on a mismatching --cluster'; the code only compares --cluster with OCP_CLUSTER, and the name selects nothing (only printed).
+5. Node/Ls.pm POD says pool is read only from annotation ocp.internal/pool; the code falls back to ocp.yaml's pools (_pools_of). Nothing in lib/ sets that annotation.
+6. Node/TrustHost.pm comment says 'a closed or non-terminal stdin answers no'; the code reads one line, so a piped 'y' confirms (only EOF/other answers no). Comment only.
+
+2026-10-31 04:13 Also found in the skill itself, outside this card's six items (left as is, for the dispatcher):
+- 'ocp hetzner [--list] [--label KEY=VAL]' is wrong: it is the subcommand 'ocp hetzner list [--label K=V]' (OCP::Cmd::Hetzner dies 'subcommand required').
+- 'ocp kubeconfig --readonly [--name NAME] [--server URL] [--revoke]' (k230) is missing from the command reference.
+- 'ocp provider add --ssh-key-name' is missing; the root '--pins-stdin' (k166, every command) is not mentioned.
+- The 'PIN2 prompts' list lacks 'ocp node rm' on an ssh node (the cluster key; now said in the node rm entry).
+
+2026-10-31 04:13 Done in .claude/skills/ocp-usage/SKILL.md (tracked, repo-owned):
+- header re-dated 2026-10-31, scoped: today's check = network block + the six commands, source and POD only, no live run; the 2026-08-16 live-run claim kept for the rest
+- dash/underscore paragraph: negatable options are the exception (deploy-image --no-restart/--no-wait, t/54)
+- ocp status [--json]: exit codes, JSON keys incl. deployed/error/amd_gpu, gpu = allocatable
+- ocp health [--json]: new entry (classification, exit codes, JSON shape, reason instability)
+- ocp deploy-image: new entry (--image|--tag/--repo, env patch k187, restart, --wait/--timeout, override k227, --cluster selects nothing)
+- ocp node rm [--keep-machine]: teardown order, PIN2 for ssh, k175 failure path, lease, k229 --keep-machine
+- ocp node trust-host NAME [--yes]: new entry
+- ocp node ls [--json]: IP column source, JSON keys, gpu/reconciler/pool
+- schema: network: block; new subsection 'network' (pod_cidr k182/k184, lb_pool k127, l2 k127/k210, the checks, validate unwired)
+Verified by reading OCP::Config, OCP::Cmd::{Status,Health,DeployImage,Node::Ls,Node::Rm,Node::TrustHost}, Apply/Network.pm, Apply/Deploy.pm, Apply/Drift.pm, OCP::Drift pod_cidr_drift, OCP::Role::Cmd, t/54. No make test: no test reads skill files. Code findings in the notes above.
+
+2026-10-31 04:16 Heads-up for whoever commits: k255 is in flight in the shared tree (untracked t/255-apply-validates-config.t: ocp apply and --dry-run call validate() first; ocp status does not). Code finding 1 above is k255's. The new ocp-usage bullet 'No command calls validate today (only t/ does), so ocp apply does not refuse a bad value before it uses it' is true at HEAD and goes stale when k255 lands -- commit k281 first and have k255 replace that bullet, or swap it to 'ocp apply and ocp apply --dry-run run validate before anything (k255); ocp status does not' if k255 commits first.
+
+Committed as f71b78e
