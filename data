@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-10-31T14:03:13Z
+created: 2026-10-31T12:19:35Z
+id: 352
+priority: low
+started: 2026-10-31T14:03:13Z
+status: done
+tags:
+- docs
+- gpu
+title: 'Docs after k350: the AMD GPU probes are self_healing, not report-only (ocp-gpu
+  skill, amd.md, AMD spec doc)'
+updated: 2026-10-31T14:03:13Z
+---
+
+Left over from k350 (2026-10-31). The four AMD GPU DaemonSet probes are self_healing since k350: the AMD step of `ocp apply` redeploys one whose image tag is off its pin. These places still call them report-only:
+- .claude/skills/ocp-gpu/SKILL.md:74
+- .claude/skills/ocp-gpu/references/amd.md:287
+- docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md:24 and :286 (main agent, plain prose)
+
+Lane: ocp-doc-writer for the skill text; the main agent for the spec doc. Do it after k350 is committed. Line numbers are as of 12d049a.
+
+Done = no doc calls the AMD probes report-only. Each place says: a pin bump and an image changed in the cluster are both redeployed; args and other fields are not compared.
+
+More docs from k347 (2026-10-31): .claude/skills/ocp-usage/SKILL.md:310 still lists network_interface, which nothing has read since k138 and which validate() refuses since k347 (unknown key). Same lane (doc-writer), after k347 is committed.
+
+Spec doc part done by the main agent (2026-10-31, uncommitted in the shared tree): docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md, the pinning bullet and §5. Skill text (ocp-gpu SKILL.md:74, references/amd.md:287, ocp-usage SKILL.md:310) goes to the doc-writer after k351 lands, so SKILL.md:74's bullet, which also covers nfd and gpu_operator, needs one pass only.
+
+From k253 (2026-10-31): docs/configuration.md does not document the gpu.amd block at all (allocation, resource_naming, labeller, metrics, integrated). k253's patch already updates ocp-gpu SKILL.md/amd.md and ocp-usage SKILL.md for integrated; the doc-writer pass for this card builds on it.
+
+Spec doc committed as 7096407. Still open: .claude/skills/ocp-gpu/SKILL.md:74 and references/amd.md:287 (k253 touches both files; the card stays in its column).
+
+2026-10-31 (main, from k346/k321): also for the doc pass: docs/security.md and the ocp-usage skill don't yet say that ocp keys secure (k321, all of validate()) and ocp keys operator add|rm / --drop-bootstrap (k346, the machine shapes) check ocp.yaml before PIN1. Also: new lib/OCP/ErrorLine.pm (k342) uses =head1 NAME + =head2 one_line next to # ABSTRACT. Bring it to the house format (=method/=func, no hand-written NAME); k317 is looking at doubled NAME sections in the dzil build.
+
+2026-10-31 (main): the OCP::ErrorLine POD point has moved to k364 (all hand-written NAME sections); leave it out here.
+
+2026-10-31 (main, from k358): skill ocp-usage (~line 193) says '--gpu ... opens the integrated-GPU gate'. That doesn't hold under gpu.enabled: false (the kill switch wins, on node add since k358 and on robocop's join since k31). Also, the comment on OCP::Provider::gpu_flags_from_cr names two callers; ocp node add is the third since k358 (comment only, can go with this doc pass).
+
+2026-10-31 (main for ocp-doc-writer): skill text and docs are done, uncommitted in the shared tree. Files: .claude/skills/ocp-gpu/SKILL.md (GPU probes bullet: all six self-healing, k350 AMD + k351 NFD/GPU Operator, tag vs pin via version_against_pin, args not compared, nfd-worker unprobed k369); .claude/skills/ocp-gpu/references/amd.md (the unchanged definition, the k350 pin read, Drift section); .claude/skills/ocp-usage/SKILL.md (node add --gpu vs the kill switch k358/k31, keys secure/operator check before PIN1 k321/k346, CP key comment without network_interface k347, Reconciliation item 2 with k351); docs/security.md (pre-PIN1 checks); docs/configuration.md (new gpu.amd section + example, k347 unknown-key bullet); lib/OCP/Provider.pm (comment + POD only: three from_cr callers since k358). Main checked the configuration.md claims against the code (removal under gpu.enabled false, metrics port 5000, DRA 1.34, the allocation label). Commit after batch 4: it documents k346/k351/k358.
+
+Docs done, in the shared tree; commit after batch 4 (explicit paths: the 6 files above).
+
+Committed as b6a0d41: ocp-gpu SKILL.md and references/amd.md, ocp-usage SKILL.md, docs/configuration.md, docs/security.md, Provider.pm comment+POD
