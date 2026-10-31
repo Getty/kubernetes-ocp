@@ -1,0 +1,65 @@
+---
+class: standard
+completed: 2026-10-31T01:11:33Z
+created: 2026-10-30T23:43:47Z
+depends_on:
+- 248
+id: 249
+priority: high
+started: 2026-10-31T01:11:33Z
+status: done
+tags:
+- gpu
+- amd
+- infra
+title: 'AMD-GPU: Host-Install (Rexfile install_amd, gfx-Target-Label) + Versions-Pins'
+updated: 2026-10-31T01:11:33Z
+---
+
+Design docs/superpowers/specs/2026-10-31-amd-gpu-worker-design.md, Abschnitte 1 und 4. Lane ocp-infra-worker: share/Rexfile, lib/OCP/Versions.pm. Teil von k248.
+
+2026-10-30 23:55 Findings before code: (1) a nested do_task forks a child that opens its own connection and exits 0 — its return value and package state never reach the caller (verified with a local toy Rexfile under Rex 1.16.1: do_task returned the Rex::Task object, X unset; a dying child is logged as ERROR and makes rex exit 1, but the parent carries on). So the gfx target cannot come back from detect_gpu while _maybe_detect_gpu calls it through do_task. (2) Rex registers every task as a function too; called that way it runs in-process on the current connection, returns the task's value and propagates die (verified, same pid). Plan: detect_gpu and install_amd are called as task functions (still tasks with callers, t/196 holds), install_amd returns the ocp.internal/amd-gpu.gfx-target label(s), _install_agent/_install_server add them to node_labels before install_agent/install_server. Preflight reads no node_labels (Rex::Rancher docs: labels read only at registration), so adding them after the preflight changes nothing it checks. install_nvidia stays a forked do_task, unchanged. (3) DRA init image: the pinned rocm/k8s-gpu-dra-driver:v1.0.1 (UBI 9 minimal) has sh=bash and sleep, and runs upstream's wait loop (docker run, 2026-10-31) — reuse it, no new pin. (4) All four AMD tags exist on Docker Hub, amd64 only (hub API 2026-10-31).
+
+2026-10-31 00:18 Implemented (sections 1 and 4, plus the coordinator's spec change: integrated gate, marker, operator mode).
+- share/Rexfile:
+  - detect_gpu answers per vendor via _gpu_actions, NVIDIA first.
+  - New install_amd: compute filter, then the integrated gate (gpu_amd_integrated, default 0, one log line per skipped iGPU), then the Rex::GPU->can('amd_class') guard (WARN + skip, never dies). It calls install_driver(method auto, reboot 0) only under gpu.driver host, then verify_amd.
+  - Labels: ocp.internal/amd-gpu.present=true once ≥1 GPU is accepted, plus gfx-target from verify_amd (one target: key=gfx; several: key.<gfx>=<count>).
+  - gpu.driver operator: detection now runs there too. NVIDIA is skipped exactly as before (no install_nvidia, same operator line); AMD is labelled without install_driver.
+  - detect_gpu and install_amd are called as task functions (in-process), so their labels come back. _with_gpu_labels merges them into node_labels before install_agent/install_server (config.yaml node-label = registration). A spec key wins. The preflight runs without them (it reads none).
+  - Label keys are written out literally (the Rexfile runs under rex without lib/). t/249 holds them equal to $OCP::Config::AMD_GPU_PRESENT_LABEL / AMD_GPU_GFX_TARGET_LABEL.
+- lib/OCP/Versions.pm: amd_device_plugin 1.31.0.11 (labeller-<same>), amd_dra_driver v1.0.1 (its own image is the DRA init image, no extra pin), amd_metrics_exporter v1.5.3. Each has a source, an amd64-only note and a moving-tag note.
+- Tests:
+  - New t/249-amd-gpu-host.t.
+  - Harness t/lib/OCPTest/Rexfile.pm: Rex::GPU::AMD recorders; function-form task calls recorded as task_call, run under %FOLLOW.
+  - t/44 claims updated (operator: detection runs, NVIDIA unchanged and proven; _gpu_actions list; "no NVIDIA GPU node"); t/196 adds install_amd.
+  - t/155 has a Rex::GPU::AMD entry-point subtest that skips until the pin carries rex-gpu k1.
+- Mutation-checked: removing the gate, the marker, the operator skip, the NVIDIA operator skip, the label merge or the flag guard each turns t/249 (and t/44 for NVIDIA) red.
+
+2026-10-31 00:18 Also found (for other lanes; I changed none of it):
+(1) apply lane, must land with this commit: the three new Versions keys are refused by ocp update until lib/OCP/Cmd/Update.pm %APPLIED_BY_APPLY lists amd_device_plugin, amd_dra_driver and amd_metrics_exporter (probably with the gpu_enabled skip the NVIDIA ones have). t/94 'every manifest component has a known outcome' and both '--force ... runs end to end' subtests are red until then (checked on host).
+(2) provider + apply lanes: OCP::Rex::install_server/install_agent build an explicit param list and drop gpu_amd_integrated, and Apply::Bootstrap does not pass it. The OCP::Node path (node add/robocop, run_task with %params) carries it through. So only cluster-wide gpu.amd.integrated: true misses the bootstrap control plane; its iGPU keeps the default (left alone), which is the safe side.
+(3) apply/k251: labels go in via config.yaml node-label, which the kubelet reads only at registration. A node already joined before k249 does not get the marker or the gfx label from a re-run install, and the changed config.yaml restarts its rke2/k3s service once (Rex::Rancher restarts on a config change). Such nodes need a rejoin or the after-join Node patch.
+(4) Behaviour change, by design: under gpu.driver operator, Rex::GPU::Detect::Sysfs now runs, so a host whose sysfs cannot be read dies there, where operator mode used to skip detection.
+(5) Assumption on rex-gpu k1: verify_amd(gpus => [...]) reports only the GPUs it is given. If it reports every KFD node, a skipped iGPU's gfx target would end up in the gfx labels.
+
+2026-10-31 00:39 Done, commit-ready (not committed).
+Since the last note:
+- t/65-gpu-device-plugin-floor.t: the 'no DRA driver pin' check matched amd_dra_driver. It is narrowed to NVIDIA's (qr/nvidia.*dra|dra.*nvidia/i), and the matcher is held: it catches nvidia_dra_driver and dra_driver_nvidia_gpu, not amd_dra_driver. The claim is unchanged, and the test goes red again with an nvidia_dra_driver pin (checked).
+- t/94 is green now: the apply lane changed Update.pm in parallel (not my files).
+Verified in the binding image:
+- DOCKER_BUILDKIT=0 make test: Files=190, Tests=2980, Result: PASS (788s, run alone after another lane stopped my first container). t/65 was edited during that run, before it reached t/65.
+- At the final tree: docker run prove -l t/65 t/249 t/44 t/196 t/155 t/94 t/06: PASS.
+- Skipped: t/155 'Rex::GPU::AMD entry points' (Rex::GPU 0.005 has no Rex::GPU::AMD yet, rex-gpu k1).
+Cross-lane items (2) to (5) from the previous note are still open.
+
+2026-10-31 00:50 ocp-apply-worker: ocp update knows the amd_* components. lib/OCP/Cmd/Update.pm: amd_device_plugin, amd_dra_driver, amd_metrics_exporter added to %APPLIED_BY_APPLY (outcome 'apply', skipped under gpu.enabled: false like the NVIDIA stack); comment extended (apply rolls the AMD stack out at the pin via Rex::Rancher::K8s, k251; no Rex task upgrades it); POD outcome list names amd_*. t/94: the --force subtest now asserts amd_* -> 'rolled out by ocp apply'. Verified: t/94 red before (1-2, 11-12; 12/138 refuse in subtest 11), DOCKER_BUILDKIT=0 make test TESTS=t/94 -> PASS 12/12; full DOCKER_BUILDKIT=0 make test -> PASS, Files=190 Tests=2982, 0 skipped (against the tree incl. the infra/state workers' uncommitted changes and the Versions pins). Gap until k251 lands: ocp update prints "Run 'ocp apply' to roll out: amd_*" while apply does not deploy the AMD stack yet.
+
+2026-10-31 00:56 Review fix (main agent): under gpu.driver operator a die from Rex::GPU::Detect::Sysfs->detect in detect_gpu now becomes one [WARN] line ('GPU detection failed under gpu.driver ...: <error, newlines folded> -- AMD GPU labels not set, the node joins without AMD labels') and the step returns []. Under host (or nothing passed) it still dies before anything is installed. This resolves cross-lane item (4).
+- t/249 tests both modes: operator joins (install_agent/install_server run without GPU labels); host dies before install_agent.
+- t/249 also asserts that an empty AMD selection reaches neither install_driver nor verify_amd (rex-gpu k1: gpus => [] makes install_driver die).
+- Mutation-checked: an unconditional eval turns the host subtest red, removing the eval turns the operator subtest red.
+- rex-gpu confirms verify_amd reports only the GPUs given, so item (5) is settled.
+- Verified: docker prove -l t/249 t/44 t/196 t/155 t/65 t/190 t/211 PASS; DOCKER_BUILDKIT=0 make test: Files=190, Tests=2982, Result: PASS (784s).
+
+2026-10-31 01:11 Committed as 1e68072
