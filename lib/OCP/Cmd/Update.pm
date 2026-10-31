@@ -13,6 +13,7 @@ use OCP;
 use Term::ANSIColor qw(colored);
 
 with 'OCP::Role::Cmd';
+with 'OCP::Role::Cmd::Confirm';
 
 option dry_run => (
     is      => 'ro',
@@ -173,13 +174,16 @@ sub execute {
         return 0;
     }
 
-    # Confirm before proceeding
+    # Manual steps need a person who has read them: a yes at a terminal, the
+    # way `ocp destroy` asks (k303). A piped y used to confirm here. There is
+    # no switch that confirms without a terminal -- --force means "even if
+    # the versions match" -- so the refusal names none.
     if (@$manual_steps) {
-        print "Manual steps required. Continue? [y/N]: ";
-        my $answer = <STDIN>;
-        chomp $answer;
-        unless ($answer =~ /^y/i) {
-            print "Update cancelled.\n";
+        unless ($self->confirmed(
+            question => 'Manual steps required. Continue?',
+            action   => "updating cluster '".$config->name."' with manual steps",
+        )) {
+            print STDERR "Aborted; nothing was changed.\n";
             return 1;
         }
     }
@@ -443,6 +447,15 @@ The update process:
 4. Stops on STDERR, before any change, if a component is refused
 5. Performs updates via Rex tasks
 6. Tracks updated versions in status.yaml
+
+When the version manifest lists manual steps, the update asks on STDERR
+whether to continue, after the plan and before anything changes (a
+C<--dry-run> asks nothing).  It asks on a terminal only and goes on only on
+C<y> or C<yes> (case-insensitive); anything else, or an EOF, aborts with
+exit 1 and nothing changed.  Without a terminal (a pipe, a CI step, a closed
+STDIN) it reads nothing, says on STDERR that a person at a terminal is
+needed, changes nothing and exits 1 (C<k303>).  A piped C<y> is not a
+confirmation, and there is no switch that confirms from a script.
 
 =head1 SSH ACCESS
 

@@ -13,6 +13,7 @@ use OCP::Secrets;
 use OCP::K8s;
 
 with 'OCP::Role::Cmd';
+with 'OCP::Role::Cmd::Confirm';
 
 option name => (
     is     => 'ro',
@@ -26,15 +27,6 @@ option yes => (
 );
 
 has k8s => (is => 'rw');
-
-# Whether someone at a terminal can answer the prompt. Forgetting the pins
-# lets the next contact trust whatever key the machine presents, so the
-# answer has to come from a person: a pipe, a CI job or a here-string is no
-# one, and the way to confirm without a terminal is --yes (k293). An
-# attribute so tests can stand in for the terminal.
-has _interactive => (is => 'lazy');
-
-sub _build__interactive { -t STDIN ? 1 : 0 }
 
 sub _k8s {
     my $self = shift;
@@ -70,22 +62,6 @@ sub _node_names {
                 @{ $list->items // [] };
 }
 
-# A terminal's stdin is the confirmation; a closed or non-terminal stdin
-# answers "no", whatever it carries -- a piped "y" does not count.
-sub _confirmed {
-    my ($self, $name, $keys) = @_;
-    unless ($self->_interactive) {
-        print STDERR "No terminal to confirm on: forgetting the pinned host keys of node '"
-                   . $name . "' needs a person at a terminal, or --yes.\n";
-        return 0;
-    }
-    print STDERR "Forget the pinned host keys of node '$name'?\n";
-    print STDERR '  ' . $_->{fingerprint} . ' (' . $_->{type} . ")\n" for @$keys;
-    print STDERR "The next contact trusts whatever key the machine presents then. [y/N] ";
-    my $answer = <STDIN>;
-    return defined $answer && $answer =~ /\A\s*y(?:es)?\s*\z/i;
-}
-
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -109,7 +85,16 @@ sub execute {
         return 0;
     }
 
-    unless ($self->yes || $self->_confirmed($name, $keys)) {
+    # Forgetting the pins lets the next contact trust whatever key the
+    # machine presents, so the answer has to come from a person at a
+    # terminal; --yes is the way to confirm from a script (k293).
+    unless ($self->yes || $self->confirmed(
+        question => "Forget the pinned host keys of node '".$name."'?\n"
+                  . join('', map { '  '.$_->{fingerprint}.' ('.$_->{type}.")\n" } @$keys)
+                  . 'The next contact trusts whatever key the machine presents then.',
+        action   => "forgetting the pinned host keys of node '".$name."'",
+        switch   => '--yes',
+    )) {
         print STDERR "Aborted; the pinned host keys stay.\n";
         return 1;
     }

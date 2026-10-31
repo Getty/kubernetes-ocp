@@ -15,6 +15,7 @@ use OCP::Provider;
 use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
+with 'OCP::Role::Cmd::Confirm';
 
 option force => (
     is    => 'ro',
@@ -30,14 +31,6 @@ option keep_status => (
 # The cluster API. Built from the encrypted kubeconfig on first use; tests
 # hand in a double.
 has k8s => (is => 'rw');
-
-# Whether someone at a terminal can answer the prompt. Deleting the cluster's
-# servers needs a person's yes: a pipe, a CI step or a here-string is no one,
-# and the way to confirm without a terminal is --force (k301, as k293 did for
-# `ocp node trust-host`). An attribute so tests can stand in for the terminal.
-has _interactive => (is => 'lazy');
-
-sub _build__interactive { -t STDIN ? 1 : 0 }
 
 # Set once the API failed to answer, so the teardown does not wait out a
 # second timeout on it.
@@ -445,21 +438,6 @@ sub _stop_robocop {
     return;
 }
 
-# A terminal's stdin is the confirmation; a closed or non-terminal stdin
-# answers "no" without being read -- a piped "y" does not count (k301). The
-# question goes to STDERR: it is not payload. An EOF at the terminal is a no.
-sub _confirmed {
-    my ($self, $config) = @_;
-    unless ($self->_interactive) {
-        print STDERR "No terminal to confirm on: destroying cluster '"
-                   . $config->name . "' needs a person at a terminal, or --force.\n";
-        return 0;
-    }
-    print STDERR "Are you sure you want to destroy this cluster? [y/N] ";
-    my $answer = <STDIN>;
-    return defined $answer && $answer =~ /\A\s*y(?:es)?\s*\z/i;
-}
-
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -535,8 +513,14 @@ sub execute {
     print "\n";
 
     # Nothing has been deleted or changed up to here; a refusal leaves the
-    # servers, robocop and the local state exactly as they were.
-    unless ($self->force || $self->_confirmed($config)) {
+    # servers, robocop and the local state exactly as they were. Deleting the
+    # cluster's servers needs a person's yes at a terminal; --force is the way
+    # to confirm without one (k301).
+    unless ($self->force || $self->confirmed(
+        question => 'Are you sure you want to destroy this cluster?',
+        action   => "destroying cluster '".$config->name."'",
+        switch   => '--force',
+    )) {
         print STDERR "Aborted; nothing was deleted.\n";
         return 1;
     }
