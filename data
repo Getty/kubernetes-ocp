@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-10-31T13:03:35Z
+id: 359
+priority: low
+status: backlog
+tags:
+- gpu
+- decision
+title: 'Decide: install-time GPU settings (gpu.amd.integrated, gpu.toolkit) reach
+  joined nodes only on re-join, and nothing says so'
+updated: 2026-10-31T13:03:35Z
+---
+
+Decide (maintainer). From k253 (ocp-worker, 2026-10-31). gpu.amd.integrated (k253) and gpu.toolkit (k223) are install-time settings: they reach a node only when its install task runs. The first control plane gets them on every `ocp apply`. A worker, or police2 and later, gets them only when it is joined again: a Ready node is only verified. Switching integrated true -> false removes nothing (the amdgpu driver stays), and ocp status does not flag a node installed under the other value.
+
+Options:
+- (a) Say it: the docs and the apply/status output name the re-join as the way to apply a changed value.
+- (b) Record per node, on the OCPNode status, what it was installed with, and have ocp status show it as drift with a manual step.
+- (c) Re-run the host step on Ready nodes when the value changes. Disruptive: a driver install, maybe a reboot.
+
+Not to be built before the maintainer answers.
