@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-10-31T05:54:48Z
+created: 2026-10-31T05:29:31Z
+id: 303
+priority: medium
+started: 2026-10-31T05:54:48Z
+status: done
+tags:
+- update
+- safety
+- output-channels
+title: 'ocp update: the manual-steps confirmation takes a piped y, prompts on STDOUT,
+  warns on Ctrl-D'
+updated: 2026-10-31T05:54:53Z
+---
+
+Found under k301 (2026-10-31). lib/OCP/Cmd/Update.pm (~line 177) prints "Manual steps required. Continue? [y/N]: " on STDOUT and reads <STDIN> with no terminal check. A piped `y` confirms. Ctrl-D gives "uninitialized value in chomp". /^y/i also takes "yep" or "yikes".
+
+The precedents just landed: `ocp node trust-host` (k293, d5baab2) and `ocp destroy` (k301). Each has an `_interactive` attribute (-t STDIN, which tests can set) and a `_confirmed` method. Without a terminal they read nothing, say on STDERR what is needed, and exit 1. The question goes to STDERR. Only y/yes (trimmed, case-insensitive) counts; EOF is a no.
+
+Done =
+- update behaves the same: a terminal or the non-interactive switch it has (check: --yes/--force; if it has none, say so on the card rather than inventing one);
+- tests for a piped y, a closed STDIN, and a terminal stand-in;
+- a Changes bullet.
+- With three users, move `_interactive`/`_confirmed` into OCP::Role::Cmd (a parameterised message) and switch TrustHost and Destroy to it, with no behaviour change: their tests t/171 and t/301 stay green unchanged.
+
+2026-10-31 05:34 Started (ocp-worker). Findings: (1) ocp update has NO non-interactive confirm switch: --force already means 'update even if versions match', --dry-run/--component are unrelated. Not reusing --force; the refusal points at a terminal only. Proposal for the maintainer: a --yes (as trust-host has), not done here. (2) _interactive cannot go into OCP::Role::Cmd: OCP::Cmd::Init consumes that role and declares its own 'has _interactive' after 'with', and Moo dies 'You cannot overwrite a locally defined method (_interactive) with a reader' (probe, Moo 2.005005). Init.pm is another worker's file (k265/k289), so the helper goes into a new opt-in role OCP::Role::Cmd::Confirm (the OCP::Role::Cmd::* family), consumed by TrustHost, Destroy and Update. Init's _interactive has the same meaning (-t STDIN, settable) and could consume the role later: that's for the Init lane, not this card. (3) Manual steps come from the target manifest's manual_steps; no shipped version has any yet, so the prompt is dormant until a release adds them.
+
+2026-10-31 05:53 Done (ocp-worker), not committed. New role lib/OCP/Role/Cmd/Confirm.pm (not OCP::Role::Cmd: Init's own _interactive makes Moo die, re-confirmed in the image, perl 5.042003 / Moo 2.005005) owns _interactive (-t STDIN, settable) and confirmed(question, action, switch). Update.pm, TrustHost.pm and Destroy.pm's main path use it. Update: without a terminal STDERR says "No terminal to confirm on: updating cluster 'NAME' with manual steps needs a person at a terminal." then "Aborted; nothing was changed.", exit 1, STDIN not read. On a terminal STDERR asks "Manual steps required. Continue? [y/N] ". Only y/yes, EOF is a no with no warning, the abort goes to STDERR (was STDOUT 'Update cancelled.'). No switch: --force already means 'even if versions match'. Proposal for the maintainer: --yes, as trust-host has. Tests: new t/303 (piped y, real -t check, closed STDIN, tty y/YES/padded, n, yep/yikes/no/sure, EOF, no manual steps asks nothing, --dry-run asks nothing). On HEAD 8 of 10 subtests fail; the 2 that pass guard unchanged behaviour. t/171 and t/301 unchanged and green. TrustHost and the destroy main path produce byte-identical STDOUT/STDERR/rc across 9 branch runs, HEAD vs new. Mutants killed: no terminal check, loose /^y/, question on STDOUT, update unasked, update naming a switch. Binding make test: the 6 directly affected files (59 tests) plus 20 related files (675 tests) all PASS. Changes: bullet added. Also found, for the Init lane (k265/k289): Init.pm's has _interactive has the same meaning and could consume OCP::Role::Cmd::Confirm instead. Not touched here. Also: t/38-reconcile-path.t hangs other workers' full suites (30+ min). That's not in these files.
+
+2026-10-31 05:54 Committed as 9d11dd8
