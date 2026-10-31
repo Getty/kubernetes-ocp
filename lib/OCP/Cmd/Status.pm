@@ -277,16 +277,19 @@ sub _collect_json {
     return 0;
 }
 
-# How many machines a worker pool has, for both forms. An ssh pool names
-# them (k322): a nodes: list, else host: for one, as ocp apply reads it
-# (worker_ocpnodes). A host-only pool read 0 here, where apply makes it one
-# worker (k332). Any other pool counts them, and its host: is not read.
+# How many machines a worker pool has, for both forms: the workers ocp apply
+# makes of it (worker_ocpnodes). An ssh pool names them (k322): a nodes:
+# list, else host: for one. A host-only pool read 0 here, where apply makes it
+# one worker (k332). Any other pool counts them, nodes: N, and one without
+# nodes: is one machine; its host: is not read. Without nodes: it read 0
+# here, or a count: that apply does not read at all (k339).
 sub _pool_machines {
     my ($self, $pool) = @_;
     my $nodes = $pool->{nodes};
     return scalar @$nodes if ref $nodes eq 'ARRAY';
-    return 1 if ($pool->{provider} // 'ssh') eq 'ssh' && $pool->{host};
-    return $nodes // $pool->{count} // 0;
+    my $ssh = ($pool->{provider} // 'ssh') eq 'ssh';
+    return 1 if $ssh && $pool->{host};
+    return $nodes // ($ssh ? 0 : 1);
 }
 
 # OCP::Drift's entries, the same for both forms, and the cause when detection
@@ -663,9 +666,12 @@ worker pools) from C<ocp.yaml> and, when the cluster has been deployed, the
 live state from the Kubernetes API: node name, Ready/NotReady, role labels,
 kubelet version, InternalIP, the GPUs each node can hand out and any
 L<OCP::Drift> entries that the spec or version manifest disagree with.
-A worker pool shows how many machines it has, in both forms: an ssh pool the
-ones it names, its C<nodes:> list or its one C<host:> (earlier builds showed
-0 for a pool with C<host:>), any other pool its C<nodes:> count.
+A worker pool shows how many machines it has, in both forms, as many as
+C<ocp apply> makes workers of: an ssh pool the ones it names, its C<nodes:>
+list or its one C<host:> (earlier builds showed 0 for a pool with C<host:>),
+any other pool its C<nodes:> count, and one machine without C<nodes:>
+(earlier builds showed 0 there, or the pool's C<count:>, which C<ocp apply>
+does not read).
 
 If C<ocp.yaml> is missing the command dies with a hint to run C<ocp init>.
 If the cluster has never been deployed the spec section is printed and the

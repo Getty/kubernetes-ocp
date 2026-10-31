@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` counts a worker pool's machines the way `ocp apply`
+      builds them: the hosts an ssh pool names (its `nodes` list, else one
+      for a `host:`), and `nodes` (default 1) for any other pool. A `count:`
+      on a pool, which `ocp apply` has not read for a long time, no longer
+      changes the number `ocp status` shows.
     - `ocp keys secure` checks `ocp.yaml` as `ocp apply` does before it
       asks for a PIN, reads the age key or touches a machine: every line
       `validate()` has goes to STDERR at once with "Nothing was changed", and
