@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-31T04:27:28Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:27:28Z
+created: 2026-10-31T03:56:17Z
+id: 283
+priority: medium
+started: 2026-10-31T04:27:28Z
+status: done
+tags:
+- k8s
+- bug
+title: OCP::K8s->register is lost on invalidate_discovery, which ensure_crd calls
+updated: 2026-10-31T04:27:33Z
+---
+
+Found under k275 (2026-10-31, ocp-status-worker). `OCP::K8s->register` writes OCPNode/OCPNodeProvider into `$api->resource_map`; `invalidate_discovery` drops what it wrote, and `ensure_crd` calls `invalidate_discovery`. So the apply API and the other ~15 `register` callers lose OCPNode and OCPNodeProvider after an `ensure_crd` in the same process, and a later `list/get(OCPNode)` dies "unknown resource" before any request.
+
+k275 fixed `OCP::Kubernetes` (ocp status) by pushing the two kinds onto `$api->with` instead, which is read lazily and survives rebuilds; robocop's Controller still calls `register` on top.
+
+Done = reproduce (a test: register → ensure_crd → list OCPNode), then fix in one place — likely `OCP::K8s->register` itself using the `with` list — so every caller keeps the kinds across a discovery rebuild; check whether any apply path already hit this live.
+
+2026-10-31 04:12 Reproduced (t/283-register-survives-discovery.t, real Kubernetes::REST 1.110 in the image, only LWPIO::call faked): apply api (OCP::Cmd::Apply::K8s::api) -> invalidate_discovery -> list('OCPNode') dies 'unknown resource' before any request when discovery does not list ocp.internal; when it does, OCPNodes/OCPNodeProviders come back as IO::K8s::Unstructured instead of OCP::K8s::*. Also: register itself fetches discovery (GET /api, /apis) because it writes into the lazy resource_map. Note: no OCP code path calls invalidate_discovery/ensure_crd/absorb_discovery on a sync client today (OCP::Cmd::Apply::CR::ensure_crds SSAs raw manifests via _request) -- latent, not live. Fix next: register onto $api->with.
+
+2026-10-31 04:24 Fix (lib/OCP/K8s.pm): register pushes one constant provider map (%KINDS) onto $api->with instead of writing $api->resource_map; skips if that entry is already there (identity), and drops an already-built inner IO::K8s (_clear_k8s guarded by can, as register_resource_providers does). Makes no request. lib/OCP/Kubernetes.pm: the k275 hand push + %OCP_KINDS replaced by OCP::K8s->register($api) (now redundant: register is lazy too); stale comment in register_resource_providers fixed. Registering twice: harmless even without the dedupe (IO::K8s add keeps the first short name; qualified key already there), and with it `with` does not grow. Verified binding (make test, image Kubernetes::REST 1.110 / IO::K8s 1.111): t/283 5/5, t/275, t/22, t/43, t/45, t/79 green; 30 more caller files (robocop controller/teardown/inject, node, status, ssh-command, deploy-image, apply-refactor, reconcile-path, ...) 586 tests green. Mutants on a scratch copy all killed: old register (subtests 1-3 red), no _clear_k8s (subtest 4), no dedupe (subtest 5), Kubernetes.pm without register (t/275 1,3,4 + t/283 5). Live path: none -- nothing in lib/bin/share calls invalidate_discovery/ensure_crd/absorb_discovery on a sync client (Apply::CR::ensure_crds SSAs raw manifests via _request; Rex::Rancher::K8s builds its own client); latent trap for the first ensure_crd/invalidate_discovery after ensure_crds.
+
+2026-10-31 04:24 Also found (for the dispatcher, outside my files): (a) robocop Controller::_build_kube and OCP::Cmd::SSH (_node_names, _lookup_by_name) call OCP::K8s->register on an api OCP::Kubernetes already registered -- now a no-op, harmless; optional cleanup in their lanes (the Controller comment 'without which OCPNode and OCPNodeProvider are not addressable' no longer holds). (b) For the kubernetes-rest board: Kubernetes::REST 1.110 documents `$api->resource_map->{StaticWebSite} = '+My::StaticWebSite'` as the way to add a class after construction, but on the default client (resource_map_from_cluster => 1, no map passed) that map is _resource_map_built, and invalidate_discovery (which ensure_crd calls last) and absorb_discovery clear and rebuild it from discovery -- the entry is gone: a bare Kind then croaks 'unknown resource' (discovery does not list the group) or resolves to IO::K8s::Unstructured (it does). Writing it also forces the discovery fetch. Repro: new client; $api->resource_map->{OCPNode}='+OCP::K8s::OCPNode'; $api->invalidate_discovery; $api->expand_class('OCPNode') -> 'IO::K8s::OCPNode' (unresolved). Ask: carry caller-written entries over a rebuild, or document `with` as the only durable post-construction registration and drop the resource_map recipe; plus a public way to add a `with` provider to a live client whose inner IO::K8s is already built (OCP needs private _has_k8s/_clear_k8s for that in two places).
+
+Filed kubernetes-rest k78 (resource_map entries lost on rebuild; ask: keep them, or document with + a public hook). Filed the register cleanup in robocop/SSH as its own OCP card. Go-ahead given for the 3 test fakes (t/229, t/235, t/237).
+
+2026-10-31 04:26 Done. Fix: lib/OCP/K8s.pm register -> $api->with (no request, dedupe, drops an already-built inner IO::K8s); lib/OCP/Kubernetes.pm uses OCP::K8s->register instead of the k275 hand push. New t/283-register-survives-discovery.t. Fake surface moved to the real client (coordinator go-ahead): t/229-ssh-node-name.t (sub resource_map -> sub with { $_[0]{with} //= [] }, resource_map => {} dropped from new), t/235-host-key-pins-existing.t and t/237-ssh-diagnosis-operator-probe.t (sub resource_map -> sub with), nothing else changed. Binding run DOCKER_BUILDKIT=0 make test TESTS='t/229-ssh-node-name.t t/235-host-key-pins-existing.t t/237-ssh-diagnosis-operator-probe.t t/283-register-survives-discovery.t t/275-status-ocpnode-crd.t': Files=5, Tests=48, All tests successful. Earlier: 30 caller files / 586 tests green, t/22 t/43 t/45 t/79 green; 4 mutants killed. No live path affected; no Changes bullet proposed. Commit subject: 'Keep OCPNode and OCPNodeProvider registered across a discovery rebuild (k283)'.
+
+2026-10-31 04:27 Committed as 1f0b10a
