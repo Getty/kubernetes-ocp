@@ -251,9 +251,10 @@ subtest 'secret: apply writes the Secret, and before the Deployment' => sub {
     is_deeply $r->{waits}, [0, 60],
         'one look when rolled out, then the 60s wait the worker step needs';
     # The one prompt brings its reason with it, on STDERR where the prompt
-    # is (k231); nothing else goes there.
-    like $r->{err}, qr/\A  In secure mode every machine.*robocop credentials needs it to reach them\.\n\z/s,
-        'STDERR carries only the reason for the PIN2 prompt';
+    # is (k231). The only other line there is the fallback, which went wrong
+    # too (k318): robocop is not ready here, so the CLI drives the workers.
+    like $r->{err}, qr/\A  In secure mode every machine.*robocop credentials needs it to reach them\.\n\Q  [WARN] robocop not ready after 60s \E.+\Q falling back to CLI reconcile\E\n\z/s,
+        'STDERR carries the reason for the PIN2 prompt, then only the fallback warning';
 };
 
 subtest 'secret: a current Secret is left alone -- no SSH, no PIN2' => sub {

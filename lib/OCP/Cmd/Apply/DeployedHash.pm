@@ -73,15 +73,21 @@ sub forget {
 #
 # 'removed' is a change: the component left the spec (the AMD GPU stack, k251)
 # and this run took it out of the cluster.
+#
+# $changed says what an 'updated' changed: the manifest, for the hash-gated
+# components. The Cilium Gateway's step reads metadata.generation, which
+# moves with the spec and nothing else, so it says 'spec changed', as the
+# step's own line does (k318).
 sub report_component {
-    my ($self, $label, $outcome) = @_;
+    my ($self, $label, $outcome, $changed) = @_;
     $outcome //= 'unchanged';
+    $changed //= 'manifest changed';
 
     my %line = (
         unchanged => "$label up to date",
         deployed  => "$label deployed (was missing)",
         restored  => "$label redeployed (was gone from the cluster)",
-        updated   => "$label updated (manifest changed)",
+        updated   => "$label updated ($changed)",
         skipped   => "$label skipped",
         removed   => "$label removed (no longer selected)",
     );

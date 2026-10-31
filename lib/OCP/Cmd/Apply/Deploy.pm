@@ -440,7 +440,8 @@ sub worker_step {
             print "  [ok] robocop ready — grace period (5s)\n";
             $self->wait_seconds(5);
         } else {
-            print "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
+            # Something that went wrong, so STDERR (k318).
+            print STDERR "  [WARN] robocop not ready after 60s — falling back to CLI reconcile\n";
         }
     } elsif ($robocop eq 'failed') {
         print "  [..] robocop is not running: the CLI brings the workers up\n";

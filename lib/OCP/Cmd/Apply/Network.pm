@@ -414,7 +414,11 @@ sub setup_lb_ipam {
     # on, which is the exact invariant k19 established. LB-IPAM-specific, so it
     # runs where LB-IPAM is set up.
     if ($node_ip =~ /^127\./) {
-        my $nodes = eval { $api->list('Node') };
+        # Only a 404 lists nothing. A list that fails otherwise dies with its
+        # cause, which the caller reports as the step's failure: a cluster
+        # nobody could read is no node with only a loopback address (k318).
+        my $nodes = OCP::Cmd::Apply::K8s::read_or_absent("Nodes (for an address instead of $node_ip)",
+            sub { $api->list('Node') });
         if ($nodes && $nodes->items && @{ $nodes->items }) {
             for my $addr (@{ $nodes->items->[0]->status->addresses || [] }) {
                 if ($addr->type eq 'InternalIP' && $addr->address !~ /^127\./) {

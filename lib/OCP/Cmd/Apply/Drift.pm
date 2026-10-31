@@ -393,10 +393,11 @@ sub reconcile_components {
         $checked++;
         print "  [..] Checking Cilium Gateway...\n";
         # The step says whether it created, updated or left the Gateway alone
-        # (k300); the [ok] line and the update count follow it (k307).
+        # (k300); the [ok] line and the update count follow it (k307). An
+        # update is a spec change, in the step's own words (k318).
         eval {
             $updated += $self->_report_component('Cilium Gateway',
-                $self->_setup_cilium_gateway($config));
+                $self->_setup_cilium_gateway($config), 'spec changed');
             1;
         } or do {
             # "MUST succeed" in the deploy path: STDERR and counted (k231).
@@ -572,11 +573,13 @@ sub reconcile_components {
         eval { OCP::Cmd::Apply::CR::warn_unlisted_failed_ocpnodes($self, $self->_k8s_api, $config) };
     }
 
-    # Summary
+    # Summary. "All up to date" speaks for every step above, including those
+    # that count a failure straight into {_failed_components} instead of
+    # @unresolved: cert-manager, the Gateway, a Failed worker (k318).
     print "\n";
     if ($updated) {
         print "  $updated component(s) updated, $checked checked.\n";
-    } elsif (@unresolved) {
+    } elsif (@unresolved || @{ $self->{_failed_components} // [] }) {
         print "  $checked component(s) checked, none updated.\n";
     } else {
         print "  All $checked component(s) up to date.\n";

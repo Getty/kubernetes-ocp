@@ -461,8 +461,8 @@ sub _save_deployed_hash {
 }
 
 sub _report_component {
-    my ($self, $label, $outcome) = @_;
-    return OCP::Cmd::Apply::DeployedHash::report_component($self, $label, $outcome);
+    my ($self, $label, $outcome, $changed) = @_;
+    return OCP::Cmd::Apply::DeployedHash::report_component($self, $label, $outcome, $changed);
 }
 
 sub _k8s_api {

@@ -1653,7 +1653,7 @@ subtest 'k278: fresh deploy -- LB-IPAM unfinished, registry.local DNS said, both
 subtest 'k307: reconcile -- the Cilium Gateway line and count follow what the step did' => sub {
     for my $case (
         [ unchanged => 'Cilium Gateway up to date',                0 ],
-        [ updated   => 'Cilium Gateway updated (manifest changed)', 1 ],
+        [ updated   => 'Cilium Gateway updated (spec changed)',     1 ],
         [ deployed  => 'Cilium Gateway deployed (was missing)',     1 ],
     ) {
         my ($outcome, $line, $counted) = @$case;
@@ -1669,6 +1669,69 @@ subtest 'k307: reconcile -- the Cilium Gateway line and count follow what the st
         }
         is_deeply $r->{failed}, [], "$outcome: nothing failed";
     }
+};
+
+
+#
+# k318: a cert-manager or Cilium Gateway step that failed said so on STDERR
+# and was counted for the exit, and the summary went on to say "All N
+# component(s) up to date" -- it looked only at its own list of unresolved
+# entries, which those two blocks (and a Failed worker, k234) never wrote to.
+# The summary speaks for every failure the run counted.
+#
+
+subtest 'k318: reconcile -- no "All up to date" over a failed cert-manager, Gateway or worker' => sub {
+    my $death = "apply Gateway/cilium-gateway failed: HTTP 422 spec.listeners: Invalid value\n";
+    no warnings 'redefine';
+    for my $case (
+        [ 'cert-manager',   _apply_cert_manager   => '' ],
+        [ 'Cilium Gateway', _setup_cilium_gateway => "nocert: true\n" ],
+    ) {
+        my ($label, $step, $yaml) = @$case;
+        no strict 'refs';
+        local *{"OCP::Cmd::Apply::$step"} = sub { die $death };
+        my $r = reconcile(yaml => $yaml);
+        like   $r->{err}, qr/^  \[!!\] \Q$label\E setup failed: \Q$death\E/m, "$label: [!!] on STDERR";
+        is_deeply $r->{failed}, [$label], "$label: counted for the exit";
+        unlike $r->{out}, qr/All \d+ component\(s\) up to date/, "$label: not summarised as up to date";
+        like   $r->{out}, qr/^  \d+ component\(s\) checked, none updated\.$/m, "$label: checked, none updated";
+
+        # The exit was right before: the finisher reads the same list.
+        my $apply = bless { _failed_components => $r->{failed} }, 'OCP::Cmd::Apply';
+        my $finish_err = '';
+        my ($out, $rc);
+        {
+            open my $efh, '>', \$finish_err or die $!;
+            local *STDERR = $efh;
+            ($out, $rc) = capture_stdout { $apply->_finish_apply(config => FakeConfig->new,
+                api => HealthApi->new(pods => [$healthy_pod]), cp_name => 'cortex', cp_ip => '10.230.30.155') };
+        }
+        is   $rc, 1, "$label: ocp apply exits non-zero";
+        like $out, qr/APPLY INCOMPLETE/, "$label: the banner says so";
+        like $finish_err, qr/^Apply did not complete: \Q$label\E failed\.$/m, "$label: named on STDERR";
+    }
+
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky'],
+                      phases => { brain => 'Failed' });
+    is_deeply $r->{failed}, ['worker brain'], 'a Failed worker: counted for the exit';
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'a Failed worker: not summarised as up to date';
+
+    my $ok = reconcile(yaml => "nocert: true\n");
+    like $ok->{out}, qr/^  All \d+ component\(s\) up to date\.$/m, 'control: nothing failed, all up to date';
+};
+
+#
+# k318: the robocop fallback is something that went wrong -- robocop did not
+# turn Ready in time -- so its [WARN] is on STDERR, not among the progress.
+#
+
+subtest 'k318: robocop not ready in time -- the fallback warning is on STDERR' => sub {
+    local $ROBOCOP_READY = 0;
+    my $r = reconcile(yaml => "robocop: true\n" . $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    like   $r->{err}, qr/^  \[WARN\] robocop not ready after 60s — falling back to CLI reconcile$/m,
+        'the [WARN] on STDERR';
+    unlike $r->{out}, qr/falling back/, 'not on STDOUT';
+    ok !$r->{driven}[0]{robocop_ready}, 'and the CLI drives the worker';
 };
 
 

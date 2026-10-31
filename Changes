@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` on an existing cluster no longer ends its component
+      summary with "All up to date" after a failed cert-manager or Cilium
+      Gateway step or a Failed worker; the robocop fallback warning goes to
+      STDERR; LB-IPAM on a loopback control plane fails with the cause when
+      the Node list cannot be read, instead of building a 127.0.0.1 pool; a
+      Gateway update reads "spec changed".
     - `ocp destroy` stops on a worker pool `nodes:` list that `ocp apply`
       refuses -- an ssh pool's entry that is no host name, address or
       mapping with `host`, or a list on a pool that counts its machines --

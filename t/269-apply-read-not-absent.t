@@ -550,4 +550,79 @@ subtest 'k277 GPU Operator: a running operator without its ClusterPolicy is not 
     is $r->[3], "GET $CP_PATH failed: HTTP 403 refused\n", '403: dies with the cause, as since k269';
 };
 
+#
+# k318: on a control plane known only by a loopback address (the local
+# provider), LB-IPAM asks the cluster for the node's InternalIP instead. A
+# Node list that failed was swallowed: the run said "Only loopback IP
+# available" and built the pool from 127.0.0.1 -- a cluster nobody could read
+# taken for one with no other address. Only a 404 lists nothing.
+#
+
+{
+    package LoopAddr;
+    sub new     { my ($c, $t, $a) = @_; bless { t => $t, a => $a }, $c }
+    sub type    { $_[0]{t} }
+    sub address { $_[0]{a} }
+    package LoopStatus;
+    sub new       { my ($c, @a) = @_; bless { a => [ @a ] }, $c }
+    sub addresses { $_[0]{a} }
+    package LoopNode;
+    sub new    { my ($c, @a) = @_; bless { s => LoopStatus->new(@a) }, $c }
+    sub status { $_[0]{s} }
+    package LoopList;
+    sub new   { my ($c, @n) = @_; bless { n => [ @n ] }, $c }
+    sub items { $_[0]{n} }
+    # list('Node') answers $self->{nodes}: a LoopList, or what it dies with.
+    package LoopApi;
+    our @ISA = ('ReadApi');
+    sub list { my ($self) = @_; ref $self->{nodes} eq 'LoopList' ? $self->{nodes} : die $self->{nodes} }
+}
+
+sub lb_loopback {
+    my ($nodes) = @_;
+    my $api = LoopApi->new(nodes => $nodes,
+        responses => { $POOL_PATH => [ [ 200, '{"items":[]}' ] ] });
+    my $apply = new_apply($api);
+    my ($applied, $pool_ip) = (0);
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_server_side_apply_all = sub { $applied++; 1 };
+    local *OCP::Cmd::Apply::wait_seconds          = sub { };
+    local *OCP::Cmd::Apply::Network::lb_ipam_resources = sub {
+        $pool_ip = $_[0];
+        [ { kind => 'CiliumLoadBalancerIPPool', spec => { blocks => [ { cidr => "$_[0]/32" } ] } } ]
+    };
+    my ($rv, $out, $err, $died) = capture {
+        OCP::Cmd::Apply::Network::setup_lb_ipam($apply, '127.0.0.1', FakeConfig->new); 1
+    };
+    return { ok => $rv, out => $out, err => $err, died => $died, applied => $applied, pool_ip => $pool_ip };
+}
+
+subtest 'k318 LB-IPAM: a Node list that fails is no "only loopback available"' => sub {
+    my $r = lb_loopback(LoopList->new(LoopNode->new(
+        LoopAddr->new(InternalIP => '127.0.0.1'), LoopAddr->new(InternalIP => '10.230.30.155'))));
+    is $r->{died}, '', 'control: a Node with an InternalIP: no death';
+    like $r->{out}, qr/Using node IP 10\.230\.30\.155 \(instead of 127\.0\.0\.1\)/, 'control: its address used';
+    is $r->{pool_ip}, '10.230.30.155', 'control: and the pool built from it';
+
+    $r = lb_loopback(LoopList->new(LoopNode->new(LoopAddr->new(InternalIP => '127.0.0.1'))));
+    is $r->{died}, '', 'only loopback: no death';
+    like $r->{out}, qr/Only loopback IP available/, 'only loopback: said, as before';
+    is $r->{pool_ip}, '127.0.0.1', 'only loopback: the pool on it';
+
+    $r = lb_loopback(api_error(404, 'NotFound'));
+    is $r->{died}, '', '404: no death, nothing listed';
+    like $r->{out}, qr/Only loopback IP available/, '404: only loopback, as before';
+
+    for my $refusal (@REFUSALS) {
+        my ($code, $reason) = @$refusal;
+        $r = lb_loopback(api_error($code, $reason));
+        like $r->{died},
+            qr{\Acould not read Nodes \(for an address instead of 127\.0\.0\.1\): Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            "$code: dies with the cause, so the step is [!!] instead of a loopback pool";
+        unlike $r->{out}, qr/Only loopback IP available/, "$code: not called only loopback";
+        ok !defined $r->{pool_ip}, "$code: no pool built";
+        is $r->{applied}, 0, "$code: nothing applied";
+    }
+};
+
 done_testing;
