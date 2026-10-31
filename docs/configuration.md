@@ -190,6 +190,33 @@ These shapes used to be read wrongly and are refused:
   a list, a mapping or a boolean is refused (`kubernetes.version: must be a
   string (a release like v1.36.4+rke2r1 or v1.36.4+k3s1; empty for the one OCP
   pins), not a list`). Empty or absent `version` still means the pinned one.
+- **An unknown key under `network:`, `network.lb_pool`, `network.l2`,
+  `cilium:` or `robocop:`** is refused, so a misspelt key cannot leave its
+  default in force. `network:` takes `pod_cidr`, `lb_pool` and `l2`; `lb_pool`
+  takes `cidr`, `start` and `stop`; `l2` takes `node_selector` and `interfaces`;
+  `cilium:` takes `devices` and `helm_values`; `robocop:` takes `enabled`,
+  `security_level` and `image`. The lines read `network.lb_pols: unknown key
+  (must be pod_cidr, lb_pool, or l2)`, `network.lb_pool.cidrs: unknown key
+  (must be cidr, start, or stop)`, `network.l2.interface: unknown key (must be
+  node_selector or interfaces)`, `cilium.device: unknown key (must be devices
+  or helm_values)` and `robocop.enable: unknown key (must be enabled,
+  security_level, or image)`.
+- **`kubernetes.dist:` and the two `ssh:` paths.** `dist` is `rke2` or `k3s`;
+  anything else is refused (`kubernetes.dist: invalid value 'rke3' (must be
+  rke2 or k3s)`) instead of installing RKE2 under that name. `ssh.private_key`
+  and `ssh.public_key` are one path each: a list, a mapping or a boolean is
+  refused (`ssh.private_key: must be a string (a path like .ocp/id_ed25519),
+  not a list`).
+- **`node_ip:` names one machine**, so it is refused wherever it would stand
+  for several. On a worker pool: `worker pool 'p': node_ip cannot be set on a
+  pool, one address cannot be every machine's; set it per node: ocp node add
+  NAME --node_ip ADDRESS, or spec.nodeIP on its OCPNode`. On an entry of a
+  pool's `nodes:` list: `worker pool 'p': nodes[1].node_ip is not read from a
+  pool's nodes; set it per node: …` (same ending). On a `control_planes`
+  mapping with `nodes:` above 1: `control_planes: node_ip with nodes: 3 would
+  give all 3 control planes the same address; list them one by one
+  (control_planes: as a list), each with its own node_ip`. A pool the line
+  cannot name by its `name` is quoted as `workers[N]`.
 
 ## `gpu.amd:` — AMD GPU nodes
 

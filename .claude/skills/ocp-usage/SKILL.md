@@ -506,6 +506,13 @@ gpu:
     (`_version_error`, `_not_a_string`); `kubernetes()` and `version()` croak
     on the same lines. The unknown keys of `ssh:` and of a pool machine are
     validate's alone (`ssh_config()` and `ocp destroy` do not refuse on them).
+  - **`cilium:`** (k210, k292) takes `devices` (a non-empty list of interface
+    names; the short form of `helm_values.devices`) and `helm_values` (a
+    mapping of Helm values, deep-merged over what Rex::Rancher::Cilium
+    generates). Setting `devices` and `helm_values.devices` both is refused, as
+    is a `cilium:` that is no mapping and a key outside the two:
+    `cilium.device: unknown key (must be devices or helm_values)`
+    (`_validate_cilium`).
   - **At most 7 control planes** (`$OCP::Config::MAX_CONTROL_PLANE_NODES`):
     `control_planes.nodes` must be a whole number from 1 to 7, and the list
     form holds at most 7 entries ("must list at most 7 control planes"),
