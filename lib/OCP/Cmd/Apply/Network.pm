@@ -504,19 +504,38 @@ sub configure_registry_dns {
         . join(', ', @COREDNS_CONFIGMAPS) . ")\n"
         unless $cm;
 
-    my $corefile = $cm->data->{Corefile} // '';
+    # The ConfigMap CoreDNS mounts, with no Corefile in it: nothing answers
+    # from it and there is no place for the record. The probe reads the same
+    # ConfigMap and says the same (k348).
+    my $corefile = ($cm->data // {})->{Corefile};
+    die "ConfigMap kube-system/$cm_name has no Corefile key, so registry.local has no place in it\n"
+        unless defined $corefile;
+
+    # The server blocks a k3s Corefile imports from coredns-custom answer like
+    # its own (k348). Read only when the Corefile imports from there, and only
+    # a 404 is no snippets: a read that fails otherwise dies with its cause.
+    my $files = {};
+    if (OCP::Drift::corefile_imports_custom($corefile)) {
+        my $custom = OCP::Cmd::Apply::K8s::read_or_absent(
+            "ConfigMap kube-system/$OCP::Drift::COREDNS_CUSTOM_CONFIGMAP",
+            sub { $api->get('ConfigMap', $OCP::Drift::COREDNS_CUSTOM_CONFIGMAP, namespace => 'kube-system') });
+        $files = OCP::Drift::coredns_custom_files($custom ? $custom->data : undef);
+    }
+
     # The record goes into the root block only (ADR 0016, 0022). A server
     # block of its own for the name, or for a zone above it, answers in the
     # root block's place and shadows its record: that block is where the name
-    # resolves from, and the one OCP::Drift's probe reads too (k338). Mapping
-    # the name to this node is up to date; anything else is not ours to fix.
-    my $answers = OCP::Corefile->new(text => $corefile);
+    # resolves from, and the one OCP::Drift's probe reads too (k338) -- a
+    # snippet from coredns-custom as well, which ocp apply does not write
+    # over (k348). Mapping the name to this node is up to date; anything else
+    # is not ours to fix.
+    my $answers = OCP::Corefile->new(text => $corefile, imports => $files);
     my $block   = $answers->block_for('registry.local');
-    if ($block && !$block->{root}) {
+    if ($block && !($block->{root} && !defined $block->{file})) {
         my $at = $answers->address_of('registry.local');
         return 0 if defined $at && $at eq $node_ip;
-        die "ConfigMap kube-system/$cm_name: registry.local is answered by the server block "
-          . join(' ', @{ $block->{keys} }) . ', which '
+        die "ConfigMap kube-system/$cm_name: registry.local is answered by the "
+          . OCP::Drift::corefile_block_name($block) . ', which '
           . (defined $at ? "maps it to $at" : 'has no record for it')
           . "; ocp apply writes the record only into the root block, which that block shadows\n";
     }
@@ -527,6 +546,15 @@ sub configure_registry_dns {
       . "root zone (.), so registry.local has no place in it\n"
         unless corefile_has_root_block($corefile);
     my $patched  = corefile_with_host($corefile, $node_ip, 'registry.local');
+
+    # corefile_with_host takes out the hosts block an older OCP added, and
+    # only that. A root block that still runs the plugin twice is a Corefile
+    # CoreDNS refuses, record or not; the probe says so too (k348).
+    my $result = OCP::Corefile->new(text => $patched);
+    my @hosts  = $result->hosts_lines($result->root_block);
+    die "ConfigMap kube-system/$cm_name: its Corefile's root block runs the hosts plugin more than once,"
+      . " which CoreDNS refuses; ocp apply removes only a hosts block an older ocp added\n"
+        if @hosts > 1;
 
     # Already resolves to this node
     return 0 if $patched eq $corefile;
@@ -633,33 +661,11 @@ sub corefile_with_host {
 # so a Corefile CoreDNS is happy with is never touched — and never the last
 # hosts plugin standing, which is the distribution's own.
 #
+# OCP::Corefile does it, because the drift probe asks whether this repair is
+# enough (k348).
 sub corefile_drop_added_hosts {
     my ($corefile, $hostname) = @_;
-
-    my $parsed = OCP::Corefile->new(text => $corefile);
-    my @lines  = @{ $parsed->lines };
-    my @depth  = @{ $parsed->depth };
-
-    my $root = $parsed->root_block or return $corefile;
-    my ($from, $to) = @{$root}{qw(from to)};
-
-    my @hosts = grep { $depth[$_] == 1 && $lines[$_] =~ /^\s*hosts\b/ } ($from + 1 .. $to);
-    return $corefile if @hosts < 2;
-
-    my $left = scalar @hosts;
-    for my $i (reverse @hosts) {
-        last if $left < 2;
-        next unless $lines[$i] =~ /^\s*hosts\s*\{\s*$/;
-
-        my $end = $i;
-        $end++ while $end < $to && $depth[$end + 1] > $depth[$i];
-        next unless grep { /\b\Q$hostname\E\b/ } @lines[$i + 1 .. $end];
-
-        splice @lines, $i, $end - $i + 1;
-        $left--;
-    }
-
-    return join "\n", @lines;
+    return OCP::Corefile->new(text => $corefile)->without_added_hosts($hostname);
 }
 
 # Whether $corefile has a server block for the root zone, the block

@@ -210,12 +210,15 @@ subtest 'k328 registry.local DNS: no root server block is no record in place' =>
     is $r->{rv}, 0, 'control: up to date';
     is scalar @{ $r->{applied} }, 0, 'control: nothing written';
 
-    for my $case ([ 'only a cluster.local block' => { Corefile => $NO_ROOT } ],
-                  [ 'an empty Corefile'          => { Corefile => '' } ],
-                  [ 'no Corefile key'            => {} ]) {
-        my ($what, $data) = @$case;
+    # k348 names the missing key instead of an empty Corefile's missing root
+    # block; the drift probe says the same now.
+    my $NO_KEY = "ConfigMap kube-system/coredns has no Corefile key, so registry.local has no place in it\n";
+    for my $case ([ 'only a cluster.local block' => { Corefile => $NO_ROOT }, $NO_PLACE ],
+                  [ 'an empty Corefile'          => { Corefile => '' },       $NO_PLACE ],
+                  [ 'no Corefile key'            => {},                       $NO_KEY ]) {
+        my ($what, $data, $death) = @$case;
         $r = registry_dns($data);
-        is $r->{died}, $NO_PLACE, "$what: dies saying there is no place for the record";
+        is $r->{died}, $death, "$what: dies saying there is no place for the record";
         ok !defined $r->{rv}, "$what: no verdict, so not \"up to date\"";
         is scalar @{ $r->{applied} }, 0, "$what: nothing written";
     }

@@ -224,6 +224,15 @@ our @COMPONENT_PROBES = (
 # in different places.
 our @COREDNS_CONFIGMAPS = ('coredns', 'rke2-coredns-rke2-coredns');
 
+# k3s mounts the coredns-custom ConfigMap at /etc/coredns/custom (optional),
+# and its stock Corefile imports the *.server keys from there as server blocks
+# of their own (ADR 0022 measured both). A snippet there answers registry.local
+# like a block in the Corefile, so the writer and the probe read it too --
+# when the Corefile imports from that directory, which RKE2's chart Corefile
+# does not (k348).
+our $COREDNS_CUSTOM_CONFIGMAP = 'coredns-custom';
+our $COREDNS_CUSTOM_DIR       = '/etc/coredns/custom';
+
 # The name `ocp apply` points at the node that serves the registry NodePorts.
 our $REGISTRY_HOSTNAME = 'registry.local';
 
@@ -903,7 +912,10 @@ sub registry_dns_drift {
     my $expected = resolve_address($cp);
     return unless defined $expected;
 
-    my $corefile;
+    # The first of the names that exists, as the writer takes it (k348): a
+    # ConfigMap without a Corefile key is still the one CoreDNS mounts, not a
+    # reason to read the next name.
+    my ($cm_name, $corefile);
     for my $name (@COREDNS_CONFIGMAPS) {
         my $cm = eval {
             $self->api->get('ConfigMap', name => $name, namespace => 'kube-system');
@@ -925,43 +937,115 @@ sub registry_dns_drift {
             return $unknown if $unknown;
             next;
         }
-        $corefile = _dig($cm, qw(data Corefile));
-        last if defined $corefile;
+        ($cm_name, $corefile) = ($name, _dig($cm, qw(data Corefile)));
+        last;
     }
 
     # No CoreDNS ConfigMap under a name we know: not this probe's business.
-    return unless defined $corefile;
+    return unless defined $cm_name;
 
-    my $actual = corefile_host_address($corefile, $REGISTRY_HOSTNAME);
+    # What every entry below shares. Each is kind 'spec' with a manual step,
+    # not 'missing', wherever the writer leaves the Corefile as it is: no ocp
+    # apply closes those.
+    my %entry = (
+        component => 'registry_dns',
+        label     => "$REGISTRY_HOSTNAME DNS",
+        expected  => $expected,
+        remedy    => undef,
+    );
+
+    # Nothing for CoreDNS to answer from, nowhere for the writer to write
+    return {
+        %entry,
+        kind        => 'spec',
+        actual      => undef,
+        message     => "$REGISTRY_HOSTNAME does not resolve (expected $expected):"
+            . " ConfigMap kube-system/$cm_name has no Corefile key",
+        manual_step => "Give ConfigMap kube-system/$cm_name its Corefile back -- the distribution"
+            . " restores its own when it re-applies CoreDNS --, then run ocp apply",
+    } unless defined $corefile;
+
+    # The server blocks k3s imports from coredns-custom, when this Corefile
+    # imports them (k348). Only a 404 is none: a read that fails otherwise is
+    # drift unknown, as for the Corefile's own ConfigMap.
+    my $files = {};
+    if (corefile_imports_custom($corefile)) {
+        my $custom = eval {
+            $self->api->get('ConfigMap', name => $COREDNS_CUSTOM_CONFIGMAP, namespace => 'kube-system');
+        };
+        my $err = $@;
+        unless ($custom) {
+            my $unknown = $self->_unknown_drift($err,
+                in        => 'registry_dns_drift',
+                op        => 'get',
+                object    => "ConfigMap kube-system/$COREDNS_CUSTOM_CONFIGMAP",
+                component => 'registry_dns',
+                label     => "$REGISTRY_HOSTNAME DNS",
+                expected  => $expected,
+            );
+            return $unknown if $unknown;
+        }
+        $files = coredns_custom_files(_dig($custom, 'data'));
+    }
+
+    # The writer puts the record only into the Corefile's own root block, and
+    # only where that block is the one answering for the name (k338).
+    my $block = OCP::Corefile->new(text => $corefile, imports => $files)->block_for($REGISTRY_HOSTNAME);
+    my $ours  = $block && $block->{root} && !defined $block->{file};
+
+    # A root block running the hosts plugin twice is a Corefile CoreDNS
+    # refuses: nothing resolves, whatever the record says. The writer takes
+    # out the hosts blocks an older OCP added there and nothing else (k348).
+    if ($ours) {
+        my $own   = OCP::Corefile->new(text => $corefile);
+        my @hosts = $own->hosts_lines($own->root_block);
+        if (@hosts > 1) {
+            my $repaired = OCP::Corefile->new(text => $own->without_added_hosts($REGISTRY_HOSTNAME));
+            my @left     = $repaired->hosts_lines($repaired->root_block);
+            my $refused  = "$REGISTRY_HOSTNAME does not resolve (expected $expected): CoreDNS refuses the"
+                . " Corefile, whose root block runs the hosts plugin more than once";
+            return {
+                %entry,
+                kind        => 'spec',
+                actual      => undef,
+                message     => "$refused; ocp apply removes only a hosts block an older ocp added",
+                manual_step => "Leave one hosts plugin in the root block of the Corefile in ConfigMap"
+                    . " kube-system/$cm_name, then run ocp apply",
+            } if @left > 1;
+
+            return {
+                %entry,
+                kind    => 'missing',
+                actual  => undef,
+                message => "$refused, one of them a block an older ocp added; ocp apply restores it",
+            };
+        }
+    }
+
+    my $actual = corefile_host_address($corefile, $REGISTRY_HOSTNAME, $files);
     return if defined $actual && $actual eq $expected;
 
-    # The writer puts the record only into the root block, and only where
-    # that block is the one answering for the name (k338). Read through the
-    # same OCP::Corefile, so this says what that run does: a block of its own
-    # that answers otherwise, or no block that answers at all, stays as it is
-    # -- 'spec' with a manual step, not 'missing': no ocp apply closes it.
-    my $block = OCP::Corefile->new(text => $corefile)->block_for($REGISTRY_HOSTNAME);
-    unless ($block && $block->{root}) {
-        my $keys = $block ? join(' ', @{ $block->{keys} }) : undef;
+    # Read through the same OCP::Corefile as the writer, so this says what
+    # that run does: a block of its own that answers otherwise, or no block
+    # that answers at all, stays as it is.
+    unless ($ours) {
+        my $name = $block ? corefile_block_name($block) : undef;
         return {
+            %entry,
             kind        => 'spec',
-            component   => 'registry_dns',
-            label       => "$REGISTRY_HOSTNAME DNS",
-            expected    => $expected,
             actual      => $actual,
             message     => !$block
                 ? "$REGISTRY_HOSTNAME does not resolve from the CoreDNS Corefile (expected $expected):"
                   . " it has no server block for the root zone (.), the one ocp apply writes the record into"
                 : (defined $actual
-                    ? "$REGISTRY_HOSTNAME resolves to $actual, expected $expected, from the server block $keys"
-                    : "$REGISTRY_HOSTNAME does not resolve from the server block $keys that answers for it"
+                    ? "$REGISTRY_HOSTNAME resolves to $actual, expected $expected, from the $name"
+                    : "$REGISTRY_HOSTNAME does not resolve from the $name that answers for it"
                       . " (expected $expected)")
                   . '; ocp apply writes the record only into the root block, which that one shadows',
             manual_step => $block
-                ? "Map $REGISTRY_HOSTNAME to $expected in the CoreDNS server block $keys"
+                ? "Map $REGISTRY_HOSTNAME to $expected in the CoreDNS $name"
                 : "Give the CoreDNS Corefile a server block for the root zone (.), or map"
                   . " $REGISTRY_HOSTNAME to $expected in a server block for it",
-            remedy      => undef,
         };
     }
 
@@ -1279,12 +1363,46 @@ sub resolve_address {
 # a probe that only looked where OCP writes would call a working cluster
 # drifted. And it answers instead: a record anywhere else in the file is not
 # what the cluster resolves the name to (ADR 0022 measured the shadowing).
+#
+# With \%imports ({ path => text }), the server blocks the Corefile's
+# top-level imports read answer as well (k348).
 sub corefile_host_address {
-    my ($corefile, $hostname) = @_;
+    my ($corefile, $hostname, $imports) = @_;
     return undef unless defined $corefile && defined $hostname;
 
-    my $address = OCP::Corefile->new(text => $corefile)->address_of($hostname);
+    my $address = OCP::Corefile->new(text => $corefile, imports => $imports // {})->address_of($hostname);
     return $address;
+}
+
+# Whether the Corefile imports server blocks from where k3s mounts
+# coredns-custom: the one question that decides whether the writer and the
+# probe read that ConfigMap (k348).
+sub corefile_imports_custom {
+    my ($corefile) = @_;
+    return 0 unless defined $corefile;
+    return ( grep { index($_, "$COREDNS_CUSTOM_DIR/") == 0 }
+             OCP::Corefile->new(text => $corefile)->import_patterns ) ? 1 : 0;
+}
+
+# coredns-custom's data as the files CoreDNS sees under its mount, for
+# OCP::Corefile's imports: { "/etc/coredns/custom/<key>" => text }.
+sub coredns_custom_files {
+    my ($data) = @_;
+    return {} unless ref $data eq 'HASH';
+    return { map { ("$COREDNS_CUSTOM_DIR/$_" => $data->{$_}) } grep { defined $data->{$_} } keys %$data };
+}
+
+# A server block as the writer's and the probe's messages name it: its keys,
+# and for one imported from coredns-custom, the ConfigMap key it is in.
+sub corefile_block_name {
+    my ($block) = @_;
+    my $name = 'server block ' . join(' ', @{ $block->{keys} });
+    return $name unless defined $block->{file};
+
+    my $file = $block->{file};
+    $file =~ s{^\Q$COREDNS_CUSTOM_DIR\E/}{}
+        and return "$name (ConfigMap kube-system/$COREDNS_CUSTOM_CONFIGMAP, key $file)";
+    return "$name ($file)";
 }
 
 # Tag of a container image reference, digest and registry port aware.
@@ -1601,10 +1719,19 @@ The record is read from the server block that answers for the name
 C<ocp apply> does not write it, and the entry is C<kind =E<gt> 'spec'> with a
 C<manual_step> instead (k338).
 
+Read as the writer reads it in every case (k348): the server blocks a k3s
+Corefile imports from the C<coredns-custom> ConfigMap answer like its own
+(read only when the Corefile imports from C</etc/coredns/custom>, which RKE2's
+does not); a server block answers only for plain DNS on port 53; the first
+CoreDNS ConfigMap that exists is the one read, and one without a C<Corefile>
+key is a C<spec> entry; a root block that runs the C<hosts> plugin more than
+once, which CoreDNS refuses, is C<missing> when the block an older OCP added is
+what C<ocp apply> takes out, and C<spec> when one would still be left over.
+
 A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
-name is read. Any other failed read ends the probe with one
-C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
-L</component_drift>.
+name is read; a C<coredns-custom> answering 404 has no snippets. Any other
+failed read ends the probe with one C<kind =E<gt> 'error'> entry (k268), drift
+unknown, as for L</component_drift>.
 
 =head2 pod_cidr_drift
 
@@ -1654,7 +1781,30 @@ drifted.
     my $ip = OCP::Drift::corefile_host_address($corefile, 'registry.local');
 
 The address a Corefile maps a name to, or C<undef> when it maps none: the
-record in the server block that answers for the name (L<OCP::Corefile>).
+record in the server block that answers for the name (L<OCP::Corefile>). An
+optional third argument, C<{ path =E<gt> text }>, gives the files the
+Corefile's top-level imports read.
+
+=head2 corefile_imports_custom
+
+    my $read = OCP::Drift::corefile_imports_custom($corefile);
+
+Whether the Corefile imports server blocks from C<$COREDNS_CUSTOM_DIR>
+(C</etc/coredns/custom>), where k3s mounts C<$COREDNS_CUSTOM_CONFIGMAP>
+(C<coredns-custom>). The writer of the C<registry.local> record and
+L</registry_dns_drift> read that ConfigMap only then.
+
+=head2 coredns_custom_files
+
+    my $files = OCP::Drift::coredns_custom_files($cm->data);
+
+C<coredns-custom>'s data as the files CoreDNS sees under its mount, for
+L<OCP::Corefile/imports>.
+
+=head2 corefile_block_name
+
+A server block as messages name it: C<server block> and its keys, and for one
+imported from C<coredns-custom>, the ConfigMap key it is in.
 
 =head2 image_version
 

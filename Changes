@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` and `ocp status` now agree on `registry.local` in more
+      Corefiles: a k3s `coredns-custom` `*.server` snippet that answers the
+      name is read by both (one that maps it elsewhere is named, not written
+      over); a CoreDNS ConfigMap without a `Corefile` key is reported by
+      `ocp status` too; a root block running the hosts plugin twice, which
+      CoreDNS refuses, is reported, and fixed by `ocp apply` when the extra
+      block is one an older ocp added; server blocks on a port other than 53
+      no longer count as answering.
     - A wrong PIN1 is now reported as what it is, with the fix: retype it,
       or, if forgotten, why it cannot be recovered. It is no longer called an
       internal error. The same goes for an empty PIN1, an empty
