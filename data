@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-31T04:04:15Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:04:15Z
+created: 2026-10-31T03:01:01Z
+id: 276
+priority: medium
+started: 2026-10-31T04:04:15Z
+status: done
+tags:
+- apply
+- drift
+- gpu
+title: 'ocp apply --dry-run: gpu_dry_run turns a failed read into ''no GPU finding'''
+updated: 2026-10-31T04:04:15Z
+---
+
+Found while doing k269 (resource_exists/crd_get die on anything but a 404 since k269). In OCP::Cmd::Apply::Drift::gpu_dry_run (line numbers as of f04fdf5):
+- L671: return () unless eval { _resource_exists } reads a failed read as "no GPU finding", silently
+- L673: eval { cluster_policy_differences } reads it as "no differences"
+- L679: eval { _crd_get } (toolkit warning) reads it as "no ClusterPolicy"
+
+Done when: each of the three tells a die apart from a false answer and reports "could not be checked" with the cause on STDERR, the way k267 reports error entries in the dry-run; tests pin 404 vs 403 for each.
+
+2026-10-31 03:40 Diagnosis: gpu_dry_run now sits at Apply/Drift.pm L671-689 (at 20bec47). The three evals swallow a die from resource_exists/crd_get (since k269 those die on non-404). Plan: gpu_dry_run returns drift-shaped entries -- {kind=>spec,path,message} per differing ClusterPolicy path, {kind=>error,label,cause,message} per failed read. Not quiet: STDOUT '[drift] could not be checked: <message>', cause on STDERR once. ClusterPolicy read failed -> the toolkit read (same GET) is skipped, so one cause, not two. dry_run_report counts error entries under 'could not be checked'. The real run's quiet pre-check (k234) counts them as '<label> drift check' unresolved, the way k267 does, because the dry run says 'a real run would not complete until it can be read' and that claim has to be true. Tests: t/233 pins 404 vs 403 for each read through the real K8s helpers; t/38 covers the real run and the dry-run count.
+
+2026-10-31 03:59 Done, commit-ready, not committed. gpu_dry_run (Apply/Drift.pm) returns entries: {kind=>spec,path,message} per differing ClusterPolicy path, {kind=>error,label,cause,message} per read that died. A 404 stays an answer: no operator, no differences, no ClusterPolicy. Any other die is said as '  [drift] could not be checked: LABEL: CAUSE' on STDOUT, with the cause once on STDERR as '  [!!] LABEL not checked: CAUSE'. quiet mode is silent on both channels, so the dry run's two calls say it once. A failed ClusterPolicy read skips the toolkit read (same GET). Labels: 'GPU Operator', 'GPU Operator ClusterPolicy', 'gpu.toolkit switch'. dry_run_report counts error entries under 'N more could not be checked', not as actions; 'No drift detected' is held back. The real run's k234 pre-check says the same pair and counts 'LABEL drift check' as unresolved, so the dry run's 'a real run would not complete' is true. Files: lib/OCP/Cmd/Apply/Drift.pm, t/233-gpu-clusterpolicy-drift.t (404 vs 403 for each read through the real K8s helpers), t/38-reconcile-path.t (real run + dry run; DryRunApi can deny a key; the k234 stub returns the entry shape). Binding: DOCKER_BUILDKIT=0 make test TESTS=<26 apply/drift/gpu/health files> -> Files=26, Tests=463, Result: PASS. Mutations (scratch copy, host prove of t/233 t/38 t/203): 16 of 16 killed for this card -- each 403 swallowed (x3), quiet not silent, toolkit re-read after a ClusterPolicy failure, not unresolved, real run silent, dry run uncounted, 'No drift detected' despite an error (real + dry), no STDERR cause, no STDOUT line, a 404/empty answer as error (x3). Also found, other lane (k273 / Workloads.pm): setup_gpu_operator evals the NFD Node list and reads a failed list as 'no GPU nodes', so the GPU step is skipped -- the same k269 class; needs a card on this board. Proposed subject: Report a GPU read ocp apply could not make as unchecked, not as no finding (k276)
+
+2026-10-31 04:04 Committed 44dbf87. Follow-up noted on k277.
