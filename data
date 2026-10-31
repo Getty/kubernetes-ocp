@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-10-31T03:00:32Z
+created: 2026-10-31T02:32:14Z
+id: 268
+priority: medium
+started: 2026-10-31T03:00:32Z
+status: done
+tags:
+- drift
+- bug
+title: 'Drift: gpu_crd_drift, registry_dns_drift, pod_cidr_drift and _probe_hosts
+  read a failed read as absent'
+updated: 2026-10-31T03:00:32Z
+---
+
+Found by k256: the same bug class it fixed in component_drift is still in lib/OCP/Drift.pm in gpu_crd_drift, registry_dns_drift and pod_cidr_drift (any failed read counts as absent), and in _probe_hosts, whose OCPNode list falls back to an empty list on any error.
+
+Done when only a 404 counts as absent there too, every other failure is a `kind => "error"` entry with the cause carped to STDERR (the k119/k256 shape), and tests cover 404/403/500 for each. Lane: ocp-state-worker.
+
+2026-10-31 02:47 Implemented in lib/OCP/Drift.pm: one local helper _unknown_drift($err, %entry) holds the /\b404\b/ test, carps the cause once and builds the k119/k256 error entry; component_drift (k256) now goes through it too, output byte-identical (t/25 k256 asserts unchanged). gpu_crd_drift: _request answers an error status as a response, so status+body (or the exception, or an undecodable 2xx body) is the cause; 404 stays absent; gpu_crds_differing and its getter contract (Apply::Workloads) unchanged. registry_dns_drift: 404 on a CoreDNS name -> next name; any other failure ends the probe with one error entry (the writer takes the first name that exists). pod_cidr_drift: 404 -> nothing to compare; else error entry. _probe_hosts: OCPNode list moved to _worker_hosts, listed once per call; a non-404 failure is ONE error entry (component worker_host_probes, label 'Worker host probes') from rex_probe_drift, CPs still probed; probe_targets carps the cause and names what it can. New t/268-drift-read-failures.t (404/403/500 per place); fakes in t/25, t/182, t/39 got a 404-answering _request. Sweep for other fakes running.
+
+2026-10-31 02:56 Caller notes (not in this card's scope, for the dispatcher): (1) Apply side, same bug class: OCP::Cmd::Apply::Workloads calls gpu_crds_differing(sub { $self->_crd_get(...) }) and OCP::Cmd::Apply::K8s::crd_get answers every failure with undef, so the GPU step still reads a 403/5xx on the CRDs as 'no CRD, not differing' -- apply-lane card (lib/OCP/Cmd/Apply/*, in flight for k267/k269). (2) ocp status's api (OCP::Kubernetes::_build_api) never calls OCP::K8s->register, so list('OCPNode') goes through Kubernetes::REST's discovery fallback (IO::K8s::Unstructured); on a cluster that does not serve the OCPNode CRD it croaks 'unknown resource OCPNode ...' instead of a 404, which is now a worker_host_probes error entry in ocp status (with a prober), whereas ocp apply's registered api gets a 404 = no workers. Every apply ensures the CRDs, so only a half-deployed cluster hits it -- suggest registering OCP::K8s in OCP::Kubernetes (k270's file). (3) k267's generic kind eq 'error' handling in Apply::Drift (real run and dry run) covers the new entries as-is; nothing component-specific.
+
+2026-10-31 02:57 Done. lib/OCP/Drift.pm: local helper _unknown_drift holds the one /\b404\b/ test, carps the cause once and builds the k119/k256 error entry; component_drift, gpu_crd_drift, registry_dns_drift, pod_cidr_drift and the OCPNode list (_worker_hosts, new) all go through it. _probe_hosts decision: the OCPNode list is read once per rex_probe_drift/probe_targets call; a non-404 failure is ONE error entry (component worker_host_probes, label 'Worker host probes', message 'Worker host probes: could not list OCPNode in ocp-system, drift unknown: <cause>'), the control planes are still probed; probe_targets carps and names what it can. List read via _dig (IO::K8s::List or plain hash, as distribution_drift) -- fixes the t/47 warning the coordinator saw. POD for registry_dns_drift/pod_cidr_drift/rex_probe_drift updated. Tests: new t/268-drift-read-failures.t (404/403/500 per place, transport + undecodable body for the CRD GET, detect wiring); fakes in t/25, t/182, t/39 got a 404-answering _request (missing method used to read as absent). Verified: binding DOCKER_BUILDKIT=0 make test on t/00-load t/25 t/228 t/182 t/39 t/71-drift-rex-probe t/234 t/268 t/47 t/38 t/71-cluster-ssh-key t/233 t/28 t/236 t/237 t/107: 16 files, 496 tests, PASS, no OCP::Drift output on stderr; stderr of t/38/t/71-cluster-ssh-key/t/47/t/233/t/107 identical to HEAD Drift.pm. t/268 against HEAD Drift.pm: every 403/500 subtest fails, every 404 subtest passes. Mutations (11, built in scratch): all killed. Host sweep of 111 drift-adjacent t/ files: PASS, none of the new carps. Proposed subject: 'Report the remaining drift probes' failed reads as unknown, not absent (k268)'.
+
+Committed as 7d904ed
