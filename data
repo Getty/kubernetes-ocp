@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-10-31T17:23:08Z
+created: 2026-10-31T02:30:05Z
+id: 266
+priority: low
+started: 2026-10-31T17:23:08Z
+status: done
+tags:
+- secrets
+- apply
+- dry-run
+title: 'ocp apply --dry-run: say which SOPS files a real run would repair'
+updated: 2026-10-31T17:23:08Z
+---
+
+Follow-up from k259 (e0ad1be). `ocp apply` repairs SOPS files with a bare lastmodified, but `--dry-run` skips that silently, while the rest of the dry run names what a real run would change.
+
+Done when OCP::Secrets has a read-only check returning the files that are still bare (secrets lane; it can reuse _sops_lastmodified_bare), and --dry-run prints "would repair <file>" for each (apply lane), touching nothing; tests for both. Lanes: ocp-secrets-worker, then ocp-apply-worker (Apply.pm is at ~694 of t/52's 700 lines).
+
+2026-10-31 15:44 Apply worker, 2026-10-31: delivered as $S/w-apply266/k266.patch against queued23 (base23 = queued22 + k378); git apply --check on a fresh base23 is clean, no Changes hunk. Cross-lane Secrets half, approved by the coordinator: a public read-only OCP::Secrets->bare_sops_lastmodified_files returns the bare files by name, in sops_file_names order, off the text through _sops_lastmodified_bare: no key, PIN, decrypt or write. repair_sops_lastmodified now selects through it, so the dry run names exactly what the real run rewrites. PIN1 path untouched. Apply half: the k259 line in execute becomes one call to the new OCP::Cmd::Apply::SopsRepair::repair_sops_files. The real run is unchanged; --dry-run prints '[..] A real run would repair <file>: its sops lastmodified is a bare timestamp, which sops -d refuses' per file on STDOUT, after the banner, then a blank line, and writes nothing. Apply.pm 679/700 (+1 use line). My call beyond the card's wording: no line when no key is at hand (no .ocp/age.key, no SOPS_AGE_KEY_FILE), because the real run then repairs nothing (t/153 'no key at hand'). Not touched: Config.pm, Apply/Drift.pm, Destroy.pm, Role/Cmd.pm. Red: t/266 method subtests failed, the keyed dry run named no file (byte-for-byte and controls held); t/259's 3 new assertions failed. Green: make test, 52 files / 865 tests, PASS, nothing skipped. Mutants 7/7 killed, Rex first, %INC asserted in-process plus a child marker for the exec'd ocp; unmutated controls passed.
+
+2026-10-31 15:44 Ready for review: $S/w-apply266/k266.patch (queued23). Proposed subject: Name in ocp apply --dry-run each SOPS file a real run would repair, its bare lastmodified read off the text (k266)
+
+Reviewed by main: Secrets::bare_sops_lastmodified_files is the repair's own selection (repair now reads it), SopsRepair names files only on -n. Accepted the worker's call: no line when no key is at hand (a real run repairs nothing then, t/153). Known limit: the dry-run key test is sops_age_key_file || has_age_key, while identities() also counts an in-memory age_key; at this call site (right after Secrets->new in Apply::execute) no in-memory key can exist yet, so the two agree. If an unlock ever moves before it, mirror identities. Applies on head11 -> head12, queued next batch.
+
+Committed as 17a4d0d
