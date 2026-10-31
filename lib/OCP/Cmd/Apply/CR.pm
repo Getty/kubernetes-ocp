@@ -371,10 +371,12 @@ sub ensure_cp_ocpnode {
         1;
     };
 
+    # A status write that failed is a failure: its [WARN] goes to STDERR, with
+    # the cause, and STDOUT claims no Ready (k356).
     if ($ok) {
         print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
     } else {
-        print "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: $@";
+        print STDERR "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: $@";
     }
 }
 
@@ -502,7 +504,9 @@ sub migrate_legacy_nodes {
         $api->ensure($cr);
 
         # Separate write: the ensure above cannot carry status past the
-        # status subresource (see OCP::K8s::patch_status).
+        # status subresource (see OCP::K8s::patch_status). One that failed is
+        # a [WARN] on STDERR, with the cause; the [migrated] line on STDOUT
+        # follows it all the same (k356).
         eval {
             OCP::K8s->patch_status($api,
                 kind      => 'OCPNode',
@@ -515,7 +519,7 @@ sub migrate_legacy_nodes {
                 },
             );
             1;
-        } or print "  [WARN] status for migrated OCPNode/$name stayed unwritten: $@";
+        } or print STDERR "  [WARN] status for migrated OCPNode/$name stayed unwritten: $@";
 
         printf "  [migrated] %s (%s, %s)\n", $name,
                $cr->{spec}{role}, $public_ip // 'no-ip';
@@ -839,7 +843,8 @@ sub ensure_robocop {
 # ocp.internal/robocop-sigterm; each one still running after the rollout is
 # deleted with a 30 s grace period instead, said on STDOUT. A pod that has the
 # annotation is never touched, so this does nothing once the transition is
-# over. Best effort: a failure is a [WARN], not a failed apply.
+# over. Best effort: a failure is a [WARN] on STDERR, with its cause, not a
+# failed apply (k356).
 sub retire_unannotated_robocop_pods {
     my ($self, $api) = @_;
 
@@ -854,7 +859,7 @@ sub retire_unannotated_robocop_pods {
     };
     if (my $err = $@) {
         chomp $err;
-        print "  [WARN] could not check for robocop pods without SIGTERM handling: $err\n";
+        print STDERR "  [WARN] could not check for robocop pods without SIGTERM handling: $err\n";
         return;
     }
 
@@ -872,7 +877,7 @@ sub retire_unannotated_robocop_pods {
         }
         else {
             my $err = $@; chomp $err;
-            print "  [WARN] could not delete robocop pod $name (no SIGTERM handling): $err\n";
+            print STDERR "  [WARN] could not delete robocop pod $name (no SIGTERM handling): $err\n";
         }
     }
     return;

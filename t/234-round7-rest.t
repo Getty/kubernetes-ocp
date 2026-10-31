@@ -90,12 +90,13 @@ subtest '29: pods without the annotation are deleted with a 30 s grace period' =
     is $out, '', 'and says nothing';
 
     my $gone = FakeApi->new(pods => [ { metadata => { name => 'p' } } ], status => 404);
-    ($out) = capture(sub { OCP::Cmd::Apply::CR::retire_unannotated_robocop_pods(undef, $gone) });
-    unlike $out, qr/WARN/, 'a pod that is gone already is fine';
+    ($out, $err) = capture(sub { OCP::Cmd::Apply::CR::retire_unannotated_robocop_pods(undef, $gone) });
+    unlike $out . $err, qr/WARN/, 'a pod that is gone already is fine';
 
     my $bad = FakeApi->new(pods => [ { metadata => { name => 'p' } } ], status => 403);
-    ($out) = capture(sub { OCP::Cmd::Apply::CR::retire_unannotated_robocop_pods(undef, $bad) });
-    like $out, qr/\[WARN\] could not delete robocop pod p/, 'a refusal is a [WARN], not a failed apply';
+    ($out, $err) = capture(sub { OCP::Cmd::Apply::CR::retire_unannotated_robocop_pods(undef, $bad) });
+    like $err, qr/\[WARN\] could not delete robocop pod p/, 'a refusal is a [WARN] on STDERR (k356), not a failed apply';
+    unlike $out, qr/WARN/, 'nothing of it on STDOUT';
 };
 
 subtest '29: apply and deploy-robocop both do it' => sub {

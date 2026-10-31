@@ -245,10 +245,15 @@ subtest 'apply does not claim Ready when the status write fails' => sub {
         no strict 'refs';
         no warnings 'redefine';
         local *ApplyApi::patch_status = sub { die "403 Forbidden\n" };
+        # The warning is a failure, so it goes to STDERR (k356).
+        my $err = '';
+        open my $efh, '>', \$err or die "open stderr capture: $!";
+        local *STDERR = $efh;
         my $out = capture_stdout {
             $apply->_ensure_cp_ocpnode($api, { name => 'cortex', provider => 'ssh' });
         };
-        like $out, qr/WARN/, 'warns instead of claiming Ready';
+        like $err, qr/WARN.*403 Forbidden/, 'warns instead of claiming Ready, on STDERR with the cause';
+        unlike $out, qr/WARN/, 'nothing of it on STDOUT';
         unlike $out, qr/\[ok\].*Ready/, 'no success line for an unwritten status';
     }
 };

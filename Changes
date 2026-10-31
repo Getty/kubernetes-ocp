@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` and `ocp deploy-robocop` say on STDERR, with the cause,
+      when the status of the control plane's or a migrated node's OCPNode
+      could not be written, or when robocop pods from before SIGTERM
+      handling could not be listed or deleted -- no longer on STDOUT among
+      the progress lines.
     - `ocp keys secure` and `ocp keys operator add|rm` name why a machine
       failed without any Perl source location in it, as `ocp init` does:
       one in the middle of a wrapped error no longer stays in the line.
