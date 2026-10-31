@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-10-31T02:16:46Z
+created: 2026-10-30T21:54:32Z
+id: 245
+priority: high
+started: 2026-10-31T01:32:05Z
+status: done
+tags:
+- bug
+- hetzner
+- provider
+title: 'ocp hetzner list dies on the first server: Server->server_type is a name string'
+updated: 2026-10-31T02:16:46Z
+---
+
+lib/OCP/Cmd/Hetzner/List.pm line 55 calls $server->server_type->{name}. WWW::Hetzner::Cloud::Server->server_type returns the type name as a plain string (the raw hash is server_type_data), so the command dies under strict refs ("Can't use string (\"cx22\") as a HASH ref") as soon as one server is listed. Reproduced offline against a fake IO while writing the consumer skill perl-www-hetzner (p5-www-hetzner k35).
+
+Done when: the column reads $server->server_type, and a test lists a server through a fake IO (pattern in skill perl-www-hetzner, "Tests without network").
+
+2026-10-31 01:36 Verified against WWW::Hetzner 0.102 in raudssus/ocp:latest (cpanfile.snapshot pin 0.102): Cloud::Server->server_type is 'sub server_type { shift->server_type_data->{name} }', a plain string. List.pm:55 ->{name} dies under strict refs. Fix = $server->server_type; test through a fake WWW::Hetzner::Role::IO.
+
+2026-10-31 01:49 Done. lib/OCP/Cmd/Hetzner/List.pm: TYPE column reads $server->server_type (the name string); new lazy 'cloud' attribute (_build_cloud holds the token lookup + same die) as the test seam, same shape as OCP::Provider::Hetzner->cloud; =attr cloud POD. New t/245-hetzner-list-server-type.t (2 subtests) through t/lib/OCPTest/HetznerIO.pm, a WWW::Hetzner::Role::IO fake under a real WWW::Hetzner::Cloud (label_selector filtered server side, 2 per page, meta.pagination.next_page). Red first: 'Can't use string ("cx22") as a HASH ref' at List.pm. Mutation (revert to ->{name}) red 2/2. Verified: DOCKER_BUILDKIT=0 make test TESTS="t/245… t/246… t/12 t/16 t/74 t/101 t/41 t/42 t/00-load" -> 9 files, 255 tests, PASS. Commit split: List.pm shares hunks with k246 (list_all + =opt label line belong to k246).
+
+2026-10-31 02:16 Closed with 20b3b5a. Verified on that commit alone in a detached worktree: prove -l t/245-hetzner-list-server-type.t t/00-load.t, 2 files, 47 tests, PASS. This was a host prove run, not the binding Docker suite; the binding full Docker suite passed on a later tree containing both commits (196 files, 3089 tests).
