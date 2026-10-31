@@ -1,0 +1,48 @@
+---
+class: standard
+completed: 2026-10-31T17:20:44Z
+created: 2026-10-31T13:54:16Z
+id: 371
+priority: low
+started: 2026-10-31T17:20:44Z
+status: done
+tags:
+- secrets
+- git
+title: 'A clone''s .ocp/ gets no .ocp/.gitignore: only ocp init writes it'
+updated: 2026-10-31T17:20:44Z
+---
+
+Found by the secrets worker during k360 (2026-10-31). Only `ocp init` writes `.ocp/.gitignore`. A clone's `.ocp/`, now created by the first PIN1 unlock (k360) or by any other writer, never gets one, so keeping the decrypted state out of git relies on the project's own `.gitignore`. A hard invariant (skill ocp-core) says `.ocp/` must stay out of git.
+
+Done = whoever creates `.ocp/` first also writes the same `.ocp/.gitignore` init writes, with the same content, and never overwrites an existing one. One helper, not ten copies. Test: a clone fixture without `.ocp/` gets `.ocp/.gitignore` after a first unlock, and `git status` in a temp repo shows nothing under `.ocp/`.
+
+Lane: ocp-secrets-worker (the creators of .ocp/ are mostly in OCP::Secrets; list the others).
+
+2026-10-31 15:02 Done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets370/k371.patch. It stacks on k370.patch over queued17 (git apply checked; the two patches together reproduce the work tree exactly). No Changes hunk.
+
+Helper: new lib/OCP/StateDir.pm, no $VERSION, has an ABSTRACT. make_parent($file) runs mkpath and, when the directory is named .ocp, writes .ocp/.gitignore with init's content. write_gitignore($dir) never replaces anything already there and returns 1 when it wrote.
+
+Every write that can make .ocp/ first now goes through make_parent. The files touched outside my lane are named so their owners can review:
+- lib/OCP/Secrets.pm: _spew_secure (k360's cached key; generate_age_key's key goes through it as well) and generate_ssh_key
+- lib/OCP/Config.pm _save_status (status.yaml): state lane
+- lib/OCP/Cmd/Apply/DeployedHash.pm save (deployed.yaml): apply lane. Not Apply.pm and not Apply/Drift.pm.
+- lib/OCP/KnownHosts.pm ensure_dir (the project's known_hosts): provider lane
+- lib/OCP/Cmd/Init.pm: init's inline write is now write_gitignore, so the content lives in one place. Same "[ok] Created .ocp/.gitignore" line. Apply lane.
+
+Left as they were:
+- generate_age_key's and restore_age_recipient's own mkpath. Neither makes .ocp/ first: the key goes through _spew_secure, and restore_age_recipient runs only once .ocp/age.key exists. A mutant of generate_age_key's line was equivalent.
+- decrypt_kubeconfig_to_file, ocp kubeconfig --output, and OCP::Kubeconfig's ~/.kube target: these write to a path the user names. Only a directory named .ocp gets a .gitignore.
+
+A .ocp/ made before this, without a .gitignore, gains one on its next write. The content is init's verbatim, including "(written by ocp init)".
+
+Runs (all with explicit file lists):
+- Red on queued17 + k370: t/371 fails 9 of 11 subtests. The two that pass are preservation claims: only a .ocp/ gets one, and init writes it, as it already did inline.
+- Green: a targeted set of 41 files (the writers' callers, the age-key/identities/kubeconfig callers, plus init, config, drift and load), Tests=911, PASS, no skips. After two lines went back to base and an init subtest was added, a second run of 20 files covered the final state: the mutant runner, t/371, t/215, and the callers of generate_age_key and restore_age_recipient. Tests=314, PASS, no skips.
+- Mutants: 10 of 10 killed (StateDir x4, each converted writer, init's own write). The runner asserts the count, and that t/371 and t/215 ran unmutated.
+
+2026-10-31 15:02 Done: new OCP::StateDir (make_parent/write_gitignore). Every write that can make .ocp/ first gives it init's .gitignore, and an existing one is never replaced. Touches Secrets, Config (state lane), Apply/DeployedHash (apply lane), KnownHosts (provider lane) and Init (apply lane); not Apply.pm or Drift.pm. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets370/k371.patch, stacked on k370. Red 9/11 subtests, green on targeted sets (41 + 20 files), mutants 10/10 killed. Details in the note above.
+
+Reviewed (main, 2026-10-31): w-secrets370/k371.patch accepted (stacked on k370); batch 6. New lib/OCP/StateDir.pm carries a hand-written =head1 NAME next to # ABSTRACT: added to k364's list rather than fixed here.
+
+Committed as 0f88dce
