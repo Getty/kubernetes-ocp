@@ -1,0 +1,77 @@
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":329,"ts":"2026-10-31T12:47:54Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":350,"ts":"2026-10-31T12:48:08Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":350,"ts":"2026-10-31T12:48:13Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":350,"ts":"2026-10-31T12:48:18Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":352,"ts":"2026-10-31T12:49:26Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":253,"ts":"2026-10-31T12:54:20Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":253,"ts":"2026-10-31T13:02:07Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":253,"ts":"2026-10-31T13:02:11Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":358,"ts":"2026-10-31T13:03:30Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":359,"ts":"2026-10-31T13:03:35Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":352,"ts":"2026-10-31T13:03:41Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":356,"ts":"2026-10-31T13:04:22Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":317,"ts":"2026-10-31T13:04:27Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":345,"ts":"2026-10-31T13:05:18Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":345,"ts":"2026-10-31T13:05:23Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":345,"ts":"2026-10-31T13:05:29Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":340,"ts":"2026-10-31T13:05:41Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":340,"ts":"2026-10-31T13:05:46Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":340,"ts":"2026-10-31T13:05:51Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":347,"ts":"2026-10-31T13:06:03Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":347,"ts":"2026-10-31T13:06:07Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":347,"ts":"2026-10-31T13:06:12Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":333,"ts":"2026-10-31T13:06:30Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":333,"ts":"2026-10-31T13:06:35Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":333,"ts":"2026-10-31T13:06:39Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":330,"ts":"2026-10-31T13:06:44Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":330,"ts":"2026-10-31T13:06:49Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":330,"ts":"2026-10-31T13:06:53Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":330,"ts":"2026-10-31T13:06:58Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":352,"ts":"2026-10-31T13:07:14Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":346,"ts":"2026-10-31T13:11:12Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":346,"ts":"2026-10-31T13:11:40Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":342,"ts":"2026-10-31T13:12:06Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":342,"ts":"2026-10-31T13:12:19Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":348,"ts":"2026-10-31T13:16:59Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":356,"ts":"2026-10-31T13:17:41Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":356,"ts":"2026-10-31T13:17:55Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":356,"ts":"2026-10-31T13:18:00Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":358,"ts":"2026-10-31T13:18:15Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":360,"ts":"2026-10-31T13:19:28Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":361,"ts":"2026-10-31T13:19:33Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":362,"ts":"2026-10-31T13:19:39Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":363,"ts":"2026-10-31T13:19:44Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":349,"ts":"2026-10-31T13:20:01Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":306,"ts":"2026-10-31T13:20:06Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":342,"ts":"2026-10-31T13:20:11Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":352,"ts":"2026-10-31T13:20:16Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":360,"ts":"2026-10-31T13:21:28Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":355,"ts":"2026-10-31T13:21:53Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":317,"ts":"2026-10-31T13:22:56Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":317,"ts":"2026-10-31T13:23:02Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":364,"ts":"2026-10-31T13:24:19Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":365,"ts":"2026-10-31T13:24:25Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":366,"ts":"2026-10-31T13:24:30Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":352,"ts":"2026-10-31T13:24:48Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":353,"ts":"2026-10-31T13:25:17Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"review","task_id":253,"ts":"2026-10-31T13:25:40Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":253,"ts":"2026-10-31T13:25:46Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":253,"ts":"2026-10-31T13:25:51Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":358,"ts":"2026-10-31T13:31:37Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":358,"ts":"2026-10-31T13:31:51Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":358,"ts":"2026-10-31T13:32:03Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":358,"ts":"2026-10-31T13:32:08Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":367,"ts":"2026-10-31T13:33:28Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":368,"ts":"2026-10-31T13:33:34Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":351,"ts":"2026-10-31T13:33:38Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":352,"ts":"2026-10-31T13:33:38Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":363,"ts":"2026-10-31T13:33:44Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":351,"ts":"2026-10-31T13:33:56Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"todo","task_id":369,"ts":"2026-10-31T13:35:01Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":313,"ts":"2026-10-31T13:35:06Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":352,"ts":"2026-10-31T13:36:14Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":349,"ts":"2026-10-31T13:36:45Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":367,"ts":"2026-10-31T13:37:16Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":353,"ts":"2026-10-31T13:38:52Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":352,"ts":"2026-10-31T13:39:08Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":352,"ts":"2026-10-31T13:39:13Z"}
