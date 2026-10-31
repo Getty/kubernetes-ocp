@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add --gpu` waits for the GPU label as long as `ocp apply`
+      waits for NFD on a fresh node, ten minutes, instead of five: the NFD
+      worker pod of a node that has just joined gets no sandbox until
+      Cilium's first BPF compile there is done, and the shorter wait gave
+      up on such a node where `ocp apply` would have waited.
     - `ocp apply` refuses a key under `gpu:` or `system:` that OCP does
       not read -- `gpu: { enable: false }` was a mapping without
       `enabled`, and left the GPU stack on -- and a `system:` that is no

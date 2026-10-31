@@ -13,6 +13,7 @@ use OCP::Choices;
 use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::CR ();
 use OCP::Cmd::Apply::K8s ();
+use OCP::Cmd::Apply::Workloads ();
 use OCP::Config;
 use OCP::Secrets;
 use OCP::K8s;
@@ -858,6 +859,12 @@ sub _ssh_keys_note {
 # GPU Operator with the next `ocp apply`. gpu.enabled: false needs no label:
 # the GPU Operator check skips at once, as in apply.
 #
+# That wait has the apply side's budget for NFD on a freshly joined node, read
+# from there (OCP::Cmd::Apply::Workloads gpu_label_timeout, k309): NFD's
+# worker pod gets no sandbox until Cilium's first BPF compile on the node is
+# done, ~5.5 min on synapse (k286). A budget of its own, 300 s, gave up on
+# such a node where `ocp apply` would have waited.
+#
 # The GPU Operator check waits for nvidia.com/gpu in status.allocatable on the
 # NVIDIA nodes it detects, this one among them (k273,
 # OCP::Cmd::Apply::Workloads wait_gpu_allocatable). It says a node that does
@@ -871,7 +878,7 @@ sub _ssh_keys_note {
 # Never fatal: the node is Ready, which is what `ocp node add` promised. No GPU
 # in time or a failed rollout is said on STDERR together with the way to get
 # the stack anyway, `ocp apply`. Returns whether the checks completed.
-sub gpu_label_timeout  { 300 }
+sub gpu_label_timeout  { OCP::Cmd::Apply::Workloads::gpu_label_timeout() }
 sub gpu_label_interval { 10 }
 
 my @GPU_LABELS = map { "feature.node.kubernetes.io/pci-${_}.present" } qw(0300_10de 0302_10de);
@@ -1013,9 +1020,10 @@ its phase, and re-running the command carries on from there.
 
 With C<--gpu>, a node that reached C<Ready> also gets its GPU stack, by the
 same checks C<ocp apply> runs.  It waits for the node to show its GPU (up to
-five minutes): the AMD GPU marker C<ocp.internal/amd-gpu.present=true>, which
-the host step sets when the node registers, or Node Feature Discovery's label
-for an NVIDIA card.  Then it deploys or confirms the AMD GPU stack ("Checking
+ten minutes, what C<ocp apply> gives NFD on a freshly joined node; k309): the
+AMD GPU marker C<ocp.internal/amd-gpu.present=true>, which the host step sets
+when the node registers, or Node Feature Discovery's label for an NVIDIA
+card.  Then it deploys or confirms the AMD GPU stack ("Checking
 AMD GPU stack") or the GPU Operator ("Checking GPU Operator"), both for a node
 that shows both.  A node joined after the last C<ocp apply> would otherwise sit
 there without C<amd.com/gpu> or C<nvidia.com/gpu> until the next one (k220,

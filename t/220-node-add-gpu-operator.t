@@ -200,16 +200,37 @@ subtest 'gpu.enabled: false -- same verdict as apply, no waiting' => sub {
 
 subtest 'no GPU shown in time: a warning that names both labels and ocp apply, exit stays 0' => sub {
     my $r = run_add(gpu => 1, label_after => undef);
+    my $budget = OCP::Cmd::Apply::Workloads::gpu_label_timeout();
     is $r->{rv}, 0, 'the node is Ready, so exit 0';
     is scalar @{ $r->{setup} }, 0, 'no GPU Operator rollout without a GPU node to roll out for';
     is scalar @{ $r->{amd} }, 0, 'and no AMD GPU stack either';
-    like $r->{err}, qr/No GPU stack ensured: node 'brain' shows no GPU after 300s/, 'says what did not happen';
+    like $r->{err}, qr/No GPU stack ensured: node 'brain' shows no GPU after ${budget}s/, 'says what did not happen';
     like $r->{err}, qr{ocp\.internal/amd-gpu\.present=true}, 'names the AMD marker it waited for';
     like $r->{err}, qr/NFD NVIDIA label.*pci-0300_10de.*pci-0302_10de/s, 'and the NFD labels';
     like $r->{err}, qr/ocp apply/, 'and what to run';
     unlike $r->{out}, qr/Checking (?:GPU Operator|AMD GPU stack)/, 'no check claimed on STDOUT';
-    is $r->{waited}, OCP::Cmd::Node::Add::gpu_label_timeout(), 'waited the whole budget';
+    is $r->{waited}, $budget, 'waited the whole budget';
     ok !$r->{ensured}, 'not ensured';
+};
+
+# k309: node add waited 300 s for NFD's label, the apply side 600 s for the
+# same label on the same fresh node (OCP::Cmd::Apply::Workloads
+# gpu_label_timeout, k233): NFD's worker pod gets no sandbox until Cilium's
+# first BPF compile there is done, ~5.5 min on synapse (k286). So node add
+# gave up where apply would have waited. It now reads the apply side's
+# budget: the same number, and from there -- not a second literal that
+# happens to agree.
+subtest 'k309: node add waits for the GPU with the apply side\'s fresh-node budget' => sub {
+    my $budget = OCP::Cmd::Apply::Workloads::gpu_label_timeout();
+    my $r = run_add(gpu => 1, label_after => undef);
+    is $r->{waited}, $budget, "the apply side's budget ($budget s), all of it";
+    like $r->{err}, qr/shows no GPU after ${budget}s /, 'and the warning says that budget';
+
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::Workloads::gpu_label_timeout = sub { 40 };
+    $r = run_add(gpu => 1, label_after => undef);
+    is $r->{waited}, 40, 'read from there: the apply side\'s budget moves, node add\'s wait follows';
+    like $r->{err}, qr/shows no GPU after 40s /, 'the warning too';
 };
 
 subtest 'an AMD node gets the AMD GPU stack, not the GPU Operator' => sub {
