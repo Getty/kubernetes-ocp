@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-10-31T17:56:00Z
+created: 2026-10-31T15:05:49Z
+id: 382
+priority: low
+started: 2026-10-31T17:56:00Z
+status: done
+tags:
+- destroy
+- secrets
+- ux
+title: ocp destroy swallows a wrong PIN1 as 'no API' when HETZNER_API_TOKEN is set
+updated: 2026-10-31T17:56:00Z
+---
+
+From k370 (secrets worker, 2026-10-31). With HETZNER_API_TOKEN set, ocp destroy reads the kubeconfig inside _cluster_api's eval. A wrong PIN1 there dies inside that eval and comes out as "no API" (the cluster unreachable), and destroy goes on with the fallback, not as "PIN1 does not open age.key.enc".
+
+Done = a wrong PIN1 in destroy is said as what it is, on STDERR, and destroy stops before touching anything (or says exactly what it will still do without the cluster API, if that is the k354 decision). Test through bin/ocp --pins-stdin with a wrong PIN1 and HETZNER_API_TOKEN set, red first, then a mutation check. Lane: ocp-destroy-worker. Coordinate the message with k375 (wrong PIN1 as internal error).
+
+2026-10-31 17:11 Cause: with HETZNER_API_TOKEN set, hetzner_token never reads secrets.yaml, so the first PIN1 prompt was read_kubeconfig's, inside _cluster_api's eval. A wrong PIN1 died there and was swallowed: no word at all (not even an API warning), then the label search ran, the fallback, 'No nodes to destroy.', and the run ended at the kubeconfig question (red log, mutant R).
+Fix (lib/OCP/Cmd/Destroy.pm, _cluster_api only): after has_kubeconfig, and before the eval, the key is unlocked (ensure_age_key, only when age.key.enc is where the key comes from: no SOPS_AGE_KEY_FILE, nothing in .ocp/) or checked (check_local_age_key). Refusals propagate unchanged to run_cli: wrong PIN1, empty PIN1, empty age.key.enc, a key the project is not bound to (from age.key.enc or .ocp/). Unchanged: no kubeconfig.yaml asks no PIN1; no key at all stays a missing API (k354 not decided); the right PIN1 caches the key as before; API error handling untouched (k389 not taken).
+Test: new t/382-destroy-wrong-pin1.t, bin/ocp run_cli in a child with --pins-stdin; the Hetzner wire faked as in t/383; API at 127.0.0.1:9.
+One guarded run (make test with IMAGE=localhost/ocp-w353): green 21 files ok (t/382, 353, 345, 77, 335, 326, 323, 177, 180, 181, 108, 107, 301, 304, 47, 71, 74, 373, 375, 00-load, 51-pod). Red = old Destroy.pm via the %INC-asserted harness: subtests 1-5 (the five refusals) fail, 6-9 (controls) pass. Mutants: M1 unlock back in the eval -> 1-4 fail; M2 no check of a key in .ocp/ -> 5 fails; M3 no has_kubeconfig guard -> 7 fails. All killed. Log: scratchpad/w-destroy353/k382-run.log.
+Patch: scratchpad/w-destroy353/k382.patch against queued-head20 (header with subject, description, Changes bullet; no Changes hunk). Follow-ups are in the report only.
+
+2026-10-31 17:11 Done: a wrong, empty or foreign PIN1/key now stops ocp destroy in OCP::Secrets' words before anything is touched, with HETZNER_API_TOKEN set or not. Red 5/9 (the refusals), green 21 files, 3 of 3 mutants killed. Patch: scratchpad/w-destroy353/k382.patch against queued-head20.
+
+Committed as 8e79854
