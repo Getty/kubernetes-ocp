@@ -151,27 +151,23 @@ sub execute {
     # this stays as read-only and interaction-free as the rest of the command --
     # an unreachable host or a missing key degrades to "not checked", never a
     # prompt and never a failure of `ocp status`.
-    my $drift = eval {
-        OCP::Drift->new(
-            config     => $config,
-            api        => $k8s->api,
-            rex_prober => $self->rex_prober($config),
-        )->detect;
-    } // [];
+    my ($drift, $drift_error) = $self->_detect_drift($config, $k8s);
 
     if (@$drift) {
         print "\n=== Drift ===\n";
-        print "$_\n" for OCP::Drift->format_lines($drift);
+        print "$_\n" for $self->_drift_lines($drift);
 
-        my $fixable = grep { $_->{remedy} } @$drift;
-        print "\n$fixable of ", scalar(@$drift),
+        # A check that could not be made found no drift: not counted (k262).
+        my @found   = grep { !$self->_drift_unknown($_) } @$drift;
+        my $fixable = grep { $_->{remedy} } @found;
+        print "\n$fixable of ", scalar(@found),
               " can be reconciled automatically: run 'ocp apply'.\n" if $fixable;
     }
 
     print "\n";
     print "Kubeconfig: ocp kubeconfig -e\n";
 
-    return 0;
+    return defined $drift_error ? 1 : 0;
 }
 
 # The --json form of the report. Same data as the text form, one object, and
@@ -257,13 +253,7 @@ sub _collect_json {
     my @amd_nodes = grep { $self->_amd_gpu_node($_) } @$nodes;
     $out->{amd_gpu} = $self->_amd_gpu_json($config, $k8s, \@amd_nodes) if @amd_nodes;
 
-    my $drift = eval {
-        OCP::Drift->new(
-            config     => $config,
-            api        => $k8s->api,
-            rex_prober => $self->rex_prober($config),
-        )->detect;
-    } // [];
+    my ($drift, $drift_error) = $self->_detect_drift($config, $k8s);
 
     $out->{drift} = [ sort { $a->{component} cmp $b->{component} || $a->{message} cmp $b->{message} } map {
         +{
@@ -277,7 +267,64 @@ sub _collect_json {
         }
     } @$drift ];
 
+    # The exit and the error field of a cluster that cannot be read: the
+    # object is the report as far as it got, error says what it is missing.
+    if (defined $drift_error) {
+        $out->{error} = 'Cannot detect drift: '.$drift_error;
+        return 1;
+    }
+
     return 0;
+}
+
+# OCP::Drift's entries, the same for both forms, and the cause when detection
+# itself died (undef when it did not). A die used to read as an empty list:
+# no drift, exit 0, nothing on STDERR (k262). Now the cause goes to STDERR
+# and the list holds one entry of kind error -- the shape OCP::Drift gives a
+# probe it could not read (k256, k268) -- so both forms say drift unknown,
+# never none.
+sub _detect_drift {
+    my ($self, $config, $k8s) = @_;
+
+    my $drift = eval {
+        OCP::Drift->new(
+            config     => $config,
+            api        => $k8s->api,
+            rex_prober => $self->rex_prober($config),
+        )->detect;
+    };
+    return ($drift, undef) if ref $drift eq 'ARRAY';
+
+    my $reason = $@ ? "$@" : 'OCP::Drift->detect returned no list';
+    chomp $reason;
+    print STDERR 'WARNING: Cannot detect drift: '.$reason."\n";
+    return ([ {
+        kind      => 'error',
+        component => 'drift',
+        label     => 'Drift detection',
+        expected  => undef,
+        actual    => undef,
+        message   => 'Drift detection: could not complete, drift unknown: '.$reason,
+        remedy    => undef,
+    } ], $reason);
+}
+
+# A drift entry that is a check OCP::Drift could not make, not a finding.
+sub _drift_unknown {
+    my ($self, $entry) = @_;
+    return ($entry->{kind} // '') eq 'error';
+}
+
+# The drift section's lines. A check that could not be made reads as `ocp
+# apply` words it (k267): "could not be checked", then the message with its
+# cause -- never as a plain [drift] finding.
+sub _drift_lines {
+    my ($self, $drift) = @_;
+    return map {
+        $self->_drift_unknown($_)
+            ? '  [drift] could not be checked: '.$_->{message}
+            : OCP::Drift->format_lines([ $_ ])
+    } @$drift;
 }
 
 #
@@ -609,6 +656,17 @@ the exit code is 1.
 
 The command never modifies cluster state.  Drift entries that carry a
 C<remedy> are listed together with the count that C<ocp apply> would resolve.
+A check L<OCP::Drift> could not make (an entry of kind C<error>: an RBAC
+denial, an apiserver 5xx) is listed as C<could not be checked> with its
+cause, and is not counted as drift:
+
+    [drift] could not be checked: Worker host probes: could not list OCPNode in ocp-system, drift unknown: 403 ...
+
+When drift detection itself dies, the cause goes to STDERR
+(C<WARNING: Cannot detect drift: ...>), the drift section says that drift
+could not be determined, and the exit code is 1:
+
+    [drift] could not be checked: Drift detection: could not complete, drift unknown: ...
 
 =head1 GPU SECTION
 
@@ -655,8 +713,9 @@ C<ocp status --json> prints exactly one JSON object (canonical: sorted keys,
 pretty-printed, no timestamps or ages) on STDOUT; diagnostics go to STDERR.
 Two runs against an unchanged cluster print identical bytes, so a script can
 compare them.  The exit code is that of the text form: 1 when the kubeconfig
-cannot be decrypted or the API cannot be reached (the object then carries an
-C<error> string and whatever could be collected), else 0.
+cannot be decrypted, the API cannot be reached or drift detection dies (the
+object then carries an C<error> string and whatever could be collected),
+else 0.
 
     {
        "cluster" : "mycluster",
@@ -695,7 +754,11 @@ C<error> string and whatever could be collected), else 0.
 C<nodes> are sorted by name, C<drift> by component and message; a drift
 entry's C<fixable> says whether C<ocp apply> carries a remedy for it.  The
 drift list includes the C<< kind => 'error' >> entry that
-L<OCP::Drift> reports when the API call behind a check failed.  A node's
+L<OCP::Drift> reports when the API call behind a check failed: drift unknown
+for what it names, never C<fixable>.  When drift detection itself dies, the
+list is not empty but holds one such entry with C<component> C<drift>, and
+C<error> says C<Cannot detect drift: ...>.  An empty list means no drift was
+found.  A node's
 C<gpu> is its C<nvidia.com/gpu> allocatable (0 when it has none), the same
 as C<gpu> in C<ocp node ls --json>, and C<gpu_capacity> its C<nvidia.com/gpu>
 capacity (C<null> when it has none).  Earlier builds reported the capacity as
@@ -765,7 +828,8 @@ A read that fails here is told on STDERR and leaves the exit code alone.
 
 Prints the spec summary, then — when the cluster is deployed — the live
 node table, GPU nodes and drift entries.  Returns 0 on success, 1 when the
-kubeconfig could not be decrypted or the API could not be reached.
+kubeconfig could not be decrypted, the API could not be reached or drift
+detection died.
 
 =seealso
 

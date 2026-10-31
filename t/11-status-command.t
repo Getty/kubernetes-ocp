@@ -28,6 +28,9 @@ use OCP::Kubernetes;
     package Local::FakeK8s;
     sub new { bless { nodes => $_[1] }, $_[0] }
     sub list_nodes { $_[0]{nodes} }
+    # Drift detection reads the api: without it detection died, which status
+    # swallowed until k262 and now reports as drift unknown, exit 1.
+    sub api { undef }
     sub node_name { $_[1]{metadata}{name} }
     sub node_ready { $_[1]{ready} }
     sub node_roles { $_[1]{roles} }
@@ -87,6 +90,7 @@ sub capture_stdout (&) {
 
     no warnings 'redefine';
     local *OCP::Secrets::new = sub { Local::FakeSecrets->new };
+    local *OCP::Cmd::Status::rex_prober = sub { undef };
     local *OCP::Kubernetes::new = sub {
         $helper_called++;
         return Local::FakeK8s->new([

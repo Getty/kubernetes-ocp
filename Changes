@@ -35,6 +35,13 @@ Revision history for OCP
       removing it. The readiness waits (AMD GPU stack, ClusterPolicy state,
       Cilium Gateway) name the read they could not make instead of saying
       "not found".
+    - `ocp status` no longer reads a failure inside drift detection as "no
+      drift": it says why on STDERR (`WARNING: Cannot detect drift: ...`),
+      shows drift as "could not be checked" and exits 1. `--json` then
+      carries one drift entry of kind `error` (component `drift`) and the
+      `error` field instead of an empty list. A drift check that could not
+      be read is shown as `ocp apply` shows it, "could not be checked" with
+      its cause, and is no longer counted as drift.
     - Hetzner server, location and server type lookups now read every page, so
       `ocp destroy`'s orphan sweep, the create idempotency check, `ocp hetzner
       list` and the `ocp init` pickers no longer miss entries past the first
