@@ -1,0 +1,35 @@
+---
+class: standard
+completed: 2026-10-31T13:05:51Z
+created: 2026-10-31T10:13:34Z
+id: 340
+priority: medium
+started: 2026-10-31T13:05:51Z
+status: done
+tags:
+- config
+- validation
+title: 'validate(): no line for public_ip/private_ip, ssh:, system.timezone/locale
+  shapes, or an empty ocp.yaml'
+updated: 2026-10-31T13:05:51Z
+---
+
+Found under k335 (destroy worker) and k331 (choices worker), 2026-10-31. validate() still has no line for these shapes, so every reader goes on with them:
+- control_planes[n].public_ip / private_ip: a list there makes an ssh control plane's uninstall (destroy) and its address (apply) ARRAY(0x...).
+- ssh: (private_key, public_key): a non-mapping ssh: dies inside Perl when destroy (and apply in dev mode) fetches the key -- destroy skips the uninstall, exits 1, prints the Perl error as the reason. Secrets lane reads it (ocp-secrets-worker for the reader side).
+- system.timezone / system.locale that is a list or mapping passes validate() and reaches the Rexfile and the provider CR, whose CRD types both as strings.
+- an empty or non-mapping ocp.yaml ends every command (destroy, apply alike) on "Not a HASH reference ... This is an internal error" -- one line naming the file would do.
+
+Use k315's _not_a_string / _shown_value. Done = each is a validate() line (t/296 sweep), accessors agree, the three real configs (cihq, citiai, amdlab) still give 0 errors.
+
+Add from k321 (2026-10-31): kubernetes.dist is validated nowhere -- keys secure and apply both rolled robocop out with OCP_DISTRIBUTION=rke3. A validate() line for it (rke2|k3s, as OCP::Choices names them). And while in t/296 (after k331 is committed): section 10's comment says keys secure reads robocop 'without' validate() -- stale since k321, which runs all of validate() first.
+
+Also (from k316, 2026-10-31): the _is_choice comment in Config.pm (~line 748) says 'Until OCP.pm fixed the eq ...' -- since k316 the fix is OCP::BooleanEq; reword.
+
+2026-10-31 11:54 Patch ready (choices worker): lib/OCP/Config.pm + t/296 (claims 23-28). New validate() lines: '<file> is empty: it must be a mapping (name, control_planes and the other settings)' / '<file>: must be a mapping (...), not X' (the only line; spec dies with it, newline-terminated, so run_cli shows no internal error); 'kubernetes: must be a mapping (dist, version), not X' (+ '; write kubernetes: { dist: rke2 }' for a bare rke2/k3s); 'kubernetes.dist: invalid value X (must be rke2 or k3s)' from new @OCP::Config::DISTRIBUTIONS; 'ssh: must be a mapping (private_key, public_key), not X' / 'ssh.private_key|public_key: must be a string (a path like ...), not X'; 'control_planes[n].public_ip|private_ip: must be a string (an IP address), not X'; 'system.timezone|locale: must be a string (...), not X'. Accessors agree: kubernetes, distribution (and supervisor_port/version through it), ssh_config, ssh_private_key_path, ssh_public_key_path, join_host, cluster_status, system_config/timezone/locale/ntp_enabled. Comments: t/296 section 10 (keys secure runs validate() since k321), _is_choice names OCP::BooleanEq (k316). Verified: make test (Docker, IMAGE=localhost/ocp-w340) 56 files: t/296 + 25 other validate tests + 14 neighbours green; HEAD Config.pm red on t/296 (37-44); 14/15 mutants killed (survivor: dropping the ref guard in _dist_error, redundant since k314/k316); cihq, citiai, amdlab: 0 errors, every accessor reads.
+
+2026-10-31 12:29 Re-verified on HEAD 12d049a (k316 + k321 in): make test (Docker, IMAGE=localhost/ocp-w347) on HEAD + k340 + k347: 27 validate tests + 14 neighbours green, t/296 47/47; HEAD Config.pm red on t/296 (37-44 + no plan); 13/14 k340 mutants killed (dropping the ref guard in _dist_error survives: _is_choice refuses refs anyway). 98 more CP/pool/apply-path tests PASS. Applied to the shared tree with k347. Leftovers for the dispatcher: (1) Init.pm:118-119 and Robocop/Controller.pm:102 spell rke2/k3s again -- @OCP::Config::DISTRIBUTIONS now holds the set (choices/robocop lanes). (2) Destroy.pm:229 reads $cp->{host} // $cp->{public_ip} raw and destroy runs no validate(): a list public_ip there is ARRAY(0x...) in the fallback (destroy lane). (3) Destroy.pm:785 cluster_ssh_key eval: a bad ssh: now dies with validate()'s ssh: line plus a croak location, printed as the reason, and destroy skips the uninstall and goes on -- secrets/destroy lane to decide whether to stop first, as k335 does. (4) callers still write distribution || 'rke2' (Apply.pm:288, CR.pm:367/960, Bootstrap.pm:508, Workloads.pm:852, Node/Add.pm:387/424, RobocopCredentials.pm:289), dead now. (5) Not done here: unknown keys under kubernetes: and ssh:, and kubernetes.version's shape. Evidence it matters: t/25-drift.t:128, t/39-coredns-registry-host.t:291, t/268-drift-read-failures.t:93, t/275-status-ocpnode-crd.t:122 write kubernetes: { distribution: k3s }, a key nothing reads, so those fixtures run as rke2 (test-writer + choices). (6) ocp status now croaks on a bad dist/ssh/timezone like the k320 switches.
+
+2026-10-31 12:29 Done: validate() lines + agreeing accessors for an empty/non-mapping ocp.yaml (one line naming the file, no internal error), kubernetes: shape and kubernetes.dist (rke2 or k3s), ssh: shape and key paths, control_planes[n].public_ip/private_ip, system.timezone/locale; t/296 claims 23-28; two stale comments fixed. Verified with make test in Docker on HEAD 12d049a + k340 + k347 (see notes); real configs cihq, citiai, amdlab 0 errors. In the shared tree, uncommitted (lib/OCP/Config.pm, t/296), together with k347.
+
+Committed as f9f957b
