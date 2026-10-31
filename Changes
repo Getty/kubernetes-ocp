@@ -8,6 +8,11 @@ Revision history for OCP
       location instead of on the top-level `deprecated` flag, which Hetzner
       removes from its API on 2026-11-02, and takes an optional location
       filter.
+    - `ocp init --hetzner` asks for the location first and then offers only
+      the server types that can be ordered there. A type that is deprecated
+      or unavailable in that location is no longer offered, and locations
+      with nothing to order are left out. When the default server type can't
+      be ordered in the chosen location, it is not preselected.
     - `ocp hetzner list` no longer dies on the first server: the TYPE column
       reads the server type name WWW::Hetzner returns.
     - File::SOPS 0.003+ writes the SOPS lastmodified timestamp quoted on every

@@ -297,6 +297,14 @@ subtest '--single is gone, and so is its caller' => sub {
     }
 }
 
+# Both types can be ordered in both locations: the type list follows the
+# chosen location (k260), and a location nothing can be ordered in is not
+# offered — t/260-init-location-server-types.t covers that cut.
+my $both = [
+    { name => 'fsn1', available => 1, deprecation => undef },
+    { name => 'hel1', available => 1, deprecation => undef },
+];
+
 sub fake_picker {
     return OCP::Hetzner::Picker->new(
         token      => 'fake',
@@ -306,11 +314,9 @@ sub fake_picker {
         ],
         _server_types => [
             FakeType->new(name => 'cpx21', cores => 3, memory => 4, disk => 80,
-                cpu_type => 'shared', architecture => 'x86',
-                locations => [ { name => 'fsn1', available => 1, deprecation => undef } ]),
+                cpu_type => 'shared', architecture => 'x86', locations => $both),
             FakeType->new(name => 'cax21', cores => 4, memory => 8, disk => 80,
-                cpu_type => 'shared', architecture => 'arm',
-                locations => [ { name => 'fsn1', available => 1, deprecation => undef } ]),
+                cpu_type => 'shared', architecture => 'arm', locations => $both),
         ],
     );
 }

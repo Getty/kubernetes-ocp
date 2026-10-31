@@ -916,59 +916,106 @@ sub _prompt_hetzner_control_plane {
         $picker = OCP::Hetzner::Picker->new(token => $token);
     }
 
-    my $locations = eval { $picker->location_options };
-    my $types     = eval { $picker->server_type_options };
+    # Whether a server type can be ordered is a per-location fact (k246), so
+    # the type list is cut for the location just chosen (k260). Both
+    # catalogues are read here, before the first question: the Picker caches
+    # them, so nothing between the two prompts goes back to the network, and
+    # an unreadable catalogue still means nothing is asked. A location where
+    # no server type can be ordered is no answer, so it is not offered.
+    my $locations = eval {
+        [ grep { @{ $picker->server_type_options(location => $_->{value}) } }
+            @{ $picker->location_options } ]
+    };
 
-    unless (($locations && @$locations) && ($types && @$types)) {
-        print STDERR "[!!] Could not read the Hetzner catalogue — keeping the defaults\n";
+    unless ($locations && @$locations) {
+        print STDERR $locations
+            ? "[!!] No Hetzner location offers a server type that can be ordered — keeping the defaults\n"
+            : "[!!] Could not read the Hetzner catalogue — keeping the defaults\n";
         return;
     }
+
+    my %default = %OCP::Config::HETZNER_DEFAULTS;
 
     print "\n";
     print "Control plane placement (Enter keeps the default)\n";
 
-    $self->_location(
-        _pick('Location:', $locations, $OCP::Config::HETZNER_DEFAULTS{location}));
-    $self->_server_type(
-        _pick('Server type:', $types, $OCP::Config::HETZNER_DEFAULTS{server_type}));
+    my $location = _pick('Location:', $locations, $default{location});
+    my $type     = defined $location
+        ? _pick("Server type (orderable in $location):",
+            $picker->server_type_options(location => $location),
+            $default{server_type})
+        : undef;
 
-    printf "[ok] Control plane: %s in %s\n",
-        $self->_server_type, $self->_location;
+    # Only reachable when the default was not on a list and STDIN closed
+    # before a choice: half a placement is not written.
+    unless (defined $type) {
+        printf STDERR "[!!] No %s chosen — keeping the defaults (%s in %s)\n",
+            (defined $location ? 'server type' : 'location'),
+            $default{server_type}, $default{location};
+        return;
+    }
+
+    $self->_location($location);
+    $self->_server_type($type);
+
+    printf "[ok] Control plane: %s in %s\n", $type, $location;
 
     return;
 }
 
 # Print a { label, value } list and read one choice from STDIN. Accepts the
-# number from the list or the value itself; anything else, including a bare
-# Enter or a closed STDIN, keeps $default.
+# number from the list or the value itself. With $wanted on the list it is
+# the default: a bare Enter, a closed STDIN or an answer that is not on the
+# list keeps it. A $wanted that is not on the list -- the default server type
+# where the chosen location cannot order it -- is not offered at all: only a
+# choice from the list counts, anything else asks again, and a closed STDIN
+# returns undef.
 sub _pick {
-    my ($prompt, $options, $default) = @_;
+    my ($prompt, $options, $wanted) = @_;
+
+    my $default = (defined $wanted && grep { $_->{value} eq $wanted } @$options)
+        ? $wanted
+        : undef;
 
     print "\n$prompt\n";
     my $n = 0;
     for my $opt (@$options) {
         $n++;
         printf "  %2d) %s%s\n", $n, $opt->{label},
-            ($opt->{value} eq $default ? '  [default]' : '');
+            (defined $default && $opt->{value} eq $default ? '  [default]' : '');
     }
-    print "Choice [$default]: ";
+    print "  No default: $wanted is not on this list\n"
+        if defined $wanted && !defined $default;
 
-    my $input = <STDIN>;
-    return $default unless defined $input;
-    chomp $input;
-    $input =~ s/\A\s+//;
-    $input =~ s/\s+\z//;
-    return $default unless length $input;
+    while (1) {
+        print defined $default ? "Choice [$default]: " : 'Choice: ';
 
-    return $options->[$input - 1]{value}
-        if $input =~ /\A[0-9]+\z/ && $input >= 1 && $input <= @$options;
+        my $input = <STDIN>;
+        return $default unless defined $input;
+        chomp $input;
+        $input =~ s/\A\s+//;
+        $input =~ s/\s+\z//;
 
-    for my $opt (@$options) {
-        return $opt->{value} if $opt->{value} eq $input;
+        unless (length $input) {
+            return $default if defined $default;
+            next;
+        }
+
+        return $options->[$input - 1]{value}
+            if $input =~ /\A[0-9]+\z/ && $input >= 1 && $input <= @$options;
+
+        for my $opt (@$options) {
+            return $opt->{value} if $opt->{value} eq $input;
+        }
+
+        unless (defined $default) {
+            print "  '$input' is not on the list\n";
+            next;
+        }
+
+        print "  '$input' is not on the list — keeping $default\n";
+        return $default;
     }
-
-    print "  '$input' is not on the list — keeping $default\n";
-    return $default;
 }
 
 sub _augment_existing_config {
@@ -1111,12 +1158,16 @@ is still missing.
 
 Once the token is stored, C<--hetzner> also offers the live Hetzner
 catalogue (L<OCP::Hetzner::Picker>) as a numbered list and asks where the
-control plane should run and on which server type. Both lists preselect the
-values C<OCP::Config> would have written anyway, so pressing Enter twice
-produces the same F<ocp.yaml> as a non-interactive run. The step is skipped
-altogether when STDIN is not a terminal, when no token is available, or when
-the catalogue cannot be read — it never blocks a batch run and never fails
-an init.
+control plane should run and on which server type. Whether a server type can
+be ordered depends on the location, so the location comes first and the
+server type list then offers only what can be ordered there; a location where
+nothing can be ordered is not offered. Both lists preselect the values
+C<OCP::Config> would have written anyway, so pressing Enter twice produces the
+same F<ocp.yaml> as a non-interactive run. When the default server type cannot
+be ordered in the chosen location, nothing is preselected and only a choice
+from the list is taken. The step is skipped altogether when STDIN is not a
+terminal, when no token is available, or when the catalogue cannot be read —
+it never blocks a batch run and never fails an init.
 
 =head2 The project age key
 
