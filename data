@@ -1,0 +1,35 @@
+---
+class: standard
+completed: 2026-10-31T13:59:53Z
+created: 2026-10-31T13:03:30Z
+id: 358
+priority: medium
+started: 2026-10-31T13:59:53Z
+status: done
+tags:
+- gpu
+- apply
+- node-add
+title: 'ocp node add ignores gpu.enabled and gpu.driver on the provider CR: kill switch
+  and gpu.driver: operator do not hold on nodes it joins'
+updated: 2026-10-31T13:59:53Z
+---
+
+Found under k253 (ocp-worker, 2026-10-31). Apply lane. `ocp node add` reads neither gpu.enabled nor gpu.driver off the OCPNodeProvider CR: `_cli_reconcile` in lib/OCP/Cmd/Node/Add.pm passes only gpu_toolkit (k223) and, since k253, gpu_amd_integrated. robocop and `ocp apply`'s worker reconcile hand the whole flag set from OCP::Provider->gpu_flags_from_cr to OCP::Node. So on a node that `ocp node add` joins:
+- the `gpu.enabled: false` kill switch does not hold -- detection runs;
+- `gpu.driver: operator` does not hold -- host drivers get installed;
+- since k253, `gpu.amd.integrated: true` opens the iGPU gate even on a cluster with gpu.enabled false.
+
+The comment there says "gpu.enabled / gpu.driver have never been read on this path". Find out why (git log -S) before changing it: --gpu may be meant to override. Then either hand the whole set over, as the other join paths do (with --gpu's per-node opt-in on top), or write down why node add differs.
+
+Done = node add's Rex params match robocop's for the same provider CR (a test on the t/253 model), with --gpu's own effect pinned; red first, then a mutation check.
+
+2026-10-31 13:31 Why node add differed (history): not intended. k31 (b2fe07c) wired gpu_flags_from_cr into robocop and apply's cli_reconcile_workers only and never named node add, though its _cli_reconcile existed since C5 (71ed005). k223 (1c60db5) added gpu_toolkit to node add alone; its card note of 2026-10-01 16:56 calls the missing gpu.enabled/gpu.driver 'a k31 gap (driver: operator -> node add still installs the host driver)' and keeps it out of k223's scope on purpose. The comment 'have never been read on this path' states that fact; it gives no reason. --gpu is not meant to override the kill switch: k31 made gpu.enabled false win over a per-node spec.gpu=true in OCP::Node, for the CLI and robocop paths alike (ADR 0003), and node add's own after-Ready GPU stack step already skips under gpu.enabled false. So the behaviour changes.
+
+2026-10-31 13:31 Done (apply worker, on queued+k253 + k356). lib/OCP/Cmd/Node/Add.pm: _cli_reconcile splats OCP::Provider->gpu_flags_from_cr like robocop and apply; the _gpu_install_flags subset (k253) is gone; POD of node add says the join honours gpu.enabled/gpu.driver off the provider CR. --gpu keeps its own effect: spec.gpu true -> gpu 1 + gpu_amd_integrated 1 under an enabled cluster, gpu 0 under the kill switch (as robocop). New t/358-node-add-gpu-switches.t: 4 provider CRs (kill switch+integrated / operator driver+toolkit false / integrated / from before spec.gpu) x with/without --gpu; node add's gpu deps == gpu_flags_from_cr == robocop's == apply's, install-task GPU params == robocop's, and the expected params pinned. Red (base+k356 + test): 12/16 subtests fail (the 4 'from before spec.gpu' controls pass). Green: 22 files / 360 tests PASS (t/358 t/253 t/223 t/217 t/18b t/220 t/333 t/31-robocop-gpu t/70-gpu-flag t/250 t/208 t/238 t/290 t/254-node-ip-apply t/209 t/71 t/196 t/273 t/211-node-labels-taints t/229 t/00-load t/356). Mutants, one guarded run, 5/5 killed: k253 subset back (12 fail), no gpu_enabled (8), no gpu_driver (12), --gpu overrides the kill switch (3), no toolkit/integrated (12). First mutant run was void (Rex.pm rewrites @INC to getcwd/lib on load; the guard assertion caught it), rerun with Rex loaded before the mutant lib. Existing nodes keep what their install had; this only acts on joins from now on. Patch: scratchpad w-apply356/k358.patch (stacks on k356.patch).
+
+2026-10-31 13:32 Also found (out of scope, not changed): (1) lib/OCP/Provider.pm gpu_flags_from_cr comment still says from_cr has 'two callers -- OCP::Robocop::Controller and the CLI reconcile path'; node add is the third (provider lane). (2) skill ocp-usage l.193 says '--gpu sets spec.gpu: true and opens the integrated-GPU gate' -- not under gpu.enabled: false (true on robocop's path before this too); doc lane. (3) Mutant technique note for workers: Rex.pm rewrites @INC on load (getcwd/lib first), so 'use lib mutN/lib' in a test only wins for modules required before Rex is loaded.
+
+2026-10-31 13:32 Done: node add's own join hands OCP::Node the whole gpu flag set off the provider CR, as robocop and apply do (history: a k31 gap the k223 card noted, not a design); --gpu pinned (spec.gpu true, gives way to the kill switch). Red 12/16, green 22 files/360 PASS, mutants 5/5 killed. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-apply356/k358.patch (on k356.patch)
+
+Committed as 9889b71
