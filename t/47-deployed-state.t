@@ -538,6 +538,7 @@ YAML
         *OCP::Cmd::Apply::_configure_registry_dns     = sub { 0 };
         *OCP::Cmd::Apply::_setup_nfd                  = sub { 'unchanged' };
         *OCP::Cmd::Apply::_setup_gpu_operator         = sub { 'skipped' };
+        *OCP::Cmd::Apply::AMDGPU::setup               = sub { ({ label => 'AMD GPU stack', outcome => 'skipped' }) };
         *OCP::Cmd::Apply::_setup_cilium_gateway       = sub { 1 };
         *OCP::Cmd::Apply::_setup_lb_ipam              = sub { 1 };
         *OCP::Cmd::Apply::_ensure_crds                = sub { 1 };

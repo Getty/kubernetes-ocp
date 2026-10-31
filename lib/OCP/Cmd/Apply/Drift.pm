@@ -4,6 +4,7 @@ package OCP::Cmd::Apply::Drift;
 use strict;
 use warnings;
 
+use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Deploy;
 use OCP::Cmd::Apply::Network;
@@ -281,6 +282,17 @@ sub reconcile_components {
         }
     }
 
+    # AMD GPU stack (only on nodes with the AMD marker, k251). The step
+    # reports each component itself and never dies; what failed is
+    # unresolved, which the summary below counts for the exit.
+    {
+        $checked++;
+        print "  [..] Checking AMD GPU stack...\n";
+        my $amd = OCP::Cmd::Apply::AMDGPU::step($self, $config);
+        $updated += $amd->{changed};
+        push @unresolved, @{ $amd->{failed} };
+    }
+
     # cert-manager
     unless ($config->no_cert) {
         $checked++;
@@ -438,6 +450,7 @@ sub reconcile_components {
                 push @unresolved, 'GPU Operator';
                 push @{ $self->{_failed_components} }, 'GPU Operator';
             }
+            push @unresolved, OCP::Cmd::Apply::AMDGPU::after_join($self, $config, \@results);
         }
 
         # A worker whose OCPNode exists but is not Ready is said, not waited

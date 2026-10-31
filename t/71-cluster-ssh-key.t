@@ -1399,6 +1399,9 @@ subtest 'a declined remedy is not summarised as "up to date"' => sub {
         local *OCP::Cmd::Apply::_check_cluster_health = sub {
             { critical => [], warnings => [], starting => [] } };
         local *OCP::Cmd::Apply::_stamp_ocp_version = sub { };
+        # The AMD GPU stack (k251) is a step of its own module, not a
+        # forwarder: nothing to do here, like the writers below.
+        local *OCP::Cmd::Apply::AMDGPU::setup = sub { () };
         # Every write the reconcile path owns is a no-op here; the claim is
         # about the closing verdict, not about the components.
         for my $w (@writers) {

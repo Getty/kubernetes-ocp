@@ -62,6 +62,15 @@ sub api {
     die "No kubeconfig available and no cached API\n";
 }
 
+# The kubeconfig api() wrote, as a local path: what a library that takes a
+# kubeconfig file (Rex::Rancher::K8s) reads. The same cluster, the same
+# credentials, decrypted once. Dies when no kubeconfig was handed to api().
+sub kubeconfig_path {
+    my ($self) = @_;
+    my $kc = $self->{_kc_temp} or die "No kubeconfig file at hand for the cluster\n";
+    return $kc->filename;
+}
+
 sub pluralize_kind {
     my ($self, $kind) = @_;
     my $plural = lc($kind);

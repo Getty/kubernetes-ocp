@@ -4,6 +4,7 @@ package OCP::Cmd::Apply::Deploy;
 use strict;
 use warnings;
 
+use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Registry;
@@ -59,6 +60,11 @@ Registry FIRST — every other component pulls images through it.
 =item *
 
 NFD NEXT — GPU operator gating reads the pci-10de label NFD writes.
+
+=item *
+
+The AMD GPU stack (L<OCP::Cmd::Apply::AMDGPU>) on nodes the host step marked
+as AMD GPU nodes -- the marker comes with the node's registration, so no NFD.
 
 =item *
 
@@ -146,6 +152,12 @@ sub deploy {
         # workers joined (k228, gpu_after_join).
         $self->{_gpu_outcome} = $gpu_outcome;
     }
+
+    # The AMD GPU stack on nodes with the AMD marker (k251). Reports its own
+    # components; what failed is counted like the GPU Operator.
+    print "  [..] Checking AMD GPU stack...\n";
+    push @{ $self->{_failed_components} },
+        @{ OCP::Cmd::Apply::AMDGPU::step($self, $config)->{failed} };
 
     # Apply cert-manager manifests AFTER node is Ready (pods can be scheduled now)
     # Apply cert-manager — MUST succeed: TLS certificates depend on it.
@@ -281,6 +293,8 @@ sub deploy {
             OCP::Cmd::Apply::CR::unready_nodes($self, \@results);
         push @{ $self->{_failed_components} }, 'GPU Operator'
             unless gpu_after_join($self, $config, \@results);
+        push @{ $self->{_failed_components} },
+            OCP::Cmd::Apply::AMDGPU::after_join($self, $config, \@results);
     }
 
     return $step;

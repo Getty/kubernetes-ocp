@@ -49,6 +49,16 @@ sub save {
     $self->ocp->dump_file($path->stringify, $hashes);
 }
 
+# Drops the record of a component OCP removed from the cluster, so the next
+# run does not read it as deployed. Nothing to drop is nothing to write.
+sub forget {
+    my ($self, $config, $component) = @_;
+    my $hashes = load($self, $config);
+    return unless exists $hashes->{$component};
+    delete $hashes->{$component};
+    $self->ocp->dump_file(hashes_path($self, $config)->stringify, $hashes);
+}
+
 # One vocabulary for what a hash-gated setup step did. The step itself is the
 # only place that knows — it holds both the record and the answer from the
 # cluster — so reconcile reports its verdict instead of forming a second one
@@ -60,6 +70,9 @@ sub save {
 # date about. The step has already printed why on the line above; this one only
 # states the verdict, and it counts as no change — a cluster with no GPU must
 # not read as "1 component updated" on every run.
+#
+# 'removed' is a change: the component left the spec (the AMD GPU stack, k251)
+# and this run took it out of the cluster.
 sub report_component {
     my ($self, $label, $outcome) = @_;
     $outcome //= 'unchanged';
@@ -70,6 +83,7 @@ sub report_component {
         restored  => "$label redeployed (was gone from the cluster)",
         updated   => "$label updated (manifest changed)",
         skipped   => "$label skipped",
+        removed   => "$label removed (no longer selected)",
     );
 
     print "  [ok] " . ($line{$outcome} // "$label $outcome") . "\n";

@@ -359,6 +359,11 @@ COREFILE
 # _ensure_providers (writes Secrets), _migrate_legacy_nodes, _ensure_cp_ocpnode,
 # and _save_deployed_hash, which writes .ocp/deployed.yaml on disk.
 #
+# The AMD GPU stack (k251) is no forwarder: OCP::Cmd::Apply::AMDGPU::setup is
+# recorded as 'AMDGPU::setup'. Its writes go through Rex::Rancher::K8s with a
+# client of its own, which DryRunApi would never see -- so here the only proof
+# a dry run leaves it alone is that the step is not reached.
+#
 
 my @WRITERS = qw(
     _run_remedy
@@ -496,6 +501,10 @@ sub gateway_bundle {
             return exists $STUB_RETURN{$writer} ? $STUB_RETURN{$writer} : 1;
         };
     }
+    *OCP::Cmd::Apply::AMDGPU::setup = sub {
+        push @touched, 'AMDGPU::setup';
+        return ({ label => 'AMD GPU stack', outcome => 'skipped' });
+    };
 }
 
 # The worker step's expensive ends, recorded instead of run: the robocop wait,
@@ -626,7 +635,7 @@ subtest 'the same run with the flag off does write' => sub {
     ok scalar @{ $r->{touched} },
         'the mutating steps are reachable — the dry run is not passing by accident';
 
-    for my $step (qw(_setup_registry _setup_nfd _setup_gpu_operator
+    for my $step (qw(_setup_registry _setup_nfd _setup_gpu_operator AMDGPU::setup
                      _setup_cilium_gateway _setup_lb_ipam _configure_registry_dns
                      _ensure_crds _ensure_cp_ocpnode)) {
         ok scalar(grep { $_ eq $step } @{ $r->{touched} }), "$step runs normally";
@@ -1297,6 +1306,58 @@ subtest 'k234 point 34: the Rexfile task narrates through [STEP] lines, which sh
     like $rexfile, qr/say "\[STEP\] Restarted "/, 'Restarted';
     my @steps = OCP::Rex::_task_steps("[STEP] Removed the bare containerd template in /d\nINFO x\n");
     is_deeply \@steps, ['Removed the bare containerd template in /d'], '_task_steps hands them to the narrative';
+};
+
+#
+# k251: the AMD GPU stack step on both apply paths. A component that failed
+# is a failed apply -- named once, the exit follows -- while the one next to it
+# that came up is still reported; the summary does not call the run up to date.
+#
+
+subtest 'k251: a failed AMD GPU component ends both paths short of spec' => sub {
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::AMDGPU::setup = sub {
+        push @touched, 'AMDGPU::setup';
+        return ({ label => 'AMD GPU node labeller', outcome => 'deployed' },
+                { label => 'AMD GPU device plugin',
+                  error => "AMD GPU device plugin not ready after 300s: no amd.com/gpu\n" });
+    };
+
+    my $r = reconcile();
+    is scalar(grep { $_ eq 'AMD GPU device plugin' } @{ $r->{failed} }), 1, 'reconcile: counted, once';
+    like $r->{err}, qr/\[!!\] AMD GPU device plugin setup failed: .*not ready/, 'said on STDERR';
+    like $r->{out}, qr/\[ok\] AMD GPU node labeller deployed/, 'the other component reported';
+    unlike $r->{out}, qr/All \d+ component\(s\) up to date/, 'not summarised as up to date';
+
+    my $d = deploy();
+    is_deeply [ grep { /^AMD/ } @{ $d->{failed} } ], ['AMD GPU device plugin'], 'fresh deploy: counted';
+    like $d->{out}, qr/Checking AMD GPU stack\.\.\./, 'in its own block';
+};
+
+subtest 'k251: an AMD component failing after the worker join is counted on both paths' => sub {
+    no warnings 'redefine';
+    my @asked;
+    local *OCP::Cmd::Apply::AMDGPU::after_join = sub {
+        my ($self, $config, $results) = @_;
+        push @asked, [ map { "$_->{name}=$_->{phase}" } @$results ];
+        return ('AMD GPU DRA driver');
+    };
+
+    my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
+    is_deeply \@asked, [['pinky=Ready']], 'reconcile: asked with the worker step\'s results';
+    is scalar(grep { $_ eq 'AMD GPU DRA driver' } @{ $r->{failed} }), 1, 'and its failure counted, once';
+
+    @asked = ();
+    my $d = deploy(yaml => <<'YAML');
+workers:
+  - name: gpu
+    provider: ssh
+    nodes:
+      - brain.ocp.invalid
+YAML
+    is scalar @asked, 1, 'fresh deploy: asked once';
+    ok scalar @{ $asked[0] // [] }, 'with the worker step\'s results';
+    is scalar(grep { $_ eq 'AMD GPU DRA driver' } @{ $d->{failed} }), 1, 'and its failure counted';
 };
 
 

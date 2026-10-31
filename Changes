@@ -19,7 +19,7 @@ Revision history for OCP
       registers AMD nodes with `ocp.internal/amd-gpu.present` and gfx-target
       labels, under `operator` too. Integrated GPUs are gated by the opt-in
       above. A detection failure under `operator` is a warning, under `host`
-      it still fails. `ocp apply` does not deploy the AMD cluster stack yet.
+      it still fails.
     - `ocp update` knows the AMD GPU stack pins (`amd_device_plugin`,
       `amd_dra_driver`, `amd_metrics_exporter`): like NFD and the NVIDIA
       stack it leaves them to `ocp apply` and skips them when `gpu.enabled`
@@ -31,6 +31,13 @@ Revision history for OCP
       `amd_dra_driver` v1.0.1 and `amd_metrics_exporter` v1.5.3. Integrated
       AMD GPUs are only set up on nodes joined with `--gpu` or when
       `gpu.amd.integrated` is set.
+    - `ocp apply` deploys the AMD GPU stack on nodes the host step marked as
+      AMD GPU nodes: ROCm's device plugin or DRA driver by allocation
+      (`gpu.amd.allocation`, overridable per node with the
+      `ocp.internal/amd-gpu.allocation` label), AMD's node labeller, and with
+      `gpu.amd.metrics` the device-metrics-exporter. A component no node
+      selects any more is removed. `ocp node add --gpu` sets up the AMD stack
+      or the GPU Operator depending on which GPU the node shows.
     - `ocp status` lists AMD GPU nodes in its GPU section: per node
       `amd.com/gpu` allocatable (capacity only beside it: the kubelet keeps
       it after a device plugin unregisters), the gfx target label(s) and the
