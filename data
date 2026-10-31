@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-10-31T08:05:47Z
+created: 2026-10-31T03:01:11Z
+id: 278
+priority: medium
+started: 2026-10-31T08:05:47Z
+status: done
+tags:
+- apply
+- output-channels
+title: Failure [WARN] lines on STDOUT in Deploy.pm and Apply/Drift.pm (NFD, LB-IPAM)
+updated: 2026-10-31T08:05:47Z
+---
+
+Found while doing k269. The house rule (.claude/rules/ocp-rules.md, "Output channels"): STDERR is everything that went wrong, with its diagnosis. Some failure [WARN] lines still go to STDOUT: in OCP::Cmd::Apply::Deploy, and in OCP::Cmd::Apply::Drift for NFD and LB-IPAM.
+
+Not to be confused with the k226 convention: warnings of a successful Rex task are relayed on STDOUT by OCP::Rex::run_task (pinned by t/226, t/231). That one is its own question; this card is about OCP-side failure diagnoses.
+
+Done when: every failure diagnosis in those files is on STDERR, tests pin the channel.
+
+More of the same, found under k273: '[WARN] NFD has not labelled …' in Workloads setup_gpu_operator_after_join goes to STDOUT.
+
+More of the same, found under k281: when LB-IPAM setup fails (e.g. multi-node without network.lb_pool), ocp apply prints '[WARN] LB-IPAM setup failed' on STDOUT AND does not count it as a failed component (the Cilium Gateway failure since k231 is handled right).
+
+From k290 (2026-10-31): the same class, with a worse effect. When the "Checking node CRs" block in OCP::Cmd::Apply::Drift fails, it prints `[WARN] node CR reconcile failed` on STDOUT and does not count it as unresolved. So a failed OCPNode/OCPNodeProvider CRD update lets `ocp apply` exit 0 with nothing on STDERR, and after k290 that update is the step `ocp node add --node_ip` tells the user to run. Done for this part = the failure goes to STDERR with its cause and counts as unresolved (APPLY INCOMPLETE), with a test. Raised to medium for that.
+
+From k287 (GPU-wait worker, 2026-10-31): two more for this card, same files. (1) The '[WARN] NFD has not labelled …' line in lib/OCP/Cmd/Apply/Workloads.pm goes to STDOUT; under the output-channels rule it belongs on STDERR. (2) Comments now out of date: lib/OCP/Cmd/Apply/Deploy.pm:152-153 and lib/OCP/Cmd/Apply/Drift.pm:320 say a joined worker is checked again only when the first check skipped. Suggested text: 'checked again after the worker join (k228 after skipped, k287 for an NVIDIA worker after a check that ran)'.
+
+2026-10-31 06:46 Started (apply worker). Plan: Deploy.pm registry.local DNS + LB-IPAM, Drift.pm registry.local DNS + NFD + LB-IPAM + node CRs, Workloads.pm 'NFD has not labelled' to STDERR. Counted: LB-IPAM on both paths, node CRs on reconcile (pushed to @unresolved, so the reconcile summary no longer says 'All N up to date' either). Tags: [!!] for the counted ones, [WARN] on STDERR for the rest (house use: [!!] = counted). Deploy.pm 'robocop not ready after 60s -- falling back to CLI reconcile' left on STDOUT: a fallback the run recovers from, not a failure of the run. Baseline: make test on t/38 t/226 t/231 t/269 t/251 t/228 t/273 t/300 t/254 t/291 t/290 green.
+
+2026-10-31 07:16 Also found (not fixed, outside k278 -- for the dispatcher): (a) reconcile pushes cert-manager and Cilium Gateway failures only to _failed_components, not @unresolved, so the summary can still say 'All N component(s) up to date.' above APPLY INCOMPLETE. (b) registry.local DNS (both paths) and NFD on the reconcile path stay uncounted: STDERR now, but banner SUCCESSFULLY -- whether they should count (the deploy path's NFD dies) is a maintainer call. (c) Deploy.pm robocop_step '[WARN] robocop not ready after 60s -- falling back to CLI reconcile' stays on STDOUT: a fallback in the narrative, not a failure. (d) Network.pm setup_lb_ipam: the loopback fallback swallows a failed Node list (eval) and prints 'WARNING: Only loopback IP available' on STDOUT -- k277-shaped, not in k277's list.
+
+2026-10-31 07:16 Done, commit-ready (no commit). Patch vs HEAD: scratchpad w-apply277/k278.patch (Apply/Drift.pm, Apply/Deploy.pm, Apply/Workloads.pm, t/38, t/228, t/254). Moved to STDERR with cause, newline normalised (no blank line after): reconcile '[WARN] registry.local DNS setup failed', '[WARN] NFD setup failed'; deploy '[WARN] registry.local DNS setup failed'; Workloads after-join '[WARN] NFD has not labelled ...'. Now [!!] on STDERR and counted (APPLY INCOMPLETE, exit 1): LB-IPAM on both paths ('LB-IPAM': reconcile @unresolved, deploy _failed_components) and the reconcile node-CR block ('node CRs' in @unresolved; covers _ensure_crds incl. the k291 CRD read/missing dir, _ensure_providers, _ensure_cp_ocpnode). k226 Rex relay untouched. Stale comments fixed: Deploy.pm GPU block + gpu_after_join header, Drift.pm GPU block (k228 after skipped, k287 for an NVIDIA worker after a check that ran). Tests: 4 new t/38 subtests (red first: 4 failed before the fix), t/228 captures STDERR (red first), t/254:672 checks out.err (was going vacuous). t/38 k26 fixture: pinky now joins as a Node NFD looked at -- its 'nothing on STDERR' claim kept; the NFD-timeout line had been hiding on STDOUT. 12/12 mutants killed (channel and count per site, the NFD blank line, Workloads line, an always-failing CR block vs t/254). Binding: make test on 23 neighbour files 361 tests PASS; full make test Files=225 Tests=3565 PASS.
+
+Committed as 35b00cf
