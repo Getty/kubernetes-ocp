@@ -1,0 +1,61 @@
+---
+claimed_at: 2026-10-31T14:35:51Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:54:11Z
+id: 370
+priority: high
+status: review
+tags:
+- secrets
+- bug
+- clone
+title: Read-only commands on a fresh clone die before PIN1 with a raw Path::Tiny error
+  on .ocp/age.key (read side of k360)
+updated: 2026-10-31T14:35:51Z
+---
+
+Found by the secrets worker during k360 (2026-10-31), by running each command through bin/ocp with --pins-stdin on a fresh clone (keys.yaml, age.key.enc, kubeconfig.yaml committed, no .ocp/).
+
+On a clone of an already-deployed cluster, these commands fail before PIN1 is even asked:
+- ocp status, ocp kubeconfig, ocp node ls, ocp health, ocp provider ls, ocp deploy-robocop;
+- ocp apply and ocp apply --dry-run when kubeconfig.yaml exists;
+- by the worker's reading of the code, also node add/rm/trust-host, update, destroy, hetzner list.
+
+These are the read-only commands a teammate runs first. They read .ocp/age.key directly, not through ensure_age_key, and die with a raw Path::Tiny error: `Error open (<) on '.ocp/age.key': No such file or directory`.
+
+k360 (the write side) made the commands that go through ensure_age_key work on a clone (keys *, ssh, inject-key, apply without kubeconfig.yaml). This card is the read side.
+
+Done =
+- Find the shared read: likely OCP::Secrets' kubeconfig decrypt or identities reading age_key_file.
+- Every listed command either unlocks the key the way ensure_age_key does (PIN1, from age.key.enc, cached in .ocp/age.key), or refuses with a diagnosis naming the fix, on STDERR, exit non-zero, with no Perl error text. Prefer the unlock, and say why if a command shouldn't.
+- One regression test per command group on a clone fixture, red first, then a mutation check.
+
+Lanes: ocp-secrets-worker for the shared read in OCP::Secrets. Command lanes only if a command needs its own change; list them in the note.
+
+Scope note (main, 2026-10-31): 'ocp apply --dry-run when kubeconfig.yaml exists' is covered by k349's apply half (Apply/Drift.pm reconcile_components unlocks into memory before read_kubeconfig; test t/349-apply-dry-run-clone.t). The real 'ocp apply' run with kubeconfig.yaml stays here. If the shared read in OCP::Secrets learns to unlock, it must keep honouring an age_key already held in memory (_unlock_age_key returns early on defined age_key) so the dry run still writes nothing.
+
+2026-10-31 14:35 Done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets370/k370.patch (base queued17; applies with git apply --check). Files: lib/OCP/Secrets.pm, t/370-clone-read-unlocks.t. No command file changed: Apply.pm and Drift.pm are not touched.
+
+Fix: read_all_secrets (so read_secret and hetzner_token too), read_kubeconfig and decrypt_file now take their identities from a new _read_identities. With no SOPS_AGE_KEY_FILE, no key in hand and no .ocp/age.key, it unlocks as ensure_age_key does: PIN1 once, cached 0600, age.pub restored. With no age.key.enc it refuses with a user error that names the file and the three ways to get the key; it does not say "run ocp init". identities itself never prompts, so the quiet probes stay quiet: repair_sops_lastmodified, _derive_project_recipient, OCP::Keys under _robo_probe_key, check_local_age_key.
+
+Commands on a clone:
+- Run from bin/ocp with PIN1 on STDIN; each asks PIN1, caches the key and gets past the read: kubeconfig (exit 0), status, node ls, health, provider ls, deploy-robocop (on to PIN2), hetzner list.
+- From the code, the same reads reach: node add, node rm, node trust-host, update (API path; --dry-run returns before the read), destroy, and a real apply on a clone that has kubeconfig.yaml. The real apply needs no change in Apply.pm or Drift.pm: Drift's own Secrets object unlocks with PIN1 on its first read, or, once the key is cached, asks nothing.
+- apply --dry-run is k349's (dropped here). A key already in memory is honoured: _read_identities skips the unlock when age_key is defined, as _unlock_age_key does, and t/370's 'a key in hand' subtest asserts no PIN1 and nothing written. So reconcile_components' unlock_age_key-then-read_kubeconfig still writes nothing.
+
+Runs:
+- Red on queued17: 16 of 18 subtests fail. The two that pass are the preservation claims.
+- Green: t/370 passes.
+- Mutants: 7 of 7 killed.
+- Full suite on queued17 + k370: Files=253, Tests=3875, Result: PASS, nothing skipped. This was the one TESTS=t/ run, started before the note about shared slots; there will be no other. The release-manager's combined run is the binding one.
+
+Findings for other lanes, not in scope here:
+1. [apply, k349, for its reviewer] Any other OCP::Secrets object a dry run reads with, beyond the one reconcile_components unlocks, would now prompt PIN1 and cache the key. CR.pm:247 eval { $secrets->hetzner_token } is one, if the dry run reaches it.
+2. [destroy] With HETZNER_API_TOKEN set, the first unlock happens inside _cluster_api's eval, so a wrong PIN1 is reported as "no API".
+3. [apply/dispatcher] ocp hetzner list has no --pins-stdin (it does not consume OCP::Role::Cmd), but it can now ask PIN1.
+4. [secrets, now k375] A wrong PIN1 (Password.pm croak "Decryption failed. Wrong password?") ends in "This is an internal error". [status/dispatcher] So does an unreachable API, for status, node ls, health and provider ls: the LWP message keeps its " at ... line N".
+5. [secrets, backlog] _unlock_age_key's croak "No age.key found. Run 'ocp init' first." gives a dev-mode clone the wrong advice and also gets the internal-error label (keys show and the other ensure_age_key commands). Not changed here.
+6. [several command files] The stale hint "Make sure .ocp/age.key exists." is still there.
+
+2026-10-31 14:35 Done: shared unlock in OCP::Secrets::_read_identities (read_all_secrets, read_kubeconfig, decrypt_file): PIN1 and cache as ensure_age_key does; the read honours a key already in memory; a user-error refusal when there is no age.key.enc. No command file changed. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets370/k370.patch on queued17. Red 16/18 subtests, green t/370, mutants 7/7 killed, full suite 253 files/3875 tests PASS. Details and findings in the note above.
