@@ -38,6 +38,13 @@ has age_recipient_file => (
     builder => sub { shift->project_dir->child('.ocp', 'age.pub') },
 );
 
+# The project key in hand (k349), unlocked into memory by
+# OCP::Secrets::unlock_age_key: read in place of age_key_file. undef reads
+# age_key_file, as ever.
+has age_key => (
+    is => 'ro',
+);
+
 # Where the age identity and the project's recipient come from (k216:
 # SOPS_AGE_KEY_FILE, see OCP::Secrets::identities). One place for both, so
 # the key file and the SOPS files can never be read with different keys.
@@ -53,6 +60,7 @@ sub _build__secrets {
         ocp                => $self->ocp,
         age_key_file       => $self->age_key_file,
         age_recipient_file => $self->age_recipient_file,
+        age_key            => $self->age_key,
     );
 }
 
@@ -763,13 +771,24 @@ C<add_public_key>) have no C<private> at all, and an C<age> field: the
 operator's age recipient. Their private SSH key never leaves the operator's
 machine.
 
+=head1 ATTRIBUTES
+
+=head2 age_key
+
+The project key in hand, as L<OCP::Secrets/unlock_age_key> leaves it in
+L<OCP::Secrets/age_key>: every decrypt reads it instead of F<.ocp/age.key>
+(k349). C<undef> by default.
+
+    $secrets->unlock_age_key;
+    my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);
+
 =head1 METHODS
 
 =head2 list_keys
 
 Returns arrayref of all keys with the SOPS/age layer removed: names, types,
 purposes and B<public> keys in plaintext, C<private> still encrypted. Needs
-F<.ocp/age.key>, never PIN2.
+F<.ocp/age.key> (or L</age_key>), never PIN2.
 
 =head2 get_key($name)
 

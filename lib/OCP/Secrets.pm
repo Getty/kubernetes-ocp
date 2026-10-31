@@ -47,6 +47,13 @@ has age_key_enc_file => (
     builder => sub { shift->project_dir->child('age.key.enc') },
 );
 
+# The project key in hand (k349): AGE-SECRET-KEY-1..., held in memory and
+# read instead of .ocp/age.key. unlock_age_key fills it from age.key.enc with
+# PIN1 and writes nothing; OCP::Keys hands its own age_key in here.
+has age_key => (
+    is => 'rwp',
+);
+
 #
 # Secure file write
 #
@@ -96,7 +103,8 @@ sub has_age_key {
 # Leitstand -- another recipient of the project's SOPS files, added with
 # `ocp keys operator add` or `ocp keys recipients add` -- runs OCP with its
 # own key: no PIN1, nothing unlocked into .ocp/. Without it, the project key
-# in .ocp/age.key (unlocked from age.key.enc with PIN1).
+# in .ocp/age.key (unlocked from age.key.enc with PIN1) -- or, when this
+# object holds one, the project key in hand (age_key, k349) in its place.
 #
 # The variable's file is read, never copied: age_key_file stays .ocp/age.key,
 # the project key's cache, and age.key.enc stays the project key behind PIN1.
@@ -116,7 +124,7 @@ sub identities {
 
     my $file = $self->sops_age_key_file;
     unless ($file) {
-        my $identity = $self->age_key_file->slurp;
+        my $identity = $self->age_key // $self->age_key_file->slurp;
         chomp $identity;
         return ($identity);
     }
@@ -793,20 +801,7 @@ sub encrypt_age_key_with_password {
 sub decrypt_age_key_with_password {
     my ($self, $password) = @_;
 
-    unless ($self->has_age_key_enc) {
-        croak "No age.key.enc found.";
-    }
-
-
-    my $encrypted = $self->age_key_enc_file->slurp;
-    chomp $encrypted;
-
-    my $age_key = OCP::Password::decrypt_age_key($encrypted, $password);
-
-    # Before caching it: is this the key the project's files are bound to?
-    # Caching a mismatched key would make has_age_key say yes from then on,
-    # and every later run would fail at the SOPS layer instead of here.
-    $self->_assert_key_matches_project($age_key);
+    my $age_key = $self->_open_age_key_enc($password);
 
     # Write to .ocp/age.key (cached), created 0600 without a world-readable
     # staging file (see _spew_secure).
@@ -818,8 +813,49 @@ sub decrypt_age_key_with_password {
     return $age_key;
 }
 
+# age.key.enc opened with PIN1 and checked against the project, written
+# nowhere: the key, or a croak -- no age.key.enc, a wrong PIN1, or a key the
+# project's files are not bound to.
+sub _open_age_key_enc {
+    my ($self, $password) = @_;
+
+    unless ($self->has_age_key_enc) {
+        croak "No age.key.enc found.";
+    }
+
+    my $encrypted = $self->age_key_enc_file->slurp;
+    chomp $encrypted;
+
+    my $age_key = OCP::Password::decrypt_age_key($encrypted, $password);
+
+    # Before caching it: is this the key the project's files are bound to?
+    # Caching a mismatched key would make has_age_key say yes from then on,
+    # and every later run would fail at the SOPS layer instead of here.
+    $self->_assert_key_matches_project($age_key);
+
+    return $age_key;
+}
+
 sub ensure_age_key {
     my ($self, $password) = @_;
+    return $self->_unlock_age_key($password, cache => 1);
+}
+
+# PIN1 into memory only (k349), for a run that must leave the project
+# directory as it found it -- `ocp apply --dry-run`. Asks what ensure_age_key
+# asks and refuses what it refuses, but age.key.enc is opened into age_key,
+# not .ocp/age.key, and .ocp/age.pub is not restored. Every decrypt on this
+# object reads the key from then on (identities); an OCP::Keys that is to
+# read with it takes it as its age_key.
+sub unlock_age_key {
+    my ($self, $password) = @_;
+    return $self->_unlock_age_key($password, cache => 0);
+}
+
+# The one body behind both: with cache, the project key goes to .ocp/
+# (age.key, and age.pub restored); without, nothing is written.
+sub _unlock_age_key {
+    my ($self, $password, %opt) = @_;
 
     # SOPS_AGE_KEY_FILE (k216): that file is the identity. No PIN1, nothing
     # written to .ocp/ -- checked that it opens this project, and done.
@@ -828,19 +864,25 @@ sub ensure_age_key {
         return 1;
     }
 
+    # The project key in hand (k349): unlocked already, nothing to ask.
+    return 1 if defined $self->age_key;
+
     # If .ocp/age.key exists, we're good
     if ($self->has_age_key) {
-        $self->restore_age_recipient;
+        $self->restore_age_recipient if $opt{cache};
         return 1;
     }
 
     # Try to decrypt from age.key.enc
     if ($self->has_age_key_enc) {
         unless ($password) {
-        
             $password = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
         }
-        $self->decrypt_age_key_with_password($password);
+        if ($opt{cache}) {
+            $self->decrypt_age_key_with_password($password);
+        } else {
+            $self->_set_age_key($self->_open_age_key_enc($password));
+        }
         return 1;
     }
 
@@ -1126,6 +1168,8 @@ Leitstand, C<ocp keys operator add>) runs OCP with its own identity.
 
 =item * otherwise F<.ocp/age.key>, the project key, unlocked from
 F<age.key.enc> with PIN1. F<age.key.enc> holds the project key only, always.
+An object holding the project key in memory (L</age_key>, k349) reads that
+in its place.
 
 =back
 
@@ -1141,6 +1185,37 @@ The path C<SOPS_AGE_KEY_FILE> names, as a L<Path::Tiny>, or C<undef>.
 =head2 identities / identity_recipients
 
 The age identities this run decrypts with, and their recipients.
+
+=head2 ensure_age_key
+
+    $secrets->ensure_age_key;            # PIN1 asked when needed
+    $secrets->ensure_age_key($pin1);
+
+Makes the project key available: C<SOPS_AGE_KEY_FILE> is checked against the
+project; a key in hand (L</age_key>) or F<.ocp/age.key> is used (and
+F<.ocp/age.pub> restored when missing); otherwise F<age.key.enc> is opened
+with PIN1 and cached to F<.ocp/age.key> and F<.ocp/age.pub>. Dies on a wrong
+PIN1, on a key the project's files are not bound to, and when there is no key
+at all.
+
+=head2 unlock_age_key
+
+    $secrets->unlock_age_key;            # PIN1 asked when needed
+    my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);
+
+C<ensure_age_key> that writes nothing (k349), for a run that has to leave the
+project directory as it found it (C<ocp apply --dry-run>). The same PIN1 and
+the same refusals, but F<age.key.enc> is opened into L</age_key> instead of
+F<.ocp/age.key>, and F<.ocp/age.pub> is not restored. A key already on disk
+or in C<SOPS_AGE_KEY_FILE> is used as it is, and C<age_key> stays C<undef>.
+
+=head2 age_key
+
+The project key in hand (C<AGE-SECRET-KEY-1...>), or C<undef>. Set by
+L</unlock_age_key>, or given to C<new>. When set, L</identities> returns it
+instead of reading F<.ocp/age.key> (C<SOPS_AGE_KEY_FILE> still comes first),
+and L</ensure_age_key> neither asks for PIN1 nor writes. It serves decrypts:
+a write still needs the project's recipient, F<.ocp/age.pub>.
 
 =head2 identity_opens_private_keys
 
