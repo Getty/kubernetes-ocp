@@ -926,11 +926,14 @@ sub _prompt_hetzner_control_plane {
         [ grep { @{ $picker->server_type_options(location => $_->{value}) } }
             @{ $picker->location_options } ]
     };
+    my $why = $@;
 
     unless ($locations && @$locations) {
         print STDERR $locations
             ? "[!!] No Hetzner location offers a server type that can be ordered — keeping the defaults\n"
-            : "[!!] Could not read the Hetzner catalogue — keeping the defaults\n";
+            : '[!!] Could not read the Hetzner catalogue: '
+              . $self->_catalogue_error($why, $picker->token)
+              . " — keeping the defaults\n";
         return;
     }
 
@@ -961,6 +964,23 @@ sub _prompt_hetzner_control_plane {
     printf "[ok] Control plane: %s in %s\n", $type, $location;
 
     return;
+}
+
+# Why the catalogue could not be read, as one line for STDERR (k265): what
+# WWW::Hetzner raised -- the API's message, or the status and body text when
+# the body has none; a transport failure arrives as LWP's reason -- without
+# the Perl source locations croak and LWP append, and with the token masked
+# should an answer ever echo it back.
+sub _catalogue_error {
+    my ($self, $err, $token) = @_;
+
+    my $line = defined $err ? "$err" : '';
+    $line =~ s/\Q$token\E/********/g if defined $token && length $token;
+    $line =~ s/ at \S+ line \d+\.?//g;
+    $line =~ s/\s+/ /g;
+    $line =~ s/\A | \z//g;
+
+    return length $line ? $line : 'unknown error';
 }
 
 # Print a { label, value } list and read one choice from STDIN. Accepts the

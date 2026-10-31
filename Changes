@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp init --hetzner` says why it could not read the Hetzner
+      catalogue: what the API answered (`unable to authenticate` for a
+      token Hetzner does not accept; the status when the answer carries no
+      message) or the connection that failed, on the one STDERR line that
+      keeps the defaults, never with the token. Init still goes on.
     - `ocp destroy` also stops, with `ocp apply`'s line and before it asks
       for a PIN or touches anything, on a `name` that is a list, a mapping
       or a boolean -- `name: [prod]` searched for servers under a label
