@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses a key on a worker pool or a control plane that
+      nothing reads, naming the keys it takes: a pool's `count:` (read by
+      nothing since February, the pool got one machine) now says to write
+      `nodes:`, and a typo such as `lables:` no longer passes in silence.
     - An `ocp.yaml` that is empty or no mapping stops every command with
       one line naming the file instead of an internal error. `ocp apply`
       also refuses a `kubernetes.dist` other than `rke2` or `k3s` (`dist:

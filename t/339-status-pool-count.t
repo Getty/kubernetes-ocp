@@ -99,6 +99,8 @@ my @NODES = (
     [ { host => 'w3.k339.test' } ],
 );
 my @HOST  = ( $ABSENT, '10.0.0.21', 'w1.k339.test', '0', '' );
+# count: is read by nothing, and validate() refuses it since k347: the shapes
+# with one leave the set, and a subtest of their own asks two of them.
 my @COUNT = ( $ABSENT, 5 );
 
 my @SHAPES;
@@ -132,15 +134,14 @@ note scalar(keys %accepted) . ' shapes accepted, ' . ($refused // 0) . ' refused
 
 # The shapes the card is about, and the ones around them, each with the
 # workers ocp apply makes of it. validate() accepts all of them, with k331 and
-# without: were one to leave the set, the sweep would no longer ask it.
+# k347 and without them: were one to leave the set, the sweep would no longer
+# ask it. The pools with a count:, which k347 refuses, are asked below.
 my @NAMED = (
     [ { provider => 'hetzner' }                    => 1, 'hetzner, no nodes: (k339)' ],
     [ { provider => 'local' }                      => 1, 'local, no nodes: (k339)' ],
     [ { provider => 'hetzner', nodes => undef }    => 1, 'hetzner, nodes: ~' ],
-    [ { provider => 'hetzner', count => 5 }        => 1, 'hetzner, a count: and no nodes:' ],
     [ { provider => 'hetzner', nodes => 0 }        => 0, 'hetzner, nodes: 0' ],
     [ { provider => 'hetzner', nodes => 3 }        => 3, 'hetzner, nodes: 3' ],
-    [ { provider => 'local', nodes => 3, count => 5 } => 3, 'local, nodes: 3 and a count:' ],
     [ { provider => 'ssh', host => '10.0.0.21' }   => 1, 'ssh, host: only (k332)' ],
     [ { provider => 'ssh', nodes => [] }           => 0, 'ssh, nodes: []' ],
     [ { provider => 'ssh', nodes => [ '10.0.0.31', { host => '10.0.0.32' } ] } => 2, 'ssh, nodes: a list of two' ],
@@ -156,6 +157,33 @@ subtest 'the pools around k339 are workers, and status says as many' => sub {
         my ($text, $from_json) = status_counts($config->file);
         is $text,      $want, "$what: text says $want";
         is $from_json, $want, "$what: --json says $want";
+    }
+};
+
+# A pool's count: is read by nothing, and validate() refuses it since k347,
+# with the hint to write nodes:. ocp status reads ocp.yaml without validate(),
+# though, and for such a pool it still counts the workers ocp apply makes, not
+# the count: (k339) -- which the sweep can no longer ask, as validate() takes
+# these shapes out of its set.
+my @COUNTED = (
+    [ { provider => 'hetzner', count => 5 }           => 1, 'hetzner, a count: and no nodes:' ],
+    [ { provider => 'local', nodes => 3, count => 5 } => 3, 'local, nodes: 3 and a count:' ],
+);
+
+subtest 'a pool with a count: is refused, and status counts the workers apply makes of it' => sub {
+    for my $case (@COUNTED) {
+        my ($pool, $want, $what) = @$case;
+        my $config = OCP::Config->new(file => project($pool));
+        my @errors = $config->validate;
+        is scalar(@errors), 1, "$what: validate() refuses it, with one line" or diag explain \@errors;
+        like $errors[0] // '',
+            qr/^workers\[1\]\.count: unknown key \(must be [^)]*\bnodes\b[^)]*\); count is read by nothing -- write nodes: N, how many machines the pool has; without nodes it has one$/,
+            "$what: the line is the count:'s, with the hint to write nodes:";
+        is scalar(my @crs = OCP::Cmd::Apply::CR::worker_ocpnodes($config)), $want,
+            "$what: ocp apply makes $want worker(s) of it";
+        my ($text, $from_json) = status_counts($config->file);
+        is $text,      $want, "$what: text says $want, not the count:";
+        is $from_json, $want, "$what: --json says $want, not the count:";
     }
 };
 

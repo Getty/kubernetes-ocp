@@ -130,6 +130,17 @@ use OCP::Provider;
 #      validate()'s only one, and what every other reader stops with, as a
 #      message to the user rather than "This is an internal error".
 #
+# k347, what k331 left at the control planes and the pools:
+#  29. a key of a worker pool that is none of those read -- name, provider,
+#      nodes, host, server_type, location, image, labels, taints -- is a line:
+#      count: has been read by nothing since a5a598d, and a typo passed in
+#      silence. count: has a hint naming what the pool's provider reads
+#      instead. node_ip keeps its own line, and is no unknown key beside it.
+#      Every key the list names is one worker_ocpnodes reads;
+#  30. so is a key of a control plane that is none of those read. nodes: is
+#      one in a list entry, which control_planes does not read it from, and it
+#      and count: have a hint. What `ocp init` writes passes.
+#
 
 local @ARGV = ();
 my $ocp    = OCP->new;
@@ -387,6 +398,17 @@ my @AT = (
     (map { my $k = $_;
         [ "ssh.$k"                => sub { +{ control_planes => $cp->(), ssh => { $k => $_[0] } } } ],
      } qw( private_key public_key )),
+    # k347: the keys read that no line checks, and keys nothing reads
+    (map { my $k = $_;
+        [ "control_planes.$k"     => sub { +{ control_planes => $cp->($k => $_[0]) } } ],
+        [ "control_planes[1].$k"  => sub { +{ control_planes => [ $cp->($k => $_[0]) ] } } ],
+     } qw( name service count nodez )),
+    [ 'control_planes[1].nodes'   => sub { +{ control_planes => [ $cp->(nodes => $_[0]) ] } } ],
+    (map { my $k = $_;
+        [ "workers[1].$k"         => sub { +{ control_planes => $cp->(), workers => [ $wp->($k => $_[0]) ] } } ],
+        [ "workers[1].$k, hetzner" => sub { +{ control_planes => $cp->(), workers => [ {
+                                     name => 'w', provider => 'hetzner', server_type => 'cx22', $k => $_[0] } ] } } ],
+     } qw( count nodez )),
 );
 
 # Claim 7 rides along: whatever a line says, it never quotes a value the way
@@ -1387,5 +1409,114 @@ subtest 'ocp apply --dry-run on a list: the line on STDERR, exit 1' => sub {
         . "Fix the lines above and run it again.\n", 'the line, and no internal error';
 };
 
+
+# --- 29. a worker pool's keys ------------------------------------------------------------------------
+
+my $POOL_KEYS   = 'name, provider, nodes, host, server_type, location, image, labels, or taints';
+my $CP_KEYS     = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, '
+    . 'or service';
+my $CP_MAP_KEYS = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, '
+    . 'service, or nodes';
+
+subtest 'a key of a worker pool that is none of those read' => sub {
+    my $hz = sub { +{ name => 'w', provider => 'hetzner', server_type => 'cx22', @_ } };
+
+    is_deeply [ pool_errors($hz->(count => 3)) ],
+        [ "workers[1].count: unknown key (must be $POOL_KEYS); count is read by nothing -- write "
+          . 'nodes: N, how many machines the pool has; without nodes it has one' ],
+        'count: 3 -- a line with the hint, not one machine in silence';
+    is_deeply [ pool_errors({ name => 'w', provider => 'ssh', host => 'w1.k347.test', count => 2 }) ],
+        [ "workers[1].count: unknown key (must be $POOL_KEYS); count is read by nothing -- an ssh pool "
+          . 'names its machines: host for one, or nodes, a list of hosts' ],
+        'an ssh pool: the hint says how it names its machines';
+    is_deeply [ pool_errors($hz->(nodes => 2, lables => { a => 'b' }, Image => 'debian-13')) ],
+        [ "workers[1].Image: unknown key (must be $POOL_KEYS)",
+          "workers[1].lables: unknown key (must be $POOL_KEYS)" ],
+        'a typo: one line each, sorted';
+    is_deeply [ pool_errors($hz->(), $hz->(name => 'v', count => 2)) ],
+        [ "workers[2].count: unknown key (must be $POOL_KEYS); count is read by nothing -- write "
+          . 'nodes: N, how many machines the pool has; without nodes it has one' ],
+        'named by its place, as workers[2].name is';
+
+    my @e = pool_errors($hz->(node_ip => '10.0.0.9'));
+    is scalar(@e), 1, 'node_ip: one line' or diag explain \@e;
+    like $e[0], qr/\Aworker pool 'w': node_ip cannot be set on a pool/, '... its own, not an unknown key';
+
+    my %all = (name => 'w', provider => 'hetzner', nodes => 2, server_type => 'cx22', location => 'fsn1',
+               image => 'debian-13', labels => { 'ai.citilan.de/node-class' => 'general' },
+               taints => [ 'dedicated=ml:NoSchedule' ]);
+    is_deeply [ pool_errors({ %all }) ], [], 'hetzner: every key the list names passes';
+    is_deeply [ pool_errors({ name => 'w', provider => 'ssh', nodes => [ 'w1.k347.test', { host => 'w2.k347.test' } ] }) ],
+        [], 'ssh with nodes';
+    is_deeply [ pool_errors({ name => 'w', provider => 'ssh', host => 'w1.k347.test' }) ], [], 'ssh with host';
+    is_deeply [ pool_errors({ name => 'w', provider => 'local' }) ], [], 'local';
+
+    # Why: each key the list names reaches the pool's OCPNodes, and count
+    # reaches none of them. Should worker_ocpnodes come to read another, the
+    # list has to take it.
+    my @nodes = OCP::Cmd::Apply::CR::worker_ocpnodes(config_for({ control_planes => $local,
+                                                                  workers => [ { %all } ] }));
+    is_deeply [ map { $_->{metadata}{name} } @nodes ], [ 'w-1', 'w-2' ], 'name and nodes: the OCPNodes';
+    is_deeply [ map { $_->{spec}{providerRef} } @nodes ], [ ('hetzner-default') x 2 ], 'provider';
+    for my $n (@nodes) {
+        is_deeply [ @{ $n->{spec} }{qw( serverType location image )} ], [ 'cx22', 'fsn1', 'debian-13' ],
+            "$n->{metadata}{name}: server_type, location and image";
+        is_deeply $n->{spec}{labels}, { 'ai.citilan.de/node-class' => 'general' }, "$n->{metadata}{name}: labels";
+        is scalar @{ $n->{spec}{taints} }, 1, "$n->{metadata}{name}: taints";
+    }
+    my @ssh = OCP::Cmd::Apply::CR::worker_ocpnodes(config_for({ control_planes => $local,
+        workers => [ { name => 'w', provider => 'ssh', host => 'w1.k347.test' } ] }));
+    is_deeply [ map { $_->{spec}{host} } @ssh ], [ 'w1.k347.test' ], 'host';
+    my @counted = OCP::Cmd::Apply::CR::worker_ocpnodes(config_for({ control_planes => $local,
+                                                                    workers => [ $hz->(count => 3) ] }));
+    is scalar(@counted), 1, 'count: 3 -- one OCPNode, as without it';
+};
+
+# --- 30. a control plane's keys ---------------------------------------------------------------------
+
+subtest 'a key of a control plane that is none of those read' => sub {
+    is_deeply [ errors_for({ control_planes => { provider => 'local', count => 3 } }) ],
+        [ "control_planes[1].count: unknown key (must be $CP_MAP_KEYS); count is read by nothing -- "
+          . 'how many control planes there are is nodes: N' ],
+        'the mapping form: count, and nodes among the keys';
+    is_deeply [ errors_for({ control_planes => [ $local, { provider => 'local', count => 2 } ] }) ],
+        [ "control_planes[2].count: unknown key (must be $CP_KEYS); count is read by nothing -- "
+          . 'a list has one entry per control plane' ],
+        'a list entry: count, by its place';
+    is_deeply [ errors_for({ control_planes => [ { provider => 'local', nodes => 3 } ] }) ],
+        [ "control_planes[1].nodes: unknown key (must be $CP_KEYS); nodes: N is read on a "
+          . 'control_planes mapping only -- a list has one entry per control plane' ],
+        'nodes: in a list entry';
+    is scalar @{ config_for({ control_planes => [ { provider => 'local', nodes => 3 } ] })->control_planes }, 1,
+        '... which stands for one control plane, as nothing reads it';
+    is_deeply [ errors_for({ control_planes => { provider => 'local', nodes => 3 } }) ], [],
+        'nodes: 3 on the mapping passes';
+    is_deeply [ errors_for({ control_planes => { provider => 'local', nodes => 3, hots => 'cp.k347.test' } }) ],
+        [ "control_planes[1].hots: unknown key (must be $CP_MAP_KEYS)" ],
+        'nodes: 3 -- said once, not once per control plane';
+    is_deeply [ errors_for({ control_planes => { provider => 'ssh', host => 'cp.k347.test', Host => 'x',
+                                                 publicip => '10.9.0.5' } }) ],
+        [ "control_planes[1].Host: unknown key (must be $CP_MAP_KEYS)",
+          "control_planes[1].publicip: unknown key (must be $CP_MAP_KEYS)" ],
+        'a typo: one line each, sorted';
+
+    is_deeply [ errors_for({ control_planes => { provider => 'hetzner', server_type => 'cx32', location => 'fsn1',
+                                                 image => 'debian-13', public_ip => '10.9.0.5',
+                                                 private_ip => '10.8.0.5', node_ip => '10.8.0.5',
+                                                 name => 'police1' } }) ],
+        [], 'hetzner: every key the list names passes';
+    is_deeply [ errors_for({ control_planes => [ { provider => 'ssh', host => 'cp1.k347.test', name => 'cp1' },
+                                                 { provider => 'local', service => 'systemd' } ] }) ],
+        [], 'a list of them, service on a local one';
+
+    # What ocp init writes.
+    for my $opts ([ provider => 'hetzner' ], [ provider => 'ssh', host => 'cp.k347.test' ],
+                  [ provider => 'local', service => 'systemd' ]) {
+        my $f = path($tmpdir)->child('init' . int(rand(1_000_000)) . '.yaml');
+        OCP::Config->write_spec($f->stringify, name => 'k347', @$opts);
+        is_deeply [ OCP::Config->new(file => $f->stringify, ocp => $ocp)->validate ], [],
+            "ocp init --provider $opts->[1]: passes";
+    }
+};
 
 done_testing;

@@ -1041,6 +1041,38 @@ sub _first_cp_string {
     return $cp->{$key};
 }
 
+# The keys a control plane and a worker pool are read for (k347), and so the
+# keys validate() takes there: any other is a typo nothing reads. A pool's
+# count: has been read by no `ocp apply` since a5a598d -- the pool got the
+# one machine a pool without nodes: gets -- and passed without a word.
+#
+# A control plane's: provider, host, server_type, location and image (the
+# bootstrap, ensure_control_plane_ocpnodes), public_ip (join_host,
+# cluster_status, cp_tls_sans, OCP::Drift), private_ip (held against the
+# cluster networks), node_ip (cp_node_ip, the join CRs), name (OCP::Drift's
+# spec drift, cluster_status), service (`ocp init --provider local
+# --service` writes it), and nodes in the mapping form, which control_planes
+# reads and a list entry does not.
+our @CONTROL_PLANE_KEYS = qw( provider host public_ip private_ip node_ip server_type location image
+                              name service );
+
+# A pool's: what worker_ocpnodes makes its OCPNodes of, as ocp destroy, ocp
+# status and ocp node ls read them too. node_ip is refused on a pool by a
+# line of its own, so it is not one of them, nor an unknown key there.
+our @POOL_KEYS = qw( name provider nodes host server_type location image labels taints );
+
+# One line per key of a control plane or pool $entry that is none of @known
+# (k347), in _unknown_keys' words, with $hints->{$key} after it where a key
+# was likely meant as another.
+sub _entry_unknown_keys {
+    my ($path, $entry, $hints, @known) = @_;
+    my %known = map { $_ => 1 } @known;
+    return map {
+        my ($line) = _unknown_keys($path, { $_ => 1 }, @known);
+        defined $hints->{$_} ? "$line; $hints->{$_}" : $line;
+    } grep { !$known{$_} } sort keys %$entry;
+}
+
 sub validate {
     my ($self) = @_;
     my @errors;
@@ -1117,6 +1149,17 @@ sub validate {
             next;
         }
         my $prov = $cp->{provider} // 'hetzner';
+
+        # A key nothing reads (k347). nodes: is the mapping form's, which
+        # control_planes takes out of each copy; in a list entry nothing
+        # reads it.
+        my $mapping = ref $raw_cps eq 'HASH';
+        my $one_each = 'a list has one entry per control plane';
+        push @errors, _entry_unknown_keys("control_planes[$idx]", $cp, {
+                count => 'count is read by nothing -- '
+                    . ($mapping ? 'how many control planes there are is nodes: N' : $one_each),
+                nodes => "nodes: N is read on a control_planes mapping only -- $one_each",
+            }, @CONTROL_PLANE_KEYS, ($mapping ? 'nodes' : ()));
 
         # The wording this rejection has always had; the SET behind it now
         # comes from the factory that builds those providers instead of being
@@ -1249,6 +1292,17 @@ sub validate {
             push @errors, "$where: invalid provider " . _shown_value($wprov) . " (must be "
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
+
+        # A key nothing reads (k347); node_ip has its line below. count: was
+        # how a5a598d's builds counted a pool's machines.
+        my %keys = %$w;
+        delete $keys{node_ip};
+        my $ssh_pool = !ref $wprov && $wprov eq 'ssh';
+        push @errors, _entry_unknown_keys("workers[$pool_n]", \%keys, {
+                count => 'count is read by nothing -- ' . ($ssh_pool
+                    ? 'an ssh pool names its machines: host for one, or nodes, a list of hosts'
+                    : 'write nodes: N, how many machines the pool has; without nodes it has one'),
+            }, @POOL_KEYS);
 
         # host, server_type, location and image (k315, k322): one name each,
         # which worker_ocpnodes copies into every OCPNode of the pool. A host
