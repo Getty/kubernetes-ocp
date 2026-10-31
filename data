@@ -1,0 +1,30 @@
+---
+claimed_at: 2026-10-31T04:25:09Z
+claimed_by: kubernetes-ocp
+class: standard
+completed: 2026-10-31T04:25:14Z
+created: 2026-10-31T03:42:10Z
+id: 282
+priority: low
+started: 2026-10-31T04:25:14Z
+status: done
+tags:
+- skills
+title: ocp-cilium skill copies the Cilium/CLI/Gateway API pins from OCP::Versions
+updated: 2026-10-31T04:25:14Z
+---
+
+Found under k271 (2026-10-31). The "Cilium Versions" section of `.claude/skills/ocp-cilium/SKILL.md` lists the pinned versions (Cilium, cilium-cli, Gateway API CRDs v1.6.1). They match OCP::Versions today, but the ocp-gpu skill states the rule that pins are never copied into skills, and these will drift on the next bump.
+
+Done = the section names OCP::Versions (`components`) as the source and how to read it, with no version numbers of its own; the same sweep over the other ocp-* skills for copied pins.
+
+2026-10-31 04:15 Sweep over every tracked ocp-* skill file (ocp-core, ocp-k8s, ocp-cilium, ocp-registry, ocp-rke2 + references/install-flow.md, ocp-gpu + references/{amd,nvidia-cluster,nvidia-host}.md, ocp-usage), grepping each component value of OCP::Versions 0.001: copied pins only in ocp-cilium (Cilium Versions list: cilium, cilium_cli, gateway_api; and 'gateway_api, currently v1.6.1'). Kept on purpose, not pins: k157 history (now 'the pin of the time, v1.6.1'), upstream facts (Gateway API v1.5/v1.6 channels, 'Cilium 1.20 needs', RKE2 >= v1.37, validator v25.3.4/v25.10), floors (device plugin v0.17.4, Rex::GPU >= 0.004, Rex::Rancher 0.003), and amd.md's live-run traps that name the release they were seen on (image 1.31.0.11, upstream v1.0.1).
+Also found, not fixed (other content): ocp-registry's 'Dev Registry (Deprecated)' section names 'ocp dev --deploy-registry/--build' and OCP::DevRegistry -- neither exists in lib/ any more. ocp-cilium's LB-IPAM line 'A multi-node cluster dies' -- lb_ipam_resources dies, but ocp apply prints it as [WARN] on STDOUT and carries on (code finding noted on k281).
+
+2026-10-31 04:15 Done in .claude/skills/ocp-cilium/SKILL.md (the only file with copied pins):
+- 'Cilium Versions': the three numbers replaced by the component names in OCP::Versions and how to read them (lib/OCP/Versions.pm, get_component_version, ocp version before deploy, expected in ocp status drift); bump rules without numbers: gateway_api version-locked to cilium (bump together), and a new cilium pin ends @CILIUM_STATIONS (t/236, k195) -- the second rule is my addition, it is the other coupling a Cilium bump breaks.
+- Gateway API paragraph: 'currently v1.6.1' dropped, points to 'Cilium Versions'.
+- k157 history: 'under the v1.6.1 pin' -> 'under the pin of the time, v1.6.1' so it cannot read as the current pin.
+No other ocp-* skill copies a pin (sweep in the note above). No make test: no test reads skill files.
+
+Committed as ba558ee
