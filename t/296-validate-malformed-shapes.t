@@ -95,6 +95,21 @@ use OCP::Provider;
 #      once for each control plane it stands for -- the per-entry lines and the
 #      pod and service CIDR overlaps alike.
 #
+# k331, what k320 and k322 left:
+#  19. a key under gpu: other than enabled, driver, toolkit and amd is a line,
+#      as under gpu.amd: and robocop: -- gpu: { enable: false } was a mapping
+#      without enabled, so the GPU stack stayed on; and so is a key under
+#      system: other than timezone, locale and ntp;
+#  20. a system: that is no mapping is a line; timezone, locale and
+#      ntp_enabled died on it inside Perl, and validate() said nothing;
+#  21. the accessors of gpu:, gpu.amd: and system: refuse what validate() says
+#      about the mapping they read, in its words, and read what it passes as
+#      before: no reader turns the GPU stack on for a gpu.enable: false;
+#  22. a pool that is not ssh takes no host: worker_ocpnodes reads host for an
+#      ssh pool only, so beside hetzner or local it named no machine, and
+#      nothing said so. One line whatever the host's shape, and such a host is
+#      held against no network, as it is no machine's address.
+#
 
 local @ARGV = ();
 my $ocp    = OCP->new;
@@ -305,6 +320,11 @@ my @AT = (
     # a host in the pod CIDR, so the pool is named in that line too (k305)
     [ 'workers[1].name, host 10.42.0.5' => sub { +{ control_planes => $cp->(),
                                      workers => [ $wp->(name => $_[0], host => '10.42.0.5') ] } } ],
+    # k331: a pool that takes no host
+    [ 'workers[1].host, hetzner'  => sub { +{ control_planes => $cp->(), workers => [ {
+                                     name => 'w', provider => 'hetzner', server_type => 'cx22', host => $_[0] } ] } } ],
+    [ 'workers[1].host, local'    => sub { +{ control_planes => $cp->(), workers => [ {
+                                     name => 'w', provider => 'local', host => $_[0] } ] } } ],
     [ 'network'                   => sub { +{ control_planes => $cp->(), network => $_[0] } } ],
     (map { my $k = $_;
         [ "network.$k"            => sub { +{ control_planes => $cp->(), network => { $k => $_[0] } } } ],
@@ -322,10 +342,10 @@ my @AT = (
     [ 'gpu'                       => sub { +{ control_planes => $cp->(), gpu => $_[0] } } ],
     (map { my $k = $_;
         [ "gpu.$k"                => sub { +{ control_planes => $cp->(), gpu => { $k => $_[0] } } } ],
-     } qw( enabled driver toolkit amd )),
+     } qw( enabled driver toolkit amd enable )),    # enable: no key of gpu's (k331)
     (map { my $k = $_;
         [ "gpu.amd.$k"            => sub { +{ control_planes => $cp->(), gpu => { amd => { $k => $_[0] } } } } ],
-     } qw( allocation resource_naming labeller metrics integrated )),
+     } qw( allocation resource_naming labeller metrics integrated alocation )),
     [ 'robocop'                   => sub { +{ control_planes => $cp->(), robocop => $_[0] } } ],
     (map { my $k = $_;
         [ "robocop.$k"            => sub { +{ control_planes => $cp->(), robocop => { $k => $_[0] } } } ],
@@ -335,6 +355,9 @@ my @AT = (
         [ $k                      => sub { +{ control_planes => $cp->(), $k => $_[0] } } ],
      } qw( lbipam nocert system )),
     [ 'system.ntp'                => sub { +{ control_planes => $cp->(), system => { ntp => $_[0] } } } ],
+    (map { my $k = $_;
+        [ "system.$k"             => sub { +{ control_planes => $cp->(), system => { $k => $_[0] } } } ],
+     } qw( timezone locale time_zone )),    # time_zone: no key of system's (k331)
 );
 
 # Claim 7 rides along: whatever a line says, it never quotes a value the way
@@ -915,6 +938,171 @@ subtest 'the mapping form with nodes: N says a line about its entry once' => sub
         [ 'control_planes[1]: server_type required for hetzner', 'control_planes[1]: location required for hetzner',
           'control_planes[2]: server_type required for hetzner', 'control_planes[2]: location required for hetzner' ],
         'the list form: each entry is its own, and named as such';
+};
+
+# --- 19. the keys of gpu: and system: -------------------------------------------------------
+
+my $GPU_KEYS    = 'enabled, driver, toolkit, or amd';
+my $AMD_KEYS    = 'allocation, resource_naming, labeller, metrics, or integrated';
+my $SYSTEM_KEYS = 'timezone, locale, or ntp';
+
+subtest 'a key under gpu: or system: that is none of its own' => sub {
+    is_deeply [ config_from_text("gpu:\n  enable: false\n")->validate ],
+        [ "gpu.enable: unknown key (must be $GPU_KEYS)" ],
+        'gpu: { enable: false } -- a typo of enabled, and a gpu mapping without enabled is on';
+    is_deeply [ errors_for({ control_planes => $local,
+                             gpu => { enabled => JSON::PP::true, nvidia => {}, Driver => 'operator' } }) ],
+        [ "gpu.Driver: unknown key (must be $GPU_KEYS)", "gpu.nvidia: unknown key (must be $GPU_KEYS)" ],
+        'one line each, sorted';
+    is_deeply [ errors_for({ control_planes => $local, gpu => { enabled => JSON::PP::true, driver => 'operator',
+                                                                 toolkit => JSON::PP::false, amd => {} } }) ],
+        [], 'enabled, driver, toolkit and amd pass';
+    is_deeply [ errors_for({ control_planes => $local, gpu => { amd => { alocation => 'dra' } } }) ],
+        [ "gpu.amd.alocation: unknown key (must be $AMD_KEYS)" ], "gpu.amd: the line it had (k250)";
+
+    is_deeply [ config_from_text("system:\n  time_zone: Europe/Berlin\n")->validate ],
+        [ "system.time_zone: unknown key (must be $SYSTEM_KEYS)" ],
+        'system: { time_zone: ... } -- a typo of timezone, which stayed UTC';
+    is_deeply [ errors_for({ control_planes => $local, system => { hostname => 'cp1', NTP => JSON::PP::false } }) ],
+        [ "system.NTP: unknown key (must be $SYSTEM_KEYS)", "system.hostname: unknown key (must be $SYSTEM_KEYS)" ],
+        'one line each, sorted';
+    is_deeply [ errors_for({ control_planes => $local, system => { timezone => 'Europe/Berlin',
+                                                                    locale => 'de_DE.UTF-8', ntp => JSON::PP::false } }) ],
+        [], 'timezone, locale and ntp pass';
+};
+
+# --- 20. a system: that is no mapping --------------------------------------------------------
+
+subtest 'a system that is no mapping' => sub {
+    my $is = 'system: must be a mapping (timezone, locale, ntp), not ';
+    for my $case ([ 'Europe/Berlin', "'Europe/Berlin'" ], [ [ 'a' ], 'a list' ], [ JSON::PP::false, 'false' ],
+                  [ JSON::PP::true, 'true' ], [ 7, "'7'" ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, system => $v }) ], [ "$is$shown" ], "system: $shown";
+    }
+    is_deeply [ errors_for({ control_planes => $local, system => undef }) ], [], 'null: as absent';
+    is_deeply [ errors_for({ control_planes => $local, system => {} }) ], [], '{}: the defaults';
+};
+
+# --- 21. the accessors of gpu:, gpu.amd: and system: agree with validate() --------------------
+#
+# ocp apply reads them after validate(); ocp update, ocp node add and the
+# drift check of ocp status read them without it. What validate() says about
+# the mapping an accessor reads, the accessor refuses in the same words; what
+# it passes, the accessor reads as before. (A gpu: or gpu.amd: that is no
+# mapping is claim 2's, in the words it has had since k296 and k250.)
+
+my %READS = (
+    gpu       => [ qw( gpu_config gpu_enabled gpu_toolkit gpu_driver ) ],
+    'gpu.amd' => [ qw( gpu_amd_config gpu_amd_allocation gpu_amd_resource_naming gpu_amd_labeller
+                       gpu_amd_metrics gpu_amd_integrated ) ],
+    system    => [ qw( system_config timezone locale ntp_enabled ) ],
+);
+# gpu.amd: is read through gpu:, so what gpu: says the gpu.amd accessors say too.
+my %REFUSED_WITH = (gpu => [ 'gpu', 'gpu.amd' ], 'gpu.amd' => [ 'gpu.amd' ], system => [ 'system' ]);
+
+subtest 'the gpu, gpu.amd and system accessors read their mapping the way validate() does' => sub {
+    my $clean = config_for({ control_planes => $local });
+    my %default = map { my $m = $_; ($m => scalar $clean->$m) } map { @$_ } values %READS;
+
+    my @cases = (
+        [ gpu       => { gpu => { enable => JSON::PP::false } } ],
+        [ gpu       => { gpu => { enable => JSON::PP::false, toolkt => JSON::PP::false } } ],
+        [ gpu       => { gpu => { enabled => JSON::PP::false, nvidia => { driver => 'operator' } } } ],
+        [ 'gpu.amd' => { gpu => { amd => { alocation => 'dra' } } } ],
+        [ 'gpu.amd' => { gpu => { amd => { allocation => 'dra', metric => JSON::PP::true } } } ],
+        [ system    => { system => { time_zone => 'Europe/Berlin' } } ],
+        [ system    => { system => { timezone => 'Europe/Berlin', ntpd => JSON::PP::false } } ],
+        (map { [ system => { system => $_->[1] } ] } @SHAPES),
+    );
+    for my $case (@cases) {
+        my ($path, $spec) = @$case;
+        my $c     = config_for({ control_planes => $local, %$spec });
+        my @lines = $c->validate;
+        my $shown = JSON::MaybeXS->new(canonical => 1, convert_blessed => 1, allow_nonref => 1)
+            ->encode($spec->{$path =~ s/\..*//r});
+        my %refused = map { $_ => 1 } map { @{ $READS{$_} } } @lines ? @{ $REFUSED_WITH{$path} } : ();
+        for my $m (sort keys %default) {
+            my $got = eval { $c->$m };
+            if ($refused{$m}) {
+                ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
+                like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                next;
+            }
+            is $@, '', "$m, $path: $shown -- reads on";
+            next if ref $default{$m};    # the mappings themselves
+            is $got, $default{$m}, "$m, $path: $shown -- reads $default{$m}, as when absent";
+        }
+    }
+
+    my $c = config_for({ control_planes => $local,
+                         gpu => { enabled => JSON::PP::false, driver => 'operator', toolkit => JSON::PP::false,
+                                  amd => { allocation => 'dra', resource_naming => 'mixed', labeller => JSON::PP::false,
+                                           metrics => JSON::PP::true, integrated => JSON::PP::true } },
+                         system => { timezone => 'Europe/Berlin', locale => 'de_DE.UTF-8', ntp => JSON::PP::false } });
+    is_deeply [ $c->validate ], [], 'every key of the three, set';
+    is_deeply { map { $_ => scalar $c->$_ } grep { !ref $default{$_} } sort keys %default },
+        { gpu_enabled => 0, gpu_driver => 'operator', gpu_toolkit => 0, gpu_amd_allocation => 'dra',
+          gpu_amd_resource_naming => 'mixed', gpu_amd_labeller => 0, gpu_amd_metrics => 1,
+          gpu_amd_integrated => 1, timezone => 'Europe/Berlin', locale => 'de_DE.UTF-8', ntp_enabled => 0 },
+        '... and each read as set';
+};
+
+# --- 22. a pool that is not ssh takes no host ---------------------------------------------------
+
+my $HOST_ONLY = 'host is read for an ssh pool only, and names no machine of ';
+my $HZ_HOST   = "${HOST_ONLY}a hetzner pool, whose servers Hetzner creates at the addresses it "
+    . 'hands out -- remove host';
+my $LO_HOST   = "${HOST_ONLY}a local pool, which is the machine ocp runs on -- remove host, "
+    . 'or name another machine in an ssh pool';
+
+subtest 'a pool that is not ssh takes no host' => sub {
+    my $hz = sub { +{ name => 'w', provider => 'hetzner', server_type => 'cx22', @_ } };
+    my $lo = sub { +{ name => 'w', provider => 'local', @_ } };
+
+    is_deeply [ pool_errors($hz->(host => 'w1.k331.test')) ], [ "worker pool 'w': $HZ_HOST" ],
+        'hetzner: a line, not a host dropped in silence';
+    is_deeply [ pool_errors($hz->(host => '10.9.0.1', nodes => 2)) ], [ "worker pool 'w': $HZ_HOST" ],
+        'hetzner, beside a count';
+    is_deeply [ pool_errors($lo->(host => '10.9.0.1')) ], [ "worker pool 'w': $LO_HOST" ], 'local';
+    is_deeply [ pool_errors({ provider => 'hetzner', server_type => 'cx22', host => '10.9.0.1' }) ],
+        [ 'worker pool: name required', "workers[1]: $HZ_HOST" ], 'a pool without a name: by its place';
+
+    # Not read whatever it is, so its shape is no line of its own.
+    for my $case ([ [ 'a' ], 'a list' ], [ { a => 1 }, 'a mapping' ], [ JSON::PP::true, 'true' ],
+                  [ JSON::PP::false, 'false' ], [ '', "''" ], [ 0, '0' ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ pool_errors($hz->(host => $v)) ], [ "worker pool 'w': $HZ_HOST" ],
+            "hetzner, host: $shown -- the one line";
+        is_deeply [ pool_errors($lo->(host => $v)) ], [ "worker pool 'w': $LO_HOST" ], "local, host: $shown";
+    }
+    is_deeply [ pool_errors($hz->(host => undef)) ], [], 'hetzner, host: null -- as absent';
+    is_deeply [ pool_errors($hz->(nodes => 2)) ], [], 'hetzner without host: as before';
+    is_deeply [ pool_errors($lo->()) ], [], 'local without host: as before';
+
+    # It is no machine's address, so no network has to stay clear of it.
+    for my $addr ('10.42.0.5', '10.43.0.5') {
+        is_deeply [ pool_errors($hz->(host => $addr)) ], [ "worker pool 'w': $HZ_HOST" ],
+            "hetzner, host $addr: no overlap line beside it";
+    }
+    is_deeply [ pool_errors({ name => 'w', provider => 'ssh', host => '10.42.0.5' }) ],
+        [ "network.pod_cidr (default 10.42.0.0/16) overlaps worker pool 'w' host 10.42.0.5 "
+          . '-- set network.pod_cidr to a range nothing else uses' ],
+        'an ssh pool host is a machine address, as before';
+
+    is_deeply [ pool_errors({ name => 'w', provider => 'aws', host => '10.9.0.1' }) ],
+        [ "worker pool 'w': invalid provider 'aws' (must be " . OCP::Choices::or_list(OCP::Provider->types) . ')' ],
+        'an unknown provider: its line, and no guess at what it reads';
+
+    # Why: worker_ocpnodes drops it. Should one of them come to read it, this
+    # refusal has to go with that.
+    for my $pool ($hz->(host => 'w1.k331.test'), $lo->(host => 'w1.k331.test')) {
+        my $c = config_for({ control_planes => $local, workers => [ $pool ] });
+        my @nodes = OCP::Cmd::Apply::CR::worker_ocpnodes($c);
+        ok @nodes, "$pool->{provider}: worker_ocpnodes makes its worker";
+        is_deeply [ grep { defined } map { $_->{spec}{host} } @nodes ], [],
+            "$pool->{provider}: ... and no OCPNode carries the host";
+    }
 };
 
 done_testing;

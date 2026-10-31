@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses a key under `gpu:` or `system:` that OCP does
+      not read -- `gpu: { enable: false }` was a mapping without
+      `enabled`, and left the GPU stack on -- and a `system:` that is no
+      mapping, which it read on and died on inside Perl. `ocp update` and
+      `ocp node add` stop with the same line on an unknown key under
+      `gpu:` or `gpu.amd:`. A `host` on a hetzner or local worker pool is
+      refused too: only an ssh pool's is read, and beside any other
+      provider it named no machine.
     - `ocp destroy` reads a worker pool's `host` only on an ssh pool, as
       `ocp apply` does: a hetzner pool's `host` is no longer listed as a
       machine to destroy, a local pool's no longer sends the uninstall to

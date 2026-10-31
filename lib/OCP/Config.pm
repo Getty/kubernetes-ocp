@@ -547,8 +547,34 @@ sub cilium_helm_values {
 sub ssl_config { shift->spec->{ssl} // {} }
 sub ssl_email { shift->spec->{ssl}{email} // '' }
 
-# System configuration (hostname, timezone, locale, NTP)
-sub system_config { shift->spec->{system} // {} }
+# System configuration (timezone, locale, NTP): what every node is set up
+# with, the control planes by the bootstrap and the workers through the
+# provider CR. The keys its accessors read, and so the keys validate() takes
+# there (k331): anything else is a typo whose default stays in force --
+# system: { time_zone: Europe/Berlin } left every node on UTC.
+our @SYSTEM_KEYS = qw( timezone locale ntp );
+
+# A system: that is no mapping, or a key in it that is none of the three, is
+# refused here in validate()'s words (k331): read on, timezone, locale and
+# ntp_enabled died inside Perl on a string ("Can't use string as a HASH
+# ref"), and validate() said nothing.
+sub system_config {
+    my ($self) = @_;
+    my @errors = _system_errors($self->spec->{system});
+    croak join '; ', @errors if @errors;
+    return $self->spec->{system} // {};
+}
+
+# What is wrong with system:, one line each, or nothing: validate() lists the
+# lines and system_config refuses on them, so the two cannot disagree.
+sub _system_errors {
+    my ($system) = @_;
+    return () unless defined $system;
+    return 'system: must be a mapping (' . join(', ', @SYSTEM_KEYS) . '), not ' . _shown_value($system)
+        unless ref $system eq 'HASH';
+    return _unknown_keys('system', $system, @SYSTEM_KEYS);
+}
+
 sub timezone      { shift->system_config->{timezone} // 'UTC' }
 sub locale        { shift->system_config->{locale} // 'en_US.UTF-8' }
 sub ntp_enabled   { my ($self) = @_; return $self->_switch('system.ntp', $self->system_config) }
@@ -573,11 +599,21 @@ sub ntp_enabled   { my ($self) = @_; return $self->_switch('system.ntp', $self->
 # A gpu: that is no mapping is refused here in validate()'s words (k296):
 # read on, every accessor below died inside Perl ("Can't use string as a
 # HASH ref"), and taken for absent, gpu: false would mean enabled.
+#
+# So is a key in it that is none of these four (k331), as robocop_enabled
+# refuses one under robocop: (k315). gpu: { enable: false } is a mapping
+# without enabled, which is on: every reader asks an accessor below -- ocp
+# update and ocp node add without validate() -- and none of them may read
+# the one ocp.yaml another way than validate() does.
+our @GPU_KEYS = qw( enabled driver toolkit amd );
+
 sub gpu_config {
     my ($self) = @_;
     my $gpu = $self->spec->{gpu} // {};
     my $err = _gpu_shape_error($gpu);
     croak "gpu $err" if defined $err;
+    my @unknown = _unknown_keys('gpu', $gpu, @GPU_KEYS);
+    croak join '; ', @unknown if @unknown;
     return $gpu;
 }
 
@@ -668,12 +704,17 @@ our $AMD_GPU_RESOURCE        = 'amd.com/gpu';
 our $AMD_GPU_RESOURCE_PREFIX = 'amd.com/';
 our $AMD_GPU_DRA_DRIVER      = 'gpu.amd.com';
 
+# A key of gpu.amd that is none of its five is refused here in validate()'s
+# words too (k331): gpu.amd: { alocation: dra } left device-plugin in force
+# for every reader that did not ask validate() first.
 sub gpu_amd_config {
     my ($self) = @_;
     my $amd = $self->gpu_config->{amd};
     return {} unless defined $amd;
     croak 'gpu.amd must be a mapping ('.OCP::Choices::or_list(@GPU_AMD_KEYS).')'
         unless ref $amd eq 'HASH';
+    my @unknown = _unknown_keys('gpu.amd', $amd, @GPU_AMD_KEYS);
+    croak join '; ', @unknown if @unknown;
     return $amd;
 }
 
@@ -985,8 +1026,15 @@ sub validate {
     push @errors, $self->_validate_cilium;
     my $gpu_err = _gpu_shape_error($self->spec->{gpu});
     push @errors, "gpu: $gpu_err" if defined $gpu_err;
+    # A key of gpu: that is none of its four (k331), the lines gpu_config
+    # refuses on.
+    push @errors, _unknown_keys('gpu', $self->spec->{gpu}, @GPU_KEYS)
+        if ref $self->spec->{gpu} eq 'HASH';
     push @errors, $self->_validate_gpu_driver;
     push @errors, $self->_validate_gpu_amd;
+
+    # system: (k331), the lines system_config refuses on.
+    push @errors, _system_errors($self->spec->{system});
 
     # The switches (k320): true or false, as robocop: is; each line is its
     # accessor's refusal too (_switch). Read through mappings only: a gpu: or
@@ -1056,9 +1104,12 @@ sub validate {
         }
 
         # host, server_type, location and image (k315, k322): one name each,
-        # which worker_ocpnodes copies into every OCPNode of the pool.
+        # which worker_ocpnodes copies into every OCPNode of the pool. A host
+        # beside a pool that takes none has one line, whatever its shape
+        # (k331): see _pool_host_error.
         for my $s (@ONE_NAME_KEYS) {
             my ($key, $what) = @$s;
+            next if $key eq 'host' && !$self->_pool_takes_host($w);
             if (defined(my $err = _not_a_string($w->{$key}, $what))) {
                 push @errors, "$where: $key $err";
             }
@@ -1072,6 +1123,7 @@ sub validate {
             if !ref $wprov && $wprov ne '' && OCP::Provider->known_type($wprov);
         push @errors, $self->_ssh_pool_machines_errors($w, $where)
             if !ref $wprov && $wprov eq 'ssh';
+        push @errors, $self->_pool_host_error($w, $where) // ();
 
         # labels / taints (k211): what the pool's OCPNodes carry.
         push @errors, OCP::NodeMeta->label_errors("$where: labels", $w->{labels})
@@ -1193,6 +1245,34 @@ sub _ssh_pool_machines_errors {
         . "beside nodes, host is not read"
         if $has_host && ref $nodes eq 'ARRAY';
     return ();
+}
+
+# Whether a pool names its machines by host (k331). An ssh pool does; a pool
+# of any other provider OCP knows does not: worker_ocpnodes reads host for an
+# ssh pool only, and puts none on the OCPNodes of any other. A pool whose
+# provider is unknown has that line, and is read as it always was.
+sub _pool_takes_host {
+    my ($self, $pool) = @_;
+    my $prov = $pool->{provider};
+    return 1 if ref $prov || !OCP::Provider->known_type($prov);
+    return $prov eq 'ssh' ? 1 : 0;
+}
+
+# A host beside a pool that takes none (k331), or undef. It named no machine,
+# and nothing said so: a hetzner pool's machines are servers Hetzner creates,
+# at addresses Hetzner hands out, and a local pool is the machine ocp runs on,
+# which its provider reaches at 127.0.0.1 whatever it is told. Refused
+# whatever it is, as `ocp init --host` is beside any provider but ssh (k124):
+# nothing reads it, so its shape is no line of its own. Null is absent.
+sub _pool_host_error {
+    my ($self, $pool, $where) = @_;
+    return undef if !defined $pool->{host} || $self->_pool_takes_host($pool);
+    my $prov = $pool->{provider};
+    my $what = $prov eq 'hetzner' ? ', whose servers Hetzner creates at the addresses it hands out'
+             : $prov eq 'local'   ? ', which is the machine ocp runs on'
+             :                      '';
+    my $fix  = $prov eq 'local' ? 'remove host, or name another machine in an ssh pool' : 'remove host';
+    return "$where: host is read for an ssh pool only, and names no machine of a $prov pool$what -- $fix";
 }
 
 # "must be a string (WHAT), not a list" for a list, a mapping or a boolean,
@@ -1378,11 +1458,8 @@ sub _validate_gpu_amd {
     my $keys = OCP::Choices::or_list(@GPU_AMD_KEYS);
     return ("gpu.amd: must be a mapping ($keys)") unless ref $amd eq 'HASH';
 
-    my @errors;
-    for my $k (sort keys %$amd) {
-        push @errors, "gpu.amd.$k: unknown key (must be $keys)"
-            unless grep { $_ eq $k } @GPU_AMD_KEYS;
-    }
+    # The lines gpu_amd_config refuses on (k331).
+    my @errors = _unknown_keys('gpu.amd', $amd, @GPU_AMD_KEYS);
 
     my %choices = (
         allocation      => \@GPU_AMD_ALLOCATIONS,
@@ -1444,9 +1521,9 @@ sub _validate_service_cidr {
 
 # The addresses ocp.yaml names that a cluster network must stay clear of
 # (k182, k279, k299), as [ what, CIDR ]: each control plane's host,
-# public_ip, private_ip and node_ip, each worker pool host, the LB pool. An
-# address that is no IPv4 literal is not counted -- a host name is not
-# resolved, a refused node_ip has its own line.
+# public_ip, private_ip and node_ip, each host of a worker pool that takes
+# one (k331), the LB pool. An address that is no IPv4 literal is not counted
+# -- a host name is not resolved, a refused node_ip has its own line.
 sub _taken_addresses {
     my ($self, $net) = @_;
     my @taken;
@@ -1475,6 +1552,11 @@ sub _taken_addresses {
     for my $n (1 .. @pools) {
         my $pool = $pools[$n - 1];
         next unless ref $pool eq 'HASH';
+
+        # A pool that takes no host names no machine by one (k331): its host,
+        # and a nodes list that is no count, have their lines and are no
+        # machine's address.
+        next unless $self->_pool_takes_host($pool);
         my @hosts = ($pool->{host},
             map { ref $_ eq 'HASH' ? $_->{host} : $_ } @{ ref $pool->{nodes} eq 'ARRAY' ? $pool->{nodes} : [] });
         my $where = $self->_pool_where($pool, $n);
