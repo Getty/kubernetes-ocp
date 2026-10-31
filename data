@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T11:13:58Z
+created: 2026-10-31T06:33:17Z
+id: 309
+priority: low
+started: 2026-10-31T11:13:58Z
+status: done
+tags:
+- gpu
+- node-add
+title: node add waits 300 s for NFD on a fresh node, the apply side 600 s
+updated: 2026-10-31T11:13:58Z
+---
+
+Found under k286/k287 (2026-10-31). The apply side waits up to 600 s for NFD to label a freshly joined worker (OCP::Cmd::Apply::Workloads gpu_label_timeout) and, since k286, up to 600 s for an AMD node that just joined (OCP::Cmd::Apply::AMDGPU join_ready_timeout). The reason is Cilium's first BPF compile on a fresh node, about 5.5 min on synapse. `ocp node add --gpu` has its own `gpu_label_timeout` of 300 s in lib/OCP/Cmd/Node/Add.pm for the same NFD wait on the same fresh node, so on a node like synapse it can give up before the apply side would.
+
+Done = node add uses the same budget as the apply side for the NFD label wait, read from one place (not a second literal), and a test pins that node add waits with the fresh-node budget. If 300 s there is deliberate, say why in the code and close this.
+
+2026-10-31 06:44 Cause: not deliberate. node add's 300 s came with k220 (73b2469, 2026-10-01); the apply side's NFD wait went 300 -> 600 with k233 (f47579a, 2026-10-16, brain's nfd-worker had no sandbox network for 4-5 min) and node add was not touched. Plan: Add.pm's gpu_label_timeout returns OCP::Cmd::Apply::Workloads::gpu_label_timeout() (Workloads.pm unchanged); t/220 pins waited == the apply side's budget and that overriding Workloads' value moves node add's wait.
+
+2026-10-31 06:45 Red first: new t/220 subtest failed on the old code (waited 300, want 600; with Workloads' budget overridden to 40, still 300). Fixed: Add.pm gpu_label_timeout returns OCP::Cmd::Apply::Workloads::gpu_label_timeout() (use'd at the top), comment says why; POD 'up to five minutes' -> ten. t/220 green in the image. Mutant: a second literal 600 in Add.pm passes the equality but is killed by the override check.
+
+2026-10-31 10:46 Taken over (worker before hung on a shell command). Reviewed the tree state: it matches the notes. Add.pm gpu_label_timeout returns OCP::Cmd::Apply::Workloads::gpu_label_timeout() (600 s), Workloads.pm untouched. Only change of mine: rewrapped the POD paragraph the edit had merged into one ~130-char line (wording unchanged). Mutants on fresh copies vs t/220, all killed by assertions: a literal 600 in Add.pm (by the override subtest), the old 300, the wait loop with its own 600 instead of gpu_label_timeout(). Binding: make test on 61 neighbour files (t/*robocop*, t/*crd*, t/*node-add*, t/18b, t/20, t/25, t/228, t/254-*, t/269, t/290, t/291, t/38, t/40, t/47, t/52, t/54 ...) PASS, 954 tests. k309.patch alone on HEAD 984e43c: t/220 t/18b t/228 t/238 t/00 PASS (102 tests). Full suite on a clean HEAD 984e43c + k309 + k311 in the image: Files=233, Tests=3655, PASS, no skips. Disjoint from k311 (no shared files), and either applies alone.
+
+2026-10-31 10:46 Done: ocp node add --gpu now waits for the GPU label as long as ocp apply waits for NFD on a fresh node (600 s), read from OCP::Cmd::Apply::Workloads::gpu_label_timeout, not a second literal. POD says ten minutes. t/220 pins the budget and that node add follows the apply side's value when it changes. Patch: k309.patch (lib/OCP/Cmd/Node/Add.pm, t/220-node-add-gpu-operator.t) against HEAD 984e43c. Proposed subject: Give ocp node add --gpu the ten minutes ocp apply waits for NFD on a fresh node, read from the apply side (k309). Verified: t/220 + neighbours + full suite in the image, PASS; 3/3 mutants killed.
+
+Committed as 3d6e6e2
