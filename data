@@ -1,0 +1,51 @@
+---
+class: standard
+completed: 2026-10-31T11:07:52Z
+created: 2026-10-31T09:24:04Z
+id: 331
+priority: medium
+started: 2026-10-31T11:07:52Z
+status: done
+tags:
+- config
+- validation
+title: 'validate(): gpu: and system: take unknown keys, system: of the wrong shape
+  dies, a non-ssh pool''s host is ignored'
+updated: 2026-10-31T11:07:52Z
+---
+
+Found under k320/k322 (choices worker, 2026-10-31):
+- gpu: and system: have no unknown-key check: `gpu: { enable: false }` leaves the GPU stack on (enabled defaults on in the mapping form), the k315 robocop.enable shape again. Use Config::_unknown_keys (k292) with each mapping's key list.
+- a system: that is not a mapping makes ntp_enabled, timezone and locale die inside Perl; validate() has no line for it.
+- a hetzner (or any non-ssh) pool's host: is silently ignored when worker_ocpnodes builds its workers. Refuse it, or say what it does.
+
+Done = each is an ordinary validate() line (t/296 sweep), the accessors agree with validate(), the three real configs (cihq, citiai, amdlab) still give 0 errors.
+
+2026-10-31 10:10 Work done (ocp-choices-worker): lib/OCP/Config.pm and t/296. Patch: scratchpad w-choices331/k331.patch against 2e013f4; nothing committed, shared tree untouched (git apply --check is clean).
+- Key lists, read from the consumers (Config accessors, Apply/CR.pm provider CR, Apply/Bootstrap.pm, Apply/Workloads.pm, Apply/AMDGPU.pm, Rexfile params), not from the docs alone:
+  - gpu: enabled, driver, toolkit, amd (@GPU_KEYS, new). There is no gpu.nvidia or any other key: NVIDIA config is driver and toolkit.
+  - gpu.amd: allocation, resource_naming, labeller, metrics, integrated (@GPU_AMD_KEYS, as before).
+  - system: timezone, locale, ntp (@SYSTEM_KEYS, new). No hostname key exists; the old "System configuration (hostname, ...)" comment was stale and is fixed.
+- validate(): an unknown key under gpu: or system: is a line via _unknown_keys (k292 words). A system: that is no mapping: "system: must be a mapping (timezone, locale, ntp), not X". _validate_gpu_amd now uses _unknown_keys as well (same words, one source).
+- Accessors agree: gpu_config croaks on an unknown gpu key, gpu_amd_config on an unknown gpu.amd key, and system_config on either system line, each with validate()'s exact lines joined by '; ', as robocop_enabled does (k315). So timezone, locale and ntp_enabled no longer die inside Perl, and gpu: { enable: false } no longer reads as on in ocp update / node add / status' drift check. The existing k296 "gpu must be a mapping" croak wording is unchanged.
+- A non-ssh pool's host, decided per provider:
+  - hetzner: REFUSED. worker_ocpnodes puts no host on its OCPNodes. Hetzner creates the servers and hands out their addresses.
+  - local: REFUSED. worker_ocpnodes drops it, and Provider::Local resolve_host ignores its argument (always 127.0.0.1). Same reason ocp init refuses --host for local (k124). I found no reading, so nothing to ask.
+  - an unknown or absent provider: unchanged. It has its provider line, and no guess is made.
+  - Any defined value is refused, '' and 0 included. Null counts as absent. One line, with no "must be a string" line beside it. The line says "host is read for an ssh pool only, and names no machine of a hetzner|local pool, ... -- remove host".
+  - Such a host (and a hetzner pool's nodes list) is no longer held against the pod/service CIDR (_taken_addresses), because it is no machine's address.
+- Tests: t/296 has claims 19-22 (subtests 33-36: 7, 7, 445 and 27 asserts). The sweep gains gpu.enable, gpu.amd.alocation, system.timezone, system.locale and system.time_zone, plus a host on a hetzner and on a local pool. Red on HEAD: 4 subtests, 95 asserts. Green on the patch: 36/36, 3723 asserts.
+- Mutants: 21/21 killed (t/296 + t/09).
+- Real configs cihq, citiai and amdlab: 0 errors, and every gpu/system/switch accessor reads exactly what HEAD reads. None of them has worker pools.
+- Binding make test on a clean copy of HEAD plus the patch: PASS, Files=228, Tests=3618, exit 0, no skips in the log (DOCKER_BUILDKIT=0; the first attempt failed while BuildKit booted, crun cgroup permission, before any test ran). After a comment-only fix in t/296, the single file was bound again: t/296 PASS, 36 subtests. A host subset (56 files) passed too, but that run is not binding.
+- Also found (not done, outside this card):
+  1. destroy lane (k326): Destroy _spec_worker_entries reads host for every known provider. A hetzner pool's host becomes a listed "Deleting X..." entry with no server id that deletes nothing. A local pool's host is uninstalled on 127.0.0.1. validate() now refuses both, but the Destroy path has its own reader.
+  2. choices lane: system.timezone and system.locale of the wrong shape (a list or a mapping) still pass validate() and reach the Rexfile and the provider CR, while the CRD types them as string. Possible follow-up.
+  3. doc-writer lane: docs/configuration.md and the ocp-usage skill don't describe the new refusals (unknown gpu/system keys, a host on a hetzner or local pool).
+  4. gpu_config's k296 croak "gpu must be a mapping..." still differs slightly from validate()'s "gpu: must be a mapping...". Left unchanged, not part of this card.
+
+2026-10-31 10:11 Done: validate() refuses an unknown key under gpu: or system:, a system: that is no mapping, and a host on a hetzner or local pool. gpu_config, gpu_amd_config and system_config croak with validate()'s lines. Verified: t/296 red on HEAD (4 subtests) and green on the patch (36/36); mutants 21/21 killed; the three real configs give 0 errors; binding make test on HEAD plus the patch PASS (228 files, 3618 tests). Patch: scratchpad w-choices331/k331.patch, uncommitted.
+
+2026-10-31 10:19 NOT committed: with k331 applied on top of 984e43c, t/335-destroy-name-host.t test 4 ('a pool host of the wrong shape, whatever provider destroy knows') fails. Config::validate now also emits the k331 line for hetzner/local pools carrying host (host is read for an ssh pool only ... remove host), and the test expects only the host-shape lines for pools 'big' and 'lp' (it also gets an extra 'worker pool: name required'). Needs the destroy worker to adapt t/335 (give those pools no ssh-incompatible host, or expect the k331 line) or a decision on whether destroy should show the k331 line. Also: ocp status drift check does NOT read gpu config (Drift.pm probes never call gpu_config; Status eval's gpu_amd_allocation), so the Changes sentence drops the status part.
+
+Committed as 15f02e4
