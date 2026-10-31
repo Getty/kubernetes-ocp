@@ -1,0 +1,47 @@
+---
+claimed_at: 2026-10-31T13:47:44Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:19:28Z
+id: 360
+priority: high
+status: review
+tags:
+- secrets
+- bug
+title: 'First PIN1 unlock on a fresh clone dies: _spew_secure does not create .ocp/
+  for age.key'
+updated: 2026-10-31T13:47:44Z
+---
+
+Found by the secrets worker during k349/k346 (2026-10-31), checked by main against HEAD 7096407.
+
+`OCP::Secrets::_spew_secure` opens the target with `sysopen ... O_CREAT|O_EXCL` and never creates its parent directory. `decrypt_age_key_with_password` (reached through `ensure_age_key` when only age.key.enc is there) writes `.ocp/age.key` with it. On a fresh clone, `.ocp/` is gitignored and absent, so the first PIN1 unlock dies *after* PIN1 was typed: `Cannot create .ocp/age.key securely: No such file or directory at ...`. This holds unless some earlier step of the command happened to mkpath `.ocp/`. The other writers in Secrets.pm do mkpath (lines 302, 495, 930, 1028); this one doesn't.
+
+A clone of a project with the encrypted files committed is the documented team workflow (keys.yaml, secrets.yaml, age.key.enc, kubeconfig.yaml are meant to be committed).
+
+Done =
+- Find which commands reach the age-key write on a clone without `.ocp/` (apply, status, kubeconfig, keys ..., node add, destroy): which of them die there today, and which create `.ocp/` first by accident.
+- `_spew_secure` (or its callers) creates the parent with the mode `.ocp/` should have. Say which mode and why; the comment above `_spew_secure` mentions "~0755".
+- Regression test: a clone fixture with keys.yaml + age.key.enc and no `.ocp/`, PIN via --pins-stdin or the function directly. It is red on HEAD, and green once `.ocp/age.key` is 0600 and readable.
+
+Lane: ocp-secrets-worker. Related: k349 (in-memory unlock for the dry run), which writes nothing at all.
+
+secrets worker: done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets360/k360.patch (on queued15; header has subject, description, Changes bullet; no Changes hunk).
+
+Fix: _spew_secure makes the parent itself (mkpath, only when missing) before the O_EXCL create. Mode: Path::Tiny's default, 0777 less the umask (0755 under 022), what every other writer of .ocp/ gives it (init, generate_age_key, restore_age_recipient, generate_ssh_key, decrypt_kubeconfig_to_file, known_hosts, status.yaml, deployed hash, kubeconfig export), so the mode no longer depends on which command ran first. The secrets in it are 0600 each (age.key, id_ed25519, decrypted kubeconfig); keys.yaml.pending is SOPS-encrypted; the dir mode shows names only. An existing .ocp/ keeps its mode; a wrong PIN1 writes nothing, .ocp/ included.
+
+The card's question, measured: each command from bin/ocp on a fresh clone, PINs on --pins-stdin, queued15 without the fix:
+- died at the write, after PIN1: keys show, keys authorized-keys, keys recipients ls, keys operator rm, keys secure --drop-bootstrap, inject-key, ssh, and apply / apply --dry-run on a clone with no kubeconfig.yaml. With the fix all of them get past the unlock (.ocp/ = age.key, age.pub).
+- died BEFORE PIN1, not reaching the write: status, kubeconfig, node ls, health, provider ls, deploy-robocop, apply / apply --dry-run on a clone WITH kubeconfig.yaml, at identities: "Error open (<) on '.ocp/age.key'". node add/rm/trust-host, update, destroy and hetzner list do the same reads first (from the code). Same before and after the fix.
+- made .ocp/ first by accident: none. init is unaffected (mkpath at step 3, before it opens age.key.enc).
+
+Tests: red on queued15: t/360 3/5 subtests fail (the clone, the mode, bin/ocp keys show). The other two hold on the base too: existing .ocp/ keeps its mode, wrong PIN1 writes nothing. Green: 41 related files + the probe, 592 tests PASS, none skipped. Mutants 6/6 killed under MutShadow, each shown loaded by the probe: no mkpath, mkpath 0700, chmod parent 0755, mkpath before PIN1, age.key 0644, no age.pub.
+
+Findings (not in scope):
+1. A clone of a deployed cluster cannot be opened by the commands an operator runs first. status, kubeconfig, node *, health, provider *, deploy-robocop, update, destroy, hetzner list, and apply all read kubeconfig.yaml/secrets.yaml without ensure_age_key. They die before PIN1 with a raw Path::Tiny error. Owners: the status, apply, destroy and provider lanes. Needs a card.
+2. k349's apply half: once the write goes through, ocp apply --dry-run on a clone without kubeconfig.yaml exits 0 and leaves .ocp/age.key + age.pub behind. Before this fix it died at the write. t/297 does not cover secure mode on a clone. Wiring apply's dry run to unlock_age_key closes it.
+3. .ocp/.gitignore (k215) is written by ocp init only. A clone's .ocp/ never gets one, from this path or any other, and rests on the project .gitignore.
+4. Making .ocp/ 0700 would be one decision across all nine of its creators. I did not take it here.
+
+Patch in the secrets scratchpad (w-secrets360/k360.patch): _spew_secure makes .ocp/ (Path::Tiny mode) before it creates the file. Red 3/5, green 592/592 across 42 files, mutants 6/6. Command audit and findings are in the note above.
