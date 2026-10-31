@@ -495,6 +495,17 @@ gpu:
     only (`_pool_host_error`, `_pool_takes_host`): beside any other known
     provider it is refused whatever it holds, and a pool that takes none adds
     no host to the service-network/pod-CIDR address checks.
+  - **Unknown keys under `kubernetes:` and `ssh:`, and on an ssh pool's
+    machine** (k355). `kubernetes:` takes `dist`, `version`; `ssh:` takes
+    `private_key`, `public_key`; a mapping in an ssh pool's `nodes:` takes
+    `host` only (`node_ip` there has its own line). validate refuses the rest
+    (`_entry_unknown_keys`, `_kubernetes_unknown_keys`), so `ocp apply` stops;
+    `kubernetes.distribution: k3s` (the Rex/robocop spelling) gets the hint
+    `write kubernetes: { dist: k3s }`, only when the value is rke2 or k3s.
+    `kubernetes.version` and a control plane's `name` must be strings
+    (`_version_error`, `_not_a_string`); `kubernetes()` and `version()` croak
+    on the same lines. The unknown keys of `ssh:` and of a pool machine are
+    validate's alone (`ssh_config()` and `ocp destroy` do not refuse on them).
   - **At most 7 control planes** (`$OCP::Config::MAX_CONTROL_PLANE_NODES`):
     `control_planes.nodes` must be a whole number from 1 to 7, and the list
     form holds at most 7 entries ("must list at most 7 control planes"),

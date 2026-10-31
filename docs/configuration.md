@@ -175,6 +175,21 @@ These shapes used to be read wrongly and are refused:
   `system.time_zone: unknown key (must be timezone, locale, or ntp)`. A
   `system:` that is not a mapping is refused too: `system: must be a mapping
   (timezone, locale, or ntp), not 'UTC'`.
+- **An unknown key under `kubernetes:` or `ssh:`, or on an ssh pool's
+  machine** is refused the same way, so `ocp apply` stops on it instead of
+  leaving a default in force. `kubernetes:` takes `dist` and `version`; `ssh:`
+  takes `private_key` and `public_key`; a mapping in an ssh pool's `nodes:`
+  list takes `host` and nothing else (`node_ip` there has a line of its own:
+  set it per node with `ocp node add NAME --node_ip ADDRESS`). The line is
+  `ssh.privat_key: unknown key (must be private_key or public_key)`.
+  `kubernetes: { distribution: k3s }` -- the name the install tasks and
+  robocop use -- was read by nothing and left the cluster on RKE2; it gets a
+  hint, `kubernetes.distribution: unknown key (must be dist or version); write
+  kubernetes: { dist: k3s }` (for `rke2` or `k3s` as the value).
+- **`kubernetes.version:` and a control plane's `name:`** are one string each:
+  a list, a mapping or a boolean is refused (`kubernetes.version: must be a
+  string (a release like v1.36.4+rke2r1 or v1.36.4+k3s1; empty for the one OCP
+  pins), not a list`). Empty or absent `version` still means the pinned one.
 
 ## `gpu.amd:` — AMD GPU nodes
 
