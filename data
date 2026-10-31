@@ -1,0 +1,38 @@
+---
+class: standard
+completed: 2026-10-31T17:25:05Z
+created: 2026-10-31T14:59:34Z
+id: 379
+priority: medium
+started: 2026-10-31T17:25:05Z
+status: done
+tags:
+- config
+- validate
+- ux
+title: ocp.yaml sections network/registry/cilium/ssl are read unchecked, and the accessors
+  that do refuse croak (shown as internal error)
+updated: 2026-10-31T17:25:05Z
+---
+
+From the k306 design pass (choices worker, 2026-10-31; $S/w-choices306/design.md, findings F3 and F4).
+
+F4: the network, registry, cilium and ssl accessors in OCP::Config return the raw spec value. `network: foo` (a string where a mapping belongs) crashes inside Perl in ocp node add, ocp deploy-robocop and ocp update, which read it without validate().
+
+F3: the accessors that already refuse a bad shape in validate()s words (kubernetes, gpu_config, ssh_config, system_config, the switches, and _first_cp_string) use croak. A croak carries " at FILE line N.", so where no validate() runs first, OCP.pm labels the line "This is an internal error. Run again with --verbose". Example: ocp update with gpu: false. Same family as k375 (wrong PIN1).
+
+Done =
+- the four sections refuse a wrong shape in validate()s words, as gpu_config does;
+- every refusing accessor dies with "line\n" (no location, no internal-error label) instead of croak;
+- validate() keeps each line exactly once (shared producers, as k306 step 1 sets up);
+- tests: one malformed shape per section through a command that reads it without validate(), and the output must not match / at \S+ line \d+|internal error|HASH\(0x|ARRAY\(0x/. Red first, then a mutation check.
+
+Lane: ocp-choices-worker, after k306 step 1 (spec_errors and its producers) has landed. Coordinate with k306 step 3a, which converts name/control_planes/workers the same way.
+
+2026-10-31 15:52 Two readers outside Config.pm must change with the croak -> die "line\n" switch, named before editing: lib/OCP/Drift.pm _refused_drift (:1242, state lane, not in k375's set) and lib/OCP/Cmd/Status.pm _amd_gpu_default_allocation (:531, in k375's set). Both interpolate $@ mid-line after stripping ' at FILE line N.' with s/ at .+? line \d+\.?\n*\z//s; a message that ends in a bare newline keeps it, so Drift's carp/message and Status's WARNING would break across two lines (t/332:227 asserts Drift's). Change in each: the location becomes optional in that regex, one line, nothing else touched. Config.pm: _refuse(@lines) dies join('; ')\n; every refusing accessor uses it; network/cilium refuse the shape via _network_shape_error/_cilium_shape_error shared with validate(); registry/ssl get _registry_errors/_ssl_errors (shape + key-is-a-string, the ssh: shape via a shared _section_string_errors) pushed by validate() and refused by registry_config/ssl_config.
+
+2026-10-31 16:31 Patch ready: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-choices379/k379.patch (header + git diff against queued-head10 190e5d2; git apply --check OK). Files: lib/OCP/Config.pm (_refuse: die 'line\n' replaces croak at all 21 refusing accessors, same texts; network_config/cilium_config refuse a non-mapping in validate()'s line via _network_shape_error/_cilium_shape_error; registry:/ssl: get _registry_errors/_ssl_errors, pushed by validate() and refused by registry_config/ssl_config, through the shared _section_string_errors that _ssh_errors uses now), lib/OCP/Drift.pm:1242 and lib/OCP/Cmd/Status.pm:531 (location strip made optional, so the line stays one line), t/296, t/314, t/379-section-shapes.t (new). Readers that print $@: Update.pm 'Failed to update X: $@' now shows the clean line (tested); Drift _refused_drift and Status _amd_gpu_default_allocation fixed above; the rest chomp, re-die or swallow; no code matches on the text. Verification (guarded make test): red t/379 13/17, t/296 12, t/314 1 failed; green 204 files/3293 tests (2 test bugs in the new assertions fixed after); final run on this exact patch t/296 t/314 t/332 t/379 ok; 5/5 mutants killed, both controls pass.
+
+2026-10-31 16:31 Done: accessors for network:/cilium:/registry:/ssl: and every refusing ocp.yaml accessor now refuse with validate()'s line plus newline (no croak location, so no 'internal error'); registry:/ssl: newly checked by validate(). Patch, subject and Changes bullet are in the patch header (scratchpad w-choices379/k379.patch). Verified red then green via guarded make test; 5/5 mutants killed. Touches lib/OCP/Cmd/Status.pm:531 (k375 set): one regex line.
+
+Committed as 349dfe6
