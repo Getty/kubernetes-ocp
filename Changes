@@ -1,6 +1,16 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A `network:`, `cilium:`, `registry:` or `ssl:` in `ocp.yaml` that is
+      no mapping, or a `registry:`/`ssl:` key that is a list, a mapping or a
+      boolean, is now refused as a line naming the key -- by `ocp apply`
+      with its other lines, and by `ocp update`, `ocp node add`, `ocp
+      status` and `ocp deploy-robocop`, which read it without that check --
+      instead of a Perl error ("Can't use string as a HASH ref"); `cilium:
+      foo` made `ocp update` upgrade Cilium without its values, and
+      `registry:`/`ssl:` were not checked at all. A line of `ocp.yaml` that
+      such a command refuses (`ocp update` with `gpu: false`) no longer ends
+      in "This is an internal error".
     - `ocp node add --gpu` refuses an `ocp.yaml` that is empty or no
       mapping before it asks for the kubeconfig (PIN1) or writes the
       OCPNode, with the line `ocp apply` refuses it with; it went on to the

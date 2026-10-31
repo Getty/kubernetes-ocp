@@ -274,7 +274,7 @@ subtest 'the gpu_* readers refuse a gpu that is no mapping in the same words' =>
         for my $m (qw( gpu_enabled gpu_toolkit gpu_driver gpu_amd_config gpu_amd_allocation
                        gpu_amd_resource_naming gpu_amd_labeller gpu_amd_metrics gpu_amd_integrated )) {
             ok !eval { $c->$m; 1 }, "$m refuses " . $line;
-            like $@, qr/^\Q$want\E at /, "$m: validate()'s line, not a Perl error";
+            is $@, "$want\n", "$m: validate()'s line, not a Perl error";
         }
     }
 
@@ -501,7 +501,7 @@ subtest 'a YAML true is no choice' => sub {
         'robocop.security_level';
     my $c = config_for({ control_planes => $local, robocop => { security_level => JSON::PP::true } });
     ok !eval { $c->robocop_security_level; 1 }, 'the accessor refuses it too';
-    like $@, qr/^robocop\.security_level must be .*, not true at /, 'in its words';
+    like $@, qr/^robocop\.security_level must be .*, not true\n\z/, 'in its words';
 };
 
 subtest 'an empty control_planes list' => sub {
@@ -579,13 +579,13 @@ subtest 'control_planes.nodes is at most 7' => sub {
 
 # --- 7. the accessors -----------------------------------------------------------
 
-subtest 'the accessors that croak quote no Perl value either' => sub {
+subtest 'the accessors that refuse quote no Perl value either' => sub {
     for my $case ([ robocop_security_level => { robocop => { security_level => [ 'a' ] } } ],
                   [ robocop_image          => { robocop => { image => [ 'a' ] } } ],
                   [ gpu_driver             => { gpu => { driver => [ 'a' ] } } ]) {
         my ($m, $spec) = @$case;
         ok !eval { config_for({ control_planes => $local, %$spec })->$m; 1 }, "$m refuses a list";
-        like $@, qr/, not a list(?: at |;|\z)/, "$m: says a list";
+        like $@, qr/, not a list(?:;|\n\z)/, "$m: says a list";
         unlike $@, qr/ARRAY\(0x|a array/, "$m: not as Perl has it";
     }
 };
@@ -671,7 +671,7 @@ subtest 'robocop_enabled reads the switch the way validate() does' => sub {
             my $on = eval { $c->robocop_enabled };
             if (@lines) {
                 ok !defined $on, "$path: $shown -- refused by validate(), not read as on or off";
-                like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$path: $shown -- in validate()'s words";
+                is $@, join('; ', @lines) . "\n", "$path: $shown -- in validate()'s words";
                 next;
             }
             my $want = ref $value eq 'HASH'  ? 1           # robocop: {} -- a mapping opts in
@@ -868,7 +868,7 @@ subtest 'each switch accessor reads the switch the way validate() does' => sub {
             my $got = eval { $c->$m };
             if (@lines) {
                 ok !defined $got, "$m, $path: $shown -- refused by validate(), not read as on or off";
-                like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                is $@, join('; ', @lines) . "\n", "$m, $path: $shown -- in validate()'s words";
                 next;
             }
             my $want = defined $value ? ($value ? 1 : 0) : $default;
@@ -1103,7 +1103,7 @@ subtest 'the gpu, gpu.amd and system accessors read their mapping the way valida
             my $got = eval { $c->$m };
             if ($refused{$m}) {
                 ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
-                like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                is $@, join('; ', @lines) . "\n", "$m, $path: $shown -- in validate()'s words";
                 next;
             }
             is $@, '', "$m, $path: $shown -- reads on";
@@ -1227,7 +1227,7 @@ subtest "join_host and cluster_status read the control plane's address the way v
                 my $got = eval { $m eq 'join_host' ? $c->join_host('adv.k340.test') : $c->cluster_status };
                 if (defined $line) {
                     ok !defined $got, "$m, $key: $shown -- refused, as validate() refuses it";
-                    like $@, qr/\A\Q$line\E at /, "$m, $key: $shown -- in validate()'s words";
+                    is $@, "$line\n", "$m, $key: $shown -- in validate()'s words";
                     next;
                 }
                 is $@, '', "$m, $key: $shown -- reads on";
@@ -1286,7 +1286,7 @@ subtest 'the ssh key accessors read ssh: the way validate() does' => sub {
                 my $got = eval { $c->$m };
                 if (@lines) {
                     ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
-                    like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                    is $@, join('; ', @lines) . "\n", "$m, $path: $shown -- in validate()'s words";
                     next;
                 }
                 is $@, '', "$m, $path: $shown -- reads on";
@@ -1309,7 +1309,7 @@ subtest 'a system.timezone or system.locale that is no string' => sub {
             my $c = config_for({ control_planes => $local, system => { $key => $v } });
             for my $m (qw( system_config timezone locale ntp_enabled )) {
                 ok !eval { $c->$m; 1 }, "$m refuses system.$key: $shown";
-                like $@, qr/\A\Q$line\E at /, "$m: in validate()'s words";
+                is $@, "$line\n", "$m: in validate()'s words";
             }
         }
     }
@@ -1363,7 +1363,7 @@ subtest 'distribution reads kubernetes.dist the way validate() does' => sub {
                 my $got = eval { $c->$m };
                 if (@lines && grep { $_ eq $m } @refusing) {
                     ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
-                    like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                    is $@, join('; ', @lines) . "\n", "$m, $path: $shown -- in validate()'s words";
                     next;
                 }
                 is $@, '', "$m, $path: $shown -- reads on";
@@ -1593,7 +1593,7 @@ subtest 'the kubernetes accessors read a key nothing reads the way validate() do
         is scalar(@lines), 1, 'kubernetes: ' . join(', ', sort keys %$k8s) . ' -- one line' or diag explain \@lines;
         for my $m (@$K8S_READERS) {
             ok !eval { $c->$m; 1 }, "$m refuses kubernetes: { " . join(', ', sort keys %$k8s) . ' }';
-            like $@, qr/\A\Q$lines[0]\E at /, "$m: in validate()'s words";
+            is $@, "$lines[0]\n", "$m: in validate()'s words";
         }
     }
     my $c = config_for({ control_planes => $local, kubernetes => { dist => 'k3s', version => 'v1.36.4+k3s1' } });
@@ -1661,7 +1661,7 @@ subtest 'version reads kubernetes.version the way validate() does' => sub {
                 # version's line is version's alone: the mapping and its dist read on.
                 if (@lines && $m eq 'version') {
                     ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
-                    like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                    is $@, join('; ', @lines) . "\n", "$m, $path: $shown -- in validate()'s words";
                     next;
                 }
                 is $@, '', "$m, $path: $shown -- reads on";
@@ -1700,7 +1700,7 @@ subtest "cluster_status reads the control plane's name the way validate() does" 
         my $got = eval { $c->cluster_status };
         if (defined $line) {
             ok !defined $got, "name: $shown -- refused, as validate() refuses it";
-            like $@, qr/\A\Q$line\E at /, "name: $shown -- in validate()'s words";
+            is $@, "$line\n", "name: $shown -- in validate()'s words";
             next;
         }
         is $@, '', "name: $shown -- reads on";

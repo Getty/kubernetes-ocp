@@ -77,6 +77,18 @@ sub _load_spec {
     return $self->_file_spec;
 }
 
+# Refuses with validate()'s lines for what an accessor reads, joined as one
+# line, or returns when there is none (an undef is none). A die with a
+# newline, as _load_spec dies, not croak (k379): a croak's " at FILE line N."
+# is what OCP::run_cli calls an internal error, and a command that reads
+# without validate() first -- ocp update on gpu: false -- said that about a
+# line of the user's ocp.yaml.
+sub _refuse {
+    my @lines = grep { defined } @_;
+    return unless @lines;
+    die join('; ', @lines) . "\n";
+}
+
 # What is wrong with ocp.yaml as a whole, one line naming the file, or undef.
 sub _spec_error {
     my ($self) = @_;
@@ -161,10 +173,8 @@ our @DISTRIBUTIONS = qw( rke2 k3s );
 sub kubernetes {
     my ($self) = @_;
     my $k8s = $self->spec->{kubernetes};
-    my $err = _kubernetes_shape_error($k8s);
-    croak $err if defined $err;
-    my @unknown = _kubernetes_unknown_keys($k8s);
-    croak join '; ', @unknown if @unknown;
+    _refuse(_kubernetes_shape_error($k8s));
+    _refuse(_kubernetes_unknown_keys($k8s));
     return $k8s // {};
 }
 
@@ -259,8 +269,7 @@ our @SSH_KEYS = (
 
 sub ssh_config {
     my ($self) = @_;
-    my @errors = _ssh_errors($self->spec->{ssh});
-    croak join '; ', @errors if @errors;
+    _refuse(_ssh_errors($self->spec->{ssh}));
     return $self->spec->{ssh} // {};
 }
 
@@ -268,14 +277,7 @@ sub ssh_config {
 # lines and ssh_config refuses on them, so the two cannot disagree.
 sub _ssh_errors {
     my ($ssh) = @_;
-    return () unless defined $ssh;
-    return 'ssh: must be a mapping (' . join(', ', map { $_->[0] } @SSH_KEYS) . '), not ' . _shown_value($ssh)
-        unless ref $ssh eq 'HASH';
-    return map {
-        my ($key, $what) = @$_;
-        my $err = _not_a_string($ssh->{$key}, $what);
-        defined $err ? "ssh.$key: $err" : ();
-    } @SSH_KEYS;
+    return _section_string_errors(ssh => $ssh, @SSH_KEYS);
 }
 
 sub single_node {
@@ -292,8 +294,7 @@ sub single_node {
 sub distribution {
     my ($self) = @_;
     my $dist = $self->kubernetes->{dist};
-    my $err = _dist_error($dist);
-    croak $err if defined $err;
+    _refuse(_dist_error($dist));
     return $dist // 'rke2';
 }
 
@@ -302,8 +303,7 @@ sub distribution {
 sub version {
     my $self = shift;
     my $version = $self->kubernetes->{version};
-    my $err = _version_error($version);
-    croak $err if defined $err;
+    _refuse(_version_error($version));
     return $version // '';
 }
 
@@ -348,7 +348,7 @@ sub no_cert { my ($self) = @_; return $self->_switch('nocert', $self->spec) }
 #
 # Anything else is refused in validate()'s words (k315): read on, robocop: no
 # was a string Perl calls true, and robocop: { enable: false } a mapping
-# without enabled -- both turned robocop on. A croak rather than off, as
+# without enabled -- both turned robocop on. A refusal rather than off, as
 # gpu_config and robocop_security_level do: every reader of the switch asks
 # this method (ocp apply, ocp keys secure, the health gate), and none of them
 # may read the one ocp.yaml another way than validate() does -- not even in
@@ -357,8 +357,7 @@ sub robocop_enabled {
     my $self = shift;
     my $val = $self->spec->{robocop};
 
-    my @errors = _robocop_errors($val);
-    croak join '; ', @errors if @errors;
+    _refuse(_robocop_errors($val));
 
     if (ref $val eq 'HASH') {
         return $val->{enabled} ? 1 : 0 if defined $val->{enabled};
@@ -434,13 +433,12 @@ our %SWITCH_DEFAULTS = (
 # The switch at $path as its accessor returns it: 0 or 1, the default when
 # absent. $in is the mapping that holds it, as the accessor has it -- the
 # gpu_config and gpu_amd_config that refuse a gpu: or gpu.amd: of the wrong
-# shape in their own words. Croaks with validate()'s line on anything else.
+# shape in their own words. Refuses with validate()'s line on anything else.
 sub _switch {
     my ($self, $path, $in) = @_;
     my ($key) = $path =~ /([^.]+)\z/;
     my $value = $in->{$key};
-    my $err = _switch_error($path, $value);
-    croak $err if defined $err;
+    _refuse(_switch_error($path, $value));
     return defined $value ? ($value ? 1 : 0) : $SWITCH_DEFAULTS{$path};
 }
 
@@ -496,7 +494,7 @@ sub robocop_arch_warning {
 # unattended, so the key has to rest in the cluster.
 our @ROBOCOP_SECURITY_LEVELS = qw( secret secret_approved inject );
 
-# Croaks on an unknown value — the accessor is the point of use (DeployRobocop),
+# Refuses an unknown value — the accessor is the point of use (DeployRobocop),
 # and a typo there must not silently fall back to a level the operator did not
 # ask for, exactly as gpu_driver refuses an unknown driver. validate() carries
 # the report-only twin for `ocp apply`.
@@ -505,9 +503,9 @@ sub robocop_security_level {
 
     my $level = $self->_raw_robocop_security_level // 'secret';
 
-    croak "robocop.security_level must be "
+    _refuse("robocop.security_level must be "
         . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS)
-        . ", not " . _shown_value($level)
+        . ", not " . _shown_value($level))
         unless _is_choice($level, @ROBOCOP_SECURITY_LEVELS);
 
     return $level;
@@ -529,7 +527,7 @@ sub robocop_image {
     my $val = $self->spec->{robocop};
     return undef unless ref $val eq 'HASH' && defined $val->{image};
     my $err = _image_ref_error($val->{image});
-    croak "robocop.image: $err" if $err;
+    _refuse("robocop.image: $err") if $err;
     return $val->{image};
 }
 
@@ -564,8 +562,29 @@ sub _any_hetzner_provider {
 # a proper design for exposing LoadBalancer services.
 sub lbipam { my ($self) = @_; return $self->_switch('lbipam', $self->spec) }
 
-# Registry configuration
-sub registry_config      { shift->spec->{registry} // {} }
+# Registry configuration. A registry: that is no mapping, or a key in it
+# that is no string, is refused here in validate()'s words (k379), as ssh:
+# is: validate() passed both, and read on, a string died inside Perl ("Can't
+# use string as a HASH ref") and a list was printed as ARRAY(0x...).
+our @REGISTRY_KEYS = (
+    [ cache    => 'a URL like http://cache.example:5000' ],
+    [ upstream => 'a URL like http://registry.example:5000' ],
+    [ name     => 'a host name like ocp.internal' ],
+);
+
+sub registry_config {
+    my ($self) = @_;
+    _refuse(_registry_errors($self->spec->{registry}));
+    return $self->spec->{registry} // {};
+}
+
+# What is wrong with registry:, one line each, or nothing: validate() lists
+# the lines and registry_config refuses on them, so the two cannot disagree.
+sub _registry_errors {
+    my ($registry) = @_;
+    return _section_string_errors(registry => $registry, @REGISTRY_KEYS);
+}
+
 sub registry_cache       { shift->registry_config->{cache} // '' }
 sub registry_upstream    { shift->registry_config->{upstream} // '' }
 sub registry_name        { shift->registry_config->{name} // 'ocp.internal' }
@@ -586,7 +605,25 @@ sub has_external_upstream { shift->registry_upstream ne '' }
 #         ai.citilan.de/l2-announce: "true"   # of trusting interface names
 #       interfaces:               # override the built-in (anchored) regexes
 #         - "^eth[0-9]+$"
-sub network_config { shift->spec->{network} // {} }
+#
+# A network: that is no mapping is refused here in validate()'s words
+# (k379): read on, pod_cidr died inside Perl on a string where ocp update,
+# ocp node add, ocp status and ocp deploy-robocop (OCP_POD_CIDR) read it
+# without validate() first. What is wrong inside the mapping is validate()'s
+# alone: those readers read pod_cidr, and nothing else of it.
+sub network_config {
+    my ($self) = @_;
+    my $net = $self->spec->{network};
+    _refuse(_network_shape_error($net));
+    return $net // {};
+}
+
+# validate()'s line for a network: that is no mapping, or undef.
+sub _network_shape_error {
+    my ($net) = @_;
+    return undef if !defined $net || ref $net eq 'HASH';
+    return 'network: must be a mapping';
+}
 
 # The keys the accessors here read under network:, and so the keys validate()
 # takes there (k292): anything else is a typo whose default stays in force.
@@ -665,21 +702,68 @@ sub l2_interfaces {
 # upgrade_cilium. OCP's own choices (ipam, gatewayAPI, k8sServiceHost) stay
 # OCP's: a contradicting ipam.mode dies in Rex::Rancher::Cilium before the
 # host is touched.
-sub cilium_config { shift->spec->{cilium} // {} }
+#
+# A cilium: that is no mapping is refused here in validate()'s words (k379):
+# read on, ocp update upgraded Cilium without the values, as if ocp.yaml set
+# none. What is wrong inside the mapping is validate()'s alone, as under
+# network:.
+sub cilium_config {
+    my ($self) = @_;
+    my $c = $self->spec->{cilium};
+    _refuse(_cilium_shape_error($c));
+    return $c // {};
+}
+
+# validate()'s line for a cilium: that is no mapping, or undef.
+sub _cilium_shape_error {
+    my ($c) = @_;
+    return undef if !defined $c || ref $c eq 'HASH';
+    return 'cilium: must be a mapping (devices, helm_values)';
+}
 
 # The merged Helm values, {} when ocp.yaml sets none.
 sub cilium_helm_values {
     my $self = shift;
     my $c = $self->cilium_config;
-    return {} unless ref $c eq 'HASH';
     my %values = ref $c->{helm_values} eq 'HASH' ? %{ $c->{helm_values} } : ();
     $values{devices} = [ @{ $c->{devices} } ] if ref $c->{devices} eq 'ARRAY';
     return \%values;
 }
 
-# SSL configuration (for cert-manager)
-sub ssl_config { shift->spec->{ssl} // {} }
-sub ssl_email { shift->spec->{ssl}{email} // '' }
+# SSL configuration (for cert-manager). Refused in validate()'s words when
+# it is no mapping or its email no string (k379), as registry: is.
+our @SSL_KEYS = (
+    [ email => 'an address like admin@example.com' ],
+);
+
+sub ssl_config {
+    my ($self) = @_;
+    _refuse(_ssl_errors($self->spec->{ssl}));
+    return $self->spec->{ssl} // {};
+}
+sub ssl_email { shift->ssl_config->{email} // '' }
+
+# What is wrong with ssl:, one line each, or nothing: validate() lists the
+# lines and ssl_config refuses on them.
+sub _ssl_errors {
+    my ($ssl) = @_;
+    return _section_string_errors(ssl => $ssl, @SSL_KEYS);
+}
+
+# The lines for a section whose keys are each one string -- ssh: (k340),
+# registry: and ssl: (k379): the mapping it must be, naming the keys, or one
+# line per key that is no string.
+sub _section_string_errors {
+    my ($section, $map, @keys) = @_;
+    return () unless defined $map;
+    return "$section: must be a mapping (" . join(', ', map { $_->[0] } @keys) . '), not ' . _shown_value($map)
+        unless ref $map eq 'HASH';
+    return map {
+        my ($key, $what) = @$_;
+        my $err = _not_a_string($map->{$key}, $what);
+        defined $err ? "$section.$key: $err" : ();
+    } @keys;
+}
 
 # System configuration (timezone, locale, NTP): what every node is set up
 # with, the control planes by the bootstrap and the workers through the
@@ -694,8 +778,7 @@ our @SYSTEM_KEYS = qw( timezone locale ntp );
 # ref"), and validate() said nothing.
 sub system_config {
     my ($self) = @_;
-    my @errors = _system_errors($self->spec->{system});
-    croak join '; ', @errors if @errors;
+    _refuse(_system_errors($self->spec->{system}));
     return $self->spec->{system} // {};
 }
 
@@ -759,9 +842,8 @@ sub gpu_config {
     my ($self) = @_;
     my $gpu = $self->spec->{gpu} // {};
     my $err = _gpu_shape_error($gpu);
-    croak "gpu $err" if defined $err;
-    my @unknown = _unknown_keys('gpu', $gpu, @GPU_KEYS);
-    croak join '; ', @unknown if @unknown;
+    _refuse("gpu $err") if defined $err;
+    _refuse(_unknown_keys('gpu', $gpu, @GPU_KEYS));
     return $gpu;
 }
 
@@ -790,7 +872,7 @@ sub gpu_driver {
 
     # A typo here would silently fall back to 'host' and leave the operator's
     # driver DaemonSet disabled on a cluster that was configured for it.
-    croak "gpu.driver must be 'host' or 'operator', not " . _shown_value($driver)
+    _refuse("gpu.driver must be 'host' or 'operator', not " . _shown_value($driver))
         unless _is_choice($driver, @GPU_DRIVERS);
 
     return $driver;
@@ -859,14 +941,13 @@ sub gpu_amd_config {
     my ($self) = @_;
     my $amd = $self->gpu_config->{amd};
     return {} unless defined $amd;
-    croak 'gpu.amd must be a mapping ('.OCP::Choices::or_list(@GPU_AMD_KEYS).')'
+    _refuse('gpu.amd must be a mapping ('.OCP::Choices::or_list(@GPU_AMD_KEYS).')')
         unless ref $amd eq 'HASH';
-    my @unknown = _unknown_keys('gpu.amd', $amd, @GPU_AMD_KEYS);
-    croak join '; ', @unknown if @unknown;
+    _refuse(_unknown_keys('gpu.amd', $amd, @GPU_AMD_KEYS));
     return $amd;
 }
 
-# Croak on an unknown value, as gpu_driver does: a typo would otherwise mean
+# Refuse an unknown value, as gpu_driver does: a typo would otherwise mean
 # the default in silence, and the wrong allocation path on every AMD node.
 sub gpu_amd_allocation {
     my ($self) = @_;
@@ -886,8 +967,8 @@ sub gpu_amd_integrated { my ($self) = @_; return $self->_switch('gpu.amd.integra
 sub _gpu_amd_choice {
     my ($self, $key, $default, @choices) = @_;
     my $value = $self->gpu_amd_config->{$key} // $default;
-    croak "gpu.amd.$key must be ".OCP::Choices::or_list(@choices)
-        .", not "._shown_value($value)
+    _refuse("gpu.amd.$key must be ".OCP::Choices::or_list(@choices)
+        .", not "._shown_value($value))
         unless _is_choice($value, @choices);
     return $value;
 }
@@ -1090,8 +1171,7 @@ sub _cp_string_error {
 # at, ARRAY(0x...).
 sub _first_cp_string {
     my ($self, $cp, $key) = @_;
-    my $err = _cp_string_error($cp, 1, $key);
-    croak $err if defined $err;
+    _refuse(_cp_string_error($cp, 1, $key));
     return $cp->{$key};
 }
 
@@ -1164,6 +1244,11 @@ sub validate {
     push @errors, $self->_validate_cilium;
     push @errors, _lines_of($self->_gpu_lines);
 
+    # registry: and ssl: (k379), the lines registry_config and ssl_config
+    # refuse on.
+    push @errors, _registry_errors($self->spec->{registry});
+    push @errors, _ssl_errors($self->spec->{ssl});
+
     # system: (k331), the lines system_config refuses on.
     push @errors, _system_errors($self->spec->{system});
 
@@ -1188,7 +1273,7 @@ sub validate {
     # refusal too.
     push @errors, _robocop_errors($self->spec->{robocop});
 
-    # robocop.security_level, report-only (k129). The accessor croaks; here
+    # robocop.security_level, report-only (k129). The accessor refuses; here
     # we collect one line so `ocp apply` lists it with every other config error.
     my $rl = $self->_raw_robocop_security_level;
     if (defined $rl && !_is_choice($rl, @ROBOCOP_SECURITY_LEVELS)) {
@@ -1741,7 +1826,8 @@ sub _validate_network {
     my ($self) = @_;
     my $net = $self->spec->{network};
     return () unless defined $net;
-    return ("network: must be a mapping") unless ref $net eq 'HASH';
+    my $shape = _network_shape_error($net);
+    return ($shape) if defined $shape;
 
     my @errors = _unknown_keys('network', $net, @NETWORK_KEYS);
 
@@ -1828,7 +1914,8 @@ sub _validate_cilium {
     my ($self) = @_;
     my $c = $self->spec->{cilium};
     return () unless defined $c;
-    return ("cilium: must be a mapping (devices, helm_values)") unless ref $c eq 'HASH';
+    my $shape = _cilium_shape_error($c);
+    return ($shape) if defined $shape;
 
     my @errors;
     for my $k (sort keys %$c) {
@@ -1856,7 +1943,7 @@ sub _validate_cilium {
 }
 
 # gpu.driver (k255). Report-only, same contract as validate(); gpu_driver
-# croaks on the same values, but only where a GPU node is set up -- after a
+# refuses the same values, but only where a GPU node is set up -- after a
 # control plane was built.
 sub _validate_gpu_driver {
     my ($self) = @_;
@@ -1868,7 +1955,7 @@ sub _validate_gpu_driver {
 }
 
 # gpu.amd (k250). Report-only, same contract as validate(); the accessors
-# croak on the same values at the point of use. An unknown key is reported
+# refuse the same values at the point of use. An unknown key is reported
 # too: a misspelt `alocation` would otherwise leave the default in force.
 sub _validate_gpu_amd {
     my ($self) = @_;

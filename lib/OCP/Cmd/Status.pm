@@ -537,7 +537,7 @@ sub _amd_gpu_default_allocation {
     my ($self, $config) = @_;
     my $allocation = eval { $config->gpu_amd_allocation };
     return $allocation if defined $allocation;
-    (my $err = "$@") =~ s/ at .+? line \d+\.?\n*\z//s;
+    (my $err = "$@") =~ s/(?: at .+? line \d+\.?)?\n*\z//s;
     print STDERR 'WARNING: '.$err.'; AMD nodes without their own '
         .$OCP::Config::AMD_GPU_ALLOCATION_LABEL." label show their allocation as unknown\n";
     return undef;

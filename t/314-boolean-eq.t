@@ -141,7 +141,7 @@ subtest 'gpu.amd.allocation: true is no allocation' => sub {
         . "gpu:\n  enabled: true\n  amd:\n    allocation: true\n");
     my $got = eval { $config->gpu_amd_allocation };
     is $got, undef, 'gpu_amd_allocation returns nothing for it';
-    like $@, qr/^gpu\.amd\.allocation must be .*, not true at /, 'it croaks, naming the value';
+    like $@, qr/^gpu\.amd\.allocation must be .*, not true\n\z/, 'it refuses, naming the value';
 };
 
 subtest 'an AMD node with a boolean allocation label gets the default, and is told' => sub {
