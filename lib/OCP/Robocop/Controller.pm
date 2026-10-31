@@ -16,6 +16,7 @@ use Time::Piece ();
 use Try::Tiny;
 
 use OCP ();
+use OCP::Config ();
 use OCP::K8s;
 use OCP::Kubernetes;
 use OCP::Node;
@@ -98,9 +99,6 @@ has pod_cidr => (
     required => 1,
 );
 
-# What robocop can install. Anything else is refused at construction.
-my %DISTRIBUTIONS = map { $_ => 1 } qw( rke2 k3s );
-
 has watch_timeout => (
     is      => 'ro',
     default => 300,   # seconds: server-side watch cycle, then reconnect
@@ -174,10 +172,11 @@ sub BUILD {
     croak "robocop controller: ssh_key is required unless security_level is 'inject'"
         unless $self->is_inject || (defined $self->ssh_key && length $self->ssh_key);
 
+    # What robocop can install: what ocp.yaml's kubernetes.dist takes (k355).
     my $dist = $self->distribution // '';
     croak "robocop controller: unknown distribution '" . $dist
-        . "' (OCP_DISTRIBUTION) -- robocop installs " . join(' or ', sort keys %DISTRIBUTIONS)
-        unless $DISTRIBUTIONS{$dist};
+        . "' (OCP_DISTRIBUTION) -- robocop installs " . join(' or ', sort @OCP::Config::DISTRIBUTIONS)
+        unless grep { $_ eq $dist } @OCP::Config::DISTRIBUTIONS;
 
     my $cidr = $self->pod_cidr // '';
     croak "robocop controller: '" . $cidr . "' (OCP_POD_CIDR) is no IPv4 CIDR "

@@ -288,7 +288,7 @@ package main;
 my $SPEC = <<'YAML';
 name: testcluster
 kubernetes:
-  distribution: k3s
+  dist: k3s
 control_planes:
   provider: hetzner
   server_type: cx32

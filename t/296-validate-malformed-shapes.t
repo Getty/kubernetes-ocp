@@ -118,7 +118,8 @@ use OCP::Provider;
 #      to) that is no string, in validate()'s words;
 #  25. ssh: is a mapping, its private_key and public_key strings; a string
 #      there died inside Perl when ocp destroy fetched the key. The key path
-#      accessors refuse what validate() says about ssh:, in its words;
+#      accessors refuse what validate() says about ssh:, in its words -- but
+#      for a key nothing reads under it (claim 31);
 #  26. system.timezone and system.locale are strings: a list reached the
 #      Rexfile and the provider CR, whose CRD types both as strings. The
 #      system accessors refuse it as validate() does (claim 21);
@@ -140,6 +141,25 @@ use OCP::Provider;
 #  30. so is a key of a control plane that is none of those read. nodes: is
 #      one in a list entry, which control_planes does not read it from, and it
 #      and count: have a hint. What `ocp init` writes passes.
+#
+# k355, what k340 and k347 left:
+#  31. a key under kubernetes: other than dist and version is a line, and so
+#      is one under ssh: other than private_key and public_key: kubernetes:
+#      { distribution: k3s } was read by nothing, and the cluster was RKE2.
+#      distribution: with a distribution OCP installs says to write dist:. The
+#      accessors that read kubernetes: refuse it in validate()'s words; ssh:'s
+#      read on, validate()'s alone as a pool's key is (k347): ocp destroy
+#      reads ssh: in dev mode;
+#  32. kubernetes.version is a string, a release or empty: a list went to the
+#      installer as a list. version refuses what validate() says about
+#      it, in its words, and reads what it passes as before;
+#  33. a control plane's name is a string, as its host is: a list matched no
+#      recorded control plane, and the drift of its pinned public_ip went
+#      unsaid. cluster_status, which hands it on, refuses one that is none, in
+#      validate()'s words;
+#  34. a key of a mapping in an ssh pool's nodes: list other than host is a
+#      line; node_ip keeps its own. validate()'s alone: what ocp destroy asks
+#      about the machines it reads (_pool_nodes_errors) does not refuse it.
 #
 
 local @ARGV = ();
@@ -393,7 +413,7 @@ my @AT = (
     [ 'kubernetes'                => sub { +{ control_planes => $cp->(), kubernetes => $_[0] } } ],
     (map { my $k = $_;
         [ "kubernetes.$k"         => sub { +{ control_planes => $cp->(), kubernetes => { $k => $_[0] } } } ],
-     } qw( dist version )),
+     } qw( dist version distribution )),    # distribution: no key of kubernetes' (k355)
     [ 'ssh'                       => sub { +{ control_planes => $cp->(), ssh => $_[0] } } ],
     (map { my $k = $_;
         [ "ssh.$k"                => sub { +{ control_planes => $cp->(), ssh => { $k => $_[0] } } } ],
@@ -409,6 +429,9 @@ my @AT = (
         [ "workers[1].$k, hetzner" => sub { +{ control_planes => $cp->(), workers => [ {
                                      name => 'w', provider => 'hetzner', server_type => 'cx22', $k => $_[0] } ] } } ],
      } qw( count nodez )),
+    # k355: a key of an ssh pool's machine that nothing reads
+    [ 'workers[1].nodes[1].name'  => sub { +{ control_planes => $cp->(), workers => [ {
+                                     name => 'w', provider => 'ssh', nodes => [ { host => 'w1.k355.test', name => $_[0] } ] } ] } } ],
 );
 
 # Claim 7 rides along: whatever a line says, it never quotes a value the way
@@ -741,7 +764,9 @@ subtest "a pool's nodes, as its provider reads them" => sub {
           "worker pool 'w': nodes[5] $entry''",
           "worker pool 'w': nodes[7] needs a host",
           "worker pool 'w': nodes[8].host must be a string (a host name or IP address), not a list",
-          "worker pool 'w': nodes[9] needs a host" ],
+          "worker pool 'w': nodes[9] needs a host",
+          # and name: is no key of a machine's (k355, claim 34)
+          'workers[1].nodes[7].name: unknown key (must be host)' ],
         'ssh, each entry: a host, or a mapping with one';
     is_deeply [ pool_errors($ssh->(nodes => [ 'w1.k315.test', { host => '10.9.0.2' } ])) ], [], 'ssh: hosts pass';
 
@@ -1249,7 +1274,8 @@ subtest 'the ssh key accessors read ssh: the way validate() does' => sub {
         for my $shape (@SHAPES) {
             my ($shown, $value) = @$shape;
             my $c     = config_for($spec_with->($value));
-            my @lines = $c->validate;
+            # but a key nothing reads under it: validate()'s alone (k355, claim 31)
+            my @lines = grep { !/\Assh\.[^:]+: unknown key / } $c->validate;
             my $ssh   = $c->spec->{ssh};
             my %set   = ref $ssh eq 'HASH' ? %$ssh : ();
             my %want  = (
@@ -1517,6 +1543,208 @@ subtest 'a key of a control plane that is none of those read' => sub {
         is_deeply [ OCP::Config->new(file => $f->stringify, ocp => $ocp)->validate ], [],
             "ocp init --provider $opts->[1]: passes";
     }
+};
+
+# --- 31. the keys of kubernetes: and ssh: ------------------------------------------------------------
+
+my $K8S_KEYS = 'dist or version';
+my $SSH_KEYS = 'private_key or public_key';
+
+subtest 'a key under kubernetes: or ssh: that is none of its own' => sub {
+    is_deeply [ config_from_text("kubernetes:\n  distribution: k3s\n")->validate ],
+        [ "kubernetes.distribution: unknown key (must be $K8S_KEYS); write kubernetes: { dist: k3s }" ],
+        'kubernetes: { distribution: k3s } as typed -- read by nothing, and the cluster was RKE2';
+    for my $case ([ 'rke3', "'rke3'" ], [ [ 'k3s' ], 'a list' ], [ undef, 'null' ]) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, kubernetes => { distribution => $v } }) ],
+            [ "kubernetes.distribution: unknown key (must be $K8S_KEYS)" ],
+            "distribution: $shown -- no distribution OCP installs, no hint";
+    }
+    is_deeply [ errors_for({ control_planes => $local, kubernetes => { dist => 'k3s', Version => 'v1', cni => 'cilium' } }) ],
+        [ "kubernetes.Version: unknown key (must be $K8S_KEYS)", "kubernetes.cni: unknown key (must be $K8S_KEYS)" ],
+        'one line each, sorted';
+    is_deeply [ errors_for({ control_planes => $local, kubernetes => { dist => 'rke3', distribution => 'k3s' } }) ],
+        [ "kubernetes.dist: invalid value 'rke3' (must be rke2 or k3s)",
+          "kubernetes.distribution: unknown key (must be $K8S_KEYS); write kubernetes: { dist: k3s }" ],
+        'beside a dist of its own: a line each';
+
+    is_deeply [ errors_for({ control_planes => $local, ssh => { privat_key => 'keys/id' } }) ],
+        [ "ssh.privat_key: unknown key (must be $SSH_KEYS)" ],
+        'ssh: { privat_key: ... } -- the default key stayed in force';
+    is_deeply [ errors_for({ control_planes => $local, ssh => { private_key => [ 'a' ], user => 'root' } }) ],
+        [ "ssh.private_key: must be a string ($SSH_WHAT{private_key}), not a list",
+          "ssh.user: unknown key (must be $SSH_KEYS)" ],
+        'beside a path that is no string: a line each';
+
+    # What ocp init writes.
+    my $f = path($tmpdir)->child('init355.yaml');
+    OCP::Config->write_spec($f->stringify, name => 'k355', provider => 'hetzner', dist => 'k3s',
+                            version => 'v1.36.4+k3s1');
+    is_deeply [ OCP::Config->new(file => $f->stringify, ocp => $ocp)->validate ], [], 'ocp init --dist k3s --version: passes';
+};
+
+# The mapping kubernetes hands on is read through it (k340); a key nothing
+# reads under it is every reader's refusal, as gpu_config's is (claim 21).
+subtest 'the kubernetes accessors read a key nothing reads the way validate() does' => sub {
+    my $K8S_READERS = [ qw( kubernetes distribution supervisor_port version ) ];
+    for my $k8s ({ distribution => 'k3s' }, { dist => 'k3s', cni => 'cilium' }, { distribution => undef }) {
+        my $c     = config_for({ control_planes => $local, kubernetes => $k8s });
+        my @lines = $c->validate;
+        is scalar(@lines), 1, 'kubernetes: ' . join(', ', sort keys %$k8s) . ' -- one line' or diag explain \@lines;
+        for my $m (@$K8S_READERS) {
+            ok !eval { $c->$m; 1 }, "$m refuses kubernetes: { " . join(', ', sort keys %$k8s) . ' }';
+            like $@, qr/\A\Q$lines[0]\E at /, "$m: in validate()'s words";
+        }
+    }
+    my $c = config_for({ control_planes => $local, kubernetes => { dist => 'k3s', version => 'v1.36.4+k3s1' } });
+    is_deeply [ $c->validate ], [], 'dist and version pass';
+    is_deeply [ map { $c->$_ } qw( distribution supervisor_port version ) ], [ 'k3s', 6443, 'v1.36.4+k3s1' ],
+        '... and read as set';
+};
+
+# Not so under ssh:: ocp destroy reads it in dev mode (OCP::ClusterKey), and
+# refused there it skips the uninstall on the ssh machines. A key nothing reads
+# is validate()'s alone, as a pool's is (k347).
+subtest 'the ssh key accessors read on over a key nothing reads' => sub {
+    for my $ssh ({ privat_key => 'keys/id' }, { private_key => 'keys/id', user => 'root' }) {
+        my $c    = config_for({ control_planes => $local, ssh => $ssh });
+        my $keys = join ', ', sort keys %$ssh;
+        my @lines = $c->validate;
+        is scalar(@lines), 1, "ssh: { $keys } -- validate() has its line" or diag explain \@lines;
+        my %want = (
+            ssh_config           => $ssh,
+            ssh_private_key_path => $c->project_dir->child($ssh->{private_key} // '.ocp/id_ed25519')->stringify,
+            ssh_public_key_path  => $c->project_dir->child('.ocp/id_ed25519.pub')->stringify,
+        );
+        for my $m (sort keys %want) {
+            my $got = eval { $c->$m };
+            is $@, '', "$m, ssh: { $keys } -- reads on";
+            is_deeply $got, $want{$m}, "$m, ssh: { $keys } -- as before";
+        }
+    }
+};
+
+# --- 32. kubernetes.version ------------------------------------------------------------------------
+
+my $VERSION_WHAT = 'a release like v1.36.4+rke2r1 or v1.36.4+k3s1; empty for the one OCP pins';
+
+subtest 'a kubernetes.version that is no string' => sub {
+    for my $case (@NO_STRING) {
+        my ($v, $shown) = @$case;
+        is_deeply [ errors_for({ control_planes => $local, kubernetes => { dist => 'rke2', version => $v } }) ],
+            [ "kubernetes.version: must be a string ($VERSION_WHAT), not $shown" ], "version: $shown";
+    }
+    is_deeply [ config_from_text("kubernetes:\n  version: [ v1.36.4+rke2r1 ]\n")->validate ],
+        [ "kubernetes.version: must be a string ($VERSION_WHAT), not a list" ],
+        'a list as typed -- went to the installer as a list';
+    is_deeply [ errors_for({ control_planes => $local, kubernetes => { dist => 'rke3', version => {}, distro => 'k3s' } }) ],
+        [ "kubernetes.dist: invalid value 'rke3' (must be rke2 or k3s)",
+          "kubernetes.version: must be a string ($VERSION_WHAT), not a mapping",
+          "kubernetes.distro: unknown key (must be $K8S_KEYS)" ],
+        'beside a dist and a key nothing reads: a line each';
+    for my $ok ('v1.36.4+rke2r1', 'v1.36.4+k3s1', '', undef) {
+        is_deeply [ errors_for({ control_planes => $local, kubernetes => { version => $ok } }) ], [],
+            'version: ' . (defined $ok ? "'$ok'" : 'null') . ' passes';
+    }
+};
+
+subtest 'version reads kubernetes.version the way validate() does' => sub {
+    my @extra = ([ "'v1.36.4+k3s1'" => 'v1.36.4+k3s1' ], [ "''" => '' ]);
+    for my $at (grep { $_->[0] eq 'kubernetes.version' } @AT) {
+        my ($path, $spec_with) = @$at;
+        for my $shape (@SHAPES, @extra) {
+            my ($shown, $value) = @$shape;
+            my $c     = config_for($spec_with->($value));
+            my @lines = $c->validate;
+            for my $m (qw( version kubernetes distribution supervisor_port )) {
+                my $got = eval { $c->$m };
+                # version's line is version's alone: the mapping and its dist read on.
+                if (@lines && $m eq 'version') {
+                    ok !defined $got, "$m, $path: $shown -- refused, as validate() refuses it";
+                    like $@, qr/\A\Q${\ join '; ', @lines }\E at /, "$m, $path: $shown -- in validate()'s words";
+                    next;
+                }
+                is $@, '', "$m, $path: $shown -- reads on";
+                is $got, $value // '', "$m, $path: $shown -- as before" if $m eq 'version';
+                is $got, 'rke2', "$m, $path: $shown -- rke2" if $m eq 'distribution';
+            }
+        }
+    }
+};
+
+# --- 33. a control plane's name --------------------------------------------------------------------
+
+my $CP_NAME_WHAT = "the control plane's name, like police1";
+
+subtest "a control plane's name that is no string" => sub {
+    my $ssh = { provider => 'ssh', host => 'cp.k355.test' };
+    for my $case (@NO_STRING) {
+        my ($v, $shown) = @$case;
+        my $line = "name: must be a string ($CP_NAME_WHAT), not $shown";
+        is_deeply [ errors_for({ control_planes => { %$ssh, name => $v } }) ],
+            [ "control_planes[1].$line" ], "name: $shown";
+        is_deeply [ errors_for({ control_planes => [ $local, { %$ssh, name => $v } ] }) ],
+            [ "control_planes[2].$line" ], "name: $shown -- the list form, by its place";
+        is_deeply [ errors_for({ control_planes => { %$ssh, name => $v, nodes => 3 } }) ],
+            [ "control_planes[1].$line" ], "name: $shown -- with nodes: 3, once";
+    }
+    is_deeply [ errors_for({ control_planes => { %$ssh, name => 'police1' } }) ], [], 'a string passes';
+    is_deeply [ errors_for({ control_planes => { %$ssh, name => undef } }) ], [], 'null: as absent';
+};
+
+subtest "cluster_status reads the control plane's name the way validate() does" => sub {
+    for my $shape (@SHAPES) {
+        my ($shown, $value) = @$shape;
+        my $c = config_for({ control_planes => { provider => 'ssh', host => 'cp.k355.test', name => $value } });
+        my ($line) = grep { /\Acontrol_planes\[1\]\.name: / } $c->validate;
+        my $got = eval { $c->cluster_status };
+        if (defined $line) {
+            ok !defined $got, "name: $shown -- refused, as validate() refuses it";
+            like $@, qr/\A\Q$line\E at /, "name: $shown -- in validate()'s words";
+            next;
+        }
+        is $@, '', "name: $shown -- reads on";
+        is_deeply $got, { name => $value // 'cp-1', public_ip => 'cp.k355.test' }, "name: $shown -- as before";
+    }
+};
+
+# --- 34. the keys of an ssh pool's machine ---------------------------------------------------------
+
+subtest "a key of an ssh pool's machine that is not host" => sub {
+    my $ssh = sub { +{ name => 'w', provider => 'ssh', nodes => [ @_ ] } };
+
+    is_deeply [ pool_errors($ssh->({ host => 'w1.k355.test', name => 'gpu1' })) ],
+        [ 'workers[1].nodes[1].name: unknown key (must be host)' ],
+        'name: -- the worker is named after its host';
+    is_deeply [ pool_errors($ssh->('w0.k355.test', { host => 'w1.k355.test', labels => {}, Host => 'x' })) ],
+        [ 'workers[1].nodes[2].Host: unknown key (must be host)',
+          'workers[1].nodes[2].labels: unknown key (must be host)' ],
+        'by its place, one line each, sorted';
+    is_deeply [ pool_errors({ name => 'v', provider => 'local' }, $ssh->({ hots => 'w1.k355.test' })) ],
+        [ "worker pool 'w': nodes[1] needs a host", 'workers[2].nodes[1].hots: unknown key (must be host)' ],
+        'a typo of host: no host, and a key nothing reads';
+
+    my @e = pool_errors($ssh->({ host => 'w1.k355.test', node_ip => '10.0.0.9' }));
+    is scalar(@e), 1, 'node_ip: one line' or diag explain \@e;
+    like $e[0], qr/\Aworker pool 'w': nodes\[1\]\.node_ip is not read from a pool's nodes/,
+        '... its own, not an unknown key';
+
+    is_deeply [ pool_errors({ name => 'w', provider => 'hetzner', server_type => 'cx22',
+                              nodes => [ { host => 'w1.k355.test', name => 'gpu1' } ] }) ],
+        [ "worker pool 'w': nodes must be a whole number (how many machines the pool has), not a list" ],
+        'a pool that counts its machines: the list has its line, its entries none';
+    is_deeply [ pool_errors($ssh->('w0.k355.test', { host => 'w1.k355.test' })) ], [], 'host passes';
+
+    # validate()'s alone: ocp destroy asks _pool_nodes_errors how it reads the
+    # machines, and a key nothing reads holds up no teardown (k323).
+    my $pool = $ssh->({ host => 'w1.k355.test', name => 'gpu1' });
+    my $c = config_for({ control_planes => $local, workers => [ $pool ] });
+    is_deeply [ $c->_pool_nodes_errors($pool, "worker pool 'w'") ], [], 'not what ocp destroy asks';
+
+    # Why: worker_ocpnodes reads host from the entry and nothing else.
+    my @n = OCP::Cmd::Apply::CR::worker_ocpnodes($c);
+    is_deeply [ map { $_->{metadata}{name} } @n ], [ 'w1' ], 'the worker is named after its host, not name:';
+    is_deeply [ map { $_->{spec}{host} } @n ], [ 'w1.k355.test' ], '... and joined at it';
 };
 
 done_testing;

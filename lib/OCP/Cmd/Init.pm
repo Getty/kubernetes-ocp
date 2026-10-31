@@ -116,8 +116,8 @@ sub execute {
     # hetzner-cloud` wrote a spec with no control_planes block, and
     # `ocp init --ssh-key ~/.ssh/id_ed25519.pub` copied the public half into
     # the private slot.
-    if (defined $self->dist && !grep { $_ eq $self->dist } qw(rke2 k3s)) {
-        die OCP::Choices::unknown('dist', $self->dist, [ qw(rke2 k3s) ]);
+    if (defined $self->dist && !grep { $_ eq $self->dist } @OCP::Config::DISTRIBUTIONS) {
+        die OCP::Choices::unknown('dist', $self->dist, [ @OCP::Config::DISTRIBUTIONS ]);
     }
 
     if (defined $self->provider && !OCP::Provider->known_type($self->provider)) {

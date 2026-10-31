@@ -100,7 +100,7 @@ my $CONFIG = do {
     path($dir)->child('ocp.yaml')->spew_utf8(<<'YAML');
 name: testcluster
 kubernetes:
-  distribution: k3s
+  dist: k3s
 control_planes:
   provider: hetzner
   server_type: cx32

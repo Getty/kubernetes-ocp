@@ -90,7 +90,7 @@ sub config {
     $dir->child('ocp.yaml')->spew_utf8(<<"YAML");
 name: k268
 kubernetes:
-  distribution: k3s
+  dist: k3s
 control_planes:
   provider: ssh
   host: $CP

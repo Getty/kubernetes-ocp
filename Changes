@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses a key under `kubernetes:` or `ssh:` that is none
+      of their own, and one on an ssh pool's machine other than `host`,
+      naming the keys taken: `kubernetes: { distribution: k3s }` was read
+      by nothing and the cluster came up as RKE2 -- it now says to write
+      `dist: k3s`. It also refuses a `kubernetes.version` or a control
+      plane's `name` that is a list, a mapping or a boolean.
     - `ocp apply --dry-run` on a secure-mode project no longer writes the
       project key: PIN1 opens it in memory, so a dry run leaves no
       `.ocp/age.key` or `.ocp/age.pub` behind, and works on a fresh clone

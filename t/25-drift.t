@@ -125,7 +125,6 @@ sub write_config {
 my $BASE_SPEC = <<'YAML';
 name: testcluster
 kubernetes:
-  distribution: rke2
   version: v1.31.3+rke2r1
 control_planes:
   provider: hetzner

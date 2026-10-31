@@ -144,11 +144,17 @@ sub robo_ssh_key_name { 'ocp-' . shift->name . '-robo' }
 # kubernetes: (k340). A kubernetes: that is no mapping is refused here in
 # validate()'s words, as gpu_config refuses a gpu: of the wrong shape: read
 # on, distribution and version died inside Perl on a string.
+#
+# So is a key in it that is neither of these two (k355), as gpu_config
+# refuses one under gpu: (k331). kubernetes: { distribution: k3s } -- the
+# name the Rex tasks and robocop give it -- was read by nothing, and the
+# cluster was RKE2.
 our @KUBERNETES_KEYS = qw( dist version );
 
 # The distributions OCP installs: OCP::Rex picks the k3s tasks for k3s and the
 # RKE2 ones for anything else, so dist: rke3 installed RKE2 -- and went out to
-# robocop as OCP_DISTRIBUTION=rke3, which it refuses.
+# robocop as OCP_DISTRIBUTION=rke3, which it refuses. `ocp init --dist` and
+# robocop's OCP_DISTRIBUTION take this list too (k355).
 our @DISTRIBUTIONS = qw( rke2 k3s );
 
 sub kubernetes {
@@ -156,6 +162,8 @@ sub kubernetes {
     my $k8s = $self->spec->{kubernetes};
     my $err = _kubernetes_shape_error($k8s);
     croak $err if defined $err;
+    my @unknown = _kubernetes_unknown_keys($k8s);
+    croak join '; ', @unknown if @unknown;
     return $k8s // {};
 }
 
@@ -166,6 +174,30 @@ sub _kubernetes_shape_error {
     return undef if !defined $k8s || ref $k8s eq 'HASH';
     return 'kubernetes: must be a mapping (' . join(', ', @KUBERNETES_KEYS) . '), not ' . _shown_value($k8s)
         . (_is_choice($k8s, @DISTRIBUTIONS) ? "; write kubernetes: { dist: $k8s }" : '');
+}
+
+# A key of kubernetes: that is neither dist nor version, one line each (k355).
+# distribution: with a distribution OCP installs says what was meant, as
+# kubernetes: k3s does.
+sub _kubernetes_unknown_keys {
+    my ($k8s) = @_;
+    return () unless ref $k8s eq 'HASH';
+    my $dist = $k8s->{distribution};
+    return _entry_unknown_keys('kubernetes', $k8s, {
+            distribution => defined $dist && _is_choice($dist, @DISTRIBUTIONS)
+                ? "write kubernetes: { dist: $dist }" : undef,
+        }, @KUBERNETES_KEYS);
+}
+
+# kubernetes.version's line, or undef (k355): one release, handed to the
+# installer as is, or empty (or absent) for the one OCP::Versions pins. A list
+# passed for being true, and went to the installer as a list; a boolean
+# is no release either.
+sub _version_error {
+    my ($version) = @_;
+    my $err = _not_a_string($version, 'a release like v1.36.4+rke2r1 or v1.36.4+k3s1; '
+        . 'empty for the one OCP pins') // return undef;
+    return "kubernetes.version: $err";
 }
 
 # kubernetes.dist's line, or undef: absent is rke2.
@@ -264,10 +296,14 @@ sub distribution {
     return $dist // 'rke2';
 }
 
+# Refused in validate()'s words (k355), as distribution is: ocp apply, ocp
+# update and ocp status read it.
 sub version {
     my $self = shift;
-    my $k8s = $self->kubernetes;
-    return $k8s->{version} // '';
+    my $version = $self->kubernetes->{version};
+    my $err = _version_error($version);
+    croak $err if defined $err;
+    return $version // '';
 }
 
 # RKE2 keeps its registration endpoint on a supervisor port of its own,
@@ -953,8 +989,9 @@ sub cluster_status {
         $ip = OCP::Provider->for_spec($cp)->advertised_host;
     }
 
+    # Its name, refused as validate() refuses it (k355).
     return {} unless defined $ip && length $ip;
-    return { name => $cp->{name} // 'cp-1', public_ip => $ip };
+    return { name => $self->_first_cp_string($cp, 'name') // 'cp-1', public_ip => $ip };
 }
 
 sub set_status {
@@ -1029,13 +1066,21 @@ our @CP_ADDRESS_KEYS = (
     [ private_ip => 'an IP address' ],
 );
 
+# A control plane's name (k355), one as its host is: OCP::Drift matches it
+# against the recorded control planes and labels their spec drift with it,
+# and cluster_status hands it on. A list matched none of them, and the drift
+# of its pinned public_ip went unsaid.
+our @CP_NAME_KEYS = (
+    [ name => "the control plane's name, like police1" ],
+);
+
 # The first control plane's $key -- its address, as join_host and
-# cluster_status read it -- refused in validate()'s words when it is no
-# string (k340): read on, a list was the address workers joined at,
-# ARRAY(0x...).
+# cluster_status read it, or its name -- refused in validate()'s words when it
+# is no string (k340, k355): read on, a list was the address workers joined
+# at, ARRAY(0x...).
 sub _first_cp_string {
     my ($self, $cp, $key) = @_;
-    my ($what) = map { $_->[1] } grep { $_->[0] eq $key } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS;
+    my ($what) = map { $_->[1] } grep { $_->[0] eq $key } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS;
     my $err = _not_a_string($cp->{$key}, $what);
     croak "control_planes[1].$key: $err" if defined $err;
     return $cp->{$key};
@@ -1060,6 +1105,11 @@ our @CONTROL_PLANE_KEYS = qw( provider host public_ip private_ip node_ip server_
 # status and ocp node ls read them too. node_ip is refused on a pool by a
 # line of its own, so it is not one of them, nor an unknown key there.
 our @POOL_KEYS = qw( name provider nodes host server_type location image labels taints );
+
+# A mapping in an ssh pool's nodes: list (k355): worker_ocpnodes reads its
+# host and nothing else -- the worker is named after it --, as ocp destroy
+# does. node_ip has its line, as on the pool.
+our @POOL_NODE_KEYS = qw( host );
 
 # One line per key of a control plane or pool $entry that is none of @known
 # (k347), in _unknown_keys' words, with $hints->{$key} after it where a key
@@ -1094,10 +1144,16 @@ sub validate {
 
     # kubernetes: and its dist (k340), the lines kubernetes and distribution
     # refuse on. dist: rke3 passed, installed RKE2 and told robocop rke3.
+    # Its version and a key that is neither (k355), the lines version and
+    # kubernetes refuse on.
     my $k8s = $self->spec->{kubernetes};
     my $k8s_err = _kubernetes_shape_error($k8s);
     push @errors, $k8s_err if defined $k8s_err;
-    push @errors, _dist_error($k8s->{dist}) // () if ref $k8s eq 'HASH';
+    if (ref $k8s eq 'HASH') {
+        push @errors, _dist_error($k8s->{dist}) // ();
+        push @errors, _version_error($k8s->{version}) // ();
+        push @errors, _kubernetes_unknown_keys($k8s);
+    }
 
     my $cps = $self->control_planes;
 
@@ -1177,9 +1233,9 @@ sub validate {
         # which the provider is handed and the OCPNode's spec carries as is. A
         # list passed for being true, and named the machine ARRAY(0x...). One
         # line for the shape, not a "required" beside it.
-        # public_ip and private_ip (k340) the same way.
+        # public_ip and private_ip (k340) the same way, and name (k355).
         my %malformed;
-        for my $s (@ONE_NAME_KEYS, @CP_ADDRESS_KEYS) {
+        for my $s (@ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS) {
             my ($key, $what) = @$s;
             my $err = _not_a_string($cp->{$key}, $what) // next;
             push @errors, "control_planes[$idx].$key: $err";
@@ -1223,8 +1279,14 @@ sub validate {
     # system: (k331), the lines system_config refuses on.
     push @errors, _system_errors($self->spec->{system});
 
-    # ssh: (k340), the lines ssh_config refuses on.
-    push @errors, _ssh_errors($self->spec->{ssh});
+    # ssh: (k340), the lines ssh_config refuses on. A key that is neither path
+    # (k355) is validate()'s alone, as a pool's are (k347): ssh: { privat_key:
+    # ... } left the default key in force, but ocp destroy reads ssh: in dev
+    # mode (OCP::ClusterKey), and refused there it skips the uninstall on the
+    # ssh machines.
+    my $ssh = $self->spec->{ssh};
+    push @errors, _ssh_errors($ssh);
+    push @errors, _unknown_keys('ssh', $ssh, map { $_->[0] } @SSH_KEYS) if ref $ssh eq 'HASH';
 
     # The switches (k320): true or false, as robocop: is; each line is its
     # accessor's refusal too (_switch). Read through mappings only: a gpu: or
@@ -1353,9 +1415,19 @@ sub validate {
         if (ref $w->{nodes} eq 'ARRAY') {
             for my $n (0 .. $#{ $w->{nodes} }) {
                 my $entry = $w->{nodes}[$n];
+                next unless ref $entry eq 'HASH';
                 push @errors, "$where: nodes[" . ($n + 1) . "].node_ip is not read from "
                     . "a pool's nodes; $per_node"
-                    if ref $entry eq 'HASH' && defined $entry->{node_ip};
+                    if defined $entry->{node_ip};
+
+                # A key of an ssh pool's machine that nothing reads (k355).
+                # validate()'s alone, as the pool's are (k347): ocp destroy
+                # reads the machines without it (k323). Any other pool's nodes
+                # is a count, and a list there has its line.
+                my %keys = %$entry;
+                delete $keys{node_ip};
+                push @errors, _entry_unknown_keys("workers[$pool_n].nodes[" . ($n + 1) . "]", \%keys, {},
+                    @POOL_NODE_KEYS) if $ssh_pool;
             }
         }
     }

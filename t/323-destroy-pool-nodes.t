@@ -134,8 +134,10 @@ sub run_destroy {
              events => [@events] };
 }
 
-# validate()'s lines about a pool's nodes, for comparing with the refusal.
-sub nodes_lines { grep { /\bnodes\b/ } $_[0]->validate }
+# validate()'s lines about a pool's nodes, for comparing with the refusal. Not
+# a key of a machine's that nothing reads (k355): destroy does not read it,
+# and it holds up no teardown (the second point above).
+sub nodes_lines { grep { /\bnodes\b/ && !/: unknown key / } $_[0]->validate }
 
 # The refusal, whole: validate()'s lines and nothing else touched.
 sub refused {
@@ -216,6 +218,8 @@ YAML
         "worker pool 'big': nodes must be a whole number (how many machines the pool has), not a list",
         "worker pool 'lp': nodes must be a whole number (how many machines the pool has), not a list",
     ], 'the fixture: validate() names all three pools';
+    ok scalar(grep { $_ eq 'workers[1].nodes[2].name: unknown key (must be host)' } $config->validate),
+        '... and name: as a key nothing reads (k355), which the refusal leaves out';
     my $r = run_destroy($config);
     refused($r, $config, @lines);
 };
