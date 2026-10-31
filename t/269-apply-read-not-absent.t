@@ -449,9 +449,15 @@ subtest 'k277 registry.local DNS: a CoreDNS ConfigMap that cannot be read is not
     is $r->{patched}, 1, "404 on $first: the next name is read and patched";
     is $r->{applied}[0]{metadata}{name}, $second, "404 on $first: $second written";
 
+    # k319 replaces the claim k277 left here ("404 on both: no death, nothing
+    # to patch"): a cluster with neither ConfigMap has no registry.local
+    # record, and "up to date" said it had. It dies saying so, and the step
+    # says it on STDERR (t/38).
     $r = registry_dns();
-    is $r->{died}, '', '404 on both: no death';
-    is $r->{patched}, 0, '404 on both: nothing to patch';
+    is $r->{died}, "found no CoreDNS ConfigMap in kube-system (tried $first, $second)\n",
+        '404 on both: dies saying no ConfigMap was found';
+    ok !defined $r->{patched}, '404 on both: no verdict, so not "up to date"';
+    is scalar @{ $r->{applied} }, 0, '404 on both: nothing written';
 
     for my $refusal (@REFUSALS) {
         my ($code, $reason) = @$refusal;

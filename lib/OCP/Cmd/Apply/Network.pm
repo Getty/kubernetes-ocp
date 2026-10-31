@@ -497,7 +497,11 @@ sub configure_registry_dns {
         $cm_name = $candidate;
         last;
     }
-    return 0 unless $cm;
+    # Neither name there is no record to keep, not one in place: "up to date"
+    # said so. The step says this on STDERR, like any failure here (k319).
+    die "found no CoreDNS ConfigMap in kube-system (tried "
+        . join(', ', @COREDNS_CONFIGMAPS) . ")\n"
+        unless $cm;
 
     my $corefile = $cm->data->{Corefile} // '';
     my $patched  = corefile_with_host($corefile, $node_ip, 'registry.local');

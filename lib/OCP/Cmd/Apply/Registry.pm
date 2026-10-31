@@ -8,6 +8,7 @@ use Digest::MD5;
 use JSON::PP ();
 
 use OCP::Versions;
+use OCP::Cmd::Apply::K8s ();
 
 =head1 SYNOPSIS
 
@@ -130,7 +131,10 @@ sub running {
 # server and owned by no field manager -- so Server-Side Apply cannot drop it,
 # and the API server refuses Recreate next to it (422 "rollingUpdate:
 # Forbidden"). A JSON merge patch can null it. Sent once, only to a Deployment
-# this configuration rolls out that exists and is not Recreate yet.
+# this configuration rolls out that exists and is not Recreate yet. Only a
+# 404 is "not there"; a read that fails otherwise dies with its cause, which
+# the registry step reports -- instead of an apply that fails on the 422 and
+# names the strategy, not the read (k319).
 sub switch_to_recreate {
     my ($self, $api, $config) = @_;
 
@@ -139,7 +143,8 @@ sub switch_to_recreate {
     push @names, 'ocp-registry' unless $config && $config->has_external_upstream;
 
     for my $name (@names) {
-        my $live = eval { $api->get('Deployment', $name, namespace => 'ocp-system') }
+        my $live = OCP::Cmd::Apply::K8s::read_or_absent("Deployment ocp-system/$name",
+            sub { $api->get('Deployment', $name, namespace => 'ocp-system') })
             or next;    # not there: the apply creates it with Recreate
         my $type = $live->TO_JSON->{spec}{strategy}{type} // '';
         next if $type eq 'Recreate';

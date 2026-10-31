@@ -114,21 +114,33 @@ sub setup_nfd {
     $self->_poll_deployment_ready($api, 'nfd-master', 'node-feature-discovery', $nfd_timeout)
         or die "nfd-master not ready within ${nfd_timeout}s\n";
 
-    # Wait for nfd-worker DaemonSet
+    # Wait for nfd-worker DaemonSet. A DaemonSet that is not there (a 404) has
+    # no pod ready yet. A read that fails otherwise is polled again; when the
+    # last one failed too, its cause goes to STDERR (k319) -- a last read that
+    # found the worker ready did not fail. The label wait below decides either
+    # way.
     print "      Waiting for nfd-worker...\n";
+    my $read_err;
     for my $i (1..12) {
-        my $ds = eval { $api->get('DaemonSet', 'nfd-worker', namespace => 'node-feature-discovery') };
+        my $ds = eval { OCP::Cmd::Apply::K8s::read_or_absent('DaemonSet node-feature-discovery/nfd-worker',
+            sub { $api->get('DaemonSet', 'nfd-worker', namespace => 'node-feature-discovery') }) };
+        $read_err = $@;
         if ($ds && $ds->status && ($ds->status->numberReady // 0) > 0) {
             print "      NFD worker running on " . $ds->status->numberReady . " node(s)\n";
             last;
         }
         $self->wait_seconds(10);
     }
+    print STDERR "  [WARN] nfd-worker not seen ready within 120s; the last read failed: $read_err"
+        if $read_err;
 
-    # Wait for NFD to label nodes (needs a few seconds after worker starts)
+    # Wait for NFD to label nodes (needs a few seconds after worker starts).
+    # As above: a failed read is polled again, and the death names the last
+    # one's cause when it failed too (k319).
     print "      Waiting for NFD labels...\n";
     for my $i (1..12) {
-        my $nodes = eval { $api->list('Node') };
+        my $nodes = eval { OCP::Cmd::Apply::K8s::read_or_absent('Nodes', sub { $api->list('Node') }) };
+        $read_err = $@;
         if ($nodes && $nodes->items && @{ $nodes->items }) {
             my $labels = $nodes->items->[0]->metadata->labels;
             if ($labels && grep { /^feature\.node\.kubernetes\.io/ } keys %$labels) {
@@ -137,7 +149,9 @@ sub setup_nfd {
             }
         }
         if ($i == 12) {
-            die "NFD labels not detected on any node after 120s\n";
+            chomp $read_err if $read_err;
+            die "NFD labels not detected on any node after 120s"
+                . ($read_err ? "; the last read failed: $read_err" : '') . "\n";
         }
         $self->wait_seconds(10);
     }

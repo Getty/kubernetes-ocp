@@ -1090,6 +1090,43 @@ subtest 'k173: --dry-run on the k169 leftover -- Deployment there, Secret not' =
     unlike $r->{out}, qr{Deployment/robocop is missing}, 'the Deployment is not';
 };
 
+# k319: the dry run took any failed read of the robocop Deployment for
+# "missing" -- "would roll it out" over a cluster it could not see. Only a 404
+# is missing; any other failure is "could not be checked", its cause on
+# STDERR, counted like an unreadable drift probe (k267) and not as an action.
+subtest 'k319: --dry-run -- a robocop Deployment that cannot be read is not "missing"' => sub {
+    no warnings 'redefine';
+    local *OCP::Drift::detect = sub { [] };
+    my $yaml = "robocop: true\nnocert: true\n";
+
+    my $missing = reconcile(dry_run => 1, yaml => $yaml);
+    like $missing->{out}, qr{Deployment/robocop is missing\s+would roll it out},
+        'control: a 404 is missing';
+    like $missing->{out}, qr/^  2 difference\(s\) a real run would act on\.$/m,
+        'control: Secret and Deployment counted as actions';
+    unlike $missing->{out} . $missing->{err}, qr/could not be checked|not checked/,
+        'control: nothing unknown';
+
+    for my $cause ("403 forbidden: User \"ocp-ci\" cannot get resource \"deployments\"\n",
+                   "500 Internal Server Error: etcdserver: request timed out\n") {
+        my ($code) = $cause =~ /\A(\d+)/;
+        my $r = reconcile(dry_run => 1, yaml => $yaml,
+            denied => { 'Deployment/ocp-system/robocop' => $cause });
+        unlike $r->{out}, qr{Deployment/robocop is missing|would roll it out},
+            "$code: not missing, nothing to roll out";
+        like $r->{out}, qr{^  \[robocop\] Deployment/robocop could not be checked$}m,
+            "$code: could not be checked";
+        is $r->{err}, "  [!!] Deployment/robocop not checked: could not read Deployment ocp-system/robocop: $cause",
+            "$code: the cause, on STDERR";
+        like $r->{out}, qr/^  1 difference\(s\) a real run would act on\.$/m,
+            "$code: only the Secret counted as an action";
+        like $r->{out},
+            qr/^  1 more could not be checked -- a real run would not complete until it can be read\.$/m,
+            "$code: counted as could not be checked";
+        is_deeply $r->{writes}, [], "$code: nothing written";
+    }
+};
+
 #
 # k173 on the fresh deploy: robocop gets a step of its own, workers or not,
 # between the control-plane joins and the workers.

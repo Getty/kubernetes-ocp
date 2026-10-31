@@ -8,6 +8,7 @@ use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Deploy;
+use OCP::Cmd::Apply::K8s ();
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Workloads ();
 use OCP::Drift;
@@ -639,8 +640,9 @@ sub dry_run_report {
     print $self->host_probe_warning($detector);
 
     # A probe that could not be read (k119, k256) is neither: nothing is known
-    # about it, and a real run ends short of spec over it (k267).
-    my $is_unknown = sub { ($_[0]{kind} // '') eq 'error' };
+    # about it, and a real run ends short of spec over it (k267). robocop's
+    # findings are names, its unread Deployment an entry (k319).
+    my $is_unknown = sub { ref $_[0] eq 'HASH' && ($_[0]{kind} // '') eq 'error' };
     # An entry with no remedy that the run does not re-apply either (not
     # self_healing, not missing) is report-only -- the pod CIDR (k182): a real
     # run names it and leaves it, so it is not counted as an action (k188).
@@ -711,9 +713,9 @@ sub dry_run_report {
     my @gpu = gpu_dry_run($self, $config);
 
     my $report_only = scalar grep { $is_report_only->($_) } @$drift;
-    my $unknown     = scalar grep { $is_unknown->($_) } @$drift, @gpu;
-    my $actions     = scalar(@$drift) + scalar(@gpu) - $report_only - $unknown
-        + scalar(@missing) + scalar(@relabel) + scalar(@robocop);
+    my $unknown     = scalar grep { $is_unknown->($_) } @$drift, @gpu, @robocop;
+    my $actions     = scalar(@$drift) + scalar(@gpu) + scalar(@robocop) - $report_only - $unknown
+        + scalar(@missing) + scalar(@relabel);
 
     print "\n";
     print "  $actions difference(s) a real run would act on.\n";
@@ -798,6 +800,9 @@ sub _say_unchecked {
 # The robocop half of the dry run: prints what robocop_step would write and
 # returns one entry per difference. A Deployment that is there is not
 # compared -- a real run re-applies it anyway, like every other manifest.
+# Only a 404 is a Deployment missing; a read that fails otherwise is an
+# { kind => 'error' } entry, "could not be checked" with its cause on STDERR
+# (k319), the shape of a GPU read gpu_dry_run could not make (k276).
 sub robocop_dry_run {
     my ($self, $config, $cp_ip) = @_;
     my $api   = $self->_k8s_api;
@@ -819,7 +824,15 @@ sub robocop_dry_run {
         push @found, 'robocop-credentials';
     }
 
-    unless (eval { $api->get('Deployment', 'robocop', namespace => 'ocp-system'); 1 }) {
+    my $deployment = eval { OCP::Cmd::Apply::K8s::read_or_absent('Deployment ocp-system/robocop',
+        sub { $api->get('Deployment', 'robocop', namespace => 'ocp-system') }) };
+    if (my $err = $@) {
+        chomp(my $cause = $err);
+        print "  [robocop] Deployment/robocop could not be checked\n";
+        print STDERR "  [!!] Deployment/robocop not checked: $cause\n";
+        push @found, { kind => 'error', label => 'Deployment/robocop', cause => $cause,
+                       message => "Deployment/robocop: $cause" };
+    } elsif (!$deployment) {
         print "  [robocop] Deployment/robocop is missing\n"
             . "          would roll it out ($level)\n";
         push @found, 'robocop';

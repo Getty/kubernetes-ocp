@@ -13,6 +13,7 @@ use OCP::Rex;
 use OCP::Secrets;
 use OCP::SSH;
 use OCP::Versions;
+use OCP::Cmd::Apply::K8s ();
 
 =head1 SYNOPSIS
 
@@ -577,9 +578,13 @@ sub bootstrap_control_plane {
             print "      WARNING: API server may not be reachable: $@\n";
         }
 
-        my $node_ready = 0;
+        # A Node list that fails is polled again like a Node not Ready yet;
+        # when the last one failed too, its cause goes to STDERR (k319). A
+        # 404 lists nothing and is no failure.
+        my ($node_ready, $read_err) = (0);
         for my $i (1..60) {
-            my $nodes = eval { $api->list('Node') };
+            my $nodes = eval { OCP::Cmd::Apply::K8s::read_or_absent('Nodes', sub { $api->list('Node') }) };
+            $read_err = $@;
             my $is_ready = 0;
             if ($nodes && $nodes->items && @{ $nodes->items }) {
                 for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
@@ -609,6 +614,8 @@ sub bootstrap_control_plane {
         unless ($node_ready) {
             # Last resort: check via SSH directly on the node
             print "  [WARN] Node not Ready after 600s via API, checking via SSH...\n";
+            print STDERR "  [WARN] Node state unknown via the API; the last read failed: $read_err"
+                if $read_err;
             my $ssh_check = $ssh->run("/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes 2>&1");
             my $ssh_output = $ssh_check->{stdout} || '';
             print "      SSH node status: $ssh_output\n";

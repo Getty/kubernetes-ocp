@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` no longer takes a read it could not make (an RBAC denial,
+      an apiserver error) for a missing object: `--dry-run` says the robocop
+      Deployment could not be checked instead of that it would roll it out,
+      the registry step fails with the cause, and the NFD and node-Ready
+      waits name their last failed read; registry.local DNS with neither
+      CoreDNS ConfigMap present is a warning instead of "up to date".
     - `ocp apply` on an existing cluster no longer ends its component
       summary with "All up to date" after a failed cert-manager or Cilium
       Gateway step or a Failed worker; the robocop fallback warning goes to
