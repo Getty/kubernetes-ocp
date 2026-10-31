@@ -37,6 +37,10 @@ use OCP::Cmd::Apply::K8s ();
     # undef (k254).
     my $node_ip = OCP::Cmd::Apply::Bootstrap::cp_node_ip($config);
 
+    # Dev mode (no keys.yaml): the age key the kubeconfig is encrypted to,
+    # generated when the project has none -- said, not made, under --dry-run.
+    OCP::Cmd::Apply::Bootstrap::ensure_dev_age_key($self, $secrets);
+
     # Mutating helper: pick the SSH key the rest of the deploy will use
     # (OCP::ClusterKey decides which), publish its path on the command
     # object and keep the object alive so its temp files outlive the
@@ -279,6 +283,41 @@ sub assert_first_deploy_identity {
         "There is no cluster yet (no kubeconfig.yaml), and the first 'ocp apply'\n"
       . "needs the admin key (PIN2), which opens for the project key alone.")
         if $who eq 'other';
+    return 1;
+}
+
+# Dev mode's age key, which the kubeconfig is encrypted to later. Dev mode
+# never prompts for a PIN: a plain .ocp/age.key that is there is used,
+# otherwise a fresh one is generated. The bound check is on the project, not
+# this machine: .ocp/ is gitignored, so a clone of a --nopassword project can
+# carry committed secrets.yaml / kubeconfig.yaml while missing the private
+# half. Generating over that would replace .ocp/age.pub with a recipient none
+# of the committed files could be opened with any more, and PIN-protected
+# unlock is not an option in dev mode. Honest answer: the key has to come
+# back from a backup or from whoever set the project up.
+#
+# A dry run generates none (k297): it says that a real run would, and stops
+# before anything reads the key. Returns whether the key is there.
+sub ensure_dev_age_key {
+    my ($self, $secrets) = @_;
+
+    return 1 if $secrets->has_age_key;
+    die "ERROR: This project is bound to an age recipient\n"
+      . "       (secrets.yaml / kubeconfig.yaml / age.key.enc), but\n"
+      . "       .ocp/age.key is missing from this checkout.\n\n"
+      . "       PIN-protected unlock is disabled in dev mode. Restore\n"
+      . "       .ocp/age.key from a backup or from the machine that\n"
+      . "       created this project, then re-run 'ocp apply'.\n"
+        if $secrets->project_has_age_key;
+
+    if ($self->dry_run) {
+        print "[..] No age key in .ocp/ yet: a real run generates one for kubeconfig encryption\n";
+        return 0;
+    }
+
+    print "[..] Generating age key for kubeconfig encryption (dev mode)\n";
+    my $keys = $secrets->generate_age_key;
+    print "[ok] Generated age key: $keys->{public_key}\n";
     return 1;
 }
 

@@ -141,29 +141,9 @@ sub execute {
         print "Step 1: Dev mode (--no_password)\n";
         print "        Using SSH key from .ocp/id_ed25519 (no encryption)\n";
 
-        # We need an age key for encrypting the kubeconfig later. In dev mode
-        # we never prompt for a PIN: if a plain age.key already exists, use
-        # it; otherwise generate a fresh one. The bound check is on the
-        # project, not this machine: .ocp/ is gitignored, so a clone of a
-        # --nopassword project can carry committed secrets.yaml / kubeconfig
-        # .yaml while missing the private half. Generating over that would
-        # replace .ocp/age.pub with a recipient none of the committed files
-        # could be opened with any more, and PIN-protected unlock is not an
-        # option in dev mode. Honest answer: the key has to come back from
-        # a backup or from whoever set the project up.
-        if (!$secrets->has_age_key) {
-            if ($secrets->project_has_age_key) {
-                die "ERROR: This project is bound to an age recipient\n"
-                  . "       (secrets.yaml / kubeconfig.yaml / age.key.enc), but\n"
-                  . "       .ocp/age.key is missing from this checkout.\n\n"
-                  . "       PIN-protected unlock is disabled in dev mode. Restore\n"
-                  . "       .ocp/age.key from a backup or from the machine that\n"
-                  . "       created this project, then re-run 'ocp apply'.\n";
-            }
-            print "[..] Generating age key for kubeconfig encryption (dev mode)\n";
-            my $keys = $secrets->generate_age_key;
-            print "[ok] Generated age key: $keys->{public_key}\n";
-        }
+        # The age key the kubeconfig is encrypted to, never behind a PIN in
+        # dev mode -- and not made by a dry run (k297). See Bootstrap.
+        OCP::Cmd::Apply::Bootstrap::ensure_dev_age_key($self, $secrets);
         print "\n";
 
         my $ssh_private_key = $config->ssh_private_key_path;
