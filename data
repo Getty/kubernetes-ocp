@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-10-31T13:59:37Z
+created: 2026-10-31T12:33:17Z
+id: 356
+priority: low
+started: 2026-10-31T13:59:37Z
+status: done
+tags:
+- output-channels
+- apply
+title: 'CR.pm: four [WARN]s about failures go to STDOUT (ensure_cp_ocpnode, migrate_legacy_nodes,
+  retire_unannotated_robocop_pods)'
+updated: 2026-10-31T13:59:37Z
+---
+
+Found under k330 (apply worker, 2026-10-31). Apply lane. These [WARN]s in lib/OCP/Cmd/Apply/CR.pm print to STDOUT, though each reports something that went wrong; the output-channel rule (.claude/rules/ocp-rules.md) puts that on STDERR, with its diagnosis:
+- ensure_cp_ocpnode: "status stayed unwritten"
+- migrate_legacy_nodes: "status for migrated ... stayed unwritten"
+- retire_unannotated_robocop_pods: both of its [WARN]s
+
+Done = all four on STDERR, each with the cause; the STDOUT narrative unchanged; tests that pin the channel (the t/107 pattern), red first.
+
+2026-10-31 13:17 Done (apply worker, on base queued+k253). lib/OCP/Cmd/Apply/CR.pm: the four [WARN]s go to STDERR with the cause they already carried (ensure_cp_ocpnode status unwritten; migrate_legacy_nodes status for migrated OCPNode/<n> unwritten; retire_unannotated_robocop_pods: pod list unreadable, pod not deleted). STDOUT narrative ([ok], [migrated], [..]) unchanged; on a failed CP status write STDOUT still says nothing, as before (no [ok] ... Ready). New t/356-cr-warn-stderr.t (4 subtests, 25 asserts) pins each [WARN] on STDERR verbatim incl. cause, and STDOUT exactly. t/36 ('apply does not claim Ready...') and t/234 (29: refusal) pinned two of these on STDOUT; they now look on STDERR (claim kept, channel corrected). Red (base + tests only): t/356 4/4 subtests fail, t/36 1/7, t/234 1/8. Green: t/356 t/36 t/234 t/330 t/38 t/20 -- Files=6 Tests=109 PASS. Mutants (each site reverted to STDOUT, one guarded run): 4/4 killed, each by exactly its own subtest. Patch: scratchpad w-apply356/k356.patch (plain a/ b/, applies cleanly on queued+k253).
+
+2026-10-31 13:17 Also found (out of scope, not changed): (1) none of these four [WARN]s, nor k330's two CR-layer [WARN]s, feeds {_apply_warnings}, so the apply banner stays clean while STDERR says something went wrong -- worth a decision whether they should turn it WITH WARNINGS. (2) CR.pm still prints two [WARN]s on STDOUT on purpose, per their comments: 'OCPNode <n> is Failed and not in ocp.yaml (ocp node rm <n>)' (~l.668) and 'worker <n> is <phase>, not Ready yet' (~l.703, counted in {_apply_warnings}); the second is pinned on STDOUT by t/38 l.1297. Documented exceptions, but the rule asks for a ticket per deviation.
+
+2026-10-31 13:18 Done: the four CR-layer [WARN]s on STDERR with their cause, STDOUT unchanged; t/356 new, t/36 + t/234 channel corrected. Red 4/4 + 1 + 1, green 6 files/109 PASS, mutants 4/4 killed. Patch: /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-apply356/k356.patch
+
+Committed as 9239a79
