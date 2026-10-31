@@ -1,0 +1,34 @@
+---
+claimed_at: 2026-10-31T13:52:47Z
+claimed_by: kubernetes-ocp
+class: standard
+created: 2026-10-31T13:19:39Z
+id: 362
+priority: medium
+status: review
+tags:
+- secrets
+- security
+title: ocp keys secure prints a Hetzner error without masking the API token
+updated: 2026-10-31T13:52:47Z
+---
+
+Found by the secrets worker during k342 (2026-10-31); line numbers are on its base (12d049a plus the queued patches).
+
+`OCP::Cmd::Keys::Secure` prints a Hetzner API error (around Secure.pm:422, the step that stores the keys at Hetzner) without masking the API token. `ocp init` masks the same source since k265 (`_catalogue_error`, now `OCP::ErrorLine::one_line($err, mask => $token)` from k342). WWW::Hetzner/LWP errors can echo request details, so a token could reach the terminal or a CI log.
+
+Done = every place `ocp keys secure` prints a Hetzner failure goes through `OCP::ErrorLine::one_line($err, mask => $token)`. Find them all, not just :422. A test makes the fake Hetzner client die with a message containing the token and asserts the token is absent from STDOUT+STDERR, with `********` in its place. Red before, green after.
+
+Lane: ocp-secrets-worker. Depends on k342 (OCP::ErrorLine) being committed.
+
+secrets worker: done, patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-secrets360/k362.patch, stacked on queued15 + k360.patch (header: subject, description, Changes bullet; no Changes hunk).
+
+Fix: _upload_to_hetzner's STDERR line is now OCP::ErrorLine::one_line($@, mask => $token) instead of the Machines role's _oneline. The token becomes ******** every time it appears, source locations are stripped, and the error stays one line.
+
+Every site: ocp keys secure talks to Hetzner in exactly one place. That is _upload_to_hetzner: the provider is built and both uploads run inside one eval, with the token read once just before it. The machine lookup, the bootstrap drop and robocop's credentials (which hold no Hetzner token) never reach the Hetzner API or the token. --drop-bootstrap on a secure project does not reach Hetzner at all.
+
+Test, a new subtest in t/96: a fake Hetzner refuses the upload, with the token twice in its error (URL and Authorization header) plus a source location. Asserted: exit 1, the switch stands, the exact one-line STDERR text with the token masked twice and no location, and the token nowhere on STDOUT or STDERR. Red on queued15+k360: exactly those 2 assertions fail, the token shows in full twice. Green: 11 related files, 196 tests PASS, none skipped. Mutants 4/4 killed under MutShadow, each shown loaded by the probe: back to _oneline, raw $@, mask a different value, mask the first occurrence only.
+
+Finding (not in scope, other lanes; needs a card): the other Hetzner callers pass WWW::Hetzner/LWP errors through unmasked. These are ocp apply's bootstrap (Apply/Bootstrap.pm ~395-420, provider for_spec, upload and create), ocp destroy (Destroy.pm ~714), ocp hetzner list (Hetzner/List.pm) and the OCP::Provider factory (~290). Only ocp init (k265) and now keys secure mask the token.
+
+Patch at w-secrets360/k362.patch, stacked on queued15+k360: the token is masked in the one Hetzner error line in keys secure. Red 2 assertions, green 196/196 across 11 files, mutants 4/4. One finding about other lanes is in the note above.
