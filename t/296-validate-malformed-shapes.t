@@ -14,6 +14,7 @@ use lib 'lib';
 use OCP;
 use OCP::Choices;
 use OCP::Config;
+use OCP::Cmd::Apply::CR;
 use OCP::Cmd::Apply::Validate;
 use OCP::Provider;
 
@@ -77,6 +78,22 @@ use OCP::Provider;
 #      refuses about the switch, in its words, and reads what validate() passes
 #      as a plain 0 or 1, its default when absent -- swept over every shape at
 #      each, and over every switch OCP::Config has.
+#
+# k322, what k315 left in the pools and the names:
+#  16. an ssh pool names its machines one way: host for one, or nodes for a
+#      list. With neither it had no worker and nothing said so; with both, host
+#      was not read. Each is a line; nodes: [] alone, a pool with none yet,
+#      passes, as nodes: 0 does for a pool that counts its machines. A host
+#      Perl calls false (0) names no machine, at the pool and in nodes, as
+#      worker_ocpnodes reads it. Every ssh pool validate() passes is the
+#      workers worker_ocpnodes makes of it. The one-way lines are validate()'s,
+#      not those ocp destroy asks about the machines it reads (k323);
+#  17. a control plane's location and image, and a pool's server_type,
+#      location and image, are strings, as host and server_type are (claim 13):
+#      a list reached the OCPNode spec and the Hetzner API;
+#  18. the mapping form with nodes: N says a line about its one entry once, not
+#      once for each control plane it stands for -- the per-entry lines and the
+#      pod and service CIDR overlaps alike.
 #
 
 local @ARGV = ();
@@ -157,7 +174,7 @@ subtest 'a workers that is no list' => sub {
 
 subtest 'a workers entry that is no mapping' => sub {
     is_deeply [ errors_for({ control_planes => $local,
-                             workers => [ { name => 'w', provider => 'ssh' }, 'foo' ] }) ],
+                             workers => [ { name => 'w', provider => 'ssh', host => 'w.k296.test' }, 'foo' ] }) ],
         [ "workers[2]: must be a mapping (a worker pool), not 'foo'" ], 'a string, by its place';
     is_deeply [ errors_for({ control_planes => $local, workers => [ [ 'w' ] ] }) ],
         [ 'workers[1]: must be a mapping (a worker pool), not a list' ], 'a list';
@@ -271,15 +288,18 @@ my @AT = (
     (map { my $k = $_;
         [ "control_planes.$k"     => sub { +{ control_planes => $cp->($k => $_[0]) } } ],
         [ "control_planes[1].$k"  => sub { +{ control_planes => [ $cp->($k => $_[0]) ] } } ],
-     } qw( provider host public_ip private_ip node_ip server_type location )),
+     } qw( provider host public_ip private_ip node_ip server_type location image )),
     [ 'workers'                   => sub { +{ control_planes => $cp->(), workers => $_[0] } } ],
     [ 'workers[1]'                => sub { +{ control_planes => $cp->(), workers => [ $_[0] ] } } ],
     (map { my $k = $_;
         [ "workers[1].$k"         => sub { +{ control_planes => $cp->(), workers => [ $wp->($k => $_[0]) ] } } ],
-     } qw( name provider host nodes labels taints node_ip )),
+     } qw( name provider host nodes labels taints node_ip server_type location image )),
     [ 'workers[1].nodes[1]'       => sub { +{ control_planes => $cp->(), workers => [ $wp->(nodes => [ $_[0] ]) ] } } ],
     # k315: an entry's host, and the nodes of a pool that counts its machines
     [ 'workers[1].nodes[1].host'  => sub { +{ control_planes => $cp->(), workers => [ $wp->(nodes => [ { host => $_[0] } ]) ] } } ],
+    # k322: an ssh pool with nodes and no host
+    [ 'workers[1].nodes, no host' => sub { +{ control_planes => $cp->(), workers => [ {
+                                     name => 'w', provider => 'ssh', nodes => $_[0] } ] } } ],
     [ 'workers[1].nodes, hetzner' => sub { +{ control_planes => $cp->(), workers => [ {
                                      name => 'w', provider => 'hetzner', server_type => 'cx22', nodes => $_[0] } ] } } ],
     # a host in the pod CIDR, so the pool is named in that line too (k305)
@@ -403,7 +423,7 @@ subtest 'a pool name that is no string' => sub {
           . OCP::Choices::or_list(OCP::Provider->types) . ')' ],
         'a list: its own line, and the pool by its place';
     is_deeply [ errors_for({ control_planes => $local,
-                             workers => [ { name => JSON::PP::true, provider => 'ssh' } ] }) ],
+                             workers => [ { name => JSON::PP::true, provider => 'ssh', host => 'w.k305.test' } ] }) ],
         [ "workers[1].name: must be a string (the pool's name), not true" ], 'true';
     is_deeply [ errors_for({ control_planes => $local, workers => [ {}, { name => 'w2' } ] }) ],
         [ 'worker pool: name required', 'workers[1]: provider required',
@@ -757,6 +777,144 @@ subtest 'each switch accessor reads the switch the way validate() does' => sub {
         }
         is config_for({ control_planes => $local })->$m, $default, "$m: absent reads $default, as before";
     }
+};
+
+# --- 16. an ssh pool names its machines one way ----------------------------------------
+
+my $NONE = "an ssh pool needs host (one machine) or nodes (a list of machines); "
+    . 'with neither it gets no worker -- nodes: [] says it has none yet';
+my $BOTH = 'an ssh pool takes host (one machine) or nodes (a list of machines), not both; '
+    . 'beside nodes, host is not read';
+
+subtest 'an ssh pool names its machines one way' => sub {
+    my $ssh = sub { +{ name => 'w', provider => 'ssh', @_ } };
+
+    is_deeply [ pool_errors($ssh->()) ], [ "worker pool 'w': $NONE" ], 'neither: a line, not no worker in silence';
+    is_deeply [ pool_errors($ssh->(host => '')) ], [ "worker pool 'w': $NONE" ], "host: '' is no host";
+    is_deeply [ pool_errors($ssh->(nodes => undef)) ], [ "worker pool 'w': $NONE" ], 'nodes: null is no nodes';
+    # worker_ocpnodes reads a host as Perl does: 0 names no machine.
+    is_deeply [ pool_errors($ssh->(host => 0)) ], [ "worker pool 'w': $NONE" ], 'host: 0 is no host';
+    is_deeply [ pool_errors($ssh->(nodes => [ 'w1.k322.test', '0' ])) ],
+        [ "worker pool 'w': nodes[2] must be a host name or IP address, or a mapping with host, not '0'" ],
+        'a nodes entry 0 names no machine';
+    is_deeply [ pool_errors($ssh->(nodes => [ { host => 0 } ])) ], [ "worker pool 'w': nodes[1] needs a host" ],
+        'a nodes entry with host: 0 names none either';
+    is_deeply [ pool_errors({ provider => 'ssh' }) ], [ 'worker pool: name required', "workers[1]: $NONE" ],
+        'a pool without a name: by its place';
+    is_deeply [ pool_errors($ssh->(nodes => [])) ], [],
+        'nodes: [] passes: a pool with none yet, as nodes: 0 is for a counted pool';
+
+    is_deeply [ pool_errors($ssh->(host => 'w0.k322.test', nodes => [ 'w1.k322.test' ])) ],
+        [ "worker pool 'w': $BOTH" ], 'both: a line, host is not read';
+    is_deeply [ pool_errors($ssh->(host => 'w0.k322.test', nodes => [])) ], [ "worker pool 'w': $BOTH" ],
+        'host beside nodes: [] -- not read either, so no worker';
+
+    is_deeply [ pool_errors($ssh->(host => 'w0.k322.test')) ], [], 'host alone passes';
+    is_deeply [ pool_errors($ssh->(nodes => [ 'w1.k322.test', { host => 'w2.k322.test' } ])) ], [],
+        'nodes alone passes';
+
+    # A host or nodes of the wrong shape has its own line (claim 13), and no
+    # "needs host" beside it.
+    is_deeply [ pool_errors($ssh->(host => [ 'a' ])) ],
+        [ "worker pool 'w': host must be a string (a host name or IP address), not a list" ], 'host: a list';
+    is_deeply [ pool_errors($ssh->(host => JSON::PP::false)) ],
+        [ "worker pool 'w': host must be a string (a host name or IP address), not false" ], 'host: false';
+    is_deeply [ pool_errors($ssh->(host => 'w0.k322.test', nodes => 2)) ],
+        [ "worker pool 'w': nodes must be a list of hosts for an ssh pool (each a host name or IP "
+          . "address, or a mapping with host), not '2'" ],
+        'host beside a count: the count is the mistake';
+
+    is_deeply [ pool_errors({ name => 'w', provider => 'hetzner', server_type => 'cx22' }) ], [],
+        'a pool that counts its machines and sets no nodes: one machine, as before';
+
+    # ocp destroy asks _pool_nodes_errors alone how it reads the machines
+    # (k323), and reads a host beside nodes as apply does: not at all. The
+    # one-way lines are validate()'s, and stand between no cluster and its
+    # teardown.
+    my $c = config_for({ control_planes => $local });
+    is_deeply [ $c->_pool_nodes_errors($ssh->(host => 'w0.k322.test', nodes => [ 'w1.k322.test' ]), 'w') ], [],
+        '_pool_nodes_errors, which ocp destroy asks: host beside nodes is no line there';
+    is_deeply [ $c->_pool_nodes_errors($ssh->(nodes => [ '0' ]), 'w') ],
+        [ "w: nodes[1] must be a host name or IP address, or a mapping with host, not '0'" ],
+        '... an entry that names no machine is';
+};
+
+# The claim in worker_ocpnodes' terms: a pool that passes gets a worker for
+# each machine it names, and no other -- none only when it says nodes: [].
+subtest 'every ssh pool validate() passes is the workers worker_ocpnodes makes of it' => sub {
+    my $json = JSON::MaybeXS->new(canonical => 1);
+    for my $p ({}, { host => '' }, { host => 'w0.k322.test' }, { nodes => undef }, { nodes => [] },
+               { host => 'w0.k322.test', nodes => undef }, { nodes => [ 'w1.k322.test' ] },
+               { nodes => [ 'w1.k322.test', { host => 'w2.k322.test' } ] },
+               { host => 'w0.k322.test', nodes => [ 'w1.k322.test' ] }, { host => 'w0.k322.test', nodes => [] },
+               { host => '', nodes => [ 'w1.k322.test' ] }, { host => 0 }, { host => '0', nodes => [ 'w1.k322.test' ] },
+               { nodes => [ '0' ] }, { nodes => [ { host => '0' } ] }) {
+        my $pool  = { name => 'w', provider => 'ssh', %$p };
+        my $shown = $json->encode($p);
+        my $c     = config_for({ control_planes => $local, workers => [ $pool ] });
+        if (my @lines = $c->validate) {
+            pass "$shown: refused (@lines)";
+            next;
+        }
+        # A host Perl calls false ('', 0) names no machine: worker_ocpnodes
+        # reads it so.
+        my @named = grep { $_ } $pool->{host}, map { ref $_ ? $_->{host} : $_ } @{ $pool->{nodes} // [] };
+        my @got = map { $_->{spec}{host} } OCP::Cmd::Apply::CR::worker_ocpnodes($c);
+        ok @got || (ref $pool->{nodes} eq 'ARRAY' && !@{ $pool->{nodes} }),
+            "$shown: has a worker, unless it says it has none";
+        is_deeply [ sort @got ], [ sort @named ], "$shown: a worker for every machine it names, and no other";
+    }
+};
+
+# --- 17. location and image -------------------------------------------------------------
+
+subtest 'a location or image that is no string' => sub {
+    my %what = (server_type => 'a Hetzner server type like cx32', location => 'a Hetzner location like fsn1',
+                image => 'an image name like debian-13');
+    my $hz = { provider => 'hetzner', location => 'fsn1', server_type => 'cx32' };
+    for my $case ([ [ 'a' ], 'a list' ], [ { a => 1 }, 'a mapping' ],
+                  [ JSON::PP::true, 'true' ], [ JSON::PP::false, 'false' ]) {
+        my ($v, $shown) = @$case;
+        for my $key (qw( location image )) {
+            is_deeply [ errors_for({ control_planes => { %$hz, $key => $v } }) ],
+                [ "control_planes[1].$key: must be a string ($what{$key}), not $shown" ],
+                "control plane $key: $shown -- one line, no \"required\" beside it";
+        }
+        is_deeply [ errors_for({ control_planes => [ $local, { provider => 'ssh', host => 'cp.k322.test', image => $v } ] }) ],
+            [ "control_planes[2].image: must be a string ($what{image}), not $shown" ],
+            "control plane image: $shown -- whatever the provider";
+        for my $key (qw( server_type location image )) {
+            is_deeply [ pool_errors({ name => 'w', provider => 'hetzner', server_type => 'cx22', $key => $v }) ],
+                [ "worker pool 'w': $key must be a string ($what{$key}), not $shown" ], "pool $key: $shown";
+        }
+    }
+    is_deeply [ errors_for({ control_planes => { %$hz, image => 'debian-13' },
+                             workers => [ { name => 'w', provider => 'hetzner', server_type => 'cx22',
+                                            location => 'nbg1', image => 'debian-13', nodes => 2 } ] }) ],
+        [], 'strings pass';
+};
+
+# --- 18. nodes: N says each line once ---------------------------------------------------------
+
+subtest 'the mapping form with nodes: N says a line about its entry once' => sub {
+    is_deeply [ errors_for({ control_planes => { provider => 'hetzner', nodes => 3 } }) ],
+        [ 'control_planes[1]: server_type required for hetzner', 'control_planes[1]: location required for hetzner' ],
+        'server_type and location required: once, not for each of the three';
+    is_deeply [ errors_for({ control_planes => { provider => 'ssh', host => [ 'a' ], nodes => 3 } }) ],
+        [ 'control_planes[1].host: must be a string (a host name or IP address), not a list' ],
+        'a host that is a list: once';
+    is_deeply [ errors_for({ control_planes => { provider => 'ssh', host => '10.42.0.5', nodes => 3 } }) ],
+        [ 'network.pod_cidr (default 10.42.0.0/16) overlaps control_planes[1].host 10.42.0.5 '
+          . '-- set network.pod_cidr to a range nothing else uses' ],
+        'a host in the pod CIDR: once';
+    is_deeply [ errors_for({ control_planes => { provider => 'ssh', host => '10.43.0.5', nodes => 3 } }) ],
+        [ 'the service network (default 10.43.0.0/16) overlaps control_planes[1].host 10.43.0.5 '
+          . '-- ocp.yaml has no key to move it; use an address outside it' ],
+        'a host in the service network: once';
+    is_deeply [ errors_for({ control_planes => [ { provider => 'hetzner' }, { provider => 'hetzner' } ] }) ],
+        [ 'control_planes[1]: server_type required for hetzner', 'control_planes[1]: location required for hetzner',
+          'control_planes[2]: server_type required for hetzner', 'control_planes[2]: location required for hetzner' ],
+        'the list form: each entry is its own, and named as such';
 };
 
 done_testing;

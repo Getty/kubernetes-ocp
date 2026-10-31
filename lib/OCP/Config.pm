@@ -860,6 +860,15 @@ sub _resolve_path {
 # Validation
 #
 
+# The keys of a control plane and of a worker pool that name one thing each
+# (k315, k322), with what that is, as a line says it.
+our @ONE_NAME_KEYS = (
+    [ host        => 'a host name or IP address' ],
+    [ server_type => 'a Hetzner server type like cx32' ],
+    [ location    => 'a Hetzner location like fsn1' ],
+    [ image       => 'an image name like debian-13' ],
+);
+
 sub validate {
     my ($self) = @_;
     my @errors;
@@ -912,8 +921,10 @@ sub validate {
         . "list them one by one (control_planes: as a list), each with its own node_ip"
         if $shared && defined $raw_cps->{node_ip};
 
+    # The entries are checked one by one -- but with nodes: N they are N
+    # copies of one, whose lines were said N times over (k322): once is enough.
     my %node_ip_at;    # address (as an IP) => the control plane that has it
-    for my $i (0 .. $#$cps) {
+    for my $i (0 .. ($shared ? 0 : $#$cps)) {
         my $cp = $cps->[$i];
         my $idx = $i + 1;
         unless (ref $cp eq 'HASH') {
@@ -935,13 +946,12 @@ sub validate {
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
-        # host and server_type (k315): one name each, which the provider is
-        # handed and the OCPNode's spec carries as is. A list passed for being
-        # true, and named the machine ARRAY(0x...). One line for the shape,
-        # not a "required" beside it.
+        # host, server_type, location and image (k315, k322): one name each,
+        # which the provider is handed and the OCPNode's spec carries as is. A
+        # list passed for being true, and named the machine ARRAY(0x...). One
+        # line for the shape, not a "required" beside it.
         my %malformed;
-        for my $s ([ host => 'a host name or IP address' ],
-                   [ server_type => 'a Hetzner server type like cx32' ]) {
+        for my $s (@ONE_NAME_KEYS) {
             my ($key, $what) = @$s;
             my $err = _not_a_string($cp->{$key}, $what) // next;
             push @errors, "control_planes[$idx].$key: $err";
@@ -952,7 +962,7 @@ sub validate {
             push @errors, "control_planes[$idx]: server_type required for hetzner"
                 unless $cp->{server_type} || $malformed{server_type};
             push @errors, "control_planes[$idx]: location required for hetzner"
-                unless $cp->{location};
+                unless $cp->{location} || $malformed{location};
         }
 
         if ($prov eq 'ssh') {
@@ -1045,13 +1055,23 @@ sub validate {
                 . OCP::Choices::or_list(OCP::Provider->types) . ")";
         }
 
-        # host and nodes (k315), see _pool_nodes_errors. Which nodes: a pool
-        # takes hangs on its provider, so only a known one is asked.
-        if (defined(my $err = _not_a_string($w->{host}, 'a host name or IP address'))) {
-            push @errors, "$where: host $err";
+        # host, server_type, location and image (k315, k322): one name each,
+        # which worker_ocpnodes copies into every OCPNode of the pool.
+        for my $s (@ONE_NAME_KEYS) {
+            my ($key, $what) = @$s;
+            if (defined(my $err = _not_a_string($w->{$key}, $what))) {
+                push @errors, "$where: $key $err";
+            }
         }
+
+        # nodes (k315), see _pool_nodes_errors. Which nodes: a pool takes
+        # hangs on its provider, so only a known one is asked. An ssh pool's
+        # host beside it is validate()'s own (k322), see
+        # _ssh_pool_machines_errors.
         push @errors, $self->_pool_nodes_errors($w, $where)
             if !ref $wprov && $wprov ne '' && OCP::Provider->known_type($wprov);
+        push @errors, $self->_ssh_pool_machines_errors($w, $where)
+            if !ref $wprov && $wprov eq 'ssh';
 
         # labels / taints (k211): what the pool's OCPNodes carry.
         push @errors, OCP::NodeMeta->label_errors("$where: labels", $w->{labels})
@@ -1113,7 +1133,8 @@ sub _pool_where {
 # -- and every other provider counts them, nodes: N. Counted, a list
 # numified to its address and ran out of memory building OCPNodes; named, a
 # boolean died inside Perl ("Not a HASH reference"), and a count named no
-# machine at all. Only for a pool whose provider is known.
+# machine at all. Only for a pool whose provider is known. An entry Perl
+# calls false (0) names no machine either: worker_ocpnodes reads it so (k322).
 sub _pool_nodes_errors {
     my ($self, $pool, $where) = @_;
     my $nodes = $pool->{nodes};
@@ -1137,11 +1158,11 @@ sub _pool_nodes_errors {
             if (defined(my $err = _not_a_string($host, 'a host name or IP address'))) {
                 push @errors, "$where: nodes[$n].host $err";
             }
-            elsif (!length($host // '')) {
+            elsif (!$host) {
                 push @errors, "$where: nodes[$n] needs a host";
             }
         }
-        elsif (ref $entry || !length($entry // '')) {
+        elsif (ref $entry || !$entry) {
             push @errors, "$where: nodes[$n] must be a host name or IP address, or a mapping "
                 . "with host, not " . _shown_value($entry);
         }
@@ -1149,8 +1170,33 @@ sub _pool_nodes_errors {
     return @errors;
 }
 
+# An ssh pool names its machines one way (k322): host for one, or nodes for a
+# list. With neither, worker_ocpnodes made no OCPNode, and nothing said so;
+# with both, it reads nodes and drops host, so a host beside nodes: [] was no
+# worker either. nodes: [] alone passes: it says the pool has none yet, as
+# nodes: 0 does for a pool that counts its machines. A host is read as
+# worker_ocpnodes reads it -- one Perl calls false ('', 0) names no machine --
+# and one of the wrong shape has its own line, so counts as set here.
+#
+# validate()'s alone, not _pool_nodes_errors': ocp destroy asks that one for
+# how it reads the machines (k323), and reads host beside nodes as apply
+# does, not at all -- no reason to stand between a cluster and its teardown.
+sub _ssh_pool_machines_errors {
+    my ($self, $pool, $where) = @_;
+    my ($host, $nodes) = @{$pool}{qw( host nodes )};
+    my $has_host = ref $host || $host;
+
+    return $has_host ? () : "$where: an ssh pool needs host (one machine) or nodes (a list of "
+        . "machines); with neither it gets no worker -- nodes: [] says it has none yet"
+        unless defined $nodes;
+    return "$where: an ssh pool takes host (one machine) or nodes (a list of machines), not both; "
+        . "beside nodes, host is not read"
+        if $has_host && ref $nodes eq 'ARRAY';
+    return ();
+}
+
 # "must be a string (WHAT), not a list" for a list, a mapping or a boolean,
-# else undef (k315): host and server_type are one name each.
+# else undef (k315): host, server_type, location and image are one name each.
 sub _not_a_string {
     my ($value, $what) = @_;
     return undef unless ref $value;
@@ -1405,7 +1451,9 @@ sub _taken_addresses {
     my ($self, $net) = @_;
     my @taken;
     my $cps = $self->control_planes;
-    for my $i (0 .. $#$cps) {
+
+    # nodes: N is N copies of one entry, held against the networks once (k322).
+    for my $i (0 .. ($self->_control_planes_shared ? 0 : $#$cps)) {
         next unless ref $cps->[$i] eq 'HASH';    # validate() has its line (k296)
         for my $key (qw( host public_ip private_ip )) {
             my $addr = $cps->[$i]{$key};

@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` refuses an ssh worker pool with neither `host` nor
+      `nodes`, which got no worker and said nothing, and one with both,
+      whose `host` was never read; `nodes: []` says a pool has no machines
+      yet, and a host of `0` names none. A control plane's `location` or
+      `image` and a pool's `server_type`, `location` or `image` that is a
+      list, a mapping or a boolean is refused too. The mapping form with
+      `nodes: N` says each of its lines once.
     - `ocp apply` refuses `gpu.enabled`, `gpu.toolkit`, `gpu.amd.labeller`,
       `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`, `nocert` and
       `system.ntp` when they are not true or false -- `gpu: { enabled: no }`
