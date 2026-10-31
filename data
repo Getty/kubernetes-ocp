@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-10-31T05:13:47Z
+created: 2026-10-31T04:25:43Z
+id: 295
+priority: low
+started: 2026-10-31T05:13:47Z
+status: done
+tags:
+- k8s
+- cleanup
+title: Drop the now-no-op OCP::K8s->register calls in robocop's Controller and OCP::Cmd::SSH
+updated: 2026-10-31T05:13:47Z
+---
+
+Follow-up to k283. Since k283, OCP::Kubernetes->_build_api calls OCP::K8s->register itself, and register is lazy (it pushes onto `$api->with`, and does nothing if the entry is already there). Three callers still call register on an api that OCP::Kubernetes already registered:
+- robocop: OCP::Robocop::Controller::_build_kube (robocop lane). Its comment "without which OCPNode and OCPNodeProvider are not addressable" no longer holds.
+- OCP::Cmd::SSH::_node_names and _lookup_by_name (apply/ssh lane).
+
+These calls are harmless but misleading. Done = remove them, fix the comment, and keep t/229, t/235, t/237 and the robocop controller tests green. If a caller builds its api without OCP::Kubernetes, keep its call.
+
+2026-10-31 04:55 Progress (ocp-worker): Controller::_build_kube and Cmd::SSH::_node_names/_lookup_by_name built on OCP::Kubernetes->api (registered since k283) -> register calls removed, comment fixed, unused 'use OCP::K8s' dropped from SSH.pm. All other register callers (DeployImage, Node::Ls/Rm/Add/TrustHost, Provider::*, Destroy, Kubeconfig, Role::Cmd::Machines, Apply::K8s) build via Kubernetes::REST::Kubeconfig directly -> kept. OCP::K8s comment naming these callers reworded. The 'sub with' stubs k283 added to the FakeAPIs of t/229/t/235/t/237 existed only for these calls -> removed. Binding run pending.
+
+2026-10-31 05:11 Done (ocp-worker). lib/OCP/Robocop/Controller.pm _build_kube now returns OCP::Kubernetes->new(...)->api; the comment says the api arrives registered (k283). lib/OCP/Cmd/SSH.pm: the register calls in _node_names and _lookup_by_name are gone, and so is the now-unused 'use OCP::K8s' (OCP::Kubernetes and OCP::Node load it). lib/OCP/K8s.pm: the register comment no longer names these callers. Every other register caller (DeployImage, Node::Ls/Rm/Add/TrustHost, Provider::Add/Rm/Ls, Destroy, Kubeconfig, Role::Cmd::Machines, Apply::K8s) builds its api through Kubernetes::REST::Kubeconfig directly or registers it itself, so those calls stay. Tests: the 'sub with' stubs k283 put on the FakeAPIs of t/229, t/235 and t/237 existed only for the removed calls, so I removed them; the fakes again match what OCP::Cmd::SSH uses. Mutants in scratchpad copy, both killed: (M6) drop register from OCP::Kubernetes::_build_api -> t/45 'OCPNode is addressable' on the controller's kube goes red, so the controller relies on OCP::Kubernetes; (M7) put register back into SSH _lookup_by_name -> t/229/t/235/t/237 red. Binding: DOCKER_BUILDKIT=0 make test on t/229 t/235 t/237 t/45 t/283 t/22 t/43 t/275 + 19 robocop/controller files (t/16 t/31 t/33 t/55 t/67 t/88 t/92 t/129 t/155 t/156 t/179 t/186 t/217 t/223 t/231 t/232x3 t/242): PASS. Not user-visible, so no Changes bullet.
+
+Committed 1043138
+
+Committed 1043138
