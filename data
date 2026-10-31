@@ -1,0 +1,55 @@
+---
+class: standard
+completed: 2026-10-31T09:27:21Z
+created: 2026-10-31T08:10:28Z
+id: 320
+priority: medium
+started: 2026-10-31T09:27:21Z
+status: done
+tags:
+- config
+- validation
+title: 'validate(): gpu.enabled: no and the other switches take any string as on,
+  as robocop did before k315'
+updated: 2026-10-31T09:27:21Z
+---
+
+Found under k315 (ocp-choices-worker, 2026-10-31). The same bug as k315's robocop: no, at other switches: a non-empty string is true in Perl, so a YAML 1.1 word (no, off, n, "false", False) reads as ON.
+- gpu.enabled (`gpu: { enabled: no }` turns the GPU stack on)
+- gpu.toolkit
+- gpu.amd.labeller, gpu.amd.metrics, gpu.amd.integrated
+- lbipam
+- nocert
+- system.ntp
+
+Shape of the fix (k315 precedent): refuse anything but a YAML boolean or 1/0 in validate(), with the "; write KEY: false" hint for a string that spells a boolean (Config::_is_switch / _boolean_hint), and make each accessor refuse the same way (one helper per switch, so validate() and the accessor cannot disagree). Check every reader of each switch, as k315 did for robocop_enabled. gpu.amd.integrated: coordinate with k253 (the same key, cluster-wide) -- do this after k253 lands or include it there.
+
+Done = each switch refuses a string in validate() with a hint, the accessors agree (t/296-style sweep), the three real configs (cihq, citiai, amdlab) still give 0 errors.
+
+2026-10-31 08:43 Work done (ocp-choices-worker): lib/OCP/Config.pm and t/296. The patch is w-choices320/k320.patch against 1f5ff77; nothing is committed.
+- There is one table, %SWITCH_DEFAULTS: gpu.enabled, gpu.toolkit, gpu.amd.labeller, gpu.amd.metrics, gpu.amd.integrated, lbipam, nocert and system.ntp. For any value that is neither true nor false (nor 1/0), validate() lists "PATH: must be true or false, not X; write KEY: true|false". Each accessor croaks with that same line (_switch), so the two can't disagree. robocop.enabled now uses the same line maker (_switch_error); its text is unchanged. The accessors return a plain 0/1 now.
+- Readers:
+  - gpu_enabled: Apply/Drift 750, Update 303, Apply/AMDGPU 213/255/279/569, Apply/Bootstrap 539, Apply/CR 209, Apply/Workloads 457/757, Node/Add 888.
+  - gpu_toolkit: Drift 781, Bootstrap 541, CR 211, Workloads 513/901.
+  - gpu_amd_labeller, gpu_amd_metrics: AMDGPU 220/221.
+  - gpu_amd_integrated: no reader yet; k253 does the wiring.
+  - lbipam: Drift 410, Apply/Deploy 190.
+  - no_cert: Drift 352, Deploy 169, Update 297, and OCP::Drift skip_if (used by ocp status).
+  - ntp_enabled: Bootstrap 538 (to OCP::Rex, the Rexfile and prepare_node), CR 223.
+  - OCP::Node and robocop read the CR flags (gpu_flags_from_cr, system_flags_from_cr), not OCP::Config, so the Rexfile gets a plain value either way.
+- What now dies that used to read on (a malformed switch only):
+  - ocp apply: no change, validate() already gates it.
+  - ocp update: refuses with the line before any update (_plan_component reads no_cert and gpu_enabled).
+  - ocp node add --gpu: dies with the line after the node is Ready (_ensure_gpu_stack reads gpu_enabled outside an eval).
+  - ocp status: drift detection fails as a whole ("Cannot detect drift: nocert: ..."); before, it skipped the cert-manager probe.
+- Tests: t/296 claims 14 (every switch is true or false) and 15 (each accessor reads it as validate() does, with a drift guard against the table). Red on HEAD with 161 failed asserts; green on k320. Mutants: 13/13 killed. Real configs cihq, citiai and amdlab: 0 errors, and every accessor reads the same value as on HEAD.
+- Binding: make test on a clean copy of HEAD+k320 PASS, Files=225, Tests=3584, exit 0. No file skipped itself; non-verbose prove does not list skips inside a test.
+- Also found (suggestions for new cards, not done here):
+  (1) A system: that is no mapping makes ntp_enabled, timezone and locale die inside Perl, and validate() has no line for it.
+  (2) gpu: and system: have no unknown-key check, so gpu: {enable: false} leaves the GPU stack on.
+  (3) ocp status drift fails as a whole on a malformed nocert (OCP::Drift skip_if); status/state lane.
+  (4) ocp node add --gpu reads gpu_enabled only after the join; apply lane.
+
+2026-10-31 08:43 To review: k320.patch (scratchpad w-choices320) against 1f5ff77. Proposed subject: "Refuse a gpu, gpu.amd, lbipam, nocert or system.ntp switch that is neither true nor false, in validate() and its accessor alike (k320)". k322.patch builds on it.
+
+Committed as 89102c9
