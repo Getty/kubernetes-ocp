@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-10-31T10:58:29Z
+created: 2026-10-31T02:30:00Z
+id: 265
+priority: low
+started: 2026-10-31T10:58:29Z
+status: done
+tags:
+- hetzner
+- init
+- stderr
+title: 'ocp init: say why the Hetzner catalogue could not be read'
+updated: 2026-10-31T10:58:29Z
+---
+
+Found by k260. `_prompt_hetzner_control_plane` prints `[!!] Could not read the Hetzner catalogue — keeping the defaults` and drops the exception, so a 401 (bad token), a 429 or a network failure gets no diagnosis on STDERR (house rule: an error line carries its diagnosis).
+
+Done when the line names the cause (status/message from WWW::Hetzner, one line, no token in it), init still never fails over it, and a test pins a 401 and a network error. Lane: ocp-apply-worker.
+
+2026-10-31 10:45 Done as a patch, not committed. Patch (against 87b31b5, applies unchanged on 984e43c): /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-init265/k265.patch. Changes: Init.pm keeps the exception from the catalogue read and prints "[!!] Could not read the Hetzner catalogue: <what WWW::Hetzner raised> — keeping the defaults". The new _catalogue_error makes it one line (strips croak's and LWP's " at FILE line N.", collapses whitespace) and masks the token as ******** if an answer echoes it. The step still returns, so init never fails over it. Tests: new t/265-init-catalogue-error.t (24 asserts) covers a 401 with Hetzner's body ("unable to authenticate"), a 401 with no API message whose body echoes the token ("401 Unauthorized Bearer ********"), and a refused loopback connection through the real LWPIO ("Can't connect to 127.0.0.1:PORT (Connection refused)"). t/260's catalogue-failure regex is widened to the new shape: same claim, now with the reason. Red first: 3 asserts failed on HEAD. Mutants 5/5 killed (no mask, trailing-only location strip, no whitespace collapse, no reason, rethrow). Binding make test on t/265 t/260 t/41 t/70 t/215: PASS, 42 tests. Full binding suite on HEAD+k265+k289: PASS, 234 files, 3648 tests, no file skipped. Also found, for p5-www-hetzner if wanted: WWW::Hetzner 0.102 drops the HTTP status and the error code when the body has a message, so Hetzner's own 401 reads "unable to authenticate" with no 401; LWPIO's transport message says the reason twice ("(Connection refused) Connection refused"). Also found: this is the third _oneline-shaped helper (Keys::Secure, Role::Cmd::Machines, now Init).
+
+Committed as 382b96e
