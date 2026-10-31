@@ -1,6 +1,8 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - ocp apply on an existing cluster says whether it created, updated or
+      left the Cilium Gateway alone, and counts a change in its summary.
     - ocp apply reports a failed LB-IPAM setup or node-CR reconcile on
       STDERR and ends APPLY INCOMPLETE with a non-zero exit; before, it
       printed a [WARN] on STDOUT and exited 0. The registry.local DNS, NFD

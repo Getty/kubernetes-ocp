@@ -391,14 +391,18 @@ sub reconcile_components {
     {
         $checked++;
         print "  [..] Checking Cilium Gateway...\n";
-        if (eval { $self->_setup_cilium_gateway($config); 1 }) {
-            print "  [ok] Cilium Gateway up to date\n";
-        } else {
+        # The step says whether it created, updated or left the Gateway alone
+        # (k300); the [ok] line and the update count follow it (k307).
+        eval {
+            $updated += $self->_report_component('Cilium Gateway',
+                $self->_setup_cilium_gateway($config));
+            1;
+        } or do {
             # "MUST succeed" in the deploy path: STDERR and counted (k231).
             print STDERR "  [!!] Cilium Gateway setup failed: $@";
             print STDERR "\n" unless $@ =~ /\n\z/;
             push @{ $self->{_failed_components} }, 'Cilium Gateway';
-        }
+        };
     }
 
     # LB-IPAM stays behind the same opt-in as in the deploy path.

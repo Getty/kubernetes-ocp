@@ -393,6 +393,8 @@ my %STUB_RETURN = (
     _setup_gpu_operator     => 'unchanged',
     _configure_registry_dns => 0,
     _run_remedy             => 0,
+    # report_component's vocabulary since k300; the reconcile reports it (k307).
+    _setup_cilium_gateway   => 'unchanged',
 );
 
 my @touched;
@@ -1637,6 +1639,35 @@ subtest 'k278: fresh deploy -- LB-IPAM unfinished, registry.local DNS said, both
         unlike $r->{err}, qr/\n\n/, 'DNS: one line, no blank one after it';
         unlike $r->{out}, qr/registry\.local DNS setup failed/, 'DNS: nothing of it on STDOUT';
         is_deeply $r->{failed}, [], 'DNS: not counted';
+    }
+};
+
+
+#
+# k307: the reconcile closed the Gateway block with "[ok] Cilium Gateway up
+# to date" whatever the step did. Since k300 the step says it: deployed,
+# updated or unchanged. The [ok] line and the summary's update count follow
+# that verdict, through report_component, like the other components'.
+#
+
+subtest 'k307: reconcile -- the Cilium Gateway line and count follow what the step did' => sub {
+    for my $case (
+        [ unchanged => 'Cilium Gateway up to date',                0 ],
+        [ updated   => 'Cilium Gateway updated (manifest changed)', 1 ],
+        [ deployed  => 'Cilium Gateway deployed (was missing)',     1 ],
+    ) {
+        my ($outcome, $line, $counted) = @$case;
+        no warnings 'redefine';
+        local *OCP::Cmd::Apply::_setup_cilium_gateway = sub { $outcome };
+        my $r = reconcile(yaml => "nocert: true\n");
+        like $r->{out}, qr/^  \[ok\] \Q$line\E$/m, "$outcome: [ok] $line";
+        is scalar(() = $r->{out} =~ /^  \[ok\] Cilium Gateway /mg), 1, "$outcome: one [ok] line for it";
+        if ($counted) {
+            like $r->{out}, qr/^  1 component\(s\) updated, \d+ checked\.$/m, "$outcome: the one update counted";
+        } else {
+            like $r->{out}, qr/^  All \d+ component\(s\) up to date\.$/m, "$outcome: nothing counted";
+        }
+        is_deeply $r->{failed}, [], "$outcome: nothing failed";
     }
 };
 
