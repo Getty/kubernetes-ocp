@@ -96,6 +96,10 @@ has gpu_driver    => (is => 'ro');
 # CDI specs, because the operator runs no toolkit DaemonSet that would. Undef
 # leaves the Rexfile's default (toolkit true, no CDI of OCP's) in charge.
 has gpu_toolkit   => (is => 'ro');
+# gpu.amd.integrated (k250): set up integrated AMD GPUs on every node of the
+# cluster. Its CR channel is still to come; until then nobody sets it, and a
+# node's own spec.gpu is the only way in. See _install_kubernetes.
+has gpu_amd_integrated => (is => 'ro');
 
 # ocp.yaml's system: block, cluster-wide like the GPU switches above and
 # carried the same way, on the OCPNodeProvider CR (OCP::Provider->
@@ -912,6 +916,18 @@ sub _install_kubernetes {
     # default -- toolkit true -- in charge.
     my $gpu_toolkit = $self->gpu_toolkit;
     $params{gpu_toolkit} = $gpu_toolkit ? 1 : 0 if defined $gpu_toolkit;
+
+    # gpu_amd_integrated (k250): the Rexfile leaves an integrated AMD GPU (a
+    # Ryzen iGPU or APU) alone unless asked -- detection runs on every node,
+    # and a control plane's iGPU is nobody's GPU node. Asked means this node
+    # was joined as a GPU node on purpose (`ocp node add --gpu`, spec.gpu
+    # true), or the cluster said so for every node (gpu.amd.integrated).
+    # Nothing is passed otherwise, and nothing where gpu is 0 (the gpu.enabled
+    # kill switch, or spec.gpu false): no detection runs there at all. The
+    # Rexfile's default (0) decides.
+    $params{gpu_amd_integrated} = 1
+        if ($cr_gpu || $self->gpu_amd_integrated)
+        && !(exists $params{gpu} && !$params{gpu});
 
     # tls-san is a control-plane concern only: an additional server has to carry
     # every control-plane address in its apiserver cert or TLS against it fails
@@ -1852,6 +1868,16 @@ F<ocp.yaml>'s C<gpu.toolkit>, carried the same way (k223), 0/1.  0 means the
 GPU Operator runs no toolkit DaemonSet, so the install task writes the node's
 CDI specs itself.  Unset leaves the Rexfile's default: toolkit true, no CDI
 specs of OCP's.
+
+=item gpu_amd_integrated
+
+F<ocp.yaml>'s C<gpu.amd.integrated> (k250), 0/1: set up integrated AMD GPUs
+(a Ryzen iGPU or APU) on every node.  OR-ed with the OCPNode's own
+C<spec.gpu> — a node joined with C<ocp node add --gpu> opts in by itself — into
+the install task's C<gpu_amd_integrated =E<gt> 1>.  Nothing is passed when
+neither says yes, or when C<gpu> is 0 for the node; the Rexfile then leaves
+integrated AMD GPUs alone.  No caller sets it yet: the OCPNodeProvider CR
+channel that carries it is still to come.
 
 =item timezone / locale / ntp
 

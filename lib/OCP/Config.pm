@@ -467,6 +467,100 @@ sub gpu_driver {
     return $driver;
 }
 
+# gpu.amd (k250): the Kubernetes side of an AMD GPU node. gpu.driver stays
+# vendor-neutral (who installs the kernel driver); everything here is about
+# what the cluster runs on AMD nodes once the driver is there. Absent means
+# the defaults.
+#
+#   allocation       how an AMD node's GPUs are handed out by default:
+#                    device-plugin (amd.com/gpu), dra (ResourceClaims against
+#                    DeviceClass gpu.amd.com) or none. A node overrides it with
+#                    the $AMD_GPU_ALLOCATION_LABEL label, so one cluster offers
+#                    both paths; which workload gets which is not OCP's call.
+#   resource_naming  single or mixed, handed to the device plugin as is.
+#   labeller         AMD's node labeller (amd.com/gpu.* labels) on AMD nodes.
+#   metrics          AMD's device-metrics-exporter. Off by default: upstream
+#                    serves Instinct and Radeon AI only, not Ryzen APUs.
+#   integrated       set up integrated AMD GPUs (the iGPU of a Ryzen CPU or
+#                    APU) on every node. Off by default: detection runs on
+#                    every node, control planes included, and a Hetzner AX42
+#                    has a Phoenix iGPU nobody asked OCP to drive. A node
+#                    joined with `ocp node add --gpu` opts in on its own
+#                    (OCP::Node ORs the two).
+our @GPU_AMD_ALLOCATIONS     = qw( device-plugin dra none );
+our @GPU_AMD_RESOURCE_NAMING = qw( single mixed );
+our @GPU_AMD_KEYS            = qw( allocation resource_naming labeller metrics integrated );
+
+# The node labels that go with gpu.amd, named once for every reader and writer
+# (the stack's affinity terms, ocp status, the Rexfile through its params).
+#
+#   $AMD_GPU_PRESENT_LABEL     'true' on a node where the host step accepted at
+#                              least one AMD GPU. The cluster stack selects on
+#                              it rather than on NFD's pci-*_1002 labels, which
+#                              cannot tell an iGPU the integrated gate skipped
+#                              from one OCP set up.
+#   $AMD_GPU_ALLOCATION_LABEL  per-node override of gpu.amd.allocation, same
+#                              values; set with `ocp node add --label` or by
+#                              the GPU management system.
+#   $AMD_GPU_GFX_TARGET_LABEL  the node's gfx target (gfx1151), which nothing
+#                              upstream publishes. A node with more than one
+#                              target gets one label per target instead, this
+#                              key plus ".<gfx>", valued with the count.
+our $AMD_GPU_PRESENT_LABEL    = 'ocp.internal/amd-gpu.present';
+our $AMD_GPU_ALLOCATION_LABEL = 'ocp.internal/amd-gpu.allocation';
+our $AMD_GPU_GFX_TARGET_LABEL = 'ocp.internal/amd-gpu.gfx-target';
+
+sub gpu_amd_config {
+    my ($self) = @_;
+    my $amd = $self->gpu_config->{amd};
+    return {} unless defined $amd;
+    croak 'gpu.amd must be a mapping ('.OCP::Choices::or_list(@GPU_AMD_KEYS).')'
+        unless ref $amd eq 'HASH';
+    return $amd;
+}
+
+# Croak on an unknown value, as gpu_driver does: a typo would otherwise mean
+# the default in silence, and the wrong allocation path on every AMD node.
+sub gpu_amd_allocation {
+    my ($self) = @_;
+    return $self->_gpu_amd_choice('allocation', 'device-plugin', @GPU_AMD_ALLOCATIONS);
+}
+
+sub gpu_amd_resource_naming {
+    my ($self) = @_;
+    return $self->_gpu_amd_choice('resource_naming', 'single', @GPU_AMD_RESOURCE_NAMING);
+}
+
+# 0/1 for the same reason gpu_toolkit is.
+sub gpu_amd_labeller   { my $v = shift->gpu_amd_config->{labeller};   return 1 unless defined $v; return $v ? 1 : 0 }
+sub gpu_amd_metrics    { my $v = shift->gpu_amd_config->{metrics};    return 0 unless defined $v; return $v ? 1 : 0 }
+sub gpu_amd_integrated { my $v = shift->gpu_amd_config->{integrated}; return 0 unless defined $v; return $v ? 1 : 0 }
+
+sub _gpu_amd_choice {
+    my ($self, $key, $default, @choices) = @_;
+    my $value = $self->gpu_amd_config->{$key} // $default;
+    croak "gpu.amd.$key must be ".OCP::Choices::or_list(@choices)
+        .", not "._shown_value($value)
+        unless _is_choice($value, @choices);
+    return $value;
+}
+
+sub _is_choice {
+    my ($value, @choices) = @_;
+    return 0 if ref $value;
+    return grep({ $_ eq $value } @choices) ? 1 : 0;
+}
+
+# A value as an error message quotes it. YAML hands `false` back as a boolean
+# object, which would otherwise read as '0'.
+sub _shown_value {
+    my ($value) = @_;
+    return JSON::MaybeXS::is_bool($value) ? ($value ? 'true' : 'false')
+         : ref $value eq 'HASH'           ? 'a mapping'
+         : ref $value eq 'ARRAY'          ? 'a list'
+         :                                  "'$value'";
+}
+
 #
 # Status file (.ocp/status.yaml)
 #
@@ -631,6 +725,7 @@ sub validate {
 
     push @errors, $self->_validate_network;
     push @errors, $self->_validate_cilium;
+    push @errors, $self->_validate_gpu_amd;
     push @errors, $self->_validate_pod_cidr(
         ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {});
 
@@ -779,6 +874,37 @@ sub _validate_cilium {
         elsif (defined $c->{devices} && exists $hv->{devices}) {
             push @errors, "cilium.devices and cilium.helm_values.devices: set one of them, not both";
         }
+    }
+    return @errors;
+}
+
+# gpu.amd (k250). Report-only, same contract as validate(); the accessors
+# croak on the same values at the point of use. An unknown key is reported
+# too: a misspelt `alocation` would otherwise leave the default in force.
+sub _validate_gpu_amd {
+    my ($self) = @_;
+    my $gpu = $self->spec->{gpu};
+    return () unless ref $gpu eq 'HASH' && defined $gpu->{amd};
+
+    my $amd = $gpu->{amd};
+    my $keys = OCP::Choices::or_list(@GPU_AMD_KEYS);
+    return ("gpu.amd: must be a mapping ($keys)") unless ref $amd eq 'HASH';
+
+    my @errors;
+    for my $k (sort keys %$amd) {
+        push @errors, "gpu.amd.$k: unknown key (must be $keys)"
+            unless grep { $_ eq $k } @GPU_AMD_KEYS;
+    }
+
+    my %choices = (
+        allocation      => \@GPU_AMD_ALLOCATIONS,
+        resource_naming => \@GPU_AMD_RESOURCE_NAMING,
+    );
+    for my $k (sort keys %choices) {
+        my $v = $amd->{$k};
+        next if !defined $v || _is_choice($v, @{ $choices{$k} });
+        push @errors, "gpu.amd.$k: invalid value "._shown_value($v)
+            .' (must be '.OCP::Choices::or_list(@{ $choices{$k} }).')';
     }
     return @errors;
 }

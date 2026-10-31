@@ -276,6 +276,108 @@ YAML
 }
 
 #
+# gpu.amd (k250): how an AMD node's GPUs reach workloads. OCP offers every
+# path and picks none as policy, so the cluster carries a default that a node
+# label overrides. Absent means the defaults; a typo must not mean them.
+#
+
+sub amd_config {
+    my ($name, $yaml) = @_;
+    my $f = path($tmpdir)->child("$name.yaml");
+    $f->spew("name: $name\ncontrol_planes:\n  - provider: local\n" . ($yaml // ''));
+    return OCP::Config->new(file => $f->stringify, ocp => $ocp);
+}
+
+{
+    my $c = amd_config('amd-absent');
+    is($c->gpu_amd_allocation, 'device-plugin',
+        'no gpu.amd: allocation defaults to the device plugin (the path with AMD evidence on gfx1151)');
+    is($c->gpu_amd_resource_naming, 'single', 'resource_naming defaults to single');
+    is($c->gpu_amd_labeller, 1, 'labeller defaults on');
+    is($c->gpu_amd_metrics, 0, 'metrics defaults off: upstream does not serve APUs');
+    is($c->gpu_amd_integrated, 0,
+        'integrated defaults off: an iGPU (an AX42 control plane has one) is not set up unasked');
+    is_deeply([ $c->validate ], [], 'and validate has nothing to say');
+
+    # gpu: present, amd: not -- the NVIDIA switches alone change nothing here.
+    my $n = amd_config('amd-nvidia-only', "gpu:\n  driver: operator\n");
+    is($n->gpu_amd_allocation, 'device-plugin', 'a gpu mapping without amd: keeps the defaults');
+}
+
+{
+    my $c = amd_config('amd-set', <<'YAML');
+gpu:
+  amd:
+    allocation: dra
+    resource_naming: mixed
+    labeller: false
+    metrics: true
+    integrated: true
+YAML
+    is($c->gpu_amd_allocation, 'dra', 'allocation from ocp.yaml');
+    is($c->gpu_amd_resource_naming, 'mixed', 'resource_naming from ocp.yaml');
+    is($c->gpu_amd_labeller, 0, 'a YAML false comes back as a plain 0, like gpu.toolkit');
+    is($c->gpu_amd_metrics, 1, 'a YAML true comes back as a plain 1');
+    is($c->gpu_amd_integrated, 1, 'integrated: true as a plain 1');
+    ok(!ref $c->gpu_amd_labeller && !ref $c->gpu_amd_metrics && !ref $c->gpu_amd_integrated,
+        'no boolean objects leak out');
+    is(amd_config('amd-int-off', "gpu:\n  amd:\n    integrated: false\n")->gpu_amd_integrated,
+        0, 'integrated: false as a plain 0');
+    is_deeply([ $c->validate ], [], 'a valid gpu.amd passes validate');
+
+    is(amd_config('amd-none', "gpu:\n  amd:\n    allocation: none\n")->gpu_amd_allocation,
+        'none', 'none is a valid allocation: only nodes labelled for a path get one');
+}
+
+{
+    my $c = amd_config('amd-bad-alloc', "gpu:\n  amd:\n    allocation: device_plugin\n");
+    my $err = do { local $@; eval { $c->gpu_amd_allocation }; $@ };
+    like($err, qr/gpu\.amd\.allocation must be device-plugin, dra, or none, not 'device_plugin'/,
+        'an unknown allocation croaks instead of silently meaning the default');
+    is_deeply([ grep { /gpu\.amd/ } $c->validate ],
+        [ "gpu.amd.allocation: invalid value 'device_plugin' (must be device-plugin, dra, or none)" ],
+        'validate reports it too, report-only');
+
+    my $n = amd_config('amd-bad-naming', "gpu:\n  amd:\n    resource_naming: product\n");
+    $err = do { local $@; eval { $n->gpu_amd_resource_naming }; $@ };
+    like($err, qr/gpu\.amd\.resource_naming must be single or mixed, not 'product'/,
+        "an unknown resource_naming croaks (upstream's product strategy is not offered yet)");
+    ok((grep { /^gpu\.amd\.resource_naming: invalid value 'product'/ } $n->validate),
+        'and validate reports it');
+
+    my $b = amd_config('amd-bool-alloc', "gpu:\n  amd:\n    allocation: false\n");
+    $err = do { local $@; eval { $b->gpu_amd_allocation }; $@ };
+    like($err, qr/not false\b/, 'a YAML boolean is quoted as false, not as 0');
+}
+
+{
+    my $c = amd_config('amd-typo-key', "gpu:\n  amd:\n    alocation: dra\n");
+    is_deeply([ grep { /gpu\.amd/ } $c->validate ],
+        [ 'gpu.amd.alocation: unknown key (must be allocation, resource_naming, labeller, metrics, or integrated)' ],
+        'a misspelt key is reported: it would otherwise leave the default in force');
+
+    my $s = amd_config('amd-scalar', "gpu:\n  amd: true\n");
+    is_deeply([ grep { /gpu\.amd/ } $s->validate ],
+        [ 'gpu.amd: must be a mapping (allocation, resource_naming, labeller, metrics, or integrated)' ],
+        'gpu.amd that is not a mapping is reported');
+    my $err = do { local $@; eval { $s->gpu_amd_labeller }; $@ };
+    like($err, qr/gpu\.amd must be a mapping/, 'and the accessors refuse to read it');
+}
+
+{
+    # The node labels are named once, here, so the stack's affinity terms,
+    # ocp status and the Rexfile agree on them.
+    is($OCP::Config::AMD_GPU_PRESENT_LABEL, 'ocp.internal/amd-gpu.present',
+        'marker label the stack selects on (not NFD: it cannot see the integrated gate)');
+    is($OCP::Config::AMD_GPU_ALLOCATION_LABEL, 'ocp.internal/amd-gpu.allocation',
+        'per-node allocation override label');
+    is($OCP::Config::AMD_GPU_GFX_TARGET_LABEL, 'ocp.internal/amd-gpu.gfx-target',
+        'gfx-target label (and prefix for the per-target form)');
+    is_deeply([ @OCP::Config::GPU_AMD_ALLOCATIONS ], [qw( device-plugin dra none )],
+        'the values the override label takes are the gpu.amd.allocation values');
+}
+
+#
 # Test: save_node_status
 #
 

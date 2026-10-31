@@ -48,6 +48,30 @@ our $VERSIONS = {
             nvidia_dcgm          => '4.5.2-1-ubuntu22.04',
             nfd                  => 'v0.18.3',
 
+            # AMD GPU stack (k248). Every image below is amd64-only upstream.
+            # Upstream's manifests and charts use moving tags (latest) or tags
+            # older than their own releases; OCP pins the release tags.
+            #
+            # rocm/k8s-device-plugin, github.com/ROCm/k8s-device-plugin
+            # release 1.31.0.11 (2026-09-14): the device plugin (amd.com/gpu)
+            # and, as rocm/k8s-device-plugin:labeller-<this>, the node
+            # labeller of the same release. The one path AMD names for gfx1151
+            # (Ryzen AI Max) clusters.
+            amd_device_plugin    => '1.31.0.11',
+            # rocm/k8s-gpu-dra-driver, github.com/ROCm/k8s-gpu-dra-driver
+            # release v1.0.1 (2026-07-22): the DRA kubelet plugin
+            # (resource.k8s.io/v1, DeviceClass gpu.amd.com). Its init container
+            # runs this same image: upstream waits for /sys/class/kfd and
+            # /sys/module/amdgpu/drivers with busybox:1.36, a moving tag, and
+            # this image (UBI 9 minimal) has the sh and sleep that loop needs
+            # (checked on v1.0.1, 2026-10-31). A release without a shell needs
+            # an init image pinned here of its own.
+            amd_dra_driver       => 'v1.0.1',
+            # rocm/device-metrics-exporter, github.com/ROCm/device-metrics-exporter
+            # release v1.5.3 (2026-10-07). Instinct and Radeon AI only: AMD
+            # does not support Ryzen APUs with it.
+            amd_metrics_exporter => 'v1.5.3',
+
             # registry.local and the docker.io pull-through cache ocp-cache.
             # Pinned, not the moving registry:2 tag (k224: measured in the lab,
             # the cache is not what limits a cold pull -- Docker Hub's CDN is).

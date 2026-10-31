@@ -21,6 +21,21 @@ has api => (is => 'ro');
 # missing `api` gives spec-only detection. Built by OCP::Role::Cmd::rex_prober.
 has rex_prober => (is => 'ro');
 
+# Where the AMD GPU stack runs (k250), by role, as { namespace, name } of its
+# DaemonSet. Rex::Rancher::K8s deploys it, not OCP, so these are the names that
+# library gives them. One table for every reader: the probes below, ocp apply's
+# AMD step (k251), ocp status (k252).
+our %AMD_GPU_DAEMONSETS = (
+    # Rex::Rancher::K8s deploy_amd_device_plugin (rex-rancher k95).
+    device_plugin => { namespace => 'kube-system', name => 'amdgpu-device-plugin-daemonset' },
+    labeller      => { namespace => 'kube-system', name => 'amdgpu-labeller-daemonset' },
+    # Upstream's Helm defaults, which Rex::Rancher adopts in rex-rancher k102
+    # (DRA driver) and k103 (metrics exporter, GPU branch; the NIC branch is
+    # amd-device-metrics-exporter). Not in a released Rex::Rancher yet.
+    dra           => { namespace => 'kube-system', name => 'k8s-gpu-dra-driver-kubeletplugin' },
+    metrics       => { namespace => 'kube-system', name => 'amdgpu-metrics-exporter' },
+);
+
 # Components whose running version can be read off one object in the cluster:
 # by default the first container image of a workload, or an annotation for
 # objects that run nothing (a CRD bundle).
@@ -53,6 +68,10 @@ has rex_prober => (is => 'ro');
 #                the run that reports the difference is also the run that
 #                closes it. Reconcile uses it to not send the user looking for
 #                a manual step, the same reason 'missing' entries stay quiet.
+#   tag_prefix   the image tag is this prefix plus the pinned version (AMD's
+#                labeller ships as k8s-device-plugin:labeller-<version>). The
+#                whole tag is compared, so the same repository's image under
+#                a tag without the prefix is drift, not a match.
 #
 # What is NOT in here, and why: the rest of the GPU stack (nvidia_toolkit,
 # nvidia_device_plugin, dcgm_exporter, nvidia_dcgm, nvidia_driver) is pinned in
@@ -143,6 +162,51 @@ our @COMPONENT_PROBES = (
         kind         => 'Deployment',
         name         => 'gpu-operator',
         namespace    => 'gpu-operator',
+        remedy       => undef,
+        optional     => 1,
+        self_healing => 1,
+    },
+    # The AMD GPU stack (k250), probed for the GPU operator's reasons: the
+    # DaemonSets in %AMD_GPU_DAEMONSETS carry the pinned image as their first
+    # container, so the version is readable, and `ocp apply` deploys them
+    # (through Rex::Rancher::K8s) with that pin. Absence is never drift: they
+    # exist only where an AMD card and gpu.enabled are, and gpu.amd
+    # (allocation, labeller, metrics) decides which of the four run at all.
+    # The labeller is a second image of the device plugin's release, under its
+    # own tag.
+    {
+        component    => 'amd_device_plugin',
+        label        => 'AMD GPU device plugin',
+        kind         => 'DaemonSet',
+        %{ $AMD_GPU_DAEMONSETS{device_plugin} },
+        remedy       => undef,
+        optional     => 1,
+        self_healing => 1,
+    },
+    {
+        component    => 'amd_device_plugin',
+        label        => 'AMD GPU node labeller',
+        kind         => 'DaemonSet',
+        %{ $AMD_GPU_DAEMONSETS{labeller} },
+        tag_prefix   => 'labeller-',
+        remedy       => undef,
+        optional     => 1,
+        self_healing => 1,
+    },
+    {
+        component    => 'amd_dra_driver',
+        label        => 'AMD GPU DRA driver',
+        kind         => 'DaemonSet',
+        %{ $AMD_GPU_DAEMONSETS{dra} },
+        remedy       => undef,
+        optional     => 1,
+        self_healing => 1,
+    },
+    {
+        component    => 'amd_metrics_exporter',
+        label        => 'AMD device metrics exporter',
+        kind         => 'DaemonSet',
+        %{ $AMD_GPU_DAEMONSETS{metrics} },
         remedy       => undef,
         optional     => 1,
         self_healing => 1,
@@ -430,7 +494,9 @@ sub component_drift {
                 if defined $have && $have ne $want->{$annotation};
         }
 
-        my $same = _same_version($actual, $expected);
+        # The tag the pin stands for; the entry keeps the pin as written.
+        my $want_tag = ($probe->{tag_prefix} // '') . $expected;
+        my $same = _same_version($actual, $want_tag);
         next if $same && !@wrong;
 
         push @drift, {
@@ -440,7 +506,7 @@ sub component_drift {
             expected  => $expected,
             actual    => $actual,
             message   => "$probe->{label} runs $actual"
-                . ($same ? '' : ", expected $expected")
+                . ($same ? '' : ", expected $want_tag")
                 . join('', map { "; $_" } @wrong),
             remedy    => $self->_probe_remedy($probe, $expected),
             ($probe->{self_healing} ? (self_healing => 1) : ()),
@@ -967,8 +1033,9 @@ Values pinned in F<ocp.yaml> that no longer match F<.ocp/status.yaml>.
 Running component versions that differ from the version manifest, plus
 components that should be deployed but are missing.
 
-Probed are Cilium, cert-manager, NFD and the GPU operator: the four whose
-running version can be read off a workload OCP writes itself. Beside them the
+Probed are Cilium, cert-manager, NFD, the GPU operator and the AMD GPU
+DaemonSets: those whose running version can be read off a workload OCP writes
+itself. Beside them the
 Gateway API CRD bundle, which runs no image: its version is the
 C<gateway.networking.k8s.io/bundle-version> annotation on the C<gateways> CRD,
 and a C<gateway.networking.k8s.io/channel> other than C<standard> is drift too.
@@ -983,6 +1050,17 @@ Absence of the GPU operator is not reported: it only belongs on a cluster with
 an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
 upgrades them — their version lives in a generated manifest that C<ocp apply>
 re-applies, which is what C<self_healing> on those entries says.
+
+The AMD GPU stack is probed the same way (k250): the device plugin, the node
+labeller (tag C<labeller-E<lt>amd_device_pluginE<gt>>), the DRA kubelet plugin
+and the metrics exporter, each read off its DaemonSet's first container image.
+Their namespace and names are C<%OCP::Drift::AMD_GPU_DAEMONSETS>, keyed
+C<device_plugin>, C<labeller>, C<dra> and C<metrics>: the names
+L<Rex::Rancher::K8s> deploys them under, all in C<kube-system> (the C<dra> and
+C<metrics> entries are upstream's Helm defaults, which no released Rex::Rancher
+deploys yet). All four
+are optional — they exist only on clusters with an AMD card, and C<gpu.amd>
+decides which of them run — and report-only.
 
 =head2 remedy_params
 

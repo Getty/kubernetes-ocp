@@ -350,6 +350,107 @@ YAML
         for qw(nvidia_toolkit nvidia_device_plugin dcgm_exporter nvidia_dcgm nvidia_driver);
 }
 
+{
+    # A probe whose component has no pin is skipped without a word
+    # (component_drift: `next unless defined $expected`), so a probe named out
+    # of sync with OCP::Versions would probe nothing, forever, in silence.
+    for my $probe (@OCP::Drift::COMPONENT_PROBES) {
+        ok(defined OCP::Versions->get_component_version($probe->{component}),
+            "$probe->{label}: component '$probe->{component}' is pinned in OCP::Versions");
+    }
+}
+
+#
+# Test: the AMD GPU stack (k250)
+#
+# The AMD DaemonSets carry the pin in their image -- the GPU operator's
+# reasoning, and its shape: report only, self-healing, and absent is not
+# drift, because they exist only where an AMD card is and gpu.amd decides
+# which of them run. Rex::Rancher::K8s deploys them, so the probes look under
+# the names that library uses (%OCP::Drift::AMD_GPU_DAEMONSETS).
+#
+
+{
+    # Pinned here so a rename is a decision, not an accident: the device
+    # plugin and labeller names are Rex::Rancher::K8s's (rex-rancher k95);
+    # dra and metrics are upstream's Helm defaults (rex-rancher k102/k103,
+    # not released yet).
+    is_deeply(\%OCP::Drift::AMD_GPU_DAEMONSETS, {
+        device_plugin => { namespace => 'kube-system', name => 'amdgpu-device-plugin-daemonset' },
+        labeller      => { namespace => 'kube-system', name => 'amdgpu-labeller-daemonset' },
+        dra           => { namespace => 'kube-system', name => 'k8s-gpu-dra-driver-kubeletplugin' },
+        metrics       => { namespace => 'kube-system', name => 'amdgpu-metrics-exporter' },
+    }, 'the AMD DaemonSets are where Rex::Rancher::K8s puts them, in one table');
+}
+
+sub daemonset { deployment(@_) }    # the same spec.template.spec.containers path
+
+my @AMD = (
+    # [ role in %AMD_GPU_DAEMONSETS, component, image repository, tag prefix ]
+    [ 'device_plugin', 'amd_device_plugin',    'rocm/k8s-device-plugin',       ''          ],
+    [ 'labeller',      'amd_device_plugin',    'rocm/k8s-device-plugin',       'labeller-' ],
+    [ 'dra',           'amd_dra_driver',       'rocm/k8s-gpu-dra-driver',      ''          ],
+    [ 'metrics',       'amd_metrics_exporter', 'rocm/device-metrics-exporter', ''          ],
+);
+
+# The FakeApi key of a role's DaemonSet.
+sub amd_key {
+    my ($role) = @_;
+    my $ds = $OCP::Drift::AMD_GPU_DAEMONSETS{$role};
+    return "DaemonSet/$ds->{namespace}/$ds->{name}";
+}
+
+sub amd_drift {
+    my (%objects) = @_;
+    my $config = write_config(spec => $BASE_SPEC);
+    my $api = FakeApi->new(objects => { matching_cluster(), %objects });
+    return grep { $_->{component} =~ /^amd_/ }
+        OCP::Drift->new(config => $config, api => $api)->component_drift;
+}
+
+sub amd_at_pin {
+    return map {
+        my ($role, $comp, $repo, $prefix) = @$_;
+        (amd_key($role) => daemonset("$repo:$prefix"
+            . (OCP::Versions->get_component_version($comp) // 'unpinned')));
+    } @AMD;
+}
+
+{
+    is_deeply([ amd_drift() ], [], 'a cluster without the AMD stack is not drifted for lacking it');
+    is_deeply([ amd_drift(amd_at_pin()) ], [], 'all four DaemonSets at the pin: no drift');
+}
+
+for my $amd (@AMD) {
+    my ($role, $comp, $repo, $prefix) = @$amd;
+    my $pin = OCP::Versions->get_component_version($comp) // 'unpinned';
+    my $ds  = $OCP::Drift::AMD_GPU_DAEMONSETS{$role}{name};
+
+    my @drift = amd_drift(amd_at_pin(), amd_key($role) => daemonset("$repo:${prefix}0.0.1"));
+    is(scalar @drift, 1, "$ds behind the pin is one drift entry");
+    my ($d) = @drift;
+    is($d->{kind}, 'version', "$ds: version drift");
+    is($d->{component}, $comp, "$ds: names the component $comp");
+    is($d->{actual}, "${prefix}0.0.1", "$ds: the tag the cluster runs");
+    is($d->{expected}, $pin, "$ds: the pin as OCP::Versions writes it");
+    is($d->{remedy}, undef, "$ds: no Rex task upgrades it");
+    ok($d->{self_healing}, "$ds: ocp apply re-applies the DaemonSet, and says so");
+    like($d->{message}, qr/ runs \Q${prefix}0.0.1\E, expected \Q$prefix$pin\E\z/,
+        "$ds: the message compares like with like");
+}
+
+{
+    # The labeller is a second image of the device plugin's release. Its tag
+    # is labeller-<pin>; the plugin's own image under that DaemonSet's name is
+    # the wrong image, even though the bare tag equals the pin.
+    my $pin = OCP::Versions->get_component_version('amd_device_plugin') // 'unpinned';
+    my @drift = amd_drift(amd_at_pin(),
+        amd_key('labeller') => daemonset("rocm/k8s-device-plugin:$pin"));
+    is(scalar @drift, 1, 'the device plugin image in the labeller DaemonSet is drift');
+    is($drift[0]{label}, 'AMD GPU node labeller', 'reported against the labeller');
+    like($drift[0]{message}, qr/expected labeller-\Q$pin\E\z/, 'and says which tag was expected');
+}
+
 #
 # Test: the Gateway API CRD bundle (k164)
 #

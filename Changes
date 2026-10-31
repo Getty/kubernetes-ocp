@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - ocp.yaml gains `gpu.amd` (allocation, resource_naming, labeller,
+      metrics, integrated). `ocp status` and `ocp apply` report version drift
+      of the AMD GPU DaemonSets (device plugin, node labeller, DRA driver,
+      metrics exporter), against the new pins `amd_device_plugin` 1.31.0.11,
+      `amd_dra_driver` v1.0.1 and `amd_metrics_exporter` v1.5.3. Integrated
+      AMD GPUs are only set up on nodes joined with `--gpu` or when
+      `gpu.amd.integrated` is set.
     - Dependencies move to the releases of 2026-10-21, all from CPAN, so the
       image vendors nothing: cpanfile raises the floors to IO::K8s 1.111,
       Kubernetes::REST 1.110, Net::Async::Kubernetes 0.011, File::SOPS 0.005
