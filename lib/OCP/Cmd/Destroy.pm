@@ -429,6 +429,12 @@ sub _spec_worker_entries {
 # a mapping. Anything else died inside Perl in _spec_worker_entries, and
 # a string there may be a host someone means, which destroy -- not knowing
 # its provider, and never guessing one (k116) -- could only skip.
+#
+# And the pool's own host where _spec_worker_entries reads it (k335): no
+# nodes: list beside it. A list, a mapping or a boolean there became one
+# machine named ARRAY(0x...) (or 0, or 1), and for an ssh pool the run asked
+# for PIN2 to uninstall RKE2 on it. Beside a nodes: list, host is not read,
+# as apply does not read it.
 sub _spec_worker_errors {
     my ($self, $config) = @_;
     my $workers = $config->workers;
@@ -444,12 +450,40 @@ sub _spec_worker_errors {
                 . OCP::Config::_shown_value($w);
             next;
         }
-        next unless ref $w->{nodes} eq 'ARRAY';
         next if ref $w->{provider}
              || !OCP::Provider->known_type($w->{provider} // q());
-        push @errors, $config->_pool_nodes_errors($w, $config->_pool_where($w, $n));
+        my $where = $config->_pool_where($w, $n);
+        if (ref $w->{nodes} eq 'ARRAY') {
+            push @errors, $config->_pool_nodes_errors($w, $where);
+        }
+        elsif (defined(my $err = $self->_host_error($w->{host}))) {
+            push @errors, "$where: host $err";
+        }
     }
     return @errors;
+}
+
+# validate()'s words for a host that is no string (k315), or undef.
+sub _host_error {
+    my ($self, $host) = @_;
+    return OCP::Config::_not_a_string($host, 'a host name or IP address');
+}
+
+# What validate() says about name (k305), in its words (k335). The name is
+# the ocp-cluster label the servers are searched by: a list searched
+# ocp-cluster=ARRAY(0x...), so a server status.yaml does not record was
+# missed while the run ended "Cluster destroyed." -- and kept billing.
+#
+# Only a list, a mapping or a boolean, not validate()'s "name is required".
+# A name such as '' or 0 is a label like any other, searched as written: a
+# cluster applied under it before `ocp apply` validated (k255) carries it,
+# and no name destroy could be told instead would find its servers.
+sub _spec_name_errors {
+    my ($self, $config) = @_;
+    my $name = $config->spec->{name};
+    return () unless ref $name;
+    return "name: must be a string (the cluster's name), not "
+         . OCP::Config::_shown_value($name);
 }
 
 # What validate() says about the shape of control_planes, in its words
@@ -468,23 +502,39 @@ sub _spec_worker_errors {
 # plane no longer asks for the hetzner-default search that names billing
 # servers. Nor is it a newer validate() standing between a cluster and its
 # teardown: validate() has refused this shape since k296 (and died on it
-# before), and `ocp apply` validates first (k255). Only the shape -- not a
-# provider, a host, a server_type, a count or the bound of seven, which
-# destroy reads around or not at all.
+# before), and `ocp apply` validates first (k255).
+#
+# And an entry's host where the fallback reads it (k335): an entry whose
+# provider destroy knows. A list, a mapping or a boolean became the name and
+# address of a machine -- ARRAY(0x...) -- that an ssh control plane asked
+# PIN2 for and sent the uninstall to. Checked whether or not the fallback
+# runs this time: that is known only after the secrets, the cluster API and
+# the label search, and this comes before them. As validate() counts them:
+# nodes: N stands for N copies of one entry, said once (k322).
+#
+# Not a provider, a server_type, a location, an image, a count or the bound
+# of seven, which destroy reads around or not at all.
 sub _spec_control_plane_errors {
     my ($self, $config) = @_;
-    my $cps = $config->spec->{control_planes};
-    return () if !defined $cps || ref $cps eq 'HASH';
+    my $raw = $config->spec->{control_planes};
     return 'control_planes: must be a mapping (one control plane, or nodes: N of them) '
-         . 'or a list of mappings, not ' . OCP::Config::_shown_value($cps)
-        unless ref $cps eq 'ARRAY';
+         . 'or a list of mappings, not ' . OCP::Config::_shown_value($raw)
+        if defined $raw && ref $raw ne 'HASH' && ref $raw ne 'ARRAY';
 
-    my (@errors, $n);
-    for my $cp (@$cps) {
-        $n++;
-        push @errors, "control_planes[$n]: must be a mapping (one control plane), not "
-            . OCP::Config::_shown_value($cp)
-            unless ref $cp eq 'HASH';
+    my $cps = $config->control_planes;
+    my @errors;
+    for my $i (0 .. ($config->_control_planes_shared ? 0 : $#$cps)) {
+        my $cp  = $cps->[$i];
+        my $idx = $i + 1;
+        unless (ref $cp eq 'HASH') {
+            push @errors, "control_planes[$idx]: must be a mapping (one control plane), not "
+                . OCP::Config::_shown_value($cp);
+            next;
+        }
+        next if ref $cp->{provider}
+             || !OCP::Provider->known_type($cp->{provider} // q());
+        my $err = $self->_host_error($cp->{host}) // next;
+        push @errors, "control_planes[$idx].host: $err";
     }
     return @errors;
 }
@@ -528,16 +578,18 @@ sub execute {
     my $config = OCP::Config->new(file => $file);
 
     # First, before a PIN is asked or the cluster or a server is reached
-    # (k323, k326), as `ocp apply` refuses an invalid ocp.yaml (k255). In
-    # validate()'s order: the control planes, then the pools.
-    if (my @errors = ($self->_spec_control_plane_errors($config),
+    # (k323, k326, k335), as `ocp apply` refuses an invalid ocp.yaml (k255).
+    # In validate()'s order: the name, the control planes, then the pools.
+    if (my @errors = ($self->_spec_name_errors($config),
+                      $self->_spec_control_plane_errors($config),
                       $self->_spec_worker_errors($config))) {
         my $s = @errors == 1 ? '' : 's';
         die "$file has " . scalar(@errors) . " error$s:\n"
           . join('', map { "  - $_\n" } @errors)
-          . "Nothing was deleted: ocp destroy reads the machines and providers of the "
-          . "control planes and worker pools in ocp.yaml, and checks their shape before "
-          . "it touches the cluster or a server. Fix the line$s above and run it again.\n";
+          . "Nothing was deleted: ocp destroy reads the cluster's name and the machines and "
+          . "providers of the control planes and worker pools in ocp.yaml, and checks their "
+          . "shape before it touches the cluster or a server. Fix the line$s above and run "
+          . "it again.\n";
     }
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
@@ -1017,12 +1069,19 @@ of (C<k326>): a C<control_planes> that is neither a mapping nor a list, a
 C<control_planes> list entry that is no mapping, a C<workers> that is no list,
 a worker pool that is no mapping.  Such an entry names no provider, and
 destroy never guesses one, so it could only be skipped -- and a string there
-may be the host of a control plane that nothing else records.  Only those
-shapes: an F<ocp.yaml> that C<validate()> refuses for a key destroy reads
-around or does not read -- C<gpu>, C<robocop>, a pool's count, an unknown
-provider, a missing C<server_type>, more than seven control planes -- is still
-torn down, so a newer C<validate()> never stands between a cluster and its
-teardown.
+may be the host of a control plane that nothing else records.  So is a
+C<name>, or a C<host> where destroy reads one, that is a list, a mapping or
+a boolean (C<k335>): the name is the C<ocp-cluster> label the servers are
+searched by, and C<name: [prod]> missed every server under C<prod> that
+F<.ocp/status.yaml> does not record; a host became a machine named
+C<ARRAY(0x...)>.  A pool's C<host> is read when its provider is one destroy
+knows and C<nodes:> is no list, a control plane's when its provider is one
+destroy knows.  Only those: an F<ocp.yaml> that C<validate()> refuses for a
+key destroy reads around or does not read -- C<gpu>, C<robocop>, a pool's
+count, an unknown provider, a missing C<server_type>, a C<server_type>,
+C<location> or C<image> of the wrong shape, more than seven control planes,
+a C<name> of C<''> or C<0> (searched as written) -- is still torn down, so a
+newer C<validate()> never stands between a cluster and its teardown.
 
 The node list is merged from every source, one entry per machine
 (matched by name, address or provider id): C<.ocp/status.yaml> (the
@@ -1089,9 +1148,10 @@ spec and you want the reconcile path to start from a known-good hash set.
     $cmd->execute($args, $chain)
 
 Dies with the lines of L<OCP::Config/validate> on a worker pool C<nodes:>
-list it cannot read (C<k323>), or on a C<control_planes> or C<workers> in a
-shape it cannot read, an entry that is no mapping among them (C<k326>),
-before it touches anything.  Then lists the
+list it cannot read (C<k323>), on a C<control_planes> or C<workers> in a
+shape it cannot read, an entry that is no mapping among them (C<k326>), or
+on a C<name> or a C<host> it reads that is no string (C<k335>), before it
+touches anything.  Then lists the
 candidate nodes, asks for confirmation on a terminal (unless
 C<--force>, the only way without a terminal; without one it returns 1 having
 touched nothing), deletes each via its provider and, on a clean run, removes

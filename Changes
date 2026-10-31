@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` also stops, with `ocp apply`'s line and before it asks
+      for a PIN or touches anything, on a `name` that is a list, a mapping
+      or a boolean -- `name: [prod]` searched for servers under a label
+      none carries, missed every one `.ocp/status.yaml` does not record
+      and still said "Cluster destroyed." -- and on a worker pool's or a
+      control plane's own `host` of that shape, which became a machine
+      named `ARRAY(0x...)`. Nothing else `ocp apply` refuses stops a
+      teardown.
     - `ocp status` keeps its drift report over a `nocert` that is neither
       true nor false: the cert-manager check reads "could not be checked"
       with the line `ocp apply` gives, said once on STDERR, every other
@@ -58,7 +66,6 @@ Revision history for OCP
       `.ocp/status.yaml`, then died inside Perl with exit 1 and no report of
       mislabelled servers), a `control_planes` that is neither a mapping nor
       a list, a `workers` that is no list, a worker pool that is no mapping.
-      Nothing else `ocp apply` refuses stops a teardown.
     - `ocp apply` refuses a `robocop:` that is not true, false or a
       mapping -- `robocop: no`, `off` or `"false"` is a string, and turned
       robocop on -- and a key under it other than `enabled`,

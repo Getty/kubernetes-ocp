@@ -175,9 +175,10 @@ sub refused {
     is $r->{ex},
         "$file has $n error$s:\n"
           . join('', map { "  - $_\n" } @lines)
-          . "Nothing was deleted: ocp destroy reads the machines and providers of the "
-          . "control planes and worker pools in ocp.yaml, and checks their shape before "
-          . "it touches the cluster or a server. Fix the line$s above and run it again.\n",
+          . "Nothing was deleted: ocp destroy reads the cluster's name and the machines and "
+          . "providers of the control planes and worker pools in ocp.yaml, and checks their "
+          . "shape before it touches the cluster or a server. Fix the line$s above and run "
+          . "it again.\n",
         "refused with validate()'s line$s";
     unlike $r->{ex}, qr/HASH ref|ARRAY ref|at \S+ line \d+/, 'no Perl error';
     is_deeply $r->{events}, [],
