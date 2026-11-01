@@ -320,7 +320,12 @@ the file an import read the block from (undef for the text's own).
 
   my $block = $corefile->block_for('registry.local');
 
-The server block that answers for the name, or undef when none does.
+The server block CoreDNS answers the name from, or undef when none does. Of
+the blocks with a zone that covers the name (the zone itself or a name below
+it, compared in lowercase and without a trailing dot), the one with the most
+specific zone wins; the root zone covers every name and is the least specific.
+On a tie the first block in the file wins. Blocks whose keys are not on the
+cluster's port have no zone and never answer (L</on_cluster_port>).
 
 =method root_block
 

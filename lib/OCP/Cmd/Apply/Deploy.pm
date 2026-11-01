@@ -90,7 +90,10 @@ without workers.
 =item *
 
 robocop rollout (credentials Secret + Deployment) whenever
-C<robocop.enabled> -- with or without workers (k173).
+C<robocop.enabled> -- with or without workers (k173). Only a 404 on the
+existing Deployment means there is none: a read of it that fails otherwise
+fails the step with its cause before anything is written (k328), the same
+read the dry run reports as "could not be checked".
 
 =item *
 

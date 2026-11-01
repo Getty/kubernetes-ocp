@@ -32,6 +32,8 @@ our @COREDNS_CONFIGMAPS = @OCP::Drift::COREDNS_CONFIGMAPS;
 
     # Pure functions (no $self):
     my $patched = OCP::Cmd::Apply::Network::corefile_with_host($corefile, $ip, 'registry.local');
+    my $cleaned = OCP::Cmd::Apply::Network::corefile_drop_added_hosts($corefile, 'registry.local');
+    my $has     = OCP::Cmd::Apply::Network::corefile_has_root_block($corefile);
 
 =head1 DESCRIPTION
 
@@ -44,8 +46,10 @@ the registry being reachable by name:
 - the CoreDNS patch that turns registry.local into an address
 
 The Corefile machinery is purely textual: t/39 feeds in the stock k3s and
-RKE2 Corefiles and never tells C<_corefile_with_host> how the cluster was
-built. That is the only reason it can be tested without a real cluster.
+RKE2 Corefiles and never tells C<corefile_with_host> how the cluster was
+built. That is the only reason it can be tested without a real cluster. The
+C<corefile_*> functions read the Corefile through L<OCP::Corefile>, the same
+reading L<OCP::Drift> checks the record with.
 
 L<OCP::Cmd::Apply> re-exports every helper as a thin forwarder so the test
 surface (t/31, t/39) keeps working.
@@ -655,6 +659,44 @@ sub corefile_with_host {
     return join "\n", @lines;
 }
 
+=method corefile_with_host
+
+    my $patched = corefile_with_host($corefile, $ip, 'registry.local');
+
+Pure function: takes the Corefile text, an address and a name and returns the
+Corefile with a hosts record mapping the name to the address in its root
+(C<.>) server block. It touches no other block.
+
+The hosts block an older OCP added next to the distribution's own is taken out
+first (L</corefile_drop_added_hosts>). Then, in this order:
+
+=over
+
+=item *
+
+The root block already lists the name in a hosts record: only the address is
+corrected, in place; the text comes back as it is when it already matches.
+
+=item *
+
+The root block runs the hosts plugin (k3s does, for C</etc/coredns/NodeHosts>):
+the record is added to it as an inline entry. A bare C<hosts FILE> line is
+wrapped around the entry, adding no option.
+
+=item *
+
+The root block has no hosts plugin (RKE2): a C<hosts> block with the record and
+C<fallthrough> is added in front of the first C<ready> or C<kubernetes> plugin,
+or last when there is none.
+
+=back
+
+A Corefile with no root server block comes back unchanged, see
+L</corefile_has_root_block>. The Corefile is read as given, without the files
+an C<import> reads.
+
+=cut
+
 #
 # Undo the block an older OCP added: a hosts plugin that names no file and
 # lists the record OCP itself writes. Only ever when the block is a duplicate,
@@ -668,6 +710,19 @@ sub corefile_drop_added_hosts {
     return OCP::Corefile->new(text => $corefile)->without_added_hosts($hostname);
 }
 
+=method corefile_drop_added_hosts
+
+    my $cleaned = corefile_drop_added_hosts($corefile, 'registry.local');
+
+Pure function: the Corefile without the hosts block an older OCP added to the
+root block, a C<hosts { ... }> that names no file and lists the name. Only
+while the root block runs the hosts plugin more than once, which CoreDNS
+refuses, and never the last one standing, which is the distribution's own. The
+text comes back as it is otherwise. L<OCP::Corefile/without_added_hosts> does
+the work, so the drift probe can ask whether this repair is enough.
+
+=cut
+
 # Whether $corefile has a server block for the root zone, the block
 # corefile_with_host puts a record in (k328).
 sub corefile_has_root_block {
@@ -675,12 +730,24 @@ sub corefile_has_root_block {
     return OCP::Corefile->new(text => $corefile)->root_block ? 1 : 0;
 }
 
+=method corefile_has_root_block
+
+    my $has = corefile_has_root_block($corefile);
+
+Pure function: true (1) when the Corefile has a server block for the root zone
+on the cluster's port (plain DNS, port 53), the block L</corefile_with_host>
+puts the record in; false (0) otherwise. C<configure_registry_dns> asks it
+before patching and dies on a false answer, since C<corefile_with_host> leaves such a
+Corefile unchanged.
+
+=cut
+
 1;
 
 __END__
 
 =head1 SEE ALSO
 
-L<OCP::Cmd::Apply>, L<OCP::Drift>, L<OCP::Versions>.
+L<OCP::Cmd::Apply>, L<OCP::Corefile>, L<OCP::Drift>, L<OCP::Versions>.
 
 =cut
