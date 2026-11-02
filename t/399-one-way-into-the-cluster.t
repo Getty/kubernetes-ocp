@@ -49,7 +49,12 @@ use OCP::Secrets;
 #   8. status, ssh and drift on optional mode: status (text and --json) says
 #      an API that does not answer, or a client that cannot be built, in one
 #      line; ssh says it once and tries the hostname; an API error in drift
-#      detection is one line without a location (k395).
+#      detection is one line without a location (k395);
+#   9. ocp apply's client (and ocp update's) is built by connect_cluster_api
+#      and sends no request: right after bootstrap the API may not answer yet.
+#      Two guards: no file but OCP::Kubernetes uses
+#      Kubernetes::REST::Kubeconfig, and every command on cluster_api is in
+#      the closed-port table or exempt with its reason.
 #
 
 umask 022;
@@ -294,6 +299,9 @@ sub run_ocp {
 # One row per command that takes its client from cluster_api: its words, then
 # the fewest arguments that get it to the API.
 my @closed_port = (
+    [ 'health' ],
+    [ 'node ls' ],
+    [ 'provider ls' ],
     [ 'node add',        'w-k399' ],
     [ 'node rm',         'w-k399' ],
     [ 'node trust-host', 'w-k399' ],
@@ -544,6 +552,85 @@ subtest 'drift during status: an API error is one line, no location (k395)' => s
     is $reason, 'The cluster API could not be reached: Connection refused', 'the reason, the same line';
     like $drift->[0]{message}, qr/drift unknown: The cluster API could not be reached: Connection refused\z/,
         'the entry carries it too';
+};
+
+#### 9: apply's client, and the guards
+
+subtest "ocp apply's client: connect_cluster_api, no request" => sub {
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+    require OCP::Cmd::Apply;
+    require OCP::Cmd::Apply::K8s;
+    my $apply  = OCP::Cmd::Apply->new;
+    my $checks = 0;
+    no warnings qw( redefine once );
+    local *OCP::Cmd::Apply::reach_cluster_api = sub { $checks++; $_[1] };
+
+    # The closed port: a request would die with it.
+    my $api = eval { OCP::Cmd::Apply::K8s::api($apply, kubeconfig_for($server)) };
+    ok $api, 'a client, against an API that does not answer' or diag $@;
+    is $checks, 0, 'no GET /version: right after bootstrap the API may not answer yet';
+    is OCP::ErrorLine::user_line($e599),
+        "The cluster API at $server could not be reached: Connection refused",
+        'the renderer names its server';
+    like path(OCP::Cmd::Apply::K8s::kubeconfig_path($apply))->slurp_utf8, qr/\Q$server\E/,
+        'its kubeconfig as a file, for a library that reads one';
+    is OCP::Cmd::Apply::K8s::api($apply), $api, 'asked again without a kubeconfig: the same client';
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+};
+
+# A file's code: no POD, no comment line, nothing after __END__.
+sub code_lines {
+    my ($file) = @_;
+    my ($pod, $n, @code) = (0, 0);
+    for my $line ($file->lines_utf8) {
+        $n++;
+        last if $line =~ /\A__END__\b/;
+        if ($line =~ /\A=(\w+)/) { $pod = $1 ne 'cut'; next }
+        next if $pod || $line =~ /\A\s*#/;
+        push @code, [ $n, $line ];
+    }
+    return @code;
+}
+
+subtest 'one build: only OCP::Kubernetes uses Kubernetes::REST::Kubeconfig' => sub {
+    my @files = grep { $_->is_file } path('bin')->children;
+    path('lib')->visit(sub { push @files, $_[0] if $_[0] =~ /\.pm\z/ }, { recurse => 1 });
+    my @hits = map {
+        my $file = $_;
+        map { "$file:$_->[0]" } grep { $_->[1] =~ /Kubernetes::REST::Kubeconfig/ } code_lines($file);
+    } @files;
+    ok scalar(grep { m{\Alib/OCP/Kubernetes\.pm:} } @hits), 'OCP::Kubernetes does';
+    is_deeply [ grep { !m{\Alib/OCP/Kubernetes\.pm:} } @hits ], [],
+        'no other file in lib/ or bin/, robocop included';
+};
+
+subtest 'every command on cluster_api: in the closed-port table, or exempt with its reason' => sub {
+    my %exempt = (
+        'lib/OCP/Cmd/Apply/K8s.pm'         => 'ocp apply, ocp update: bootstrap flow, no check (above)',
+        'lib/OCP/Cmd/Destroy.pm'           => 'optional mode: goes on without the API (7)',
+        'lib/OCP/Cmd/Keys/Secure.pm'       => 'the machines role: its OCPNodes line (7)',
+        'lib/OCP/Cmd/Keys/Operator/Add.pm' => 'the machines role, as keys secure',
+        'lib/OCP/Cmd/Keys/Operator/Rm.pm'  => 'the machines role, as keys secure',
+        'lib/OCP/Cmd/SSH.pm'               => 'optional mode: says it once, tries the hostname (8)',
+        'lib/OCP/Cmd/Status.pm'            => 'optional mode: the report ends on the kubeconfig hint (8)',
+    );
+    my %row = map {
+        my @part = map { join '', map { ucfirst } split /-/ } split / /, $_->[0];
+        ('lib/OCP/Cmd/' . join('/', @part) . '.pm' => $_->[0]);
+    } @closed_port;
+
+    my %calls;
+    path('lib/OCP/Cmd')->visit(sub {
+        my ($file) = @_;
+        return unless $file =~ /\.pm\z/;
+        $calls{"$file"} = 1
+            if grep { $_->[1] =~ /->\s*_?(?:connect_)?cluster_api\b/ } code_lines($file);
+    }, { recurse => 1 });
+
+    is_deeply [ grep { !$row{$_} && !$exempt{$_} } sort keys %calls ], [],
+        'each in the table or exempt with its reason';
+    is_deeply [ grep { !$calls{$_} } sort keys %row ], [], 'every row takes its client there';
+    is_deeply [ grep { !$calls{$_} } sort keys %exempt ], [], 'and every exempt file does';
 };
 
 # A cluster API whose every read dies as the transport does; a client

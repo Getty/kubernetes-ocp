@@ -13,7 +13,6 @@ use YAML::XS ();
 use Digest::MD5;
 use File::Temp;
 use HTTP::Tiny;
-use Kubernetes::REST::Kubeconfig;
 
 use OCP::Config;
 use OCP::Drift;

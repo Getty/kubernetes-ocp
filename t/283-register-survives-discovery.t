@@ -10,6 +10,7 @@ use lib 'lib';
 
 use Kubernetes::REST::Kubeconfig;
 use Kubernetes::REST::LWPIO;
+use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::K8s;
 use OCP::K8s;
 use OCP::Kubernetes;
@@ -117,10 +118,11 @@ users:
     token: kc-token
 YAML
 
-# The api `ocp apply` works with, built the way apply builds it. The hash
-# stands in for the apply command, which keeps the kubeconfig file alive.
-my %APPLY;
-sub apply_api { OCP::Cmd::Apply::K8s::api(\%APPLY, $KUBECONFIG) }
+# The api `ocp apply` works with, built the way apply builds it, on the apply
+# command, which keeps the kubeconfig file alive. A command object, not a bare
+# hash: the build is OCP::Role::Cmd's connect_cluster_api (k399).
+my $APPLY = OCP::Cmd::Apply->new;
+sub apply_api { OCP::Cmd::Apply::K8s::api($APPLY, $KUBECONFIG) }
 
 # A plain client from the kubeconfig, before anything is registered on it.
 sub bare_api {
