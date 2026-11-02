@@ -1,0 +1,42 @@
+---
+class: standard
+completed: 2026-11-02T01:37:42Z
+created: 2026-11-02T00:14:36Z
+id: 398
+priority: medium
+started: 2026-11-02T01:37:42Z
+status: done
+tags:
+- errors
+- ux
+- refactor
+title: 'Part A of one-place-per-concern: render foreign errors, --json failures and
+  secret masking once, in OCP::run_cli'
+updated: 2026-11-02T01:37:42Z
+---
+
+Design: docs/superpowers/specs/2026-10-31-one-place-per-concern-design.md, Part A (approved by the maintainer 2026-11-01). Plan: docs/superpowers/plans/2026-11-01-part-a-one-error-renderer.md (approved 2026-11-02).
+
+What changes for the user: a Kubernetes::REST::APIError or a Path::Tiny::Error that reaches OCP::run_cli is one Error: line, not 'This is an internal error'; a --json command that fails prints one JSON error object on STDOUT (k388 precedent, moved from node ls into OCP.pm); every Hetzner token the process has read is masked in whatever is printed, --verbose included.
+
+Steps (notes on this card): 1 api_error_line in OCP::ErrorLine; 2 secret registry; 3 user_line + _report_error; 4 JSON error object in one place; 5 sweep over the command map.
+
+Done when the sweep (step 5) feeds every command class a 599 APIError and sees one line, no 'internal error', and the JSON object under --json; t/219, t/384, t/387, t/388 keep their claims.
+
+Not here: the endpoint in the central line and removing cluster_api_call (Part B).
+
+Body fix: 't/388' means k388's node ls --json claims, which live in t/384 and t/387 (there is no t/388); the plan names them. My call: one ocp-worker carries steps 1-5 in order as five stacked patches, since each step builds on the previous one's functions; the RM runs one full suite on the stack and commits per step.
+
+2026-11-02 00:26 step 1: api_error_line in OCP::ErrorLine, cluster_api_error delegates (wording unchanged), patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp398/k398-1.patch, runs red (t/398: undefined sub) / green (t/398 t/384 t/387 t/342 t/00-load: 5 files, 89 tests)
+
+2026-11-02 00:34 step 2: secret registry (add_secret/mask_secrets, one_line masks it; registered in Secrets::hetzner_token, Provider::Hetzner BUILD, Hetzner::Picker BUILD), patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp398/k398-2.patch, runs red (t/398: undefined add_secret) / green (18 files incl. t/373 t/383 t/342 t/01 t/12 t/49 t/246x2 t/260 t/265 t/41 t/42 t/181 t/353 t/346 t/96: 288 tests)
+
+2026-11-02 00:51 step 3: user_line (APIError, Path::Tiny::Error) + _report_error asks it first, masks every path (verbose too), patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp398/k398-3.patch, runs red (t/398: 599 and Path::Tiny read 'internal error', verbose unmasked) / green (47 files: plan's 6 + every t/ that drives bin/ocp, run_cli or _report_error + t/342: 697 tests); mutants 5/5 red, control green, %INC checked
+
+2026-11-02 01:04 step 4: _resolve_commands returns the leaf; run_cli passes $json (--json given && leaf->can('json')) to _report_error, which prints {"error": line} on STDOUT before the STDERR line; node ls wrapper dropped. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp398/k398-4.patch. Runs: red 1 (wrapper kept) only the node ls 599 case failed (raw 'Kubernetes API error (): 599 ...' as error); red 2 (wrapper removed) node ls user-error + 599 cases failed; green make test 29 files 585 tests PASS (plan's 9 + _report_error/_resolve_commands callers + --json/CLI drivers). t/384/t/387 unchanged, no raw internal-error assertion.
+
+2026-11-02 01:09 step 5: sweep subtest in t/398 over the 28 leaf commands of the command map (execute replaced by a 599 die, required options dummied, --json where the class has it). Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp398/k398-5.patch. Runs: green make test t/398 + t/383 2 files PASS; -v run 148 sweep assertions all ok, every class reached execute; same test on the task-3 tree red (status/health/node ls --json: no object). No command failed the sweep -> no findings.
+
+2026-11-02 01:09 Done: Part A Tasks 1-5 as five stacked patches in /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp398/k398-{1..5}.patch (base 80a2254; they apply in order and give the clone's task-5 tip exactly). 1 api_error_line moved to OCP::ErrorLine (refactor); 2 secret registry (add_secret/mask_secrets, 8-char floor, longest first) fed by Secrets::hetzner_token and the Hetzner adapter/picker BUILD; 3 user_line in _report_error: APIError and Path::Tiny errors are one Error: line, not internal, all output masked incl. --verbose (mutation check 5/5 red, control green); 4 --json failure object printed once in OCP.pm, node ls wrapper removed; 5 sweep over all 28 leaf commands, test only. Verified with Docker make test per task (t1 5 files/89, t2 18/288, t3 47/697, t4 29/585, t5 t/398+t/383 PASS). Cross-lane files: lib/OCP/Secrets.pm, lib/OCP/Provider/Hetzner.pm, lib/OCP/Hetzner/Picker.pm, lib/OCP/Cmd/Node/Ls.pm, lib/OCP.pm, lib/OCP/Role/Cmd.pm. No Changes hunk; bullets are in the patch headers (t1 and t5 none).
+
+Committed as db3d882, 49841a9, 358dd8a, 7399ae7, 39473d1 (tasks 1-5)
