@@ -5,15 +5,11 @@ use Moo;
 use MooX::Cmd;
 use MooX::Options;
 
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
 use Time::Piece ();
 
 use OCP;
 use OCP::Config;
-use OCP::K8s;
 use OCP::Robocop::Manifest;
-use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
@@ -267,7 +263,7 @@ sub execute {
     print "Image:    $image\n";
     print "\n";
 
-    my $api = $self->_build_api($config);
+    my $api = $self->_build_api;
 
     # Fail loud if the Deployment isn't there -- patching nothing is the kind
     # of silent success that turns a deploy outage into a "wait why didn't
@@ -445,27 +441,12 @@ sub _resolve_cluster {
 }
 
 sub _build_api {
-    my ($self, $config) = @_;
+    my ($self) = @_;
 
-    my $secrets    = OCP::Secrets->new(project_dir => $config->project_dir);
-    my $kc_content = $secrets->read_kubeconfig;
-    die OCP::Secrets->no_kubeconfig_refusal
-        unless $kc_content;
-
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$kc_fh} $kc_content;
-    close $kc_fh;
-
-    # Keep the temp file alive on the instance -- without an anchor the
-    # File::Temp destructor unlinks it before Kubernetes::REST reads it.
-    $self->{_kc_temp} = $kc_fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(
-        kubeconfig_path => $kc_fh->filename,
-    )->api;
-
-    OCP::K8s->register($api);
-    return $api;
+    # The key, kubeconfig.yaml, the client and one GET /version: an API that
+    # does not answer, or answers /version with an error, is said there, in
+    # one line (k389, k399).
+    return $self->cluster_api;
 }
 
 # Strategic merge by container name: addresses the controller container in

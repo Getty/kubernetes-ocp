@@ -4,11 +4,6 @@ package OCP::Cmd::Provider::Rm;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
-use OCP::Config;
-use OCP::Secrets;
-use OCP::K8s;
 
 with 'OCP::Role::Cmd';
 
@@ -23,24 +18,10 @@ sub _k8s {
     my $file = $self->ocp->config;
     die "Config file '$file' not found. Run 'ocp init' first.\n" unless -f $file;
 
-    my $config  = OCP::Config->new(file => $file);
-    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-
-    my $kc_content = $secrets->read_kubeconfig;
-    die OCP::Secrets->no_kubeconfig_refusal
-        unless $kc_content;
-
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$kc_fh} $kc_content;
-    close $kc_fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(
-        kubeconfig_path => $kc_fh->filename,
-    )->api;
-
-    OCP::K8s->register($api);
-    $self->k8s($api);
-    return $api;
+    # The key, kubeconfig.yaml, the client and one GET /version: an API that
+    # does not answer, or answers /version with an error, is said there, in
+    # one line (k389, k399).
+    return $self->k8s($self->cluster_api);
 }
 
 sub execute {

@@ -288,6 +288,11 @@ my @closed_port = (
     [ 'node add',        'w-k399' ],
     [ 'node rm',         'w-k399' ],
     [ 'node trust-host', 'w-k399' ],
+    [ 'provider add',    '--name', 'p-k399', '--type', 'ssh' ],
+    [ 'provider rm',     'p-k399' ],
+    [ 'deploy-image',    '--image', 'ghcr.io/k399/robocop:1' ],
+    [ 'deploy-robocop' ],
+    [ 'kubeconfig',      '--readonly' ],
 );
 
 for my $row (@closed_port) {

@@ -4,13 +4,10 @@ package OCP::Cmd::Kubeconfig;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
 use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Config;
-use OCP::K8s;
 use OCP::Kubeconfig;
 use OCP::ReadonlyKubeconfig;
 use OCP::Secrets;
@@ -106,15 +103,10 @@ sub _readonly {
             unless $admin;
         $cname //= $config->name;
 
-        unless ($api) {
-            my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-            print {$kc_fh} $admin;
-            close $kc_fh;
-            $api = Kubernetes::REST::Kubeconfig->new(
-                kubeconfig_path => $kc_fh->filename,
-            )->api;
-            OCP::K8s->register($api);
-        }
+        # From the admin kubeconfig at hand, not decrypted a second time; one
+        # GET /version, so an API that does not answer is one line naming the
+        # server (k389, k399).
+        $api //= $self->reach_cluster_api($self->connect_cluster_api($admin));
     }
 
     my $user = OCP::ReadonlyKubeconfig->sa_name($name);

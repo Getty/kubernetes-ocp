@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp provider add`, `provider rm`, `deploy-image`, `deploy-robocop`
+      and `kubeconfig --readonly` say a cluster API that does not answer in
+      one line naming the server, before anything else is asked;
+      `deploy-robocop` no longer asks PIN2 first.
     - `ocp node add`, `ocp node rm` and `ocp node trust-host` say an
       unreachable cluster API in one line naming the server, instead of a
       Perl warning and an "Unknown node" error.

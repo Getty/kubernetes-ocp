@@ -6,8 +6,6 @@ use MooX::Cmd;
 use MooX::Options;
 use Path::Tiny qw(path);
 use YAML::XS ();
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
 
 use OCP;
 use OCP::Cmd::Apply::CR;
@@ -37,17 +35,10 @@ sub execute {
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
 
-    my $kc_content = $secrets->read_kubeconfig;
-    die OCP::Secrets->no_kubeconfig_refusal
-        unless $kc_content;
-
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$kc_fh} $kc_content;
-    close $kc_fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(
-        kubeconfig_path => $kc_fh->filename,
-    )->api;
+    # The key, kubeconfig.yaml, the client and one GET /version: an API that
+    # does not answer, or answers /version with an error, is said there, in
+    # one line (k389, k399).
+    my $api = $self->cluster_api;
 
     # Populate the credentials Secret the controller mounts. Done before the
     # manifests so the namespace and Secret exist by the time the Deployment's

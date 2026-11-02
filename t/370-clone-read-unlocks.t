@@ -301,7 +301,7 @@ my @commands = (
     [ ['node', 'ls'],      sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
     [ ['health'],          sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
     [ ['provider', 'ls'],  sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
-    [ ['deploy-robocop'],  sub { like $_[2], qr/Enter PIN2/, 'on to the admin key (PIN2)' } ],
+    [ ['deploy-robocop'],  sub { like $_[2], qr{127\.0\.0\.1:9}, 'on to the API' } ],
     [ ['hetzner', 'list'], sub { my ($st, $o, $e) = @_;
           isnt $st >> 8, 0, 'exit non-zero';
           like $e, qr/Hetzner API token required/, 'on to the token: secrets.yaml holds none' } ],
