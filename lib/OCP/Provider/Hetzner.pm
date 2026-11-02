@@ -76,6 +76,14 @@ has cloud => (
     builder => sub { WWW::Hetzner::Cloud->new(token => shift->token) },
 );
 
+# The token is masked in whatever OCP prints from here on, not only in this
+# adapter's own errors (_api below): OCP::ErrorLine's registry (k398).
+sub BUILD {
+    my ($self) = @_;
+    OCP::ErrorLine::add_secret($self->token);
+    return;
+}
+
 # Every request this adapter makes to the Hetzner API goes through here (k373).
 # WWW::Hetzner's error -- the API's answer, or LWP's reason for not getting
 # one -- can carry the request it was about, the Authorization header with the

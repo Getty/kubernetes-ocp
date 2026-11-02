@@ -2,9 +2,17 @@ package OCP::Hetzner::Picker;
 # ABSTRACT: Hetzner Cloud catalogue wrapper (pickers, NOT a cluster adapter)
 
 use Moo;
+use OCP::ErrorLine ();
 use WWW::Hetzner::Cloud;
 
 has token => (is => 'ro', required => 1);
+
+# The token is masked in whatever OCP prints from here on (k398).
+sub BUILD {
+    my ($self) = @_;
+    OCP::ErrorLine::add_secret($self->token);
+    return;
+}
 
 has _cloud => (is => 'lazy', builder => sub {
     WWW::Hetzner::Cloud->new(token => shift->token)

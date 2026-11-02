@@ -1,6 +1,8 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A Hetzner API token OCP has read is now masked in every error line it
+      prints, not only in the Hetzner adapter's own messages.
     - `ocp destroy` with `HETZNER_API_TOKEN` set stops on a wrong PIN1 and
       says so in OCP::Secrets' words. It no longer takes the failure for an
       unreachable cluster API and tears down without the OCPNodes. The same

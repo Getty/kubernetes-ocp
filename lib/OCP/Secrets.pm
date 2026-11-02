@@ -3,6 +3,7 @@ package OCP::Secrets;
 
 use Moo;
 use OCP;
+use OCP::ErrorLine ();
 use OCP::Password;
 use OCP::StateDir;
 use Path::Tiny qw(path);
@@ -1097,11 +1098,11 @@ sub generate_ssh_key {
 sub hetzner_token {
     my ($self) = @_;
 
-    # First check environment
-    return $ENV{HETZNER_API_TOKEN} if $ENV{HETZNER_API_TOKEN};
-
-    # Then check secrets file
-    return $self->read_secret('hetzner_token');
+    # First check environment, then the secrets file. Whichever it came from,
+    # it is masked in whatever OCP prints from now on (k398).
+    my $token = $ENV{HETZNER_API_TOKEN} || $self->read_secret('hetzner_token');
+    OCP::ErrorLine::add_secret($token);
+    return $token;
 }
 
 sub set_hetzner_token {

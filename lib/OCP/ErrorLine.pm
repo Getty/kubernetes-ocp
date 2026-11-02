@@ -17,19 +17,51 @@ use Scalar::Util ();
 # carries both, and LWP puts its own inside the message it hands on (k265).
 # _oneline took only one at the very end; it says it as Init does now.
 # A secret the caller holds -- the token a request went out with -- is masked
-# before anything else, should an answer ever echo it back. Nothing left is
-# 'unknown error', unless the caller says what nothing is (empty).
+# before anything else, should an answer ever echo it back, and so is every
+# secret the registry below holds (k398). Nothing left is 'unknown error',
+# unless the caller says what nothing is (empty).
 sub one_line {
     my ($err, %opt) = @_;
 
-    my $line = defined $err ? "$err" : '';
-    my $mask = $opt{mask};
-    $line =~ s/\Q$mask\E/********/g if defined $mask && length $mask;
+    my $line = _masked(defined $err ? "$err" : '', $opt{mask});
     $line =~ s/ at \S+ line \d+\.?//g;
     $line =~ s/\s+/ /g;
     $line =~ s/\A | \z//g;
 
     return length $line ? $line : $opt{empty} // 'unknown error';
+}
+
+# k398: every secret this process has read -- a Hetzner token, from the
+# environment, secrets.yaml or a provider CR's Secret -- for the life of the
+# process. The code that reads one adds it; one_line, and OCP.pm's renderer
+# through mask_secrets, put ******** where it stands, so no message names it,
+# whichever way it took to the terminal. Process-wide on purpose, as
+# OCP::Password's $PINS_STDIN is: a secret read anywhere is a secret
+# everywhere, and the code that prints holds no handle on the code that read.
+#
+# A value shorter than 8 characters is no secret here: an empty or a short
+# one (a "0", a test's "tok") would mask unrelated text, every number with a
+# 0 in it. Longest first, the mask one_line is given among them, so a secret
+# inside a longer one never leaves the longer one half masked.
+my %SECRET;
+
+sub add_secret {
+    my ($value) = @_;
+    $SECRET{$value} = 1 if defined $value && length $value >= 8;
+    return;
+}
+
+sub mask_secrets { _masked($_[0]) }
+
+sub _masked {
+    my ($text, @also) = @_;
+    return '' unless defined $text;
+    $text = "$text";
+    for my $secret (sort { length $b <=> length $a || $a cmp $b }
+                    keys %SECRET, grep { defined $_ && length $_ } @also) {
+        $text =~ s/\Q$secret\E/********/g;
+    }
+    return $text;
 }
 
 # k384, k387, moved here from OCP::Role::Cmd::cluster_api_error (k398), so
@@ -119,7 +151,8 @@ newlines too -- folded into one space, and none at either end. Options:
 =item mask
 
 A secret to replace with C<********> wherever it appears, before anything
-else is done -- the API token a request went out with.
+else is done -- the API token a request went out with.  Every secret
+L</add_secret> was given is masked as well, without being named here.
 
 =item empty
 
@@ -127,6 +160,27 @@ What to return when nothing is left (C<undef>, an empty or blank C<$err>, a
 bare source location). C<'unknown error'> when not given.
 
 =back
+
+=head2 add_secret
+
+    OCP::ErrorLine::add_secret($token);
+
+Remembers C<$token> as a secret for the life of the process: from then on
+L</one_line> and L</mask_secrets> replace it with C<********> wherever it
+appears.  C<undef> and any value shorter than 8 characters are ignored, so an
+empty or a short value does not mask unrelated text.  Returns nothing.
+L<OCP::Secrets/hetzner_token>, L<OCP::Provider::Hetzner> and
+L<OCP::Hetzner::Picker> add the Hetzner token they read or are built with
+(k398).
+
+=head2 mask_secrets
+
+    print STDERR OCP::ErrorLine::mask_secrets($text);
+
+C<$text> with every secret L</add_secret> was given replaced by C<********>,
+the longest first, so a secret inside a longer one never leaves part of the
+longer one standing.  C<undef> comes back as C<''>.  Nothing else about the
+text changes: no folding, no source locations taken out.
 
 =head2 api_error_line
 
