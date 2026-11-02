@@ -1,0 +1,48 @@
+---
+class: standard
+completed: 2026-11-02T19:32:52Z
+created: 2026-11-02T00:14:42Z
+depends_on:
+- 398
+id: 399
+priority: medium
+started: 2026-11-02T16:27:56Z
+status: done
+tags:
+- k8s
+- errors
+- refactor
+title: 'Part B of one-place-per-concern: one role method builds the cluster client
+  for every command'
+updated: 2026-11-02T19:32:52Z
+---
+
+Design: docs/superpowers/specs/2026-10-31-one-place-per-concern-design.md, Part B (approved 2026-11-01). Starts after Part A (k398) is committed and reported to the maintainer.
+
+One OCP::Role::Cmd method: unlock key (k370 rule) -> read kubeconfig.yaml -> OCP::Kubernetes build + GET /version -> client cached on the command object; apply passes bootstrap's in-memory kubeconfig; optional mode for destroy/status (no kubeconfig or API down -> undef plus reason; a key problem still stops the command).
+
+Done when only lib/OCP/Kubernetes.pm builds through Kubernetes::REST::Kubeconfig (robocop excluded, Role/Cmd/Machines.pm included) and a sweep of the command map against an unreachable API sees one line per command. Absorbs k389, k395, the API parts of k396.
+
+Plan: docs/superpowers/plans/2026-11-02-part-b-one-way-into-the-cluster.md (6 tasks), approved by the maintainer 2026-11-02. One ocp-worker works Tasks 1-6 in order, one patch per task; the release manager runs one full suite and commits per task. Plan decisions: apply builds through connect_cluster_api with no /version check (Bootstrap.pm:628-640 tolerates a slow API); the endpoint for the renderer lives in OCP::ErrorLine (set_cluster_endpoint); method names cluster_api/connect_cluster_api because deploy-image has --cluster. Two claims change on purpose in Task 5: t/384:294 and t/257:121 (k395).
+
+step 1 (Task 1, B1): OCP::Role::Cmd::cluster_api + connect_cluster_api, OCP::ErrorLine::set_cluster_endpoint; health, node ls, provider ls moved onto it; t/399 new. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp399/k399-1.patch. Runs: red (t/399: no method cluster_api, no set_cluster_endpoint), green 30 files / 927 tests PASS. Mutation check: control green + 5 mutants (key step in eval, optional reason for no kubeconfig, no cache, no set_cluster_endpoint, user_line ignoring endpoint) each loaded per %INC and each turned t/399 red, one guarded run, 17 tests PASS.
+
+step 2 (Task 2): node add/rm/trust-host on cluster_api; OCP::Kubernetes::temp_kubeconfig added for node add's AMD kubeconfig file handoff (plan gap); t/220 k251 fake adapted, assertions unchanged; closed-port table in t/399. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp399/k399-2.patch. Runs: red (3 rows: discovery warning with Perl location + 'Unknown node'/'No OCPNodeProvider'), green 58 files / 1372 tests PASS.
+
+step 3 (Task 3): STOPPED, claim conflict. Implemented per plan (provider add/rm, deploy-image, deploy-robocop, kubeconfig on cluster_api / connect+reach); t/399 5 new rows red then green, but t/370:304 ('bin/ocp deploy-robocop on a clone, PIN1 on STDIN' -> 'on to the admin key (PIN2)') turns red: deploy-robocop now sends GET /version before _apply_credentials_secret asks PIN2, and t/370's API (127.0.0.1:9) refuses. Run: 45 files, 1147 tests, 1 failed (t/370 test 16). Keeping that claim needs a decision outside the plan: (a) deploy-robocop builds with connect_cluster_api (no check) and its closed-port row goes to the exempt list, (b) change the t/370 claim, or (c) reorder deploy-robocop so PIN2 comes before the API check. No patch 3 written; WIP diff /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp399/k399-3.wip.diff. Patches 1-2 are final and green.
+
+Coordinator decided the stop (plan section 'Amendments during execution'): Task 1 amended (read_kubeconfig outside the optional eval, cache dropped on failed check, why without ERROR:), t/370:304 changes on purpose in Task 3, destroy keeps its no-key exception itself. Resuming.
+
+2026-11-02 17:32 step 1 amended (orchestrator's calls 2a-f): cluster_api reads kubeconfig.yaml outside the optional eval in both modes (the k382 key block is gone; read_kubeconfig unlocks/checks the key, so every key problem incl. no key at all dies), the optional eval wraps only connect+reach, a failed optional check drops _cluster_api/_cluster_kubernetes (endpoint stays), $why has no leading ERROR:. t/399 +2 subtests (optional no key -> no-age-key refusal; closed port twice -> built twice) +1 assertion of mine (ERROR: stripped). Runs: red t/399 3/7 subtests (the 3 new); green 30 files/929 tests PASS; mutation (control + read_inside_eval + cache_kept) 8 tests PASS, each mutant loaded per %INC and red. Re-cut patch scratchpad/w-ocp399/k399-1.patch; old k399-2.patch applied with offsets only, re-cut for exact offsets (content unchanged); Task 2 green set rerunning on the restacked tree.
+
+2026-11-02 17:52 step 2 restacked: on the amended task 1 the Task 2 green set ran again, 58 files/1374 tests PASS. step 3: provider add, provider rm, deploy-image, deploy-robocop via cluster_api; kubeconfig --readonly via connect_cluster_api+reach_cluster_api on the admin kubeconfig it already holds; own reads/temp files/builds and unused use lines gone. Claim changed on purpose (orchestrator's call): t/370:304 deploy-robocop row, old qr/Enter PIN2/ 'on to the admin key (PIN2)', new qr{127\.0\.0\.1:9} 'on to the API'. Side effect: deploy-robocop now gets the CRD providers and OCP Kinds registered (built through OCP::Kubernetes). Patch scratchpad/w-ocp399/k399-3.patch. Runs: red t/399 5 new rows red (tests 9-13, recorded before the stop, against the pre-amendment stack); green 45 files/1149 tests PASS.
+
+2026-11-02 18:10 step 4: destroy + machines role on cluster_api(optional => 1). destroy keeps k382's no-key exception itself (kubeconfig.yaml, no SOPS_AGE_KEY_FILE/.ocp/age.key/age.key.enc -> one [!!] block saying it goes on without the API, _api_down, cluster_api not asked); build/reach failures said once in the [!!] OCPNode words naming the server (helper _say_ocpnodes_unread, shared with _ocpnode_entries); robocop warning via user_line//one_line. Machines dies 'Could not read the OCPNodes from the cluster API: <line>' + _ocpnodes_unreadable; key problems die in OCP::Secrets' words. Patch scratchpad/w-ocp399/k399-4.patch. Runs: red t/399 4 new subtests red (16-19); green 61 files/1385 tests PASS (destroy/keys/operator + t/353 t/382 t/345 t/96 t/370 t/375 t/384 t/387 t/398 ...).
+
+2026-11-02 18:42 step 5: status (text, --json) and ssh on cluster_api(optional => 1), using the OCP::Kubernetes cluster_api built (not a second new: keeps t/11's 'helper called once'); ssh keeps its has_kubeconfig early return (keeps t/77, which builds OCP::Cmd::SSH with no command chain); Drift's two API-error carps and status's drift reason say user_line without a location. Claims changed on purpose: t/384:294, t/257:121. Fakes adapted (has_kubeconfig, blessed api, Status reach_cluster_api override): t/11 t/230-status-json t/252 t/257 t/258 t/262 t/270 t/291 t/312 t/332 t/380. Plan drift: Drift.pm :818/:1223 are :827/:1325 now. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp399/k399-5.patch. Runs: red t/399 subtests 22-24 (20-21 status closed port were already green); green 82 files / 1499 tests PASS (make test, Docker).
+
+2026-11-02 19:03 step 6: OCP::Cmd::Apply::K8s::api builds through connect_cluster_api (cache and rebuild-on-new-kubeconfig kept; _kc_temp from the OCP::Kubernetes temp_kubeconfig; no request, Review focus 3); Kubernetes::REST::Kubeconfig gone from Apply.pm and Apply/K8s.pm (with K8s.pm's now-unused File::Temp, OCP::K8s, OCP::Kubernetes). t/399 section 9: apply's client against the closed port, the source guard (code only: POD, comment lines, __END__ skipped; lib/ and bin/), the command guard (table rows or exempt-with-reason, both lists checked for staleness; health, node ls, provider ls added as table rows). Fake adapted: t/283's bare-hash apply stand-in is now an OCP::Cmd::Apply. Patch /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp399/k399-6.patch. Runs: red t/399 tests 28-30 (1-27 green); green 128 files / 1896 tests PASS (make test, Docker).
+
+2026-11-02 19:03 Done: Part B as six stacked patches, /tmp/claude-1000/-home-getty-dev-kubernetes-ocp/40f58f97-eafe-411c-a3b3-2d81a09fd894/scratchpad/w-ocp399/k399-1.patch .. k399-6.patch (headers carry subject, description, claims changed, Changes bullet; no Changes hunk). Applying 1-6 in order onto 39473d1 gives exactly the final tree, and each step equals its task commit's tree (verified in a fresh clone). Every patch was run green on its own with make test in Docker: 30/929, 58/1374, 45/1149, 61/1385, 82/1499, 128/1896 (files/tests). Claims changed on purpose: t/370:304 (patch 3), t/384:294 and t/257:121 (patch 5). Cross-lane files touched: lib/OCP/Role/Cmd.pm, Role/Cmd/Machines.pm, ErrorLine.pm, Kubernetes.pm, Drift.pm (state), Cmd/Status.pm (status), Cmd/Destroy.pm (destroy), Cmd/SSH.pm, Cmd/Apply.pm, Cmd/Apply/K8s.pm, Cmd/DeployImage.pm, Cmd/DeployRobocop.pm (apply), Cmd/Health.pm, Cmd/Kubeconfig.pm, Cmd/Node/{Add,Ls,Rm,TrustHost}.pm, Cmd/Provider/{Add,Ls,Rm}.pm; tests t/399 (new), t/220, t/283, t/370, t/384, t/257, plus status fakes t/11 t/230-status-json t/252 t/258 t/262 t/270 t/291 t/312 t/332 t/380. Release manager: run one full suite on the stack before committing per task.
+
+Committed as 2b8723c (plan amendments), b497f65, e428e59, af4d47c, 8db076b, bdb8bf9, b257bbd (patches 1-6)
