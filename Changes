@@ -1,6 +1,8 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A cluster API error that escapes any `ocp` command now names the
+      server it came from.
     - An error that escapes `ocp status`, `ocp health` or `ocp node ls`
       under `--json` is now the JSON error object `{"error": ...}` on
       STDOUT too, as `node ls` already printed it, with the line on STDERR.

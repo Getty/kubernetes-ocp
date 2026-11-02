@@ -8,8 +8,6 @@ use JSON::MaybeXS ();
 
 use OCP::Cmd::Apply::Health ();
 use OCP::Config;
-use OCP::Kubernetes;
-use OCP::Secrets;
 
 with 'OCP::Role::Cmd';
 
@@ -47,15 +45,10 @@ sub _api {
     die "No cluster deployed yet. Run 'ocp apply' to deploy.\n"
         unless $config->cluster_exists;
 
-    my $kc = OCP::Secrets->new(project_dir => $config->project_dir)->read_kubeconfig;
-    die OCP::Secrets->no_kubeconfig_refusal
-        unless $kc;
-
-    # An API that does not answer, or answers /version with an error, is
-    # said here, in one line (k384, k387).
-    my $api = OCP::Kubernetes->new(kubeconfig => $kc)->api;
-    $self->reach_cluster_api($api);
-    return $self->api($api);
+    # The key, kubeconfig.yaml, the client and one GET /version: an API that
+    # does not answer, or answers /version with an error, is said there, in
+    # one line (k384, k387, k399).
+    return $self->api($self->cluster_api);
 }
 
 # One scan, no waiting: check() with a zero timeout stops after the first scan

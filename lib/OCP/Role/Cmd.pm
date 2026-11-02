@@ -3,13 +3,16 @@ package OCP::Role::Cmd;
 
 use Moo::Role;
 use MooX::Options;
+use Path::Tiny ();
 use Scalar::Util ();
 
 use OCP::Choices;
 use OCP::ErrorLine;
 use OCP::Keys;
+use OCP::Kubernetes;
 use OCP::Password;
 use OCP::Provider;
+use OCP::Secrets;
 use OCP::SSH;
 
 # --pins-stdin (k166): every PIN prompt of this run reads the next line of
@@ -253,6 +256,76 @@ sub reach_cluster_api {
             $api->io->call($api->prepare_request('GET', '/version')), 'GET /version');
     });
     return $api;
+}
+
+# k399 (Part B): the one way a command gets its cluster client. Sixteen files
+# built one, each reading kubeconfig.yaml itself and deciding itself whether
+# to unlock the key first (k370, k375, k382); only three checked the API
+# before their first call (k384).
+#
+# connect_cluster_api is the inner part, for a kubeconfig in hand -- ocp
+# apply's, from bootstrap, in memory. It builds through OCP::Kubernetes, so
+# the CRD providers are registered in one place (ADR 0024), and sends
+# nothing: right after bootstrap the API may not answer yet, and apply waits
+# for it itself. The OCP::Kubernetes stays on the command, for the temp file
+# it holds. The server goes to OCP::ErrorLine, process-wide: when execute
+# dies, the renderer in OCP.pm holds no command object to ask (MooX::Cmd
+# built it), and an APIError that escapes then still names the server -- the
+# last one built for, so a rebuild on a new kubeconfig names the new one.
+# can('server'): a test's fake client has none, as in cluster_api_error.
+sub connect_cluster_api {
+    my ($self, $kubeconfig) = @_;
+
+    my $kubernetes = OCP::Kubernetes->new(kubeconfig => $kubeconfig);
+    my $api        = $kubernetes->api;
+    $self->{_cluster_kubernetes} = $kubernetes;
+    $self->{_cluster_api}        = $api;
+    OCP::ErrorLine::set_cluster_endpoint($api->server->endpoint) if $api->can('server');
+    return $api;
+}
+
+# The project's cluster, for every other command: kubeconfig.yaml read,
+# connect_cluster_api, one GET /version. Once per command object: a second
+# call is the first one's client, no second build and no second PIN1.
+#
+# The read is the key step. read_kubeconfig unlocks age.key.enc with PIN1 when
+# that is where the key comes from (k370) and checks a key already here
+# against the project, so it runs outside any eval, in both modes: a key
+# problem is no missing cluster (k382). A PIN1 that does not open
+# age.key.enc, an empty one, a key this project's files are not bound to, no
+# key at all -- each stops the command in OCP::Secrets' words (k375).
+#
+# optional => 1 is for the commands that go on without the cluster (ocp
+# destroy, ocp status): in list context (undef, undef) when there is no
+# kubeconfig.yaml -- nothing to say --, (undef, the one line) when the client
+# cannot be built or the API does not answer. That client is not kept: a
+# second call builds and checks again.
+sub cluster_api {
+    my ($self, %opt) = @_;
+
+    return $self->{_cluster_api} if $self->{_cluster_api};
+
+    my $project = Path::Tiny::path($self->ocp->config)->parent;
+    my $secrets = OCP::Secrets->new(project_dir => $project);
+
+    unless ($secrets->has_kubeconfig) {
+        die OCP::Secrets->no_kubeconfig_refusal unless $opt{optional};
+        return wantarray ? (undef, undef) : undef;
+    }
+
+    my $kubeconfig = $secrets->read_kubeconfig;
+
+    return $self->reach_cluster_api($self->connect_cluster_api($kubeconfig))
+        unless $opt{optional};
+
+    my $api = eval { $self->reach_cluster_api($self->connect_cluster_api($kubeconfig)) };
+    return $api if $api;
+
+    my $err = $@;
+    delete @{$self}{qw( _cluster_api _cluster_kubernetes )};
+    my $why = OCP::ErrorLine::user_line($err) // OCP::ErrorLine::one_line($err);
+    $why =~ s/\AERROR:\s*//;
+    return wantarray ? (undef, $why) : undef;
 }
 
 # Which private key reaches this cluster's machines — see OCP::ClusterKey for
@@ -747,10 +820,51 @@ cluster has providers at all; without any, the bootstrap hint is the whole
 answer.  A type is never resolved to the CR that happens to carry it:
 provider names and provider types are separate namespaces and may collide.
 
+=method cluster_api
+
+    my $api = $self->cluster_api;
+    my ($api, $why) = $self->cluster_api(optional => 1);
+
+The project's cluster client, the one way a command gets it (k399):
+F<kubeconfig.yaml> read by L<OCP::Secrets/read_kubeconfig>, the client built
+by L</connect_cluster_api>, and one C<GET /version> by L</reach_cluster_api>.
+The project is the directory of C<< $self->ocp->config >>.  Built once per
+command object: a second call returns the first one's client, with no second
+build and no second PIN1 prompt.
+
+Without C<optional> it dies: with L<OCP::Secrets/no_kubeconfig_refusal> when
+there is no F<kubeconfig.yaml>, and as reading, building or checking died --
+an API that does not answer is the line of L</cluster_api_error>, naming the
+server.
+
+With C<< optional => 1 >>, in list context, it answers C<(undef, undef)> when
+there is no F<kubeconfig.yaml>, and C<(undef, $line)> when the client cannot
+be built or the API does not answer: C<$line> is that failure as one line,
+without a newline and without a leading C<ERROR:>.  That client is not kept;
+a second call builds and checks again.  For the commands that go on without
+the cluster, C<ocp destroy> and C<ocp status>.
+
+A key problem is no missing cluster in either mode (k382): reading
+F<kubeconfig.yaml> unlocks F<age.key.enc> with PIN1 when that is where the key
+comes from, and checks a key already here against the project.  A PIN1 that
+does not open F<age.key.enc>, an empty one, a key this project's files are not
+bound to, or no key at all dies in L<OCP::Secrets>' words.
+
+=method connect_cluster_api
+
+    my $api = $self->connect_cluster_api($kubeconfig_yaml);
+
+Builds the client for a kubeconfig in hand, through L<OCP::Kubernetes> (the
+CRD providers and OCP's own Kinds registered), keeps it as the command's
+client for L</cluster_api>, and tells L<OCP::ErrorLine/set_cluster_endpoint>
+its server, so an API error that escapes the command names it.  Sends no
+request: C<ocp apply> builds on bootstrap's kubeconfig before the API may
+answer.  Each call builds anew; the server named is the last one built for.
+
 =method reach_cluster_api
 
-    my $api = Kubernetes::REST::Kubeconfig->new(kubeconfig_path => $kc)->api;
-    $self->reach_cluster_api($api);
+    my $api = $self->cluster_api;               # checks it already
+    $self->reach_cluster_api($self->connect_cluster_api($kubeconfig_yaml));
 
 Sends one C<GET /version> through the client and returns C<$api> when it is
 answered.  When it is not -- the API server the kubeconfig names does not
@@ -762,9 +876,8 @@ error without a Perl source location:
     The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)
 
 Every client may read C</version>, so an error there is the one every later
-call would get.  For a command that builds its client from the kubeconfig,
-before its first call: C<ocp node ls>, C<ocp provider ls>, C<ocp health>
-(k384, k387).
+call would get.  L</cluster_api> sends it before a command's first call
+(k384, k387, k399).
 
 =method cluster_api_call
 
