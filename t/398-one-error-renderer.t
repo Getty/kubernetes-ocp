@@ -2,12 +2,14 @@
 use strict;
 use warnings;
 use Test::More;
+use Carp ();
 use File::Temp qw( tempdir );
 use Path::Tiny qw( path );
 
 use lib 'lib';
 
 use Kubernetes::REST::APIError;
+use OCP;
 use OCP::ErrorLine;
 use OCP::Hetzner::Picker;
 use OCP::Provider::Hetzner;
@@ -28,9 +30,33 @@ use OCP::Secrets;
 #      Hetzner adapter and the catalogue picker register the token they are
 #      built with, OCP::Secrets the one hetzner_token gives; a secret inside a
 #      longer one never leaves the longer one half masked.
+#   3. foreign errors are user lines: an APIError and a Path::Tiny error that
+#      reach OCP::_report_error are one "Error:" line with no internal-error
+#      hint ("cannot read FILE: why", "cannot write ..."); anything else that
+#      carries a source location is still an internal error (t/219's claim).
+#      --verbose prints the raw exception, location included, and masks the
+#      registry there too.
 #
 
 sub api_err { Kubernetes::REST::APIError->new(@_) }
+
+# A 599 as Kubernetes::REST throws it: the transport reason, and the location
+# croak would add.
+my $e599 = api_err(code => 599, body => "Connection refused\n",
+    _location => ' at lib/Kubernetes/REST.pm line 1546.');
+
+my $tmp = tempdir(CLEANUP => 1);
+
+# What $code prints on STDERR.
+sub stderr_of {
+    my ($code) = @_;
+    my $err = '';
+    open my $fh, '>', \$err or die "stderr: $!";
+    local *STDERR = $fh;
+    $code->();
+    close $fh;
+    return $err;
+}
 
 subtest 'api_error_line' => sub {
     is OCP::ErrorLine::api_error_line(api_err(code => 599, body => "Connection refused\n"), undef),
@@ -79,6 +105,27 @@ subtest 'secret registry' => sub {
     is OCP::ErrorLine::one_line('Bearer tok-abcdefgh-1234567890-and-more',
             mask => 'tok-abcdefgh-1234567890-and-more'),
         'Bearer ********', 'nor by the registry inside the mask one_line is given';
+};
+
+subtest 'foreign errors are user lines' => sub {
+    is stderr_of(sub { OCP::_report_error($e599, 0) }),
+        "Error: The cluster API could not be reached: Connection refused\n",
+        'a 599: one line, no internal-error hint';
+    eval { Path::Tiny::path("$tmp/missing/file")->slurp_utf8 };
+    like stderr_of(sub { OCP::_report_error($@, 0) }),
+        qr{\AError: cannot read \Q$tmp\E/missing/file: No such file or directory\n\z},
+        'a file that cannot be read: cannot read FILE: why';
+    eval { Path::Tiny::path("$tmp/missing/dir/x")->spew_utf8('x') };
+    like stderr_of(sub { OCP::_report_error($@, 0) }), qr{\AError: cannot write },
+        'a file that cannot be written: cannot write';
+    eval { Carp::croak('boom') };
+    like stderr_of(sub { OCP::_report_error($@, 0) }), qr/internal error/,
+        'anything else with a source location is still internal (t/219)';
+    like stderr_of(sub { OCP::_report_error($e599, 1) }), qr/line 1546/,
+        '--verbose: the raw exception, location included';
+    OCP::ErrorLine::add_secret('tok-abcdefgh-1234567890');
+    unlike stderr_of(sub { OCP::_report_error("x tok-abcdefgh-1234567890\n", 1) }),
+        qr/tok-abcdefgh/, '--verbose: the registry masked there too';
 };
 
 done_testing;

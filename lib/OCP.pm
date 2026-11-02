@@ -5,6 +5,7 @@ use Moo;
 with 'MooX::Singleton';
 use MooX::Cmd;
 use MooX::Options;
+use OCP::ErrorLine ();
 use OCP::KnownHosts;
 use Path::Tiny ();
 use YAML::XS ();
@@ -86,8 +87,10 @@ option verbose => (
 # CLI entry point
 #
 # Wraps new_with_cmd so users never see a Perl stacktrace. Commands report
-# problems with `die "message\n"`; anything carrying an " at FILE line N."
-# is an internal error and says so. --verbose keeps the raw message.
+# problems with `die "message\n"`; a foreign exception OCP knows is said as
+# its own line (OCP::ErrorLine::user_line, k398); anything else carrying an
+# " at FILE line N." is an internal error and says so. --verbose keeps the
+# raw message. Secrets the process has read are masked in all of it.
 #
 # Returns the process exit code: the value the command's execute returned,
 # or 1 when it died.
@@ -240,17 +243,23 @@ sub _clean_message {
     return ($msg, $internal);
 }
 
+# A foreign exception OCP knows -- the cluster API, a file it could not read
+# or write -- is said as the line OCP::ErrorLine::user_line gives, and is no
+# internal error (k398). Every secret the process has read is masked in
+# whatever goes out, the raw --verbose text included.
 sub _report_error {
     my ($err, $verbose) = @_;
 
     if ($verbose) {
-        my $raw = "$err";
+        my $raw = OCP::ErrorLine::mask_secrets("$err");
         $raw .= "\n" unless $raw =~ /\n\z/;
         print STDERR $raw;
         return 1;
     }
 
-    my ($msg, $internal) = _clean_message($err);
+    my $line = OCP::ErrorLine::user_line($err);
+    my ($msg, $internal) = defined $line ? ($line, 0) : _clean_message($err);
+    $msg = OCP::ErrorLine::mask_secrets($msg);
     my $label = eval {
         require Term::ANSIColor;
         -t STDERR ? Term::ANSIColor::colored('Error:', 'red bold') : 'Error:';

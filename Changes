@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A Kubernetes API that cannot be reached or answers with an error, and
+      a file OCP cannot read or write, now read as one "Error:" line instead
+      of "This is an internal error" when they reach the top of an `ocp`
+      command.
     - A Hetzner API token OCP has read is now masked in every error line it
       prints, not only in the Hetzner adapter's own messages.
     - `ocp destroy` with `HETZNER_API_TOKEN` set stops on a wrong PIN1 and

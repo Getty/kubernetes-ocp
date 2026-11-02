@@ -111,6 +111,30 @@ sub api_error_line {
         .')'.(length $message ? ": $message" : '');
 }
 
+# k398: the foreign exceptions OCP.pm's renderer knows, as the line the user
+# reads instead of "This is an internal error". Each carries a source
+# location -- the caller's line, as croak puts it -- and none is a bug in OCP:
+#   Kubernetes::REST::APIError  the cluster API did not answer, or answered
+#                               with an error: api_error_line, without the
+#                               server (the renderer has no client to ask).
+#   Path::Tiny::Error           a file OCP could not read or write: "cannot
+#                               read FILE: why". The verb is read for what
+#                               opens or reads a file, write for what creates
+#                               or writes one, else the op's own first word
+#                               ("cannot close", "cannot chmod").
+# Anything else is undef: the renderer decides by its location, as before.
+sub user_line {
+    my ($err) = @_;
+    return unless Scalar::Util::blessed($err);
+    return api_error_line($err, undef) if $err->isa('Kubernetes::REST::APIError');
+    return unless $err->isa('Path::Tiny::Error');
+    my $op   = $err->{op} // '';
+    my $verb = $op =~ /\A(?:open \(<|opendir|read|slurp|lines|stat)/             ? 'read'
+             : $op =~ /\A(?:open \(>|sysopen|spew|append|mkpath|mkdir|touch)/ ? 'write'
+             : (split ' ', $op)[0] // 'access';
+    return 'cannot '.$verb.' '.($err->{file} // '?').': '.one_line($err->{err});
+}
+
 1;
 
 __END__
@@ -135,6 +159,12 @@ What a command prints after "could not ...": the exception, as one line.
 Shared by L<OCP::Role::Cmd::Machines> (and through it L<OCP::Cmd::Keys::Secure>
 and the operator commands) and L<OCP::Cmd::Init> (k342), so a failure reads
 the same wherever it is named.
+
+It also holds what the one error renderer in L<OCP> (C<run_cli>) says with
+(k398): the cluster API's wording (L</api_error_line>), the foreign
+exceptions it says as a line of their own (L</user_line>), and the registry
+of secrets it masks in everything it prints (L</add_secret>,
+L</mask_secrets>).
 
 =head1 FUNCTIONS
 
@@ -223,5 +253,31 @@ C<message> -- or the body, when it is no C<Status> object -- as one line by
 L</one_line>, left out when it only repeats the reason.
 L<OCP::Role::Cmd/cluster_api_error> says it with the client's endpoint
 (k384, k387).
+
+=head2 user_line
+
+    my $line = OCP::ErrorLine::user_line($@);
+    # The cluster API could not be reached: Connection refused
+    # cannot read /srv/project/ocp.yaml: Permission denied
+
+The line a user reads for a foreign exception OCP knows, or nothing
+(C<undef>) for anything else.  L<OCP>'s C<run_cli> says it as C<Error: $line>,
+without the internal-error hint (k398):
+
+=over
+
+=item L<Kubernetes::REST::APIError>
+
+L</api_error_line> without an endpoint.
+
+=item L<Path::Tiny::Error>
+
+C<cannot VERB FILE: REASON>.  VERB is C<read> for an operation that opens or
+reads a file (C<open (E<lt>>, C<opendir>, C<read>, C<slurp>, C<lines>, C<stat>),
+C<write> for one that creates or writes one (C<open (E<gt>>, C<sysopen>,
+C<spew>, C<append>, C<mkpath>, C<mkdir>, C<touch>), else the operation's
+first word.
+
+=back
 
 =cut
