@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-02T19:33:08Z
+created: 2026-10-31T15:45:23Z
+id: 389
+priority: medium
+started: 2026-11-02T19:33:08Z
+status: done
+tags:
+- ux
+- errors
+title: Other commands that build a Kubernetes client from the kubeconfig still let
+  an unreachable API die as 'internal error'
+updated: 2026-11-02T19:33:08Z
+---
+
+From k384 (2026-10-31). k384 covered ocp status, node ls, health and provider ls (OCP::Role::Cmd::reach_cluster_api / cluster_api_unreachable). The same client build and the same 599 death, with LWP source locations and OCP.pm's internal-error label, remain in: Node::TrustHost, Node::Add, OCP::Role::Cmd::Machines, Destroy (k353's file), Apply's _k8s_api, and SSH.pm. Done = each says the k384 line (one helper call, or a catch with cluster_api_unreachable where the command has its own fallback, e.g. destroy's and ssh's API cascades must keep going), and a test per command against a closed local port. Several lanes: split per owning worker when dispatched, after k375, k353 and k306 2b (same files).
+
+After k387: the helpers are OCP::Role::Cmd cluster_api_error (any APIError -> one line) and cluster_api_call (runs one call, dies with that line); cluster_api_unreachable is gone. reach_cluster_api now treats any error status at /version as fatal. Use these for TrustHost.pm:49, Node/Add.pm:132, Role/Cmd/Machines.pm:217.
+
+Stopped right after dispatch (2026-10-31): the maintainer wants to look at abstracting the cluster API client build across commands first; per-site fixes would be superseded.
+
+Destroy's part (from k382, destroy worker): the _cluster_api eval only builds the client; the API calls are at Destroy.pm:343 (_ocpnode_entries' own eval, prints the raw error), :357 (provider_crs, outside any eval) and :767 (_stop_robocop, raw error). Destroy does not die on a closed port.
+
+Absorbed by Part B (k399, docs/superpowers/specs/2026-10-31-one-place-per-concern-design.md). Part A (k398) already turns the 599 into one Error: line without 'internal error' at OCP.pm; the endpoint and the single client build follow in k399.
+
+Done by k399: node add/rm/trust-host (patch 2, e428e59), provider add/rm, deploy-image, deploy-robocop, kubeconfig --readonly (patch 3, af4d47c)
