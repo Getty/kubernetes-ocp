@@ -51,6 +51,34 @@ sweep in `t/398-one-error-renderer.t`.
 5. **The key step** is Destroy.pm's k382 block (Destroy.pm:130-135), moved verbatim into
    `cluster_api`. Both modes run it first.
 
+## Amendments during execution (2026-11-02, the orchestrator's calls)
+
+The worker stopped at Task 3 on a claim conflict and reported three more findings. These
+calls replace the plan text where they differ:
+
+1. **Key problems die in both modes, no key at all included.** `cluster_api` runs
+   `read_kubeconfig` outside the optional eval. The read already unlocks age.key.enc with
+   PIN1 and checks the key against the project (`_read_identities`,
+   `_assert_key_matches_project`), so Decision 5's separate key step goes.
+   - The optional eval wraps only `connect_cluster_api` and `reach_cluster_api`, so
+     `(undef, $why)` now means only "the client cannot be built, or the API does not
+     answer".
+   - Why: `status` and the machines role die on a missing key today. t/370:332 pins it for
+     status. Only `destroy` goes on.
+2. **`destroy` keeps its no-key exception itself** (k382: "No key at all stays a missing
+   API"). Its condition: kubeconfig.yaml is there, and there is no SOPS_AGE_KEY_FILE, no
+   .ocp/age.key and no age.key.enc. Then `destroy` says once why it goes on without the
+   API and does not call `cluster_api`. Review focus 5 still holds.
+3. **A failed optional check leaves nothing cached,** and `$why` carries no leading
+   `ERROR:`.
+4. **t/370:304 changes on purpose (Task 3).** The `deploy-robocop` row checks "on to the
+   API" (`127.0.0.1:9`), as its siblings do, instead of "Enter PIN2".
+   - The test's own comment says that how a command's next step ends is the command's
+     own business.
+   - Asking PIN2 for a cluster that cannot be reached is the worse order.
+5. **Task 6's source guard counts code only.** It skips comment lines and POD; the comment
+   at Robocop/Controller.pm:306 stays.
+
 ## Global constraints
 
 - No new CPAN dependencies; `cpanfile` stays unchanged.
