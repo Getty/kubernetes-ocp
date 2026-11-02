@@ -5,6 +5,7 @@ use Test::More;
 use Carp ();
 use File::Temp qw( tempdir );
 use JSON::MaybeXS ();
+use Module::Runtime qw( use_module );
 use POSIX ();
 use Path::Tiny qw( path );
 
@@ -44,6 +45,11 @@ use OCP::Secrets;
 #      k388 precedent, moved out of node ls); STDOUT is always exactly one
 #      document -- status and health, which print their own object, too --
 #      and a command without a json option prints no JSON for --json.
+#   5. the sweep: every leaf command in the command map, its execute dying
+#      with an unreachable cluster API, says it as that one Error: line, no
+#      internal error, exit 1, and with --json where it has the option as the
+#      one object -- nothing between run_cli and execute says it its own way.
+#      A command whose execute is never reached fails, named.
 #
 
 sub api_err { Kubernetes::REST::APIError->new(@_) }
@@ -218,6 +224,73 @@ subtest 'the JSON error object, in one place' => sub {
         is $r->{signal}, 0, "$cmd --json, nothing deployed: no signal";
         one_document($r->{out});
         unlike $r->{err}, qr/internal error/, "$cmd --json, nothing deployed: no internal error";
+    }
+};
+
+# Every leaf command OCP dispatches to, with the words that reach it: the
+# command map's keys, level by level, the way t/383 walks it.
+sub leaf_commands {
+    my (%words, @leaves);
+    my $root = OCP::_command_map('OCP');
+    my @todo = map { [ [$_], $root->{$_} ] } sort keys %$root;
+    while (my $item = shift @todo) {
+        my ($words, $class) = @$item;
+        next if $words{$class};
+        $words{$class} = $words;
+        use_module($class);
+        my $map = OCP::_command_map($class);
+        if (%$map) { push @todo, map { [ [ @$words, $_ ], $map->{$_} ] } sort keys %$map }
+        else       { push @leaves, $class }
+    }
+    return map { [ $_, $words{$_} ] } sort @leaves;
+}
+
+# A dummy for each required option, by its format: a number for i and f, k=v
+# for a hash, a word for the rest, nothing for a flag.
+sub required_options {
+    my ($class) = @_;
+    my %data = $class->_options_data;
+    my @argv;
+    for my $name (sort grep { $data{$_}{required} } keys %data) {
+        my $format = $data{$name}{format};
+        push @argv, "--$name",
+            !defined $format    ? ()
+          : $format =~ /%/      ? 'k=v'
+          : $format =~ /\A[if]/ ? 1
+          :                       'x';
+    }
+    return @argv;
+}
+
+subtest 'the sweep: every command, the one renderer' => sub {
+    my $dir    = project();
+    my @leaves = leaf_commands();
+    ok @leaves > 10, 'the walk reaches the commands (' . @leaves . ')';
+    ok((grep { $_->[0] eq 'OCP::Cmd::Provider::Add' } @leaves),
+        'among them one with required options, ocp provider add');
+
+    my $line = 'The cluster API could not be reached: Connection refused';
+    for my $leaf (@leaves) {
+        my ($class, $words) = @$leaf;
+        my @argv = (@$words, required_options($class), $class->can('json') ? '--json' : ());
+        my $what = join ' ', 'ocp', @argv;
+        (my $mark = "$tmp/reached-$class") =~ s/::/-/g;
+
+        # execute dies as a cluster API that cannot be reached would make it.
+        my $r = run_ocp($dir, sub {
+            no strict 'refs';
+            no warnings 'redefine';
+            *{"${class}::execute"} = sub { path($mark)->spew($class); die $e599 };
+        }, @argv);
+
+        ok -e $mark, "$class ($what): execute reached"
+            or diag "exit $r->{exit}, signal $r->{signal}\nSTDOUT:\n$r->{out}\nSTDERR:\n$r->{err}";
+        is $r->{signal}, 0, "$class: no signal";
+        is $r->{exit}, 1, "$class: exit 1";
+        is $r->{err}, "Error: $line\n", "$class: STDERR is the one line";
+        unlike $r->{out} . $r->{err}, qr/internal error/, "$class: no internal error";
+        is_deeply one_document($r->{out}), { error => $line }, "$class --json: the object"
+            if $class->can('json');
     }
 };
 
