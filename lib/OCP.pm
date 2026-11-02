@@ -14,6 +14,7 @@ use JSON::PP ();
 # corrects Cpanel::JSON::XS's operand swap on JSON::PP::Boolean (k314). Loaded
 # before anything is read; share/Rexfile loads it for the rex child (k316).
 use OCP::BooleanEq ();
+use JSON::MaybeXS ();
 
 # Enable proper YAML boolean serialization (JSON::PP::true/false → true/false)
 #
@@ -160,7 +161,8 @@ sub _command_word_index {
 
 # Walk the command words in $argv level by level, rewriting the aliases of
 # each level in place. Dies naming the available commands as soon as one of
-# them does not resolve.
+# them does not resolve. Returns the leaf: the last command class it required,
+# or $class when no command word resolved (k398: run_cli asks it for --json).
 sub _resolve_commands {
     my ($class, $argv) = @_;
 
@@ -202,24 +204,31 @@ sub _resolve_commands {
         $from    = $i + 1;
     }
 
-    return;
+    return $current;
 }
 
 sub run_cli {
     my ($class) = @_;
 
     my $verbose = grep { $_ eq '-v' || $_ eq '--verbose' } @ARGV;
+    my $json_given = grep { $_ eq '--json' } @ARGV;
 
     # BUILD exports the project's known_hosts file for this run; scoped here so
     # it ends with the run (k168).
     local $ENV{OCP_KNOWN_HOSTS} = $ENV{OCP_KNOWN_HOSTS};
 
+    # A command run with --json keeps STDOUT one JSON document when it dies
+    # (k398): only one that has the option -- for any other, MooX::Options
+    # refuses --json as before -- and not when the command words themselves
+    # did not resolve: there is no command then.
+    my $json = 0;
     my $root = eval {
-        _resolve_commands($class, \@ARGV);
+        my $leaf = _resolve_commands($class, \@ARGV);
+        $json = $json_given && $leaf->can('json') ? 1 : 0;
         $class->new_with_cmd;
     };
     if (my $err = $@) {
-        return _report_error($err, $verbose);
+        return _report_error($err, $verbose, $json);
     }
 
     my $ret = $root->execute_return;
@@ -247,8 +256,20 @@ sub _clean_message {
 # or write -- is said as the line OCP::ErrorLine::user_line gives, and is no
 # internal error (k398). Every secret the process has read is masked in
 # whatever goes out, the raw --verbose text included.
+#
+# With $json (a command run with --json) the message goes to STDOUT first, as
+# the one JSON error object k388 settled on for ocp node ls: {"error": the
+# line STDERR says, without its label or hint}, so a script reading STDOUT
+# tells a failure from a result by its type. STDERR says it as without --json.
 sub _report_error {
-    my ($err, $verbose) = @_;
+    my ($err, $verbose, $json) = @_;
+
+    my $line = OCP::ErrorLine::user_line($err);
+    my ($msg, $internal) = defined $line ? ($line, 0) : _clean_message($err);
+    $msg = OCP::ErrorLine::mask_secrets($msg);
+
+    print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode({ error => $msg })
+        if $json;
 
     if ($verbose) {
         my $raw = OCP::ErrorLine::mask_secrets("$err");
@@ -257,9 +278,6 @@ sub _report_error {
         return 1;
     }
 
-    my $line = OCP::ErrorLine::user_line($err);
-    my ($msg, $internal) = defined $line ? ($line, 0) : _clean_message($err);
-    $msg = OCP::ErrorLine::mask_secrets($msg);
     my $label = eval {
         require Term::ANSIColor;
         -t STDERR ? Term::ANSIColor::colored('Error:', 'red bold') : 'Error:';

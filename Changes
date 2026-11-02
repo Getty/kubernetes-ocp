@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - An error that escapes `ocp status`, `ocp health` or `ocp node ls`
+      under `--json` is now the JSON error object `{"error": ...}` on
+      STDOUT too, as `node ls` already printed it, with the line on STDERR.
     - A Kubernetes API that cannot be reached or answers with an error, and
       a file OCP cannot read or write, now read as one "Error:" line instead
       of "This is an internal error" when they reach the top of an `ocp`

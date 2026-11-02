@@ -55,19 +55,12 @@ sub _k8s {
 # --json answers on STDOUT when the nodes could not be listed too (k388), as
 # ocp status --json and ocp health --json do: an object whose error is the
 # line, where the inventory is an array -- so the type tells a list that
-# could not be made from an empty one. The line goes to STDERR as without
-# --json: the error dies on to OCP.pm, which says it and exits 1.
+# could not be made from an empty one. OCP.pm prints that object for every
+# --json command that dies (k398); the error dies on to it, which says it on
+# STDOUT as the object, on STDERR as without --json, and exits 1.
 sub execute {
     my ($self, $args, $chain) = @_;
-
-    return $self->_ls unless $self->json;
-
-    my $exit;
-    return $exit if eval { $exit = $self->_ls; 1 };
-    my $err = $@ || "Unknown error\n";
-    chomp(my $line = "$err");
-    print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode({ error => $line });
-    die $err;
+    return $self->_ls;
 }
 
 sub _ls {

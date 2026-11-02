@@ -4,12 +4,15 @@ use warnings;
 use Test::More;
 use Carp ();
 use File::Temp qw( tempdir );
+use JSON::MaybeXS ();
+use POSIX ();
 use Path::Tiny qw( path );
 
 use lib 'lib';
 
 use Kubernetes::REST::APIError;
 use OCP;
+use OCP::Cmd::Node::Ls;
 use OCP::ErrorLine;
 use OCP::Hetzner::Picker;
 use OCP::Provider::Hetzner;
@@ -36,6 +39,11 @@ use OCP::Secrets;
 #      carries a source location is still an internal error (t/219's claim).
 #      --verbose prints the raw exception, location included, and masks the
 #      registry there too.
+#   4. a --json command that fails prints one JSON error object on STDOUT,
+#      {"error": the line STDERR says}, from OCP.pm and not per command (the
+#      k388 precedent, moved out of node ls); STDOUT is always exactly one
+#      document -- status and health, which print their own object, too --
+#      and a command without a json option prints no JSON for --json.
 #
 
 sub api_err { Kubernetes::REST::APIError->new(@_) }
@@ -126,6 +134,91 @@ subtest 'foreign errors are user lines' => sub {
     OCP::ErrorLine::add_secret('tok-abcdefgh-1234567890');
     unlike stderr_of(sub { OCP::_report_error("x tok-abcdefgh-1234567890\n", 1) }),
         qr/tok-abcdefgh/, '--verbose: the registry masked there too';
+};
+
+# A project directory: an ocp.yaml and nothing deployed (no kubeconfig.yaml).
+sub project {
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(join "\n",
+        'name: k398', 'control_planes:', '  provider: ssh', '  host: cp.k398.invalid', '');
+    return $dir;
+}
+
+# `ocp @argv` the way bin/ocp runs it -- OCP->run_cli -- in a child, in $dir,
+# STDIN empty; $setup runs in the child first, so what it replaces stays
+# there. The child's END is the first to run and ends it at once: none of this
+# file's own END blocks, and no global destruction, run in the child.
+sub run_ocp {
+    my ($dir, $setup, @argv) = @_;
+    my $io = path(tempdir(CLEANUP => 1));
+    my ($in, $out, $err) = map { $io->child($_)->stringify } qw( in out err );
+    path($in)->spew('');
+    my $pid = fork // die "fork: $!";
+    unless ($pid) {
+        eval q{ END { close STDOUT; close STDERR; POSIX::_exit($?) } 1 } or POSIX::_exit(96);
+        my $code = eval {
+            chdir $dir or die "chdir: $!";
+            local $ENV{HOME} = "$dir";
+            open STDIN,  '<', $in  or die "stdin: $!";
+            open STDOUT, '>', $out or die "stdout: $!";
+            open STDERR, '>', $err or die "stderr: $!";
+            alarm 120;
+            $setup->() if $setup;
+            @ARGV = @argv;
+            OCP->run_cli;
+        } // 97;
+        exit $code;
+    }
+    waitpid $pid, 0;
+    return {
+        exit   => $? >> 8,
+        signal => $? & 127,
+        out    => path($out)->slurp_utf8,
+        err    => path($err)->slurp_utf8,
+    };
+}
+
+# STDOUT as one JSON document: decoding the whole of it fails on anything
+# before or after the one document.
+sub one_document {
+    my ($text) = @_;
+    my $doc = eval { JSON::MaybeXS->new->decode($text) };
+    ok ref $doc eq 'HASH', 'STDOUT: exactly one JSON object' or diag "STDOUT:\n$text";
+    return $doc // {};
+}
+
+subtest 'the JSON error object, in one place' => sub {
+    my $dir = project();
+    my $fails_with = sub {
+        my ($err) = @_;
+        return sub { no warnings 'redefine'; *OCP::Cmd::Node::Ls::_ls = sub { die $err } };
+    };
+
+    my $r = run_ocp($dir, $fails_with->("nodes failed\n"), 'node', 'ls', '--json');
+    is $r->{signal}, 0, 'node ls --json, a user error: no signal';
+    is $r->{exit}, 1, 'node ls --json, a user error: exit 1';
+    is_deeply one_document($r->{out}), { error => 'nodes failed' },
+        'node ls --json, a user error: the object, the line as its error';
+    is $r->{err}, "Error: nodes failed\n", 'node ls --json, a user error: STDERR says it';
+
+    $r = run_ocp($dir, $fails_with->($e599), 'node', 'ls', '--json');
+    is $r->{exit}, 1, 'node ls --json, a 599: exit 1';
+    is_deeply one_document($r->{out}),
+        { error => 'The cluster API could not be reached: Connection refused' },
+        'node ls --json, a 599: the line as its error';
+    is $r->{err}, "Error: The cluster API could not be reached: Connection refused\n",
+        'node ls --json, a 599: STDERR says it';
+
+    $r = run_ocp($dir, undef, 'version', '--json');
+    isnt $r->{exit}, 0, 'version --json: refused';
+    unlike $r->{out}, qr/\{/, 'version --json: no JSON, version has no json option';
+
+    for my $cmd ('status', 'health') {
+        $r = run_ocp($dir, undef, $cmd, '--json');
+        is $r->{signal}, 0, "$cmd --json, nothing deployed: no signal";
+        one_document($r->{out});
+        unlike $r->{err}, qr/internal error/, "$cmd --json, nothing deployed: no internal error";
+    }
 };
 
 done_testing;
