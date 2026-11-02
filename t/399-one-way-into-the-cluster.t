@@ -40,7 +40,12 @@ use OCP::Secrets;
 #      one;
 #   6. from bin/ocp, every command in the closed-port table, against an API
 #      that does not answer: STDERR is exactly the one line naming the server,
-#      no Perl location and no "internal error" anywhere, exit 1 (k389).
+#      no Perl location and no "internal error" anywhere, exit 1 (k389);
+#   7. destroy and the machines role on optional mode: destroy says once why
+#      it goes on without the API -- one that does not answer, or no key at
+#      all to open kubeconfig.yaml (k396, from k382) -- and tears down what
+#      it knows; its robocop warning says the error in one line; keys secure
+#      stops on OCPNodes it cannot read, naming the server.
 #
 
 umask 022;
@@ -306,5 +311,127 @@ for my $row (@closed_port) {
         is $status >> 8, 1, 'exit 1';
     };
 }
+
+
+#### 7: destroy and the machines role on optional mode
+
+{
+    # The machines, as destroy reaches them: no server under any label, and an
+    # uninstall that only records where it ran.
+    package Local::Provider;
+    sub new   { my ($c, %a) = @_; bless {%a}, $c }
+    sub token { $_[0]{token} }
+    sub list_servers_by_cluster { [] }
+    sub resolve_host {
+        my ($self, %o) = @_;
+        return $o{host} // die "SSH provider requires 'host'\n";
+    }
+    sub delete_server {
+        my ($self, $id, %o) = @_;
+        push @main::deleted, "$self->{type} " . ($id // $o{host});
+        return { stdout => '', stderr => '', exit => 0 };
+    }
+
+    package Local::Key;
+    sub new            { bless {}, shift }
+    sub path           { '/nonexistent/admin-key' }
+    sub migration_hint { "hint\n" }
+
+    # A cluster API handed in: no OCPNodes, no OCPNodeProviders, and a robocop
+    # scale-down that dies as the transport does.
+    package Local::K8s;
+    sub new              { my ($c, %a) = @_; bless {%a}, $c }
+    sub k8s              { $_[0] }
+    sub object_to_struct { $_[1] }
+    sub list             { Local::List->new }
+    sub patch            { die $_[0]{patch_dies} }
+
+    package Local::List;
+    sub new   { bless {}, shift }
+    sub items { [] }
+}
+our @deleted;
+
+# ocp destroy --force in $dir, its machines faked; the token from
+# HETZNER_API_TOKEN when the caller set it, else a fake read.
+sub run_destroy {
+    my ($dir, %o) = @_;
+    @deleted = ();
+    require OCP::Cmd::Destroy;
+    my $cmd = OCP::Cmd::Destroy->new(
+        command_chain => [ Local::OCP->new($dir->child('ocp.yaml')->stringify) ],
+        force         => 1,
+        ($o{k8s} ? (k8s => $o{k8s}) : ()),
+    );
+    my ($out, $err) = ('', '');
+    open my $ofh, '>', \$out or die;
+    open my $efh, '>', \$err or die;
+    my $died = do {
+        local *STDOUT = $ofh;
+        local *STDERR = $efh;
+        no warnings qw( redefine once );
+        local *OCP::Provider::for_spec = sub {
+            my ($class, $spec) = @_;
+            return Local::Provider->new(type => $spec->{provider}, token => 'tok');
+        };
+        local *OCP::Secrets::hetzner_token = sub { 'tok' } unless $ENV{HETZNER_API_TOKEN};
+        local *OCP::Cmd::Destroy::cluster_ssh_key = sub { Local::Key->new };
+        eval { $cmd->execute([], []); 1 } ? '' : $@;
+    };
+    return { out => $out, err => $err, died => $died };
+}
+
+my $OCPNODES_UNREAD = qr/^\[!!\] Could not read the OCPNodes from the cluster API:$/m;
+
+subtest 'ocp destroy, the API does not answer: why, once, and the teardown goes on' => sub {
+    my $r = run_destroy(project());
+    is $r->{died}, '', 'ran without dying';
+    like $r->{err}, qr{\A\[!!\] Could not read the OCPNodes from the cluster API:\n     $unreachable\n},
+        'in the words of an OCPNode list that failed, the line naming the server';
+    is scalar(() = $r->{err} =~ /could not be reached/g), 1, 'said once';
+    like $r->{err}, qr/\Q$server\E/, 'the server of the kubeconfig';
+    unlike "$r->{out}$r->{err}", qr/ at \S+ line \d+/, 'no Perl location';
+    is_deeply \@deleted, [ 'ssh cp.k399.invalid' ], 'the teardown went on: the control plane uninstalled';
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+};
+
+subtest 'ocp destroy, kubeconfig.yaml, no key at all, HETZNER_API_TOKEN set: why, once (k396)' => sub {
+    my $clone = clone_of(project());
+    ok !-e $clone->child('.ocp'),        'precondition: no .ocp/';
+    ok !-e $clone->child('age.key.enc'), 'precondition: no age.key.enc';
+    local $ENV{HETZNER_API_TOKEN} = 'hzTOKEN-k399-env-0123456789';
+    local $ENV{SOPS_AGE_KEY_FILE};
+    delete $ENV{SOPS_AGE_KEY_FILE};
+    my $r = run_destroy($clone);
+    is $r->{died}, '', 'ran without dying: a missing key is a missing API here (k382)';
+    is scalar(() = $r->{err} =~ /$OCPNODES_UNREAD/g), 1, 'the API line, once';
+    is scalar(() = $r->{err} =~ /no age key/g), 1, 'why, once: no key opens kubeconfig.yaml';
+    like $r->{err}, qr/no age key to open kubeconfig\.yaml.*\n.*goes on without it/,
+        'and that destroy goes on without the API';
+    unlike $r->{err}, qr/check out age\.key\.enc/, "not OCP::Secrets' refusal: nothing stops";
+    unlike "$r->{out}$r->{err}", qr/ at \S+ line \d+/, 'no Perl location';
+    is_deeply \@deleted, [ 'ssh cp.k399.invalid' ], 'the teardown went on';
+};
+
+subtest 'ocp destroy, robocop not stopped: the error in one line (k396)' => sub {
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+    my $r = run_destroy(project(), k8s => Local::K8s->new(patch_dies => $e599));
+    is $r->{died}, '', 'ran without dying';
+    like $r->{err},
+        qr/^  Warning: could not stop robocop \(The cluster API could not be reached: Connection refused\); it may re-provision a worker\.$/m,
+        'the warning says the error in its one line';
+    unlike $r->{err}, qr/ at \S+ line \d+/, 'no Perl location';
+};
+
+subtest 'ocp keys secure, the API does not answer: its OCPNodes line, naming the server' => sub {
+    my ($status, $out, $err) = run_ocp(project(), 'keys', 'secure');
+    like $err, qr{^Error: Could not read the OCPNodes from the cluster API: $unreachable$}m,
+        'the line it says for OCPNodes it cannot read, with the line naming the server';
+    like $err, qr/\Q$server\E/, 'the server of the kubeconfig';
+    like $err, qr/Nothing was changed/, 'and that nothing changed';
+    unlike "$out$err", qr/ at \S+ line \d+/, 'no Perl location';
+    unlike "$out$err", qr/internal error/i,  'no "internal error"';
+    is $status >> 8, 1, 'exit 1';
+};
 
 done_testing;

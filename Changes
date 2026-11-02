@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp destroy` says once why it goes on without the cluster API -- one
+      that does not answer, naming its server, or a checkout with no age
+      key to open `kubeconfig.yaml` -- and its robocop warning says the
+      error in one line; `ocp keys secure` and `keys operator add|rm` name
+      the server of a cluster API that does not answer.
     - `ocp provider add`, `provider rm`, `deploy-image`, `deploy-robocop`
       and `kubeconfig --readonly` say a cluster API that does not answer in
       one line naming the server, before anything else is asked;

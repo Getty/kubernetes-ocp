@@ -4,15 +4,12 @@ package OCP::Cmd::Destroy;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
 use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Choices;
 use OCP::Config;
 use OCP::ErrorLine ();
-use OCP::K8s;
 use OCP::Provider;
 use OCP::Secrets;
 
@@ -107,48 +104,46 @@ sub _report_mislabelled_servers {
 # The cluster API, or undef when there is none to ask. A teardown has to run
 # on a project whose kubeconfig is already gone, whose age key is missing, or
 # whose control plane is half down -- that is when people run it -- so none of
-# that dies here. Whether the API really answers is only known at the first
-# call; _ocpnode_entries makes that call and says so when it fails.
+# that stops it: cluster_api's optional mode answers undef, and why. No
+# kubeconfig.yaml is nothing to say; a kubeconfig no client is built from, or
+# an API that does not answer GET /version, is said once, here, and the
+# teardown goes on without the API (k396, k399).
 #
-# The key is the exception (k382). A PIN1 that does not open age.key.enc, an
-# empty one, an empty age.key.enc, or a key this project's files are not
-# bound to is the user's to hear, in OCP::Secrets' words (k375), and stops
-# the run before anything is touched -- as it does where secrets.yaml is read
-# for the Hetzner token. With HETZNER_API_TOKEN set that read does not happen,
-# PIN1 was asked inside the eval below, and a mistyped one was taken for a
-# cluster that does not answer: the teardown went on without the OCPNodes.
-# So the key is unlocked, or checked, first and outside the eval, as
-# read_kubeconfig would: PIN1 only when age.key.enc is where the key comes
-# from; a key already here is checked against the project. No key at all
-# stays a missing API, as before.
+# A key problem is no missing API (k382). A PIN1 that does not open
+# age.key.enc, an empty one, an empty age.key.enc, or a key this project's
+# files are not bound to is the user's to hear, in OCP::Secrets' words
+# (k375), and stops the run before anything is touched -- as it does where
+# secrets.yaml is read for the Hetzner token. cluster_api reads
+# kubeconfig.yaml outside its eval, so a mistyped PIN1 is never taken for a
+# cluster that does not answer.
+#
+# No key at all is the one exception, and it stays one: a checkout without
+# .ocp/age.key, age.key.enc or SOPS_AGE_KEY_FILE cannot open kubeconfig.yaml,
+# but status.yaml, the Hetzner labels and ocp.yaml still say what to tear
+# down. cluster_api would stop on it, so it is not asked; why is said once.
 sub _cluster_api {
     my ($self, $config) = @_;
     return $self->k8s if $self->k8s;
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-    return unless $secrets->has_kubeconfig;
-    if (!$secrets->sops_age_key_file && !$secrets->has_age_key && $secrets->has_age_key_enc) {
-        $secrets->ensure_age_key;
-    } else {
-        $secrets->check_local_age_key;
+    if (   $secrets->has_kubeconfig
+        && !$secrets->sops_age_key_file
+        && !$secrets->has_age_key
+        && !$secrets->has_age_key_enc)
+    {
+        $self->_api_down(1);
+        $self->_say_ocpnodes_unread(
+            'this checkout has no age key to open kubeconfig.yaml (no .ocp/age.key,',
+            'no age.key.enc, no SOPS_AGE_KEY_FILE), so destroy goes on without it.');
+        return;
     }
 
-    my $api = eval {
-        my $kc = $secrets->read_kubeconfig or return;
-
-        my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-        print {$kc_fh} $kc;
-        close $kc_fh;
-        # Anchored on the instance: File::Temp unlinks on destruction.
-        $self->{_kc_temp} = $kc_fh;
-
-        my $api = Kubernetes::REST::Kubeconfig->new(
-            kubeconfig_path => $kc_fh->filename,
-        )->api;
-        OCP::K8s->register($api);
-        $api;
-    };
+    my ($api, $why) = $self->cluster_api(optional => 1);
     return $self->k8s($api) if $api;
+    if (defined $why) {
+        $self->_api_down(1);
+        $self->_say_ocpnodes_unread($why);
+    }
     return;
 }
 
@@ -325,6 +320,21 @@ sub _node_keys {
     return @keys;
 }
 
+# The OCPNodes could not be read, and why (one line or more): said once,
+# with where the workers come from instead -- for a cluster API that is not
+# there to ask (_cluster_api) and for an OCPNode list that failed
+# (_ocpnode_entries).
+sub _say_ocpnodes_unread {
+    my ($self, @why) = @_;
+    print STDERR "[!!] Could not read the OCPNodes from the cluster API:\n";
+    print STDERR "     $_\n" for @why;
+    print STDERR "     Workers come from .ocp/status.yaml, Hetzner labels and the\n";
+    print STDERR "     hosts of ocp.yaml's ssh pools only; a worker only its OCPNode\n";
+    print STDERR "     records -- a local pool's, or one added with `ocp node add` --\n";
+    print STDERR "     may be missed and keep running.\n";
+    return;
+}
+
 # Every OCPNode, every role, as [ node entry, alias addresses ]. The provider
 # TYPE comes from the OCPNodeProvider the node names; failing that from the
 # "<type>-default" name `ocp apply` gives the CRs it writes (the derivation
@@ -345,12 +355,7 @@ sub _ocpnode_entries {
         $self->_api_down(1);
         my $why = $@ || "no answer\n";
         chomp $why;
-        print STDERR "[!!] Could not read the OCPNodes from the cluster API:\n";
-        print STDERR "     $why\n";
-        print STDERR "     Workers come from .ocp/status.yaml, Hetzner labels and the\n";
-        print STDERR "     hosts of ocp.yaml's ssh pools only; a worker only its OCPNode\n";
-        print STDERR "     records -- a local pool's, or one added with `ocp node add` --\n";
-        print STDERR "     may be missed and keep running.\n";
+        $self->_say_ocpnodes_unread($why);
         return;
     }
 
@@ -764,9 +769,10 @@ sub _stop_robocop {
         print "robocop stopped.\n";
         return 1;
     }
-    my $why = $@ // q();
-    return if $why =~ /\b404\b/;
-    chomp $why;
+    my $err = $@ // q();
+    return if $err =~ /\b404\b/;
+    # One line, as every API error is said (k396).
+    my $why = OCP::ErrorLine::user_line($err) // OCP::ErrorLine::one_line($err);
     print STDERR "  Warning: could not stop robocop ($why);"
                . " it may re-provision a worker.\n";
     return;
@@ -1340,7 +1346,9 @@ sources (C<k177>).  The key that opens C<kubeconfig.yaml> is not such a
 failure: a PIN1 that does not open C<age.key.enc>, an empty PIN1 or
 C<age.key.enc>, or a key this project's files are not bound to stops the run
 before anything is listed or touched, with L<OCP::Secrets>' refusal --
-C<HETZNER_API_TOKEN> set or not (C<k382>).
+C<HETZNER_API_TOKEN> set or not (C<k382>).  No key at all to open it -- no
+F<.ocp/age.key>, no F<age.key.enc>, no C<SOPS_AGE_KEY_FILE> -- is said once on
+STDERR, and the teardown goes on without the API (C<k396>).
 
 Workers are torn down before the control planes, and robocop is scaled to
 zero first so it does not provision a replacement for a worker it sees

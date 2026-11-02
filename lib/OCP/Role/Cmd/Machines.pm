@@ -1,14 +1,10 @@
 package OCP::Role::Cmd::Machines;
 # ABSTRACT: Every machine of a cluster, and their authorized_keys
 
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
-
 use OCP::Cmd::Apply::Bootstrap ();
 use OCP::Cmd::Apply::CR ();
 use OCP::Config ();
 use OCP::ErrorLine ();
-use OCP::K8s;
 use OCP::SSH;
 
 use Moo::Role;
@@ -22,7 +18,7 @@ requires qw( provider_crs );
 # commands needed the same walk over the same machines.
 
 # The cluster API. Injectable for tests, the way OCP::Cmd::Destroy has it;
-# otherwise built from kubeconfig.yaml on first use.
+# otherwise OCP::Role::Cmd's cluster_api, on first use.
 has k8s => (is => 'rw');
 
 #
@@ -166,24 +162,20 @@ sub _ocpnodes_unreadable {
 }
 
 # The cluster API, or undef when the project has no kubeconfig.yaml (never
-# deployed, or deployed and destroyed).
+# deployed, or deployed and destroyed). A key problem stops in OCP::Secrets'
+# words, as the read here always did; a client that cannot be built, or an
+# API that does not answer, stops in the words _ocpnodes says it with, naming
+# the server (k399): the workers would be unknown.
 sub _cluster_api {
     my ( $self, $config, $secrets ) = @_;
 
     return $self->k8s if $self->k8s;
     return undef unless $secrets->has_kubeconfig;
 
-    my $kc = $secrets->read_kubeconfig
-        or die "ERROR: kubeconfig.yaml exists but could not be decrypted.\n";
-
-    my $fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$fh} $kc;
-    close $fh;
-    # Anchored on the instance: File::Temp unlinks it on destruction.
-    $self->{_kc_temp} = $fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(kubeconfig_path => $fh->filename)->api;
-    OCP::K8s->register($api);
+    my ($api, $why) = $self->cluster_api(optional => 1);
+    die "ERROR: Could not read the OCPNodes from the cluster API: $why\n"
+      . $self->_ocpnodes_unreadable
+        unless $api;
     return $self->k8s($api);
 }
 
@@ -383,7 +375,8 @@ C<_admin_refused> tries the admin key alone. They speak to the machine through
 L<OCP::SSH>.
 
 The consumer also consumes L<OCP::Role::Cmd>. The C<k8s> attribute takes an
-API handle (tests); otherwise C<_cluster_api> builds one from
-F<kubeconfig.yaml>.
+API handle (tests); otherwise C<_cluster_api> takes one from
+L<OCP::Role::Cmd/cluster_api>, checked with one C<GET /version>: one that does
+not answer stops the command naming the server, before anything is changed.
 
 =cut
