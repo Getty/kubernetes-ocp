@@ -212,26 +212,9 @@ sub provider_cr {
 }
 
 # k384, k387: what became of a request to the API server the kubeconfig
-# names, as one line naming that server. Kubernetes::REST dies with an
-# APIError: for an answer of 400 and up, and with code 599 for no answer at
-# all (its "Error contract"). Its text carries the caller's source location,
-# and a 599's body LWP's own as well, so where it reached OCP.pm it read "This
-# is an internal error". By the code:
-#   599       no answer (refused, no route, TLS, a timeout): "could not be
-#             reached", and the first line of the transport reason. LWP says
-#             it there whole; the lines after it say it again, with LWP's
-#             own location ("Connection refused" twice, k387).
-#   401       "refused the credentials in the kubeconfig": a token or a client
-#             certificate it does not know, or no longer.
-#   403       "denied the request": the credentials are good, RBAC says no.
-#   500-598   "failed": the API server could not do it.
-#   any other "answered" -- a 404 too: an answer, never "could not be
-#             reached", and nothing here makes it "absent".
-# Behind the words the status, with the reason of a Kubernetes Status body in
-# words ("403 Forbidden", "500 Internal Error"), then the API's message, unless
-# it only repeats that reason (a 401 says "Unauthorized" twice). A body that
-# is no Status object (a proxy's page, Go's "404 page not found") is the
-# message, as one line; no body, no message.
+# names, as one line naming that server. The wording is
+# OCP::ErrorLine::api_error_line's (k398: there, so the renderer in OCP.pm
+# can say it too); this adds the server, from the client.
 #
 # $client is read only for an APIError, which only a built client can give:
 # the client itself, or the OCP::Kubernetes that holds it (ocp status).
@@ -241,22 +224,8 @@ sub cluster_api_error {
     my ($self, $client, $err) = @_;
     return unless Scalar::Util::blessed($err)
         && $err->isa('Kubernetes::REST::APIError');
-    my $api  = $client->can('server') ? $client : $client->api;
-    my $at   = 'The cluster API at '.$api->server->endpoint;
-    my $code = $err->code;
-    if ($code == 599) {
-        my ($why) = $err->body =~ /^(.*\S.*)$/m;
-        return "$at could not be reached: ".OCP::ErrorLine::one_line($why);
-    }
-    my $what = $code == 401 ? 'refused the credentials in the kubeconfig'
-             : $code == 403 ? 'denied the request'
-             : $code >= 500 ? 'failed'
-             :                'answered';
-    (my $reason = $err->reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
-    my $message = OCP::ErrorLine::one_line($err->message // $err->body, empty => '');
-    $message = '' if lc $message eq lc $reason;
-    return "$at $what (".join(' ', $code, length $reason ? $reason : ())
-        .')'.(length $message ? ": $message" : '');
+    my $api = $client->can('server') ? $client : $client->api;
+    return OCP::ErrorLine::api_error_line($err, $api->server->endpoint);
 }
 
 # $call (a sub that talks to the API through $client) and its result; an
@@ -817,7 +786,8 @@ For an error a call already caught: when C<$err> is a
 L<Kubernetes::REST::APIError>, one line naming the server
 (C<< ->server->endpoint >> of the client), what became of the request, and
 why.  The client is a L<Kubernetes::REST>, or an L<OCP::Kubernetes> holding
-one.
+one.  The words are L<OCP::ErrorLine/api_error_line>'s, with the client's
+endpoint (k398).
 
 =over
 
