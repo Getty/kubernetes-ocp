@@ -21,7 +21,7 @@ use OCP::Kubernetes;
 #
 
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
-{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub read_kubeconfig { $main::KC } }
+{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { defined $main::KC } sub read_kubeconfig { $main::KC } }
 {
     package Local::FakeK8s;
     sub new { bless {}, $_[0] }
@@ -29,7 +29,7 @@ use OCP::Kubernetes;
         die "connection refused\n" if $main::API_DOWN;
         return [ { metadata => { name => 'police1' } } ];
     }
-    sub api { undef }
+    sub api { bless {}, 'Local::NoServer' }    # cluster_api asks it for a server (k399)
     sub gpu_nodes { [] }
     sub node_name { $_[1]{metadata}{name} }
     sub node_ready { 1 }
@@ -67,6 +67,7 @@ sub run_status {
     {
         no warnings 'redefine';
         local *OCP::Secrets::new            = sub { Local::FakeSecrets->new };
+        local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
         local *OCP::Kubernetes::new         = sub { Local::FakeK8s->new };
         local *OCP::Drift::detect           = sub { [] };
         local *OCP::Cmd::Status::rex_prober = sub { undef };
@@ -117,8 +118,8 @@ sub run_status {
     unlike $out, qr/connection refused|Cannot connect|WARNING|Error:/,
         'STDOUT: neither the error nor its cause';
 
-    # STDERR: the error and the API's answer, one line each.
-    is $err, "WARNING: Cannot connect to cluster API\nError: connection refused\n",
+    # STDERR: the error and the API's answer, in one line (k399).
+    is $err, "ERROR: connection refused\n",
         'STDERR: the error with its cause, and only that';
 }
 

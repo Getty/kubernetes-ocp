@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` says a cluster API that does not answer, or a kubeconfig
+      no client can be built from, in one ERROR line naming the server, in
+      text and `--json` alike, where a client that could not be built used
+      to give a two-line WARNING; `ocp ssh` says once why it could not ask
+      the cluster API, then tries the name as a host; a drift check that
+      fails on the cluster API says it in one line without a source
+      location.
     - `ocp destroy` says once why it goes on without the cluster API -- one
       that does not answer, naming its server, or a checkout with no age
       key to open `kubeconfig.yaml` -- and its robocop warning says the

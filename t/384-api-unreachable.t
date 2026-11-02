@@ -280,19 +280,19 @@ for my $c (@commands) {
 }
 
 # A kubeconfig no client can be built from is not an API that could not be
-# reached, and ocp status reports it as before: building the client is not
+# reached, and ocp status says it in one line: building the client is not
 # tried a second time on the way to the message.
 {
     my $bad = project();
     OCP::Secrets->new(project_dir => $bad, ocp => $ocp)
         ->save_kubeconfig("apiVersion: v1\nkind: Config\n");
     my ($st, $o, $e);
-    subtest 'ocp status, a kubeconfig without contexts: reported as before' => sub {
+    subtest 'ocp status, a kubeconfig without contexts: reported in one line' => sub {
         ($st, $o, $e) = run_ocp($bad, 'status');
         is $st & 127, 0, 'no signal (alarm)';
         is $st >> 8, 1, 'exit 1';
-        like $e, qr/\AWARNING: Cannot connect to cluster API\nError: [^\n]*(?i:kubeconfig)/,
-            'STDERR: the build error, as before';
+        like $e, qr/\AERROR: [^\n]*(?i:kubeconfig)[^\n]*\n\z/,
+            'STDERR: the build error, one line (k399)';
         unlike $e, qr/could not be reached|internal error/, 'not called unreachable, not internal';
         like $o, qr/\nKubeconfig available\. Export with: ocp kubeconfig -e\n\z/,
             'STDOUT: the report still ends on the kubeconfig hint';

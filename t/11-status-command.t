@@ -21,6 +21,7 @@ use OCP::Kubernetes;
 {
     package Local::FakeSecrets;
     sub new { bless {}, $_[0] }
+    sub has_kubeconfig { 1 }
     sub read_kubeconfig { return "apiVersion: v1\nkind: Config\n"; }
 }
 
@@ -29,8 +30,9 @@ use OCP::Kubernetes;
     sub new { bless { nodes => $_[1] }, $_[0] }
     sub list_nodes { $_[0]{nodes} }
     # Drift detection reads the api: without it detection died, which status
-    # swallowed until k262 and now reports as drift unknown, exit 1.
-    sub api { undef }
+    # swallowed until k262 and now reports as drift unknown, exit 1. An api
+    # with no server: cluster_api asks it for one (k399).
+    sub api { bless {}, 'Local::NoServer' }
     sub node_name { $_[1]{metadata}{name} }
     sub node_ready { $_[1]{ready} }
     sub node_roles { $_[1]{roles} }
@@ -91,6 +93,7 @@ sub capture_stdout (&) {
     no warnings 'redefine';
     local *OCP::Secrets::new = sub { Local::FakeSecrets->new };
     local *OCP::Cmd::Status::rex_prober = sub { undef };
+    local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
     local *OCP::Kubernetes::new = sub {
         $helper_called++;
         return Local::FakeK8s->new([

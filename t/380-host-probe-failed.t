@@ -284,6 +284,7 @@ sub status_in {
         command_chain => [ FakeOCP->new(config => $dir->child('ocp.yaml')->stringify) ],
     );
     no warnings 'redefine';
+    local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
     local *OCP::Kubernetes::new = sub { FakeK8s->new(FakeApi->new) };
     return on_the_machine($dir, sub { $cmd->execute([], []) });
 }

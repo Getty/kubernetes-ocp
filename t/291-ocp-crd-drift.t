@@ -333,7 +333,7 @@ subtest 'the GPU CRD probe reads through the same reader: a 404 is no drift ther
 #### 4. what the user sees
 
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
-{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub read_kubeconfig { "apiVersion: v1\n" } }
+{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { 1 } sub read_kubeconfig { "apiVersion: v1\n" } }
 {
     package Local::FakeK8s;
     our $API;
@@ -361,6 +361,7 @@ sub run_status {
     local $Local::FakeK8s::API = $api;
     no warnings 'redefine';
     local *OCP::Secrets::new            = sub { Local::FakeSecrets->new };
+    local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
     local *OCP::Kubernetes::new         = sub { Local::FakeK8s->new };
     local *OCP::Drift::detect           = sub { [ $_[0]->ocp_crd_drift ] };
     local *OCP::Cmd::Status::rex_prober = sub { undef };

@@ -18,12 +18,12 @@ use OCP::Versions;
 # STDERR, exit code as the text form.
 
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
-{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub read_kubeconfig { $main::KC } }
+{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { defined $main::KC } sub read_kubeconfig { $main::KC } }
 {
     package Local::FakeK8s;
     sub new { bless { nodes => $_[1] }, $_[0] }
     sub list_nodes { die "connection refused\n" if $main::API_DOWN; $_[0]{nodes} }
-    sub api { undef }
+    sub api { bless {}, 'Local::NoServer' }    # cluster_api asks it for a server (k399)
     sub node_name { $_[1]{metadata}{name} }
     sub node_ready { $_[1]{ready} }
     sub node_roles { $_[1]{roles} }
@@ -63,6 +63,7 @@ sub run_status {
 
 no warnings 'redefine';
 local *OCP::Secrets::new = sub { Local::FakeSecrets->new };
+local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
 local *OCP::Kubernetes::new = sub {
     Local::FakeK8s->new([
         { metadata => { name => 'police2' }, ready => 0, roles => '<none>', version => 'v1.32.1', internal_ip => '10.0.0.11', gpu => 2, gpu_capacity => 2 },

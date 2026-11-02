@@ -45,7 +45,11 @@ use OCP::Secrets;
 #      it goes on without the API -- one that does not answer, or no key at
 #      all to open kubeconfig.yaml (k396, from k382) -- and tears down what
 #      it knows; its robocop warning says the error in one line; keys secure
-#      stops on OCPNodes it cannot read, naming the server.
+#      stops on OCPNodes it cannot read, naming the server;
+#   8. status, ssh and drift on optional mode: status (text and --json) says
+#      an API that does not answer, or a client that cannot be built, in one
+#      line; ssh says it once and tries the hostname; an API error in drift
+#      detection is one line without a location (k395).
 #
 
 umask 022;
@@ -433,5 +437,126 @@ subtest 'ocp keys secure, the API does not answer: its OCPNodes line, naming the
     unlike "$out$err", qr/internal error/i,  'no "internal error"';
     is $status >> 8, 1, 'exit 1';
 };
+
+#### 8: status, ssh and drift on optional mode; status's API errors in one line
+
+subtest 'ocp status, the API does not answer: one line naming the server' => sub {
+    my ($st, $o, $e) = run_ocp(project(), 'status');
+    is $st & 127, 0, 'no signal (alarm)';
+    is $st >> 8, 1, 'exit 1';
+    like $e, qr{\AERROR: $unreachable\n\z}, 'STDERR: exactly the one line';
+    like $e, qr/\Q$server\E/, 'the server of the kubeconfig';
+    unlike "$o$e", qr/ at \S+ line \d+/, 'no Perl location';
+    like $o, qr/\nKubeconfig available\. Export with: ocp kubeconfig -e\n\z/,
+        'STDOUT: the report ends on the kubeconfig hint';
+} or diag 'see above';
+
+subtest 'ocp status --json, the API does not answer: the line as its error' => sub {
+    require JSON::MaybeXS;
+    my ($st, $o, $e) = run_ocp(project(), 'status', '--json');
+    is $st & 127, 0, 'no signal (alarm)';
+    is $st >> 8, 1, 'exit 1';
+    my $j = eval { JSON::MaybeXS->new->decode($o) };
+    ok $j, 'STDOUT: one JSON document' or diag $o;
+    like $j->{error} // '', qr{\A$unreachable\z}, 'its error: the line naming the server';
+    like $e, qr{\AERROR: $unreachable\n\z}, 'STDERR: exactly the one line';
+    unlike "$o$e", qr/ at \S+ line \d+/, 'no Perl location';
+};
+
+subtest 'ocp status, a kubeconfig no client is built from: one line, no location' => sub {
+    my $bad = project();
+    OCP::Secrets->new(project_dir => $bad, ocp => $ocp)
+        ->save_kubeconfig("apiVersion: v1\nkind: Config\n");
+    my ($st, $o, $e) = run_ocp($bad, 'status');
+    is $st >> 8, 1, 'exit 1';
+    like $e, qr{\AERROR: [^\n]+\n\z}, 'STDERR: one ERROR: line';
+    unlike $e, qr/Cannot connect|could not be reached/, 'not called a connection failure';
+    unlike "$o$e", qr/ at \S+ line \d+|internal error/i, 'no Perl location, no internal error';
+};
+
+subtest 'ocp ssh, a node name, the API does not answer: why, once, then the hostname' => sub {
+    require OCP::Cmd::SSH;
+    require OCP::Config;
+    my $dir    = project();
+    my $cmd    = OCP::Cmd::SSH->new(
+        command_chain => [ Local::OCP->new($dir->child('ocp.yaml')->stringify) ]);
+    my $config  = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
+    my $secrets = OCP::Secrets->new(project_dir => $dir);
+
+    my ($err, @got) = ('');
+    my $ok;
+    {
+        open my $efh, '>', \$err or die;
+        local *STDERR = $efh;
+        $ok = eval {
+            @got = ($cmd->_resolve_target_host($config, $secrets, 'w-k399'),
+                    $cmd->_resolve_target_host($config, $secrets, 'cp-k399'));
+            1;
+        };
+    }
+    ok $ok, 'no lookup dies' or diag $@;
+    is $got[0], 'w-k399', 'a worker name: the hostname path, as before';
+    is $got[1], undef,    'a CP-looking name: nothing found, for the unknown-node error';
+    is scalar(() = $err =~ /could not be reached/g), 1, 'the reason, once for three lookups';
+    like $err, qr{^\[!!\] $unreachable$}m, 'the line naming the server';
+    unlike $err, qr/ at \S+ line \d+/, 'no Perl location';
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+};
+
+subtest 'drift during status: an API error is one line, no location (k395)' => sub {
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+    require OCP::Cmd::Status;
+    require OCP::Config;
+    require OCP::Drift;
+    my $dir    = project();
+    my $config = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
+
+    # The two carps of OCP::Drift that say an API error.
+    my @warn;
+    {
+        local $SIG{__WARN__} = sub { push @warn, $_[0] };
+        OCP::Drift->new(config => $config, api => Local::DownApi->new)->distribution_drift;
+        OCP::Drift->new(config => $config, api => Local::DownApi->new)->_unknown_drift($e599,
+            in => 'component_drift', op => 'get', object => 'ConfigMap kube-system/k399',
+            component => 'k399', label => 'K399', expected => undef);
+    }
+    is scalar @warn, 2, 'two diagnoses';
+    like $warn[0], qr{\AOCP::Drift::distribution_drift: list\('Node'\) failed: The cluster API could not be reached: Connection refused\n\z},
+        "distribution_drift: the API error's one line, no location";
+    like $warn[1], qr{\AOCP::Drift::component_drift: get ConfigMap kube-system/k399 failed: The cluster API could not be reached: Connection refused\n\z},
+        "_unknown_drift: the API error's one line, no location";
+
+    # Status: drift detection that dies with one.
+    my $cmd = OCP::Cmd::Status->new(
+        command_chain => [ Local::OCP->new($dir->child('ocp.yaml')->stringify) ]);
+    my $err = '';
+    my ($drift, $reason);
+    {
+        open my $efh, '>', \$err or die;
+        local *STDERR = $efh;
+        no warnings qw( redefine once );
+        local *OCP::Drift::detect = sub { die $e599 };
+        local *OCP::Cmd::Status::rex_prober = sub { undef };
+        ($drift, $reason) = $cmd->_detect_drift($config, Local::K8sWithApi->new);
+    }
+    is $err, "WARNING: Cannot detect drift: The cluster API could not be reached: Connection refused\n",
+        'STDERR: the one line, no location';
+    is $reason, 'The cluster API could not be reached: Connection refused', 'the reason, the same line';
+    like $drift->[0]{message}, qr/drift unknown: The cluster API could not be reached: Connection refused\z/,
+        'the entry carries it too';
+};
+
+# A cluster API whose every read dies as the transport does; a client
+# around none, for _detect_drift.
+{
+    package Local::DownApi;
+    sub new  { bless {}, shift }
+    sub list { die $e599 }
+    sub get  { die $e599 }
+
+    package Local::K8sWithApi;
+    sub new { bless {}, shift }
+    sub api { undef }
+}
 
 done_testing;

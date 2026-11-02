@@ -7,6 +7,7 @@ use Carp qw(croak carp);
 use OCP::Corefile;
 use OCP::Versions;
 use OCP::Config ();
+use OCP::ErrorLine ();
 
 has config => (is => 'ro', required => 1);
 
@@ -823,8 +824,8 @@ sub distribution_drift {
         # own kind and carp it to stderr, the same way OCP::Cmd::Status
         # handles its `list_nodes` failure.
         my $err = $@;
+        _say_failed("OCP::Drift::distribution_drift: list('Node') failed: ", $err);
         chomp $err;
-        carp "OCP::Drift::distribution_drift: list('Node') failed: $err";
         return {
             kind      => 'error',
             component => $dist,
@@ -1322,7 +1323,7 @@ sub _unknown_drift {
 
     my $reason = "$err";
     chomp $reason;
-    carp "OCP::Drift::$e{in}: $e{op} $e{object} failed: $reason";
+    _say_failed("OCP::Drift::$e{in}: $e{op} $e{object} failed: ", $err);
     my $could = $e{op} eq 'get' ? 'read' : $e{op};
     return {
         kind      => 'error',
@@ -1333,6 +1334,17 @@ sub _unknown_drift {
         message   => "$e{label}: could not $could $e{object}, drift unknown: $reason",
         remedy    => undef,
     };
+}
+
+# A read that failed, said on stderr once: an API error as its one line,
+# naming the server, without a source location (k395); anything else carped
+# as it came, with the caller's.
+sub _say_failed {
+    my ($what, $err) = @_;
+    my $line = OCP::ErrorLine::user_line($err);
+    return warn $what.$line."\n" if defined $line;
+    (my $s = "$err") =~ s/\n\z//;
+    carp $what.$s;
 }
 
 # The entry for a probe whose skip_if OCP::Config refused (k332): whether

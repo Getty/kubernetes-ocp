@@ -225,7 +225,7 @@ sub _remote_command {
 sub _node_names {
     my ($self, $secrets) = @_;
 
-    my $k8s = eval { $self->_kubernetes($secrets) } or return ();
+    my $k8s = eval { $self->_kubernetes($secrets, quiet => 1) } or return ();
 
     my $nodes = eval { $k8s->list_nodes } // [];
     my @names = map { $k8s->node_name($_) } @$nodes;
@@ -379,13 +379,22 @@ sub _get_or_undef {
     return $obj && $kind eq 'OCPNode' ? $api->k8s->object_to_struct($obj) : $obj;
 }
 
-# The cluster API as OCP::Kubernetes, from the project's kubeconfig, or undef
-# when the project has none.
+# The cluster API as OCP::Kubernetes, from OCP::Role::Cmd's cluster_api, or
+# undef: when the project has no kubeconfig.yaml, and when the client cannot
+# be built or the API does not answer. That is said once on STDERR -- not for
+# quiet, the listing an error message is built from -- and not asked again;
+# the hostname path is tried, as before (k399). A key problem stops the
+# command (k382).
 sub _kubernetes {
-    my ($self, $secrets) = @_;
+    my ($self, $secrets, %opt) = @_;
     return undef unless $secrets->has_kubeconfig;
-    my $kubeconfig = $secrets->read_kubeconfig or return undef;
-    return OCP::Kubernetes->new(kubeconfig => $kubeconfig);
+    return undef if defined $self->{_api_down};
+    my ($api, $why) = $self->cluster_api(optional => 1);
+    return $self->{_cluster_kubernetes} if $api;
+    return undef unless defined $why;
+    $self->{_api_down} = $why;
+    print STDERR "[!!] $why\n" unless $opt{quiet};
+    return undef;
 }
 
 # Why --node did not resolve to anything to connect to.

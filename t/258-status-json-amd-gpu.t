@@ -25,7 +25,7 @@ use OCP::Kubernetes;
 #
 
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
-{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub read_kubeconfig { "apiVersion: v1\nkind: Config\n" } }
+{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { 1 } sub read_kubeconfig { "apiVersion: v1\nkind: Config\n" } }
 { package Local::FakeList; sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
 {
     package Local::FakeApi;
@@ -156,6 +156,7 @@ sub run_status {
     {
         no warnings 'redefine';
         local *OCP::Secrets::new            = sub { Local::FakeSecrets->new };
+        local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
         local *OCP::Kubernetes::new         = sub { $k8s };
         local *OCP::Drift::detect           = sub { [] };
         local *OCP::Cmd::Status::rex_prober = sub { undef };

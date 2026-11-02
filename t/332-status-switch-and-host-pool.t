@@ -74,7 +74,7 @@ use OCP::Versions;
     sub content { $_[0]{content} }
 }
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
-{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub read_kubeconfig { "apiVersion: v1\n" } }
+{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { 1 } sub read_kubeconfig { "apiVersion: v1\n" } }
 {
     package Local::FakeK8s;
     sub new { bless { api => $_[1] }, $_[0] }
@@ -182,6 +182,7 @@ sub run_status {
     {
         no warnings 'redefine';
         local *OCP::Secrets::new            = sub { Local::FakeSecrets->new };
+        local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
         local *OCP::Kubernetes::new         = sub { Local::FakeK8s->new($api) };
         local *OCP::Cmd::Status::rex_prober = sub { undef };
         local *STDOUT = $o;

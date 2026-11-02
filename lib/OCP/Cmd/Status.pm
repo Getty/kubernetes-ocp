@@ -11,6 +11,7 @@ use OCP;
 use OCP::Choices;
 use OCP::Config;
 use OCP::Drift;
+use OCP::ErrorLine ();
 use OCP::Kubernetes;
 use OCP::Secrets;
 use OCP::Versions;
@@ -84,31 +85,33 @@ sub execute {
     print "=== Status ===\n";
     print "Cluster exists (kubeconfig.yaml found)\n\n";
 
-    # Decrypt kubeconfig to temp file
-    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-    my $kc_content = $secrets->read_kubeconfig;
-
-    # What went wrong and why goes to STDERR (k257); the report on STDOUT ends
+    # The key, kubeconfig.yaml, the client and one GET /version (k399); a key
+    # problem stops the command there, in OCP::Secrets' words (k382). What
+    # went wrong and why goes to STDERR (k257); the report on STDOUT ends
     # where it got to, the API case on the kubeconfig hint a good run ends on.
-    unless ($kc_content) {
-        print STDERR OCP::Secrets->no_kubeconfig_refusal;
+    my ($api, $why) = $self->cluster_api(optional => 1);
+    unless ($api) {
+        unless (defined $why) {
+            print STDERR OCP::Secrets->no_kubeconfig_refusal;
+            return 1;
+        }
+        # A client that cannot be built, or an API that does not answer: one
+        # line, naming the server when there is one (k384, k395).
+        print STDERR "ERROR: $why\n";
+        print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
 
-    my $k8s = OCP::Kubernetes->new(kubeconfig => $kc_content);
+    # The OCP::Kubernetes cluster_api built the client in, not a second one.
+    my $k8s = $self->{_cluster_kubernetes};
 
-    # An API that does not answer, or answers with an error, is one line
-    # naming the server, what became of the request and why (k384, k387).
+    # A list that fails after the check is one line too: an API error names
+    # the server, what became of the request and why (k384, k387).
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        if (my $line = $self->cluster_api_error($k8s, $error)) {
-            print STDERR "ERROR: $line\n";
-        } else {
-            chomp $error;
-            print STDERR "WARNING: Cannot connect to cluster API\n";
-            print STDERR "Error: $error\n";
-        }
+        my $line  = $self->cluster_api_error($k8s, $error) // OCP::ErrorLine::one_line($error);
+        print STDERR "ERROR: $line\n";
         print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
@@ -222,26 +225,22 @@ sub _collect_json {
     return 0 unless $config->cluster_exists;
     $out->{deployed} = JSON::MaybeXS::true();
 
-    my $secrets    = OCP::Secrets->new(project_dir => $config->project_dir);
-    my $kc_content = $secrets->read_kubeconfig;
-    unless ($kc_content) {
-        $out->{error} = 'Cannot decrypt kubeconfig.yaml (is .ocp/age.key present?)';
+    # As the text form: the key, kubeconfig.yaml, the client and one GET
+    # /version (k399); a client that cannot be built, an API that does not
+    # answer, and a list that fails after it are each one line (k395).
+    my ($api, $why) = $self->cluster_api(optional => 1);
+    unless ($api) {
+        $out->{error} = $why // 'Cannot decrypt kubeconfig.yaml (is .ocp/age.key present?)';
         print STDERR "ERROR: $out->{error}\n";
         return 1;
     }
 
-    my $k8s   = OCP::Kubernetes->new(kubeconfig => $kc_content);
+    my $k8s   = $self->{_cluster_kubernetes};
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        if (my $line = $self->cluster_api_error($k8s, $error)) {
-            $out->{error} = $line;
-            print STDERR "ERROR: $line\n";
-        } else {
-            chomp $error;
-            $out->{error} = 'Cannot connect to cluster API: ' . $error;
-            print STDERR "WARNING: $out->{error}\n";
-        }
+        $out->{error} = $self->cluster_api_error($k8s, $error) // OCP::ErrorLine::one_line($error);
+        print STDERR "ERROR: $out->{error}\n";
         return 1;
     }
 
@@ -320,7 +319,10 @@ sub _detect_drift {
     };
     return ($drift, undef) if ref $drift eq 'ARRAY';
 
-    my $reason = $@ ? "$@" : 'OCP::Drift->detect returned no list';
+    # An API error is its one line, without a source location (k395).
+    my $err    = $@;
+    my $reason = $err ? OCP::ErrorLine::user_line($err) // "$err"
+                      : 'OCP::Drift->detect returned no list';
     chomp $reason;
     print STDERR 'WARNING: Cannot detect drift: '.$reason."\n";
     return ([ {
@@ -691,7 +693,8 @@ When the kubeconfig cannot be decrypted or the API cannot be reached, the
 report on STDOUT stops there, the error and its diagnosis go to STDERR, and
 the exit code is 1.  An API server that does not answer, or answers with an
 error status, is one line naming the server from the kubeconfig, what became
-of the request and why (L<OCP::Role::Cmd/cluster_api_error>):
+of the request and why (L<OCP::Role::Cmd/cluster_api>); a kubeconfig no
+client can be built from is one C<ERROR:> line too (k399):
 
     ERROR: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
     ERROR: The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)

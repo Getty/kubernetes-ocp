@@ -110,12 +110,12 @@ my @UNKNOWN     = qw( unknown );
 #### harness
 
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
-{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub read_kubeconfig { "apiVersion: v1\n" } }
+{ package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { 1 } sub read_kubeconfig { "apiVersion: v1\n" } }
 {
     package Local::FakeK8s;
     sub new { bless {}, $_[0] }
     sub list_nodes { [ { metadata => { name => 'police1' } } ] }
-    sub api { undef }
+    sub api { bless {}, 'Local::NoServer' }    # cluster_api asks it for a server (k399)
     sub gpu_nodes { [] }
     sub node_name { $_[1]{metadata}{name} }
     sub node_ready { 1 }
@@ -182,6 +182,7 @@ sub run_status {
     );
     no warnings 'redefine';
     local *OCP::Secrets::new            = sub { Local::FakeSecrets->new };
+    local *OCP::Cmd::Status::reach_cluster_api = sub { $_[1] };
     local *OCP::Kubernetes::new         = sub { Local::FakeK8s->new };
     local *OCP::Drift::detect           = sub { entries(@$names) };
     local *OCP::Cmd::Status::rex_prober = sub { undef };
