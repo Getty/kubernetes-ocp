@@ -1,0 +1,67 @@
+---
+class: standard
+completed: 2026-11-02T00:17:05Z
+created: 2026-10-31T06:02:31Z
+id: 306
+priority: low
+started: 2026-11-02T00:17:05Z
+status: done
+tags:
+- config
+- validation
+- cli
+title: Commands that read control_planes or workers without validate() still crash
+  on malformed shapes
+updated: 2026-11-02T00:17:05Z
+---
+
+Left over from k296 (2026-10-31). Since k255 only `ocp apply` validates first. `ocp status`, `ocp update`, `ocp node add/ls`, `ocp kubeconfig` and others read `control_planes`/`workers` directly, and still die inside Perl on the shapes k296 names (e.g. Status.pm:53 on a `control_planes` list entry that is not a mapping, or `workers: foo`). gpu: is already covered: gpu_config croaks with the validate() line (k296).
+
+Done = every command that reads ocp.yaml either runs `OCP::Cmd::Apply::Validate::refuse_invalid_config` (or a read-only equivalent) before it reads, or the accessors refuse the bad shape in the validate() words, so the user always gets the line naming the key. Decide which, and say why: a validate-first gate on read-only commands like `ocp status` may be too strict for a half-edited file. Test: one malformed shape per command, no Perl error text in the output.
+
+2026-10-31 (main, from k323/k326): the destroy worker suggests one public OCP::Config helper that returns validate()'s lines for the shapes every reader depends on (name, control_planes/workers shapes, pool mappings, provider, host, pool nodes); validate() calls it first, read-side commands check it before they read. Destroy (k323/k326) currently calls the private _shown_value/_pool_nodes_errors/_pool_where and re-spells three validate() lines, pinned by t/326. Same pattern for k306: each command refuses only on the lines for what it reads.
+
+2026-10-31 (main, from k332): `workers: [ just-a-string ]` still crashes ocp status inside Perl before any report -- one more read-side command for this card.
+
+From k339 (2026-10-31): ocp status runs without validate(), so on shapes validate() refuses its pool count can still differ from apply's (t/230's ssh pool with nodes: 2 shows 2, apply makes 0); and status shows a pool without provider as ssh where apply reads it as hetzner. Both belong to the read-side shape check this card asks for.
+
+From k333 (apply worker, 2026-10-31): ocp node add --gpu picks validate()'s gpu lines by key-path prefix (/\Agpu[.:]/), tied to validate()'s line format. A public per-path errors helper in OCP::Config (state lane) would replace that, and it fits this card's read-side commands too.
+
+2026-10-31 (main, from k346): OCP::Role::Cmd::Machines::_machines_spec_errors is a third copy of validate()'s shape lines, after Destroy (k323/k326) and node add's gpu prefix (k333). It belongs in the shared helper too. k361 (worker_ocpnodes counting nodes: on a pool of unknown provider) is the OOM case among the read-side shapes.
+
+From k355 (choices worker, 2026-10-31): OCP::Drift (around line 587) and OCP::Role::Cmd::Machines (around line 153) still read $cp->{name} without the string check that cluster_status and validate() now apply (k355). Two more read-side sites for this card's shared helper.
+
+From k361 (2026-10-31): CR.pm worker_ocpnodes now calls the private OCP::Config::_is_whole_number to read a count the way validate() does. One more private-call site for the shared public helper.
+
+2026-10-31 14:58 Design pass done (ocp-choices-worker, read-only, nothing changed, no tests run; base19). Full doc: scratchpad w-choices306/design.md.
+Decision: no validate-first gate on the read side. name, control_planes and workers refuse in validate()'s words, as kubernetes/gpu/ssh/system/robocop/switches already do since k331/k340/k355: die "...\n", not croak. Every reader of those three treats each entry as a mapping, so refusing the whole list on one bad entry refuses exactly what is read. The deeper shapes (an entry's host/public_ip/name/provider; a pool's nodes/host) come from one public OCP::Config::spec_errors(@paths). It returns validate()'s lines per key path (name, control_planes, control_planes[I|*], control_planes[I].provider/host/public_ip/..., workers, workers[I|*], workers[I].name/provider/nodes/host/..., optionally gpu for k333). Unknown keys, required lines and bounds stay validate()-only (k347/k355). validate() calls the same private producers at today's spots, so its order is kept; a property test pins spec_errors as an ordered sub-list of validate(). Status reads each spec section in an eval: the line goes to STDERR once and the report goes on (the _amd_gpu_default_allocation precedent); OCP::Drift turns a refusal into a kind=>error entry. Destroy keeps its own selection (k323/k335/k345); only the line text moves to Config.
+Plan: 1 Config spec_errors with no behaviour change (choices); 2a Destroy (destroy), 2b Machines (secrets), 2c node add gpu (apply, optional); 3 one batch: accessors refuse (choices) + Status/Version (status) + Drift (state) + node ls/ssh/kubeconfig (ocp-worker; no lane names them) + Init (apply) + provider add (test only). Step 3 replaces t/230's ssh-pool count claim (k339).
+k361: land first, narrowly. worker_ocpnodes reads nodes: as a count only when it is a whole number within a bound, else as one machine, as control_planes() does. Not 'every caller gates'.
+Also found (for the dispatcher):
+F1 validate() has no upper bound on a pool's nodes: count. nodes: 1000000000000 on a hetzner or local pool passes validate() and OOMs ocp apply in worker_ocpnodes. k361 assumes a bound that does not exist; the number is a maintainer decision.
+F2 ocp node ls --json OOMs on P1-P4 (_pools_of -> worker_ocpnodes; its eval does not stop that). k361 does not list it, and status does not call worker_ocpnodes.
+F3 the refusing accessors croak, so OCP::run_cli labels them 'internal error' where nothing gates first (e.g. ocp update with gpu: false, Update.pm:125->303; by reading).
+F4 network/registry/cilium/ssl_config return raw values; network: foo dies inside Perl in node add, deploy-robocop and update.
+F5 ocp provider add with name: [a] writes clusterName ARRAY(0x...) into the OCPNodeProvider, so destroy misses robocop's servers (k98 class).
+F6 destroy's fallback (Destroy.pm:253) and Machines (:157) read public_ip without a shape check; steps 2a/2b close it.
+Card stays in-progress for the implementation, after k353/k367/k361/k374 land.
+
+2026-10-31 15:37 Step 1 done (ocp-choices-worker), card stays in-progress for steps 2/3. Patch: scratchpad w-choices306/k306-step1.patch on queued21 (273f238); Config.pm + new t/306-spec-errors.t, no Changes hunk (no user-visible change). validate()'s name/control_planes/gpu/switch/workers blocks moved verbatim into producers returning [tag, line] (tag = key path, undef = validate()-only); validate() pushes them at the old spots. Public OCP::Config::spec_errors(@paths): name, control_planes, control_planes[I|*](.provider/host/public_ip/private_ip/server_type/location/image/name), workers, workers[I|*](.name/provider/nodes/host/server_type/location/image), gpu (incl. gpu.* switches, for 2c). Unknown paths croak; non-mapping ocp.yaml dies with the file line. _first_cp_string now goes through _cp_string_error (same text). No accessor refuses yet. Verified via make test in Docker (IMAGE=localhost/ocp-w306): red = t/306 against queued21 fails (no spec_errors); green = 43 files (t/306, t/296, t/255, t/323, t/326, t/335, t/346, t/355, t/361, t/00-load + every t/ that calls validate/refuse_invalid_config/join_host/cluster_status), 687 tests PASS; mutation = 17/17 mutants killed by assertions (drop each producer from validate, widen unknown keys into entry paths, drop \\z, break the nodes:N once-rule, all switches as gpu, section order, index 0, any key, gpu without switches, name/required lines tagged, nodes/key tags moved), controls pass; differential = validate() line-for-line equal to queued21's on every in-process call in t/296, t/306, t/15, t/255, t/75, t/211 (harness checked to fail on a changed old validate).
+
+Step 1 reviewed by main (w-choices306/k306-step1.patch): validate() blocks moved verbatim into tagged producers, spec_errors(@paths) per design, order preserved; worker's line-for-line check vs queued21 + 17/17 mutants. Applies on HEAD + batch 6 + batch 7 (head10). Queued with batch 7; card stays in-progress. Next: 2b (secrets, Machines.pm) now on head10; 2a (destroy) after k353; 2c (apply, Node/Add.pm) after k375, which touches Node/Add.pm.
+
+Step 2c (ocp-apply-worker): Node/Add.pm _refuse_invalid_gpu_config takes its lines from spec_errors('gpu') instead of grep /\Agpu[.:]/ over validate(). Equality: same lines, same order on every mapping. t/333 now sweeps t/296's gpu shapes (12 key paths x 10 values), alone and next to a line in every other section. In both cases spec_errors('gpu') equals the filter's lines, and node add refuses on exactly those lines or goes on. An unrelated line still holds nothing up. One difference = behaviour change: an ocp.yaml that is empty or no mapping. The filter dropped the file's line and node add --gpu went on to PIN1 and the OCPNode write. It now refuses before anything, with the line ocp apply uses. Corner: a --config named gpu.* was framed as a 'gpu: block' error and now gets the bare line. t/220 and t/273 fakes: validate -> spec_errors. Red on queued-head14 (t/333 subtests 37-38), green 15 files/319 tests no skips, mutant spec_errors() killed (20/38 subtests red). Patch: w-apply306c/tmp.wFGYrjuflT/k306-2c.patch, Changes bullet proposed. Not handed off.
+
+Step 2c reviewed and queued (node add --gpu: spec_errors('gpu') instead of the grep over validate()). For step 3: without --gpu, an empty or no-mapping ocp.yaml still lets ocp node add write the OCPNode first; on the CLI join path it then dies in _cli_reconcile at the first spec read (Node/Add.pm:355 cluster_status, :378 distribution).
+
+2026-10-31 17:03 Step 2b done (ocp-secrets-worker), card stays in-progress. Patch: scratchpad w-secrets306b/tmp.cb7ppHDRtP/k306-2b.patch on queued-head10 (f49cea9); applies clean there. Machines::_machines_spec_errors is now one OCP::Config::spec_errors call with Machines' own paths: control_planes, control_planes[*], control_planes[*].host/public_ip/name, workers, workers[*], workers[*].nodes, workers[I].host for each ssh pool without a nodes: list. public_ip and name are the new paths (closes the k346 drift and F6's Machines half). _machine_host_error and the unused OCP::Provider import are gone; the POD in Machines and Keys::Secure names the two keys. No validate()-only line was needed. New t/306-machines-spec-errors.t covers public_ip: [a] (local CP, no host) and name: [a], with and without a recorded CP, through all three commands plus bin/ocp operator add; private_ip: [a] holds nothing up. Red on queued-head10: 6/7 subtests fail (ARRAY(0x...) machines SSHed to; 'not a list at lib/OCP/Role/Cmd/Machines.pm line 163', after PIN1). Green: make test IMAGE=localhost/ocp-w306b, 19 files (00-load, 51-pod, 306 x2, 346, 323, 326, 335, 96, 216 x2, 361, 373, 237, 329, 342, 241, 296, 69), 319 tests PASS; t/323/326/335/346 unchanged. Mutants: one guarded run, 5/5 killed by the targeted assertions (drop public_ip, drop name, drop the call, ssh host beside nodes, drop ssh host); the control passes; %INC checked in every wrapper. After a POD-only edit: 00-load + 51-pod PASS.
+
+Step 2b reviewed and queued (Machines: spec_errors at the paths _machines reads, plus control_planes[*].public_ip/name). For step 3, found by reading, not run: (1) ClusterKey.pm:213-215 (used at :497/:518): a first control plane whose provider is a list shows as provider 'ARRAY(0x...)' in the keys commands' PIN2 text, since the Machines gate does not ask control_planes[1].provider. (2) Cmd/Apply/CR.pm:610 -> NodeMeta.pm:85: a malformed pool taint makes worker_ocpnodes croak with a Perl location inside the keys commands after PIN1; taints are validate()-only, with no spec_errors path.
+
+Step 1 committed as 7665c48; card stays in-progress for steps 2 and 3
+
+Step 2c committed as 5170476; card stays in-progress
+
+Step 2b committed as 19fe5ba; card stays in-progress
+
+Steps 1, 2c and 2b are on main: 7665c48, 5170476, 19fe5ba. The design folds the remaining commands into Part C (k400). Closed here.
