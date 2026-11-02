@@ -1,7 +1,7 @@
 # One place per concern: errors, cluster access, ocp.yaml shape, drift — design
 
-Date: 2026-10-31 · Status: approved by the maintainer on 2026-11-01 · Cards: one card per
-part, created when Gate 0 passes (see "Process")
+Date: 2026-10-31 · Status: approved by the maintainer on 2026-11-01 · Cards: k398 (Part A),
+k399 (Part B), k400 (Part C)
 
 ## Intent
 
