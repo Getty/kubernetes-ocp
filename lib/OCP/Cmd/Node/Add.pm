@@ -4,11 +4,9 @@ package OCP::Cmd::Node::Add;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use File::Temp ();
 use JSON::PP ();
 use Path::Tiny ();
 use Socket ();
-use Kubernetes::REST::Kubeconfig;
 use OCP::Choices;
 use OCP::Cmd::Apply::AMDGPU ();
 use OCP::Cmd::Apply::CR ();
@@ -16,7 +14,6 @@ use OCP::Cmd::Apply::K8s ();
 use OCP::Cmd::Apply::Workloads ();
 use OCP::Config;
 use OCP::Secrets;
-use OCP::K8s;
 use OCP::Node;
 use OCP::NodeMeta;
 use OCP::Provider;
@@ -118,28 +115,16 @@ sub _k8s {
     my $file = $self->ocp->config;
     die "Config file '$file' not found. Run 'ocp init' first.\n" unless -f $file;
 
-    my $config  = OCP::Config->new(file => $file);
-    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
-
-    my $kc_content = $secrets->read_kubeconfig;
-    die OCP::Secrets->no_kubeconfig_refusal
-        unless $kc_content;
-
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$kc_fh} $kc_content;
-    close $kc_fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(
-        kubeconfig_path => $kc_fh->filename,
-    )->api;
+    # The key, kubeconfig.yaml, the client and one GET /version: an API that
+    # does not answer, or answers /version with an error, is said there, in
+    # one line (k389, k399).
+    my $api = $self->cluster_api;
 
     # Kept with the command: the AMD GPU stack's library reads the kubeconfig
     # as a file (_apply_cmd hands it on), and the file goes when this does.
-    $self->{_kc_temp} = $kc_fh;
+    $self->{_kc_temp} = $self->{_cluster_kubernetes}->temp_kubeconfig;
 
-    OCP::K8s->register($api);
-    $self->k8s($api);
-    return $api;
+    return $self->k8s($api);
 }
 
 sub _resolve_provider {

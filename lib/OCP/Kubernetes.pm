@@ -109,6 +109,14 @@ sub _build_api {
     return $api;
 }
 
+# The file _build_api wrote the kubeconfig text to. A library that takes a
+# kubeconfig file (the AMD GPU stack's) reads it, and it is gone when this
+# object is (k399).
+sub temp_kubeconfig {
+    my ($self) = @_;
+    return $self->{_temp_kubeconfig};
+}
+
 # The resource-map providers for the Kinds OCP addresses by name. All three
 # ship inside IO::K8s itself (cpanfile requires 1.108), and Kubernetes::REST
 # loads each one when it merges the `with` list into its inner IO::K8s.
@@ -340,6 +348,16 @@ being run.  It also knows OCP's own Kinds, C<OCPNode> and C<OCPNodeProvider>
 (L<OCP::K8s::OCPNode>, L<OCP::K8s::OCPNodeProvider>), on the same C<with>
 list: on a cluster that does not serve their CRD a C<list> or C<get> is
 answered with a 404, not refused as an unknown resource.
+
+=method temp_kubeconfig
+
+    my $file = $kubernetes->temp_kubeconfig;   # a File::Temp
+    say $file->filename;
+
+The temporary file C<api> wrote C<kubeconfig> to and built the client from,
+for a library that reads a kubeconfig file (L<OCP::Cmd::Apply::K8s/kubeconfig_path>).
+It lives as long as this object.  Undef until C<api> is built, and when it was
+built from C<kubeconfig_path> or C<in_cluster>.
 
 =method register_resource_providers
 

@@ -37,7 +37,10 @@ use OCP::Secrets;
 #   5. connect_cluster_api tells the renderer its server: an APIError that
 #      escapes a command names the server of the last client built, so a
 #      rebuild on a new kubeconfig (ocp apply after bootstrap) names the new
-#      one.
+#      one;
+#   6. from bin/ocp, every command in the closed-port table, against an API
+#      that does not answer: STDERR is exactly the one line naming the server,
+#      no Perl location and no "internal error" anywhere, exit 1 (k389).
 #
 
 umask 022;
@@ -254,5 +257,49 @@ subtest 'connect_cluster_api: the renderer names the last server' => sub {
     is OCP::ErrorLine::user_line($e599), 'The cluster API could not be reached: Connection refused',
         'reset: no server';
 };
+
+#### 6: the closed-port table, from bin/ocp
+
+my $bin = path('bin/ocp')->absolute;
+my $lib = path('lib')->absolute;
+
+# bin/ocp in the project dir, STDIN empty and --pins-stdin, so a prompt that
+# should not come ends the run instead of waiting.
+sub run_ocp {
+    my ($dir, @argv) = @_;
+    my ($in, $out, $err) = map { Path::Tiny->tempfile } 1 .. 3;
+    my $pid = fork // die "fork: $!";
+    unless ($pid) {
+        chdir $dir or die "chdir: $!";
+        local $ENV{HOME} = $dir->stringify;
+        open STDIN,  '<', "$in"  or die;
+        open STDOUT, '>', "$out" or die;
+        open STDERR, '>', "$err" or die;
+        alarm 120;
+        exec $^X, "-I$lib", "$bin", @argv, '--pins-stdin' or die "exec: $!";
+    }
+    waitpid $pid, 0;
+    return ($?, $out->slurp_utf8, $err->slurp_utf8);
+}
+
+# One row per command that takes its client from cluster_api: its words, then
+# the fewest arguments that get it to the API.
+my @closed_port = (
+    [ 'node add',        'w-k399' ],
+    [ 'node rm',         'w-k399' ],
+    [ 'node trust-host', 'w-k399' ],
+);
+
+for my $row (@closed_port) {
+    my ($words, @args) = @$row;
+    subtest "ocp $words, the API does not answer" => sub {
+        my ($status, $out, $err) = run_ocp(project(), split(/ /, $words), @args);
+        like $err, qr{\AError: $unreachable\n\z}, 'STDERR: the one line naming the server';
+        like $err, qr{\Q$server\E}, 'the server of the kubeconfig';
+        unlike "$out$err", qr/ at \S+ line \d+/, 'no Perl location';
+        unlike "$out$err", qr/internal error/i,  'no "internal error"';
+        is $status >> 8, 1, 'exit 1';
+    };
+}
 
 done_testing;

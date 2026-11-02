@@ -300,9 +300,13 @@ subtest 'k251: the apply command node add hands on carries its kubeconfig file' 
     require File::Temp;
     no warnings 'redefine';
     my $add = OCP::Cmd::Node::Add->new(name => 'brain', command_chain => [ KcOcp->new ]);
+    local *OCP::Secrets::has_kubeconfig        = sub { 1 };
     local *OCP::Secrets::read_kubeconfig       = sub { "apiVersion: v1\nkind: Config\n" };
     local *Kubernetes::REST::Kubeconfig::api   = sub { 'API' };
+    local *OCP::Kubernetes::register_resource_providers = sub { $_[1] };
     local *OCP::K8s::register                  = sub { 1 };
+    # A client that is no client sends no GET /version (k399).
+    local *OCP::Cmd::Node::Add::reach_cluster_api = sub { $_[1] };
     my $api = $add->_k8s;
     is $api, 'API', '_k8s built the client';
     ok $add->{_kc_temp} && -f $add->{_kc_temp}->filename, 'and kept the kubeconfig file it built it from';

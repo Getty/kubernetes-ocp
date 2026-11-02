@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add`, `ocp node rm` and `ocp node trust-host` say an
+      unreachable cluster API in one line naming the server, instead of a
+      Perl warning and an "Unknown node" error.
     - A cluster API error that escapes any `ocp` command now names the
       server it came from.
     - An error that escapes `ocp status`, `ocp health` or `ocp node ls`

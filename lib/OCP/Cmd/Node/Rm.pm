@@ -4,13 +4,9 @@ package OCP::Cmd::Node::Rm;
 use Moo;
 use MooX::Cmd;
 use MooX::Options;
-use File::Temp ();
-use Kubernetes::REST::Kubeconfig;
 use List::Util qw(first);
 use OCP::Choices;
 use OCP::Config;
-use OCP::Secrets;
-use OCP::K8s;
 use OCP::Node;
 use OCP::Provider;
 
@@ -33,8 +29,8 @@ option keep_machine => (
 
 has k8s => (is => 'rw');
 
-# The project's ocp.yaml, read once: the kubeconfig and the cluster SSH key
-# both hang off it.
+# The project's ocp.yaml, read once: _k8s stops without it, and the cluster
+# SSH key hangs off it.
 has _config => (is => 'lazy');
 
 sub _build__config {
@@ -48,24 +44,13 @@ sub _k8s {
     my $self = shift;
     return $self->k8s if $self->k8s;
 
-    my $config  = $self->_config;
-    my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
+    # ocp.yaml first: without it, "Config file ... not found".
+    $self->_config;
 
-    my $kc_content = $secrets->read_kubeconfig;
-    die OCP::Secrets->no_kubeconfig_refusal
-        unless $kc_content;
-
-    my $kc_fh = File::Temp->new(SUFFIX => '.yaml', UNLINK => 1);
-    print {$kc_fh} $kc_content;
-    close $kc_fh;
-
-    my $api = Kubernetes::REST::Kubeconfig->new(
-        kubeconfig_path => $kc_fh->filename,
-    )->api;
-
-    OCP::K8s->register($api);
-    $self->k8s($api);
-    return $api;
+    # The key, kubeconfig.yaml, the client and one GET /version: an API that
+    # does not answer, or answers /version with an error, is said there, in
+    # one line (k389, k399).
+    return $self->k8s($self->cluster_api);
 }
 
 # The OCPNode CRs this cluster has, by name — for the rejection above and
