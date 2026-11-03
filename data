@@ -1,0 +1,36 @@
+---
+class: standard
+completed: 2026-11-03T20:14:34Z
+created: 2026-10-31T13:19:44Z
+id: 363
+priority: low
+started: 2026-11-03T20:14:34Z
+status: done
+tags:
+- cli
+- cleanup
+title: Route the remaining hand-made error one-liners through OCP::ErrorLine (after
+  k342)
+updated: 2026-11-03T20:14:34Z
+---
+
+Left over from k342 (secrets worker, 2026-10-31). k342 made `OCP::ErrorLine::one_line` the one helper that turns an exception into a single STDERR line. Two callers use it so far: Init's `_catalogue_error` and the Machines role's `_oneline`. Other places still strip Perl source locations by hand. The line numbers below are on the k342 base:
+
+- lib/OCP/Cmd/Apply/Drift.pm:1229
+- lib/OCP/Cmd/Status.pm:531
+- lib/OCP/Cmd/Init.pm:741 and :800
+- lib/OCP.pm:235 (run_cli: check first whether its job differs, since it tells user errors from internal ones by the location)
+
+Done = each one either calls `one_line` (with `mask =>` where a secret is in play), or has a comment saying why it can't. Only the visible edge case changes: a wrapped error's inner " at FILE line N." no longer stays in the line. Tests: the callers' existing tests stay green; add one case per converted site where a location in the middle used to survive.
+
+Lane: cross-cutting → ocp-worker. Low priority. Depends on k342 being committed.
+
+2026-10-31 (main, from k356): CR.pm's [WARN]s print the raw $@ (croak location included): ensure_cp_ocpnode, migrate_legacy_nodes, retire_unannotated_robocop_pods. Same treatment.
+
+From k373 (provider worker, 2026-10-31): two more sites for this card. OCP::Provider::Hetzner cleanup_on_failure (around line 424) and Destroy's "  Warning: $@\n" (around line 918) add a newline to an error that already ends in one, so a blank line follows the warning. Routing them through OCP::ErrorLine::one_line fixes both. Cosmetic, there before k373.
+
+2026-11-03 18:59 k363 worker (ocp-worker), base 895a9bf. Sites found by text (the card's lines were stale). Converted to OCP::ErrorLine::one_line: lib/OCP/Drift.pm _refused_drift (the card's 'Apply/Drift.pm:1229' was a path slip: it is lib/OCP/Drift.pm, line 1229 in 4f945b1); Status.pm _amd_gpu_default_allocation; CR.pm's five [WARN]s in ensure_cp_ocpnode, migrate_legacy_nodes and retire_unannotated_robocop_pods; Hetzner cleanup_on_failure (mask => token); Destroy's Hetzner-delete 'Warning:' (the double newline is gone in both). Not converted, with comments: Init's two age-key refusals (Secrets' multi-line aligned block, k375) and OCP.pm _clean_message (the trailing location is its internal-error signal; multi-line user errors keep their lines). t/356: five exact claims dropped the location, as the card's k356 note asks. Red 4 files/40 tests (10 subtests failed, for the right reason). Green 42 files/877 tests PASS (make test, image ocp-w400). Outside scope, listed in the header and not filed: CR.pm _say_robocop_image_change / wait_robocop_ready [WARN]s still raw; Apply::K8s read_or_absent/read_or_why flatten APIError; Apply/Drift.pm raw [!!] lines; k396's Destroy:990 item is done here; OCP.pm calls a user error that wraps "$@\n" internal. Patch + header: scratchpad w-ocp363/k363.patch and k363.hdr.
+
+2026-11-03 18:59 Done: one_line at the 7 converted sites, reasoned comments at 3 kept sites (Init x2, OCP.pm). Red then green in Docker make test: 42 files, 877 tests PASS. Patch w-ocp363/k363.patch, header k363.hdr. Not committed: that is the release manager's.
+
+Committed as 9e13d5a
