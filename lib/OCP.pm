@@ -239,6 +239,12 @@ sub run_cli {
 # Split an exception into (message, is_internal). Anything that ends in a
 # source location was raised without a trailing newline, i.e. not meant for
 # the user.
+#
+# Not OCP::ErrorLine::one_line (k363): this has another job. The location at
+# the end is the signal it decides by -- user error or internal error -- so
+# it must see it, not have it taken away. And a user error is said as it was
+# written: a "die ...\n" of several lines (Init's and OCP::Secrets' refusals,
+# validate()'s) keeps its lines, where one_line would fold them into one.
 sub _clean_message {
     my ($err) = @_;
 

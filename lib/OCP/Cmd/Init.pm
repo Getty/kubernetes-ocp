@@ -747,6 +747,12 @@ sub _ensure_age_key {
         # older `ocp init` is left holding a minted one, and its only symptom
         # is a SOPS error from wherever the next run reaches first. Say it
         # here, with the way out.
+        #
+        # Not OCP::ErrorLine::one_line (k363), here or at the unlock below:
+        # OCP::Secrets' refusal is a block of lines -- the recipients the key
+        # opens and the ones each file needs, in aligned columns (k375) --
+        # that this refusal indents under its own words. one_line would fold
+        # it into one line and its columns into single spaces.
         unless (eval { $secrets->check_local_age_key; 1 }) {
             my $why = $@ || "unknown error\n";
             $why =~ s/ at \S+ line \d+\.?\s*\z//;
@@ -806,6 +812,7 @@ sub _ensure_age_key {
 
     my $pin1 = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
 
+    # Kept as lines, not one_line, as the refusal above is (k363).
     unless (eval { $secrets->decrypt_age_key_with_password($pin1); 1 }) {
         my $why = $@ || "unknown error\n";
         $why =~ s/ at \S+ line \d+\.?\s*\z//;

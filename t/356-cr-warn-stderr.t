@@ -22,6 +22,12 @@ use OCP::Cmd::Apply::CR;
 # STDOUT narrative around it as it was: [ok], [migrated] and [..] lines, and
 # nothing of the failure.
 #
+# k363: the cause is said by OCP::ErrorLine::one_line -- one line, without a
+# Perl source location, wherever in it one stood. Each [WARN] printed the raw
+# $@ before: a croak's " at FILE line N." at its end, and a die that wraps
+# another kept the inner one in the middle. The ensure_cp_ocpnode Node read
+# (k330) is its sub's other [WARN].
+#
 
 sub capture (&) {
     my ($code) = @_;
@@ -47,20 +53,22 @@ sub capture (&) {
     sub new    { bless { status => $_[1] }, $_[0] }
     sub status { $_[0]{status} }
 
-    # get: a Node it was given, else a 404. list: what it was given for the
-    # kind, or the error in {list_dies}{kind}. patch_status dies with
+    # get: a Node it was given, the error in {get_dies}{name}, else a 404.
+    # list: what it was given for the kind, or the error in
+    # {list_dies}{kind}. patch_status dies with
     # {status_dies}{name}; _request (the pod DELETE) answers {delete}{name},
     # an HTTP status, or dies with it when it is a string.
     package Api;
     sub new {
         my ($c, %a) = @_;
-        bless { nodes => {}, lists => {}, list_dies => {}, status_dies => {}, delete => {},
+        bless { nodes => {}, get_dies => {}, lists => {}, list_dies => {}, status_dies => {}, delete => {},
                 ensured => [], statuses => {}, requests => [], %a }, $c;
     }
     sub k8s              { $_[0] }
     sub object_to_struct { $_[1] }
     sub get {
         my ($s, $kind, $name) = @_;
+        die $s->{get_dies}{$name} if $s->{get_dies}{$name};
         return $s->{nodes}{$name} if $kind eq 'Node' && $s->{nodes}{$name};
         die "Kubernetes API error (get $kind): 404 NotFound\n";
     }
@@ -93,6 +101,18 @@ sub capture (&) {
 my $FORBIDDEN = "Kubernetes API error (patch status OCPNode): 403 Forbidden at Fake line 1.\n";
 my $INTERNAL  = "Kubernetes API error (patch status OCPNode): 500 InternalError at Fake line 1.\n";
 
+# A die that wraps another: the inner location stands in the middle (k363).
+my $WRAPPED   = "the request failed: Kubernetes API error: 403 Forbidden at Fake line 1.\n"
+              . "retried once, refused again at Fake line 2.\n";
+
+# What each [WARN] says of them (k363): one line, no location.
+my %SAID = (
+    $FORBIDDEN => "Kubernetes API error (patch status OCPNode): 403 Forbidden\n",
+    $INTERNAL  => "Kubernetes API error (patch status OCPNode): 500 InternalError\n",
+    $WRAPPED   => "the request failed: Kubernetes API error: 403 Forbidden"
+                . " retried once, refused again\n",
+);
+
 # --- 1. ensure_cp_ocpnode --------------------------------------------------------
 
 sub cp_ocpnode {
@@ -112,9 +132,22 @@ subtest 'k356 ensure_cp_ocpnode: an unwritten status is a [WARN] on STDERR, with
     $r = cp_ocpnode(status_dies => { police1 => $FORBIDDEN });
     is $r->{died}, '', 'no death -- the CR is observational';
     is_deeply $r->{api}{ensured}, [ 'OCPNode/police1' ], 'the CR is ensured';
-    is $r->{err}, "  [WARN] ensured OCPNode/police1, but its status stayed unwritten: $FORBIDDEN",
-        'the [WARN] on STDERR, with the cause';
+    is $r->{err}, "  [WARN] ensured OCPNode/police1, but its status stayed unwritten: $SAID{$FORBIDDEN}",
+        'the [WARN] on STDERR, with the cause, without its location (k363)';
     is $r->{out}, '', 'nothing on STDOUT: no [WARN], and no [ok] claiming Ready';
+
+    $r = cp_ocpnode(status_dies => { police1 => $WRAPPED });
+    is $r->{err}, "  [WARN] ensured OCPNode/police1, but its status stayed unwritten: $SAID{$WRAPPED}",
+        'a wrapped cause: one line, the location in the middle gone too (k363)';
+};
+
+subtest 'k363 ensure_cp_ocpnode: a Node it could not read is said in one line, without a location' => sub {
+    my $r = cp_ocpnode(get_dies => { police1 => $WRAPPED });
+    is $r->{died}, '', 'no death';
+    is $r->{err}, "  [WARN] OCPNode/police1 keeps the address it has: could not read Node 'police1': "
+        . $SAID{$WRAPPED},
+        'the [WARN] on STDERR: read_or_absent\'s words, the cause in one line, no location';
+    is $r->{out}, "  [ok] ensured OCPNode/police1 (control-plane, Ready)\n", 'STDOUT as before';
 };
 
 # --- 2. migrate_legacy_nodes -----------------------------------------------------
@@ -144,10 +177,14 @@ subtest 'k356 migrate_legacy_nodes: a migrated OCPNode\'s unwritten status is a 
 
     $r = migrate(status_dies => { old1 => $INTERNAL });
     is $r->{died}, '', 'no death';
-    is $r->{err}, "  [WARN] status for migrated OCPNode/old1 stayed unwritten: $INTERNAL",
-        'the [WARN] on STDERR, with the cause';
+    is $r->{err}, "  [WARN] status for migrated OCPNode/old1 stayed unwritten: $SAID{$INTERNAL}",
+        'the [WARN] on STDERR, with the cause, without its location (k363)';
     is $r->{out}, $MIGRATED, 'STDOUT as without the failure: both [migrated] lines, no [WARN]';
     ok $r->{api}{statuses}{'OCPNode/old2'}, 'the next Node is still migrated with its status';
+
+    $r = migrate(status_dies => { old1 => $WRAPPED });
+    is $r->{err}, "  [WARN] status for migrated OCPNode/old1 stayed unwritten: $SAID{$WRAPPED}",
+        'a wrapped cause: one line, the location in the middle gone too (k363)';
 };
 
 # --- 3. retire_unannotated_robocop_pods ------------------------------------------
@@ -172,9 +209,13 @@ subtest 'k356 retire_unannotated_robocop_pods: a list it could not read is a [WA
     is_deeply $r->{api}{requests}, [], 'nothing deleted';
     is $r->{err},
         "  [WARN] could not check for robocop pods without SIGTERM handling: "
-      . "Kubernetes API error (list Pod): 403 Forbidden at Fake line 1.\n",
-        'the [WARN] on STDERR, with the cause';
+      . "Kubernetes API error (list Pod): 403 Forbidden\n",
+        'the [WARN] on STDERR, with the cause, without its location (k363)';
     is $r->{out}, '', 'nothing on STDOUT';
+
+    $r = retire(list_dies => { Pod => $WRAPPED });
+    is $r->{err}, "  [WARN] could not check for robocop pods without SIGTERM handling: $SAID{$WRAPPED}",
+        'a wrapped cause: one line, the location in the middle gone too (k363)';
 };
 
 subtest 'k356 retire_unannotated_robocop_pods: a pod it could not delete is a [WARN] on STDERR' => sub {
@@ -193,9 +234,13 @@ subtest 'k356 retire_unannotated_robocop_pods: a pod it could not delete is a [W
     is $r->{out}, deleted('robocop-b'), 'refused: STDOUT keeps the pod that was deleted, and no [WARN]';
 
     $r = retire(delete => { 'robocop-b' => "connection refused at Fake line 1.\n" });
-    is $r->{err}, "  [WARN] could not delete robocop pod robocop-b (no SIGTERM handling): connection refused at Fake line 1.\n",
-        'request died: the [WARN] on STDERR, with what it died of';
+    is $r->{err}, "  [WARN] could not delete robocop pod robocop-b (no SIGTERM handling): connection refused\n",
+        'request died: the [WARN] on STDERR, with what it died of, without its location (k363)';
     is $r->{out}, deleted('robocop-a'), 'request died: STDOUT keeps the pod that was deleted, and no [WARN]';
+
+    $r = retire(delete => { 'robocop-b' => $WRAPPED });
+    is $r->{err}, "  [WARN] could not delete robocop pod robocop-b (no SIGTERM handling): $SAID{$WRAPPED}",
+        'request died of a wrapped cause: one line, the location in the middle gone too (k363)';
 };
 
 done_testing;

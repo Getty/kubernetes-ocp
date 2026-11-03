@@ -569,13 +569,14 @@ sub _amd_gpu_allocation {
 
 # gpu.amd.allocation, or undef when ocp.yaml holds a value OCP::Config
 # refuses. The reason goes to STDERR once and the report goes on: a read-only
-# command that died on a typo would hide everything else it can tell.
+# command that died on a typo would hide everything else it can tell. The
+# reason is one line by OCP::ErrorLine (k363): a location in the middle of it
+# goes too, not only one at its end.
 sub _amd_gpu_default_allocation {
     my ($self, $config) = @_;
     my $allocation = eval { $config->gpu_amd_allocation };
     return $allocation if defined $allocation;
-    (my $err = "$@") =~ s/(?: at .+? line \d+\.?)?\n*\z//s;
-    print STDERR 'WARNING: '.$err.'; AMD nodes without their own '
+    print STDERR 'WARNING: '.OCP::ErrorLine::one_line($@).'; AMD nodes without their own '
         .$OCP::Config::AMD_GPU_ALLOCATION_LABEL." label show their allocation as unknown\n";
     return undef;
 }

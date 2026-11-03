@@ -386,6 +386,33 @@ subtest "ocp status, a gpu.amd.allocation it refuses: one WARNING line" => sub {
         'the line, in one WARNING line';
 };
 
+# k363: the cause is said by OCP::ErrorLine::one_line. The hand-made strip took
+# one location off the very end only, so a refusal that carried one in the
+# middle -- validate()'s lines joined with '; ', a die that wraps another --
+# kept it, and its newline, inside the WARNING line.
+subtest "ocp status, a gpu.amd.allocation refusal with a location inside: still one WARNING line" => sub {
+    {
+        package Local::K363::WrappedRefusal;
+        sub new { bless {}, shift }
+        sub gpu_amd_allocation {
+            die "gpu.amd: cannot read it: Not a HASH reference at lib/OCP/Config.pm line 1046.\n"
+              . "write gpu.amd: as a mapping\n";
+        }
+    }
+    my $err = '';
+    my $got;
+    {
+        local *STDERR;
+        open STDERR, '>', \$err or die $!;
+        $got = OCP::Cmd::Status->_amd_gpu_default_allocation(Local::K363::WrappedRefusal->new);
+    }
+    is $got, undef, 'no allocation';
+    is $err, 'WARNING: gpu.amd: cannot read it: Not a HASH reference write gpu.amd: as a mapping;'
+        . " AMD nodes without their own $OCP::Config::AMD_GPU_ALLOCATION_LABEL label show their"
+        . " allocation as unknown\n",
+        'one WARNING line, without the location in the middle';
+};
+
 # Nothing reads registry: or ssl: before validate(): ocp apply refuses them
 # first, with the other lines. workers: none is one of those, so the run ends
 # at validate() whatever it says about the other two.

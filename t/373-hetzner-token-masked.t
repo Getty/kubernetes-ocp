@@ -132,9 +132,32 @@ subtest 'the Hetzner adapter: every request it makes fails masked' => sub {
         like   join('', @warned), qr/\ACleanup failed for server 7: [^\n]*Bearer \*{8}[^\n]*\n+\z/,
             "$how, cleanup_on_failure: the masked line";
         unlike join('', @warned), qr/ at \S+ line \d+/, "$how, cleanup_on_failure: no Perl source location";
+        like   join('', @warned), qr/\A[^\n]+\n\z/, "$how, cleanup_on_failure: one line, no blank line after it (k363)";
 
         ok scalar @SENT >= 7, "$how: the requests went out on the (fake) wire";
     }
+};
+
+# k363: cleanup_on_failure says the delete's error by OCP::ErrorLine::one_line.
+# It added a newline to one that ended in one already -- a blank line after
+# every warning (k373) -- and a delete that died with a Perl source location
+# kept it, the inner one of a wrapped die in the middle too.
+my $WRAPPED = "Server 7 not deleted: known_hosts not rewritten: Permission denied at lib/OCP/KnownHosts.pm line 3.\n"
+            . "the server may be gone already at lib/OCP/Provider/Hetzner.pm line 9.\n";
+my $WRAPPED_LINE = 'Server 7 not deleted: known_hosts not rewritten: Permission denied'
+                 . ' the server may be gone already';
+
+subtest 'the Hetzner adapter: cleanup_on_failure says a wrapped error in one line, without its locations' => sub {
+    no warnings 'redefine';
+    local *OCP::Provider::Hetzner::delete_server = sub { die $WRAPPED };
+    my $prov = OCP::Provider::Hetzner->new(token => $TOKEN, cluster_name => 'lab');
+    my @warned;
+    {
+        local $SIG{__WARN__} = sub { push @warned, @_ };
+        $prov->cleanup_on_failure(7);
+    }
+    is_deeply \@warned, [ "Cleanup failed for server 7: $WRAPPED_LINE\n" ],
+        'one warning, one line: no location, no blank line after it';
 };
 
 # ---------------------------------------------------------------- the factory
@@ -318,6 +341,22 @@ subtest 'ocp destroy: a refused delete is said without the token' => sub {
     like $r->{err}, qr/^  Warning: Hetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/m,
         'the warning, masked';
     unlike "$r->{out}$r->{err}", qr/\Q$TOKEN\E/, 'the token nowhere on STDOUT or STDERR';
+    is $r->{code}, 1, 'exit 1: the server is still there';
+};
+
+# k363: the warning for a failed delete is said by OCP::ErrorLine::one_line.
+# "  Warning: $@\n" added a newline to an error that ended in one already
+# (k373), and kept a Perl source location, the inner one of a wrapped die in
+# the middle too.
+subtest 'ocp destroy: a delete that died of a wrapped error is one Warning line, without its locations' => sub {
+    no warnings 'redefine';
+    local *OCP::Provider::Hetzner::delete_server = sub { die $WRAPPED =~ s/Server 7/Server 111/r };
+    my $r = destroy(project(status => $STATUS));
+    (my $line = $WRAPPED_LINE) =~ s/Server 7/Server 111/;
+    like $r->{err}, qr/^  Warning: \Q$line\E\n\n\[!!\] Teardown INCOMPLETE/m,
+        'the warning: one line, then only the blank line the INCOMPLETE block opens with';
+    unlike $r->{err}, qr/ at lib\/OCP\/(?:KnownHosts|Provider\/Hetzner)\.pm line \d+/,
+        'neither location on STDERR';
     is $r->{code}, 1, 'exit 1: the server is still there';
 };
 

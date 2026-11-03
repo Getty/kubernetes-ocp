@@ -13,6 +13,7 @@ use OCP::Cmd::Apply::Bootstrap;
 use OCP::Cmd::Apply::K8s ();
 use OCP::Config ();
 use OCP::Drift ();
+use OCP::ErrorLine ();
 use OCP::K8s;
 use OCP::Node;
 use OCP::NodeMeta;
@@ -360,10 +361,12 @@ sub ensure_cp_ocpnode {
     # of the merge patch, so the recorded address stays, and says why on
     # STDERR (k330) -- the configured host is no answer to "could not look".
     # Each [WARN] of this sub is counted in {_apply_warnings}: the banner
-    # reads WITH WARNINGS, the exit code stays 0 (k367).
+    # reads WITH WARNINGS, the exit code stays 0 (k367). Each says its cause
+    # in one line, without a Perl source location (OCP::ErrorLine, k363).
     my $ip = eval { k8s_node_ip($self, $api, $name) };
     if (my $err = $@) {
-        print STDERR "  [WARN] OCPNode/$name keeps the address it has: $err";
+        print STDERR "  [WARN] OCPNode/$name keeps the address it has: "
+            .OCP::ErrorLine::one_line($err)."\n";
         push @{ $self->{_apply_warnings} }, "OCPNode/$name address" if ref $self;
     } else {
         $ip //= $cp_info->{host};
@@ -390,7 +393,8 @@ sub ensure_cp_ocpnode {
     if ($ok) {
         print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
     } else {
-        print STDERR "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: $@";
+        print STDERR "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: "
+            .OCP::ErrorLine::one_line($@)."\n";
         push @{ $self->{_apply_warnings} }, "OCPNode/$name status" if ref $self;
     }
 }
@@ -520,8 +524,9 @@ sub migrate_legacy_nodes {
 
         # Separate write: the ensure above cannot carry status past the
         # status subresource (see OCP::K8s::patch_status). One that failed is
-        # a [WARN] on STDERR, with the cause, counted in {_apply_warnings}
-        # (k367); the [migrated] line on STDOUT follows it all the same (k356).
+        # a [WARN] on STDERR, with the cause in one line (OCP::ErrorLine,
+        # k363), counted in {_apply_warnings} (k367); the [migrated] line on
+        # STDOUT follows it all the same (k356).
         eval {
             OCP::K8s->patch_status($api,
                 kind      => 'OCPNode',
@@ -535,7 +540,8 @@ sub migrate_legacy_nodes {
             );
             1;
         } or do {
-            print STDERR "  [WARN] status for migrated OCPNode/$name stayed unwritten: $@";
+            print STDERR "  [WARN] status for migrated OCPNode/$name stayed unwritten: "
+                .OCP::ErrorLine::one_line($@)."\n";
             push @{ $self->{_apply_warnings} }, "OCPNode/$name status" if ref $self;
         };
 
@@ -875,9 +881,9 @@ sub ensure_robocop {
 # ocp.internal/robocop-sigterm; each one still running after the rollout is
 # deleted with a 30 s grace period instead, said on STDOUT. A pod that has the
 # annotation is never touched, so this does nothing once the transition is
-# over. Best effort: a failure is a [WARN] on STDERR, with its cause, not a
-# failed apply (k356) -- counted in {_apply_warnings}, so the banner reads
-# WITH WARNINGS (k367).
+# over. Best effort: a failure is a [WARN] on STDERR, with its cause in one
+# line (OCP::ErrorLine, k363), not a failed apply (k356) -- counted in
+# {_apply_warnings}, so the banner reads WITH WARNINGS (k367).
 sub retire_unannotated_robocop_pods {
     my ($self, $api) = @_;
 
@@ -891,8 +897,8 @@ sub retire_unannotated_robocop_pods {
         @found;
     };
     if (my $err = $@) {
-        chomp $err;
-        print STDERR "  [WARN] could not check for robocop pods without SIGTERM handling: $err\n";
+        print STDERR "  [WARN] could not check for robocop pods without SIGTERM handling: "
+            .OCP::ErrorLine::one_line($err)."\n";
         push @{ $self->{_apply_warnings} }, 'robocop pods' if ref $self;
         return;
     }
@@ -910,8 +916,8 @@ sub retire_unannotated_robocop_pods {
             print "  [..] robocop pod $name predates SIGTERM handling; deleted with a 30 s grace period (one-time transition)\n";
         }
         else {
-            my $err = $@; chomp $err;
-            print STDERR "  [WARN] could not delete robocop pod $name (no SIGTERM handling): $err\n";
+            print STDERR "  [WARN] could not delete robocop pod $name (no SIGTERM handling): "
+                .OCP::ErrorLine::one_line($@)."\n";
             push @{ $self->{_apply_warnings} }, "robocop pod $name" if ref $self;
         }
     }

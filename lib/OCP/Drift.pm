@@ -1350,11 +1350,12 @@ sub _say_failed {
 # The entry for a probe whose skip_if OCP::Config refused (k332): whether
 # this cluster has the thing at all is not known, so its drift is not either.
 # The cause is validate()'s line, as the accessor refuses it (k379: with a
-# newline, no location; a location, should a die carry one, goes too),
-# carped once, here, as _unknown_drift carps its cause.
+# newline, no location; a location, should a die carry one, goes too -- one
+# in the middle as well, by OCP::ErrorLine, k363), carped once, here, as
+# _unknown_drift carps its cause.
 sub _refused_drift {
     my ($self, $err, $probe) = @_;
-    (my $line = "$err") =~ s/(?: at .+? line \d+\.?)?\n*\z//s;
+    my $line = OCP::ErrorLine::one_line($err);
     carp "OCP::Drift::component_drift: $probe->{label} not checked: $line";
     return {
         kind      => 'error',

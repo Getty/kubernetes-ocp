@@ -276,6 +276,33 @@ subtest 'OCP::Drift: any switch a probe names in skip_if is read the same way' =
     }
 };
 
+# k363: the cause is said by OCP::ErrorLine::one_line. The hand-made strip took
+# one location off the very end only, so a refusal with one in the middle --
+# validate()'s lines joined with '; ', a die that wraps another -- kept it, and
+# its newline, in the drift entry and on STDERR.
+subtest 'OCP::Drift: a refusal with a location inside is said as one line, without it' => sub {
+    local @OCP::Drift::COMPONENT_PROBES = ({
+        component => 'cilium', label => 'Probe', kind => 'Deployment',
+        name => 'cilium-operator', namespace => 'kube-system', skip_if => 'no_cert',
+    });
+    no warnings 'redefine';
+    local *OCP::Config::no_cert = sub {
+        die "nocert: cannot read it: Not a HASH reference at lib/OCP/Config.pm line 9.\n"
+          . "write nocert: false\n";
+    };
+    my @warned;
+    local $SIG{__WARN__} = sub { push @warned, $_[0] };
+    my @drift = eval { OCP::Drift->new(config => config_for($BASE), api => cluster_api())->component_drift };
+    is $@, '', 'component_drift does not die';
+    my $line = 'nocert: cannot read it: Not a HASH reference write nocert: false';
+    is_deeply [ map { [ @{$_}{qw( kind message )} ] } @drift ],
+        [ [ error => "Probe: ocp.yaml does not say whether to check it, drift unknown: $line" ] ],
+        'the drift entry: the cause as one line, the location in the middle gone';
+    is scalar(@warned), 1, 'said once';
+    like $warned[0] // '', qr/^OCP::Drift::component_drift: Probe not checked: \Q$line\E at /,
+        '... the same line, then the carp location only';
+};
+
 #### 1. ocp status, both forms
 
 subtest 'ocp status: nocert: no gives its line and the rest of the drift report' => sub {

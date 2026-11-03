@@ -425,11 +425,14 @@ masked.
 
 =cut
 
+# The delete's error in one line, masked as _api masks (k363): _api's own
+# ends in a newline already, and "$@\n" left a blank line after the warning.
 sub cleanup_on_failure {
     my ($self, $server_id) = @_;
     return unless $server_id;
     eval { $self->delete_server($server_id) };
-    warn "Cleanup failed for server $server_id: $@\n" if $@;
+    warn "Cleanup failed for server $server_id: "
+        . OCP::ErrorLine::one_line($@, mask => $self->token) . "\n" if $@;
 }
 
 =method list_servers_by_cluster

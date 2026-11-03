@@ -929,8 +929,10 @@ sub execute {
                 $prov->delete_server($node->{providerId},
                     ($ip ? (host => $ip) : ()));
             };
+            # One line, by OCP::ErrorLine (k363): the adapter's error ends in
+            # a newline already, and "$@\n" left a blank line after it.
             if ($@) {
-                print STDERR "  Warning: $@\n";
+                print STDERR '  Warning: ' . OCP::ErrorLine::one_line($@) . "\n";
                 push @undeleted, $node;
             }
         }

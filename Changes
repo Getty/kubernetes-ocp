@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - The warnings `ocp apply` prints about the control plane's OCPNode,
+      migrated nodes and old robocop pods, the warning `ocp destroy` prints
+      for a server it could not delete, `ocp status`'s warning for a
+      `gpu.amd.allocation` it refuses, and a drift check `ocp.yaml` does not
+      say whether to run, now give their cause in one line, without a Perl
+      source location. `ocp destroy` and a failed Hetzner cleanup no longer
+      leave a blank line after the warning.
     - The remaining `ocp` commands check what they read of `ocp.yaml` too,
       and a value `ocp apply` refuses stops them with `ocp apply`'s line:
       `ocp provider add` no longer writes a list as the cluster name
