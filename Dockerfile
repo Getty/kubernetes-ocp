@@ -127,12 +127,15 @@ COPY --chown=ocp:ocp ./cpanfile.snapshot $OCP_ROOT/src
 # FIRST, so the snapshot pass below finds them already satisfied; their own
 # dependencies resolve from cpanfile.snapshot, MetaDB only as fallback. An
 # empty vendor/ (`make vendor VENDOR=`) installs nothing.
+# --configure-timeout: see the snapshot pass below. This step runs first and
+# installs the vendored dists' dependencies, Rex and so IO-Tty among them (k280).
 COPY --chown=ocp:ocp ./vendor/ $OCP_ROOT/src/vendor/
 RUN if [ -s vendor/ORDER ]; then \
       while read -r tgz; do \
         [ -n "$tgz" ] || continue; \
         echo "[vendor] $tgz"; \
         cpm install --no-test --show-build-log-on-failure --resolver snapshot --resolver metadb \
+          --configure-timeout=600 \
           --local-lib-contained=$PERL_LOCAL_LIB_ROOT "./vendor/$tgz" || exit 1; \
       done < vendor/ORDER; \
     fi \
