@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-03T20:25:31Z
+created: 2026-10-31T03:38:46Z
+id: 280
+priority: medium
+started: 2026-11-03T20:25:31Z
+status: done
+tags:
+- build
+- docker
+title: 'Dockerfile: the vendor step (k222) lacks --configure-timeout=600, IO-Tty times
+  out under load'
+updated: 2026-11-03T20:25:31Z
+---
+
+The snapshot pass got `--configure-timeout=600` on 2026-10-22 because IO-Tty's Makefile.PL symbol probe outruns cpm's 60s default on a loaded builder. The vendor step (k222, `RUN if [ -s vendor/ORDER ]`) runs FIRST and installs each vendored dist's dependencies from scratch, Rex and therefore IO-Tty included, with the 60s default.
+
+Seen 2026-10-31 building `live-20bec47` (Rex-GPU-0.006 + Rex-Rancher-0.005 vendored), host load ~2.4 on 8 cores, parallel worker test runs: `IO-Tty-1.27| Timed out (> 60s). Failed to configure distribution` → `FAIL install Rex-1.16.1` → `FAIL install file:///opt/ocp/src/vendor/Rex-GPU-0.006.tar.gz`, build exit 1. Earlier live builds passed only because that layer came from the cache.
+
+Fix: the same `--configure-timeout=600` on the vendor-step cpm call, with the existing comment extended or pointed to. Done = the flag is there and `make build` with a non-empty vendor/ passes (the live build in the scratch clone passed with exactly this one-flag change).
+
+2026-11-03 18:44 Flag added (worker clone, patch ready): the vendor step's cpm call now has --configure-timeout=600, on its own line above --local-lib-contained, plus a 2-line comment pointing at the snapshot pass's explanation. Nothing else changed in the Dockerfile. sh -n on the joined RUN command: OK. t/222-vendor.t's Dockerfile-text claims all still hold (read, not run). NOT verified: make build with a non-empty vendor/. Main's vendor/ is empty (.keep + empty ORDER), and the only repo way to fill it is make vendor, a host-side dzil build of the siblings, e.g. VENDOR="rex-gpu rex-rancher" SIBLINGS_DIR=/home/getty/dev (rex-gpu 0.005-4, rex-rancher 0.004-5, both clean; the recipe also runs rm -rf). The worker brief makes that a stop condition. Proposed Changes: none (4f4b598, the snapshot-pass twin, had none).
+
+Main agent ran the verification (2026-11-03): make vendor (Rex-GPU-0.006, Rex-Rancher-0.005) then make test t/222 + t/48 on localhost/ocp-w280. The vendor step built IO-Tty-1.27 and Rex-1.16.1 with --configure-timeout=600; image built; Files=2 Tests=11 PASS. Ready for commit.
+
+Committed as f11a0ff
