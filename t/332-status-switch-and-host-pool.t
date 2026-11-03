@@ -125,6 +125,8 @@ sub cluster_api {
         'Deployment/cert-manager/cert-manager'   => deployment("quay.io/jetstack/cert-manager-controller:$PIN{cert_manager}"),
         'Deployment/node-feature-discovery/nfd-master'
             => deployment("registry.k8s.io/nfd/node-feature-discovery:$PIN{nfd}"),
+        'DaemonSet/node-feature-discovery/nfd-worker'
+            => deployment("registry.k8s.io/nfd/node-feature-discovery:$PIN{nfd}"),
         'CustomResourceDefinition//gateways.gateway.networking.k8s.io' => gateway_bundle(),
     });
 }

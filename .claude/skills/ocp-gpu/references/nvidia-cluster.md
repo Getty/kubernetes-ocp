@@ -137,8 +137,9 @@ load-bearing. AMD's stack does not gate on NFD (see `amd.md`).
 
 ## Drift (`OCP::Drift`)
 
-- Probed: `nfd` (the `nfd-master` Deployment) and `gpu_operator` (the
-  `gpu-operator` Deployment, `optional`, since absence is not drift). Both are
+- Probed: `nfd` (the `nfd-master` Deployment and, since k369, the
+  `nfd-worker` DaemonSet: two probes of one pin) and `gpu_operator` (the
+  `gpu-operator` Deployment, `optional`, since absence is not drift). All are
   workloads OCP writes itself, so the image is honestly readable.
 - Both are report-only (`remedy => undef`) and `self_healing`: a plain
   `ocp apply` re-applies the manifest that carries the version. `ocp update`

@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status`, the `ocp apply` dry run and `ocp apply` now read NFD's
+      `nfd-worker` DaemonSet as well as `nfd-master`: an nfd-worker whose
+      image was changed in the cluster is reported as drift (`NFD DaemonSet
+      runs ..., expected ...`) and re-applied, and a deleted one is
+      reported missing and restored. Before, both went unnoticed and apply
+      called NFD up to date.
     - The warnings `ocp apply` prints about the control plane's OCPNode,
       migrated nodes and old robocop pods, the warning `ocp destroy` prints
       for a server it could not delete, `ocp status`'s warning for a

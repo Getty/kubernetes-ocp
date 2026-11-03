@@ -32,14 +32,15 @@ lesson registry paid for the hard way — without it, an `ocp destroy` left
 a record of a workload the next apply happily skipped.
 
 An equal hash says what OCP deployed, not what the cluster runs. So the
-step also reads the image of the Deployment the L<OCP::Drift> probe reads
-(C<nfd-master>, C<gpu-operator>), the way that probe reads it
-(L<OCP::Drift/version_against_pin>). An image changed in the cluster
-(C<kubectl set image>, an edit) is the drift C<ocp status> counts as one
-C<ocp apply> closes, and this step closes it: C<updated>, the manifest
-re-applied. A server-side apply with force takes the image back from
+step also reads the image of each workload an L<OCP::Drift> probe reads
+(C<nfd-master> and the C<nfd-worker> DaemonSet, k369; C<gpu-operator>), the
+way that probe reads it (L<OCP::Drift/version_against_pin>). An image changed
+in the cluster (C<kubectl set image>, an edit) is the drift C<ocp status>
+counts as one C<ocp apply> closes, and this step closes it: C<updated>, the
+manifest re-applied. A server-side apply with force takes the image back from
 whoever set it (k351). What that probe does not read, such as the args, is
-not compared.
+not compared. NFD counts as there when both its workloads are: one that is
+gone is C<restored>, as L<OCP::Drift> reports it missing (k369).
 
 That decision is the return value, and the caller reports it through
 L<OCP::Cmd::Apply::DeployedHash/report_component>: here is the only place
@@ -50,7 +51,7 @@ for C<report_component>'s line. C<setup_gpu_operator> has a fifth
 answer, C<skipped> — no NVIDIA card, or C<gpu.enabled: false> — for the
 cluster where this component is not part of the spec at all.
 
-A Deployment whose image cannot be read (anything but a 404) is no verdict:
+A workload whose image cannot be read (anything but a 404) is no verdict:
 the step dies with the cause and applies nothing (k269).
 
 Every C<setup_gpu_operator> that does not skip, C<unchanged> included,
@@ -99,18 +100,21 @@ sub setup_nfd {
     my $hash = Digest::MD5::md5_hex($manifest . path($crd_file)->slurp);
     my $deployed = $self->_load_deployed_hashes($config);
 
-    # Check if NFD is actually running (not just hash match)
+    # Check if NFD is actually running (not just hash match): both workloads
+    # its manifest runs, which OCP::Drift reports missing one by one (k369).
     my $ns_exists = $self->_resource_exists($api, 'Namespace', 'node-feature-discovery');
     my $nfd_running = $ns_exists &&
-        $self->_resource_exists($api, 'Deployment', 'nfd-master', namespace => 'node-feature-discovery');
+        $self->_resource_exists($api, 'Deployment', 'nfd-master', namespace => 'node-feature-discovery') &&
+        $self->_resource_exists($api, 'DaemonSet', 'nfd-worker', namespace => 'node-feature-discovery');
 
     my $recorded = exists $deployed->{nfd};
     my $current  = ($deployed->{nfd} // '') eq $hash && $nfd_running;
 
     # The hash is what OCP deployed, not what the cluster runs: an image
     # changed since (kubectl set image, an edit) leaves it as it was. The NFD
-    # probe of OCP::Drift reads that image, and ocp status counts what it
-    # finds as drift ocp apply closes; this step asks the same (k351).
+    # probes of OCP::Drift read that image, nfd-master's and nfd-worker's,
+    # and ocp status counts what they find as drift ocp apply closes; this
+    # step asks the same (k351, k369).
     my $off = $current ? off_pin($self, $api, 'nfd') : undef;
 
     if ($current && !$off) {
@@ -185,24 +189,28 @@ sub setup_nfd {
 }
 
 # Why $component's workload is re-applied although its hash has not moved:
-# "ran X, expected Y" when the object its OCP::Drift probe reads runs another
-# image than the pin, read as that probe reads it (OCP::Drift
+# "ran X, expected Y" when an object one of its OCP::Drift probes reads runs
+# another image than the pin, read as that probe reads it (OCP::Drift
 # version_against_pin: the first container's tag, a leading v alike) -- so
-# the step and ocp status cannot tell two stories (k351). undef when it runs
-# the pin, carries no tag, or is gone. Only a 404 is gone: any other failed
-# read dies with its cause (k269).
+# the step and ocp status cannot tell two stories (k351). Every probe of the
+# component is asked, in table order: NFD has two, nfd-master and nfd-worker
+# (k369). undef when each runs the pin, carries no tag, or is gone. Only a
+# 404 is gone: any other failed read dies with its cause (k269).
 sub off_pin {
     my ($self, $api, $component) = @_;
-    my ($probe) = grep { $_->{component} eq $component } @OCP::Drift::COMPONENT_PROBES;
-    die "OCP::Drift has no probe for $component\n" unless $probe;
+    my @probes = grep { $_->{component} eq $component } @OCP::Drift::COMPONENT_PROBES;
+    die "OCP::Drift has no probe for $component\n" unless @probes;
 
-    my $object = OCP::Cmd::Apply::K8s::read_or_absent("$probe->{kind} $probe->{namespace}/$probe->{name}",
-        sub { $api->get($probe->{kind}, name => $probe->{name}, namespace => $probe->{namespace}) })
-        or return;
-    my ($actual, $want, $same) = OCP::Drift->version_against_pin($probe, $object,
-        OCP::Versions->get_component_version($component));
-    return if !length $actual || $same;
-    return "ran $actual, expected $want";
+    for my $probe (@probes) {
+        my $object = OCP::Cmd::Apply::K8s::read_or_absent("$probe->{kind} $probe->{namespace}/$probe->{name}",
+            sub { $api->get($probe->{kind}, name => $probe->{name}, namespace => $probe->{namespace}) })
+            or next;
+        my ($actual, $want, $same) = OCP::Drift->version_against_pin($probe, $object,
+            OCP::Versions->get_component_version($component));
+        next if !length $actual || $same;
+        return "ran $actual, expected $want";
+    }
+    return;
 }
 
 # Whether drift entry $entry is one setup_nfd or setup_gpu_operator closes by

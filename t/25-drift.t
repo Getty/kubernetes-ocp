@@ -107,6 +107,9 @@ sub matching_cluster {
         'Deployment/cert-manager/cert-manager'   => deployment('quay.io/jetstack/cert-manager-controller:v1.21.2'),
         'Deployment/node-feature-discovery/nfd-master'
             => deployment('registry.k8s.io/nfd/node-feature-discovery:v0.18.3'),
+        # NFD's second workload, at the same pin (k369).
+        'DaemonSet/node-feature-discovery/nfd-worker'
+            => deployment('registry.k8s.io/nfd/node-feature-discovery:v0.18.3'),
         $GATEWAY_CRD_KEY => gateway_bundle(OCP::Versions->get_component_version('gateway_api')),
     );
 }

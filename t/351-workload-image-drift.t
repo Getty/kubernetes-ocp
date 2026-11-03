@@ -46,6 +46,16 @@ use OCP::Versions;
 #   3. a Deployment whose image cannot be read is no verdict: the step dies
 #      with the cause and applies nothing it could not see.
 #
+# k369: the NFD manifest pins a second workload, the DaemonSet
+# node-feature-discovery/nfd-worker, and no probe read it: a hand-changed
+# worker image was drift nowhere -- not in ocp status, not in the dry run --
+# and setup_nfd called NFD up to date. It is the NFD DaemonSet probe now (one
+# component, two objects, as the AMD device plugin and its labeller), and
+# setup_nfd asks it as it asks the Deployment. The three claims above hold
+# for the DaemonSet as for the Deployments (nfd_worker below), and
+#   4. an nfd-worker that is not there is the same in all three: status names
+#      it missing and fixable, the dry run counts it, the real run restores it.
+#
 
 sub capture (&) {
     my ($code) = @_;
@@ -88,9 +98,11 @@ my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
     sub metadata { $_[0] }
     sub name     { $_[0]{name} }
     sub labels   { $_[0]{labels} }
-    # nfd-worker as setup_nfd's wait reads it: one pod, ready.
+    # nfd-worker as setup_nfd's wait reads it (one pod, ready), and as the
+    # NFD DaemonSet probe reads it: the spec as applied (k369).
     package WlDaemonSet;
-    sub new                    { bless {}, shift }
+    sub new                    { bless { object => $_[1] }, $_[0] }
+    sub spec                   { $_[0]{object}{spec} }
     sub status                 { $_[0] }
     sub numberReady            { 1 }
     sub desiredNumberScheduled { 1 }
@@ -136,7 +148,7 @@ my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
                  status   => { allocatable => { 'nvidia.com/gpu' => '1' }, capacity => { 'nvidia.com/gpu' => '1' } } }
             if $kind eq 'Node' && $name eq 'crag';
         my $obj = $self->{objects}{$key} or die "404 $key not found\n";
-        return $kind eq 'DaemonSet' && $name eq 'nfd-worker' ? WlDaemonSet->new : $obj;
+        return $kind eq 'DaemonSet' && $name eq 'nfd-worker' ? WlDaemonSet->new($obj) : $obj;
     }
     sub _request {
         my ($self, $method, $path, $body, %o) = @_;
@@ -156,27 +168,40 @@ my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
     }
 }
 
-# The two workloads: their step, label, probe component, Deployment and the
-# image their manifest writes before the pin.
+# The workloads: their step, probe label and component (the key, unless
+# named), object and the image their manifest writes before the pin. NFD's
+# two are one component, applied by one step (k369).
 my %WL = (
     nfd => {
         step   => \&OCP::Cmd::Apply::Workloads::setup_nfd,
         label  => 'NFD',
+        kind   => 'Deployment',
         key    => 'Deployment/node-feature-discovery/nfd-master',
         name   => 'nfd-master',
         image  => 'registry.k8s.io/nfd/node-feature-discovery:',
         record => 'nfd',
     },
+    nfd_worker => {
+        step      => \&OCP::Cmd::Apply::Workloads::setup_nfd,
+        label     => 'NFD DaemonSet',
+        component => 'nfd',
+        kind      => 'DaemonSet',
+        key       => 'DaemonSet/node-feature-discovery/nfd-worker',
+        name      => 'nfd-worker',
+        image     => 'registry.k8s.io/nfd/node-feature-discovery:',
+        record    => 'nfd',
+    },
     gpu_operator => {
         step   => \&OCP::Cmd::Apply::Workloads::setup_gpu_operator,
         label  => 'GPU Operator',
+        kind   => 'Deployment',
         key    => 'Deployment/gpu-operator/gpu-operator',
         name   => 'gpu-operator',
         image  => 'nvcr.io/nvidia/gpu-operator:',
         record => 'gpu-operator',
     },
 );
-$WL{$_}{pin} = OCP::Versions->get_component_version($_) for keys %WL;
+$WL{$_}{pin} = OCP::Versions->get_component_version($WL{$_}{component} // $_) for keys %WL;
 
 sub project {
     my $dir = path(File::Temp::tempdir(CLEANUP => 1));
@@ -271,7 +296,7 @@ sub image_of {
 }
 
 subtest 'k351: an image changed outside OCP -- status, the dry run and the real run agree' => sub {
-    for my $c (qw( nfd gpu_operator )) {
+    for my $c (qw( nfd nfd_worker gpu_operator )) {
         my ($label, $pin) = @{ $WL{$c} }{qw( label pin )};
         my ($api, $dir, $first) = deployed($c);
         is image_of($api, $c), $WL{$c}{image} . $pin, "$c: deployed at its pin";
@@ -295,8 +320,8 @@ subtest 'k351: an image changed outside OCP -- status, the dry run and the real 
         is $res->{died}, '', "$c: the real run does not die";
         is_deeply $res->{rv}, [ 'updated', "ran v0.0.1, expected $pin" ],
             "$c: the real run re-applies it, and says why";
-        my ($patch) = grep { $_->{kind} eq 'Deployment' && $_->{name} eq $WL{$c}{name} } @{ $res->{patches} };
-        ok $patch, "$c: the Deployment applied";
+        my ($patch) = grep { $_->{kind} eq $WL{$c}{kind} && $_->{name} eq $WL{$c}{name} } @{ $res->{patches} };
+        ok $patch, "$c: the $WL{$c}{kind} applied";
         is_deeply $patch && $patch->{params}, { fieldManager => 'ocp', force => 'true' },
             "$c: by a server-side apply with force, which takes the image back";
         is image_of($api, $c), $WL{$c}{image} . $pin, "$c: back at its pin";
@@ -314,7 +339,7 @@ subtest 'k351: an image changed outside OCP -- status, the dry run and the real 
 };
 
 subtest 'k351: what the probe does not call drift, the step leaves -- all three agree' => sub {
-    for my $c (qw( nfd gpu_operator )) {
+    for my $c (qw( nfd nfd_worker gpu_operator )) {
         (my $bare = $WL{$c}{pin}) =~ s/\Av//;
         my %case = (
             'the pin without its leading v' => [ image => $WL{$c}{image} . $bare ],
@@ -336,8 +361,8 @@ subtest 'k351: what the probe does not call drift, the step leaves -- all three 
     }
 };
 
-subtest 'k351: a Deployment whose image cannot be read is no verdict' => sub {
-    for my $c (qw( nfd gpu_operator )) {
+subtest 'k351: a workload whose image cannot be read is no verdict' => sub {
+    for my $c (qw( nfd nfd_worker gpu_operator )) {
         for my $refusal (@REFUSALS) {
             my ($code, $reason) = @$refusal;
             my ($api, $dir, $first) = deployed($c);
@@ -345,13 +370,40 @@ subtest 'k351: a Deployment whose image cannot be read is no verdict' => sub {
             # Readable for the presence check, refused on the read after it.
             $api->{refuse}{ $WL{$c}{key} } = { after => 1, error => api_error($code, $reason) };
             my $res = run_step($api, $dir, $c);
-            (my $where = $WL{$c}{key}) =~ s{\ADeployment/}{};
-            like $res->{died}, qr{\Acould not read Deployment \Q$where\E: Kubernetes API error \(get\): $code .*"reason":"$reason"}s,
+            (my $where = $WL{$c}{key}) =~ s{\A\w+/}{};
+            like $res->{died}, qr{\Acould not read \Q$WL{$c}{kind}\E \Q$where\E: Kubernetes API error \(get\): $code .*"reason":"$reason"}s,
                 "$c, $code: the step dies with the cause";
             is_deeply $res->{patches}, [], "$c, $code: and applies nothing it could not see";
             is_deeply $res->{record}, $first->{record}, "$c, $code: the record as it was";
         }
     }
+};
+
+subtest 'k369: an nfd-worker that is not there -- status, the dry run and the real run agree' => sub {
+    my $pin = $WL{nfd_worker}{pin};
+    my ($api, $dir, $first) = deployed('nfd_worker');
+    my $before = dry_run($api, $dir);
+    delete $api->{objects}{ $WL{nfd_worker}{key} };
+
+    my ($entry, @more) = @{ status_of($api, $dir, 'nfd_worker') };
+    is scalar @more, 0, 'one entry';
+    is $entry && $entry->{kind}, 'missing', 'status: missing';
+    is $entry && $entry->{message}, "NFD DaemonSet is not deployed (expected $pin)", 'status names it';
+    ok $entry && OCP::Cmd::Status->_drift_fixable($entry), 'and counts it as drift ocp apply closes';
+
+    my $dry = dry_run($api, $dir);
+    is_deeply $dry->{patches}, [], 'the dry run writes nothing';
+    like $dry->{out}, qr/^  \[drift\] NFD DaemonSet is not deployed \(expected \Q$pin\E\)$/m, 'the dry run names it';
+    is $dry->{actions}, $before->{actions} + 1, 'one more difference a real run acts on';
+
+    my $res = run_step($api, $dir, 'nfd_worker');
+    is $res->{died}, '', 'the real run does not die';
+    is_deeply $res->{rv}, ['restored'], 'the real run restores it';
+    ok +(grep { $_->{kind} eq 'DaemonSet' && $_->{name} eq 'nfd-worker' } @{ $res->{patches} }),
+        'the DaemonSet applied';
+    is image_of($api, 'nfd_worker'), $WL{nfd_worker}{image} . $pin, 'at its pin';
+    is_deeply $res->{record}, $first->{record}, 'the record as it was';
+    is_deeply status_of($api, $dir, 'nfd_worker'), [], 'then the probe finds nothing';
 };
 
 # The dry run's "would re-apply" is the promise of setup_nfd and

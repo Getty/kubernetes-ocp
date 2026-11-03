@@ -147,11 +147,26 @@ our @COMPONENT_PROBES = (
     # labels it writes), from a manifest OCP generates, so both "not there"
     # and "wrong version" are real findings. No Rex task upgrades it: the
     # version is in the manifest, and apply re-applies the manifest.
+    # The manifest runs the pin twice, in the nfd-master Deployment and the
+    # nfd-worker DaemonSet, and either can move or go on its own: one
+    # component, one pin, a probe per object, as the AMD device plugin and
+    # its labeller below (k369). setup_nfd asks both. The label says
+    # DaemonSet, not worker: a drift line about a worker reads as one about
+    # the worker nodes, which a cluster without any has none of (k26).
     {
         component    => 'nfd',
         label        => 'NFD',
         kind         => 'Deployment',
         name         => 'nfd-master',
+        namespace    => 'node-feature-discovery',
+        remedy       => undef,
+        self_healing => 1,
+    },
+    {
+        component    => 'nfd',
+        label        => 'NFD DaemonSet',
+        kind         => 'DaemonSet',
+        name         => 'nfd-worker',
         namespace    => 'node-feature-discovery',
         remedy       => undef,
         self_healing => 1,
@@ -1613,6 +1628,11 @@ Absence of the GPU operator is not reported: it only belongs on a cluster with
 an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
 upgrades them — their version lives in a generated manifest that C<ocp apply>
 re-applies, which is what C<self_healing> on those entries says.
+
+NFD is two probes of the one C<nfd> pin, because its manifest runs that image
+twice: the C<nfd-master> Deployment (label C<NFD>) and the C<nfd-worker>
+DaemonSet (label C<NFD DaemonSet>). Either can run another image, or be gone,
+on its own, and the entry names the one that does (k369).
 
 The AMD GPU stack is probed the same way (k250): the device plugin, the node
 labeller (tag C<labeller-E<lt>amd_device_pluginE<gt>>), the DRA kubelet plugin
