@@ -80,6 +80,7 @@ ADR here.
 | [0028](0028-inject-the-robo-key-in-memory-over-a-port-forward.md) | Inject the robo key into robocop in memory over a port-forward, and make a restart ask for it again |
 | [0029](0029-robocop-watches-ocpnode-through-net-async-kubernetes.md) | Trigger robocop's reconcile from an OCPNode watch through Net::Async::Kubernetes |
 | [0030](0030-trust-machine-host-keys-on-first-use.md) | Trust a machine's host key on first use, record it in a local known_hosts, and verify it on every later connection |
+| [0031](0031-one-place-per-concern.md) | Render errors, reach the cluster and check the ocp.yaml shape in one place each, not per command |
 
 ## Provenance
 
@@ -136,6 +137,16 @@ bump 80f3b36) made libssh refuse unknown host keys. The same pass amended 0004
 under k172: `.ocp/known_hosts` is local and not committed, but `ocp destroy`
 deliberately leaves it in place, and 0004 now says that these are two separate
 classifications.
+
+0031 was written after its decision was built, from records rather than by
+reconstruction. Its sources are an approved design
+(`docs/superpowers/specs/2026-10-31-one-place-per-concern-design.md`, approved
+2026-11-01), the three part plans with their amendments made during execution,
+and the k398–k400 commits. It names as the maintainer's only what the design's
+"Decided by the maintainer" section names. The other choices were the
+orchestrator's, approved with the design. Where a plan was amended during
+execution (Part C's accessor wording and its read-around rule), the ADR records
+what shipped, not the first draft.
 
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
