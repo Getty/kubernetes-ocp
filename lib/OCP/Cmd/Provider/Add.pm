@@ -61,6 +61,13 @@ option default => (
     doc => 'Mark as default provider',
 );
 
+# What provider add reads of ocp.yaml, declared as its spec_paths: the
+# cluster's name, spec.clusterName and the default sshKeyName
+# (_resolve_cluster_name, _resolve_ssh_key_name). OCP::Role::Cmd refuses its
+# line, validate()'s own, before the cluster is asked (k400): a name that was
+# a list was written as clusterName ARRAY(0x...) (k306).
+sub spec_paths { return ('name') }
+
 has k8s => (is => 'rw');
 
 sub _k8s {
@@ -306,7 +313,9 @@ onto each server as the C<ocp-cluster> label and what C<ocp destroy> searches
 by, so a hand-added provider that disagreed with the project would produce
 servers no teardown ever finds.  There is deliberately no flag for it — the
 cluster has one name.  With no project on disk it is left off, and
-L<OCP::Provider/from_cr> then refuses to build the adapter at all.
+L<OCP::Provider/from_cr> then refuses to build the adapter at all.  A name
+L<OCP::Config/validate> refuses stops the command with that line before the
+cluster is asked (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 C<--location>, C<--server-type> and C<--image> write
 C<spec.hetzner.location>, C<.serverType> and C<.image>: what every node of

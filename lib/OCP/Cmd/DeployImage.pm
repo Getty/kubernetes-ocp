@@ -185,6 +185,17 @@ has _poll_interval => (
     default => 5,
 );
 
+# What deploy-image reads of ocp.yaml, declared as its spec_paths:
+# OCP::Role::Cmd refuses their lines, validate()'s own, before anything is
+# printed or sent (k400). The cluster's name (_resolve_cluster), the
+# distribution and the pod CIDR robocop is told (cluster_env: kubernetes,
+# network.pod_cidr) and robocop.image, for the override warning. The
+# clusters:/cluster: lists _resolve_cluster also looks at are keys validate()
+# does not know, so there is no line to refuse there.
+sub spec_paths {
+    return ('name', 'kubernetes', 'network', 'network.pod_cidr', 'robocop', 'robocop.image');
+}
+
 # --- Execute ---------------------------------------------------------------
 
 =method execute
@@ -198,7 +209,10 @@ the rollout is through.
 
 Returns C<0> on success, C<1> on a wait timeout. Dies loud on a missing
 project, missing kubeconfig, missing Deployment, or a mismatching
-C<--cluster>.
+C<--cluster>. Before any of it, what it reads of F<ocp.yaml> -- the
+cluster's name, C<kubernetes>, C<network.pod_cidr> and C<robocop.image> --
+is checked, and a value L<OCP::Config/validate> refuses there stops it with
+that line (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 =cut
 

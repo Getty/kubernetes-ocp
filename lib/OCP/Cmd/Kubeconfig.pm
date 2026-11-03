@@ -60,6 +60,16 @@ has k8s => (is => 'rw');
 has admin_kubeconfig => (is => 'rw');
 has cluster_name => (is => 'rw');
 
+# What kubeconfig reads of ocp.yaml, declared as its spec_paths: the cluster's
+# name, which --readonly writes into the kubeconfig it prints and --export
+# names the merged context after. OCP::Role::Cmd refuses its line,
+# validate()'s own, before anything is decrypted or asked (k400). The plain
+# kubeconfig, and --output, read nothing of ocp.yaml.
+sub spec_paths {
+    my ($self) = @_;
+    return $self->readonly || ($self->export && !$self->output) ? ('name') : ();
+}
+
 sub _check_options {
     my ($self) = @_;
 
@@ -245,6 +255,10 @@ previous file is kept as F<< <target>.ocp-bak >>. See L<OCP::Kubeconfig>.
 
 Inside a container the merge target is the container's home directory, so
 C<--export> warns and points at stdout or C<--output> instead.
+
+C<--export> and C<--readonly> read the cluster's name from F<ocp.yaml>; a
+name L<OCP::Config/validate> refuses stops them with that line before
+anything is decrypted (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 =head1 READ-ONLY ACCESS
 

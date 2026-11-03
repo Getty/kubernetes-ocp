@@ -27,6 +27,16 @@ option keep_machine => (
     doc => 'Remove the OCPNode but leave its machine as it is: no server delete, no uninstall',
 );
 
+# What node rm reads of ocp.yaml, declared as its spec_paths: the bootstrap
+# key's path (ssh:, cluster_ssh_key), for an ssh node's teardown. Which node
+# that is only the cluster knows, so it is declared for every node but
+# --keep-machine, which contacts no machine. OCP::Role::Cmd refuses its
+# lines, validate()'s own, before the cluster is asked (k400).
+sub spec_paths {
+    my ($self) = @_;
+    return $self->keep_machine ? () : ('ssh');
+}
+
 has k8s => (is => 'rw');
 
 # The project's ocp.yaml, read once: _k8s stops without it, and the cluster
@@ -273,7 +283,10 @@ object, and deletes the CR.
 
 For an C<ssh> node the machine is reached with the cluster key, the one
 C<ocp node add> installed it with; in secure mode that costs the PIN2 prompt.
-A C<hetzner> node is deleted through the API and asks for no key.
+A C<hetzner> node is deleted through the API and asks for no key. An C<ssh>
+in F<ocp.yaml> that L<OCP::Config/validate> refuses stops the command with
+that line before the cluster is asked, unless C<--keep-machine> is given
+(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 B<A node that could not be taken off its machine is not removed.>  When the
 provider cannot be loaded, the drain does not finish, or the server delete or

@@ -28,6 +28,19 @@ option node => (
     doc    => 'Node name or IP to SSH into',
 );
 
+# What ssh reads of ocp.yaml, declared as its spec_paths: every control
+# plane's provider and host, which --node is matched against
+# (_resolve_target_host), and the bootstrap key's path (ssh:,
+# cluster_ssh_key). OCP::Role::Cmd refuses their lines, validate()'s own,
+# before a PIN is asked (k400).
+sub spec_paths {
+    return (
+        'control_planes', 'control_planes[*]',
+        map({ "control_planes[*].$_" } qw( provider host )),
+        'ssh',
+    );
+}
+
 # This command used to unlock the admin key by hand and demand PIN2
 # unconditionally — including in a --nopassword project, which has no
 # keys.yaml at all and where the prompt could only ever end in "Wrong PIN2 or
@@ -497,6 +510,11 @@ ask for PIN2 anyway and could only fail.
 A run whose age identity is an operator's (C<SOPS_AGE_KEY_FILE>, a Leitstand)
 connects with that operator's key from C<OCP_OPERATOR_KEY> instead, without a
 PIN2 (L<OCP::ClusterKey>).
+
+Before a PIN is asked, what it reads of F<ocp.yaml> -- each control plane's
+provider and host, and C<ssh> -- is checked, and a value
+L<OCP::Config/validate> refuses there stops it with that line
+(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 Before the session is handed over, one batch-mode probe (C<true>) runs for
 B<every> target -- an OCPNode, a control plane or a bare address (k237).  If

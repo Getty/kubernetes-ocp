@@ -21,6 +21,22 @@ with 'OCP::Role::Cmd';
 # way to refresh it.
 with 'OCP::Role::Cmd::RobocopCredentials';
 
+# What deploy-robocop reads of ocp.yaml, declared as its spec_paths:
+# OCP::Role::Cmd refuses their lines, validate()'s own, before anything is
+# asked or sent (k400). robocop.security_level picks the Secret and the
+# Deployment variant; the credentials read the first control plane's address
+# (cluster_status) and the bootstrap key's path (ssh:, cluster_ssh_key); the
+# Deployment carries robocop.image, the distribution (kubernetes) and the pod
+# CIDR (network.pod_cidr, OCP::Robocop::Manifest).
+sub spec_paths {
+    return (
+        'robocop', 'robocop.security_level', 'robocop.image',
+        'control_planes', 'control_planes[1]',
+        map({ "control_planes[1].$_" } qw( provider public_ip host name )),
+        'ssh', 'kubernetes', 'network', 'network.pod_cidr',
+    );
+}
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -136,5 +152,10 @@ gives it (L<OCP::Cmd::Apply::CR>, k311); a CRD it cannot read stops the
 command with the cause instead of being written over blind. The Deployment
 carries the cluster's distribution and pod CIDR from F<ocp.yaml>
 (C<OCP_DISTRIBUTION>, C<OCP_POD_CIDR>); robocop does not start without them.
+
+Before any of it, what it reads of F<ocp.yaml> -- C<robocop>, the first
+control plane, C<ssh>, C<kubernetes> and C<network.pod_cidr> -- is checked,
+and a value L<OCP::Config/validate> refuses there stops it with that line
+before a PIN is asked (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 =cut

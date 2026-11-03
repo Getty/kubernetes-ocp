@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - The remaining `ocp` commands check what they read of `ocp.yaml` too,
+      and a value `ocp apply` refuses stops them with `ocp apply`'s line:
+      `ocp provider add` no longer writes a list as the cluster name
+      `ARRAY(0x...)`, `ocp deploy-robocop` refuses a bad `network:` before
+      it asks for a PIN, and `ocp node ls --json` says a malformed worker
+      pool as its JSON error object.
     - `ocp status` checks what it reads of `ocp.yaml` before the report: a
       bad `network:`, control plane or worker pool stops it with `ocp
       apply`'s line -- in `--json` as the error object -- instead of a half

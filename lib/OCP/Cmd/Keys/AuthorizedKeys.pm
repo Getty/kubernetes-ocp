@@ -20,6 +20,18 @@ option purpose => (
     doc    => 'Which keys to print: all (default), admin, automation, operator',
 );
 
+# What authorized-keys reads of ocp.yaml, declared as its spec_paths: in dev
+# mode (no keys.yaml) the bootstrap key's public path (ssh:, _dev_mode_key),
+# for every purpose but operator, which dev mode refuses before reading it.
+# OCP::Role::Cmd refuses its lines, validate()'s own, on STDERR before
+# anything is printed (k400). Secure mode reads nothing of ocp.yaml.
+sub spec_paths {
+    my ( $self, $config ) = @_;
+    return () if OCP::Keys->new( project_dir => $config->project_dir )->has_keys_file
+        || ( $self->purpose // '' ) eq 'operator';
+    return ('ssh');
+}
+
 # Which key does what, in secure mode (k209). Two keys reach machines, and an
 # ssh-provider worker needs both of them:
 #
@@ -204,7 +216,10 @@ would look like all of it.
 
 A C<--nopassword> project has no F<keys.yaml> and a single key,
 F<.ocp/id_ed25519>. Its public half is printed for every purpose (once for
-C<all>), with a note on STDERR that dev mode knows only this one key.
+C<all>), with a note on STDERR that dev mode knows only this one key. Its
+path comes from C<ssh.public_key> in F<ocp.yaml>; an C<ssh> that
+L<OCP::Config/validate> refuses stops it with that line on STDERR, nothing on
+STDOUT (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 =head2 What it asks for
 

@@ -105,6 +105,17 @@ has _picker => (is => 'rw');
 has _location    => (is => 'rw');
 has _server_type => (is => 'rw');
 
+# What init reads of an ocp.yaml it keeps, declared as its spec_paths: the
+# first control plane's provider (_effective_provider), which decides whether
+# it makes the bootstrap key. OCP::Role::Cmd refuses their lines, validate()'s
+# own, before init changes anything (k400). With --force init writes
+# ocp.yaml anew and reads nothing of the old one.
+sub spec_paths {
+    my ($self) = @_;
+    return () if $self->force;
+    return ('control_planes', 'control_planes[1]', 'control_planes[1].provider');
+}
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -1161,6 +1172,11 @@ OCP::Cmd::Init - Initialize OCP project
 
 Initializes an OCP project with intelligent defaults. Checks what already
 exists and only creates what's missing.
+
+An F<ocp.yaml> it keeps (no C<--force>) is read for its first control
+plane's provider; a value L<OCP::Config/validate> refuses there stops init
+with that line before it changes anything
+(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 The provider defaults to C<hetzner>, which is what an absent provider means
 everywhere else in the spec (see L<OCP::Config>). C<--provider ssh> needs

@@ -21,7 +21,7 @@
 #      ocp keys operator add with validate()'s line before PIN1 (a string was
 #      dropped without a word, a list of no taint croaked after PIN1); a
 #      control plane whose provider is a list is said nowhere as ARRAY(0x...)
-#   3. the sweep, over every leaf command not in %NOT_YET, run as bin/ocp
+#   3. the sweep, over every leaf command, run as bin/ocp
 #      runs it with every way out of this machine a die (@WAYS_OUT):
 #      (a) on a valid ocp.yaml: no signal, exit 0 or 1, no Perl text; and,
 #          unless the command checks all of validate() (%FULL), every
@@ -41,6 +41,13 @@
 #      both forms -- --json as its one JSON error object (k398) -- where it
 #      said "Cannot detect drift" under a report half printed (k394); a line
 #      in a section it does not declare holds no report up
+#   7. the rest: ocp provider add refuses a name that is a list before it
+#      writes the provider (it wrote clusterName ARRAY(0x...), k306);
+#      ocp deploy-robocop refuses a network.pod_cidr that is a list in its
+#      own words; ocp node ls --json says a pool's taints: foo as its one
+#      JSON error object, and without --json reads no pool; each command
+#      whose reads the sweep does not reach refuses a section it reads, in
+#      its words, and not under the option where it does not read it
 #
 # Network-free and cluster-free: each run is a child whose ways out die, its
 # hosts *.invalid.
@@ -84,15 +91,6 @@ delete $ENV{OCP_OPERATOR_KEY};
 my @LEAVES = leaf_commands();
 
 # --- What the sweep covers ----------------------------------------------------
-
-# The commands not on the check yet (k400): each task of the plan takes its
-# own off, which turns the sweep red for them first.
-my %NOT_YET = map { ("OCP::Cmd::$_" => 1) } qw(
-    DeployImage DeployRobocop Health Hetzner::List Init InjectKey
-    Keys::AuthorizedKeys Keys::Recipients::Add Keys::Recipients::Ls Keys::Recipients::Rm
-    Keys::Show Kubeconfig Node::Ls Node::Rm Node::TrustHost Provider::Add Provider::Ls
-    Provider::Rm SSH
-);
 
 # The commands that check all of validate() before they read, in a frame of
 # their own: ocp apply (refuse_invalid_config) and ocp keys secure (its
@@ -490,8 +488,8 @@ sub problems {
 
 subtest 'the sweep: every command on the check' => sub {
     my $started = Time::HiRes::time();
-    my @swept = grep { !$NOT_YET{ $_->[0] } } @LEAVES;
-    ok @swept >= 5, 'the commands on the check (' . @swept . ')';
+    my @swept = @LEAVES;
+    ok @swept >= 25, 'every leaf command (' . @swept . ')';
     ok @MALFORMED > 50, 'the malformed paths (' . @MALFORMED . ')';
 
     for my $leaf (@swept) {
@@ -629,6 +627,111 @@ subtest 'status: a line in a section it does not declare' => sub {
         unlike $r->{err}, qr/has \d+ errors?:/, "$path: $shown: no refusal" or diag $r->{err};
         is $r->{exit}, 0, "$path: $shown: the report, exit 0" or diag $r->{err};
         like $r->{out}, qr/^No cluster deployed yet\./m, "$path: $shown: to its end";
+    }
+};
+
+# --- 7. the rest ------------------------------------------------------------------------
+
+# A cluster API that writes down each resource it is to ensure, by kind and
+# clusterName, instead of sending it.
+package WrittenCRs {
+    sub new { my ($class, $file) = @_; return bless { file => $file }, $class }
+    sub ensure {
+        my ($self, $doc) = @_;
+        open my $fh, '>>', $self->{file} or die "written: $!";
+        print {$fh} "$doc->{kind} " . ($doc->{spec}{clusterName} // '-') . "\n";
+        close $fh or die "written: $!";
+        return $doc;
+    }
+}
+
+package main;
+
+# Refused before the provider is written, where it wrote clusterName
+# ARRAY(0x...) (k306).
+subtest 'provider add: a name that is a list' => sub {
+    my $dir = project({ %BASE, name => [ 'a' ] });
+    my @lines = validate_lines($dir);
+    is scalar(@lines), 1, 'validate() has one line, for the name' or diag explain \@lines;
+
+    my $written = $dir->child('written')->stringify;
+    my $r = run_ocp($dir, setup(answer => {
+        'OCP::Role::Cmd::cluster_api' => sub { WrittenCRs->new($written) },
+    }), qw( provider add --name p --type ssh ));
+    is $r->{err}, role_text('ocp provider add', @lines), 'STDERR: the one text, with that line';
+    is $r->{exit}, 1, 'exit 1';
+    is $r->{out}, '', 'nothing on STDOUT';
+    ok !-e $written, 'no provider written'
+        or diag path($written)->slurp_utf8;
+};
+
+subtest 'deploy-robocop: a network.pod_cidr that is a list' => sub {
+    my $dir = project({ %BASE, network => { pod_cidr => [ 'a' ] } });
+    my @lines = validate_lines($dir);
+    is scalar(@lines), 1, 'validate() has one line, for the pod CIDR' or diag explain \@lines;
+
+    my $r = run_ocp($dir, setup(), qw( deploy-robocop ));
+    is $r->{err}, role_text('ocp deploy-robocop', @lines), 'STDERR: the one text, in its words';
+    is $r->{exit}, 1, 'exit 1';
+    is $r->{out}, '', 'nothing on STDOUT';
+};
+
+subtest 'node ls: a pool\'s taints: foo' => sub {
+    my $dir = project({ %BASE, workers => [ { %{ $BASE{workers}[0] }, taints => 'foo' } ] });
+    my @lines = validate_lines($dir);
+    is scalar(@lines), 1, 'validate() has one line, for the taints' or diag explain \@lines;
+    my $text = role_text('ocp node ls', @lines);
+    (my $error = $text) =~ s/\AError: //;
+    $error =~ s/\n\z//;
+
+    my $r = run_ocp($dir, setup(), qw( node ls --json ));
+    my $doc = eval { JSON::MaybeXS->new->decode($r->{out}) };
+    is_deeply $doc, { error => $error }, '--json: STDOUT is the one JSON error object'
+        or diag "STDOUT: $r->{out}";
+    is $r->{err}, $text, '--json: STDERR says it';
+    is $r->{exit}, 1, '--json: exit 1';
+
+    # The table reads no pool: on to the cluster.
+    $r = run_ocp($dir, setup(), qw( node ls ));
+    unlike $r->{err}, qr/has \d+ errors?:/, 'without --json: no refusal' or diag $r->{err};
+    like $r->{err}, qr/sweep: outside/, 'without --json: on to the cluster' or diag $r->{err};
+};
+
+# The commands whose reads the sweep does not reach -- each stops at a way
+# out, a missing kubeconfig.yaml or a flag before it reads ocp.yaml -- with a
+# value validate() refuses in a section they read: refused in their words;
+# and with the option under which they do not read it: not refused.
+# [ argv, spec, words (undef: no refusal) ].
+my @BEHIND_A_WAY_OUT = (
+    [ [qw( deploy-image --tag t )],                    { name => [ 'a' ] },  'ocp deploy-image' ],
+    [ [qw( inject-key )],      { robocop => { security_level => [ 'a' ] } }, 'ocp inject-key' ],
+    [ [qw( init --nogit )],                      { control_planes => 'foo' }, 'ocp init' ],
+    [ [qw( init --nogit --force )],              { control_planes => 'foo' }, undef ],
+    [ [qw( kubeconfig --export )],                     { name => [ 'a' ] },  'ocp kubeconfig' ],
+    [ [qw( kubeconfig )],                              { name => [ 'a' ] },  undef ],
+    [ [qw( ssh --node x )],                            { ssh => 'foo' },     'ocp ssh' ],
+    [ [qw( keys authorized-keys )],                    { ssh => 'foo' },     'ocp keys authorized-keys' ],
+    [ [qw( keys authorized-keys --purpose operator )], { ssh => 'foo' },     undef ],
+    [ [qw( node rm w1 )],                              { ssh => 'foo' },     'ocp node rm' ],
+    [ [qw( node rm w1 --keep-machine )],               { ssh => 'foo' },     undef ],
+);
+
+subtest 'what the sweep does not reach: refused where read, not where not' => sub {
+    for my $case (@BEHIND_A_WAY_OUT) {
+        my ($argv, $spec, $words) = @$case;
+        my $dir = project({ %BASE, %$spec });
+        my @lines = validate_lines($dir);
+        my $what = "@$argv";
+        is scalar(@lines), 1, "$what: validate() has one line" or diag explain \@lines;
+        my $r = run_ocp($dir, setup(), @$argv);
+        if (defined $words) {
+            is $r->{err}, role_text($words, @lines), "$what: refused, in its words";
+            is $r->{exit}, 1, "$what: exit 1";
+        }
+        else {
+            unlike $r->{err}, qr/has \d+ errors?:/, "$what: no refusal" or diag $r->{err};
+        }
+        unlike "$r->{out}$r->{err}", $PERL_TEXT, "$what: no Perl text" or diag $r->{err};
     }
 };
 

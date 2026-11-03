@@ -37,6 +37,11 @@ option timeout => (
     doc     => 'Seconds to wait for robocop to answer (default: 30)',
 );
 
+# What inject-key reads of ocp.yaml, declared as its spec_paths: the level,
+# robocop.security_level. OCP::Role::Cmd refuses its lines, validate()'s own,
+# before a PIN is asked (k400).
+sub spec_paths { return ('robocop', 'robocop.security_level') }
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -174,6 +179,9 @@ OCPNodes that need SSH carry C<SSHKeyAvailable=False>. Run this command again.
 Refused, with the reason on STDERR, when the level is not C<inject>, in dev
 mode (no F<keys.yaml>), on a wrong PIN2, and when no robocop pod is running.
 Exits 1 if any pod did not accept the key.
+A C<robocop> or C<robocop.security_level> that L<OCP::Config/validate>
+refuses stops it with that line before a PIN is asked
+(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 =head1 OPTIONS
 

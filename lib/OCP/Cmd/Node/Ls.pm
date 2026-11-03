@@ -18,6 +18,20 @@ option json => (
     doc => 'Print the node inventory as canonical JSON (name, role, pool, host, address, GPU, runtime, versions)',
 );
 
+# What node ls reads of ocp.yaml, declared as its spec_paths: with --json,
+# the worker pools, whose OCPNode names give each node its pool (_pools_of,
+# OCP::Cmd::Apply::CR::worker_ocpnodes); the table reads nothing of
+# ocp.yaml. OCP::Role::Cmd refuses their lines, validate()'s own, before the
+# cluster is asked -- as the one JSON error object on STDOUT (k400).
+sub spec_paths {
+    my ($self) = @_;
+    return () unless $self->json;
+    return (
+        'workers', 'workers[*]',
+        map({ "workers[*].$_" } qw( name provider nodes host server_type image location labels taints )),
+    );
+}
+
 sub _k8s {
     my $self = shift;
     return $self->k8s if $self->k8s;
@@ -214,7 +228,9 @@ pool. An annotation C<ocp.internal/pool> on the OCPNode takes precedence;
 OCP itself never writes one. Without it, C<pool> is null for a node no named
 pool produces (a control plane, a worker C<ocp node add> created under a name
 of its own, the nodes of a pool without C<name>), and for every node when
-there is no readable C<ocp.yaml>.
+there is no readable C<ocp.yaml>. A worker pool L<OCP::Config/validate>
+refuses stops C<--json> before the cluster is asked, with that line as the
+error object below (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 When the nodes cannot be listed -- the API server the kubeconfig names does
 not answer or answers with an error, or there is no C<ocp.yaml> or no
