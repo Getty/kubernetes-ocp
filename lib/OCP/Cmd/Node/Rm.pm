@@ -261,10 +261,6 @@ sub _provider {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Node::Rm - Remove an OCPNode (drain, teardown, delete)
-
 =head1 SYNOPSIS
 
     ocp node rm worker-1

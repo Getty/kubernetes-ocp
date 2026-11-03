@@ -319,10 +319,6 @@ sub _oneline {
 
 __END__
 
-=head1 NAME
-
-OCP::Role::Cmd::Machines - Every machine of a cluster, and their authorized_keys
-
 =head1 SYNOPSIS
 
     package OCP::Cmd::Keys::Something;

@@ -146,10 +146,6 @@ sub _terminate {
 
 __END__
 
-=head1 NAME
-
-OCP::Exec - run a child process, capturing stdout and stderr without deadlock
-
 =head1 SYNOPSIS
 
     use OCP::Exec qw(capture_command);

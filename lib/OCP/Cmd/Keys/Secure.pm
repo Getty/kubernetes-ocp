@@ -612,10 +612,6 @@ sub _wait_robocop_ready {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Secure - Move a dev-mode project into secure mode without locking its machines out
-
 =head1 SYNOPSIS
 
     ocp keys secure                     # switch; the bootstrap key stays on the machines

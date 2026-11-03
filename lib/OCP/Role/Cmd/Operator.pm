@@ -67,10 +67,6 @@ sub operator_entries {
 
 __END__
 
-=head1 NAME
-
-OCP::Role::Cmd::Operator - What the C<ocp keys operator> commands share
-
 =head1 DESCRIPTION
 
 C<operator_name_arg> (an operator's name, C<[a-z0-9][a-z0-9-]*>, checked

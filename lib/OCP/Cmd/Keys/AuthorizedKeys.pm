@@ -156,10 +156,6 @@ sub _dev_mode_key {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::AuthorizedKeys - Print the authorized_keys lines a cluster machine needs
-
 =head1 SYNOPSIS
 
     # Everything an ssh-provider worker needs: admin + robo

@@ -66,10 +66,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Provider::Rm - Remove an OCPNodeProvider CR (and its Secret)
-
 =head1 SYNOPSIS
 
     ocp provider rm hetzner-a

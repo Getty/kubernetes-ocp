@@ -8,10 +8,6 @@ use warnings;
 
 __END__
 
-=head1 NAME
-
-OCP::Robocop - Kubernetes controller for automated worker management
-
 =head1 SYNOPSIS
 
     robocop controller      # how the Deployment in ocp-system starts it

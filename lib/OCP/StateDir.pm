@@ -40,10 +40,6 @@ sub write_gitignore {
 
 __END__
 
-=head1 NAME
-
-OCP::StateDir - The project's .ocp/ directory, made with the .gitignore that keeps it out of git
-
 =head1 SYNOPSIS
 
     use OCP::StateDir;

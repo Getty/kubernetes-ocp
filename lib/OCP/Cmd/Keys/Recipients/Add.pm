@@ -41,10 +41,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Recipients::Add - Add an age recipient and re-encrypt the project's SOPS files
-
 =head1 SYNOPSIS
 
     ocp keys recipients add age1...

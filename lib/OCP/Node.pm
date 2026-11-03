@@ -1739,10 +1739,6 @@ sub _converge_node_meta {
 
 __END__
 
-=head1 NAME
-
-OCP::Node - Trigger-neutral node reconcile state machine
-
 =head1 SYNOPSIS
 
     use OCP::Node;

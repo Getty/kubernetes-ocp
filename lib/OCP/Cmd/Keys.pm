@@ -18,10 +18,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys - Inspect the encrypted keys in keys.yaml, and move a dev-mode project to them
-
 =head1 SYNOPSIS
 
     ocp keys show                     # admin public key

@@ -438,10 +438,6 @@ sub _update_via_rex {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Update - Update cluster components to current OCP version
-
 =head1 SYNOPSIS
 
     # Show what would be updated

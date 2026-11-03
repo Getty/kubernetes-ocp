@@ -652,10 +652,6 @@ sub _timestamp {
 
 __END__
 
-=head1 NAME
-
-OCP::Keys - Secure key management with double encryption
-
 =head1 SYNOPSIS
 
     use OCP::Keys;

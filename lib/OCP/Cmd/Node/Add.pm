@@ -1004,10 +1004,6 @@ sub _apply_cmd {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Node::Add - Add an OCPNode CR and optionally reconcile it
-
 =head1 SYNOPSIS
 
     ocp node add worker-1 --role worker

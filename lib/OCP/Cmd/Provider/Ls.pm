@@ -58,10 +58,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Provider::Ls - List OCPNodeProvider CRs
-
 =head1 SYNOPSIS
 
     ocp provider ls

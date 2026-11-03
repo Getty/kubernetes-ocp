@@ -123,10 +123,6 @@ sub _crd_get {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::DeployRobocop - Deploy robocop controller to the cluster
-
 =head1 SYNOPSIS
 
     ocp deploy-robocop

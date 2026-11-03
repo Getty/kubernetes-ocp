@@ -1221,10 +1221,6 @@ sub decrypt_file {
 
 __END__
 
-=head1 NAME
-
-OCP::Secrets - Secret management for OCP using SOPS and age
-
 =head1 SYNOPSIS
 
     use OCP::Secrets;

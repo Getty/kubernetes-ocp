@@ -167,10 +167,6 @@ sub export {
 
 __END__
 
-=head1 NAME
-
-OCP::Kubeconfig - Rename and merge kubeconfig entries
-
 =head1 SYNOPSIS
 
     use OCP::Kubeconfig;

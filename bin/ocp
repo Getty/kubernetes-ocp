@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# ABSTRACT: Omni Control Plane - Kubernetes Cluster Management
+# ABSTRACT: Omni Control Plane CLI
 # PODNAME: ocp
 
 use strict;
@@ -22,10 +22,6 @@ STDOUT->autoflush(1);
 exit OCP->run_cli;
 
 __END__
-
-=head1 NAME
-
-ocp - Omni Control Plane CLI
 
 =head1 SYNOPSIS
 

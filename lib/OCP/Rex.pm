@@ -614,10 +614,6 @@ sub _generate_token {
 
 __END__
 
-=head1 NAME
-
-OCP::Rex - Rex task executor wrapper
-
 =head1 SYNOPSIS
 
     use OCP::Rex;

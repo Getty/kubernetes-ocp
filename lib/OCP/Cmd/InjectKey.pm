@@ -155,10 +155,6 @@ sub _robocop_pods {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::InjectKey - Hand the robo SSH key to the running robocop (security_level inject)
-
 =head1 SYNOPSIS
 
     ocp inject-key                # PIN1 (if age.key is locked) + PIN2

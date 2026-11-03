@@ -1,5 +1,5 @@
 package OCP::K8s::OCPNodeProvider;
-# ABSTRACT: OCPNodeProvider Custom Resource
+# ABSTRACT: IO::K8s class for the OCPNodeProvider CRD
 use IO::K8s::APIObject
     api_version     => 'ocp.internal/v1',
     resource_plural => 'ocpnodeproviders';
@@ -10,10 +10,6 @@ k8s status => Opaque;
 1;
 
 __END__
-
-=head1 NAME
-
-OCP::K8s::OCPNodeProvider - IO::K8s class for the OCPNodeProvider CRD
 
 =head1 SYNOPSIS
 

@@ -1340,10 +1340,6 @@ sub log_error {
 
 __END__
 
-=head1 NAME
-
-OCP::Robocop::Controller - Kubernetes controller for OCP nodes
-
 =head1 SYNOPSIS
 
     use OCP::Robocop::Controller;

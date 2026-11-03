@@ -1153,10 +1153,6 @@ sub _detect_locale {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Init - Initialize OCP project
-
 =head1 SYNOPSIS
 
     # Basic init (Hetzner Cloud, the default provider)

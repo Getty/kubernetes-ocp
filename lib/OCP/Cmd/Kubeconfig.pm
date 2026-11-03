@@ -1,5 +1,5 @@
 package OCP::Cmd::Kubeconfig;
-# ABSTRACT: Export kubeconfig
+# ABSTRACT: Output or install the cluster kubeconfig, or hand out a read-only one
 
 use Moo;
 use MooX::Cmd;
@@ -230,10 +230,6 @@ sub _tilde {
 1;
 
 __END__
-
-=head1 NAME
-
-OCP::Cmd::Kubeconfig - Output or install the cluster kubeconfig
 
 =head1 SYNOPSIS
 

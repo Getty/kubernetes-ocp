@@ -1509,10 +1509,6 @@ sub format_lines {
 
 __END__
 
-=head1 NAME
-
-OCP::Drift - Detect drift between the OCP spec and the running cluster
-
 =head1 SYNOPSIS
 
     use OCP::Drift;

@@ -94,10 +94,6 @@ sub _show_bundled_versions {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Version - Show OCP and component versions
-
 =head1 SYNOPSIS
 
     ocp version

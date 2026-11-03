@@ -1,5 +1,5 @@
 package OCP::K8s::OCPNode;
-# ABSTRACT: OCPNode Custom Resource
+# ABSTRACT: IO::K8s class for the OCPNode CRD
 use IO::K8s::APIObject
     api_version     => 'ocp.internal/v1',
     resource_plural => 'ocpnodes';
@@ -10,10 +10,6 @@ k8s status => Opaque;
 1;
 
 __END__
-
-=head1 NAME
-
-OCP::K8s::OCPNode - IO::K8s class for the OCPNode CRD
 
 =head1 SYNOPSIS
 

@@ -279,10 +279,6 @@ sub _print_hetzner_gap {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Operator::Add - Register an operator: its SSH key onto every machine, its age key as a recipient
-
 =head1 SYNOPSIS
 
     ocp keys operator add --name leitstand --ssh-pubkey leitstand.pub --age age1...

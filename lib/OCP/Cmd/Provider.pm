@@ -18,10 +18,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Provider - Manage OCPNodeProvider CRs
-
 =head1 SYNOPSIS
 
     ocp provider add --name hetzner-a --type hetzner --token-file token.txt

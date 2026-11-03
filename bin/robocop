@@ -36,10 +36,6 @@ exit 2;
 
 __END__
 
-=head1 NAME
-
-robocop - OCP Kubernetes controller for worker management
-
 =head1 SYNOPSIS
 
     # Reconciliation controller (how the Deployment starts it)

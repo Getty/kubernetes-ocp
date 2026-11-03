@@ -289,10 +289,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Provider::Add - Add an OCPNodeProvider CR
-
 =head1 SYNOPSIS
 
     ocp provider add --name hetzner-a --type hetzner \

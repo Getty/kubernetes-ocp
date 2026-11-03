@@ -465,10 +465,6 @@ sub _lookup_node_ip {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::SSH - SSH into a cluster node with the key it trusts
-
 =head1 SYNOPSIS
 
     # SSH into control plane

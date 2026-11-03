@@ -93,10 +93,6 @@ sub rexfile {
 
 __END__
 
-=head1 NAME
-
-OCP::Share - Resolve the share directory that belongs to the running code
-
 =head1 SYNOPSIS
 
     use OCP::Share;

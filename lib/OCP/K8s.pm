@@ -133,10 +133,6 @@ sub evict {
 
 __END__
 
-=head1 NAME
-
-OCP::K8s - Register OCP CRD classes with a Kubernetes::REST api instance
-
 =head1 SYNOPSIS
 
     use OCP::K8s;

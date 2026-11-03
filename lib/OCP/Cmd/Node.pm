@@ -18,10 +18,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Node - Manage OCPNode CRs
-
 =head1 SYNOPSIS
 
     ocp node add NAME --role worker

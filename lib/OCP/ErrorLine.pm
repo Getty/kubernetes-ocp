@@ -154,10 +154,6 @@ sub user_line {
 
 __END__
 
-=head1 NAME
-
-OCP::ErrorLine - An exception as one line for STDERR
-
 =head1 SYNOPSIS
 
     use OCP::ErrorLine;

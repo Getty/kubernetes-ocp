@@ -131,10 +131,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Show - Print a public key from keys.yaml
-
 =head1 SYNOPSIS
 
     # The admin public key — what a machine needs in authorized_keys

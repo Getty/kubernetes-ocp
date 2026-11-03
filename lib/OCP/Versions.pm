@@ -163,10 +163,6 @@ sub get_manual_steps {
 
 __END__
 
-=head1 NAME
-
-OCP::Versions - OCP version manifest and component versions
-
 =head1 SYNOPSIS
 
     use OCP::Versions;

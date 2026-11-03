@@ -1,5 +1,5 @@
 package OCP::Cmd::Apply;
-# ABSTRACT: Reconcile cluster to match config
+# ABSTRACT: Deploy the control plane, or reconcile an existing cluster to match config
 
 use Moo;
 use MooX::Cmd;
@@ -644,10 +644,6 @@ sub _run_remedy {
 1;
 
 __END__
-
-=head1 NAME
-
-OCP::Cmd::Apply - Deploy control plane (admin-key required)
 
 =head1 SYNOPSIS
 

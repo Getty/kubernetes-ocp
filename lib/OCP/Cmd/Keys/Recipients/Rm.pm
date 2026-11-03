@@ -52,10 +52,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Recipients::Rm - Remove an age recipient, re-encrypt, and say what to rotate
-
 =head1 SYNOPSIS
 
     ocp keys recipients rm age1...

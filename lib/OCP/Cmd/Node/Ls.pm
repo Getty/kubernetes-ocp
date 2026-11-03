@@ -172,10 +172,6 @@ sub _age {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Node::Ls - List OCPNode CRs
-
 =head1 SYNOPSIS
 
     ocp node ls

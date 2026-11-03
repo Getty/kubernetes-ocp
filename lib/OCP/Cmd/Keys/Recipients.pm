@@ -17,10 +17,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Recipients - Who the project's SOPS files are encrypted for
-
 =head1 SYNOPSIS
 
     ocp keys recipients ls

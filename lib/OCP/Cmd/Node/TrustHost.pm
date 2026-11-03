@@ -101,10 +101,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Node::TrustHost - Forget the pinned SSH host keys of an OCPNode
-
 =head1 SYNOPSIS
 
     ocp node trust-host worker-1

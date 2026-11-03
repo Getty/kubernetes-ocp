@@ -97,10 +97,6 @@ sub rotation_hint {
 
 __END__
 
-=head1 NAME
-
-OCP::Role::Cmd::Recipients - What the C<ocp keys recipients> commands share
-
 =head1 DESCRIPTION
 
 C<project_secrets> (the project's L<OCP::Secrets>, PIN1 when C<unlock> asks

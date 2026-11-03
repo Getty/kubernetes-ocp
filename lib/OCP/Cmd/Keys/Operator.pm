@@ -17,10 +17,6 @@ sub execute {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Operator - Operators (a Leitstand) that run ocp apply unattended with their own keys
-
 =head1 SYNOPSIS
 
     # where the project key is (PIN1, PIN2):

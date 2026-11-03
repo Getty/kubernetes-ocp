@@ -201,10 +201,6 @@ sub _random_bytes {
 
 __END__
 
-=head1 NAME
-
-OCP::Password - Secure password prompting and age.key encryption
-
 =head1 SYNOPSIS
 
     use OCP::Password qw(prompt_password encrypt_age_key decrypt_age_key);

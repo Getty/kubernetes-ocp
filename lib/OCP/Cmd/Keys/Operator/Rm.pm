@@ -142,10 +142,6 @@ sub _take_off {
 
 __END__
 
-=head1 NAME
-
-OCP::Cmd::Keys::Operator::Rm - Revoke an operator: its SSH key off every machine, its age key out, say what to rotate
-
 =head1 SYNOPSIS
 
     ocp keys operator rm leitstand

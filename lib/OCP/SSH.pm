@@ -1,5 +1,5 @@
 package OCP::SSH;
-# ABSTRACT: SSH operations for OCP
+# ABSTRACT: SSH operations for OCP over the ssh and scp commands
 
 use Moo;
 use Carp qw(croak);
@@ -463,10 +463,6 @@ sub wait_for_ssh {
 1;
 
 __END__
-
-=head1 NAME
-
-OCP::SSH - SSH operations for OCP using IPC::Open3
 
 =head1 SYNOPSIS
 
