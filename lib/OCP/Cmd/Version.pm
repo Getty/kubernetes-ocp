@@ -10,6 +10,15 @@ use OCP;
 
 with 'OCP::Role::Cmd';
 
+# What version reads of ocp.yaml, declared as its spec_paths: the cluster's
+# name, shown for a deployed cluster only. OCP::Role::Cmd refuses its line
+# before anything is printed (k400); an undeployed project's name is not read
+# and holds nothing up.
+sub spec_paths {
+    my ($self, $config) = @_;
+    return $config->status->{ocpVersion} ? ('name') : ();
+}
+
 sub execute {
     my ($self, $args_ref, $chain_ref) = @_;
 
@@ -100,6 +109,10 @@ Shows:
 - Deployed cluster version (if any)
 - Installed component versions
 - Update availability
+
+For a deployed cluster it shows the cluster's name from F<ocp.yaml>, and a
+name L<OCP::Config/validate> refuses stops it with that line before anything
+is printed (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 =head1 EXAMPLES
 

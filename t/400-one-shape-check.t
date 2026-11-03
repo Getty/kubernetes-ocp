@@ -37,6 +37,10 @@
 #      before any component runs (it upgraded cert-manager first and then
 #      said "Failed to update cilium: ...", k394); ocp destroy is held up by
 #      no line in a section it does not read
+#   6. status: ocp status refuses a network: it reads before the report, in
+#      both forms -- --json as its one JSON error object (k398) -- where it
+#      said "Cannot detect drift" under a report half printed (k394); a line
+#      in a section it does not declare holds no report up
 #
 # Network-free and cluster-free: each run is a child whose ways out die, its
 # hosts *.invalid.
@@ -46,6 +50,7 @@ use warnings;
 use Test::More;
 
 use Crypt::Age;
+use JSON::MaybeXS ();
 use File::Temp qw( tempdir );
 use Path::Tiny qw( path );
 use Scalar::Util qw( refaddr );
@@ -86,7 +91,7 @@ my %NOT_YET = map { ("OCP::Cmd::$_" => 1) } qw(
     DeployImage DeployRobocop Health Hetzner::List Init InjectKey
     Keys::AuthorizedKeys Keys::Recipients::Add Keys::Recipients::Ls Keys::Recipients::Rm
     Keys::Show Kubeconfig Node::Ls Node::Rm Node::TrustHost Provider::Add Provider::Ls
-    Provider::Rm SSH Status Version
+    Provider::Rm SSH
 );
 
 # The commands that check all of validate() before they read, in a frame of
@@ -98,7 +103,12 @@ my %FULL = map { ("OCP::Cmd::$_" => 1) } qw( Apply Keys::Secure );
 # a WARNING or a drift entry over a bad value there, and a test pins that.
 # Class => [ section, ... ]; each entry is named beside the command's
 # spec_paths.
-my %READS_AROUND = ();
+my %READS_AROUND = (
+    # The AMD allocation a bad gpu.amd.allocation turns into a WARNING (t/252,
+    # t/258, t/379); the cert-manager probe's skip_if a bad nocert turns into
+    # a check that could not be made (k332, t/332 claim 1).
+    'OCP::Cmd::Status' => [ qw( gpu nocert ) ],
+);
 
 # What a command needs after its words to get past its usage line.
 my $PUBFILE = path(tempdir(CLEANUP => 1))->child('second.pub');
@@ -575,6 +585,51 @@ subtest 'destroy: cilium: foo holds nothing up' => sub {
     my $r = run_ocp($dir, setup(), qw( destroy ));
     unlike $r->{err}, qr/has \d+ errors?:/, 'no refusal' or diag $r->{err};
     like $r->{err}, qr/sweep: outside/, 'on to the cluster' or diag $r->{err};
+};
+
+# --- 6. status and version --------------------------------------------------------------
+
+# Refused up front, not a report that stops where it reads network: (k394).
+subtest 'status: network: foo, in both forms, before the report' => sub {
+    my $dir = project({ %BASE, network => 'foo' });
+    my @lines = validate_lines($dir);
+    is scalar(@lines), 1, 'validate() has one line, for network:' or diag explain \@lines;
+    my $text = role_text('ocp status', @lines);
+
+    my $r = run_ocp($dir, setup(), qw( status ));
+    is $r->{err}, $text, 'STDERR: the one text, with that line';
+    is $r->{exit}, 1, 'exit 1';
+    is $r->{out}, '', 'no report begun on STDOUT';
+
+    (my $error = $text) =~ s/\AError: //;
+    $error =~ s/\n\z//;
+    $r = run_ocp($dir, setup(), qw( status --json ));
+    my $doc = eval { JSON::MaybeXS->new->decode($r->{out}) };
+    is_deeply $doc, { error => $error }, '--json: STDOUT is the one JSON error object'
+        or diag "STDOUT: $r->{out}";
+    is $r->{err}, $text, '--json: STDERR says it';
+    is $r->{exit}, 1, '--json: exit 1';
+};
+
+# A section status does not declare -- does not read, or reads around
+# (%READS_AROUND) -- holds no report up: each such section of
+# OCPTest::Shapes at its first refused shape.
+subtest 'status: a line in a section it does not declare' => sub {
+    my $config = OCP::Config->new(file => project({ %BASE })->child('ocp.yaml')->stringify);
+    my %declared = map { /\A([a-z_]+)/ ? ($1 => 1) : () } OCP::Cmd::Status->spec_paths($config);
+    my %seen;
+    my @cases = grep {
+        my ($section) = $_->[0] =~ /\A([a-z_]+)/;
+        !$declared{$section} && !$seen{$section}++;
+    } @MALFORMED;
+    ok @cases, 'sections status does not declare: ' . join(', ', sort keys %seen);
+    for my $case (@cases) {
+        my ($path, $shown, $spec) = @$case;
+        my $r = run_ocp(project($spec), setup(), qw( status ));
+        unlike $r->{err}, qr/has \d+ errors?:/, "$path: $shown: no refusal" or diag $r->{err};
+        is $r->{exit}, 0, "$path: $shown: the report, exit 0" or diag $r->{err};
+        like $r->{out}, qr/^No cluster deployed yet\./m, "$path: $shown: to its end";
+    }
 };
 
 done_testing;

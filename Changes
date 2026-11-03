@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` checks what it reads of `ocp.yaml` before the report: a
+      bad `network:`, control plane or worker pool stops it with `ocp
+      apply`'s line -- in `--json` as the error object -- instead of a half
+      report or a Perl message. A bad key it does not read still holds no
+      report up. `ocp version` checks the cluster's name the same way.
     - `ocp update` checks what it reads of `ocp.yaml` before it prints its
       plan: a malformed `cilium:`, `network:` or `gpu:` stops it with `ocp
       apply`'s line before any component is upgraded, instead of after

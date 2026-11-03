@@ -45,7 +45,9 @@ sub project {
     $ocp->dump_file($cfg->stringify, {
         name => $name, version => 'v1.32.1+rke2r1',
         control_planes => [{ provider => 'hetzner', server_type => 'cx32' }],
-        workers => [{ name => 'pool-a', provider => 'ssh', nodes => 2 }],
+        # An ssh pool names its machines (k322): a count there is refused,
+        # and status checks the pools it reads before it reports (k400).
+        workers => [{ name => 'pool-a', provider => 'ssh', nodes => [ 'w1.k230.invalid', 'w2.k230.invalid' ] }],
     });
     $dir->child('kubeconfig.yaml')->spew("x\n") if $deployed;
     return $cfg->stringify;

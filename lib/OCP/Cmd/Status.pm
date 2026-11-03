@@ -32,6 +32,40 @@ option json => (
     doc => 'Print the status as canonical JSON on STDOUT (diagnostics on STDERR, no timestamps)',
 );
 
+# What status reads of ocp.yaml, the same for the text and the --json form,
+# declared as its spec_paths: OCP::Role::Cmd refuses their lines, validate()'s
+# own, before the report begins (k400). Before, each accessor refused where it
+# was reached, and network: foo stopped the drift check with "Cannot detect
+# drift: network: must be a mapping" under a report half printed (k394).
+#
+# The summary reads the name, the distribution and its version (kubernetes),
+# the first control plane's provider and server_type, the count of control
+# planes and every pool's name, provider and machines (nodes, an ssh pool's
+# host: _pool_machines). The drift check reads every control plane's
+# public_ip, host and name (spec_drift, the host probes, cluster_status), the
+# pod network (network.pod_cidr), Cilium's values for its remedy (cilium:) and
+# the bootstrap key's path for the host probes (ssh:, rex_prober).
+#
+# Read around on purpose, so not declared (t/400's %READS_AROUND): gpu:, the
+# AMD allocation a bad gpu.amd.allocation turns into one WARNING line while
+# status exits 0 (t/252-status-amd-gpu.t:332-334,
+# t/258-status-json-amd-gpu.t:342-348, t/379-section-shapes.t's "ocp status,
+# a gpu.amd.allocation it refuses"); and nocert, the cert-manager probe's
+# skip_if, which a bad value turns into a check that could not be made while
+# the rest of the report runs, exit 0 (k332, t/332-status-switch-and-host-pool.t
+# claim 1).
+sub spec_paths {
+    return (
+        'name', 'kubernetes',
+        'control_planes', 'control_planes[*]',
+        map({ "control_planes[*].$_" } qw( public_ip host name )),
+        map({ "control_planes[1].$_" } qw( provider server_type )),
+        'workers', 'workers[*]',
+        map({ "workers[*].$_" } qw( name provider nodes host )),
+        'network', 'network.pod_cidr', 'cilium', 'ssh',
+    );
+}
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -686,6 +720,16 @@ any other pool its C<nodes:> count, and one machine without C<nodes:>
 does not read).
 
 If C<ocp.yaml> is missing the command dies with a hint to run C<ocp init>.
+Before the report begins, both forms check what they read of F<ocp.yaml> --
+the cluster's name, C<kubernetes>, the control planes, the worker pools,
+C<network>, C<network.pod_cidr>, C<cilium> and C<ssh> -- and refuse with
+L<OCP::Config/validate>'s lines for them, all at once, exit 1; C<--json>
+prints that refusal as its one JSON error object
+(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).  Earlier builds began the
+report and stopped where a bad value was read, a C<network: foo> as
+C<Cannot detect drift>.  A bad key status does not read holds no report up;
+nor does a bad C<gpu.amd.allocation> or C<nocert>, which it reads around as
+described below.
 If the cluster has never been deployed the spec section is printed and the
 status section says so.  The kubeconfig is read through L<OCP::Secrets>, so
 the C<.ocp/age.key> must be present for the live-status section to render.
