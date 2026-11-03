@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A `network.pod_cidr` that is no IPv4 CIDR, has host bits set or is
+      too small now stops `ocp node add`, `ocp deploy-image`, `ocp
+      deploy-robocop` and `ocp status` where they read it, with the line
+      `ocp apply` refuses it with, instead of being handed on to the
+      install or to robocop.
     - `ocp status` says a cluster API that does not answer, or a kubeconfig
       no client can be built from, in one ERROR line naming the server, in
       text and `--json` alike, where a client that could not be built used

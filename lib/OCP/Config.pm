@@ -219,6 +219,17 @@ sub _dist_error {
         . ' (must be ' . OCP::Choices::or_list(@DISTRIBUTIONS) . ')';
 }
 
+# Every line under kubernetes:, at its path (k400).
+sub _kubernetes_lines {
+    my ($k8s) = @_;
+    return _tagged(kubernetes => _kubernetes_shape_error($k8s) // ()) unless ref $k8s eq 'HASH';
+    return _tagged(kubernetes =>
+        _dist_error($k8s->{dist}) // (),
+        _version_error($k8s->{version}) // (),
+        _kubernetes_unknown_keys($k8s),
+    );
+}
+
 # The most control planes `nodes: N` stands for (k305). Every RKE2/K3s
 # server is an etcd member, and etcd advises no more than seven: a write
 # waits for a majority of them, so each member past that slows every write
@@ -278,6 +289,19 @@ sub ssh_config {
 sub _ssh_errors {
     my ($ssh) = @_;
     return _section_string_errors(ssh => $ssh, @SSH_KEYS);
+}
+
+# ssh: (k340), the lines ssh_config refuses on, at its path (k400). A key that
+# is neither path (k355) is validate()'s alone, as a pool's are (k347): ssh: {
+# privat_key: ... } left the default key in force, but ocp destroy reads ssh:
+# in dev mode (OCP::ClusterKey), and refused there it skips the uninstall on
+# the ssh machines.
+sub _ssh_lines {
+    my ($ssh) = @_;
+    return (
+        _tagged(ssh => _ssh_errors($ssh)),
+        _tagged(undef, ref $ssh eq 'HASH' ? _unknown_keys('ssh', $ssh, map { $_->[0] } @SSH_KEYS) : ()),
+    );
 }
 
 sub single_node {
@@ -544,6 +568,33 @@ sub _image_ref_error {
     return "needs a tag or a digest, like raudssus/ocp:1.2.3 or repo\@sha256:<64 hex> ('$ref')";
 }
 
+# Every line under robocop:, each at its path (k400): robocop as a list, a
+# string, a robocop.enabled that is neither true nor false, or a key of the
+# mapping that is none of its three, each read as true and turned robocop on
+# (k305, k315) -- the lines robocop_enabled refuses on; security_level and
+# image at their own paths.
+sub _robocop_lines {
+    my ($self) = @_;
+    my $robocop = $self->spec->{robocop};
+    my @lines = _tagged(robocop => _robocop_errors($robocop));
+
+    # robocop.security_level, report-only (k129). The accessor refuses; here
+    # we collect one line so `ocp apply` lists it with every other config error.
+    my $rl = $self->_raw_robocop_security_level;
+    if (defined $rl && !_is_choice($rl, @ROBOCOP_SECURITY_LEVELS)) {
+        push @lines, _tagged('robocop.security_level' => "robocop.security_level: invalid value "
+            . _shown_value($rl) . " (must be " . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS) . ")");
+    }
+
+    # robocop.image, report-only (k227), same reason as security_level above.
+    if (ref $robocop eq 'HASH' && defined $robocop->{image}) {
+        my $ie = _image_ref_error($robocop->{image});
+        push @lines, _tagged('robocop.image' => "robocop.image: $ie") if $ie;
+    }
+
+    return @lines;
+}
+
 sub _any_hetzner_provider {
     my $self = shift;
     for my $cp (@{$self->control_planes}) {
@@ -609,8 +660,8 @@ sub has_external_upstream { shift->registry_upstream ne '' }
 # A network: that is no mapping is refused here in validate()'s words
 # (k379): read on, pod_cidr died inside Perl on a string where ocp update,
 # ocp node add, ocp status and ocp deploy-robocop (OCP_POD_CIDR) read it
-# without validate() first. What is wrong inside the mapping is validate()'s
-# alone: those readers read pod_cidr, and nothing else of it.
+# without validate() first. What is wrong inside the mapping its accessors
+# refuse at their own paths (k400): pod_cidr, lb_pool_config, l2_config.
 sub network_config {
     my ($self) = @_;
     my $net = $self->spec->{network};
@@ -631,7 +682,13 @@ our @NETWORK_KEYS = qw( pod_cidr lb_pool l2 );
 our @LB_POOL_KEYS = qw( cidr start stop );
 our @L2_KEYS      = qw( node_selector interfaces );
 
-sub lb_pool_config { shift->network_config->{lb_pool} // {} }
+# lb_pool, refused in validate()'s lines at network.lb_pool (k400): read on,
+# lb_pool: foo died inside Perl in lb_pool_blocks.
+sub lb_pool_config {
+    my ($self) = @_;
+    _refuse($self->spec_errors('network.lb_pool'));
+    return $self->network_config->{lb_pool} // {};
+}
 
 # The CiliumLoadBalancerIPPool blocks list, or undef when no pool is
 # configured — the caller then falls back to the node IP, but only on a
@@ -659,10 +716,30 @@ our $DEFAULT_POD_CIDR = '10.42.0.0/16';
 # service-cidr. The pod CIDR must stay clear of it.
 our $SERVICE_CIDR = '10.43.0.0/16';
 
-sub pod_cidr        { shift->network_config->{pod_cidr} // $DEFAULT_POD_CIDR }
-sub pod_cidr_is_set { defined shift->network_config->{pod_cidr} }
+# Refused in validate()'s lines at network.pod_cidr (k400) -- no IPv4 CIDR,
+# host bits set, too small -- where ocp update, ocp node add, ocp status and
+# ocp deploy-robocop read it without validate() first. An overlap is no
+# refusal here, see _pod_cidr_lines.
+sub pod_cidr {
+    my ($self) = @_;
+    _refuse($self->spec_errors('network.pod_cidr'));
+    return $self->network_config->{pod_cidr} // $DEFAULT_POD_CIDR;
+}
 
-sub l2_config        { shift->network_config->{l2} // {} }
+sub pod_cidr_is_set {
+    my ($self) = @_;
+    _refuse($self->spec_errors('network.pod_cidr'));
+    return defined $self->network_config->{pod_cidr};
+}
+
+# l2, refused in validate()'s lines at network.l2 (k400), as lb_pool is: read
+# on, l2: foo died inside Perl in l2_interfaces and l2_node_selector.
+sub l2_config {
+    my ($self) = @_;
+    _refuse($self->spec_errors('network.l2'));
+    return $self->network_config->{l2} // {};
+}
+
 sub l2_node_selector { shift->l2_config->{node_selector} // {} }
 
 # The interface-name regexes for CiliumL2AnnouncementPolicy, when
@@ -1214,82 +1291,61 @@ sub _entry_unknown_keys {
 
 sub validate {
     my ($self) = @_;
-    my @errors;
 
     # An ocp.yaml that is empty or no mapping holds no key to check (k340):
     # its line is the only one, the one every other reader stops with.
     my $spec_err = $self->_spec_error;
     return ($spec_err) if defined $spec_err;
 
-    # The name, the control planes, gpu: and the worker pools come from the
-    # producers spec_errors reads too (k306), each line spelt once there.
-    push @errors, _lines_of($self->_name_lines);
+    return _lines_of($self->_spec_lines);
+}
 
-    # kubernetes: and its dist (k340), the lines kubernetes and distribution
-    # refuse on. dist: rke3 passed, installed RKE2 and told robocop rke3.
-    # Its version and a key that is neither (k355), the lines version and
-    # kubernetes refuse on.
-    my $k8s = $self->spec->{kubernetes};
-    my $k8s_err = _kubernetes_shape_error($k8s);
-    push @errors, $k8s_err if defined $k8s_err;
-    if (ref $k8s eq 'HASH') {
-        push @errors, _dist_error($k8s->{dist}) // ();
-        push @errors, _version_error($k8s->{version}) // ();
-        push @errors, _kubernetes_unknown_keys($k8s);
-    }
+# validate()'s lines, every one, as [ tag, line ] in its order (k400): the one
+# list validate() and spec_errors both read, so that their order cannot
+# differ. Each block is a producer; the tag is the key path spec_errors finds
+# the line at, undef for a line that is validate()'s alone.
+sub _spec_lines {
+    my ($self) = @_;
+    my $spec = $self->spec;
 
-    push @errors, _lines_of($self->_control_plane_lines);
+    # The network the pod CIDR and the service network are held against.
+    my $net = ref $spec->{network} eq 'HASH' ? $spec->{network} : {};
 
-    push @errors, $self->_validate_network;
-    push @errors, $self->_validate_cilium;
-    push @errors, _lines_of($self->_gpu_lines);
+    return (
+        # The name, the control planes, gpu: and the worker pools: k306.
+        $self->_name_lines,
 
-    # registry: and ssl: (k379), the lines registry_config and ssl_config
-    # refuse on.
-    push @errors, _registry_errors($self->spec->{registry});
-    push @errors, _ssl_errors($self->spec->{ssl});
+        # kubernetes: and its dist (k340), the lines kubernetes and
+        # distribution refuse on. dist: rke3 passed, installed RKE2 and told
+        # robocop rke3. Its version and a key that is neither (k355), the
+        # lines version and kubernetes refuse on.
+        _kubernetes_lines($spec->{kubernetes}),
 
-    # system: (k331), the lines system_config refuses on.
-    push @errors, _system_errors($self->spec->{system});
+        $self->_control_plane_lines,
 
-    # ssh: (k340), the lines ssh_config refuses on. A key that is neither path
-    # (k355) is validate()'s alone, as a pool's are (k347): ssh: { privat_key:
-    # ... } left the default key in force, but ocp destroy reads ssh: in dev
-    # mode (OCP::ClusterKey), and refused there it skips the uninstall on the
-    # ssh machines.
-    my $ssh = $self->spec->{ssh};
-    push @errors, _ssh_errors($ssh);
-    push @errors, _unknown_keys('ssh', $ssh, map { $_->[0] } @SSH_KEYS) if ref $ssh eq 'HASH';
+        _network_lines($spec->{network}),
+        _tagged(cilium => $self->_validate_cilium),
+        $self->_gpu_lines,
 
-    push @errors, _lines_of($self->_switch_lines);
+        # registry: and ssl: (k379), the lines registry_config and
+        # ssl_config refuse on.
+        _tagged(registry => _registry_errors($spec->{registry})),
+        _tagged(ssl      => _ssl_errors($spec->{ssl})),
 
-    my $net = ref $self->spec->{network} eq 'HASH' ? $self->spec->{network} : {};
-    push @errors, $self->_validate_pod_cidr($net);
-    push @errors, $self->_validate_service_cidr($net);
+        # system: (k331), the lines system_config refuses on.
+        _tagged(system => _system_errors($spec->{system})),
 
-    # robocop as a list, a string, a robocop.enabled that is neither true nor
-    # false, or a key of the mapping that is none of its three: each read as
-    # true and turned robocop on (k305, k315). The lines are robocop_enabled's
-    # refusal too.
-    push @errors, _robocop_errors($self->spec->{robocop});
+        _ssh_lines($spec->{ssh}),
 
-    # robocop.security_level, report-only (k129). The accessor refuses; here
-    # we collect one line so `ocp apply` lists it with every other config error.
-    my $rl = $self->_raw_robocop_security_level;
-    if (defined $rl && !_is_choice($rl, @ROBOCOP_SECURITY_LEVELS)) {
-        push @errors, "robocop.security_level: invalid value " . _shown_value($rl) . " (must be "
-            . OCP::Choices::or_list(@ROBOCOP_SECURITY_LEVELS) . ")";
-    }
+        $self->_switch_lines,
 
-    # robocop.image, report-only (k227), same reason as security_level above.
-    if (ref $self->spec->{robocop} eq 'HASH' && defined $self->spec->{robocop}{image}) {
-        my $ie = _image_ref_error($self->spec->{robocop}{image});
-        push @errors, "robocop.image: $ie" if $ie;
-    }
+        $self->_pod_cidr_lines($net),
+        _tagged(undef, $self->_validate_service_cidr($net)),
 
-    push @errors, _lines_of($self->_worker_lines);
+        $self->_robocop_lines,
 
-    return @errors;
+        $self->_worker_lines,
+    );
 }
 
 =method spec_errors
@@ -1307,11 +1363,29 @@ C<validate> checks (with C<nodes: N> the control planes are one entry,
 said once):
 
     name                         a name that is no string
+    kubernetes                   every line under kubernetes:
     control_planes               control_planes that is neither form
     control_planes[I]            an entry that is no mapping
     control_planes[I].provider   a provider OCP does not know
     control_planes[I].KEY        KEY no string: host, public_ip, private_ip,
                                  server_type, location, image, name
+    network                      network: no mapping, or a key of it OCP
+                                 does not know
+    network.pod_cidr             no IPv4 CIDR, host bits set, too small
+    network.lb_pool              every line under lb_pool:
+    network.l2                   every line under l2:
+    cilium                       every line under cilium:
+    gpu                          every line under gpu:, its switches with it
+    registry                     every line under registry:
+    ssl                          every line under ssl:
+    system                       every line under system:, ntp with them
+    ssh                          ssh: no mapping, or a path that is no string
+    lbipam                       lbipam neither true nor false
+    nocert                       nocert neither true nor false
+    robocop                      robocop: as the switch it is: its shape,
+                                 enabled, a key OCP does not know
+    robocop.security_level       a level OCP does not know
+    robocop.image                no image reference
     workers                      workers that is no list
     workers[I]                   a pool that is no mapping
     workers[I].name              a pool name that is no string
@@ -1319,63 +1393,66 @@ said once):
     workers[I].nodes             nodes: as the pool's provider reads it
     workers[I].KEY               KEY no string: host (on a pool that takes
                                  one), server_type, location, image
-    gpu                          every line under gpu:
+    workers[I].labels            the pool's labels
+    workers[I].taints            the pool's taints
 
-Under a section or an entry that has a line of its own shape, a path has
-none: C<validate> reads no further there either. Nor has an entry past the
-last one.
+A path is the lines about its key and no more: C<network> is not the lines
+under C<lb_pool:>, C<robocop> not its C<security_level>. Under a section or
+an entry that has a line of its own shape, a path has none: C<validate>
+reads no further there either. Nor has an entry past the last one.
 
 Not at any path, C<validate>'s alone: a name missing, the cluster's or a
-pool's; a key nothing reads (k347); what a provider requires; the bounds of
-C<control_planes>; every C<node_ip>; labels and taints; an ssh pool that
-names its machines both ways, or neither; a host on a pool that takes none;
-and every other section. A path outside these croaks. An F<ocp.yaml> that
-is empty or no mapping stops it with its line, as it stops every reader.
+pool's; a key nothing reads of an entry, a pool, a pool's machine (k347) or
+C<ssh:> (k355); what a provider requires; the bounds of C<control_planes>;
+every C<node_ip>; an ssh pool that names its machines both ways, or
+neither; a host on a pool that takes none; and where the pod CIDR or the
+service network overlaps an address (k400) -- that is about the other
+sections' addresses, and a running cluster whose default pod CIDR overlaps
+a node address must not stop every command that reads C<network:>. A path
+outside these croaks. An F<ocp.yaml> that is empty or no mapping stops it
+with its line, as it stops every reader.
+
+C<validate> and C<spec_errors> read one list of C<validate>'s lines, each
+with the path it is at (k400), so their order cannot differ.
 
 =cut
 
-# The paths spec_errors answers for under a control plane and a pool (k306).
+# The paths spec_errors answers for under a control plane and a pool (k306),
+# and the sections and keys that are one path each (k400).
 my @CP_PATH_KEYS   = ('provider', map { $_->[0] } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS);
-my @POOL_PATH_KEYS = (qw( name provider nodes ), map { $_->[0] } @ONE_NAME_KEYS);
+my @POOL_PATH_KEYS = (qw( name provider nodes ), (map { $_->[0] } @ONE_NAME_KEYS), qw( labels taints ));
+my @SECTION_PATHS  = qw( name kubernetes control_planes network network.pod_cidr network.lb_pool network.l2
+                         cilium gpu registry ssl system ssh lbipam nocert robocop robocop.security_level
+                         robocop.image workers );
 
 sub spec_errors {
     my ($self, @paths) = @_;
 
-    my %want;    # section => [ the tags it is asked for, as regexes ]
-    for my $path (@paths) {
-        my ($section, $re) = _spec_path($path);
-        croak 'spec_errors: no key path ' . _shown_value($path) . ' (see OCP::Config/spec_errors)'
-            unless defined $section;
-        push @{ $want{$section} }, $re;
-    }
+    # The tags asked for, as regexes.
+    my @want = map {
+        _spec_path($_)
+            // croak 'spec_errors: no key path ' . _shown_value($_) . ' (see OCP::Config/spec_errors)';
+    } @paths;
+    return () unless @want;
 
-    # In validate()'s order: the name, the control planes, gpu:, the pools.
-    my @lines;
-    for my $s ([ name => '_name_lines' ], [ control_planes => '_control_plane_lines' ],
-               [ gpu => '_gpu_spec_lines' ], [ workers => '_worker_lines' ]) {
-        my ($section, $producer) = @$s;
-        my $res = $want{$section} or next;
-        for my $pair ($self->$producer) {
-            my ($tag, $line) = @$pair;
-            push @lines, $line if defined $tag && grep { $tag =~ $_ } @$res;
-        }
-    }
-    return @lines;
+    # In validate()'s order, from validate()'s own list.
+    return map { $_->[1] }
+        grep { my $tag = $_->[0]; defined $tag && grep { $tag =~ $_ } @want } $self->_spec_lines;
 }
 
-# The section a key path is in and a regex for the tags it stands for, or
-# nothing for a path spec_errors does not answer for.
+# A regex for the tags a key path stands for, or undef for a path spec_errors
+# does not answer for.
 sub _spec_path {
     my ($path) = @_;
-    return () if !defined $path || ref $path;
-    return ($path, qr/\A\Q$path\E\z/) if grep { $path eq $_ } qw( name control_planes gpu workers );
+    return undef if !defined $path || ref $path;
+    return qr/\A\Q$path\E\z/ if grep { $path eq $_ } @SECTION_PATHS;
     my ($section, $i, $key) = $path =~ /\A(control_planes|workers)\[(\*|[1-9][0-9]*)\](?:\.([a-z_]+))?\z/
-        or return ();
-    return () if defined $key
+        or return undef;
+    return undef if defined $key
         && !grep { $_ eq $key } ($section eq 'workers' ? @POOL_PATH_KEYS : @CP_PATH_KEYS);
     my $index = $i eq '*' ? '[0-9]+' : $i;
     my $tail  = defined $key ? "\\.$key" : '';
-    return ($section, qr/\A$section\[$index\]$tail\z/);
+    return qr/\A$section\[$index\]$tail\z/;
 }
 
 # The producers (k306): validate()'s lines of one block, in its order, as
@@ -1527,16 +1604,11 @@ sub _gpu_lines {
     );
 }
 
-# All of gpu:'s lines, its switches with them, in validate()'s order.
-sub _gpu_spec_lines {
-    my ($self) = @_;
-    return ($self->_gpu_lines, grep { defined $_->[0] } $self->_switch_lines);
-}
-
 # The switches (k320): true or false, as robocop: is; each line is its
 # accessor's refusal too (_switch). Read through mappings only: a gpu: or
-# gpu.amd: that is none has its own line (_gpu_lines). Those under gpu: are
-# at its path.
+# gpu.amd: that is none has its own line (_gpu_lines). Each is at the path of
+# its section (k400): those under gpu: at gpu, system.ntp at system, lbipam
+# and nocert at their own.
 sub _switch_lines {
     my ($self) = @_;
     my @lines;
@@ -1544,7 +1616,8 @@ sub _switch_lines {
         my $value = $self->spec;
         $value = ref $value eq 'HASH' ? $value->{$_} : undef for split /\./, $path;
         my $err = _switch_error($path, $value);
-        push @lines, _tagged(($path =~ /\Agpu\./ ? 'gpu' : undef), $err) if defined $err;
+        my ($section) = $path =~ /\A([^.]+)/;
+        push @lines, _tagged($section => $err) if defined $err;
     }
     return @lines;
 }
@@ -1621,17 +1694,19 @@ sub _worker_lines {
             if !ref $wprov && $wprov eq 'ssh';
         push @lines, _tagged(undef, $self->_pool_host_error($w, $where) // ());
 
-        # labels / taints (k211): what the pool's OCPNodes carry.
-        push @lines, _tagged(undef, OCP::NodeMeta->label_errors("$where: labels", $w->{labels}))
+        # labels / taints (k211): what the pool's OCPNodes carry, each at its
+        # path (k400).
+        push @lines, _tagged("$at.labels" => OCP::NodeMeta->label_errors("$where: labels", $w->{labels}))
             if defined $w->{labels};
         if (defined(my $taints = $w->{taints})) {
             if (ref $taints ne 'ARRAY') {
-                push @lines, _tagged(undef, "$where: taints must be a list like [ \"key=value:NoSchedule\" ]");
+                push @lines, _tagged("$at.taints"
+                    => "$where: taints must be a list like [ \"key=value:NoSchedule\" ]");
             }
             else {
                 for my $t (@$taints) {
                     my $err = OCP::NodeMeta->taint_error($t);
-                    push @lines, _tagged(undef, "$where: $err") if defined $err;
+                    push @lines, _tagged("$at.taints" => "$where: $err") if defined $err;
                 }
             }
         }
@@ -1820,18 +1895,28 @@ sub _node_ip_key {
     return $ip;
 }
 
-# network.lb_pool / network.l2 validation (k127). Report-only: returns a
-# list of human-readable errors, same contract as validate() itself.
-sub _validate_network {
-    my ($self) = @_;
-    my $net = $self->spec->{network};
+# network.lb_pool / network.l2 validation (k127). Report-only: returns
+# validate()'s lines under network:, each at its path (k400) -- network:'s
+# shape and its unknown keys at network, the rest at network.lb_pool and
+# network.l2, the lines lb_pool_config and l2_config refuse on.
+sub _network_lines {
+    my ($net) = @_;
     return () unless defined $net;
     my $shape = _network_shape_error($net);
-    return ($shape) if defined $shape;
+    return _tagged(network => $shape) if defined $shape;
 
-    my @errors = _unknown_keys('network', $net, @NETWORK_KEYS);
+    return (
+        _tagged(network => _unknown_keys('network', $net, @NETWORK_KEYS)),
+        _tagged('network.lb_pool' => _lb_pool_errors($net->{lb_pool})),
+        _tagged('network.l2'      => _l2_errors($net->{l2})),
+    );
+}
 
-    if (defined(my $pool = $net->{lb_pool})) {
+# The lines under network.lb_pool, or nothing.
+sub _lb_pool_errors {
+    my ($pool) = @_;
+    my @errors;
+    if (defined $pool) {
         if (ref $pool ne 'HASH') {
             push @errors, "network.lb_pool: must be a mapping (cidr, or start+stop)";
         }
@@ -1868,8 +1953,14 @@ sub _validate_network {
             }
         }
     }
+    return @errors;
+}
 
-    if (defined(my $l2 = $net->{l2})) {
+# The lines under network.l2, or nothing.
+sub _l2_errors {
+    my ($l2) = @_;
+    my @errors;
+    if (defined $l2) {
         if (ref $l2 ne 'HASH') {
             push @errors, "network.l2: must be a mapping";
         }
@@ -1985,22 +2076,29 @@ sub _validate_gpu_amd {
 # network.pod_cidr (k182). Checked whether set or not: the default can
 # collide with a node address just as well, and then the error has to say it
 # was the default that did.
-sub _validate_pod_cidr {
+#
+# A pod CIDR that is none -- no IPv4 CIDR, host bits set, too small -- is at
+# network.pod_cidr (k400), the line pod_cidr refuses on. An overlap is
+# validate()'s alone: it is about the addresses of other sections, and a
+# running cluster whose default pod CIDR overlaps a node address must not
+# stop every command that reads the pod CIDR.
+sub _pod_cidr_lines {
     my ($self, $net) = @_;
     my $set  = defined $net->{pod_cidr};
     my $cidr = $set ? $net->{pod_cidr} : $DEFAULT_POD_CIDR;
     my $what = $set ? "network.pod_cidr: '$cidr'" : "network.pod_cidr (default $cidr)";
 
-    return ("network.pod_cidr: " . _shown_value($cidr) . " is not an IPv4 CIDR (e.g. 10.42.0.0/16)")
+    return _tagged('network.pod_cidr' => "network.pod_cidr: " . _shown_value($cidr)
+        . " is not an IPv4 CIDR (e.g. 10.42.0.0/16)")
         unless _looks_like_cidr($cidr);
 
     my ($net_ip, $bits) = _cidr_range($cidr);
     my $canonical = _int_to_ipv4($net_ip) . "/$bits";
-    return ("$what has host bits set; the network address is $canonical")
+    return _tagged('network.pod_cidr' => "$what has host bits set; the network address is $canonical")
         unless $cidr eq $canonical;
 
     # Cilium's cluster pool gives every node a /24 out of this.
-    return ("$what is too small: Cilium gives every node a /24 of it, "
+    return _tagged('network.pod_cidr' => "$what is too small: Cilium gives every node a /24 of it, "
         . "so the pod CIDR needs a shorter prefix than /24 (e.g. /16)")
         if $bits >= 24;
 
@@ -2012,7 +2110,7 @@ sub _validate_pod_cidr {
         push @errors, "$what overlaps $t->[0]$hint"
             if _cidrs_overlap($cidr, $t->[1]);
     }
-    return @errors;
+    return _tagged(undef, @errors);
 }
 
 # The service network (k299): RKE2's and K3s's built-in service-cidr, which
