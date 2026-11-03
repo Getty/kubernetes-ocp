@@ -80,7 +80,8 @@ the same class of lie.
 - The banner is now load-bearing for humans and CI alike, so anything that
   weakens the check weakens both.
 - The GPU stack's real proof — `nvidia.com/gpu` in the node capacity — is still
-  not part of the gate (ADR 0015) *(amended 2026-10-31, see below)*.
+  not part of the gate (ADR 0015) *(amended 2026-10-31 and 2026-11-03, see
+  below)*.
 
 ## Amendment 2026-10-31
 
@@ -110,7 +111,7 @@ After a failed first check there is no second one. A node without
 `nvidia.com/gpu` in allocatable after 300 s is one
 `[WARN] NVIDIA GPU not ready after 300s: …` on STDERR, in either check. The
 verdict, the banner and the exit code stay as they were. The proof is checked,
-but outside the gate.
+but outside the gate *(amended 2026-11-03, see below)*.
 
 For AMD it no longer holds. This was added alongside the capacity error, not
 caused by it. Since k251 (4d90591), the AMD stack step waits for
@@ -137,7 +138,77 @@ labelled the node, so its 300 s start on a node whose CNI works.
 
 The two vendors therefore differ. A node without its GPU in allocatable is a
 warning on NVIDIA and a failed component on AMD. That asymmetry was set in k273
-as a provisional call, not a maintainer decision, and it is open on k285.
+as a provisional call, not a maintainer decision, and it is open on k285
+*(amended 2026-11-03, see below)*.
 k286 and k287 widened which nodes are waited for on both sides and left the
 asymmetry as it was. Recorded under k274; the waits for joined nodes under
 k310.
+
+## Amendment 2026-11-03
+
+The amendment of 2026-10-31 ended on an asymmetry:
+
+> The two vendors therefore differ. A node without its GPU in allocatable is a
+> warning on NVIDIA and a failed component on AMD. That asymmetry was set in
+> k273 as a provisional call, not a maintainer decision, and it is open on
+> k285.
+
+k285 closes it in favour of parity. In `ocp apply`, an NVIDIA node without
+`nvidia.com/gpu` in `status.allocatable` after the GPU Operator step's wait is
+now a failed component, as an AMD node without `amd.com/gpu` has been since
+k251. `ocp apply` names the node on STDERR, the banner reads
+`— APPLY INCOMPLETE`, and the exit code is non-zero. The route is the AMD one:
+the failed-component list, not the pod scan. `ocp node add --gpu` stays
+non-fatal on both vendors, and its exit code still says only whether the node
+is Ready. The call is the main agent's, not the maintainer's.
+
+k273 kept NVIDIA at a warning for two reasons. Neither holds any more:
+
+- **No live NVIDIA check of the wait.** On 2026-11-03 an RTX 3090 node running
+  OCP's own ClusterPolicy (driver 610.57.04) showed `nvidia.com/gpu: "1"` in
+  `status.allocatable`. An idempotent `ocp apply` on its cluster exited 0 and
+  reported the GPU Operator up to date.
+- **The resource can carry another name.** Time-slicing with
+  `renameByDefault` publishes `nvidia.com/gpu.shared`, and the MIG strategy
+  `mixed` publishes `nvidia.com/mig-*`. A wait for `nvidia.com/gpu` would read
+  either as a GPU that never arrived. But the ClusterPolicy OCP writes sets
+  neither. Its device plugin carries no sharing config, `migManager` is off,
+  and it has no `mig` block, so the operator's default MIG strategy applies.
+  That default is `single`, which publishes MIG slices as `nvidia.com/gpu`
+  too. The renamed resources come only from settings OCP does not write.
+
+The k273 code gave one more reason: the operator is deployed and the node is
+up, and whatever holds the device plugin back is on the node. That is just as
+true on AMD, where it has been a failed component since k251. It says where to
+look, not whether the apply produced what the spec asked for. This ADR's
+banner is a statement about the cluster. A node that was meant to hand out a
+GPU and cannot is the gap this ADR exists to report.
+
+This is not the "fail on anything unhealthy anywhere" alternative rejected
+above. The pod scan is unchanged: a broken pod in `gpu-operator` still warns
+and leaves the exit code alone. The new failure is one specific proof, on
+nodes where the spec enabled the GPU stack and the machine has an NVIDIA card.
+It is judged once, after a wait (300 s), as the pod scan is.
+
+The last Consequence and the 2026-10-31 sentence "the proof is checked, but
+outside the gate" no longer hold for either vendor. The proof, read in
+allocatable, now decides the banner and the exit code of `ocp apply` on
+NVIDIA as on AMD.
+
+Consequences of the parity:
+
+- A ClusterPolicy given time-slicing with `renameByDefault`, or the MIG
+  strategy `mixed`, by someone other than OCP now fails `ocp apply` on those
+  nodes. OCP's Server-Side Apply owns only the fields it writes (ADR 0008), so
+  those settings survive it, and the wait still looks for `nvidia.com/gpu`. A
+  cluster OCP does not describe now shows up as an incomplete apply instead of
+  a warning.
+- An NVIDIA node whose driver, toolkit or validator holds the device plugin
+  back now turns `ocp apply` red, where before it printed a `[WARN]` and
+  exited 0. CI that runs `ocp apply` on a GPU cluster sees that.
+
+Unverified: the live run on 2026-11-03 used the code from before the parity.
+It shows that OCP's ClusterPolicy publishes `nvidia.com/gpu`. It does not show
+the new failure, an NVIDIA node short of `nvidia.com/gpu` ending in
+`— APPLY INCOMPLETE`, on a live cluster. The `single` default was not seen on
+a MIG-capable card; the RTX 3090 has no MIG. Recorded under k285.

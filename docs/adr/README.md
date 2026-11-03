@@ -148,6 +148,21 @@ orchestrator's, approved with the design. Where a plan was amended during
 execution (Part C's accessor wording and its read-around rule), the ADR records
 what shipped, not the first draft.
 
+0008 and 0017 were amended on 2026-11-03, under k369 and k285. Neither
+decision moved. 0008 named one of the two workloads NFD's manifest runs as its
+witness. Since k369 `setup_nfd` also asks for the `nfd-worker` DaemonSet and
+reads its image against the pin. A worker deleted by hand is `restored`, and
+one whose image was changed in the cluster is re-applied, where before both
+were called up to date. The same amendment records the image read that k351
+added and 0008 had not written down. 0017's amendment of 2026-10-31 left
+NVIDIA and AMD asymmetric, as a provisional call open on k285. An NVIDIA node
+without `nvidia.com/gpu` in allocatable is now a failed component, as an AMD
+node has been since k251. The call is the main agent's, not the maintainer's.
+It rests on a live check on 2026-11-03: OCP's own ClusterPolicy publishes
+`nvidia.com/gpu`, so the renamed resources that kept k273 at a warning come
+only from settings OCP does not write. The failing direction has not been seen
+live, and the amendment says so.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and

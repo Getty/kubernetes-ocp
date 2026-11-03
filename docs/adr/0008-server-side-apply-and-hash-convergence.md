@@ -44,14 +44,16 @@ answers one question — did the desired state change — and it is not evidence
 that the component is still on the cluster. That is a second question, and it
 is asked separately: before any component may report "up to date", it reads a
 witness resource through `_resource_exists`. Hash match **and** witness present,
-or the component is redeployed.
+or the component is redeployed *(amended 2026-11-03, see below)*.
 
 - **registry** — `Namespace/ocp-system`, plus `Deployment/ocp-cache` and
   `Deployment/ocp-registry`, but only the halves this configuration actually
   rolls out (`OCP::Cmd::Apply::Registry::running`). With an external cache or
   upstream OCP deploys nothing for that half and must not expect it, or the
   component redeploys on every run.
-- **NFD** — `Namespace/node-feature-discovery` plus `Deployment/nfd-master`.
+- **NFD** — `Namespace/node-feature-discovery` plus both workloads its
+  manifest runs, `Deployment/nfd-master` and `DaemonSet/nfd-worker`
+  *(amended 2026-11-03, see below)*.
 - **GPU operator** — `Namespace/gpu-operator` plus `Deployment/gpu-operator`.
 - **cert-manager** — `Deployment/cert-manager` in namespace `cert-manager`;
   its version then comes off the running image, not out of the file.
@@ -103,8 +105,9 @@ other component's verdict reaches it as a return value.
   are read together *(amended 2026-08-15, see below)*.
 - The witness is a sample, not an inventory. A namespace and one Deployment
   say the component exists; they say nothing about a Service, ConfigMap or
-  DaemonSet deleted out of the same manifest. Those are still only noticed when
-  the manifest changes, or by the health gate (ADR 0017) if they break a pod.
+  DaemonSet deleted out of the same manifest *(amended 2026-11-03, see
+  below)*. Those are still only noticed when the manifest changes, or by the
+  health gate (ADR 0017) if they break a pod.
 - Every new hash-gated component owes a witness. `t/47-deployed-state.t` makes
   that structural rather than remembered — it reads the source and requires
   that whatever consults `_load_deployed_hashes` also asks the cluster — but it
@@ -155,3 +158,51 @@ The decision itself did not change. Convergence is still hash-gated, and the
 hash is still the reason the frequently-run reconcile path stays cheap
 (ADR 0018). What changed is its standing as evidence — which it never had on
 its own. Recorded under k47.
+
+## Amendment 2026-11-03
+
+Until this date the NFD line under `## Decision` read:
+
+> - **NFD** — `Namespace/node-feature-discovery` plus `Deployment/nfd-master`.
+
+NFD's manifest runs its pinned image in two workloads: the `nfd-master`
+Deployment, which writes the labels, and the `nfd-worker` DaemonSet, which
+detects each node's hardware. The witness asked for the first only. With
+`nfd-worker` deleted by hand, the Namespace and `nfd-master` still stood, the
+hash still matched, and `setup_nfd` reported "NFD already deployed (up to
+date)" and left the DaemonSet gone. That is the case the fourth Consequence
+names, a DaemonSet deleted out of the same manifest. Since k369 `setup_nfd`
+also asks for `DaemonSet/nfd-worker`, after the Namespace and `nfd-master`. A
+cluster without it is `restored`, and `ocp status` reports it missing and
+fixable by `ocp apply`.
+
+The same step asks a third question, which k351 (6a7fc53) added and this ADR
+did not record. The witness says whether a workload exists. Since k351,
+`setup_nfd` and `setup_gpu_operator` also read which image it runs, through
+the `OCP::Drift` probes and `OCP::Drift->version_against_pin`. A workload off
+its pin, because the pin moved or because someone changed the image in the
+cluster, gets its manifest re-applied and is `updated`, not `unchanged`. For
+these two components, "Hash match **and** witness present" names two of three
+conditions. The third is the image on the pin.
+
+For NFD that image read covered `nfd-master` only. k369 gave `nfd-worker` a
+probe of its own in `@OCP::Drift::COMPONENT_PROBES` (label `NFD DaemonSet`),
+and the step now asks every probe of a component, not just the first. An
+`nfd-worker` image changed in the cluster is now drift in `ocp status`, a
+re-apply in the `ocp apply` dry run, and a re-apply in `ocp apply`. Before
+k369 all three were silent about it.
+
+It is one probe per object, not one probe that reads both, because the AMD
+device plugin and its labeller already work that way (k250, k350): one pin, a
+probe per object, and the drift entry names the object that moved. A probe
+reading both objects would have needed a multi-object probe shape that
+nothing else uses, and it would hide which of the two moved.
+
+The decision did not move. Convergence is still hash-gated, and the witness is
+still a sample, not an inventory. For NFD the sample now covers both objects
+that run a pod. The rest of NFD's manifest (the CRDs, the ServiceAccounts, the
+RBAC and the Service) is still noticed only when the manifest changes, or by
+the health gate (ADR 0017) when a pod breaks. The new behaviour is shown
+against a fake cluster in `t/351-workload-image-drift.t`, which failed on the
+`nfd-worker` cases before the change. It has not been seen on a live cluster.
+Recorded under k369.
