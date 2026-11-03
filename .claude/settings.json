@@ -1,18 +1,11 @@
 {
   "enabledPlugins": {
     "briefing@getty": true,
-    "caveman@caveman": true,
     "superpowers@claude-plugins-official": true,
     "ruler@getty": true,
     "skilletor@getty": true
   },
   "extraKnownMarketplaces": {
-    "caveman": {
-      "source": {
-        "source": "github",
-        "repo": "JuliusBrussee/caveman"
-      }
-    },
     "getty": {
       "source": {
         "source": "github",
