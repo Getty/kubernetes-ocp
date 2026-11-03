@@ -38,12 +38,15 @@ use OCP::Robocop::Manifest;
 #   4. every accessor that refuses dies with one line and a newline, never a
 #      croak's " at FILE line N.": OCP::run_cli called that an internal
 #      error, about a line of the user's ocp.yaml;
-#   5. through the commands that read without validate() first -- ocp update
-#      (network:, cilium:, and gpu: false at the plan), the robocop
-#      Deployment's settings (ocp deploy-robocop, ocp deploy-image), ocp
-#      status' AMD allocation warning -- and ocp apply --dry-run for registry:
-#      and ssl:, which nothing reads before validate(): the line, and no Perl
-#      text. Drift's refused-switch entry has its own test (t/332).
+#   5. through the commands that read without validate() first -- the
+#      robocop Deployment's settings (ocp deploy-robocop, ocp deploy-image),
+#      ocp status' AMD allocation warning -- and ocp apply --dry-run for
+#      registry: and ssl:, which nothing reads before validate(): the line,
+#      and no Perl text. ocp update checks what it reads before it runs
+#      (k400): network:, cilium: and gpu: false stop it with the line in
+#      OCP::Role::Cmd's one text, before any component -- it upgraded
+#      cert-manager first (k394). Drift's refused-switch entry has its own
+#      test (t/332).
 #
 
 my $PERL_TEXT = qr/ at \S+ line \d+|internal error|HASH\(0x|ARRAY\(0x/;
@@ -314,18 +317,23 @@ for my $case (
     [ 'cilium: foo'  => "cilium: foo\n",  'cilium: must be a mapping (devices, helm_values)' ],
 ) {
     my ($name, $yaml, $line) = @$case;
-    subtest "ocp update, $name: Cilium is not upgraded, and the line says why" => sub {
-        my ($rc, $out, $err, $tasks, $died) = run_update(project($yaml));
-        is $died, '', 'no die';
-        is $rc, 1, 'exit 1';
-        like $err, qr/\A\S+ Failed to update cilium: \Q$line\E\n\z/, 'STDERR: the line, once';
-        unlike $out . $err, $PERL_TEXT, 'no Perl text';
-        is_deeply $tasks, [ 'upgrade_cert_manager' ], 'Cilium is not upgraded without its values';
+    subtest "ocp update, $name: refused before any component, with the line" => sub {
+        my $dir = project($yaml);
+        my ($rc, $out, $err, $tasks, $died) = run_update($dir);
+        my $file = $dir->child('ocp.yaml')->stringify;
+        is $died, "$file has 1 error:\n  - $line\n"
+            . "Nothing was done: ocp update checks what it reads of $file before it asks for a PIN "
+            . "or touches the cluster or a machine. Fix the line above and run it again.\n",
+            'refused with the line, in the one text';
+        is $out . $err, '', 'nothing said besides';
+        unlike $died, $PERL_TEXT, 'no Perl text';
+        is_deeply $tasks, [], 'no component upgraded, cert-manager neither';
     };
 }
 
-# The real CLI, as a user runs it: gpu: false stops ocp update at its plan,
-# outside any eval, and OCP::run_cli prints what it died with.
+# The real CLI, as a user runs it: gpu: false stops ocp update before its
+# plan, in OCP::Role::Cmd's check (k400; it stopped at the plan, outside any
+# eval, before), and OCP::run_cli prints what it died with.
 subtest 'ocp update --dry-run, gpu: false: the line, not "internal error"' => sub {
     my $dir = project("gpu: false\n");
     my ($out, $err) = map { $dir->parent->child("k379-$$-$_") } qw( out err );
@@ -344,7 +352,10 @@ subtest 'ocp update --dry-run, gpu: false: the line, not "internal error"' => su
     $_->remove for $out, $err;
 
     is $rc, 1, 'exit 1';
-    is $e, "Error: gpu must be a mapping, not false; write gpu: { enabled: false }\n", 'STDERR: the line, nothing else';
+    is $e, "Error: ocp.yaml has 1 error:\n  - gpu: must be a mapping, not false; write gpu: { enabled: false }\n"
+         . "Nothing was done: ocp update checks what it reads of ocp.yaml before it asks for a PIN "
+         . "or touches the cluster or a machine. Fix the line above and run it again.\n",
+        'STDERR: validate()\'s line, in the one text, nothing else';
     unlike $o . $e, $PERL_TEXT, 'no Perl text';
     unlike $o, qr/Updates planned/, 'no plan printed';
 };

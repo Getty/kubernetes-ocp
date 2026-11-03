@@ -34,6 +34,28 @@ option force => (
     doc     => 'Force update even if versions match',
 );
 
+# What update reads of ocp.yaml, declared as its spec_paths: OCP::Role::Cmd
+# refuses their lines, validate()'s own, before the plan is printed and
+# before any component runs (k400). Each accessor refused on its own when it
+# was reached, so update upgraded cert-manager first and then said "Failed to
+# update cilium: cilium: must be a mapping" with the cluster half updated
+# (k394).
+#
+# The plan reads the distribution and its version (kubernetes), nocert and
+# gpu.enabled; the question names the cluster; the Rex remedies reach the
+# first control plane (cluster_status: its public_ip, host and name; the key
+# by its provider, and ssh: for the bootstrap key in dev mode) and hand
+# Cilium its values (cilium:) and the pod network (network.pod_cidr). Not
+# network.lb_pool or network.l2, which update does not read.
+sub spec_paths {
+    return (
+        'name', 'kubernetes', 'nocert', 'gpu',
+        'control_planes', 'control_planes[1]',
+        map({ "control_planes[1].$_" } qw( provider public_ip host name )),
+        'ssh', 'cilium', 'network', 'network.pod_cidr',
+    );
+}
+
 sub execute {
     my ($self, $args_ref, $chain_ref) = @_;
 
@@ -447,6 +469,12 @@ The update process:
 4. Stops on STDERR, before any change, if a component is refused
 5. Performs updates via Rex tasks
 6. Tracks updated versions in status.yaml
+
+Before any of it, C<ocp update> checks what it reads of F<ocp.yaml> -- the
+cluster's name, C<kubernetes>, C<nocert>, C<gpu>, the first control plane,
+C<ssh>, C<cilium> and C<network.pod_cidr> -- and refuses with
+L<OCP::Config/validate>'s lines for them, all at once, before the plan is
+printed (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 When the version manifest lists manual steps, the update asks on STDERR
 whether to continue, after the plan and before anything changes (a

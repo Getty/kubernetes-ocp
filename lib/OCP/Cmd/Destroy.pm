@@ -27,6 +27,81 @@ option keep_status => (
     doc => 'Keep the local cluster state (.ocp/status.yaml, .ocp/deployed.yaml)',
 );
 
+# What destroy reads of ocp.yaml, declared as its spec_paths: OCP::Role::Cmd
+# refuses their lines, validate()'s own, before a PIN is asked or the cluster
+# or a server is reached (k323, k326, k335, k353, k400), as `ocp apply`
+# refuses an invalid ocp.yaml (k255).
+#
+# Only where destroy reads, not all of validate(). Destroy is the way out of
+# a cluster: a refusal there for a key it never reads -- a gpu.driver typo, a
+# robocop key a newer validate() refuses (k315), a pool count, which destroy
+# does not read at all -- would keep paid servers running until someone
+# edits a line that has nothing to do with them.
+#
+# The name (k305, k335): the ocp-cluster label the servers are searched by.
+# A list searched ocp-cluster=ARRAY(0x...), so a server status.yaml does not
+# record was missed while the run ended "Cluster destroyed." -- and kept
+# billing. Only its shape: validate()'s "name is required" is at no path, as
+# a name such as '' or 0 is a label like any other, searched as written --
+# a cluster applied under it before `ocp apply` validated (k255) carries it.
+#
+# The shape of control_planes and of each entry (k326). Destroy reads every
+# entry's provider for the k98 report, after the deletes and the status
+# cleanup, and the whole entry when the control-plane fallback is the only
+# source left. An entry that is no mapping names no provider, and destroy
+# never guesses one (k116); read on, the run ended on a Perl error after the
+# servers were gone. And an entry's host where the fallback reads it (k335):
+# an ssh or local one -- a list there became a machine named ARRAY(0x...)
+# that asked PIN2 and was sent the uninstall -- and the public_ip of a local
+# one with no host (k353). A hetzner control plane is named by its label,
+# not by a host (k345). Counted as validate() counts them: nodes: N stands
+# for N copies of one entry, said once (k322).
+#
+# The shape of workers and of each pool (k326), and in a pool whose provider
+# destroy knows the machines _spec_worker_entries reads (k323, k335): the
+# nodes: list, else the pool's own host where it takes one. A list, a mapping
+# or a boolean there became one machine named ARRAY(0x...) (or 0, or 1).
+# Which pool takes a host is validate()'s answer (k331): it has a line at
+# workers[I].host only for such a pool, an ssh one, so a hetzner or local
+# pool's host asks nothing here. Beside a nodes: list host is not read, and
+# its shape is not checked.
+#
+# Not a provider, a server_type, a location, an image, a count or the bound
+# of seven, which destroy reads around or not at all.
+sub spec_paths {
+    my ($self, $config) = @_;
+    my $spec = $config->spec;
+
+    my @cps;
+    my $raw = $spec->{control_planes};
+    if (!defined $raw || ref $raw eq 'HASH' || ref $raw eq 'ARRAY') {
+        my $entries = $config->control_planes;
+        for my $i (0 .. (ref $raw eq 'HASH' ? 0 : $#$entries)) {
+            my $cp = $entries->[$i];
+            next unless ref $cp eq 'HASH';
+            my $prov = $cp->{provider} // 'hetzner';
+            next if ref $prov || !OCP::Provider->known_type($prov) || $prov eq 'hetzner';
+            my $idx = $i + 1;
+            push @cps, "control_planes[$idx].host";
+            push @cps, "control_planes[$idx].public_ip"
+                unless ref $cp->{host} || $cp->{host} || $prov eq 'ssh';
+        }
+    }
+
+    my @pools;
+    my $workers = $config->workers;
+    if (ref $workers eq 'ARRAY') {
+        for my $n (1 .. @$workers) {
+            my $w = $workers->[$n - 1];
+            next unless ref $w eq 'HASH';
+            next if ref $w->{provider} || !OCP::Provider->known_type($w->{provider});
+            push @pools, ref $w->{nodes} eq 'ARRAY' ? "workers[$n].nodes" : "workers[$n].host";
+        }
+    }
+
+    return ('name', 'control_planes', 'control_planes[*]', @cps, 'workers', 'workers[*]', @pools);
+}
+
 # The cluster API. Built from the encrypted kubeconfig on first use; tests
 # hand in a double.
 has k8s => (is => 'rw');
@@ -500,9 +575,10 @@ sub _no_token_reason {
 # (k116), and said, on STDERR (k341).
 #
 # Which pool takes a host is OCP::Config::_pool_takes_host's answer, the one
-# validate() gives (k331). Asked only behind the known-provider gate here and
-# in _spec_worker_errors: for a provider it does not know it answers yes, as
-# validate() reads such a pool, and destroy reads none (k345).
+# validate() gives (k331). Asked only behind the known-provider gate, here as
+# spec_paths declares a pool's host only behind it: for a provider it does
+# not know it answers yes, as validate() reads such a pool, and destroy
+# reads none (k345).
 sub _spec_worker_entries {
     my ($self, $config) = @_;
     my @entries;
@@ -607,149 +683,6 @@ sub _say_hetzner_control_plane {
     print STDERR "       hcloud server list -l $label\n";
 }
 
-# What validate() says about the nodes: lists _spec_worker_entries reads, in
-# its own words (k323): an entry that names no host died there inside Perl
-# ("Not a HASH reference"), a host that is a list became a machine named
-# ARRAY(0x...), and a hetzner pool's list was read as host names it then
-# never deleted.
-#
-# Only those lists, not all of validate(). Destroy is the way out of a
-# cluster: a refusal there for a key it never reads -- a gpu.driver typo, a
-# robocop key a newer validate() refuses (k315), a pool count, which destroy
-# does not read at all -- would keep paid servers running until someone
-# edits a line that has nothing to do with them. So the gate asks exactly
-# where the read happens: a pool that is a mapping, with a provider destroy
-# knows, and nodes: a list.
-#
-# And the shape the pools are read out of (k326): workers: a list, each pool
-# a mapping. Anything else died inside Perl in _spec_worker_entries, and
-# a string there may be a host someone means, which destroy -- not knowing
-# its provider, and never guessing one (k116) -- could only skip.
-#
-# And the pool's own host where _spec_worker_entries reads it (k335): an ssh
-# pool with no nodes: list beside it (k341). A list, a mapping or a boolean
-# there became one machine named ARRAY(0x...) (or 0, or 1), and the run
-# asked for PIN2 to uninstall RKE2 on it. Beside a nodes: list, or on a
-# hetzner or local pool, host is not read, as apply does not read it, and
-# its shape is not checked: a refusal there would hold a teardown up over a
-# key it never reads.
-sub _spec_worker_errors {
-    my ($self, $config) = @_;
-    my $workers = $config->workers;
-    return 'workers: must be a list of worker pools, not '
-         . OCP::Config::_shown_value($workers)
-        unless ref $workers eq 'ARRAY';
-
-    my (@errors, $n);
-    for my $w (@$workers) {
-        $n++;
-        unless (ref $w eq 'HASH') {
-            push @errors, "workers[$n]: must be a mapping (a worker pool), not "
-                . OCP::Config::_shown_value($w);
-            next;
-        }
-        next if ref $w->{provider}
-             || !OCP::Provider->known_type($w->{provider} // q());
-        my $where = $config->_pool_where($w, $n);
-        if (ref $w->{nodes} eq 'ARRAY') {
-            push @errors, $config->_pool_nodes_errors($w, $where);
-        }
-        elsif ($config->_pool_takes_host($w)
-               && defined(my $err = $self->_host_error($w->{host}))) {
-            push @errors, "$where: host $err";
-        }
-    }
-    return @errors;
-}
-
-# validate()'s words for a host that is no string (k315), or undef.
-sub _host_error {
-    my ($self, $host) = @_;
-    return OCP::Config::_not_a_string($host, 'a host name or IP address');
-}
-
-# What validate() says about name (k305), in its words (k335). The name is
-# the ocp-cluster label the servers are searched by: a list searched
-# ocp-cluster=ARRAY(0x...), so a server status.yaml does not record was
-# missed while the run ended "Cluster destroyed." -- and kept billing.
-#
-# Only a list, a mapping or a boolean, not validate()'s "name is required".
-# A name such as '' or 0 is a label like any other, searched as written: a
-# cluster applied under it before `ocp apply` validated (k255) carries it,
-# and no name destroy could be told instead would find its servers.
-sub _spec_name_errors {
-    my ($self, $config) = @_;
-    my $name = $config->spec->{name};
-    return () unless ref $name;
-    return "name: must be a string (the cluster's name), not "
-         . OCP::Config::_shown_value($name);
-}
-
-# What validate() says about the shape of control_planes, in its words
-# (k326). Destroy reads every entry's provider for the k98 report -- on each
-# run with a Hetzner token, AFTER the deletes and the status cleanup -- and
-# the whole entry when the control-plane fallback is the only source left.
-# An entry that is no mapping died in the report: the servers were gone and
-# status.yaml removed, and the run ended on a Perl error, exit 1, no report.
-#
-# Refused, not read around. An entry that is no mapping names no provider,
-# and destroy never guesses one (k116), so it can be named but not read as a
-# machine. Named after the teardown is too late for the case it matters in:
-# when that line is the only record of a control plane, the run ends "No
-# nodes to destroy." and offers to remove the kubeconfig while that machine
-# may still run; and skipped in the report, the line of a hetzner control
-# plane no longer asks for the hetzner-default search that names billing
-# servers. Nor is it a newer validate() standing between a cluster and its
-# teardown: validate() has refused this shape since k296 (and died on it
-# before), and `ocp apply` validates first (k255).
-#
-# And an entry's host where the fallback reads it (k335): an entry it lists,
-# an ssh or local one. A list, a mapping or a boolean became the name and
-# address of a machine -- ARRAY(0x...) -- that an ssh control plane asked
-# PIN2 for and sent the uninstall to. Checked whether or not the fallback
-# runs this time: that is known only after the secrets, the cluster API and
-# the label search, and this comes before them. As validate() counts them:
-# nodes: N stands for N copies of one entry, said once (k322). A hetzner
-# control plane's host is not read since k345 -- the fallback names it by
-# its label, and lists no machine for it -- so its shape is not checked.
-#
-# And an entry's public_ip where the fallback reads it (k353): one it lists
-# with no host, a local one (an ssh one without a host it says, not lists).
-# A list there became the address the machine was listed and matched by,
-# ARRAY(0x...), while validate() has refused it since k340.
-#
-# Not a provider, a server_type, a location, an image, a count or the bound
-# of seven, which destroy reads around or not at all.
-sub _spec_control_plane_errors {
-    my ($self, $config) = @_;
-    my $raw = $config->spec->{control_planes};
-    return 'control_planes: must be a mapping (one control plane, or nodes: N of them) '
-         . 'or a list of mappings, not ' . OCP::Config::_shown_value($raw)
-        if defined $raw && ref $raw ne 'HASH' && ref $raw ne 'ARRAY';
-
-    my $cps = $config->control_planes;
-    my @errors;
-    for my $i (0 .. ($config->_control_planes_shared ? 0 : $#$cps)) {
-        my $cp  = $cps->[$i];
-        my $idx = $i + 1;
-        unless (ref $cp eq 'HASH') {
-            push @errors, "control_planes[$idx]: must be a mapping (one control plane), not "
-                . OCP::Config::_shown_value($cp);
-            next;
-        }
-        my $prov = $cp->{provider} // 'hetzner';
-        next if ref $prov || !OCP::Provider->known_type($prov) || $prov eq 'hetzner';
-        if (defined(my $err = $self->_host_error($cp->{host}))) {
-            push @errors, "control_planes[$idx].host: $err";
-            next;
-        }
-        next if $cp->{host} || $prov eq 'ssh';
-        my $err = OCP::Config::_not_a_string($cp->{public_ip}, 'an IP address') // next;
-        push @errors, "control_planes[$idx].public_ip: $err";
-    }
-    return @errors;
-}
-
 # robocop reconciles OCPNodes: left running, it would see a worker vanish
 # under it and provision a replacement -- a new paid server, created after the
 # label search, that nothing is left to delete. Scaled to zero before the
@@ -788,21 +721,6 @@ sub execute {
     }
 
     my $config = OCP::Config->new(file => $file);
-
-    # First, before a PIN is asked or the cluster or a server is reached
-    # (k323, k326, k335), as `ocp apply` refuses an invalid ocp.yaml (k255).
-    # In validate()'s order: the name, the control planes, then the pools.
-    if (my @errors = ($self->_spec_name_errors($config),
-                      $self->_spec_control_plane_errors($config),
-                      $self->_spec_worker_errors($config))) {
-        my $s = @errors == 1 ? '' : 's';
-        die "$file has " . scalar(@errors) . " error$s:\n"
-          . join('', map { "  - $_\n" } @errors)
-          . "Nothing was deleted: ocp destroy reads the cluster's name and the machines and "
-          . "providers of the control planes and worker pools in ocp.yaml, and checks their "
-          . "shape before it touches the cluster or a server. Fix the line$s above and run "
-          . "it again.\n";
-    }
 
     my $secrets = OCP::Secrets->new(project_dir => $config->project_dir);
     # Initialize Hetzner provider if token available
@@ -1288,8 +1206,9 @@ is reached -- the C<nodes:> lists of the worker pools are checked, the lists
 destroy reads machines off (C<k323>).  A list L<OCP::Config/validate>
 refuses -- an entry that is no host name, address or mapping with C<host>,
 or a list at all on a pool that counts its machines -- stops the teardown
-with C<validate()>'s lines, all at once, on STDERR and exit 1, and nothing
-is deleted.  So is the shape those lists and the control planes are read out
+with C<validate()>'s lines, all at once, in the text every command refuses
+with (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>), on STDERR and exit 1,
+and nothing is deleted.  So is the shape those lists and the control planes are read out
 of (C<k326>): a C<control_planes> that is neither a mapping nor a list, a
 C<control_planes> list entry that is no mapping, a C<workers> that is no list,
 a worker pool that is no mapping.  Such an entry names no provider, and

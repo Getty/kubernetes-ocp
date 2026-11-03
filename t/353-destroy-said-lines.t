@@ -378,10 +378,8 @@ subtest 'a local control plane with no host: its public_ip is shape-checked, as 
         my $file = $config->file;
         is $r->{ex},
             "$file has 1 error:\n  - $lines[0]\n"
-          . "Nothing was deleted: ocp destroy reads the cluster's name and the machines and "
-          . "providers of the control planes and worker pools in ocp.yaml, and checks their "
-          . "shape before it touches the cluster or a server. Fix the line above and run "
-          . "it again.\n",
+          . "Nothing was done: ocp destroy checks what it reads of $file before it asks for a "
+          . "PIN or touches the cluster or a machine. Fix the line above and run it again.\n",
             "public_ip: $ip -- refused with validate()'s line";
         is_deeply $r->{events}, [], "public_ip: $ip -- nothing read, asked or deleted";
         ok -f $config->status_file, "public_ip: $ip -- status.yaml kept";

@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp update` checks what it reads of `ocp.yaml` before it prints its
+      plan: a malformed `cilium:`, `network:` or `gpu:` stops it with `ocp
+      apply`'s line before any component is upgraded, instead of after
+      cert-manager. `ocp destroy` refuses in the same one text as the other
+      commands; what it refuses is unchanged.
     - `ocp node add`, the `ocp keys operator` commands and `ocp keys secure
       --drop-bootstrap` refuse in one text with `ocp apply`'s lines for
       what they read. A worker pool's labels or taints that `ocp apply`

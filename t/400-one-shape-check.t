@@ -33,6 +33,10 @@
 #          its order, as many as it counts; %FULL lists all of them
 #   4. the probe the sweep reads with sees a read outside the check, and not
 #      one inside it
+#   5. update and destroy: ocp update refuses a cilium: or network: it reads
+#      before any component runs (it upgraded cert-manager first and then
+#      said "Failed to update cilium: ...", k394); ocp destroy is held up by
+#      no line in a section it does not read
 #
 # Network-free and cluster-free: each run is a child whose ways out die, its
 # hosts *.invalid.
@@ -63,6 +67,7 @@ use OCP::Rex;
 use OCP::Role::Cmd;
 use OCP::SSH;
 use OCP::Secrets;
+use OCP::Versions;
 use Net::Async::Kubernetes;
 use WWW::Hetzner::Cloud;
 use OCPTest::Cli qw( run_ocp leaf_commands required_options );
@@ -78,10 +83,10 @@ my @LEAVES = leaf_commands();
 # The commands not on the check yet (k400): each task of the plan takes its
 # own off, which turns the sweep red for them first.
 my %NOT_YET = map { ("OCP::Cmd::$_" => 1) } qw(
-    DeployImage DeployRobocop Destroy Health Hetzner::List Init InjectKey
+    DeployImage DeployRobocop Health Hetzner::List Init InjectKey
     Keys::AuthorizedKeys Keys::Recipients::Add Keys::Recipients::Ls Keys::Recipients::Rm
     Keys::Show Kubeconfig Node::Ls Node::Rm Node::TrustHost Provider::Add Provider::Ls
-    Provider::Rm SSH Status Update Version
+    Provider::Rm SSH Status Version
 );
 
 # The commands that check all of validate() before they read, in a frame of
@@ -524,6 +529,52 @@ subtest 'the probe sees a read outside the check, not one inside' => sub {
     ok((grep { $_ eq 'read cilium' } @log), 'the read after it was');
     is_deeply [ undeclared('OCP::Cmd::Node::Add', @log) ], [ 'cilium' ], 'and is undeclared';
     ok !(grep { $_ eq 'read lbipam' } @log), 'the check\'s own read of lbipam is not';
+};
+
+# --- 5. update and destroy --------------------------------------------------------------
+
+# A project ocp update goes on with: status.yaml at an OCP version older than
+# any OCP::Versions knows, so every component has an update planned, and
+# kubernetes.version pinned in ocp.yaml, so the distribution is skipped (its
+# moved pin is a refusal of its own, k165, that would stop the run first).
+sub deployed_project {
+    my (%spec) = @_;
+    my $rke2 = OCP::Versions->get_component_version('rke2');
+    my $dir = project({ %BASE, kubernetes => { version => $rke2 }, %spec });
+    $dir->child('.ocp')->mkpath;
+    $dir->child('.ocp', 'status.yaml')->spew_utf8("ocpVersion: '0.000'\n");
+    return $dir;
+}
+
+# Each component update would run is written down instead of run.
+subtest 'update: cilium: and network: before any component' => sub {
+    for my $case ([ cilium => 'foo' ], [ network => 'foo' ]) {
+        my ($key, $value) = @$case;
+        my $dir = deployed_project($key => $value);
+        my @lines = validate_lines($dir);
+        is scalar(@lines), 1, "$key: $value: validate() has one line" or diag explain \@lines;
+
+        my $ran = $dir->child('ran')->stringify;
+        my $r = run_ocp($dir, setup(extra => sub {
+            require OCP::Cmd::Update;
+            no warnings 'redefine';
+            *OCP::Cmd::Update::_update_component = sub { path($ran)->append("$_[2]{component}\n") };
+        }), qw( update ));
+        is $r->{err}, role_text('ocp update', @lines), "$key: $value: STDERR is the one text";
+        is $r->{exit}, 1, "$key: $value: exit 1";
+        is $r->{out}, '', "$key: $value: no plan on STDOUT";
+        ok !-e $ran, "$key: $value: no component ran" or diag path($ran)->slurp_utf8;
+    }
+};
+
+# Destroy is the way out of a cluster: a line it does not read holds no
+# teardown up.
+subtest 'destroy: cilium: foo holds nothing up' => sub {
+    my $dir = project({ %BASE, cilium => 'foo' });
+    ok scalar(validate_lines($dir)), 'validate() refuses the file';
+    my $r = run_ocp($dir, setup(), qw( destroy ));
+    unlike $r->{err}, qr/has \d+ errors?:/, 'no refusal' or diag $r->{err};
+    like $r->{err}, qr/sweep: outside/, 'on to the cluster' or diag $r->{err};
 };
 
 done_testing;
