@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-11-03T20:14:56Z
+created: 2026-10-31T13:35:01Z
+id: 369
+priority: low
+started: 2026-11-03T20:14:56Z
+status: done
+tags:
+- gpu
+- drift
+title: 'NFD drift probe reads nfd-master only: an nfd-worker image changed in the
+  cluster is drift nowhere'
+updated: 2026-11-03T20:45:40Z
+---
+
+Left over from k351 (apply worker, 2026-10-31). The NFD drift probe in OCP::Drift (@COMPONENT_PROBES) reads the `nfd-master` Deployment only. A hand-changed image on the `nfd-worker` DaemonSet counts as drift nowhere: `ocp status` doesn't show it, and `ocp apply` doesn't re-apply. The k351 card body named nfd-worker; k351 fixed the master side.
+
+Done = decide whether nfd-worker gets its own probe, or whether the NFD probe reads both objects. Either way, status, the dry run and apply then agree on it, as k350/k351 made them agree for the other GPU workloads (OCP::Drift->version_against_pin, Workloads::off_pin). Test: hand-change the nfd-worker image in a fake cluster; status names it, the dry run says it would re-apply, and the real run re-applies. Red first, then a mutation check.
+
+Lanes: ocp-state-worker (the probe in OCP::Drift), then ocp-apply-worker if setup_nfd needs to read the second object.
+
+Stopped on maintainer's order (2026-10-31), back to todo; nothing handed off. ocp-state-worker had started before the stop. Its unverified draft, not a deliverable: (1) a second probe in OCP::Drift @COMPONENT_PROBES, component nfd, label 'NFD worker', DaemonSet node-feature-discovery/nfd-worker, self_healing, the AMD device plugin/labeller precedent; (2) apply lane, a few lines in OCP::Cmd::Apply::Workloads: off_pin asks every probe of the component, not the first one only, and setup_nfd's presence check also asks for the nfd-worker DaemonSet, so a deleted worker is 'restored' as status reports it missing; (3) t/351 extended with an nfd_worker case plus a missing-worker subtest; the matching fixtures in t/25 and t/332 get the DaemonSet. Red run on the k380 base: t/351 failed only the nfd_worker cases (subtests 1, 3, 4), as expected. The green run was stopped mid-way, so the draft is not verified. The draft diff is in the scratchpad at w-state380/k369-wip.diff, a session scratch path that may not survive the session.
+
+2026-11-03 19:29 ocp-state-worker, 2026-11-03: decided that nfd-worker gets its own probe, following the k250/k350 AMD precedent: component nfd, label 'NFD DaemonSet', DaemonSet node-feature-discovery/nfd-worker, self_healing, not optional. The label avoids 'NFD worker' because that trips the k26 claim in t/38 ('no worker line in the output' when ocp.yaml lists no workers; first green run with that label failed only there). Apply lane, under the orchestrator's permission: Workloads::off_pin asks every probe of the component; setup_nfd's presence check also asks for the nfd-worker DaemonSet, so a deleted one is 'restored'. Updated the ocp-gpu skill text ('not probed (open card k369)'). Red, clean on 895a9bf: t/351 fails only the nfd_worker/k369 cases (subtests 1, 3, 4). Green on 68 related t/ files: all PASS, 1260 tests (61 in one run plus 7 SIGTERM-killed by the host guard and rerun to PASS). Mutants: 4/4 killed. Patch and header at scratchpad w-ocp369/k369.patch and k369.hdr. Also found: ADR 0008 still names only Deployment/nfd-master as NFD's witness (for ocp-adr-auditor).
+
+2026-11-03 19:29 Done: nfd-worker probe in OCP::Drift; off_pin and setup_nfd presence follow in Apply::Workloads; t/351 extended, fixtures in t/25 and t/332. make test: 68 files PASS, red-first verified, mutants 4/4 killed. One commit in the clone: w-ocp369/k369.patch, header k369.hdr. The label choice 'NFD DaemonSet' vs 'NFD worker' is flagged for the orchestrator.
+
+Committed as b1dee60
+
+ADR 0008 amendment committed as be9cbc6
