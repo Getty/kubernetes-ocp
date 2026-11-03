@@ -1,0 +1,42 @@
+---
+class: standard
+completed: 2026-11-03T20:45:20Z
+created: 2026-10-31T04:00:58Z
+id: 285
+priority: medium
+started: 2026-11-03T20:45:20Z
+status: done
+tags:
+- gpu
+- nvidia
+- decision
+title: 'ocp apply: should an NVIDIA node without nvidia.com/gpu allocatable be a failed
+  component, as on AMD?'
+updated: 2026-11-03T20:50:19Z
+---
+
+Since k273, `ocp apply` waits up to 300 s for `nvidia.com/gpu` in status.allocatable after the GPU Operator step; a node that does not get there is a `[WARN]` on STDERR and the apply still succeeds. On AMD (k251) the same situation is a failed component: `— APPLY INCOMPLETE`, exit non-zero. `ocp node add` is non-fatal for both vendors.
+
+Main agent's call for k273 (mine, not the maintainer's): keep NVIDIA at [WARN] for now. Reasons: no live NVIDIA check of the wait yet; the resource name can differ (time-slicing with renameByDefault → nvidia.com/gpu.shared, MIG mixed → nvidia.com/mig-*), so a hard gate could turn green production applies red with no live evidence.
+
+Done = a live run on an NVIDIA node (crag/brain/cortex — only with the maintainer's go) shows what the operator publishes there, then either parity with AMD (failed component, ADR 0017 amended) or the asymmetry recorded in ADR 0017 with its reason.
+
+Live evidence, 2026-11-03, on otho (RTX 3090, driver 610.57.04, amdlab cluster):
+- With OCP's own ClusterPolicy (migManager off, no devicePlugin config, so no time-slicing and no renameByDefault), otho publishes status.allocatable nvidia.com/gpu: "1".
+- An idempotent ocp apply with image live-20bec47 exited 0 and reported 'GPU Operator up to date'.
+- The ClusterPolicy OCP generates sets neither MIG mixed nor time-slicing. The operator's default MIG strategy is single, which publishes MIG slices as nvidia.com/gpu too. So the variants that kept k273 at [WARN] (nvidia.com/gpu.shared, nvidia.com/mig-*) come only from a ClusterPolicy OCP does not write.
+
+Main agent's call (mine, not the maintainer's): parity with AMD. A GPU node without nvidia.com/gpu allocatable after the GPU Operator step fails that component, so the apply reports APPLY INCOMPLETE and exits non-zero. ocp node add stays non-fatal for both vendors. ADR 0017 gets amended to match.
+
+Implemented as parity with AMD; patch + header: scratchpad w-ocp285/k285.patch, k285.hdr (one commit on bcae858; also applies cleanly on main f11a0ff). wait_gpu_allocatable (Apply/Workloads.pm) now dies like AMDGPU wait_ready, naming each short node's why in one line. No caller changed: fresh deploy, reconcile (rollout and up-to-date) and the after-join recheck inside ocp apply (Deploy::gpu_after_join) already count a death of the GPU Operator step, so it is [!!], counted, APPLY INCOMPLETE, exit 1. ocp node add calls setup_gpu_operator directly and catches it: '[!!] GPU Operator not ensured: <why>' + 'Run `ocp apply`', exit 0, the same shape as AMD's node add. Deviation from the dispatch: (c2) asked for a [WARN] there; that would need a node-add-only special case AMD does not have, so it is [!!] with exit 0, flagged in the header. Rollout hash is still recorded before the wait (commented). Docs: Workloads.pm POD/comments, Node/Add.pm comment+POD (prose only, not my lane), ocp-gpu SKILL.md + references/nvidia-cluster.md. No docs/adr, no Changes. Tests: t/273 claims changed (old -> new in header); red 12/16 failing on the old behaviour; green make test 22 files / 472 tests PASS; mutants 5/5 killed.
+
+Ready for review: w-ocp285/k285.patch + k285.hdr in the session scratchpad. NVIDIA miss = failed GPU Operator component in ocp apply (after-join included), node add [!!] + exit 0 as on AMD. ADR 0017 amendment is the other agent's; Changes bullet proposed in the header.
+
+Committed as 94e913a
+
+ADR 0017 amendment committed as be9cbc6
+
+Live acceptance after commit (2026-11-03, main be9cbc6, local image localhost/ocp-final, amdlab cluster, RTX 3090 CP node):
+- ocp apply: 'GPU Operator already deployed (up to date)', then 'Waiting for nvidia.com/gpu on otho...', then 'nvidia.com/gpu allocatable on otho', then '[ok] GPU Operator up to date'.
+- All 9 components up to date, exit 0, STDERR empty.
+- This is the first live run of the k273/k285 wait. The pass direction is confirmed live. The fail direction is tested only in t/273.
