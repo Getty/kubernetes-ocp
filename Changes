@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply`: an NVIDIA GPU node that shows no `nvidia.com/gpu` in
+      `status.allocatable` within 300 s of the GPU Operator step now fails
+      that step, as an AMD node does: "[!!] GPU Operator setup failed:
+      NVIDIA GPU not ready after 300s: ...", APPLY INCOMPLETE, exit 1 --
+      also for a worker that joins during the apply. It was a [WARN] with
+      exit 0. `ocp node add --gpu` says it as "[!!] GPU Operator not
+      ensured" with `ocp apply` as the way on and still exits 0.
     - `ocp status`, the `ocp apply` dry run and `ocp apply` now read NFD's
       `nfd-worker` DaemonSet as well as `nfd-master`: an nfd-worker whose
       image was changed in the cluster is reported as drift (`NFD DaemonSet

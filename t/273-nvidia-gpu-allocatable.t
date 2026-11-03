@@ -11,8 +11,11 @@ use YAML::XS ();
 use lib 'lib';
 
 use OCP::Cmd::Apply;
+use OCP::Cmd::Apply::Deploy;
+use OCP::Cmd::Apply::Drift;
 use OCP::Cmd::Apply::Workloads;
 use OCP::Cmd::Node::Add;
+use OCP::Config;
 
 #
 # k273: on AMD, the GPU stack is ready once amd.com/gpu shows in
@@ -26,10 +29,14 @@ use OCP::Cmd::Node::Add;
 # until nvidia.com/gpu shows above 0 in status.allocatable on every NVIDIA
 # node it detected. It waits for allocatable and never for capacity: the
 # kubelet keeps capacity after a device plugin unregisters (k106/k270,
-# capacity 1 and allocatable 0 on amdlab). A node that does not get there
-# is a [WARN] on STDERR with why. That does not fail the step, the apply or
-# the join. A read that fails is read again, and only a 404 means the node
-# is absent (k269).
+# capacity 1 and allocatable 0 on amdlab). A read that fails is read again,
+# and only a 404 means the node is absent (k269).
+#
+# k285: a node that does not get there fails the step, as on AMD (k251):
+# setup_gpu_operator dies with why, `ocp apply` says it as [!!] and counts
+# it, so the run ends APPLY INCOMPLETE and exit 1. It was a [WARN] that let
+# the apply succeed. `ocp node add --gpu` says it with `ocp apply` as the way
+# on and keeps exit 0, as it does for AMD.
 #
 # k287: the same for an NVIDIA worker that joins later in the run, when the
 # first check did not skip: the check after the worker join runs again for
@@ -150,6 +157,12 @@ sub api_error {
     sub project_dir           { $_[0]{dir} }
     sub cluster_status        { +{} }
     sub deployed_file         { $_[0]{dir}->child('.ocp', 'deployed.yaml')->stringify }
+    # What the deploy path reads up to its CR step, and its finish (k285).
+    sub name                  { 'amdlab' }
+    sub api_url               { 'https://10.230.30.52:6443' }
+    sub no_cert               { 1 }
+    sub lbipam                { 0 }
+    sub workers               { [] }
 }
 
 # Status answers.
@@ -206,7 +219,8 @@ sub gpu_step {
 
 my $BUDGET = OCP::Cmd::Apply::Workloads::gpu_ready_timeout();
 my $READS  = int($BUDGET / OCP::Cmd::Apply::Workloads::gpu_ready_interval()) + 1;
-my $WARN   = "  [WARN] NVIDIA GPU not ready after ${BUDGET}s: ";
+# What setup_gpu_operator dies with for a node short of its GPU (k285).
+my $MISS   = "NVIDIA GPU not ready after ${BUDGET}s: ";
 
 #
 # ocp apply
@@ -222,31 +236,32 @@ subtest 'apply: allocatable 1 after a rollout is ready, said on STDOUT' => sub {
     is $r->{reads}{crag}, 1, 'one read: there at once';
 };
 
-subtest 'apply: allocatable 0 with capacity 1 is a WARN; the step stands' => sub {
+subtest 'apply k285: allocatable 0 with capacity 1 fails the step' => sub {
     my $r = gpu_step(nodes => { crag => [ $STALE ] });
-    is $r->{died}, '', 'not a failed step';
-    is $r->{outcome}, 'deployed', 'the verdict is the rollout\'s';
-    is $r->{err}, $WARN . "node 'crag' shows no nvidia.com/gpu in status.allocatable"
+    is $r->{died}, $MISS . "node 'crag' shows no nvidia.com/gpu in status.allocatable"
         . " (capacity 1: stale after a device plugin unregisters, or unhealthy devices)\n",
-        'on STDERR: the node, allocatable, and the capacity that stands without it';
+        'dies with the node, allocatable, and the capacity that stands without it';
+    ok !defined $r->{outcome}, 'no verdict: the step failed';
+    is $r->{err}, '', 'nothing on STDERR from the step: the caller says it, as [!!]';
     unlike $r->{out}, qr/allocatable on/, 'not called allocatable on STDOUT';
     is $r->{reads}{crag}, $READS, 'read for the whole budget';
     ok $r->{hashes}{'gpu-operator'}, 'the rollout is recorded all the same';
 };
 
-subtest 'apply: no nvidia.com/gpu at all is said without a capacity' => sub {
+subtest 'apply k285: no nvidia.com/gpu at all is said without a capacity' => sub {
     my $r = gpu_step(nodes => { crag => [ $NONE ] });
-    is $r->{err}, $WARN . "node 'crag' shows no nvidia.com/gpu in status.allocatable\n", 'what the node shows';
+    is $r->{died}, $MISS . "node 'crag' shows no nvidia.com/gpu in status.allocatable\n", 'what the node shows';
 };
 
 subtest 'apply: allocatable decides, capacity never does' => sub {
     my $r = gpu_step(nodes => { crag => [ gpu({}, { 'nvidia.com/gpu' => '1' }) ] });
-    like $r->{err}, qr/node 'crag' shows no nvidia\.com\/gpu in status\.allocatable \(capacity 1/,
-        'capacity 1 without allocatable: not ready';
+    like $r->{died}, qr/node 'crag' shows no nvidia\.com\/gpu in status\.allocatable \(capacity 1/,
+        'capacity 1 without allocatable: not ready, the step fails';
     $r = gpu_step(nodes => { crag => [ gpu({ 'nvidia.com/gpu' => '2' }, { 'nvidia.com/gpu' => '4' }) ] });
-    is $r->{err}, '', 'allocatable 2 of capacity 4: ready';
+    is $r->{died}, '', 'allocatable 2 of capacity 4: ready';
+    is $r->{err}, '', 'and nothing on STDERR';
     $r = gpu_step(nodes => { crag => [ gpu({ 'nvidia.com/gpu' => '1' }, {}) ] });
-    is $r->{err}, '', 'allocatable 1 with no capacity listed: ready';
+    is $r->{died}, '', 'allocatable 1 with no capacity listed: ready';
 };
 
 subtest 'apply: "up to date" waits too, until the plugin registers' => sub {
@@ -259,41 +274,46 @@ subtest 'apply: "up to date" waits too, until the plugin registers' => sub {
         'three intervals until the fourth read';
 };
 
-subtest 'apply: "up to date" on a node that never gets there: the whole budget, then the WARN' => sub {
+subtest 'apply k285: "up to date" on a node that never gets there: the whole budget, then the step fails' => sub {
     my $r = gpu_step(deployed => 1, nodes => { crag => [ $STALE ] });
-    is $r->{outcome}, 'unchanged', 'up to date';
+    like $r->{out}, qr/already deployed \(up to date\)/, 'up to date';
+    ok !defined $r->{outcome}, 'but no verdict';
     is sum0(@{ $r->{waits} }), $BUDGET, 'waited the whole budget';
-    like $r->{err}, qr/\A\Q$WARN\Enode 'crag' shows no/, 'then said it';
+    like $r->{died}, qr/\A\Q$MISS\Enode 'crag' shows no/, 'then died with why';
 };
 
-subtest 'apply: every NVIDIA node by its own answer' => sub {
+subtest 'apply k285: every NVIDIA node by its own answer' => sub {
     my $r = gpu_step(nodes => { brain => [ $ONE ], crag => [ $STALE ] });
     like $r->{out}, qr/Waiting for nvidia\.com\/gpu on brain, crag\.\.\./, 'both waited for';
     like $r->{out}, qr/nvidia\.com\/gpu allocatable on brain\n/, 'brain is ready';
-    like $r->{err}, qr/node 'crag' shows no/, 'crag is not';
-    unlike $r->{err}, qr/brain/, 'and brain is not in the warning';
+    like $r->{died}, qr/\A\Q$MISS\Enode 'crag' shows no/, 'crag is not: the step fails';
+    unlike $r->{died}, qr/brain/, 'and brain is not in why';
     is $r->{reads}{brain}, 1, 'brain is not read again once it was there';
+
+    $r = gpu_step(nodes => { brain => [ $NONE ], crag => [ $STALE ] });
+    like $r->{died}, qr/\A\Q$MISS\Enode 'brain' shows no nvidia\.com\/gpu in status\.allocatable; node 'crag' shows no /,
+        'two nodes short of it: both named, in one line';
 };
 
 subtest 'apply k269: a failed read is no verdict; the last one is the why' => sub {
     for my $code (403, 500) {
         my $r = gpu_step(nodes => { crag => [ api_error($code, 'Refused') ] });
-        is $r->{died}, '', "$code: not a failed step";
         is $r->{reads}{crag}, $READS, "$code: read again for the whole budget";
-        like $r->{err}, qr/\A\Q$WARN\Ecould not read Node 'crag': Kubernetes API error \(get\): $code .*"reason":"Refused"/,
+        like $r->{died}, qr/\A\Q$MISS\Ecould not read Node 'crag': Kubernetes API error \(get\): $code .*"reason":"Refused"/,
             "$code: the cause, not a node without a GPU";
-        unlike $r->{err}, qr/not found|shows no/, "$code: neither absent nor GPU-less";
+        unlike $r->{died}, qr/not found|shows no/, "$code: neither absent nor GPU-less";
     }
 
     my $r = gpu_step(nodes => { crag => [ api_error(500, 'Blip'), api_error(403, 'Forbidden') ] });
-    like $r->{err}, qr/: 403 .*Forbidden/, 'the last failed read is named';
-    unlike $r->{err}, qr/Blip/, 'not an earlier one';
+    like $r->{died}, qr/: 403 .*Forbidden/, 'the last failed read is named';
+    unlike $r->{died}, qr/Blip/, 'not an earlier one';
 
     $r = gpu_step(nodes => { crag => [ "404 Node/crag not found\n" ] });
-    is $r->{err}, $WARN . "Node 'crag' not found\n", 'a 404: not found';
+    is $r->{died}, $MISS . "Node 'crag' not found\n", 'a 404: not found';
 
     $r = gpu_step(nodes => { crag => [ api_error(500, 'Blip'), $ONE ] });
-    is $r->{err}, '', 'a 500 once, then allocatable: ready, nothing on STDERR';
+    is $r->{died}, '', 'a 500 once, then allocatable: ready';
+    is $r->{err}, '', 'nothing on STDERR';
     like $r->{out}, qr/allocatable on crag/, 'said on STDOUT';
 };
 
@@ -303,10 +323,10 @@ subtest 'apply: the budget and the interval are gpu_ready_timeout and gpu_ready_
     local *OCP::Cmd::Apply::Workloads::gpu_ready_interval = sub { 5 };
     my $r = gpu_step(deployed => 1, nodes => { crag => [ $STALE ] });
     is_deeply $r->{waits}, [ (5) x 6 ], 'six waits of 5s';
-    like $r->{err}, qr/NVIDIA GPU not ready after 30s: /, 'and the WARN names that budget';
+    like $r->{died}, qr/\ANVIDIA GPU not ready after 30s: /, 'and why names that budget';
 };
 
-subtest 'apply k287: a worker that joins after a check that ran is waited for' => sub {
+subtest 'apply k287, k285: a worker that joins after a check that ran is waited for' => sub {
     # The first check rolled the operator out for brain. crag joins in the
     # worker step, NFD labels it, and its plugin registers a while later.
     my $api    = NvApi->new;
@@ -317,30 +337,141 @@ subtest 'apply k287: a worker that joins after a check that ran is waited for' =
         capture { OCP::Cmd::Apply::Workloads::setup_gpu_operator($apply, $config) } });
     is $first, 'deployed', 'the first check deployed';
     @$api{qw( running reads )} = (1, {});
+    $apply->{_gpu_outcome} = $first;
 
+    # Through gpu_after_join, which both apply paths call after their worker
+    # step, and whose false the caller counts as the GPU Operator failed.
     my $after_join = sub {
         my (@answers) = @_;
         $api->{nodes}{crag} = [ @answers ];
         my ($waits, $rv, $out, $err, $died) = with_cluster(sub { capture {
-            OCP::Cmd::Apply::Workloads::setup_gpu_operator_after_join($apply, $config, $first, 'crag')
+            OCP::Cmd::Apply::Deploy::gpu_after_join($apply, $config, [ { name => 'crag', phase => 'Ready' } ])
         } });
-        return { outcome => $rv, out => $out, err => $err, died => $died, waits => $waits };
+        return { ok => $rv, out => $out, err => $err, died => $died, waits => $waits };
     };
 
     my $r = $after_join->($NONE, $NONE, $STALE, $ONE);
     is $r->{died}, '', 'no death';
-    is $r->{outcome}, 'unchanged', 'checked again: up to date';
-    like $r->{out}, qr/Checking GPU Operator again, after the worker join\.\.\.\n.*Waiting for nvidia\.com\/gpu on brain, crag\.\.\.\n\s+nvidia\.com\/gpu allocatable on brain, crag\n/s,
+    ok $r->{ok}, 'checked again: not failed';
+    like $r->{out}, qr/Checking GPU Operator again, after the worker join\.\.\.\n.*Waiting for nvidia\.com\/gpu on brain, crag\.\.\.\n\s+nvidia\.com\/gpu allocatable on brain, crag\n.*GPU Operator up to date/s,
         'and waited for the new worker, on STDOUT';
     is $r->{err}, '', 'nothing on STDERR';
     is sum0(@{ $r->{waits} }), 2 * OCP::Cmd::Apply::Workloads::gpu_ready_interval(), 'until its plugin registered';
 
     $r = $after_join->($STALE);
-    is $r->{died}, '', 'never: not a failed step';
-    is $r->{outcome}, 'unchanged', 'the verdict stands';
-    is $r->{err}, $WARN . "node 'crag' shows no nvidia.com/gpu in status.allocatable"
+    is $r->{died}, '', 'said, not died';
+    ok !$r->{ok}, 'a failed check: the caller counts the GPU Operator';
+    is $r->{err}, "  [!!] GPU Operator setup failed: " . $MISS
+        . "node 'crag' shows no nvidia.com/gpu in status.allocatable"
         . " (capacity 1: stale after a device plugin unregisters, or unhealthy devices)\n",
-        'the WARN, on STDERR';
+        'the [!!] with why, on STDERR, as for an AMD worker (AMDGPU after_join)';
+    unlike $r->{out}, qr/\[ok\] GPU Operator/, 'no [ok] over it';
+};
+
+#
+# ocp apply, the whole run: what the GPU step's failure does to it (k285)
+#
+
+# The closing verdict of `ocp apply` for $apply, the one Health::finish
+# prints and exits with.
+sub finish_apply {
+    my ($apply, $config) = @_;
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_check_cluster_health = sub { { critical => [], warnings => [], starting => [] } };
+    local *OCP::Cmd::Apply::_stamp_ocp_version    = sub { };
+    my ($rc, $out, $err) = capture { $apply->_finish_apply(config => $config, api => undef) };
+    return { rc => $rc, out => $out, err => $err };
+}
+
+subtest 'apply k285, the fresh deploy: a node short of its GPU after the rollout ends the apply incomplete, exit 1' => sub {
+    my $api    = NvApi->new(nodes => { crag => [ $STALE ] });
+    my $config = FakeConfig->new;
+    my $apply  = new_apply($api);
+    my $done   = sub { 'unchanged' };
+    my ($waits, $rv, $out, $err, $died) = with_cluster(sub {
+        no warnings 'redefine';
+        # Every step around the GPU Operator's is a no-op; the CR step stops
+        # the run, which has said all it has to say about the GPU by then.
+        local *OCP::Cmd::Apply::_setup_registry         = $done;
+        local *OCP::Cmd::Apply::_configure_registry_dns = $done;
+        local *OCP::Cmd::Apply::_setup_nfd              = $done;
+        local *OCP::Cmd::Apply::_setup_cilium_gateway   = $done;
+        local *OCP::Cmd::Apply::AMDGPU::step            = sub { { failed => [] } };
+        local *OCP::Cmd::Apply::_ensure_crds            = sub { die "STOP\n" };
+        capture { OCP::Cmd::Apply::Deploy::deploy($apply, {
+            config => $config, api => $api, cp_name => 'otho', cp_ip => '10.230.30.52',
+            provider => 'ssh', ssh_key_path => '/nonexistent', deploy_step => 2,
+        }) };
+    });
+    is $died, "STOP\n", 'the deploy got past the GPU step' or diag $died;
+    like $out, qr/Deploying GPU Operator\.\.\..*Waiting for nvidia\.com\/gpu on crag\.\.\./s, 'rolled out and waited';
+    like $err, qr/^  \[!!\] GPU Operator setup failed: \Q$MISS\Enode 'crag' shows no nvidia\.com\/gpu in status\.allocatable/m,
+        'the [!!] with why, on STDERR';
+    unlike $out, qr/\[ok\] GPU Operator/, 'no [ok] over it';
+    is_deeply $apply->{_failed_components}, [ 'GPU Operator' ], 'counted';
+
+    my $end = finish_apply($apply, $config);
+    is $end->{rc}, 1, 'exit 1';
+    like $end->{out}, qr/APPLY INCOMPLETE/, 'the banner says the apply is incomplete';
+    unlike $end->{out}, qr/SUCCESSFULLY/, 'not that it succeeded';
+    like $end->{err}, qr/^Apply did not complete: GPU Operator failed\.$/m, 'and names the GPU Operator';
+};
+
+subtest 'apply k285, the reconcile: an up-to-date operator whose node shows no GPU ends the apply incomplete, exit 1' => sub {
+    my $dir = path(tempdir(CLEANUP => 1));
+    $dir->child('ocp.yaml')->spew(<<'YAML');
+name: amdlab
+nocert: true
+kubernetes:
+  dist: k3s
+control_planes:
+  provider: ssh
+  host: otho.lab
+gpu:
+  enabled: true
+YAML
+    $dir->child('.ocp')->mkpath;
+    $dir->child('.ocp', 'status.yaml')->spew("nodes:\n  - name: otho\n    role: control-plane\n    public_ip: 10.230.30.52\n");
+    my $config = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
+
+    # The operator rolled out by an earlier apply, so this one finds it up to date.
+    my $api   = NvApi->new(nodes => { crag => [ $ONE ] });
+    my $apply = new_apply($api);
+    with_cluster(sub { capture { OCP::Cmd::Apply::Workloads::setup_gpu_operator($apply, $config) } });
+    @$api{qw( running reads )} = (1, {});
+    $api->{nodes} = { crag => [ $STALE ] };
+
+    my $done = sub { 'unchanged' };
+    my ($waits, $r, $out, $err, $died) = with_cluster(sub {
+        no warnings qw( redefine once );
+        local *OCP::Cmd::Apply::_k8s_api            = sub { $_[0]{_k8s_api} };
+        local *OCP::Secrets::read_kubeconfig        = sub { "apiVersion: v1\n" };
+        local *OCP::Cmd::Apply::rex_prober          = sub { undef };
+        local *OCP::Drift::new                      = sub { bless {}, 'NoDrift' };
+        local *NoDrift::detect                      = sub { [] };
+        local *OCP::Cmd::Apply::_setup_registry         = $done;
+        local *OCP::Cmd::Apply::_configure_registry_dns = sub { 0 };
+        local *OCP::Cmd::Apply::_setup_nfd              = $done;
+        local *OCP::Cmd::Apply::_setup_cilium_gateway   = $done;
+        local *OCP::Cmd::Apply::AMDGPU::setup           = sub { () };
+        local *OCP::Cmd::Apply::_ensure_crds            = sub { 1 };
+        local *OCP::Cmd::Apply::_ensure_providers       = sub { 1 };
+        local *OCP::Cmd::Apply::_migrate_legacy_nodes   = sub { 1 };
+        local *OCP::Cmd::Apply::_ensure_cp_ocpnode      = sub { 1 };
+        capture { OCP::Cmd::Apply::Drift::reconcile_components($apply, $config) };
+    });
+    is $died, '', 'the reconcile ran' or diag $died;
+    like $out, qr/GPU Operator already deployed \(up to date\)\n\s+Waiting for nvidia\.com\/gpu on crag\.\.\./,
+        'up to date, and waited';
+    like $err, qr/^  \[!!\] GPU Operator setup failed: \Q$MISS\Enode 'crag' shows no nvidia\.com\/gpu in status\.allocatable/m,
+        'the [!!] with why, on STDERR';
+    unlike $out, qr/\[ok\] GPU Operator/, 'no [ok] over it';
+    ok scalar(grep { $_ eq 'GPU Operator' } @{ $apply->{_failed_components} // [] }), 'counted';
+
+    my $end = finish_apply($apply, $config);
+    is $end->{rc}, 1, 'exit 1';
+    like $end->{out}, qr/APPLY INCOMPLETE/, 'the banner says the apply is incomplete';
+    like $end->{err}, qr/^Apply did not complete: GPU Operator failed\.$/m, 'and names the GPU Operator';
 };
 
 #
@@ -395,22 +526,29 @@ subtest 'node add --gpu: the plugin registers while it waits' => sub {
     ok sum0(@{ $r->{waits} }) > 0, 'after waiting';
 };
 
-subtest 'node add --gpu: allocatable 0 is a WARN with the diagnosis; the join stands' => sub {
+# k285: the GPU Operator check fails for a node short of its GPU, as the AMD
+# GPU stack's does, and node add says it the way it says that one: [!!] with
+# why, `ocp apply` as the way on, exit 0 (the node is Ready; t/220 has AMD).
+my $NOT_ENSURED = "  [!!] GPU Operator not ensured: $MISS";
+my $WAY_ON      = "       Run `ocp apply` to deploy it.\n";
+
+subtest 'node add --gpu k285: allocatable 0 is said with why and ocp apply; the join stands, exit 0' => sub {
     my $r = run_add($STALE);
+    is $r->{died}, '', 'no death';
     is $r->{rv}, 0, 'exit 0: the node is Ready';
     like $r->{out}, qr/Node 'brain' is Ready\./, 'said as Ready';
-    is $r->{err}, $WARN . "node 'brain' shows no nvidia.com/gpu in status.allocatable"
-        . " (capacity 1: stale after a device plugin unregisters, or unhealthy devices)\n",
-        'the WARN, on STDERR, and nothing else';
-    unlike $r->{out}, qr/allocatable on brain/, 'not called allocatable';
+    is $r->{err}, $NOT_ENSURED . "node 'brain' shows no nvidia.com/gpu in status.allocatable"
+        . " (capacity 1: stale after a device plugin unregisters, or unhealthy devices)\n" . $WAY_ON,
+        'on STDERR: the [!!] with why, and ocp apply, nothing else';
+    unlike $r->{out}, qr/allocatable on brain|\[ok\] GPU Operator/, 'neither allocatable nor [ok]';
     is sum0(@{ $r->{waits} }), $BUDGET, 'after the whole budget';
 };
 
 subtest 'node add --gpu k269: an unreadable node is said as that' => sub {
     my $r = run_add($ONE, api_error(403, 'Forbidden'));
     is $r->{rv}, 0, 'exit 0';
-    like $r->{err}, qr/\A\Q$WARN\Ecould not read Node 'brain': Kubernetes API error \(get\): 403 /,
-        'the cause of the last read';
+    like $r->{err}, qr/\A\Q$NOT_ENSURED\Ecould not read Node 'brain': Kubernetes API error \(get\): 403 .*\n\Q$WAY_ON\E\z/s,
+        'the cause of the last read, then ocp apply';
 };
 
 done_testing;

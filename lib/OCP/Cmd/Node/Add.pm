@@ -880,13 +880,12 @@ sub _ssh_keys_note {
 #
 # The GPU Operator check waits for nvidia.com/gpu in status.allocatable on the
 # NVIDIA nodes it detects, this one among them (k273,
-# OCP::Cmd::Apply::Workloads wait_gpu_allocatable). It says a node that does
-# not get there itself, as a [WARN]. No `ocp apply` hint is added: an apply
-# would only wait again. The AMD GPU stack check waits for amd.com/gpu in
-# status.allocatable (a ResourceSlice under DRA) on every node its components
-# select, this one among them and up to date or not, with the budget of a
-# freshly joined node (k286, OCP::Cmd::Apply::AMDGPU join_ready_timeout). A
-# node that does not get there fails the component, said with `ocp apply`.
+# OCP::Cmd::Apply::Workloads wait_gpu_allocatable). The AMD GPU stack check
+# waits for amd.com/gpu in status.allocatable (a ResourceSlice under DRA) on
+# every node its components select, this one among them and up to date or
+# not, with the budget of a freshly joined node (k286,
+# OCP::Cmd::Apply::AMDGPU join_ready_timeout). For either vendor a node that
+# does not get there fails the check, said with `ocp apply` (k285).
 #
 # Never fatal: the node is Ready, which is what `ocp node add` promised. No GPU
 # in time or a failed rollout is said on STDERR together with the way to get
@@ -1069,10 +1068,12 @@ join is left to robocop and the stack to C<ocp apply>, which checks it first.
 After that, the GPU Operator check waits up to five minutes for
 C<nvidia.com/gpu> in C<status.allocatable> (not capacity) on every NVIDIA
 node, this one among them, as it does in C<ocp apply> (k273).  A node that
-does not show it gets a C<[WARN]> on STDERR that says what the node shows
-instead.  The exit code does not change:
+does not show it fails the check, as an AMD node fails the AMD one (k285):
+what the node shows instead and C<ocp apply> on STDERR.  The exit code does
+not change:
 
-    [WARN] NVIDIA GPU not ready after 300s: node 'brain' shows no nvidia.com/gpu in status.allocatable
+    [!!] GPU Operator not ensured: NVIDIA GPU not ready after 300s: node 'brain' shows no nvidia.com/gpu in status.allocatable
+           Run `ocp apply` to deploy it.
 
 The AMD GPU stack check waits up to ten minutes, also when the stack was up
 to date, for C<amd.com/gpu> in C<status.allocatable> (for the DRA driver, a

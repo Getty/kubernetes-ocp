@@ -90,7 +90,8 @@ gpu:
   - Never guess an operator-owned DaemonSet name for the other NVIDIA pins.
 - **A GPU is ready when it shows in `status.allocatable`, never in capacity.**
   The kubelet keeps capacity after a device plugin unregisters. The final
-  proof is a smoke pod.
+  proof is a smoke pod. A node short of it after `ocp apply`'s wait fails
+  that GPU step, NVIDIA and AMD alike (k285); `ocp node add` keeps exit 0.
 
 ## AMD in short
 

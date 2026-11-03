@@ -70,6 +70,15 @@ argued back in.
    - Not capacity: the kubelet leaves capacity standing after a plugin
      unregisters (see `amd.md`). `OCP::Kubernetes` `node_gpu_count` and
      `ocp status` count allocatable (k270).
+   - A node without it after the 300 s wait fails the GPU Operator step, as
+     on AMD (k285): `[!!]`, counted, APPLY INCOMPLETE, exit 1, the check
+     after the worker join included. `ocp node add --gpu` says it with
+     `ocp apply` and keeps exit 0.
+   - OCP's ClusterPolicy sets neither time-slicing nor MIG mixed, so the
+     plugin publishes `nvidia.com/gpu` (live check on an RTX 3090 node,
+     2026-11-03).
+     `nvidia.com/gpu.shared` and `nvidia.com/mig-*` come only from a
+     ClusterPolicy OCP does not write.
    - Everything before this is a prediction.
 
 ## ClusterPolicy (`_generate_gpu_operator_manifest`)

@@ -58,9 +58,19 @@ Every C<setup_gpu_operator> that does not skip, C<unchanged> included,
 then waits (300 s, C<gpu_ready_timeout>) until C<status.allocatable> shows
 C<nvidia.com/gpu> above 0 on every NVIDIA node it detected. That is what a pod
 can get, unlike capacity, which the kubelet keeps after a device plugin
-unregisters. A node that does not get there is a C<[WARN]> on STDERR with
-why, and the step's verdict stands: the operator is deployed and the node
-is up.
+unregisters. A node that does not get there fails the step, as an AMD node
+fails the AMD GPU stack's (L<OCP::Cmd::Apply::AMDGPU>, k285). It dies with
+why:
+
+    NVIDIA GPU not ready after 300s: node 'crag' shows no nvidia.com/gpu in status.allocatable
+
+C<ocp apply> says that as C<[!!]> and counts it, also for the check after
+the worker join, so the run ends APPLY INCOMPLETE and exits 1. C<ocp node
+add> says it with C<ocp apply> as the way on and keeps its exit code. The
+rollout stays recorded. OCP's ClusterPolicy turns on neither time-slicing nor
+MIG mixed, so its device plugin publishes C<nvidia.com/gpu>; the renamed
+resources (C<nvidia.com/gpu.shared>, C<nvidia.com/mig-*>) come only from a
+ClusterPolicy OCP does not write.
 
 L<OCP::Cmd::Apply> re-exports these as thin forwarders so the test surface
 (t/40-gpu-clusterpolicy.t) keeps working.
@@ -692,6 +702,8 @@ sub setup_gpu_operator {
         $self->wait_seconds(10);
     }
 
+    # Recorded before the wait: a node short of its GPU is not put right by
+    # rolling the operator out again, and the next apply waits for it again.
     $self->_save_deployed_hash($config, 'gpu-operator', $hash);
 
     wait_gpu_allocatable($self, $api, @gpu_names);
@@ -712,12 +724,13 @@ sub gpu_ready_interval { 10 }
 
 # Waits up to gpu_ready_timeout until every node of @names shows
 # nvidia.com/gpu above 0 in status.allocatable. Progress goes to STDOUT.
-# Each node that does not get there is a [WARN] on STDERR with why, in the
-# AMD device plugin's words (AMDGPU not_ready). It is a warning and not a
-# failed step: the operator is deployed and the node is up, and whatever
-# holds the plugin back (the driver, the validator, the kubelet) is on the
-# node. A read that fails is polled again; when the last one failed too,
-# its cause is the why (k269). Returns the names that did not get there.
+# A node that does not get there fails the step, as on AMD (k285, AMDGPU
+# wait_ready): it dies with each such node's why, in the AMD device plugin's
+# words (AMDGPU not_ready). OCP's ClusterPolicy sets neither time-slicing nor
+# MIG mixed, so its device plugin publishes nvidia.com/gpu (live check on an
+# RTX 3090 node, 2026-11-03); nvidia.com/gpu.shared and nvidia.com/mig-* come
+# only from a ClusterPolicy OCP does not write. A read that fails is polled
+# again; when the last one failed too, its cause is the why (k269).
 sub wait_gpu_allocatable {
     my ($self, $api, @names) = @_;
     my $k8s = OCP::Kubernetes->new(api => $api);
@@ -736,9 +749,9 @@ sub wait_gpu_allocatable {
     my %short = map { $_ => 1 } @waiting;
     my @ready = grep { !$short{$_} } @names;
     print "      nvidia.com/gpu allocatable on " . join(', ', @ready) . "\n" if @ready;
-    print STDERR "  [WARN] NVIDIA GPU not ready after " . gpu_ready_timeout() . "s: $why{$_}\n"
-        for @waiting;
-    return @waiting;
+    die "NVIDIA GPU not ready after " . gpu_ready_timeout() . "s: "
+        . join('; ', map { $why{$_} } @waiting) . "\n" if @waiting;
+    return 1;
 }
 
 # Why node $name cannot hand out an NVIDIA GPU yet, or undef when it can.
