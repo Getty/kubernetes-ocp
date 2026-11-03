@@ -1,0 +1,39 @@
+---
+class: standard
+completed: 2026-11-03T07:26:06Z
+created: 2026-11-02T00:14:47Z
+depends_on:
+- 399
+id: 400
+priority: medium
+started: 2026-11-03T03:02:06Z
+status: done
+tags:
+- config
+- validation
+- refactor
+title: 'Part C of one-place-per-concern: check the ocp.yaml shape each command reads,
+  once, before it runs'
+updated: 2026-11-03T07:26:06Z
+---
+
+Design: docs/superpowers/specs/2026-10-31-one-place-per-concern-design.md, Part C (approved 2026-11-01; the maintainer chose: each command checks only what it reads). Starts after Part B (k399).
+
+C1 extends OCP::Config spec_errors to every section (k394 in scope); C2 every remaining command declares the paths it reads; C3 sweep test.
+
+Done when the sweep (every command x the malformed shapes from t/296) shows no command crashing on a malformed shape and each says validate()'s line. Absorbs the rest of k306, k394.
+
+2026-11-03: plan docs/superpowers/plans/2026-11-03-part-c-one-shape-check.md approved by the maintainer ('ja passt, leg los'); one ocp-worker runs Tasks 1-5 on b257bbd, patches in scratchpad w-ocp400; plan commit goes with the code commits via the release manager.
+
+2026-11-03 03:07 task 1 stopped before any code: Decision 6 (accessors say validate()'s words) breaks claims the plan does not name, and t/296 must stay unchanged (Global constraints, Task 1 step 4). Claims: t/296:273-277 (claim 2 pins gpu_* readers to validate()'s gpu: line with 'gpu: '->'gpu '), t/296:504, t/296:588; t/15-config-validation.t:274, :335, :343, :350, :364; t/314-boolean-eq.t:144; t/252-status-amd-gpu.t:333; t/258-status-json-amd-gpu.t:347; t/379-section-shapes.t:347, :372. Later tasks, same kind: Task 3 t/379:312-325 (update network:/cilium: foo: 'Failed to update cilium' + cert-manager upgraded first), t/379:329-350 (update declares gpu: frame); Task 4 t/252:330-333 + t/258:343-347 (status exit 0 + WARNING on bad gpu.amd.allocation; status reads gpu), t/332 claim 1 (nocert drift entry, if status declares nocert). Orchestrator's call needed.
+
+Orchestrator's call on the worker's stop: plan section 'Amendments during execution (2026-11-03)'. (1) Decision 6 narrowed to the network accessors; gpu/robocop accessor wording stays (t/296 claim 21 pins it). (2) A command that reads around a bad value on purpose (exit 0 + WARNING/drift entry, pinned by a test) does not declare it; status: gpu and the switches; listed in t/400 %READS_AROUND. (3) Frame/wording claim changes and t/379:312-325, :329-350 allowed without a stop, named in headers.
+
+2026-11-03 06:46 Done (ocp-worker): Tasks 1-5 of docs/superpowers/plans/2026-11-03-part-c-one-shape-check.md, with amendments 1-4. Five stacked patches on b257bbd, one per task, each with a header (subject ending (k400), the user-visible changes, a proposed Changes bullet, the claims changed old/new, the fixtures, the tests) and no Changes hunk. The patches live in the scratchpad: w-ocp400/k400-1.patch .. k400-5.patch. Applied in order to a fresh clone at b257bbd with git apply --index, they reproduce the work clone's HEAD exactly (0-line diff): 39 files, +2053/-639.
+Files outside ocp-worker's own lane: lib/OCP/Config.pm (spec_errors answers every section, plus pod_cidr/lb_pool/l2: state lane); lib/OCP/Role/Cmd.pm, Role/Cmd/Machines.pm, Role/Cmd/Operator.pm (spec_paths and refuse_spec_errors in the before-execute hook); lib/OCP/ClusterKey.pm (secrets lane); Cmd/Destroy.pm (destroy lane); Cmd/Update.pm, DeployImage.pm, DeployRobocop.pm, Init.pm (apply lane); Cmd/Status.pm, Version.pm (status lane); InjectKey, Keys/AuthorizedKeys, Keys/Operator/Add+Rm, Keys/Secure, Kubeconfig, Node/Add+Ls+Rm, Provider/Add, SSH. Tests: t/230, 273, 296, 306-machines-spec-errors, 306-spec-errors, 323, 326, 333, 335, 346, 353, 379, 398, the new t/400, t/lib/OCPTest/Cli.pm, t/lib/OCPTest/Shapes.pm.
+Verification: every run went through make test (Docker image localhost/ocp-w400) with an explicit file list. Each task: a red run first, then a green run on the task's own commit. Green runs: T2 146 files / 2529 tests; T3 47 files / 820 tests, then 31 / 610; T4 41 / 1010; T5 76 / 1636, then t/400 alone 15 tests. No skips. Mutants: T1 and T2, all killed. The full suite was not run as one piece, since the brief rules out running t/; that run is left to the release manager.
+t/400 timing: the sweep takes 406-460 s and the file 485-544 s wallclock. That is under its 600 s alarm, but with little margin; claim 3(b) is not restricted.
+Also found (no card, no fix): Init.pm:718 reads $cps->[0]{provider} outside the eval; Node/Ls.pm:104 _pools_of copies the whole spec; DeployImage.pm:422 reads clusters:/cluster:, which validate() does not know; NodeMeta.pm:87/:125 drops taints silently. The probe only sees reads before a command's first way out, which is why t/400 has @BEHIND_A_WAY_OUT. Full list: the patch headers.
+The plan file docs/superpowers/plans/2026-11-03-part-c-one-shape-check.md is untracked in the real repo and goes in with these commits.
+
+Committed as fa22d38 (plan), c1600b1, b04efdb, 9522af5, 2788e16, e29a3c7 (steps 1-5). Full suite on the combined tree: Files=277, Tests=4182, 2074 wallclock secs, Result: PASS
