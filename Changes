@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add`, the `ocp keys operator` commands and `ocp keys secure
+      --drop-bootstrap` refuse in one text with `ocp apply`'s lines for
+      what they read. A worker pool's labels or taints that `ocp apply`
+      refuses now stop the keys commands before PIN1, and `ocp node add`
+      checks the first control plane, `kubernetes:`, `network:` and `ssh:`
+      before it asks for anything.
     - A `network.pod_cidr` that is no IPv4 CIDR, has host bits set or is
       too small now stops `ocp node add`, `ocp deploy-image`, `ocp
       deploy-robocop` and `ocp status` where they read it, with the line

@@ -31,6 +31,13 @@ option age => (
     doc    => "The operator's age recipient (age1..., its PUBLIC key)",
 );
 
+# What the walk over every machine reads of ocp.yaml (OCP::Role::Cmd::Machines),
+# checked before the command runs, so before PIN1 (k346, k400).
+sub spec_paths {
+    my ( $self, $config ) = @_;
+    return $self->machines_spec_paths($config);
+}
+
 my $USAGE = 'ocp keys operator add --name NAME --ssh-pubkey FILE --age AGE1...';
 
 #

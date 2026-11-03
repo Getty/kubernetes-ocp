@@ -210,8 +210,13 @@ sub for_config {
 
     croak "for_config: config required" unless $config;
 
+    # Read only where it is a string on an entry that is a mapping (k400): it
+    # is said in messages and nothing else, so no command declares it for
+    # this, and a list there was said as ARRAY(0x...).
+    my $first    = $config->control_planes->[0];
     my $provider = $opt{provider}
-        // ($config->control_planes->[0] // {})->{provider}
+        // (ref $first eq 'HASH' && defined $first->{provider} && !ref $first->{provider}
+                ? $first->{provider} : undef)
         // 'hetzner';
 
     # Same detection as OCP::Cmd::Apply and OCP::Cmd::Apply::Bootstrap: dev

@@ -33,6 +33,18 @@ option drop_bootstrap => (
     doc => 'Also remove the bootstrap key .ocp/id_ed25519 from every machine',
 );
 
+# --drop-bootstrap on a project that is secure already reads only the
+# machines of ocp.yaml (OCP::Role::Cmd::Machines), not validate() (see
+# _refuse_invalid_config): their shape is checked before the command runs, so
+# before PIN1 (k346, k400). The switch checks all of validate() as ocp apply
+# does, in its own text, and declares nothing; a project that is secure
+# already, without the flag, reads nothing of it.
+sub spec_paths {
+    my ( $self, $config ) = @_;
+    return () unless $self->drop_bootstrap && -f $config->project_dir->child('keys.yaml');
+    return $self->machines_spec_paths($config);
+}
+
 #
 # k96: `ocp init --nopassword` used to be a one-way door. A dev-mode project's
 # machines trust .ocp/id_ed25519 and nothing else, and secure mode never
@@ -203,8 +215,8 @@ sub _migrate {
 # nothing made of ocp.yaml, and takes a key off a machine only where the
 # admin key has just logged in -- the step a leaked bootstrap key needs, not
 # to be held up by a line it does not read. The lines of what it does read,
-# the machines, it refuses as the operator commands do (k346, see
-# OCP::Role::Cmd::Machines::_machines_spec_errors).
+# the machines, are refused before it runs, as for the operator commands
+# (k346, k400: spec_paths above).
 sub _refuse_invalid_config {
     my ( $self, $config ) = @_;
 
@@ -301,12 +313,12 @@ sub _distribute_and_test {
 #
 
 # Already secure: only the last step, typically after a run without the flag.
-# Not validate() (see _refuse_invalid_config), but the shape of what the
-# machine lookup reads, before PIN1 (k346).
+# Not validate() (see _refuse_invalid_config); the shape of what the machine
+# lookup reads was checked before the command ran, before PIN1 (k346, k400:
+# spec_paths).
 sub _drop_in_secure_mode {
     my ( $self, $config, $secrets ) = @_;
 
-    $self->_refuse_unreadable_machines($config, 'ocp keys secure --drop-bootstrap');
     $secrets->ensure_age_key;
     my $api = $self->_cluster_api($config, $secrets);
     my ($machines) = $self->_machines($config, $api);

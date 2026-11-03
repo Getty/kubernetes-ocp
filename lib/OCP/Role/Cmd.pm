@@ -3,10 +3,13 @@ package OCP::Role::Cmd;
 
 use Moo::Role;
 use MooX::Options;
+use Carp ();
 use Path::Tiny ();
 use Scalar::Util ();
 
+use OCP ();
 use OCP::Choices;
+use OCP::Config ();
 use OCP::ErrorLine;
 use OCP::Keys;
 use OCP::Kubernetes;
@@ -146,6 +149,74 @@ sub positional_args {
 }
 
 sub ocp { $_[0]->command_chain->[0] }
+
+#
+# The shape of ocp.yaml, checked once (k400)
+#
+
+# The key paths of ocp.yaml this command reads, in OCP::Config::spec_errors'
+# syntax; each command that reads any defines it after its options. It may
+# read the command's options and the raw config (node add's paths turn on
+# --gpu), and never dies on a shape of ocp.yaml: one that is empty or no
+# mapping stops with that file's one line, as every reader does (k340).
+# Nothing declared, nothing checked.
+sub spec_paths { return () }
+
+# Dies with every line of spec_errors at the paths spec_paths declares, in
+# validate()'s order, in the one text a command refuses ocp.yaml with; 1 when
+# there is none. Destroy's, the machines role's and node add --gpu's own
+# frames went into it (k400); ocp apply and ocp keys secure check all of
+# validate() in theirs.
+sub refuse_spec_errors {
+    my ($self, $config) = @_;
+
+    my @paths  = $self->spec_paths($config) or return 1;
+    my @errors = $config->spec_errors(@paths) or return 1;
+
+    my $file = $config->file;
+    my $s    = @errors == 1 ? '' : 's';
+    die "$file has " . scalar(@errors) . " error$s:\n"
+      . join('', map { "  - $_\n" } @errors)
+      . 'Nothing was done: ' . $self->_command_words . " checks what it reads of $file before it "
+      . "asks for a PIN or touches the cluster or a machine. Fix the line$s above and run it "
+      . "again.\n";
+}
+
+# The command as it is typed: its class's words below OCP::Cmd, lower case,
+# spelt as %OCP::COMMAND_ALIASES spells them (deploy-robocop, keys
+# authorized-keys) -- the spelling is keyed by the words in front of it.
+sub _command_words {
+    my ($self) = @_;
+
+    my @words;
+    for my $part (split /::/, (ref($self) || $self) =~ s/\AOCP::Cmd:://r) {
+        my $word   = lc $part;
+        my $prefix = join '', map { "$_ " } @words;
+        my ($alias) = grep {
+            $OCP::COMMAND_ALIASES{$_} eq $word
+              && substr($_, 0, length $prefix) eq $prefix
+              && index($_, ' ', length $prefix) < 0
+        } sort keys %OCP::COMMAND_ALIASES;
+        push @words, defined $alias ? substr($alias, length $prefix) : $word;
+    }
+    return join ' ', 'ocp', @words;
+}
+
+# The check, before the command runs: MooX::Cmd executes the leaf. A command
+# built by hand -- in a test -- has no chain and checks nothing; without an
+# ocp.yaml the command says its own "not found".
+before execute => sub {
+    my ($self) = @_;
+
+    my $root = ($self->command_chain // [])->[0] or return;
+    my $file = $root->config;
+    return unless defined $file && -f $file;
+    $self->refuse_spec_errors(OCP::Config->new(file => $file));
+};
+
+# What `before execute` wraps in a class that has no execute of its own: a
+# modifier needs the method there. Every OCP::Cmd class has its own.
+sub execute { Carp::croak(ref($_[0]) . ' has no execute') }
 
 # What to say instead of a listing when the cluster has no OCPNodeProvider at
 # all: an empty "Available:" line answers nothing. Written once because two
@@ -695,6 +766,40 @@ is the command line as typed, options included: every option of the command
 and the value of each that takes one are left out, as Getopt::Long read them
 (C<--opt=value>, abbreviations, short options); everything after C<--> is
 positional.
+
+=method spec_paths
+
+    sub spec_paths {
+        my ($self, $config) = @_;
+        return ('kubernetes', 'network.pod_cidr', ($self->gpu ? 'gpu' : ()));
+    }
+
+The key paths of F<ocp.yaml> the command reads, in the syntax of
+L<OCP::Config/spec_errors>. A command that reads any defines it after its
+options; it may look at its options and at the raw config, and never dies on a
+shape of F<ocp.yaml>. The role's own returns nothing: a command that declares
+nothing is not checked.
+
+=method refuse_spec_errors
+
+    $self->refuse_spec_errors($config);    # 1, or dies
+
+Dies with every line L<OCP::Config/spec_errors> has at the paths
+C<spec_paths> declares, in L<OCP::Config/validate>'s order, or returns 1 when
+there is none (k400):
+
+    ocp.yaml has 1 error:
+      - gpu.driver: ...
+    Nothing was done: ocp node add checks what it reads of ocp.yaml before it asks for a PIN or touches the cluster or a machine. Fix the line above and run it again.
+
+The command words are spelt as they are typed (C<ocp deploy-robocop>). An
+F<ocp.yaml> that is empty or no mapping dies with that file's one line
+instead. The role runs it before C<execute>, on the F<ocp.yaml> of the root
+C<OCP> object, so before the command asks for a PIN, reads the cluster or
+touches a machine; without an F<ocp.yaml> it does not run, and the command
+says its own "not found". A command built without a C<command_chain> (a
+test) is not checked. C<ocp apply> and C<ocp keys secure> check all of
+C<validate()> in their own text instead, and declare nothing.
 
 =method cluster_ssh_key
 

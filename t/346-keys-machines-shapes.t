@@ -236,8 +236,9 @@ for my $case (@SHAPES) {
             ok !defined $r->{rv}, "$command: refused";
             like $r->{died}, qr/\Aocp\.yaml has 1 error:\n  - \Q$lines[0]\E\n/,
                 "$command: validate()'s line";
-            like $r->{died}, qr/^Nothing was changed: \Q$command\E reads the machines/m,
-                "$command: says nothing changed, and why";
+            (my $words = $command) =~ s/ --drop-bootstrap\z//;
+            like $r->{died}, qr/^Nothing was done: \Q$words\E checks what it reads of ocp\.yaml before it asks for a PIN or touches the cluster or a machine\. Fix the line above and run it again\.$/m,
+                "$command: says nothing was done, and why";
             unlike $r->{died}, qr/ line \d+\.$|internal error/m, "$command: no Perl error";
             is_deeply $r->{prompts}, [], "$command: no PIN asked";
             is_deeply $r->{ssh}, [], "$command: no SSH";
@@ -338,7 +339,7 @@ subtest 'the gate itself: nothing on a valid ocp.yaml' => sub {
         $ocp->dump_file($dir->child('ocp.yaml')->stringify, { %VALID, %$spec });
         my $config = OCP::Config->new(file => $dir->child('ocp.yaml')->stringify);
         is_deeply [ $config->validate ], [], 'validate() has nothing';
-        is_deeply [ $cmd->_machines_spec_errors($config) ], [], 'nor has the gate';
+        is $cmd->refuse_spec_errors($config), 1, 'nor has the gate';
     }
 };
 

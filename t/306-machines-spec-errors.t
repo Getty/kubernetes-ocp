@@ -228,8 +228,9 @@ for my $case (@SHAPES) {
                 ok !defined $r->{rv}, "$command: refused";
                 like $r->{died}, qr/\Aocp\.yaml has 1 error:\n  - \Q$lines[0]\E\n/,
                     "$command: validate()'s line";
-                like $r->{died}, qr/^Nothing was changed: \Q$command\E reads the machines/m,
-                    "$command: says nothing changed, and why";
+                (my $words = $command) =~ s/ --drop-bootstrap\z//;
+                like $r->{died}, qr/^Nothing was done: \Q$words\E checks what it reads of ocp\.yaml before it asks for a PIN or touches the cluster or a machine\. Fix the line above and run it again\.$/m,
+                    "$command: says nothing was done, and why";
                 unlike join("\n", @{$r}{qw( died out err )}, @{ $r->{ssh} }), $PERL_TEXT,
                     "$command: no Perl text, no reference as a machine";
                 is_deeply $r->{prompts}, [], "$command: no PIN asked";

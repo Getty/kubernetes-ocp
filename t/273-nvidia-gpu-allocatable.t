@@ -124,6 +124,9 @@ sub api_error {
     package FakeOCP;
     sub new       { bless {}, shift }
     sub verbose   { 0 }
+    # No ocp.yaml: node add's _config is replaced below, and OCP::Role::Cmd's
+    # check, which reads the file this names, has none to check (k400).
+    sub config    { undef }
     sub dump      { my ($self, @r) = @_; return join '', map { YAML::XS::Dump($_) } @r }
     sub load_file { my ($self, $f) = @_; -f "$f" ? YAML::XS::LoadFile("$f") : undef }
     sub dump_file { my ($self, $f, $d) = @_; YAML::XS::DumpFile("$f", $d) }

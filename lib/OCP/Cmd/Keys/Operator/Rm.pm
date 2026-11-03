@@ -14,6 +14,13 @@ with 'OCP::Role::Cmd::Operator';
 
 my $USAGE = 'ocp keys operator rm NAME';
 
+# What the walk over every machine reads of ocp.yaml (OCP::Role::Cmd::Machines),
+# checked before the command runs, so before PIN1 (k346, k400).
+sub spec_paths {
+    my ( $self, $config ) = @_;
+    return $self->machines_spec_paths($config);
+}
+
 #
 # k216: revoking a Leitstand takes away both of its keys. Its SSH key comes off
 # every machine (logged in with the admin key, PIN2), its entry out of

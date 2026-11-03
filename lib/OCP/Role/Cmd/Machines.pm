@@ -25,12 +25,14 @@ has k8s => (is => 'rw');
 # Machines
 #
 
-# What _machines reads of ocp.yaml, refused in validate()'s words before the
-# age key, a PIN or the cluster is asked (k346). `ocp keys operator add|rm`
+# The key paths _machines reads of ocp.yaml: what `ocp keys operator add|rm`
 # and `ocp keys secure --drop-bootstrap` on a project that is secure already
-# do not run validate() (k321): the walk below died inside Perl on an entry
-# that is no mapping ("Not a HASH reference ... internal error"), after PIN1,
-# and a host that is a list became the machine ARRAY(0x...).
+# declare as their spec_paths, so OCP::Role::Cmd refuses their lines in
+# validate()'s words before the age key, a PIN or the cluster is asked (k346,
+# k400). Those commands do not run validate() (k321): the walk below died
+# inside Perl on an entry that is no mapping ("Not a HASH reference ...
+# internal error"), after PIN1, and a host that is a list became the machine
+# ARRAY(0x...).
 #
 # Only what is read, as ocp destroy has it (k323, k326, k335): the shape of
 # control_planes and of each entry; each entry's host, public_ip and name,
@@ -41,11 +43,14 @@ has k8s => (is => 'rw');
 # pool, and in a pool whose provider OCP knows the nodes as worker_ocpnodes
 # reads them -- a list of hosts for ssh, a count for the others -- and an ssh
 # pool's host where no nodes: list stands beside it. With nodes: N the
-# control planes are N copies of one entry, said once (k322).
+# control planes are N copies of one entry, said once (k322). And a pool's
+# labels and taints, which worker_ocpnodes puts on each OCPNode it reads
+# (OCP::Cmd::Apply::CR, OCP::NodeMeta): a taints: foo croaked there, after
+# PIN1 (k400).
 #
 # Machines picks the paths; the lines are OCP::Config::spec_errors', which
 # are validate()'s own (k306).
-sub _machines_spec_errors {
+sub machines_spec_paths {
     my ( $self, $config ) = @_;
 
     # The pools whose host worker_ocpnodes reads: ssh, no nodes: list beside.
@@ -57,25 +62,10 @@ sub _machines_spec_errors {
                  && ref $w->{nodes} ne 'ARRAY' } 1 .. @$workers
         : ();
 
-    return $config->spec_errors(
+    return (
         'control_planes', 'control_planes[*]', map({ "control_planes[*].$_" } qw( host public_ip name )),
-        'workers', 'workers[*]', 'workers[*].nodes', @ssh_hosts,
+        'workers', 'workers[*]', map({ "workers[*].$_" } qw( nodes labels taints )), @ssh_hosts,
     );
-}
-
-# Dies with every line of _machines_spec_errors, the way `ocp apply` refuses
-# an invalid ocp.yaml; $command names the consumer in the message.
-sub _refuse_unreadable_machines {
-    my ( $self, $config, $command ) = @_;
-
-    my @errors = $self->_machines_spec_errors($config) or return;
-    my $file = $config->file;
-    my $s    = @errors == 1 ? '' : 's';
-    die "$file has " . scalar(@errors) . " error$s:\n"
-      . join('', map { "  - $_\n" } @errors)
-      . "Nothing was changed: $command reads the machines of the control planes and worker "
-      . "pools in $file, and checks their shape before it asks for a PIN or touches a "
-      . "machine. Fix the line$s above and run it again.\n";
 }
 
 # Every machine of this cluster that exists, as { name, address, role }: the
@@ -351,14 +341,14 @@ What L<OCP::Cmd::Keys::Secure> (k96) and the operator commands
 L<OCP::Cmd::Keys::Operator::Add> and L<OCP::Cmd::Keys::Operator::Rm> (k216)
 share.
 
-C<_refuse_unreadable_machines> dies, in L<OCP::Config/validate>'s words, on
-what C<_machines> cannot read of F<ocp.yaml> (C<_machines_spec_errors>, k346):
-C<control_planes> and C<workers> that are no mapping or list, an entry or a
-pool that is no mapping, a host -- or a control plane's C<public_ip> or
-C<name> (k306) -- that is no string, a pool's C<nodes> in a shape its
-provider does not take. The lines are
-L<OCP::Config/spec_errors>' at the paths C<_machines> reads. A consumer calls
-it before the age key, a PIN or the cluster.
+C<machines_spec_paths> returns the key paths of F<ocp.yaml> C<_machines>
+reads (k346, k400): C<control_planes> and C<workers>, each entry and pool,
+each control plane's host, C<public_ip> and C<name> (k306), a pool's
+C<nodes>, C<labels> and C<taints>, and an ssh pool's host where no C<nodes>
+list stands beside it. A consumer returns them from its
+L<OCP::Role::Cmd/spec_paths>, and L<OCP::Role::Cmd/refuse_spec_errors>
+refuses their lines, L<OCP::Config/validate>'s own, before the command runs:
+before the age key, a PIN or the cluster.
 
 C<_machines> lists every machine of the cluster as C<< { name, address, role } >>:
 each OCPNode in C<ocp-system> when the cluster can be asked (at

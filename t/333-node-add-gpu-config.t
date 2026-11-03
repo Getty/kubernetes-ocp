@@ -29,8 +29,9 @@ use OCP::Cmd::Node::Add;
 # OCPNode write, the host's SSH probe (PIN2) and the join. Every line at once,
 # STDOUT empty, exit 1 with the lines on STDERR (bin/ocp prints the die).
 #
-# Not refused: a line validate() has outside gpu: (node add does not read it;
-# `ocp apply` refuses it), --gpu --nowait (reads no gpu: key, leaves the stack
+# Not refused: a line validate() has in a section node add does not read
+# (`ocp apply` refuses it; the sections node add reads are its spec_paths,
+# swept in t/400, k400), --gpu --nowait (reads no gpu: key, leaves the stack
 # to `ocp apply`), and a run without --gpu.
 #
 
@@ -84,6 +85,7 @@ sub add {
     my @steps;
     my $api = FakeK8s->new(\@steps);
     my $add = OCP::Cmd::Node::Add->new(
+        command_chain => [ OCP->new(config => $dir->child('ocp.yaml')->stringify) ],
         name => 'brain',
         host => '10.0.0.5',
         ($o{gpu}    ? (gpu    => 1) : ()),
@@ -133,7 +135,7 @@ sub refused_ok {
             . 'no SSH probe (PIN2), no join, no GPU stack' or diag explain $r->{steps};
         is $r->{out}, '', 'nothing on STDOUT';
         unlike $r->{err}, qr/UNEXPECTED DIE| at \S+ line \d+/, 'no Perl error text';
-        like $r->{err}, qr/\A\S*ocp\.yaml has $n errors? in its gpu: block:\n/, "opens with the count ($n)"
+        like $r->{err}, qr/\A\S*ocp\.yaml has $n errors?:\n/, "opens with the count ($n)"
             or diag $r->{err};
         like $r->{err}, qr/^  - \Q$_\E$/m, "names: $_" for @$want;
         my @listed = $r->{err} =~ /^  - (.*)$/mg;
@@ -217,7 +219,7 @@ subtest 'a gpu: line beside one outside it: only the gpu: line is node add\'s' =
     is scalar(() = config_of($dir)->validate), 2, 'fixture: validate() has two lines';
     my $r = add($dir, gpu => 1);
     is $r->{rc}, 1, 'refused';
-    like $r->{err}, qr/\A\S*ocp\.yaml has 1 error in its gpu: block:\n  - \Q$NO\E\n/, 'the gpu: line, counted alone';
+    like $r->{err}, qr/\A\S*ocp\.yaml has 1 error:\n  - \Q$NO\E\n/, 'the gpu: line, counted alone';
     unlike $r->{err}, qr/lbipam/, 'not the lbipam: line';
     is_deeply $r->{steps}, [], 'nothing done';
 };
@@ -280,7 +282,7 @@ subtest 'bin/ocp node add --gpu: validate()\'s line on STDERR, exit 1, nothing w
     my ($out, $err, $rc) = ocp_in($dir, 'node', 'add', 'brain', '--host', '10.0.0.5', '--gpu');
     is $rc, 1, 'exit 1';
     is $out, '', 'nothing on STDOUT';
-    like $err, qr/\AError: ocp\.yaml has 1 error in its gpu: block:\n  - \Q$NO\E\n/,
+    like $err, qr/\AError: ocp\.yaml has 1 error:\n  - \Q$NO\E\n/,
         'STDERR: validate()\'s line' or diag $err;
     unlike $err, qr/kubeconfig/i, 'not the kubeconfig: the cluster was not asked for';
     is_deeply [ sort map { "$_" } $dir->children ], \@before, 'no file written in the project';
@@ -291,10 +293,11 @@ subtest 'bin/ocp node add --gpu: validate()\'s line on STDERR, exit 1, nothing w
 # k306 step 2c: the refusal takes its lines from OCP::Config::spec_errors('gpu')
 # instead of filtering all of validate() by /\Agpu[.:]/. On a mapping both are
 # the same lines in the same order: held here on every gpu shape t/296 sweeps,
-# alone and beside a line in every other section, where a line outside gpu:
-# still holds nothing up. An ocp.yaml that is empty or no mapping is where they
-# part: validate() has the file's line alone, the filter dropped it, and node
-# add went on -- PIN1, the OCPNode, the join -- until a reader came to the spec.
+# alone and beside a line in every section node add does not read, where such
+# a line still holds nothing up. An ocp.yaml that is empty or no mapping is
+# where they part: validate() has the file's line alone, the filter dropped
+# it, and node add went on -- PIN1, the OCPNode, the join -- until a reader
+# came to the spec.
 # spec_errors stops with that line, so --gpu refuses it before anything.
 
 # t/296's @SHAPES, at each key under gpu: t/296's sweep has.
@@ -310,10 +313,11 @@ my @GPU_AT = (
     (map { my $k = $_; [ "gpu.amd.$k" => sub { +{ gpu => { amd => { $k => $_[0] } } } } ] }
         qw( allocation resource_naming labeller metrics integrated alocation )),
 );
-# A line in every section but gpu:, the switches beside it among them.
-my %ELSEWHERE = (name => [ 'a' ], control_planes => [ 'x' ], workers => [ 'x' ], kubernetes => 'foo',
-                 network => 'foo', cilium => 'foo', system => 'foo', ssh => 'foo', robocop => 'foo',
-                 lbipam => 'off', nocert => 'no');
+# A line in every section node add does not read, the switches beside it among
+# them. Not control_planes, kubernetes, network or ssh: node add reads those,
+# declares them and refuses their lines with gpu:'s (k400).
+my %ELSEWHERE = (name => [ 'a' ], workers => [ 'x' ], cilium => 'foo', system => 'foo',
+                 robocop => 'foo', lbipam => 'off', nocert => 'no');
 
 subtest "spec_errors('gpu') is the filter's lines, on every gpu shape t/296 sweeps" => sub {
     my ($refused, $passed) = (0, 0);
@@ -323,7 +327,7 @@ subtest "spec_errors('gpu') is the filter's lines, on every gpu shape t/296 swee
             my ($shown, $value) = @$v;
             my $alone = $spec_with->($value);
             my @want  = gpu_lines(project($alone));
-            for my $case ([ alone => $alone ], [ 'beside a line in every other section' => { %ELSEWHERE, %$alone } ]) {
+            for my $case ([ alone => $alone ], [ 'beside a line in every section node add does not read' => { %ELSEWHERE, %$alone } ]) {
                 my ($beside, $spec) = @$case;
                 my $what = "$path: $shown, $beside";
                 my $dir  = project($spec);
