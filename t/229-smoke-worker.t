@@ -75,9 +75,19 @@ sub project {
     is $pool->{location}, 'fsn1', 'location as asked';
 
     my $bare = project();
-    main::add_worker_pool($bare, mode => 'hetzner');
-    my $p = OCP::Config->new(file => $bare)->workers->[0];
-    ok !exists $p->{server_type} && !exists $p->{location}, 'no server type or location: the project defaults apply';
+    eval { main::add_worker_pool($bare, mode => 'hetzner') };
+    is $@, "a hetzner worker needs a server type -- set OCP_SMOKE_HETZNER_SERVER_TYPE (e.g. cpx22)\n",
+        'a hetzner worker without a server type is refused, naming the variable to set';
+    eval { main::add_worker_pool($bare, mode => 'hetzner', server_type => '', location => 'fsn1') };
+    like $@, qr/needs a server type/, 'an empty server type is refused as well';
+    is_deeply YAML::XS::LoadFile($bare)->{workers}, undef, 'and no pool was written';
+
+    my $typed = project();
+    main::add_worker_pool($typed, mode => 'hetzner', server_type => 'cpx22');
+    my $p = OCP::Config->new(file => $typed)->workers->[0];
+    is $p->{server_type}, 'cpx22', 'only the server type given is written';
+    ok !exists $p->{location}, 'no location unless asked for: the project default applies';
+    is_deeply [ OCP::Config->new(file => $typed)->validate ], [], 'and validate() accepts the pool';
 }
 
 # --- pick ----------------------------------------------------------------

@@ -236,7 +236,7 @@ subtest 'ocp.yaml worker pools carry labels and taints onto their OCPNodes' => s
         { name => 'gpu', provider => 'ssh', host => 'crag.lan',
           labels => { 'ai.citilan.de/node-class' => 'rtx3090' },
           taints => [ 'nvidia.com/gpu=present:NoSchedule' ] },
-        { name => 'plain', provider => 'hetzner', nodes => 1 },
+        { name => 'plain', provider => 'hetzner', server_type => 'cpx22', nodes => 1 },
     ] });
     is_deeply [ grep { /worker pool/ } $config->validate ], [], 'valid';
     my ($gpu, $plain) = OCP::Cmd::Apply::CR::worker_ocpnodes($config);

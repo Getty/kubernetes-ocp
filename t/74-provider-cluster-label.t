@@ -276,12 +276,15 @@ sub bootstrap_label {
         cluster_name => $prov->cluster_name,
         cloud        => $cloud,
     );
+    # Bootstrap names the server type (OCP::Config's %HETZNER_DEFAULTS at
+    # least); since k308 the adapter has none of its own.
     $prov->create_server(
-        name     => 'cp1',
-        cluster  => $config->name,
-        node     => 'cp1',
-        role     => 'control-plane',
-        ssh_keys => [ $config->admin_ssh_key_name ],
+        name        => 'cp1',
+        cluster     => $config->name,
+        node        => 'cp1',
+        role        => 'control-plane',
+        server_type => 'cpx22',
+        ssh_keys    => [ $config->admin_ssh_key_name ],
     );
     return $cloud->servers->{created}[0]{labels}{'ocp-cluster'};
 }
@@ -300,7 +303,9 @@ sub worker_provision {
         apiVersion => 'ocp.internal/v1',
         kind       => 'OCPNode',
         metadata   => { name => 'pool-a-1', namespace => 'ocp-system' },
-        spec       => { role => 'worker', providerRef => 'hetzner-default' },
+        # A pool's node carries the pool's server_type, which validate()
+        # requires of a Hetzner pool (k308).
+        spec       => { role => 'worker', providerRef => 'hetzner-default', serverType => 'cpx22' },
     });
     $k8s->provider_cr($provider_cr);
 
@@ -459,9 +464,6 @@ subtest 'a provider default reaches the server, and the node still outranks it' 
     is $sent->{server_type}, 'cx42',      'and the server type';
     is $sent->{image},       'debian-12', 'and the image';
 
-    isnt $sent->{server_type}, 'cx32',
-        'not the code default -- which is what a write-only field would have produced';
-
     # The node is the more specific statement and wins. Both halves have to
     # hold or "Node-spec > Provider-CR > code default" is not an order, just a
     # value that happens to be read.
@@ -480,15 +482,21 @@ subtest 'a provider default reaches the server, and the node still outranks it' 
     is $override->{server_type}, 'cpx31',     'on every field it names';
     is $override->{image},       'debian-12', 'and leaves the rest to the provider';
 
-    # And the bottom of the ladder still exists: a provider that names nothing
-    # -- which is every CR ensure_provider_cr writes -- lands on the code
-    # default. The OCPNodeProvider CRD declares no schema default for exactly
-    # this reason; with one, the API server would have materialised a value
-    # into this CR and this assertion could not be made.
-    my ($plain) = provision_through_cr();
-    is $plain->{server_type}, 'cx32',      'no provider default, code default answers';
-    is $plain->{image},       'debian-13', 'same for the image';
-    is $plain->{location},    'fsn1',      'same for the location';
+    # And the bottom of the ladder still exists for the image and the
+    # location: a provider that names nothing -- which is every CR
+    # ensure_provider_cr writes -- lands on the code default. The
+    # OCPNodeProvider CRD declares no schema default for exactly this reason;
+    # with one, the API server would have materialised a value into this CR
+    # and this assertion could not be made. The server type has no code
+    # default (k308): the node names it, as a pool's node does.
+    my ($plain) = provision_through_cr(node_spec => { serverType => 'cpx22' });
+    is $plain->{server_type}, 'cpx22',     'the server type is the node\'s';
+    is $plain->{image},       'debian-13', 'no provider default, code default answers for the image';
+    is $plain->{location},    'fsn1',      'and for the location';
+
+    # Neither the node nor the provider names one: nothing is created.
+    ok !eval { provision_through_cr(); 1 }, 'no server type anywhere: _provision refuses';
+    like $@, qr/without a server type/, 'and says what is missing';
 };
 
 #

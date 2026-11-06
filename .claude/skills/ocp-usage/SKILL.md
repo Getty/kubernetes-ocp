@@ -76,7 +76,9 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
     catalogue cannot be read, STDERR says why (`[!!] Could not read the
     Hetzner catalogue: …`: the API's message, the status, or the failed
     connection, token masked; `_catalogue_error`, k265) and init keeps the
-    defaults.
+    defaults (`OCP::Config::%HETZNER_DEFAULTS`: cpx22 / fsn1 / debian-13,
+    control planes only, k264). Init scaffolds no worker pool; an existing
+    ocp.yaml keeps its own as they are.
   - `--provider hetzner|ssh|local` — **default is hetzner**, matching the
     spec-wide default in `OCP::Config` (an absent provider reads as hetzner
     everywhere else too). A bare `ocp init` therefore stays offline and ends
@@ -190,6 +192,10 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu]
   [--node-ip IP] [--label K=V]... [--taint K=V:Effect]... [--nowait]`
   — create an OCPNode CR (`--no_wait` is kept as an alias, see above).
+  On a hetzner provider `--server-type` is needed unless the OCPNodeProvider
+  has `spec.hetzner.serverType` (the `hetzner-default` apply writes has none):
+  with neither, `create_server` refuses and the node goes Failed, nothing
+  ordered (k308; the cx32 fallback is gone).
   `--node-ip` becomes `spec.nodeIP` (see "node_ip" below). `--gpu` sets
   `spec.gpu: true` and opens the integrated-GPU gate (see "gpu.amd" below).
   Under `gpu.enabled: false` the kill switch wins over `--gpu` and no GPU is
@@ -326,7 +332,7 @@ control_planes:             # Hash, Hash + "nodes: N", or Array of hashes
 workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
     provider: hetzner       # robocop or the CLI fallback
-    server_type: cpx21
+    server_type: cpx22      # required on a hetzner pool (k308): no default
     nodes: 3                # a count; an ssh pool lists hosts (strings or
                             # {host: …}) instead, see "Shapes" below
     labels:                 # optional, onto each Node (OCPNode spec.labels)
@@ -488,6 +494,15 @@ gpu:
     means "no machines yet"; a `host` Perl calls false (`0`, empty) counts as
     none. `host`, `server_type`, `location` and `image` must be strings, in a
     control plane and in a pool (`_not_a_string`).
+  - **A hetzner pool's `server_type`** (k308, `_worker_lines`): required, a
+    worker has no default type: `worker pool 'pool1': server_type required
+    for hetzner -- a worker pool has no default; add one, e.g. server_type:
+    cpx22` (the example is `%HETZNER_DEFAULTS{server_type}`). Untagged, like
+    the control plane's `server_type required for hetzner`, so `spec_errors`
+    (destroy, status, node ls) does not stop on it. A pool's type reaches
+    each OCPNode's `spec.serverType` (`worker_ocpnodes`); the provider CR
+    apply writes carries none, so this line is what keeps a pool from
+    `create_server`'s refusal.
   - **Unknown keys under `gpu:` and `system:`, a `system:` that is no
     mapping, and `host:` on a hetzner or local pool** (k331). `gpu:` takes
     `enabled`, `driver`, `toolkit`, `amd`; `system:` takes `timezone`,

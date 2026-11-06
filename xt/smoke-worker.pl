@@ -51,8 +51,12 @@ sub add_worker_pool {
         die "an ssh worker needs a host\n" unless length($o{host} // '');
         $entry{nodes} = [ $o{host} ];
     } else {
+        # A worker pool has no default server type: say so here, before the
+        # paid run reaches apply, which would refuse the pool anyway.
+        die "a hetzner worker needs a server type -- set OCP_SMOKE_HETZNER_SERVER_TYPE (e.g. cpx22)\n"
+            unless length($o{server_type} // '');
         $entry{nodes}       = 1;
-        $entry{server_type} = $o{server_type} if length($o{server_type} // '');
+        $entry{server_type} = $o{server_type};
         $entry{location}    = $o{location}    if length($o{location}    // '');
     }
     push @{ $spec->{workers} }, \%entry;

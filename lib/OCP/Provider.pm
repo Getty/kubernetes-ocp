@@ -193,7 +193,8 @@ sub from_cr {
         # provider ls` since the beginning and read by NOBODY, so
         # `--location nbg1` moved no server (k100). They land at rank 3 of
         # OCP::Provider::Hetzner::create_server's four: below the node's own
-        # spec, above the code default.
+        # spec, above the code default -- which the server type has none of
+        # (k308), so for it this is the last rank.
         #
         # They stay under spec.hetzner, unlike clusterName, because that is
         # what they are: Hetzner backend configuration. clusterName went
@@ -433,7 +434,9 @@ L<OCP::Provider::Hetzner/default_server_type>, L</default_image> and
 L</default_location> — what a node of this provider gets when its own OCPNode
 spec names none.  They sit at rank 3 of the four
 L<OCP::Provider::Hetzner/create_server> resolves: below the node's own spec,
-above the code default.  Written since the beginning by C<ocp provider add>
+above the code default.  The server type has no code default, so for it this
+is the last rank: a node whose own spec and provider name none is refused
+rather than created.  Written since the beginning by C<ocp provider add>
 and read by nobody until k100, which is why C<--location nbg1> used to
 move no server at all.
 

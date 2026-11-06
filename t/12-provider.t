@@ -244,7 +244,7 @@ subtest 'a spec-driven create still gets an SSH key' => sub {
 
     $prov->create_server(
         name => 'w1', node => 'w1', role => 'worker',
-        spec => { role => 'worker', providerRef => 'hetzner-default' },
+        spec => { role => 'worker', providerRef => 'hetzner-default', serverType => 'cpx22' },
     );
 
     my $keys = $servers->{created}[0]{ssh_keys};
@@ -281,12 +281,15 @@ subtest 'directly passed options beat the spec' => sub {
 };
 
 subtest 'defaults still apply when neither option nor spec says anything' => sub {
-    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin');
+    # Image and location only: the server type has no code default (k308),
+    # so here it is the provider's.
+    my ($prov, $servers) = hz_provider(ssh_key_name => 'ocp-cortex-admin',
+        default_server_type => 'cpx22');
 
     $prov->create_server(name => 'w2', node => 'w2', role => 'worker');
 
     my $sent = $servers->{created}[0];
-    is $sent->{server_type}, 'cx32',      'default server type';
+    is $sent->{server_type}, 'cpx22',     'the provider\'s server type';
     is $sent->{image},       'debian-13', 'default image';
     is $sent->{location},    'fsn1',      'default location';
 };
@@ -305,7 +308,8 @@ subtest 'defaults still apply when neither option nor spec says anything' => sub
 #   1. the named option        -- the bootstrap path
 #   2. the OCPNode spec        -- `ocp node add --server-type`
 #   3. this provider's default -- spec.hetzner.* on the provider CR
-#   4. the code default        -- cx32 / debian-13 / fsn1
+#   4. the code default        -- debian-13 / fsn1; none for the server
+#                                 type, which is refused without one (k308)
 #
 
 subtest 'the provider defaults sit between the node spec and the code default' => sub {
@@ -321,7 +325,7 @@ subtest 'the provider defaults sit between the node spec and the code default' =
         spec => { role => 'worker', providerRef => 'hetzner-default' },
     );
     my $sent = $servers->{created}[0];
-    is $sent->{server_type}, 'cx42',      'provider default beats the code default (server type)';
+    is $sent->{server_type}, 'cx42',      'provider default answers (server type, which has no code default)';
     is $sent->{image},       'debian-12', 'provider default beats the code default (image)';
     is $sent->{location},    'nbg1',      'provider default beats the code default (location)';
 
@@ -383,9 +387,12 @@ subtest 'a provider that says nothing changes nothing' => sub {
     is $prov->default_image,       '', 'and so is the image';
     is $prov->default_location,    '', 'and the location';
 
-    $prov->create_server(name => 'w1', node => 'w1', role => 'worker');
-    my $sent = $servers->{created}[0];
-    is $sent->{server_type}, 'cx32', 'the code default answers, not an empty string';
+    # The server type has no rank 4 (k308): nothing names one, nothing is
+    # created -- it was cx32 here, a type nobody chose.
+    ok !eval { $prov->create_server(name => 'w1', node => 'w1', role => 'worker'); 1 },
+        'no server type at any rank: refused, not a code default';
+    like $@, qr/without a server type/, 'the refusal names what is missing';
+    is scalar @{ $servers->{created} }, 0, 'and nothing was sent to Hetzner';
 
     # Empty is absent at rank 3 too, exactly as it is at ranks 1 and 2: a
     # hand-edited CR carrying `serverType: ""` did not choose anything.
@@ -394,10 +401,12 @@ subtest 'a provider that says nothing changes nothing' => sub {
         default_server_type => '',
         default_location    => '',
     );
-    $prov2->create_server(name => 'w2', node => 'w2', role => 'worker');
-    my $sent2 = $servers2->{created}[0];
-    is $sent2->{server_type}, 'cx32', 'an empty provider default is not a server type';
-    is $sent2->{location},    'fsn1', 'and an empty one is not a location';
+    ok !eval { $prov2->create_server(name => 'w2', node => 'w2', role => 'worker'); 1 },
+        'an empty provider default is not a server type';
+    like $@, qr/without a server type/, 'and is refused as none';
+    $prov2->create_server(name => 'w2', node => 'w2', role => 'worker',
+        spec => { serverType => 'cpx22' });
+    is $servers2->{created}[0]{location}, 'fsn1', 'and an empty one is not a location';
 };
 
 subtest 'a create with no key at all fails before the server exists' => sub {

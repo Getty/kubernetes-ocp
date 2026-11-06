@@ -313,7 +313,7 @@ sub fake_picker {
             FakeLocation->new(name => 'hel1', city => 'Helsinki',    country => 'FI'),
         ],
         _server_types => [
-            FakeType->new(name => 'cpx21', cores => 3, memory => 4, disk => 80,
+            FakeType->new(name => 'cpx22', cores => 2, memory => 4, disk => 80,
                 cpu_type => 'shared', architecture => 'x86', locations => $both),
             FakeType->new(name => 'cax21', cores => 4, memory => 8, disk => 80,
                 cpu_type => 'shared', architecture => 'arm', locations => $both),
@@ -417,7 +417,7 @@ subtest 'ocp init --hetzner does not stop for a picker in a batch run' => sub {
     unlike $out, qr/Control plane placement/, 'no picker was printed';
 
     my $spec = path($dir)->child('ocp.yaml')->slurp;
-    like $spec, qr/server_type: cpx21/, 'server_type stays at the default';
+    like $spec, qr/server_type: cpx22/, 'server_type stays at the default';
     like $spec, qr/location: fsn1/,     'location stays at the default';
 };
 

@@ -64,10 +64,11 @@ my @LOCATIONS = (
     location('ash',  'Ashburn',     'US'),
 );
 
-# The defaults are cpx21 in fsn1 (OCP::Config). Orderable per location:
-#   fsn1: cpx21 cax21 cx33   hel1: cpx22 cpx21   nbg1: cpx22 cx33   ash: none
+# The defaults are cpx22 in fsn1 (OCP::Config; cpx21 until k264). Orderable
+# per location:
+#   fsn1: cpx22 cax21 cx33   hel1: cpx22 cpx21   nbg1: cpx21 cx33   ash: none
 my @TYPES = (
-    type('cpx21', 3, 4, 'x86',
+    type('cpx22', 2, 4, 'x86',
         entry('fsn1'), entry('hel1'),
         entry('nbg1', deprecation => $deprecation),
         entry('ash',  available => $false)),
@@ -78,7 +79,7 @@ my @TYPES = (
     type('cax21', 4, 8, 'arm',
         entry('fsn1'),
         entry('hel1', available => $false)),
-    type('cpx22', 2, 4, 'x86',
+    type('cpx21', 3, 4, 'x86',
         entry('hel1'), entry('nbg1'),
         entry('ash', deprecation => $deprecation)),
 );
@@ -127,35 +128,35 @@ subtest 'a type deprecated or unavailable only in the chosen location is not off
         'hel1 offers only what can be ordered there: not cx33 (deprecated in hel1),'
         . ' not cax21 (unavailable in hel1)';
     is $hel1->_location,    'hel1',  'the chosen location is kept';
-    is $hel1->_server_type, 'cpx21', 'Enter keeps the default where it can be ordered';
+    is $hel1->_server_type, 'cpx22', 'Enter keeps the default where it can be ordered';
     is $err, '', 'nothing went wrong';
 
     my ($fsn1, $fsn1_out) = run_picker("fsn1\n\n");
-    is_deeply listed($fsn1_out, 'Server type (orderable in fsn1):'), [qw( cpx21 cax21 cx33 )],
+    is_deeply listed($fsn1_out, 'Server type (orderable in fsn1):'), [qw( cpx22 cax21 cx33 )],
         'the same cx33 and cax21 are still offered for fsn1, where they can be ordered';
 };
 
 subtest 'an answer naming a type the location cannot order is not taken' => sub {
     my ($by_name, $out) = run_picker("hel1\ncx33\n");
-    is $by_name->_server_type, 'cpx21', 'cx33 by name is refused in hel1';
-    like $out, qr/'cx33' is not on the list — keeping cpx21/, 'and the dialog says so';
+    is $by_name->_server_type, 'cpx22', 'cx33 by name is refused in hel1';
+    like $out, qr/'cx33' is not on the list — keeping cpx22/, 'and the dialog says so';
 
     my ($by_number) = run_picker("hel1\n3\n");
-    is $by_number->_server_type, 'cpx21',
+    is $by_number->_server_type, 'cpx22',
         'number 3 is out of range for the two types hel1 offers';
 };
 
 subtest 'the default type is not preselected where it cannot be ordered' => sub {
-    # cpx21 is deprecated in nbg1: Enter must not write it. Enter and a name
+    # cpx22 is deprecated in nbg1: Enter must not write it. Enter and a name
     # off the list ask again; the third answer is a choice from the list.
-    my ($init, $out, $err) = run_picker("nbg1\n\ncpx21\n2\n");
+    my ($init, $out, $err) = run_picker("nbg1\n\ncpx22\n2\n");
 
-    is_deeply listed($out, 'Server type (orderable in nbg1):'), [qw( cpx22 cx33 )],
+    is_deeply listed($out, 'Server type (orderable in nbg1):'), [qw( cpx21 cx33 )],
         'nbg1 lists what it can order';
     unlike $out, qr/orderable in nbg1.*\[default\]/s, 'nothing on it is marked as default';
-    like $out, qr/No default: cpx21 is not on this list/, 'and the dialog says why';
-    is scalar(() = $out =~ /Choice: /g), 3, 'Enter and cpx21 each asked again';
-    like $out, qr/'cpx21' is not on the list\n/, 'naming the default does not slip it through';
+    like $out, qr/No default: cpx22 is not on this list/, 'and the dialog says why';
+    is scalar(() = $out =~ /Choice: /g), 3, 'Enter and cpx22 each asked again';
+    like $out, qr/'cpx22' is not on the list\n/, 'naming the default does not slip it through';
 
     is $init->_location,    'nbg1', 'location nbg1';
     is $init->_server_type, 'cx33', 'the type actually chosen from the list';
@@ -167,7 +168,7 @@ subtest 'input that ends before a type is chosen writes no half placement' => su
 
     is $init->_location,    undef, 'no location is kept';
     is $init->_server_type, undef, 'no server type is kept';
-    like $err, qr/\[!!\] No server type chosen — keeping the defaults \(cpx21 in fsn1\)/,
+    like $err, qr/\[!!\] No server type chosen — keeping the defaults \(cpx22 in fsn1\)/,
         'STDERR says nothing was chosen and what ocp.yaml gets instead';
     unlike $out, qr/\[ok\] Control plane/, 'no placement is reported as chosen';
 };
@@ -176,22 +177,22 @@ subtest 'a location nothing can be ordered in is not offered' => sub {
     my ($init, $out) = run_picker("ash\n\n");
 
     is_deeply listed($out, 'Location:'), [qw( fsn1 hel1 nbg1 )],
-        'ash is left out: cpx21 is unavailable there, cpx22 deprecated';
+        'ash is left out: cpx22 is unavailable there, cpx21 deprecated';
     is $init->_location, 'fsn1', 'answering ash keeps the default location';
 
-    # Same cut when it hits the default location: cpx22 alone is orderable,
+    # Same cut when it hits the default location: cpx21 alone is orderable,
     # and only in hel1, so fsn1 is not on the list and cannot be the default.
-    my @hel1_only = (type('cpx22', 2, 4, 'x86', entry('fsn1', available => $false), entry('hel1')));
+    my @hel1_only = (type('cpx21', 3, 4, 'x86', entry('fsn1', available => $false), entry('hel1')));
 
     my ($picked, $picked_out) = run_picker("\n1\n1\n", server_types => \@hel1_only);
     is_deeply listed($picked_out, 'Location:'), [qw( hel1 )], 'only hel1 is offered';
     like $picked_out, qr/No default: fsn1 is not on this list/, 'fsn1 is not preselected';
     is $picked->_location,    'hel1',  'Enter asked again, 1 took hel1';
-    is $picked->_server_type, 'cpx22', 'and the one type hel1 offers was taken by number';
+    is $picked->_server_type, 'cpx21', 'and the one type hel1 offers was taken by number';
 
     my ($ended, undef, $err) = run_picker('', server_types => \@hel1_only);
     is $ended->_location, undef, 'closed input picks no location';
-    like $err, qr/\[!!\] No location chosen — keeping the defaults \(cpx21 in fsn1\)/,
+    like $err, qr/\[!!\] No location chosen — keeping the defaults \(cpx22 in fsn1\)/,
         'and STDERR says so';
 };
 

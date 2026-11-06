@@ -600,11 +600,14 @@ sub stored_after {
 sub hetzner_provider {
     my (%over) = @_;
     my $cloud = FakeHetznerCloud->new(%over);
+    # A server type from the provider: ocpnode() names none, and since k308
+    # the adapter has no code default to fall back to.
     return (OCP::Provider::Hetzner->new(
-        token        => 'fake-token',
-        cluster_name => 'cortex',
-        ssh_key_name => 'ocp-cortex-admin',
-        cloud        => $cloud,
+        token               => 'fake-token',
+        cluster_name        => 'cortex',
+        ssh_key_name        => 'ocp-cortex-admin',
+        default_server_type => 'cpx22',
+        cloud               => $cloud,
     ), $cloud);
 }
 

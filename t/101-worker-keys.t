@@ -254,10 +254,11 @@ subtest 'Hetzner create_server passes both names through to the API' => sub {
         token => 'fake', cluster_name => 'cortex', cloud => $cloud,
     );
     $prov->create_server(
-        name     => 'cortex-police1',
-        node     => 'police1',
-        role     => 'control-plane',
-        ssh_keys => ['ocp-cortex-admin', 'ocp-cortex-robo'],
+        name        => 'cortex-police1',
+        node        => 'police1',
+        role        => 'control-plane',
+        server_type => 'cpx22',    # bootstrap names one; the adapter has none (k308)
+        ssh_keys    => ['ocp-cortex-admin', 'ocp-cortex-robo'],
     );
 
     is_deeply $servers->{created}[0]{ssh_keys},

@@ -121,7 +121,7 @@ network-free and cluster-free, running against inline mock packages
 | Optional: the worker path | Switch | Costs |
 |---|---|---|
 | ssh worker on an existing machine | `OCP_SMOKE_WORKER_HOST=<host>` | nothing; its Kubernetes is wiped like `SMOKE_HOST`'s, +3–6 min |
-| Hetzner worker | `OCP_SMOKE_HETZNER_WORKER=1` (+ `HETZNER_API_TOKEN`) | one paid server for the length of the run, +5–10 min |
+| Hetzner worker | `OCP_SMOKE_HETZNER_WORKER=1` (+ `HETZNER_API_TOKEN`, `OCP_SMOKE_HETZNER_SERVER_TYPE`) | one paid server for the length of the run, +5–10 min |
 
 Both do the same, in this order: a worker pool (`smoke-workers`) is written
 into the `ocp.yaml` `ocp init` made, so `ocp apply` joins it after the control
@@ -148,9 +148,13 @@ OCP_SMOKE_WORKER_HOST=crag.lab SMOKE_HOST=reuben.cihq make smoke
 # paid: SMOKE_HOST needs an address the Hetzner server can reach (public), and
 # robocop (switched on by the hetzner pool) must be able to pull its image.
 HETZNER_API_TOKEN=... OCP_SMOKE_HETZNER_WORKER=1 \
-  OCP_SMOKE_HETZNER_SERVER_TYPE=cpx21 OCP_SMOKE_HETZNER_LOCATION=fsn1 \
+  OCP_SMOKE_HETZNER_SERVER_TYPE=cpx22 OCP_SMOKE_HETZNER_LOCATION=fsn1 \
   SMOKE_HOST=cp.example.org make smoke
 ```
+
+The Hetzner worker needs `OCP_SMOKE_HETZNER_SERVER_TYPE`: a Hetzner worker
+pool has no default server type, so the helper refuses to write one without
+it, before anything is ordered.
 
 The helper `xt/smoke-worker.pl` holds the parsing (the pool in `ocp.yaml`, the
 `ocp node ls --json` lookup, the pod, the server count); `t/229-smoke-worker.t`

@@ -318,7 +318,10 @@ C<spec.hetzner.location>, C<.serverType> and C<.image>: what every node of
 this provider gets when its own OCPNode spec names none.  That is rank 3 of
 the four L<OCP::Provider::Hetzner/create_server> resolves — a node's own
 C<ocp node add --location> still wins, and with none of them given the code
-default applies.  A provider named C<hetzner-nbg1> is worth having for
+default applies to the location and the image.  The server type has none:
+without C<--server-type> here, every node of this provider has to name its
+own (C<ocp node add --server-type>), or creating it is refused.  A provider
+named C<hetzner-nbg1> is worth having for
 exactly this reason; until k100 the fields were written here and read
 nowhere, so C<--location nbg1> changed no server.
 

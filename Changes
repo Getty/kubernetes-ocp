@@ -1,6 +1,19 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A new Hetzner control plane is now cpx22 by default, replacing cpx21.
+      That is what `ocp init` writes and what its server-type picker
+      preselects.
+    - Breaking: a Hetzner worker pool in `ocp.yaml` must name its server
+      type. `ocp apply` now refuses a pool without one and says what to
+      add: put `server_type: cpx22` (or the type you want) on the pool.
+      Before, such workers were quietly created as cx32.
+    - A Hetzner worker added with `ocp node add` needs `--server-type`,
+      unless its provider already has one (`ocp provider add
+      --server-type`). With neither, the node goes Failed with a line
+      saying what is missing, and no server is ordered. This also hits
+      nodes that were still waiting to be created from before the update;
+      remove each with `ocp node rm` and add it again with a type.
     - ocp apply now ends APPLY INCOMPLETE with a non-zero exit code when
       the first control plane is still not Ready after the first deploy's
       10-minute wait, as it already did for further control planes and

@@ -96,7 +96,9 @@ subtest 'the guard is armed: it counts the OCPNodes of that loop' => sub {
 subtest 'control: a count validate() takes is the count' => sub {
     for my $case ([ 3, [ 'hz-1', 'hz-2', 'hz-3' ] ], [ 0, [] ]) {
         my ($n, $names) = @$case;
-        my $config = config_from_text("  - name: hz\n    provider: hetzner\n    nodes: $n\n");
+        # server_type: validate() requires it of a hetzner pool (k308).
+        my $config = config_from_text("  - name: hz\n    provider: hetzner\n    server_type: cpx22\n"
+            . "    nodes: $n\n");
         is_deeply [ $config->validate ], [], "nodes: $n -- validate() passes it";
         is_deeply built($config)->{names}, $names, "nodes: $n -- $n OCPNode(s)";
     }

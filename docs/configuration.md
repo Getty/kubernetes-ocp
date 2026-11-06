@@ -30,7 +30,7 @@ control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
 workers:                       # optional pools; each becomes Pending OCPNode
   - name: pool1                # CRs on `ocp apply` (CR-first — see below)
     provider: hetzner
-    server_type: cpx21
+    server_type: cpx22         # required on a hetzner pool: no default
     nodes: 3                   # a count; an ssh pool lists its hosts instead
 
 ssh:
@@ -159,6 +159,12 @@ These shapes used to be read wrongly and are refused:
   whatever it holds (`host is read for an ssh pool only, and names no machine
   of a hetzner pool, … -- remove host`; for `local` the line adds `or name
   another machine in an ssh pool`).
+- **A `hetzner` worker pool names its `server_type:`.** A worker has no
+  default server type: a pool without one used to get `cx32`, which nothing in
+  `ocp.yaml` said. The line is `worker pool 'pool1': server_type required for
+  hetzner -- a worker pool has no default; add one, e.g. server_type: cpx22`.
+  A Hetzner control plane needs `server_type:` and `location:` as before;
+  `ocp init` writes both, `cpx22` and `fsn1` unless you pick others.
 - **An unknown key in a control plane or a worker pool** is refused, so a
   misspelt key cannot leave its default in force. A control plane takes
   `provider`, `host`, `public_ip`, `private_ip`, `node_ip`, `server_type`,
@@ -270,6 +276,12 @@ Note that `ocp node add --provider` takes the **name** of an `OCPNodeProvider`
 CR, not a provider type — `--provider ssh-default`, not `--provider ssh`.
 `ocp apply` names the CRs it writes `<type>-default`, and `ocp provider ls`
 lists what exists.
+
+A Hetzner node's server type comes from `ocp node add --server-type`, or else
+from its provider's (`ocp provider add --server-type`). There is no default
+beyond those two: the `hetzner-default` provider `ocp apply` writes names none,
+so `ocp node add` on it needs `--server-type`. A node with neither goes
+`Failed` with a line that says what to add, and no server is created for it.
 
 ### A worker by hostname
 

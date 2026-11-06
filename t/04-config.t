@@ -274,7 +274,8 @@ my $tmpdir = tempdir(CLEANUP => 1);
     my $cps = $config->control_planes;
     is(ref $cps, 'ARRAY', 'write_spec: returns array');
     is($cps->[0]{provider}, 'hetzner', 'write_spec: hetzner provider');
-    is($cps->[0]{server_type}, 'cpx21', 'write_spec: default server_type');
+    # Hetzner catalogue, as of 2026-11 (k264): cpx22, not cpx21.
+    is($cps->[0]{server_type}, 'cpx22', 'write_spec: default server_type');
 }
 
 {

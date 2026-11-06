@@ -17,8 +17,12 @@ use YAML::XS ();
 # places need the same three values: write_spec falls back to them, and the
 # pickers in OCP::Cmd::Init preselect them so pressing Enter reproduces
 # exactly what a non-interactive init would have written.
+#
+# Control planes only: a Hetzner worker pool names its own server_type, and
+# validate() refuses one without (k308). server_type: Hetzner catalogue, as of
+# 2026-11 (k264).
 our %HETZNER_DEFAULTS = (
-    server_type => 'cpx21',
+    server_type => 'cpx22',
     location    => 'fsn1',
     image       => 'debian-13',
 );
@@ -1676,13 +1680,23 @@ sub _worker_lines {
         # which worker_ocpnodes copies into every OCPNode of the pool. A host
         # beside a pool that takes none has one line, whatever its shape
         # (k331): see _pool_host_error.
+        my %malformed;
         for my $s (@ONE_NAME_KEYS) {
             my ($key, $what) = @$s;
             next if $key eq 'host' && !$self->_pool_takes_host($w);
             if (defined(my $err = _not_a_string($w->{$key}, $what))) {
                 push @lines, _tagged("$at.$key" => "$where: $key $err");
+                $malformed{$key} = 1;
             }
         }
+
+        # A Hetzner pool names its server type (k308): there is no worker
+        # default, and OCP::Provider::Hetzner::create_server refuses a node
+        # whose OCPNode and provider name none. What a provider requires, at
+        # no path, as a control plane's server_type is (_control_plane_lines).
+        push @lines, _tagged(undef, "$where: server_type required for hetzner -- a worker pool has "
+            . "no default; add one, e.g. server_type: $HETZNER_DEFAULTS{server_type}")
+            if !ref $wprov && $wprov eq 'hetzner' && !$w->{server_type} && !$malformed{server_type};
 
         # nodes (k315), see _pool_nodes_errors. Which nodes: a pool takes
         # hangs on its provider, so only a known one is asked. An ssh pool's

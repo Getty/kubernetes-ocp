@@ -311,8 +311,14 @@ Your control plane can run workloads on its own, but a real cluster grows.
 Adding a node does not involve editing `ocp.yaml`:
 
 ```bash
-ocp node add worker-1 --role worker
+ocp node add worker-1 --role worker --server-type cpx22
 ```
+
+`--server-type` is the Hetzner machine the node gets; `cpx22` is what `ocp init`
+gives the control plane. A Hetzner worker has no default type: without the
+flag, and unless its provider names one (`ocp provider add --server-type`),
+the node goes `Failed` with a line that says what to add, and no server is
+created. ssh and local nodes take no server type, so leave it off there.
 
 This writes an `OCPNode` custom resource and then waits, printing each phase as
 the node passes through it: the machine is created, Kubernetes is installed, it
@@ -343,9 +349,9 @@ of the array and exits 1, as `ocp status --json` and `ocp health --json` do.
 Useful variations:
 
 ```bash
-ocp node add gpu-1 --role worker --provider hetzner-default --gpu
+ocp node add gpu-1 --role worker --provider hetzner-default --server-type TYPE --gpu
 ocp node add ssh-1 --role worker --provider ssh-default --host 10.0.0.5
-ocp node add worker-2 --role worker --nowait     # write the CR, don't wait
+ocp node add worker-2 --role worker --server-type cpx22 --nowait   # write the CR, don't wait
 ```
 
 With `--gpu`, the command also makes sure of the GPU Operator once the node is

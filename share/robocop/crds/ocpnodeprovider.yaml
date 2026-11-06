@@ -168,10 +168,10 @@ spec:
                   serverType:
                     type: string
                     description: >-
-                      Default server type (cx22, cx32, cpx21, cax21, ...) for
+                      Default server type (cpx22, cax21, ...) for
                       nodes of this provider that do not set spec.serverType
-                      themselves. Leave unset to fall through to the code
-                      default (cx32).
+                      themselves. There is no code default: left unset, a
+                      node that names none is refused, not created.
                   image:
                     type: string
                     description: >-

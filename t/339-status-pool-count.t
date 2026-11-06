@@ -103,6 +103,10 @@ my @HOST  = ( $ABSENT, '10.0.0.21', 'w1.k339.test', '0', '' );
 # with one leave the set, and a subtest of their own asks two of them.
 my @COUNT = ( $ABSENT, 5 );
 
+# A hetzner pool names its server type, which validate() requires since k308:
+# without one, every hetzner shape would leave the set.
+my %SERVER_TYPE = (hetzner => 'cpx22');
+
 my @SHAPES;
 for my $provider (OCP::Provider->types) {
     for my $nodes (@NODES) {
@@ -110,6 +114,7 @@ for my $provider (OCP::Provider->types) {
             for my $count (@COUNT) {
                 push @SHAPES, {
                     provider => $provider,
+                    ($SERVER_TYPE{$provider} ? (server_type => $SERVER_TYPE{$provider}) : ()),
                     (ref $nodes && $nodes == $ABSENT ? () : (nodes => $nodes)),
                     (ref $host  && $host  == $ABSENT ? () : (host  => $host)),
                     (ref $count && $count == $ABSENT ? () : (count => $count)),
@@ -137,11 +142,11 @@ note scalar(keys %accepted) . ' shapes accepted, ' . ($refused // 0) . ' refused
 # k347 and without them: were one to leave the set, the sweep would no longer
 # ask it. The pools with a count:, which k347 refuses, are asked below.
 my @NAMED = (
-    [ { provider => 'hetzner' }                    => 1, 'hetzner, no nodes: (k339)' ],
-    [ { provider => 'local' }                      => 1, 'local, no nodes: (k339)' ],
-    [ { provider => 'hetzner', nodes => undef }    => 1, 'hetzner, nodes: ~' ],
-    [ { provider => 'hetzner', nodes => 0 }        => 0, 'hetzner, nodes: 0' ],
-    [ { provider => 'hetzner', nodes => 3 }        => 3, 'hetzner, nodes: 3' ],
+    [ { provider => 'hetzner', server_type => 'cpx22' }                 => 1, 'hetzner, no nodes: (k339)' ],
+    [ { provider => 'local' }                                           => 1, 'local, no nodes: (k339)' ],
+    [ { provider => 'hetzner', server_type => 'cpx22', nodes => undef } => 1, 'hetzner, nodes: ~' ],
+    [ { provider => 'hetzner', server_type => 'cpx22', nodes => 0 }     => 0, 'hetzner, nodes: 0' ],
+    [ { provider => 'hetzner', server_type => 'cpx22', nodes => 3 }     => 3, 'hetzner, nodes: 3' ],
     [ { provider => 'ssh', host => '10.0.0.21' }   => 1, 'ssh, host: only (k332)' ],
     [ { provider => 'ssh', nodes => [] }           => 0, 'ssh, nodes: []' ],
     [ { provider => 'ssh', nodes => [ '10.0.0.31', { host => '10.0.0.32' } ] } => 2, 'ssh, nodes: a list of two' ],
@@ -166,7 +171,7 @@ subtest 'the pools around k339 are workers, and status says as many' => sub {
 # the count: (k339) -- which the sweep can no longer ask, as validate() takes
 # these shapes out of its set.
 my @COUNTED = (
-    [ { provider => 'hetzner', count => 5 }           => 1, 'hetzner, a count: and no nodes:' ],
+    [ { provider => 'hetzner', server_type => 'cpx22', count => 5 } => 1, 'hetzner, a count: and no nodes:' ],
     [ { provider => 'local', nodes => 3, count => 5 } => 3, 'local, nodes: 3 and a count:' ],
 );
 

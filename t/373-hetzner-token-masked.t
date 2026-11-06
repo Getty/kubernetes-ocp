@@ -117,7 +117,7 @@ subtest 'the Hetzner adapter: every request it makes fails masked' => sub {
         {
             local $ROUTES{'GET /servers'} = { servers => [] };
             masked_line(died(sub {
-                $prov->create_server(name => 'police1', ssh_keys => ['k']) }),
+                $prov->create_server(name => 'police1', server_type => 'cpx22', ssh_keys => ['k']) }),
                 $TOKEN, "$how, create_server");
             is $SENT[-1], 'POST /servers', 'create_server: the create was the request refused';
         }

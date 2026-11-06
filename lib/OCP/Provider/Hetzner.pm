@@ -41,10 +41,10 @@ key is unreachable, so C<create_server> refuses instead of creating it.
     my $hz = OCP::Provider::Hetzner->new(default_server_type => 'cx42');
 
 The server type a node created through this provider gets when its own
-OCPNode spec names none.  Third of the four ranks C<create_server> resolves
-(see there); L<OCP::Provider/from_cr> fills it from
-C<spec.hetzner.serverType> on the OCPNodeProvider CR.  Empty by default, and
-empty counts as absent.
+OCPNode spec names none.  Third of the ranks C<create_server> resolves, and
+the last one for the server type (see there); L<OCP::Provider/from_cr> fills
+it from C<spec.hetzner.serverType> on the OCPNodeProvider CR.  Empty by
+default, and empty counts as absent.
 
 =attr default_image
 
@@ -153,7 +153,7 @@ sub server_exists {
         name        => 'police1',
         node        => 'police1',
         role        => 'control-plane',
-        server_type => 'cx32',
+        server_type => 'cpx22',
         image       => 'debian-13',
         location    => 'fsn1',
         ssh_keys    => ['ocp-mycluster-admin'],
@@ -188,14 +188,14 @@ A label match is returned with C<newly_created = 0> and no IP set; this
 is the same shape the caller would have built from a fresh create, minus
 the wait.
 
-C<server_type>, C<image> and C<location> have four possible sources, and the
-order between them is the contract:
+C<server_type>, C<image> and C<location> have up to four possible sources, and
+the order between them is the contract:
 
 =over 4
 
 =item 1. the named option
 
-C<< server_type => 'cx32' >>. The bootstrap path
+C<< server_type => 'cpx22' >>. The bootstrap path
 (L<OCP::Cmd::Apply::Bootstrap>) names all three, so nothing below can move
 the control plane.
 
@@ -215,8 +215,13 @@ otherwise.
 
 =item 4. the code default
 
-C<cx32> / C<debian-13> / C<fsn1>. The last word, and the only one that is not
-configurable.
+C<debian-13> / C<fsn1>, for the image and the location only. The last word,
+and the only one that is not configurable. The server type has none: when
+none of the three ranks above names one, the call dies before anything is
+created and says where to set it. A worker pool in F<ocp.yaml> always names
+one, because L<OCP::Config/validate> refuses a C<hetzner> pool without
+C<server_type>; what can still arrive without one is a node from
+C<ocp node add> without C<--server-type> on a provider without a default.
 
 =back
 
@@ -283,10 +288,25 @@ sub create_server {
 
     # The order in each _first_set below IS the contract, so read it as one:
     # named option, then the node's own spec, then this provider's default,
-    # then the constant. Rank 3 is the one k100 added -- the provider CR
-    # carried these three fields from the beginning, `ocp provider add` wrote
-    # them and `ocp provider ls` printed them, and nothing read them, so
-    # `--location nbg1` moved no server.
+    # then the constant -- for image and location. The server type has no
+    # constant (k308): it was cx32 here, a type nobody chose, while the control
+    # plane's default lives in OCP::Config. A worker is what reaches this
+    # without one -- bootstrap names it, and validate() refuses a Hetzner pool
+    # without server_type -- so this refusal is the backstop for `ocp node add`
+    # and a hand-written CR. Before anything is created, as for the key.
+    my $server_type = _first_set($opts{server_type}, $spec->{serverType},
+                                 $self->default_server_type);
+    die "Refusing to create Hetzner server '$name' without a server type: its "
+      . "OCPNode names none (spec.serverType), nor does its OCPNodeProvider "
+      . "(spec.hetzner.serverType), and there is no default.\n"
+      . "Name one: ocp node rm $name, then ocp node add $name --server-type TYPE; "
+      . "or give its provider one, as ocp provider add --server-type TYPE does.\n"
+        unless defined $server_type;
+
+    # Rank 3 is the one k100 added -- the provider CR carried these three
+    # fields from the beginning, `ocp provider add` wrote them and `ocp
+    # provider ls` printed them, and nothing read them, so `--location nbg1`
+    # moved no server.
     #
     # It sits BELOW the node spec because the node is the more specific
     # statement, and ABOVE the constant because a provider the user configured
@@ -297,8 +317,7 @@ sub create_server {
     # constant unreachable.
     my $server = $self->_api(sub { $self->cloud->servers->create(
         name        => $name,
-        server_type => _first_set($opts{server_type}, $spec->{serverType},
-                                  $self->default_server_type, 'cx32'),
+        server_type => $server_type,
         image       => _first_set($opts{image},       $spec->{image},
                                   $self->default_image,       'debian-13'),
         location    => _first_set($opts{location},    $spec->{location},
