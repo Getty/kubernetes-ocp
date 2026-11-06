@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T19:33:59Z
+id: 411
+priority: low
+status: backlog
+tags:
+- secrets
+- pod
+title: OCP::Keys update_key adds a PIN2 layer without checking pin2; add_key POD calls
+  pin2 required
+updated: 2026-11-06T19:33:59Z
+---
+
+Found by the k390 worker (2026-11-06), not fixed there. (1) lib/OCP/Keys.pm update_key (~:287) puts a PIN2 layer on private without checking pin2: an undefined PIN2 derives the layer from an empty password, and it would put a PIN2 layer on an automation key. Nothing in lib/ or bin/ calls update_key today. (2) The add_key POD (~:797) says "Required params: ... pin2"; pin2 is optional (automation keys). Done = update_key refuses a missing pin2 for a non-automation key and never adds a PIN2 layer to an automation key (or update_key goes, since nothing calls it), and the POD says pin2 is optional. Lane: ocp-secrets-worker.
