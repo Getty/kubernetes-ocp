@@ -163,6 +163,16 @@ It rests on a live check on 2026-11-03: OCP's own ClusterPolicy publishes
 only from settings OCP does not write. The failing direction has not been seen
 live, and the amendment says so.
 
+0013 was amended on 2026-11-06 under k405. The decision did not move. Its
+account of one consequence did: publishing never runs without explicit
+permission. That bullet named the Make targets and `dzil release` and was
+false for CI twice. The first time was the day the ADR was written, until
+df5b0cf removed the old publish workflow. The second began on 2026-09-18,
+when k134's scripts reached `main` with a policy that publishes every push
+there. The maintainer then decided that only release tags publish. What counts
+as a release tag, the bare-version tag `dzil release` writes, is the main
+agent's call, not the maintainer's, and the amendment says so.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and
