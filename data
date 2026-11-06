@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T19:34:59Z
+created: 2026-10-31T16:17:27Z
+id: 390
+priority: high
+started: 2026-11-06T19:11:53Z
+status: done
+tags:
+- secrets
+- security
+- bug
+title: A PIN2 of 0 stores the admin key without PIN2 protection
+updated: 2026-11-06T19:34:59Z
+---
+
+Found while working k375 (secrets worker). Confirmed by reading the code on 682e86a; not yet reproduced in a test.
+
+- OCP::Password::prompt_new_pin accepts "0": it checks only defined && length.
+- OCP::Keys::add_key double-encrypts only `if ($pin2)` (Keys.pm ~l.131). PIN2 "0" is false in Perl, so the key falls through to _single_encrypt: the admin key is stored age-only, like an automation key, and the user believes it is PIN2-protected.
+- PIN1 "0": OCP::Password::encrypt_age_key croaks "password required" (Password.pm l.105, also l.135), so ocp init shows an internal error instead of a user error.
+
+Done when a PIN of "0" is either honoured everywhere (checks on defined/length, never truthiness, in Password.pm and Keys.pm) or refused at the prompt as a user error. Regression test for both PIN1 and PIN2. Lane: ocp-secrets-worker.
+
+2026-11-06 (ocp-secrets-worker): a PIN "0" is a PIN everywhere (maintainer's decision via the hub). defined && length instead of truthiness in OCP::Keys add_key (:134), decrypt_key (:355), get_admin_key (:400), OCP::Password encrypt_age_key/decrypt_age_key (:107/:137) and OCP::Secrets::_unlock_age_key (:951, a PIN1 "0" handed in was asked for again). Before: PIN2 "0" stored the admin key age-only, PIN1 "0" ended ocp init in an internal error. New t/390-pin-zero.t runs secure-mode init end to end via --pins-stdin and asserts the stored shape (admin key = PIN2 layer, robo key = plain key as control). Red on main 06c5fb5: tests 4-9 and 11 (PIN1: 4-7, PIN2: 8, 9, 11); each of the six sites reverted alone is caught. Binding (image rel1106): t/390 + 14 neighbour files (t/05, t/08*, t/349*, t/370, t/375, t/382, t/69, t/71*, t/95, t/96*) Files=15 Tests=664 PASS. No PIN truthiness site outside the secrets lane.
+
+Committed as e16cfe09711ca61c7dceafeb1cba2482c050524b on worktree-ocp-release-1106.
