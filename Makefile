@@ -162,11 +162,11 @@ docker-release: build
 	docker push $(IMAGE):latest
 	@echo "Released $(IMAGE):$(TAG)"
 
-# Build and push the OCP image using share/bin/ocp-build-image. The script
-# runs standalone (CI does not need `make`), accepts overrides via --repo
-# and --tag, and prints rather than executes under --dry-run. This
-# target does NOT need maintainer go-ahead — the script pushes by default,
-# so `--push` here is explicit (call the script directly with `--no-push`
-# for a local-only build).
+# Build the OCP image using share/bin/ocp-build-image — build only, nothing is
+# pushed. The script runs standalone (CI does not need `make`), accepts
+# overrides via --repo and --tag, and prints rather than executes under
+# --dry-run. `--no-push` is spelled out so this target never pushes, whatever
+# the script's default. Pushing is `share/bin/ocp-build-image --push` and,
+# like `make docker-push`, needs the maintainer's explicit go-ahead.
 build-image: | vendor/ORDER
-	share/bin/ocp-build-image --push
+	share/bin/ocp-build-image --no-push

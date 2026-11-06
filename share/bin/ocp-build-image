@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 #
-# ocp-build-image — Build and (optionally) push the OCP Docker image to a
-# registry. The image is built for the architecture of the machine running
-# this script. Idempotent, CI-friendly. Standalone — works without `make` or
-# any Perl.
+# ocp-build-image — Build the OCP Docker image, and push it to a registry only
+# when asked to with --push. The image is built for the architecture of the
+# machine running this script. Idempotent, CI-friendly. Standalone — works
+# without `make` or any Perl.
+#
+# Building is the default and pushes nothing (k407): a host that happens to be
+# logged in to Docker Hub must not publish raudssus/ocp:latest just because
+# someone built the image. Pushing needs --push: CI's publish job passes it for
+# a release tag, and any other push needs the maintainer's explicit go-ahead.
 #
 # Tags written (in order):
 #   latest
 #   $VERSION            — from ./VERSION file, --tag=…, or `git describe`
 #   <git-sha-short-7>   — from `git rev-parse --short=7 HEAD`
 #
-# Push target: raudssus/ocp by default; override via --repo= or $OCP_IMAGE_REPO.
+# Image repo (and push target with --push): raudssus/ocp by default; override
+# via --repo= or $OCP_IMAGE_REPO.
 #
 # Build cache: pulled from $REPO:cache so incremental builds reuse layers
 # (push from CI; local-only builds still benefit if the cache tag exists).
@@ -19,14 +25,14 @@ set -euo pipefail
 
 # ---- Defaults ---------------------------------------------------------------
 REPO="${OCP_IMAGE_REPO:-raudssus/ocp}"
-PUSH=1
+PUSH=0
 DRY_RUN=0
 TAG_OVERRIDE=""
 
 # ---- Usage ------------------------------------------------------------------
 usage() {
     cat <<'EOF'
-ocp-build-image — Build and (optionally) push the OCP Docker image
+ocp-build-image — Build the OCP Docker image; push it only with --push
 
 Builds for the architecture of the machine this runs on.
 
@@ -36,8 +42,8 @@ Usage:
 Options:
   --repo=NAME         Image repo (default: raudssus/ocp, or $OCP_IMAGE_REPO)
   --tag=VERSION       Override VERSION (otherwise from ./VERSION or git describe)
-  --push              Push to registry (default)
-  --no-push           Build only, do not push
+  --push              Push every tag to the registry (needs a docker login)
+  --no-push           Build only, do not push (default)
   --dry-run           Print docker commands instead of running them
   -h, --help          Show this help
 
@@ -47,8 +53,8 @@ Environment:
 Exit codes:
   0  success
   1  build failed
-  2  push failed
-  3  not logged in to a docker registry
+  2  push failed (--push only)
+  3  not logged in to a docker registry (--push only)
 EOF
 }
 

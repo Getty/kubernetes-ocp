@@ -38,9 +38,11 @@ the tests. Prose in `README.md` and `Changes` bullets are not.
 
 ## Release
 
-`make test` / `make build` / `dzil build` are fine anytime. The release commands that need the
-maintainer's go-ahead here: the dzil release, `make docker-push`, `make docker-release` — even
-if a plan lists "release" as the next step.
+`make test` / `make build` / `make build-image` / `dzil build` are fine anytime. The release
+commands that need the maintainer's go-ahead here: the dzil release, `make docker-push`,
+`make docker-release` and `share/bin/ocp-build-image --push` — even if a plan lists "release"
+as the next step. These are every command here that pushes: `make build-image` and the script
+without `--push` only build, and CI publishes only from a release tag.
 
 ## Deviations from the house rules
 

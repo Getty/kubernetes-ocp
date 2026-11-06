@@ -270,11 +270,13 @@ the very same `action/run.sh`. There is one contract, not two.
 
 ## Releasing
 
-`make test`, `make build` and `dzil build` are fine at any time.
+`make test`, `make build`, `make build-image` and `dzil build` are fine at any
+time. `make build-image` and `share/bin/ocp-build-image` only build; the script
+pushes only when it is given `--push`.
 
-`dzil release`, `make docker-push` and `make docker-release` require the
-maintainer's explicit go-ahead, every time, even when a plan lists "release" as
-the obvious next step.
+`dzil release`, `make docker-push`, `make docker-release` and
+`share/bin/ocp-build-image --push` require the maintainer's explicit go-ahead,
+every time, even when a plan lists "release" as the obvious next step.
 
 Note that this distribution builds with `no_cpan = 1`: it is deliberately not
 published to CPAN, and `cpanm OCP` will never find it.

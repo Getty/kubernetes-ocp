@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `share/bin/ocp-build-image` and `make build-image` now only build
+      the image: pushing needs an explicit `--push`, which the CI publish
+      job already passes. Before, a run on a host logged in to Docker Hub
+      pushed `raudssus/ocp:latest` unasked.
     - CI publishes the Docker image only from a release tag (`0.001`,
       `1.110`), no longer from every push to main: `raudssus/ocp:latest`
       and the GHCR copy now follow releases.

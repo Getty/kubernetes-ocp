@@ -6,19 +6,21 @@ use File::Temp qw(tempdir);
 use FindBin;
 use Path::Tiny qw(path);
 #
-# share/bin/ocp-build-image builds and (by default) pushes the OCP image for
-# the architecture of the machine it runs on, idempotent, CI-friendly. The
-# only thing this test actually exercises is the script's command line — it
+# share/bin/ocp-build-image builds the OCP image for the architecture of the
+# machine it runs on, idempotent, CI-friendly, and pushes it only when asked
+# to with --push. A run without flags must never push (k407): a host logged
+# in to Docker Hub would otherwise publish raudssus/ocp:latest just by
+# building. The only thing this test actually exercises is the script's
+# command line — it
 # must not require a running docker daemon, a logged-in registry, or even
 # `docker` in $PATH, because those are precisely the things CI wants to
 # assert are *not* needed.
 #
 # Almost everything below runs the script with --dry-run, so docker is never
 # invoked. The `mock docker` further down proves that point by recording
-# every invocation: in --dry-run mode the log stays empty. The two
-# failure-mode subtests at the end are the exception — they need the real
-# code path to reach `docker`, and get there against the mock, never against
-# a daemon.
+# every invocation: in --dry-run mode the log stays empty. The subtests that
+# pass no_dry_run are the exception — they need the real code path to reach
+# `docker`, and get there against the mock, never against a daemon.
 #
 my $root   = path(__FILE__)->parent->parent->absolute;
 my $script = $root->child('share/bin/ocp-build-image');
@@ -123,12 +125,44 @@ subtest 'script defaults to raudssus/ocp with the standard tag triple' => sub {
         'latest tag is on the docker build line';
     like $r->{stdout}, qr/-t 'raudssus\/ocp:1\.2\.3'/,
         'version tag is on the docker build line';
+    unlike $r->{stdout}, qr/^other\/x/m,
+        'no leaked default-name override';
+};
+
+# The default is build only. Two witnesses, so the claim holds for the real
+# code path too and not just for what --dry-run chooses to print.
+subtest 'a run without flags builds and pushes nothing' => sub {
+    my $r = run_ocp_build(version => '1.2.3');
+    is $r->{exit}, 0, 'dry-run exits 0';
+    like $r->{stdout}, qr/^\[ocp-build-image\] repo=raudssus\/ocp push=0$/m,
+        'announces push=0 when no flag is given';
+    like $r->{stdout}, qr/\[dry-run\] docker build/,
+        'the build is printed';
+    unlike $r->{stdout}, qr/docker push/,
+        'no docker push line without --push';
+
+    my $real = run_ocp_build(version => '1.2.3', no_dry_run => 1);
+    is $real->{exit}, 0, 'the real code path exits 0 against the mock docker';
+    like $real->{docker_log}, qr/^build$/m,
+        'docker build ran';
+    unlike $real->{docker_log}, qr/^push$/m,
+        'docker push never ran without --push';
+};
+
+subtest '--push pushes every tag' => sub {
+    my $r = run_ocp_build(
+        version => '1.2.3',
+        args    => ['--push'],
+    );
+    is $r->{exit}, 0, 'dry-run exits 0';
+    like $r->{stdout}, qr/^\[ocp-build-image\] repo=raudssus\/ocp push=1$/m,
+        'announces push=1 with --push';
     like $r->{stdout}, qr/docker push 'raudssus\/ocp:latest'/,
         'latest tag gets its own docker push line';
     like $r->{stdout}, qr/docker push 'raudssus\/ocp:1\.2\.3'/,
         'version tag gets its own docker push line';
-    unlike $r->{stdout}, qr/^other\/x/m,
-        'no leaked default-name override';
+    my @pushes = $r->{stdout} =~ /^\[dry-run\] docker push /mg;
+    is scalar(@pushes), 3, 'one docker push line per tag of the triple';
 };
 
 # The image is built for the architecture of the machine running the
@@ -174,6 +208,8 @@ subtest '--no-push drops the docker push commands' => sub {
         args    => ['--no-push'],
     );
     is $r->{exit}, 0, 'still exits 0';
+    like $r->{stdout}, qr/ push=0$/m,
+        'announces push=0';
     unlike $r->{stdout}, qr/docker push/,
         'no push command anywhere in the printed output';
     like $r->{stdout}, qr/\[dry-run\] docker build/,
@@ -187,8 +223,10 @@ subtest '--no-push drops the docker push commands' => sub {
 subtest '--dry-run never invokes docker' => sub {
     # Mock docker is in PATH and logs every call. The script must not
     # touch it under --dry-run — otherwise a "dry-run" that already
-    # pinged the daemon is not a dry-run.
-    my $r = run_ocp_build(version => '0.0.1');
+    # pinged the daemon is not a dry-run. --push makes the dry-run print
+    # (and, without the dry-run, run) the most docker commands there are,
+    # the login check included.
+    my $r = run_ocp_build(version => '0.0.1', args => ['--push']);
     is $r->{exit}, 0, 'exits 0 in dry-run';
     ok !$r->{docker_invoked},
         'docker was never executed' . ($r->{docker_invoked}
@@ -249,15 +287,22 @@ subtest '--help exits 0 and documents exit codes' => sub {
         'mentions push-fail exit code 2';
     like $r->{stdout}, qr/\b3\b.*not logged in/s,
         'mentions no-login exit code 3';
+    like $r->{stdout}, qr/^\s*--no-push\b.*\(default\)/m,
+        'documents build-only as the default';
+    unlike $r->{stdout}, qr/^\s*--push\b.*\(default\)/m,
+        'does not document pushing as the default';
 };
 
 # The exit-code contract is only worth documenting if the script honours it.
 # Build and push are two separate docker invocations, so which one failed is
 # simply which command returned non-zero — these two subtests run the real
-# code path (no --dry-run) against the mock docker, never a daemon.
+# code path (no --dry-run) against the mock docker, never a daemon. Both pass
+# --push: without it no push is attempted at all, and "never reaches the push"
+# would hold for the wrong reason.
 subtest 'a failing build exits 1 and never reaches the push' => sub {
     my $r = run_ocp_build(
         version     => '1.0.0',
+        args        => ['--push'],
         no_dry_run  => 1,
         docker_mock => <<'EOS',
 case "$1" in
@@ -276,6 +321,7 @@ EOS
 subtest 'a failing push exits 2 after a successful build' => sub {
     my $r = run_ocp_build(
         version     => '1.0.0',
+        args        => ['--push'],
         no_dry_run  => 1,
         docker_mock => <<'EOS',
 case "$1" in
@@ -291,6 +337,38 @@ EOS
         'a push failure is never reported as a build failure';
     like $r->{docker_log}, qr/^build$/m,
         'the build itself did run';
+};
+
+# The callers decide whether anything is published, so they have to say so on
+# their command line rather than lean on the script's default. `make
+# build-image` builds only — pushing waits for the maintainer's go, like `make
+# docker-push`. CI's publish job is the one caller that pushes; with build-only
+# as the default, losing its --push would turn a release publish into a quiet
+# local build.
+sub recipe_of {
+    my ($text, $target) = @_;
+    my ($recipe) = $text =~ /^\Q$target\E:[^\n]*\n((?:\t[^\n]*\n)*)/m;
+    return $recipe;
+}
+
+subtest 'make build-image builds only' => sub {
+    my $makefile = $root->child('Makefile');
+    plan skip_all => 'Makefile not found' unless -f $makefile;
+    my $recipe = recipe_of($makefile->slurp_utf8, 'build-image');
+    ok defined $recipe && length $recipe, 'Makefile has a build-image recipe'
+        or return;
+    like $recipe, qr{share/bin/ocp-build-image\b},
+        'the recipe runs share/bin/ocp-build-image';
+    unlike $recipe, qr/(?<![\w-])--push\b/,
+        'the recipe does not pass --push';
+};
+
+subtest 'the CI publish job passes --push explicitly' => sub {
+    my $publish = $root->child('.cicd/docker+29+publish.image.sh');
+    plan skip_all => '.cicd/docker+29+publish.image.sh not found'
+        unless -f $publish;
+    like $publish->slurp_utf8, qr/^\s*set -- [^\n]*(?<![\w-])--push\b/m,
+        'the publish job hands --push to ocp-build-image';
 };
 
 done_testing;
