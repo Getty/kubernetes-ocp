@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-06T23:10:05Z
+created: 2026-10-31T14:41:46Z
+id: 376
+priority: low
+started: 2026-11-06T19:37:33Z
+status: done
+tags:
+- config
+- validate
+- decision
+title: 'Decide: should validate() check that kubernetes.version is a release of its
+  dist (+rke2rN / +k3sN)?'
+updated: 2026-11-06T23:10:05Z
+---
+
+From k355 (choices worker, 2026-10-31). k355 refuses a kubernetes.version that is no string (list, mapping, boolean). It does not check the release form: v1.36.4+k3s1 under dist: rke2, or a bare v1.31.3 (t/04 uses one), passes validate() and goes to the installer as is.
+
+Question for the maintainer: should validate() refuse a version whose suffix does not match its dist, or one without a suffix? Arguments: generic RKE2/K3s version rules belong in Rex::Rancher (OCP keeps only OCP policy, k196), and the installer already fails on a bad release, but late and after a server was bought. Options: (a) leave it, (b) refuse a suffix of the other dist only, (c) require the dist suffix, with the rule taken from Rex::Rancher.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): validate() refuses only the other distribution's suffix: +k3sN under rke2 and +rke2rN under k3s. A version without suffix stays valid.
+
+2026-11-06 ocp-release-1106 (ocp-choices-worker): validate() refuses only the other distribution suffix (+k3sN under rke2 or no dist, +rke2rN under k3s); a bare version passes. Line tagged kubernetes, so status, update, node add, deploy-* refuse it up front; version() refuses with the same line. Rex::Rancher 0.005 cannot tell a version distribution (parse_release takes either), so the suffix match is OCP code for now; could move to Rex::Rancher as release_suffix. New t/376; t/296 case moved to a bare version. Red on fc2aa1f (claims 1,2,5,6), mutants caught; binding 7 files, 161 tests, PASS.
+
+committed as a1e70d1
