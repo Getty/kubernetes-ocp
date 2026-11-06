@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-11-06T23:44:58Z
+created: 2026-10-31T13:03:35Z
+id: 359
+priority: low
+started: 2026-11-06T19:37:18Z
+status: done
+tags:
+- gpu
+- decision
+title: 'Decide: install-time GPU settings (gpu.amd.integrated, gpu.toolkit) reach
+  joined nodes only on re-join, and nothing says so'
+updated: 2026-11-06T23:45:11Z
+---
+
+Decide (maintainer). From k253 (ocp-worker, 2026-10-31). gpu.amd.integrated (k253) and gpu.toolkit (k223) are install-time settings: they reach a node only when its install task runs. The first control plane gets them on every `ocp apply`. A worker, or police2 and later, gets them only when it is joined again: a Ready node is only verified. Switching integrated true -> false removes nothing (the amdgpu driver stays), and ocp status does not flag a node installed under the other value.
+
+Options:
+- (a) Say it: the docs and the apply/status output name the re-join as the way to apply a changed value.
+- (b) Record per node, on the OCPNode status, what it was installed with, and have ocp status show it as drift with a manual step.
+- (c) Re-run the host step on Ready nodes when the value changes. Disruptive: a driver install, maybe a reboot.
+
+Not to be built before the maintainer answers.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): docs, apply and status say that gpu.amd.integrated and gpu.toolkit reach an already joined node only on re-join, and name the re-join as the way.
+
+ocp-worker (2026-11-07): (a) built. apply, its dry run and ocp status say gpu.toolkit and gpu.amd.integrated are set at a node's install; a joined worker takes a changed value only when joined again (ocp node rm, then apply or node add), a control plane never. Toolkit warning moved to STDERR and counts toward WITH WARNINGS. status --json: spec.gpu. New t/359 (8 subtests), adjusted t/228 t/233 t/252 t/258 t/332 t/381. Red on c260ad8: every positive claim fails, 9 mutants killed. Found: the old docs said the first control plane gets the value on every apply; it is set once, at build. No control-plane re-join exists (maintainer question).
+
+commit-ready; shared files docs/configuration.md and ocp-usage SKILL.md also hold k325 hunks, stage k359 hunks only
+
+committed 4b612c6
