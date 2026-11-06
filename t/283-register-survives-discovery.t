@@ -216,7 +216,8 @@ subtest 'register asks the cluster nothing' => sub {
 };
 
 # A client whose inner IO::K8s was built before register (ocp ssh lists the
-# Nodes first): that instance read `with` already, so it has to be built again.
+# Nodes first): that instance read `with` already, so the Kinds have to reach
+# it as well (Kubernetes::REST's add_provider merges them in).
 subtest 'register on an api already in use' => sub {
     no warnings 'redefine';
     local *Kubernetes::REST::LWPIO::call = loopback_io(discovery());

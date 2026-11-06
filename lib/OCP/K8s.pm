@@ -31,15 +31,14 @@ my %KINDS = (
 #
 # The entry is %KINDS itself, so a second register finds it and adds nothing:
 # calling it on an api OCP::Kubernetes built, which is registered already, is
-# harmless -- and unneeded (k295). An inner IO::K8s built before this call
-# read `with` without the Kinds, so it is dropped and built again on next
-# use, as in OCP::Kubernetes::register_resource_providers.
+# harmless -- and unneeded (k295). add_provider (Kubernetes::REST 1.111, the
+# pinned version) puts that same reference on `with` and merges it into an
+# inner IO::K8s that is already built, as in
+# OCP::Kubernetes::register_resource_providers.
 sub register {
     my ($class, $api) = @_;
     return $api if grep { ref $_ && $_ == \%KINDS } @{ $api->with };
-    push @{ $api->with }, \%KINDS;
-    $api->_clear_k8s if $api->can('_clear_k8s') && $api->can('_has_k8s')
-        && $api->_has_k8s;
+    $api->add_provider(\%KINDS);
     return $api;
 }
 

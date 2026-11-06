@@ -118,18 +118,14 @@ sub temp_kubeconfig {
 }
 
 # The resource-map providers for the Kinds OCP addresses by name. All three
-# ship inside IO::K8s itself (cpanfile requires 1.108), and Kubernetes::REST
-# loads each one when it merges the `with` list into its inner IO::K8s.
+# ship inside IO::K8s itself (cpanfile pins IO::K8s 1.112).
 #
-# Registered through the Kubernetes::REST `with` list, NOT a one-shot
-# $api->k8s->add(). Since 1.108 resource_map/with live on the Kubernetes::REST
-# instance and the inner IO::K8s is a lazy, rebuildable cache: any discovery- or
-# openapi-spec invalidation (ensure_crd calls invalidate_discovery) clears it,
-# and the next access rebuilds it from `with` via IO::K8s::BUILD -> add(). A
-# runtime add() on that inner instance is lost on the first rebuild, after which
-# CiliumNetworkPolicy and friends fall back to fabricated IO::K8s::<Kind> names
-# that die at load time. `with` survives every rebuild because the builder
-# re-applies it (design D12; k131/k132).
+# Registered with add_provider, which puts them on the client's `with` list,
+# NOT with a one-shot $api->k8s->add(). The inner IO::K8s is a rebuildable
+# cache: invalidate_discovery (ensure_crd ends with it) drops it, and the next
+# access builds it again from `with`. An add() on the inner instance is lost
+# there, after which CiliumNetworkPolicy and friends fall back to fabricated
+# IO::K8s::<Kind> names that die at load time (design D12; k131/k132).
 my @RESOURCE_PROVIDERS = qw(
     IO::K8s::Cilium
     IO::K8s::CertManager
@@ -139,16 +135,12 @@ my @RESOURCE_PROVIDERS = qw(
 sub register_resource_providers {
     my ($self, $api) = @_;
 
-    # Mutate the arrayref the accessor returns -- the same durable-registration
-    # pattern OCP::K8s::register uses for OCP's own Kinds -- skipping any
-    # provider a caller already listed. In the common path (called straight from
-    # _build_api) the inner IO::K8s has not been built yet, so `with` is read for
-    # the first time only once these are in place; drop an already-built instance
-    # so a caller that hands over a used $api still gets the providers.
+    # add_provider (Kubernetes::REST 1.111, the pinned version) appends to
+    # `with` and merges into an inner IO::K8s that is already built, so an $api
+    # already in use gets the providers too; one not built yet stays unbuilt.
+    # A provider already on `with` is skipped, so a second call adds nothing.
     my %present = map { $_ => 1 } @{ $api->with };
-    push @{ $api->with }, grep { !$present{$_} } @RESOURCE_PROVIDERS;
-    $api->_clear_k8s if $api->can('_clear_k8s') && $api->can('_has_k8s')
-        && $api->_has_k8s;
+    $api->add_provider(grep { !$present{$_} } @RESOURCE_PROVIDERS);
 
     return $api;
 }
@@ -376,9 +368,10 @@ rebuildable L<IO::K8s>.  A one-shot C<< $api->k8s->add(...) >> is discarded the
 first time the discovery or OpenAPI cache is invalidated (C<ensure_crd> does
 this), after which the provider Kinds fall back to fabricated
 C<< IO::K8s::<Kind> >> names.  Registering on C<with> is durable: the C<k8s>
-builder re-applies it on every rebuild (design D12).  Call this before the first
-use of C<< $api->k8s >>; an already-built inner instance is cleared so the next
-access picks the providers up.
+builder re-applies it on every rebuild (design D12).  It registers through
+L<Kubernetes::REST/add_provider>, so an C<$api> whose inner instance is already
+built gets the providers merged into it at once.  A provider already on C<with>
+is not added again.
 
 =method list_nodes
 
