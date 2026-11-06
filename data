@@ -1,0 +1,23 @@
+---
+class: standard
+created: 2026-11-06T21:24:08Z
+id: 416
+priority: low
+status: backlog
+tags:
+- secrets
+- sops
+- deps
+title: 'repair_sops_lastmodified: ask File::SOPS->has_bare_lastmodified instead of
+  OCP''s own regex'
+updated: 2026-11-06T21:24:08Z
+---
+
+From the hub (perl-developer-bb, 2026-11-06), not this release round. File::SOPS 0.006 (main 3ab0330, pushed) has a class method has_bare_lastmodified(file => $path) or (encrypted => $text), optionally with format. It returns 1 or 0, decrypts nothing and needs no identities; 1 means exactly that the read warning would fire (the warning text stayed byte-identical).
+
+OCP::Secrets->repair_sops_lastmodified asks this with its own regex today. Switch it to the library method. Differences to the regex:
+- it croaks on YAML it cannot read, so the call needs an eval (and a decision what an unreadable file means here);
+- it recognises flow style, a value on the following line and "? lastmodified", so it reports more files than the regex;
+- json/env/ini return 0.
+
+Pin: File::SOPS 0.006 (already the cpanfile pin since the k406 pin step). Related: k414 (the Secrets.pm:746 comment about 0.005 warning on every read).
