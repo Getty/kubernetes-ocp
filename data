@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-06T19:40:12Z
+created: 2026-11-05T12:39:39Z
+id: 404
+priority: low
+started: 2026-11-06T19:20:52Z
+status: done
+tags:
+- ci
+title: CI vendor job checks out and builds three siblings although VENDOR is empty
+updated: 2026-11-06T19:40:12Z
+---
+
+The vendor job in .github/workflows/ci.yml checks out io-k8s-p5, rex-gpu and p5-crypt-age with full history, installs Dist::Zilla plus each sibling's authordeps, and then runs `make vendor` with the Makefile default `VENDOR ?=` (empty). The result is an empty vendor/ORDER: the artifact in run 41741299801 (main 44a9db0) is 126 bytes. The job costs about 3.5 minutes per run, and every CI run fails if a sibling's authordeps break, even though nothing from the siblings goes into the image.
+
+The comment in ci.yml asks to "Keep the checkouts in step with the Makefile's VENDOR list". They are out of step since the siblings were released on CPAN (2026-10-21).
+
+Done when the job follows VENDOR: no checkout and no dzil when VENDOR is empty (or the job is skipped), and the siblings in VENDOR when it is set. Lane: CI/Makefile (ocp-infra-worker or ocp-worker). Found while closing k134.
+
+2026-11-06 (ocp-infra-worker + main agent): the CI vendor job follows the Makefile's VENDOR and holds no copy of it. Step 'list' reads it with make -s vendor-list (step output vendor); clone (make vendor-siblings) and Dist::Zilla/authordeps steps run only when that output is non-empty; make vendor and the upload always run, so the image jobs always get the artifact. New Makefile table SIBLING_HOMES (dir name -> owner/repo, 10 homes: pplu for io-k8s-p5/kubernetes-rest, Getty for the rest, owners taken from each sibling's origin URL); an unknown name fails naming the sibling. t/222: 15 subtests, 8-14 red on the old tree; 9 mutations of the new tree all red. Local dry-run of the job steps: VENDOR empty -> no clone, no tools, empty ORDER; two siblings -> cloned from the right owners, ORDER in VENDOR order; unknown name -> exit 2 with the message. YAML parses (YAML::PP, YAML::XS). Binding (image rel1106): t/222 + t/53 + t/66 Files=3 Tests=39 PASS. docs/development.md vendor section updated by the main agent. Caveat: clones are anonymous HTTPS, every vendored sibling repo must be public (as before).
+
+Committed as 585cc317bab1d845c05e380fac8997007336d5df on worktree-ocp-release-1106.
