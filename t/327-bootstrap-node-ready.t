@@ -12,6 +12,8 @@ use OCP::Config;
 use OCP::Secrets;
 use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::Bootstrap;
+use OCP::Cmd::Apply::CR;
+use OCP::Cmd::Apply::Health;
 
 #
 # k327: the first deploy waits up to 600s for police1's Node to turn Ready.
@@ -19,14 +21,20 @@ use OCP::Cmd::Apply::Bootstrap;
 # /var/lib/rancher/rke2/bin/kubectl with /etc/rancher/rke2/rke2.yaml on the
 # node -- on k3s too, which has neither -- and `cilium status` with the same
 # rke2.yaml. What it found only chose the next line to print; the bootstrap
-# went on either way. Now a Node not seen Ready is one [WARN] on STDERR that
+# went on either way. Now a Node not seen Ready is one line on STDERR that
 # says why: the Ready condition's status, reason and message from the last
 # Node list, or that list's failure (k319). Nothing runs over SSH after the
 # wait, on either distribution. A failed API connectivity check is a [WARN]
 # on STDERR with its cause too.
 #
-# Not decided here and so not pinned: whether a control plane that never
-# turns Ready ends the run APPLY INCOMPLETE. ADR 0017 does not say (k327).
+# k336 (the maintainer's call, 2026-11-06): a control plane not Ready after
+# the wait is a failed component, as a police2+ that did not join and a
+# worker short of Ready have been since k226. Its line is an [!!], it is
+# counted as "control plane NAME" -- the name unready_nodes gives police2+ --
+# and the run ends APPLY INCOMPLETE and non-zero. Until then it was a [WARN],
+# and a run that got past it ended SUCCESSFULLY with exit 0. The bootstrap
+# still goes on and returns what the steps after it need, as the deploy goes
+# on after a police2+ that did not join.
 #
 
 sub capture (&) {
@@ -148,12 +156,32 @@ sub bootstrap {
     ) };
     $r->{lists}    = $api->{lists};
     $r->{ssh_runs} = \@ssh_runs;
+    # What the run counts as failed so far, and what Health::finish needs to
+    # end it (k336).
+    $r->{failed}   = $apply->{_failed_components} // [];
+    @$r{qw( apply config api )} = ($apply, $config, $api);
     return $r;
 }
 
-my $NOT_SEEN = '  [WARN] Node otho not seen Ready within 600s';
+# The single exit of `ocp apply` after that bootstrap, with a pod scan that
+# finds nothing wrong: what the run ends with when no later step failed.
+sub finish_after {
+    my ($b) = @_;
+    no warnings 'redefine';
+    local *OCP::Cmd::Apply::_check_cluster_health = sub { +{ critical => [], warnings => [], starting => [] } };
+    local *OCP::Cmd::Apply::_stamp_ocp_version    = sub { };
+    return capture { OCP::Cmd::Apply::Health::finish($b->{apply},
+        config  => $b->{config},
+        api     => $b->{api},
+        step    => 9,
+        cp_name => $b->{rv}{cp_name},
+        cp_ip   => $b->{rv}{cp_ip},
+    ) };
+}
 
-subtest 'k327: a Node not Ready after the wait is one [WARN] on STDERR, with the Ready condition' => sub {
+my $NOT_SEEN = '  [!!] Node otho not seen Ready within 600s';
+
+subtest 'k327: a Node not Ready after the wait is one [!!] on STDERR, with the Ready condition' => sub {
     my $r = bootstrap(nodes => [ 'True' ]);
     is $r->{died}, '', 'control: bootstrap ran' or return diag $r->{died};
     like $r->{out}, qr/\[ok\] Node is Ready after ~10s/, 'control: Ready at once';
@@ -170,7 +198,7 @@ subtest 'k327: a Node not Ready after the wait is one [WARN] on STDERR, with the
     is $r->{lists}, 60, 'not Ready: listed for the whole wait';
     is $r->{err}, "$NOT_SEEN: Ready is False (KubeletNotReady: $CNI_DOWN)\n",
         'not Ready: one line on STDERR, the Ready condition -- not the one listed before it';
-    unlike $r->{out}, qr/WARN|not seen Ready|via SSH|genuinely/, 'not Ready: nothing of it on STDOUT';
+    unlike $r->{out}, qr/WARN|\[!!\]|not seen Ready|via SSH|genuinely/, 'not Ready: nothing of it on STDOUT';
     like $r->{out}, qr{\(60/60\) status='False'}, 'not Ready: the wait itself is still progress on STDOUT';
     is_deeply $r->{ssh_runs}, [], 'not Ready: nothing run over SSH -- no kubectl, no cilium status';
 
@@ -200,6 +228,50 @@ subtest 'k327: a Node not Ready after the wait is one [WARN] on STDERR, with the
     is $r->{err}, '', 'not Ready once, then Ready: nothing on STDERR';
 };
 
+subtest 'k336: a control plane not Ready after the wait is a failed component' => sub {
+    my $r = bootstrap(nodes => [ 'True' ]);
+    is $r->{died}, '', 'control: bootstrap ran' or return diag $r->{died};
+    is_deeply $r->{failed}, [], 'control: a Ready control plane counts as nothing';
+    my $f = finish_after($r);
+    is $f->{died}, '', 'control: finish ran' or return diag $f->{died};
+    is $f->{rv}, 0, 'control: exit 0';
+    like $f->{out}, qr/CONTROL PLANE DEPLOYED SUCCESSFULLY!/, 'control: the success banner';
+    is $f->{err}, '', 'control: nothing on STDERR';
+
+    $r = bootstrap(nodes => [ [ { type => 'Ready', status => 'False', reason => 'KubeletNotReady', message => $CNI_DOWN } ] ]);
+    is $r->{died}, '', 'not Ready: the bootstrap goes on' or return diag $r->{died};
+    is ref $r->{rv}, 'HASH', 'not Ready: and returns what the steps after it need';
+    is $r->{rv}{cp_name}, 'otho', 'not Ready: the control plane it names';
+    is_deeply $r->{failed}, [ 'control plane otho' ],
+        'not Ready: counted once, under the name a police2+ that did not join gets';
+    is_deeply $r->{failed}, [ OCP::Cmd::Apply::CR::unready_nodes(undef, [ { name => 'otho', phase => 'Joining' } ], 'control plane') ],
+        'not Ready: ... the same name unready_nodes gives a control plane';
+    like $r->{err}, qr/\A\Q$NOT_SEEN\E: Ready is False \(KubeletNotReady: /,
+        'not Ready: the [!!] line names the node and the kubelet\'s reason';
+
+    $f = finish_after($r);
+    is $f->{died}, '', 'not Ready: finish ran' or return diag $f->{died};
+    is $f->{rv}, 1, 'not Ready: exit non-zero';
+    like $f->{out}, qr/APPLY INCOMPLETE/, 'not Ready: the banner reads APPLY INCOMPLETE';
+    unlike $f->{out}, qr/SUCCESSFULLY|WITH WARNINGS/, 'not Ready: no success banner, no mere warning';
+    like $f->{err}, qr/^Apply did not complete: control plane otho failed\.$/m,
+        'not Ready: the closing line on STDERR names it';
+
+    for my $quiet ([ 'no Node listed' => 'none' ], [ 'a 403 throughout' => api_error(403, 'Forbidden') ]) {
+        my ($what, $answer) = @$quiet;
+        $r = bootstrap(nodes => [ $answer ]);
+        is_deeply $r->{failed}, [ 'control plane otho' ], "$what: counted the same";
+        is finish_after($r)->{rv}, 1, "$what: exit non-zero";
+    }
+
+    $r = bootstrap(nodes => [ 'False', 'True' ]);
+    is_deeply $r->{failed}, [], 'not Ready once, then Ready within the wait: nothing counted';
+    is finish_after($r)->{rv}, 0, 'not Ready once, then Ready within the wait: exit 0';
+
+    $r = bootstrap(nodes => [ 'True' ], request_dies => "Connection refused at 10.0.0.1:6443\n");
+    is_deeply $r->{failed}, [], 'an unreachable connectivity check, then Ready: a [WARN] alone, not counted';
+};
+
 subtest 'k327: a Node list that failed last is that line, with the cause' => sub {
     for my $refusal ([403, 'Forbidden'], [500, 'InternalError']) {
         my ($code, $reason) = @$refusal;
@@ -226,7 +298,7 @@ subtest 'k327: on k3s nothing reaches for RKE2 paths' => sub {
         is_deeply $r->{ssh_runs}, [], "$dist: nothing run over SSH after the wait";
         unlike join("\n", @{ $r->{ssh_runs} }, $r->{out}, $r->{err}), qr{/var/lib/rancher|/etc/rancher|kubectl},
             "$dist: no node path and no kubectl, run or printed";
-        is $r->{err}, "$NOT_SEEN: Ready is False\n", "$dist: the same [WARN]";
+        is $r->{err}, "$NOT_SEEN: Ready is False\n", "$dist: the same [!!]";
     }
 };
 

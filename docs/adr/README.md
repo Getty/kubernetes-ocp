@@ -173,6 +173,15 @@ there. The maintainer then decided that only release tags publish. What counts
 as a release tag, the bare-version tag `dzil release` writes, is the main
 agent's call, not the maintainer's, and the amendment says so.
 
+0017 was amended again on 2026-11-06, under k336. The decision did not move.
+Its account of a pod stuck `Pending` did: nothing judged the node such a pod
+waits for. A first control plane that the bootstrap's wait never saw Ready did
+not count for the exit code, though a further control plane and a worker had
+since k226. The maintainer then decided that a node that never got Ready is a
+failure, and so is an NVIDIA or AMD node without its GPU in allocatable. That
+makes k285's parity his rule as well. The amendment records one gap as open,
+not decided: the reconcile path does not judge control-plane readiness.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and

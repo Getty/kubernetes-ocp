@@ -74,7 +74,7 @@ the same class of lie.
 - Every `ocp apply` costs an extra pod list and up to 120s of settling time.
 - A pod that is genuinely stuck `Pending` (unschedulable, no resources) is
   reported as "still starting" and does not fail the run: only durable *waiting
-  reasons* are judged.
+  reasons* are judged *(amended 2026-11-06, see below)*.
 - `kube-system` is a hardcoded list of one. A distribution that puts core
   components elsewhere would be judged too leniently.
 - The banner is now load-bearing for humans and CI alike, so anything that
@@ -160,7 +160,8 @@ k251. `ocp apply` names the node on STDERR, the banner reads
 `— APPLY INCOMPLETE`, and the exit code is non-zero. The route is the AMD one:
 the failed-component list, not the pod scan. `ocp node add --gpu` stays
 non-fatal on both vendors, and its exit code still says only whether the node
-is Ready. The call is the main agent's, not the maintainer's.
+is Ready. The call is the main agent's, not the maintainer's
+*(amended 2026-11-06, see below)*.
 
 k273 kept NVIDIA at a warning for two reasons. Neither holds any more:
 
@@ -212,3 +213,123 @@ It shows that OCP's ClusterPolicy publishes `nvidia.com/gpu`. It does not show
 the new failure, an NVIDIA node short of `nvidia.com/gpu` ending in
 `— APPLY INCOMPLETE`, on a live cluster. The `single` default was not seen on
 a MIG-capable card; the RTX 3090 has no MIG. Recorded under k285.
+
+## Amendment 2026-11-06
+
+A Consequence above reads:
+
+> A pod that is genuinely stuck `Pending` (unschedulable, no resources) is
+> reported as "still starting" and does not fail the run: only durable *waiting
+> reasons* are judged.
+
+That still holds for the pod scan. What it left out is the node a `Pending`
+pod waits for. A first control plane that never turns Ready leaves every pod
+the deploy rolls out `Pending`, and the scan judges none of them. Nothing
+judged the node itself. Since k327 (53d34eb) the bootstrap's wait said so on
+STDERR, `[WARN] Node NAME not seen Ready within 600s`, with the `Ready`
+condition's reason, and then went on. It left the banner and the exit code to
+whatever came after. In practice that was the registry step, which must
+succeed. It ran out of its own 120 s wait for pods that could not be
+scheduled, and the run ended `Error: …`, non-zero, with no banner and with the
+registry named instead of the node. A run whose later steps passed, because
+the node turned Ready after the wait, ended `SUCCESSFULLY!` over a control
+plane its own wait had not seen Ready. Since k226 (4305e2d) a further control
+plane that did not join and a worker short of Ready had been failed
+components. The first control plane was the one node `ocp apply` did not
+judge.
+
+The maintainer decided on 2026-11-06 (k336) that a node that never got Ready
+is a failure, and so is an NVIDIA or AMD node without its GPU in
+`status.allocatable`. The second half is what k285 built on 2026-11-03 as the
+main agent's call. It is now the maintainer's rule. In `ocp apply`, each half
+reaches the banner and the exit code through the failed-component list, as
+the GPU proofs already did. A failed component makes the banner read
+`— APPLY INCOMPLETE` and the exit code non-zero
+(`OCP::Cmd::Apply::Health::finish`).
+
+The rule as `ocp apply` applies it, on the first deploy (no
+`kubeconfig.yaml`):
+
+- **First control plane.** The bootstrap waits 60 × 10 s = 600 s for its
+  Node's `Ready` condition to read `True`. A node not seen Ready by then gets
+  one `[!!] Node NAME not seen Ready within 600s: …` line on STDERR, with what
+  the API said last, and is counted as `control plane NAME`, the name a
+  further control plane gets (`bootstrap_control_plane`). The run goes on:
+  the kubeconfig is saved, and each later step says what it could not do. A
+  step that must succeed still ends the run `Error: …`, non-zero, before the
+  banner. In practice that is the registry, whose pods cannot be scheduled on
+  a NotReady node. A run that gets past those steps ends `— APPLY INCOMPLETE`,
+  also when the node turned Ready late: the wait did not see it Ready.
+- **Further control planes** (police2+, RKE2 only) join through `OCP::Node`
+  within `$OCP::Node::READY_TIMEOUT` (900 s). One not Ready when its join ends
+  is `control plane NAME`, since k226.
+- **Workers in ocp.yaml.** A worker not Ready at the end of the worker step
+  is `worker NAME`, since k226. That holds whether robocop drove it (a 600 s
+  poll) or the CLI fallback did (`$OCP::Node::READY_TIMEOUT`).
+
+On reconcile (the cluster exists):
+
+- A worker in ocp.yaml without an OCPNode is created and driven as on the
+  first deploy, and one that does not reach Ready is counted (k26).
+- A worker OCPNode in `Failed` is an `[!!]` and counted. One in `Pending`,
+  `Provisioning`, `Installing` or `Joining` is a `[WARN]`, and the banner
+  reads `— WITH WARNINGS` with exit 0. It is reported, not waited for and not
+  driven again (k234, 8d3e57f).
+- A `Failed` OCPNode that ocp.yaml does not list is named, not counted. It is
+  not part of the spec this apply checks (k231).
+
+And for the GPU, on both paths:
+
+- **NVIDIA.** The GPU Operator step waits up to 300 s
+  (`gpu_ready_timeout`) for `nvidia.com/gpu` above 0 in `status.allocatable`
+  on every NVIDIA node it detected. A node short of it fails the
+  `GPU Operator` component (k273, k285). After a worker join it waits up to
+  600 s (`gpu_label_timeout`) for NFD's label and then runs the same check,
+  counted the same way (k287).
+- **AMD.** The AMD stack step waits up to 300 s (`ready_timeout`) for
+  `amd.com/gpu` in `status.allocatable`, or for a ResourceSlice with the DRA
+  driver. For a node that just joined it waits 600 s (`join_ready_timeout`).
+  A miss is a failed component, `after_join` included (k251, k286).
+
+The argument of 2026-11-03 carries over. Each of these is one proof, judged
+once, after a wait: the `Ready` condition after 600 s, as the GPU in
+allocatable after 300 s. This is not the "fail on anything unhealthy
+anywhere" alternative rejected above. The pod scan is unchanged, and a pod
+stuck `Pending` is still "still starting". The node such a pod waits for is
+now judged in its own right, which the pod scan could never do.
+
+`ocp node add` is unchanged. Its exit code says only whether the node is
+Ready, so the first half of the rule already held there. A GPU missing from
+allocatable is an `[!!]` on STDERR that names `ocp apply`, with exit 0. The
+GPU half of the rule is applied by the `ocp apply` it sends the operator to.
+
+Consequences:
+
+- A first deploy whose control plane turns Ready only after the 600 s wait
+  now ends `— APPLY INCOMPLETE` and non-zero, though the stack came up on it.
+  Before, it ended `SUCCESSFULLY!`. The 600 s is now load-bearing for the exit
+  code, and a machine that needs longer to get its CNI up turns the first
+  deploy red.
+- A first deploy that dies in the registry step still ends `Error: …` and
+  names the registry. The node is named only in the `[!!]` line above it; the
+  run never reaches the closing `Apply did not complete` line.
+
+Known gap, recorded and not decided (open on k417): the reconcile path does not judge the
+control planes' readiness, and does not join police2+ again. There a control
+plane is judged only through steps that happen to wait for a pod on it. A
+component that has to roll out waits for its pods, and is counted under its
+own name when they do not come up. A component that is up to date does not
+wait, and the pod scan reads a pod stuck `Pending` as still starting. A rerun
+after a failed bootstrap therefore ends `SUCCESSFULLY!` with the first control
+plane NotReady whenever every step it runs finds its component up to date.
+One way to get there: a bootstrap whose node turned Ready only after the
+wait, which ended `— APPLY INCOMPLETE` with the stack deployed and recorded,
+and a node that is NotReady again by the rerun. A rerun right after a
+bootstrap that died in the registry step does not end green. The registry's
+hash is recorded only once its pods were ready, so the rerun rolls it out
+again, runs out of the same wait and counts `Registry`. It does not count
+the node.
+
+Unverified: the new failure is tested in `t/327-bootstrap-node-ready.t`
+against a stubbed pod scan. It has not been seen on a live cluster. Recorded
+under k336.

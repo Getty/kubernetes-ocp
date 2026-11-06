@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - ocp apply now ends APPLY INCOMPLETE with a non-zero exit code when
+      the first control plane is still not Ready after the first deploy's
+      10-minute wait, as it already did for further control planes and
+      workers. The line on STDERR that says why is now marked as a failure
+      instead of a warning.
     - ocp apply now prints its warnings about a worker that is not Ready
       yet, and about a Failed worker that ocp.yaml does not list, on STDERR
       instead of STDOUT. The run still ends WITH WARNINGS and exits 0.

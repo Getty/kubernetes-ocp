@@ -19,7 +19,9 @@ use OCP::Cmd::Apply::K8s ();
 
     # One call: provision server, install K8s, wait for the node to be
     # Ready (Cilium CNI up), save the kubeconfig. Returns the K8s api
-    # handle for the component deploy steps that follow.
+    # handle for the component deploy steps that follow. A node not Ready
+    # when the wait ends is counted as a failed component on $self, and
+    # the call returns all the same.
     my $api = OCP::Cmd::Apply::Bootstrap::bootstrap_control_plane(
         $self, $config, $secrets,
         admin_key      => $admin_key,
@@ -57,6 +59,17 @@ kubeconfig, and wait for the node to be Ready. Everything past that
 (registry, NFD, GPU operator, cert-manager, Cilium Gateway, LB-IPAM,
 workers) lives in the other phase modules and is wired up by
 OCP::Cmd::Apply::execute.
+
+The wait for the node to be Ready lasts up to 600 seconds. A control plane
+that is not Ready when it ends is a failed component of the run: one C<[!!]>
+line on STDERR names the node and what the API said last (its C<Ready>
+condition with reason and message, or why the Node list could not be read),
+and C<ocp apply> ends C<APPLY INCOMPLETE> with a non-zero exit code, as it does
+for a further control plane or a worker that did not come up. The run goes on
+with the steps after it, as it does after a further control plane that did not
+join. On a node that stays not Ready, the steps that need a pod running there
+fail with their own errors; one the deploy cannot go on without, such as the
+registry, ends the run with that error and a non-zero exit before the banner.
 
 Splitting this out of execute() serves two purposes:
 
@@ -203,7 +216,7 @@ sub warn_node_ip_mismatch {
 }
 
 # Why the node-Ready wait of the first deploy ended without a Ready Node, as
-# the end of its [WARN] on STDERR (k327): the last Node list's failure
+# the end of its [!!] on STDERR (k327, k336): the last Node list's failure
 # (k319), or what the Ready condition of the Node the wait judged, the first
 # one, said -- its status, and the reason and message the kubelet gives
 # ("container runtime network not ready: ... cni plugin not initialized").
@@ -365,7 +378,9 @@ sub _robo_public_key {
 
 # The whole first-deploy sequence: provision, install, kubeconfig,
 # wait-Ready. Returns the Kubernetes api handle plus the control-plane
-# identity the caller needs to write the OCPNode CR afterwards.
+# identity the caller needs to write the OCPNode CR afterwards -- also when
+# the node was not seen Ready, which is counted in {_failed_components}
+# instead (k336).
 #
 # This is the call site that used to be 240 lines of inline Perl in
 # execute(). Splitting it does not change behaviour — same provider
@@ -675,16 +690,34 @@ sub bootstrap_control_plane {
             }
             $self->wait_seconds(10);
         }
-        # Not Ready within 600s: said on STDERR with what the API said last,
-        # and the bootstrap goes on, as it always has (k327). An SSH fallback
-        # used to follow: RKE2's kubectl and rke2.yaml on the node, on k3s as
-        # well, asking the apiserver this wait has just read, and its answer
-        # only chose the line to print. The Ready condition's reason and
-        # message say why the node is not Ready; a failed list says why
-        # nothing could be read (k319).
-        print STDERR "  [WARN] Node $cp_name not seen Ready within 600s"
-            . node_not_ready_why($last_nodes, $read_err) . "\n"
-            unless $node_ready;
+        # Not Ready within 600s is a failed component (k336, the maintainer's
+        # call of 2026-11-06), as a police2+ that did not join and a worker
+        # short of Ready have been since k226: said on STDERR with what the
+        # API said last, and counted under the name unready_nodes
+        # (OCP::Cmd::Apply::CR) gives a control plane, so
+        # OCP::Cmd::Apply::Health::finish ends the run APPLY INCOMPLETE and
+        # non-zero. Until k336 it was a [WARN] that left banner and exit code
+        # alone.
+        #
+        # The bootstrap goes on, as the deploy does after a police2+ that did
+        # not join: the kubeconfig is saved and the API answers, so the steps
+        # after it run and each says for itself what it could not do. On a
+        # node that stays NotReady nothing that needs a pod scheduled comes
+        # up, and the registry step (MUST succeed, Deploy.pm) dies with its
+        # own timeout -- non-zero, before the banner, as before k336. A node
+        # that turns Ready late gets the stack deployed, and the run still
+        # ends incomplete: the wait did not see it Ready.
+        #
+        # An SSH fallback used to follow: RKE2's kubectl and rke2.yaml on the
+        # node, on k3s as well, asking the apiserver this wait has just read,
+        # and its answer only chose the line to print (k327). The Ready
+        # condition's reason and message say why the node is not Ready; a
+        # failed list says why nothing could be read (k319).
+        unless ($node_ready) {
+            print STDERR "  [!!] Node $cp_name not seen Ready within 600s"
+                . node_not_ready_why($last_nodes, $read_err) . "\n";
+            push @{ $self->{_failed_components} }, "control plane $cp_name";
+        }
     }
 
     return {
