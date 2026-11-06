@@ -78,6 +78,9 @@ gpu:
     labeller: true             # AMD's node labeller
     metrics: false             # AMD's device-metrics-exporter
     integrated: false          # set up an integrated AMD GPU on every node
+                               # (set at a node's install, like toolkit:
+                               # a change reaches a joined node only when it
+                               # is joined again)
 
 ssl:
   email: admin@example.com     # enables Let's Encrypt issuers; omit for
@@ -263,9 +266,10 @@ dra, or none)`).
 `integrated` reaches every node through the `OCPNodeProvider` CR: `ocp apply`
 writes it to `spec.gpu.amd.integrated`, and robocop, `ocp apply`'s worker
 reconcile and `ocp node add` read it from there. The first control plane gets it
-from `ocp.yaml` directly. It takes effect at a node's next install: a node that
-joined through an `OCPNode` and is Ready is only verified, so it has to be
-joined again. `allocation`, `resource_naming`, `labeller` and `metrics` shape
+from `ocp.yaml` directly, once, in the `ocp apply` that builds the cluster. It
+is set at a node's install, so a changed value reaches only the nodes that join
+after it — see [GPU settings a node takes at its install](#gpu-settings-a-node-takes-at-its-install).
+`allocation`, `resource_naming`, `labeller` and `metrics` shape
 the cluster's AMD stack, not a node's install, so they do not travel through the
 CR.
 
@@ -273,6 +277,40 @@ CR.
 node, whatever `integrated` says, and an AMD stack already deployed is removed.
 It wins over `ocp node add --gpu` as well. The switches take only `true` or
 `false` (`1` and `0` too), like the other on/off switches above.
+
+## GPU settings a node takes at its install
+
+`gpu.toolkit` and `gpu.amd.integrated` are set on a node when it is installed,
+and the node keeps them after that. The first control plane is installed once,
+in the `ocp apply` that builds the cluster. Every other node is installed when
+it joins. After that, `ocp apply` only checks a Ready node and installs nothing
+on it. So when you change either value, the nodes that joined before keep the
+old one. A node takes the new value only when it is joined again:
+
+- **A worker:** `ocp node rm NAME` takes it out of the cluster and tears it
+  down. Then `ocp apply` joins it again if `ocp.yaml` lists it under
+  `workers:`. A worker you added by hand is joined again with
+  `ocp node add NAME` and the flags you gave it the first time.
+- **A control plane:** ocp cannot join one again. A control plane keeps the
+  value it was installed with.
+
+Turning `gpu.amd.integrated` off uninstalls nothing. The `amdgpu` driver stays
+on a machine that has it.
+
+`ocp apply` says so when it sees the change, with a `[WARN]` on STDERR, and the
+run ends `WITH WARNINGS`:
+
+- **`gpu.amd.integrated`:** apply compares the value with the one the cluster's
+  `OCPNodeProvider` CR holds, before it writes the new one. The warning names
+  the Ready nodes that joined without `--gpu`, and gives the re-join for each
+  kind of node among them. If none joined that way, it says nothing.
+- **`gpu.toolkit`:** apply compares the value with the running GPU Operator's
+  ClusterPolicy, and names the nodes with an NVIDIA GPU.
+
+`ocp apply --dry-run` prints the same warnings. `ocp status` lists both values
+in its Spec section with a reminder of what a change reaches. `ocp status --json`
+has them under `spec.gpu` (`toolkit`, `amd_integrated`). Neither shows them
+under `gpu.enabled: false` or before the cluster is deployed.
 
 ## Provider modes
 

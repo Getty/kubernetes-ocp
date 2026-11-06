@@ -474,6 +474,8 @@ sub reconcile_components {
         eval {
             my $api = $self->_k8s_api;
             $self->_ensure_crds($api);
+            # Before the write below, which records ocp.yaml's value (k359).
+            OCP::Cmd::Apply::CR::warn_install_time_changes($self, $api, $config);
             $self->_ensure_providers($api, $config, $secrets);
             $self->_migrate_legacy_nodes($api);
             # control_planes[0].node_ip as spec.nodeIP (k254): the ensure
@@ -767,6 +769,12 @@ sub dry_run_report {
     # checked (k276).
     my @gpu = gpu_dry_run($self, $config);
 
+    # A gpu.amd.integrated the real run would record but not bring to the
+    # nodes that joined before (k359): said as the real run says it, on
+    # STDERR, and no difference of its own -- the run that writes the CR
+    # leaves those nodes as they are.
+    OCP::Cmd::Apply::CR::warn_install_time_changes($self, $self->_k8s_api, $config);
+
     # The AMD GPU stack (k261): what its step would deploy, update or remove,
     # and on which nodes. A component a drift entry already names -- the k250
     # probes read the same DaemonSets -- is that entry's difference, not a
@@ -854,8 +862,8 @@ sub gpu_dry_run {
 
     my $cp = eval { $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy') };
     return (@found, $unread->('gpu.toolkit switch', $@)) if $@;
-    my $warning = OCP::Cmd::Apply::Workloads::toolkit_switch_warning($cp, $config->gpu_toolkit);
-    print $warning if $warning;
+    my $warning = OCP::Cmd::Apply::Workloads::toolkit_switch_warning($cp, $config->gpu_toolkit, @nvidia);
+    print STDERR $warning if $warning;
     return @found;
 }
 

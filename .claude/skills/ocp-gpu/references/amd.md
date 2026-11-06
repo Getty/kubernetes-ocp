@@ -115,10 +115,30 @@ Rexfile writes the label keys out literally, because it runs under rex without
   `$config->gpu_amd_integrated` to `OCP::Rex::install_server` for police1.
   A CR an older ocp wrote has no `spec.gpu.amd`: that reads as absent, and
   only `--gpu` opens the gate.
-- It takes effect at the node's next install. The first control plane gets
-  one on every `ocp apply`. A node that joined through an OCPNode (a worker,
-  or police2 and later) does not: a Ready node is only verified, so it has to
-  be joined again.
+- It is set at a node's install (k359; maintainer decision 2026-11-06: say
+  so, do not re-run the host step on Ready nodes). police1 installs once, in
+  the apply that builds the cluster. The reconcile path installs nothing on
+  it. A Ready node that joined through an OCPNode is only verified. So a
+  changed value reaches a joined node only when it is joined again:
+  - a worker: `ocp node rm NAME`, then `ocp apply` (ocp.yaml lists it) or
+    `ocp node add NAME` with its flags again;
+  - a control plane: not at all. It has no teardown finalizer and no re-join
+    path.
+
+  Turning it off uninstalls nothing.
+- `OCP::Cmd::Apply::CR::warn_install_time_changes` warns about a change, on
+  the reconcile path and in its dry run.
+  - It reads the `<type>-default` CR **before** `ensure_providers` overwrites
+    it.
+  - It skips a CR under `gpu.enabled` false.
+  - It names the Ready OCPNodes without `spec.gpu`.
+  - The `[WARN]` goes to STDERR and is counted in `{_apply_warnings}`. A read
+    that fails is a `[WARN]` with its cause.
+  - The text comes from `install_time_warning`, which the toolkit switch uses
+    too.
+- `ocp status` prints `GPU, set at install: ...` in the Spec section, and
+  `--json` has `spec.gpu.{toolkit,amd_integrated}`. Both appear only once the
+  cluster is deployed and under `gpu.enabled` true.
 
 ## Labels
 

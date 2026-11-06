@@ -572,9 +572,15 @@ gpu:
   Set it with `ocp node add --label`. OCP itself never sets it.
 - **Integrated GPUs** (a Ryzen iGPU or APU) are set up on a node joined with
   `ocp node add --gpu`, or on every node with `gpu.amd.integrated: true`
-  (k253). A node gets the setting at its next install: the first control
-  plane on the next `ocp apply`, a node that has already joined through an
-  OCPNode (a worker, police2 and later) only when it is joined again.
+  (k253). Like `gpu.toolkit`, it is set at a node's install (k359).
+  - The first control plane gets it in the apply that builds the cluster.
+  - A joined worker takes a change only when it is joined again:
+    `ocp node rm NAME`, then `ocp apply` or `ocp node add NAME` with its
+    flags.
+  - A control plane never takes a change.
+
+  `ocp apply` warns about such a change on STDERR. `ocp status` lists both
+  values in its Spec section.
 - **The rest** (components, affinity, readiness, status, the full label
   table) is in skill `ocp-gpu` (`references/amd.md`).
 

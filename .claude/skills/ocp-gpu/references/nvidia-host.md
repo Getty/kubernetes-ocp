@@ -145,3 +145,12 @@ Rex::GPU::NVIDIA::install_driver(
 - robocop, the apply CLI and `ocp node add` hand it to `OCP::Node`.
 - The bootstrap passes `$config->gpu_toolkit` to `OCP::Rex::install_server`.
 - Absent everywhere means true.
+- It is set at a node's install, like `gpu.amd.integrated` (k359, see
+  `references/amd.md`). A joined node keeps its value until it is joined
+  again.
+  - `OCP::Cmd::Apply::Workloads::toolkit_switch_warning` warns about a change
+    against the running ClusterPolicy. It names the NVIDIA nodes and their
+    re-join.
+  - The warning goes to STDERR and is counted in `{_apply_warnings}`. It used
+    to print on STDOUT, uncounted.
+  - The dry run's `gpu_dry_run` prints it on STDERR too.

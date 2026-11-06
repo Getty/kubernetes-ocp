@@ -297,6 +297,110 @@ sub ensure_provider_cr {
     print "  [ok] ensured OCPNodeProvider/$name\n";
 }
 
+# gpu.amd.integrated and gpu.toolkit are install-time settings (k359): a node
+# takes them when its install task runs and keeps them after. police1 runs its
+# install once, in the apply that builds the cluster -- every later apply takes
+# the reconcile path, which installs nothing on it. A joined node, worker or
+# police2+, is only verified while Ready. So a changed value reaches the nodes
+# joined before only when each is joined again, and the maintainer's answer
+# (2026-11-06) was to say so, not to re-run the host step on them.
+#
+# The [WARN] for one such change, or undef when no node joined before. $nodes
+# is [ [ name, is_control_plane ], ... ]; undef (no list at hand, t/228's
+# calls) says both re-joins. Off, gpu.amd.integrated uninstalls nothing: the
+# amdgpu driver stays on the machine. To STDERR: it is about a value that does
+# not take effect (the k368 rule for CR.pm's warnings).
+sub install_time_warning {
+    my (%arg) = @_;
+    my $nodes = $arg{nodes};
+    return undef if $nodes && !@$nodes;
+
+    my @names = map { $_->[0] } @{ $nodes // [] };
+    my $worker = !$nodes || grep { !$_->[1] } @$nodes;
+    my $cp     = !$nodes || grep {  $_->[1] } @$nodes;
+    my $flag   = sub { $_[0] ? 'true' : 'false' };
+
+    my $text = sprintf "  [WARN] %s changed (%s -> %s), and it is set at a node's install:\n",
+        $arg{setting}, $flag->($arg{was}), $flag->($arg{now});
+    $text .= '         the ' . ($arg{what} // 'nodes') . ' that joined before keep the old value'
+        . (@names ? ' (' . join(', ', @names) . ')' : '') . ".\n";
+    $text .= "         A worker takes it when it is joined again: `ocp node rm NAME`, then\n"
+           . "         `ocp apply` (a worker ocp.yaml lists) or `ocp node add NAME` with its\n"
+           . "         flags again (a worker added by hand).\n"
+        if $worker;
+    $text .= "         A control plane cannot be joined again with ocp: it keeps the old value.\n"
+        if $cp;
+    $text .= "         Turning it off uninstalls nothing: the amdgpu driver stays on the machine.\n"
+        if $arg{setting} eq 'gpu.amd.integrated' && $arg{was} && !$arg{now};
+    return $text;
+}
+
+# Say, on STDERR, that gpu.amd.integrated differs from what the cluster's
+# OCPNodeProvider CRs hold (k359). The CR is the one record of the value the
+# nodes joined under: robocop, apply's worker reconcile and `ocp node add`
+# read it at every join, and ensure_providers overwrites it in the same run,
+# so the comparison is made before that write. Absent reads as false, what a
+# join of a CR without it hands the install (OCP::Provider->gpu_flags_from_cr).
+# A CR under gpu.enabled false joined nobody with GPU detection: not compared.
+#
+# The nodes named are the Ready OCPNodes without spec.gpu -- a node joined with
+# `ocp node add --gpu` has its integrated GPU set up whatever the setting
+# says. None, and nothing is said: there is nobody it does not reach.
+#
+# gpu.toolkit is not compared here: OCP::Cmd::Apply::Workloads::
+# toolkit_switch_warning says its change against the running ClusterPolicy,
+# only where NVIDIA nodes are, where the setting does anything.
+#
+# Only the reconcile path calls this (and its dry run): the deploy path builds
+# the cluster, and every node that joins in it reads this run's CR. Returns
+# true when it warned. A read that fails is a [WARN] too, with its cause --
+# "could not look" is no "unchanged" -- and stops nothing. Both are counted
+# in {_apply_warnings}, as CR.pm's other [WARN]s are (k367).
+sub warn_install_time_changes {
+    my ($self, $api, $config) = @_;
+    return 0 unless $config->gpu_enabled;
+    my $now = $config->gpu_amd_integrated ? 1 : 0;
+
+    my $warning;
+    my $ok = eval {
+        my ($was, %seen);
+        for my $entry (@{$config->control_planes}, @{$config->workers}) {
+            my $type = $entry->{provider} // 'hetzner';
+            next if $type eq 'local' || $seen{$type}++;
+            my $name = "$type-default";
+            my $obj = OCP::Cmd::Apply::K8s::read_or_absent("OCPNodeProvider ocp-system/$name",
+                sub { $api->get('OCPNodeProvider', $name, namespace => 'ocp-system') })
+                or next;
+            my $gpu = $api->k8s->object_to_struct($obj)->{spec}{gpu} // {};
+            next if defined $gpu->{enabled} && !$gpu->{enabled};
+            my $had = ($gpu->{amd} // {})->{integrated} ? 1 : 0;
+            $was = $had, last if $had != $now;
+        }
+        return 1 unless defined $was;
+
+        my $list = OCP::Cmd::Apply::K8s::read_or_absent('OCPNodes in ocp-system',
+            sub { $api->list('OCPNode', namespace => 'ocp-system') });
+        my @nodes = sort { $a->[0] cmp $b->[0] } map {
+            my $n = $api->k8s->object_to_struct($_);
+            (($n->{status}{phase} // '') eq 'Ready' && !$n->{spec}{gpu})
+                ? [ $n->{metadata}{name}, ($n->{spec}{role} // '') eq 'control-plane' ]
+                : ();
+        } @{ $list ? $list->items // [] : [] };
+
+        $warning = install_time_warning(setting => 'gpu.amd.integrated',
+            was => $was, now => $now, nodes => \@nodes);
+        1;
+    };
+    unless ($ok) {
+        $warning = '  [WARN] gpu.amd.integrated not compared with the cluster\'s: '
+            . OCP::ErrorLine::one_line($@) . "\n";
+    }
+    return 0 unless $warning;
+    print STDERR $warning;
+    push @{ $self->{_apply_warnings} }, 'gpu.amd.integrated' if ref $self;
+    return 1;
+}
+
 # Address of a Kubernetes Node object: ExternalIP wins, InternalIP is the
 # fallback. Returns undef when the Node is not (yet) registered -- a 404, and
 # only that: any other failed read dies with its cause (k330).

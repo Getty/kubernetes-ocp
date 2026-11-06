@@ -21,8 +21,9 @@ sub warning_for {
     return OCP::Cmd::Apply::Workloads::toolkit_switch_warning($cp, $now);
 }
 
-like warning_for(JSON::PP::false, 1), qr/\[WARN\] gpu\.toolkit changed \(false -> true\).*Re-join them/s,
-    'false -> true is said, with the way out';
+like warning_for(JSON::PP::false, 1),
+    qr/\[WARN\] gpu\.toolkit changed \(false -> true\).*joined again: `ocp node rm NAME`/s,
+    'false -> true is said, with the way out (k359: named per kind of node, t/359)';
 like warning_for(JSON::PP::true, 0), qr/\(true -> false\)/, 'true -> false too';
 is warning_for(JSON::PP::true, 1),  undef, 'unchanged: nothing';
 is warning_for(JSON::PP::false, 0), undef, 'unchanged false: nothing';
@@ -31,7 +32,7 @@ is OCP::Cmd::Apply::Workloads::toolkit_switch_warning({ spec => {} }, 1), undef,
     'a ClusterPolicy without toolkit: nothing';
 
 like path('lib/OCP/Cmd/Apply/Workloads.pm')->slurp_utf8,
-    qr/sub setup_gpu_operator \{.*toolkit_switch_warning\(\$cp, \$config->gpu_toolkit\)/s,
+    qr/sub setup_gpu_operator \{.*toolkit_switch_warning\(\$cp, \$config->gpu_toolkit, \@gpu_nodes\)/s,
     'setup_gpu_operator asks it for the running cluster';
 
 done_testing;

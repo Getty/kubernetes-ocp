@@ -90,18 +90,23 @@ is_deeply diffs(undef), ['spec'], 'no ClusterPolicy while the operator runs: the
 subtest 'dry-run says both' => sub {
     no warnings 'redefine';
     local *OCP::Cmd::Apply::Workloads::generate_gpu_operator_manifest = sub { $MANIFEST };
-    my $out = '';
+    my ($out, $err) = ('', '');
     my @r;
     {
         local *STDOUT;
+        local *STDERR;
         open STDOUT, '>', \$out or die;
+        open STDERR, '>', \$err or die;
         @r = OCP::Cmd::Apply::Drift::gpu_dry_run(
             FakeApply->new(cp => live(sub { pop @{ $_[0]{spec}{toolkit}{env} } })),
             FakeConfig->new(toolkit => 0));
     }
     is_deeply [ map { "$_->{kind} $_->{path}" } @r ], ['spec spec.toolkit.env'], 'one action';
     like $out, qr/\[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.toolkit\.env/, 'named';
-    like $out, qr/\[WARN\] gpu\.toolkit changed \(true -> false\)/, 'the toolkit switch is announced';
+    # A value that does not take effect is a [WARN] on STDERR (k359, the k368
+    # rule): it was on STDOUT, with the dry run's report.
+    like $err, qr/\[WARN\] gpu\.toolkit changed \(true -> false\)/, 'the toolkit switch is announced, on STDERR';
+    unlike $out, qr/\[WARN\]/, 'and not in the report on STDOUT';
 
     $out = '';
     {
@@ -262,8 +267,8 @@ subtest 'k276: the gpu.toolkit read -- a 404 is no ClusterPolicy, a 403 is not k
     # the warning is due whenever the second read sees it.
     my $read = read_dry(api => { cp => [ [200, $LIVE], [200, $LIVE] ] });
     is_deeply $read->{found}, [], 'control: nothing differs';
-    like $read->{out}, qr/\[WARN\] gpu\.toolkit changed \(true -> false\)/,
-        'control: the second read decides the warning';
+    like $read->{err}, qr/\[WARN\] gpu\.toolkit changed \(true -> false\)/,
+        'control: the second read decides the warning (on STDERR, k359)';
 
     my $none = read_dry(api => { cp => [ [200, $LIVE], [404, $MISSING] ] });
     is_deeply $none->{found}, [], '404: nothing found';
@@ -278,7 +283,7 @@ subtest 'k276: the gpu.toolkit read -- a 404 is no ClusterPolicy, a 403 is not k
     like $denied->{err}, qr{^  \[!!\] gpu\.toolkit switch not checked: GET \Q$CP_PATH\E failed: HTTP 403 }m,
         '403: the cause on STDERR';
     is count($denied->{err}, qr/Forbidden/), 1, '403: once';
-    unlike $denied->{out}, qr/\[WARN\]/, '403: no warning made up';
+    unlike $denied->{out} . $denied->{err}, qr/\[WARN\]/, '403: no warning made up';
 
     my $both = read_dry(api => { cp => [
         [200, JSON::PP::encode_json(live(sub { pop @{ $_[0]{spec}{toolkit}{env} } }))], [403, $DENIED] ] });

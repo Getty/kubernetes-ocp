@@ -7,10 +7,12 @@ use warnings;
 use Digest::MD5;
 use JSON::PP ();
 use Path::Tiny qw(path);
+use Scalar::Util ();
 
 use OCP::Drift ();
 use OCP::Kubernetes;
 use OCP::Versions;
+use OCP::Cmd::Apply::CR ();
 use OCP::Cmd::Apply::K8s ();
 
 =head1 SYNOPSIS
@@ -607,11 +609,16 @@ sub setup_gpu_operator {
     # (CDI specs) or the operator's toolkit DaemonSet -- and that happens at
     # join time. Changing it under a running cluster flips the ClusterPolicy,
     # but the nodes keep what their join left them, and the two mix (k228
-    # point 5, lab note 15). Said, not acted on: the clean way is a re-join.
+    # point 5, lab note 15). Said, not acted on: the clean way is a re-join,
+    # named per kind of node (k359). On STDERR, as a value that does not take
+    # effect is, and counted like CR.pm's [WARN]s (k367): WITH WARNINGS.
     if ($gpu_running) {
         my $cp = $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy');
-        my $warning = toolkit_switch_warning($cp, $config->gpu_toolkit);
-        print $warning if $warning;
+        my $warning = toolkit_switch_warning($cp, $config->gpu_toolkit, @gpu_nodes);
+        if ($warning) {
+            print STDERR $warning;
+            push @{ $self->{_apply_warnings} }, 'gpu.toolkit' if ref $self;
+        }
     }
 
     # The recorded hash is only what this project applied last; the CRDs in
@@ -820,16 +827,30 @@ sub _differ {
 
 # The [WARN] for a gpu.toolkit that differs from the running ClusterPolicy's
 # toolkit.enabled, or undef when they agree or there is nothing to compare.
+# @gpu_nodes, the NVIDIA nodes (Node objects), are named in it with the
+# re-join for their kind: a worker has one, a control plane none (k359,
+# OCP::Cmd::Apply::CR::install_time_warning). Without them both are said.
 sub toolkit_switch_warning {
-    my ($cluster_policy, $toolkit) = @_;
+    my ($cluster_policy, $toolkit, @gpu_nodes) = @_;
     my $was = $cluster_policy && ref $cluster_policy->{spec}{toolkit} eq 'HASH'
         ? $cluster_policy->{spec}{toolkit}{enabled} : undef;
     return undef unless defined $was;
     return undef if !!$was == !!$toolkit;
-    return sprintf "  [WARN] gpu.toolkit changed (%s -> %s): GPU nodes that joined before keep\n"
-         . "         what their join set up. Re-join them (`ocp node rm NAME`, then\n"
-         . "         `ocp node add` or the next apply) for a clean switch.\n",
-        ($was ? 'true' : 'false'), ($toolkit ? 'true' : 'false');
+    return OCP::Cmd::Apply::CR::install_time_warning(
+        setting => 'gpu.toolkit', was => $was, now => $toolkit, what => 'GPU nodes',
+        (@gpu_nodes ? (nodes => [ map { _node_kind($_) } @gpu_nodes ]) : ()),
+    );
+}
+
+# [ name, is_control_plane ] of a Node, by the label RKE2 and k3s give a
+# server. An IO::K8s object or its struct.
+sub _node_kind {
+    my ($node) = @_;
+    my $meta = Scalar::Util::blessed($node) ? $node->metadata : $node->{metadata} // {};
+    my ($name, $labels) = Scalar::Util::blessed($meta)
+        ? ($meta->name, $meta->can('labels') ? $meta->labels : undef)
+        : ($meta->{name}, $meta->{labels});
+    return [ $name, exists +($labels // {})->{'node-role.kubernetes.io/control-plane'} ? 1 : 0 ];
 }
 
 # k228 point 2: the GPU check runs before the worker step on both apply paths

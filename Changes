@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply`, its dry run and `ocp status` now say that `gpu.toolkit`
+      and `gpu.amd.integrated` are set when a node is installed: a changed
+      value reaches a joined worker only when it is joined again (`ocp node
+      rm`, then `ocp apply` or `ocp node add`), and a control plane never.
+      The toolkit warning moved to STDERR and now ends the run WITH
+      WARNINGS. `ocp status --json` has the values under `spec.gpu`.
     - Breaking: a control plane's `service:` key, which `ocp init
       --provider local --service` wrote and nothing read, is refused by
       `ocp apply` and `ocp keys secure` with a hint to delete it. `ocp init

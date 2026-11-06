@@ -197,6 +197,9 @@ sub gpu_section {
         . "=== Spec ===\n"
         . "Distribution: rke2 v1.36.4+rke2r1\n"
         . "Control Planes: 1 (ssh)\n"
+        # k359: the GPU settings set at a node's install (t/359).
+        . "GPU, set at install: toolkit true, amd.integrated false\n"
+        . "  a joined worker takes a change only when joined again, a control plane never\n"
         . "\n"
         . "=== Status ===\n"
         . "Cluster exists (kubeconfig.yaml found)\n"
@@ -212,7 +215,7 @@ sub gpu_section {
         . "Kubeconfig: ocp kubeconfig -e\n";
 
     is $rc, 0, 'NVIDIA-only: exit 0';
-    is $out, $expected, 'NVIDIA-only: the report is byte-identical to the pre-AMD one';
+    is $out, $expected, 'NVIDIA-only: the report is byte-identical to the pre-AMD one (plus k359\'s Spec line)';
     is $err, '', 'NVIDIA-only: nothing on STDERR';
     is_deeply [ grep { !/^list Node$/ } @{ $api->calls } ], [],
         'NVIDIA-only: no DaemonSet or ResourceSlice is read';

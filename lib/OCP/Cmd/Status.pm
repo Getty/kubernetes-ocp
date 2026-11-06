@@ -107,6 +107,11 @@ sub execute {
         my $provider = $pool->{provider} // 'ssh';
         print "Workers ($pool->{name}): $nodes ($provider)\n";
     }
+    if (my $gpu = $self->_install_time_gpu($config)) {
+        printf "GPU, set at install: toolkit %s, amd.integrated %s\n",
+            map { $_ ? 'true' : 'false' } @$gpu{qw( toolkit amd_integrated )};
+        print "  a joined worker takes a change only when joined again, a control plane never\n";
+    }
     print "\n";
 
     # Live status via the Kubernetes API (typed client)
@@ -246,6 +251,11 @@ sub _execute_json {
             } @workers ],
         },
     );
+    if (my $gpu = $self->_install_time_gpu($config)) {
+        $out{spec}{gpu} = { map {
+            $_ => ($gpu->{$_} ? JSON::MaybeXS::true() : JSON::MaybeXS::false())
+        } keys %$gpu };
+    }
 
     my $exit = $self->_collect_json($config, \%out);
 
@@ -318,6 +328,29 @@ sub _collect_json {
     }
 
     return 0;
+}
+
+# gpu.toolkit and gpu.amd.integrated, { toolkit, amd_integrated } as 0/1, for
+# the Spec line of both forms (k359): they are set at a node's install, so the
+# running cluster has the values its nodes joined under, not necessarily these
+# -- a joined worker takes a change only when it is joined again, a control
+# plane never (police1 installs once, when the cluster is built). undef where
+# there is nothing to say: under gpu.enabled false (no node gets either), and
+# before the cluster is deployed (no node has joined). A value OCP::Config
+# refuses leaves it out too, its line once on STDERR as for gpu.amd.allocation;
+# the report goes on.
+sub _install_time_gpu {
+    my ($self, $config) = @_;
+    return undef unless $config->cluster_exists;
+    my $gpu = eval {
+        $config->gpu_enabled
+            ? { toolkit => $config->gpu_toolkit, amd_integrated => $config->gpu_amd_integrated }
+            : 0;
+    };
+    return $gpu || undef if defined $gpu;
+    print STDERR 'WARNING: '.OCP::ErrorLine::one_line($@)
+        ."; the GPU settings set at install are left out of the Spec\n";
+    return undef;
 }
 
 # How many machines a worker pool has, for both forms: the workers ocp apply

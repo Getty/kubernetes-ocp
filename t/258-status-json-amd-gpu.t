@@ -209,10 +209,13 @@ sub ds {
         spec => {
             control_planes => { count => 1, provider => 'ssh', server_type => undef },
             distribution   => 'rke2',
+            # k359: the two GPU settings set at a node's install, as the
+            # text form's Spec line has them (t/359).
+            gpu            => { toolkit => $true, amd_integrated => JSON::MaybeXS::false() },
             version        => 'v1.36.4+rke2r1',
             workers        => [],
         },
-    }), 'no AMD node: the pre-k258 object (plus k270\'s gpu_capacity) to the byte, no amd_gpu key';
+    }), 'no AMD node: the pre-k258 object (plus k270\'s gpu_capacity, k359\'s spec.gpu) to the byte, no amd_gpu key';
     is $rc, 0, 'no AMD node: exit 0';
     is $err, '', 'no AMD node: nothing on STDERR';
     is_deeply [ grep { !/^list Node$/ } @{ $api->calls } ], [],

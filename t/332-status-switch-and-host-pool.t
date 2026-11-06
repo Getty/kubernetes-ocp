@@ -31,7 +31,9 @@ use OCP::Versions;
 #      way they list any check that could not be made (k262, k267). The rule
 #      is skip_if's, not nocert's: whichever switch a probe names is read so.
 #      The other switches (gpu.*, lbipam, system.ntp) are read by neither
-#      status nor the drift check, and stand in their way not at all.
+#      status nor the drift check, and stand in their way not at all --
+#      except the three status' Spec line reads since k359, which a refused
+#      value costs that line and one WARNING, nothing more.
 #   2. An ssh pool names its machines with host: (one) or a nodes: list
 #      (k322). Status counted nodes: only, and a host-only pool read
 #      "Workers (w): 0 (ssh)" where ocp apply makes it one worker.
@@ -343,11 +345,24 @@ subtest 'ocp status --json: nocert: no -- the object, whole and parseable' => su
     ], 'drift: the cert-manager check as kind error, not fixable, and the Cilium finding';
 };
 
+# k359: status reads three of the gpu switches for its Spec line -- the two
+# set at a node's install, and gpu.enabled, which decides whether that line
+# is there. A refused one leaves the line out and says why in one WARNING
+# line, as a refused gpu.amd.allocation does (t/252); the report is whole and
+# the exit 0 all the same. The rest it still reads not at all.
+my %SPEC_LINE = map { $_ => 1 } qw( gpu.enabled gpu.toolkit gpu.amd.integrated );
+
 subtest 'ocp status: the switches it does not read stand in its way not at all' => sub {
     for my $path (grep { $_ ne 'nocert' } sort keys %SWITCH) {
         my ($rc, $out, $err) = run_status(project($BASE . yaml_at($path, 'off')));
         is $rc, 0, "$path: off -- exit 0";
-        is $err, '', "$path: off -- STDERR empty";
+        if ($SPEC_LINE{$path}) {
+            like $err, qr/\AWARNING: \Q$path\E: must be true or false, not 'off'; [^\n]*left out of the Spec\n\z/,
+                "$path: off -- one WARNING line, the Spec's GPU line left out";
+            unlike $out, qr/^GPU, set at install/m, "$path: off -- no GPU line in the Spec";
+        } else {
+            is $err, '', "$path: off -- STDERR empty";
+        }
         is_deeply drift_section($out), [ "  [drift] $CILIUM" ], "$path: off -- the drift report, whole";
     }
 };

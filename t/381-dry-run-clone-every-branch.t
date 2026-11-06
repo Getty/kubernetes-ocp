@@ -352,7 +352,8 @@ sub every_branch_reached {
     like $r->{out},
         qr/^  \[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.toolkit\.enabled$/m,
         'the NVIDIA GPU Operator: its ClusterPolicy read';
-    like $r->{out}, qr/^  \[WARN\] gpu\.toolkit changed \(false -> true\)/m,
+    # On STDERR since k359: a value that does not take effect is a warning.
+    like $r->{err}, qr/^  \[WARN\] gpu\.toolkit changed \(false -> true\)/m,
         'and read again for the toolkit switch';
     like $r->{out}, qr/^  \[workers\] hz-1 has no OCPNode$/m, 'the Hetzner worker: missing';
     like $r->{out}, qr/^  \[workers\] gpu1: labels\/taints differ from ocp\.yaml$/m,
@@ -367,7 +368,8 @@ sub every_branch_reached {
     }
     like $r->{out}, qr/\[Dry run - no changes made\]\n\z/, 'to its end';
     is $r->{died}, '', 'no death' or diag $r->{died};
-    is $r->{err}, '', 'nothing on STDERR';
+    is $r->{err} =~ s/^  \[WARN\] gpu\.toolkit changed .*?(?=^\S|^  \S|\z)//msr, '',
+        'nothing else on STDERR';
     is_deeply $r->{writes}, [], 'nothing written to the cluster';
 }
 
