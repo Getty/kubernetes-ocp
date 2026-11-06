@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-11-06T21:53:38Z
+created: 2026-10-31T13:33:34Z
+id: 368
+priority: low
+started: 2026-11-06T19:37:23Z
+status: done
+tags:
+- decision
+- output
+title: 'Decide: two deliberate [WARN]s on STDOUT in CR.pm (Failed OCPNode not in ocp.yaml,
+  worker not Ready yet)'
+updated: 2026-11-06T21:53:38Z
+---
+
+Decide (maintainer). From k356 (apply worker, 2026-10-31). The output-channel rule (.claude/rules/ocp-rules.md) says exceptions and disputed cases belong in a ticket. Two [WARN]s in lib/OCP/Cmd/Apply/CR.pm print on STDOUT on purpose, each with a comment saying why:
+1. "OCPNode <n> is Failed and not in ocp.yaml"
+2. "worker <n> is <phase>, not Ready yet". t/38 pins this one on STDOUT. It is counted in {_apply_warnings} (banner WITH WARNINGS, exit 0).
+
+The case for STDOUT: both are part of the apply narrative (a state report, not something this run failed to do). The case for STDERR: the rule says STDERR carries everything that went wrong, and a Failed OCPNode is something wrong.
+
+Options: keep both on STDOUT and list them as named exceptions in the rules file; move one or both to STDERR; or split them, a short [WARN] on STDOUT plus the diagnosis on STDERR.
+Not to be built before the maintainer answers.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): both [WARN] lines in CR.pm (Failed OCPNode not in ocp.yaml, worker not Ready yet) go to STDERR.
+
+Done per the maintainer's 2026-11-06 decision. Both [WARN]s in CR.pm now print on STDERR: Failed OCPNode not in ocp.yaml (CR.pm:711) and worker not Ready yet (CR.pm:747). The not-Ready one is still in {_apply_warnings} (WITH WARNINGS, exit 0). The Failed-unlisted one was never counted (warn_unlisted_failed_ocpnodes does not push, Apply/Drift.pm:616 drops its return) and still is not -- open question for the maintainer, recommendation: count it like the other STDERR [WARN]s. t/38 and t/231 assert STDERR and not STDOUT; t/38 checks the real count (the old banner check used a hand-filled list and could not fail). Red against 585cc31 on every channel claim; mutation check on the count. make test (rel1106-pins) t/38 t/231 t/367 t/211: Files=4, Tests=104, PASS. Other STDOUT [WARN]s in the Apply lane: k415.
+
+committed as 4833571
