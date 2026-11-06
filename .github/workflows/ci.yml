@@ -4,8 +4,9 @@
 # SimpiCI derives the plan from the .cicd file names: docker+29+build.image.sh
 # builds, docker+29+publish.image.sh publishes, both in docker.io/library/
 # docker:29, and the publish phase starts only after the build phase passed.
-# Which registries exist, and that only main and tags publish at all, is
-# decided in those scripts — in this repository, under review. Not here.
+# Which registries exist, and that only a release tag publishes at all (k405),
+# is decided in those scripts — in this repository, under review. Not here.
+# main, branches and pull requests build the image and push nothing.
 #
 # ONE JOB PER REGISTRY, and that is not an accident. SimpiCI hands each .cicd
 # container exactly one CICD_REGISTRY / _USER / _PASSWORD triple, so a single

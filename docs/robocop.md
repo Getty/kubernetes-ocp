@@ -66,7 +66,9 @@ robocop:
 Without it, robocop runs `raudssus/ocp:<version of the ocp you run>` -- CLI and
 controller match, and nothing moves with `:latest`. A development checkout has
 no release version to name; it falls back to `raudssus/ocp:latest` and says so
-with a `[WARN]`.
+with a `[WARN]`. `latest` is the newest release, not `main`, so that robocop can
+be older than your checkout; set `robocop.image` to the image you built when the
+two have to match.
 
 `ocp deploy-image` is a one-off override of the live Deployment: it says so,
 and the next `ocp apply` sets the image back to the one above (and prints

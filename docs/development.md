@@ -171,7 +171,7 @@ ocp keys show --purpose admin >> ~/.ssh/authorized_keys
 
 `.github/workflows/ci.yml` runs this repository's own `.cicd/` jobs through
 [SimpiCI](https://github.com/Getty/simpici)'s action. What gets built, which
-registries exist, and that only `main` and tags publish at all is decided in
+registries exist, and that only a release tag publishes at all is decided in
 those scripts — in this repository, under review. Not in workflow YAML.
 
 ### How SimpiCI picks the jobs
@@ -243,10 +243,14 @@ per runner.
 
 ### Publish policy
 
-`main` and tags publish. Everything else — pull requests, feature branches —
-builds the image and pushes nothing, because the build is the test. The publish
-job reports that with **exit 78**, which SimpiCI counts as a skip rather than a
-failure. Missing credentials on a revision that would otherwise publish are
+Only a release tag publishes: the bare version the release writes (`0.001`),
+which is also the tag robocop of a released `ocp` pulls. Everything else —
+pushes to `main`, other tags, pull requests, feature branches — builds the
+image and pushes nothing, because the build is the test. A release tag is
+pushed only with the maintainer's go, so `latest` is always the newest release,
+never `main` (ADR 0013, amendment 2026-11-06). The publish
+job reports a skip with **exit 78**, which SimpiCI counts as a skip rather than a
+failure. Missing credentials on a release tag are
 also a skip, on stderr: runner configuration must never turn a green build red.
 
 ### Two Alpine details

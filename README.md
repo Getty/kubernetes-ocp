@@ -136,8 +136,8 @@ ocp --help
 ```
 
 Prefer to make it permanent? Put the alias in your `~/.bashrc` or `~/.zshrc`.
-To pin a specific version instead of tracking `latest`, use a tag:
-`raudssus/ocp:v0.001`.
+`latest` is the newest release. To pin one instead, use its version as the
+tag: `raudssus/ocp:0.001`.
 
 The same image is published to a second location, so you are never stuck
 waiting for one registry to come back:
@@ -147,7 +147,7 @@ docker pull raudssus/ocp                    # Docker Hub — the default
 docker pull ghcr.io/getty/kubernetes-ocp    # GitHub Container Registry
 ```
 
-Both are built and pushed by the same CI run from the same commit. Use
+CI builds and pushes both from the same release tag. Use
 whichever you prefer; the rest of this guide assumes the Docker Hub name.
 
 ## Step 2 — Create your project

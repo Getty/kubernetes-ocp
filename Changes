@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - CI publishes the Docker image only from a release tag (`0.001`,
+      `1.110`), no longer from every push to main: `raudssus/ocp:latest`
+      and the GHCR copy now follow releases.
     - `ocp apply`: an NVIDIA GPU node that shows no `nvidia.com/gpu` in
       `status.allocatable` within 300 s of the GPU Operator step now fails
       that step, as an AMD node does: "[!!] GPU Operator setup failed:
