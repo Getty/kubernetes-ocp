@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-06T22:00:45Z
+id: 420
+priority: low
+status: backlog
+tags:
+- k8s
+- cleanup
+- tests
+title: 'Kubernetes::REST 1.111 leftovers: private escapes with public twins, a dead
+  t/22 branch, _request where a typed call exists'
+updated: 2026-11-06T22:00:45Z
+---
+
+Found under k406 (add_provider switch, 2026-11-06). 1. _build_path and _check_response have public versions in Kubernetes::REST 1.111; callers lib/OCP/Cmd/Apply/K8s.pm:119 and lib/OCP/K8s.pm:88,95. The patch_status fallback in OCP::K8s (:84-97) cannot run under the pin (patch_status exists since 1.107), and its comment still says make test runs against host CPAN. Move them to the public calls and drop them from the escape list in t/406-no-private-kubernetes-rest.t, whose still-called check will flag it. 2. t/22 register half never runs: Kubernetes::REST->new with no arguments dies on missing credentials and server, so the test always takes its classes-load branch. 3. _request is used where a typed call exists: Bootstrap.pm:650 GETs the kube-system namespace as a reachability check, CR.pm:912 DELETEs a pod with gracePeriodSeconds, Drift.pm:396 GETs a CRD definition. The house rule limits _request to CRDs without IO::K8s classes; each either moves or is named as a deliberate exception.
