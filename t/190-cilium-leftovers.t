@@ -38,8 +38,11 @@ use OCPTest::CiliumRefusal;
 #   2. Cilium state that survives fails it, naming the host, what is left, and
 #      that a reboot is needed;
 #   3. the install tasks refuse a host with Cilium state before anything
-#      touches it, prepare_node included -- the library's preflight, the guard
-#      in it, is the first thing they do; on a clean host they go ahead.
+#      touches it, prepare_node included -- the guard, asked by the task
+#      itself (k406), then the library's preflight, which asks it again, are
+#      the first things they do; on a clean host they go ahead. The switch
+#      that clears instead, and the refusal naming it: t/406-cilium-residue-
+#      clean.t.
 #
 # Whether the kernel really detaches the programs when the pins go is a live
 # question (Cilium's own detach does exactly that for its bpf_links), NOT
@@ -122,8 +125,15 @@ for my $case (
     OCPTest::Rexfile->reset;
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
     ok $ok, 'the task runs' or diag $@;
+    # Since k406 the task asks the guard itself first -- so that its refusal
+    # names OCP's switch, and the switch clears instead (t/406-cilium-residue-
+    # clean.t) -- and the preflight, which asks it again, comes right after.
+    my $check = 'Rex::Rancher::Uninstall::check_cilium_residue';
+    is $OCPTest::Rexfile::CALLS[0]{name}, $check, 'the leftover check first, before anything else';
+    is_deeply [ @{ $OCPTest::Rexfile::CALLS[0]{args} }[1 .. $#{ $OCPTest::Rexfile::CALLS[0]{args} }] ], [],
+      'the plain check, without clean';
     is scalar(OCPTest::Rexfile->calls($preflight)), 1, 'the host was checked';
-    is $OCPTest::Rexfile::CALLS[0]{name}, $preflight, 'first, before anything else';
+    is $OCPTest::Rexfile::CALLS[1]{name}, $preflight, 'then the preflight, before anything else';
     my $prep = OCPTest::Rexfile->index_of(sub { $_->{name} eq 'do_task' && $_->{args}[0] eq 'prepare_node' });
     ok $prep > 0, 'then prepare_node';
     is scalar(OCPTest::Rexfile->calls($lib)), 1, "then $lib";

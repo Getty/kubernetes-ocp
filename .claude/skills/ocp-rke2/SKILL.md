@@ -41,7 +41,13 @@ the ssh/local uninstall.
   - Distribution upgrades stay manual, node by node. OCP::Drift reports them.
 - **Check before you change.** `preflight_server`/`preflight_agent` run with
   the install's own options before `prepare_node`, so a refused host stays
-  untouched (Cilium residue → reboot, version skew, cluster-cidr).
+  untouched (Cilium residue → reboot, or `--clean_cilium_residue` on the CLI
+  paths `ocp apply`/`ocp node add`, not robocop; version skew, cluster-cidr).
+  The install asks the residue check itself first, so the refusal can name the
+  switch.
+- **A join without `node_ip` derives it from the route** to the join server
+  (`node_ip_from_route`) when Rex::Rancher can; else a `[WARN]`. An explicit
+  `node_ip` wins; the first server derives nothing.
 - **`cluster_cidr` belongs to a fresh server only.** A server already set up
   keeps its own, with a `[WARN]`.
 - **The token lives only in config.yaml (0600).** The sealed token is reused,

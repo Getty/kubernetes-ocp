@@ -438,10 +438,12 @@ subtest 'uninstall_failure: nothing for success, the exit and stderr otherwise' 
     like $m, qr/failed \(exit 255\): Permission denied \(publickey\)\.\n\z/, 'exit and stderr';
 };
 
-# The Rexfile no longer asks check_cilium_residue itself: it runs the
-# library's preflight_server / preflight_agent before prepare_node, with the
-# options the install gets (t/190). This holds that the guard is in there, as
-# the first read of the host, and that a refused host is only read.
+# The Rexfile asks check_cilium_residue itself again since k406 (so that its
+# refusal names OCP's switch, t/406-cilium-residue-clean.t), and then runs
+# the library's preflight_server / preflight_agent before prepare_node, with
+# the options the install gets (t/190). This holds that the guard is in the
+# preflight too, as the first read of the host, and that a refused host is
+# only read.
 subtest 'preflight_server and preflight_agent refuse a host Cilium left state on, only reading it' => sub {
     my $probe = Rex::Rancher::Uninstall->cilium_residue_probe_cmd;
     for my $t (

@@ -20,6 +20,12 @@ use Rex::Rancher::Uninstall ();
 # reads the host through, is replaced while it runs. A guard that no longer
 # refuses for these names, or no longer reads through that channel, croaks
 # here, so a test cannot go on with an empty refusal.
+#
+# The real check_cilium_residue, taken when this file loads: OCPTest::Rexfile
+# records over it once it loads the Rexfile (the install tasks call it since
+# k406), and a recorder refuses nothing -- which croaks below, never passes.
+my $CHECK = \&Rex::Rancher::Uninstall::check_cilium_residue;
+
 sub text {
   my ( $class, @found ) = @_;
   croak 'text needs at least one residue name' unless @found;
@@ -33,7 +39,7 @@ sub text {
       $? = 0;
       return $_[0] eq $probe ? join('', map { "$_\n" } @found) : '';
     };
-    eval { Rex::Rancher::Uninstall->check_cilium_residue; 1 };
+    eval { $CHECK->('Rex::Rancher::Uninstall'); 1 };
   };
   my $refusal = $@;
 

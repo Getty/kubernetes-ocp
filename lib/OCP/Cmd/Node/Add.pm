@@ -88,11 +88,20 @@ option taint => (
 );
 
 # spec.nodeIP (k254): the address the node registers as its InternalIP. Only
-# ever what is given here -- absent, no node-ip is asked for at all.
+# ever what is given here -- absent, none is asked for, and the install takes
+# the node-ip from the machine's route to the join server (k406).
 option node_ip => (
     is     => 'ro',
     format => 's',
     doc    => 'Address the node registers by (RKE2/K3s node-ip): one IP, or v4,v6',
+);
+
+# Hands OCP::Node clean_cilium_residue (k406): the install clears what Cilium
+# left on the machine from an earlier cluster instead of refusing it. Only a
+# join this command runs itself takes it -- see execute.
+option clean_cilium_residue => (
+    is  => 'ro',
+    doc => 'Clear Cilium state an earlier cluster left on the machine, without a reboot',
 );
 
 # Spelled without a dash on purpose, like --nogit and --nopassword in
@@ -433,6 +442,7 @@ sub _cli_reconcile {
         distribution  => ($config->distribution || 'rke2'),
         pod_cidr      => $config->pod_cidr,   # a control-plane join repeats it (k184)
         reconciler_id => 'cli',
+        clean_cilium_residue => $self->clean_cilium_residue ? 1 : 0,
         # ocp.yaml's system: block, off the provider CR like robocop reads it
         # (k217) -- one source for every join path.
         ($provider_h ? OCP::Provider->system_flags_from_cr($provider_h) : ()),
@@ -568,6 +578,20 @@ sub execute {
         # name may resolve only in the cluster, k236) and a failure shows up as
         # Failed with the message.
         $self->_preflight_host($provider_type) unless $robocop_ready;
+    }
+
+    # --clean_cilium_residue reaches an install this command runs itself only
+    # (k406): no OCPNode field carries it, so robocop's install would refuse
+    # the machine as if it had not been given. Said before the first write.
+    if ($self->clean_cilium_residue) {
+        die "--clean_cilium_residue: with --nowait this command installs nothing, "
+          . "so nothing would clear the machine. Nothing was written. Leave out --nowait\n"
+            if $self->nowait;
+        $robocop_ready //= $self->_robocop_ready($api);
+        die "--clean_cilium_residue: robocop joins this node, and robocop takes no "
+          . "such switch. Nothing was written. Reboot the machine instead, then add "
+          . "the node without it\n"
+            if $robocop_ready;
     }
 
     my $cr = $self->_build_cr($provider_name);
@@ -1104,11 +1128,18 @@ Kubernetes Node once it registers; see L<OCP::NodeMeta>.
 C<--node_ip> is the address the node registers as its C<InternalIP> --
 RKE2's and K3s's C<node-ip> -- written to the OCPNode's C<spec.nodeIP>: one
 IP address, or C<v4,v6> for dual-stack (one of each family), with no
-whitespace.  Give it on a multi-homed host: without it the node registers the
-address of its default route, which the other nodes may not reach, and the
-node still turns Ready -- live, C<synapse> joined by 10.230.30.50 registered
-192.168.0.165 and its Cilium tunnel broke (k254).  It is only ever what is
-given here; without it no node-ip is asked for.  A value that is no such
+whitespace.  It wins over everything else.  Without it the install takes the
+node-ip from the machine's route to the join server: the source address of
+C<ip -o route get> to the control plane it joins, asked on the machine by
+L<Rex::Rancher> (C<node_ip_from_route>).  That is the address the machine
+reaches the cluster from, and on a single-homed host the one RKE2 and K3s
+would pick anyway.  A route that cannot be read leaves the node-ip out with a
+warning, and the node registers the address of its default route, which on a
+multi-homed host the other nodes may not reach -- the node still turns Ready:
+live, C<synapse> joined by 10.230.30.50 registered 192.168.0.165 and its
+Cilium tunnel broke (k254).  Give C<--node_ip> when the route to the control
+plane is not the address the other nodes reach the machine by.  A value that
+is no such
 address -- a hostname, a CIDR, loopback, link-local -- is refused before the
 cluster is asked anything, in the words of L<OCP::Choices/node_ip_error>.
 
@@ -1163,6 +1194,26 @@ the API server drops it with no more than a warning header the client may
 never show.  Nothing downstream can tell: L<OCP::Node>, on the CLI path and
 inside Robocop, only ever sees the OCPNode as stored.  Run C<ocp apply>
 first.
+
+=head1 CILIUM LEFTOVERS
+
+A machine that was a node of an earlier cluster and was uninstalled without
+a reboot can still carry Cilium's datapath -- its pinned eBPF programs and
+maps, its cgroup programs, F</run/cilium>.  On a machine with no RKE2 or K3s
+the install refuses it before anything is changed: that state would hang
+every image pull of the new install.  The refusal names a reboot, and this
+switch:
+
+    ocp node add worker-9 --provider ssh-default --host 10.0.0.9 --clean_cilium_residue
+
+With C<--clean_cilium_residue> the install clears that state instead,
+without a reboot (L<Rex::Rancher::Uninstall/check_cilium_residue> with
+C<clean>), and checks the machine again: anything left fails the node,
+asking for a reboot.  A machine with nothing on it, or one running RKE2 or
+K3s, is not touched.  Only a join this command runs itself takes the switch:
+with Robocop running, Robocop joins the node and takes no such switch, and
+with C<--nowait> nothing is installed in this run -- both are refused before
+anything is written.
 
 =head1 CHOOSING THE PROVIDER
 

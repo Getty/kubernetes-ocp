@@ -93,7 +93,12 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   - `--ssh-key PATH` — reuse an existing private key (copied to `.ocp/`)
   - `--service systemd|none` — for provider local
   - `--force` — overwrite existing config
-- `ocp apply [--only control-planes|workers|NODE] [--dry-run]` — deploy/reconcile
+- `ocp apply [--only control-planes|workers|NODE] [--dry-run] [--clean_cilium_residue]`
+  — deploy/reconcile. `--clean_cilium_residue` clears Cilium datapath state
+  left by an earlier cluster on a machine instead of refusing it (a host
+  running RKE2/K3s is untouched; what remains still asks for a reboot);
+  without it the install refuses such a host and the refusal names the
+  switch. Not for robocop-joined nodes (reboot those).
 - `ocp status [--json]` — spec summary, then (once deployed) nodes, GPUs and
   the drift report; read-only. Exit 1 when the kubeconfig cannot be
   decrypted, the API does not answer or drift detection dies (cause on
@@ -198,8 +203,11 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   token sees (bare `ocp hetzner` dies, a subcommand is required)
 - `ocp node add NAME --role ROLE [--provider NAME] [--host HOST]
   [--server-type TYPE] [--location LOC] [--image IMG] [--gpu]
-  [--node-ip IP] [--label K=V]... [--taint K=V:Effect]... [--nowait]`
+  [--node-ip IP] [--label K=V]... [--taint K=V:Effect]... [--nowait] [--clean_cilium_residue]`
   — create an OCPNode CR (`--no_wait` is kept as an alias, see above).
+  `--clean_cilium_residue` is the same switch as on `ocp apply`; refused with
+  `--nowait` (nothing would install) and when robocop does the join, both
+  before anything is written.
   On a hetzner provider `--server-type` is needed unless the OCPNodeProvider
   has `spec.hetzner.serverType` (the `hetzner-default` apply writes has none):
   with neither, `create_server` refuses and the node goes Failed, nothing
@@ -336,7 +344,7 @@ control_planes:             # Hash, Hash + "nodes: N", or Array of hashes
   # host / private_ip / public_ip / name / service (pinned after apply);
   # `nodes: N` on the mapping form only. Any other key is
   # refused (k347), `count:` and `network_interface:` included
-  node_ip: 10.0.0.5         # optional, never defaulted; see "node_ip" below
+  node_ip: 10.0.0.5         # optional; a join takes its route's address; see "node_ip" below
 workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
     provider: hetzner       # robocop or the CLI fallback
@@ -407,10 +415,14 @@ gpu:
   anything is ordered or installed. `ocp node add`, ocp.yaml and a
   hand-written `spec.nodeIP` refuse a value in the same words
   (`OCP::Choices::node_ip_error`).
-- **Explicit only, no default.** Without it, no node-ip is passed, and the
-  node registers the address of its default route. On a multi-homed host
-  that can be the wrong address. Skill `ocp-rke2`
-  (`references/install-flow.md`) has why and how to fix it.
+- **Explicit wins; a join derives one.** An explicit node_ip is used as
+  given. Without it, a join (every worker, every control plane after the
+  first) registers the address of its route to the join server (`ip route
+  get`, Rex::Rancher's `node_ip_from_route`), not its default route's. The
+  first control plane derives nothing and registers its default route's
+  address, which on a multi-homed host can be the wrong one. With a
+  Rex::Rancher that cannot derive it, the join goes on with a `[WARN]`.
+  Skill `ocp-rke2` (`references/install-flow.md`) has why and how to fix it.
 - **It names one machine.** It is refused:
   - on a `workers:` pool and on the entries of its `nodes:` list (set it per
     node with `ocp node add` instead);

@@ -33,6 +33,9 @@ use Rex::Rancher::Server ();
 use Rex::Rancher::Agent ();
 use Rex::Rancher::Cilium ();
 use Rex::Rancher::Distribution ();
+# For the Cilium leftover check the install tasks ask themselves, so that a
+# refusal names OCP's switch and the switch clears instead (k406).
+use Rex::Rancher::Uninstall ();
 use Rex::Rancher::K8s ();
 use Rex::GPU::Detect::Sysfs ();
 use Rex::GPU::NVIDIA ();
@@ -667,20 +670,28 @@ sub _install_server {
         @node_ip,
     );
 
+    # Cilium datapath state from a previous cluster on a host without
+    # RKE2/K3s (k190, rex-rancher k71): an uninstall that left Cilium's eBPF
+    # behind leaves the socket load balancer translating the old cluster's
+    # service addresses to pods that are gone, so connections hang instead of
+    # being refused -- the registry mirror containerd pulls through
+    # (localhost:30500) among them, and RKE2 misses its start bound without
+    # saying why. Measured on ocpt-cp. Refused, naming a reboot and OCP's
+    # switch, or with the switch cleared without a reboot: see
+    # _cilium_residue_check (k406).
+    _cilium_residue_check($params);
+
     # Everything install_server would refuse, asked before prepare_node
     # changes the host, so a refused host is left exactly as it was
     # (rex-rancher k78). install_server asks the same again, first thing --
     # its log lines appear twice. Read-only:
-    #   - Cilium datapath state from a previous cluster on a host without
-    #     RKE2/K3s (k190, rex-rancher k71): an uninstall that left Cilium's eBPF
-    #     behind leaves the socket load balancer translating the old cluster's
-    #     service addresses to pods that are gone, so connections hang instead
-    #     of being refused -- the registry mirror containerd pulls through
-    #     (localhost:30500) among them, and RKE2 misses its start bound without
-    #     saying why. Measured on ocpt-cp; the refusal asks for a reboot;
+    #   - the Cilium leftovers once more (its first read of the host), which
+    #     the check above has refused or cleared already;
     #   - the version to hold (hold_running) and its skew against the running
     #     server or installed binary;
-    #   - the cluster-cidr of a server already set up here (rex-rancher k67).
+    #   - the cluster-cidr of a server already set up here (rex-rancher k67);
+    #   - last, with node_ip_from_route, the route to the join server (see
+    #     _node_ip_opt).
     Rex::Rancher::Server::preflight_server(%opts);
 
     do_task "prepare_node", _node_params($params);
@@ -783,9 +794,12 @@ sub _install_agent {
     # node_ip first, as for a server (see _node_ip_opt): it may die.
     my %opts = (_node_ip_opt($params), _agent_opts($distribution, $params));
 
+    # The Cilium leftovers (k190), refused or cleared as for a server.
+    _cilium_residue_check($params);
+
     # Everything install_agent would refuse, before prepare_node touches the
     # host (rex-rancher k78), as for a server (see _install_server): the Cilium
-    # leftovers (k190), the version to hold and its skew, and with
+    # leftovers once more, the version to hold and its skew, and with
     # `kubeconfig` the control plane's version, read through the API.
     # install_agent asks again, first thing.
     Rex::Rancher::Agent::preflight_agent(%opts);
@@ -824,11 +838,25 @@ sub _node_labels {
 # node_ip (k254): the address the node registers as its InternalIP -- one IP,
 # or "v4,v6" for dual-stack -- as OCP::Node and OCP::Rex hand it over, only
 # when the operator asked for one: OCPNode spec.nodeIP (`ocp node add
-# --node_ip`) or control_planes[].node_ip. Never defaulted. Without it RKE2/K3s
-# register the address of the default route, which on a multi-homed host the
-# other nodes may not reach. Live (2026-10-31): synapse, joined by
-# 10.230.30.50, registered 192.168.0.165, and Cilium's tunnel to it broke in
-# one direction while the node showed Ready.
+# --node_ip`) or control_planes[].node_ip. Without one RKE2/K3s register the
+# address of the default route, which on a multi-homed host the other nodes
+# may not reach. Live (2026-10-31): synapse, joined by 10.230.30.50,
+# registered 192.168.0.165, and Cilium's tunnel to it broke in one direction
+# while the node showed Ready.
+#
+# So a join without a node_ip -- every task run with a `server`: an agent, a
+# control plane joining police1 -- gets node_ip_from_route (k406,
+# rex-rancher k111): Rex::Rancher takes the source address of
+# `ip -o route get` to the join server's host as the node-ip, on the host, as
+# the last read of its preflight. A route it cannot read leaves node-ip out
+# with the library's warning, never a guess. The first server joins nothing
+# and gets neither. A node_ip given wins: it is all that is passed.
+#
+# Asked by capability, as node_ip is below: a Rex::Rancher without
+# node_ip_from_route would ignore the option without a word, so it is not
+# handed one. The join goes on as before, on the default route's address,
+# with a [WARN] -- it is a default, not something the operator asked for, so
+# no refusal.
 #
 # Rex::Rancher writes it to config.yaml as node-ip (rex-rancher k100, after
 # 0.004), refuses bad syntax in the preflight, and on a re-run keeps the
@@ -846,7 +874,8 @@ sub _node_labels {
 sub _node_ip_opt {
     my ($params) = @_;
     my $ip = $params->{node_ip};
-    return () unless defined $ip && (ref $ip eq 'ARRAY' ? @$ip : length $ip);
+    return _node_ip_from_route_opt($params)
+        unless defined $ip && (ref $ip eq 'ARRAY' ? @$ip : length $ip);
     return (node_ip => $ip) if Rex::Rancher::Distribution->can('node_addresses');
 
     my $shown = ref $ip eq 'ARRAY' ? join(',', @$ip) : $ip;
@@ -856,6 +885,52 @@ sub _node_ip_opt {
       . "the address of its default route instead. Nothing was changed on the host. "
       . "Fix: an OCP/robocop image whose Rex::Rancher supports node_ip, or leave "
       . "node_ip out\n";
+}
+
+# The default for a join without a node_ip (see _node_ip_opt).
+sub _node_ip_from_route_opt {
+    my ($params) = @_;
+    return () unless $params->{server};
+    return (node_ip_from_route => 1) if Rex::Rancher::Distribution->can('node_ip_from_route');
+    say "[WARN] node-ip is not taken from the route to the join server: this image's "
+      . "Rex::Rancher " . ($Rex::Rancher::Distribution::VERSION // '?') . " cannot, so the "
+      . "node registers the address of its default route. Set node_ip if the other nodes "
+      . "cannot reach that address";
+    return ();
+}
+
+# The Cilium leftover check of an install (k190, rex-rancher k71), asked here
+# before the library's preflight asks it again, for the two things the
+# preflight alone cannot do (k406):
+#
+#   - with clean_cilium_residue set (`ocp apply --clean_cilium_residue`, `ocp
+#     node add --clean_cilium_residue`) the state is cleared without a reboot:
+#     Rex::Rancher's check_cilium_residue(clean => 1), which removes Cilium's
+#     pins, its cgroup programs (with bpftool; without it a warning), the tc
+#     globals and /run/cilium, probes again and dies asking for a reboot when
+#     anything is left. A host with nothing on it, or one running RKE2/K3s, is
+#     only probed. It runs before the preflight's other checks, so a host one
+#     of them then refuses has lost that state all the same: dead state of a
+#     cluster that is gone, and the operator asked for it to go;
+#   - without it the refusal stands, the library's words with OCP's switch
+#     after them -- the library names its own Perl call, which no OCP user
+#     types. One line still, so OCP::Rex relays it whole.
+#
+# The switch is a task parameter, set by ocp itself only: robocop sets none
+# (no OCPNode field carries it), so the sentence says what to do there.
+sub _cilium_residue_check {
+    my ($params) = @_;
+    return Rex::Rancher::Uninstall->check_cilium_residue(clean => 1)
+        if $params->{clean_cilium_residue};
+    return 1 if eval { Rex::Rancher::Uninstall->check_cilium_residue; 1 };
+    (my $refusal = $@) =~ s/\s+\z//;
+    die "$refusal " . _cilium_residue_switch_text() . "\n";
+}
+
+sub _cilium_residue_switch_text {
+    return 'In OCP that clearing is --clean_cilium_residue: run ocp apply with it again, '
+         . 'or ocp node add for a node joined without robocop. robocop takes no such '
+         . 'switch: reboot a host robocop joins.';
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and

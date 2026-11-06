@@ -1225,6 +1225,8 @@ sub cli_reconcile_workers {
                 ? (tls_san => \@cp_sans, pod_cidr => $config->pod_cidr) : ()),
             %gpu_flags,
             %system_flags,
+            # --clean_cilium_residue (k406), for the installs this run drives.
+            clean_cilium_residue => $self->clean_cilium_residue ? 1 : 0,
             # An additional control plane's node-ip mismatch as a [WARN] of
             # this run's (k254), worded as `ocp node add` says it.
             logger       => node_logger(),

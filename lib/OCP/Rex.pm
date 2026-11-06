@@ -412,6 +412,7 @@ sub install_server {
 
     $self->run_task($task,
         _node_ip_param($opts{node_ip}),
+        _clean_cilium_residue_param($opts{clean_cilium_residue}),
         token             => $token,
         version           => $version,
         tls_san           => $tls_san,
@@ -526,6 +527,7 @@ sub install_agent {
 
     $self->run_task($task,
         _node_ip_param($opts{node_ip}),
+        _clean_cilium_residue_param($opts{clean_cilium_residue}),
         server            => $server,
         token             => $token,
         version           => $version,
@@ -554,6 +556,14 @@ sub install_agent {
 sub _node_ip_param {
     my ($node_ip) = @_;
     return defined $node_ip && length $node_ip ? (node_ip => $node_ip) : ();
+}
+
+# clean_cilium_residue as a task parameter (k406), only when it is asked for:
+# the install task then clears Cilium's leftover datapath state without a
+# reboot instead of refusing the host (the Rexfile's _cilium_residue_check).
+sub _clean_cilium_residue_param {
+    my ($clean) = @_;
+    return $clean ? (clean_cilium_residue => 1) : ();
 }
 
 # The cluster token a control plane is already sealed with, read straight off
@@ -676,6 +686,7 @@ Execute a Rex task with parameters.
         pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
         cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
         node_ip      => '10.230.30.50',  # optional; or "v4,v6"
+        clean_cilium_residue => 1,       # optional; clear Cilium leftovers
     );
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
@@ -708,6 +719,13 @@ task dies before it changes anything on the host. A re-run that changes the
 value is a C<[WARN]> from Rex::Rancher, since the node's Cilium agent pod then
 needs a restart.
 
+C<clean_cilium_residue> true (C<ocp apply --clean_cilium_residue>) clears
+the Cilium datapath state an earlier cluster left on a host without RKE2/K3s,
+without a reboot, where the install would refuse the host otherwise
+(L<Rex::Rancher::Uninstall/check_cilium_residue> with C<clean>). It goes to
+the Rexfile as the task parameter of that name, and only when true. What is
+still there afterwards fails the task, asking for a reboot.
+
 The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
 C<server> are C<advertised_host>. On k3s Cilium reaches the API server at
 C<node_api_host> instead, the address agents join the control plane at; it
@@ -728,10 +746,14 @@ Returns hashref with C<token> and C<kubeconfig>.
         server       => 'https://cp-ip:9345',
         token        => '...',
         node_ip      => '10.230.30.50',  # optional; or "v4,v6"
+        clean_cilium_residue => 1,       # optional; clear Cilium leftovers
     );
 
 Join node to cluster as worker. C<node_ip> is the address the agent
-registers by, as for L</install_server>; omitted or empty, none is passed.
+registers by, as for L</install_server>; omitted or empty, none is passed,
+and the Rexfile has Rex::Rancher take the node-ip from the host's route to
+C<server> (C<node_ip_from_route>), as on every join.
+C<clean_cilium_residue> as for L</install_server>.
 
 =head2 fetch_kubeconfig_ssh
 

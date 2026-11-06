@@ -113,6 +113,12 @@ has timezone      => (is => 'ro');
 has locale        => (is => 'ro');
 has ntp           => (is => 'ro');
 has reconciler_id => (is => 'ro', default => sub { 'cli' });
+# Clear Cilium's leftover datapath state on the machine without a reboot,
+# where the install would refuse the host otherwise (k406): handed to the
+# install task as clean_cilium_residue. Set by whoever drives the node --
+# `ocp apply --clean_cilium_residue` and `ocp node add --clean_cilium_residue`
+# do; nothing on the OCPNode CR carries it, so robocop sets none.
+has clean_cilium_residue => (is => 'ro', default => 0);
 
 # Set when the last reconcile left the node alone because another reconciler
 # holds its lease (k227): the lease as found, or why it could not be taken.
@@ -906,6 +912,7 @@ sub _install_kubernetes {
         (defined $self->timezone ? (timezone => $self->timezone) : ()),
         (defined $self->locale   ? (locale   => $self->locale)   : ()),
         (defined $node_ip        ? (node_ip  => $node_ip)        : ()),
+        ($self->clean_cilium_residue ? (clean_cilium_residue => 1) : ()),
     );
 
     # Two GPU inputs meet here. spec.gpu on the OCPNode is per-node: `ocp node
@@ -1845,8 +1852,12 @@ operator waiting and passes a sink, Robocop passes none.
 C<spec.nodeIP> is the address the node is to register as its C<InternalIP>
 -- RKE2's and K3s's C<node-ip> (k254): one IP literal, or C<"v4,v6"> for
 dual-stack.  It is explicit only, written by C<ocp node add --node_ip> (or
-by hand); absent, the install is handed no C<node_ip> and the node registers
-the address of its default route, as before.  An OCPNode CRD from before
+by hand); absent, the install is handed no C<node_ip>, and the install task
+has L<Rex::Rancher> take the node-ip from the machine's route to the join
+server (C<node_ip_from_route>) -- an image whose Rex::Rancher cannot do that
+registers the address of its default route, as before, with a C<[WARN]>.
+Such a derived address is not handed over, so C<status.nodeIP> stays unset
+and nothing holds the node to it.  An OCPNode CRD from before
 k254 declares neither C<spec.nodeIP> nor C<status.nodeIP>, and the API server
 drops both without an error; this class only ever sees the stored CR, so a
 dropped C<spec.nodeIP> reads as none asked for (C<ocp node add --node_ip>
@@ -2066,6 +2077,16 @@ against the control plane's version before it touches the machine. C<ocp apply>
 and C<ocp node add> pass the project's kubeconfig, robocop its service account
 as one (C<< OCP::Kubernetes->in_cluster_kubeconfig >>); unset, the join goes without
 the check.
+
+=item clean_cilium_residue
+
+True: the install clears the Cilium datapath state an earlier cluster left on
+a machine without RKE2/K3s, without a reboot, where it would refuse the
+machine otherwise -- the install task's C<clean_cilium_residue> parameter,
+passed only when true.  Default false.  The caller decides: C<ocp apply> and
+C<ocp node add> set it for their C<--clean_cilium_residue>.  No OCPNode field
+carries it, so a node robocop installs gets the refusal, which asks for a
+reboot there.
 
 =item reconciler_id
 

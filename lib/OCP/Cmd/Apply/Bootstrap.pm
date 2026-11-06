@@ -619,6 +619,9 @@ sub bootstrap_control_plane {
             pod_cidr          => $config->pod_cidr,
             cilium_helm_values => $config->cilium_helm_values,
             (defined $node_ip ? (node_ip => $node_ip) : ()),
+            # --clean_cilium_residue (k406): clear, rather than refuse, what
+            # Cilium left on the machine from an earlier cluster.
+            ($self->clean_cilium_residue ? (clean_cilium_residue => 1) : ()),
         );
     };
     if ($@) {

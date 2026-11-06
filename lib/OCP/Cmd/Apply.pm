@@ -77,6 +77,15 @@ option only => (
     doc    => 'Only apply: control-planes, workers, or node name',
 );
 
+# The install task's clean_cilium_residue (k406), for every install this run
+# does itself: the first control plane (OCP::Rex install_server), police2+
+# and the workers it drives from the CLI (OCP::Node). Workers robocop drives
+# do not get it -- nothing on the OCPNode carries it.
+option clean_cilium_residue => (
+    is  => 'ro',
+    doc => 'Clear Cilium state an earlier cluster left on a machine, without a reboot',
+);
+
 sub execute {
     my ($self, $args, $chain) = @_;
 
@@ -656,6 +665,25 @@ Deploys the control plane using the admin-ssh key (requires PIN2).
 
 B<Security:> Control planes are SACRED\! Only admin-key can deploy them.
 Workers are managed by robocop controller using robo-key.
+
+=opt clean_cilium_residue
+
+    ocp apply --clean_cilium_residue
+
+A machine that was a node of an earlier cluster and was uninstalled without a
+reboot can still carry Cilium's datapath (pinned eBPF programs and maps,
+cgroup programs, F</run/cilium>), which would hang every image pull of the new
+install. Without this switch the install refuses such a machine, when it has
+no RKE2 or K3s, before anything on it is changed, naming a reboot and this
+switch. With it the install clears that state without a reboot
+(L<Rex::Rancher::Uninstall/check_cilium_residue> with C<clean>) and checks
+again: anything left fails the install, asking for a reboot. A machine with
+nothing on it, or one running RKE2 or K3s, is not touched.
+
+It reaches every install this run does itself: the first control plane, the
+additional ones, and the workers the CLI brings up. Workers Robocop brings up
+do not get it -- Robocop takes no such switch, and its refusal asks for a
+reboot.
 
 =method execute
 

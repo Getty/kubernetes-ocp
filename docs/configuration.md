@@ -115,6 +115,17 @@ ocp node rm worker-1
 when robocop is not running — reconciles them. Editing `workers:` in `ocp.yaml`
 on an existing cluster changes nothing.
 
+## The address a node registers by
+
+A node registers by one InternalIP, the RKE2/K3s `node-ip`. `node_ip:` on a
+control plane, or `ocp node add NAME --node_ip ADDRESS` for a node, sets it.
+Without it, a joining node registers the address of its route to the join
+server (`ip route get`), not that of its default route: every worker and
+every control plane after the first. The first control plane has nothing to
+join and registers its default route's address. On a host with several
+networks, set `node_ip:` when that is not the address the other nodes reach
+it by.
+
 ## What `ocp apply` refuses in these keys
 
 `ocp apply` checks `ocp.yaml` first and lists every error at once on STDERR.

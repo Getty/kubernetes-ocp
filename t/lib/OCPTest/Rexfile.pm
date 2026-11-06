@@ -71,6 +71,7 @@ our @LIBRARY = qw(
   Rex::Rancher::K8s::wait_for_api
   Rex::Rancher::Distribution::remove_bare_containerd_template
   Rex::Rancher::Distribution::heal_bare_containerd_template
+  Rex::Rancher::Uninstall::check_cilium_residue
   Rex::GPU::Detect::Sysfs::detect
   Rex::GPU::NVIDIA::install_driver
   Rex::GPU::NVIDIA::install_container_toolkit
@@ -108,7 +109,12 @@ sub load {
   # Rex::Rancher::Distribution, whose objects the containerd template tasks
   # ask (its is_bare_template_output is pure). Only the entry points in
   # @LIBRARY are recorded over -- remove_bare_containerd_template among them,
-  # a method: its first argument is the Distribution object.
+  # a method: its first argument is the Distribution object. So is
+  # check_cilium_residue, a class method (first argument the class), which
+  # the install tasks call themselves since k406: the real one runs its probe,
+  # and with clean => 1 its cleanup, through Rex::Commands::Run::run -- on
+  # this machine, which the sandbox's own run stub does not cover.
+  # OCPTest::CiliumRefusal keeps the real one for its text.
   require Rex::Rancher::Server;
   require Rex::Rancher::Uninstall;
   require Rex::Rancher::Distribution;

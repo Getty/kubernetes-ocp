@@ -58,7 +58,17 @@ Rex::GPU (CPAN; floors in `cpanfile`, exact versions in `cpanfile.snapshot`).
    - Cilium residue, the first read of the host (`check_cilium_residue`,
      rex-rancher k71): a host with Cilium's pins, its cgroup2
      mount or `cilium_host`, but no RKE2/K3s, is refused with a request to
-     reboot. The old socket LB hangs every image pull (k190).
+     reboot. The old socket LB hangs every image pull (k190). `_install_server`
+     and `_install_agent` ask this check themselves, before the library's
+     preflight. The refusal adds a sentence naming `--clean_cilium_residue`
+     (`ocp apply`, `ocp node add`); robocop has no such switch, a host it joins
+     is rebooted.
+   - With `--clean_cilium_residue` the install calls
+     `Rex::Rancher::Uninstall->check_cilium_residue(clean => 1)` (Rex::Rancher
+     0.005): it removes the pins under `/sys/fs/bpf/cilium`, the `cil_*` cgroup
+     programs (bpftool, else a warning), `/sys/fs/bpf/tc/globals`,
+     `/run/cilium/cgroupv2` and `/run/cilium`, probes again, and dies asking
+     for a reboot if anything is left. A host running RKE2/K3s is only probed.
    - The version to hold and its skew, against the control plane when a
      `kubeconfig` is passed.
    - On a server, the cluster-cidr of one already set up (rex-rancher k67).
@@ -151,8 +161,12 @@ Rex::GPU (CPAN; floors in `cpanfile`, exact versions in `cpanfile.snapshot`).
   Rexfile's `node_ip` task param → `_node_ip_opt` → Rex::Rancher, which
   writes `node-ip` to config.yaml. Unset, nothing is passed, and a
   Rex::Rancher with node_ip support keeps the `node-ip` that config.yaml
-  already holds. What values pass, and that there is no default: skill
-  `ocp-usage`.
+  already holds. A join (agent, control plane joining police1) gets
+  `node_ip_from_route => 1` instead, when
+  `Rex::Rancher::Distribution->can('node_ip_from_route')`: the node-ip is the
+  source address of `ip -o route get` to the join server. An explicit node_ip
+  wins; the first server derives nothing. Without that capability the join goes
+  on with a `[WARN]`. What values pass: skill `ocp-usage`.
 - **The library needs node_ip support (rex-rancher k100).** It is part of
   Rex::Rancher 0.005, which OCP's cpanfile requires (vendored until its CPAN
   release). The Rexfile asks for it by capability, not by version
