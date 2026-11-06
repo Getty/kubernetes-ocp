@@ -619,6 +619,8 @@ YAML
         # What OCP::Cmd::Apply::Health::finish will name as not completed
         # and turn into a non-zero exit (k226).
         failed    => $apply->{_failed_components} // [],
+        # What the closing banner turns into WITH WARNINGS, exit untouched (k367).
+        warnings  => $apply->{_apply_warnings} // [],
     };
 }
 
@@ -1294,19 +1296,24 @@ subtest 'k234 point 31: a worker with an OCPNode that is not Ready is said' => s
     for my $phase (qw(Pending Provisioning Installing Joining)) {
         my $r = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky'],
                           phases => { pinky => $phase });
-        like $r->{out}, qr/^  \[WARN\] worker pinky is \Q$phase\E, not Ready yet$/m,
-            "$phase: [WARN] on STDOUT";
-        unlike $r->{err}, qr/pinky/, "$phase: nothing on STDERR";
+        # A worker short of spec is something wrong: STDERR, not the STDOUT
+        # narrative (k368, decision 2026-11-06).
+        like $r->{err}, qr/^  \[WARN\] worker pinky is \Q$phase\E, not Ready yet$/m,
+            "$phase: [WARN] on STDERR";
+        unlike $r->{out}, qr/pinky/, "$phase: not on STDOUT";
         is_deeply $r->{failed}, [], "$phase: the exit stays 0";
+        ok scalar(grep { $_ eq 'worker pinky' } @{ $r->{warnings} }),
+            "$phase: counted in {_apply_warnings}";
         ok !touched($r, '_drive_workers'), "$phase: not driven again";
 
-        my $apply = bless { _apply_warnings => ['worker pinky'] }, 'OCP::Cmd::Apply';
+        my $apply = bless { _apply_warnings => $r->{warnings} }, 'OCP::Cmd::Apply';
         like OCP::Cmd::Apply::Health::banner_text($apply, { critical => [], warnings => [], starting => [] }),
             qr/WITH WARNINGS/, "$phase: banner WITH WARNINGS";
     }
 
     my $ok = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky']);
-    unlike $ok->{out}, qr/not Ready yet/, 'Ready workers say nothing';
+    unlike $ok->{out} . $ok->{err}, qr/not Ready yet/, 'Ready workers say nothing';
+    ok !grep({ /^worker / } @{ $ok->{warnings} }), 'Ready workers are not counted as warnings';
 
     my $failed = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain', 'pinky'],
                            phases => { brain => 'Failed' });
@@ -1315,7 +1322,7 @@ subtest 'k234 point 31: a worker with an OCPNode that is not Ready is said' => s
     unlike $failed->{out}, qr/worker brain is Failed/, 'Failed: not on STDOUT';
 
     my $made = reconcile(yaml => $TWO_SSH_WORKERS, ocpnodes => ['brain']);
-    unlike $made->{out}, qr/pinky is \w+, not Ready yet/,
+    unlike $made->{out} . $made->{err}, qr/pinky is \w+, not Ready yet/,
         'a worker this very run created is reported by the worker step, not twice';
 };
 

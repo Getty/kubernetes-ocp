@@ -20,7 +20,9 @@ use OCP::Rex;
 # that went wrong, a run that worked writes nothing on STDERR, the exit is
 # non-zero when something is not in order.
 #
-# N18 a Failed worker OCPNode outside ocp.yaml: named on STDOUT, not counted.
+# N18 a Failed worker OCPNode outside ocp.yaml: named, not counted for the
+#     exit. On STDERR since k368 (decision 2026-11-06): a Failed machine is
+#     something wrong.
 # N19 a pool host that already belongs to another OCPNode: counted.
 # N22 a Rex warning in the successful CLI join path: [WARN] on STDOUT.
 # 4b  Health.pm critical pods, 4c robocop's key label, 4d the PIN2 explanation.
@@ -66,7 +68,7 @@ sub capture_both {
     return ($out, $err);
 }
 
-subtest 'N18: a Failed worker outside ocp.yaml is named on STDOUT, not counted' => sub {
+subtest 'N18: a Failed worker outside ocp.yaml is named on STDERR, not counted' => sub {
     my $api = FakeApi->new(
         ocpnode('lab-1',  '10.230.30.52',  'Ready'),
         ocpnode('ghost',  '10.230.30.254', 'Failed'),
@@ -81,16 +83,17 @@ subtest 'N18: a Failed worker outside ocp.yaml is named on STDOUT, not counted' 
             $apply, $api, config_with('10.230.30.52', '10.230.30.53'));
     });
     is_deeply \@warned, ['ghost'], 'only the Failed worker the spec does not list (by host)';
-    is $out, "  [WARN] OCPNode ghost is Failed and not in ocp.yaml (ocp node rm ghost)\n",
-        'one WARN line on STDOUT, with the way out';
-    is $err, '', 'nothing on STDERR';
+    is $err, "  [WARN] OCPNode ghost is Failed and not in ocp.yaml (ocp node rm ghost)\n",
+        'one WARN line on STDERR, with the way out';
+    is $out, '', 'nothing on STDOUT';
     ok !$apply->{_failed_components}, 'and it does not count for the exit';
 
     # No workers in ocp.yaml at all: the same node is still not invisible.
-    ($out) = capture_both(sub {
+    ($out, $err) = capture_both(sub {
         OCP::Cmd::Apply::CR::warn_unlisted_failed_ocpnodes($apply, $api, config_with());
     });
-    like $out, qr/OCPNode ghost is Failed and not in ocp.yaml/, 'also with an empty worker list';
+    like $err, qr/OCPNode ghost is Failed and not in ocp.yaml/, 'also with an empty worker list, on STDERR';
+    unlike $out, qr/ghost/, 'and not on STDOUT';
 };
 
 subtest 'N19: a pool host owned by another OCPNode counts, the line stays on STDERR' => sub {

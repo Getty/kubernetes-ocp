@@ -687,10 +687,11 @@ sub missing_worker_ocpnodes {
 
 # Worker OCPNodes in phase Failed that ocp.yaml does not list -- one made by
 # `ocp node add`, say. `ocp apply` checks the spec, so these do not count for
-# its exit (k231); but a Failed machine nobody is told about is invisible, so
-# each is named on STDOUT as a [WARN] with the way out. A worker is "listed"
-# by name or by host, the way missing_worker_ocpnodes matches. Dies when the
-# list fails; returns the names it warned about.
+# its exit (k231), nor in {_apply_warnings}; but a Failed machine nobody is
+# told about is invisible, so each is named as a [WARN] with the way out. A
+# Failed machine is something wrong, so the line goes to STDERR (k368). A
+# worker is "listed" by name or by host, the way missing_worker_ocpnodes
+# matches. Dies when the list fails; returns the names it warned about.
 sub warn_unlisted_failed_ocpnodes {
     my ($self, $api, $config) = @_;
 
@@ -707,7 +708,7 @@ sub warn_unlisted_failed_ocpnodes {
         next unless ($h->{status}{phase} // '') eq 'Failed';
         my $n = $h->{metadata}{name};
         next if $name{$n} || $host{ lc($h->{spec}{host} // '') };
-        print "  [WARN] OCPNode $n is Failed and not in ocp.yaml (ocp node rm $n)\n";
+        print STDERR "  [WARN] OCPNode $n is Failed and not in ocp.yaml (ocp node rm $n)\n";
         push @warned, $n;
     }
     return @warned;
@@ -717,11 +718,12 @@ sub warn_unlisted_failed_ocpnodes {
 # The reconcile never drives an existing OCPNode, and it used to say nothing
 # about one either: a worker stuck in Installing ended in "SUCCESSFULLY",
 # exit 0. Now a worker on its way (Pending, Provisioning, Installing, Joining)
-# is a [WARN] on STDOUT -- recorded in {_apply_warnings}, which turns the
-# banner into WITH WARNINGS, exit 0 -- and a Failed one is a [!!] on STDERR
-# counted for the exit. $skip: names of the OCPNodes this very run created,
-# whose outcome the worker step has reported already. Dies when the list
-# fails; returns the names it reported.
+# is a [WARN] on STDERR, since a worker short of spec is something wrong
+# (k368) -- recorded in {_apply_warnings}, which turns the banner into WITH
+# WARNINGS, exit 0 -- and a Failed one is a [!!] on STDERR counted for the
+# exit. $skip: names of the OCPNodes this very run created, whose outcome the
+# worker step has reported already. Dies when the list fails; returns the
+# names it reported.
 sub check_worker_phases {
     my ($self, $api, $config, $skip) = @_;
     $skip ||= {};
@@ -742,7 +744,7 @@ sub check_worker_phases {
             push @{ $self->{_failed_components} }, "worker $n" if ref $self;
         }
         else {
-            print "  [WARN] worker $n is $phase, not Ready yet\n";
+            print STDERR "  [WARN] worker $n is $phase, not Ready yet\n";
             push @{ $self->{_apply_warnings} }, "worker $n" if ref $self;
         }
         push @reported, $n;
