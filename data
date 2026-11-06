@@ -1,0 +1,39 @@
+---
+class: standard
+completed: 2026-11-06T21:53:20Z
+created: 2026-10-31T06:46:26Z
+id: 313
+priority: low
+started: 2026-11-06T21:53:20Z
+status: done
+tags:
+- drift
+- status
+- apply
+title: One rule for what ocp apply closes, shared by ocp status and the dry run
+updated: 2026-11-06T21:53:20Z
+---
+
+Found under k312 (2026-10-31). What `ocp apply` closes now lives in two places that must agree:
+- `OCP::Cmd::Status::_drift_fixable` (k312): a remedy, `self_healing`, or kind `missing`;
+- the `$is_report_only` check in the `ocp apply --dry-run` report (k188).
+
+t/312 checks that the two agree, but the rule should be one `OCP::Drift` helper both call.
+
+While there:
+- lib/OCP/Drift.pm:61-63 says a missing component without `remedy_if_missing` "waits for a full deploy, which reconcile never runs". That is wrong for cert-manager, which reconcile installs when it is missing.
+- t/262's NFD test entry lacks `self_healing`, unlike real NFD entries. Make the fixture match the real shape.
+
+Done = one helper in OCP::Drift (state lane), called by Status.pm and the apply dry-run report (apply lane); the comment says what reconcile does; t/312 still passes unchanged.
+
+While in Drift.pm (from k337's ADR audit, 2026-10-31): lib/OCP/Drift.pm:617 says the upgrade tasks 'pick kubectl and kubeconfig by it and fall back to RKE2's' -- false since k198 (b3af9b0), no task runs kubectl. Fix the comment to say what the distribution param picks today.
+
+While in Drift.pm (from k311, 2026-10-31): the k291 comment in OCP::Drift names only ensure_crds as leaving a newer CRD alone; since k311 ocp deploy-robocop does too (Apply::CR::skip_newer_crd). Its manual_step hint is already true for both.
+
+2026-10-31 (main, from k351): two more cases for the one rule. (1) GPU Operator off its pin under gpu.enabled: false, or with no NVIDIA node: status calls it fixable and the dry run counts it as an action, but the real run skips the step. (2) gpu_dry_run's ClusterPolicy 'would re-apply' line has the same gap when there is no NVIDIA node. k351 added Workloads::reapplies($entry, $config) for the dry run's 'would re-apply the X manifest' line, gated on gpu.enabled only. Also: OCP::Drift's comment on version_against_pin names only the AMD step as a caller; setup_nfd/setup_gpu_operator (Workloads::off_pin) use it too since k351.
+
+One rule now: OCP::Drift->apply_closes (remedy, self_healing or missing; never kind error), used by status _drift_fixable, the dry run's $is_report_only, Workloads::reapplies and the reconcile hint (a third copy). The GPU Operator probe has step_skips: off its pin, it asks the GPU step's own questions (gpu.enabled, then NVIDIA nodes via the shared OCP::Drift->nvidia_gpu_nodes over @NVIDIA_GPU_LABELS); where the step skips, the entry is report only with the reason as manual_step; when it cannot tell, an error entry. gpu_dry_run reads the NVIDIA nodes before the ClusterPolicy. setup_gpu_operator lists through the same helper (error text byte-identical, t/269). All while-there items fixed (Drift.pm comments on remedy_if_missing, remedy_params/kubectl, k291 + deploy-robocop, version_against_pin + Workloads::off_pin; t/262 fixture self_healing). New t/313 (9 tests); t/312 unchanged and green; fixtures adjusted in t/233, t/262, t/338, t/351, t/381; 51 reached files 1126 tests PASS (host). Red proof at 585cc31 (%INC asserted): 5 of 7 subtests fail there (operator off pin under gpu.enabled false / no NVIDIA node; ClusterPolicy without NVIDIA node; refused Node list twice); the controls and the already-right gpu.enabled-false ClusterPolicy case pass.
+
+Follow-up card k413: the GPU Operator CRD probe has the same gap, plus the dry run counting a refused Node list twice.
+
+committed as a78a57f
