@@ -5,10 +5,11 @@ use Test::More;
 use File::Temp qw(tempdir);
 use Path::Tiny qw(path);
 
-use lib 'lib';
+use lib 'lib', 't/lib';
 
 use OCP;
 use OCP::Rex;
+use OCPTest::CiliumRefusal;
 
 #
 # k219: install_rke2_server refused a host with Cilium state from an earlier
@@ -34,10 +35,14 @@ my $known_hosts = path($tmp)->child('known_hosts');
 $known_hosts->spew("cp.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tr\n");
 $ENV{OCP_KNOWN_HOSTS} = $known_hosts->stringify;
 
+# The refusal is Rex::Rancher's own, asked of the library rather than copied
+# from it: the copy that stood here kept the words of the release before
+# 0.005, which also names a way out without a reboot (k406). Rex logs it as
+# the task's ERROR line.
+my $REFUSAL = OCPTest::CiliumRefusal->text('cilium_host');
+(my $REASON = $REFUSAL) =~ s/\s+\z//;
 my $PREFLIGHT = "[2026-10-01 07:40:00] ERROR - Error executing task:\n"
-  . "[2026-10-01 07:40:00] ERROR - This host still carries Cilium datapath state from an "
-  . "earlier cluster (cilium_host). Nothing was written or installed. Reboot the host, "
-  . "then run the install again.\n";
+  . "[2026-10-01 07:40:00] ERROR - $REFUSAL";
 
 {
     no warnings 'redefine';
@@ -62,12 +67,12 @@ my ($ok) = quiet {
 my $died = $@;
 
 ok !$ok, 'the failed task dies';
-like $died, qr/Rex task 'install_rke2_server' failed:.*Reboot the host/s,
-    'with the task and its reason';
+like $died, qr/Rex task 'install_rke2_server' failed: \Q$REASON\E/,
+    'with the task and its reason, the library\'s refusal whole';
 unlike $died, qr/ at \S+ line \d+\.?\s*\z/, 'and no source location of OCP\'s own';
 
 my (undef, $stderr) = quiet { OCP::_report_error($died, 0) };
-like $stderr, qr/Reboot the host, then run the install again/, 'run_cli shows the reason';
+like $stderr, qr/\Q$REASON\E/, 'run_cli shows the reason';
 unlike $stderr, qr/internal error/, 'and does not call it an internal error';
 
 # The classification itself is unchanged: an error with a location stays internal.

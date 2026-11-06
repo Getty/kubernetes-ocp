@@ -6,6 +6,7 @@ use Test::More;
 use lib 't/lib';
 use OCPTest::Rexfile;
 use OCPTest::UninstallHost;
+use OCPTest::CiliumRefusal;
 
 #
 # k190: after `ocp destroy` (rke2-uninstall.sh) and a fresh RKE2 bootstrap on
@@ -91,9 +92,10 @@ subtest 'Cilium state that survived fails delete_server, asking for a reboot' =>
 
 # --- 3. the install path refuses leftovers, before anything else ----------------
 
-my $REFUSAL = "This host still carries Cilium datapath state from an earlier cluster "
-  . "(/sys/fs/bpf/cilium, cilium_host), and no RKE2/K3s is installed on it. [...] "
-  . "Nothing was written or installed. Reboot the host, then run the install again.\n";
+# The refusal as Rex::Rancher's guard dies with it, asked of the library
+# rather than copied from it: the copy that stood here kept the words of the
+# release before 0.005, which also names a way out without a reboot (k406).
+my $REFUSAL = OCPTest::CiliumRefusal->text('/sys/fs/bpf/cilium', 'cilium_host');
 
 for my $case (
   [ install_rke2_server => 'Rex::Rancher::Server::install_server', 'Rex::Rancher::Server::preflight_server', {} ],
