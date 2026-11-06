@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-06T21:55:25Z
+id: 419
+priority: low
+status: backlog
+tags:
+- hetzner
+- robocop
+- destroy
+title: Hetzner 404 on delete_server (server already gone) fails robocop's teardown
+updated: 2026-11-06T21:55:25Z
+---
+
+Found under k406 (pin step, 2026-11-06), not new. A Hetzner 404 on delete_server, the server already gone, still fails robocop's teardown: Node.pm around line 1447 turns it into phase Failed. Since WWW::Hetzner 0.103 the error is a WWW::Hetzner::Error object with status and code (404 not_found), so OCP could recognise an already-deleted server as done instead of parsing text. Using the error object was out of scope for the release round. Done = a server Hetzner reports as not found counts as deleted on the teardown paths (robocop, ocp node rm, ocp destroy), with a test against a fake raising the real error object.
