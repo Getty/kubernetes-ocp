@@ -127,9 +127,11 @@ sub add_key {
         croak "Key '$name' already exists. Use update_key or choose different name.";
     }
 
-    # Encrypt private key
+    # Encrypt private key. A PIN2 is set when it is defined and not empty --
+    # never "when it is true": "0" is a PIN2, and reading it as none stored
+    # the admin key age-only (k390).
     my $encrypted_private;
-    if ($pin2) {
+    if (defined $pin2 && length $pin2) {
         # Double encrypt (age + password) for admin keys
         $encrypted_private = $self->_double_encrypt($private, $pin2);
     } else {
@@ -350,7 +352,7 @@ sub decrypt_key {
         $decrypted = $self->_single_decrypt($key->{private}, $name);
     } else {
         # Double decrypt (age + password)
-        croak "PIN2 required for non-automation key" unless $pin2;
+        croak "PIN2 required for non-automation key" unless defined $pin2 && length $pin2;
         $decrypted = $self->_double_decrypt($key->{private}, $pin2, $name);
     }
 
@@ -395,7 +397,7 @@ sub get_automation_key {
 sub get_admin_key {
     my ($self, $pin2, $name) = @_;
 
-    croak "PIN2 required for admin key" unless $pin2;
+    croak "PIN2 required for admin key" unless defined $pin2 && length $pin2;
 
     # If name provided, get specific key
     if ($name) {

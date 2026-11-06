@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A PIN of "0" is accepted as a real PIN: as PIN1 it no longer makes
+      `ocp init` fail with an internal error, and as PIN2 it now really
+      protects the admin key -- before, the admin key was stored without
+      its PIN2 layer, under PIN1 alone.
     - `share/bin/ocp-build-image` and `make build-image` now only build
       the image: pushing needs an explicit `--push`, which the CI publish
       job already passes. Before, a run on a host logged in to Docker Hub

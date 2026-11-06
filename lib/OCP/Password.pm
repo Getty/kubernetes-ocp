@@ -78,8 +78,10 @@ sub _read_stdin_line {
 # are one thing in both.
 #
 # Empty is refused because an empty PIN2 is not a weak PIN2 but none at all:
-# OCP::Keys::add_key reads a false pin2 as "automation key" and stores the
-# admin key under the age layer alone, while its purpose still says admin.
+# OCP::Keys::add_key reads an undefined or empty pin2 as "automation key" and
+# stores the admin key under the age layer alone, while its purpose still
+# says admin. Anything else is a PIN, "0" included (k390): every check on a
+# PIN here and in OCP::Keys asks defined && length, never truthiness.
 sub prompt_new_pin {
     my ($pin, $purpose) = @_;
 
@@ -102,7 +104,7 @@ sub encrypt_age_key {
     my ($age_key_content, $password) = @_;
 
     croak "age.key content required" unless $age_key_content;
-    croak "password required" unless $password;
+    croak "password required" unless defined $password && length $password;
 
     # Use AES-256-GCM via CryptX
 
@@ -132,7 +134,7 @@ sub decrypt_age_key {
     my ($encrypted_b64, $password) = @_;
 
     croak "encrypted age.key required" unless $encrypted_b64;
-    croak "password required" unless $password;
+    croak "password required" unless defined $password && length $password;
 
     # Decode base64
     my $encrypted = decode_base64($encrypted_b64);

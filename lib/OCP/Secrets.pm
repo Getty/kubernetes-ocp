@@ -948,7 +948,7 @@ sub _unlock_age_key {
 
     # Try to decrypt from age.key.enc
     if ($self->has_age_key_enc) {
-        unless ($password) {
+        unless (defined $password && length $password) {
             $password = OCP::Password::prompt_password("Enter PIN1 (cluster access): ");
         }
         if ($opt{cache}) {
