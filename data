@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-06T20:21:14Z
+id: 413
+priority: low
+status: backlog
+tags:
+- drift
+- gpu
+- status
+title: 'GPU Operator CRD probe: self_healing where setup_gpu_operator skips the cluster'
+updated: 2026-11-06T20:21:14Z
+---
+
+Found under k313 (2026-11-06). The GPU Operator CRD probe in OCP::Drift is self_healing, but setup_gpu_operator only re-applies those CRDs where the GPU step runs (gpu.enabled and a node NFD labelled NVIDIA). On a cluster the step skips, ocp status counts that drift as reconcilable and the dry run as an action, while a real ocp apply leaves it. k313 gave the GPU Operator image probe a step_skips (_gpu_operator_step_skips); the CRD probe needs the same. t/312 hands in ready-made entries and is not touched by it.
+
+Also from k313, same area: (1) one refused Node list counts twice in the dry run under "could not be checked" -- once from the detector (step_skips error entry), once from gpu_dry_run; the real run fails once, at the GPU step. (2) gpu_dry_run returns before its node read when the operator is not running, so the dry run does not foretell a refused Node list the real step would hit first. (3) gpu_dry_run prints its own "would re-apply the manifest" line for ClusterPolicy differences next to Workloads::reapplies; both follow the same gate now, but they are two copies.
+
+Done = the CRD probe follows the step as the image probe does; the dry run counts a refused Node list once and as the real run meets it.
