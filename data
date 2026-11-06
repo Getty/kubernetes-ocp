@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-06T22:44:48Z
+created: 2026-10-31T02:29:55Z
+id: 264
+priority: medium
+started: 2026-11-06T22:44:48Z
+status: done
+tags:
+- hetzner
+- config
+title: Check the Hetzner default server type cpx21 against the live catalogue
+updated: 2026-11-06T22:44:48Z
+---
+
+Found by k260 (ocp-apply-worker). OCP::Config %HETZNER_DEFAULTS has server_type cpx21. Batch `ocp init` (no TTY) writes that default unchecked, without reading the catalogue. If Hetzner deprecated cpx21 with its 2025 line change, a batch init writes a type that cannot be ordered, and the first `ocp apply` fails at server creation.
+
+Done when the default is confirmed against the catalogue (per-location `locations[].deprecation`, k246), or replaced by a current type orderable in the default location, with a comment naming the source and date; any test pinning cpx21 follows. A live read of the catalogue needs a token: ask the maintainer for one (read-only) instead of guessing. Lane: ocp-state-worker.
+
+Maintainer's decision 2026-11-06 (Getty, relayed by hub perl-developer-bb: ~/dev/perl-developer/docs/ocp-release-2026-11-06/kubernetes-ocp-entscheidungen.md, hub commit e0ba4b5): control-plane default is cpx22; source and date (Hetzner catalogue, as of 2026-11) in the comment next to the constant. Built together with k308; one commit closes both.
+
+2026-11-06 ocp-release-1106 (ocp-worker): the control-plane default moves from cpx21 to cpx22 in OCP::Config %HETZNER_DEFAULTS, comment: Hetzner catalogue, as of 2026-11. write_spec and the init picker follow it; t/04, t/41, t/260, t/308 pin it. Red on 323230b, green in the binding make test (16 files, 461 tests). Ships with k308 in one commit.
+
+committed as 605ad0c
