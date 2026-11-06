@@ -1294,11 +1294,13 @@ sub _first_cp_string {
 # bootstrap, ensure_control_plane_ocpnodes), public_ip (join_host,
 # cluster_status, cp_tls_sans, OCP::Drift), private_ip (held against the
 # cluster networks), node_ip (cp_node_ip, the join CRs), name (OCP::Drift's
-# spec drift, cluster_status), service (`ocp init --provider local
-# --service` writes it), and nodes in the mapping form, which control_planes
-# reads and a list entry does not.
+# spec drift, cluster_status), and nodes in the mapping form, which
+# control_planes reads and a list entry does not.
+#
+# Not service (k357): `ocp init --provider local --service systemd` wrote it,
+# and nothing read it. It is refused with a hint that it can go.
 our @CONTROL_PLANE_KEYS = qw( provider host public_ip private_ip node_ip server_type location image
-                              name service );
+                              name );
 
 # A pool's: what worker_ocpnodes makes its OCPNodes of, as ocp destroy, ocp
 # status and ocp node ls read them too. node_ip is refused on a pool by a
@@ -1570,6 +1572,7 @@ sub _control_plane_lines {
                 count => 'count is read by nothing -- '
                     . ($mapping ? 'how many control planes there are is nodes: N' : $one_each),
                 nodes => "nodes: N is read on a control_planes mapping only -- $one_each",
+                service => 'service is gone (ocp init wrote it, nothing read it) -- delete it',
             }, @CONTROL_PLANE_KEYS, ($mapping ? 'nodes' : ())));
 
         # The wording this rejection has always had; the SET behind it now
@@ -2345,11 +2348,7 @@ sub write_spec {
             $cp->{host} = $opts{host} if $opts{host};
             $spec->{control_planes} = $cp;
         } elsif ($provider eq 'local') {
-            my $cp = { provider => 'local' };
-            if ($opts{service} && $opts{service} ne 'none') {
-                $cp->{service} = $opts{service};
-            }
-            $spec->{control_planes} = $cp;
+            $spec->{control_planes} = { provider => 'local' };
         }
     }
 

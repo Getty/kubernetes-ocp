@@ -65,12 +65,6 @@ option host => (
     doc    => 'SSH host (for --provider=ssh)',
 );
 
-option service => (
-    is     => 'ro',
-    format => 's',
-    doc    => 'Service manager: systemd or none (default: none for local, systemd for others)',
-);
-
 option ssh_key => (
     is     => 'ro',
     format => 's',
@@ -135,10 +129,6 @@ sub execute {
     if (defined $self->provider && !OCP::Provider->known_type($self->provider)) {
         die OCP::Choices::unknown('provider', $self->provider,
             [ OCP::Provider->types ]);
-    }
-
-    if (defined $self->service && !grep { $_ eq $self->service } qw(systemd none)) {
-        die OCP::Choices::unknown('service', $self->service, [ qw(systemd none) ]);
     }
 
     # --ssh-key takes the PRIVATE half: the .pub convention is universal
@@ -379,7 +369,6 @@ sub execute {
 
         $opts{provider} = $provider;
         $opts{host}     = $self->host;
-        $opts{service}  = $self->service;
 
         # Only set when a picker actually ran; write_spec falls back to
         # OCP::Config's defaults for anything left undef.

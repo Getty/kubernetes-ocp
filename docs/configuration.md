@@ -179,12 +179,15 @@ These shapes used to be read wrongly and are refused:
 - **An unknown key in a control plane or a worker pool** is refused, so a
   misspelt key cannot leave its default in force. A control plane takes
   `provider`, `host`, `public_ip`, `private_ip`, `node_ip`, `server_type`,
-  `location`, `image`, `name` and `service` (and `nodes` on the mapping form); a
+  `location`, `image` and `name` (and `nodes` on the mapping form); a
   worker pool takes `name`, `provider`, `nodes`, `host`, `server_type`,
   `location`, `image`, `labels` and `taints`. `count:` gets a hint
   (`count is read by nothing -- how many control planes there are is nodes:
-  N`), and `network_interface:`, which nothing has read since k138, is refused
-  like any other unknown key.
+  N`), and so does `service:`, which `ocp init --provider local --service
+  systemd` used to write and nothing read (`control_planes[1].service: unknown
+  key (must be …); service is gone (ocp init wrote it, nothing read it) --
+  delete it`). `network_interface:`, which nothing has read since k138, is
+  refused like any other unknown key.
 - **An unknown key under `gpu:` or `system:`** is refused, because a
   misspelt key left its default in force (`system: { time_zone: Europe/Berlin
   }` left every node on UTC). `gpu:` takes `enabled`, `driver`, `toolkit` and

@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Breaking: a control plane's `service:` key, which `ocp init
+      --provider local --service` wrote and nothing read, is refused by
+      `ocp apply` and `ocp keys secure` with a hint to delete it. `ocp init
+      --service` is gone and now fails as an unknown option.
     - `ocp apply` and `ocp node add` take `--clean_cilium_residue`: the
       install clears the Cilium datapath state an earlier cluster left on a
       machine, without a reboot. Without it the install still refuses such

@@ -168,7 +168,6 @@ subtest 'every ocp.yaml ocp init writes without a terminal passes validate()' =>
         [ '--dist k3s'                   => [ '--dist', 'k3s' ] ],
         [ '--provider ssh --host'        => [ '--provider', 'ssh', '--host', 'cp.k308.test' ] ],
         [ '--provider local'             => [ '--provider', 'local' ] ],
-        [ '--provider local --service'   => [ '--provider', 'local', '--service', 'none' ] ],
     );
     for my $p (@paths) {
         my ($what, $args, %opt) = @$p;

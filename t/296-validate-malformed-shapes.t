@@ -1345,10 +1345,10 @@ subtest 'ocp apply --dry-run on a list: the line on STDERR, exit 1' => sub {
 # --- 29. a worker pool's keys ------------------------------------------------------------------------
 
 my $POOL_KEYS   = 'name, provider, nodes, host, server_type, location, image, labels, or taints';
-my $CP_KEYS     = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, '
-    . 'or service';
+# No service since k357 (t/357-control-plane-service.t): nothing read it.
+my $CP_KEYS     = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, or name';
 my $CP_MAP_KEYS = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, '
-    . 'service, or nodes';
+    . 'or nodes';
 
 subtest 'a key of a worker pool that is none of those read' => sub {
     my $hz = sub { +{ name => 'w', provider => 'hetzner', server_type => 'cx22', @_ } };
@@ -1438,12 +1438,12 @@ subtest 'a key of a control plane that is none of those read' => sub {
                                                  name => 'police1' } }) ],
         [], 'hetzner: every key the list names passes';
     is_deeply [ errors_for({ control_planes => [ { provider => 'ssh', host => 'cp1.k347.test', name => 'cp1' },
-                                                 { provider => 'local', service => 'systemd' } ] }) ],
-        [], 'a list of them, service on a local one';
+                                                 { provider => 'local' } ] }) ],
+        [], 'a list of them';
 
     # What ocp init writes.
     for my $opts ([ provider => 'hetzner' ], [ provider => 'ssh', host => 'cp.k347.test' ],
-                  [ provider => 'local', service => 'systemd' ]) {
+                  [ provider => 'local' ]) {
         my $f = path($tmpdir)->child('init' . int(rand(1_000_000)) . '.yaml');
         OCP::Config->write_spec($f->stringify, name => 'k347', @$opts);
         is_deeply [ OCP::Config->new(file => $f->stringify, ocp => $ocp)->validate ], [],

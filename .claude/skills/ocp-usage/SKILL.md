@@ -91,7 +91,6 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
     switches the project later)
   - `--dist rke2|k3s` — distribution
   - `--ssh-key PATH` — reuse an existing private key (copied to `.ocp/`)
-  - `--service systemd|none` — for provider local
   - `--force` — overwrite existing config
 - `ocp apply [--only control-planes|workers|NODE] [--dry-run] [--clean_cilium_residue]`
   — deploy/reconcile. `--clean_cilium_residue` clears Cilium datapath state
@@ -341,9 +340,9 @@ control_planes:             # Hash, Hash + "nodes: N", or Array of hashes
   server_type: cx32
   location: fsn1
   image: debian-13
-  # host / private_ip / public_ip / name / service (pinned after apply);
+  # host / private_ip / public_ip / name (pinned after apply);
   # `nodes: N` on the mapping form only. Any other key is
-  # refused (k347), `count:` and `network_interface:` included
+  # refused (k347), `count:`, `service:` and `network_interface:` included
   node_ip: 10.0.0.5         # optional; a join takes its route's address; see "node_ip" below
 workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
@@ -619,7 +618,7 @@ gpu:
 ### Local
 - `OCP::Provider::Local`: provider operations run locally (open3), but
   `resolve_host` returns `127.0.0.1` so the actual install still goes through
-  the normal Rex/SSH path. `--service systemd|none` controls service setup.
+  the normal Rex/SSH path.
 
 ## Security Model (PIN1/PIN2)
 

@@ -113,17 +113,6 @@ subtest 'unknown --dist is rejected with the valid dists' => sub {
     like $out, qr/Available: rke2, k3s/, 'lists the two distributions OCP writes';
 };
 
-subtest 'unknown --service is rejected with the valid values' => sub {
-    plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
-
-    my ($rc, $out) = run_init('--nogit', '--service', 'launchd');
-
-    isnt $rc, 0, '--service launchd is refused'
-        or diag $out;
-    like $out, qr/Unknown service 'launchd'\./, 'names the input';
-    like $out, qr/Available: systemd, none/, 'lists the two service values';
-};
-
 subtest '--host without --provider ssh is rejected, not silently eaten' => sub {
     plan skip_all => 'needs ssh-keygen' unless _have('ssh-keygen');
 
@@ -187,7 +176,6 @@ subtest 'every new rejection has the shape ocp quatschkommando answers in' => su
     my @cases = (
         ['--provider', 'hetzner-cloud', 1],   # 1 -> has Available: line
         ['--dist',     'rke3',          1],
-        ['--service',  'launchd',       1],
         ['--host',     'foo.example.com', 0], # 0 -> uses hint, no Available:
     );
 
