@@ -1,0 +1,76 @@
+{"action":"handoff","agent":"ocp-release-1106","detail":"review","task_id":390,"ts":"2026-11-06T19:33:48Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":391,"ts":"2026-11-06T19:33:54Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":411,"ts":"2026-11-06T19:33:59Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":412,"ts":"2026-11-06T19:34:04Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"review","task_id":390,"ts":"2026-11-06T19:34:45Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":390,"ts":"2026-11-06T19:34:53Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":390,"ts":"2026-11-06T19:34:59Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"todo","task_id":264,"ts":"2026-11-06T19:35:37Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":308,"ts":"2026-11-06T19:35:43Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":325,"ts":"2026-11-06T19:35:49Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":336,"ts":"2026-11-06T19:36:01Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":354,"ts":"2026-11-06T19:36:07Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":357,"ts":"2026-11-06T19:36:12Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":359,"ts":"2026-11-06T19:36:18Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":368,"ts":"2026-11-06T19:36:23Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":372,"ts":"2026-11-06T19:36:27Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":376,"ts":"2026-11-06T19:36:32Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":406,"ts":"2026-11-06T19:36:38Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"backlog","task_id":137,"ts":"2026-11-06T19:36:43Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":308,"ts":"2026-11-06T19:36:54Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":325,"ts":"2026-11-06T19:36:59Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":336,"ts":"2026-11-06T19:37:04Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":354,"ts":"2026-11-06T19:37:09Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":357,"ts":"2026-11-06T19:37:13Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":359,"ts":"2026-11-06T19:37:18Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":368,"ts":"2026-11-06T19:37:23Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":372,"ts":"2026-11-06T19:37:28Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":376,"ts":"2026-11-06T19:37:33Z"}
+{"action":"handoff","agent":"ocp-release-1106","detail":"review","task_id":404,"ts":"2026-11-06T19:38:58Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"review","task_id":404,"ts":"2026-11-06T19:39:55Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":404,"ts":"2026-11-06T19:40:02Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":404,"ts":"2026-11-06T19:40:12Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"todo","task_id":406,"ts":"2026-11-06T19:40:40Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T19:40:45Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":313,"ts":"2026-11-06T19:48:55Z"}
+{"action":"handoff","agent":"ocp-release-1106","detail":"review","task_id":313,"ts":"2026-11-06T20:21:02Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":413,"ts":"2026-11-06T20:21:14Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":414,"ts":"2026-11-06T20:21:25Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"review","task_id":313,"ts":"2026-11-06T20:21:31Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T20:28:36Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T20:34:16Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":368,"ts":"2026-11-06T20:48:11Z"}
+{"action":"handoff","agent":"ocp-release-1106","detail":"review","task_id":368,"ts":"2026-11-06T21:09:09Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":415,"ts":"2026-11-06T21:09:24Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":336,"ts":"2026-11-06T21:09:50Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":416,"ts":"2026-11-06T21:24:08Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":417,"ts":"2026-11-06T21:38:58Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":417,"ts":"2026-11-06T21:39:07Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":417,"ts":"2026-11-06T21:39:13Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":417,"ts":"2026-11-06T21:39:19Z"}
+{"action":"handoff","agent":"ocp-release-1106","detail":"review","task_id":336,"ts":"2026-11-06T21:44:54Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":414,"ts":"2026-11-06T21:45:31Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T21:52:41Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T21:52:56Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":313,"ts":"2026-11-06T21:53:15Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":313,"ts":"2026-11-06T21:53:20Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":368,"ts":"2026-11-06T21:53:33Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":368,"ts":"2026-11-06T21:53:38Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"review","task_id":336,"ts":"2026-11-06T21:53:48Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":336,"ts":"2026-11-06T21:53:52Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":418,"ts":"2026-11-06T21:55:14Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":419,"ts":"2026-11-06T21:55:25Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":264,"ts":"2026-11-06T21:56:11Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":308,"ts":"2026-11-06T21:56:17Z"}
+{"action":"create","agent":"Torsten Raudssus","detail":"backlog","task_id":420,"ts":"2026-11-06T22:00:45Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T22:00:55Z"}
+{"action":"move","agent":"ocp-release-1106","detail":"in-progress","task_id":354,"ts":"2026-11-06T22:01:10Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":409,"ts":"2026-11-06T22:37:32Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"backlog","task_id":409,"ts":"2026-11-06T22:37:42Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":406,"ts":"2026-11-06T22:40:44Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":264,"ts":"2026-11-06T22:41:26Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":308,"ts":"2026-11-06T22:41:32Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":354,"ts":"2026-11-06T22:41:43Z"}
+{"action":"edit","agent":"ocp-release-1106","detail":"in-progress","task_id":264,"ts":"2026-11-06T22:44:35Z"}
+{"action":"edit","agent":"Torsten Raudssus","detail":"in-progress","task_id":264,"ts":"2026-11-06T22:44:41Z"}
+{"action":"move","agent":"Torsten Raudssus","detail":"done","task_id":264,"ts":"2026-11-06T22:44:48Z"}
