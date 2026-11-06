@@ -377,16 +377,13 @@ sub _drift_unknown {
 }
 
 # A drift entry `ocp apply` closes, for the text count and --json's fixable
-# alike (k312): one with a remedy it runs, a self_healing one whose manifest
-# it re-applies anyway, a missing one it deploys. Counting remedies alone left
-# out every entry whose message says "ocp apply updates it". The line is the
-# one `ocp apply --dry-run` draws between what a real run acts on and what it
-# only reports (k188), so the two commands count the same entries. A check
-# that could not be made is none of the three (OCP::Drift gives it no remedy).
+# alike (k312). Counting remedies alone left out every entry whose message
+# says "ocp apply updates it". The rule is OCP::Drift's apply_closes, the one
+# `ocp apply --dry-run` draws between what a real run acts on and what it
+# only reports (k188), so the two commands count the same entries (k313).
 sub _drift_fixable {
     my ($self, $entry) = @_;
-    return 1 if $entry->{remedy} || $entry->{self_healing};
-    return ($entry->{kind} // '') eq 'missing' ? 1 : 0;
+    return OCP::Drift->apply_closes($entry);
 }
 
 # The drift section's lines. A check that could not be made reads as `ocp
@@ -755,9 +752,12 @@ followed by the count of those C<ocp apply> closes:
 An entry counts when C<ocp apply> carries a C<remedy> for it, when it is
 C<self_healing> (C<ocp apply> re-applies that manifest anyway: NFD, the GPU
 stack, the GPU Operator CRDs, OCP's own CRDs) or when it is of kind
-C<missing> (C<ocp apply> deploys it).  The rest is report only: C<ocp apply>
-names it and leaves it, among them a distribution upgrade, a moved address,
-the pod CIDR and a CRD newer than this C<ocp>.  These are the entries
+C<missing> (C<ocp apply> deploys it) -- L<OCP::Drift/apply_closes>.  The rest
+is report only: C<ocp apply> names it and leaves it, among them a
+distribution upgrade, a moved address, the pod CIDR, a CRD newer than this
+C<ocp>, and a GPU Operator off its pin where the GPU step of C<ocp apply>
+skips the cluster (C<gpu.enabled: false>, or no node NFD labelled NVIDIA),
+whose line under it says so.  These are the entries
 C<ocp apply --dry-run> counts as "a real run would act on" and as "reported
 only".  Earlier builds counted only the entries with a C<remedy>.
 A check L<OCP::Drift> could not make (an entry of kind C<error>: an RBAC

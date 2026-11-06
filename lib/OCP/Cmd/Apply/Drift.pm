@@ -54,9 +54,12 @@ without writing either. Disabling robocop does not remove it.
 Under C<--dry-run> the walk is replaced by C<dry_run_report>: the detector
 runs, its findings are printed, and not one write leaves the process.
 NFD or the GPU Operator running another image than its pin is followed by
-C<would re-apply the NFD manifest> (or the GPU Operator's, under
-C<gpu.enabled>): their steps read the image as the probe does and re-apply
-at an unchanged hash too (k351).
+C<would re-apply the NFD manifest> (or the GPU Operator's): their steps read
+the image as the probe does and re-apply at an unchanged hash too (k351).
+Where the GPU step skips the cluster -- C<gpu.enabled: false>, or no node
+NFD labelled NVIDIA -- the GPU Operator's entry is C<report only> instead,
+and counted so: what a dry run counts as acted on and reported only is what
+L<OCP::Drift/apply_closes> says, the rule C<ocp status> counts by as well.
 C<reconcile_components> then returns false, which is how the dispatcher
 knows to stop without stamping a version.
 
@@ -88,7 +91,9 @@ on and from the ones it only reports, as "could not be checked -- a real run
 would not complete until it can be read".
 
 C<gpu_dry_run> covers the GPU step the same way, read-only. It reads the GPU
-Operator's Deployment, then compares its ClusterPolicy against the spec, and
+Operator's Deployment and, as that step does, the nodes NFD labelled NVIDIA
+(L<OCP::Drift/nvidia_gpu_nodes>) -- without one the step skips, and so does
+this --, then compares its ClusterPolicy against the spec, and
 outside quiet mode reads the ClusterPolicy again for the C<gpu.toolkit>
 warning. It returns entries of the same shape: one C<< kind =E<gt> 'spec' >>
 entry per ClusterPolicy path that differs, and one C<< kind =E<gt> 'error' >>
@@ -224,13 +229,15 @@ sub reconcile_components {
                 # re-applies — a GPU-stack version bump lands in the generated
                 # manifest, so the hash changes and the component rolls out
                 # two blocks further down. Only what neither covers
-                # (distribution upgrades, moved IPs) needs a human.
+                # (distribution upgrades, moved IPs) needs a human: the line
+                # OCP::Drift apply_closes draws for status and the dry run too
+                # (k313).
                 if ($entry->{manual_step}) {
                     print "        $entry->{manual_step}\n";
                 }
                 else {
                     print "        No automatic step for this — see 'ocp update'\n"
-                        unless $entry->{kind} eq 'missing' || $entry->{self_healing};
+                        unless OCP::Drift->apply_closes($entry);
                 }
                 next;
             }
@@ -685,13 +692,14 @@ sub dry_run_report {
     # about it, and a real run ends short of spec over it (k267). robocop's
     # findings are names, its unread Deployment an entry (k319).
     my $is_unknown = sub { ref $_[0] eq 'HASH' && ($_[0]{kind} // '') eq 'error' };
-    # An entry with no remedy that the run does not re-apply either (not
-    # self_healing, not missing) is report-only -- the pod CIDR (k182): a real
-    # run names it and leaves it, so it is not counted as an action (k188).
+    # An entry a real run does not close (OCP::Drift apply_closes: no remedy,
+    # not self_healing, not missing) is report-only -- the pod CIDR (k182), a
+    # GPU Operator the GPU step skips (k313): a real run names it and leaves
+    # it, so it is not counted as an action (k188). ocp status counts by the
+    # same rule.
     my $is_report_only = sub {
         my $e = shift;
-        return !$e->{remedy} && !$e->{self_healing} && ($e->{kind} // '') ne 'missing'
-            && !$is_unknown->($e);
+        return !OCP::Drift->apply_closes($e) && !$is_unknown->($e);
     };
     # The GPU findings are asked first, silently: "No drift detected" is only
     # true when they find nothing either (k234). They are printed below.
@@ -713,9 +721,9 @@ sub dry_run_report {
             if $is_report_only->($entry);
         # NFD or the GPU Operator off its pin: its step reads the image as the
         # probe does and re-applies the manifest, at an unchanged hash too
-        # (k351).
+        # (k351) -- where the step runs (k313).
         print "          would re-apply the $entry->{label} manifest\n"
-            if OCP::Cmd::Apply::Workloads::reapplies($entry, $config);
+            if OCP::Cmd::Apply::Workloads::reapplies($entry);
     }
 
     # Workers without an OCPNode (k26): named, not created. The list is the
@@ -788,7 +796,8 @@ sub dry_run_report {
 }
 
 # The GPU half of the drift check, read-only: what the GPU step of a real run
-# would act on, and only where the operator runs. One entry per ClusterPolicy
+# would act on, and only where the operator runs and that step does too --
+# gpu.enabled, and a node NFD labelled NVIDIA (k313). One entry per ClusterPolicy
 # path that differs from the spec, { kind => 'spec', path, message }. The
 # gpu.toolkit warning is printed but is no entry of its own (the real run
 # only warns as well).
@@ -796,7 +805,8 @@ sub dry_run_report {
 # A read that fails with anything but a 404 is no answer (k276). The three
 # here -- the operator's Deployment, the ClusterPolicy for its differences,
 # the ClusterPolicy again for the warning -- each took one for a false
-# answer: no operator, no differences, no ClusterPolicy. Each is now an
+# answer: no operator, no differences, no ClusterPolicy. The NVIDIA nodes,
+# read after the Deployment (k313), are the same. Each is now an
 # { kind => 'error', label, cause, message } entry, drift unknown, the shape
 # of a probe OCP::Drift could not read (k267); the real run's GPU step makes
 # the same reads and fails on them. A ClusterPolicy that could not be read is
@@ -824,6 +834,13 @@ sub gpu_dry_run {
         namespace => 'gpu-operator') };
     return $unread->('GPU Operator', $@) if $@;
     return () unless $running;
+
+    # A running operator on a cluster without a node NFD labelled NVIDIA is
+    # one the real run's GPU step skips and leaves as it is: nothing it would
+    # re-apply (k313). Read as that step reads it, which a failed list fails.
+    my @nvidia = eval { OCP::Drift->nvidia_gpu_nodes($api) };
+    return $unread->('GPU Operator', $@) if $@;
+    return () unless @nvidia;
 
     my @paths = eval {
         OCP::Cmd::Apply::Workloads::cluster_policy_differences($self, $config, $api)

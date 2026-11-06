@@ -38,6 +38,14 @@ our %AMD_GPU_DAEMONSETS = (
     metrics       => { namespace => 'kube-system', name => 'amdgpu-metrics-exporter' },
 );
 
+# The labels NFD v0.17 gives a node with an NVIDIA GPU, pci-{CLASS}_{VENDOR}.present:
+#   0300 = VGA controller (consumer/workstation GPUs: RTX, GTX, Quadro)
+#   0302 = 3D controller  (datacenter GPUs: Tesla, A100, H100, L40)
+# A node with either is one the GPU step of ocp apply runs for; with none it
+# skips. One table for every reader (k313): that step, its dry run, and the
+# GPU Operator probe below, which asks whether that step closes its drift.
+our @NVIDIA_GPU_LABELS = map { "feature.node.kubernetes.io/pci-${_}.present" } qw(0300_10de 0302_10de);
+
 # Components whose running version can be read off one object in the cluster:
 # by default the first container image of a workload, or an annotation for
 # objects that run nothing (a CRD bundle).
@@ -61,8 +69,10 @@ our %AMD_GPU_DAEMONSETS = (
 #   remedy_lists  further task params that are lists kept in OCP::Versions,
 #                as { task param => OCP::Versions method }
 #   remedy_if_missing  the remedy installs from nothing too, so a 'missing'
-#                entry carries it. Without this a missing component waits for
-#                a full deploy, which reconcile never runs.
+#                entry carries it. Without this a 'missing' entry carries no
+#                remedy, and reconcile deploys the component with a step of
+#                its own instead: its cert-manager check installs a missing
+#                cert-manager, the upgrade task does not (k313).
 #   skip_if      config predicate: this cluster asked not to have the thing.
 #                One that croaks (a switch OCP::Config refuses) makes the
 #                probe an error entry, drift unknown (k332)
@@ -72,6 +82,13 @@ our %AMD_GPU_DAEMONSETS = (
 #                the run that reports the difference is also the run that
 #                closes it. Reconcile uses it to not send the user looking for
 #                a manual step, the same reason 'missing' entries stay quiet.
+#   step_skips   for a self_healing probe: an OCP::Drift method that says
+#                why the step re-applying its manifest skips this cluster, or
+#                returns nothing when that step runs (k313). Where it skips,
+#                the 'version' entry is report only, not self_healing, and
+#                carries the why as its manual_step. A method that cannot
+#                tell dies, and the entry is one that could not be checked.
+#                Without it, the step runs wherever the component is found.
 #   tag_prefix   the image tag is this prefix plus the pinned version (AMD's
 #                labeller ships as k8s-device-plugin:labeller-<version>). The
 #                whole tag is compared, so the same repository's image under
@@ -174,7 +191,10 @@ our @COMPONENT_PROBES = (
     # The GPU operator only exists where there is an NVIDIA card and
     # gpu.enabled — which is why absence is not drift here. A cluster that has
     # one still gets told when the pinned version moved; that OCP writes this
-    # Deployment itself is what makes the image readable at all.
+    # Deployment itself is what makes the image readable at all. An operator
+    # still running after gpu.enabled went false, or after the last NVIDIA
+    # node went, is told too -- but setup_gpu_operator skips such a cluster
+    # and leaves it as it is, so there it is report only (step_skips, k313).
     {
         component    => 'gpu_operator',
         label        => 'GPU Operator',
@@ -184,6 +204,7 @@ our @COMPONENT_PROBES = (
         remedy       => undef,
         optional     => 1,
         self_healing => 1,
+        step_skips   => '_gpu_operator_step_skips',
     },
     # The AMD GPU stack (k250), probed for the GPU operator's reasons: the
     # DaemonSets in %AMD_GPU_DAEMONSETS carry the pinned image as their first
@@ -410,8 +431,10 @@ sub _read_crd {
 #   the cluster declares what the image does not -- it is newer than this
 #     ocp. Reported, not "fixed": writing this ocp's CRD over it would drop
 #     those fields from every object, which is the bug above the other way
-#     round, so ensure_crds leaves such a CRD as it is (crd_schema_diff is its
-#     judge as well). The flip side: the day OCP drops a field from its own
+#     round, so ensure_crds leaves such a CRD as it is, and so does `ocp
+#     deploy-robocop` since k311 -- both through
+#     OCP::Cmd::Apply::CR::skip_newer_crd, whose judge is crd_schema_diff as
+#     well. The flip side: the day OCP drops a field from its own
 #     CRDs, every cluster will read as newer than the image that dropped it,
 #     until something better than field names tells the two apart.
 
@@ -640,9 +663,11 @@ sub spec_drift {
 #
 
 # The params a component's upgrade task runs with: the target version, the
-# distribution (the tasks pick kubectl and kubeconfig by it and fall back to
-# RKE2's) and the probe's remedy_pins. `ocp update` drives the same tasks and
-# builds its params here too, so the two paths cannot drift apart (k163).
+# distribution (the Rex tasks fetch the node's admin kubeconfig by it, RKE2's
+# when it is missing, and hand it on to Rex::Rancher's Cilium calls; no task
+# runs kubectl since k198) and the probe's remedy_pins. `ocp update` drives
+# the same tasks and builds its params here too, so the two paths cannot
+# drift apart (k163).
 # Callable on the class: update has a config, not a drift detector.
 sub remedy_params {
     my ( $self, $config, $component, $version ) = @_;
@@ -741,8 +766,8 @@ sub component_drift {
                 expected  => $expected,
                 actual    => undef,
                 message   => "$probe->{label} is not deployed (expected $expected)",
-                # A full deploy handles this, not an upgrade -- unless the
-                # remedy is one that installs from nothing.
+                # A deploy step of ocp apply handles this, not an upgrade --
+                # unless the remedy is one that installs from nothing.
                 remedy    => $probe->{remedy_if_missing}
                     ? $self->_probe_remedy($probe, $expected) : undef,
                 ($probe->{self_healing} ? (self_healing => 1) : ()),
@@ -764,17 +789,28 @@ sub component_drift {
 
         next if $same && !@wrong;
 
+        my $message = "$probe->{label} runs $actual"
+            . ($same ? '' : ", expected $want_tag")
+            . join('', map { "; $_" } @wrong);
+
+        # A self_healing probe whose step skips this cluster is report only,
+        # and says why (k313).
+        my ($skips, $unknown) = $self->_step_skips($probe, $expected, $message);
+        if ($unknown) {
+            push @drift, $unknown;
+            next;
+        }
+
         push @drift, {
             kind      => 'version',
             component => $probe->{component},
             label     => $probe->{label},
             expected  => $expected,
             actual    => $actual,
-            message   => "$probe->{label} runs $actual"
-                . ($same ? '' : ", expected $want_tag")
-                . join('', map { "; $_" } @wrong),
+            message   => $message,
             remedy    => $self->_probe_remedy($probe, $expected),
-            ($probe->{self_healing} ? (self_healing => 1) : ()),
+            ($probe->{self_healing} && !defined $skips ? (self_healing => 1) : ()),
+            (defined $skips ? (manual_step => $skips) : ()),
         };
     }
 
@@ -801,8 +837,10 @@ sub _probe_remedy {
 # the version annotation, or the tag of the first container's image -- ''
 # when there is none, which is not compared. $want_tag is the tag the pin
 # stands for (the entry keeps the pin as written), $same whether the two are
-# one version. The AMD GPU step of ocp apply asks the same before it calls a
-# DaemonSet up to date (k350), so status and apply read it one way.
+# one version. The steps of ocp apply that close such drift ask the same
+# before they call a workload up to date, so status and apply read it one
+# way: the AMD GPU step for its DaemonSets (k350), setup_nfd and
+# setup_gpu_operator for theirs (OCP::Cmd::Apply::Workloads::off_pin, k351).
 sub version_against_pin {
     my ($class, $probe, $object, $expected) = @_;
 
@@ -817,6 +855,86 @@ sub version_against_pin {
 
     my $want_tag = ($probe->{tag_prefix} // '') . $expected;
     return ($actual, $want_tag, _same_version($actual, $want_tag));
+}
+
+# Whether a plain `ocp apply` closes drift entry $entry (k313): it runs the
+# entry's remedy, re-applies its manifest (self_healing), or deploys what is
+# missing. Everything else it names and leaves, report only; a check that
+# could not be made (kind error) is neither. ocp status counts the entries
+# this says yes to as reconcilable, ocp apply --dry-run as the differences a
+# real run acts on, and reconcile sends no one to ocp update over them: one
+# line for all three. The entry alone decides. Where the step that re-applies
+# a component skips the cluster, its probe has left self_healing off already
+# (step_skips), so no caller needs to know more about the cluster.
+sub apply_closes {
+    my ($class, $entry) = @_;
+    my $kind = $entry->{kind} // '';
+    return 0 if $kind eq 'error';
+    return $entry->{remedy} || $entry->{self_healing} || $kind eq 'missing' ? 1 : 0;
+}
+
+# The Nodes NFD labelled with an NVIDIA GPU (@NVIDIA_GPU_LABELS), each once,
+# in the order listed: the nodes setup_gpu_operator runs for, and with none
+# it skips. Listed through $api one label selector at a time, as that step
+# lists them. A 404 lists nothing; any other failure dies with its cause,
+# naming the selector, as OCP::Cmd::Apply::K8s::read_or_absent words it.
+# That step, the dry run's gpu_dry_run and the GPU Operator probe's
+# step_skips read it here, so the three cannot tell it apart (k313).
+sub nvidia_gpu_nodes {
+    my ($class, $api) = @_;
+    my (%seen, @nodes);
+    for my $label (@NVIDIA_GPU_LABELS) {
+        my $selector = "$label=true";
+        my $list = eval { $api->list('Node', labelSelector => $selector) };
+        if (my $err = $@) {
+            my $reason = "$err";
+            chomp $reason;
+            next if $reason =~ /\b404\b/;
+            die "could not read Nodes labelled $selector: $reason\n";
+        }
+        my $items = _dig($list, 'items');
+        push @nodes, grep { !$seen{ _dig($_, qw(metadata name)) // '' }++ }
+            @{ ref $items eq 'ARRAY' ? $items : [] };
+    }
+    return @nodes;
+}
+
+# Why the step that re-applies $probe's manifest skips this cluster: ($why),
+# the 'version' entry's manual_step, or () when that step runs -- or when the
+# probe is not self_healing or names no step_skips (k313). A step_skips that
+# cannot tell makes the entry one that could not be checked, returned as
+# (undef, $entry): its message what was found ($found) and that what ocp
+# apply does about it is unknown, with the cause, carped once.
+sub _step_skips {
+    my ($self, $probe, $expected, $found) = @_;
+    my $method = $probe->{self_healing} && $probe->{step_skips} or return;
+    my $why = eval { $self->$method };
+    my $err = $@ or return $why;
+    _say_failed("OCP::Drift::component_drift: whether ocp apply re-applies $probe->{label}: ", $err);
+    return (undef, {
+        kind      => 'error',
+        component => $probe->{component},
+        label     => $probe->{label},
+        expected  => $expected,
+        actual    => undef,
+        message   => "$found; whether ocp apply re-applies it is unknown: " . OCP::ErrorLine::one_line($err),
+        remedy    => undef,
+    });
+}
+
+# step_skips of the GPU Operator probe (k313): setup_gpu_operator re-applies
+# the operator only under gpu.enabled and for a node NFD labelled NVIDIA,
+# and anywhere else skips, leaving it as it is. The same two reads that step
+# makes, in its order; a gpu.enabled OCP::Config refuses, or a Node list
+# that fails, dies here as it fails the step there.
+sub _gpu_operator_step_skips {
+    my ($self) = @_;
+    return 'gpu.enabled is false, so ocp apply leaves the GPU Operator as it is;'
+        . ' with gpu.enabled: true it re-applies it.'
+        unless $self->config->gpu_enabled;
+    return if $self->nvidia_gpu_nodes($self->api);
+    return 'No node carries an NFD NVIDIA label (pci-0300_10de or pci-0302_10de),'
+        . ' so ocp apply leaves the GPU Operator as it is.';
 }
 
 # The Kubernetes distribution itself. Upgrading it is a node-by-node dance,
@@ -1625,6 +1743,17 @@ an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
 upgrades them — their version lives in a generated manifest that C<ocp apply>
 re-applies, which is what C<self_healing> on those entries says.
 
+The GPU operator's entry says so only where that happens: the GPU step of
+C<ocp apply> runs under C<gpu.enabled> and for a node NFD labelled NVIDIA
+(L</nvidia_gpu_nodes>), and skips any other cluster, leaving a running
+operator as it is. An operator off its pin under C<gpu.enabled: false>, or
+with no such node, is reported without C<self_healing>, with a
+C<manual_step> that says why: report only, as C<ocp apply> treats it. When
+that cannot be told -- a C<gpu.enabled> L<OCP::Config> refuses, a Node list
+that fails with anything but a 404 -- the finding is a C<kind =E<gt>
+'error'> entry instead, its message the difference found and that what
+C<ocp apply> does about it is unknown, with the cause, carped to stderr.
+
 NFD is two probes of the one C<nfd> pin, because its manifest runs that image
 twice: the C<nfd-master> Deployment (label C<NFD>) and the C<nfd-worker>
 DaemonSet (label C<NFD DaemonSet>). Either can run another image, or be gone,
@@ -1681,9 +1810,10 @@ writes the shipped one over it.
 =item * The cluster's CRD declares paths the shipped one does not: it is
 newer than this ocp (a downgrade). C<kind =E<gt> 'version'>, with a
 C<manual_step>, and reported only: L<OCP::Cmd::Apply::CR> leaves such a CRD
-as it is, because writing this one over it would drop those fields from every
-object. The flip side: once OCP drops a field from its own CRDs, every
-cluster reads as newer than the ocp that dropped it.
+as it is, for C<ocp apply> and C<ocp deploy-robocop> alike, because writing
+this one over it would drop those fields from every object. The flip side:
+once OCP drops a field from its own CRDs, every cluster reads as newer than
+the ocp that dropped it.
 
 =item * The cluster has no such CRD (a 404, and only a 404): C<kind =E<gt>
 'missing'>, C<self_healing>.
@@ -1743,7 +1873,33 @@ annotation or the tag of the first container's image (C<''> when there is
 none, which is not compared), the tag the pin stands for with the probe's
 C<tag_prefix>, and whether the two are one version. Callable on the class.
 L<OCP::Cmd::Apply::AMDGPU> asks it before it calls a DaemonSet up to date
-(k350).
+(k350), and L<OCP::Cmd::Apply::Workloads> before it calls NFD or the GPU
+operator up to date.
+
+=head2 apply_closes
+
+    my $closes = OCP::Drift->apply_closes($entry);
+
+True when a plain C<ocp apply> closes the drift entry: it runs its
+C<remedy>, re-applies its manifest (C<self_healing>), or deploys what is
+C<missing>. Every other entry is report only, and an entry of kind C<error>
+is neither. L<OCP::Cmd::Status> counts these entries as "can be reconciled
+automatically" and sets C<fixable> by it, and C<ocp apply --dry-run> counts
+them as the differences a real run would act on: one rule for both.
+Callable on the class; it reads nothing but the entry.
+
+=head2 nvidia_gpu_nodes
+
+    my @nodes = OCP::Drift->nvidia_gpu_nodes($api);
+
+The Nodes NFD labelled with an NVIDIA GPU, each once: those with
+C<feature.node.kubernetes.io/pci-0300_10de.present> or
+C<feature.node.kubernetes.io/pci-0302_10de.present> set to C<true>
+(C<@OCP::Drift::NVIDIA_GPU_LABELS>), listed one label selector at a time. A
+404 lists nothing; any other failure dies with
+C<could not read Nodes labelled SELECTOR: CAUSE>. The GPU step of C<ocp
+apply> runs for these nodes and skips a cluster without one; its dry run and
+the GPU operator probe read them here as well. Callable on the class.
 
 =head2 distribution_drift
 

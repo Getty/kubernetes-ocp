@@ -151,8 +151,10 @@ my @MIXED = (
     { kind => 'error', component => 'worker_host_probes', label => 'Worker host probes',
       message => 'Worker host probes: could not list OCPNode in ocp-system, drift unknown: 403 Forbidden',
       remedy => undef },
+    # NFD's probe is self_healing: component_drift marks the entry so, and
+    # ocp apply re-applies NFD (k313).
     { kind => 'version', component => 'nfd', label => 'NFD',
-      message => 'NFD runs v0.17.0, expected v0.18.3', remedy => undef },
+      message => 'NFD runs v0.17.0, expected v0.18.3', remedy => undef, self_healing => 1 },
 );
 
 {
@@ -167,7 +169,7 @@ my @MIXED = (
         '  [drift] could not be checked: Worker host probes: could not list OCPNode in ocp-system, drift unknown: 403 Forbidden',
         '  [drift] NFD runs v0.17.0, expected v0.18.3',
     ), 'the error entry reads "could not be checked" with its cause, the drift as before';
-    like $out, qr/^1 of 2 can be reconciled automatically: run 'ocp apply'\.$/m,
+    like $out, qr/^2 of 2 can be reconciled automatically: run 'ocp apply'\.$/m,
         'the count is of the drift found, not of the checks that could not be made';
 }
 

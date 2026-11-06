@@ -203,9 +203,9 @@ sub writer_verdict {
 sub probe_verdict {
     my ($p) = @_;
     return 'nothing to do' unless $p;
-    # What ocp status and the dry run count as closed by `ocp apply`:
-    # a remedy, a self-healing entry, or kind missing.
-    return $p->{remedy} || $p->{self_healing} || ($p->{kind} // '') eq 'missing'
+    # What ocp status and the dry run count as closed by `ocp apply`: the
+    # one rule they share (k313).
+    return OCP::Drift->apply_closes($p)
         ? 'closed by ocp apply'
         : 'not closed by ocp apply';
 }

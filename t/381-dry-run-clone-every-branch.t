@@ -68,6 +68,7 @@ use OCP;
 use OCP::Cmd::Apply;
 use OCP::Cmd::Apply::AMDGPU;
 use OCP::Config;
+use OCP::Drift;
 use OCP::Keys;
 use OCP::Password;
 use OCP::Secrets;
@@ -85,6 +86,7 @@ my $TOKEN      = 'K10k381::server:k381';
 my $KUBECONFIG = "apiVersion: v1\nkind: Config\nclusters: []\n";
 my $HOST_KEY   = 'ssh-ed25519 ' . MIME::Base64::encode_base64('k381 the host key', '');
 my $AMD        = $OCP::Config::AMD_GPU_PRESENT_LABEL;
+my $NVIDIA     = $OCP::Drift::NVIDIA_GPU_LABELS[1];    # NFD's 3D controller, 10de
 
 # --- Fakes ----------------------------------------------------------------
 
@@ -254,8 +256,8 @@ sub listing {
 
 # The cluster, as each branch of the dry run reads it: robocop's Secret
 # (current: the robo key it holds is the one keys.yaml has) and Deployment;
-# the GPU Operator running, its ClusterPolicy with the container toolkit off;
-# one AMD GPU node; the ssh worker's OCPNode without the pool's labels, the
+# the GPU Operator running, its ClusterPolicy with the container toolkit off,
+# and one NVIDIA GPU node, the GPU step's to run for (k313); one AMD GPU node; the ssh worker's OCPNode without the pool's labels, the
 # Hetzner worker's none; a CoreDNS Corefile without registry.local.
 sub cluster_for {
     my ($dir) = @_;
@@ -272,6 +274,7 @@ sub cluster_for {
               data => { map { $_ => MIME::Base64::encode_base64($plain{$_}, '') } keys %plain } },
             { kind => 'Deployment', metadata => { name => 'robocop', namespace => 'ocp-system' } },
             { kind => 'Deployment', metadata => { name => 'gpu-operator', namespace => 'gpu-operator' } },
+            { kind => 'Node', metadata => { name => 'crag', labels => { $NVIDIA => 'true' } } },
             { kind => 'Node', metadata => { name => 'synapse', labels => { $AMD => 'true' } } },
             { kind => 'Node', metadata => { name => 'k381', labels => {} } },
             { kind => 'OCPNode',

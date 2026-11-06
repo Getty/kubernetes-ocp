@@ -224,17 +224,18 @@ sub off_pin {
 }
 
 # Whether drift entry $entry is one setup_nfd or setup_gpu_operator closes by
-# re-applying its manifest: the probe on its Deployment found another image
-# than the pin -- a pin that moved, or an image changed in the cluster
-# (k351). The dry run says so under the entry. Not for the GPU Operator under
-# gpu.enabled: false, where setup_gpu_operator skips; the gate is
-# gpu_dry_run's for the same line.
+# re-applying its manifest: a probe on its workload found another image than
+# the pin -- a pin that moved, or an image changed in the cluster (k351) --,
+# and ocp apply closes it (OCP::Drift apply_closes). The dry run says so
+# under the entry. Not for a GPU Operator the step skips (gpu.enabled: false,
+# no node NFD labelled NVIDIA): its probe leaves such an entry report only
+# (k313), the rule gpu_dry_run follows for its own lines.
 sub reapplies {
-    my ($entry, $config) = @_;
+    my ($entry) = @_;
     return 0 unless ($entry->{kind} // '') eq 'version';
     my $component = $entry->{component} // '';
-    return 1 if $component eq 'nfd';
-    return $component eq 'gpu_operator' && $config->gpu_enabled ? 1 : 0;
+    return 0 unless $component eq 'nfd' || $component eq 'gpu_operator';
+    return OCP::Drift->apply_closes($entry);
 }
 
 # Why the nfd-worker wait of setup_nfd ended without a ready pod, as the end
@@ -549,10 +550,10 @@ sub generate_nfd_manifest {
     return $self->ocp->dump(@resources);
 }
 
-# NFD v0.17 labels use the format pci-{CLASS}_{VENDOR}.present:
-#   0300 = VGA controller (consumer/workstation GPUs: RTX, GTX, Quadro)
-#   0302 = 3D controller  (datacenter GPUs: Tesla, A100, H100, L40)
-my @NVIDIA_LABELS = map { "feature.node.kubernetes.io/pci-${_}.present" } qw(0300_10de 0302_10de);
+# NFD's labels for a node with an NVIDIA GPU, pci-{CLASS}_{VENDOR}.present:
+# OCP::Drift's table, which the GPU Operator probe and the dry run read too
+# (k313).
+my @NVIDIA_LABELS = @OCP::Drift::NVIDIA_GPU_LABELS;
 
 sub setup_gpu_operator {
     my ($self, $config) = @_;
@@ -568,20 +569,12 @@ sub setup_gpu_operator {
 
     my $api = $self->_k8s_api;
 
-    # Check if any node has NVIDIA GPU via NFD labels (@NVIDIA_LABELS). A list
-    # that fails is no "no GPU nodes": it dies with its cause, and the step is
-    # [!!] instead of skipped (k277). A 404 lists nothing.
-    my @gpu_nodes;
-    for my $label (@NVIDIA_LABELS) {
-        my $list = OCP::Cmd::Apply::K8s::read_or_absent("Nodes labelled $label=true",
-            sub { $api->list('Node', labelSelector => "$label=true") });
-        if ($list && $list->items) {
-            push @gpu_nodes, @{ $list->items };
-        }
-    }
-    # Deduplicate (a node could theoretically have both classes)
-    my %seen;
-    @gpu_nodes = grep { !$seen{$_->metadata->name}++ } @gpu_nodes;
+    # Check if any node has NVIDIA GPU via NFD labels (@NVIDIA_LABELS), each
+    # node once. A list that fails is no "no GPU nodes": it dies with its
+    # cause, and the step is [!!] instead of skipped (k277). A 404 lists
+    # nothing. OCP::Drift reads them, so the GPU Operator probe and the dry
+    # run see the nodes this step does (k313).
+    my @gpu_nodes = OCP::Drift->nvidia_gpu_nodes($api);
 
     unless (@gpu_nodes) {
         print "      No GPU nodes detected (no NFD pci-0300_10de or pci-0302_10de label)\n";

@@ -1,6 +1,13 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - ocp status's "N of M can be reconciled automatically" and the counts
+      of ocp apply --dry-run now agree with what a real ocp apply does.
+      Where ocp apply skips the GPU step (gpu.enabled: false, or no node
+      that NFD labelled NVIDIA), a GPU Operator running another image than
+      its pin is reported only, with the reason under it. The dry run also
+      no longer promises to re-apply the GPU Operator there for a
+      ClusterPolicy that differs.
     - The image carries the next release of each sibling distribution OCP
       depends on (Crypt::Age 0.006, File::SOPS 0.006, IO::K8s 1.112,
       Kubernetes::REST 1.111, MooX::Cmd 1.001, Net::Async::Kubernetes 0.012,

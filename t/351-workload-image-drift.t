@@ -409,16 +409,19 @@ subtest 'k369: an nfd-worker that is not there -- status, the dry run and the re
 # The dry run's "would re-apply" is the promise of setup_nfd and
 # setup_gpu_operator, and only theirs: the other probes' steps (Cilium's
 # remedy, the AMD GPU step with its own dry run) close a version drift their
-# own way, and a missing workload is deployed, not re-applied.
+# own way, and a missing workload is deployed, not re-applied. The entries
+# are shaped as component_drift builds them where each step runs, with the
+# probe's self_healing (k313: reapplies asks OCP::Drift apply_closes, which
+# reads the entry).
 subtest 'k351: the dry run says re-apply only for the steps that do' => sub {
-    my $config = config_for(project());
     for my $probe (@OCP::Drift::COMPONENT_PROBES) {
         my $c     = $probe->{component};
         my $mine  = $c eq 'nfd' || $c eq 'gpu_operator';
-        my %entry = (component => $c, label => $probe->{label}, message => 'x');
-        is !!OCP::Cmd::Apply::Workloads::reapplies({ %entry, kind => 'version' }, $config), !!$mine,
+        my %entry = (component => $c, label => $probe->{label}, message => 'x',
+                     ($probe->{self_healing} ? (self_healing => 1) : ()));
+        is !!OCP::Cmd::Apply::Workloads::reapplies({ %entry, kind => 'version' }), !!$mine,
             "$c, another version: " . ($mine ? 'would re-apply' : 'nothing about a manifest');
-        ok !OCP::Cmd::Apply::Workloads::reapplies({ %entry, kind => 'missing' }, $config),
+        ok !OCP::Cmd::Apply::Workloads::reapplies({ %entry, kind => 'missing' }),
             "$c, missing: nothing about a manifest";
     }
 };

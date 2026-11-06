@@ -42,10 +42,17 @@ sub live {
 }
 
 {
+    # A cluster with one node NFD labelled NVIDIA, crag: the GPU step runs
+    # here, so its dry run compares the ClusterPolicy (k313; t/313 is the
+    # cluster without one).
+    package NvidiaNodes;
+    sub list { +{ items => [ { metadata => { name => 'crag' } } ] } }
+}
+{
     package FakeApply;
     sub new { my ($c, %o) = @_; bless { %o }, $c }
     sub _crd_get { $_[0]{cp} }
-    sub _k8s_api { 'API' }
+    sub _k8s_api { 'NvidiaNodes' }
     sub _resource_exists { $_[0]{running} // 1 }
 }
 {
@@ -150,6 +157,7 @@ my $CP_PATH = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';
     # the ClusterPolicy GETs, one [status, body] per call in order, then 404s.
     package ReadApi;
     sub new { my ($c, %o) = @_; bless { deployment => { kind => 'Deployment' }, cp => [], gets => 0, %o }, $c }
+    sub list { NvidiaNodes->list }    # the node the GPU step runs for (k313)
     sub get {
         my ($self) = @_;
         die $self->{deployment} unless ref $self->{deployment} eq 'HASH';
