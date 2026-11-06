@@ -53,13 +53,33 @@ build: | vendor/ORDER
 #
 # Back to CPAN-only: `make vendor VENDOR=` leaves an empty vendor/ (.keep and
 # an empty ORDER), and the Dockerfile then installs nothing from it.
-# Default is empty. For an image with siblings that are not released yet, name
-# them on the command line, e.g.
-#   make vendor VENDOR="rex-libssh rex-rancher p5-net-async-kubernetes p5-www-hetzner"
+#
+# The default is what cpanfile pins beyond cpanfile.snapshot (k406): cpanfile
+# pins each sibling at the version its tree releases next, the snapshot pins
+# only what CPAN has, and t/222-vendor.t holds VENDOR to exactly the siblings
+# in between. Pending, none of them on CPAN yet:
+#   p5-crypt-age     Crypt::Age 0.006
+#   p5-file-sops     File::SOPS 0.006
+#   p5-moox-cmd      MooX::Cmd 1.001
+#   p5-www-hetzner   WWW::Hetzner 0.103
+#   rex-gpu          Rex::GPU 0.006
+#   kubernetes-rest  Kubernetes::REST 1.111
+#   rex-rancher      Rex::Rancher 0.005
+# In install order: File::SOPS needs Crypt::Age, WWW::Hetzner and
+# Kubernetes::REST need MooX::Cmd, Rex::Rancher needs Kubernetes::REST and
+# takes Rex::GPU. An entry falls out on its release day, together with the
+# snapshot moving to that release.
 # CI vendors this same list; a name needs its GitHub home in SIBLING_HOMES
-# below, nothing in ci.yml.
-VENDOR ?=
-SIBLINGS_DIR ?= ..
+# below, nothing in ci.yml. One line: t/222 rewrites it to test the CI step.
+VENDOR ?= p5-crypt-age p5-file-sops p5-moox-cmd p5-www-hetzner rex-gpu kubernetes-rest rex-rancher
+
+# SIBLINGS_DIR is where the sibling checkouts live: by default the directory
+# that holds the main checkout, i.e. <dir> when git's common dir is
+# <dir>/<checkout>/.git -- ~/dev for ~/dev/kubernetes-ocp and for each of its
+# worktrees under .claude/worktrees/, where `..` would name .claude/worktrees/
+# (k406). Without git, or with a common dir that is no <checkout>/.git, it is
+# `..`. Given on the command line or in the environment, it wins (CI sets it).
+SIBLINGS_DIR ?= $(or $(abspath $(patsubst %/.git,%/..,$(filter /%/.git,$(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)))),..)
 
 vendor/ORDER:
 	@$(MAKE) --no-print-directory vendor
@@ -99,8 +119,8 @@ vendor:
 # version from the tags. SIBLING_HOMES maps a sibling's directory name to its
 # owner/repo; a VENDOR entry without a home stops the clone and names the
 # sibling -- add it here. git refuses to clone into a directory that is not
-# empty, so the real checkouts under the default SIBLINGS_DIR=.. stay
-# untouched if this runs outside CI.
+# empty, so the real checkouts under the default SIBLINGS_DIR stay untouched
+# if this runs outside CI.
 SIBLING_HOMES = \
 	io-k8s-p5=pplu/io-k8s-p5 \
 	kubernetes-rest=pplu/kubernetes-rest \

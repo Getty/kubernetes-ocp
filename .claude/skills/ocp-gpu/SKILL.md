@@ -107,11 +107,12 @@ gpu:
   `gpu.amd.allocation` through affinity terms, so each node gets either the
   device plugin or the DRA driver (experimental). A component that no node
   selects is removed again.
-- **Unreleased libraries.**
-  - Rex::GPU::AMD is on rex-gpu branch `worktree-k1-amd-driver`. Without it,
-    the released detection marks AMD GPUs `compute => 0`, so no driver and no
-    labels.
-  - The `deploy_amd_*`/`remove_amd_*` functions are on rex-rancher branch
-    `worktree-k95-amd-gpu`. Without them, apply prints one `[WARN]` and
-    deploys nothing.
+- **Library versions.** OCP requires Rex::GPU 0.006 (carries Rex::GPU::AMD)
+  and Rex::Rancher 0.005 (carries the `deploy_amd_*`/`remove_amd_*`
+  functions). Until their CPAN release the image vendors both from the sibling
+  trees' `main`.
+  - Without an AMD-capable Rex::GPU, detection marks AMD GPUs `compute => 0`,
+    so no driver and no labels.
+  - Without the deploy functions, apply prints one `[WARN]` and deploys
+    nothing.
   - Neither case ever fails a run.

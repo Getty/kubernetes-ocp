@@ -74,11 +74,18 @@ sub nothing_asked_nothing_failed {
 
 subtest 'a 401 names what the API answered' => sub {
     # The body Hetzner sends for a token it does not accept.
-    my @r = run_picker(WWW::Hetzner::Cloud->new(token => $TOKEN, io => CannedIO->new(
+    my $cloud = WWW::Hetzner::Cloud->new(token => $TOKEN, io => CannedIO->new(
         status  => 401,
         content => '{"error":{"code":"unauthorized","message":"unable to authenticate","details":{}}}',
-    )));
-    like $r[2], qr/\A\[!!\] Could not read the Hetzner catalogue: Hetzner API error: unable to authenticate — keeping the defaults\n\z/,
+    ));
+    # The why is WWW::Hetzner's own line for that answer, taken from the error
+    # it raises -- its wording is its own (k406).
+    my $why = eval { $cloud->locations->list_all; 1 }
+        ? die "the canned 401 was accepted\n"
+        : $@->message;
+    like $why, qr/unable to authenticate/, 'which carries the API message';
+    my @r = run_picker($cloud);
+    like $r[2], qr/\A\[!!\] Could not read the Hetzner catalogue: \Q$why\E — keeping the defaults\n\z/,
         'STDERR says the catalogue could not be read, and why';
     nothing_asked_nothing_failed(@r);
 

@@ -403,8 +403,9 @@ gpu:
   - on a `control_planes:` mapping with `nodes:` above 1 (list the control
     planes one by one instead);
   - when two control planes share an address.
-- **It needs a Rex::Rancher with node_ip support** (rex-rancher k100,
-  unreleased). Until the image has one, the install of a node with a
+- **It needs a Rex::Rancher with node_ip support** (rex-rancher k100). That is
+  part of Rex::Rancher 0.005, which OCP's cpanfile requires (vendored until its
+  CPAN release). With an older one, the install of a node with a
   node_ip dies with the reason before its host is touched, and its OCPNode
   ends in `Failed`. Nodes without a node_ip install as before.
 - **It needs an OCPNode CRD that stores `spec.nodeIP`** (k290). An older

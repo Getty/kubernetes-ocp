@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - The image carries the next release of each sibling distribution OCP
+      depends on (Crypt::Age 0.006, File::SOPS 0.006, IO::K8s 1.112,
+      Kubernetes::REST 1.111, MooX::Cmd 1.001, Net::Async::Kubernetes 0.012,
+      Rex::GPU 0.006, Rex::Rancher 0.005, WWW::Hetzner 0.103), built from
+      source where CPAN does not have it yet.
+    - A Hetzner API error now names the HTTP status and the API's error
+      code, e.g. "Could not read the Hetzner catalogue: Hetzner API error:
+      unable to authenticate (401 unauthorized) — keeping the defaults".
     - A PIN of "0" is accepted as a real PIN: as PIN1 it no longer makes
       `ocp init` fail with an internal error, and as PIN2 it now really
       protects the admin key -- before, the admin key was stored without

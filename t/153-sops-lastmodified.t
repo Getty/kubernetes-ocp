@@ -16,9 +16,9 @@ use YAML::XS ();
 #
 # File::SOPS 0.001 and 0.002 wrote it bare; from 0.003 on every YAML write
 # quotes it, rotate included. k153 quoted OCP's own output on top while the
-# image still carried 0.002 (until 2026-09-23); k247 dropped that, as the
-# cpanfile pins 0.005. Files committed before then can still be bare, so this
-# pins what OCP owes them as well as what it writes now:
+# image still carried 0.002 (until 2026-09-23); k247 dropped that once the
+# cpanfile pinned 0.005 (0.006 now). Files committed before then can still be
+# bare, so this pins what OCP owes them as well as what it writes now:
 #
 #   1. every OCP write path produces a quoted document that round-trips;
 #   2. a project File::SOPS 0.002 really wrote still opens through OCP's read

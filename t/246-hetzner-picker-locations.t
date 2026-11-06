@@ -18,7 +18,7 @@ use OCPTest::HetznerIO;
 # offers a type only when its entry for L is available and undeprecated;
 # without a location, when at least one entry is. The catalogue comes through
 # a real WWW::Hetzner::Cloud on a fake IO, so the entries arrive exactly as
-# WWW::Hetzner 0.102 hands them on: plain hashes, JSON booleans, undef for null.
+# WWW::Hetzner 0.103 hands them on: plain hashes, JSON booleans, undef for null.
 
 my $true  = JSON::MaybeXS::true;
 my $false = JSON::MaybeXS::false;

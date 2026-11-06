@@ -42,11 +42,17 @@ Only the local state counts: when OCP needs a fix that sits in a sibling dist
 gets it from `vendor/` instead of waiting for the release.
 
 ```bash
-make vendor                              # the default list (Makefile VENDOR), from ../<repo>
+make vendor                              # the default list (Makefile VENDOR), next to the main checkout
 make vendor VENDOR="io-k8s-p5 rex-gpu"   # a different list, in install order
-make vendor SIBLINGS_DIR=~/dev           # siblings somewhere else
+make vendor SIBLINGS_DIR=~/src           # siblings somewhere else
 make vendor VENDOR=                      # CPAN-only: empty vendor/
 ```
+
+The siblings are looked for in the directory that holds the main checkout:
+`~/dev` for `~/dev/kubernetes-ocp`, and for every worktree of it under
+`.claude/worktrees/` too, as the Makefile reads it off git's common dir. Without
+git, it is `..`. A `SIBLINGS_DIR` given on the command line or in the
+environment wins; CI sets one.
 
 `make vendor` dzil-builds each repo in `VENDOR` from its **committed HEAD**, in
 a throwaway clone (uncommitted work is not vendored; it warns), into `vendor/`
@@ -62,11 +68,23 @@ sibling checkout (the floor names the sibling's next release, e.g. IO::K8s
 `cpanfile.snapshot` pins; the snapshot is regenerated (`make snapshot`) after
 the release.
 
+The default `VENDOR` is exactly that set, and `t/222-vendor.t` holds it there.
+`cpanfile` pins every sibling at the version its tree releases next, while
+`cpanfile.snapshot` pins only what CPAN has. Each sibling whose pin the snapshot
+does not reach must be in `VENDOR`, once, and nothing else may be. The Makefile
+comment above `VENDOR` names the pending versions.
+
+On a sibling's release day: run `make snapshot`, which moves exactly the pins
+the snapshot no longer meets, then drop that sibling from `VENDOR`. If only some
+siblings are released, lower the unreleased pins to their CPAN version for the
+`make snapshot` run and restore them after, so the snapshot moves only the
+released ones.
+
 Back to CPAN-only: once every floor is satisfiable from CPAN and the snapshot
-pins it, `make vendor VENDOR=` and rebuild — `vendor/` then holds only `.keep`
-and an empty `ORDER`, and the Dockerfile installs nothing from it. To make
-that the default, empty `VENDOR` in the Makefile; CI follows it, with no
-workflow edit.
+pins it, `VENDOR` is empty in the Makefile (t/222 demands it then) and
+`vendor/` holds only `.keep` and an empty `ORDER`; the Dockerfile installs
+nothing from it, and CI follows, with no workflow edit. `make vendor VENDOR=`
+gives the same for a single build.
 
 CI builds the same list in its `vendor` job and hands `vendor/` to both image
 jobs as an artifact. The job reads the list from the Makefile

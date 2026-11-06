@@ -153,8 +153,9 @@ Rex::GPU (CPAN; floors in `cpanfile`, exact versions in `cpanfile.snapshot`).
   Rex::Rancher with node_ip support keeps the `node-ip` that config.yaml
   already holds. What values pass, and that there is no default: skill
   `ocp-usage`.
-- **The library needs node_ip support (rex-rancher k100, unreleased).** The
-  Rexfile asks for it by capability, not by version
+- **The library needs node_ip support (rex-rancher k100).** It is part of
+  Rex::Rancher 0.005, which OCP's cpanfile requires (vendored until its CPAN
+  release). The Rexfile asks for it by capability, not by version
   (`Rex::Rancher::Distribution->can('node_addresses')`). Without it the
   install dies before anything on the host is read or changed, and the
   OCPNode ends in `Failed` with that message. A library without the

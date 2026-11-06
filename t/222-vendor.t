@@ -4,6 +4,7 @@ use warnings;
 use Test::More;
 use File::Temp qw(tempdir);
 use Path::Tiny qw(path);
+use version ();
 use YAML::XS ();
 
 #
@@ -21,6 +22,12 @@ use YAML::XS ();
 # reads VENDOR from the Makefile (`make vendor-list`), clones exactly those
 # siblings from their homes in SIBLING_HOMES (`make vendor-siblings`), and
 # skips the clone and Dist::Zilla when the list is empty.
+#
+# k406: the default list is no longer empty by rule. cpanfile pins every
+# sibling at the version its tree releases next, cpanfile.snapshot pins only
+# what CPAN has, and VENDOR names exactly the siblings whose pin the snapshot
+# does not reach -- so a pin bumped ahead of CPAN without vendoring fails
+# here, and so does a VENDOR entry left behind after the release day.
 #
 # `make vendor` is exercised for real here, against throwaway sibling
 # repositories and a stand-in `dzil` at the front of PATH — never against the
@@ -119,6 +126,58 @@ sub git_out {
 # What a directory holds, by name; nothing when it does not exist.
 sub names_in { my ($dir) = @_; -d $dir ? [ sort map { $_->basename } $dir->children ] : [] }
 
+# The module each sibling checkout builds (k406).
+my %SIBLING = (
+    'Crypt::Age'             => 'p5-crypt-age',
+    'File::SOPS'             => 'p5-file-sops',
+    'IO::K8s'                => 'io-k8s-p5',
+    'Kubernetes::REST'       => 'kubernetes-rest',
+    'MooX::Cmd'              => 'p5-moox-cmd',
+    'Net::Async::Kubernetes' => 'p5-net-async-kubernetes',
+    'Rex::GPU'               => 'rex-gpu',
+    'Rex::LibSSH'            => 'rex-libssh',
+    'Rex::Rancher'           => 'rex-rancher',
+    'WWW::Hetzner'           => 'p5-www-hetzner',
+);
+
+# A variable of the real Makefile as make expands it, split into words; the
+# environment does not count.
+sub make_var {
+    my ($var) = @_;
+    delete local $ENV{$var};
+    open my $mk, '-|', 'make', '-s', '-f', "$makefile",
+        '--eval', "print-var: ; \@echo \$($var)", 'print-var'
+        or die "make: $!";
+    my $out = do { local $/; <$mk> };
+    close $mk or die "make print-var $var: $?";
+    return split ' ', $out;
+}
+
+# requires 'Module', 'version'; from cpanfile, as module => version.
+sub cpanfile_pins {
+    my %pin = $root->child('cpanfile')->slurp_utf8
+        =~ m{^requires \s+ '([^']+)', \s* '([^']+)';}mxg;
+    delete $pin{perl};
+    return \%pin;
+}
+
+# The version cpanfile.snapshot installs of each module, from the provides:
+# block of each distribution.
+sub snapshot_versions {
+    my (%have, $provides);
+    for ($root->child('cpanfile.snapshot')->lines_utf8({ chomp => 1 })) {
+        if (/^ {4}(\S+):/) { $provides = $1 eq 'provides'; next }
+        $have{$1} = $2 if $provides && /^ {6}(\S+) (\S+)$/;
+    }
+    return \%have;
+}
+
+sub reaches {
+    my ($have, $want) = @_;
+    return defined $have && $have ne 'undef'
+        && version->parse($have) >= version->parse($want);
+}
+
 subtest 'make vendor builds the VENDOR list into vendor/, in list order' => sub {
     my ($proj, $sib, $bin, $log) = sandbox();
     my ($rc, $out) = run_make($proj, $bin, "SIBLINGS_DIR=$sib",
@@ -170,17 +229,74 @@ subtest 'a missing sibling fails loud' => sub {
     like $out, qr{nope}, 'and names the missing sibling';
 };
 
-# Nothing pending since the 2026-10-01 releases (IO::K8s 1.110, Rex::GPU 0.004,
-# Crypt::Age 0.005): the default is empty, a plain `make vendor` is CPAN-only.
-subtest 'the default list' => sub {
-    ok $makefile->slurp_utf8 =~ m{^VENDOR \s* \?= \s*$}mx,
-        'VENDOR defaults to nothing -- everything the image needs is on CPAN';
-    my ($proj, $sib, $bin) = sandbox();
+# The default is the difference between cpanfile and cpanfile.snapshot: the
+# siblings whose pin only their tree has, until the release day moves the
+# snapshot (k406). Empty again once everything pinned is on CPAN.
+subtest 'the default list is what cpanfile pins beyond the snapshot' => sub {
+    my $pin    = cpanfile_pins();
+    my $have   = snapshot_versions();
+    my @vendor = make_var('VENDOR');
+
+    is_deeply [ sort values %SIBLING ],
+        [ sort map { (split /=/)[0] } make_var('SIBLING_HOMES') ],
+        'every sibling with a home is one this test knows the module of';
+    ok defined $pin->{$_}, "cpanfile pins a version of $_" for sort keys %SIBLING;
+
+    my @beyond = grep { !reaches($have->{$_}, $pin->{$_}) } sort keys %$pin;
+    is_deeply [ grep { !$SIBLING{$_} } @beyond ], [],
+        'every pin the snapshot does not reach is a sibling, so vendor/ can carry it';
+    is_deeply [ sort @vendor ], [ sort map { $SIBLING{$_} // () } @beyond ],
+        'VENDOR names exactly the siblings of those pins (' . join(' ', @vendor) . ')';
+    my %seen;
+    is_deeply [ grep { $seen{$_}++ } @vendor ], [], 'each one once';
+
+    # A plain `make vendor` builds that list, in its order.
+    my ($proj, undef, $bin) = sandbox();
+    my %module = reverse %SIBLING;
+    my %dist = map { ($_ => $module{$_} =~ s/::/-/gr) } @vendor;
+    my $sib = path(tempdir(CLEANUP => 1));
+    make_sibling($sib->child($_), $dist{$_}, $pin->{$module{$_}}) for @vendor;
     my ($rc, $out) = run_make($proj, $bin, "SIBLINGS_DIR=$sib");
     is $rc, 0, 'a plain make vendor succeeds' or diag $out;
-    is $proj->child('vendor/ORDER')->slurp_utf8, '', 'and vendors nothing';
-    ok $makefile->slurp_utf8 =~ m{^SIBLINGS_DIR \s* \?= \s* \.\. \s*$}mx,
-        'SIBLINGS_DIR defaults to ..';
+    is_deeply [ $proj->child('vendor/ORDER')->lines_utf8({ chomp => 1 }) ],
+        [ map { "$dist{$_}-$pin->{$module{$_}}.tar.gz" } @vendor ],
+        'and builds the default list, in its order';
+};
+
+# With VENDOR set by default, a plain `make build` vendors -- also in a fresh
+# worktree under .claude/worktrees/, where `..` holds no sibling (k406). The
+# default is the directory next to the main checkout, from the main checkout
+# and from its worktrees alike; `..` where there is no git.
+subtest 'SIBLINGS_DIR defaults to the directory that holds the main checkout' => sub {
+    my $tmp  = path(tempdir(CLEANUP => 1))->realpath;
+    my $main = $tmp->child('dev', 'ocp');
+    make_sibling($main, 'OCP', '0.001');
+    my $worktree = $main->child('.claude', 'worktrees', 'x');
+    system('git', '-C', "$main", 'worktree', 'add', '-q', "$worktree") == 0
+        or die "git worktree add: $?";
+    my $plain = $tmp->child('plain');
+    $plain->mkpath;
+    $makefile->copy($_->child('Makefile')) for $main, $worktree, $plain;
+
+    # git looks no further up than $tmp, so the plain directory has no git
+    # even when the temp dir lies inside some repository.
+    local $ENV{GIT_CEILING_DIRECTORIES} = "$tmp";
+    delete local @ENV{qw(SIBLINGS_DIR GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR)};
+    my $siblings_dir = sub {
+        my ($dir, @args) = @_;
+        my $out = `make -s -C '$dir' --eval 'print-var: ; \@echo \$(SIBLINGS_DIR)' print-var @args 2>&1`;
+        chomp $out;
+        return $out;
+    };
+    my $dev = $tmp->child('dev') . '';
+    is $siblings_dir->($worktree), $dev,
+        'from a worktree under .claude/worktrees/: next to the main checkout';
+    is $siblings_dir->($main), $dev, 'from the main checkout: the same';
+    is $siblings_dir->($plain), '..', 'without git: ..';
+    is $siblings_dir->($worktree, 'SIBLINGS_DIR=/given'), '/given',
+        'given on the command line, it wins';
+    local $ENV{SIBLINGS_DIR} = 'siblings';
+    is $siblings_dir->($worktree), 'siblings', 'and from the environment, as CI sets it';
 };
 
 subtest 'the Dockerfile installs vendor/ORDER before the snapshot pass' => sub {
@@ -212,7 +328,7 @@ subtest 'make vendor-list prints VENDOR on one line' => sub {
     my ($proj, $sib, $bin) = sandbox();
     my ($rc, $out) = run_target($proj, $bin, 'vendor-list');
     is $rc, 0, 'make vendor-list succeeds' or diag $out;
-    is $out, "\n", 'the default list is empty';
+    is $out, join(' ', make_var('VENDOR')) . "\n", 'the default list, as the Makefile names it';
     ($rc, $out) = run_target($proj, $bin, 'vendor-list', "VENDOR=' rex-gpu   io-k8s-p5 '");
     is $out, "rex-gpu io-k8s-p5\n", 'a given list comes out as one line';
 };
@@ -283,7 +399,7 @@ subtest 'VENDOR= clones nothing' => sub {
     ok !-e $dest, 'and creates nothing';
 };
 
-# Run outside CI with the default SIBLINGS_DIR=.., the target meets the real
+# Run outside CI with the default SIBLINGS_DIR, the target meets the real
 # checkouts. They must come out of that unchanged.
 subtest 'an existing checkout is never cloned over' => sub {
     my ($proj, $sib, $bin) = sandbox();

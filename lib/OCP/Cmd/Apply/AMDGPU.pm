@@ -86,7 +86,7 @@ Ready a few seconds before port 5000 answers; apply does not probe it).
 
 =back
 
-A Rex::Rancher without the AMD functions (0.004, the released one) is one
+A Rex::Rancher without the AMD functions (older than 0.005) is one
 C<[WARN]> on STDERR and nothing deployed -- never a failed apply.
 
 =cut

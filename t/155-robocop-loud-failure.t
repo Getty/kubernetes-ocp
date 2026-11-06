@@ -165,7 +165,7 @@ subtest 'a successful check resets the count' => sub {
     is($c->async_kube->lists, 5, 'after exactly that many checks');
 };
 
-# k247: what Net::Async::Kubernetes::Watcher (0.011 in cpanfile.snapshot) hands
+# k247: what Net::Async::Kubernetes::Watcher (0.012 in cpanfile.snapshot) hands
 # on_error -- the Status it builds for a failed watch attempt, and the API
 # server's raw Status for an ERROR event on the stream. The fake reports both
 # the way the watcher does: to on_error, or as a warning without one.

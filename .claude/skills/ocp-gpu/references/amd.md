@@ -19,12 +19,14 @@ ROCm questions (images, HIP, `HSA_OVERRIDE_GFX_VERSION`) belong to skill
 | Status | `OCP::Cmd::Status` `_print_amd_gpu`, `_amd_gpu_json` (lane: ocp-status-worker) |
 | Tests | `t/249-amd-gpu-host.t`, `t/250-gpu-amd-integrated.t`, `t/251-amd-gpu-stack.t`, `t/252-status-amd-gpu.t`, `t/253-gpu-amd-integrated-cr.t`, `t/258-status-json-amd-gpu.t` |
 
-## The libraries are not released yet
+## Library versions
 
-Both halves rest on library code that no CPAN release carries yet. The versions
-pinned in `cpanfile` have none of it.
+Both halves rest on library code that OCP's `cpanfile` pins: Rex::GPU 0.006
+and Rex::Rancher 0.005. Until their CPAN release the image vendors them from
+the sibling trees' `main`. The fallbacks below cover an older library on the
+path (a stale host install, an older vendored copy).
 
-- **Rex::GPU::AMD** is on rex-gpu branch `worktree-k1-amd-driver` (rex-gpu k1).
+- **Rex::GPU::AMD** is part of Rex::GPU 0.006 (rex-gpu k1).
   - Its feature flag is `Rex::GPU->can('amd_class')`.
   - The released detection marks every AMD GPU `compute => 0`. `detect_gpu`
     then says `AMD GPU present, but none Rex::GPU knows to be compute-capable`
@@ -37,9 +39,8 @@ pinned in `cpanfile` have none of it.
   - Nothing is exported, so call it fully qualified.
 - **The `Rex::Rancher::K8s` functions** `deploy_amd_device_plugin`,
   `deploy_amd_node_labeller`, `deploy_amd_dra_driver`,
-  `deploy_amd_metrics_exporter` and their `remove_amd_*` counterparts are on
-  rex-rancher branch `worktree-k95-amd-gpu`, unmerged (rex-rancher k95, k101,
-  k102, k103, k106).
+  `deploy_amd_metrics_exporter` and their `remove_amd_*` counterparts are part
+  of Rex::Rancher 0.005 (rex-rancher k95, k101, k102, k103, k106).
   - Before any call, `AMDGPU::setup` checks that every function this run needs
     exists (`lib_missing`).
   - If one is missing, apply prints a single `[WARN] The AMD GPU stack needs a
@@ -49,7 +50,8 @@ pinned in `cpanfile` have none of it.
   - The check runs only when there is something to deploy or remove. With
     nothing to do, the step prints one skip line instead (for example `No AMD
     GPU nodes`).
-- The cpanfile pins can only move once the maintainer releases the libraries.
+- The vendored copies go once both libraries are on CPAN; the `cpanfile` pins
+  stay.
 
 ## Host step (`share/Rexfile`)
 

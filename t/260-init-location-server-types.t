@@ -201,7 +201,12 @@ subtest 'nothing is asked unless the type catalogue can be read' => sub {
     # user has already answered the location.
     my ($init, $out, $err) = run_picker("hel1\n\n", server_types => undef);
     unlike $out, qr/Location:/, 'no location was asked for';
-    like $err, qr/\[!!\] Could not read the Hetzner catalogue: Hetzner API error: no route: GET \/server_types — keeping the defaults\n/,
+    # The why is WWW::Hetzner's own line for the fake's 404 on /server_types,
+    # taken from the error it raises -- its wording is its own (k406).
+    my $why = eval { OCPTest::HetznerIO->new->cloud->server_types->list_all; 1 }
+        ? die "the fake answered GET /server_types\n"
+        : $@->message;
+    like $err, qr/\[!!\] Could not read the Hetzner catalogue: \Q$why\E — keeping the defaults\n/,
         'STDERR says the catalogue could not be read, and why (k265)';
     is $init->_location, undef, 'the defaults stay';
 
