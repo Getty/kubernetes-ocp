@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-06T23:29:30Z
+created: 2026-10-31T12:33:49Z
+id: 357
+priority: low
+started: 2026-11-06T19:37:13Z
+status: done
+tags:
+- decision
+- validation
+title: 'Decide: a control plane''s service: key (written by ocp init --provider local
+  --service, read by nothing)'
+updated: 2026-11-06T23:29:30Z
+---
+
+Decide (maintainer). From k347 (choices worker, 2026-10-31): a control plane's `service:` key is written by `ocp init --provider local --service` and read by nothing in lib/, bin/ or share/. Since k347, validate() still accepts it, as one of the keys it lists. Options:
+- drop it: init stops writing it, and validate() refuses it with a hint;
+- keep it as a placeholder (say what for);
+- make it mean something (what, with --service).
+Not to be built before the maintainer answers.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): the service: key goes. ocp init no longer writes it; validate() refuses it with a hint that it is gone and can be deleted. init's --service option goes with it if it only writes this key.
+
+2026-11-06 ocp-release-1106 (ocp-choices-worker): service: is out of the control-plane keys; validate() refuses it as an unknown key with the hint: service is gone (ocp init wrote it, nothing read it) -- delete it. Untagged like every unknown control-plane key, so apply and keys secure refuse it. --service only validated systemd|none and wrote the key, so it is gone; init --service now fails as an unknown option. write_spec writes no service. New t/357 (5 claims); t/296, t/308, t/41 claims replaced. Red on 8e9956b (claims 1,2,4,5), mutants for 2 and 3; binding 8 files, 216 tests, PASS.
+
+committed as c260ad8
