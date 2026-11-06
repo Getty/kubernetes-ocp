@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-06T22:45:06Z
+created: 2026-10-31T06:23:22Z
+id: 308
+priority: low
+started: 2026-11-06T19:36:54Z
+status: done
+tags:
+- provider
+- hetzner
+- decision
+title: Hetzner worker server type falls back to cx32, the control-plane default is
+  cpx21
+updated: 2026-11-06T22:45:06Z
+---
+
+Found under k298 (2026-10-31). Since k298, a Hetzner control plane takes missing placement from `OCP::Config::%HETZNER_DEFAULTS` (cpx21 / fsn1 / debian-13). `OCP::Provider::Hetzner::create_server` (Provider/Hetzner.pm:129 and :274, POD :171/:191) still falls back to `cx32` at its last rank. So a Hetzner worker from `ocp node add` or robocop whose OCPNode and OCPNodeProvider name no server type gets cx32, while the control-plane default is cpx21.
+
+Decision for the maintainer: should workers share the control-plane default (one source, cpx21 at today's value), keep cx32 as a separate worker default (then name it next to HETZNER_DEFAULTS and say why), or have no fallback (refuse a worker without a server type)? Switching changes what new workers cost, so it needs a Changes bullet. Related: k264 checks cpx21 against the live catalogue.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): no default for Hetzner workers any more. validate() refuses a Hetzner worker pool without server_type (the line names the key and gives an example); ocp init writes a server_type for Hetzner workers (check that init never writes a file validate() refuses). Control-plane default cpx22 (k264). Docs and tests follow; one commit closes k264 and k308.
+
+2026-11-06 ocp-release-1106 (ocp-worker): Hetzner workers have no default server type. validate() refuses a hetzner pool without server_type and names the key and an example (server_type: cpx22). create_server drops the cx32 fallback and refuses before any POST; the OCPNode goes Failed with the fix (node rm, node add --server-type). No init path writes a pool: 11 paths in t/308, mutant-proven. POD, CRD description, README, docs/configuration.md, ocp-usage skill updated. Red on 323230b; binding run 16 files, 461 tests, PASS.
+
+committed as 605ad0c
