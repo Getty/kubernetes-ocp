@@ -1,0 +1,34 @@
+---
+class: standard
+completed: 2026-11-06T01:48:46Z
+created: 2026-11-06T01:26:45Z
+id: 405
+priority: medium
+started: 2026-11-06T01:48:46Z
+status: done
+tags:
+- ci
+- docker
+title: CI publishes the image only for release tags; main and branches build only
+updated: 2026-11-06T01:48:46Z
+---
+
+Maintainer decision 2026-11-06: only release tags publish the OCP image. Pushes to main, feature branches and pull requests build the image and push nothing.
+
+Until now .cicd/docker+29+publish.image.sh publishes on main and on any tag. Every push to main since at least 2026-10-01 (run 36813555940, ac075c6) pushed raudssus/ocp:latest + :<sha> to Docker Hub and ghcr.io/getty/kubernetes-ocp. Most recently: run 41741299801, 44a9db0. ADR 0013 says publishing never runs without explicit permission, and that was not true for main pushes.
+
+Scope:
+- Gate in .cicd/docker+29+publish.image.sh: publish only when CICD_TAG is a release tag. Anything else exits 78 (skip). That includes main, other tags such as the existing k138-debug, PRs and branches. Release tag = the [@Author::GETTY] tag_format %v (bare version, e.g. 0.001), which is also the tag robocop of a released CLI pulls (OCP::Robocop::Manifest _default_image: raudssus/ocp:<version>). Limiting it to release-shaped tags is the main agent's call: a debug tag must not move latest.
+- Comments that state the old policy: the headers of both .cicd scripts and .github/workflows/ci.yml.
+- Prose: docs/development.md (CI, Publish policy), docs/robocop.md (a development checkout falls back to :latest, which is now the newest release, not main), README.md (pin example raudssus/ocp:v0.001 -> 0.001, the bare-version tag the release writes).
+- ADR 0013 amendment recording the decision and the history.
+
+Consequence to know: until the first release tag, latest stays at 44a9db0.
+
+Closes k134 together (its open points are met: secrets in place since 2026-09-04, siblings on CPAN since 2026-10-21, a fresh checkout builds without vendor/, CI green on main).
+
+2026-11-06 01:46 Gate done (infra-worker): .cicd/docker+29+publish.image.sh publishes only when CICD_TAG matches ^[0-9]+\.[0-9]+$ (bare %v release version); main, branches, other tags (k138-debug), 0.001_01, v0.001 exit 78 'not a release tag (ref ...)'. PR and no-creds paths unchanged; push failure rc passes through, logout runs. Headers of the publish script and ci.yml updated; build script header states no policy, left as is. Workflow jobs/env unchanged: nothing blocks tag runs (on: push unfiltered, simpici sets CICD_TAG from refs/tags/*). Verified: 14-path stub matrix in busybox sh, dash and Alpine docker:27 (old script published on 6 of those paths); simpici plan unchanged; t/222-vendor.t 9/9 in image. Still stating the old policy, outside this lane: docs/development.md:174,246. Patch: scratchpad w-ocp405/k405.patch + k405.hdr.
+
+2026-11-06 01:47 Done: release-tag-only publish gate + CI header comments; patch w-ocp405/k405.patch, header k405.hdr (Changes: none). Docs/ADR parts of the card are for other agents.
+
+2026-11-06 01:48 Committed on main: 353c2a0 (publish gate, ci.yml header, docs, Changes) and 06c5fb5 (ADR 0013 amendment). Not pushed.
