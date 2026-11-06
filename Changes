@@ -1068,3 +1068,8 @@ Revision history for OCP
       table (`make vendor-siblings`). With `VENDOR` empty it clones
       nothing and installs no Dist::Zilla; before, every run checked out
       and prepared three siblings for an empty build.
+    - `ocp.yaml`: a `kubernetes.version` that is a release of the other
+      distribution (`v1.36.4+k3s1` under `dist: rke2` or no dist,
+      `v1.36.4+rke2r1` under `dist: k3s`) is refused, so commands stop on
+      it before a server is bought. A version without a suffix passes as
+      before.

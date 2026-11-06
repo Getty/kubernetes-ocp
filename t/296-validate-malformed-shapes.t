@@ -1548,7 +1548,9 @@ subtest 'a kubernetes.version that is no string' => sub {
           "kubernetes.version: must be a string ($VERSION_WHAT), not a mapping",
           "kubernetes.distro: unknown key (must be $K8S_KEYS)" ],
         'beside a dist and a key nothing reads: a line each';
-    for my $ok ('v1.36.4+rke2r1', 'v1.36.4+k3s1', '', undef) {
+    # Under no dist, which is rke2: a k3s release is refused there since k376
+    # (t/376-version-of-the-dist.t), a version without a suffix is not.
+    for my $ok ('v1.36.4+rke2r1', 'v1.31.3', '', undef) {
         is_deeply [ errors_for({ control_planes => $local, kubernetes => { version => $ok } }) ], [],
             'version: ' . (defined $ok ? "'$ok'" : 'null') . ' passes';
     }

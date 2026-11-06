@@ -528,8 +528,12 @@ gpu:
     `write kubernetes: { dist: k3s }`, only when the value is rke2 or k3s.
     `kubernetes.version` and a control plane's `name` must be strings
     (`_version_error`, `_not_a_string`); `kubernetes()` and `version()` croak
-    on the same lines. The unknown keys of `ssh:` and of a pool machine are
-    validate's alone (`ssh_config()` and `ocp destroy` do not refuse on them).
+    on the same lines. A `kubernetes.version` ending in the other
+    distribution's suffix (`+k3sN` under `dist: rke2` or no dist, `+rke2rN`
+    under `dist: k3s`; `%RELEASE_SUFFIX`, `_release_error`) is refused at the
+    path `kubernetes` and by `version()`, and one without a suffix passes.
+    The unknown keys of `ssh:` and of a pool machine are validate's alone
+    (`ssh_config()` and `ocp destroy` do not refuse on them).
   - **`cilium:`** (k210, k292) takes `devices` (a non-empty list of interface
     names; the short form of `helm_values.devices`) and `helm_values` (a
     mapping of Helm values, deep-merged over what Rex::Rancher::Cilium

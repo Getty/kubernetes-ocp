@@ -196,6 +196,12 @@ These shapes used to be read wrongly and are refused:
   a list, a mapping or a boolean is refused (`kubernetes.version: must be a
   string (a release like v1.36.4+rke2r1 or v1.36.4+k3s1; empty for the one OCP
   pins), not a list`). Empty or absent `version` still means the pinned one.
+  A release of the other distribution is refused too, `v1.36.4+k3s1` under
+  `dist: rke2` (or under no `dist`, which is `rke2`) and `v1.36.4+rke2r1` under
+  `dist: k3s` (`kubernetes.version: 'v1.36.4+k3s1' is a release of k3s, but
+  kubernetes.dist is rke2; write a release of rke2 (like v1.36.4+rke2r1), or
+  set kubernetes.dist to k3s`), while a version without a suffix, such as
+  `v1.31.3`, passes as before.
 - **An unknown key under `network:`, `network.lb_pool`, `network.l2`,
   `cilium:` or `robocop:`** is refused, so a misspelt key cannot leave its
   default in force. `network:` takes `pod_cidr`, `lb_pool` and `l2`; `lb_pool`

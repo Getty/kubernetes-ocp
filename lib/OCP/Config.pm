@@ -208,11 +208,39 @@ sub _kubernetes_unknown_keys {
 # installer as is, or empty (or absent) for the one OCP::Versions pins. A list
 # passed for being true, and went to the installer as a list; a boolean
 # is no release either.
+#
+# Nor is a release of the other distribution (k376): v1.36.4+k3s1 under dist:
+# rke2, or under no dist, which is rke2, went to the installer as is, which
+# fails on it only on the machine, after a server was bought. $dist is
+# kubernetes.dist as ocp.yaml has it.
 sub _version_error {
-    my ($version) = @_;
+    my ($version, $dist) = @_;
     my $err = _not_a_string($version, 'a release like v1.36.4+rke2r1 or v1.36.4+k3s1; '
-        . 'empty for the one OCP pins') // return undef;
+        . 'empty for the one OCP pins') // return _release_error($version, $dist);
     return "kubernetes.version: $err";
+}
+
+# The suffix each distribution tags its releases with, a number after it:
+# v1.36.4+rke2r1 is an RKE2 release, v1.36.4+k3s1 a k3s one.
+our %RELEASE_SUFFIX = ( rke2 => '+rke2r', k3s => '+k3s' );
+
+# kubernetes.version's line when it ends in the other distribution's suffix,
+# or undef (k376). Only that is refused, by the maintainer's decision: a
+# version with no suffix (v1.31.3) and every other form go to the installer as
+# before. Beside a dist that is none, whose release it must be is not known,
+# and the dist's own line says what is wrong.
+sub _release_error {
+    my ($version, $dist) = @_;
+    my $set = defined $dist;
+    $dist //= 'rke2';
+    return undef if !defined $version || !_is_choice($dist, @DISTRIBUTIONS);
+    my ($other) = grep {
+        $_ ne $dist && defined $RELEASE_SUFFIX{$_} && $version =~ /\Q$RELEASE_SUFFIX{$_}\E[0-9]+\z/
+    } @DISTRIBUTIONS or return undef;
+    my $like = defined $RELEASE_SUFFIX{$dist} ? ' (like v1.36.4' . $RELEASE_SUFFIX{$dist} . '1)' : '';
+    return 'kubernetes.version: ' . _shown_value($version) . " is a release of $other, but kubernetes.dist is "
+        . $dist . ($set ? '' : ' (not set, the default)')
+        . "; write a release of $dist$like, or set kubernetes.dist to $other";
 }
 
 # kubernetes.dist's line, or undef: absent is rke2.
@@ -229,7 +257,7 @@ sub _kubernetes_lines {
     return _tagged(kubernetes => _kubernetes_shape_error($k8s) // ()) unless ref $k8s eq 'HASH';
     return _tagged(kubernetes =>
         _dist_error($k8s->{dist}) // (),
-        _version_error($k8s->{version}) // (),
+        _version_error($k8s->{version}, $k8s->{dist}) // (),
         _kubernetes_unknown_keys($k8s),
     );
 }
@@ -327,12 +355,13 @@ sub distribution {
 }
 
 # Refused in validate()'s words (k355), as distribution is: ocp apply, ocp
-# update and ocp status read it.
+# update and ocp status read it. A release of the other distribution is
+# version's line too (k376); distribution reads on over it.
 sub version {
     my $self = shift;
-    my $version = $self->kubernetes->{version};
-    _refuse(_version_error($version));
-    return $version // '';
+    my $k8s = $self->kubernetes;
+    _refuse(_version_error($k8s->{version}, $k8s->{dist}));
+    return $k8s->{version} // '';
 }
 
 # RKE2 keeps its registration endpoint on a supervisor port of its own,
