@@ -1,0 +1,20 @@
+---
+class: standard
+created: 2026-11-06T20:21:25Z
+id: 414
+priority: low
+status: backlog
+tags:
+- cleanup
+- deps
+title: Stale dependency-version comments in lib/ after the k406 pin bump
+updated: 2026-11-06T21:45:31Z
+---
+
+Found under k406 (pin step, 2026-11-06). Comments in lib/ that name dependency versions the cpanfile no longer pins:
+- lib/OCP/Kubernetes.pm:121 says "cpanfile requires 1.108" -- stale before k406 already (Kubernetes::REST is pinned 1.110).
+- lib/OCP/Secrets.pm:746 says File::SOPS 0.005 "warns on every read"; the pin is 0.006 now. Unverified whether 0.006 still warns -- check against the File::SOPS 0.006 tree (../p5-file-sops) and fix the comment, or drop the workaround if 0.006 no longer warns (then it is a behaviour change with its own test).
+
+Done = each comment names what is true for the pinned version.
+
+The lib/OCP/Kubernetes.pm:121 comment is being fixed with the add_provider switch under k406 (release round); the Secrets.pm:746 point stays here.
