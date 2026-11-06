@@ -1,6 +1,16 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Breaking: `ocp destroy` now exits 1 instead of 0 whenever it leaves
+      something standing on purpose: a skipped node or pool, a control
+      plane it could not search for, a failed server search, or servers
+      under the old label. It ends on a "Teardown INCOMPLETE" line instead
+      of "Cluster destroyed.". Scripts that took exit 0 to mean "done"
+      after such a run will now see a failure.
+    - When `ocp destroy` cannot reach the cluster API, it now says that a
+      local worker pool's worker on this machine is NOT torn down, and
+      names the uninstall script to run by hand. It still uninstalls
+      nothing on a guess.
     - A new Hetzner control plane is now cpx22 by default, replacing cpx21.
       That is what `ocp init` writes and what its server-type picker
       preselects.

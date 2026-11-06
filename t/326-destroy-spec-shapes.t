@@ -185,17 +185,22 @@ sub refused {
     is $r->{out}, '', 'nothing on STDOUT';
 }
 
-# A teardown that ran to the end: deleted, cleaned up, reported.
+# A teardown that ran to the end: deleted, cleaned up, reported. The k98
+# report names a server it leaves running, NOT deleted, so the run ends on
+# the cleanup and the closing line, exit 1 (k354).
 sub torn_down {
     my ($r, $config) = @_;
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
-    is $r->{ret}, 0, 'exit 0';
+    is $r->{ret}, 1, 'exit 1: the k98 report\'s server is left standing (k354)';
     ok scalar(grep { $_->[0] eq 'delete' && $_->[2] eq '111' } @{ $r->{events} }),
         'the control plane is deleted';
     ok !-f $_, path($_)->basename . ' is removed' for state_files($config);
-    like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends on Cluster destroyed.';
+    like $r->{out}, qr/\nEncrypted kubeconfig removed\.\n\z/,
+        'ends on the cleanup, not on Cluster destroyed.';
     like $r->{err}, qr/1 Hetzner server\(s\) carry the label ocp-cluster=hetzner-default/,
         'the k98 report ran';
+    like $r->{err}, qr/\n\[!!\] Teardown INCOMPLETE: the lines above that say NOT torn down\n     \(or NOT deleted\) name what is left standing\.\n\z/,
+        'and the closing line last';
 }
 
 # ------------------------------------------------------- refused

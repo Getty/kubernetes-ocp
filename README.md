@@ -396,6 +396,9 @@ ocp destroy
 > from a script or a pipe it refuses unless you pass `--force`, which also
 > skips the question. Never point this at a cluster you still need.
 
+If destroy has to leave something standing, it says what on STDERR and exits
+1 instead of printing "Cluster destroyed.".
+
 `ocp apply` and `ocp destroy` are the only two commands in this guide that
 touch paid infrastructure or a live install. Everything else is safe to run
 while you are finding your way around.

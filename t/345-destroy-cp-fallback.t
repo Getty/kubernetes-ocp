@@ -173,6 +173,10 @@ sub not_searched {
          . "       hcloud server list -l ocp-cluster=prod\n";
 }
 
+# The run's last word when a line said something is NOT torn down (k354).
+my $CLOSING = "\n[!!] Teardown INCOMPLETE: the lines above that say NOT torn down\n"
+            . "     (or NOT deleted) name what is left standing.\n";
+
 # ------------------------------------------------------- host: 0 or ''
 
 subtest 'a control plane with host: 0 or \'\' names no machine, as apply reads it' => sub {
@@ -187,7 +191,7 @@ subtest 'a control plane with host: 0 or \'\' names no machine, as apply reads i
         # word: an ssh control plane is reached at its host. Said now, with
         # validate()'s line for it, and not listed (t/353).
         is $r->{err}, "[!!] control_planes[1]: host required for ssh -- skipped: "
-                    . "that control plane is NOT torn down.\n",
+                    . "that control plane is NOT torn down.\n" . $CLOSING,
             "ssh, host: $host -- said as no host, on STDERR";
         is $r->{out}, $NO_NODES, "ssh, host: $host -- not listed";
         unlike $r->{out}, qr/^  - 0 |^Deleting 0\.\.\.$|^  -  \(/m, "ssh, host: $host -- no machine named 0 or ''";
@@ -241,8 +245,9 @@ subtest 'no label search answered: said on STDERR, with what it leaves' => sub {
     my $r = run_destroy($config, token => undef);
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
     is_deeply searched($r), [], 'the fixture: no search ran';
-    is $r->{err}, not_searched(1, 'no Hetzner token searched for it'),
+    is $r->{err}, not_searched(1, 'no Hetzner token searched for it') . $CLOSING,
         'on STDERR: no token searched for it, it may still run, how to find it';
+    is $r->{ret}, 1, 'exit 1: if it runs, it is NOT torn down (k354)';
     is $r->{out}, $NO_NODES, 'STDOUT: No nodes to destroy., no Deleting line';
     is_deeply deleted($r), [], 'nothing deleted';
 
@@ -251,14 +256,14 @@ subtest 'no label search answered: said on STDERR, with what it leaves' => sub {
     $r = run_destroy(project($HCP), token => undef, api_down => 1);
     like $r->{err}, qr/\A\[!!\] Could not read the OCPNodes from the cluster API:\n/,
         'the API line first';
-    like $r->{err}, qr/\n\Q${\ not_searched(1, 'no Hetzner token searched for it') }\E\z/,
+    like $r->{err}, qr/\n\Q${\ (not_searched(1, 'no Hetzner token searched for it') . $CLOSING) }\E\z/,
         'then the control plane\'s';
 
     # A search that fails answered nothing either -- and says why.
     $r = run_destroy(project($HCP), search_dies => 1);
     is_deeply searched($r), [ 'prod', 'hetzner-default' ],
         'the fixture: the label search ran, and died (as the k98 report\'s did)';
-    is $r->{err}, not_searched(1, 'the label search failed: 401 Unauthorized', 'Fix the cause'),
+    is $r->{err}, not_searched(1, 'the label search failed: 401 Unauthorized', 'Fix the cause') . $CLOSING,
         'on STDERR, with the search\'s error';
     is $r->{out}, $NO_NODES, 'STDOUT: No nodes to destroy.';
 };
@@ -278,7 +283,7 @@ subtest 'nodes: N is said once; no provider is read as hetzner, as apply reads i
     $r = run_destroy($none);
     is $r->{out}, found_none(1) . $NO_NODES, 'no provider -- the same line as hetzner';
     $r = run_destroy($none, token => undef);
-    is $r->{err}, not_searched(1, 'no Hetzner token searched for it'),
+    is $r->{err}, not_searched(1, 'no Hetzner token searched for it') . $CLOSING,
         'no provider, no token -- said on STDERR as for hetzner';
 };
 

@@ -121,6 +121,13 @@ has _cr_hetzner_error => (is => 'ro', default => sub { {} });
 # The adapter built from the local token, if there is one.
 has _local_hetzner => (is => 'rw');
 
+# Set by every line that says destroy leaves something standing on purpose --
+# "NOT torn down", and the k98 report's "NOT deleted" -- so the run ends on a
+# line that says so, never on "Cluster destroyed.", and exits 1 (k354). It
+# changes only the exit and that closing line: what the local cleanup removes
+# is decided as before, by a provider delete that failed and --keep_status.
+has _left_standing => (is => 'rw', default => 0);
+
 # Servers this project paid for but which are not labelled with its name.
 #
 # Until k98, OCP::Provider::from_cr took the provider CR's OWN name for
@@ -157,6 +164,8 @@ sub _report_mislabelled_servers {
         my $servers = eval { $hetzner_prov->list_servers_by_cluster($label) } || [];
         next unless @$servers;
 
+        # Left running on purpose, so the run says it is not done (k354).
+        $self->_left_standing(1);
         print STDERR "\n";
         printf STDERR "[!!] %d Hetzner server(s) carry the label ocp-cluster=%s and were\n",
                scalar @$servers, $label;
@@ -370,6 +379,10 @@ sub _collect_nodes {
     # A server only that search would find stays up, and nothing named it.
     $self->_say_failed_search($config, @$_) for $search_said ? () : @failed;
 
+    # A local pool's worker with the OCPNodes unread (k354), once the list is
+    # complete: a local node on it clears this machine.
+    $self->_say_local_pools($config, \@nodes);
+
     my @workers = grep { ($_->{role} // '') eq 'worker' } @nodes;
     my @rest    = grep { ($_->{role} // '') ne 'worker' } @nodes;
     return [ @workers, @rest ];
@@ -450,6 +463,7 @@ sub _ocpnode_entries {
         unless (defined $type && OCP::Provider->known_type($type)) {
             print STDERR "[!!] OCPNode $name: provider '$ref' is unknown here;"
                        . " it is NOT torn down.\n";
+            $self->_left_standing(1);
             next;
         }
 
@@ -632,10 +646,68 @@ sub _say_unknown_provider {
 }
 
 # The line for a control plane or pool destroy skips (k341): where, why in
-# validate()'s words, and what that leaves running.
+# validate()'s words, and what that leaves running -- then, where there is
+# one, how to tear it down by hand (k354). It leaves that standing, so the
+# run exits 1.
 sub _say_skipped {
-    my ($self, $where, $what, $left) = @_;
-    print STDERR "[!!] $where: $what -- skipped: $left NOT torn down.\n";
+    my ($self, $where, $what, $left, $by_hand) = @_;
+    print STDERR "[!!] $where: $what -- skipped: $left NOT torn down"
+               . (defined $by_hand ? "; $by_hand" : '') . ".\n";
+    $self->_left_standing(1);
+}
+
+# The worker of a local pool, when the OCPNodes could not be read (k354).
+#
+# Its only record is its OCPNode: apply puts no host on it, and ocp.yaml names
+# no machine for a local pool (k341, _spec_worker_entries). Nothing is
+# uninstalled on suspicion -- the machine ocp runs on may hold another
+# project's RKE2/K3s, or one apply never reconciled -- so the pool is said,
+# with the uninstall to run by hand, and the run exits 1.
+#
+# Not said when a local node is on the list: its uninstall on 127.0.0.1 runs
+# every RKE2/K3s uninstall script on this machine, the worker's too (and a
+# failed one is named at the end). Not for a pool of nodes: 0, which apply
+# gives no OCPNode, counted as worker_ocpnodes counts it. And not when there
+# is no kubeconfig.yaml at all: no cluster API was there to read OCPNodes
+# from -- the shape a project takes after a teardown, which removes it --
+# and "NOT torn down" would then claim what nobody knows.
+sub _say_local_pools {
+    my ($self, $config, $nodes) = @_;
+    return unless $self->_api_down;
+    return if grep { ($_->{provider} // '') eq 'local' } @$nodes;
+
+    my $n = 0;
+    for my $w (@{ $config->workers }) {
+        $n++;
+        next unless OCP::Provider->known_type($w->{provider} // q())
+                 && $w->{provider} eq 'local';
+        my $count = $w->{nodes} // 1;
+        $count = 1 unless OCP::Config::_is_whole_number($count);
+        next if $count == 0;
+        $self->_say_skipped($config->_pool_where($w, $n),
+            "a local pool's worker is found by its OCPNode only, which could not be read",
+            'its worker, this machine, is',
+            'to tear it down by hand, run ' . $self->_agent_uninstall_script($config) . ' here');
+    }
+}
+
+# The uninstall script of a worker's RKE2/K3s, by the cluster's distribution,
+# where OCP's install puts it: the one Rex::Rancher runs for an agent --
+# rke2-uninstall.sh for both RKE2 roles, k3s-agent-uninstall.sh on a K3s
+# agent -- in /usr/local/bin, where the RKE2 artifact install (a pinned
+# version, as apply always passes) and the K3s script install put it. A
+# kubernetes: destroy cannot read names both: destroy does not read it
+# otherwise, and must not stop on it.
+my %AGENT_UNINSTALL = (
+    rke2 => '/usr/local/bin/rke2-uninstall.sh',
+    k3s  => '/usr/local/bin/k3s-agent-uninstall.sh',
+);
+
+sub _agent_uninstall_script {
+    my ($self, $config) = @_;
+    my $dist = eval { $config->distribution };
+    return $AGENT_UNINSTALL{$dist} if defined $dist && $AGENT_UNINSTALL{$dist};
+    return "$AGENT_UNINSTALL{rke2} (RKE2) or $AGENT_UNINSTALL{k3s} (K3s)";
 }
 
 # A label search that failed where the control-plane fallback does not say it
@@ -651,6 +723,7 @@ sub _say_failed_search {
                . " -- a server only it would find is NOT torn down.\n";
     print STDERR "     Fix the cause and run `ocp destroy` again, or look by hand:\n";
     print STDERR "       hcloud server list -l $label\n";
+    $self->_left_standing(1);
 }
 
 # What the control-plane fallback says for a hetzner control plane, in place
@@ -681,6 +754,7 @@ sub _say_hetzner_control_plane {
     print STDERR "[!!] $found, and $why -- if it runs, it is NOT torn down.\n";
     print STDERR "     $fix and run `ocp destroy` again, or look by hand:\n";
     print STDERR "       hcloud server list -l $label\n";
+    $self->_left_standing(1);
 }
 
 # robocop reconciles OCPNodes: left running, it would see a worker vanish
@@ -790,8 +864,11 @@ sub execute {
         # alive, and the kubeconfig is the way into it. So the same yes as
         # the main path -- a person at a terminal, or --force -- naming the
         # files. Nothing to remove, nothing to ask.
+        #
+        # Something said NOT torn down above ends the run on 1 here too
+        # (k354), after the cleanup, which it does not change.
         my @files = $self->_project_state_files($config);
-        return 0 unless @files;
+        return $self->_said_left_standing unless @files;
 
         my $listed = join ', ',
             map { path($_)->relative($config->project_dir) } @files;
@@ -806,7 +883,7 @@ sub execute {
         }
 
         $self->_cleanup_project_state($config);
-        return 0;
+        return $self->_said_left_standing;
     }
 
     print "Cluster: ", $config->name, "\n";
@@ -1085,11 +1162,28 @@ sub execute {
         print  STDERR "    Reboot them before RKE2/K3s is installed on them again.\n";
     }
 
-    return 1 if @undeleted || @still_installed;
+    # What was left standing on purpose (k354) makes the run incomplete as
+    # well: not "Cluster destroyed.", and exit 1.
+    my $left = $self->_said_left_standing;
+    return 1 if @undeleted || @still_installed || $left;
 
     print "\nCluster destroyed.\n";
 
     return 0;
+}
+
+# The end of a run that did all it could (k354): 0, or 1 when a line said
+# that something is NOT torn down (or, in the k98 report, NOT deleted) --
+# then after one line on STDERR saying so, so the run does not end on a
+# cleanup line as if nothing were left. 1, as every incomplete teardown and
+# an incomplete `ocp apply` exit.
+sub _said_left_standing {
+    my ($self) = @_;
+    return 0 unless $self->_left_standing;
+    print STDERR "\n";
+    print STDERR "[!!] Teardown INCOMPLETE: the lines above that say NOT torn down\n";
+    print STDERR "     (or NOT deleted) name what is left standing.\n";
+    return 1;
 }
 
 # Remove the local files a successful destroy is meant to leave behind. Both
@@ -1271,6 +1365,20 @@ C<HETZNER_API_TOKEN> set or not (C<k382>).  No key at all to open it -- no
 F<.ocp/age.key>, no F<age.key.enc>, no C<SOPS_AGE_KEY_FILE> -- is said once on
 STDERR, and the teardown goes on without the API (C<k396>).
 
+With the OCPNodes unread that way, the worker of a C<provider: local> pool
+is not found: its OCPNode is its only record, and nothing is uninstalled on
+a guess -- the machine ocp runs on may hold another project's RKE2/K3s, or
+one C<ocp apply> never set up.  One line on STDERR says that this pool's
+worker, this machine, is B<NOT torn down>, and names the uninstall script to
+run there by hand, by the cluster's distribution:
+F</usr/local/bin/rke2-uninstall.sh>, or F</usr/local/bin/k3s-agent-uninstall.sh>
+on K3s (both, with their distribution, when C<kubernetes:> cannot be read).
+It is not said when a local node is on the list -- its uninstall on
+C<127.0.0.1> runs every RKE2/K3s uninstall script on this machine, the
+worker's too --, for a pool of C<nodes: 0>, which has no worker, or when
+there is no F<kubeconfig.yaml> at all: then no cluster API was there to read
+OCPNodes from.
+
 Workers are torn down before the control planes, and robocop is scaled to
 zero first so it does not provision a replacement for a worker it sees
 disappear.  A Hetzner server is deleted together with its known_hosts
@@ -1293,6 +1401,19 @@ remove nothing is asked.  It is B<skipped>, though, when any provider delete
 failed: the survivor is still running (and still billing) and
 C<status.yaml> is the only local record of its C<providerId>, so keeping it
 is what lets a re-run finish the job (C<k140>).
+
+A teardown that leaves something standing on purpose B<returns 1>.  Each
+such thing is said on STDERR as the run meets it, with B<NOT torn down>: a
+worker pool or control plane skipped for its provider or for want of a host,
+a hetzner control plane no label search answered for, a label search that
+failed, an OCPNode whose provider is unknown here, a local pool's worker with
+the OCPNodes unread (above) -- and the servers under the old
+C<< <type>-default >> label, which the report above names B<NOT deleted>.
+The run still does everything else it can: the deletes, the uninstalls and
+the cleanup of the local state go on as described above, which none of
+these change.  It then ends on one line on STDERR,
+C<Teardown INCOMPLETE: the lines above that say NOT torn down (or NOT
+deleted) name what is left standing.>, instead of C<Cluster destroyed.>.
 
 =opt force
 
@@ -1318,6 +1439,8 @@ local state is removed (C<k304>).
 Keep C<.ocp/status.yaml> and C<.ocp/deployed.yaml> in place after
 teardown.  Useful when the next step is C<ocp apply> against the same
 spec and you want the reconcile path to start from a known-good hash set.
+It changes what is removed, not the exit code: a teardown that leaves
+something standing returns 1 either way.
 
 =method execute
 
@@ -1338,7 +1461,10 @@ failed B<provider>
 delete — a Hetzner server the API did not remove — is different: the local
 state is B<kept> so a re-run can find the survivor by its C<providerId>, the
 teardown is reported B<incomplete> on STDERR, and the command returns
-non-zero (C<k140>).
+non-zero (C<k140>).  Anything said B<NOT torn down> (or, by the old-label
+report, B<NOT deleted>) on the way makes it return 1 as well, after the
+cleanup, which it leaves as it is: the run ends on C<Teardown INCOMPLETE>
+instead of C<Cluster destroyed.>.
 
 An uninstall that succeeded but could not check part of Cilium's datapath on
 its machine -- no C<tc>, no iptables backend with C<-save> and C<-restore>

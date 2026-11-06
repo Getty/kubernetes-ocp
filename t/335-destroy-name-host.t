@@ -209,15 +209,25 @@ sub refused {
 }
 
 # A teardown that ran to the end: deleted, cleaned up, no machine named after
-# a reference.
+# a reference. With left_standing, a line said something is NOT torn down:
+# then the run ends on the cleanup and the closing line, exit 1 (k354).
 sub torn_down {
-    my ($r, $config) = @_;
+    my ($r, $config, %a) = @_;
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
-    is $r->{ret}, 0, 'exit 0';
     ok scalar(grep { $_->[0] eq 'delete' && $_->[2] eq '111' } @{ $r->{events} }),
         'the control plane is deleted';
     ok !-f $_, path($_)->basename . ' is removed' for state_files($config);
-    like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends on Cluster destroyed.';
+    if ($a{left_standing}) {
+        is $r->{ret}, 1, 'exit 1: something is NOT torn down (k354)';
+        like $r->{out}, qr/\nEncrypted kubeconfig removed\.\n\z/,
+            'ends on the cleanup, not on Cluster destroyed.';
+        like $r->{err}, qr/\n\[!!\] Teardown INCOMPLETE: the lines above that say NOT torn down\n     \(or NOT deleted\) name what is left standing\.\n\z/,
+            'and the closing line last';
+    }
+    else {
+        is $r->{ret}, 0, 'exit 0';
+        like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends on Cluster destroyed.';
+    }
     unlike $r->{out}.$r->{err}, qr/(?:ARRAY|HASH)\(0x/, 'no machine or label named after a reference';
 }
 
@@ -496,7 +506,8 @@ YAML
         "worker pool 'v': host must be a string (a host name or IP address), not a list",
     );
     my $r = run_destroy($config);
-    torn_down($r, $config);
+    # The vsphere pool is skipped, and said NOT torn down (k341, k354).
+    torn_down($r, $config, left_standing => 1);
     is_deeply deleted($r), [ 'hetzner 111', 'ssh b.lan' ], 'b.lan is uninstalled, nothing else';
 };
 
@@ -608,7 +619,7 @@ YAML
         "worker pool 'l': invalid provider a list (must be hetzner, ssh, or local)",
     ], 'the fixture: validate()\'s provider lines, a pool with none set has "provider required"';
     my $r = run_destroy($config);
-    torn_down($r, $config);
+    torn_down($r, $config, left_standing => 1);
     is_deeply deleted($r), [ 'hetzner 111' ], 'neither pool\'s host is touched';
     is_deeply [ $r->{err} =~ /^\[!!\] (.*) -- skipped: a machine it names is NOT torn down\.$/mg ],
         \@lines, 'each named once on STDERR, in validate()\'s words, with what it leaves running';

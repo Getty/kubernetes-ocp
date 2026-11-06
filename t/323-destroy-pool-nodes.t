@@ -317,11 +317,15 @@ YAML
 
     my $r = run_destroy($config);
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
-    is $r->{ret}, 0, 'exit 0';
     ok scalar(grep { $_->[0] eq 'delete' && $_->[2] eq '111' } @{ $r->{events} }),
         'the control plane is deleted';
     ok !-f $_, path($_)->basename . ' is removed' for state_files($config);
-    like $r->{out}, qr/Cluster destroyed\./, 'Cluster destroyed.';
+    # The vsphere pool is skipped and said NOT torn down (k341): the run is
+    # not stopped, but it is not "Cluster destroyed." either (k354).
+    like $r->{err}, qr/^\[!!\] worker pool 'v': invalid provider 'vsphere' .* NOT torn down\.$/m,
+        'the vsphere pool said NOT torn down';
+    is $r->{ret}, 1, 'exit 1, for that pool (k354)';
+    unlike $r->{out}, qr/Cluster destroyed\./, 'no Cluster destroyed.';
 };
 
 subtest 'a well-formed ssh pool list is read and torn down' => sub {

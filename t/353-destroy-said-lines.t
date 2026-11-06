@@ -35,8 +35,8 @@ use OCP::Config;
 #   * the key for the ssh nodes, when it could not be had, was named with
 #     the croak location of the refusal: "... at .../Config.pm line N.".
 #
-# Exit codes are as they were: whether a "NOT torn down" line should make the
-# run fail is k354's question.
+# Since k354 every "NOT torn down" line ends the run on exit 1, after a
+# closing line, and not on "Cluster destroyed." (t/354 for each of them).
 #
 
 {
@@ -190,6 +190,10 @@ sub skipped {
     return "[!!] $line -- skipped: $left NOT torn down.\n";
 }
 
+# The run's last word when a line said something is NOT torn down (k354).
+my $CLOSING = "\n[!!] Teardown INCOMPLETE: the lines above that say NOT torn down\n"
+            . "     (or NOT deleted) name what is left standing.\n";
+
 # A label search that failed, as Hetzner fails it: croaked, with a location.
 my $CROAKED = "Hetzner API error: unable to authenticate at /src/lib/OCP/Provider/Hetzner.pm line 421.\n";
 my $WHY     = 'Hetzner API error: unable to authenticate';
@@ -220,31 +224,32 @@ subtest 'an ssh control plane with no host: validate()\'s line on STDERR, not li
 
         my $r = run_destroy($config);
         is $r->{ex}, '', "$shown -- ran without dying" or diag $r->{ex};
-        is $r->{err}, skipped($lines[0], 'that control plane is'),
+        is $r->{err}, skipped($lines[0], 'that control plane is') . $CLOSING,
             "$shown -- on STDERR: validate()'s line, and that it is NOT torn down";
         is $r->{out}, $NO_NODES, "$shown -- not listed: No nodes to destroy., no Deleting line";
         is_deeply deleted($r), [], "$shown -- nothing uninstalled";
         ok !(grep { $_->[0] eq 'ssh key' } @{ $r->{events} }), "$shown -- no PIN2 asked";
-        is $r->{ret}, 0, "$shown -- exit 0, as before (k354)";
+        is $r->{ret}, 1, "$shown -- exit 1: that control plane is NOT torn down (k354)";
     }
 };
 
 subtest 'nodes: N said once; beside it a local control plane is still torn down' => sub {
     my $shared = project("control_planes:\n  provider: ssh\n  nodes: 3\n");
     my $r = run_destroy($shared);
-    is $r->{err}, skipped('control_planes[1]: host required for ssh', 'that control plane is'),
+    is $r->{err}, skipped('control_planes[1]: host required for ssh', 'that control plane is') . $CLOSING,
         'nodes: 3 -- said once, as validate() says it once';
 
     my $list = project("control_planes:\n  - provider: ssh\n  - provider: local\n");
     is_deeply [ validate_lines($list, qr/host required/) ],
         [ 'control_planes[1]: host required for ssh' ], 'the fixture: validate()\'s line';
     $r = run_destroy($list);
-    is $r->{err}, skipped('control_planes[1]: host required for ssh', 'that control plane is'),
+    is $r->{err}, skipped('control_planes[1]: host required for ssh', 'that control plane is') . $CLOSING,
         'the ssh one said';
     like $r->{out}, qr/^Nodes to destroy:\n  - prod-cp-2 \(local, -\)\n\n/m,
         'the local one alone listed, numbered as before';
     is_deeply deleted($r), [ 'local 127.0.0.1' ], 'and uninstalled';
-    like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends on Cluster destroyed.';
+    like $r->{out}, qr/\nEncrypted kubeconfig removed\.\n\z/,
+        'ends on the cleanup, not on Cluster destroyed.: the ssh one is NOT torn down (k354)';
 };
 
 subtest 'the control: an ssh control plane with a host is listed and uninstalled there' => sub {
@@ -263,7 +268,7 @@ subtest 'a control plane with provider: \'\' is said in validate()\'s words' => 
         'the fixture: validate()\'s line';
     my $r = run_destroy($config);
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
-    is $r->{err}, skipped($lines[0], 'that control plane is'), 'destroy says the same, on STDERR';
+    is $r->{err}, skipped($lines[0], 'that control plane is') . $CLOSING, 'destroy says the same, on STDERR';
     is $r->{out}, $NO_NODES, 'nothing listed';
     is_deeply deleted($r), [], 'nothing uninstalled';
 };
@@ -282,10 +287,11 @@ YAML
         'the fixture: validate() has the same line for both';
     my $r = run_destroy($config);
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
-    is $r->{err}, skipped($lines[0], 'a machine it names is'),
+    is $r->{err}, skipped($lines[0], 'a machine it names is') . $CLOSING,
         'on STDERR: the pool set to \'\' -- not the one with none, which apply reads as hetzner (k341)';
     is_deeply deleted($r), [ 'hetzner 111' ], 'no pool host touched';
-    like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends on Cluster destroyed.';
+    like $r->{out}, qr/\nEncrypted kubeconfig removed\.\n\z/,
+        'ends on the cleanup, not on Cluster destroyed. (k354)';
 };
 
 # ======================================================= a failed label search
@@ -299,18 +305,19 @@ subtest 'a label search that fails while status.yaml found nodes: said on STDERR
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
     is_deeply searched($r), [ 'prod tok', 'hetzner-default tok' ],
         'the fixture: the label search ran under the local token, and died';
-    is $r->{err}, search_failed(),
+    is $r->{err}, search_failed() . $CLOSING,
         'on STDERR: the cause without its croak location, what it leaves, the selector';
     unlike $r->{out}, qr/label search|hcloud/, 'nothing of it on STDOUT';
     is_deeply deleted($r), [ 'hetzner 111' ], 'police1 still deleted';
-    like $r->{out}, qr/\nCluster destroyed\.\n\z/, 'ends as before';
-    is $r->{ret}, 0, 'exit 0, as before (k354)';
+    like $r->{out}, qr/\nEncrypted kubeconfig removed\.\n\z/,
+        'ends on the cleanup, not on Cluster destroyed. (k354)';
+    is $r->{ret}, 1, 'exit 1: a server only that search would find is NOT torn down (k354)';
 };
 
 subtest 'the fallback ran, with no hetzner control plane to say it: said' => sub {
     my $config = project("control_planes:\n  provider: ssh\n  host: cp1.lan\n");
     my $r = run_destroy($config, search_dies => { tok => $CROAKED });
-    is $r->{err}, search_failed(), 'on STDERR';
+    is $r->{err}, search_failed() . $CLOSING, 'on STDERR';
     is_deeply deleted($r), [ 'ssh cp1.lan' ], 'the control plane still uninstalled';
 };
 
@@ -321,7 +328,7 @@ subtest 'the fallback says it for a hetzner control plane: once, without the cro
         "[!!] control_planes[1]: a hetzner control plane is found by its ocp-cluster=prod label "
       . "or not at all, and the label search failed: $WHY -- if it runs, it is NOT torn down.\n"
       . "     Fix the cause and run `ocp destroy` again, or look by hand:\n"
-      . "       hcloud server list -l ocp-cluster=prod\n",
+      . "       hcloud server list -l ocp-cluster=prod\n" . $CLOSING,
         'the k345 line alone, the cause as one line';
     is $r->{out}, $NO_NODES, 'STDOUT: No nodes to destroy.';
 };
@@ -335,7 +342,7 @@ subtest 'a search under an OCPNodeProvider\'s token fails: said, naming that pro
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
     is_deeply [ grep { /^prod / } @{ searched($r) } ], [ 'prod tok', 'prod tok-hetzner-b' ],
         'the fixture: searched under both tokens';
-    is $r->{err}, search_failed('hetzner-b'), 'on STDERR, with the provider whose token failed';
+    is $r->{err}, search_failed('hetzner-b') . $CLOSING, 'on STDERR, with the provider whose token failed';
     is_deeply deleted($r), [ 'hetzner 111' ], 'police1 still deleted';
 
     # Nothing recorded: the fallback says the hetzner control plane on STDOUT
@@ -346,7 +353,7 @@ subtest 'a search under an OCPNodeProvider\'s token fails: said, naming that pro
     $r = run_destroy($config, crs => \@crs, search_dies => { 'tok-hetzner-b' => $CROAKED });
     like $r->{out}, qr/\Acontrol_planes\[1\]: a hetzner control plane is found by its ocp-cluster=prod label or not at all; no server carries it, nothing to delete\.\n/,
         'the fallback\'s line, on STDOUT';
-    is $r->{err}, search_failed('hetzner-b'), 'and the failed search on STDERR';
+    is $r->{err}, search_failed('hetzner-b') . $CLOSING, 'and the failed search on STDERR';
 };
 
 # ======================================================= the cluster API down

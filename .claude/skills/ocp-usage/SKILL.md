@@ -135,7 +135,15 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   files it would remove (k304), and `--force` skips that too; with no
   file to remove nothing is asked. Afterwards it deletes status.yaml +
   deployed.yaml unless `--keep-status`; the encrypted kubeconfig.yaml goes
-  either way
+  either way. A teardown that leaves something standing on purpose (every
+  line saying NOT torn down, or NOT deleted for old-label servers) ends on
+  STDERR `Teardown INCOMPLETE` and exits 1 instead of "Cluster destroyed.";
+  deletes, uninstalls and the state cleanup run as before, `--keep-status`
+  changes only which files go. With the cluster API unreadable, a
+  `provider: local` pool's worker (this machine) is named NOT torn down on
+  STDERR with the script to run by hand: `/usr/local/bin/rke2-uninstall.sh`
+  (K3s: `/usr/local/bin/k3s-agent-uninstall.sh`); nothing is uninstalled on
+  a guess
 - `ocp kubeconfig` — stdout; `-e` merge (with backup, other clusters kept),
   `-o FILE` write to file; `--refresh` is not implemented (dies: the stored
   kubeconfig.yaml is authoritative)
