@@ -37,13 +37,17 @@ permissions:
   packages: write
 
 jobs:
-  # ─── vendor: unreleased sibling dists (k222) ───────────────────────────────
+  # ─── vendor: unreleased sibling dists (k222, k404) ─────────────────────────
   # The Dockerfile installs what vendor/ORDER lists ahead of the snapshot pass,
   # and `make vendor` dzil-builds that from sibling checkouts a runner does not
-  # have. So check the siblings out (default branch, full history so the
-  # version comes out of the tags), run that same target, and hand vendor/ to
-  # both image jobs. Keep the checkouts in step with the Makefile's VENDOR
-  # list; with VENDOR= the artifact is just an empty ORDER.
+  # have. This job follows the Makefile's VENDOR list and holds no copy of it:
+  # it reads the list with `make vendor-list`, clones exactly those siblings
+  # with `make vendor-siblings` (homes in the Makefile's SIBLING_HOMES, full
+  # history so the version comes out of the tags), installs Dist::Zilla and
+  # their author deps, runs the same `make vendor` and hands vendor/ to both
+  # image jobs. With VENDOR empty it clones nothing and installs no
+  # Dist::Zilla; the artifact is then just an empty ORDER. Vendoring another
+  # sibling is a Makefile change only.
   #
   # CI sees what is PUSHED to the siblings. A fix that is only committed
   # locally reaches a local `make build`, not this job.
@@ -56,32 +60,32 @@ jobs:
         shell: bash
     env:
       PERL_CPANM_OPT: --mirror https://cpan.metacpan.org --mirror-only
+      # Every make call below reads it; relative to the workspace.
+      SIBLINGS_DIR: siblings
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
-        with:
-          repository: pplu/io-k8s-p5
-          path: siblings/io-k8s-p5
-          fetch-depth: 0
-      - uses: actions/checkout@v6
-        with:
-          repository: Getty/rex-gpu
-          path: siblings/rex-gpu
-          fetch-depth: 0
-      - uses: actions/checkout@v6
-        with:
-          repository: Getty/p5-crypt-age
-          path: siblings/p5-crypt-age
-          fetch-depth: 0
+      - name: Read VENDOR from the Makefile
+        id: list
+        run: |
+          list=$(make -s vendor-list)
+          echo "vendor=$list" >> "$GITHUB_OUTPUT"
+          echo "VENDOR: ${list:-(empty, nothing to vendor)}"
+      - name: Clone the VENDOR siblings
+        if: steps.list.outputs.vendor != ''
+        run: |
+          git config --global --add safe.directory '*'
+          make vendor-siblings
       - name: Install Dist::Zilla and the siblings' author deps
+        if: steps.list.outputs.vendor != ''
+        env:
+          VENDOR: ${{ steps.list.outputs.vendor }}
         run: |
           set -euo pipefail
-          git config --global --add safe.directory '*'
           cpanm -nq Dist::Zilla
-          for s in io-k8s-p5 rex-gpu p5-crypt-age; do
-            ( cd "siblings/$s" && dzil authordeps --missing | cpanm -nq )
+          for s in $VENDOR; do
+            ( cd "$SIBLINGS_DIR/$s" && dzil authordeps --missing | cpanm -nq )
           done
-      - run: make vendor SIBLINGS_DIR="$GITHUB_WORKSPACE/siblings"
+      - run: make vendor
       - uses: actions/upload-artifact@v7
         with:
           name: vendor

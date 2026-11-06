@@ -29,7 +29,7 @@ DOCKER_PROVE = docker run --rm -v $(CURDIR):/src:ro -w /src \
 	--entrypoint prove $(IMAGE):$(TAG)
 
 .PHONY: all build test test-v test-host clean docker-test docker-push docker-release \
-        snapshot smoke build-image vendor
+        snapshot smoke build-image vendor vendor-list vendor-siblings
 
 all: build
 
@@ -56,6 +56,8 @@ build: | vendor/ORDER
 # Default is empty. For an image with siblings that are not released yet, name
 # them on the command line, e.g.
 #   make vendor VENDOR="rex-libssh rex-rancher p5-net-async-kubernetes p5-www-hetzner"
+# CI vendors this same list; a name needs its GitHub home in SIBLING_HOMES
+# below, nothing in ci.yml.
 VENDOR ?=
 SIBLINGS_DIR ?= ..
 
@@ -84,6 +86,49 @@ vendor:
 	  rm -rf "$$w"; \
 	done
 	@echo "[vendor] install order:"; sed 's/^/  /' $(CURDIR)/vendor/ORDER
+
+# ─── the same VENDOR list in CI (k404) ───────────────────────────────────────
+# A runner has no sibling checkouts, so the CI vendor job clones them before
+# it runs `make vendor`. It takes the list from here (`make -s vendor-list`)
+# and carries no copy of its own: what CI builds and what a local build
+# vendors cannot drift apart. VENDOR empty: the job clones nothing and installs
+# no Dist::Zilla.
+#
+# `make vendor-siblings` clones each VENDOR entry from its GitHub home into
+# SIBLINGS_DIR: the default branch with its full history, so dzil reads the
+# version from the tags. SIBLING_HOMES maps a sibling's directory name to its
+# owner/repo; a VENDOR entry without a home stops the clone and names the
+# sibling -- add it here. git refuses to clone into a directory that is not
+# empty, so the real checkouts under the default SIBLINGS_DIR=.. stay
+# untouched if this runs outside CI.
+SIBLING_HOMES = \
+	io-k8s-p5=pplu/io-k8s-p5 \
+	kubernetes-rest=pplu/kubernetes-rest \
+	p5-crypt-age=Getty/p5-crypt-age \
+	p5-file-sops=Getty/p5-file-sops \
+	p5-moox-cmd=Getty/p5-moox-cmd \
+	p5-net-async-kubernetes=Getty/p5-net-async-kubernetes \
+	p5-www-hetzner=Getty/p5-www-hetzner \
+	rex-gpu=Getty/rex-gpu \
+	rex-libssh=Getty/rex-libssh \
+	rex-rancher=Getty/rex-rancher
+SIBLINGS_REMOTE ?= https://github.com
+
+vendor-list:
+	@echo '$(strip $(VENDOR))'
+
+vendor-siblings:
+	@set -e; for s in $(VENDOR); do \
+	  repo=; \
+	  for h in $(SIBLING_HOMES); do \
+	    case "$$h" in "$$s="*) repo="$${h#*=}" ;; esac; \
+	  done; \
+	  if [ -z "$$repo" ]; then \
+	    echo "[vendor] $$s: no GitHub home in the Makefile's SIBLING_HOMES" >&2; exit 1; \
+	  fi; \
+	  echo "[vendor] clone $$s from $(SIBLINGS_REMOTE)/$$repo"; \
+	  git clone -q "$(SIBLINGS_REMOTE)/$$repo.git" "$(SIBLINGS_DIR)/$$s"; \
+	done
 
 # Run the suite against the pinned dependencies inside the image. THIS is the
 # binding result — the same perl and the same module versions the release

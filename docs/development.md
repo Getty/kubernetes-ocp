@@ -65,12 +65,17 @@ the release.
 Back to CPAN-only: once every floor is satisfiable from CPAN and the snapshot
 pins it, `make vendor VENDOR=` and rebuild — `vendor/` then holds only `.keep`
 and an empty `ORDER`, and the Dockerfile installs nothing from it. To make
-that the default, empty `VENDOR` in the Makefile and drop the matching
-checkouts from the `vendor` job in `.github/workflows/ci.yml`.
+that the default, empty `VENDOR` in the Makefile; CI follows it, with no
+workflow edit.
 
 CI builds the same list in its `vendor` job and hands `vendor/` to both image
-jobs as an artifact. CI checks out what is **pushed** to the siblings: a fix
-that is only committed locally reaches a local `make build`, not CI.
+jobs as an artifact. The job reads the list from the Makefile
+(`make vendor-list`) and keeps no copy of its own: with `VENDOR` empty it
+clones nothing and installs no Dist::Zilla, otherwise `make vendor-siblings`
+clones exactly those siblings from their GitHub homes. A sibling that has never
+been vendored needs its home in the Makefile's `SIBLING_HOMES`. CI clones what
+is **pushed** to the siblings: a fix that is only committed locally reaches a
+local `make build`, not CI.
 
 ## `make smoke` is not a test
 

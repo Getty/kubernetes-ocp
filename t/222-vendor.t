@@ -4,6 +4,7 @@ use warnings;
 use Test::More;
 use File::Temp qw(tempdir);
 use Path::Tiny qw(path);
+use YAML::XS ();
 
 #
 # k222: vendor/ is how a sibling dist's unreleased fix reaches the image
@@ -14,6 +15,12 @@ use Path::Tiny qw(path);
 # `make vendor` dzil-builds each one into vendor/ and records the install
 # order in vendor/ORDER, and the Dockerfile installs them, in that order,
 # before the snapshot pass. VENDOR= is CPAN-only.
+#
+# k404: CI vendors that same list. Its vendor job used to hard-code three
+# sibling checkouts and install Dist::Zilla even with VENDOR empty. Now it
+# reads VENDOR from the Makefile (`make vendor-list`), clones exactly those
+# siblings from their homes in SIBLING_HOMES (`make vendor-siblings`), and
+# skips the clone and Dist::Zilla when the list is empty.
 #
 # `make vendor` is exercised for real here, against throwaway sibling
 # repositories and a stand-in `dzil` at the front of PATH — never against the
@@ -29,13 +36,20 @@ plan skip_all => 'make or git not available'
 
 # A sibling checkout whose `dzil build` (the mock) writes <Dist>-<ver>.tar.gz
 # into the directory it is run in, the way Dist::Zilla does.
+#
+# The version is also a tag one commit behind HEAD, the way a release leaves
+# it: a clone without the full history loses the tag, and with it the version
+# dzil reads.
 sub make_sibling {
     my ($dir, $dist, $ver) = @_;
     $dir->mkpath;
     $dir->child('dist.ini')->spew("name = $dist\nversion = $ver\n");
     for my $cmd (['init', '-q'], ['config', 'user.email', 't@t'],
                  ['config', 'user.name', 't'], ['add', '.'],
-                 ['commit', '-q', '-m', 'init']) {
+                 ['-c', 'commit.gpgSign=false', 'commit', '-q', '-m', 'init'],
+                 ['-c', 'tag.gpgSign=false', 'tag', $ver],
+                 ['-c', 'commit.gpgSign=false', 'commit', '-q', '--allow-empty',
+                  '-m', 'after the release']) {
         system('git', '-C', "$dir", @$cmd) == 0 or die "git @$cmd: $?";
     }
 }
@@ -69,12 +83,41 @@ EOS
     return ($proj, $sib, $bin, $log);
 }
 
-sub run_make {
-    my ($proj, $bin, @args) = @_;
+sub run_target {
+    my ($proj, $bin, $target, @args) = @_;
     local $ENV{PATH} = "$bin:$ENV{PATH}";
-    my $out = `make -s -C '$proj' vendor @args 2>&1`;
+    # make reads these from the environment too; only the arguments count here
+    delete local @ENV{qw(VENDOR SIBLINGS_DIR SIBLINGS_REMOTE)};
+    my $out = `make -s -C '$proj' $target @args 2>&1`;
     return ($? >> 8, $out);
 }
+
+sub run_make { my ($proj, $bin, @args) = @_; run_target($proj, $bin, 'vendor', @args) }
+
+# A stand-in for GitHub: for each owner/repo given, a bare copy of the named
+# sandbox sibling at <remote>/<owner/repo>.git. Handed out as a file:// URL so
+# git clones it like a real remote (from a plain path it would ignore --depth).
+sub make_remote {
+    my ($sib, %home) = @_;
+    my $remote = path(tempdir(CLEANUP => 1));
+    for my $repo (sort keys %home) {
+        my $bare = $remote->child("$repo.git");
+        $bare->parent->mkpath;
+        system('git', 'clone', '-q', '--bare', $sib->child($home{$repo}) . '', "$bare") == 0
+            or die "git clone --bare $home{$repo}: $?";
+    }
+    return "file://$remote";
+}
+
+sub git_out {
+    my ($dir, @cmd) = @_;
+    my $out = `git -C '$dir' @cmd 2>&1`;
+    chomp $out;
+    return $out;
+}
+
+# What a directory holds, by name; nothing when it does not exist.
+sub names_in { my ($dir) = @_; -d $dir ? [ sort map { $_->basename } $dir->children ] : [] }
 
 subtest 'make vendor builds the VENDOR list into vendor/, in list order' => sub {
     my ($proj, $sib, $bin, $log) = sandbox();
@@ -163,12 +206,165 @@ subtest 'build context and git' => sub {
     ok -f $root->child('vendor/.keep'), 'vendor/.keep is tracked, so COPY ./vendor/ always works';
 };
 
-subtest 'CI builds the same list and hands it to both image jobs' => sub {
-    my $ci = $root->child('.github/workflows/ci.yml')->slurp_utf8;
-    ok $ci =~ m{^  vendor:$}m, 'there is a vendor job';
-    ok $ci =~ m{repository: \s+ \Q$_\E \s}x, "it checks out $_"
-        for qw(pplu/io-k8s-p5 Getty/rex-gpu Getty/p5-crypt-age);
-    ok $ci =~ m{make \s+ vendor \s+ SIBLINGS_DIR=}x, 'it runs make vendor';
+# ─── CI: the same list, from the Makefile (k404) ─────────────────────────────
+
+subtest 'make vendor-list prints VENDOR on one line' => sub {
+    my ($proj, $sib, $bin) = sandbox();
+    my ($rc, $out) = run_target($proj, $bin, 'vendor-list');
+    is $rc, 0, 'make vendor-list succeeds' or diag $out;
+    is $out, "\n", 'the default list is empty';
+    ($rc, $out) = run_target($proj, $bin, 'vendor-list', "VENDOR=' rex-gpu   io-k8s-p5 '");
+    is $out, "rex-gpu io-k8s-p5\n", 'a given list comes out as one line';
+};
+
+subtest 'make vendor-siblings clones exactly VENDOR, with full history' => sub {
+    my ($proj, $sib, $bin) = sandbox();
+    my $remote = make_remote($sib, 'Getty/rex-gpu' => 'rex-gpu',
+        'pplu/io-k8s-p5' => 'io-k8s-p5', 'Getty/p5-crypt-age' => 'p5-crypt-age');
+    my $dest = path(tempdir(CLEANUP => 1))->child('siblings');
+    my @list = ("VENDOR='rex-gpu io-k8s-p5'", "SIBLINGS_DIR=$dest");
+    my ($rc, $out) = run_target($proj, $bin, 'vendor-siblings', @list,
+        "SIBLINGS_REMOTE=$remote");
+    is $rc, 0, 'make vendor-siblings succeeds' or diag $out;
+    is_deeply names_in($dest), [ 'io-k8s-p5', 'rex-gpu' ],
+        'it clones the VENDOR siblings and no other';
+    for my $s ([ 'rex-gpu', '0.004' ], [ 'io-k8s-p5', '1.110' ]) {
+        my ($name, $ver) = @$s;
+        is git_out($dest->child($name), qw(rev-parse --is-shallow-repository)), 'false',
+            "$name: full history";
+        is git_out($dest->child($name), qw(describe --tags --abbrev=0)), $ver,
+            "$name: its release tag came along";
+    }
+
+    # The CI path end to end: the same `make vendor` builds from those clones.
+    ($rc, $out) = run_make($proj, $bin, @list);
+    is $rc, 0, 'make vendor builds from the clones' or diag $out;
+    is_deeply [ $proj->child('vendor/ORDER')->lines_utf8({ chomp => 1 }) ],
+        [ 'Rex-GPU-0.004.tar.gz', 'IO-K8s-1.110.tar.gz' ],
+        'in VENDOR order';
+};
+
+# Each sibling OCP depends on has its home, so vendoring it before its release
+# is a Makefile change and never a ci.yml one.
+subtest 'SIBLING_HOMES knows where each sibling lives' => sub {
+    my %home = (
+        'io-k8s-p5'       => 'pplu/io-k8s-p5',
+        'kubernetes-rest' => 'pplu/kubernetes-rest',
+        map { ($_ => "Getty/$_") } qw(p5-crypt-age p5-file-sops p5-moox-cmd
+            p5-net-async-kubernetes p5-www-hetzner rex-gpu rex-libssh rex-rancher),
+    );
+    my ($proj, $sib, $bin) = sandbox();
+    my $remote = make_remote($sib, map { ($home{$_} => 'rex-gpu') } keys %home);
+    my $dest = path(tempdir(CLEANUP => 1))->child('siblings');
+    my $list = join ' ', sort keys %home;
+    my ($rc, $out) = run_target($proj, $bin, 'vendor-siblings', "VENDOR='$list'",
+        "SIBLINGS_DIR=$dest", "SIBLINGS_REMOTE=$remote");
+    is $rc, 0, 'each one clones from its home' or diag $out;
+    is_deeply names_in($dest), [ sort keys %home ],
+        'into a directory of its own name';
+};
+
+subtest 'a VENDOR entry without a home fails loud' => sub {
+    my ($proj, $sib, $bin) = sandbox();
+    my $dest = path(tempdir(CLEANUP => 1))->child('siblings');
+    my ($rc, $out) = run_target($proj, $bin, 'vendor-siblings', 'VENDOR=nope',
+        "SIBLINGS_DIR=$dest", 'SIBLINGS_REMOTE=file:///nonexistent');
+    isnt $rc, 0, 'make vendor-siblings fails';
+    like $out, qr{\bnope\b.*\bSIBLING_HOMES\b}, 'naming the sibling and where its home goes';
+    ok !-e $dest, 'and clones nothing';
+};
+
+subtest 'VENDOR= clones nothing' => sub {
+    my ($proj, $sib, $bin) = sandbox();
+    my $dest = path(tempdir(CLEANUP => 1))->child('siblings');
+    my ($rc, $out) = run_target($proj, $bin, 'vendor-siblings', 'VENDOR=',
+        "SIBLINGS_DIR=$dest", 'SIBLINGS_REMOTE=file:///nonexistent');
+    is $rc, 0, 'make vendor-siblings VENDOR= succeeds' or diag $out;
+    ok !-e $dest, 'and creates nothing';
+};
+
+# Run outside CI with the default SIBLINGS_DIR=.., the target meets the real
+# checkouts. They must come out of that unchanged.
+subtest 'an existing checkout is never cloned over' => sub {
+    my ($proj, $sib, $bin) = sandbox();
+    my $remote = make_remote($sib, 'Getty/rex-gpu' => 'rex-gpu');
+    my $checkout = $sib->child('rex-gpu');
+    my $head = git_out($checkout, qw(rev-parse HEAD));
+    my ($rc, $out) = run_target($proj, $bin, 'vendor-siblings', 'VENDOR=rex-gpu',
+        "SIBLINGS_DIR=$sib", "SIBLINGS_REMOTE=$remote");
+    isnt $rc, 0, 'make vendor-siblings onto the checkouts fails';
+    like $out, qr{rex-gpu}, 'naming the sibling';
+    is git_out($checkout, qw(rev-parse HEAD)), $head, 'the checkout keeps its HEAD';
+    is_deeply names_in($checkout), [ '.git', 'dist.ini' ], 'and its files';
+};
+
+subtest 'the CI vendor job follows the Makefile list and keeps none of its own' => sub {
+    my $ci_file = $root->child('.github/workflows/ci.yml');
+    my $job = YAML::XS::LoadFile("$ci_file")->{jobs}{vendor};
+    ok $job, 'there is a vendor job' or return;
+    my @steps = @{ $job->{steps} || [] };
+    my $run = sub { $_[0]{run} // '' };
+
+    # No copy of the list: no checkout of another repository, no sibling named.
+    is_deeply [ grep { $_->{with} && $_->{with}{repository} } @steps ], [],
+        'no step checks out a sibling repository';
+    open my $mk, '-|', 'make', '-s', '-f', "$makefile",
+        '--eval', 'homes: ; @echo $(SIBLING_HOMES)', 'homes'
+        or die "make: $!";
+    my @names = map { (split /=/)[0] } split ' ', do { local $/; <$mk> };
+    close $mk;
+    ok @names >= 2, 'SIBLING_HOMES names the siblings (' . scalar(@names) . ')';
+    my ($text) = $ci_file->slurp_utf8 =~ m{^  vendor:\n(.*?)(?=^  \S|\z)}ms;
+    is_deeply [ grep { $text =~ m{(?<![\w-])\Q$_\E(?![\w-])} } @names ], [],
+        'and the job names none of them';
+
+    my ($list) = grep { $run->($_) =~ m{\bmake \s+ -s \s+ vendor-list\b}x } @steps;
+    ok $list && $list->{id}, 'a step with an id reads the list with make vendor-list'
+        or return;
+
+    # That step, run the way the runner runs it, against a Makefile that names
+    # two siblings and against one that names none.
+    for my $vendor ('', 'rex-gpu io-k8s-p5') {
+        my $dir = path(tempdir(CLEANUP => 1));
+        (my $mf = $makefile->slurp_utf8) =~ s{^VENDOR \s* \?= .*$}{VENDOR ?= $vendor}mx
+            or die 'no VENDOR line in the Makefile';
+        $dir->child('Makefile')->spew_utf8($mf);
+        $dir->child('step.sh')->spew_utf8($run->($list));
+        my $output = $dir->child('github_output');
+        $output->touch;
+        local $ENV{GITHUB_OUTPUT} = "$output";
+        delete local $ENV{VENDOR};
+        my $log = `cd '$dir' && bash --noprofile --norc -eo pipefail step.sh 2>&1`;
+        is $? >> 8, 0, "the step runs with VENDOR ?= '$vendor'" or diag $log;
+        is $output->slurp_utf8, "vendor=$vendor\n", "and outputs vendor=$vendor";
+    }
+
+    # Cloning and Dist::Zilla only when that output names siblings.
+    my $gate = "steps.$list->{id}.outputs.vendor != ''";
+    my @work = grep { YAML::XS::Dump($_) =~ m{\b(?:cpanm|dzil|Dist::Zilla|vendor-siblings)\b} }
+        @steps;
+    ok scalar(grep { $run->($_) =~ m{\bmake \s+ vendor-siblings\b}x } @work),
+        'a step clones the siblings with make vendor-siblings';
+    ok scalar(grep { $run->($_) =~ m{\bcpanm\b .* \bDist::Zilla\b}x } @work),
+        'a step installs Dist::Zilla';
+    for my $step (@work) {
+        (my $if = $step->{if} // '') =~ s{^\s*\$\{\{\s*|\s*\}\}\s*$}{}g;
+        is $if, $gate, "'" . ($step->{name} // $run->($step)) . "' runs only then";
+    }
+
+    # One SIBLINGS_DIR for the whole job: the clones are what make vendor reads.
+    ok $job->{env} && $job->{env}{SIBLINGS_DIR}, 'the job sets SIBLINGS_DIR';
+    is_deeply [ grep { $run->($_) =~ m{SIBLINGS_DIR=} || ($_->{env} && exists $_->{env}{SIBLINGS_DIR}) }
+        @steps ], [], 'and no step sets another';
+
+    # The artifact exists either way.
+    my ($build) = grep { $run->($_) =~ m{\bmake \s+ vendor (?:\s|$)}x } @steps;
+    ok $build && !$build->{if}, 'make vendor runs whatever VENDOR is';
+    my ($upload) = grep { ($_->{uses} // '') =~ m{^actions/upload-artifact@} } @steps;
+    ok $upload && !$upload->{if} && ($upload->{with}{path} // '') eq 'vendor/',
+        'and vendor/ is uploaded';
+
+    my $ci = $ci_file->slurp_utf8;
     for my $job (qw(dockerhub ghcr)) {
         my ($body) = $ci =~ m{^  $job:\n(.*?)(?=^  \S|\z)}ms;
         ok $body && $body =~ m{needs: \s+ vendor}x, "$job needs vendor";
