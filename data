@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-06T21:55:14Z
+id: 418
+priority: low
+status: backlog
+tags:
+- tests
+- secrets
+- hetzner
+title: 'Token masking tests: WWW::Hetzner 0.103 masks the body itself, so t/265 and
+  t/373 no longer prove OCP''s own masking'
+updated: 2026-11-06T21:55:14Z
+---
+
+Found under k406 (pin step, 2026-11-06). WWW::Hetzner 0.103 masks a token in the response body itself. So the API-refusal cases in t/265 and t/373 no longer prove that OCP's own masking is what hides the token; only t/373's transport-dies case still does. Done = each claim about OCP's masking is proven by a case the library does not mask already, e.g. a fake that raises an unmasked text, or the claim is dropped where OCP no longer masks anything itself.
