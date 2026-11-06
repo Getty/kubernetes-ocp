@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-11-06T19:20:04Z
+created: 2026-11-06T01:34:56Z
+id: 407
+priority: high
+started: 2026-11-06T19:11:43Z
+status: done
+tags:
+- docker
+- publish-gate
+title: make build-image and share/bin/ocp-build-image push without the maintainer's
+  go
+updated: 2026-11-06T19:20:04Z
+---
+
+Found while closing k134/k405 (ADR auditor, checked by the main agent).
+
+- Makefile `build-image` runs `share/bin/ocp-build-image --push`. Its comment says: "This target does NOT need maintainer go-ahead — the script pushes by default". That contradicts the publish gate (pushing an image needs the maintainer's explicit go) and ADR 0013's publishing consequence. The ocp rules list only `make docker-push`/`make docker-release` (and the release) as needing the go, so `make build-image` looks safe to an agent and is not.
+- `share/bin/ocp-build-image` pushes unless told `--no-push`. Any run on a host that is logged in to Docker Hub publishes raudssus/ocp:latest.
+- Since 2d14fd7 (2026-08-15, k64).
+
+CI is not affected by a change to the default: the build phase runs push=0 and the publish phase passes --push explicitly (run 41741299801 log: `repo=raudssus/ocp push=0` / `push=1`). Verify that before changing it.
+
+Done when nothing pushes without an explicit flag: the script defaults to no push, `make build-image` either builds only or is documented and gated like docker-push, the comment is corrected, and the ocp rules name every target that pushes (the rules file is the maintainer's call). Lane: ocp-infra-worker (share/bin, Makefile).
+
+2026-11-06 (ocp-infra-worker + main agent): share/bin/ocp-build-image builds only by default; --push pushes, --no-push still works. make build-image runs the script with --no-push; its comment says pushing needs the maintainer's go, like make docker-push. CI checked before the change: run 41741299801 logs [build/image] push=0 / [publish/image] push=1; .cicd/docker+29+build.image.sh:46 passes --no-push, .cicd/docker+29+publish.image.sh:70 passes --push; nothing else calls the script. t/53 asserts: no flag = no push (dry-run push=0 and the real path against the mock docker), --push pushes every tag, the help text, the Makefile recipe has no --push, the publish job passes --push. Red against main's tree: 3/17 subtests, 6 assertions, exactly the new claims. Binding (image rel1106): t/53 + t/66 PASS. Rules: .claude/rules/ocp-rules.md and docs/development.md now name share/bin/ocp-build-image --push next to docker-push/docker-release as every command that pushes. Follow-ups filed: k409 (cache-tag comment), k410 (t/66 header).
+
+Committed as 5022b698e77ff4e0f8d706abccc2fca55954561c on worktree-ocp-release-1106.
