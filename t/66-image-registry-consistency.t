@@ -12,10 +12,12 @@ use Path::Tiny qw(path);
 # consolidated everything on raudssus/ocp; this file is the missing
 # comparison that would have caught it, kept alive as a standing guard.
 #
-# There is no CI publish workflow any more (.github/workflows/docker-publish.yml
-# was deleted along with CI auto-publish -- see k10's history and the k41
-# addendum). The place that now actually builds and pushes the image is
-# share/bin/ocp-build-image, and the name every other Make target defers to
+# The old docker-publish.yml workflow is gone (deleted along with the first CI
+# auto-publish -- see k10's history and the k41 addendum). CI exists again
+# since k134: .github/workflows/ci.yml runs .cicd/docker+29+publish.image.sh,
+# which publishes, but from a release tag only (k405); every other revision
+# just builds. The image is built and pushed by share/bin/ocp-build-image
+# (the script CI calls), and the name every other Make target defers to
 # is the Makefile's IMAGE variable. So the comparison this file makes is:
 # every image reference under share/ agrees with the Makefile's IMAGE
 # variable, and with ocp-build-image's own default.
