@@ -68,7 +68,18 @@ sub add_worker_pool {
 sub pick_node {
     my ($json, $pool) = @_;
     $pool //= POOL;
-    my $rows = JSON::MaybeXS->new->decode($json);
+    # `ocp node ls --json` that could not ask the API prints {"error": "..."}
+    # instead of the array (k388). That is no answer to "is the node there",
+    # least of all "no": die, so the smoke step fails instead of reading an
+    # empty result as "gone" (k397). Output that is not JSON is refused alike.
+    my $rows = eval { JSON::MaybeXS->new->decode($json // '') };
+    die "node ls --json did not print JSON: " . (length($json // '') ? $json : "(nothing)") . "\n"
+        unless defined $rows;
+    if (ref $rows eq 'HASH') {
+        die "node ls --json could not ask the API: $rows->{error}\n" if defined $rows->{error};
+        die "node ls --json printed an object, not the node array\n";
+    }
+    die "node ls --json printed neither an array nor an error object\n" unless ref $rows eq 'ARRAY';
     for my $row (@$rows) {
         next unless ($row->{pool} // '') eq $pool;
         return [ map { $row->{$_} // '' } qw(name phase kubernetesNodeName host) ];

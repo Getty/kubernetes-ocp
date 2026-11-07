@@ -104,6 +104,17 @@ sub project {
     is main::pick_node($json, 'other'), undef, 'another pool: no node';
     is main::pick_node('[]'), undef, 'an empty cluster: no node';
 
+    # k397: node ls --json that could not ask the API is {"error": ...}, not "no node".
+    eval { main::pick_node('{"error":"The cluster API at https://10.0.0.1:6443 could not be reached"}') };
+    like $@, qr/could not ask the API: The cluster API at https:\/\/10\.0\.0\.1:6443 could not be reached/,
+        'an error object is refused, with its message, not read as "no node"';
+    eval { main::pick_node('') };
+    like $@, qr/did not print JSON: \(nothing\)/, 'no output at all is refused';
+    eval { main::pick_node('Segmentation fault') };
+    like $@, qr/did not print JSON: Segmentation fault/, 'output that is not JSON is refused';
+    eval { main::pick_node('{"nodes":[]}') };
+    like $@, qr/an object, not the node array/, 'an object without error is refused too';
+
     my $ready = JSON::MaybeXS->new->decode($json);
     $ready->[1]{phase} = 'Ready';
     $ready->[1]{kubernetesNodeName} = 'worker-host-1';

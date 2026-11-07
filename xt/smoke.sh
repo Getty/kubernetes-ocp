@@ -263,7 +263,11 @@ if [ -n "$WORKER_MODE" ]; then
     ocp node rm "$node_name" >/dev/null 2>"$WORK/node-rm.err" \
         || { cat "$WORK/node-rm.err" >&2; fail "node rm exited non-zero"; }
     pass "node rm exited 0"
-    left="$(ocp node ls --json 2>/dev/null | helper pick --pool "$POOL" || true)"
+    # pick exits 1 for "no such node" and dies (255) when node ls could not
+    # ask the API or printed no JSON: that is no proof the OCPNode is gone.
+    left_rc=0
+    left="$(ocp node ls --json 2>/dev/null | helper pick --pool "$POOL")" || left_rc=$?
+    [ "$left_rc" -le 1 ] || fail "could not tell whether the OCPNode is gone: node ls --json gave no node list (pick exit $left_rc)"
     [ -z "$left" ] && pass "the OCPNode is gone" || fail "the OCPNode is still listed: $left"
     ! kube get node "$k8s_name" >/dev/null 2>&1 && pass "Kubernetes no longer has $k8s_name" \
         || fail "Kubernetes still has the node $k8s_name"
