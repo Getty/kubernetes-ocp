@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T00:01:19Z
+id: 423
+priority: low
+status: backlog
+tags:
+- secrets
+- kubeconfig
+title: ocp kubeconfig -o and OCP::Kubeconfig export write the decrypted kubeconfig
+  with spew, then chmod 0600
+updated: 2026-11-07T00:01:19Z
+---
+
+Found by the k372 secrets worker. lib/OCP/Cmd/Kubeconfig.pm:185-186 and lib/OCP/Kubeconfig.pm export spew the kubeconfig and chmod 0600 afterwards: the brief world-readable window that Secrets::_spew_secure (create 0600, then write) exists to close. Lane: secrets.
