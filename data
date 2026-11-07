@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-07T00:33:19Z
+id: 428
+priority: low
+status: backlog
+tags:
+- secrets
+- ux
+title: A stale cached .ocp/age.key dies at the first SOPS read as an internal error
+updated: 2026-11-07T00:33:19Z
+---
+
+Found on k391 (secrets worker). Secrets::_unlock_age_key trusts an existing .ocp/age.key without checking it against the project. A key that does not belong dies at the first SOPS read: 'Could not decrypt data key with any of the provided identities at lib/OCP/Keys.pm line 607.', rendered as an internal error. check_local_age_key exists for this, but only Init.pm calls it. Lane: secrets.
