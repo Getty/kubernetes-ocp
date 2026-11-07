@@ -331,14 +331,6 @@ sub _create_cert_issuers {
     return OCP::Cmd::Apply::Network::create_cert_issuers(@_);
 }
 
-sub _selfsigned_issuer {
-    return OCP::Cmd::Apply::Network::selfsigned_issuer(@_);
-}
-
-sub _acme_issuer {
-    return OCP::Cmd::Apply::Network::acme_issuer(@_);
-}
-
 sub _setup_cilium_gateway {
     return OCP::Cmd::Apply::Network::setup_cilium_gateway(@_);
 }
@@ -353,10 +345,6 @@ sub _configure_registry_dns {
 
 sub _corefile_with_host {
     return OCP::Cmd::Apply::Network::corefile_with_host(@_);
-}
-
-sub _corefile_drop_added_hosts {
-    return OCP::Cmd::Apply::Network::corefile_drop_added_hosts(@_);
 }
 
 # t/39 reads the writer's list of CoreDNS ConfigMap names from the apply
@@ -374,16 +362,6 @@ sub _setup_registry {
     return OCP::Cmd::Apply::Registry::setup($self, $config);
 }
 
-sub _registry_running {
-    my ($self, $config) = @_;
-    return OCP::Cmd::Apply::Registry::running($self, $config);
-}
-
-sub _generate_registry_manifest {
-    my ($self, $config) = @_;
-    return OCP::Cmd::Apply::Registry::generate_manifest($self, $config);
-}
-
 sub _stamp_ocp_version {
     my ($self, $config) = @_;
     return OCP::Cmd::Apply::Registry::stamp_ocp_version($self, $config);
@@ -393,10 +371,6 @@ sub _registry_deployment {
     return OCP::Cmd::Apply::Registry::deployment(@_);
 }
 
-sub _nodeport_service {
-    return OCP::Cmd::Apply::Registry::nodeport_service(@_);
-}
-
 #
 # Opt-in cluster workloads (NFD + GPU operator) — see OCP::Cmd::Apply::Workloads.
 # Forwarders below keep the test surface and the callers in this file stable.
@@ -404,14 +378,6 @@ sub _nodeport_service {
 
 sub _setup_nfd {
     return OCP::Cmd::Apply::Workloads::setup_nfd(@_);
-}
-
-sub _ensure_nfd_image {
-    return OCP::Cmd::Apply::Workloads::ensure_nfd_image(@_);
-}
-
-sub _generate_nfd_manifest {
-    return OCP::Cmd::Apply::Workloads::generate_nfd_manifest(@_);
 }
 
 sub _setup_gpu_operator_after_join {
@@ -441,11 +407,6 @@ sub _find_share_dir {
 # the same names.
 #
 
-sub _deployed_hashes_path {
-    my ($self, $config) = @_;
-    return OCP::Cmd::Apply::DeployedHash::hashes_path($self, $config);
-}
-
 sub _load_deployed_hashes {
     my ($self, $config) = @_;
     return OCP::Cmd::Apply::DeployedHash::load($self, $config);
@@ -471,16 +432,6 @@ sub _k8s_api {
 # Forwarders exist so the test surface (local *OCP::Cmd::Apply::_server_side_apply
 # = sub { ... }) keeps working.
 #
-
-sub _pluralize_kind {
-    my ($self, $kind) = @_;
-    return OCP::Cmd::Apply::K8s::pluralize_kind($self, $kind);
-}
-
-sub _build_resource_path {
-    my ($self, $resource) = @_;
-    return OCP::Cmd::Apply::K8s::build_resource_path($self, $resource);
-}
 
 sub _server_side_apply {
     my ($self, $api, $resource) = @_;
@@ -541,16 +492,6 @@ sub _ensure_providers {
     return OCP::Cmd::Apply::CR::ensure_providers($self, $api, $config, $secrets);
 }
 
-sub _ensure_provider_cr {
-    my ($self, $api, $type, $ns, $config, $secrets) = @_;
-    return OCP::Cmd::Apply::CR::ensure_provider_cr($self, $api, $type, $ns, $config, $secrets);
-}
-
-sub _k8s_node_ip {
-    my ($self, $api, $name) = @_;
-    return OCP::Cmd::Apply::CR::k8s_node_ip($self, $api, $name);
-}
-
 sub _ensure_cp_ocpnode {
     my ($self, $api, $cp_info) = @_;
     return OCP::Cmd::Apply::CR::ensure_cp_ocpnode($self, $api, $cp_info);
@@ -606,16 +547,6 @@ sub _print_worker_status {
 # Forwarders exist so the test surface and the callers inside this file keep
 # the same names.
 #
-
-sub _classify_pod {
-    my ($self, $pod) = @_;
-    return OCP::Cmd::Apply::Health::classify_pod($self, $pod);
-}
-
-sub _scan_pods {
-    my ($self, $api) = @_;
-    return OCP::Cmd::Apply::Health::scan_pods($self, $api);
-}
 
 sub _check_cluster_health {
     my ($self, $api, %opts) = @_;

@@ -31,8 +31,8 @@ an `ocp destroy` left a record of a registry that no longer existed, and the
 next apply happily declared it up to date (see the comment on
 C<setup_registry>).
 
-L<OCP::Cmd::Apply> re-exports every helper as a thin forwarder, including
-C<deployment> and C<nodeport_service> — t/33 calls those as bare package subs.
+L<OCP::Cmd::Apply> re-exports the helpers called through it as thin
+forwarders, including C<deployment> — t/33 calls it as a bare package sub.
 
 =cut
 

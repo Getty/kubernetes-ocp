@@ -51,8 +51,8 @@ built. That is the only reason it can be tested without a real cluster. The
 C<corefile_*> functions read the Corefile through L<OCP::Corefile>, the same
 reading L<OCP::Drift> checks the record with.
 
-L<OCP::Cmd::Apply> re-exports every helper as a thin forwarder so the test
-surface (t/31, t/39) keeps working.
+L<OCP::Cmd::Apply> re-exports the helpers called through it as thin
+forwarders, so the test surface (t/31, t/39) keeps working.
 
 =cut
 

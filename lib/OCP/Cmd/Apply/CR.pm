@@ -89,8 +89,8 @@ of its two C<[WARN]>s a run prints -- C<wait_robocop_ready>'s, for a wait that
 ended on a failed read, and the fallback to the CLI in
 L<OCP::Cmd::Apply::Deploy/worker_step>: C<note_robocop_not_ready> (k378).
 
-L<OCP::Cmd::Apply> re-exports every helper as a thin C<_method>
-forwarder — the existing test surface (t/20-apply-refactor.t,
+L<OCP::Cmd::Apply> re-exports the helpers called through it as thin
+C<_method> forwarders — the existing test surface (t/20-apply-refactor.t,
 t/36-ocpnode-status.t, t/38-reconcile-path.t) keeps working.
 
 =cut
