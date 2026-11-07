@@ -554,6 +554,9 @@ sub _aes_decrypt {
     my $plaintext = $ae->decrypt_add($ciphertext);
     my $ok = $ae->decrypt_done($tag);
 
+    # A wrong PIN2 ends here. OCP::ClusterKey and OCP::Cmd::Apply tell it
+    # from every other failure by this line: change it, change them
+    # (t/391-*.t hold both).
     die "AES-GCM authentication failed\n" unless $ok;
 
     return $plaintext;

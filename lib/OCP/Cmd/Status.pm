@@ -274,7 +274,18 @@ sub _collect_json {
     # answer, and a list that fails after it are each one line (k395).
     my ($api, $why) = $self->cluster_api(optional => 1);
     unless ($api) {
-        $out->{error} = $why // 'Cannot decrypt kubeconfig.yaml (is .ocp/age.key present?)';
+        # $why is undef in one case only: no kubeconfig.yaml when cluster_api
+        # looks, gone since cluster_exists saw it. A key problem dies inside
+        # cluster_api in OCP::Secrets' words (k382), a client or API failure
+        # is $why. STDERR is the text form's refusal, the error field the same
+        # words as one line, without its ERROR:.
+        unless (defined $why) {
+            my $refusal = OCP::Secrets->no_kubeconfig_refusal;
+            ($out->{error} = OCP::ErrorLine::one_line($refusal)) =~ s/\AERROR:\s*//;
+            print STDERR $refusal;
+            return 1;
+        }
+        $out->{error} = $why;
         print STDERR "ERROR: $out->{error}\n";
         return 1;
     }

@@ -147,10 +147,13 @@ sub reconcile_components {
     # memory, and every read of this run takes the key from $secrets (k349).
     # With the key on disk already this asks nothing. A real run is unchanged.
     $secrets->unlock_age_key if $self->dry_run && $secrets->has_age_key_enc;
+    # read_kubeconfig unlocks the key or refuses for it itself (k370), so undef
+    # means there is no kubeconfig.yaml (k375): said on STDERR, what went
+    # wrong. Not counted in {_apply_warnings}: the dispatcher returns without a
+    # verdict on a false return, so no banner would read it.
     my $kubeconfig = $secrets->read_kubeconfig;
     unless ($kubeconfig) {
-        print "  Cannot decrypt kubeconfig.yaml, skipping component reconcile.\n";
-        print "  Make sure .ocp/age.key exists.\n";
+        print STDERR OCP::Secrets->no_kubeconfig_refusal;
         return;
     }
 

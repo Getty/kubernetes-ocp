@@ -529,8 +529,15 @@ sub _unlock_admin_key {
     die "ERROR: No PIN2 given, cannot decrypt the admin key.\n"
         unless defined $pin2 && length $pin2;
 
+    # A wrong PIN2 does not come back as undef: the PIN2 layer's AES-GCM tag
+    # fails, and OCP::Keys dies "AES-GCM authentication failed" -- crypto
+    # internals, not the PIN2 (k391). Only that failure is the PIN2's. Any
+    # other keeps its own words: a .ocp/age.key that does not open keys.yaml
+    # fails here with the right PIN2 too, and blaming the PIN2 for it would
+    # send the operator after the wrong thing.
     my $keys = OCP::Keys->new(project_dir => $config->project_dir);
-    my $admin_key = $keys->get_admin_key($pin2);
+    my $admin_key = eval { $keys->get_admin_key($pin2) };
+    die $@ if !$admin_key && $@ && $@ !~ /\AAES-GCM authentication failed/;
     die "ERROR: Wrong PIN2 or no admin-key found!\n" unless $admin_key;
 
     return $admin_key;

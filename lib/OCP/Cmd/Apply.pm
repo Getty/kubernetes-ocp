@@ -129,7 +129,7 @@ sub execute {
         my $reconciled = $self->_reconcile_components($config);
 
         # Falsy means nothing was reconciled, so there is nothing to pass a
-        # verdict on: either no kubeconfig we could decrypt, or --dry-run,
+        # verdict on: either no kubeconfig.yaml (said on STDERR), or --dry-run,
         # which stops before the first write. Return without a verdict and
         # without stamping a version — claiming this OCP manages a cluster it
         # could not reach, or deployed one it deliberately did not touch, is
@@ -201,17 +201,18 @@ sub execute {
         print "Step 2: Admin authentication (PIN2 required)\n";
         print "        Control plane deployment requires admin-key.\n\n";
 
-
-
-
         my $keys = OCP::Keys->new(project_dir => $config->project_dir,
                                   age_key     => $secrets->age_key);
         my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin-key): ");
+        die "ERROR: No PIN2 given, cannot decrypt the admin key.\n"
+            unless defined $pin2 && length $pin2;
 
-        $admin_key = $keys->get_admin_key($pin2);
-        unless ($admin_key) {
-            die "\nERROR: Wrong PIN2 or no admin-key found!\n";
-        }
+        # A wrong PIN2 dies in the PIN2 layer's decrypt, "AES-GCM authentication
+        # failed" (k391): refused as a PIN2 problem, as OCP::ClusterKey does.
+        # Any other failure (keys.yaml itself) keeps its own words.
+        $admin_key = eval { $keys->get_admin_key($pin2) };
+        die $@ if !$admin_key && $@ && $@ !~ /\AAES-GCM authentication failed/;
+        die "ERROR: Wrong PIN2 or no admin-key found!\n" unless $admin_key;
 
         print "[ok] admin-key decrypted: $admin_key->{name}\n";
         print "[ok] Admin authenticated\n\n";

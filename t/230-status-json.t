@@ -121,15 +121,18 @@ local *OCP::Cmd::Status::rex_prober = sub { undef };
     unlike($out, qr/=== Spec ===|Cluster:/, 'only JSON on STDOUT');
 }
 
-# kubeconfig cannot be decrypted
+# No kubeconfig.yaml by the time cluster_api looks (FakeSecrets: has_kubeconfig
+# false): a key read_kubeconfig lacks is unlocked or refused inside it, so this
+# is the one case left without a line (t/391-status-json-error.t).
 {
     my $cfg = project('nokc', 1);
     local $KC = undef;
     my ($rc, $out, $err) = run_status($cfg);
-    is($rc, 1, 'undecryptable kubeconfig: exit 1');
+    is($rc, 1, 'no kubeconfig.yaml: exit 1');
     my $d = decode_json($out);
-    like($d->{error}, qr/decrypt/, 'error field');
-    like($err, qr/decrypt/, 'diagnosis on STDERR');
+    like($d->{error}, qr/\AThis project has no kubeconfig\.yaml\b/, 'error field says what is missing');
+    unlike($d->{error}, qr/age\.key|decrypt/, 'error field names no key');
+    is($err, OCP::Secrets->no_kubeconfig_refusal, 'diagnosis on STDERR, as the text form');
 }
 
 # API down
