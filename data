@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-11-07T04:22:26Z
+created: 2026-11-06T22:45:35Z
+id: 421
+priority: low
+started: 2026-11-07T04:08:12Z
+status: done
+tags:
+- docs
+- pod
+title: POD carries karr card ids (C<kNN>) in about 20 modules
+updated: 2026-11-07T04:22:26Z
+---
+
+Found in the 2026-11-06 release round (k354 review). The built POD carries about 50 card ids as C<kNN>, in lib/OCP/Cmd/Destroy.pm and about 19 other files (grep -rl 'C<k[0-9]' lib bin). The round rule is: no card ids in POD, README, Changes or user-visible messages; code comments and commit subjects may carry them. New text this round adds none. Done = the POD keeps the reason a C<kNN> stood for, in words, and drops the id; dzil build before/after pod2text shows no lost content. Lane: ocp-doc-writer.
+
+From k396 (fef5289): lib/OCP/Cmd/Destroy.pm POD carries many C<kNN> references, one of them C<k396> added by k399. Part of the same cleanup once the kNN-in-POD question is decided.
+
+From k401: lib/OCP/Cmd/Init.pm POD around :1174 carries C<k400>.
+
+2026-11-07 hub decision (perl-developer-bb), not a maintainer decision: as the card says. The POD keeps the reason in words and drops the id; code comments stay as they are. Checked with the pod2text before/after comparison as for k402. Done when a grep for k followed by 2 or 3 digits finds nothing in the POD of the built modules, README and Changes. Scope on 01c9716: 235 POD lines in 49 modules, README none, Changes 15 lines in older entries.
+
+2026-11-07 two ocp-doc-writers + orchestrator: 235 POD lines in 49 modules lose their card ids; 15 Changes lines in the unreleased section lose theirs (orchestrator, prose). Most ids were provenance and are simply dropped; where an id carried meaning it is put into words (e.g. legacy containerd template, a CRD that predates the node-ip, older releases). Also rewrapped the long lines from the k441 links. Code comments untouched: code-only comparison of all 50 lib files against 01c9716 identical. Checks on the dzil build: POD-only grep for k plus 2-3 digits over lib and bin 0 hits, README 0, Changes 0; podchecker 92 files 0 errors; AUTHOR_TESTING=1 t/author-pod-syntax.t 90/90 PASS. pod2text word-level comparison 01c9716 build vs this build: 42 files same, 38 only lost ids, 12 to review with 41 hunks, all of them ids put into words or the k441 item and link changes; no content lost. Before: 235 POD hits, Changes 15.
+
+commit-ready: Changes plus 50 files under lib/OCP (path list in the job tmp r2/k421-commit-paths.txt), POD and Changes prose only
+
+committed 8d25101
