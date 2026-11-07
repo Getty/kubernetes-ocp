@@ -62,9 +62,10 @@ deploys to. That is the first column below, and it is the load-bearing one.
 It stops at OCP's own image, and that stop is deliberate. The image is built
 for the architecture of the machine doing the build (`make build`,
 `share/bin/ocp-build-image`), and the published `raudssus/ocp:latest` is amd64
-(pushed 2026-08-15). One architecture is enough because robocop is pinned to
-the control-plane node: `share/robocop/deployment.yaml` requires
-`node-role.kubernetes.io/control-plane` and tolerates it alongside
+(pushed 2026-08-15) *(amended 2026-11-07, see below)*. One architecture is
+enough because robocop is pinned to the control-plane node:
+`share/robocop/deployment.yaml` requires `node-role.kubernetes.io/control-plane`
+and tolerates it alongside
 `node-role.kubernetes.io/master`, so robocop cannot land on a worker at all
 (k10, commit 03dec2e). The control plane is amd64 in this project; arm64
 shows up on the workers, and the workers never run robocop. The CLI is
@@ -111,10 +112,10 @@ The second column is what is asserted rather than verified.
 ### Where arm64 is NOT yet first-class
 
 - **No cross-architecture CI for the full reconcile path.** *Amended
-  2026-08-17 — see below.* The arm64 verification was a single k3s end-to-end
-  run; the RKE2 arm64 fix that started the work has never been re-verified
-  against a running RKE2 cluster (k9). Static checks replaced the live
-  run because the live run would have re-bootstrapped a real machine.
+  2026-08-17 and 2026-11-07 — see below.* The arm64 verification was a single
+  k3s end-to-end run; the RKE2 arm64 fix that started the work has never been
+  re-verified against a running RKE2 cluster (k9). Static checks replaced the
+  live run because the live run would have re-bootstrapped a real machine.
 - **No `xt/smoke.sh` on aarch64.** `make smoke` is amd64-only (`xt/smoke.sh`
   needs `SMOKE_HOST`); an aarch64 smoke would need an aarch64 runner with the
   same `SMOKE_HOST` target. Until it exists, "first-class on arm64" is asserted
@@ -175,10 +176,10 @@ the board (2026-08-12T22:40:58Z) by two days.
 Both inline markers point here. The amendment does not retract the
 "NOT yet first-class" header — that header is, if anything, stronger today
 than when the ADR was written: `.github/workflows/` no longer exists at all,
-so there is no CI for **any** architecture, and the "first-class" claim rests
-on the historical run plus the static checks that substituted for it (the
-"No cross-architecture CI" bullet carries that strengthening — see also
-k10).
+so there is no CI for **any** architecture *(amended 2026-11-07, see below)*,
+and the "first-class" claim rests on the historical run plus the static checks
+that substituted for it (the "No cross-architecture CI" bullet carries that
+strengthening — see also k10).
 
 Two adjacent claims were deliberately left alone. The `dpkg --print-architecture`
 rationale for the kubectl bullet (line 91) still calibrates against the
@@ -186,3 +187,48 @@ removed cross-build machinery; the historical `perl:5.40-slim` in the
 verified-images list is the dated record of what that earlier audit
 checked, and a record is not rewritten to look as if it had always said
 the right thing.
+
+## Amendment 2026-11-07 (k408)
+
+The 2026-08-17 amendment says:
+
+> `.github/workflows/` no longer exists at all, so there is no CI for **any**
+> architecture, and the "first-class" claim rests on the historical run plus
+> the static checks that substituted for it
+
+That was true when it was written: df5b0cf had removed the old publish
+workflow on 2026-08-14. It has been stale since 2026-09-18, when k134's
+`.github/workflows/ci.yml` (21da1ab) reached `main` with the k138 merge.
+
+What that CI runs today (`ci.yml` as of 585cc31): on every push and pull
+request, a `vendor` job, then one image job per registry, `dockerhub` and
+`ghcr`. All three run on `ubuntu-latest`, an amd64 runner. The image jobs
+build through `share/bin/ocp-build-image`, a plain `docker build` for the
+architecture of the machine it runs on, with no `--platform`.
+`.cicd/docker+29+build.image.sh` states its contract as proving that the image
+builds, and it pushes nothing. `.cicd/docker+29+publish.image.sh` pushes only
+for a release tag since k405 (353c2a0), and no release tag exists yet. CI runs
+neither `t/` nor any part of the reconcile path, and nothing in it builds or
+runs on arm64.
+
+So from 2026-09-18 on the strengthening overstated the case by one
+architecture and one claim: CI proves that the image builds on amd64. The
+"NOT yet first-class" header stands, and so do both of its bullets. There is
+no cross-architecture CI for the full reconcile path, and no CI for that path
+on amd64 either. There is no aarch64 smoke. The arm64 claim still rests on the
+historical runs (k3s, and RKE2 on cortex, see the 2026-08-17 amendment) and on
+the static checks.
+
+The Consequences date the published `raudssus/ocp:latest` to its push of
+2026-08-15. That was the push of the time. It has been pushed since, by hand
+on 2026-09-25 (k134) and by CI on pushes to `main`, the earliest checked run
+on 2026-10-01 (ADR 0013, amendment 2026-11-06). It is still amd64 and nothing
+else. Checked on Docker Hub on 2026-11-07, `latest` carries one `linux/amd64`
+entry, digest `sha256:fe4bcee1…`, the same image as `:44a9db0`, which CI
+pushed on 2026-11-03. Since k405 a push to `main` no longer moves `latest`.
+The next push from CI is the first release tag's, again from an amd64 runner.
+
+The decision did not move. arm64 is first-class where OCP names an artifact
+for a machine it deploys to, and the bound on OCP's own image is unchanged: it
+is built for the architecture of the machine that builds it, and that includes
+CI's machines. Recorded under k408.

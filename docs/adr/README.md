@@ -182,6 +182,13 @@ failure, and so is an NVIDIA or AMD node without its GPU in allocatable. That
 makes k285's parity his rule as well. The amendment records one gap as open,
 not decided: the reconcile path does not judge control-plane readiness.
 
+0020 was amended on 2026-11-07 under k408. The decision did not move. The
+2026-08-17 amendment's "no CI for any architecture" has been stale since
+k134's CI reached `main` on 2026-09-18. That CI builds the image on amd64
+runners and runs neither the suite nor the reconcile path, so the "NOT yet
+first-class" header stands. The published `latest` is still amd64 only, now
+CI's push of 2026-11-03.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and
