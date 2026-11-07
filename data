@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T02:50:15Z
+id: 432
+priority: low
+status: backlog
+tags:
+- destroy
+- ux
+title: 'ocp destroy node collection: a later source host lost to //=, undef public_ip
+  printed, only the first of two failed searches said'
+updated: 2026-11-07T02:50:15Z
+---
+
+Found by k396 (fef5289), not fixed there. 1. Destroy.pm _collect_nodes merges its sources with //=, so a node keeps public_ip - even when a later source (an ocp.yaml pool host) knows the host; the uninstall is then skipped for want of a host that is known. 2. The node listing prints undef for a status.yaml entry without public_ip. 3. When no label search answered and two failed, only the first failure is said. 4. The closing text Once they are reachable... reads oddly for a machine with no host recorded. Lane: ocp-destroy-worker.
