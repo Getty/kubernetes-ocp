@@ -66,6 +66,26 @@ hosts {
 
 This allows pods to resolve `registry.local` to the node IP where the registry NodePort is exposed.
 
+How the record is read and written (k338, k348; ADR 0022 amendment k392). Writer
+`configure_registry_dns` (`OCP::Cmd::Apply::Network`) and probe `registry_dns_drift`
+(`OCP::Drift`) read the Corefile through one parser, `OCP::Corefile`:
+
+- **Read from the block that answers.** `block_for` takes the server block CoreDNS answers
+  the name from: of the blocks whose zone covers it, the most specific, the root zone
+  covering every name. `address_of` reads the record there; a record in another block does
+  not count. Only plain DNS on port 53 answers (`on_cluster_port`).
+- **`coredns-custom` on k3s.** When the Corefile has a top-level `import` from
+  `/etc/coredns/custom/` (`corefile_imports_custom`; k3s's stock Corefile does, RKE2's does
+  not), both sides also read `kube-system/coredns-custom` and take its `*.server` snippets
+  as server blocks. `*.override` files are not read (k3s imports them inside the root block).
+- **A snippet that maps the name to the control plane counts as solved**: no drift, the
+  writer does nothing. One that maps it elsewhere or has no record is `spec` drift with a
+  `manual_step` that `ocp apply` does not close; the writer dies with the reason and the
+  caller prints it as `[WARN]` on STDERR instead of writing a root-block record the
+  snippet would shadow.
+- **OCP writes only the inline record** in the Corefile's root block (merged into an
+  existing `hosts` block where there is one). It never writes or maintains `coredns-custom`.
+
 ## Image References
 
 - In-cluster (Service, port 5000): `ocp-registry.ocp-system.svc:5000/myimage:tag`

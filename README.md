@@ -33,7 +33,7 @@ the one before it:
 | | Component | What it is for |
 |---|---|---|
 | **1** | **RKE2** (or K3s) | The Kubernetes distribution itself. Pinned version, not "whatever is newest". Pick either — OCP treats them as equals. |
-| **2** | **Registry cache + local registry** | `ocp-cache` pulls through to docker.io so image pulls stop hammering the internet; `ocp-registry` is an in-cluster store for your own images. CoreDNS is patched so `registry.local` resolves. Comes up first — everything else pulls through it. |
+| **2** | **Registry cache + local registry** | `ocp-cache` pulls through to docker.io so image pulls stop hammering the internet; `ocp-registry` is an in-cluster store for your own images. CoreDNS is patched so `registry.local` resolves; a `coredns-custom` snippet of your own for that name on K3s is respected and reported if it points elsewhere, but OCP does not maintain it. Comes up first — everything else pulls through it. |
 | **3** | **Node Feature Discovery** | Labels each node with what the hardware actually is. Always installed; the GPU step reads its labels. |
 | **4** | **NVIDIA GPU stack** | GPU Operator, container toolkit, device plugin and DCGM exporter — installed **only** when NFD reports an NVIDIA card. No card, no GPU pods, no noise. |
 | **5** | **cert-manager** | Issues TLS certificates. Self-signed out of the box; add `ssl.email` to `ocp.yaml` and you get Let's Encrypt issuers too. |

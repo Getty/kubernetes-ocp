@@ -189,6 +189,13 @@ runners and runs neither the suite nor the reconcile path, so the "NOT yet
 first-class" header stands. The published `latest` is still amd64 only, now
 CI's push of 2026-11-03.
 
+0022 was amended on 2026-11-07 under k392. The decision did not move. Its
+account of how the probe reads the record did. `corefile_host_address` took
+the first record anywhere in the Corefile, not the one in the block CoreDNS
+answers from. And a `coredns-custom` snippet, which the ADR counted as solved,
+was read by neither side. k338 and k348 made both true. The amendment records
+what they read, and that `*.override` files are not read.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and

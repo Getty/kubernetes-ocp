@@ -55,9 +55,10 @@ an instruction, because the reconcile path prints it in the middle of the very
 apply that is about to fix it — pointing at `ocp update` there would be wrong.
 
 `corefile_host_address` reads the mapping regardless of which block the line
-sits in. An operator who adds their own `coredns-custom` snippet therefore
-counts as solved and is not nagged about drift. The decision is not that the
-snippet is wrong; it is that OCP will not maintain it.
+sits in *(amended 2026-11-07, see below)*. An operator who adds their own
+`coredns-custom` snippet therefore counts as solved and is not nagged about
+drift *(amended 2026-11-07, see below)*. The decision is not that the snippet
+is wrong; it is that OCP will not maintain it.
 
 Generalised: when a gap cannot be closed the same way on every supported target
 (ADR 0012), and the measured harm is a quiet, self-healing window, report the
@@ -105,3 +106,72 @@ theoretical one.
 - OCP now reports a condition it deliberately does not fix outside of `apply`.
   That is a category the drift report did not have before, and it needs to stay
   distinguishable from drift that wants `ocp update`.
+
+## Amendment 2026-11-07 (k392)
+
+Until this date the third paragraph under `## Decision` read:
+
+> `corefile_host_address` reads the mapping regardless of which block the line
+> sits in. An operator who adds their own `coredns-custom` snippet therefore
+> counts as solved and is not nagged about drift. The decision is not that the
+> snippet is wrong; it is that OCP will not maintain it.
+
+The first sentence described the code exactly. `corefile_host_address` took
+the first line anywhere in the Corefile that mapped the name (60aa766). That
+is not how CoreDNS reads a Corefile, and this ADR's own Context had measured
+why: a `registry.local:53` block shadows the inline record. With the right
+inline record and a stale block of its own for the name, the probe met the
+inline record first and reported nothing, while CoreDNS answered with the
+stale address. That is the silent win this ADR rejected two writers for, and
+it sat in the probe. None of the four states under Consequences had both.
+
+The second sentence was not true on the day it was written. A
+`coredns-custom` snippet lives in a ConfigMap of its own, and
+`registry_dns_drift` read only the `Corefile` key of the CoreDNS ConfigMap
+(60aa766, unchanged until k338). Neither the probe nor the writer saw a
+snippet there. A k3s cluster whose inline record had been reset, and whose
+snippet answered correctly, was reported as missing the record. What did count
+as solved was a server block written into the Corefile itself. k19's offline
+table has a row in which the probe answers correctly for a snippet. The
+function was right about the text it was given, but on a cluster the probe
+never gave it that text.
+
+k338 (5ea2861) and k348 (79e24e3) made the paragraph's intent true. The writer
+(`OCP::Cmd::Apply::Network::configure_registry_dns`) and the probe now read
+the Corefile through one parser, `OCP::Corefile`:
+
+- **The answering block.** `registry.local` is read from the server block
+  CoreDNS answers it from: of the blocks whose zone covers the name, the most
+  specific one, the root zone covering every name (`block_for`). A record
+  anywhere else does not count. Only blocks for plain DNS on port 53 answer
+  (`on_cluster_port`). A block on another port or transport neither answers
+  nor shadows.
+- **`coredns-custom`.** Where the Corefile has a top-level `import` from
+  `/etc/coredns/custom/`, both sides read `kube-system/coredns-custom` and take
+  the `*.server` snippets the import names as server blocks of the Corefile
+  (`OCP::Drift::corefile_imports_custom`). k3s's stock Corefile has that
+  import. The RKE2 chart's has none, so on RKE2 nothing changes.
+- **A snippet that maps the name to the control plane counts as solved.** There
+  is no drift, and the writer does nothing. One that maps it elsewhere, or has
+  no record for it, is a `spec` entry with a `manual_step` and no remedy, named
+  with the ConfigMap key it is in. That is drift `ocp apply` does not close.
+  The writer does not write a root-block record the snippet would shadow. It
+  says why, as a `[WARN]` on STDERR.
+- **OCP still does not write or maintain the snippet.** It writes only the
+  inline record in the Corefile's root block. `coredns-custom` is only read.
+- **`*.override` files are not read.** k3s imports them inside the root block,
+  as plugin lines rather than as server blocks, and `OCP::Corefile` expands
+  only top-level imports (`t/338-registry-dns-one-reading.t` holds that). A
+  second `hosts` there is what this ADR's Context already ruled out.
+
+The decision did not move. OCP writes the record in one place, and the snippet
+is still the operator's to maintain. What moved is what the probe sees, and
+with it the case this ADR held against running two writers: a stale snippet
+that shadows the correct inline record is now reported, not silent. It is
+reported as a third kind of entry next to the two the last Consequence keeps
+apart, a condition that neither `ocp apply` nor `ocp update` closes. The
+Consequence that the probe says what CoreDNS does "in all four" states stays
+as written, because it is true of those four. `t/338-registry-dns-one-reading.t`
+drives the writer and the probe over the shadowing state and the k348 cases,
+and asserts that they agree. Neither k338 nor k348 records a run against a
+live cluster. Recorded under k392.
