@@ -117,7 +117,7 @@ sub _execute_json {
     my ($self, $api, $ocpnodes, $pool_of) = @_;
     $pool_of //= {};
 
-    my $nlist = $self->cluster_api_call($api, sub { $api->list('Node') });
+    my $nlist = $self->_list_nodes($api);
     my %k8s_node;
     for my $item (@{ $nlist->items // [] }) {
         my $n = $api->k8s->object_to_struct($item);
@@ -154,6 +154,27 @@ sub _execute_json {
 
     print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode(\@rows);
     return 0;
+}
+
+# The Kubernetes Nodes, for the inventory. An error the API answers with is
+# its one line (k387). The client resolves 'Node' from the cluster's
+# discovery once it has read it, and the OCPNode list above read it: a
+# discovery that answers without Node leaves the client no class for it, and
+# Kubernetes::REST croaks "unknown resource 'Node'" before sending anything,
+# with the caller's location -- an internal error where the cluster is what
+# is odd (k395; seen with a test's fake API, a real API server lists Node in
+# its core group). A discovery that cannot be read at all is no such case:
+# the client falls back to IO::K8s's built-in map, where Node resolves.
+sub _list_nodes {
+    my ($self, $api) = @_;
+    my $list;
+    return $list
+        if eval { $list = $self->cluster_api_call($api, sub { $api->list('Node') }); 1 };
+    my $err = $@;
+    die $err if ref $err || $err !~ /\Aunknown resource 'Node'/;
+    my $at = $api->can('server') ? ' at ' . $api->server->endpoint : '';
+    die "The cluster API$at does not list the Kind Node in its discovery,"
+      . " so the Nodes cannot be read.\n";
 }
 
 sub _age {
@@ -229,9 +250,10 @@ refuses stops C<--json> before the cluster is asked, with that line as the
 error object below (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
 
 When the nodes cannot be listed -- the API server the kubeconfig names does
-not answer or answers with an error, or there is no C<ocp.yaml> or no
-kubeconfig -- STDOUT carries one object instead of the array, its C<error>
-the message the command stopped on (for the API, the one line of
+not answer or answers with an error, its discovery does not list the Kind
+C<Node>, or there is no C<ocp.yaml> or no kubeconfig -- STDOUT carries one
+object instead of the array, its C<error> the message the command stopped on
+as one line, without an C<Error:> label (for the API, the one line of
 L<OCP::Role::Cmd/cluster_api_error>), and the exit code is 1, as with
 C<ocp status --json> and C<ocp health --json> (k388). STDERR says it as
 without C<--json>.

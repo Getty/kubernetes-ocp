@@ -267,6 +267,13 @@ sub _clean_message {
 # the one JSON error object k388 settled on for ocp node ls: {"error": the
 # line STDERR says, without its label or hint}, so a script reading STDOUT
 # tells a failure from a result by its type. STDERR says it as without --json.
+# A message of several lines -- a refusal such as OCP::Secrets'
+# no_kubeconfig_refusal -- is one line there, by OCP::ErrorLine::json_error,
+# as ocp status and ocp health fill their error field (k395).
+#
+# Without $json it says the error on STDERR only, and ocp health --json calls
+# it so: its STDOUT is its own object, its STDERR the one ocp health says
+# without --json (k395).
 sub _report_error {
     my ($err, $verbose, $json) = @_;
 
@@ -274,7 +281,8 @@ sub _report_error {
     my ($msg, $internal) = defined $line ? ($line, 0) : _clean_message($err);
     $msg = OCP::ErrorLine::mask_secrets($msg);
 
-    print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode({ error => $msg })
+    print JSON::MaybeXS->new(canonical => 1, pretty => 1)
+        ->encode({ error => OCP::ErrorLine::json_error($msg) })
         if $json;
 
     if ($verbose) {

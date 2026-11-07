@@ -234,7 +234,7 @@ my @commands = (
       } ],
     [ ['health', '--json'], sub {
           my ($o, $e) = @_;
-          like $e, qr/\AERROR: $unreachable\n\z/, 'STDERR: the API and why, one line, nothing else';
+          like $e, qr/\AError: $unreachable\n\z/, 'STDERR: the API and why, one line, as without --json';
           my $doc = json_of($o);
           like $doc->{error} // '', qr/\A$unreachable\z/, 'JSON: error says it, as on STDERR';
           ok exists $doc->{healthy} && !$doc->{healthy}, 'JSON: not healthy';

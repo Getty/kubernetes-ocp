@@ -6,8 +6,10 @@ use MooX::Cmd;
 use MooX::Options;
 use JSON::MaybeXS ();
 
+use OCP ();
 use OCP::Cmd::Apply::Health ();
 use OCP::Config;
+use OCP::ErrorLine ();
 
 with 'OCP::Role::Cmd';
 
@@ -69,13 +71,20 @@ sub execute {
         # server (k387); anything else is said as it came.
         $error = $self->cluster_api_error($self->api, $error) // $error;
         chomp $error;
-        # The JSON form still answers on STDOUT; the diagnosis goes to STDERR.
+        # The JSON form still answers on STDOUT, the error one line without
+        # a label; STDERR says it as ocp health says it without --json, by
+        # the renderer that says the die below (k395). It said "ERROR:"
+        # where the text form says "Error:", and "ERROR: ERROR:" for a
+        # refusal that carries its own.
         if ($self->json) {
-            print STDERR "ERROR: $error\n";
             print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode({
-                error => $error, healthy => JSON::MaybeXS::false(), pods => [],
+                error   => OCP::ErrorLine::json_error($error),
+                healthy => JSON::MaybeXS::false(),
+                pods    => [],
             });
-            return 1;
+            my $root = ($self->command_chain // [])->[0];
+            return OCP::_report_error("$error\n",
+                $root && $root->can('verbose') ? $root->verbose : 0, 0);
         }
         die "$error\n";
     }
@@ -159,8 +168,10 @@ STDOUT and nothing else; diagnostics go to STDERR.
 
 C<pods> is sorted by namespace, then name; C<state> is C<critical>,
 C<warning> or C<starting>.  C<healthy> is true when C<pods> is empty.  When
-the cluster cannot be reached the object has an C<error> string, an empty
-C<pods> and the exit code is 1.
+the cluster cannot be reached the object has an C<error> string -- the
+message as one line, without an C<ERROR:> label --, an empty C<pods> and the
+exit code is 1.  STDERR says the error as C<ocp health> says it without
+C<--json>.
 
 B<Known instability:> a pod stuck for a long time gets a reason such as
 C<stuck in Init for 17m (ContainerCreating)>, and the minutes are part of the

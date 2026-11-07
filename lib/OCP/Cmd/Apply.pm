@@ -11,7 +11,6 @@ use JSON::PP ();
 use YAML::XS ();
 
 use Digest::MD5;
-use File::Temp;
 use HTTP::Tiny;
 
 use OCP::Config;

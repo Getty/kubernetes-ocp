@@ -20,15 +20,53 @@ use Scalar::Util ();
 # before anything else, should an answer ever echo it back, and so is every
 # secret the registry below holds (k398). Nothing left is 'unknown error',
 # unless the caller says what nothing is (empty).
+#
+# k395: a Kubernetes::REST::APIError of code 599 carries LWP's text as its
+# body, and LWP says its reason there twice -- "Can't connect to H:P
+# (Connection refused)", a blank line, then "Connection refused" again with
+# its own location. Folded whole, the reason read twice in every one_line
+# caller that holds such an error (ocp apply's CR steps, ocp destroy). So
+# the body's first line stands for the body, as api_error_line says a 599
+# (k387); the rest of the object's text is kept as it is. Keyed on the
+# object, not on the shape of the text: a plain refusal of several lines --
+# ClusterKey's, validate()'s -- is folded whole, as before. WWW::Hetzner
+# (ocp init, the Hetzner adapter) keeps only that first line itself.
 sub one_line {
     my ($err, %opt) = @_;
 
-    my $line = _masked(defined $err ? "$err" : '', $opt{mask});
+    my $text = defined $err ? "$err" : '';
+    if (_is_transport_error($err)) {
+        my $body = $err->body;
+        my ($first) = $body =~ /^(.*\S.*)$/m;
+        $text =~ s/\Q$body\E/$first/ if defined $first;
+    }
+
+    my $line = _masked($text, $opt{mask});
     $line =~ s/ at \S+ line \d+\.?//g;
     $line =~ s/\s+/ /g;
     $line =~ s/\A | \z//g;
 
     return length $line ? $line : $opt{empty} // 'unknown error';
+}
+
+sub _is_transport_error {
+    my ($err) = @_;
+    return Scalar::Util::blessed($err)
+        && $err->isa('Kubernetes::REST::APIError')
+        && $err->code == 599;
+}
+
+# k395: the error field of a --json command's object -- ocp status, ocp
+# health, and through OCP.pm's renderer ocp node ls and every other: the
+# message as one line, without the label it may carry. A refusal such as
+# OCP::Secrets' no_kubeconfig_refusal is written for STDERR, "ERROR: " and
+# indented lines below; a script reads the field as one string. Status did
+# this on its own (k391); this is the one place for the three. The label is
+# any of the spellings OCP.pm's renderer takes off (_clean_message).
+sub json_error {
+    my ($err) = @_;
+    (my $line = one_line($err, empty => '')) =~ s/\A(?:ERROR|Error|error):\s*//;
+    return length $line ? $line : 'unknown error';
 }
 
 # k398: every secret this process has read -- a Hetzner token, from the
@@ -186,7 +224,10 @@ L</mask_secrets>).
 
 C<$err> as a string (an exception object stringified), with every Perl
 source location (C< at FILE line N.>) taken out, each run of whitespace --
-newlines too -- folded into one space, and none at either end. Options:
+newlines too -- folded into one space, and none at either end.  For a
+L<Kubernetes::REST::APIError> of code C<599> (no answer) only the first line
+of its body is kept: the lines after it are LWP's, saying the same reason
+again.  Options:
 
 =over
 
@@ -202,6 +243,19 @@ What to return when nothing is left (C<undef>, an empty or blank C<$err>, a
 bare source location). C<'unknown error'> when not given.
 
 =back
+
+=head2 json_error
+
+    my $field = OCP::ErrorLine::json_error($err);
+    # This project has no kubeconfig.yaml, so there is no cluster API to reach. 'ocp apply' writes ...
+
+The C<error> field of a C<--json> command's object: L</one_line> of C<$err>,
+without a leading C<ERROR:> (or C<Error:>, C<error:>) label, so a refusal
+written for STDERR over several indented lines is one string a script can
+read.  C<unknown error> when nothing is left.  L<OCP::Cmd::Status> and
+L<OCP::Cmd::Health> fill their field with it, and L<OCP>'s renderer the
+object of every other C<--json> command that dies, C<ocp node ls --json>
+among them.
 
 =head2 add_secret
 

@@ -216,7 +216,7 @@ my @commands = (
     [ ['health'], 'pods', 'Error', sub {
           is $_[0], '', 'STDOUT: nothing';
       } ],
-    [ ['health', '--json'], 'pods', 'ERROR', sub {
+    [ ['health', '--json'], 'pods', 'Error', sub {
           my ($o, $line) = @_;
           my $doc = json_of($o);
           is $doc->{error}, $line, 'JSON: error is the line, as on STDERR';

@@ -341,6 +341,17 @@ sub role_text {
       . "or touches the cluster or a machine. Fix the line$s above and run it again.\n";
 }
 
+# The error field of a --json command's object for that text: STDERR's words
+# as one line, without the Error: label (k395) -- built here from the text,
+# not by the code under test.
+sub json_field {
+    my ($text) = @_;
+    (my $error = $text) =~ s/\AError: //;
+    $error =~ s/\s+/ /g;
+    $error =~ s/\A | \z//g;
+    return $error;
+}
+
 # --- 1. The role --------------------------------------------------------------------
 
 subtest 'node add: --gpu checks gpu:, in the one text, before anything' => sub {
@@ -599,11 +610,9 @@ subtest 'status: network: foo, in both forms, before the report' => sub {
     is $r->{exit}, 1, 'exit 1';
     is $r->{out}, '', 'no report begun on STDOUT';
 
-    (my $error = $text) =~ s/\AError: //;
-    $error =~ s/\n\z//;
     $r = run_ocp($dir, setup(), qw( status --json ));
     my $doc = eval { JSON::MaybeXS->new->decode($r->{out}) };
-    is_deeply $doc, { error => $error }, '--json: STDOUT is the one JSON error object'
+    is_deeply $doc, { error => json_field($text) }, '--json: STDOUT is the one JSON error object, the text as one line'
         or diag "STDOUT: $r->{out}";
     is $r->{err}, $text, '--json: STDERR says it';
     is $r->{exit}, 1, '--json: exit 1';
@@ -681,12 +690,10 @@ subtest 'node ls: a pool\'s taints: foo' => sub {
     my @lines = validate_lines($dir);
     is scalar(@lines), 1, 'validate() has one line, for the taints' or diag explain \@lines;
     my $text = role_text('ocp node ls', @lines);
-    (my $error = $text) =~ s/\AError: //;
-    $error =~ s/\n\z//;
 
     my $r = run_ocp($dir, setup(), qw( node ls --json ));
     my $doc = eval { JSON::MaybeXS->new->decode($r->{out}) };
-    is_deeply $doc, { error => $error }, '--json: STDOUT is the one JSON error object'
+    is_deeply $doc, { error => json_field($text) }, '--json: STDOUT is the one JSON error object, the text as one line'
         or diag "STDOUT: $r->{out}";
     is $r->{err}, $text, '--json: STDERR says it';
     is $r->{exit}, 1, '--json: exit 1';

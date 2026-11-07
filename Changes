@@ -1130,3 +1130,13 @@ Revision history for OCP
       `v1.36.4+rke2r1` under `dist: k3s`) is refused, so commands stop on
       it before a server is bought. A version without a suffix passes as
       before.
+    - `ocp status --json`, `ocp health --json` and `ocp node ls --json` give
+      their error field as one line without an `ERROR:` label; `ocp health
+      --json` says the error on STDERR as `ocp health` says it without
+      `--json`.
+    - The drift table shows an API error as one line naming the server,
+      without a Perl source location.
+    - `ocp apply` and `ocp destroy` say the reason of an API server that
+      does not answer once, not twice.
+    - `ocp node ls --json` against a cluster whose API discovery does not
+      list Node says so in one line instead of an internal error.

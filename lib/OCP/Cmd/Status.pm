@@ -278,14 +278,15 @@ sub _collect_json {
         # looks, gone since cluster_exists saw it. A key problem dies inside
         # cluster_api in OCP::Secrets' words (k382), a client or API failure
         # is $why. STDERR is the text form's refusal, the error field the same
-        # words as one line, without its ERROR:.
+        # words as one line, without its ERROR: -- OCP::ErrorLine::json_error,
+        # as ocp health and OCP.pm's renderer fill theirs (k395).
         unless (defined $why) {
             my $refusal = OCP::Secrets->no_kubeconfig_refusal;
-            ($out->{error} = OCP::ErrorLine::one_line($refusal)) =~ s/\AERROR:\s*//;
+            $out->{error} = OCP::ErrorLine::json_error($refusal);
             print STDERR $refusal;
             return 1;
         }
-        $out->{error} = $why;
+        $out->{error} = OCP::ErrorLine::json_error($why);
         print STDERR "ERROR: $out->{error}\n";
         return 1;
     }
@@ -294,7 +295,8 @@ sub _collect_json {
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        $out->{error} = $self->cluster_api_error($k8s, $error) // OCP::ErrorLine::one_line($error);
+        $out->{error} = OCP::ErrorLine::json_error(
+            $self->cluster_api_error($k8s, $error) // $error);
         print STDERR "ERROR: $out->{error}\n";
         return 1;
     }
@@ -334,7 +336,7 @@ sub _collect_json {
     # The exit and the error field of a cluster that cannot be read: the
     # object is the report as far as it got, error says what it is missing.
     if (defined $drift_error) {
-        $out->{error} = 'Cannot detect drift: '.$drift_error;
+        $out->{error} = 'Cannot detect drift: '.OCP::ErrorLine::json_error($drift_error);
         return 1;
     }
 
@@ -869,8 +871,8 @@ pretty-printed, no timestamps or ages) on STDOUT; diagnostics go to STDERR.
 Two runs against an unchanged cluster print identical bytes, so a script can
 compare them.  The exit code is that of the text form: 1 when the kubeconfig
 cannot be decrypted, the API cannot be reached or drift detection dies (the
-object then carries an C<error> string and whatever could be collected),
-else 0.
+object then carries an C<error> string -- the message as one line, without
+an C<ERROR:> label -- and whatever could be collected), else 0.
 
     {
        "cluster" : "mycluster",

@@ -958,14 +958,13 @@ sub distribution_drift {
         # handles its `list_nodes` failure.
         my $err = $@;
         _say_failed("OCP::Drift::distribution_drift: list('Node') failed: ", $err);
-        chomp $err;
         return {
             kind      => 'error',
             component => $dist,
             label     => "$dist kubelet versions",
             expected  => $expected,
             actual    => undef,
-            message   => "$dist kubelet versions: could not list Nodes: $err",
+            message   => "$dist kubelet versions: could not list Nodes: " . _failed_line($err),
             remedy    => undef,
         };
     }
@@ -1454,8 +1453,7 @@ sub _unknown_drift {
     return unless $err;
     return if "$err" =~ /\b404\b/;
 
-    my $reason = "$err";
-    chomp $reason;
+    my $reason = _failed_line($err);
     _say_failed("OCP::Drift::$e{in}: $e{op} $e{object} failed: ", $err);
     my $could = $e{op} eq 'get' ? 'read' : $e{op};
     return {
@@ -1478,6 +1476,17 @@ sub _say_failed {
     return warn $what.$line."\n" if defined $line;
     (my $s = "$err") =~ s/\n\z//;
     carp $what.$s;
+}
+
+# The cause in a read's error entry, the message the drift table shows: one
+# line, with no source location (k395). The diagnosis above took an API
+# error's location off STDERR; the entry still held the raw text, so
+# Kubernetes::REST's "at FILE line N." stood in the drift table. An API
+# error is the line the diagnosis says, anything else one_line of it, as
+# _step_skips and _refused_drift word their causes.
+sub _failed_line {
+    my ($err) = @_;
+    return OCP::ErrorLine::user_line($err) // OCP::ErrorLine::one_line($err);
 }
 
 # The entry for a probe whose skip_if OCP::Config refused (k332): whether
