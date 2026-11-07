@@ -41,10 +41,13 @@ option json => (
 # The summary reads the name, the distribution and its version (kubernetes),
 # the first control plane's provider and server_type, the count of control
 # planes and every pool's name, provider and machines (nodes, an ssh pool's
-# host: _pool_machines). The drift check reads every control plane's
-# public_ip, host and name (spec_drift, the host probes, cluster_status), the
-# pod network (network.pod_cidr), Cilium's values for its remedy (cilium:) and
-# the bootstrap key's path for the host probes (ssh:, rex_prober).
+# host: _pool_machines). The drift check reads the first control plane as
+# cluster_status does and the bootstrap key's path for the host probes (ssh:,
+# rex_prober, the paths cluster_ssh_key reads): first_control_plane_spec_paths
+# (k401). It reads every other control plane's public_ip, host and name too
+# (spec_drift, the host probes), so those are declared at [*], which holds
+# the first one's; and the pod network (network.pod_cidr) and Cilium's values
+# for its remedy (cilium:).
 #
 # Read around on purpose, so not declared (t/400's %READS_AROUND): gpu:, the
 # AMD allocation a bad gpu.amd.allocation turns into one WARNING line while
@@ -55,14 +58,16 @@ option json => (
 # the rest of the report runs, exit 0 (k332, t/332-status-switch-and-host-pool.t
 # claim 1).
 sub spec_paths {
+    my ($self) = @_;
     return (
         'name', 'kubernetes',
-        'control_planes', 'control_planes[*]',
+        $self->first_control_plane_spec_paths,
+        'control_planes[*]',
         map({ "control_planes[*].$_" } qw( public_ip host name )),
-        map({ "control_planes[1].$_" } qw( provider server_type )),
+        'control_planes[1].server_type',
         'workers', 'workers[*]',
         map({ "workers[*].$_" } qw( name provider nodes host )),
-        'network', 'network.pod_cidr', 'cilium', 'ssh',
+        'network', 'network.pod_cidr', 'cilium',
     );
 }
 

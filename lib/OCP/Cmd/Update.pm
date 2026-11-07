@@ -44,15 +44,16 @@ option force => (
 # The plan reads the distribution and its version (kubernetes), nocert and
 # gpu.enabled; the question names the cluster; the Rex remedies reach the
 # first control plane (cluster_status: its public_ip, host and name; the key
-# by its provider, and ssh: for the bootstrap key in dev mode) and hand
-# Cilium its values (cilium:) and the pod network (network.pod_cidr). Not
-# network.lb_pool or network.l2, which update does not read.
+# by its provider, and ssh: for the bootstrap key in dev mode:
+# first_control_plane_spec_paths, k401) and hand Cilium its values (cilium:)
+# and the pod network (network.pod_cidr). Not network.lb_pool or network.l2,
+# which update does not read.
 sub spec_paths {
+    my ($self) = @_;
     return (
         'name', 'kubernetes', 'nocert', 'gpu',
-        'control_planes', 'control_planes[1]',
-        map({ "control_planes[1].$_" } qw( provider public_ip host name )),
-        'ssh', 'cilium', 'network', 'network.pod_cidr',
+        $self->first_control_plane_spec_paths,
+        'cilium', 'network', 'network.pod_cidr',
     );
 }
 

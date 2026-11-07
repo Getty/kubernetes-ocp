@@ -25,15 +25,16 @@ with 'OCP::Role::Cmd::RobocopCredentials';
 # OCP::Role::Cmd refuses their lines, validate()'s own, before anything is
 # asked or sent (k400). robocop.security_level picks the Secret and the
 # Deployment variant; the credentials read the first control plane's address
-# (cluster_status) and the bootstrap key's path (ssh:, cluster_ssh_key); the
-# Deployment carries robocop.image, the distribution (kubernetes) and the pod
-# CIDR (network.pod_cidr, OCP::Robocop::Manifest).
+# (cluster_status) and the bootstrap key's path (ssh:, cluster_ssh_key):
+# first_control_plane_spec_paths (k401); the Deployment carries
+# robocop.image, the distribution (kubernetes) and the pod CIDR
+# (network.pod_cidr, OCP::Robocop::Manifest).
 sub spec_paths {
+    my ($self) = @_;
     return (
         'robocop', 'robocop.security_level', 'robocop.image',
-        'control_planes', 'control_planes[1]',
-        map({ "control_planes[1].$_" } qw( provider public_ip host name )),
-        'ssh', 'kubernetes', 'network', 'network.pod_cidr',
+        $self->first_control_plane_spec_paths,
+        'kubernetes', 'network', 'network.pod_cidr',
     );
 }
 

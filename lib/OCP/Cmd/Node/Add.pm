@@ -118,10 +118,11 @@ option nowait => (
 # What node add reads of ocp.yaml, checked before it runs (k400): before the
 # kubeconfig is decrypted (PIN1), the provider looked up, the OCPNode written,
 # the host probed (PIN2) or joined. A join without robocop reads the first
-# control plane (its address, name and provider: cluster_status), the
-# distribution and the supervisor port (kubernetes), the pod CIDR it repeats
-# (network.pod_cidr, k184) and the SSH key's path (ssh). With --gpu the GPU
-# stack reads the gpu: block once the node is Ready (k333): since k320 a
+# control plane (its address, name and provider: cluster_status) and the SSH
+# key's path (ssh: cluster_ssh_key), first_control_plane_spec_paths (k401),
+# the distribution and the supervisor port (kubernetes) and the pod CIDR it
+# repeats (network.pod_cidr, k184). With --gpu the GPU stack reads the gpu:
+# block once the node is Ready (k333): since k320 a
 # malformed gpu.enabled croaked there, outside an eval, with the node in the
 # cluster. Whether robocop does the join the cluster says only later, so both
 # are declared.
@@ -140,9 +141,8 @@ sub spec_paths {
     my ($self) = @_;
     return () if $self->nowait;
     return (
-        'control_planes', 'control_planes[1]',
-        map({ "control_planes[1].$_" } qw( provider host public_ip name )),
-        'kubernetes', 'network', 'network.pod_cidr', 'ssh',
+        $self->first_control_plane_spec_paths,
+        'kubernetes', 'network', 'network.pod_cidr',
         ($self->gpu ? 'gpu' : ()),
     );
 }

@@ -162,6 +162,29 @@ sub ocp { $_[0]->command_chain->[0] }
 # Nothing declared, nothing checked.
 sub spec_paths { return () }
 
+# What reaching the first control plane reads of ocp.yaml, for the spec_paths
+# of each command that reaches it (k401): its address and name as
+# OCP::Config::cluster_status reads them -- the entry, its public_ip, else its
+# host, a local one's provider, and its name -- and the key to log in with
+# (cluster_ssh_key_spec_paths). Node add, update and deploy-robocop listed it
+# by hand, status and ssh in variants of their own, so a change to
+# cluster_status could leave a declaration behind; t/401 holds what
+# cluster_status and cluster_ssh_key read against these.
+sub first_control_plane_spec_paths {
+    my ($self) = @_;
+    return (
+        'control_planes', 'control_planes[1]',
+        map({ "control_planes[1].$_" } qw( provider public_ip host name )),
+        $self->cluster_ssh_key_spec_paths,
+    );
+}
+
+# What cluster_ssh_key reads of ocp.yaml: ssh:, the bootstrap key's paths in
+# dev mode (OCP::ClusterKey). The first control plane's provider it says in
+# messages only, where it is a string on a mapping, so it declares nothing
+# there (k400).
+sub cluster_ssh_key_spec_paths { return ('ssh') }
+
 # Dies with every line of spec_errors at the paths spec_paths declares, in
 # validate()'s order, in the one text a command refuses ocp.yaml with; 1 when
 # there is none. Destroy's, the machines role's and node add --gpu's own
@@ -410,6 +433,9 @@ sub cluster_api {
 # consumed by every OCP::Cmd::* class and its constructor surface is part of
 # the CLI's contract (MooX::Cmd/MooX::Options both read it). Nothing should be
 # able to pass a cluster key in from the command line.
+#
+# What it reads of ocp.yaml is cluster_ssh_key_spec_paths: a new read there
+# goes into that list too (k401).
 sub cluster_ssh_key {
     my ($self, $config, %opt) = @_;
 
@@ -779,6 +805,21 @@ L<OCP::Config/spec_errors>. A command that reads any defines it after its
 options; it may look at its options and at the raw config, and never dies on a
 shape of F<ocp.yaml>. The role's own returns nothing: a command that declares
 nothing is not checked.
+
+=method first_control_plane_spec_paths
+
+    return ($self->first_control_plane_spec_paths, 'kubernetes');
+
+The key paths reaching the first control plane reads: C<control_planes>, its
+first entry and that entry's C<provider>, C<public_ip>, C<host> and C<name>,
+as L<OCP::Config/cluster_status> reads them, and
+L</cluster_ssh_key_spec_paths>. A command that reaches the first control plane
+returns them from its L</spec_paths>.
+
+=method cluster_ssh_key_spec_paths
+
+The key paths L</cluster_ssh_key> reads: C<ssh>, the bootstrap key's paths in
+dev mode.
 
 =method refuse_spec_errors
 

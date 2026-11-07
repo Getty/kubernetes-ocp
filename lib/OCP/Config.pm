@@ -1202,6 +1202,10 @@ sub nodes_status {
 
 # The control plane we can reach: the recorded node status if we have one,
 # otherwise whatever the spec pins.
+#
+# What it reads of the spec, the commands that call it declare through
+# OCP::Role::Cmd::first_control_plane_spec_paths: a new read here goes into
+# that list too, or t/401 says which (k401).
 sub cluster_status {
     my ($self) = @_;
 

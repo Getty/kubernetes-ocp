@@ -31,13 +31,18 @@ option node => (
 # What ssh reads of ocp.yaml, declared as its spec_paths: every control
 # plane's provider and host, which --node is matched against
 # (_resolve_target_host), and the bootstrap key's path (ssh:,
-# cluster_ssh_key). OCP::Role::Cmd refuses their lines, validate()'s own,
-# before a PIN is asked (k400).
+# cluster_ssh_key_spec_paths). OCP::Role::Cmd refuses their lines,
+# validate()'s own, before a PIN is asked (k400).
+#
+# Not first_control_plane_spec_paths (k401): ssh never asks cluster_status,
+# so it reads no control plane's public_ip or name, and a line there holds no
+# session up.
 sub spec_paths {
+    my ($self) = @_;
     return (
         'control_planes', 'control_planes[*]',
         map({ "control_planes[*].$_" } qw( provider host )),
-        'ssh',
+        $self->cluster_ssh_key_spec_paths,
     );
 }
 

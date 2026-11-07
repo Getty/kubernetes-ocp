@@ -120,10 +120,22 @@ sub spec_labels {
   return { map { $_ => ''.$labels->{$_} } grep { defined $labels->{$_} && !ref $labels->{$_} } keys %$labels };
 }
 
+# A taints: that is no list, or an entry that is no taint, is refused in
+# validate()'s words, without the pool's name (k401): it dropped a taints: foo
+# without a word, and croaked on an entry, an internal error. Every command
+# that reads a pool's taints checks them before it runs (k400); this is the
+# net behind that check, as OCP::Config's accessors are. robocop reads an
+# OCPNode's spec.taints, in the CRD's shape, never these.
 sub spec_taints {
   my ( $self, $taints ) = @_;
-  return [] unless ref $taints eq 'ARRAY';
-  return [ map { $self->parse_taint($_) } @$taints ];
+  return [] unless defined $taints;
+  die 'worker pool: taints must be a list like [ "key=value:NoSchedule" ]'."\n"
+    unless ref $taints eq 'ARRAY';
+  return [ map {
+    my $err = $self->taint_error($_);
+    die 'worker pool: '.$err."\n" if defined $err;
+    $self->parse_taint($_);
+  } @$taints ];
 }
 
 # Identity of a taint on a Node: key and effect, as Kubernetes keys them.
@@ -345,7 +357,8 @@ that go to a user as they are.
 =method spec_labels / spec_taints
 
 An F<ocp.yaml> worker pool's C<labels> mapping and C<taints> list in OCPNode
-spec shape.
+spec shape. C<spec_taints> dies naming what is wrong when C<taints> is set
+and is no list, or holds an entry that is no taint.
 
 =method label_errors
 

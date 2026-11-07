@@ -701,7 +701,10 @@ sub _effective_provider {
     # Step 7 is about to (over)write ocp.yaml, so the flags are the answer.
     return $self->_provider if !$has_config || $self->force;
 
-    # Otherwise the file that will survive this run is the authority.
+    # Otherwise the file that will survive this run is the authority. Read
+    # raw: this is reached only without --force, where spec_paths declares
+    # the first entry and its provider, so a control_planes: [ foo ] or a
+    # provider that is a list was refused before execute ran (k400, k401).
     my $cps = eval { OCP::Config->new(file => $self->ocp->config)->control_planes };
     return $self->_provider unless $cps && @$cps;
     return $cps->[0]{provider} // 'hetzner';
