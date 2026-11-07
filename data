@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-07T00:16:22Z
+id: 426
+priority: low
+status: backlog
+tags:
+- adr
+- docs
+title: ADR 0016 names _corefile_drop_added_hosts, a forwarder removed from Apply.pm
+updated: 2026-11-07T00:16:22Z
+---
+
+docs/adr/0016-leave-distribution-generated-config-to-the-distribution.md:47 names OCP::Cmd::Apply::_corefile_drop_added_hosts. The forwarder was dead and is removed (k406 follow-up, 2026-11-07); the function lives on as OCP::Cmd::Apply::Network::corefile_drop_added_hosts. Also t/52-apply-dispatcher.t:94-98 comment names forwarders loosely. Lane: ocp-adr-auditor (ADR), test-writer (comment).
