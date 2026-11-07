@@ -1,0 +1,46 @@
+---
+class: standard
+completed: 2026-11-07T01:05:04Z
+created: 2026-10-31T16:32:40Z
+depends_on:
+- 379
+id: 394
+priority: low
+started: 2026-11-07T00:41:24Z
+status: done
+tags:
+- choices
+- config
+- validate
+title: 'validate(): registry: and ssl: take unknown keys silently (no unknown-key
+  line)'
+updated: 2026-11-07T01:05:12Z
+---
+
+Found while working k379 (choices worker). Line numbers are in the k379-patched tree.
+
+Wording drift: the accessor refuses with other words than validate() uses.
+- Config.pm:845 gpu_config ("gpu must be ..." vs validate's "gpu: ...")
+- Config.pm:875 gpu_driver
+- Config.pm:944 gpu_amd_config
+- Config.pm:970 _gpu_amd_choice
+- Config.pm:506 robocop_security_level
+
+Shape gaps:
+- Config.pm:583 / :748: registry: and ssl: get no unknown-key line yet; _registry_errors and _ssl_errors check shape only.
+- Config.pm:662: a network.pod_cidr that is a list or no CIDR is not refused by its readers (Robocop/Manifest.pm:202, Cmd/Node/Add.pm:417).
+- Config.pm:639: lb_pool_blocks and l2_* crash in Perl on a wrong inner shape. Only apply reads them today, after validate() (Cmd/Apply/Network.pm:351).
+- Cmd/Update.pm:199 and :411: ocp update refuses a bad cilium:/network: only inside its per-component loop, after cert-manager is already upgraded (:298). A partial upgrade before the refusal.
+- Cmd/Status.pm:301: network: foo fails the whole _detect_drift through pod_cidr_drift (Drift.pm:1001), instead of one drift entry.
+
+Lanes: choices (Config.pm), apply (Update.pm), status/state (Status.pm/Drift.pm).
+
+Absorbed by Part C (k400): C1 extends spec_errors to every section.
+
+Update after k400: the wording-drift item closes as not needed (plan amendment 1: t/296 claim 21 pins the gpu/robocop accessor wording on purpose, and the up-front check says validate()'s lines first). The pod_cidr, lb_pool/l2, update-partial-upgrade and status network: items are done by k400 (status now refuses a bad network: before the report, by the maintainer's 'only what it reads' choice, instead of a single drift entry). What is left is the registry:/ssl: unknown-key item.
+
+choices worker (2026-11-07): _registry_errors and _ssl_errors add the unknown-key line (registry: cache, upstream, name; ssl: email; each read at Config.pm accessors -> Apply/Registry.pm, Bootstrap.pm, Network.pm:113). Tagged at registry/ssl like system:, so registry_config/ssl_config refuse on it too; no command declares those spec_paths, every reader runs after validate(). t/379 claim 3 replaced (readers no longer read on past an unknown key there). New t/394 (red on HEAD 7/13). Binding 13 files, 335 tests PASS. Orchestrator: docs/configuration.md bullet added, and the registry.upstream comment fixed (it replaces ocp-registry, not what the cache pulls from).
+
+commit-ready: Config.pm, t/394, t/379, docs/configuration.md
+
+committed e304fcd
