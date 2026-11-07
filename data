@@ -1,0 +1,44 @@
+---
+class: standard
+completed: 2026-11-07T02:05:01Z
+created: 2026-10-31T16:41:07Z
+depends_on:
+- 387
+id: 395
+priority: low
+started: 2026-11-07T00:49:08Z
+status: done
+tags:
+- status
+- drift
+- ux
+title: Raw API errors with Perl locations left in the status and drift paths after
+  k387
+updated: 2026-11-07T02:05:01Z
+---
+
+Found while working k387 (status worker). Line numbers are in the k387-patched tree.
+
+- lib/OCP/Drift.pm:818 and :1223: OCP::Drift carps raw API errors, with source locations, during ocp status (state lane).
+- lib/OCP/Cmd/Status.pm:325: when drift detection dies, the raw reason is printed, with the location if it is an API error.
+- lib/OCP/Cmd/Status.pm:109: a kubeconfig the client cannot be built from still prints "WARNING: Cannot connect to cluster API" plus the raw error.
+- lib/OCP/ErrorLine.pm:27: one_line keeps every line of LWP's text, so its other users (ocp init, the Hetzner adapter) can still repeat a reason. k387 takes only the first line for the 599 case in Role::Cmd.
+
+Use Role::Cmd cluster_api_error / cluster_api_call (k387) where the cause is an APIError. Related: k391 (status --json error field), k388, k389. Lanes: status, state.
+
+More from k388 (ocp-worker):
+- Secrets.pm:986: the no-kubeconfig message carries its own 'ERROR: ' label and indented extra lines. The --json error field keeps them, in health --json (Health.pm:78) and now in node ls --json, while STDERR strips the label.
+- Health.pm:81 and Status.pm:239: status and health --json label the STDERR line 'ERROR:', node ls --json keeps OCP.pm's 'Error:'.
+- Node/Ls.pm:47: node ls's client knows 'Node' only if the cluster's discovery lists it; otherwise it ends in an internal error (seen with a test fake; real clusters list nodes). Related to kubernetes-rest k80.
+
+Absorbed by Part B (k399).
+
+Correction to the earlier note: k399 (Part B plan) absorbs only this card's client-build and raw-API-error items (status/drift API errors, the WARNING: Cannot connect branch). Still open here: one_line keeping every line of LWP's text; the ERROR: label in no_kubeconfig_refusal and in the status/health --json STDERR lines; node ls and discovery.
+
+Left after k399 (worker findings, not fixed): lib/OCP/Drift.pm:835 and :1334 (line numbers after k399) -- the drift error entry's message still holds the raw "$err", so an API error's source location can still reach the drift table; only the STDERR lines go through user_line now. Also lib/OCP/Cmd/Apply.pm:14 'use File::Temp;' is unused (was before k399).
+
+Done (ocp-worker, uncommitted). OCP::ErrorLine::one_line keeps only the first body line of a 599 Kubernetes::REST::APIError, so an unanswering API reason is said once in apply/destroy. New OCP::ErrorLine::json_error fills the error field of status/health/node ls --json: one line, no ERROR:/Error: label. health --json says its STDERR through OCP.pm _report_error as the text form does (was ERROR: vs Error:, and ERROR: ERROR: for a refusal). node ls --json against a discovery without Node refuses in one line instead of an internal error. Drift error entries (distribution_drift, _unknown_drift) go through _failed_line: one line, no Perl location. Dropped an unused use File::Temp from Apply.pm. Tests: t/395-error-lines.t new; t/384, t/387 (health --json STDERR label), t/400 subtests 10 and 14 updated to the new one-line field. Red proof against the old lib in t/395. Binding: t/400 t/395 t/52 t/00 PASS (71 tests), the wider 181-file run red only on the two t/400 claims, since updated.
+
+commit-ready: lib/OCP.pm, lib/OCP/ErrorLine.pm, lib/OCP/Cmd/Health.pm, lib/OCP/Cmd/Status.pm, lib/OCP/Cmd/Node/Ls.pm, lib/OCP/Drift.pm, lib/OCP/Cmd/Apply.pm, t/395-error-lines.t, t/384-api-unreachable.t, t/387-api-error-answers.t, t/400-one-shape-check.t
+
+committed 82436160cdfed68c5267cc80c52077b2a8d6b0c9
