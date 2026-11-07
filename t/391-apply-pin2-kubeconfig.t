@@ -34,9 +34,12 @@ use OCP::Secrets;
 #      own line. The right PIN2 gets past Step 2 (the fixture is sound);
 #   2. a failure of get_admin_key that is not the PIN2 layer's keeps its own
 #      words: it is not reported as a wrong PIN2;
-#   3. reconcile_components on a project with no kubeconfig.yaml says
-#      OCP::Secrets' refusal on STDERR, nothing of it on STDOUT, and stops
-#      before the cluster API -- in a real run and in a dry run.
+#   3. reconcile_components on a project with no kubeconfig.yaml dies with
+#      OCP::Secrets' refusal, prints nothing of it on STDOUT, and stops
+#      before the cluster API -- in a real run and in a dry run. It said the
+#      refusal on STDERR itself and returned false, which ended ocp apply
+#      with exit 0; since k444 the renderer says it and apply ends with
+#      exit 1 (t/444 runs it from OCP->run_cli).
 #
 # Network-free: every run is `apply --dry-run` on an ssh control plane with
 # a .test name, refused or stopped before anything leaves the process.
@@ -182,7 +185,7 @@ subtest 'a failure that is not the PIN2 layer\'s keeps its own words' => sub {
 
 for my $dry (0, 1) {
     my $run = $dry ? 'a dry run' : 'a real run';
-    subtest "reconcile_components, no kubeconfig.yaml, $run: the refusal on STDERR" => sub {
+    subtest "reconcile_components, no kubeconfig.yaml, $run: dies with the refusal" => sub {
         my $dir = dev_no_kubeconfig();
         ok !-e $dir->child('kubeconfig.yaml'), 'precondition: no kubeconfig.yaml';
         my $root   = OCP->new(config => $dir->child('ocp.yaml')->stringify);
@@ -200,10 +203,10 @@ for my $dry (0, 1) {
             local *STDOUT = $ofh;
             local *STDERR = $efh;
             $rv = eval { OCP::Cmd::Apply::Drift::reconcile_components($apply, $config) };
-            is $@, '', 'did not die';
+            is $@, OCP::Secrets->no_kubeconfig_refusal, "dies with OCP::Secrets' refusal";
         }
-        ok !$rv, 'nothing reconciled: a false return, the dispatcher passes no verdict';
-        is $err, OCP::Secrets->no_kubeconfig_refusal, "STDERR: OCP::Secrets' refusal";
+        ok !defined $rv, 'nothing reconciled: nothing returned';
+        is $err, '', 'STDERR: nothing printed here, the renderer says it';
         unlike $out, qr/kubeconfig|age\.key|Cannot decrypt|skipping/,
             'none of it on STDOUT';
         is $out, '', 'STDOUT has nothing at all';

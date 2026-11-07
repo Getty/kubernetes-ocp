@@ -17,9 +17,9 @@ Revision history for OCP
       Other failures keep their own message rather than being blamed on the
       PIN2.
     - When `ocp apply` finds no kubeconfig.yaml while reconciling, it says so
-      on STDERR in the same words as the other commands, instead of "Make
-      sure .ocp/age.key exists." on STDOUT; `ocp status --json` does the same
-      in its error field.
+      on STDERR in the same words as the other commands and ends with exit 1
+      as they do, instead of "Make sure .ocp/age.key exists." on STDOUT and
+      exit 0; `ocp status --json` does the same in its error field.
     - A worker pool that counts its machines (every provider but ssh) holds
       at most 10. `ocp apply` refuses `nodes: 11` and more with a line naming
       the limit and docs/configuration.md; `ocp status`, `ocp keys operator

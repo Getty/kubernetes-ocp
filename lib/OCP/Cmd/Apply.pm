@@ -127,13 +127,13 @@ sub execute {
         print "     Checking components...\n\n";
         my $reconciled = $self->_reconcile_components($config);
 
-        # Falsy means nothing was reconciled, so there is nothing to pass a
-        # verdict on: either no kubeconfig.yaml (said on STDERR), or --dry-run,
-        # which stops before the first write. Return without a verdict and
-        # without stamping a version — claiming this OCP manages a cluster it
-        # could not reach, or deployed one it deliberately did not touch, is
-        # the same class of lie as the success banner over a dead CoreDNS.
-        # _reconcile_components has already said which of the two it was.
+        # Falsy means --dry-run, which stops before the first write: nothing
+        # was reconciled, so there is nothing to pass a verdict on. Return
+        # without a verdict and without stamping a version — claiming this
+        # OCP deployed a cluster it deliberately did not touch is the same
+        # class of lie as the success banner over a dead CoreDNS. No
+        # kubeconfig.yaml to read is no falsy return: _reconcile_components
+        # dies with OCP::Secrets' refusal, and the run ends with exit 1 (k444).
         return 0 unless $reconciled;
         return $self->_finish_apply(
             config  => $config,

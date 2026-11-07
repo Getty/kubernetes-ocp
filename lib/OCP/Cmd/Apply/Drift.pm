@@ -149,14 +149,13 @@ sub reconcile_components {
     # With the key on disk already this asks nothing. A real run is unchanged.
     $secrets->unlock_age_key if $self->dry_run && $secrets->has_age_key_enc;
     # read_kubeconfig unlocks the key or refuses for it itself (k370), so undef
-    # means there is no kubeconfig.yaml (k375): said on STDERR, what went
-    # wrong. Not counted in {_apply_warnings}: the dispatcher returns without a
-    # verdict on a false return, so no banner would read it.
-    my $kubeconfig = $secrets->read_kubeconfig;
-    unless ($kubeconfig) {
-        print STDERR OCP::Secrets->no_kubeconfig_refusal;
-        return;
-    }
+    # means there is no kubeconfig.yaml (k375): gone since the dispatcher's
+    # cluster_exists saw it. An error, as ocp update, ocp kubeconfig and ocp
+    # inject-key have it: OCP.pm's renderer says it on STDERR, exit 1 (k444).
+    # Printed here with a false return, it read to the dispatcher like a dry
+    # run: no verdict, exit 0.
+    my $kubeconfig = $secrets->read_kubeconfig
+        or die OCP::Secrets->no_kubeconfig_refusal;
 
     # Initialize K8s API for reconciliation
     $self->_k8s_api($kubeconfig);
