@@ -1,6 +1,14 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` now refuses an unknown key under `registry:` or `ssl:` (for
+      example `ssl: { emial: … }` or `registry: { cahce: … }`), with a line
+      like `ssl.emial: unknown key (must be email)`. Until now such a typo
+      passed silently and left the default in force: no Let's Encrypt
+      issuers, or docker.io still on the built-in cache. Breaking: an
+      `ocp.yaml` that carries a key other than `cache`, `upstream` and `name`
+      under `registry:`, or other than `email` under `ssl:`, has to drop it
+      before `ocp apply` runs again.
     - A wrong PIN2 now says "Wrong PIN2 or no admin-key found!" where a
       command reaches the cluster's machines with the admin key (`ocp ssh`,
       `ocp update`, `ocp destroy`, ...) and at `ocp apply`'s admin step,

@@ -700,9 +700,15 @@ sub registry_config {
 
 # What is wrong with registry:, one line each, or nothing: validate() lists
 # the lines and registry_config refuses on them, so the two cannot disagree.
+# A key that is none of the three (k394) is a typo whose default stays in
+# force, as under system: (k331): registry: { cahce: ... } passed, and
+# docker.io went on through the built-in ocp-cache.
 sub _registry_errors {
     my ($registry) = @_;
-    return _section_string_errors(registry => $registry, @REGISTRY_KEYS);
+    return (
+        _section_string_errors(registry => $registry, @REGISTRY_KEYS),
+        (ref $registry eq 'HASH' ? _unknown_keys('registry', $registry, map { $_->[0] } @REGISTRY_KEYS) : ()),
+    );
 }
 
 sub registry_cache       { shift->registry_config->{cache} // '' }
@@ -890,10 +896,15 @@ sub ssl_config {
 sub ssl_email { shift->ssl_config->{email} // '' }
 
 # What is wrong with ssl:, one line each, or nothing: validate() lists the
-# lines and ssl_config refuses on them.
+# lines and ssl_config refuses on them. A key that is not email (k394) is
+# refused as under registry:: ssl: { emial: ... } passed, and cert-manager
+# got no Let's Encrypt issuers.
 sub _ssl_errors {
     my ($ssl) = @_;
-    return _section_string_errors(ssl => $ssl, @SSL_KEYS);
+    return (
+        _section_string_errors(ssl => $ssl, @SSL_KEYS),
+        (ref $ssl eq 'HASH' ? _unknown_keys('ssl', $ssl, map { $_->[0] } @SSL_KEYS) : ()),
+    );
 }
 
 # The lines for a section whose keys are each one string -- ssh: (k340),

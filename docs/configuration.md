@@ -90,7 +90,8 @@ ssl:
 registry:
   name: ocp.internal           # local registry hostname (default)
   cache: ''                    # external docker.io pull-through cache URL
-  upstream: ''                 # what the built-in cache pulls from
+  upstream: ''                 # external registry served under `name`,
+                               # instead of the built-in ocp-registry
 
 system:                        # detected from the host at `ocp init`; every
                                # node gets it, workers via the provider CR
@@ -242,6 +243,12 @@ These shapes used to be read wrongly and are refused:
   node_selector or interfaces)`, `cilium.device: unknown key (must be devices
   or helm_values)` and `robocop.enable: unknown key (must be enabled,
   security_level, or image)`.
+- **An unknown key under `registry:` or `ssl:`** is refused the same way:
+  `ssl: { emial: … }` left the cluster without Let's Encrypt issuers, and
+  `registry: { cahce: … }` left docker.io on the built-in cache. `registry:`
+  takes `cache`, `upstream` and `name`; `ssl:` takes `email`. The lines read
+  `registry.cahce: unknown key (must be cache, upstream, or name)` and
+  `ssl.emial: unknown key (must be email)`.
 - **`kubernetes.dist:` and the two `ssh:` paths.** `dist` is `rke2` or `k3s`;
   anything else is refused (`kubernetes.dist: invalid value 'rke3' (must be
   rke2 or k3s)`) instead of installing RKE2 under that name. `ssh.private_key`

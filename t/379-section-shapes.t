@@ -35,6 +35,8 @@ use OCP::Robocop::Manifest;
 #      registry: and ssl:: validate() never dies, and each reader either
 #      refuses in the lines validate() says about what it reads, or reads on.
 #      What is wrong inside network: and cilium: stays validate()'s alone;
+#      a key of registry: or ssl: that none of them reads is refused by
+#      their readers too, since it has a line of its own (k394);
 #   4. every accessor that refuses dies with one line and a newline, never a
 #      croak's " at FILE line N.": OCP::run_cli called that an internal
 #      error, about a line of the user's ocp.yaml;
@@ -183,9 +185,9 @@ subtest 'every shape at each: refused in the lines validate() says about it, or 
             my @lines;
             ok eval { @lines = $c->validate; 1 }, "$path: $shown -- validate() does not die" or diag $@;
             # The section's own shape, or (registry:, ssl:) a key that is no
-            # string: what the readers refuse on. An unknown key under
-            # network: or cilium: is no reader's business.
-            my @refused = grep { /\A\Q$section\E(?::|\.\w+: must be a string )/ } @lines;
+            # string or none they read (k394): what the readers refuse on. An
+            # unknown key under network: or cilium: is no reader's business.
+            my @refused = grep { /\A\Q$section\E(?::|\.\w+: (?:must be a string|unknown key) )/ } @lines;
             @refused = grep { /\A\Q$section\E: / } @refused unless $STRING_KEYS{$section};
             for my $m (@{ $READERS{$section} }) {
                 my $ok = eval { $c->$m; 1 };
