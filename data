@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-07T04:14:48Z
+created: 2026-11-07T03:51:58Z
+id: 441
+priority: medium
+started: 2026-11-07T04:07:40Z
+status: done
+tags:
+- docs
+- pod
+- release
+title: 'POD ERRORS in ErrorLine and Role::Cmd: item 401 and item 403 read as numbered
+  items'
+updated: 2026-11-07T04:14:48Z
+---
+
+Found by the k402 dzil before and after comparison; there before k402. lib/OCP/ErrorLine.pm (around line 234 to 247) and lib/OCP/Role/Cmd.pm (around line 1053 to 1066) each have an item list: 599, no answer / 401 / 403 / 500 and up. Pod::Simple reads the items 401 and 403 as numbered items inside a text list and reports Expected text after item, not a number; pod2text of the built file ends in a POD ERRORS section, and xt/author/pod-syntax.t (dzil test with author tests, so a release) would fail on it. Fix: write the items as HTTP 401 and HTTP 403 (or in a code tag), the same in both lists. Lane: ocp-doc-writer. Check before the release audit.
+
+2026-11-07 hub decision (perl-developer-bb), not a maintainer decision: the items read HTTP 401 and HTTP 403 in both lists, the others the same way (HTTP 599, no answer / HTTP 500 and up / any other HTTP status). Done when podchecker shows no error on the built tree and xt/author/pod-syntax passes on the build. Lane: ocp-doc-writer.
+
+2026-11-07 ocp-doc-writer + orchestrator: ErrorLine.pm and Role/Cmd.pm item lists now HTTP 599, no answer / HTTP 401 / HTTP 403 / HTTP 500 and up / any other HTTP status. podchecker on the build of 01c9716 also found 4 unresolved internal links (older, from 2026-08 and 2026-10), fixed too so the tree is clean: Password.pm link to prompt_password names its heading; Provider.pm _build is C-text (private, no section), default_image and default_location link to OCP::Provider::Hetzner like default_server_type. No POD link pointed at the old item names. Before (01c9716 build): podchecker 8 errors in 4 files, author-pod-syntax 2/90 fail (ErrorLine, Role::Cmd). After: podchecker 92 files 0 errors 0 warnings, AUTHOR_TESTING=1 prove t/author-pod-syntax.t on the build Files=1 Tests=90 PASS (host Test::Pod 1.52; the image has no Test::Pod). POD only, no Changes entry.
+
+commit-ready: lib/OCP/ErrorLine.pm lib/OCP/Role/Cmd.pm lib/OCP/Password.pm lib/OCP/Provider.pm (POD only)
+
+committed 215c946
