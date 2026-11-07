@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T00:33:09Z
+id: 427
+priority: low
+status: backlog
+tags:
+- secrets
+- ux
+title: require_admin_approval and Keys::Secure call any get_admin_key failure a wrong
+  PIN2
+updated: 2026-11-07T00:33:09Z
+---
+
+Found on k391 (secrets + apply workers). Role::Cmd::require_admin_approval (~:696) and Keys::Secure (:264) wrap get_admin_key in a blanket eval: a .ocp/age.key that does not open keys.yaml, with the right PIN2, is reported as Wrong PIN2. ClusterKey and Apply now catch only the AES-GCM line (k391). Also require_admin_approval builds OCP::Keys without age_key (breaks a dry run on a clone if ever used there). A small OCP::Keys helper that recognises a wrong PIN2 would replace the three copies of the regex. Lane: secrets.
