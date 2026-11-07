@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-07T02:52:39Z
+id: 435
+priority: low
+status: backlog
+tags:
+- errors
+- stderr
+- apply
+title: Raw causes with a Perl location left in ocp apply WARN and !! lines outside
+  the k403 sites
+updated: 2026-11-07T02:52:39Z
+---
+
+Found by k403, not fixed there (not on the card). These print the raw cause, Perl source location and a 599 double reason included: lib/OCP/Cmd/Apply/Drift.pm registry.local DNS and NFD [WARN], LB-IPAM, node CR reconcile and the worker phases [!!]; lib/OCP/Cmd/Apply/Deploy.pm around 134, 203, 336, 395; lib/OCP/Cmd/Apply/AMDGPU.pm around 640, 647, 790; OCP::Cmd::Apply::K8s resource_exists and poll_deployment_ready still keep the location. Same fix as k403: OCP::ErrorLine one_line (or user_line first). Test as t/403: a fake APIError with a location, assert no line N. Lane: ocp-apply-worker.
