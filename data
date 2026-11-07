@@ -1,0 +1,33 @@
+---
+class: standard
+completed: 2026-11-07T03:39:54Z
+created: 2026-10-31T16:30:33Z
+depends_on:
+- 348
+id: 393
+priority: low
+started: 2026-11-07T02:50:47Z
+status: done
+tags:
+- state
+- drift
+- registry
+title: 'registry.local DNS: Corefile edge cases left after k348'
+updated: 2026-11-07T03:39:54Z
+---
+
+Found while working k348 (state worker). Not fixed, line numbers are in the k348-patched tree.
+
+- lib/OCP/Corefile.pm:57: imports are expanded only at the top level, so *.override snippets inside the root block are not read. A second hosts plugin there would crash CoreDNS, and neither the writer nor the probe notices.
+- lib/OCP/Drift.pm:986: the duplicate-hosts check runs only when the Corefile's own root block answers. If another block answers registry.local, a doubled root block (which CoreDNS refuses) goes unreported.
+- lib/OCP/Drift.pm:986 and lib/OCP/Cmd/Apply/Network.pm:554: a hosts plugin doubled in a non-root server block is checked by neither side.
+- lib/OCP/Drift.pm:932: when neither CoreDNS ConfigMap name exists, the writer stops with an error (k319), but the probe says nothing. t/39 and t/268 currently assert that silence, so a fix replaces their claim.
+- lib/OCP/Drift.pm:1031: "which that one shadows" reads oddly when the answering root block comes from a snippet and the Corefile has none of its own.
+
+Lane: ocp-state-worker (writer side in Network.pm: apply).
+
+Done 2-5 (ocp-state-worker, uncommitted); item 1 split off (ADR decision). 2+3: OCP::Corefile doubled_hosts_block finds a server block running hosts twice in any block, port or snippet; probe (registry_dns_drift) and writer (Apply/Network.pm configure_registry_dns) both check it, a doubled root block while another block answers included; the writer repairs only the root block it writes into, everything else is spec + manual step / a refusal. 4: with neither CoreDNS ConfigMap name the probe gives one spec entry with a manual step, in the writer words (k319); t/39 claim 14 and t/268 claim 5 asserted silence and now assert that entry; t/38 k188 subtest fake cluster gains a CoreDNS ConfigMap (claim unchanged). 5: which that one shadows only when the Corefile has its own root block, else says there is none (shared corefile_shadow_tail). Worker choices: a doubled hosts in any block counts as CoreDNS refusing the Corefile (CoreDNS sets up every block; not measured live); entry kind spec for item 4. Red: t/393 fails 19/26 on fef5289, t/39 14 and t/268 5 fail. Green binding on a clean b745c27 + these files: 26 Corefile/CoreDNS files 447 tests PASS, 8 drift/status files 140 tests PASS.
+
+commit-ready (items 2-5): lib/OCP/Corefile.pm, lib/OCP/Drift.pm, lib/OCP/Cmd/Apply/Network.pm, t/393-registry-dns-corefile-edges.t, t/39-coredns-registry-host.t, t/268-drift-read-failures.t, t/38-reconcile-path.t
+
+committed 7496f84255912b1717822a529b7abbcf7d103a21 (items 2-5; item 1 is k439)
