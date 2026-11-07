@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T02:50:27Z
+id: 434
+priority: low
+status: backlog
+tags:
+- secrets
+- refactor
+title: 'One predicate for whether a PIN can be asked: Destroy _ssh_key_age_key copies
+  ClusterKey'
+updated: 2026-11-07T02:50:27Z
+---
+
+Found by k396 (fef5289). Destroy.pm _ssh_key_age_key decides whether anyone can be asked for PIN1 with a copy of OCP::ClusterKey _unlock_admin_key test (OCP::ClusterKey INTERACTIVE, else OCP::Password PINS_STDIN or -t STDIN). A public predicate in OCP::Password or OCP::ClusterKey would remove the copy, so a change to the rule cannot leave destroy behind. Lane: ocp-secrets-worker.
