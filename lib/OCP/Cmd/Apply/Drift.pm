@@ -45,7 +45,7 @@ the fresh deploy; C<--dry-run> names the workers it would create and
 creates none.
 
 robocop is made sure of on every reconcile when C<robocop.enabled> is set,
-whether or not a worker is missing or listed (k173), through
+whether or not a worker is missing or listed, through
 L<OCP::Cmd::Apply::Deploy/robocop_step>: its credentials Secret is written
 when missing or outdated, its Deployment re-applied. A current Secret costs no
 SSH read and no PIN2. It sits behind the same C<--only> gate as the workers,
@@ -56,7 +56,7 @@ Under C<--dry-run> the walk is replaced by C<dry_run_report>: the detector
 runs, its findings are printed, and not one write leaves the process.
 NFD or the GPU Operator running another image than its pin is followed by
 C<would re-apply the NFD manifest> (or the GPU Operator's): their steps read
-the image as the probe does and re-apply at an unchanged hash too (k351).
+the image as the probe does and re-apply at an unchanged hash too.
 Where the GPU step skips the cluster -- C<gpu.enabled: false>, or no node
 NFD labelled NVIDIA -- the GPU Operator's entry is C<report only> instead,
 and counted so: what a dry run counts as acted on and reported only is what
@@ -64,14 +64,14 @@ L<OCP::Drift/apply_closes> says, the rule C<ocp status> counts by as well.
 C<reconcile_components> then returns false, which is how the dispatcher
 knows to stop without stamping a version.
 
-On a secure-mode clone without F<.ocp/> the dry run writes no project key
-(k349): PIN1 opens F<age.key.enc> into memory
+On a secure-mode clone without F<.ocp/> the dry run writes no project key:
+PIN1 opens F<age.key.enc> into memory
 (L<OCP::Secrets/unlock_age_key>) instead of F<.ocp/age.key>, and the
 kubeconfig and the robo key for the robocop check are read with that key.
 F<.ocp/age.pub> is not restored either, on a checkout that has the key on
 disk too. The host probes read the robo key with it as well.
 
-The host probes of a dry run record no host key (k374). They contact only a
+The host probes of a dry run record no host key. They contact only a
 machine whose key F<.ocp/known_hosts> holds already, and check it against
 that key as a real run does; a key that no longer matches is said on STDERR.
 A machine not recorded yet -- every one, on a fresh clone -- is skipped
@@ -86,7 +86,7 @@ STDERR. C<reconcile_components> prints the entry as
 C<[drift] could not be checked: MESSAGE> and does not send anyone to
 C<ocp update> over it. It counts the entry as unresolved
 (C<LABEL drift check>), so the run ends incomplete and non-zero instead of
-"All N component(s) up to date" (k267). C<dry_run_report> prints the same
+"All N component(s) up to date". C<dry_run_report> prints the same
 line and counts these entries apart from the differences a real run would act
 on and from the ones it only reports, as "could not be checked -- a real run
 would not complete until it can be read".
@@ -98,18 +98,18 @@ this --, then compares its ClusterPolicy against the spec, and
 outside quiet mode reads the ClusterPolicy again for the C<gpu.toolkit>
 warning. It returns entries of the same shape: one C<< kind =E<gt> 'spec' >>
 entry per ClusterPolicy path that differs, and one C<< kind =E<gt> 'error' >>
-entry for each read that failed with anything but a 404 (k276). A 404 is an
+entry for each read that failed with anything but a 404. A 404 is an
 answer: no operator finds nothing; no ClusterPolicy while the operator runs
-is one C<spec> entry for the whole spec (k277). Any other failure
+is one C<spec> entry for the whole spec. Any other failure
 is neither a finding nor the absence of one: it is printed as "could not be
 checked" with its cause, the cause goes to STDERR once, and both apply paths
 count it the way they count an unreadable drift probe. When the ClusterPolicy
 could not be read, it is not read a second time for the warning. The real run
-asks C<gpu_dry_run> before it prints "No drift detected" (k234), so a GPU read
+asks C<gpu_dry_run> before it prints "No drift detected", so a GPU read
 that failed holds that line back as well.
 
 The AMD GPU stack is covered by L<OCP::Cmd::Apply::AMDGPU/dry_run>, from
-the plan its step acts on (k261): per component, what a real run would
+the plan its step acts on: per component, what a real run would
 deploy, update or remove and on which nodes, with no call into
 Rex::Rancher::K8s and no write to F<.ocp/deployed.yaml>. A component a drift
 entry already names is not counted a second time.
@@ -130,7 +130,7 @@ _setup_cilium_gateway, _setup_lb_ipam, ...) and the one it must NOT
 (install_server). Moving the function but not the body would be a
 regression. The worker behaviour — missing workers are created, existing
 ones left alone, nothing at all when none is missing — is asserted by
-running the path against a fake API in the same test (k26), not by the
+running the path against a fake API in the same test, not by the
 source regex that used to forbid _drive_workers here.
 
 L<OCP::Cmd::Apply> re-exports both helpers as thin forwarders so the

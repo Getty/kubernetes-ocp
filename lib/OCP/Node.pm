@@ -1887,7 +1887,7 @@ C<$OCP::SSH::WAIT_TIMEOUT> — see L<OCP::SSH/Waiting for a machine to come up>.
 Neither budget is named here: a worker and a control plane wait for the same
 kind of freshly created machine, and when this class named its own number it
 drifted to half of what L<OCP::Cmd::Apply::Bootstrap> spends, on the one of the
-two paths where running out is terminal (k109).
+two paths where running out is terminal.
 
 Waiting there rather than in C<_provision> is deliberate.  C<Installing> is
 re-enterable and the provider id is already in status by the time the wait
@@ -1926,19 +1926,18 @@ operator waiting and passes a sink, Robocop passes none.
 =head2 The node-ip
 
 C<spec.nodeIP> is the address the node is to register as its C<InternalIP>
--- RKE2's and K3s's C<node-ip> (k254): one IP literal, or C<"v4,v6"> for
+-- RKE2's and K3s's C<node-ip>: one IP literal, or C<"v4,v6"> for
 dual-stack.  It is explicit only, written by C<ocp node add --node_ip> (or
 by hand); absent, the install is handed no C<node_ip>, and the install task
 has L<Rex::Rancher> take the node-ip from the machine's route to the join
 server (C<node_ip_from_route>) -- an image whose Rex::Rancher cannot do that
 registers the address of its default route, as before, with a C<[WARN]>.
 Such a derived address is not handed over, so C<status.nodeIP> stays unset
-and nothing holds the node to it.  An OCPNode CRD from before
-k254 declares neither C<spec.nodeIP> nor C<status.nodeIP>, and the API server
-drops both without an error; this class only ever sees the stored CR, so a
-dropped C<spec.nodeIP> reads as none asked for (C<ocp node add --node_ip>
-refuses such a cluster since k290, L<OCP::Drift/ocp_crd_drift> reports it
-since k291).
+and nothing holds the node to it.  An OCPNode CRD that
+predates the node-ip declares neither C<spec.nodeIP> nor C<status.nodeIP>, and
+the API server drops both without an error; this class only ever sees the
+stored CR, so a dropped C<spec.nodeIP> reads as none asked for (C<ocp node add
+--node_ip> refuses such a cluster, L<OCP::Drift/ocp_crd_drift> reports it).
 
 C<reconcile> checks it first, with L<OCP::Choices/node_ip_error>, for a
 node that is C<Pending>, C<Provisioning> or C<Installing>: a value that does
@@ -2058,7 +2057,7 @@ C<lease_conflict> (undef after any other pass).  The holder carries on:
 C<reconcile_until_ready> simply looks again on its next tick, robocop logs
 who holds it and takes the node up on the next event or resync -- which is
 also how a node whose holder died gets picked up once the lease expires.
-Before k227 the install ran without a lease, and C<ocp node add> and a
+Older releases ran the install without a lease, and C<ocp node add> and a
 restarting robocop installed onto the same host at the same time.
 
 A live lease of another robocop pod (holder C<robocop@E<lt>podE<gt>>) is taken
@@ -2066,7 +2065,7 @@ over before it expires when that pod provably no longer exists: the Pod answers
 404, or is C<Succeeded>/C<Failed>.  A pod that is merely terminating still
 exists and may still be working, and a failed lookup proves nothing -- both
 leave the TTL as the only way out, as do the CLI's lease and the pod-less
-C<robocop> of releases before k232.
+C<robocop> of older releases.
 
 C<teardown> takes the same lease before it starts and renews it after the
 drain, so C<ocp node rm> and robocop never tear down the same node at once,
@@ -2095,7 +2094,7 @@ when the node already has a public IP in status.
 
 The private key the node is reached with, what the operator calls it, and
 which of the secure-mode keys it is: C<admin> when the CLI drives the node,
-C<automation> when robocop does (k209). Label and purpose only shape the
+C<automation> when robocop does. Label and purpose only shape the
 message of a refused key (L<OCP::SSH/A refused key>); without a purpose it
 stays generic.
 
@@ -2109,23 +2108,24 @@ L<OCP::Provider/gpu_flags_from_cr> and passes them here.  C<gpu_enabled> is 0/1
 and acts as a cluster kill switch: false forces C<gpu =E<gt> 0> at install even
 when the OCPNode's own C<spec.gpu> is true.  C<gpu_driver> is C<'host'> or
 C<'operator'>.  Both unset (a provider CR predating the field) leaves
-L<OCP::Rex>'s own defaults in charge — the pre-k31 baseline.
+L<OCP::Rex>'s own defaults in charge — the baseline from before these
+switches reached robocop-joined workers.
 
 =item gpu_toolkit
 
-F<ocp.yaml>'s C<gpu.toolkit>, carried the same way (k223), 0/1.  0 means the
+F<ocp.yaml>'s C<gpu.toolkit>, carried the same way, 0/1.  0 means the
 GPU Operator runs no toolkit DaemonSet, so the install task writes the node's
 CDI specs itself.  Unset leaves the Rexfile's default: toolkit true, no CDI
 specs of OCP's.
 
 =item gpu_amd_integrated
 
-F<ocp.yaml>'s C<gpu.amd.integrated> (k250), 0/1: set up integrated AMD GPUs
+F<ocp.yaml>'s C<gpu.amd.integrated>, 0/1: set up integrated AMD GPUs
 (a Ryzen iGPU or APU) on every node.  OR-ed with the OCPNode's own
 C<spec.gpu> — a node joined with C<ocp node add --gpu> opts in by itself — into
 the install task's C<gpu_amd_integrated =E<gt> 1>.  Nothing is passed when
 neither says yes, or when C<gpu> is 0 for the node; the Rexfile then leaves
-integrated AMD GPUs alone.  It is carried like C<gpu_toolkit> (k253): C<ocp
+integrated AMD GPUs alone.  It is carried like C<gpu_toolkit>: C<ocp
 apply> writes C<spec.gpu.amd.integrated> onto the OCPNodeProvider CR and the
 caller reads it back with L<OCP::Provider/gpu_flags_from_cr>.  Unset (a
 provider CR predating the field) leaves C<spec.gpu> the only way in.
@@ -2134,7 +2134,7 @@ provider CR predating the field) leaves C<spec.gpu> the only way in.
 
 F<ocp.yaml>'s C<system:> block, carried like the GPU switches: C<ocp apply>
 writes it onto the OCPNodeProvider CR, the caller reads it back with
-L<OCP::Provider/system_flags_from_cr> (k217).  Passed to the install task, whose
+L<OCP::Provider/system_flags_from_cr>.  Passed to the install task, whose
 C<prepare_node> sets them on the machine.  Unset leaves the task's own defaults
 (UTC, en_US.UTF-8, NTP on).
 
@@ -2168,12 +2168,12 @@ reboot there.
 
 String identifying the reconciler holding the lease.  Defaults to
 C<'cli'>.  Robocop sets it to C<robocop@E<lt>pod nameE<gt>> -- one id per pod,
-shared by that pod's reconcile children (k232).  A successor pod therefore does
+shared by that pod's reconcile children.  A successor pod therefore does
 not mistake its predecessor's lease for its own; see L</Lease Mechanics>.
 
 =item lease_conflict_seen
 
-Read-only: the first lease this object ever left a node to (k232).  Once set,
+Read-only: the first lease this object ever left a node to.  Once set,
 status writes no longer stamp C<status.reconciler> -- the reconciler that did
 the work stays the node's reconciler.
 
@@ -2199,8 +2199,7 @@ reads it to offer C<--keep-machine>; robocop retries.
 The values C<spec.role> may take, in the order the OCPNode CRD lists them.
 The single source for the set on the Perl side: C<ocp node add> checks
 C<--role> against it before touching the API, so a typo is answered by OCP
-naming the two roles rather than by a raw Kubernetes 422 about an enum
-(k103).
+naming the two roles rather than by a raw Kubernetes 422 about an enum.
 
 The CRD in F<share/robocop/crds/ocpnode.yaml> spells the same set a second
 time -- it has to, nothing in a YAML schema can call Perl.  A test reads the
@@ -2218,7 +2217,7 @@ True if C<$role> is one of L</roles>.  C<undef> is not.
     warn "[WARN] $name: $diag\n" if defined $diag;
 
 Whether a Kubernetes Node, as a plain hash (C<object_to_struct>), registered
-at the node-ip it was installed with (k254).  C<undef> when C<$node_ip> is
+at the node-ip it was installed with.  C<undef> when C<$node_ip> is
 undef or empty, or when every address of it -- both, for C<"v4,v6"> -- is
 one of the Node's C<status.addresses> of type C<InternalIP>; addresses
 compare as IPs, so C<FD00:0::5> is C<fd00::5>.  Otherwise one line, without

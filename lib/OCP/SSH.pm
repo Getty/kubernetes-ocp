@@ -508,7 +508,7 @@ explicitly provided key.
 
 =head2 Host keys
 
-Host keys are trusted on first use (k168). C<known_hosts> (default:
+Host keys are trusted on first use. C<known_hosts> (default:
 L<OCP::KnownHosts/default_file> -- C<OCP_KNOWN_HOSTS>, which C<ocp> sets to the
 project's F<.ocp/known_hosts>) is handed to ssh with
 C<StrictHostKeyChecking=accept-new>: the first successful contact records the
@@ -528,7 +528,7 @@ C<$OCP::SSH::WAIT_TIMEOUT> (120 s). That is the budget for the same wait
 everywhere it happens: L<OCP::Cmd::Apply::Bootstrap> after the control-plane
 server reaches C<running>, and L<OCP::Node> after a worker does. Neither names
 a number of its own — they used to, with 120 and 60, and the worker's half
-budget failed nodes that were merely slow to boot (k109).
+budget failed nodes that were merely slow to boot.
 
 An explicit argument is for a different question. L<OCP::Provider::SSH>'s
 C<is_reachable> passes 10: it probes a host that is supposed to be up already
@@ -536,10 +536,10 @@ and wants a quick no, not a boot wait.
 
 =head2 A refused key
 
-A C<Permission denied> answer ends the wait at once (k204): the host is up and
+A C<Permission denied> answer ends the wait at once: the host is up and
 said no. The message (L</rejection_message>) names user, key (C<key_label>,
 else C<key_file>) and the key's fingerprint. With C<key_purpose> set
-(C<admin>, C<automation> or C<operator>, k209, k237) it also names which key
+(C<admin>, C<automation> or C<operator>) it also names which key
 is missing and the command that installs it:
 
     ocp keys authorized-keys --purpose automation | ssh root@HOST 'cat >> ~/.ssh/authorized_keys'
@@ -572,14 +572,13 @@ sshd is up and said no -- else 0.
 The whole refusal as text, ending in a newline: user, key (label, else file,
 plus fingerprint), the fact that the host is reachable, and what the key needs
 according to C<key_purpose>.  One text for C<wait_for_ssh> and for the probe
-of C<ocp ssh> (k237).
+of C<ocp ssh>.
 
 =head2 A name that does not resolve
 
 A host given by name that the lookup cannot resolve is no boot in progress and
 no key problem, so C<wait_for_ssh> and C<learn_host_key> die at once with
-L</unresolved_message> instead of waiting out the budget or blaming the key
-(k236).  The same recogniser serves the host probes of L<OCP::Role::Cmd> and,
+L</unresolved_message> instead of waiting out the budget or blaming the key.  The same recogniser serves the host probes of L<OCP::Role::Cmd> and,
 through the error text, the C<status.message> of an L<OCP::Node>.  The lookup
 that failed is the one of the machine running this code: for robocop that is
 the cluster's DNS, for the CLI the CLI host.

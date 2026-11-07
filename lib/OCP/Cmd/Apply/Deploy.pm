@@ -27,14 +27,13 @@ use OCP::Versions;
     });
 
     # robocop and the worker step, as the reconcile path runs them. robocop
-    # comes first and on its own (k173); the worker step only uses its answer:
+    # comes first and on its own; the worker step only uses its answer:
     my $robocop = OCP::Cmd::Apply::Deploy::robocop_step($apply, $api, $config, {
         cp_ip   => $cp_ip,
         secrets => $secrets,
     });
     my @results = OCP::Cmd::Apply::Deploy::worker_step($apply, $api, $config, {
         robocop      => $robocop,
-        # k26:
         names        => \@missing,         # omit to cover every worker
         ssh_key_path => sub { ... },       # a path, or a code ref run lazily
         cp_ip        => $cp_ip,
@@ -90,9 +89,9 @@ without workers.
 =item *
 
 robocop rollout (credentials Secret + Deployment) whenever
-C<robocop.enabled> -- with or without workers (k173). Only a 404 on the
+C<robocop.enabled> -- with or without workers. Only a 404 on the
 existing Deployment means there is none: a read of it that fails otherwise
-fails the step with its cause before anything is written (k328), the same
+fails the step with its cause before anything is written, the same
 read the dry run reports as "could not be checked".
 
 =item *

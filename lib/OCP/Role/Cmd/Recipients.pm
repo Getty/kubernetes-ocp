@@ -106,7 +106,7 @@ of step, plus the files the command wrote itself, and say so on STDOUT; it
 returns that one list) and C<rotation_hint> (what a removed recipient
 could read until now, for STDERR) and C<reencrypted_clause> (the files
 C<reencrypt> rewrote as a clause in the right number -- "keys.yaml was
-re-encrypted", "A and B were re-encrypted" -- used by C<rotation_hint>, k237),
+re-encrypted", "A and B were re-encrypted" -- used by C<rotation_hint>),
 for L<OCP::Cmd::Keys::Recipients::Ls>,
 L<OCP::Cmd::Keys::Recipients::Add>, L<OCP::Cmd::Keys::Recipients::Rm> and the
 operator commands (L<OCP::Cmd::Keys::Operator::Add>,

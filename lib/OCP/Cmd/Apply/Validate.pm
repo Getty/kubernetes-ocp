@@ -13,7 +13,7 @@ use warnings;
 
 C<ocp apply> refuses an F<ocp.yaml> that L<OCP::Config/validate> finds
 errors in, before it asks for a PIN, writes a file, or reaches a host or the
-cluster (k255). Every error is named at once, one line each, so a human fixes
+cluster. Every error is named at once, one line each, so a human fixes
 them in one pass rather than one run per mistake:
 
     Error: ocp.yaml has 2 errors:

@@ -35,14 +35,14 @@ a record of a workload the next apply happily skipped.
 
 An equal hash says what OCP deployed, not what the cluster runs. So the
 step also reads the image of each workload an L<OCP::Drift> probe reads
-(C<nfd-master> and the C<nfd-worker> DaemonSet, k369; C<gpu-operator>), the
+(C<nfd-master> and the C<nfd-worker> DaemonSet; C<gpu-operator>), the
 way that probe reads it (L<OCP::Drift/version_against_pin>). An image changed
 in the cluster (C<kubectl set image>, an edit) is the drift C<ocp status>
 counts as one C<ocp apply> closes, and this step closes it: C<updated>, the
 manifest re-applied. A server-side apply with force takes the image back from
-whoever set it (k351). What that probe does not read, such as the args, is
+whoever set it. What that probe does not read, such as the args, is
 not compared. NFD counts as there when both its workloads are: one that is
-gone is C<restored>, as L<OCP::Drift> reports it missing (k369).
+gone is C<restored>, as L<OCP::Drift> reports it missing.
 
 That decision is the return value, and the caller reports it through
 L<OCP::Cmd::Apply::DeployedHash/report_component>: here is the only place
@@ -54,14 +54,14 @@ answer, C<skipped> — no NVIDIA card, or C<gpu.enabled: false> — for the
 cluster where this component is not part of the spec at all.
 
 A workload whose image cannot be read (anything but a 404) is no verdict:
-the step dies with the cause and applies nothing (k269).
+the step dies with the cause and applies nothing.
 
 Every C<setup_gpu_operator> that does not skip, C<unchanged> included,
 then waits (300 s, C<gpu_ready_timeout>) until C<status.allocatable> shows
 C<nvidia.com/gpu> above 0 on every NVIDIA node it detected. That is what a pod
 can get, unlike capacity, which the kubelet keeps after a device plugin
 unregisters. A node that does not get there fails the step, as an AMD node
-fails the AMD GPU stack's (L<OCP::Cmd::Apply::AMDGPU>, k285). It dies with
+fails the AMD GPU stack's (L<OCP::Cmd::Apply::AMDGPU>). It dies with
 why:
 
     NVIDIA GPU not ready after 300s: node 'crag' shows no nvidia.com/gpu in status.allocatable

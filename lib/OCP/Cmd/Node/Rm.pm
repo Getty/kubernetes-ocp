@@ -282,7 +282,7 @@ C<ocp node add> installed it with; in secure mode that costs the PIN2 prompt.
 A C<hetzner> node is deleted through the API and asks for no key. An C<ssh>
 in F<ocp.yaml> that L<OCP::Config/validate> refuses stops the command with
 that line before the cluster is asked, unless C<--keep-machine> is given
-(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+(L<OCP::Role::Cmd/refuse_spec_errors>).
 
 B<A node that could not be taken off its machine is not removed.>  When the
 provider cannot be loaded, the drain does not finish, or the server delete or

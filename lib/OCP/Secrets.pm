@@ -1250,7 +1250,7 @@ and does not require any external CLI tools.
 Every decrypt -- C<read_all_secrets>, C<read_kubeconfig>, C<decrypt_file>,
 C<rotate_sops_files>, C<repair_sops_lastmodified>, and L<OCP::Keys> -- takes
 its age identities from
-C<identities> (k216):
+C<identities>:
 
 =over 4
 
@@ -1263,7 +1263,7 @@ Leitstand, C<ocp keys operator add>) runs OCP with its own identity.
 
 =item * otherwise F<.ocp/age.key>, the project key, unlocked from
 F<age.key.enc> with PIN1. F<age.key.enc> holds the project key only, always.
-An object holding the project key in memory (L</age_key>, k349) reads that
+An object holding the project key in memory (L</age_key>) reads that
 in its place.
 
 =back
@@ -1271,7 +1271,7 @@ in its place.
 The reads of the project's files -- C<read_all_secrets> (and through it
 C<read_secret> and C<hetzner_token>), C<read_kubeconfig>, C<decrypt_file> --
 unlock the project key first when this checkout has none, as
-L</ensure_age_key> does: PIN1, and the key cached in F<.ocp/age.key> (k370).
+L</ensure_age_key> does: PIN1, and the key cached in F<.ocp/age.key>.
 A clone has none, since F<.ocp/> is gitignored. With no F<age.key.enc> to
 unlock either, they die with a message that names the file and the ways to
 the key. C<identities> itself never asks for PIN1.
@@ -1300,7 +1300,7 @@ F<.ocp/age.pub> restored when missing); otherwise F<age.key.enc> is opened
 with PIN1 and cached to F<.ocp/age.key> and F<.ocp/age.pub>. Dies on a wrong
 or empty PIN1, an empty F<age.key.enc>, a key the project's files are not
 bound to, and when there is no key at all -- each a message for the user that
-says what failed and what to do, not a Perl error (k375). With no key and
+says what failed and what to do, not a Perl error. With no key and
 committed files encrypted to one, that message is the read refusal above;
 with nothing encrypted yet, it says to run C<ocp init>.
 
@@ -1310,14 +1310,14 @@ with nothing encrypted yet, it says to run C<ocp init>.
         or die OCP::Secrets->no_kubeconfig_refusal;
 
 The message for a command that needs the cluster API and finds no
-F<kubeconfig.yaml>: C<read_kubeconfig> returns C<undef> for that alone (k375).
+F<kubeconfig.yaml>: C<read_kubeconfig> returns C<undef> for that alone.
 
 =head2 unlock_age_key
 
     $secrets->unlock_age_key;            # PIN1 asked when needed
     my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);
 
-C<ensure_age_key> that writes nothing (k349), for a run that has to leave the
+C<ensure_age_key> that writes nothing, for a run that has to leave the
 project directory as it found it (C<ocp apply --dry-run>). The same PIN1 and
 the same refusals, but F<age.key.enc> is opened into L</age_key> instead of
 F<.ocp/age.key>, and F<.ocp/age.pub> is not restored. A key already on disk
@@ -1355,7 +1355,7 @@ F<.ocp/> is gitignored; F<keys.yaml>, F<secrets.yaml>, F<kubeconfig.yaml> and
 F<age.key.enc> are committed. So "is there an age key on this machine" and
 "does this project have an age key" are B<different questions>, and a checkout
 that confuses them mints a new key over F<.ocp/age.pub> and orphans everything
-the project ever encrypted (k86).
+the project ever encrypted.
 
 =over 4
 
@@ -1395,7 +1395,7 @@ for paths added later as well.
 
     my $recipients = $secrets->recipients_for($secrets->secrets_file);
 
-Everyone a SOPS file of the project is encrypted for (k212): the project key
+Everyone a SOPS file of the project is encrypted for: the project key
 first, then the age recipients of the first creation rule matching the file in
 the governing F<.sops.yaml> -- the nearest one at or above the project
 directory, as sops finds it. A F<.sops.yaml> without a rule for the file adds
@@ -1431,7 +1431,7 @@ rewrote.
 =head2 repair_sops_lastmodified
 
 Rewrites every SOPS file of the project whose C<sops> section carries
-C<lastmodified> as a bare timestamp, as File::SOPS 0.002 wrote it (k259):
+C<lastmodified> as a bare timestamp, as File::SOPS 0.002 wrote it:
 C<sops -d> refuses such a file, and File::SOPS warns on every read. The
 rewrite is L<File::SOPS/rotate> with the document's own recipients, so values,
 types and recipients stay as they are; a file that is already quoted is never
@@ -1446,13 +1446,13 @@ dying. Returns the file names it repaired.
 
 The names of the project's SOPS files whose C<lastmodified> is still a bare
 timestamp, in C<sops_file_names> order: the files
-L</repair_sops_lastmodified> rewrites (k266). Read off the text alone -- it
+L</repair_sops_lastmodified> rewrites. Read off the text alone -- it
 needs no key, decrypts nothing and writes nothing -- so
 C<ocp apply --dry-run> can name them.
 
 =head2 restore_age_recipient
 
-Never under C<SOPS_AGE_KEY_FILE> (k216). Rebuilds F<.ocp/age.pub> from
+Never under C<SOPS_AGE_KEY_FILE>. Rebuilds F<.ocp/age.pub> from
 F<.ocp/age.key> when it is missing — the public
 half is derivable (X25519), so a clone that unlocked F<age.key.enc> does not
 need a stored copy in order to encrypt again. It never overwrites an existing

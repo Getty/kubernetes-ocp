@@ -148,7 +148,7 @@ __END__
 
 =head1 DESCRIPTION
 
-Revokes an operator registered with L<OCP::Cmd::Keys::Operator::Add> (k216).
+Revokes an operator registered with L<OCP::Cmd::Keys::Operator::Add>.
 Runs where the project key is: PIN1, and PIN2 for the admin key when there are
 machines.
 
@@ -166,8 +166,8 @@ The entry leaves F<keys.yaml>, the operator's age recipient leaves the
 project's F<.sops.yaml>, and the files are re-encrypted with a new data key.
 F<keys.yaml> counts among them although writing the entry's removal already
 encrypted it for the remaining recipients: the STDERR notice names every file
-re-encrypted, F<keys.yaml> included (k237).  STDERR then says what the operator could read until now and what to rotate
-(as C<ocp keys recipients rm>): re-encryption only locks it out of what is
+re-encrypted, F<keys.yaml> included.  STDERR then says what the operator could read until now and
+what to rotate (as C<ocp keys recipients rm>): re-encryption only locks it out of what is
 written from now on.
 
 =back

@@ -212,7 +212,7 @@ project, missing kubeconfig, missing Deployment, or a mismatching
 C<--cluster>. Before any of it, what it reads of F<ocp.yaml> -- the
 cluster's name, C<kubernetes>, C<network.pod_cidr> and C<robocop.image> --
 is checked, and a value L<OCP::Config/validate> refuses there stops it with
-that line (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+that line (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 =cut
 

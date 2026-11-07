@@ -15,12 +15,12 @@ use warnings;
 A SOPS file that File::SOPS 0.002 wrote carries its C<lastmodified> as a bare
 timestamp, which C<sops -d> refuses. C<ocp apply> re-quotes those files before
 the bootstrap or the reconcile reads any of them
-(L<OCP::Secrets/repair_sops_lastmodified>, k259): one C<[ok]> line per file,
+(L<OCP::Secrets/repair_sops_lastmodified>): one C<[ok]> line per file,
 then a blank line.
 
 That writes, so a dry run does not. It names each file a real run would
 repair instead, on STDOUT and in the same place, as the rest of the dry run
-names what a real run would change (k266):
+names what a real run would change:
 
     [..] A real run would repair keys.yaml: its sops lastmodified is a bare timestamp, which sops -d refuses
 

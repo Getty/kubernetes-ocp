@@ -226,7 +226,7 @@ sub add_public_key {
         purpose => 'operator', public => $line, age => 'age1...');
 
 Adds an entry with a public half and B<no> private one -- an operator's SSH
-key (k216). Required: name, type, public, purpose; C<age> is optional. Croaks
+key. Required: name, type, public, purpose; C<age> is optional. Croaks
 when the name is taken.
 
 =cut
@@ -839,12 +839,12 @@ keys and the automation private key; the admin private key additionally needs
 PIN2.
 
 The age identity is the one L<OCP::Secrets/identities> names: the project key,
-or the file C<SOPS_AGE_KEY_FILE> points at (k216). The SOPS layer opens for
+or the file C<SOPS_AGE_KEY_FILE> points at. The SOPS layer opens for
 every recipient of the project; the inner layer of a private half is the
 project key's alone, and another identity trying it is told so by name
 instead of with age's own error.
 
-B<operator> entries (C<purpose: operator>, k216, written by
+B<operator> entries (C<purpose: operator>, written by
 C<add_public_key>) have no C<private> at all, and an C<age> field: the
 operator's age recipient. Their private SSH key never leaves the operator's
 machine.
@@ -854,8 +854,8 @@ machine.
 =head2 age_key
 
 The project key in hand, as L<OCP::Secrets/unlock_age_key> leaves it in
-L<OCP::Secrets/age_key>: every decrypt reads it instead of F<.ocp/age.key>
-(k349). C<undef> by default.
+L<OCP::Secrets/age_key>: every decrypt reads it instead of F<.ocp/age.key>.
+C<undef> by default.
 
     $secrets->unlock_age_key;
     my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);

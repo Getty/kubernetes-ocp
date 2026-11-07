@@ -1365,7 +1365,7 @@ Hetzner — each node carrying a C<providerId> is deleted via
 L<OCP::Provider::Hetzner/delete_server>; the encrypted SSH key the
 project uploaded is left in place and may be re-used by a later C<ocp apply>.
 
-The token comes from where the server came from (C<k181>).  A node whose
+The token comes from where the server came from.  A node whose
 OCPNode names an C<OCPNodeProvider> is deleted with the token in that
 provider's Secret, read while the cluster API answers; a node that names
 none (a control plane from C<status.yaml>) with the local token from
@@ -1382,7 +1382,7 @@ SSH / local — the RKE2/K3s uninstaller is run on the host.  A failure here
 does not stop the tear-down: the reason the uninstaller gave (host, exit
 code, its stderr) is printed on STDERR and the next machine is tried.  At
 the end every machine that kept its install is listed with its reason and
-the command returns 1 (C<k180>).  A reason of several lines keeps its lines,
+the command returns 1.  A reason of several lines keeps its lines,
 without a Perl source location.  An ssh machine with no host recorded -- an
 OCPNode or a F<status.yaml> entry with no address -- has nowhere to send its
 uninstall: it is skipped with a line on STDERR and listed at the end the same
@@ -1410,41 +1410,41 @@ no PIN1 is asked, and the uninstalls are skipped as above.
 Before the final line the teardown looks once more, under the C<ocp-cluster>
 labels C<ocp apply> would have written a provider CR as
 (C<< <type>-default >>), and B<names> anything still running there.  Those are
-servers created before the fix for C<k98>, when the worker path took the
-provider CR's own name for the cluster name: they belong to this cluster but
+servers created while the worker path took the provider CR's own name for
+the cluster name: they belong to this cluster but
 carry a label no teardown searches.  They are reported, never deleted — the
 label is generic, so a match can belong to another OCP cluster in the same
 Hetzner project.  The printed C<hcloud> selector is the way to inspect and
 remove them by hand, and it is also the way to find servers under a provider
 that was added with C<ocp provider add --name> rather than by C<ocp apply>.
 The report runs when no node was found to delete as well, before the
-question about the local state (C<k345>).  A search under such a label that
+question about the local state.  A search under such a label that
 fails is said on STDERR with its cause and the selector, B<NOT deleted>, and
 not taken for one that found nothing.
 
 Before anything else -- before a PIN is asked, the cluster API or a provider
 is reached -- the C<nodes:> lists of the worker pools are checked, the lists
-destroy reads machines off (C<k323>).  A list L<OCP::Config/validate>
+destroy reads machines off.  A list L<OCP::Config/validate>
 refuses -- an entry that is no host name, address or mapping with C<host>,
 or a list at all on a pool that counts its machines -- stops the teardown
 with C<validate()>'s lines, all at once, in the text every command refuses
-with (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>), on STDERR and exit 1,
+with (L<OCP::Role::Cmd/refuse_spec_errors>), on STDERR and exit 1,
 and nothing is deleted.  So is the shape those lists and the control planes are read out
-of (C<k326>): a C<control_planes> that is neither a mapping nor a list, a
+of: a C<control_planes> that is neither a mapping nor a list, a
 C<control_planes> list entry that is no mapping, a C<workers> that is no list,
 a worker pool that is no mapping.  Such an entry names no provider, and
 destroy never guesses one, so it could only be skipped -- and a string there
 may be the host of a control plane that nothing else records.  So is a
 C<name>, or a C<host> where destroy reads one, that is a list, a mapping or
-a boolean (C<k335>): the name is the C<ocp-cluster> label the servers are
+a boolean: the name is the C<ocp-cluster> label the servers are
 searched by, and C<name: [prod]> missed every server under C<prod> that
 F<.ocp/status.yaml> does not record; a host became a machine named
 C<ARRAY(0x...)>.  A pool's C<host> is read on an ssh pool whose C<nodes:> is
 no list -- never on a hetzner or local pool, where C<ocp apply> does not read
-it either (C<k341>) -- a control plane's on an ssh or local one, which the
-fallback below lists (a hetzner one it does not, since C<k345>).  So is the
+it either -- a control plane's on an ssh or local one, which the
+fallback below lists (a hetzner one it does not).  So is the
 C<public_ip> of a local control plane with no C<host>, which the fallback
-lists it by (C<k353>).  Only
+lists it by.  Only
 those: an F<ocp.yaml> that C<validate()> refuses for a key destroy reads
 around or does not read -- C<gpu>, C<robocop>, a pool's
 count, an unknown provider, a missing C<server_type>, a C<server_type>,
@@ -1460,18 +1460,17 @@ C<ocp node add> brought up); the Hetzner servers carrying this cluster's
 label (L<OCP::Provider::Hetzner/list_servers_by_cluster>); and the worker
 pools of C<ocp.yaml> that name their machines: the C<nodes: [...]> list, and
 the single C<host:> of an ssh pool, read as C<ocp apply> reads it -- a host
-Perl calls false, such as C<0>, names no machine (C<k341>).  A hetzner pool's
+Perl calls false, such as C<0>, names no machine.  A hetzner pool's
 machines are found by label or by OCPNode, a local pool's by OCPNode.  The
 C<control_planes> section of C<ocp.yaml> is a last resort, used only when
 nothing else found a node.  A worker pool, or a control plane in that last
 resort, whose provider destroy does not know is skipped and named on STDERR
-with C<validate()>'s words for its provider (C<k341>) -- for a pool's
-C<provider: false> or C<provider: ''> that is C<provider required> (C<k345>,
-C<k353>).  A control plane
-there is read as C<ocp apply> reads it (C<k345>): with no C<provider> it is
+with C<validate()>'s words for its provider -- for a pool's
+C<provider: false> or C<provider: ''> that is C<provider required>.  A control
+plane there is read as C<ocp apply> reads it: with no C<provider> it is
 hetzner, and a C<host> Perl calls false, such as C<0>, names no machine.  An
 ssh one with no host is skipped and named on STDERR the same way, with
-C<validate()>'s C<host required for ssh> (C<k353>): there is nowhere to send
+C<validate()>'s C<host required for ssh>: there is nowhere to send
 its uninstall.  A
 hetzner one is not listed: there is no server id to delete it by, and its
 server is found by its C<ocp-cluster> label -- the search before the last
@@ -1479,16 +1478,16 @@ resort, which found nothing if it runs -- or not at all.  The run says so,
 on STDOUT when that search answered, and on STDERR, with the C<hcloud>
 selector to look for it by hand, when none did (no token, or the search
 failed): then it may still run.  A label search that fails anywhere else is
-named on STDERR the same way, with its cause and the selector (C<k353>): a
+named on STDERR the same way, with its cause and the selector: a
 server only it would have found keeps running.  An API that does not
 answer is reported on STDERR and the teardown continues from the other
-sources (C<k177>).  The key that opens C<kubeconfig.yaml> is not such a
+sources.  The key that opens C<kubeconfig.yaml> is not such a
 failure: a PIN1 that does not open C<age.key.enc>, an empty PIN1 or
 C<age.key.enc>, or a key this project's files are not bound to stops the run
 before anything is listed or touched, with L<OCP::Secrets>' refusal --
-C<HETZNER_API_TOKEN> set or not (C<k382>).  No key at all to open it -- no
+C<HETZNER_API_TOKEN> set or not.  No key at all to open it -- no
 F<.ocp/age.key>, no F<age.key.enc>, no C<SOPS_AGE_KEY_FILE> -- is said once on
-STDERR, and the teardown goes on without the API (C<k396>).
+STDERR, and the teardown goes on without the API.
 
 With the OCPNodes unread that way, the worker of a C<provider: local> pool
 is not found: its OCPNode is its only record, and nothing is uninstalled on
@@ -1507,7 +1506,7 @@ OCPNodes from.
 Workers are torn down before the control planes, and robocop is scaled to
 zero first so it does not provision a replacement for a worker it sees
 disappear.  A Hetzner server is deleted together with its known_hosts
-entries (C<k168>).
+entries.
 
 After the run, both C<.ocp/status.yaml> and C<.ocp/deployed.yaml> are
 removed (unless C<--keep_status> is set) and the encrypted C<kubeconfig.yaml>
@@ -1515,17 +1514,17 @@ is deleted.  Leaving C<deployed.yaml> behind was the bug behind C<ADR 0004>:
 a fresh C<ocp apply> compared a brand-new cluster against the hash file of
 the previous one and announced every component as "up to date" against a
 registry that was never rolled out.  Cleanup runs even when no nodes were
-found to delete (C<k78>) — a teardown that discovers nothing on the
+found to delete — a teardown that discovers nothing on the
 wire is exactly the shape a project directory takes after a cluster was
-torn down out of band.  It is asked for first, the way the teardown is
-(C<k304>): an empty node list is also what a stale C<status.yaml> or a failed
+torn down out of band.  It is asked for first, the way the teardown is:
+an empty node list is also what a stale C<status.yaml> or a failed
 read looks like while the cluster is alive, and the kubeconfig is the way in.
 The question names the files that would go; it needs a person at a terminal
 or C<--force>, and a no keeps every file and returns 1.  With nothing to
 remove nothing is asked.  It is B<skipped>, though, when any provider delete
 failed: the survivor is still running (and still billing) and
 C<status.yaml> is the only local record of its C<providerId>, so keeping it
-is what lets a re-run finish the job (C<k140>).
+is what lets a re-run finish the job.
 
 A teardown that leaves something standing on purpose B<returns 1>.  Each
 such thing is said on STDERR as the run meets it, with B<NOT torn down>: a
@@ -1550,13 +1549,13 @@ terminal.  Otherwise the question is asked on STDERR, and the command aborts
 unless the answer is C<y> or C<yes> (case-insensitive).  An abort deletes
 nothing, leaves the local state alone and returns 1.
 
-The confirmation is asked on a terminal only (C<k301>).  Without one (a pipe,
+The confirmation is asked on a terminal only.  Without one (a pipe,
 a CI step, a here-string, a closed STDIN) the command does not read STDIN at
 all: it says on STDERR that it needs a person at a terminal or C<--force>,
 deletes nothing and returns 1.  A piped C<y> is not a confirmation.
 
 When no node is found, C<--force> likewise skips the question before the
-local state is removed (C<k304>).
+local state is removed.
 
 =opt keep_status
 
@@ -1573,21 +1572,21 @@ something standing returns 1 either way.
     $cmd->execute($args, $chain)
 
 Dies with the lines of L<OCP::Config/validate> on a worker pool C<nodes:>
-list it cannot read (C<k323>), on a C<control_planes> or C<workers> in a
-shape it cannot read, an entry that is no mapping among them (C<k326>), or
-on a C<name> or a C<host> it reads that is no string (C<k335>), before it
+list it cannot read, on a C<control_planes> or C<workers> in a
+shape it cannot read, an entry that is no mapping among them, or
+on a C<name> or a C<host> it reads that is no string, before it
 touches anything.  Then lists the
 candidate nodes, asks for confirmation on a terminal (unless
 C<--force>, the only way without a terminal; without one it returns 1 having
 touched nothing), deletes each via its provider and, on a clean run, removes
 the local state and the encrypted kubeconfig and returns 0.  A failed or skipped SSH/local
 uninstall does not stop the run and does not keep the local state, but it is
-named with its reason at the end and the command returns 1 (C<k180>).  A
+named with its reason at the end and the command returns 1.  A
 failed B<provider>
 delete — a Hetzner server the API did not remove — is different: the local
 state is B<kept> so a re-run can find the survivor by its C<providerId>, the
 teardown is reported B<incomplete> on STDERR, and the command returns
-non-zero (C<k140>).  Anything said B<NOT torn down> (or, by the old-label
+non-zero.  Anything said B<NOT torn down> (or, by the old-label
 report, B<NOT deleted>) on the way makes it return 1 as well, after the
 cleanup, which it leaves as it is: the run ends on C<Teardown INCOMPLETE>
 instead of C<Cluster destroyed.>.
@@ -1596,7 +1595,7 @@ An uninstall that succeeded but could not check part of Cilium's datapath on
 its machine -- no C<tc>, no iptables backend with C<-save> and C<-restore>
 (L<Rex::Rancher::Uninstall/uninstall_warnings>) -- is not a failure: its
 warnings go to STDERR as they come, and the run ends by naming those machines
-with them and asking for a reboot before the next install (C<k213>).
+with them and asking for a reboot before the next install.
 
 =seealso
 

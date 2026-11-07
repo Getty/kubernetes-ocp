@@ -255,7 +255,7 @@ C<--export> warns and points at stdout or C<--output> instead.
 
 C<--export> and C<--readonly> read the cluster's name from F<ocp.yaml>; a
 name L<OCP::Config/validate> refuses stops them with that line before
-anything is decrypted (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+anything is decrypted (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 =head1 READ-ONLY ACCESS
 

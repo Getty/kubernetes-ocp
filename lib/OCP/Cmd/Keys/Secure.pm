@@ -716,12 +716,12 @@ C<ocp apply> refuses it: every line is named on STDERR and the exit code is
 switch the command does apply's work from F<ocp.yaml> -- it rolls robocop
 out and stores the keys at Hetzner under the cluster's name -- so a mistake
 in it stopped the command halfway, with the PINs set and F<keys.yaml>
-written (C<k321>). C<--drop-bootstrap> on a project that is already secure does not
+written. C<--drop-bootstrap> on a project that is already secure does not
 check all of F<ocp.yaml>: it reads only the machines, and removes the bootstrap key
 only where the admin key has just logged in. What it reads it checks, in
-validate()'s words and before PIN1 (C<k346>): C<control_planes> and C<workers>
-in their shapes, each control plane's C<host>, C<public_ip> and C<name>
-(C<k306>), and a pool's C<nodes> and C<host> as the pool reads them.
+validate()'s words and before PIN1: C<control_planes> and C<workers>
+in their shapes, each control plane's C<host>, C<public_ip> and C<name>,
+and a pool's C<nodes> and C<host> as the pool reads them.
 
 =head1 SEE ALSO
 

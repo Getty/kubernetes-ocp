@@ -515,10 +515,10 @@ PIN2 (L<OCP::ClusterKey>).
 Before a PIN is asked, what it reads of F<ocp.yaml> -- each control plane's
 provider and host, and C<ssh> -- is checked, and a value
 L<OCP::Config/validate> refuses there stops it with that line
-(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+(L<OCP::Role::Cmd/refuse_spec_errors>).
 
 Before the session is handed over, one batch-mode probe (C<true>) runs for
-B<every> target -- an OCPNode, a control plane or a bare address (k237).  If
+B<every> target -- an OCPNode, a control plane or a bare address.  If
 the key is refused (C<Permission denied>), the command prints the same
 diagnosis as the SSH wait of C<ocp apply> and C<ocp node add>
 (L<OCP::SSH/rejection_message>): which key, that the host is reachable, and

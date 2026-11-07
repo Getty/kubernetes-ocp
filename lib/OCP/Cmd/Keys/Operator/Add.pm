@@ -286,7 +286,7 @@ __END__
 =head1 DESCRIPTION
 
 Registers an operator (a Leitstand) that runs C<ocp apply> unattended with its
-own age identity and its own SSH key (k216). Runs where the project key is:
+own age identity and its own SSH key. Runs where the project key is:
 PIN1, and PIN2 for the admin key when there are machines.
 
 =over 4

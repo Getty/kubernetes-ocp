@@ -61,16 +61,16 @@ that did not come up is still C<Failed>.
 
 C<ensure_crds> writes the OCPNode and OCPNodeProvider CRDs from
 F<share/robocop/crds> over the cluster's, and dies naming that directory when
-it is not there (k291). It leaves a cluster CRD as it is, with a C<[skip]>
+it is not there. It leaves a cluster CRD as it is, with a C<[skip]>
 line, when that CRD declares fields this ocp's does not -- one a newer ocp
 installed, whose fields the API server would otherwise drop from every
 object; L<OCP::Drift/ocp_crd_drift> reports it, and both judge by
 L<OCP::Drift/crd_schema_diff>. A CRD it cannot read is not written over
 blind: it dies with the cause. C<skip_newer_crd> is that judgement for one
 CRD document, and C<ocp deploy-robocop> (L<OCP::Cmd::DeployRobocop>) makes it
-too (k311).
+too.
 
-Every read here takes only a 404 for "not there" (k330); any other failure
+Every read here takes only a 404 for "not there"; any other failure
 is named with its cause, through L<OCP::Cmd::Apply::K8s>. C<migrate_legacy_nodes>
 dies with it, for its step to report. C<ensure_cp_ocpnode> keeps the address
 the OCPNode has, and C<ensure_robocop> writes the Deployment without saying
@@ -83,11 +83,11 @@ Those two C<[WARN]>s, and the ones for an OCPNode status left unwritten
 (C<ensure_cp_ocpnode>, C<migrate_legacy_nodes>) and a robocop pod that could
 not be listed or deleted (C<retire_unannotated_robocop_pods>), are counted in
 the apply's C<{_apply_warnings}>, as a worker not Ready yet is: the closing
-banner reads WITH WARNINGS, and the exit code stays as it was (k367,
-L<OCP::Cmd::Apply::Health>). So is robocop not seen Ready, once, however many
+banner reads WITH WARNINGS, and the exit code stays as it was
+(L<OCP::Cmd::Apply::Health>). So is robocop not seen Ready, once, however many
 of its two C<[WARN]>s a run prints -- C<wait_robocop_ready>'s, for a wait that
 ended on a failed read, and the fallback to the CLI in
-L<OCP::Cmd::Apply::Deploy/worker_step>: C<note_robocop_not_ready> (k378).
+L<OCP::Cmd::Apply::Deploy/worker_step>: C<note_robocop_not_ready>.
 
 L<OCP::Cmd::Apply> re-exports the helpers called through it as thin
 C<_method> forwarders — the existing test surface (t/20-apply-refactor.t,

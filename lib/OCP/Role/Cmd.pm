@@ -827,7 +827,7 @@ dev mode.
 
 Dies with every line L<OCP::Config/spec_errors> has at the paths
 C<spec_paths> declares, in L<OCP::Config/validate>'s order, or returns 1 when
-there is none (k400):
+there is none:
 
     ocp.yaml has 1 error:
       - gpu.driver: ...
@@ -888,7 +888,7 @@ prompt.  It uses only a key already in hand, in this order: one
 L</cluster_ssh_key_if_known> already built; the operator key of a run under an
 operator identity (a Leitstand, C<SOPS_AGE_KEY_FILE>), from C<OCP_OPERATOR_KEY>
 via L<OCP::ClusterKey/operator_probe_key>, which needs no PIN2 and stands on
-every machine (k237); an on-disk private key (C<ssh>/C<local> providers); the
+every machine; an on-disk private key (C<ssh>/C<local> providers); the
 robo key, which needs the age key alone.  If C<OCP_OPERATOR_KEY> is set but
 unusable, a C<[WARN]> on STDERR says why, once, and the probe falls through to
 the next key.  With none, it returns C<undef> and L<OCP::Drift> skips its SSH
@@ -899,14 +899,14 @@ not land on the report's STDOUT.
 A host whose key no longer matches the one recorded in known_hosts dies out of
 the prober with L<OCP::SSH>'s C<HostKeyChanged>, whatever key was offered;
 L<OCP::Drift> says it on STDERR and reports the probe as could not be checked
-(an C<error> entry, k380).  Other failures with the robo key are a skip,
+(an C<error> entry).  Other failures with the robo key are a skip,
 named on the C<[WARN] host probes skipped> line.
 
     my $prober = $self->rex_prober($config,
         pinned_only => 1, age_key => $secrets->age_key);   # ocp apply --dry-run
 
 C<pinned_only> contacts only a machine whose host key the known_hosts file
-already holds (k374): the first contact with any other records its key, and a
+already holds: the first contact with any other records its key, and a
 dry run writes nothing.  Such a machine is skipped, before any connection, and
 the skip line says why.  C<age_key> is the project key held in memory
 (L<OCP::Secrets/unlock_age_key>), to read the robo key with when
@@ -920,7 +920,7 @@ The PIN2 approval gate of an admin-gated action (C<secret_approved>'s Secret
 write, C<ocp inject-key>). Returns the admin key the PIN2 unlocked; dies on a
 wrong or missing PIN2. A run under another age identity
 (C<SOPS_AGE_KEY_FILE>: an operator, or another recipient) cannot give the
-approval and is refused before any prompt (k216).
+approval and is refused before any prompt.
 
 =method provider_crs
 
@@ -971,7 +971,7 @@ provider names and provider types are separate namespaces and may collide.
     my $api = $self->cluster_api;
     my ($api, $why) = $self->cluster_api(optional => 1);
 
-The project's cluster client, the one way a command gets it (k399):
+The project's cluster client, the one way a command gets it:
 F<kubeconfig.yaml> read by L<OCP::Secrets/read_kubeconfig>, the client built
 by L</connect_cluster_api>, and one C<GET /version> by L</reach_cluster_api>.
 The project is the directory of C<< $self->ocp->config >>.  Built once per
@@ -990,7 +990,7 @@ without a newline and without a leading C<ERROR:>.  That client is not kept;
 a second call builds and checks again.  For the commands that go on without
 the cluster, C<ocp destroy> and C<ocp status>.
 
-A key problem is no missing cluster in either mode (k382): reading
+A key problem is no missing cluster in either mode: reading
 F<kubeconfig.yaml> unlocks F<age.key.enc> with PIN1 when that is where the key
 comes from, and checks a key already here against the project.  A PIN1 that
 does not open F<age.key.enc>, an empty one, a key this project's files are not
@@ -1022,8 +1022,7 @@ error without a Perl source location:
     The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)
 
 Every client may read C</version>, so an error there is the one every later
-call would get.  L</cluster_api> sends it before a command's first call
-(k384, k387, k399).
+call would get.  L</cluster_api> sends it before a command's first call.
 
 =method cluster_api_call
 
@@ -1032,7 +1031,7 @@ call would get.  L</cluster_api> sends it before a command's first call
 Runs the sub and returns its result.  A L<Kubernetes::REST::APIError> it dies
 with dies again as the line of L</cluster_api_error> (a user error); anything
 else dies as it came.  Used by C<ocp node ls> and C<ocp provider ls> around
-their calls (k387).
+their calls.
 
 =method cluster_api_error
 
@@ -1046,7 +1045,7 @@ L<Kubernetes::REST::APIError>, one line naming the server
 (C<< ->server->endpoint >> of the client), what became of the request, and
 why.  The client is a L<Kubernetes::REST>, or an L<OCP::Kubernetes> holding
 one.  The words are L<OCP::ErrorLine/api_error_line>'s, with the client's
-endpoint (k398).
+endpoint.
 
 =over
 
@@ -1083,7 +1082,7 @@ repeats the reason:
 
 For anything that is no APIError it returns nothing and does not touch the
 client, so a client whose build died is not built again.  Used by
-C<ocp status> and C<ocp health> (k384, k387).
+C<ocp status> and C<ocp health>.
 
 =method wait_seconds
 

@@ -177,7 +177,7 @@ mode (no F<keys.yaml>), on a wrong PIN2, and when no robocop pod is running.
 Exits 1 if any pod did not accept the key.
 A C<robocop> or C<robocop.security_level> that L<OCP::Config/validate>
 refuses stops it with that line before a PIN is asked
-(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+(L<OCP::Role::Cmd/refuse_spec_errors>).
 
 =head1 OPTIONS
 

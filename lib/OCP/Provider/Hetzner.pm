@@ -350,7 +350,7 @@ than return an C<$info> with no C<ip>.
 
 Any host key OCP's known_hosts (L<OCP::KnownHosts>) still holds for that
 address is removed: nothing has connected to this server yet, so a recorded
-key belongs to a previous machine Hetzner gave the address to (k168).
+key belongs to a previous machine Hetzner gave the address to.
 
 Only C<id> is read out of C<$info>, so a caller that holds nothing but the
 server id can build one: C<< { id => $id } >>.
@@ -359,7 +359,7 @@ Both paths call this. L<OCP::Cmd::Apply::Bootstrap> calls it right after
 C<create_server> for the control plane, and L<OCP::Node/_resolve_host>
 calls it for a worker whose C<status.publicIP> is still empty. The line
 that used to stand here — "robocop never does, its node has the IP
-already" — was the assumption behind k99: a worker created through an
+already" — was the assumption behind the old behaviour: a worker created through an
 OCPNode CR has no address at all until this method has run, and the install
 failed with "No host IP" before it ever tried to connect.
 
@@ -526,8 +526,7 @@ The OCP cluster this provider manages, embedded as the C<ocp-cluster>
 label. Set by the factory from C<OCP::Provider/for_spec>'s
 C<cluster_name> arg or C<OCP::Provider/from_cr>'s
 C<spec.clusterName> — B<not> the CR's own name, which is C<< <type>-default >>
-and labelled every worker into a cluster C<ocp destroy> could not find
-(k98).
+and labelled every worker into a cluster C<ocp destroy> could not find.
 
 =seealso
 

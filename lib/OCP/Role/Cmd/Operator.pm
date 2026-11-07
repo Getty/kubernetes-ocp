@@ -73,7 +73,7 @@ C<operator_name_arg> (an operator's name, C<[a-z0-9][a-z0-9-]*>, checked
 before anything is touched), C<operator_project> (secure mode, the project
 key in hand -- an operator's own identity is refused --, PIN1; the shape of
 the machines in F<ocp.yaml> is checked before, as the consumer's
-L<OCP::Role::Cmd/spec_paths>, k346, k400) and
+L<OCP::Role::Cmd/spec_paths>) and
 C<operator_entries> (the C<purpose: operator> entries of F<keys.yaml>), for
 L<OCP::Cmd::Keys::Operator::Add> and L<OCP::Cmd::Keys::Operator::Rm>. The
 consumer also consumes L<OCP::Role::Cmd>, L<OCP::Role::Cmd::Recipients> and

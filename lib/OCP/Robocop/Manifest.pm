@@ -137,7 +137,7 @@ our $IMAGE_REPO  = 'raudssus/ocp';
 
     my $ref = OCP::Robocop::Manifest->image($config);
 
-The image the robocop Deployment runs (k227): C<robocop.image> from
+The image the robocop Deployment runs: C<robocop.image> from
 C<ocp.yaml> when set; otherwise C<raudssus/ocp:E<lt>version of this CLIE<gt>>, so
 controller and CLI match and nothing moves with C<:latest>. A source checkout
 (C<$OCP::VERSION> still the placeholder) has no release to name and falls back
@@ -189,7 +189,7 @@ The controller's env entries for what robocop has to know about the cluster:
 C<OCP_DISTRIBUTION> from C<< $config->distribution >> and C<OCP_POD_CIDR>
 from C<< $config->pod_cidr >>, sorted by name. Croaks when the config has
 either empty. L</for_config> writes them into a full manifest;
-C<ocp deploy-image> sends them in its image patch (k187), so a Deployment
+C<ocp deploy-image> sends them in its image patch, so a Deployment
 written before robocop needed them gets them together with the new image.
 
 =cut

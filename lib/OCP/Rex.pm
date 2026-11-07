@@ -490,11 +490,11 @@ sub install_server {
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
 driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
-C<operator>.  With C<gpu_toolkit> false (F<ocp.yaml> C<gpu.toolkit: false>,
-k223) it also writes the node's CDI specs, which the GPU Operator's toolkit
+C<operator>.  With C<gpu_toolkit> false (F<ocp.yaml> C<gpu.toolkit: false>)
+it also writes the node's CDI specs, which the GPU Operator's toolkit
 DaemonSet writes otherwise.  An integrated AMD GPU (the iGPU of a Ryzen CPU
 or APU) is set up only with C<gpu_amd_integrated> true (F<ocp.yaml>
-C<gpu.amd.integrated: true>, k253); omitted, it is left alone.
+C<gpu.amd.integrated: true>); omitted, it is left alone.
 
 C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
 is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to
@@ -513,7 +513,7 @@ It goes to the Rexfile as the C<node_ip> task parameter, and from there to
 Rex::Rancher, which writes it to C<config.yaml>. Omitted or empty, no
 C<node_ip> is passed at all, RKE2/K3s choose the address themselves, and
 Rex::Rancher keeps the C<node-ip> the node's C<config.yaml> already holds. A
-Rex::Rancher without node_ip support (rex-rancher k100) cannot set it: the
+Rex::Rancher without node_ip support cannot set it: the
 task dies before it changes anything on the host. A re-run that changes the
 value is a C<[WARN]> from Rex::Rancher, since the node's Cilium agent pod then
 needs a restart.
@@ -534,7 +534,7 @@ When C<token> is omitted, an existing cluster's token is B<reused> rather than
 regenerated: the machine's on-disk C<server/token> is read first, and a fresh
 token is minted only when there is none. RKE2/K3s seal the datastore with this
 token at bootstrap and re-check it at the next start, so rotating it on a
-re-apply would arm a fatal reconcile failure on the following restart (k150).
+re-apply would arm a fatal reconcile failure on the following restart.
 
 Returns hashref with C<token> and C<kubeconfig>.
 
@@ -771,4 +771,4 @@ a key itself, so C<run_task> first contacts a host the file does not know yet
 through L<OCP::SSH/learn_host_key>, which trusts it on first use; a known host
 goes straight to Rex. The file reaches the Rexfile as C<OCP_KNOWN_HOSTS>. A
 refused changed key fails the task with the C<ssh-keygen -R> command that
-removes the stale entry (k168).
+removes the stale entry.

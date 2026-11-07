@@ -232,7 +232,7 @@ OCP verifies every machine it reaches over SSH against a known_hosts file of
 its own, on trust-on-first-use terms: the first successful contact records the
 host key, every later one -- over L<OCP::SSH> or over Rex/libssh via
 L<OCP::Rex> -- must present the same key, and a different key fails the
-connection with the command that removes the stale entry (k168).
+connection with the command that removes the stale entry.
 
 The CLI keeps the file at F<.ocp/known_hosts> in the project (local state,
 gitignored, like F<.ocp/status.yaml>); C<ocp> exports that path as

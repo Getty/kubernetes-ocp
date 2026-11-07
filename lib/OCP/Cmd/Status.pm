@@ -774,7 +774,7 @@ the cluster's name, C<kubernetes>, the control planes, the worker pools,
 C<network>, C<network.pod_cidr>, C<cilium> and C<ssh> -- and refuse with
 L<OCP::Config/validate>'s lines for them, all at once, exit 1; C<--json>
 prints that refusal as its one JSON error object
-(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).  Earlier builds began the
+(L<OCP::Role::Cmd/refuse_spec_errors>).  Earlier builds began the
 report and stopped where a bad value was read, a C<network: foo> as
 C<Cannot detect drift>.  A bad key status does not read holds no report up;
 nor does a bad C<gpu.amd.allocation> or C<nocert>, which it reads around as
@@ -787,7 +787,7 @@ report on STDOUT stops there, the error and its diagnosis go to STDERR, and
 the exit code is 1.  An API server that does not answer, or answers with an
 error status, is one line naming the server from the kubeconfig, what became
 of the request and why (L<OCP::Role::Cmd/cluster_api>); a kubeconfig no
-client can be built from is one C<ERROR:> line too (k399):
+client can be built from is one C<ERROR:> line too:
 
     ERROR: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
     ERROR: The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)

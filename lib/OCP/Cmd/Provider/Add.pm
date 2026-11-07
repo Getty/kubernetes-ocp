@@ -311,7 +311,7 @@ servers no teardown ever finds.  There is deliberately no flag for it — the
 cluster has one name.  With no project on disk it is left off, and
 L<OCP::Provider/from_cr> then refuses to build the adapter at all.  A name
 L<OCP::Config/validate> refuses stops the command with that line before the
-cluster is asked (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+cluster is asked (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 C<--location>, C<--server-type> and C<--image> write
 C<spec.hetzner.location>, C<.serverType> and C<.image>: what every node of
@@ -322,7 +322,7 @@ default applies to the location and the image.  The server type has none:
 without C<--server-type> here, every node of this provider has to name its
 own (C<ocp node add --server-type>), or creating it is refused.  A provider
 named C<hetzner-nbg1> is worth having for
-exactly this reason; until k100 the fields were written here and read
+exactly this reason; earlier the fields were written here and read
 nowhere, so C<--location nbg1> changed no server.
 
 Each is written only when the flag is given.  Leaving one out is a real

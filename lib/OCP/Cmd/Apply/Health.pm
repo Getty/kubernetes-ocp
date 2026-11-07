@@ -192,7 +192,7 @@ sub _no_amd64_cp {
 
 C<< robocop_arch_warning($apply, $api) >> returns a C<[WARN]> line when robocop
 is enabled and the cluster's control-plane Nodes include no amd64 one, else
-undef (k197). Reads the Nodes tolerantly: a failed or empty list warns nothing.
+undef. Reads the Nodes tolerantly: a failed or empty list warns nothing.
 
 =cut
 

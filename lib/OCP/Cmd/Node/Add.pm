@@ -1052,19 +1052,18 @@ its phase, and re-running the command carries on from there.
 
 With C<--gpu>, a node that reached C<Ready> also gets its GPU stack, by the
 same checks C<ocp apply> runs.  It waits for the node to show its GPU (up to
-ten minutes, what C<ocp apply> gives NFD on a freshly joined node; k309): the
+ten minutes, what C<ocp apply> gives NFD on a freshly joined node): the
 AMD GPU marker C<ocp.internal/amd-gpu.present=true>, which the host step sets
 when the node registers, or Node Feature Discovery's label for an NVIDIA
 card.  Then it deploys or confirms the AMD GPU stack ("Checking
 AMD GPU stack") or the GPU Operator ("Checking GPU Operator"), both for a node
 that shows both.  A node joined after the last C<ocp apply> would otherwise sit
-there without C<amd.com/gpu> or C<nvidia.com/gpu> until the next one (k220,
-k251).  When that cannot be done -- no GPU shown in time, a failed rollout, or
+there without C<amd.com/gpu> or C<nvidia.com/gpu> until the next one.  When that cannot be done -- no GPU shown in time, a failed rollout, or
 C<--nowait> -- it says so on STDERR and names C<ocp apply> as the way to get
 the stack; the exit code still reflects only whether the node is Ready.
 
 The join takes the C<gpu:> switches of F<ocp.yaml> off the OCPNodeProvider
-CR, as a join by robocop does (k358). Under C<gpu.enabled: false> the node's
+CR, as a join by robocop does. Under C<gpu.enabled: false> the node's
 host step sets up no GPU, C<--gpu> or not; C<gpu.driver: operator> leaves the
 NVIDIA driver to the GPU Operator. Otherwise C<--gpu> also sets up the node's
 integrated AMD GPU (a Ryzen iGPU or APU), which a node without it gets only
@@ -1073,8 +1072,7 @@ under C<gpu.amd.integrated: true>.
 Before any of that -- before the kubeconfig is decrypted (PIN1), the cluster
 is asked anything, the OCPNode is written or the host is probed or joined --
 the command checks what it reads of F<ocp.yaml>, and refuses on every line
-L<OCP::Config/validate> has there, all at once, on STDERR with exit 1 (k333,
-k400): the first control plane, C<kubernetes>, C<network> and its
+L<OCP::Config/validate> has there, all at once, on STDERR with exit 1: the first control plane, C<kubernetes>, C<network> and its
 C<pod_cidr>, C<ssh>, and with C<--gpu> the C<gpu:> block the stack is set up
 from. A malformed switch used to stop the command only after the node had
 joined:
@@ -1086,13 +1084,13 @@ joined:
 Only those: a line C<validate()> has elsewhere in F<ocp.yaml> is none this
 command reads, and C<ocp apply> refuses it.  An F<ocp.yaml> that is empty or
 no mapping refuses before anything, with the one line C<ocp apply> refuses it
-with too (k306).  With C<--nowait> nothing of it is read or checked; the
+with too.  With C<--nowait> nothing of it is read or checked; the
 join is left to robocop and the stack to C<ocp apply>, which checks it first.
 
 After that, the GPU Operator check waits up to five minutes for
 C<nvidia.com/gpu> in C<status.allocatable> (not capacity) on every NVIDIA
-node, this one among them, as it does in C<ocp apply> (k273).  A node that
-does not show it fails the check, as an AMD node fails the AMD one (k285):
+node, this one among them, as it does in C<ocp apply>.  A node that
+does not show it fails the check, as an AMD node fails the AMD one:
 what the node shows instead and C<ocp apply> on STDERR.  The exit code does
 not change:
 
@@ -1101,8 +1099,7 @@ not change:
 
 The AMD GPU stack check waits up to ten minutes, also when the stack was up
 to date, for C<amd.com/gpu> in C<status.allocatable> (for the DRA driver, a
-ResourceSlice) on every AMD node its components select, this one among them
-(k286).  The budget is that of a freshly joined node, whose pods get no
+ResourceSlice) on every AMD node its components select, this one among them.  The budget is that of a freshly joined node, whose pods get no
 sandbox until Cilium is done with it.  A node that does not get there fails
 the component, with the cause and C<ocp apply> named on STDERR:
 
@@ -1137,7 +1134,7 @@ would pick anyway.  A route that cannot be read leaves the node-ip out with a
 warning, and the node registers the address of its default route, which on a
 multi-homed host the other nodes may not reach -- the node still turns Ready:
 live, C<synapse> joined by 10.230.30.50 registered 192.168.0.165 and its
-Cilium tunnel broke (k254).  Give C<--node_ip> when the route to the control
+Cilium tunnel broke.  Give C<--node_ip> when the route to the control
 plane is not the address the other nodes reach the machine by.  A value that
 is no such
 address -- a hostname, a CIDR, loopback, link-local -- is refused before the
@@ -1150,7 +1147,7 @@ is asked for.  A CRD that an older C<ocp> installed does not declare the
 field, and the API server drops a field its schema does not declare without
 an error: the OCPNode would be stored without it, the install, which reads
 the stored OCPNode, would be handed no node-ip, and the node would register
-the address of its default route with nothing said (k290, live on amdlab).
+the address of its default route with nothing said (live on amdlab).
 The refusal goes to STDERR, exit 1:
 
     Error: --node_ip: this cluster's OCPNode CRD (ocpnodes.ocp.internal) has no spec.nodeIP -- an
@@ -1259,7 +1256,7 @@ resolver), not from the machine running C<ocp>.  A name that resolves only here
 -- through F</etc/hosts> or a container's C<--add-host> -- is unknown to every
 pod, so the join would fail.  The command says so on STDERR (never on STDOUT,
 which stays the node name with C<--nowait>) and notes whether the name resolves
-on this machine; it makes no lookup inside the cluster (k236).  An IP address
+on this machine; it makes no lookup inside the cluster.  An IP address
 gets no note.
 
 A name that does not resolve where it is tried is reported as that -- "does not
@@ -1267,7 +1264,7 @@ resolve ... not a key problem" (L<OCP::SSH/unresolved_message>) -- and not as a
 rejected key.  Use the IP address or a DNS entry the cluster knows.
 
 Without Robocop this machine does the join, so the host is checked B<before> the
-OCPNode is written (k238): the name must resolve here (an IP address is not
+OCPNode is written: the name must resolve here (an IP address is not
 looked up) and, unless C<--nowait> is given, the host must answer SSH with the
 key the join will use.  A failure prints the L<OCP::SSH> message on STDERR, exits
 1 and leaves no OCPNode behind.  With C<--nowait> only the name is checked; the

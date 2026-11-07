@@ -143,8 +143,7 @@ L</one_line> and L</mask_secrets> replace it with C<********> wherever it
 appears.  C<undef> and any value shorter than 8 characters are ignored, so an
 empty or a short value does not mask unrelated text.  Returns nothing.
 L<OCP::Secrets/hetzner_token>, L<OCP::Provider::Hetzner> and
-L<OCP::Hetzner::Picker> add the Hetzner token they read or are built with
-(k398).
+L<OCP::Hetzner::Picker> add the Hetzner token they read or are built with.
 
 =cut
 
@@ -258,8 +257,7 @@ Behind the words, for an answer: the status in brackets, with the C<reason>
 of a Kubernetes C<Status> body in words (C<403 Forbidden>), then the API's
 C<message> -- or the body, when it is no C<Status> object -- as one line by
 L</one_line>, left out when it only repeats the reason.
-L<OCP::Role::Cmd/cluster_api_error> says it with the client's endpoint
-(k384, k387).
+L<OCP::Role::Cmd/cluster_api_error> says it with the client's endpoint.
 
 =cut
 
@@ -285,7 +283,7 @@ sub set_cluster_endpoint {
 Remembers the API server of the cluster client built last, for the life of
 the process, so L</user_line> names it.  C<undef> forgets it.  Returns
 nothing.  L<OCP::Role::Cmd/connect_cluster_api> sets it for every client a
-command builds (k399): a command's object is gone by the time L<OCP>'s
+command builds: a command's object is gone by the time L<OCP>'s
 renderer says its error, so the server cannot be asked of it there.
 
 =cut
@@ -323,7 +321,7 @@ sub user_line {
 
 The line a user reads for a foreign exception OCP knows, or nothing
 (C<undef>) for anything else.  L<OCP>'s C<run_cli> says it as C<Error: $line>,
-without the internal-error hint (k398):
+without the internal-error hint:
 
 =over
 
@@ -362,12 +360,12 @@ __END__
 
 What a command prints after "could not ...": the exception, as one line.
 Shared by L<OCP::Role::Cmd::Machines> (and through it L<OCP::Cmd::Keys::Secure>
-and the operator commands) and L<OCP::Cmd::Init> (k342), so a failure reads
+and the operator commands) and L<OCP::Cmd::Init>, so a failure reads
 the same wherever it is named.
 
-It also holds what the one error renderer in L<OCP> (C<run_cli>) says with
-(k398): the cluster API's wording (L</api_error_line>), the foreign
+It also holds what the one error renderer in L<OCP> (C<run_cli>) says with:
+the cluster API's wording (L</api_error_line>), the foreign
 exceptions it says as a line of their own (L</user_line>), the server of the
-last cluster client built (L</set_cluster_endpoint>, k399), and the registry
+last cluster client built (L</set_cluster_endpoint>), and the registry
 of secrets it masks in everything it prints (L</add_secret>,
 L</mask_secrets>).

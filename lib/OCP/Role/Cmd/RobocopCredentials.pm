@@ -400,8 +400,8 @@ __END__
 =description
 
 The one implementation of the C<robocop-credentials> Secret in C<ocp-system>
-that the robocop Deployment mounts (k129), shared by C<ocp deploy-robocop> and
-every path of C<ocp apply> that rolls robocop out (k169). It must be in place
+that the robocop Deployment mounts, shared by C<ocp deploy-robocop> and
+every path of C<ocp apply> that rolls robocop out. It must be in place
 B<before> the Deployment, or the pod sits in C<CreateContainerConfigError>.
 
 Per C<robocop.security_level> it writes C<server-url> (the RKE2 join URL),
@@ -422,7 +422,7 @@ the level's key set, the current robo key and join URL, and a non-empty token.
 Only a 404 makes the Secret missing: a read that fails otherwise dies with its
 cause, before anything is written, prompted for or read over SSH.
 A run whose age identity cannot read the robo private key (C<SOPS_AGE_KEY_FILE>
-of an operator, k216) leaves an existing Secret of the C<secret> levels as it
+of an operator) leaves an existing Secret of the C<secret> levels as it
 is, with a C<[WARN]> on STDERR, and fails on a missing one: writing it is the
 project key's holder's job. C<inject> needs the public half only.
 The token's value is not compared: that would need the SSH read, and with it
@@ -431,7 +431,7 @@ always writes.
 
 The dry run's check reads the robo key with the project key the run holds in
 memory (L<OCP::Secrets/unlock_age_key>): on a clone it writes no
-F<.ocp/age.key>, and nowhere does it restore F<.ocp/age.pub> (k349).
+F<.ocp/age.key>, and nowhere does it restore F<.ocp/age.pub>.
 
 Consumers must also consume L<OCP::Role::Cmd>.
 

@@ -108,7 +108,7 @@ Shows:
 
 For a deployed cluster it shows the cluster's name from F<ocp.yaml>, and a
 name L<OCP::Config/validate> refuses stops it with that line before anything
-is printed (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+is printed (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 =head1 EXAMPLES
 

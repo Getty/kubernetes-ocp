@@ -29,7 +29,7 @@ use OCP::Cmd::Apply::K8s ();
 =head1 DESCRIPTION
 
 What a cluster runs on its AMD GPU nodes, once the host step installed the
-driver (k249): ROCm's device plugin (C<amd.com/gpu>), ROCm's DRA driver
+driver: ROCm's device plugin (C<amd.com/gpu>), ROCm's DRA driver
 (ResourceSlices of driver C<gpu.amd.com>, experimental), AMD's node labeller
 and, with C<gpu.amd.metrics>, ROCm's device-metrics-exporter (C</metrics> on
 port 5000; upstream does not support Ryzen APUs, where many of its fields
@@ -73,14 +73,14 @@ cluster, running its pin, is C<unchanged>, anything else re-deploys. Its pin
 is read as the drift probe on that DaemonSet reads it
 (L<OCP::Drift/version_against_pin>): an image changed in the cluster with the
 hash unchanged is the drift C<ocp status> counts as one C<ocp apply> closes,
-and this step closes it, C<updated> (k350). What that probe does not read,
+and this step closes it, C<updated>. What that probe does not read,
 such as the args, is not compared. Either way the step then
 waits for the component to be ready by OCP's own check (300 s,
 C<ready_timeout>; 600 s, C<join_ready_timeout>, for a node that just joined): the DaemonSet
 rolled out, then C<status.allocatable> C<amd.com/gpu> on every node the plugin
 selects, or a ResourceSlice of driver C<gpu.amd.com> for every node the DRA
 driver selects. C<unchanged> waits too, because a node that joined since
-gets its pods only now (k286). The labeller and the metrics exporter are ready with their
+gets its pods only now. The labeller and the metrics exporter are ready with their
 DaemonSet (the exporter has no readinessProbe upstream, so its pods turn
 Ready a few seconds before port 5000 answers; apply does not probe it).
 
@@ -661,7 +661,7 @@ sub step {
 
     my @found = OCP::Cmd::Apply::AMDGPU::dry_run($apply, $config);   # ocp apply --dry-run
 
-What L</setup> would do, said and not done (k261): the same plan, the same
+What L</setup> would do, said and not done: the same plan, the same
 comparison against F<.ocp/deployed.yaml> and the cluster, then no call into
 Rex::Rancher::K8s and no write. On STDOUT, under C<[amd]>: the marker nodes
 with their allocation, and per component that a real run would deploy,
@@ -750,7 +750,7 @@ Ready carries the marker: its allocation may need a component the first
 check had no node for, and an up-to-date one still has to come up on it. The
 marker is set at registration, so there is no label to wait for; the step
 runs with C<< joined => 1 >> and waits for the new node's readiness with
-C<join_ready_timeout> (k286). Not run when the first check failed or warned (said
+C<join_ready_timeout>. Not run when the first check failed or warned (said
 already), or did not run. Returns the labels that failed, empty otherwise.
 
 =cut

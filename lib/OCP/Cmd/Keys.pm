@@ -41,7 +41,7 @@ L<OCP::Cmd::Keys::Recipients>, L<OCP::Cmd::Keys::Operator> and
 L<OCP::Cmd::Keys::Secure>.
 
 C<operator> registers and revokes an operator -- a Leitstand that runs
-C<ocp apply> unattended with its own age identity and SSH key (k216): the key
+C<ocp apply> unattended with its own age identity and SSH key: the key
 onto or off every machine, the age recipient into or out of F<.sops.yaml>.
 
 C<show> prints one key, picked by purpose or name. C<authorized-keys> answers
@@ -49,9 +49,9 @@ the question an operator setting up a machine has: which lines go into its
 F<authorized_keys>. In secure mode a control plane needs the admin key and a
 worker the C<ssh> provider reaches needs the admin B<and> the robo key, since
 robocop joins and tears down workers with the robo key while C<ocp node rm>,
-C<ocp ssh> and a CLI join use the admin key (k209).
+C<ocp ssh> and a CLI join use the admin key.
 
-C<secure> moves a C<--nopassword> project into secure mode (k96): it creates
+C<secure> moves a C<--nopassword> project into secure mode: it creates
 the admin and robo keys, puts their public halves onto every machine while the
 bootstrap key still opens them, checks the admin key on each, and only then
 writes F<keys.yaml>.

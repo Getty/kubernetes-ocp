@@ -105,7 +105,7 @@ reach the machines of the cluster described by C<$config>? robocop does not
 ask it: it holds the robo key (C<purpose: automation>) and joins and tears
 down workers with that. So the key chosen here is one of the keys a machine
 must trust, not the only one — in secure mode a worker on the C<ssh> provider
-needs the admin B<and> the robo public key (k209); C<ocp keys authorized-keys>
+needs the admin B<and> the robo public key; C<ocp keys authorized-keys>
 prints both.
 
 Three answers, decided by the mode -- and, in secure mode, by whose age
@@ -130,7 +130,7 @@ place the bootstrap key still lives.
 
 =item *
 
-B<Operator> (secure mode, k216) — when this run decrypts with
+B<Operator> (secure mode) — when this run decrypts with
 C<SOPS_AGE_KEY_FILE> and that identity's recipient is the C<age> of a
 C<purpose: operator> entry in F<keys.yaml> (C<ocp keys operator add>): that
 operator's SSH key, whose private half is the file C<OCP_OPERATOR_KEY> names.
@@ -242,7 +242,7 @@ sub for_config {
 
     my ($who, $entry) = OCP::ClusterKey->identity_of($config);
 
-Who this run's age identity is to the project (k216): C<'project'> -- the
+Who this run's age identity is to the project: C<'project'> -- the
 project key, which is the only answer without C<SOPS_AGE_KEY_FILE>, and never
 costs a prompt to give --, C<'operator'> with that operator's F<keys.yaml>
 entry, or C<'other'>, another recipient of the SOPS files that is no
@@ -301,7 +301,7 @@ sub operator_entry {
 
     my ($key, $problem) = OCP::ClusterKey->operator_probe_key($config);
 
-The operator's SSH key for a read-only probe, without ever prompting (k237).
+The operator's SSH key for a read-only probe, without ever prompting.
 A run whose age identity is an operator (L</identity_of>) reaches machines
 with the key C<OCP_OPERATOR_KEY> names; this builds that key the way
 C<for_config> does and returns it. Returns the empty list when this run is no
@@ -587,7 +587,7 @@ sub content { Path::Tiny::path($_[0]{path})->slurp }
 
 C<'bootstrap'> for F<.ocp/id_ed25519>, C<'admin'> for the PIN2-protected key
 out of F<keys.yaml>, C<'operator'> for an operator's key from
-C<OCP_OPERATOR_KEY> (k216). Tests assert on this: "secure + hetzner reached the
+C<OCP_OPERATOR_KEY>. Tests assert on this: "secure + hetzner reached the
 admin key" is the claim, and a path comparison alone cannot make it.
 
 =cut

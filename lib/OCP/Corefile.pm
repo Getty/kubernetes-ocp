@@ -294,7 +294,7 @@ they cannot disagree about where the record is or what it says.
 
 Only plain DNS on port 53 answers the cluster's queries (L</on_cluster_port>),
 and a top-level C<import> reads the server blocks of the files given as
-L</imports> in where it stands, as CoreDNS does (k348).
+L</imports> in where it stands, as CoreDNS does.
 
 =attr text
 

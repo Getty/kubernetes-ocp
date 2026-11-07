@@ -190,7 +190,7 @@ itself, C<ocp node rm> when it tears one down. A control plane needs it.
 =item * B<robo> (C<purpose: automation>) -- robocop, which joins and tears
 down workers with it.
 
-=item * B<operator> (C<purpose: operator>, k216) -- the SSH key of an
+=item * B<operator> (C<purpose: operator>) -- the SSH key of an
 operator (a Leitstand) registered with C<ocp keys operator add>, which runs
 C<ocp apply> unattended and reaches every machine with it. One line per
 operator; a project may have none.
@@ -215,7 +215,7 @@ F<.ocp/id_ed25519>. Its public half is printed for every purpose (once for
 C<all>), with a note on STDERR that dev mode knows only this one key. Its
 path comes from C<ssh.public_key> in F<ocp.yaml>; an C<ssh> that
 L<OCP::Config/validate> refuses stops it with that line on STDERR, nothing on
-STDOUT (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+STDOUT (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 =head2 What it asks for
 

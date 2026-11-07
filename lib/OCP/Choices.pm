@@ -239,9 +239,9 @@ then say what would have worked.
     Available: hetzner-default (type hetzner), ssh-default (type ssh)
     'ssh' is a provider type, not a provider name. 'ocp apply' names its CR 'ssh-default'.
 
-C<ocp> has answered unknown B<commands> like this since k67 and unknown
-B<provider names> since k89.  This module exists so that the other six
-rejections found in k103 -- an unknown node, an unknown key, an unknown
+C<ocp> answers unknown B<commands> and unknown B<provider names> like this.
+This module exists so that the other six rejections that did not say what
+would be valid -- an unknown node, an unknown key, an unknown
 key purpose, an unknown version, an unknown provider type, an unknown
 C<--role> -- produce B<one> error picture instead of six similar ones, and so
 that the next one costs a single line.
@@ -253,8 +253,7 @@ That is the whole discipline: the set of valid providers belongs to
 L<OCP::Provider>, the set of roles to L<OCP::Node>, the set of versions to
 L<OCP::Versions>, and the set of a cluster's CRs to the cluster.  The listing
 printed in an error must come from the same place as the check that produced
-the error, or the two drift and the message starts lying -- the failure
-recorded in k102, k109, k110 and k112.
+the error, or the two drift and the message starts lying.
 
 =method choice_list
 
@@ -302,8 +301,8 @@ newline-terminated block for a caller that already owns its listing and its
 own empty case.
 
 C<< hint => $text >> is appended verbatim.  Whether to pass one is the
-caller's decision and always a judgement about the input: k89 settled
-that a hint appears only where it is B<true>, so C<--provider ssh> is told
+caller's decision and always a judgement about the input: a
+hint appears only where it is B<true>, so C<--provider ssh> is told
 that C<ssh> is a type rather than a name, while the typo C<ssh-defualt> gets
 the listing and no such claim.
 

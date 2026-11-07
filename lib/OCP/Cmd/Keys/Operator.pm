@@ -31,7 +31,7 @@ __END__
 =head1 DESCRIPTION
 
 An operator -- a Leitstand machine -- runs C<ocp apply> without anybody at a
-PIN prompt (k216). It brings two keys of its own and hands over only their
+PIN prompt. It brings two keys of its own and hands over only their
 public halves:
 
 =over 4

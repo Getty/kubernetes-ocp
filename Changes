@@ -385,7 +385,8 @@ Revision history for OCP
       label or not at all, and, when no Hetzner token could search for it
       or the search failed, says on STDERR that it may still run, with the
       `hcloud` selector to look for it by hand. The report of servers
-      mislabelled before k98 now runs when no node is found as well. A
+      mislabelled while the worker path took the provider CR's own name for
+      the cluster name now runs when no node is found as well. A
       control plane with `host: 0` is no machine named `0`, a hetzner
       control plane's `host` no longer holds a teardown up, and a worker
       pool with `provider: false` is skipped as "provider required", the
@@ -576,8 +577,8 @@ Revision history for OCP
       OCPNodeProvider no longer equals every word it is checked against:
       with Cpanel::JSON::XS loaded, as in the image, `'hetzner' eq true`
       held, so `provider: true` counted as a provider type wherever ocp
-      compared that way (k305 closed `ocp apply`'s checks; this closes
-      the rest). A boolean now equals only true and 1, or false, 0 and
+      compared that way (an earlier fix closed `ocp apply`'s checks; this
+      closes the rest). A boolean now equals only true and 1, or false, 0 and
       the empty string, on either side of the comparison.
     - `ocp status` counts drift that `ocp apply` closes without a remedy
       task -- a self-healing entry (NFD, the GPU stack, the GPU Operator
@@ -800,54 +801,55 @@ Revision history for OCP
       and Rex::GPU 0.005 (Rex::LibSSH 0.005, Rex::Rancher 0.004 and
       WWW::Hetzner 0.102 were already asked for), and cpanfile.snapshot pins
       exactly these eight; no other distribution moves.
-    - robocop's `host key of NAME (HOST) not pinned: ...` warning (k242) goes
+    - robocop's `host key of NAME (HOST) not pinned: ...` warning goes
       through robocop's own log (timestamped) and only when it first appears
       or its reason changes, not on every resync; once the key is pinned
       after such a note, one `host key of NAME (HOST) pinned` line follows.
     - `ocp node add --host NAME` with robocop off checks the host before it
-      writes the OCPNode (k238): a name that does not resolve on this machine,
+      writes the OCPNode: a name that does not resolve on this machine,
       and without `--nowait` a host that does not answer SSH with the join's
       key, is refused on STDERR with exit 1 and leaves no `Failed` OCPNode
       behind. With robocop running the OCPNode stays the request.
     - `ocp keys operator add` and `operator rm` list every re-encrypted file
       in their `[ok] Re-encrypted with a new data key:` line, keys.yaml
-      included (k241); the line and the rotation message of `operator rm`
+      included; the line and the rotation message of `operator rm`
       now come from one list.
-    - robocop no longer fails silently to pin the host key of a Ready worker
-      (k239): the node stays Ready, `status.message` reads `Node joined and
+    - robocop no longer fails silently to pin the host key of a Ready worker:
+      the node stays Ready, `status.message` reads `Node joined and
       Ready; host key not pinned: <reason>` (an unresolvable name with the
-      cluster wording of k240), the reason is warned in robocop's log, and
+      cluster wording described below), the reason is warned in robocop's
+      log, and
       the next resync tries again and clears the message once pinned.
     - A stale `Node joined and Ready; host key not pinned: ...` note no
-      longer outlives the pins (k239): when the host key was pinned
+      longer outlives the pins: when the host key was pinned
       elsewhere (the CLI's trust on first use, e.g. `ocp ssh --node`),
       robocop's next resync resets `status.message` to `Node joined and
       Ready`. Other messages and control planes are left alone.
     - robocop's "name does not resolve" `status.message` no longer says
       "this machine (DNS or /etc/hosts)": the lookup ran in its pod, so it
       says the lookup failed inside the cluster (CoreDNS) and points at the
-      cluster DNS or the IP address (k240). The CLI wording is unchanged;
+      cluster DNS or the IP address. The CLI wording is unchanged;
       `OCP::SSH->unresolved_message` takes an optional `context => 'cluster'`.
-    - robocop's SSH wait on a host name that does not resolve now uses the
-      cluster wording of k240 too: `status.message` reads `SSH not ready:
+    - robocop's SSH wait on a host name that does not resolve now uses that
+      cluster wording too: `status.message` reads `SSH not ready:
       Name '...' does not resolve: the lookup failed inside the cluster ...`
-      instead of "this machine (DNS or /etc/hosts)" (k240). The CLI's
+      instead of "this machine (DNS or /etc/hosts)". The CLI's
       message is unchanged.
     - `ocp ssh` explains a refused key with the same diagnosis as the SSH
       wait (which key, `ocp keys authorized-keys --purpose ...`) before
-      handing over to ssh (k237). Host probes use the operator key
+      handing over to ssh. Host probes use the operator key
       (OCP_OPERATOR_KEY) under an operator identity instead of being
       skipped; a set but unusable key is warned about. `ocp keys
       recipients rm` and `ocp keys operator rm` name every re-encrypted
       file (keys.yaml included) in correct grammar.
     - A host name that does not resolve is reported as such instead of
       blaming the key ("the robo key was not accepted") or a generic SSH
-      failure (k236): host probes, `OCP::SSH` and robocop's node
+      failure: host probes, `OCP::SSH` and robocop's node
       `status.message` say so. `ocp node add --host NAME` warns, when
       robocop is on, that the name must resolve inside the cluster too.
     - Workers installed before the host-key pins (and ones whose pins were
       removed with `ocp node trust-host`) are pinned on the next reconcile of
-      a Ready node (k235). `ocp ssh --node NAME` verifies the node's pins
+      a Ready node. `ocp ssh --node NAME` verifies the node's pins
       (refusing with the `trust-host` hint on a changed key; trust on first
       use for a node without pins). `ocp node rm` checks the host key before
       anything of the node is touched, so a changed key leaves phase,
@@ -856,7 +858,7 @@ Revision history for OCP
       node; the control plane stays on the project's known_hosts. A control
       plane pinned by the previous build is un-pinned with `ocp node
       trust-host NAME`.
-    - `ocp apply` warns (k197) when robocop is on but no control plane is
+    - `ocp apply` warns when robocop is on but no control plane is
       amd64 (every one a Hetzner `cax*` server): the robocop image is amd64
       only, so the pod would stay Pending and worker joins through robocop
       would not run. `[WARN]` up front and after the health check (banner WITH

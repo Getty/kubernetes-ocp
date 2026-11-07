@@ -334,7 +334,7 @@ single private C<_build> method. Add a fourth provider in exactly one place.
 
 The provider types OCP can build, in declaration order.  The single source
 for the set: every rejection that lists valid provider types reads it from
-here rather than spelling out three words again (k103).
+here rather than spelling out three words again.
 
 It lives with the factory because the factory decides -- a supported type is
 exactly a type C<_build> knows how to construct.
@@ -354,19 +354,19 @@ True if C<$type> is one of L</types>.  C<undef> is not.
 The cluster-wide GPU switches read off an C<OCPNodeProvider> CR, ready to
 splat into C<< OCP::Node->from_cr >>.  They live on the provider CR because
 robocop never sees F<ocp.yaml>: this is the only channel through which the
-cluster's C<gpu.enabled> / C<gpu.driver> reach a worker robocop joins (k31).
+cluster's C<gpu.enabled> / C<gpu.driver> reach a worker robocop joins.
 C<ocp apply> copies them there from F<ocp.yaml>
 (L<OCP::Cmd::Apply::CR/ensure_provider_cr>), and all three callers of
 L</from_cr> read them back with this method: robocop's controller, the CLI
-reconcile path of C<ocp apply>, and, since k358, C<ocp node add>'s own join
+reconcile path of C<ocp apply>, and C<ocp node add>'s own join
 (robocop off).  Under C<gpu_enabled> 0 the cluster kill
 switch wins over a node's C<--gpu> on each of them.
 
 Normalised like the matching L<OCP::Config> accessors: C<gpu_enabled>,
 C<gpu_toolkit> and C<gpu_amd_integrated> are 0/1 (the CR stores JSON
-booleans), C<gpu_driver> is the string.  C<gpu_toolkit> false (k223) has the
+booleans), C<gpu_driver> is the string.  C<gpu_toolkit> false has the
 install task write the node's CDI specs, because no operator toolkit
-DaemonSet does.  C<gpu_amd_integrated> (C<spec.gpu.amd.integrated>, k253) has
+DaemonSet does.  C<gpu_amd_integrated> (C<spec.gpu.amd.integrated>) has
 it set up integrated AMD GPUs on every node.  A field absent
 from the CR is B<absent> from the returned list, so L<OCP::Node> leaves the
 Rex parameter out and L<OCP::Rex>'s own default wins — the behaviour a
@@ -379,7 +379,7 @@ provider CR that predates the field must keep.
 
 F<ocp.yaml>'s C<system:> block read off an C<OCPNodeProvider> CR's
 C<spec.system>, ready to splat into C<< OCP::Node->from_cr >> -- the same
-channel and contract as L</gpu_flags_from_cr> (k217).  Absent fields are absent
+channel and contract as L</gpu_flags_from_cr>.  Absent fields are absent
 from the list, so the install task's own defaults stay in charge.
 
 =method for_spec
@@ -418,7 +418,7 @@ C<< <type>-default >>, so taking C<metadata.name> labelled every worker
 C<ocp-cluster=hetzner-default> while the control plane carried the real
 cluster name.  Those workers survived C<ocp destroy> and kept billing, and
 C<server_exists> could never match one, so a repeat provisioning run built a
-second server next to the first (k98).
+second server next to the first.
 
 A CR without C<spec.clusterName> makes C<from_cr> die rather than build an
 adapter that would create unfindable machines; one C<ocp apply> rewrites it.
@@ -430,14 +430,15 @@ learns which key to use: L<OCP::Node> is trigger-neutral and neither it nor
 robocop knows the cluster name.
 
 C<spec.hetzner.serverType>, C<.image> and C<.location> become
-L<OCP::Provider::Hetzner/default_server_type>, L<OCP::Provider::Hetzner/default_image> and
-L<OCP::Provider::Hetzner/default_location> — what a node of this provider gets when its own OCPNode
-spec names none.  They sit at rank 3 of the four
+L<OCP::Provider::Hetzner/default_server_type>,
+L<OCP::Provider::Hetzner/default_image> and
+L<OCP::Provider::Hetzner/default_location> — what a node of this provider
+gets when its own OCPNode spec names none.  They sit at rank 3 of the four
 L<OCP::Provider::Hetzner/create_server> resolves: below the node's own spec,
 above the code default.  The server type has no code default, so for it this
 is the last rank: a node whose own spec and provider name none is refused
 rather than created.  Written since the beginning by C<ocp provider add>
-and read by nobody until k100, which is why C<--location nbg1> used to
+and once read by nobody, which is why C<--location nbg1> used to
 move no server at all.
 
 C<for_spec> sets none of them, and that is the point rather than an omission:

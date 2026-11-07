@@ -36,7 +36,7 @@ use OCP::Cmd::Apply::K8s ();
     my $label = OCP::Cmd::Apply::Bootstrap::dist_label($distribution);
 
     # The node-ip police1 is installed with (control_planes[0].node_ip), or
-    # undef (k254).
+    # undef.
     my $node_ip = OCP::Cmd::Apply::Bootstrap::cp_node_ip($config);
 
     # Dev mode (no keys.yaml): the age key the kubeconfig is encrypted to,

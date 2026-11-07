@@ -471,7 +471,7 @@ Before any of it, C<ocp update> checks what it reads of F<ocp.yaml> -- the
 cluster's name, C<kubernetes>, C<nocert>, C<gpu>, the first control plane,
 C<ssh>, C<cilium> and C<network.pod_cidr> -- and refuses with
 L<OCP::Config/validate>'s lines for them, all at once, before the plan is
-printed (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+printed (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 When the version manifest lists manual steps, the update asks on STDERR
 whether to continue, after the plan and before anything changes (a
@@ -479,7 +479,7 @@ C<--dry-run> asks nothing).  It asks on a terminal only and goes on only on
 C<y> or C<yes> (case-insensitive); anything else, or an EOF, aborts with
 exit 1 and nothing changed.  Without a terminal (a pipe, a CI step, a closed
 STDIN) it reads nothing, says on STDERR that a person at a terminal is
-needed, changes nothing and exits 1 (C<k303>).  A piped C<y> is not a
+needed, changes nothing and exits 1.  A piped C<y> is not a
 confirmation, and there is no switch that confirms from a script.
 
 =head1 SSH ACCESS

@@ -247,7 +247,7 @@ pool produces (a control plane, a worker C<ocp node add> created under a name
 of its own, the nodes of a pool without C<name>), and for every node when
 there is no readable C<ocp.yaml>. A worker pool L<OCP::Config/validate>
 refuses stops C<--json> before the cluster is asked, with that line as the
-error object below (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+error object below (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 When the nodes cannot be listed -- the API server the kubeconfig names does
 not answer or answers with an error, its discovery does not list the Kind
@@ -255,7 +255,7 @@ C<Node>, or there is no C<ocp.yaml> or no kubeconfig -- STDOUT carries one
 object instead of the array, its C<error> the message the command stopped on
 as one line, without an C<Error:> label (for the API, the one line of
 L<OCP::Role::Cmd/cluster_api_error>), and the exit code is 1, as with
-C<ocp status --json> and C<ocp health --json> (k388). STDERR says it as
+C<ocp status --json> and C<ocp health --json>. STDERR says it as
 without C<--json>.
 
     {

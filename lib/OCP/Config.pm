@@ -522,7 +522,7 @@ sub _switch_error {
 =method robocop_arch_warning
 
 Returns a C<[WARN]> line when robocop is enabled but no control plane can run
-its image, undef otherwise (k197). The robocop image is amd64 only; when every
+its image, undef otherwise. The robocop image is amd64 only; when every
 control plane is a Hetzner CAX (ARM) server the pod stays Pending and no
 worker joins through robocop. A warning, never a refusal: a mixed cluster, an
 amd64 control plane or C<robocop: false> say nothing.
@@ -1440,7 +1440,7 @@ sub _spec_lines {
     my @lines = $config->spec_errors("workers[$n].nodes", "workers[$n].host");
 
 The lines C<validate> has at the key paths named, in its words and its
-order, each line once; none when nothing is wrong there (k306). For a
+order, each line once; none when nothing is wrong there. For a
 command that reads part of F<ocp.yaml> without running all of
 C<validate>: it refuses on what it reads, and on nothing it does not.
 
@@ -1488,18 +1488,18 @@ an entry that has a line of its own shape, a path has none: C<validate>
 reads no further there either. Nor has an entry past the last one.
 
 Not at any path, C<validate>'s alone: a name missing, the cluster's or a
-pool's; a key nothing reads of an entry, a pool, a pool's machine (k347) or
-C<ssh:> (k355); what a provider requires; the bounds of C<control_planes>;
+pool's; a key nothing reads of an entry, a pool, a pool's machine or
+C<ssh:>; what a provider requires; the bounds of C<control_planes>;
 every C<node_ip>; an ssh pool that names its machines both ways, or
 neither; a host on a pool that takes none; and where the pod CIDR or the
-service network overlaps an address (k400) -- that is about the other
+service network overlaps an address -- that is about the other
 sections' addresses, and a running cluster whose default pod CIDR overlaps
 a node address must not stop every command that reads C<network:>. A path
 outside these croaks. An F<ocp.yaml> that is empty or no mapping stops it
 with its line, as it stops every reader.
 
 C<validate> and C<spec_errors> read one list of C<validate>'s lines, each
-with the path it is at (k400), so their order cannot differ.
+with the path it is at, so their order cannot differ.
 
 =cut
 
@@ -2481,7 +2481,7 @@ meant to be gitignored as it changes frequently during operations.
         node_ip: 10.230.30.52          # or "10.230.30.52,fd00::52"
 
 The address a control plane registers as its C<InternalIP> -- RKE2's and
-K3s's C<node-ip> (k254). Without it the node registers the address of its
+K3s's C<node-ip>. Without it the node registers the address of its
 default route, which on a multi-homed host (a second NIC, a VLAN) may be one
 the other nodes cannot reach: the node shows Ready while Cilium's tunnel to it
 is broken. One IPv4 or IPv6 literal, or one of each joined by a comma for
@@ -2505,7 +2505,7 @@ entries;
 =item * its IPv4 address, either part of a dual-stack value, must lie outside
 C<network.pod_cidr> (default C<10.42.0.0/16>): it is a node address like
 C<host> and C<public_ip>, and refused in the same words when the pod CIDR
-contains it (k279);
+contains it;
 
 =item * a C<workers> pool takes none, and neither does an entry of a pool's
 C<nodes> list. Both are refused rather than ignored, and the line points to

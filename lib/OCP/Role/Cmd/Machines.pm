@@ -333,13 +333,13 @@ __END__
 
 =head1 DESCRIPTION
 
-What L<OCP::Cmd::Keys::Secure> (k96) and the operator commands
-L<OCP::Cmd::Keys::Operator::Add> and L<OCP::Cmd::Keys::Operator::Rm> (k216)
+What L<OCP::Cmd::Keys::Secure> and the operator commands
+L<OCP::Cmd::Keys::Operator::Add> and L<OCP::Cmd::Keys::Operator::Rm>
 share.
 
 C<machines_spec_paths> returns the key paths of F<ocp.yaml> C<_machines>
-reads (k346, k400): C<control_planes> and C<workers>, each entry and pool,
-each control plane's host, C<public_ip> and C<name> (k306), a pool's
+reads: C<control_planes> and C<workers>, each entry and pool,
+each control plane's host, C<public_ip> and C<name>, a pool's
 C<nodes>, C<labels> and C<taints>, and an ssh pool's host where no C<nodes>
 list stands beside it. A consumer returns them from its
 L<OCP::Role::Cmd/spec_paths>, and L<OCP::Role::Cmd/refuse_spec_errors>

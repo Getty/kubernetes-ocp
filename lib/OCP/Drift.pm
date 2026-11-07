@@ -635,10 +635,10 @@ sub ocp_crd_drift {
     my @entries = $detector->ocp_crd_drift;
 
 OCP's own CRDs, C<OCPNode> and C<OCPNodeProvider>, compared with the ones
-this ocp ships in F<share/robocop/crds> (k291). The API server drops every
+this ocp ships in F<share/robocop/crds>. The API server drops every
 field of an object that the stored CRD does not declare, without an error, so
-an OCPNode CRD from before k254 lost C<spec.nodeIP> from C<ocp node add
---node_ip> while the drift check said nothing. Compared are the property
+an OCPNode CRD from before it declared C<spec.nodeIP> lost that field from
+C<ocp node add --node_ip> while the drift check said nothing. Compared are the property
 paths under C<spec> and C<status> (L</crd_schema_diff>), not the schemas as
 text, which the API server stores normalised. One entry per CRD that
 differs, C<component =E<gt> 'ocp_crd'>, label C<"$kind CRD">, no remedy:
@@ -933,7 +933,7 @@ C<gateway.networking.k8s.io/bundle-version> annotation on the C<gateways> CRD,
 and a C<gateway.networking.k8s.io/channel> other than C<standard> is drift too.
 Its remedy, the Rex task C<update_gateway_api>, re-applies the pinned bundle
 and restarts C<cilium-operator>; it installs from nothing as well, so a
-missing bundle carries the remedy too (k164). The remaining
+missing bundle carries the remedy too. The remaining
 GPU pins (toolkit, device plugin, DCGM, DCGM exporter, driver) go into the
 C<ClusterPolicy> the operator reconciles, not into a Deployment of OCP's, and
 are deliberately not guessed at — see the comment on C<@COMPONENT_PROBES>.
@@ -957,9 +957,9 @@ C<ocp apply> does about it is unknown, with the cause, carped to stderr.
 NFD is two probes of the one C<nfd> pin, because its manifest runs that image
 twice: the C<nfd-master> Deployment (label C<NFD>) and the C<nfd-worker>
 DaemonSet (label C<NFD DaemonSet>). Either can run another image, or be gone,
-on its own, and the entry names the one that does (k369).
+on its own, and the entry names the one that does.
 
-The AMD GPU stack is probed the same way (k250): the device plugin, the node
+The AMD GPU stack is probed the same way: the device plugin, the node
 labeller (tag C<labeller-E<lt>amd_device_pluginE<gt>>), the DRA kubelet plugin
 and the metrics exporter, each read off its DaemonSet's first container image.
 Their namespace and names are C<%OCP::Drift::AMD_GPU_DAEMONSETS>, keyed
@@ -971,10 +971,9 @@ are optional — they exist only on clusters with an AMD card, and C<gpu.amd>
 decides which of them run — and C<self_healing>: the AMD GPU step of
 C<ocp apply> redeploys a DaemonSet that runs another tag than its pin. It
 sees a pin bump in its options hash, and an image changed in the cluster by
-reading the DaemonSet as this probe does, through L</version_against_pin>
-(k350).
+reading the DaemonSet as this probe does, through L</version_against_pin>.
 
-Only a 404 on a probe's read counts as "not there" (k256). Any other failed
+Only a 404 on a probe's read counts as "not there". Any other failed
 read -- an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
 the component: the probe becomes one C<kind =E<gt> 'error'> entry with no
 remedy, whose message names the object and the exception, and the same
@@ -984,9 +983,9 @@ report the component missing.
 
 A probe whose switch in F<ocp.yaml> L<OCP::Config> refuses -- cert-manager
 under a C<nocert> that is neither true nor false, such as C<nocert: no>
-(k320) -- is neither skipped nor read: it is one C<kind =E<gt> 'error'> entry
+-- is neither skipped nor read: it is one C<kind =E<gt> 'error'> entry
 too, whose message carries the line L<OCP::Config/validate> gives, carped to
-stderr once, and the other probes run (k332).
+stderr once, and the other probes run.
 
 =cut
 
@@ -1037,8 +1036,8 @@ C<@COMPONENT_PROBES>), read as L</component_drift> reads it: the version
 annotation or the tag of the first container's image (C<''> when there is
 none, which is not compared), the tag the pin stands for with the probe's
 C<tag_prefix>, and whether the two are one version. Callable on the class.
-L<OCP::Cmd::Apply::AMDGPU> asks it before it calls a DaemonSet up to date
-(k350), and L<OCP::Cmd::Apply::Workloads> before it calls NFD or the GPU
+L<OCP::Cmd::Apply::AMDGPU> asks it before it calls a DaemonSet up to date,
+and L<OCP::Cmd::Apply::Workloads> before it calls NFD or the GPU
 operator up to date.
 
 =cut
@@ -1218,7 +1217,7 @@ If the C<list('Node')> call fails (revoked token, RBAC denial, TLS, apiserver
 5xx), the sub returns one C<kind =E<gt> 'error'> entry naming the distribution
 and the underlying exception, and carps the same exception to stderr. The
 silent return that used to leave C<ocp status> printing a green drift summary
-on a cluster it could not actually query is gone (k119).
+on a cluster it could not actually query is gone.
 
 =cut
 
@@ -1459,9 +1458,9 @@ The record is read from the server block that answers for the name
 (L<OCP::Corefile>), as the writer reads it. When that is not the root block
 (a block of its own for the name that maps it elsewhere, or none at all),
 C<ocp apply> does not write it, and the entry is C<kind =E<gt> 'spec'> with a
-C<manual_step> instead (k338).
+C<manual_step> instead.
 
-Read as the writer reads it in every case (k348): the server blocks a k3s
+Read as the writer reads it in every case: the server blocks a k3s
 Corefile imports from the C<coredns-custom> ConfigMap answer like its own
 (read only when the Corefile imports from C</etc/coredns/custom>, which RKE2's
 does not); a server block answers only for plain DNS on port 53; the first
@@ -1481,7 +1480,7 @@ A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
 name is read. When neither name exists, the writer stops with an error and the
 probe gives a C<spec> entry with a C<manual_step>. A C<coredns-custom>
 answering 404 has no snippets. Any other failed read ends the probe with one
-C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+C<kind =E<gt> 'error'> entry, drift unknown, as for
 L</component_drift>.
 
 =cut
@@ -1564,7 +1563,7 @@ C<manual_step>: the pod network of a running cluster is never moved
 automatically, and C<upgrade_cilium> keeps the live pool.
 
 No C<cilium-config> (a 404) is nothing to compare. Any other failed read is
-one C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+one C<kind =E<gt> 'error'> entry, drift unknown, as for
 L</component_drift>.
 
 =cut
@@ -1660,15 +1659,15 @@ line (L<OCP::Role::Cmd/host_probe_warning>). A probe that throws -- host
 unreachable, timeout, a host key that no longer matches the recorded one -- is
 carped to stderr, the whole cause once, and is one C<kind =E<gt> 'error'>
 entry with the probe's C<component> and C<label>, the C<host>, and the first
-line of the cause in its C<message> (k380): drift unknown, never drift and
+line of the cause in its C<message>: drift unknown, never drift and
 never an exception, so a single unreachable machine cannot block C<detect> or
 make C<ocp status> a no-go, and is not read as a clean host either. The first probe is the obsolete
-pre-k23 containerd config template on the control planes (k45/k71).
+legacy containerd config template on the control planes.
 
 The workers a C<machines> probe adds come from one list of the OCPNodes in
 C<ocp-system>. A 404 there (no OCPNode CRD) is no workers. Any other failed
 list is one C<kind =E<gt> 'error'> entry, component C<worker_host_probes>, its
-cause carped to stderr (k268): the control planes are still probed, and the
+cause carped to stderr: the control planes are still probed, and the
 workers' drift is unknown rather than reported clean.
 
 =cut

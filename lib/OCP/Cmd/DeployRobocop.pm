@@ -129,7 +129,7 @@ __END__
     ocp deploy-robocop
 
 Before the manifests, populates the C<robocop-credentials> Secret in
-C<ocp-system> that the controller mounts (k129), through
+C<ocp-system> that the controller mounts, through
 L<OCP::Role::Cmd::RobocopCredentials> -- the same code C<ocp apply> uses. Per
 C<robocop.security_level> it writes three keys: C<robo-ssh-key> (the decrypted
 private robo key), C<server-url> (the RKE2 join URL) and C<rke2-token> (the
@@ -145,7 +145,7 @@ CRDs first and then remaining resources (skipping C<kustomization.yaml>) via
 L<Kubernetes::REST/ensure> against the encrypted kubeconfig for the current
 project. A CRD in the cluster that declares fields this ocp's does not -- one
 a newer ocp installed -- is left as it is, with the C<[skip]> line C<ocp apply>
-gives it (L<OCP::Cmd::Apply::CR>, k311); a CRD it cannot read stops the
+gives it (L<OCP::Cmd::Apply::CR>); a CRD it cannot read stops the
 command with the cause instead of being written over blind. The Deployment
 carries the cluster's distribution and pod CIDR from F<ocp.yaml>
 (C<OCP_DISTRIBUTION>, C<OCP_POD_CIDR>); robocop does not start without them.
@@ -153,6 +153,6 @@ carries the cluster's distribution and pod CIDR from F<ocp.yaml>
 Before any of it, what it reads of F<ocp.yaml> -- C<robocop>, the first
 control plane, C<ssh>, C<kubernetes> and C<network.pod_cidr> -- is checked,
 and a value L<OCP::Config/validate> refuses there stops it with that line
-before a PIN is asked (L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+before a PIN is asked (L<OCP::Role::Cmd/refuse_spec_errors>).
 
 =cut

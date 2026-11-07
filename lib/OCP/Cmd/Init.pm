@@ -1171,7 +1171,7 @@ exists and only creates what's missing.
 An F<ocp.yaml> it keeps (no C<--force>) is read for its first control
 plane's provider; a value L<OCP::Config/validate> refuses there stops init
 with that line before it changes anything
-(L<OCP::Role::Cmd/refuse_spec_errors>, C<k400>).
+(L<OCP::Role::Cmd/refuse_spec_errors>).
 
 The provider defaults to C<hetzner>, which is what an absent provider means
 everywhere else in the spec (see L<OCP::Config>). C<--provider ssh> needs
@@ -1251,7 +1251,7 @@ key, not which key gets distributed.
 Workers need one key more. robocop joins and tears down workers with the robo
 key, while C<ocp node rm>, C<ocp ssh> and a join from the CLI use the admin
 key, so in secure mode every C<provider: ssh> worker needs B<both> public keys
-in F<authorized_keys> (k209; Hetzner gets both through the API). The report
+in F<authorized_keys> (Hetzner gets both through the API). The report
 says so, and C<ocp keys authorized-keys> prints the pair
 (C<--purpose admin> for a control plane alone).
 
