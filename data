@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T03:31:21Z
+id: 438
+priority: low
+status: backlog
+tags:
+- config
+- validation
+title: 'NodeMeta spec_labels drops a labels: that is no mapping; node rm and keys
+  authorized-keys declare ssh by hand'
+updated: 2026-11-07T03:31:21Z
+---
+
+Found by k401, not fixed there. 1. lib/OCP/NodeMeta.pm spec_labels still drops, without a word, a labels: that is no mapping, and any value that is no string; the same shape spec_taints had before k401. The CLI check refuses both first, so it is the net behind it. 2. lib/OCP/Cmd/Node/Rm.pm (~:37) and lib/OCP/Cmd/Keys/AuthorizedKeys.pm (~:32) declare ssh by hand for cluster_ssh_key; both could return OCP::Role::Cmd cluster_ssh_key_spec_paths, as ssh does since k401. Lane: ocp-worker or choices.
