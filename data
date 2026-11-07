@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T02:52:46Z
+id: 436
+priority: low
+status: backlog
+tags:
+- errors
+- refactor
+title: 'OCP::ErrorLine gaps: STDIN line N. remnant, crd_get 599 twice, user_line or
+  one_line in three places'
+updated: 2026-11-07T02:52:46Z
+---
+
+Found by k403, not fixed there (ErrorLine.pm was off-limits). 1. one_line strips only at FILE line N.; once --pins-stdin has read a line Perl appends , <STDIN> line N. and one_line leaves that remnant in every WARN and !! line. OCP.pm _clean_message matches it since k403; one_line should too. 2. OCP::Cmd::Apply::K8s crd_get gets the raw HTTP response, not an APIError, so a 599 body still says its reason twice; either crd_get builds an APIError and keeps it, or ErrorLine gets a helper for a response body. 3. The pattern user_line(err) or else one_line(err) now exists in three places (OCP::Drift _failed_line, Destroy.pm twice); one ErrorLine helper would keep it in one place. Lane: cross-cutting (ocp-worker).
