@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T05:25:21Z
+id: 447
+priority: medium
+status: backlog
+tags:
+- apply
+- ux
+- control-plane
+title: ocp apply on an existing cluster never names a Failed control-plane OCPNode
+updated: 2026-11-07T05:25:21Z
+---
+
+Found during k445 (2026-11-07). On the reconcile path, check_worker_phases covers workers only, and warn_unlisted_failed_ocpnodes skips non-workers (lib/OCP/Cmd/Apply/CR.pm around 814). A police2 whose join was refused (for example, for Cilium leftovers) stays Failed, and every later ocp apply says nothing about it and does not count it. t/445-cilium-residue-rerun.t section C shows police2/police3 Failed and unnamed. Done when ocp apply names a Failed control-plane OCPNode with its message on STDERR, the same way it names a Failed worker, and says the way back (ocp node rm NAME --keep_machine, then ocp node add). Lane: apply.
