@@ -1050,24 +1050,24 @@ endpoint (k398).
 
 =over
 
-=item 599, no answer
+=item HTTP 599, no answer
 
 C<could not be reached:> and the first line of the transport reason.
 
-=item 401
+=item HTTP 401
 
 C<refused the credentials in the kubeconfig>: a token or client certificate
 the API server does not know, or no longer.
 
-=item 403
+=item HTTP 403
 
 C<denied the request>: the credentials are good, RBAC says no.
 
-=item 500 and up
+=item HTTP 500 and up
 
 C<failed>.
 
-=item any other status
+=item any other HTTP status
 
 C<answered>; a C<404> too, which is an answer, never "could not be reached".
 

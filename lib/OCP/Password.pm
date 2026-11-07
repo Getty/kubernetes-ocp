@@ -116,7 +116,7 @@ sub prompt_new_pin {
     my $pin2 = prompt_new_pin('PIN2', 'admin SSH access');
 
 Sets a PIN: prompts C<Enter $pin ($purpose): >, then C<Confirm $pin: >, both
-through L</prompt_password> (so C<--pins-stdin> reads two lines). Dies when
+through L<prompt_password|/"prompt_password($prompt)"> (so C<--pins-stdin> reads two lines). Dies when
 the two differ or the PIN is empty; returns it otherwise. C<ocp init> and
 C<ocp keys secure> set PIN1 and PIN2 with it.
 

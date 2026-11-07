@@ -337,7 +337,7 @@ for the set: every rejection that lists valid provider types reads it from
 here rather than spelling out three words again (k103).
 
 It lives with the factory because the factory decides -- a supported type is
-exactly a type L</_build> knows how to construct.
+exactly a type C<_build> knows how to construct.
 
 =method known_type
 
@@ -430,8 +430,8 @@ learns which key to use: L<OCP::Node> is trigger-neutral and neither it nor
 robocop knows the cluster name.
 
 C<spec.hetzner.serverType>, C<.image> and C<.location> become
-L<OCP::Provider::Hetzner/default_server_type>, L</default_image> and
-L</default_location> — what a node of this provider gets when its own OCPNode
+L<OCP::Provider::Hetzner/default_server_type>, L<OCP::Provider::Hetzner/default_image> and
+L<OCP::Provider::Hetzner/default_location> — what a node of this provider gets when its own OCPNode
 spec names none.  They sit at rank 3 of the four
 L<OCP::Provider::Hetzner/create_server> resolves: below the node's own spec,
 above the code default.  The server type has no code default, so for it this

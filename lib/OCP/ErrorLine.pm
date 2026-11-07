@@ -231,24 +231,24 @@ $endpoint>; C<undef>, it starts C<The cluster API>.  By the status:
 
 =over
 
-=item 599, no answer
+=item HTTP 599, no answer
 
 C<could not be reached:> and the first line of the transport reason;
 C<unknown error> when the body has none.
 
-=item 401
+=item HTTP 401
 
 C<refused the credentials in the kubeconfig>.
 
-=item 403
+=item HTTP 403
 
 C<denied the request>.
 
-=item 500 and up
+=item HTTP 500 and up
 
 C<failed>.
 
-=item any other status
+=item any other HTTP status
 
 C<answered>; a C<404> too, which is an answer, never "could not be reached".
 
