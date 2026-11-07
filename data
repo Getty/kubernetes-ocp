@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-07T00:04:14Z
+id: 425
+priority: low
+status: backlog
+tags:
+- apply
+- config
+title: worker_ocpnodes has no upper clamp at the pool limit
+updated: 2026-11-07T00:04:14Z
+---
+
+Found by the k325 choices worker. lib/OCP/Cmd/Apply/CR.pm:683 worker_ocpnodes takes any whole nodes: as a count. Every command that reaches it refuses a pool above 10 first (workers[N].nodes in spec_paths), but a direct call does not. Clamp with && $count <= $OCP::Config::MAX_WORKER_POOL_NODES on the k361 condition; t/361's guard-is-armed subtest calls it with nodes: 1000 and needs changing. Lane: apply.
