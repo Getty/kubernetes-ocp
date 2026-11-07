@@ -1,0 +1,50 @@
+---
+class: standard
+completed: 2026-11-07T05:24:53Z
+created: 2026-11-07T04:31:13Z
+id: 445
+priority: high
+started: 2026-11-07T04:31:21Z
+status: done
+tags:
+- cilium
+- node-add
+- ux
+- live
+title: 'The --clean_cilium_residue advice leads nowhere: a refused ocp node add leaves
+  a Failed OCPNode that the rerun reads back'
+updated: 2026-11-07T05:24:53Z
+---
+
+Found by the hub in the amdlab live test with image 01c9716 (2026-11-07). 1) ocp node add synapse --role worker --provider ssh-default --host 10.230.30.50 --gpu without the switch: the Cilium leftover refusal comes, exit 1, nothing installed, but an OCPNode synapse stays with phase Failed. 2) The same command with --clean_cilium_residue: exit 1 after 8 s with exactly the same message, no Pending, no Installing. reconcile_until_ready reads the existing Failed CR and returns its old message; the switch never reaches an install. 3) Only ocp node rm synapse --keep_machine, then node add with --clean_cilium_residue worked: leftovers cleared without a reboot, Ready after 3 min, exit 0. So the advice in share/Rexfile _cilium_residue_switch_text (around line 930: run ocp apply with it again, or ocp node add for a node joined without robocop) leads nowhere for node add. Hub decision (perl-developer-bb), not a maintainer decision: the text says what really works. For a node ocp node add joined without robocop that is first ocp node rm NAME --keep_machine, then ocp node add with --clean_cilium_residue. Failed stays terminal. Also check the ocp apply --clean_cilium_residue path: if a refusal there leaves a Failed OCPNode that blocks the second run the same way, the text must be right for that way too. The test quotes the new wording (t/406-cilium-residue-clean.t pins the old sentence); t/190 and t/219 follow if they check the OCP sentence. Red proof on 01c9716. Order: after k444, fourth card of the round.
+
+Worked by ocp-worker in two rounds and reviewed by ocp-release-1106; POD by ocp-doc-writer.
+
+Apply path, checked as asked:
+- Only the first control plane is installed again by the next `ocp apply --clean_cilium_residue`. Its refusal comes during bootstrap, before kubeconfig.yaml or any OCPNode exists.
+- police2+ and apply's workers are refused with a Failed OCPNode that no later `ocp apply` drives. The reconcile path joins no control plane, and `missing_worker_ocpnodes` skips an OCPNode that exists.
+- `ocp node add` behaves the same: `ensure` keeps Failed, and `reconcile_until_ready` returns 0.
+
+So `share/Rexfile` `_cilium_residue_switch_text` now has two sentences, told apart by `server`:
+- First control plane: "run ocp apply with it again."
+- A joining node: read PROVIDER and IP in `ocp node ls`, then `ocp node rm NAME --keep_machine`, then `ocp node add NAME [--role control-plane] --provider PROVIDER` with the switch. Add `--host IP` for an ssh provider and any `--node_ip`, `--label`, `--taint` or `--gpu` the node had. After a reboot the add works without the switch. The robocop sentence is kept.
+
+Review round 2 added two things:
+- the role, because node add defaults to worker; `_install_server` passes control-plane;
+- provider and host, because node add refuses without `--provider` when there are several providers, and without `--host` on ssh.
+
+My choice beyond the hub brief: the Apply.pm `=opt clean_cilium_residue` and Node::Add CILIUM LEFTOVERS POD are corrected too, because they gave the same dead-end advice.
+
+Tests:
+- t/406 pins both sentences and adds a police2 join case.
+- The new t/445 covers:
+  - the three node add runs;
+  - apply's reconcile with the switch;
+  - node add re-creating an apply-made police2 and an apply-listed worker.
+- Red on 01c9716: t/406 7/22, t/445 5/11 fail, all of them wording claims. A mutant without `--role` fails t/445 9-11.
+- Binding: worker 30 files, 369 tests PASS; mine t/406 t/445 t/190 t/219, 4 files, 49 tests PASS.
+- The Hetzner police2 path was read in code only: `create_server` reuses the kept server by name.
+
+commit-ready: share/Rexfile, lib/OCP/Cmd/Apply.pm, lib/OCP/Cmd/Node/Add.pm, t/406-cilium-residue-clean.t, t/445-cilium-residue-rerun.t (new), .claude/skills/ocp-usage/SKILL.md, .claude/skills/ocp-rke2/SKILL.md, .claude/skills/ocp-rke2/references/install-flow.md; Changes bullet at the clean_cilium_residue entry to be extended
+
+committed b1da850
