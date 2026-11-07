@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T03:52:11Z
+id: 442
+priority: low
+status: backlog
+tags:
+- docs
+- pod
+title: 'POD after k402: ATTRIBUTES and CLASS METHODS tail blocks, public subs without
+  POD'
+updated: 2026-11-07T03:52:11Z
+---
+
+Found by the k402 doc writer, out of that card scope. 1. Tail blocks left at the end of the file: lib/OCP/Node.pm head1 CLASS METHODS (roles, known_role, node_ip_mismatch); lib/OCP/Keys.pm head1 ATTRIBUTES (age_key); lib/OCP/Drift.pm head1 ATTRIBUTES (config, api, rex_prober). House format is inline attr and method commands; keep the head1 in the source as k402 did. 2. Public subs with no POD entry: Keys has_keys_file, update_key, get_automation_key, get_admin_key; Drift crd_fingerprint, gpu_crds_differing, gpu_crd_drift, probe_targets; Versions cilium_stations; Node host_keys, wants_finalizer, has_finalizer, name, role, phase, namespace, from_cr, reconcile, reconcile_until_ready, teardown; OCP.pm dump, load, dump_file, load_file, execute. 3. Drift corefile_block_name has no signature line; Drift ocp_crd_drift says no remedy before a list of kinds. Lane: ocp-doc-writer, with a dzil before and after pod2text comparison as in k402.
