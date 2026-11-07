@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T00:01:28Z
+id: 424
+priority: low
+status: backlog
+tags:
+- secrets
+- keys
+title: 'Check: ocp keys secure writes .ocp/keys.yaml.pending with plain spew and never
+  makes .ocp/'
+updated: 2026-11-07T00:01:28Z
+---
+
+Found by the k372 secrets worker, not run-verified. On a dev-mode clone under SOPS_AGE_KEY_FILE with no .ocp/, the pending write would probably fail (no directory), and it is a plain spew (umask mode). Reproduce first; if real, route it through OCP::StateDir::make_parent and a 0600 create. Lane: secrets.
