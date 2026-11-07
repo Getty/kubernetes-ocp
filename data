@@ -1,0 +1,28 @@
+---
+class: standard
+completed: 2026-11-07T03:32:24Z
+created: 2026-11-03T06:49:08Z
+id: 401
+priority: low
+started: 2026-11-07T02:54:21Z
+status: done
+tags:
+- config
+- validation
+- refactor
+title: 'Part C follow-ups: init --force on a bad control plane, spec_taints on a string,
+  one list for the first control plane''s reads'
+updated: 2026-11-07T03:32:24Z
+---
+
+Found by the k400 worker (Part C), not fixed there; nothing here is run-verified unless it says so.
+
+- lib/OCP/Cmd/Init.pm:718 reads $cps->[0]{provider} outside its eval. From reading the code: with --force (spec_paths declares nothing then), control_planes: [ foo ] would die inside Perl. Without --force the k400 check refuses first.
+- lib/OCP/NodeMeta.pm:125 spec_taints drops a taints: that is no list without a word; :87 croaks on a bad list entry. Every ocp command that reads taints now refuses both before it reads (k400, t/400 claim 2). Check whether a reader outside the ocp CLI check (robocop, OCPNodeProvider spec) still meets the silent drop.
+- The set the first control plane is read with (cluster_status, cluster_ssh_key: control_planes[1].provider/public_ip/host/name and ssh) is listed by hand in the spec_paths of Node::Add, Update and DeployRobocop, in variants in Status and SSH. One helper beside OCP::Role::Cmd::Machines::machines_spec_paths would keep it in one place, so a change to cluster_status cannot leave a declaration behind. t/400 @BEHIND_A_WAY_OUT covers only some of these reads.
+
+Done (ocp-worker, uncommitted). 1: unreachable, ticked off with a comment: with --force Init _effective_provider returns before the read; without --force the k400 check refuses control_planes: [ foo ] first; t/401 claim 1 pins both (green at HEAD too). 2: NodeMeta spec_taints refuses a taints: that is no list and a bad entry in one line (was a silent drop and a croak); robocop never calls it, it reads OCPNode spec.taints in the CRD shape. 3: OCP::Role::Cmd first_control_plane_spec_paths and cluster_ssh_key_spec_paths (in Role::Cmd, not Machines.pm: update, deploy-robocop and ssh do not use the Machines role); node add, update, deploy-robocop, status use the first, ssh only the second (it never calls cluster_status). Effective spec_paths unchanged: spec_errors over 1010 malformed specs before vs after, 0 differences. t/401 claim 3 traces what cluster_status and cluster_ssh_key read against the helper. Red: t/401 claims 2 and 3 fail on b745c27; three mutants caught. Green binding: t/401 (11), t/400 (15), 84 related files 1561 tests PASS. No user-visible change (the CLI check refuses first).
+
+commit-ready: lib/OCP/Role/Cmd.pm, lib/OCP/Cmd/Node/Add.pm, lib/OCP/Cmd/Update.pm, lib/OCP/Cmd/DeployRobocop.pm, lib/OCP/Cmd/Status.pm, lib/OCP/Cmd/SSH.pm, lib/OCP/NodeMeta.pm, lib/OCP/Config.pm, lib/OCP/Cmd/Init.pm, t/401-shape-check-follow-ups.t
+
+committed 766776af8d74d05b534b51023c1dc74e343b3d8b
