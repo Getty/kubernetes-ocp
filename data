@@ -1,0 +1,46 @@
+---
+class: standard
+completed: 2026-11-07T02:54:00Z
+created: 2026-11-03T20:24:31Z
+id: 403
+priority: low
+started: 2026-11-07T02:05:53Z
+status: done
+tags:
+- errors
+- stderr
+title: 'Cluster-read errors keep their Perl location: read_or_absent/read_or_why flatten
+  the APIError, so [WARN]/[!!] lines print it raw (after k363)'
+updated: 2026-11-07T02:54:00Z
+---
+
+Found by k363 (9e13d5a, 2026-11-03). Nothing here was converted, because it was not on the card.
+
+1. **Root cause.** OCP::Cmd::Apply::K8s read_or_absent, read_or_why and crd_get flatten a Kubernetes::REST::APIError into "could not read X: $reason". The reason keeps its " at FILE line N." location. After that, no caller can use OCP::ErrorLine user_line/api_error_line on it.
+2. **Same class in CR.pm, not in the k356 list:**
+   - _say_robocop_image_change: "[WARN] robocop image ..., not compared with the running one: $err"
+   - wait_robocop_ready: "[WARN] robocop not seen ready: $why"
+   Both print the read reason raw, location included.
+3. **lib/OCP/Cmd/Apply/Drift.pm prints raw $@ in its [!!] lines** (line numbers as of 895a9bf):
+   - the remedy failure ~:250
+   - Registry ~:291
+   - GPU Operator ~:364
+   - cert-manager ~:413
+   - Cilium Gateway ~:434
+   - "Could not list OCPNodes" ~:542 and ~:728
+   - worker labels/taints ~:741
+4. **OCP.pm _clean_message.** A user error that wraps an inner croak with "$@\n" ends in "line N.\n\n". `\s*\z` matches that, so the renderer calls the error internal. This is the renderer's own rule (ADR 0031): decide there, not per site.
+5. **Init _ensure_age_key, both sites.** They strip only a location at the very end. A location inside OCP::Secrets' multi-line refusal would stay. None has been seen, because Secrets dies with "\n". Watch for it if 1 changes.
+
+Done =
+- read_or_absent/read_or_why/crd_get keep the error object, or a one_line-clean reason, so callers can render it;
+- the sites in 2 and 3 print without a Perl location (test: a fake APIError with a location, then assert STDERR has no " line N.");
+- 4 is decided in OCP.pm.
+
+From k395 (8243616): OCP::ErrorLine::one_line now keeps only the first body line of a 599 Kubernetes::REST::APIError object, so the reason of an unanswering API is said once. A 599 already flattened into a string (read_or_absent/read_or_why/crd_get today) is not shortened: keeping the object here, item 1, also fixes that.
+
+Done (ocp-apply-worker, uncommitted). 1: read_or_why, read_or_absent and crd_get say their cause through OCP::ErrorLine one_line, handed the object, so a 599 reason is said once; every caller contract kept (string, 404 = absent), about 25 claims in 12 test files unchanged. 2: the CR.pm WARN lines are clean through 1, CR.pm untouched, t/403 asserts the exact lines. 3: every Apply/Drift.pm !! site the card names goes through one_line (remedy, Registry, GPU Operator, cert-manager, Cilium Gateway, OCPNodes list twice, worker labels/taints twice). 4: OCP.pm _clean_message decides: internal = ends in the Perl/Carp location plus at most one newline; a wrapped croak ending line N. plus blank line is a user error; every location is stripped from what is printed; also matches the , STDIN line N. suffix --pins-stdin leaves. 5: nothing reaches Init _ensure_age_key through 1; ticked off. Red: t/403 fails 9/17 on 8243616. Green binding: fef5289 plus these files, t/403 with t/373 t/396 t/353 t/345 t/47 PASS (79 tests); before that 52 related files green except one k396 claim since updated. Follow-ups filed: k435, k436, k437.
+
+commit-ready: lib/OCP.pm, lib/OCP/Cmd/Apply/K8s.pm, lib/OCP/Cmd/Apply/Drift.pm, t/403-read-errors-no-location.t
+
+committed b745c27aaa4c0a6a0b2ff65ad827e5d5f2fda03b
