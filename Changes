@@ -1,6 +1,20 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A worker pool that counts its machines (every provider but ssh) holds
+      at most 10. `ocp apply` refuses `nodes: 11` and more with a line naming
+      the limit and docs/configuration.md; `ocp status`, `ocp keys operator
+      add|rm`, `ocp keys secure --drop-bootstrap` and `ocp node ls --json`
+      read the count and refuse the same line, `ocp destroy` does not.
+      Before, any whole number passed, and a huge one built OCPNodes until
+      memory ran out. Breaking: an ocp.yaml with a counted pool above 10 is
+      refused until the pool is lowered. The limit will be raised when
+      someone needs bigger pools.
+    - `ocp apply` prints a `[WARN]` on STDERR for an rke2 cluster with an
+      even number of control planes (2, 4 or 6) and ends WITH WARNINGS: etcd
+      needs a majority of its members up, so an even count tolerates no more
+      failures than one less does. k3s, which deploys only the first control
+      plane, gets no such line.
     - A new `.ocp/` is made mode 0700, whichever command makes it first
       (`ocp init`, the first PIN1 unlock on a clone, `ocp status`,
       known_hosts, a kubeconfig written into it), so other local users can

@@ -113,6 +113,12 @@ sub execute {
         push @{ $self->{_apply_warnings} }, 'robocop arch';
     }
 
+    # k325: an even control-plane count, on STDERR (k368; robocop's: k415).
+    if (my $even = $config->even_control_planes_warning) {
+        print STDERR "$even\n";
+        push @{ $self->{_apply_warnings} }, 'even control planes';
+    }
+
     # k259: re-quote a bare sops lastmodified before either path decrypts; -n names them (k266).
     OCP::Cmd::Apply::SopsRepair::repair_sops_files($self, $secrets);
 

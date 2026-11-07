@@ -271,9 +271,19 @@ sub _kubernetes_lines {
 # k315 it bounds the list form too.
 #
 # An even count (2, 4, 6) tolerates no more failures than one less does, but
-# it works, so it is no refusal; and validate() returns errors only, with no
-# channel for a warning. Left for a ticket (k315's notes), not invented here.
+# it works, so it is no refusal; validate() returns errors only. It is a
+# [WARN] in ocp apply instead (k325, even_control_planes_warning).
 our $MAX_CONTROL_PLANE_NODES = 7;
+
+# The most machines a counted worker pool's `nodes: N` stands for (k325):
+# every provider but ssh, whose pool lists its hosts and is not counted.
+# Workers are no etcd members, so this is no etcd bound: it is the
+# maintainer's limit (decision 2026-11-06), raised when someone needs more,
+# as docs/configuration.md says. It also keeps worker_ocpnodes
+# (OCP::Cmd::Apply::CR) from taking a nodes: of 10^12 as a count: the line
+# is at workers[N].nodes, which every command that walks the pools without
+# validate() declares in its spec_paths (k400).
+our $MAX_WORKER_POOL_NODES = 10;
 
 sub control_planes {
     my ($self) = @_;
@@ -534,6 +544,32 @@ sub robocop_arch_warning {
     return '[WARN] robocop image is amd64 only, but every control plane is an ARM server (cax*): '
         . 'the robocop pod stays Pending and worker joins through robocop do not run. '
         . 'Set `robocop: false` or add an amd64 control plane (cpx/cx).';
+}
+
+=method even_control_planes_warning
+
+Returns a C<[WARN]> line when an RKE2 cluster has an even number of control
+planes (2, 4 or 6), undef otherwise. Every control plane is an etcd
+member and etcd needs a majority of them, so an even count tolerates no more
+failures than one less does. A warning, never a refusal: the cluster works.
+Counted as C<control_planes> counts them, the list or C<nodes: N>. Not for
+K3s, which deploys only the first control plane, so adding or removing one
+changes nothing it runs; and not past C<$MAX_CONTROL_PLANE_NODES>, which
+validate() refuses.
+
+=cut
+
+sub even_control_planes_warning {
+    my ($self) = @_;
+    return undef unless $self->distribution eq 'rke2';
+
+    my $n = @{ $self->control_planes };
+    return undef if $n % 2 || $n < 2 || $n > $MAX_CONTROL_PLANE_NODES;
+
+    my $less = $n - 1;
+    return "[WARN] $n control planes: each is an etcd member and etcd needs a majority of them up "
+        . "(its quorum), so $n tolerate no more failures than $less " . ($less == 1 ? 'does' : 'do')
+        . '; add one or remove one, for ' . ($n + 1) . " or $less";
 }
 
 # How the private robo (automation) SSH key reaches the cluster (k129),
@@ -1820,6 +1856,12 @@ sub _pool_nodes_errors {
     return () unless defined $nodes;
 
     if ($pool->{provider} ne 'ssh') {
+        # At most $MAX_WORKER_POOL_NODES (k325). An ssh pool's list is not
+        # counted, so it has no such bound.
+        return "$where: nodes must be at most $MAX_WORKER_POOL_NODES, not " . _shown_value($nodes)
+            . "; $MAX_WORKER_POOL_NODES machines is OCP's limit for a pool for now "
+            . "(see docs/configuration.md)"
+            if _is_whole_number($nodes) && $nodes > $MAX_WORKER_POOL_NODES;
         return () if _is_whole_number($nodes);
         return "$where: nodes must be a whole number (how many machines the pool has), not "
             . _shown_value($nodes);

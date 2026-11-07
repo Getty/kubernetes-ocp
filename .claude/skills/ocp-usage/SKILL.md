@@ -348,8 +348,8 @@ workers:                    # optional pools; apply turns each entry into
   - name: pool1             # Pending OCPNode CRs (CR-first), reconciled by
     provider: hetzner       # robocop or the CLI fallback
     server_type: cpx22      # required on a hetzner pool (k308): no default
-    nodes: 3                # a count; an ssh pool lists hosts (strings or
-                            # {host: …}) instead, see "Shapes" below
+    nodes: 3                # a count, at most 10; an ssh pool lists hosts
+                            # (strings or {host: …}) instead, see "Shapes" below
     labels:                 # optional, onto each Node (OCPNode spec.labels)
       ai.citilan.de/node-class: general
     taints: ["dedicated=ml:NoSchedule"]   # optional, kubectl syntax
@@ -498,6 +498,15 @@ gpu:
     hosts (strings, or mappings with `host`); every other provider counts its
     machines (`nodes: 3`, a whole number). Wrong: "nodes must be a list of
     hosts for an ssh pool" / "nodes must be a whole number".
+  - **At most 10 machines in a counted pool** (k325,
+    `$OCP::Config::MAX_WORKER_POOL_NODES`): every provider but ssh; an ssh
+    pool's list is not counted. The maintainer's limit for now (decision
+    2026-11-06), not an etcd or Hetzner one, raised when someone needs more.
+    Wrong: "nodes must be at most 10, not '11'; 10 machines is OCP's limit for
+    a pool for now (see docs/configuration.md)". At `workers[N].nodes`, so
+    status, `keys operator add|rm`, `keys secure --drop-bootstrap` and
+    `node ls --json` refuse it too (their `spec_paths`), before
+    `worker_ocpnodes` could take a huge count; destroy does not read it.
   - **The other switches** (k320): `gpu.enabled`, `gpu.toolkit`,
     `gpu.amd.labeller`, `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`,
     `nocert` and `system.ntp` take only true/false (or 1/0), as `robocop:`
@@ -556,6 +565,10 @@ gpu:
     `control_planes.nodes` must be a whole number from 1 to 7, and the list
     form holds at most 7 entries ("must list at most 7 control planes"),
     since every control plane is an etcd member and etcd advises no more.
+    An even count (2, 4, 6) is no refusal but a `[WARN]` (k325,
+    `even_control_planes_warning`, rke2 only -- k3s deploys only the first):
+    `ocp apply` prints it on STDERR next to the robocop arch warning and
+    counts it in `{_apply_warnings}`, so the banner reads WITH WARNINGS.
   - **`ocp apply` and `ocp apply --dry-run` call `validate` first** (k255),
     before a PIN, a file, a host or the cluster: every error at once on
     STDERR, one line each, then exit 1 with nothing done. `ocp status` does

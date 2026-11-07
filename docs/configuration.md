@@ -23,7 +23,7 @@ control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
   provider: hetzner            # CPs), or an Array of hashes (mixed).
   server_type: cx32            # rke2 deploys every entry; k3s only the first.
                                # At most 7 either way (etcd): `nodes:` and the
-                               # list both.
+                               # list both. An even count gets a [WARN].
   location: fsn1               # No HA client endpoint yet — see "Limits" in README.
   image: debian-13
 
@@ -31,7 +31,8 @@ workers:                       # optional pools; each becomes Pending OCPNode
   - name: pool1                # CRs on `ocp apply` (CR-first — see below)
     provider: hetzner
     server_type: cpx22         # required on a hetzner pool: no default
-    nodes: 3                   # a count; an ssh pool lists its hosts instead
+    nodes: 3                   # a count, at most 10; an ssh pool lists its
+                               # hosts instead
 
 ssh:
   private_key: .ocp/id_ed25519
@@ -141,10 +142,21 @@ These shapes used to be read wrongly and are refused:
 - **A worker pool's `nodes:`** depends on its provider. An `ssh` pool lists its
   hosts, each a host name or IP address or a mapping with `host`:
   `nodes: [w1.example, { host: 10.0.0.7 }]`. Every other provider counts its
-  machines: `nodes: 3`, a whole number.
+  machines: `nodes: 3`, a whole number, at most 10 per pool. The 10 is OCP's
+  own limit for now, not Hetzner's or Kubernetes', and it will be raised when
+  someone needs bigger pools. An ssh pool's list is not counted and has no
+  such limit. Above it: `worker pool 'big': nodes must be at most 10, not
+  '11'; 10 machines is OCP's limit for a pool for now (see
+  docs/configuration.md)`. `ocp status`, `ocp keys operator add|rm`,
+  `ocp keys secure --drop-bootstrap` and `ocp node ls --json` read the count
+  too and refuse the same line; `ocp destroy` does not read it.
 - **`control_planes:`** holds at most 7 control planes, as a list just as with
   `nodes: N`: every control plane is an etcd member, and etcd advises no more
-  than 7.
+  than 7. An even count (2, 4 or 6) is not refused, but on rke2 `ocp apply`
+  prints a `[WARN]` on STDERR and ends WITH WARNINGS: etcd needs a majority
+  of its members up, so 4 control planes tolerate no more failures than 3 do;
+  add one or remove one. k3s gets no such line: it deploys only the first
+  control plane.
 - **The other on/off switches** take only `true` or `false` (`1` and `0` too),
   as `robocop:` does: `gpu.enabled`, `gpu.toolkit`, `gpu.amd.labeller`,
   `gpu.amd.metrics`, `gpu.amd.integrated`, `lbipam`, `nocert` and `system.ntp`.
