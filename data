@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-07T00:02:14Z
+created: 2026-10-31T13:54:21Z
+id: 372
+priority: low
+started: 2026-11-06T19:37:28Z
+status: done
+tags:
+- decision
+- secrets
+title: 'Decide: .ocp/ directory mode (0755 from mkpath vs 0700)'
+updated: 2026-11-07T00:02:22Z
+---
+
+Decide (maintainer). From k360 (secrets worker, 2026-10-31). `.ocp/` is created with Path::Tiny's mkpath default, 0777 minus the umask (0755 under 022), by every one of its ~10 creators, now including the first PIN1 unlock on a clone (k360). The secrets inside are each 0600: age.key, the decrypted kubeconfig, the SSH keys. A 0755 directory still exposes their names and lets other local users list it.
+
+Options: keep it (each secret file's own 0600 is the protection); make `.ocp/` 0700 on creation everywhere (one helper); or also tighten an existing `.ocp/` (chmod on every run, which changes the mode on users' machines).
+Not to be built before the maintainer answers.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): a new .ocp/ is created with mode 0700, everywhere through one helper. An existing directory stays as it is.
+
+secrets worker (2026-11-07): built. New OCP::StateDir::make_dir makes a .ocp/ 0700 at creation (mkpath mode, chmod only on a dir this call made), others default; make_parent goes through it. Routed: Init step 3, generate_age_key, restore_age_recipient, decrypt_kubeconfig_to_file, OCP::Kubeconfig export, ocp kubeconfig -o (both could make .ocp/; now also write its .gitignore). Existing .ocp/ keeps its mode. t/360 claim 2 replaced (0755 -> 0700, per decision); its keeps-mode subtest pre-creates 0755 now. New t/372 (23 subtests). Red on 4b612c6: 12/23 fail (0755). Binding: 13 files, 272 tests PASS.
+
+commit-ready; files disjoint from k325's. Follow-ups filed as k423, k424.
+
+committed e6cc6e3
