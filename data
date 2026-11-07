@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-07T01:11:48Z
+created: 2026-10-31T17:04:10Z
+depends_on:
+- 388
+id: 397
+priority: low
+started: 2026-11-07T01:05:28Z
+status: done
+tags:
+- smoke
+- test
+title: 'Smoke: an empty node ls result passes ''the OCPNode is gone'', also when node
+  ls could not ask the API'
+updated: 2026-11-07T01:11:54Z
+---
+
+Found while working k388. xt/smoke.sh:266 and xt/smoke-worker.pl:67: an empty result passes "the OCPNode is gone". If node ls could not ask the API, pick dies and that smoke step passes falsely, both before and after k388. Since k388, node ls --json prints {"error": ...} (an object instead of the array), so pick_node can refuse an object that has error.
+
+xt/ only. make smoke is human-triggered: the fix is code, the run is the maintainer's. Lane: ocp-test-writer.
+
+test-writer (2026-11-07): the old pick_node already died on the error object; the false pass came from smoke.sh's || true. pick_node now dies on an error object, other objects, non-JSON or no output; smoke.sh fails the step when pick exits 2+ (exit 1 = no such node still passes). t/229 +5 assertions. Offline harness: old line passed {error} and garbage as gone, new fails both. Never ran smoke. Left: the polling loop at smoke.sh:232 keeps its || true (retries to the deadline, cannot pass falsely, hides the message).
+
+commit-ready: xt/smoke.sh, xt/smoke-worker.pl, t/229
+
+committed 5cfd862
