@@ -1,0 +1,45 @@
+---
+class: standard
+completed: 2026-11-06T23:13:10Z
+created: 2026-11-06T01:29:23Z
+id: 406
+priority: low
+started: 2026-11-06T19:40:40Z
+status: done
+tags:
+- rex-rancher
+- cilium
+- node-ip
+title: 'After Rex::Rancher 0.005: offer the Cilium residue cleanup and node_ip from
+  the route, refresh the copied refusal texts'
+updated: 2026-11-07T00:16:44Z
+---
+
+Rex::Rancher main 67fff01 (pushed, ships with 0.005; order: Rex::GPU 0.006 first, then Rex::Rancher 0.005, both released by the maintainer). The rex-rancher hub session reported it on 2026-11-05/06 and requested no reply. Nothing here is needed before 0.005 is on CPAN.
+
+1. Cilium leftovers without a reboot (our wish from the k248 round): `Rex::Rancher::Uninstall->check_cilium_residue(clean => 1)` in its own task on the host. It removes the pins in /sys/fs/bpf/cilium, the cil_* cgroup programs (via bpftool if installed, otherwise a warning), /sys/fs/bpf/tc/globals, /run/cilium/cgroupv2 and /run/cilium, then checks again. Anything left dies asking for a reboot, and a host running RKE2/K3s is not touched. A bare line for our own channel: `cilium_residue_cleanup_cmd`. Without clean the refusal stays, but its text now also names this call. Not run live; the bpftool output format is not verified offline. Decide whether OCP offers it (opt-in), and where (destroy / re-bootstrap path).
+2. node_ip from the route (our wish from k254): new option `node_ip_from_route => 1` for rancher_deploy_agent/_server, install_agent/_server and preflight_agent/_server. A joining node with no node_ip takes the source address of `ip -o route get` to the join server. An explicit node_ip wins. The first server derives nothing. preflight_* return the derived address as node_ip. Older Rex::Rancher ignore the option silently, so gate on `Rex::Rancher::Distribution->can('node_ip_from_route')`. Decide whether OCP uses it by default for joins on multi-homed hosts (today the operator passes --node_ip).
+3. uninstall_cmd / uninstall_node are now ONE command, `/bin/sh -c '…'`, with single quotes inside. Name and signature are unchanged. Check that OCP never wraps the line in '…' itself. According to the hub, t/29, t/190 and t/50 pass against the new lib (checked read-only).
+4. t/190 and t/219 carry a copy of the old refusal text: green, but stale once 0.005 is pinned.
+
+Done when the cpanfile pins Rex::Rancher 0.005 and each point above is either adopted or decided against on this card.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5), points 1 and 2: OCP offers the Cilium residue cleanup without a reboot as a switch; the switch sits where the reboot refusal comes today, and the refusal text names it; the functions come from Rex::Rancher 0.005 (local tree). node_ip_from_route is the default for every join without node_ip. With points 1, 2 and points 3, 4 (release-round order) k406 is done.
+
+Dependency part done (release round, step 4). cpanfile pins IO::K8s 1.112 and Net::Async::Kubernetes 0.012 (on CPAN; the snapshot moved only these two, 126 dists before and after), plus Crypt::Age 0.006, File::SOPS 0.006, MooX::Cmd 1.001, WWW::Hetzner 0.103, Rex::GPU 0.006 and Rex::Rancher 0.005 (the trees' next releases, vendored: VENDOR = p5-crypt-age p5-file-sops p5-moox-cmd p5-www-hetzner rex-gpu rex-rancher). t/222 now holds VENDOR to exactly the siblings whose pin the snapshot does not reach. SIBLINGS_DIR now defaults to the directory holding the main checkout (git common dir), so fresh worktrees vendor too; '..' without git; t/222 proves it with a real worktree. Image rel1106-pins builds with all eight (Data-Record 0.02 + Sub-Uplevel come unpinned via WWW::Hetzner 0.103 until its release moves the snapshot); 17 targeted files PASS in it, the AMD and node_ip subtests of t/155-rex-libraries and t/254 now run. Release day: make snapshot for the released ones, drop them from VENDOR. Stale lib/ version comments: k414.
+
+Points 3 and 4 done (ocp-provider-worker). 3: no path wraps or re-quotes the uninstall line -- SSH sends it as one argv word after root@host through a list-form open3 (OCP::SSH _build_ssh_cmd), Local passes it as one argument to sh -c, Hetzner has no shell channel, no Rexfile task runs it; lib/ unchanged. New t/406-uninstall-line-unquoted.t checks what ssh sends and what a real shell runs, for the real 0.005 line and a made-up one with an escaped single quote inside, and that every provider type is covered. 4: t/190 and t/219 take the refusal from the real check_cilium_residue (t/lib/OCPTest/CiliumRefusal.pm) instead of copying its words, so they cannot go stale again. Binding run in rel1106-pins: Files=14, Tests=212, PASS. Red: each claim fails against a mutant (m1-m7: ssh wraps / quotes, Local wraps, Hetzner gains run_command, new existing-host type, Rexfile rewords, _failure_reason keeps one sentence); the old t/219 fails against the real 0.005 refusal. For point 1: the share/Rexfile:675-680 comment still says the refusal only asks for a reboot.
+
+pin step committed as 575d3e6
+
+points 3 and 4 committed as 6a96d7d
+
+Kubernetes::REST part done (ocp-worker, hub request). OCP::Kubernetes::register_resource_providers and OCP::K8s::register call add_provider (Kubernetes::REST 1.111, the pin) instead of pushing onto with and calling the private _clear_k8s/_has_k8s; the duplicate checks stay, no can-fallback. New t/406-no-private-kubernetes-rest.t: no private Kubernetes::REST method in lib/ or bin/ except _request, _build_path, _check_response, each of which must still be in use (k420 moves the last two). Binding run rel1106-pins: Files=15, Tests=256, PASS. Register tests t/79 t/283 t/10 t/275 t/43 pass on 585cc31 and on the new tree; the new guard fails on 585cc31; mutants M1-M8 all caught. Uncommitted, commit follows the HEAD suite run.
+
+add_provider switch committed as ba7f97b
+
+2026-11-06 points 1 and 2 (ocp-worker): --clean_cilium_residue on ocp apply and ocp node add. The install tasks ask the Cilium leftover check themselves before the preflight: with the switch check_cilium_residue(clean => 1), without it the library refusal plus one OCP sentence naming the switch. robocop joins get no switch (no CRD field); refusal says reboot there, node add refuses the switch with --nowait or a robocop join; the robocop question is k422 (blocked, recommendation on it). Point 2: every join without node_ip gets node_ip_from_route => 1, gated on can(); first server derives nothing, explicit node_ip wins, older lib: join goes on with a WARN. New t/406-cilium-residue-clean.t (20) and t/406-node-ip-from-route.t (7); t/190 order. Red on fc2aa1f, 12 mutants killed; binding 17 files, 224 tests, PASS. Docs: configuration.md, ocp-usage and ocp-rke2 skills.
+
+points 1 and 2 committed as 8e9956b; k406 done
+
+follow-up committed 9a4d448: t/52 green again (Apply.pm 639 lines, 15 dead forwarders removed)
