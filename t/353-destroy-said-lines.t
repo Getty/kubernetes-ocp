@@ -198,6 +198,14 @@ my $CLOSING = "\n[!!] Teardown INCOMPLETE: the lines above that say NOT torn dow
 my $CROAKED = "Hetzner API error: unable to authenticate at /src/lib/OCP/Provider/Hetzner.pm line 421.\n";
 my $WHY     = 'Hetzner API error: unable to authenticate';
 
+# The lines for the old-label search (k98) under a token that fails: since
+# k396 said, where it was taken for one that found nothing. A token that
+# fails the cluster's own search fails this one too (t/396).
+my $OLD_FAILED = "\n[!!] The search under the old label ocp-cluster=hetzner-default failed: $WHY"
+               . " -- a server of this cluster still labelled so is NOT deleted, and not named here.\n"
+               . "     Look by hand:\n"
+               . "       hcloud server list -l ocp-cluster=hetzner-default\n";
+
 # The lines for a label search that failed where nothing else says it.
 sub search_failed {
     my ($with) = @_;
@@ -305,8 +313,9 @@ subtest 'a label search that fails while status.yaml found nodes: said on STDERR
     is $r->{ex}, '', 'ran without dying' or diag $r->{ex};
     is_deeply searched($r), [ 'prod tok', 'hetzner-default tok' ],
         'the fixture: the label search ran under the local token, and died';
-    is $r->{err}, search_failed() . $CLOSING,
-        'on STDERR: the cause without its croak location, what it leaves, the selector';
+    is $r->{err}, search_failed() . $OLD_FAILED . $CLOSING,
+        'on STDERR: the cause without its croak location, what it leaves, the selector'
+      . ' -- and the old-label search under the same token, failed too (k396)';
     unlike $r->{out}, qr/label search|hcloud/, 'nothing of it on STDOUT';
     is_deeply deleted($r), [ 'hetzner 111' ], 'police1 still deleted';
     like $r->{out}, qr/\nEncrypted kubeconfig removed\.\n\z/,
@@ -328,8 +337,8 @@ subtest 'the fallback says it for a hetzner control plane: once, without the cro
         "[!!] control_planes[1]: a hetzner control plane is found by its ocp-cluster=prod label "
       . "or not at all, and the label search failed: $WHY -- if it runs, it is NOT torn down.\n"
       . "     Fix the cause and run `ocp destroy` again, or look by hand:\n"
-      . "       hcloud server list -l ocp-cluster=prod\n" . $CLOSING,
-        'the k345 line alone, the cause as one line';
+      . "       hcloud server list -l ocp-cluster=prod\n" . $OLD_FAILED . $CLOSING,
+        'the k345 line once, the cause as one line -- then the old-label search, failed too (k396)';
     is $r->{out}, $NO_NODES, 'STDOUT: No nodes to destroy.';
 };
 
@@ -348,10 +357,12 @@ subtest 'a search under an OCPNodeProvider\'s token fails: said, naming that pro
     # Nothing recorded: the fallback says the hetzner control plane on STDOUT
     # -- the local token's search answered -- and the failed one is still
     # said: the fallback's line carries a failure only when no search
-    # answered.
+    # answered. Since k396 that line says what the answering search found,
+    # not "no server carries it": hetzner-b's token was never searched
+    # (t/396).
     $config = project($HCP);
     $r = run_destroy($config, crs => \@crs, search_dies => { 'tok-hetzner-b' => $CROAKED });
-    like $r->{out}, qr/\Acontrol_planes\[1\]: a hetzner control plane is found by its ocp-cluster=prod label or not at all; no server carries it, nothing to delete\.\n/,
+    like $r->{out}, qr/\Acontrol_planes\[1\]: a hetzner control plane is found by its ocp-cluster=prod label or not at all; no label search that answered found a server carrying it\.\n/,
         'the fallback\'s line, on STDOUT';
     is $r->{err}, search_failed('hetzner-b') . $CLOSING, 'and the failed search on STDERR';
 };

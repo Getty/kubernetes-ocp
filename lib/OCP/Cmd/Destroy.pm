@@ -8,8 +8,10 @@ use Path::Tiny qw(path);
 
 use OCP;
 use OCP::Choices;
+use OCP::ClusterKey ();
 use OCP::Config;
 use OCP::ErrorLine ();
+use OCP::Password ();
 use OCP::Provider;
 use OCP::Secrets;
 
@@ -161,7 +163,11 @@ sub _report_mislabelled_servers {
     return unless %stale;
 
     for my $label (sort keys %stale) {
-        my $servers = eval { $hetzner_prov->list_servers_by_cluster($label) } || [];
+        my $servers = eval { $hetzner_prov->list_servers_by_cluster($label) || [] };
+        unless ($servers) {
+            $self->_say_failed_old_label_search($label, $@);
+            next;
+        }
         next unless @$servers;
 
         # Left running on purpose, so the run says it is not done (k354).
@@ -183,6 +189,24 @@ sub _report_mislabelled_servers {
         print  STDERR "       hcloud server list -l ocp-cluster=$label\n";
         print  STDERR "       hcloud server delete <name>\n";
     }
+}
+
+# The old-label search above, when it fails (k396). It was taken for one that
+# found nothing, and a server of this cluster under that label kept running
+# with nothing said. Said as a failed search under the cluster's own label is
+# (k353): the cause in one line, what it leaves unnamed, the selector -- and,
+# like the servers the report names, it makes the run incomplete (k354). Only
+# "look by hand": after a teardown the local state is gone when this runs, and
+# a token read from a provider CR went with the kubeconfig.
+sub _say_failed_old_label_search {
+    my ($self, $label, $err) = @_;
+    $self->_left_standing(1);
+    print STDERR "\n";
+    print STDERR "[!!] The search under the old label ocp-cluster=$label failed: "
+               . OCP::ErrorLine::one_line($err)
+               . " -- a server of this cluster still labelled so is NOT deleted, and not named here.\n";
+    print STDERR "     Look by hand:\n";
+    print STDERR "       hcloud server list -l ocp-cluster=$label\n";
 }
 
 # The cluster API, or undef when there is none to ask. A teardown has to run
@@ -438,12 +462,16 @@ sub _ocpnode_entries {
     my ($self, $api) = @_;
     return unless $api;
 
+    # Why the list failed, in one line, as the robocop-stop warning says an
+    # API error (k396): an APIError as the line naming the server, anything
+    # else without its source location. It was the raw text, croak's
+    # location on it.
     my $list = eval { $api->list('OCPNode', namespace => 'ocp-system') };
     unless ($list) {
         $self->_api_down(1);
-        my $why = $@ || "no answer\n";
-        chomp $why;
-        $self->_say_ocpnodes_unread($why);
+        my $err = $@;
+        $self->_say_ocpnodes_unread(OCP::ErrorLine::user_line($err)
+            // OCP::ErrorLine::one_line($err, empty => 'no answer'));
         return;
     }
 
@@ -509,9 +537,12 @@ sub _build_cr_hetzner {
             $self->_cr_hetzner->{$name} = $prov;
             next;
         }
-        my $why = $@ || "no adapter\n";
-        chomp $why;
-        $self->_cr_hetzner_error->{$name} = $why;
+        # In one line, for the refusal's line (k396): the Secret read is an
+        # API call, whose error names the server; anything else without its
+        # source location.
+        my $err = $@;
+        $self->_cr_hetzner_error->{$name} = OCP::ErrorLine::user_line($err)
+            // OCP::ErrorLine::one_line($err, empty => 'no adapter');
     }
 }
 
@@ -740,12 +771,19 @@ sub _say_failed_search {
 #
 # The search's error is one line without its croak location, as
 # _say_failed_search says it (k353): Hetzner's carries one.
+#
+# A search that answered while another failed (k396) is not the whole story:
+# "no server carries it" was said for the token that was never searched as
+# well. The line says only what the answering ones found; the failed one is
+# said on STDERR, by _say_failed_search, with what it may leave running.
 sub _say_hetzner_control_plane {
     my ($self, $config, $where, $searched, $search_error) = @_;
     my $label = 'ocp-cluster=' . $config->name;
     my $found = "$where: a hetzner control plane is found by its $label label or not at all";
     if ($searched) {
-        print "$found; no server carries it, nothing to delete.\n";
+        print defined $search_error
+            ? "$found; no label search that answered found a server carrying it.\n"
+            : "$found; no server carries it, nothing to delete.\n";
         return;
     }
     my ($why, $fix) = defined $search_error
@@ -755,6 +793,64 @@ sub _say_hetzner_control_plane {
     print STDERR "     $fix and run `ocp destroy` again, or look by hand:\n";
     print STDERR "       hcloud server list -l $label\n";
     $self->_left_standing(1);
+}
+
+# The project key for the SSH key's lookup (k396, the case k382 left open). In
+# secure mode the lookup opens keys.yaml with it, and with no kubeconfig.yaml
+# and HETZNER_API_TOKEN set nothing before has: PIN1 was first asked inside
+# the eval in execute, and a mistyped one was taken for a key that cannot be
+# had -- the uninstalls SKIPPED and the Hetzner servers deleted, on a typo.
+# So it is done here first, outside the eval, as _cluster_api's read of
+# kubeconfig.yaml does it (k382): PIN1 when age.key.enc is where the key
+# comes from, a key already here (.ocp/age.key, SOPS_AGE_KEY_FILE) checked
+# against the project. A refusal stops the run in OCP::Secrets' words; nothing
+# has been deleted yet.
+#
+# Only where the lookup would need it: dev mode (no keys.yaml) reaches the
+# machines with the bootstrap key, which needs no age key. And PIN1 only with
+# someone to ask, in OCP::ClusterKey's test for it (_unlock_admin_key): with
+# nobody there the lookup refuses before it asks, the downgrade it always
+# was, and a PIN1 asked here would read a pipe. No key at all is left to the
+# lookup as well: it refuses, and the uninstalls are skipped, as destroy goes
+# on without the API then (k399).
+sub _ssh_key_age_key {
+    my ($self, $config) = @_;
+    return unless -f $config->project_dir->child('keys.yaml');
+
+    my $secrets  = OCP::Secrets->new(project_dir => $config->project_dir);
+    my $from_enc = !$secrets->sops_age_key_file
+                && !$secrets->has_age_key
+                && $secrets->has_age_key_enc;
+    unless ($from_enc) {
+        $secrets->check_local_age_key;
+        return;
+    }
+    my $asks = defined $OCP::ClusterKey::INTERACTIVE ? $OCP::ClusterKey::INTERACTIVE
+             : $OCP::Password::PINS_STDIN || -t STDIN;
+    $secrets->ensure_age_key if $asks;
+    return;
+}
+
+# An error as the lines of a block on STDERR (k396), not one_line's one long
+# line -- a refusal of several lines, an uninstaller's stderr: each line
+# without a Perl source location, secrets masked (OCP::ErrorLine). The
+# "ERROR:" label goes, as the block names the failure already, and so does
+# the indent the lines after the first share, which only lined them up under
+# it. Blank lines go: the block is one paragraph. A foreign exception
+# OCP::ErrorLine has a line for (user_line) is that line.
+sub _error_lines {
+    my ($err) = @_;
+    my $text = OCP::ErrorLine::user_line($err) // (defined $err ? "$err" : '');
+    $text =~ s/\A\s*ERROR:[ \t]*//;
+    my ($first, @rest) = grep { /\S/ } split /\n/, $text;
+    my ($cut) = sort { $a <=> $b } map { length +(/\A([ \t]*)/)[0] } @rest;
+    my @lines;
+    for my $line (grep { defined } $first, map { substr $_, $cut } @rest) {
+        my ($lead) = $line =~ /\A([ \t]*)/;
+        my $body = OCP::ErrorLine::one_line($line, empty => '');
+        push @lines, $lead . $body if length $body;
+    }
+    return @lines ? @lines : (OCP::ErrorLine::one_line(undef));
 }
 
 # robocop reconciles OCPNodes: left running, it would see a worker vanish
@@ -932,9 +1028,14 @@ sub execute {
     #
     # A failure here therefore downgrades to "the uninstall script did not
     # run on those machines", which is recoverable by hand, and says so. Its
-    # reason is one line without a croak location (k353, OCP::ErrorLine):
+    # reason is said without a croak location (k353, OCP::ErrorLine):
     # ssh_config's refusal of an ssh: key came with "at .../ClusterKey.pm
-    # line N." on it.
+    # line N." on it. A refusal of several lines keeps its lines (k396):
+    # one_line made one long line of it, the command it names to run buried
+    # in the middle.
+    #
+    # The project key is the exception (k382, k396): asked or checked first,
+    # outside the eval -- see _ssh_key_age_key.
     my $needs_ssh_key = grep {
         ($_->{provider} // '') eq 'ssh'
             && $_->{public_ip} && $_->{public_ip} ne '-'
@@ -942,6 +1043,7 @@ sub execute {
 
     my $ssh_key;
     if ($needs_ssh_key) {
+        $self->_ssh_key_age_key($config);
         $ssh_key = eval {
             $self->cluster_ssh_key($config,
                 provider => 'ssh',
@@ -949,10 +1051,10 @@ sub execute {
             );
         };
         unless ($ssh_key) {
-            my $why = OCP::ErrorLine::one_line($@);
+            my @why = _error_lines($@);
             print STDERR "\n";
             print STDERR "[!!] Could not obtain the SSH key for the ssh-provider nodes:\n";
-            print STDERR "     $why\n";
+            print STDERR "     $_\n" for @why;
             print STDERR "     Their RKE2/K3s uninstall will be SKIPPED. Everything\n";
             print STDERR "     that costs money is deleted through the provider API\n";
             print STDERR "     and is unaffected.\n";
@@ -1028,7 +1130,9 @@ sub execute {
         # string test on the provider name here. A spec-fallback node with no
         # `host` in ocp.yaml arrives with public_ip '-'; that is passed through
         # as "no host". ssh has nowhere to go without one -- resolve_host dies
-        # and the node is skipped, exactly as before -- while the local
+        # and the node is skipped, on STDERR and in the closing list (k396):
+        # an ssh node from status.yaml, or an OCPNode, with no host recorded
+        # was skipped without a word -- while the local
         # provider ignores the host entirely (resolve_host is a constant
         # 127.0.0.1) and still tears the box down. That last case is the bug
         # this closes: a `provider: local` cluster discovered only via the spec
@@ -1049,7 +1153,14 @@ sub execute {
             my $ip = ($node->{public_ip} && $node->{public_ip} ne '-')
                 ? $node->{public_ip} : undef;
             my $target = eval { $host_prov->resolve_host(host => $ip) };
-            next unless defined $target && length $target;
+            unless (defined $target && length $target) {
+                my $why = defined $ip
+                    ? OCP::ErrorLine::one_line($@, empty => 'no host to reach it at')
+                    : 'no host recorded';
+                print STDERR "  Skipped: $why, $node->{name} keeps its RKE2/K3s install.\n";
+                push @still_installed, [ $node->{name}, $why ];
+                next;
+            }
 
             if ($node->{provider} eq 'ssh') {
                 unless ($ssh_key) {
@@ -1067,7 +1178,9 @@ sub execute {
             # the uninstaller's stderr (k175); a provider that returns a
             # non-zero exit instead is the same failure. Either way the reason
             # is what gets printed -- a fixed "may already be down" threw it
-            # away and left the operator guessing (k180).
+            # away and left the operator guessing (k180). Its lines as they
+            # are, without a Perl source location (k396): a run_command that
+            # died over SSH carried one.
             my $why = $@;
             if (!$why && (!ref $result || ($result->{exit} // 0) != 0)) {
                 my $exit   = ref $result ? $result->{exit} : '?';
@@ -1077,10 +1190,10 @@ sub execute {
                      . (length $stderr ? ": $stderr" : '');
             }
             if ($why) {
-                chomp $why;
+                my @why = _error_lines($why);
                 print STDERR "  Warning: could not uninstall on $target:\n";
-                print STDERR join('', map { "    $_\n" } split /\n/, $why);
-                push @still_installed, [ $target, $why ];
+                print STDERR "    $_\n" for @why;
+                push @still_installed, [ $target, join "\n", @why ];
                 # The migration hint names the bootstrap-vs-admin key story,
                 # which is ssh-only. A local uninstall has no key.
                 if ($node->{provider} eq 'ssh' && !$hinted++) {
@@ -1269,7 +1382,11 @@ SSH / local — the RKE2/K3s uninstaller is run on the host.  A failure here
 does not stop the tear-down: the reason the uninstaller gave (host, exit
 code, its stderr) is printed on STDERR and the next machine is tried.  At
 the end every machine that kept its install is listed with its reason and
-the command returns 1 (C<k180>).  The local state is still removed — the
+the command returns 1 (C<k180>).  A reason of several lines keeps its lines,
+without a Perl source location.  An ssh machine with no host recorded -- an
+OCPNode or a F<status.yaml> entry with no address -- has nowhere to send its
+uninstall: it is skipped with a line on STDERR and listed at the end the same
+way.  The local state is still removed — the
 machine is not billed through OCP and nothing in C<status.yaml> is needed to
 reach it again, while holding the cleanup back would make a project whose
 host is already gone impossible to tear down.
@@ -1280,9 +1397,15 @@ The key those SSH uninstalls use is resolved once, before the loop, and only
 when the node list actually contains an ssh-provider machine (see
 L<OCP::ClusterKey> — in secure mode that is the PIN2-protected admin key, so
 it can fail; a Hetzner-only teardown never asks).  B<A failure to obtain it
-does not stop the teardown.>  It is reported, the uninstall steps are skipped
-with a per-host line, and every Hetzner server is still deleted through the
-API — those cost money, an uninstall script does not.
+does not stop the teardown.>  It is reported -- a refusal of several lines
+with its lines --, the uninstall steps are skipped with a per-host line, and
+every Hetzner server is still deleted through the API — those cost money, an
+uninstall script does not.  The age key that opens F<keys.yaml> is the
+exception, as it is for F<kubeconfig.yaml> below: a PIN1 that does not open
+F<age.key.enc>, or a C<SOPS_AGE_KEY_FILE> or F<.ocp/age.key> this project's
+files are not bound to, stops the run there, before anything is deleted,
+with L<OCP::Secrets>' refusal.  Without a terminal (and no C<--pins-stdin>)
+no PIN1 is asked, and the uninstalls are skipped as above.
 
 Before the final line the teardown looks once more, under the C<ocp-cluster>
 labels C<ocp apply> would have written a provider CR as
@@ -1295,7 +1418,9 @@ Hetzner project.  The printed C<hcloud> selector is the way to inspect and
 remove them by hand, and it is also the way to find servers under a provider
 that was added with C<ocp provider add --name> rather than by C<ocp apply>.
 The report runs when no node was found to delete as well, before the
-question about the local state (C<k345>).
+question about the local state (C<k345>).  A search under such a label that
+fails is said on STDERR with its cause and the selector, B<NOT deleted>, and
+not taken for one that found nothing.
 
 Before anything else -- before a PIN is asked, the cluster API or a provider
 is reached -- the C<nodes:> lists of the worker pools are checked, the lists
@@ -1408,7 +1533,8 @@ worker pool or control plane skipped for its provider or for want of a host,
 a hetzner control plane no label search answered for, a label search that
 failed, an OCPNode whose provider is unknown here, a local pool's worker with
 the OCPNodes unread (above) -- and the servers under the old
-C<< <type>-default >> label, which the report above names B<NOT deleted>.
+C<< <type>-default >> label, or a failed search under it, which the report
+above says B<NOT deleted>.
 The run still does everything else it can: the deletes, the uninstalls and
 the cleanup of the local state go on as described above, which none of
 these change.  It then ends on one line on STDERR,

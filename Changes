@@ -1140,3 +1140,14 @@ Revision history for OCP
       does not answer once, not twice.
     - `ocp node ls --json` against a cluster whose API discovery does not
       list Node says so in one line instead of an internal error.
+    - `ocp destroy` names an ssh machine with no host recorded, on STDERR
+      and in the closing list, and returns 1, instead of skipping it
+      without a word.
+    - A failed search under the old `<type>-default` label is said on
+      STDERR with its cause and the hcloud selector, and the run returns 1;
+      when one token's label search failed, `ocp destroy` no longer says on
+      STDOUT that no server carries the label.
+    - A wrong PIN1 or a broken `SOPS_AGE_KEY_FILE` for the ssh nodes' key
+      stops `ocp destroy` before anything is deleted, instead of skipping
+      the uninstalls; error reasons are said without a Perl source
+      location, and a refusal of several lines keeps its lines.

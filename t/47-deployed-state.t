@@ -112,6 +112,28 @@ sub capture_stdout (&) {
     return ($out, $rc);
 }
 
+# Destroy's STDERR captured as well (k396): what it says there -- a control
+# plane it skips, a kubeconfig it cannot open -- is a claim of its own, and
+# uncaptured it ran into the test's output.
+sub capture_both (&) {
+    my ($code) = @_;
+    my ($out, $err) = ('', '');
+    open my $ofh, '>', \$out or die $!;
+    open my $efh, '>', \$err or die $!;
+    my $rc;
+    {
+        local *STDOUT = $ofh;
+        local *STDERR = $efh;
+        $rc = $code->();
+    }
+    return ($out, $err, $rc);
+}
+
+# The lines destroy says on these projects: an ssh control plane with no
+# host (k353), and a kubeconfig.yaml with no age key to open it (k399).
+my $NO_HOST = qr/^\[!!\] control_planes\[1\]: host required for ssh -- skipped: that control plane is NOT torn down\.$/m;
+my $NO_KEY  = qr/^\[!!\] Could not read the OCPNodes from the cluster API:\n     this checkout has no age key to open kubeconfig\.yaml/m;
+
 # A registry the cluster really has: namespace plus both deployments.
 my %FULL_REGISTRY = (
     'Namespace/-/ocp-system'               => 1,
@@ -653,12 +675,15 @@ YAML
         force         => 1,
     );
 
-    my ($out) = capture_stdout { $destroy->execute([], []) };
+    my ($out, $err) = capture_both { $destroy->execute([], []) };
 
     ok !-f $status,     'status.yaml is gone';
     ok !-f $deployed,
         'deployed.yaml is gone — otherwise the next apply skips what is missing';
     ok !-f $kubeconfig, 'the encrypted kubeconfig is gone';
+    like $err, $NO_HOST,
+        'the ssh control plane with no host is said on STDERR -- and the state goes all the same';
+    like $err, $NO_KEY, 'so is the kubeconfig.yaml no key opens';
 };
 
 subtest '--keep-status keeps all of it, not half' => sub {
@@ -684,10 +709,11 @@ YAML
         keep_status   => 1,
     );
 
-    capture_stdout { $destroy->execute([], []) };
+    my (undef, $err) = capture_both { $destroy->execute([], []) };
 
     ok -f $status,   'status.yaml kept';
     ok -f $deployed, 'deployed.yaml kept with it — one switch, one meaning';
+    like $err, $NO_HOST, 'the ssh control plane with no host is said on STDERR';
 };
 
 #
@@ -726,7 +752,7 @@ YAML
         force         => 1,
     );
 
-    my ($out) = capture_stdout { $destroy->execute([], []) };
+    my ($out, $err) = capture_both { $destroy->execute([], []) };
 
     like $out, qr/No nodes to destroy\./,
         'the early-return path announces what it found';
@@ -734,6 +760,8 @@ YAML
     ok !-f $deployed,
         'deployed.yaml is gone too — otherwise the next apply skips what is missing';
     ok !-f $kubeconfig, 'and the encrypted kubeconfig is gone';
+    like $err, $NO_KEY, 'the kubeconfig.yaml no key opens is said on STDERR';
+    unlike $err, qr/NOT torn down/, 'and nothing said to be left standing';
 };
 
 subtest 'destroy cleans up when there is no local state at all' => sub {
@@ -754,12 +782,13 @@ YAML
         force         => 1,
     );
 
-    my ($out) = capture_stdout { $destroy->execute([], []) };
+    my ($out, $err) = capture_both { $destroy->execute([], []) };
 
     like $out, qr/No nodes to destroy\./,
         'the empty-project case is the same early-return path';
     unlike $out, qr/\QRemoved\E/,
         'and nothing announces "Removed ..." because nothing was there to remove';
+    is $err, '', 'nothing on STDERR: no warning';
 };
 
 subtest '--keep-status preserves state on the early-return path too' => sub {
@@ -787,10 +816,11 @@ YAML
         keep_status   => 1,
     );
 
-    capture_stdout { $destroy->execute([], []) };
+    my (undef, $err) = capture_both { $destroy->execute([], []) };
 
     ok -f $status,   'status.yaml kept on the early-return path';
     ok -f $deployed, 'deployed.yaml kept on the early-return path';
+    is $err, '', 'nothing on STDERR';
 };
 
 done_testing;

@@ -353,8 +353,10 @@ subtest 'ocp destroy: a delete that died of a wrapped error is one Warning line,
     local *OCP::Provider::Hetzner::delete_server = sub { die $WRAPPED =~ s/Server 7/Server 111/r };
     my $r = destroy(project(status => $STATUS));
     (my $line = $WRAPPED_LINE) =~ s/Server 7/Server 111/;
-    like $r->{err}, qr/^  Warning: \Q$line\E\n\n\[!!\] Teardown INCOMPLETE/m,
-        'the warning: one line, then only the blank line the INCOMPLETE block opens with';
+    # The next block is the old-label search, failed under the same 401 and
+    # said since k396; before, it was the INCOMPLETE block.
+    like $r->{err}, qr/^  Warning: \Q$line\E\n\n\[!!\] The search under the old label ocp-cluster=hetzner-default failed: /m,
+        'the warning: one line, then only the blank line the next [!!] block opens with';
     unlike $r->{err}, qr/ at lib\/OCP\/(?:KnownHosts|Provider\/Hetzner)\.pm line \d+/,
         'neither location on STDERR';
     is $r->{code}, 1, 'exit 1: the server is still there';

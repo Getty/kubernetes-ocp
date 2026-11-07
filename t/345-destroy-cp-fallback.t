@@ -259,12 +259,19 @@ subtest 'no label search answered: said on STDERR, with what it leaves' => sub {
     like $r->{err}, qr/\n\Q${\ (not_searched(1, 'no Hetzner token searched for it') . $CLOSING) }\E\z/,
         'then the control plane\'s';
 
-    # A search that fails answered nothing either -- and says why.
+    # A search that fails answered nothing either -- and says why. The k98
+    # report's search under the old label died too; since k396 that is said
+    # as well, where it was taken for one that found nothing (t/396).
     $r = run_destroy(project($HCP), search_dies => 1);
     is_deeply searched($r), [ 'prod', 'hetzner-default' ],
         'the fixture: the label search ran, and died (as the k98 report\'s did)';
-    is $r->{err}, not_searched(1, 'the label search failed: 401 Unauthorized', 'Fix the cause') . $CLOSING,
-        'on STDERR, with the search\'s error';
+    is $r->{err}, not_searched(1, 'the label search failed: 401 Unauthorized', 'Fix the cause')
+                . "\n[!!] The search under the old label ocp-cluster=hetzner-default failed: 401 Unauthorized"
+                . " -- a server of this cluster still labelled so is NOT deleted, and not named here.\n"
+                . "     Look by hand:\n"
+                . "       hcloud server list -l ocp-cluster=hetzner-default\n"
+                . $CLOSING,
+        'on STDERR, with the search\'s error -- then the old-label search\'s, failed too';
     is $r->{out}, $NO_NODES, 'STDOUT: No nodes to destroy.';
 };
 
