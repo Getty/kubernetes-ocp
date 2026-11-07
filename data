@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T04:01:14Z
+id: 443
+priority: low
+status: backlog
+tags:
+- robocop
+- errors
+title: robocop writes a raw API error with a Perl source location into an OCPNode's
+  Failed message
+updated: 2026-11-07T04:01:14Z
+---
+
+Found in the 2026-11-07 full suite run (release round, log of t/ on 7496f84). OCP::Robocop::Controller around line 1130 puts the raw eval error of kube->get OCPNodeProvider into _mark_failed, so status.message of the OCPNode reads: Failed to load OCPNodeProvider/hetzner-a: Kubernetes API error (get OCPNodeProvider): 404 {"message":"..."} at lib/OCP/Robocop/Controller.pm line 1132. That message is what ocp node ls shows. A 404 means the named provider does not exist and can be said as such; other errors can go through OCP::ErrorLine (one_line / api_error_line) like the CLI since k395 and k403. Check the other _mark_failed callers for the same raw $@. Done: no Perl location in status.message, a 404 says the provider is missing, a regression test pins both. Lane: ocp-robocop-worker.
