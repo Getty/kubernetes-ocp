@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-07T01:12:07Z
+created: 2026-11-06T19:18:44Z
+id: 410
+priority: low
+started: 2026-11-07T01:05:42Z
+status: done
+tags:
+- test
+- docs
+title: t/66 header says there is no CI publish workflow, untrue since CI came back
+updated: 2026-11-07T01:12:13Z
+---
+
+Found by the k407 worker (2026-11-06). t/66-image-registry-consistency.t lines 15-21 say "There is no CI publish workflow any more"; .cicd/docker+29+publish.image.sh publishes (release tags only since k405). Comment-only fix, the claims of the test are unaffected. Lane: ocp-test-writer.
+
+test-writer (2026-11-07): t/66 header comment now says CI exists again since k134 and publishes from a release tag only (k405); claims unchanged; t/66 + t/229 46 tests PASS.
+
+commit-ready: t/66 comment
+
+committed e1a1673
