@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-07T04:48:26Z
+created: 2026-11-07T04:02:17Z
+id: 444
+priority: low
+started: 2026-11-07T04:08:41Z
+status: done
+tags:
+- apply
+- exit-code
+title: 'Decide: ocp apply refuses a missing kubeconfig.yaml on STDERR but exits 0
+  without a banner'
+updated: 2026-11-07T04:48:26Z
+---
+
+From k391 (084ebaf). OCP::Cmd::Apply::Drift reconcile path, around line 155: when read_kubeconfig returns nothing (no kubeconfig.yaml), it prints OCP::Secrets no_kubeconfig_refusal on STDERR and returns false. The dispatcher gives no verdict on a false return, so ocp apply ends with exit 0 and no APPLY banner, while ocp update, ocp kubeconfig and inject-key die on the same refusal (exit 1). Reached when a cluster is recorded but kubeconfig.yaml was removed. Recommendation: exit 1 like the other commands, e.g. die with the refusal or count it as a failed component. Decision for the maintainer, then ocp-apply-worker with a regression test on the exit code.
+
+2026-11-07 hub decision (perl-developer-bb), not a maintainer decision: exit 1, as update, kubeconfig and inject-key do. The refusal becomes an error, so ocp apply ends with exit 1. A regression test checks the exit code, red on 01c9716. If Changes already names ocp apply, it gets a line there. Order: after k441 and k421.
+
+2026-11-07 ocp-apply-worker: Apply/Drift.pm reconcile_components dies with OCP::Secrets no_kubeconfig_refusal instead of printing it and returning false; OCP.pm renders it on STDERR (Error: label), exit 1, as ocp kubeconfig does. Apply.pm comment only. Card correction: the branch is hardly reachable. The dispatcher takes the reconcile path only when kubeconfig.yaml exists, so read_kubeconfig finds none only when the file vanishes between that check and the read; a removed kubeconfig.yaml takes the fresh-deploy path. t/444-apply-no-kubeconfig-exit.t removes it at the read (as t/395 does) and runs ocp apply through OCP run_cli: exit 1, the refusal on STDERR as the renderer says an error and the same as ocp kubeconfig in that race, nothing on STDOUT, no Perl location, real run and dry run; control with the file present reaches the cluster API; %INC asserted. Red on 01c9716: subtests 4 and 6 fail on exactly the four new claims (exit 0, raw ERROR: text), controls pass. t/391 subtests 5-6 replaced (they pinned no die and a false return). Binding rel1106-pins: 13 files 240 tests PASS (t/444 t/391 t/399 t/395 t/52 t/38 t/47 t/71 t/349 t/403 t/374 t/381 t/375); orchestrator re-ran t/444 + t/391: 2 files 12 tests PASS.
+
+commit-ready: lib/OCP/Cmd/Apply/Drift.pm lib/OCP/Cmd/Apply.pm t/444-apply-no-kubeconfig-exit.t t/391-apply-pin2-kubeconfig.t plus the Changes bullet; not share/Rexfile or t/406 (k445)
+
+committed 9f74ecd
