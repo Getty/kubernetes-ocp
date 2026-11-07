@@ -8,6 +8,8 @@ use JSON::MaybeXS qw( decode_json );
 use Path::Tiny qw(path);
 use YAML::XS ();
 
+use OCP::ErrorLine ();
+
 =head1 SYNOPSIS
 
     my $api = OCP::Cmd::Apply::K8s::api($apply, $kubeconfig);
@@ -20,7 +22,9 @@ api from a kubeconfig string (through L<OCP::Role::Cmd/connect_cluster_api>, so
 the command handed in consumes that role), server-side apply a hash, parse and
 apply a multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path,
 and the reads a readiness wait and a single lookup make, which tell a 404 from
-a read that failed.
+a read that failed. C<read_or_why>, C<read_or_absent> and C<crd_get> say the
+cause of a failed read in one line, without a Perl source location
+(L<OCP::ErrorLine/one_line>), so whatever prints their words prints none.
 L<OCP::Cmd::Apply> keeps a C<_method> thin forwarder for C<api> (as
 C<_k8s_api>), C<server_side_apply>, C<server_side_apply_all>,
 C<apply_yaml_string>, C<apply_yaml_file>, C<poll_deployment_ready>,
@@ -225,53 +229,56 @@ sub resource_exists {
 # undef and why not -- "<what> not found" for a 404, "could not read <what>:
 # <cause>" for any other failure, which is no verdict on the object (k269).
 # Not a death: the wait reads again, and says the last why when it runs out.
+#
+# The cause is OCP::ErrorLine::one_line of the error (k403): one line, no
+# Perl source location. Kubernetes::REST's APIError carries the caller's
+# " at FILE line N.", and a 599 LWP's text, which says its reason twice;
+# flattened as it came, every [WARN] and [!!] that prints these words
+# printed both. one_line is handed the object, not its text, so a 599 is
+# said once (k395).
 sub read_or_why {
     my ($what, $read) = @_;
     my $object = eval { $read->() };
     my $err = $@ or return ($object, undef);
-    my $reason = "$err";
-    chomp $reason;
-    return (undef, $reason =~ /\b404\b/ ? "$what not found" : "could not read $what: $reason");
+    return (undef, "$err" =~ /\b404\b/ ? "$what not found"
+        : "could not read $what: ".OCP::ErrorLine::one_line($err));
 }
 
 # A read asked once: what $read returns, or undef for a 404 -- and only for
 # one. Any other failure says nothing about the object and dies "could not
 # read <what>: <cause>"; the step it is part of reports it (k277). A wait
-# that reads again takes read_or_why.
+# that reads again takes read_or_why. The cause in one line, as there (k403).
 sub read_or_absent {
     my ($what, $read) = @_;
     my $object = eval { $read->() };
     my $err = $@ or return $object;
-    my $reason = "$err";
-    chomp $reason;
-    return undef if $reason =~ /\b404\b/;
-    die "could not read $what: $reason\n";
+    return undef if "$err" =~ /\b404\b/;
+    die "could not read $what: ".OCP::ErrorLine::one_line($err)."\n";
 }
 
 # A raw GET of $resource_path (a CRD's object has no IO::K8s class OCP
 # reads), decoded. undef only for a 404; a failed request, any other error
-# status and a body that is no JSON die with the cause (k269).
+# status and a body that is no JSON die with the cause (k269), in one line
+# without a Perl source location (k403): a request that died, LWP's text in
+# a 599's body and decode_json's complaint each carry one.
 sub crd_get {
     my ($self, $api, $resource_path) = @_;
     my $response = eval { $api->_request('GET', $resource_path) };
     unless ($response) {
-        my $reason = "$@" || 'no response';
-        chomp $reason;
-        die "GET $resource_path failed: $reason\n";
+        die "GET $resource_path failed: "
+            .OCP::ErrorLine::one_line($@, empty => 'no response')."\n";
     }
     my $status = $response->status;
     return undef if $status == 404;
     if ($status >= 400) {
-        my $body = eval { $response->content } // '';
-        $body =~ s/\s+/ /g;
+        my $body = OCP::ErrorLine::one_line(eval { $response->content }, empty => '');
         $body = substr($body, 0, 400);
         die "GET $resource_path failed: HTTP $status $body\n";
     }
     my $object = eval { decode_json($response->content) };
     unless ($object) {
-        my $reason = "$@" || 'empty body';
-        chomp $reason;
-        die "GET $resource_path: the answer is no JSON: $reason\n";
+        die "GET $resource_path: the answer is no JSON: "
+            .OCP::ErrorLine::one_line($@, empty => 'empty body')."\n";
     }
     return $object;
 }

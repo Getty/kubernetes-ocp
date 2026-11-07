@@ -89,9 +89,10 @@ option verbose => (
 #
 # Wraps new_with_cmd so users never see a Perl stacktrace. Commands report
 # problems with `die "message\n"`; a foreign exception OCP knows is said as
-# its own line (OCP::ErrorLine::user_line, k398); anything else carrying an
-# " at FILE line N." is an internal error and says so. --verbose keeps the
-# raw message. Secrets the process has read are masked in all of it.
+# its own line (OCP::ErrorLine::user_line, k398); anything else ending in
+# the " at FILE line N." Perl puts there is an internal error and says so
+# (_clean_message, k403). --verbose keeps the raw message. Secrets the
+# process has read are masked in all of it.
 #
 # Returns the process exit code: the value the command's execute returned,
 # or 1 when it died.
@@ -245,12 +246,26 @@ sub run_cli {
 # it must see it, not have it taken away. And a user error is said as it was
 # written: a "die ...\n" of several lines (Init's and OCP::Secrets' refusals,
 # validate()'s) keeps its lines, where one_line would fold them into one.
+#
+# k403, the rule as this renderer decides it (ADR 0031), not each site:
+# internal is what ends in the location Perl or Carp put there, " at FILE
+# line N." and the one newline after it -- nothing else follows it. A
+# message that ends in "line N.\n\n" was raised with a newline of its own,
+# a user error that wraps an inner croak (die "Could not ...: $@\n"); it used
+# to read as internal because the strip took any whitespace after the
+# location. What is said, user or internal error, carries no source
+# location: the inner croak's stays out of the line too, and --verbose
+# keeps them all. The location is Perl's whole one: once a line was read
+# from a filehandle -- the PINs --pins-stdin reads -- it ends ", <STDIN>
+# line 1." (or "chunk 1."), which the strip did not see at all.
 sub _clean_message {
     my ($err) = @_;
 
+    my $at  = qr/ at \S+ line \d+(?:, <[^>]*> (?:line|chunk) \d+)?\.?/;
     my $msg = "$err";
     $msg =~ s/\n\s+\S+::\S+ called at .*\z//s;   # Carp::confess trace tail
-    my $internal = $msg =~ s/ at \S+ line \d+\.?\s*\z//s ? 1 : 0;
+    my $internal = $msg =~ s/$at\n?\z// ? 1 : 0;
+    $msg =~ s/$at//g;
     $msg =~ s/\s+\z//;
     $msg =~ s/\A(?:ERROR|Error|error):\s*//;     # normalize existing prefixes
     $msg = 'unknown error' unless length $msg;

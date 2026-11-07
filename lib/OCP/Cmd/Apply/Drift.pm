@@ -12,6 +12,7 @@ use OCP::Cmd::Apply::K8s ();
 use OCP::Cmd::Apply::Network;
 use OCP::Cmd::Apply::Workloads ();
 use OCP::Drift;
+use OCP::ErrorLine ();
 use OCP::Rex;
 use OCP::Secrets;
 use OCP::Versions;
@@ -253,12 +254,15 @@ sub reconcile_components {
                 ? "  [..] Updating $entry->{label} via the cluster API...\n"
                 : "  [..] Running $entry->{remedy}{task}...\n";
             my $done = eval { $self->_run_remedy($config, $entry) };
-            if ($@) {
+            if (my $err = $@) {
                 # A repair that failed leaves the drift in place and the run
-                # unfinished (k226): said on STDERR, in the [!!] style.
+                # unfinished (k226): said on STDERR, in the [!!] style. The
+                # cause in one line, without a Perl source location
+                # (OCP::ErrorLine, k403), as every [!!] below says its own.
+                my $why = OCP::ErrorLine::one_line($err);
                 print STDERR $via_api
-                    ? "  [!!] $entry->{label} update via the cluster API failed: $@"
-                    : "  [!!] $entry->{remedy}{task} failed: $@";
+                    ? "  [!!] $entry->{label} update via the cluster API failed: $why\n"
+                    : "  [!!] $entry->{remedy}{task} failed: $why\n";
                 push @unresolved, $entry->{label} // $entry->{component};
             } elsif ($done) {
                 if (($entry->{kind} // '') eq 'rex_probe') {
@@ -294,12 +298,11 @@ sub reconcile_components {
             # back on the cluster.
             $updated += $self->_report_component('Registry', $self->_setup_registry($config));
         };
-        if ($@) {
+        if (my $err = $@) {
             # The registry is required infrastructure ("MUST succeed" in the
             # deploy path: every image pull goes through it), so a failure is
             # an unfinished apply like cert-manager and the Gateway (k234).
-            print STDERR "  [!!] Registry setup failed: $@";
-            print STDERR "\n" unless $@ =~ /\n\z/;
+            print STDERR '  [!!] Registry setup failed: '.OCP::ErrorLine::one_line($err)."\n";
             push @unresolved, 'Registry';
             push @{ $self->{_failed_components} }, 'Registry';
         }
@@ -370,8 +373,8 @@ sub reconcile_components {
             # for an NVIDIA worker after a check that ran).
             $self->{_gpu_outcome} = $outcome;
         };
-        if ($@) {
-            print STDERR "  [!!] GPU Operator setup failed: $@";
+        if (my $err = $@) {
+            print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::one_line($err)."\n";
             push @unresolved, 'GPU Operator';
             push @{ $self->{_failed_components} }, 'GPU Operator';
         }
@@ -418,10 +421,9 @@ sub reconcile_components {
                 $updated++;
             }
         };
-        if ($@) {
+        if (my $err = $@) {
             # "MUST succeed" in the deploy path: said on STDERR and counted (k231).
-            print STDERR "  [!!] cert-manager setup failed: $@";
-            print STDERR "\n" unless $@ =~ /\n\z/;
+            print STDERR '  [!!] cert-manager setup failed: '.OCP::ErrorLine::one_line($err)."\n";
             push @{ $self->{_failed_components} }, 'cert-manager';
         }
     }
@@ -441,8 +443,7 @@ sub reconcile_components {
             1;
         } or do {
             # "MUST succeed" in the deploy path: STDERR and counted (k231).
-            print STDERR "  [!!] Cilium Gateway setup failed: $@";
-            print STDERR "\n" unless $@ =~ /\n\z/;
+            print STDERR '  [!!] Cilium Gateway setup failed: '.OCP::ErrorLine::one_line($@)."\n";
             push @{ $self->{_failed_components} }, 'Cilium Gateway';
         };
     }
@@ -551,7 +552,8 @@ sub reconcile_components {
         };
         my $list_err = $@;
         if ($list_err) {
-            print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $list_err";
+            print STDERR '  [!!] Could not list OCPNodes, workers were not checked: '
+                .OCP::ErrorLine::one_line($list_err)."\n";
             push @unresolved, 'workers';
         } elsif (!@missing) {
             print "  [ok] Every worker in ocp.yaml has an OCPNode\n"
@@ -599,7 +601,7 @@ sub reconcile_components {
         # OCPNode (k211): spec.labels/spec.taints only, no re-drive, no key.
         my $meta = eval { OCP::Cmd::Apply::CR::sync_worker_meta($self, $api, $config) };
         if (my $err = $@) {
-            print STDERR "  [!!] Could not check worker labels/taints: $err";
+            print STDERR '  [!!] Could not check worker labels/taints: '.OCP::ErrorLine::one_line($err)."\n";
             push @unresolved, 'worker labels/taints';
         } else {
             if (@{ $meta->{patched} }) {
@@ -738,7 +740,8 @@ sub dry_run_report {
         @missing = eval {
             OCP::Cmd::Apply::CR::missing_worker_ocpnodes($self, $self->_k8s_api, $config);
         };
-        print STDERR "  [!!] Could not list OCPNodes, workers were not checked: $@"
+        print STDERR '  [!!] Could not list OCPNodes, workers were not checked: '
+            .OCP::ErrorLine::one_line($@)."\n"
             if $@;
         print "  [workers] $_->{metadata}{name} has no OCPNode\n"
             . "          would create OCPNode/$_->{metadata}{name} and bring the worker up\n"
@@ -751,7 +754,8 @@ sub dry_run_report {
         my $meta = eval {
             OCP::Cmd::Apply::CR::sync_worker_meta($self, $self->_k8s_api, $config, dry_run => 1);
         };
-        print STDERR "  [!!] Could not check worker labels/taints: $@" if $@;
+        print STDERR '  [!!] Could not check worker labels/taints: '.OCP::ErrorLine::one_line($@)."\n"
+            if $@;
         @relabel = @{ $meta ? $meta->{patched} : [] };
         print "  [workers] $_: labels/taints differ from ocp.yaml\n"
             . "          would update labels/taints of OCPNode/$_\n"

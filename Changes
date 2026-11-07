@@ -1151,3 +1151,10 @@ Revision history for OCP
       stops `ocp destroy` before anything is deleted, instead of skipping
       the uninstalls; error reasons are said without a Perl source
       location, and a refusal of several lines keeps its lines.
+    - `ocp apply`'s warning and failure lines for a cluster read, a
+      component setup and the worker checks give their cause in one line,
+      without a Perl source location, and say an unreachable API server's
+      reason once.
+    - The final error line of a command that stops no longer shows a Perl
+      source location. An error that wraps another one is reported as the
+      error it is, not as an internal error.
