@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-11-07T00:15:25Z
+created: 2026-10-31T16:30:28Z
+depends_on:
+- 348
+id: 392
+priority: medium
+started: 2026-11-07T00:02:56Z
+status: done
+tags:
+- docs
+- adr
+- registry
+title: 'Docs after k338/k348: ADR 0022, the ocp-registry skill and README on how registry.local
+  is read'
+updated: 2026-11-07T00:15:31Z
+---
+
+ADR 0022 lines 57-60 have been wrong since k338 and still are after k348. They say corefile_host_address "reads the mapping regardless of which block the line sits in". Since k338 the record is read from the server block that answers the name.
+
+Replacement text proposed by the k348 worker (amend in place or supersede: the adr-auditor decides, by the repo convention):
+> The writer and the probe read `registry.local` from the server block CoreDNS answers it from (k338), including the `*.server` snippets a k3s Corefile imports from `coredns-custom` (k348). A snippet that maps it to the control plane counts as solved; one that maps it elsewhere is `spec` drift that `ocp apply` does not close, and the writer warns rather than writing a record that would be shadowed. OCP still does not write or maintain the snippet. Only plain-DNS server blocks on port 53 count as answering. `*.override` imports are deliberately not read.
+
+Also: .claude/skills/ocp-registry/SKILL.md and README.md say nothing about coredns-custom being read (ocp-doc-writer). Lanes: ocp-adr-auditor (ADR), ocp-doc-writer (skill + README).
+
+2026-11-07: ADR 0022 amended in place by the adr-auditor (verified against Corefile.pm block_for/on_cluster_port, Drift.pm corefile_imports_custom, Network.pm). Card text adjusted: 'or not at all' is spec drift too; *.override not read (not called deliberate). Also found: the old second sentence was false when written (probe read only the Corefile key). doc-writer: ocp-registry skill section + one README clause. docs/adr/README.md provenance paragraph.
+
+commit-ready: docs/adr/0022, docs/adr/README.md, ocp-registry skill, README.md
+
+committed e55898c
