@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-07T03:38:55Z
+id: 440
+priority: low
+status: backlog
+tags:
+- state
+- drift
+- registry
+- docs
+title: 'registry.local DNS after k393: two server blocks with the same key unreported;
+  ADR 0022 and skill wording on snippets'
+updated: 2026-11-07T03:38:55Z
+---
+
+Found by k393, not fixed there. 1. Two server blocks with the same key (two .:53, or a coredns-custom snippet .:53 next to the Corefile own) are refused by CoreDNS (already defined). OCP::Corefile block_for takes the first (t/338 asserts that tie rule) and neither writer nor probe reports it; the other reading of a doubled root block. Lane: ocp-state-worker (writer side apply). 2. ADR 0022 and the ocp-registry skill say a snippet mapping the name to the control plane counts as solved, no drift; since k393 that holds only for a Corefile CoreDNS loads (a doubled hosts in any block wins). One sentence in the ADR amendment and the skill. Lane: ocp-adr-auditor / doc. 3. The k348 wording does not resolve ... CoreDNS refuses the Corefile is strictly true only after a restart; on reload CoreDNS keeps serving the previous config. Wording only.
