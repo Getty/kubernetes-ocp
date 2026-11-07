@@ -1,0 +1,27 @@
+---
+class: standard
+completed: 2026-11-07T03:53:03Z
+created: 2026-11-03T20:19:47Z
+id: 402
+priority: low
+started: 2026-11-07T03:42:23Z
+status: done
+tags:
+- docs
+- pod
+title: 'POD: move =head1 FUNCTIONS/METHODS blocks to inline =func/=method next to
+  each sub (after k364)'
+updated: 2026-11-07T03:53:03Z
+---
+
+Left by k364. 13 files still carry a =head1 FUNCTIONS or METHODS block at the end of the file: OCP.pm, OCP::Cmd::Apply::AMDGPU, OCP::Drift, OCP::ErrorLine, OCP::K8s, OCP::Keys, OCP::Kubeconfig, OCP::Node, OCP::Password, OCP::Rex, OCP::Share, OCP::StateDir, OCP::Versions. House format is inline =func/=method next to each sub.
+
+Why it is not a find/replace: in @Author::GETTY, =func and =method are only a =head2 shortcut with no collector, so converting an __END__ block in place drops the FUNCTIONS heading from the built POD. k364 tried it on ErrorLine and StateDir and the dzil build before/after comparison showed the lost heading.
+
+Done = the POD sits inline per sub, and a dzil build before/after (pod2text per built file) shows no lost content.
+
+commit-ready: lib/OCP.pm, lib/OCP/Cmd/Apply/AMDGPU.pm, lib/OCP/Drift.pm, lib/OCP/ErrorLine.pm, lib/OCP/K8s.pm, lib/OCP/Keys.pm, lib/OCP/Kubeconfig.pm, lib/OCP/Node.pm, lib/OCP/Password.pm, lib/OCP/Rex.pm, lib/OCP/Share.pm, lib/OCP/StateDir.pm, lib/OCP/Versions.pm (POD only)
+
+Done (ocp-doc-writer, uncommitted). 13 files: per-sub POD moved inline as func/method commands next to each sub; the head1 FUNCTIONS or METHODS heading is kept in the source right before the first inline entry, since func/method have no collector and Leftovers keeps the head1. Code untouched: the POD-stripped code of all 13 files is identical to 7496f84. dzil build before (7496f84) and after, pod2text of all 92 built lib and bin files: 85 identical, 6 with the same lines in another order (OCP.pm, Drift, Keys, Node, Rex, Share: entries now follow code order; METHODS moves before COMMANDS in OCP.pm, before ATTRIBUTES in Drift, before FILE FORMAT in Keys), 1 differs only in the line numbers of a POD ERRORS note that was there before (ErrorLine). No content lost, no heading lost. Both dzil builds exit 0.
+
+committed 01c9716708264c58a664b3dd046c258554e8a02a
