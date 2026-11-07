@@ -1,0 +1,46 @@
+---
+class: standard
+completed: 2026-11-07T02:49:55Z
+created: 2026-10-31T16:57:55Z
+depends_on:
+- 353
+id: 396
+priority: low
+started: 2026-11-07T02:06:14Z
+status: done
+tags:
+- destroy
+- ux
+title: 'ocp destroy after k353: silent skips and raw errors left'
+updated: 2026-11-07T02:49:55Z
+---
+
+Found while working k353 (destroy worker). Line numbers are in the k353-patched Destroy.pm.
+
+- Destroy.pm:1029-1030: an ssh node from status.yaml or from an OCPNode with no host is still skipped silently at uninstall.
+- Destroy.pm:85: the k98 mislabelled-server search swallows a failure.
+- Destroy.pm:575: when one token's search answers and another fails, STDOUT says "no server carries it" while STDERR names the failed search.
+- These print the raw error, possibly with a croak location; use OCP::ErrorLine::one_line as k353 did:
+  - Destroy.pm:327 (API-down reason)
+  - :399 (CR Hetzner adapter failure)
+  - :748 (robocop-stop warning)
+  - :990 (Hetzner delete warning)
+  - :1049 (uninstall failure reason)
+- lib/OCP/ErrorLine.pm (via Destroy.pm:932): one_line folds ClusterKey's multi-line refusals into one long line.
+- t/47-deployed-state.t:632 prints the new k353 STDERR line without capturing it.
+
+Lane: ocp-destroy-worker. Related: k395 (raw API errors in status/drift).
+
+More from k382: (1) Destroy.pm:945 + ClusterKey.pm:284/:505: with the token set and no kubeconfig.yaml, the first PIN1 is asked inside the ssh-key eval; a wrong one there downgrades to 'uninstall SKIPPED', and one_line (:951) folds the multi-line refusal. (2) Destroy.pm:341: no key at all, kubeconfig.yaml present, token set: destroy goes on without the API and says nothing (next to k354). (3) Since k382 a broken SOPS_AGE_KEY_FILE stops destroy when the token is set too (as without the token); untested.
+
+Its cluster-API parts are absorbed by Part B (k399); the rest stays here.
+
+k399 (Part B plan) takes this card's cluster-API items: destroy says once why it goes on without the API (no key/token-set case included), the robocop-stop warning through user_line. Still open here: the silent ssh skips and the Hetzner search wording.
+
+The Destroy.pm:990 item (Hetzner delete warning) is done by 9e13d5a (k363)
+
+Done (ocp-destroy-worker, uncommitted). Already done elsewhere: the cluster-API items by k399 (8db076b, with bdb8bf9/b257bbd/af4d47c), the Hetzner delete warning by k363 (9e13d5a). Fixed here: an ssh node with no host recorded is said on STDERR and listed at the end (exit 1); a failed search under the old type-default label is said with its cause and the hcloud selector (exit 1); with one token search failed, STDOUT no longer says no server carries the label; the CR adapter failure, the OCPNode list failure and the uninstall reason without Perl location (user_line, else one_line); a refusal of several lines keeps its lines (_error_lines in Destroy.pm, ErrorLine.pm untouched); k382 item 1: the project age key for the ssh key lookup is asked or checked before the eval, so a wrong PIN1 or a broken SOPS_AGE_KEY_FILE stops the run before any delete (_ssh_key_age_key); k382 item 3 pinned by a claim (passes on the old tree too); t/47 captures the k353 line. Claims changed: t/353 partial-search line (old text claimed what was not searched), t/353 6+8, t/345 case 3, t/373 #6 (exact STDERR now has the old-label failure block). Red: t/396 fails 11/13 on 8243616. Green binding: 25 destroy-related files PASS (runs of 13, 12, 2 files).
+
+commit-ready: lib/OCP/Cmd/Destroy.pm, t/396-destroy-silent-skips.t, t/47-deployed-state.t, t/353-destroy-said-lines.t, t/345-destroy-cp-fallback.t, t/373-hetzner-token-masked.t
+
+committed fef5289ff60e8314a380e0d7cc6d677e8e878030
