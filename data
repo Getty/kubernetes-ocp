@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-07T05:25:28Z
+id: 448
+priority: medium
+status: backlog
+tags:
+- node-add
+- ux
+title: ocp node add run again on a Failed OCPNode repeats the old message without
+  saying Failed is terminal
+updated: 2026-11-07T05:25:28Z
+---
+
+Found during k445 (2026-11-07). `ocp node add NAME` for a NAME whose OCPNode is Failed reads it back (ensure keeps the stored status, Add.pm around 597) and returns its old message, exit 1, installing nothing, whatever switches are given. Nothing on the CLI says that Failed is terminal and that `ocp node rm NAME --keep_machine` comes first; only robocop's path adds a retry hint. The Cilium refusal now says it for that one case. Done when a node add run that meets an existing Failed OCPNode says so on STDERR, naming the rm, with a test. Lane: apply (node add).
