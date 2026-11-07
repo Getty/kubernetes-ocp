@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-07T00:13:13Z
+created: 2026-11-06T01:35:00Z
+id: 408
+priority: low
+started: 2026-11-07T00:03:42Z
+status: done
+tags:
+- adr
+- docs
+title: 'ADR 0020: the 2026-08-17 amendment says there is no CI, true again since k134
+  is not'
+updated: 2026-11-07T00:13:20Z
+---
+
+ADR 0020's 2026-08-17 amendment says there is "no CI for any architecture" because .github/workflows/ was gone. That has been stale since 2026-09-18 (k134 brought .github/workflows/ci.yml back; CI builds on amd64 ubuntu-latest runners). The "published raudssus/ocp:latest is amd64 (pushed 2026-08-15)" sentence is still true in substance; the latest push is CI's (44a9db0, 2026-11-03). Its "NOT yet first-class" header still stands. Fix with a short 0020 amendment, the way ADR 0013 was amended under k405. Lane: ocp-adr-auditor. Found by the ADR auditor on k405.
+
+adr-auditor (2026-11-07): ADR 0020 amended in place (dated section + inline markers). CI exists again since k134 (21da1ab, on main 2026-09-18): vendor + dockerhub/ghcr image jobs on ubuntu-latest amd64, build only, publish only from a release tag (k405), no t/ and no reconcile path in CI. Header NOT yet first-class stands. latest still single linux/amd64 (Docker Hub, :44a9db0). docs/adr/README.md provenance paragraph added.
+
+commit-ready: docs/adr/0020 + docs/adr/README.md
+
+committed 4d32deb
