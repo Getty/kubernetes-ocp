@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-07T00:47:50Z
+id: 429
+priority: low
+status: backlog
+tags:
+- docs
+- status
+- pod
+title: ocp status POD still says a failed kubeconfig decrypt exits 1 with an error
+  object
+updated: 2026-11-07T00:47:50Z
+---
+
+Found on k391 (status worker). lib/OCP/Cmd/Status.pm, the JSON OUTPUT section (around 859-863) and the execute POD, say status exits 1 when the kubeconfig cannot be decrypted and the object then carries an error string. Since a key problem dies in cluster_api, a failed decrypt exits 1 with no JSON object on STDOUT. Lane: ocp-doc-writer.
