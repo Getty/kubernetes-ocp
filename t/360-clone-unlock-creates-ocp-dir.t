@@ -25,9 +25,10 @@ use OCP::Secrets;
 #      .ocp/age.key is 0600 and is the project key, .ocp/age.pub is back, and
 #      a fresh object reads every file with it and asks nothing;
 #   2. the .ocp/ it makes has the mode every other writer of .ocp/ gives it
-#      (Path::Tiny's mkpath: 0777 less the umask) -- 0755 under umask 022,
-#      the same as the origin's, made by generate_age_key;
-#   3. a .ocp/ the clone has already keeps its mode;
+#      -- 0700 since k372 (was Path::Tiny's mkpath default, 0777 less the
+#      umask: 0755 under 022), the same as the origin's, made by
+#      generate_age_key;
+#   3. a .ocp/ the clone has already keeps its mode, a looser one included;
 #   4. a wrong PIN1 is refused as before, and writes nothing: no .ocp/;
 #   5. from bin/ocp: `ocp keys show --pins-stdin`, PIN1 on STDIN, prints the
 #      admin public key on STDOUT and exits 0.
@@ -126,8 +127,7 @@ subtest '.ocp/ gets the mode every other writer of it gives it' => sub {
 
     my $dir = $clone->child('.ocp');
     ok -d $dir, '.ocp/ made';
-    is sprintf('%04o', mode_of($dir)), sprintf('%04o', 0777 & ~umask), '0777 less the umask';
-    is sprintf('%04o', mode_of($dir)), '0755', 'which is 0755 under umask 022';
+    is sprintf('%04o', mode_of($dir)), '0700', 'it is 0700 (k372)';
     is sprintf('%04o', mode_of($dir)), sprintf('%04o', mode_of($origin->child('.ocp'))),
         'the mode generate_age_key gave the origin its .ocp/';
 };
@@ -136,14 +136,14 @@ subtest 'a .ocp/ the clone has already keeps its mode' => sub {
     my $clone = clone_of($origin);
     my $dir   = $clone->child('.ocp');
     $dir->mkpath;
-    $dir->chmod(0700);
+    $dir->chmod(0755);    # not the 0700 a new one gets: kept, not tightened (k372)
     $dir->child('id_ed25519')->spew('BOOTSTRAP k360');
 
     my $err;
     prompted($PIN1, sub { eval { OCP::Secrets->new(project_dir => $clone, ocp => $ocp)->ensure_age_key; 1 } or $err = $@ });
     is $err, undef, 'ensure_age_key unlocks';
     ok -f $dir->child('age.key'), '.ocp/age.key written';
-    is sprintf('%04o', mode_of($dir)), '0700', '.ocp/ is 0700 still';
+    is sprintf('%04o', mode_of($dir)), '0755', '.ocp/ is 0755 still';
     is $dir->child('id_ed25519')->slurp, 'BOOTSTRAP k360', 'and what was in it is there';
 };
 

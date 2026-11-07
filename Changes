@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A new `.ocp/` is made mode 0700, whichever command makes it first
+      (`ocp init`, the first PIN1 unlock on a clone, `ocp status`,
+      known_hosts, a kubeconfig written into it), so other local users can
+      no longer list it. A `.ocp/` that is already there keeps its mode.
     - `ocp apply`, its dry run and `ocp status` now say that `gpu.toolkit`
       and `gpu.amd.integrated` are set when a node is installed: a changed
       value reaches a joined worker only when it is joined again (`ocp node

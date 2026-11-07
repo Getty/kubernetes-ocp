@@ -214,7 +214,7 @@ sub execute {
         print "[ok] .ocp/ directory exists\n";
     } else {
         print "[..] Creating .ocp/ directory\n";
-        path('.ocp')->mkpath;
+        OCP::StateDir::make_dir(path('.ocp'));    # 0700 (k372)
         print "[ok] Created .ocp/\n";
     }
 

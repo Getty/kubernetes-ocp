@@ -6,6 +6,7 @@ use warnings;
 use Path::Tiny qw(path);
 
 use OCP;
+use OCP::StateDir;
 
 # Named entry lists in a kubeconfig, and the key holding their payload.
 my %SECTIONS = (
@@ -152,7 +153,7 @@ sub export {
 
     my $merged = $class->merge($base, $incoming);
 
-    $target->parent->mkpath;
+    OCP::StateDir::make_parent($target);    # a .ocp/ 0700 (k372)
     $target->spew_utf8(OCP->dump($merged));
     $target->chmod(0600);
 

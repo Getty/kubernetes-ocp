@@ -11,6 +11,7 @@ use OCP::Config;
 use OCP::Kubeconfig;
 use OCP::ReadonlyKubeconfig;
 use OCP::Secrets;
+use OCP::StateDir;
 
 with 'OCP::Role::Cmd';
 
@@ -180,7 +181,7 @@ sub execute {
     if ($self->output) {
         # Write to specific file
         my $out_file = $self->output;
-        path($out_file)->parent->mkpath;
+        OCP::StateDir::make_parent($out_file);    # a .ocp/ 0700 (k372)
         path($out_file)->spew($kubeconfig);
         path($out_file)->chmod(0600);
         print "Kubeconfig written to $out_file\n";
