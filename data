@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-07T05:25:34Z
+id: 449
+priority: medium
+status: backlog
+tags:
+- node
+- cosmetic
+title: A failed Rex task's OCPNode message carries the prefix twice
+updated: 2026-11-07T05:25:34Z
+---
+
+Found during k445 (2026-11-07). The stored status.message reads "Rex task failed: Rex task 'install_rke2_agent' failed: ...", prefixed once by lib/OCP/Node.pm (around 1072) and once by OCP::Rex. Done when the message carries the prefix once, with the test that pins the wording adjusted. Lane: state (OCP::Node) or provider (OCP::Rex); check which side t/219-rex-task-failure-not-internal.t pins.
