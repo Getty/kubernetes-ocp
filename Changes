@@ -51,7 +51,12 @@ Revision history for OCP
     - `ocp apply` and `ocp node add` take `--clean_cilium_residue`: the
       install clears the Cilium datapath state an earlier cluster left on a
       machine, without a reboot. Without it the install still refuses such
-      a host, and the refusal names the switch. robocop takes no such
+      a host, and the refusal names the switch and what running the
+      install again takes: `ocp apply` again for the first control plane;
+      for a node that joins, whose OCPNode the refusal leaves Failed,
+      `ocp node rm NAME --keep_machine`, then `ocp node add NAME` with the
+      switch, `--role control-plane` for a control plane, and the provider
+      and host `ocp node ls` shows for it. robocop takes no such
       switch: reboot a machine robocop joins.
     - A node joining a cluster without a `node_ip` now registers the
       address of its route to the join server, not that of its default

@@ -679,7 +679,7 @@ sub _install_server {
     # saying why. Measured on ocpt-cp. Refused, naming a reboot and OCP's
     # switch, or with the switch cleared without a reboot: see
     # _cilium_residue_check (k406).
-    _cilium_residue_check($params);
+    _cilium_residue_check($params, 'control-plane');
 
     # Everything install_server would refuse, asked before prepare_node
     # changes the host, so a refused host is left exactly as it was
@@ -795,7 +795,7 @@ sub _install_agent {
     my %opts = (_node_ip_opt($params), _agent_opts($distribution, $params));
 
     # The Cilium leftovers (k190), refused or cleared as for a server.
-    _cilium_residue_check($params);
+    _cilium_residue_check($params, 'worker');
 
     # Everything install_agent would refuse, before prepare_node touches the
     # host (rex-rancher k78), as for a server (see _install_server): the Cilium
@@ -919,18 +919,51 @@ sub _node_ip_from_route_opt {
 # The switch is a task parameter, set by ocp itself only: robocop sets none
 # (no OCPNode field carries it), so the sentence says what to do there.
 sub _cilium_residue_check {
-    my ($params) = @_;
+    my ($params, $role) = @_;
     return Rex::Rancher::Uninstall->check_cilium_residue(clean => 1)
         if $params->{clean_cilium_residue};
     return 1 if eval { Rex::Rancher::Uninstall->check_cilium_residue; 1 };
     (my $refusal = $@) =~ s/\s+\z//;
-    die "$refusal " . _cilium_residue_switch_text() . "\n";
+    die "$refusal " . _cilium_residue_switch_text($params, $role) . "\n";
 }
 
+# Where "run the install again" leads in OCP, which depends on the install
+# (k445), told apart by `server`, the URL only a joining node is handed (as
+# _node_ip_from_route_opt tells them apart):
+#
+#   - the first control plane (no server) is `ocp apply`'s bootstrap, refused
+#     before kubeconfig.yaml or any OCPNode is written, so the next `ocp apply`
+#     bootstraps again and hands its switch to this check;
+#   - every node that joins (server set) -- police2+ and the workers of `ocp
+#     apply`, a node of `ocp node add`, every node robocop joins -- is
+#     installed from its OCPNode, which the refusal leaves Failed. Failed is
+#     terminal: `ocp node add` reads the Failed OCPNode back and returns its
+#     message, `ocp apply` drives no OCPNode that exists and joins no control
+#     plane on a cluster that exists. The way back is a new OCPNode, on the
+#     machine as it is (--keep_machine: nothing of the cluster is on it).
+#     node add is the one command that makes it for a worker and a control
+#     plane alike, and NAME keeps the node the one ocp.yaml may list.
+#
+# Typed as said, that node add has to make the same node: its role ($role,
+# which install this is -- node add defaults to worker), its provider and, for
+# ssh, its host. Neither is known here, so the sentence points at `ocp node
+# ls`, whose PROVIDER and IP columns are those flags (spec.providerRef, and the
+# address the provider handed back -- an ssh node's host), read before the rm
+# takes the OCPNode away. A node ocp apply made needs nothing else from
+# ocp.yaml but its node_ip, labels and taints, which the last clause names.
 sub _cilium_residue_switch_text {
-    return 'In OCP that clearing is --clean_cilium_residue: run ocp apply with it again, '
-         . 'or ocp node add for a node joined without robocop. robocop takes no such '
-         . 'switch: reboot a host robocop joins.';
+    my ($params, $role) = @_;
+    return 'In OCP that clearing is --clean_cilium_residue: run ocp apply with it again.'
+        unless $params->{server};
+    my $name = $params->{node_name} || 'NAME';
+    my $role_flag = ($role // '') eq 'control-plane' ? ' --role control-plane' : '';
+    return 'In OCP that clearing is --clean_cilium_residue, and running the install '
+         . 'again takes a new OCPNode, as this one stays Failed: note its PROVIDER and '
+         . "IP in ocp node ls, then ocp node rm $name --keep_machine and ocp node add "
+         . "$name$role_flag --provider PROVIDER with the switch, plus --host IP for an "
+         . 'ssh provider and any --node_ip, --label, --taint or --gpu it had; or without '
+         . 'the switch after a reboot. robocop takes no such switch: reboot a host '
+         . 'robocop joins.';
 }
 
 # The pod network, stated on both sides: the server's cluster-cidr and

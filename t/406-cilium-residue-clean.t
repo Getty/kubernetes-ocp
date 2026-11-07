@@ -48,7 +48,13 @@ no warnings 'once';   # the sandbox package is filled by a string eval
 #   1. without the switch each install task refuses a host with leftovers in
 #      the library's words with OCP's switch after them, one line, before
 #      the preflight, prepare_node or the install -- and the check it asks
-#      is the plain one, never clean;
+#      is the plain one, never clean. The sentence says where the switch
+#      goes (k445): the first control plane (no server) takes it on the next
+#      ocp apply; a node that joins is Failed, so it takes ocp node rm NAME
+#      --keep_machine and an ocp node add NAME that makes the same node --
+#      --role control-plane from a server install, none from an agent's, the
+#      provider and host read off ocp node ls (t/445-cilium-residue-rerun.t
+#      shows why, and types it);
 #   2. with clean_cilium_residue the task asks check_cilium_residue(clean =>
 #      1) before the preflight and goes on when it returns; a JSON false or
 #      0 is no switch;
@@ -75,16 +81,43 @@ my $CWD = getcwd();
 like $INC{'OCP/Rex.pm'}, qr{^(?:\Q$CWD\E/)?lib/}, 'OCP::Rex from ./lib';
 like $INC{'OCPTest/Rexfile.pm'}, qr{^(?:\Q$CWD\E/)?t/lib/}, 'the harness from ./t/lib';
 
-my $SWITCH = qr/In OCP that clearing is --clean_cilium_residue: run ocp apply with it again, or ocp node add for a node joined without robocop\. robocop takes no such switch: reboot a host robocop joins\./;
+# OCP's sentence after the library's refusal (k445): where the switch goes for
+# the first control plane, and for a node that joins -- named, since its
+# OCPNode is what has to go first, and with the flags that make the same node
+# again: a control plane's role (node add's default is worker), the provider
+# and host it has.
+my $SWITCH_FIRST = qr/In OCP that clearing is --clean_cilium_residue: run ocp apply with it again\./;
+sub switch_join {
+  my ($name, $role) = @_;
+  my $role_flag = $role eq 'control-plane' ? ' --role control-plane' : '';
+  return qr/In OCP that clearing is --clean_cilium_residue, and running the install again takes a new OCPNode, as this one stays Failed: note its PROVIDER and IP in ocp node ls, then ocp node rm \Q$name\E --keep_machine and ocp node add \Q$name$role_flag\E --provider PROVIDER with the switch, plus --host IP for an ssh provider and any --node_ip, --label, --taint or --gpu it had; or without the switch after a reboot\. robocop takes no such switch: reboot a host robocop joins\./;
+}
 
 my $CHECK = 'Rex::Rancher::Uninstall::check_cilium_residue';
 
+# The first control plane gets no server; every node that joins gets one,
+# and its OCPNode's name as node_name (OCP::Node), a control plane too.
 my @TASKS = (
   [ install_rke2_server => 'Server', {} ],
   [ install_k3s_server  => 'Server', {} ],
-  [ install_rke2_agent  => 'Agent', { server => 'https://10.0.0.1:9345', token => 't' } ],
-  [ install_k3s_agent   => 'Agent', { server => 'https://10.0.0.1:6443', token => 't' } ],
+  [ install_rke2_server => 'Server', { server => 'https://10.0.0.1:9345', token => 't', node_name => 'police2' } ],
+  [ install_rke2_agent  => 'Agent', { server => 'https://10.0.0.1:9345', token => 't', node_name => 'worker-9' } ],
+  [ install_k3s_agent   => 'Agent', { server => 'https://10.0.0.1:6443', token => 't', node_name => 'worker-9' } ],
 );
+
+# The sentence the task with these parameters ends its refusal with: a server
+# task's install joins a control plane, an agent task's a worker.
+sub switch_for {
+  my ($task, $params) = @_;
+  return $SWITCH_FIRST unless $params->{server};
+  return switch_join($params->{node_name}, $task =~ /_server\z/ ? 'control-plane' : 'worker');
+}
+
+# A subtest name: which of the two installs of a server task this is.
+sub task_label {
+  my ($task, $params) = @_;
+  return $task . ($params->{server} ? " (joining as $params->{node_name})" : '');
+}
 
 sub lib_fns {
   my ($side) = @_;
@@ -108,7 +141,7 @@ for my $t (@TASKS) {
   my ($task, $side, $params) = @$t;
   my ($preflight, $install) = lib_fns($side);
 
-  subtest "$task: leftovers without the switch are refused, naming it" => sub {
+  subtest task_label($task, $params) . ": leftovers without the switch are refused, naming it" => sub {
     OCPTest::Rexfile->reset;
     local $OCPTest::Rexfile::LIB_CODE{$CHECK} = sub {
       my ($class, %o) = @_;
@@ -118,7 +151,8 @@ for my $t (@TASKS) {
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params }); 1 };
     my $died = $@;
     ok !$ok, 'the task dies';
-    like $died, qr/\A\Q$REFUSAL_LINE\E $SWITCH\n\z/,
+    my $switch = switch_for($task, $params);
+    like $died, qr/\A\Q$REFUSAL_LINE\E $switch\n\z/,
       'the library\'s refusal, then OCP\'s switch sentence';
     unlike $died, qr/\n./, 'one line, so Rex logs it as one ERROR line';
     is_deeply check_opts(), [ {} ], 'the plain check, never clean';
@@ -135,7 +169,7 @@ for my $t (@TASKS) {
   my ($task, $side, $params) = @$t;
   my ($preflight, $install) = lib_fns($side);
 
-  subtest "$task: with clean_cilium_residue the check clears, then the install goes on" => sub {
+  subtest task_label($task, $params) . ": with clean_cilium_residue the check clears, then the install goes on" => sub {
     for my $on (1, JSON::PP::true) {
       OCPTest::Rexfile->reset;
       my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params, clean_cilium_residue => $on }); 1 };
@@ -169,13 +203,14 @@ subtest 'with the switch, what is left fails the task in the library\'s words' =
   for my $t (@TASKS) {
     my ($task, $side, $params) = @$t;
     my ($preflight, $install) = lib_fns($side);
+    my $label = task_label($task, $params);
     OCPTest::Rexfile->reset;
     local $OCPTest::Rexfile::LIB_DIE{$CHECK} = $left;
     my $ok = eval { OCPTest::Rexfile->run_task($task, { %$params, clean_cilium_residue => 1 }); 1 };
-    ok !$ok, "$task: dies";
-    is $@, $left, "$task: with the library's message, unchanged -- the switch was used already";
+    ok !$ok, "$label: dies";
+    is $@, $left, "$label: with the library's message, unchanged -- the switch was used already";
     is scalar(OCPTest::Rexfile->calls($preflight)) + scalar(OCPTest::Rexfile->calls($install))
-       + scalar(OCPTest::Rexfile->calls('do_task')), 0, "$task: nothing after it";
+       + scalar(OCPTest::Rexfile->calls('do_task')), 0, "$label: nothing after it";
   }
 };
 
@@ -184,7 +219,7 @@ subtest 'with the switch, what is left fails the task in the library\'s words' =
 # The Rexfile's own helper, with the real guard in place of the recorder and
 # Rex::Commands::Run::run -- its one channel to the host -- answered here.
 sub real_check {
-  my ($params, $answer) = @_;
+  my ($params, $answer, $role) = @_;
   my @ran;
   my $ok;
   {
@@ -197,7 +232,7 @@ sub real_check {
       return $answer->($cmd, scalar @ran);
     };
     local *Rex::Logger::info = sub { };
-    $ok = eval { OCPTest::Rexfile->helper('_cilium_residue_check')->($params); 1 };
+    $ok = eval { OCPTest::Rexfile->helper('_cilium_residue_check')->($params, $role); 1 };
   }
   return ($ok, $@, \@ran);
 }
@@ -206,11 +241,20 @@ my $PROBE   = Rex::Rancher::Uninstall->cilium_residue_probe_cmd;
 my $CLEANUP = Rex::Rancher::Uninstall->cilium_residue_cleanup_cmd;
 
 subtest 'the real Rex::Rancher: refused with its text and OCP\'s sentence' => sub {
-  my ($ok, $err, $ran) = real_check({}, sub { $_[0] eq $PROBE ? "/sys/fs/bpf/cilium\n" : '' });
-  ok !$ok, 'refused';
   (my $own = OCPTest::CiliumRefusal->text('/sys/fs/bpf/cilium')) =~ s/\s+\z//;
-  like $err, qr/\A\Q$own\E $SWITCH\n\z/, 'its refusal, then the switch sentence';
-  is_deeply $ran, [ $PROBE ], 'only probed';
+  # As _install_server and _install_agent call it: the install's role with it.
+  for my $c ([ install_rke2_server => {} ],
+             [ install_rke2_server => { server => 'https://10.0.0.1:9345', node_name => 'police2' } ],
+             [ install_rke2_agent  => { server => 'https://10.0.0.1:9345', node_name => 'synapse' } ]) {
+    my ($task, $params) = @$c;
+    my $role = $task =~ /_server\z/ ? 'control-plane' : 'worker';
+    my $who = $params->{server} ? "a $role that joins" : 'the first control plane';
+    my ($ok, $err, $ran) = real_check($params, sub { $_[0] eq $PROBE ? "/sys/fs/bpf/cilium\n" : '' }, $role);
+    ok !$ok, "$who: refused";
+    my $switch = switch_for($task, $params);
+    like $err, qr/\A\Q$own\E $switch\n\z/, "$who: its refusal, then the switch sentence";
+    is_deeply $ran, [ $PROBE ], "$who: only probed";
+  }
 };
 
 subtest 'the real Rex::Rancher: the switch runs its cleanup and probes again' => sub {
@@ -509,9 +553,9 @@ subtest 'the refusal with its switch sentence is the failed task\'s reason, whol
   OCPTest::Rexfile->reset;
   local $OCPTest::Rexfile::LIB_DIE{$CHECK} = $REFUSAL;
   ok !eval { OCPTest::Rexfile->run_task('install_rke2_agent',
-    { server => 'https://10.0.0.1:9345', token => 't' }); 1 }, 'the task refuses';
+    { server => 'https://10.0.0.1:9345', token => 't', node_name => 'worker-9' }); 1 }, 'the task refuses';
   (my $line = $@) =~ s/\s+\z//;
-  like $line, $SWITCH, 'naming the switch';
+  like $line, switch_join('worker-9', 'worker'), 'naming the switch';
 
   my $rexfile = path($tmp)->child('Rexfile');
   $rexfile->spew("# stub\n");

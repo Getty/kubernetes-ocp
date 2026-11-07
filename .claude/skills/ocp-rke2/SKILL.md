@@ -44,7 +44,11 @@ the ssh/local uninstall.
   untouched (Cilium residue → reboot, or `--clean_cilium_residue` on the CLI
   paths `ocp apply`/`ocp node add`, not robocop; version skew, cluster-cidr).
   The install asks the residue check itself first, so the refusal can name the
-  switch.
+  switch, and where a rerun leads: `ocp apply` for the first control plane;
+  for a join, whose OCPNode the refusal left Failed, `ocp node rm NAME
+  --keep_machine` then `ocp node add NAME` with the switch, `--role
+  control-plane` for a server join, and the `--provider`/`--host` that
+  `ocp node ls` shows for the node.
 - **A join without `node_ip` derives it from the route** to the join server
   (`node_ip_from_route`) when Rex::Rancher can; else a `[WARN]`. An explicit
   `node_ip` wins; the first server derives nothing.

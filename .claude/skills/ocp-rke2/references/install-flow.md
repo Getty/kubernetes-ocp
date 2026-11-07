@@ -61,8 +61,16 @@ Rex::GPU (CPAN; floors in `cpanfile`, exact versions in `cpanfile.snapshot`).
      reboot. The old socket LB hangs every image pull (k190). `_install_server`
      and `_install_agent` ask this check themselves, before the library's
      preflight. The refusal adds a sentence naming `--clean_cilium_residue`
-     (`ocp apply`, `ocp node add`); robocop has no such switch, a host it joins
-     is rebooted.
+     and where a rerun leads, told apart by `server`
+     (`_cilium_residue_switch_text`, handed the role by its caller): the
+     first control plane to `ocp apply` again (no kubeconfig.yaml was
+     written, so the next apply bootstraps again); a joining node, whose
+     OCPNode the refusal leaves Failed, to `ocp node rm NAME --keep_machine`,
+     then `ocp node add NAME` with the switch: `--role control-plane` from
+     `_install_server` (node add defaults to worker), `--provider` and, for
+     ssh, `--host` off the PROVIDER and IP columns of `ocp node ls`, plus any
+     `--node_ip`, `--label`, `--taint` or `--gpu` the node had. robocop has
+     no such switch, a host it joins is rebooted.
    - With `--clean_cilium_residue` the install calls
      `Rex::Rancher::Uninstall->check_cilium_residue(clean => 1)` (Rex::Rancher
      0.005): it removes the pins under `/sys/fs/bpf/cilium`, the `cil_*` cgroup

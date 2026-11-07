@@ -97,7 +97,13 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   left by an earlier cluster on a machine instead of refusing it (a host
   running RKE2/K3s is untouched; what remains still asks for a reboot);
   without it the install refuses such a host and the refusal names the
-  switch. Not for robocop-joined nodes (reboot those).
+  switch. Only a refused first control plane is installed again by the next
+  `ocp apply` (no kubeconfig.yaml was written, so it bootstraps again); a
+  refused join (police2+, a worker) leaves a Failed OCPNode that no later
+  `ocp apply` installs again: `ocp node rm NAME --keep_machine`, then
+  `ocp node add NAME --clean_cilium_residue` with `--role control-plane` for
+  a control plane and the `--provider`/`--host` `ocp node ls` shows for the
+  node, as the refusal says. Not for robocop-joined nodes (reboot those).
 - `ocp status [--json]` — spec summary, then (once deployed) nodes, GPUs and
   the drift report; read-only. Exit 1 when the kubeconfig cannot be
   decrypted, the API does not answer or drift detection dies (cause on
@@ -206,7 +212,10 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   — create an OCPNode CR (`--no_wait` is kept as an alias, see above).
   `--clean_cilium_residue` is the same switch as on `ocp apply`; refused with
   `--nowait` (nothing would install) and when robocop does the join, both
-  before anything is written.
+  before anything is written. Failed is terminal: run again for a NAME whose
+  OCPNode is Failed, it reads that OCPNode back and installs nothing, switch
+  or not — `ocp node rm NAME --keep_machine` first, then add it again with
+  the flags it was added with.
   On a hetzner provider `--server-type` is needed unless the OCPNodeProvider
   has `spec.hetzner.serverType` (the `hetzner-default` apply writes has none):
   with neither, `create_server` refuses and the node goes Failed, nothing

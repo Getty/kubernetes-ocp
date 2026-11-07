@@ -617,9 +617,19 @@ switch. With it the install clears that state without a reboot
 again: anything left fails the install, asking for a reboot. A machine with
 nothing on it, or one running RKE2 or K3s, is not touched.
 
-It reaches every install this run does itself: the first control plane, the
-additional ones, and the workers the CLI brings up. Workers Robocop brings up
-do not get it -- Robocop takes no such switch, and its refusal asks for a
+On a run that deploys a cluster fresh, it reaches every install this run does
+itself: the first control plane, the additional ones, and the workers the CLI
+brings up.  A run after a refusal is different.  The first control plane is
+refused during bootstrap, before F<kubeconfig.yaml> or any C<OCPNode> is
+written, so the next C<ocp apply --clean_cilium_residue> bootstraps it again
+and the switch reaches it.  A control plane that joins later and a worker are
+refused with their C<OCPNode> in phase C<Failed>, which is terminal: on a
+cluster that exists C<ocp apply> joins no control plane and drives no
+C<OCPNode> that already exists, so running it again with the switch does not
+reach them.  They need C<ocp node rm NAME --keep_machine>, then C<ocp node
+add>, as the refusal says; the flags are in
+L<OCP::Cmd::Node::Add/CILIUM LEFTOVERS>.  Workers Robocop brings up do not
+get the switch -- Robocop takes no such switch, and its refusal asks for a
 reboot.
 
 =method execute

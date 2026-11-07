@@ -1212,6 +1212,22 @@ with Robocop running, Robocop joins the node and takes no such switch, and
 with C<--nowait> nothing is installed in this run -- both are refused before
 anything is written.
 
+The refusal leaves the node's C<OCPNode> in phase C<Failed>, and C<Failed> is
+terminal.  Running the same C<ocp node add> again, with the switch or without,
+reads that C<OCPNode> back, returns its old message and installs nothing.  The
+way back is a new C<OCPNode> on the machine as it is.  Read the node's
+C<PROVIDER> and C<IP> in C<ocp node ls>, then remove the C<OCPNode> without
+touching the machine and add it again with the switch:
+
+    ocp node rm worker-9 --keep_machine
+    ocp node add worker-9 --provider ssh-default --host 10.0.0.9 --clean_cilium_residue
+
+C<--provider> is the C<PROVIDER> column, and C<--host> the C<IP> column, for
+an ssh provider only.  For a control plane add C<--role control-plane>, as
+C<ocp node add> makes a worker by default.  Repeat any C<--node_ip>,
+C<--label>, C<--taint> or C<--gpu> the node had.  After a reboot the add works
+without the switch.
+
 =head1 CHOOSING THE PROVIDER
 
 C<--provider> takes the B<name> of an C<OCPNodeProvider> CR, not a provider
