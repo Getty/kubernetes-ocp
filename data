@@ -1,0 +1,17 @@
+---
+class: standard
+created: 2026-11-07T05:25:15Z
+id: 446
+priority: medium
+status: backlog
+tags:
+- node-add
+- robocop
+- control-plane
+- tls
+title: ocp node add and robocop join a control plane without the cluster's tls-san
+  list
+updated: 2026-11-07T05:25:15Z
+---
+
+Found during k445 (2026-11-07). Only ocp apply hands a control-plane join the cluster's tls-san list (lib/OCP/Cmd/Apply/CR.pm around 1203 and 1329, cp_tls_sans). ocp node add's _cli_reconcile and robocop's join do not. A control plane added or re-created with `ocp node add NAME --role control-plane` (the way back the Cilium refusal now names) therefore carries only its own address in its serving cert, not the cluster's SANs. Done when node add's control-plane join (and robocop's, if it joins control planes) passes the same tls-san list as apply, with a test that compares the install params of both paths. Lanes: apply (node add), robocop.
