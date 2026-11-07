@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-07T02:50:21Z
+id: 433
+priority: low
+status: backlog
+tags:
+- errors
+- provider
+title: OCP::Role::Cmd provider_crs swallows a failed OCPNodeProvider list
+updated: 2026-11-07T02:50:21Z
+---
+
+Found by k396 (fef5289), not fixed there. OCP::Role::Cmd::provider_crs takes a failed list of OCPNodeProvider CRs for an empty one, so ocp destroy (and every other caller) goes on as if the cluster had no provider CR, with nothing said. It should say the failure in one line (OCP::ErrorLine user_line), as the OCPNode list failure does since k396. Cross-cutting lane (role used by several commands).
