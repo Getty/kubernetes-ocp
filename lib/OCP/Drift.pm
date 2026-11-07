@@ -1074,9 +1074,6 @@ sub registry_dns_drift {
         last;
     }
 
-    # No CoreDNS ConfigMap under a name we know: not this probe's business.
-    return unless defined $cm_name;
-
     # What every entry below shares. Each is kind 'spec' with a manual step,
     # not 'missing', wherever the writer leaves the Corefile as it is: no ocp
     # apply closes those.
@@ -1086,6 +1083,19 @@ sub registry_dns_drift {
         expected  => $expected,
         remedy    => undef,
     );
+
+    # No CoreDNS ConfigMap under a name we know: the writer stops there with
+    # an error (k319), so this is drift no ocp apply closes, named as the
+    # writer names it (k393).
+    return {
+        %entry,
+        kind        => 'spec',
+        actual      => undef,
+        message     => "$REGISTRY_HOSTNAME is not in CoreDNS (expected $expected): found no CoreDNS"
+            . ' ConfigMap in kube-system (tried ' . join(', ', @COREDNS_CONFIGMAPS) . '),'
+            . ' the place ocp apply writes the record into',
+        manual_step => "Bring back the distribution's CoreDNS ConfigMap in kube-system, then run ocp apply",
+    } unless defined $cm_name;
 
     # Nothing for CoreDNS to answer from, nowhere for the writer to write
     return {
@@ -1123,36 +1133,42 @@ sub registry_dns_drift {
 
     # The writer puts the record only into the Corefile's own root block, and
     # only where that block is the one answering for the name (k338).
-    my $block = OCP::Corefile->new(text => $corefile, imports => $files)->block_for($REGISTRY_HOSTNAME);
-    my $ours  = $block && $block->{root} && !defined $block->{file};
+    my $answers = OCP::Corefile->new(text => $corefile, imports => $files);
+    my $block   = $answers->block_for($REGISTRY_HOSTNAME);
+    my $ours    = $block && $block->{root} && !defined $block->{file};
 
-    # A root block running the hosts plugin twice is a Corefile CoreDNS
-    # refuses: nothing resolves, whatever the record says. The writer takes
-    # out the hosts blocks an older OCP added there and nothing else (k348).
-    if ($ours) {
-        my $own   = OCP::Corefile->new(text => $corefile);
-        my @hosts = $own->hosts_lines($own->root_block);
-        if (@hosts > 1) {
-            my $repaired = OCP::Corefile->new(text => $own->without_added_hosts($REGISTRY_HOSTNAME));
-            my @left     = $repaired->hosts_lines($repaired->root_block);
-            my $refused  = "$REGISTRY_HOSTNAME does not resolve (expected $expected): CoreDNS refuses the"
-                . " Corefile, whose root block runs the hosts plugin more than once";
+    # A server block running the hosts plugin twice is a Corefile CoreDNS
+    # refuses: nothing resolves, whatever the record says. Any block, the
+    # root block or another, the Corefile's own or a snippet (k393). The
+    # writer takes out the hosts blocks an older OCP added to the root block
+    # it writes the record into and nothing else (k348); where it does not
+    # write, the Corefile stays as it is.
+    if (my $now = $answers->doubled_hosts_block) {
+        my $left = $ours
+            ? OCP::Corefile->new(text => $answers->without_added_hosts($REGISTRY_HOSTNAME), imports => $files)
+                ->doubled_hosts_block
+            : $now;
+        my ($where, $tail) = corefile_hosts_twice($left // $now, $ours);
+        my $refused = "$REGISTRY_HOSTNAME does not resolve (expected $expected): CoreDNS refuses the"
+            . " Corefile, whose $where runs the hosts plugin more than once";
+
+        if ($left) {
+            my $in = defined $left->{file} ? $where : "$where of the Corefile in ConfigMap kube-system/$cm_name";
             return {
                 %entry,
                 kind        => 'spec',
                 actual      => undef,
-                message     => "$refused; ocp apply removes only a hosts block an older ocp added",
-                manual_step => "Leave one hosts plugin in the root block of the Corefile in ConfigMap"
-                    . " kube-system/$cm_name, then run ocp apply",
-            } if @left > 1;
-
-            return {
-                %entry,
-                kind    => 'missing',
-                actual  => undef,
-                message => "$refused, one of them a block an older ocp added; ocp apply restores it",
+                message     => "$refused; $tail",
+                manual_step => "Leave one hosts plugin in the $in, then run ocp apply",
             };
         }
+
+        return {
+            %entry,
+            kind    => 'missing',
+            actual  => undef,
+            message => "$refused, one of them a block an older ocp added; ocp apply restores it",
+        };
     }
 
     my $actual = corefile_host_address($corefile, $REGISTRY_HOSTNAME, $files);
@@ -1174,7 +1190,7 @@ sub registry_dns_drift {
                     ? "$REGISTRY_HOSTNAME resolves to $actual, expected $expected, from the $name"
                     : "$REGISTRY_HOSTNAME does not resolve from the $name that answers for it"
                       . " (expected $expected)")
-                  . '; ocp apply writes the record only into the root block, which that one shadows',
+                  . '; ' . corefile_shadow_tail($corefile),
             manual_step => $block
                 ? "Map $REGISTRY_HOSTNAME to $expected in the CoreDNS $name"
                 : "Give the CoreDNS Corefile a server block for the root zone (.), or map"
@@ -1579,6 +1595,33 @@ sub corefile_block_name {
     return "$name ($file)";
 }
 
+# A server block that runs the hosts plugin more than once, as the writer's
+# and the probe's messages name it (k393): the block, "root block" for the
+# Corefile's own, and what ocp apply does about it. It repairs only that root
+# block, and only on a run that writes the record there ($writes).
+sub corefile_hosts_twice {
+    my ($block, $writes) = @_;
+    my $own_root = $block->{root} && !defined $block->{file};
+    return (
+        $own_root ? 'root block' : corefile_block_name($block),
+        $own_root && $writes
+            ? 'ocp apply removes only a hosts block an older ocp added'
+            : 'ocp apply leaves that block as it is',
+    );
+}
+
+# What ocp apply does about a block that answers for the name in the root
+# block's place, as the writer's and the probe's messages say it: it writes
+# only into the Corefile's own root block, which that block shadows -- or
+# which the Corefile does not have, when a coredns-custom snippet brings the
+# only root block or no root block answers at all (k393).
+sub corefile_shadow_tail {
+    my ($corefile) = @_;
+    return OCP::Corefile->new(text => $corefile)->root_block
+        ? 'ocp apply writes the record only into the root block, which that one shadows'
+        : "ocp apply writes the record only into the Corefile's own root block, and there is none";
+}
+
 # Tag of a container image reference, digest and registry port aware.
 sub image_version {
     my ($image) = @_;
@@ -1945,10 +1988,19 @@ key is a C<spec> entry; a root block that runs the C<hosts> plugin more than
 once, which CoreDNS refuses, is C<missing> when the block an older OCP added is
 what C<ocp apply> takes out, and C<spec> when one would still be left over.
 
+CoreDNS refuses the whole Corefile over any server block that runs the
+C<hosts> plugin more than once: the root block or another, on any port, the
+Corefile's own or a C<coredns-custom> snippet. Each of them is checked
+(L<OCP::Corefile/doubled_hosts_block>). C<ocp apply> repairs only the root
+block it writes the record into, so every other case is a C<spec> entry. That
+includes a doubled root block while another block answers for the name.
+
 A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
-name is read; a C<coredns-custom> answering 404 has no snippets. Any other
-failed read ends the probe with one C<kind =E<gt> 'error'> entry (k268), drift
-unknown, as for L</component_drift>.
+name is read. When neither name exists, the writer stops with an error and the
+probe gives a C<spec> entry with a C<manual_step>. A C<coredns-custom>
+answering 404 has no snippets. Any other failed read ends the probe with one
+C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+L</component_drift>.
 
 =head2 pod_cidr_drift
 
@@ -2027,6 +2079,26 @@ L<OCP::Corefile/imports>.
 
 A server block as messages name it: C<server block> and its keys, and for one
 imported from C<coredns-custom>, the ConfigMap key it is in.
+
+=head2 corefile_hosts_twice
+
+    my ($where, $tail) = OCP::Drift::corefile_hosts_twice($block, $writes);
+
+A server block that runs the C<hosts> plugin more than once, as the writer of
+the C<registry.local> record and L</registry_dns_drift> name it: C<root block>
+for the Corefile's own, L</corefile_block_name> for any other. Also returns
+what C<ocp apply> does about it. It removes a C<hosts> block an older OCP
+added only from that root block, and only on a run that writes the record
+there (C<$writes>). Any other block it leaves as it is.
+
+=head2 corefile_shadow_tail
+
+    my $tail = OCP::Drift::corefile_shadow_tail($corefile);
+
+What the writer and the probe say when another server block answers for the
+name in the root block's place: C<ocp apply> writes the record only into the
+Corefile's own root block. The tail says that block is shadowed, or, when the
+Corefile has no root block of its own, that there is none.
 
 =head2 image_version
 

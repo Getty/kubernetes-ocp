@@ -440,10 +440,25 @@ SNIPPET
     is probe(corefile => $corefile), undef, 'answered is answered, wherever the record sits';
 };
 
-subtest 'what the probe stays quiet about' => sub {
-    is probe(corefile => undef), undef,
-        'no CoreDNS ConfigMap under a name we know: not this probe s business';
+# k393: with no CoreDNS ConfigMap under either name, ocp apply's step stops
+# with an error (k319). The probe used to stay quiet there, as if that were
+# not its business. Now it says what the step says, as drift no ocp apply
+# closes.
+subtest 'no CoreDNS ConfigMap under a name we know is drift ocp apply does not close' => sub {
+    my $drift = probe(corefile => undef);
 
+    ok $drift, 'reported';
+    is $drift->{kind}, 'spec', 'kind spec: no ocp apply puts it back';
+    ok !OCP::Drift->apply_closes($drift), 'and nothing counts it as closed by ocp apply';
+    is $drift->{remedy}, undef, 'no Rex task fixes this';
+    is $drift->{expected}, '10.230.30.155', 'expects the control plane address';
+    like $drift->{message},
+        qr/found no CoreDNS ConfigMap in kube-system \(tried coredns, rke2-coredns-rke2-coredns\)/,
+        'names what the writer did not find, in the words the step dies with';
+    ok $drift->{manual_step}, 'and says what a human does instead';
+};
+
+subtest 'what the probe stays quiet about' => sub {
     my $api = FakeApi->new(objects => {
         'ConfigMap/kube-system/coredns' => { data => { Corefile => $K3S_COREFILE } },
     });

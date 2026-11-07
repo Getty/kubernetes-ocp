@@ -681,6 +681,13 @@ subtest 'k188: report-only drift is counted apart from what a real run does' => 
         'ConfigMap/kube-system/cilium-config' => {
             data => { 'cluster-pool-ipv4-cidr' => '10.0.0.0/8', 'ipam' => 'cluster-pool' },
         },
+        # The CoreDNS ConfigMap a k3s cluster has, with the record: without
+        # one, the registry.local probe reports that as report-only drift as
+        # well (k393), and the count below is about the pod CIDR alone.
+        'ConfigMap/kube-system/coredns' => {
+            data => { Corefile => ".:53 {\n    hosts {\n        10.230.30.155 registry.local\n"
+                                . "        fallthrough\n    }\n}\n" },
+        },
     });
 
     if ($r->{out} =~ /\[drift\] Pod CIDR/) {

@@ -183,8 +183,13 @@ subtest 'registry_dns_drift: a 404 is not the distribution\'s name' => sub {
     is_deeply $api->{asked}, [ $K3S_CM, $RKE2_CM ], 'both names were read, in order';
     is_deeply $warn, [], 'nothing on stderr';
 
+    # k393: both names 404 is known, not unknown: no CoreDNS ConfigMap,
+    # where ocp apply's step stops with an error (k319). The probe used to
+    # say nothing; it says that now, as a spec entry, not an error entry.
     ($warn, @e) = warned(sub { OCP::Drift->new(config => config(), api => FakeApi->new)->registry_dns_drift });
-    is_deeply \@e, [], 'both names 404: no CoreDNS ConfigMap, not this probe\'s business';
+    is scalar @e, 1, 'both names 404: one entry';
+    is $e[0]{kind}, 'spec', 'a spec entry, not drift unknown';
+    like $e[0]{message}, qr/found no CoreDNS ConfigMap in kube-system/, 'saying no CoreDNS ConfigMap was found';
     is_deeply $warn, [], 'nothing on stderr';
 };
 

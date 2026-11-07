@@ -1158,3 +1158,13 @@ Revision history for OCP
     - The final error line of a command that stops no longer shows a Perl
       source location. An error that wraps another one is reported as the
       error it is, not as an internal error.
+    - `ocp status` and `ocp apply` report a CoreDNS Corefile that runs the
+      hosts plugin twice in any server block (another zone's block, a block
+      on another port, a coredns-custom snippet) and a doubled root block
+      while another block answers `registry.local`; `ocp apply` no longer
+      calls such a Corefile up to date.
+    - `ocp status` reports a cluster with no CoreDNS ConfigMap under either
+      distribution's name, where `ocp apply`'s `registry.local` step stops
+      with an error.
+    - The `registry.local` messages no longer say the root block is shadowed
+      when the Corefile has no root block of its own.

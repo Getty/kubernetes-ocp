@@ -212,6 +212,19 @@ sub hosts_lines {
   return grep { $depth->[$_] == 1 && $lines->[$_] =~ /^\s*hosts\b/ } $block->{from} + 1 .. $block->{to} - 1;
 }
 
+# The first server block that runs the hosts plugin more than once, or undef.
+# Any block, whatever its zone, port or file: CoreDNS sets up every block it
+# reads and refuses the whole Corefile over one of them, so a doubled hosts
+# plugin in a block that answers nothing the cluster asks breaks the name all
+# the same (k393).
+sub doubled_hosts_block {
+  my ( $self ) = @_;
+  for my $block ( @{ $self->blocks } ) {
+    return $block if ( () = $self->hosts_lines($block) ) > 1;
+  }
+  return;
+}
+
 # The text without the hosts blocks an older OCP added to the root block next
 # to the distribution's own: a hosts plugin that names no file and lists
 # $name. Only while the root block runs the plugin more than once, and never
@@ -370,6 +383,14 @@ L</blocks>.
 
 The indexes in L</lines> of the block's hosts plugin lines. More than one is a
 Corefile CoreDNS refuses.
+
+=method doubled_hosts_block
+
+  my $block = $corefile->doubled_hosts_block;
+
+The first server block in L</blocks> that runs the hosts plugin more than
+once, or undef. Every block counts, on any port and imported or not: CoreDNS
+refuses the whole Corefile over any one of them.
 
 =method without_added_hosts
 

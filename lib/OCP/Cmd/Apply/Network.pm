@@ -535,13 +535,21 @@ sub configure_registry_dns {
     # is not ours to fix.
     my $answers = OCP::Corefile->new(text => $corefile, imports => $files);
     my $block   = $answers->block_for('registry.local');
-    if ($block && !($block->{root} && !defined $block->{file})) {
+    my $ours    = $block && $block->{root} && !defined $block->{file};
+
+    # Where the record does not go into the root block, the Corefile stays as
+    # it is: a server block in it that runs the hosts plugin twice, any block,
+    # stays one CoreDNS refuses. The probe says so too (k393).
+    if (!$ours and my $twice = $answers->doubled_hosts_block) {
+        die _hosts_twice_error($cm_name, $twice, 0);
+    }
+    if ($block && !$ours) {
         my $at = $answers->address_of('registry.local');
         return 0 if defined $at && $at eq $node_ip;
         die "ConfigMap kube-system/$cm_name: registry.local is answered by the "
           . OCP::Drift::corefile_block_name($block) . ', which '
           . (defined $at ? "maps it to $at" : 'has no record for it')
-          . "; ocp apply writes the record only into the root block, which that block shadows\n";
+          . '; ' . OCP::Drift::corefile_shadow_tail($corefile) . "\n";
     }
     # corefile_with_host leaves a Corefile with no server block for the root
     # zone as it is, with no place for the record, and unchanged read as
@@ -553,12 +561,12 @@ sub configure_registry_dns {
 
     # corefile_with_host takes out the hosts block an older OCP added, and
     # only that. A root block that still runs the plugin twice is a Corefile
-    # CoreDNS refuses, record or not; the probe says so too (k348).
-    my $result = OCP::Corefile->new(text => $patched);
-    my @hosts  = $result->hosts_lines($result->root_block);
-    die "ConfigMap kube-system/$cm_name: its Corefile's root block runs the hosts plugin more than once,"
-      . " which CoreDNS refuses; ocp apply removes only a hosts block an older ocp added\n"
-        if @hosts > 1;
+    # CoreDNS refuses, record or not; the probe says so too (k348). So is any
+    # other block that does, snippets included (k393).
+    my $result = OCP::Corefile->new(text => $patched, imports => $files);
+    if (my $twice = $result->doubled_hosts_block) {
+        die _hosts_twice_error($cm_name, $twice, 1);
+    }
 
     # Already resolves to this node
     return 0 if $patched eq $corefile;
@@ -573,6 +581,15 @@ sub configure_registry_dns {
 
     print "  [ok] CoreDNS configured for registry.local -> $node_ip\n";
     return 1;
+}
+
+# What configure_registry_dns dies with over a server block that runs the
+# hosts plugin twice, named as OCP::Drift's probe names it (k393).
+sub _hosts_twice_error {
+    my ($cm_name, $block, $writes) = @_;
+    my ($where, $tail) = OCP::Drift::corefile_hosts_twice($block, $writes);
+    return "ConfigMap kube-system/$cm_name: its Corefile's $where runs the hosts plugin more than once,"
+        . " which CoreDNS refuses; $tail\n";
 }
 
 #
