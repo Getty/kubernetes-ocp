@@ -149,7 +149,7 @@ sub join_ready_timeout { 600 }
 
 =head1 FUNCTIONS
 
-=head2 affinity
+=func affinity
 
     my $affinity = OCP::Cmd::Apply::AMDGPU::affinity($component, $default_allocation);
 
@@ -196,7 +196,7 @@ sub selects {
     return 0;
 }
 
-=head2 setup
+=func setup
 
     my @results = OCP::Cmd::Apply::AMDGPU::setup($apply, $config, %opt);
 
@@ -617,7 +617,7 @@ sub dra_hint {
          . "       device-plugin meanwhile.\n";
 }
 
-=head2 step
+=func step
 
     my $r = OCP::Cmd::Apply::AMDGPU::step($apply, $config);
     my $r = OCP::Cmd::Apply::AMDGPU::step($apply, $config, joined => 1);   # ocp node add --gpu
@@ -657,7 +657,7 @@ sub step {
     return $r;
 }
 
-=head2 dry_run
+=func dry_run
 
     my @found = OCP::Cmd::Apply::AMDGPU::dry_run($apply, $config);   # ocp apply --dry-run
 
@@ -741,7 +741,7 @@ sub unchecked {
     return { kind => 'error', label => $label, cause => $cause, message => "$label: $cause" };
 }
 
-=head2 after_join
+=func after_join
 
     my @failed = OCP::Cmd::Apply::AMDGPU::after_join($apply, $config, \@worker_results);
 

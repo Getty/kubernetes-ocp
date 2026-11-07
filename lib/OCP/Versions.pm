@@ -110,12 +110,32 @@ sub known_versions {
     return sort keys %$VERSIONS;
 }
 
+=head1 METHODS
+
+=method known_versions
+
+    my @versions = OCP::Versions->known_versions;
+
+Every OCP version the manifest carries, sorted.  Derived from the manifest
+itself, so a rejection that lists them (C<ocp update> on an OCP whose own
+version has no manifest entry) cannot offer a version that is not there.
+
+=cut
+
 # Get component versions for a specific OCP version
 sub get_versions {
     my ($class, $version) = @_;
     $version //= _ocp_version();  # Default to current version
     return $VERSIONS->{$version};
 }
+
+=method get_versions
+
+    my $versions = OCP::Versions->get_versions('0.001');
+
+Returns the complete version manifest for a specific OCP version.
+
+=cut
 
 # Get component version
 sub get_component_version {
@@ -126,6 +146,14 @@ sub get_component_version {
     return $versions->{components}{$component};
 }
 
+=method get_component_version
+
+    my $version = OCP::Versions->get_component_version('cilium', '0.001');
+
+Returns the version string for a specific component.
+
+=cut
+
 # List all components
 sub list_components {
     my ($class, $ocp_version) = @_;
@@ -135,6 +163,14 @@ sub list_components {
     return keys %{$versions->{components}};
 }
 
+=method list_components
+
+    my @components = OCP::Versions->list_components('0.001');
+
+Returns list of all components for a specific OCP version.
+
+=cut
+
 # Check if upgrade has breaking changes
 sub has_breaking_changes {
     my ($class, $from_version, $to_version) = @_;
@@ -142,6 +178,14 @@ sub has_breaking_changes {
     return 0 unless $target;
     return $target->{breaking_changes} ? 1 : 0;
 }
+
+=method has_breaking_changes
+
+    if (OCP::Versions->has_breaking_changes('0.001', '0.2.0')) { ... }
+
+Returns true if upgrading from one version to another has breaking changes.
+
+=cut
 
 # Get breaking changes
 sub get_breaking_changes {
@@ -151,6 +195,14 @@ sub get_breaking_changes {
     return $target->{breaking_changes} || [];
 }
 
+=method get_breaking_changes
+
+    my $changes = OCP::Versions->get_breaking_changes('0.001', '0.2.0');
+
+Returns arrayref of breaking changes.
+
+=cut
+
 # Get manual steps
 sub get_manual_steps {
     my ($class, $from_version, $to_version) = @_;
@@ -158,6 +210,14 @@ sub get_manual_steps {
     return unless $target;
     return $target->{manual_steps} || [];
 }
+
+=method get_manual_steps
+
+    my $steps = OCP::Versions->get_manual_steps('0.001', '0.2.0');
+
+Returns arrayref of manual steps required for upgrade.
+
+=cut
 
 1;
 
@@ -226,51 +286,3 @@ For updates with breaking changes, add documentation:
             'Run: cilium migrate config',
         ],
     }
-
-=head1 METHODS
-
-=head2 known_versions
-
-    my @versions = OCP::Versions->known_versions;
-
-Every OCP version the manifest carries, sorted.  Derived from the manifest
-itself, so a rejection that lists them (C<ocp update> on an OCP whose own
-version has no manifest entry) cannot offer a version that is not there.
-
-=head2 get_versions
-
-    my $versions = OCP::Versions->get_versions('0.001');
-
-Returns the complete version manifest for a specific OCP version.
-
-=head2 get_component_version
-
-    my $version = OCP::Versions->get_component_version('cilium', '0.001');
-
-Returns the version string for a specific component.
-
-=head2 list_components
-
-    my @components = OCP::Versions->list_components('0.001');
-
-Returns list of all components for a specific OCP version.
-
-=head2 has_breaking_changes
-
-    if (OCP::Versions->has_breaking_changes('0.001', '0.2.0')) { ... }
-
-Returns true if upgrading from one version to another has breaking changes.
-
-=head2 get_breaking_changes
-
-    my $changes = OCP::Versions->get_breaking_changes('0.001', '0.2.0');
-
-Returns arrayref of breaking changes.
-
-=head2 get_manual_steps
-
-    my $steps = OCP::Versions->get_manual_steps('0.001', '0.2.0');
-
-Returns arrayref of manual steps required for upgrade.
-
-=cut

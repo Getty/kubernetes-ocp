@@ -450,6 +450,17 @@ sub shipped_ocp_crds {
         map { YAML::XS::LoadFile($_->stringify) } sort $dir->children(qr/\.ya?ml$/);
 }
 
+=head1 METHODS
+
+=method shipped_ocp_crds
+
+    my @crds = OCP::Drift->shipped_ocp_crds;
+
+Every C<CustomResourceDefinition> in F<share/robocop/crds>, decoded, in file
+order. Dies with the path when the directory is not there.
+
+=cut
+
 # Every property path a CRD's schema declares under spec and status, as
 # { version name => { path => 1 } }. A path names a property from the top of
 # the object, the items of an array through []: spec.nodeIP,
@@ -471,6 +482,17 @@ sub crd_property_paths {
     }
     return \%paths;
 }
+
+=method crd_property_paths
+
+    my $paths = OCP::Drift->crd_property_paths($crd);
+    # { v1 => { spec => 1, 'spec.nodeIP' => 1, 'status.hostKeys[].fingerprint' => 1, ... } }
+
+Every property path a CRD's schema declares under C<spec> and C<status>, per
+version name. The items of an array are named by C<[]>; C<spec> and
+C<status> count themselves.
+
+=cut
 
 sub _schema_paths {
     my ($class, $schema, $path, $into) = @_;
@@ -513,6 +535,19 @@ sub crd_schema_diff {
     };
     return ($only->($w, $h), $only->($h, $w));
 }
+
+=method crd_schema_diff
+
+    my ($want_only, $have_only) = OCP::Drift->crd_schema_diff($live, $shipped);
+
+The property paths only C<$shipped> declares and those only C<$live>
+declares, each a sorted arrayref. A path whose parent is in the same list is
+left out (C<spec.hetzner> stands for everything under it), and a path
+carries its version (C<v1:spec.nodeIP>) only when the two CRDs hold more than
+one version between them. L</ocp_crd_drift> and
+L<OCP::Cmd::Apply::CR/ensure_crds> judge by it alike.
+
+=cut
 
 sub ocp_crd_drift {
     my ($self) = @_;
@@ -595,6 +630,44 @@ sub ocp_crd_drift {
     return @drift;
 }
 
+=method ocp_crd_drift
+
+    my @entries = $detector->ocp_crd_drift;
+
+OCP's own CRDs, C<OCPNode> and C<OCPNodeProvider>, compared with the ones
+this ocp ships in F<share/robocop/crds> (k291). The API server drops every
+field of an object that the stored CRD does not declare, without an error, so
+an OCPNode CRD from before k254 lost C<spec.nodeIP> from C<ocp node add
+--node_ip> while the drift check said nothing. Compared are the property
+paths under C<spec> and C<status> (L</crd_schema_diff>), not the schemas as
+text, which the API server stores normalised. One entry per CRD that
+differs, C<component =E<gt> 'ocp_crd'>, label C<"$kind CRD">, no remedy:
+
+=over 4
+
+=item * The cluster's CRD lacks paths the shipped one declares: it is older.
+C<kind =E<gt> 'version'>, C<self_healing>: the node CR step of C<ocp apply>
+writes the shipped one over it.
+
+=item * The cluster's CRD declares paths the shipped one does not: it is
+newer than this ocp (a downgrade). C<kind =E<gt> 'version'>, with a
+C<manual_step>, and reported only: L<OCP::Cmd::Apply::CR> leaves such a CRD
+as it is, for C<ocp apply> and C<ocp deploy-robocop> alike, because writing
+this one over it would drop those fields from every object. The flip side:
+once OCP drops a field from its own CRDs, every cluster reads as newer than
+the ocp that dropped it.
+
+=item * The cluster has no such CRD (a 404, and only a 404): C<kind =E<gt>
+'missing'>, C<self_healing>.
+
+=item * It cannot be read, or the shipped CRDs cannot: one C<kind =E<gt>
+'error'> entry naming the cause, carped to stderr, as for the probes of
+L</component_drift>.
+
+=back
+
+=cut
+
 sub detect {
     my ($self) = @_;
 
@@ -610,6 +683,14 @@ sub detect {
 
     return \@drift;
 }
+
+=method detect
+
+    my $drift = $detector->detect;
+
+All drift, as an arrayref of entries.
+
+=cut
 
 #
 # Spec drift: what ocp.yaml pinned vs. what we recorded as real
@@ -658,6 +739,12 @@ sub spec_drift {
     return @drift;
 }
 
+=method spec_drift
+
+Values pinned in F<ocp.yaml> that no longer match F<.ocp/status.yaml>.
+
+=cut
+
 #
 # Component drift: target versions vs. what runs in the cluster
 #
@@ -692,6 +779,20 @@ sub remedy_params {
         %configured,
     };
 }
+
+=method remedy_params
+
+    my $params = OCP::Drift->remedy_params($config, 'cert_manager', $version);
+
+The params a component's upgrade task runs with: C<version>, the config's
+C<distribution>, the probe's C<remedy_pins> resolved from
+L<OCP::Versions>, and its C<remedy_config> read off the config (for Cilium the
+C<helm_values> from F<ocp.yaml>'s C<cilium:>, so an upgrade keeps them).
+Callable on the class. Both a drift remedy and
+L<OCP::Cmd::Update> build their Rex params here, so the two paths drive a
+task the same way.
+
+=cut
 
 sub component_drift {
     my ($self) = @_;
@@ -819,6 +920,76 @@ sub component_drift {
     return @drift;
 }
 
+=method component_drift
+
+Running component versions that differ from the version manifest, plus
+components that should be deployed but are missing.
+
+Probed are Cilium, cert-manager, NFD, the GPU operator and the AMD GPU
+DaemonSets: those whose running version can be read off a workload OCP writes
+itself. Beside them the
+Gateway API CRD bundle, which runs no image: its version is the
+C<gateway.networking.k8s.io/bundle-version> annotation on the C<gateways> CRD,
+and a C<gateway.networking.k8s.io/channel> other than C<standard> is drift too.
+Its remedy, the Rex task C<update_gateway_api>, re-applies the pinned bundle
+and restarts C<cilium-operator>; it installs from nothing as well, so a
+missing bundle carries the remedy too (k164). The remaining
+GPU pins (toolkit, device plugin, DCGM, DCGM exporter, driver) go into the
+C<ClusterPolicy> the operator reconciles, not into a Deployment of OCP's, and
+are deliberately not guessed at — see the comment on C<@COMPONENT_PROBES>.
+
+Absence of the GPU operator is not reported: it only belongs on a cluster with
+an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
+upgrades them — their version lives in a generated manifest that C<ocp apply>
+re-applies, which is what C<self_healing> on those entries says.
+
+The GPU operator's entry says so only where that happens: the GPU step of
+C<ocp apply> runs under C<gpu.enabled> and for a node NFD labelled NVIDIA
+(L</nvidia_gpu_nodes>), and skips any other cluster, leaving a running
+operator as it is. An operator off its pin under C<gpu.enabled: false>, or
+with no such node, is reported without C<self_healing>, with a
+C<manual_step> that says why: report only, as C<ocp apply> treats it. When
+that cannot be told -- a C<gpu.enabled> L<OCP::Config> refuses, a Node list
+that fails with anything but a 404 -- the finding is a C<kind =E<gt>
+'error'> entry instead, its message the difference found and that what
+C<ocp apply> does about it is unknown, with the cause, carped to stderr.
+
+NFD is two probes of the one C<nfd> pin, because its manifest runs that image
+twice: the C<nfd-master> Deployment (label C<NFD>) and the C<nfd-worker>
+DaemonSet (label C<NFD DaemonSet>). Either can run another image, or be gone,
+on its own, and the entry names the one that does (k369).
+
+The AMD GPU stack is probed the same way (k250): the device plugin, the node
+labeller (tag C<labeller-E<lt>amd_device_pluginE<gt>>), the DRA kubelet plugin
+and the metrics exporter, each read off its DaemonSet's first container image.
+Their namespace and names are C<%OCP::Drift::AMD_GPU_DAEMONSETS>, keyed
+C<device_plugin>, C<labeller>, C<dra> and C<metrics>: the names
+L<Rex::Rancher::K8s> deploys them under, all in C<kube-system> (the C<dra> and
+C<metrics> entries are upstream's Helm defaults, which no released Rex::Rancher
+deploys yet). All four
+are optional — they exist only on clusters with an AMD card, and C<gpu.amd>
+decides which of them run — and C<self_healing>: the AMD GPU step of
+C<ocp apply> redeploys a DaemonSet that runs another tag than its pin. It
+sees a pin bump in its options hash, and an image changed in the cluster by
+reading the DaemonSet as this probe does, through L</version_against_pin>
+(k350).
+
+Only a 404 on a probe's read counts as "not there" (k256). Any other failed
+read -- an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
+the component: the probe becomes one C<kind =E<gt> 'error'> entry with no
+remedy, whose message names the object and the exception, and the same
+exception is carped to stderr. That holds for the optional probes, which
+would otherwise report nothing, and for the others, which would otherwise
+report the component missing.
+
+A probe whose switch in F<ocp.yaml> L<OCP::Config> refuses -- cert-manager
+under a C<nocert> that is neither true nor false, such as C<nocert: no>
+(k320) -- is neither skipped nor read: it is one C<kind =E<gt> 'error'> entry
+too, whose message carries the line L<OCP::Config/validate> gives, carped to
+stderr once, and the other probes run (k332).
+
+=cut
+
 # The Rex remedy a probe names, its params built by remedy_params; undef when
 # the probe names none. One place for the version and the missing entry.
 sub _probe_remedy {
@@ -857,6 +1028,21 @@ sub version_against_pin {
     return ($actual, $want_tag, _same_version($actual, $want_tag));
 }
 
+=method version_against_pin
+
+    my ($actual, $want_tag, $same) = OCP::Drift->version_against_pin($probe, $object, $expected);
+
+What C<$object> runs against the pin C<$expected> of C<$probe> (an entry of
+C<@COMPONENT_PROBES>), read as L</component_drift> reads it: the version
+annotation or the tag of the first container's image (C<''> when there is
+none, which is not compared), the tag the pin stands for with the probe's
+C<tag_prefix>, and whether the two are one version. Callable on the class.
+L<OCP::Cmd::Apply::AMDGPU> asks it before it calls a DaemonSet up to date
+(k350), and L<OCP::Cmd::Apply::Workloads> before it calls NFD or the GPU
+operator up to date.
+
+=cut
+
 # Whether a plain `ocp apply` closes drift entry $entry (k313): it runs the
 # entry's remedy, re-applies its manifest (self_healing), or deploys what is
 # missing. Everything else it names and leaves, report only; a check that
@@ -872,6 +1058,20 @@ sub apply_closes {
     return 0 if $kind eq 'error';
     return $entry->{remedy} || $entry->{self_healing} || $kind eq 'missing' ? 1 : 0;
 }
+
+=method apply_closes
+
+    my $closes = OCP::Drift->apply_closes($entry);
+
+True when a plain C<ocp apply> closes the drift entry: it runs its
+C<remedy>, re-applies its manifest (C<self_healing>), or deploys what is
+C<missing>. Every other entry is report only, and an entry of kind C<error>
+is neither. L<OCP::Cmd::Status> counts these entries as "can be reconciled
+automatically" and sets C<fixable> by it, and C<ocp apply --dry-run> counts
+them as the differences a real run would act on: one rule for both.
+Callable on the class; it reads nothing but the entry.
+
+=cut
 
 # The Nodes NFD labelled with an NVIDIA GPU (@NVIDIA_GPU_LABELS), each once,
 # in the order listed: the nodes setup_gpu_operator runs for, and with none
@@ -898,6 +1098,21 @@ sub nvidia_gpu_nodes {
     }
     return @nodes;
 }
+
+=method nvidia_gpu_nodes
+
+    my @nodes = OCP::Drift->nvidia_gpu_nodes($api);
+
+The Nodes NFD labelled with an NVIDIA GPU, each once: those with
+C<feature.node.kubernetes.io/pci-0300_10de.present> or
+C<feature.node.kubernetes.io/pci-0302_10de.present> set to C<true>
+(C<@OCP::Drift::NVIDIA_GPU_LABELS>), listed one label selector at a time. A
+404 lists nothing; any other failure dies with
+C<could not read Nodes labelled SELECTOR: CAUSE>. The GPU step of C<ocp
+apply> runs for these nodes and skips a cluster without one; its dry run and
+the GPU operator probe read them here as well. Callable on the class.
+
+=cut
 
 # Why the step that re-applies $probe's manifest skips this cluster: ($why),
 # the 'version' entry's manual_step, or () when that step runs -- or when the
@@ -992,6 +1207,20 @@ sub distribution_drift {
 
     return @drift;
 }
+
+=method distribution_drift
+
+Nodes whose kubelet version differs from the configured distribution version.
+Never carries a remedy — distribution upgrades are a manual, node-by-node
+operation.
+
+If the C<list('Node')> call fails (revoked token, RBAC denial, TLS, apiserver
+5xx), the sub returns one C<kind =E<gt> 'error'> entry naming the distribution
+and the underlying exception, and carps the same exception to stderr. The
+silent return that used to leave C<ocp status> printing a green drift summary
+on a cluster it could not actually query is gone (k119).
+
+=cut
 
 #
 # registry.local in CoreDNS
@@ -1218,6 +1447,45 @@ sub registry_dns_drift {
     };
 }
 
+=method registry_dns_drift
+
+The C<registry.local> record in the CoreDNS Corefile: missing, or pointing at
+an address that is not the control plane's. Both distributions own that
+ConfigMap themselves and reset it on an upgrade or a restart, taking the record
+with them; C<ocp apply> writes it back, so the entry reports the window in
+between rather than a permanent fault, and carries no remedy of its own.
+
+The record is read from the server block that answers for the name
+(L<OCP::Corefile>), as the writer reads it. When that is not the root block
+(a block of its own for the name that maps it elsewhere, or none at all),
+C<ocp apply> does not write it, and the entry is C<kind =E<gt> 'spec'> with a
+C<manual_step> instead (k338).
+
+Read as the writer reads it in every case (k348): the server blocks a k3s
+Corefile imports from the C<coredns-custom> ConfigMap answer like its own
+(read only when the Corefile imports from C</etc/coredns/custom>, which RKE2's
+does not); a server block answers only for plain DNS on port 53; the first
+CoreDNS ConfigMap that exists is the one read, and one without a C<Corefile>
+key is a C<spec> entry; a root block that runs the C<hosts> plugin more than
+once, which CoreDNS refuses, is C<missing> when the block an older OCP added is
+what C<ocp apply> takes out, and C<spec> when one would still be left over.
+
+CoreDNS refuses the whole Corefile over any server block that runs the
+C<hosts> plugin more than once: the root block or another, on any port, the
+Corefile's own or a C<coredns-custom> snippet. Each of them is checked
+(L<OCP::Corefile/doubled_hosts_block>). C<ocp apply> repairs only the root
+block it writes the record into, so every other case is a C<spec> entry. That
+includes a doubled root block while another block answers for the name.
+
+A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
+name is read. When neither name exists, the writer stops with an error and the
+probe gives a C<spec> entry with a C<manual_step>. A C<coredns-custom>
+answering 404 has no snippets. Any other failed read ends the probe with one
+C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+L</component_drift>.
+
+=cut
+
 #
 # Pod CIDR drift (k182): the pool Cilium hands out vs. network.pod_cidr.
 #
@@ -1286,6 +1554,20 @@ sub pod_cidr_drift {
         remedy      => undef,
     };
 }
+
+=method pod_cidr_drift
+
+Compares the pool in Cilium's C<cilium-config> ConfigMap
+(C<cluster-pool-ipv4-cidr>) with C<network.pod_cidr> (default
+C<10.42.0.0/16>). A difference is a C<spec> entry with no remedy and a
+C<manual_step>: the pod network of a running cluster is never moved
+automatically, and C<upgrade_cilium> keeps the live pool.
+
+No C<cilium-config> (a 404) is nothing to compare. Any other failed read is
+one C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
+L</component_drift>.
+
+=cut
 
 #
 # Host-side drift: state on the machine that no Kubernetes query can see
@@ -1362,6 +1644,34 @@ sub rex_probe_drift {
 
     return @drift;
 }
+
+=method rex_probe_drift
+
+Host-side drift found by running a read-only Rex task over SSH on the hosts a
+probe selects (C<@REX_PROBES>) and matching its stdout against
+C<$REX_DRIFT_MARKER>. A host that answers with the marker gets one
+C<kind =E<gt> 'rex_probe'> entry naming the host it drifted on and carrying the
+cleanup task as its C<remedy> (with that same host), so
+L<OCP::Cmd::Apply::Drift> runs the fix where the drift is.
+
+Needs L</rex_prober>; without it, nothing is probed. A probe the prober
+skipped (it returned nothing) is no entry; the command says why on its skip
+line (L<OCP::Role::Cmd/host_probe_warning>). A probe that throws -- host
+unreachable, timeout, a host key that no longer matches the recorded one -- is
+carped to stderr, the whole cause once, and is one C<kind =E<gt> 'error'>
+entry with the probe's C<component> and C<label>, the C<host>, and the first
+line of the cause in its C<message> (k380): drift unknown, never drift and
+never an exception, so a single unreachable machine cannot block C<detect> or
+make C<ocp status> a no-go, and is not read as a clean host either. The first probe is the obsolete
+pre-k23 containerd config template on the control planes (k45/k71).
+
+The workers a C<machines> probe adds come from one list of the OCPNodes in
+C<ocp-system>. A 404 there (no OCPNode CRD) is no workers. Any other failed
+list is one C<kind =E<gt> 'error'> entry, component C<worker_host_probes>, its
+cause carped to stderr (k268): the control planes are still probed, and the
+workers' drift is unknown rather than reported clean.
+
+=cut
 
 # The machines a host_selector names. 'control_planes': the CPs from ocp.yaml,
 # addressed by their pinned public_ip (or host). 'machines': those plus every
@@ -1545,6 +1855,18 @@ sub resolve_address {
     return Socket::inet_ntoa($packed);
 }
 
+=method resolve_address
+
+    my $ip = OCP::Drift::resolve_address('cortex.ai.citilan.de');
+
+A control plane's address as a dotted quad, or C<undef> when it does not
+resolve to one. Addresses pass through untouched. Both the writer of the
+C<registry.local> record and L</registry_dns_drift> derive the address they
+expect through this function, so a control plane named by DNS cannot read as
+drifted.
+
+=cut
+
 # The address a Corefile maps a name to, or undef when it maps none.
 #
 # Read from the server block CoreDNS answers the name from (OCP::Corefile,
@@ -1564,6 +1886,17 @@ sub corefile_host_address {
     return $address;
 }
 
+=method corefile_host_address
+
+    my $ip = OCP::Drift::corefile_host_address($corefile, 'registry.local');
+
+The address a Corefile maps a name to, or C<undef> when it maps none: the
+record in the server block that answers for the name (L<OCP::Corefile>). An
+optional third argument, C<{ path =E<gt> text }>, gives the files the
+Corefile's top-level imports read.
+
+=cut
+
 # Whether the Corefile imports server blocks from where k3s mounts
 # coredns-custom: the one question that decides whether the writer and the
 # probe read that ConfigMap (k348).
@@ -1574,6 +1907,17 @@ sub corefile_imports_custom {
              OCP::Corefile->new(text => $corefile)->import_patterns ) ? 1 : 0;
 }
 
+=method corefile_imports_custom
+
+    my $read = OCP::Drift::corefile_imports_custom($corefile);
+
+Whether the Corefile imports server blocks from C<$COREDNS_CUSTOM_DIR>
+(C</etc/coredns/custom>), where k3s mounts C<$COREDNS_CUSTOM_CONFIGMAP>
+(C<coredns-custom>). The writer of the C<registry.local> record and
+L</registry_dns_drift> read that ConfigMap only then.
+
+=cut
+
 # coredns-custom's data as the files CoreDNS sees under its mount, for
 # OCP::Corefile's imports: { "/etc/coredns/custom/<key>" => text }.
 sub coredns_custom_files {
@@ -1581,6 +1925,15 @@ sub coredns_custom_files {
     return {} unless ref $data eq 'HASH';
     return { map { ("$COREDNS_CUSTOM_DIR/$_" => $data->{$_}) } grep { defined $data->{$_} } keys %$data };
 }
+
+=method coredns_custom_files
+
+    my $files = OCP::Drift::coredns_custom_files($cm->data);
+
+C<coredns-custom>'s data as the files CoreDNS sees under its mount, for
+L<OCP::Corefile/imports>.
+
+=cut
 
 # A server block as the writer's and the probe's messages name it: its keys,
 # and for one imported from coredns-custom, the ConfigMap key it is in.
@@ -1594,6 +1947,13 @@ sub corefile_block_name {
         and return "$name (ConfigMap kube-system/$COREDNS_CUSTOM_CONFIGMAP, key $file)";
     return "$name ($file)";
 }
+
+=method corefile_block_name
+
+A server block as messages name it: C<server block> and its keys, and for one
+imported from C<coredns-custom>, the ConfigMap key it is in.
+
+=cut
 
 # A server block that runs the hosts plugin more than once, as the writer's
 # and the probe's messages name it (k393): the block, "root block" for the
@@ -1610,6 +1970,19 @@ sub corefile_hosts_twice {
     );
 }
 
+=method corefile_hosts_twice
+
+    my ($where, $tail) = OCP::Drift::corefile_hosts_twice($block, $writes);
+
+A server block that runs the C<hosts> plugin more than once, as the writer of
+the C<registry.local> record and L</registry_dns_drift> name it: C<root block>
+for the Corefile's own, L</corefile_block_name> for any other. Also returns
+what C<ocp apply> does about it. It removes a C<hosts> block an older OCP
+added only from that root block, and only on a run that writes the record
+there (C<$writes>). Any other block it leaves as it is.
+
+=cut
+
 # What ocp apply does about a block that answers for the name in the root
 # block's place, as the writer's and the probe's messages say it: it writes
 # only into the Corefile's own root block, which that block shadows -- or
@@ -1622,6 +1995,17 @@ sub corefile_shadow_tail {
         : "ocp apply writes the record only into the Corefile's own root block, and there is none";
 }
 
+=method corefile_shadow_tail
+
+    my $tail = OCP::Drift::corefile_shadow_tail($corefile);
+
+What the writer and the probe say when another server block answers for the
+name in the root block's place: C<ocp apply> writes the record only into the
+Corefile's own root block. The tail says that block is shadowed, or, when the
+Corefile has no root block of its own, that there is none.
+
+=cut
+
 # Tag of a container image reference, digest and registry port aware.
 sub image_version {
     my ($image) = @_;
@@ -1632,6 +2016,14 @@ sub image_version {
 
     return $tag // '';
 }
+
+=method image_version
+
+    my $tag = OCP::Drift::image_version('quay.io/cilium/operator-generic:v1.20.0');
+
+The tag of a container image reference. Handles digests and registry ports.
+
+=cut
 
 # Version strings are written inconsistently across manifests ('1.19.2' vs
 # 'v1.19.2', '+rke2r1' suffixes). Compare on the numeric core.
@@ -1674,6 +2066,14 @@ sub format_lines {
          ($_->{manual_step} ? "          $_->{manual_step}" : ()))
     } @$drift;
 }
+
+=method format_lines
+
+    print "$_\n" for OCP::Drift->format_lines($drift);
+
+Drift entries as printable lines.
+
+=cut
 
 1;
 
@@ -1759,357 +2159,3 @@ probe it skipped. This is the second, SSH-side detection mode; without it, host-
 probes are skipped just as spec-only detection skips the API when C<api> is
 absent. L<OCP::Role::Cmd/rex_prober> builds it, non-prompting, so C<ocp status>
 and the top of C<ocp apply> never grow a password prompt.
-
-=head1 METHODS
-
-=head2 detect
-
-    my $drift = $detector->detect;
-
-All drift, as an arrayref of entries.
-
-=head2 spec_drift
-
-Values pinned in F<ocp.yaml> that no longer match F<.ocp/status.yaml>.
-
-=head2 component_drift
-
-Running component versions that differ from the version manifest, plus
-components that should be deployed but are missing.
-
-Probed are Cilium, cert-manager, NFD, the GPU operator and the AMD GPU
-DaemonSets: those whose running version can be read off a workload OCP writes
-itself. Beside them the
-Gateway API CRD bundle, which runs no image: its version is the
-C<gateway.networking.k8s.io/bundle-version> annotation on the C<gateways> CRD,
-and a C<gateway.networking.k8s.io/channel> other than C<standard> is drift too.
-Its remedy, the Rex task C<update_gateway_api>, re-applies the pinned bundle
-and restarts C<cilium-operator>; it installs from nothing as well, so a
-missing bundle carries the remedy too (k164). The remaining
-GPU pins (toolkit, device plugin, DCGM, DCGM exporter, driver) go into the
-C<ClusterPolicy> the operator reconciles, not into a Deployment of OCP's, and
-are deliberately not guessed at — see the comment on C<@COMPONENT_PROBES>.
-
-Absence of the GPU operator is not reported: it only belongs on a cluster with
-an NVIDIA card. Neither it nor NFD carries a remedy, because no Rex task
-upgrades them — their version lives in a generated manifest that C<ocp apply>
-re-applies, which is what C<self_healing> on those entries says.
-
-The GPU operator's entry says so only where that happens: the GPU step of
-C<ocp apply> runs under C<gpu.enabled> and for a node NFD labelled NVIDIA
-(L</nvidia_gpu_nodes>), and skips any other cluster, leaving a running
-operator as it is. An operator off its pin under C<gpu.enabled: false>, or
-with no such node, is reported without C<self_healing>, with a
-C<manual_step> that says why: report only, as C<ocp apply> treats it. When
-that cannot be told -- a C<gpu.enabled> L<OCP::Config> refuses, a Node list
-that fails with anything but a 404 -- the finding is a C<kind =E<gt>
-'error'> entry instead, its message the difference found and that what
-C<ocp apply> does about it is unknown, with the cause, carped to stderr.
-
-NFD is two probes of the one C<nfd> pin, because its manifest runs that image
-twice: the C<nfd-master> Deployment (label C<NFD>) and the C<nfd-worker>
-DaemonSet (label C<NFD DaemonSet>). Either can run another image, or be gone,
-on its own, and the entry names the one that does (k369).
-
-The AMD GPU stack is probed the same way (k250): the device plugin, the node
-labeller (tag C<labeller-E<lt>amd_device_pluginE<gt>>), the DRA kubelet plugin
-and the metrics exporter, each read off its DaemonSet's first container image.
-Their namespace and names are C<%OCP::Drift::AMD_GPU_DAEMONSETS>, keyed
-C<device_plugin>, C<labeller>, C<dra> and C<metrics>: the names
-L<Rex::Rancher::K8s> deploys them under, all in C<kube-system> (the C<dra> and
-C<metrics> entries are upstream's Helm defaults, which no released Rex::Rancher
-deploys yet). All four
-are optional — they exist only on clusters with an AMD card, and C<gpu.amd>
-decides which of them run — and C<self_healing>: the AMD GPU step of
-C<ocp apply> redeploys a DaemonSet that runs another tag than its pin. It
-sees a pin bump in its options hash, and an image changed in the cluster by
-reading the DaemonSet as this probe does, through L</version_against_pin>
-(k350).
-
-Only a 404 on a probe's read counts as "not there" (k256). Any other failed
-read -- an RBAC denial, an apiserver 5xx, a TLS error -- says nothing about
-the component: the probe becomes one C<kind =E<gt> 'error'> entry with no
-remedy, whose message names the object and the exception, and the same
-exception is carped to stderr. That holds for the optional probes, which
-would otherwise report nothing, and for the others, which would otherwise
-report the component missing.
-
-A probe whose switch in F<ocp.yaml> L<OCP::Config> refuses -- cert-manager
-under a C<nocert> that is neither true nor false, such as C<nocert: no>
-(k320) -- is neither skipped nor read: it is one C<kind =E<gt> 'error'> entry
-too, whose message carries the line L<OCP::Config/validate> gives, carped to
-stderr once, and the other probes run (k332).
-
-=head2 ocp_crd_drift
-
-    my @entries = $detector->ocp_crd_drift;
-
-OCP's own CRDs, C<OCPNode> and C<OCPNodeProvider>, compared with the ones
-this ocp ships in F<share/robocop/crds> (k291). The API server drops every
-field of an object that the stored CRD does not declare, without an error, so
-an OCPNode CRD from before k254 lost C<spec.nodeIP> from C<ocp node add
---node_ip> while the drift check said nothing. Compared are the property
-paths under C<spec> and C<status> (L</crd_schema_diff>), not the schemas as
-text, which the API server stores normalised. One entry per CRD that
-differs, C<component =E<gt> 'ocp_crd'>, label C<"$kind CRD">, no remedy:
-
-=over 4
-
-=item * The cluster's CRD lacks paths the shipped one declares: it is older.
-C<kind =E<gt> 'version'>, C<self_healing>: the node CR step of C<ocp apply>
-writes the shipped one over it.
-
-=item * The cluster's CRD declares paths the shipped one does not: it is
-newer than this ocp (a downgrade). C<kind =E<gt> 'version'>, with a
-C<manual_step>, and reported only: L<OCP::Cmd::Apply::CR> leaves such a CRD
-as it is, for C<ocp apply> and C<ocp deploy-robocop> alike, because writing
-this one over it would drop those fields from every object. The flip side:
-once OCP drops a field from its own CRDs, every cluster reads as newer than
-the ocp that dropped it.
-
-=item * The cluster has no such CRD (a 404, and only a 404): C<kind =E<gt>
-'missing'>, C<self_healing>.
-
-=item * It cannot be read, or the shipped CRDs cannot: one C<kind =E<gt>
-'error'> entry naming the cause, carped to stderr, as for the probes of
-L</component_drift>.
-
-=back
-
-=head2 crd_schema_diff
-
-    my ($want_only, $have_only) = OCP::Drift->crd_schema_diff($live, $shipped);
-
-The property paths only C<$shipped> declares and those only C<$live>
-declares, each a sorted arrayref. A path whose parent is in the same list is
-left out (C<spec.hetzner> stands for everything under it), and a path
-carries its version (C<v1:spec.nodeIP>) only when the two CRDs hold more than
-one version between them. L</ocp_crd_drift> and
-L<OCP::Cmd::Apply::CR/ensure_crds> judge by it alike.
-
-=head2 crd_property_paths
-
-    my $paths = OCP::Drift->crd_property_paths($crd);
-    # { v1 => { spec => 1, 'spec.nodeIP' => 1, 'status.hostKeys[].fingerprint' => 1, ... } }
-
-Every property path a CRD's schema declares under C<spec> and C<status>, per
-version name. The items of an array are named by C<[]>; C<spec> and
-C<status> count themselves.
-
-=head2 shipped_ocp_crds
-
-    my @crds = OCP::Drift->shipped_ocp_crds;
-
-Every C<CustomResourceDefinition> in F<share/robocop/crds>, decoded, in file
-order. Dies with the path when the directory is not there.
-
-=head2 remedy_params
-
-    my $params = OCP::Drift->remedy_params($config, 'cert_manager', $version);
-
-The params a component's upgrade task runs with: C<version>, the config's
-C<distribution>, the probe's C<remedy_pins> resolved from
-L<OCP::Versions>, and its C<remedy_config> read off the config (for Cilium the
-C<helm_values> from F<ocp.yaml>'s C<cilium:>, so an upgrade keeps them).
-Callable on the class. Both a drift remedy and
-L<OCP::Cmd::Update> build their Rex params here, so the two paths drive a
-task the same way.
-
-=head2 version_against_pin
-
-    my ($actual, $want_tag, $same) = OCP::Drift->version_against_pin($probe, $object, $expected);
-
-What C<$object> runs against the pin C<$expected> of C<$probe> (an entry of
-C<@COMPONENT_PROBES>), read as L</component_drift> reads it: the version
-annotation or the tag of the first container's image (C<''> when there is
-none, which is not compared), the tag the pin stands for with the probe's
-C<tag_prefix>, and whether the two are one version. Callable on the class.
-L<OCP::Cmd::Apply::AMDGPU> asks it before it calls a DaemonSet up to date
-(k350), and L<OCP::Cmd::Apply::Workloads> before it calls NFD or the GPU
-operator up to date.
-
-=head2 apply_closes
-
-    my $closes = OCP::Drift->apply_closes($entry);
-
-True when a plain C<ocp apply> closes the drift entry: it runs its
-C<remedy>, re-applies its manifest (C<self_healing>), or deploys what is
-C<missing>. Every other entry is report only, and an entry of kind C<error>
-is neither. L<OCP::Cmd::Status> counts these entries as "can be reconciled
-automatically" and sets C<fixable> by it, and C<ocp apply --dry-run> counts
-them as the differences a real run would act on: one rule for both.
-Callable on the class; it reads nothing but the entry.
-
-=head2 nvidia_gpu_nodes
-
-    my @nodes = OCP::Drift->nvidia_gpu_nodes($api);
-
-The Nodes NFD labelled with an NVIDIA GPU, each once: those with
-C<feature.node.kubernetes.io/pci-0300_10de.present> or
-C<feature.node.kubernetes.io/pci-0302_10de.present> set to C<true>
-(C<@OCP::Drift::NVIDIA_GPU_LABELS>), listed one label selector at a time. A
-404 lists nothing; any other failure dies with
-C<could not read Nodes labelled SELECTOR: CAUSE>. The GPU step of C<ocp
-apply> runs for these nodes and skips a cluster without one; its dry run and
-the GPU operator probe read them here as well. Callable on the class.
-
-=head2 distribution_drift
-
-Nodes whose kubelet version differs from the configured distribution version.
-Never carries a remedy — distribution upgrades are a manual, node-by-node
-operation.
-
-If the C<list('Node')> call fails (revoked token, RBAC denial, TLS, apiserver
-5xx), the sub returns one C<kind =E<gt> 'error'> entry naming the distribution
-and the underlying exception, and carps the same exception to stderr. The
-silent return that used to leave C<ocp status> printing a green drift summary
-on a cluster it could not actually query is gone (k119).
-
-=head2 registry_dns_drift
-
-The C<registry.local> record in the CoreDNS Corefile: missing, or pointing at
-an address that is not the control plane's. Both distributions own that
-ConfigMap themselves and reset it on an upgrade or a restart, taking the record
-with them; C<ocp apply> writes it back, so the entry reports the window in
-between rather than a permanent fault, and carries no remedy of its own.
-
-The record is read from the server block that answers for the name
-(L<OCP::Corefile>), as the writer reads it. When that is not the root block
-(a block of its own for the name that maps it elsewhere, or none at all),
-C<ocp apply> does not write it, and the entry is C<kind =E<gt> 'spec'> with a
-C<manual_step> instead (k338).
-
-Read as the writer reads it in every case (k348): the server blocks a k3s
-Corefile imports from the C<coredns-custom> ConfigMap answer like its own
-(read only when the Corefile imports from C</etc/coredns/custom>, which RKE2's
-does not); a server block answers only for plain DNS on port 53; the first
-CoreDNS ConfigMap that exists is the one read, and one without a C<Corefile>
-key is a C<spec> entry; a root block that runs the C<hosts> plugin more than
-once, which CoreDNS refuses, is C<missing> when the block an older OCP added is
-what C<ocp apply> takes out, and C<spec> when one would still be left over.
-
-CoreDNS refuses the whole Corefile over any server block that runs the
-C<hosts> plugin more than once: the root block or another, on any port, the
-Corefile's own or a C<coredns-custom> snippet. Each of them is checked
-(L<OCP::Corefile/doubled_hosts_block>). C<ocp apply> repairs only the root
-block it writes the record into, so every other case is a C<spec> entry. That
-includes a doubled root block while another block answers for the name.
-
-A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
-name is read. When neither name exists, the writer stops with an error and the
-probe gives a C<spec> entry with a C<manual_step>. A C<coredns-custom>
-answering 404 has no snippets. Any other failed read ends the probe with one
-C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
-L</component_drift>.
-
-=head2 pod_cidr_drift
-
-Compares the pool in Cilium's C<cilium-config> ConfigMap
-(C<cluster-pool-ipv4-cidr>) with C<network.pod_cidr> (default
-C<10.42.0.0/16>). A difference is a C<spec> entry with no remedy and a
-C<manual_step>: the pod network of a running cluster is never moved
-automatically, and C<upgrade_cilium> keeps the live pool.
-
-No C<cilium-config> (a 404) is nothing to compare. Any other failed read is
-one C<kind =E<gt> 'error'> entry (k268), drift unknown, as for
-L</component_drift>.
-
-=head2 rex_probe_drift
-
-Host-side drift found by running a read-only Rex task over SSH on the hosts a
-probe selects (C<@REX_PROBES>) and matching its stdout against
-C<$REX_DRIFT_MARKER>. A host that answers with the marker gets one
-C<kind =E<gt> 'rex_probe'> entry naming the host it drifted on and carrying the
-cleanup task as its C<remedy> (with that same host), so
-L<OCP::Cmd::Apply::Drift> runs the fix where the drift is.
-
-Needs L</rex_prober>; without it, nothing is probed. A probe the prober
-skipped (it returned nothing) is no entry; the command says why on its skip
-line (L<OCP::Role::Cmd/host_probe_warning>). A probe that throws -- host
-unreachable, timeout, a host key that no longer matches the recorded one -- is
-carped to stderr, the whole cause once, and is one C<kind =E<gt> 'error'>
-entry with the probe's C<component> and C<label>, the C<host>, and the first
-line of the cause in its C<message> (k380): drift unknown, never drift and
-never an exception, so a single unreachable machine cannot block C<detect> or
-make C<ocp status> a no-go, and is not read as a clean host either. The first probe is the obsolete
-pre-k23 containerd config template on the control planes (k45/k71).
-
-The workers a C<machines> probe adds come from one list of the OCPNodes in
-C<ocp-system>. A 404 there (no OCPNode CRD) is no workers. Any other failed
-list is one C<kind =E<gt> 'error'> entry, component C<worker_host_probes>, its
-cause carped to stderr (k268): the control planes are still probed, and the
-workers' drift is unknown rather than reported clean.
-
-=head2 resolve_address
-
-    my $ip = OCP::Drift::resolve_address('cortex.ai.citilan.de');
-
-A control plane's address as a dotted quad, or C<undef> when it does not
-resolve to one. Addresses pass through untouched. Both the writer of the
-C<registry.local> record and L</registry_dns_drift> derive the address they
-expect through this function, so a control plane named by DNS cannot read as
-drifted.
-
-=head2 corefile_host_address
-
-    my $ip = OCP::Drift::corefile_host_address($corefile, 'registry.local');
-
-The address a Corefile maps a name to, or C<undef> when it maps none: the
-record in the server block that answers for the name (L<OCP::Corefile>). An
-optional third argument, C<{ path =E<gt> text }>, gives the files the
-Corefile's top-level imports read.
-
-=head2 corefile_imports_custom
-
-    my $read = OCP::Drift::corefile_imports_custom($corefile);
-
-Whether the Corefile imports server blocks from C<$COREDNS_CUSTOM_DIR>
-(C</etc/coredns/custom>), where k3s mounts C<$COREDNS_CUSTOM_CONFIGMAP>
-(C<coredns-custom>). The writer of the C<registry.local> record and
-L</registry_dns_drift> read that ConfigMap only then.
-
-=head2 coredns_custom_files
-
-    my $files = OCP::Drift::coredns_custom_files($cm->data);
-
-C<coredns-custom>'s data as the files CoreDNS sees under its mount, for
-L<OCP::Corefile/imports>.
-
-=head2 corefile_block_name
-
-A server block as messages name it: C<server block> and its keys, and for one
-imported from C<coredns-custom>, the ConfigMap key it is in.
-
-=head2 corefile_hosts_twice
-
-    my ($where, $tail) = OCP::Drift::corefile_hosts_twice($block, $writes);
-
-A server block that runs the C<hosts> plugin more than once, as the writer of
-the C<registry.local> record and L</registry_dns_drift> name it: C<root block>
-for the Corefile's own, L</corefile_block_name> for any other. Also returns
-what C<ocp apply> does about it. It removes a C<hosts> block an older OCP
-added only from that root block, and only on a run that writes the record
-there (C<$writes>). Any other block it leaves as it is.
-
-=head2 corefile_shadow_tail
-
-    my $tail = OCP::Drift::corefile_shadow_tail($corefile);
-
-What the writer and the probe say when another server block answers for the
-name in the root block's place: C<ocp apply> writes the record only into the
-Corefile's own root block. The tail says that block is shadowed, or, when the
-Corefile has no root block of its own, that there is none.
-
-=head2 image_version
-
-    my $tag = OCP::Drift::image_version('quay.io/cilium/operator-generic:v1.20.0');
-
-The tag of a container image reference. Handles digests and registry ports.
-
-=head2 format_lines
-
-    print "$_\n" for OCP::Drift->format_lines($drift);
-
-Drift entries as printable lines.
-
-=cut

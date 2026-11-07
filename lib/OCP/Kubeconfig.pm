@@ -26,6 +26,16 @@ sub parse {
     return $struct;
 }
 
+=head1 METHODS
+
+=method parse
+
+    my $struct = OCP::Kubeconfig->parse($yaml);
+
+Parses kubeconfig YAML into a hashref. Dies on anything that is not a mapping.
+
+=cut
+
 # Rename clusters/users/contexts to the OCP cluster name so a merge into a
 # shared kubeconfig cannot clobber unrelated entries. RKE2 and K3s both ship
 # everything named 'default', which would collide with every other cluster.
@@ -68,6 +78,16 @@ sub rename_entries {
     return $current;
 }
 
+=method rename_entries
+
+    my $context = OCP::Kubeconfig->rename_entries($struct, 'mycluster');
+
+Renames clusters, users and contexts in place and rewires the context
+references. A single entry takes the name as-is, multiple entries get it as
+a prefix. Sets and returns C<current-context>.
+
+=cut
+
 # Merge $incoming into $base. Entries with the same name are replaced in
 # place, everything else is kept. current-context follows $incoming.
 sub merge {
@@ -102,6 +122,15 @@ sub merge {
     return \%out;
 }
 
+=method merge
+
+    my $merged = OCP::Kubeconfig->merge($base, $incoming);
+
+Merges named entries, replacing same-named ones and appending the rest.
+C<current-context> follows C<$incoming>.
+
+=cut
+
 # Where `ocp kubeconfig -e` writes: $KUBECONFIG (first entry) or ~/.kube/config.
 sub default_target {
     my ($class) = @_;
@@ -118,6 +147,14 @@ sub default_target {
     return path($home)->child('.kube', 'config')->stringify;
 }
 
+=method default_target
+
+    my $path = OCP::Kubeconfig->default_target;
+
+The first path in C<$KUBECONFIG>, or F<~/.kube/config>.
+
+=cut
+
 # True when we are inside a container, where $HOME is usually not persistent.
 sub in_container {
     my ($class) = @_;
@@ -129,6 +166,14 @@ sub in_container {
 
     return 0;
 }
+
+=method in_container
+
+    warn "..." if OCP::Kubeconfig->in_container;
+
+True inside Docker/Podman/Kubernetes, where C<$HOME> is usually throwaway.
+
+=cut
 
 # Merge a kubeconfig into $target (default: default_target), backing up the
 # previous file first. Returns a hashref: target, backup, context.
@@ -164,6 +209,16 @@ sub export {
     };
 }
 
+=method export
+
+    my $result = OCP::Kubeconfig->export(kubeconfig => $yaml, name => 'mycluster');
+
+Renames, merges and writes the target file with mode 0600, backing up an
+existing file as F<< <target>.ocp-bak >>. Returns a hashref with C<target>,
+C<backup> and C<context>.
+
+=cut
+
 1;
 
 __END__
@@ -187,48 +242,3 @@ named C<default>. Writing one of those straight into a shared
 F<~/.kube/config> would overwrite the entries of any other cluster. This
 module renames the entries to the OCP cluster name first, then merges them
 into the existing file, leaving unrelated entries untouched.
-
-=head1 METHODS
-
-=head2 parse
-
-    my $struct = OCP::Kubeconfig->parse($yaml);
-
-Parses kubeconfig YAML into a hashref. Dies on anything that is not a mapping.
-
-=head2 rename_entries
-
-    my $context = OCP::Kubeconfig->rename_entries($struct, 'mycluster');
-
-Renames clusters, users and contexts in place and rewires the context
-references. A single entry takes the name as-is, multiple entries get it as
-a prefix. Sets and returns C<current-context>.
-
-=head2 merge
-
-    my $merged = OCP::Kubeconfig->merge($base, $incoming);
-
-Merges named entries, replacing same-named ones and appending the rest.
-C<current-context> follows C<$incoming>.
-
-=head2 default_target
-
-    my $path = OCP::Kubeconfig->default_target;
-
-The first path in C<$KUBECONFIG>, or F<~/.kube/config>.
-
-=head2 in_container
-
-    warn "..." if OCP::Kubeconfig->in_container;
-
-True inside Docker/Podman/Kubernetes, where C<$HOME> is usually throwaway.
-
-=head2 export
-
-    my $result = OCP::Kubeconfig->export(kubeconfig => $yaml, name => 'mycluster');
-
-Renames, merges and writes the target file with mode 0600, backing up an
-existing file as F<< <target>.ocp-bak >>. Returns a hashref with C<target>,
-C<backup> and C<context>.
-
-=cut

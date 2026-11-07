@@ -49,6 +49,36 @@ sub one_line {
     return length $line ? $line : $opt{empty} // 'unknown error';
 }
 
+=head1 FUNCTIONS
+
+=func one_line
+
+    my $line = OCP::ErrorLine::one_line($err, %opt);
+
+C<$err> as a string (an exception object stringified), with every Perl
+source location (C< at FILE line N.>) taken out, each run of whitespace --
+newlines too -- folded into one space, and none at either end.  For a
+L<Kubernetes::REST::APIError> of code C<599> (no answer) only the first line
+of its body is kept: the lines after it are LWP's, saying the same reason
+again.  Options:
+
+=over
+
+=item mask
+
+A secret to replace with C<********> wherever it appears, before anything
+else is done -- the API token a request went out with.  Every secret
+L</add_secret> was given is masked as well, without being named here.
+
+=item empty
+
+What to return when nothing is left (C<undef>, an empty or blank C<$err>, a
+bare source location). C<'unknown error'> when not given.
+
+=back
+
+=cut
+
 sub _is_transport_error {
     my ($err) = @_;
     return Scalar::Util::blessed($err)
@@ -68,6 +98,21 @@ sub json_error {
     (my $line = one_line($err, empty => '')) =~ s/\A(?:ERROR|Error|error):\s*//;
     return length $line ? $line : 'unknown error';
 }
+
+=func json_error
+
+    my $field = OCP::ErrorLine::json_error($err);
+    # This project has no kubeconfig.yaml, so there is no cluster API to reach. 'ocp apply' writes ...
+
+The C<error> field of a C<--json> command's object: L</one_line> of C<$err>,
+without a leading C<ERROR:> (or C<Error:>, C<error:>) label, so a refusal
+written for STDERR over several indented lines is one string a script can
+read.  C<unknown error> when nothing is left.  L<OCP::Cmd::Status> and
+L<OCP::Cmd::Health> fill their field with it, and L<OCP>'s renderer the
+object of every other C<--json> command that dies, C<ocp node ls --json>
+among them.
+
+=cut
 
 # k398: every secret this process has read -- a Hetzner token, from the
 # environment, secrets.yaml or a provider CR's Secret -- for the life of the
@@ -89,7 +134,32 @@ sub add_secret {
     return;
 }
 
+=func add_secret
+
+    OCP::ErrorLine::add_secret($token);
+
+Remembers C<$token> as a secret for the life of the process: from then on
+L</one_line> and L</mask_secrets> replace it with C<********> wherever it
+appears.  C<undef> and any value shorter than 8 characters are ignored, so an
+empty or a short value does not mask unrelated text.  Returns nothing.
+L<OCP::Secrets/hetzner_token>, L<OCP::Provider::Hetzner> and
+L<OCP::Hetzner::Picker> add the Hetzner token they read or are built with
+(k398).
+
+=cut
+
 sub mask_secrets { _masked($_[0]) }
+
+=func mask_secrets
+
+    print STDERR OCP::ErrorLine::mask_secrets($text);
+
+C<$text> with every secret L</add_secret> was given replaced by C<********>,
+the longest first, so a secret inside a longer one never leaves part of the
+longer one standing.  C<undef> comes back as C<''>.  Nothing else about the
+text changes: no folding, no source locations taken out.
+
+=cut
 
 sub _masked {
     my ($text, @also) = @_;
@@ -149,136 +219,7 @@ sub api_error_line {
         .')'.(length $message ? ": $message" : '');
 }
 
-# k399: the API server of the last cluster client this process built
-# (OCP::Role::Cmd::connect_cluster_api), for user_line. Process-wide, as the
-# secret registry is: when a command's execute dies, the renderer in OCP.pm
-# holds no command object to ask -- MooX::Cmd built it inside new_with_cmd.
-# The last one, so a client rebuilt on a new kubeconfig (ocp apply after
-# bootstrap) names the new server, never the stale one. Undef: none.
-my $CLUSTER_ENDPOINT;
-
-sub set_cluster_endpoint {
-    my ($endpoint) = @_;
-    $CLUSTER_ENDPOINT = $endpoint;
-    return;
-}
-
-# k398: the foreign exceptions OCP.pm's renderer knows, as the line the user
-# reads instead of "This is an internal error". Each carries a source
-# location -- the caller's line, as croak puts it -- and none is a bug in OCP:
-#   Kubernetes::REST::APIError  the cluster API did not answer, or answered
-#                               with an error: api_error_line, with the
-#                               server set_cluster_endpoint was last given
-#                               (k399), without one before any client.
-#   Path::Tiny::Error           a file OCP could not read or write: "cannot
-#                               read FILE: why". The verb is read for what
-#                               opens or reads a file, write for what creates
-#                               or writes one, else the op's own first word
-#                               ("cannot close", "cannot chmod").
-# Anything else is undef: the renderer decides by its location, as before.
-sub user_line {
-    my ($err) = @_;
-    return unless Scalar::Util::blessed($err);
-    return api_error_line($err, $CLUSTER_ENDPOINT) if $err->isa('Kubernetes::REST::APIError');
-    return unless $err->isa('Path::Tiny::Error');
-    my $op   = $err->{op} // '';
-    my $verb = $op =~ /\A(?:open \(<|opendir|read|slurp|lines|stat)/             ? 'read'
-             : $op =~ /\A(?:open \(>|sysopen|spew|append|mkpath|mkdir|touch)/ ? 'write'
-             : (split ' ', $op)[0] // 'access';
-    return 'cannot '.$verb.' '.($err->{file} // '?').': '.one_line($err->{err});
-}
-
-1;
-
-__END__
-
-=head1 SYNOPSIS
-
-    use OCP::ErrorLine;
-
-    print STDERR "[!!] $label: could not add the keys: "
-        . OCP::ErrorLine::one_line($@) . "\n";
-
-    # The token the request went out with never reaches the terminal.
-    my $why = OCP::ErrorLine::one_line($@, mask => $token);
-
-=head1 DESCRIPTION
-
-What a command prints after "could not ...": the exception, as one line.
-Shared by L<OCP::Role::Cmd::Machines> (and through it L<OCP::Cmd::Keys::Secure>
-and the operator commands) and L<OCP::Cmd::Init> (k342), so a failure reads
-the same wherever it is named.
-
-It also holds what the one error renderer in L<OCP> (C<run_cli>) says with
-(k398): the cluster API's wording (L</api_error_line>), the foreign
-exceptions it says as a line of their own (L</user_line>), the server of the
-last cluster client built (L</set_cluster_endpoint>, k399), and the registry
-of secrets it masks in everything it prints (L</add_secret>,
-L</mask_secrets>).
-
-=head1 FUNCTIONS
-
-=head2 one_line
-
-    my $line = OCP::ErrorLine::one_line($err, %opt);
-
-C<$err> as a string (an exception object stringified), with every Perl
-source location (C< at FILE line N.>) taken out, each run of whitespace --
-newlines too -- folded into one space, and none at either end.  For a
-L<Kubernetes::REST::APIError> of code C<599> (no answer) only the first line
-of its body is kept: the lines after it are LWP's, saying the same reason
-again.  Options:
-
-=over
-
-=item mask
-
-A secret to replace with C<********> wherever it appears, before anything
-else is done -- the API token a request went out with.  Every secret
-L</add_secret> was given is masked as well, without being named here.
-
-=item empty
-
-What to return when nothing is left (C<undef>, an empty or blank C<$err>, a
-bare source location). C<'unknown error'> when not given.
-
-=back
-
-=head2 json_error
-
-    my $field = OCP::ErrorLine::json_error($err);
-    # This project has no kubeconfig.yaml, so there is no cluster API to reach. 'ocp apply' writes ...
-
-The C<error> field of a C<--json> command's object: L</one_line> of C<$err>,
-without a leading C<ERROR:> (or C<Error:>, C<error:>) label, so a refusal
-written for STDERR over several indented lines is one string a script can
-read.  C<unknown error> when nothing is left.  L<OCP::Cmd::Status> and
-L<OCP::Cmd::Health> fill their field with it, and L<OCP>'s renderer the
-object of every other C<--json> command that dies, C<ocp node ls --json>
-among them.
-
-=head2 add_secret
-
-    OCP::ErrorLine::add_secret($token);
-
-Remembers C<$token> as a secret for the life of the process: from then on
-L</one_line> and L</mask_secrets> replace it with C<********> wherever it
-appears.  C<undef> and any value shorter than 8 characters are ignored, so an
-empty or a short value does not mask unrelated text.  Returns nothing.
-L<OCP::Secrets/hetzner_token>, L<OCP::Provider::Hetzner> and
-L<OCP::Hetzner::Picker> add the Hetzner token they read or are built with
-(k398).
-
-=head2 mask_secrets
-
-    print STDERR OCP::ErrorLine::mask_secrets($text);
-
-C<$text> with every secret L</add_secret> was given replaced by C<********>,
-the longest first, so a secret inside a longer one never leaves part of the
-longer one standing.  C<undef> comes back as C<''>.  Nothing else about the
-text changes: no folding, no source locations taken out.
-
-=head2 api_error_line
+=func api_error_line
 
     my $line = OCP::ErrorLine::api_error_line($err, $endpoint);
     # The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
@@ -320,7 +261,23 @@ L</one_line>, left out when it only repeats the reason.
 L<OCP::Role::Cmd/cluster_api_error> says it with the client's endpoint
 (k384, k387).
 
-=head2 set_cluster_endpoint
+=cut
+
+# k399: the API server of the last cluster client this process built
+# (OCP::Role::Cmd::connect_cluster_api), for user_line. Process-wide, as the
+# secret registry is: when a command's execute dies, the renderer in OCP.pm
+# holds no command object to ask -- MooX::Cmd built it inside new_with_cmd.
+# The last one, so a client rebuilt on a new kubeconfig (ocp apply after
+# bootstrap) names the new server, never the stale one. Undef: none.
+my $CLUSTER_ENDPOINT;
+
+sub set_cluster_endpoint {
+    my ($endpoint) = @_;
+    $CLUSTER_ENDPOINT = $endpoint;
+    return;
+}
+
+=func set_cluster_endpoint
 
     OCP::ErrorLine::set_cluster_endpoint($api->server->endpoint);
     OCP::ErrorLine::set_cluster_endpoint(undef);
@@ -331,7 +288,34 @@ nothing.  L<OCP::Role::Cmd/connect_cluster_api> sets it for every client a
 command builds (k399): a command's object is gone by the time L<OCP>'s
 renderer says its error, so the server cannot be asked of it there.
 
-=head2 user_line
+=cut
+
+# k398: the foreign exceptions OCP.pm's renderer knows, as the line the user
+# reads instead of "This is an internal error". Each carries a source
+# location -- the caller's line, as croak puts it -- and none is a bug in OCP:
+#   Kubernetes::REST::APIError  the cluster API did not answer, or answered
+#                               with an error: api_error_line, with the
+#                               server set_cluster_endpoint was last given
+#                               (k399), without one before any client.
+#   Path::Tiny::Error           a file OCP could not read or write: "cannot
+#                               read FILE: why". The verb is read for what
+#                               opens or reads a file, write for what creates
+#                               or writes one, else the op's own first word
+#                               ("cannot close", "cannot chmod").
+# Anything else is undef: the renderer decides by its location, as before.
+sub user_line {
+    my ($err) = @_;
+    return unless Scalar::Util::blessed($err);
+    return api_error_line($err, $CLUSTER_ENDPOINT) if $err->isa('Kubernetes::REST::APIError');
+    return unless $err->isa('Path::Tiny::Error');
+    my $op   = $err->{op} // '';
+    my $verb = $op =~ /\A(?:open \(<|opendir|read|slurp|lines|stat)/             ? 'read'
+             : $op =~ /\A(?:open \(>|sysopen|spew|append|mkpath|mkdir|touch)/ ? 'write'
+             : (split ' ', $op)[0] // 'access';
+    return 'cannot '.$verb.' '.($err->{file} // '?').': '.one_line($err->{err});
+}
+
+=func user_line
 
     my $line = OCP::ErrorLine::user_line($@);
     # The cluster API at https://10.0.0.1:6443 could not be reached: Connection refused
@@ -359,3 +343,31 @@ first word.
 =back
 
 =cut
+
+1;
+
+__END__
+
+=head1 SYNOPSIS
+
+    use OCP::ErrorLine;
+
+    print STDERR "[!!] $label: could not add the keys: "
+        . OCP::ErrorLine::one_line($@) . "\n";
+
+    # The token the request went out with never reaches the terminal.
+    my $why = OCP::ErrorLine::one_line($@, mask => $token);
+
+=head1 DESCRIPTION
+
+What a command prints after "could not ...": the exception, as one line.
+Shared by L<OCP::Role::Cmd::Machines> (and through it L<OCP::Cmd::Keys::Secure>
+and the operator commands) and L<OCP::Cmd::Init> (k342), so a failure reads
+the same wherever it is named.
+
+It also holds what the one error renderer in L<OCP> (C<run_cli>) says with
+(k398): the cluster API's wording (L</api_error_line>), the foreign
+exceptions it says as a line of their own (L</user_line>), the server of the
+last cluster client built (L</set_cluster_endpoint>, k399), and the registry
+of secrets it masks in everything it prints (L</add_secret>,
+L</mask_secrets>).

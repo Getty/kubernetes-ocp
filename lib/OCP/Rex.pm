@@ -275,6 +275,16 @@ sub run_task {
     };
 }
 
+=head1 METHODS
+
+=method run_task
+
+    $rex->run_task('task_name', param1 => 'value', ...);
+
+Execute a Rex task with parameters.
+
+=cut
+
 # The task's own progress lines, in order: "[STEP] ..." on its stdout (the
 # Rexfile's upgrade_cilium says one per Cilium minor it passes, k195). A task
 # that worked shows no log, so these are what the run narrates of it.
@@ -462,6 +472,74 @@ sub install_server {
     };
 }
 
+=method install_server
+
+    my $result = $rex->install_server(
+        distribution => 'rke2',  # or 'k3s'
+        version      => '',      # empty = latest
+        token        => '...',   # see below if omitted
+        gpu          => 1,       # 0 skips GPU detection entirely
+        gpu_driver   => 'host',  # 'operator' leaves the host driver alone
+        gpu_toolkit  => 1,       # 0: no operator toolkit, so write CDI specs
+        gpu_amd_integrated => 0, # 1: set up an integrated AMD GPU too
+        pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
+        cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
+        node_ip      => '10.230.30.50',  # optional; or "v4,v6"
+        clean_cilium_residue => 1,       # optional; clear Cilium leftovers
+    );
+
+Install Kubernetes control plane. Detects NVIDIA hardware and installs the
+driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
+C<operator>.  With C<gpu_toolkit> false (F<ocp.yaml> C<gpu.toolkit: false>,
+k223) it also writes the node's CDI specs, which the GPU Operator's toolkit
+DaemonSet writes otherwise.  An integrated AMD GPU (the iGPU of a Ryzen CPU
+or APU) is set up only with C<gpu_amd_integrated> true (F<ocp.yaml>
+C<gpu.amd.integrated: true>, k253); omitted, it is left alone.
+
+C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
+is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to
+C<10.42.0.0/16>. A Cilium that already runs keeps the pool it has.
+
+C<cilium_helm_values> (F<ocp.yaml>'s C<cilium:>, merged by
+C<OCP::Config-E<gt>cilium_helm_values>) goes to C<install_cilium> as its
+C<helm_values>; an empty or missing hash passes none.
+
+C<node_ip> is the address the node registers as its C<InternalIP> (RKE2/K3s
+C<node-ip>): one IP, or C<"v4,v6"> for dual-stack, one per family -- only
+what the operator asked for (C<control_planes[].node_ip>), never a default.
+Pass it on a multi-homed host, where the default route's address -- what
+the node registers without it -- may not be reachable from the other nodes.
+It goes to the Rexfile as the C<node_ip> task parameter, and from there to
+Rex::Rancher, which writes it to C<config.yaml>. Omitted or empty, no
+C<node_ip> is passed at all, RKE2/K3s choose the address themselves, and
+Rex::Rancher keeps the C<node-ip> the node's C<config.yaml> already holds. A
+Rex::Rancher without node_ip support (rex-rancher k100) cannot set it: the
+task dies before it changes anything on the host. A re-run that changes the
+value is a C<[WARN]> from Rex::Rancher, since the node's Cilium agent pod then
+needs a restart.
+
+C<clean_cilium_residue> true (C<ocp apply --clean_cilium_residue>) clears
+the Cilium datapath state an earlier cluster left on a host without RKE2/K3s,
+without a reboot, where the install would refuse the host otherwise
+(L<Rex::Rancher::Uninstall/check_cilium_residue> with C<clean>). It goes to
+the Rexfile as the task parameter of that name, and only when true. What is
+still there afterwards fails the task, asking for a reboot.
+
+The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
+C<server> are C<advertised_host>. On k3s Cilium reaches the API server at
+C<node_api_host> instead, the address agents join the control plane at; it
+defaults to C<advertised_host>, which defaults to C<host>.
+
+When C<token> is omitted, an existing cluster's token is B<reused> rather than
+regenerated: the machine's on-disk C<server/token> is read first, and a fresh
+token is minted only when there is none. RKE2/K3s seal the datastore with this
+token at bootstrap and re-check it at the next start, so rotating it on a
+re-apply would arm a fatal reconcile failure on the following restart (k150).
+
+Returns hashref with C<token> and C<kubeconfig>.
+
+=cut
+
 sub fetch_kubeconfig_ssh {
     my ($self, $distribution) = @_;
 
@@ -494,6 +572,18 @@ sub fetch_kubeconfig_ssh {
 
     return $kubeconfig;
 }
+
+=method fetch_kubeconfig_ssh
+
+    my $kubeconfig = $rex->fetch_kubeconfig_ssh('rke2');
+
+The server's admin kubeconfig, read over SSH from where the distribution
+writes it (L<Rex::Rancher::Distribution/kubeconfig>), with C<server> pointed at
+C<advertised_host> (L<Rex::Rancher::Server/patch_kubeconfig_server>) and the CA
+replaced by C<insecure-skip-tls-verify>. C<install_server> returns it as
+C<kubeconfig>.
+
+=cut
 
 sub install_agent {
     my ($self, %opts) = @_;
@@ -548,6 +638,24 @@ sub install_agent {
 
     return 1;
 }
+
+=method install_agent
+
+    $rex->install_agent(
+        distribution => 'rke2',
+        server       => 'https://cp-ip:9345',
+        token        => '...',
+        node_ip      => '10.230.30.50',  # optional; or "v4,v6"
+        clean_cilium_residue => 1,       # optional; clear Cilium leftovers
+    );
+
+Join node to cluster as worker. C<node_ip> is the address the agent
+registers by, as for L</install_server>; omitted or empty, none is passed,
+and the Rexfile has Rex::Rancher take the node-ip from the host's route to
+C<server> (C<node_ip_from_route>), as on every join.
+C<clean_cilium_residue> as for L</install_server>.
+
+=cut
 
 # node_ip as a task parameter (k254), only when the operator asked for one
 # (there is no default), or nothing: absent stays absent, so the Rexfile hands
@@ -664,105 +772,3 @@ through L<OCP::SSH/learn_host_key>, which trusts it on first use; a known host
 goes straight to Rex. The file reaches the Rexfile as C<OCP_KNOWN_HOSTS>. A
 refused changed key fails the task with the C<ssh-keygen -R> command that
 removes the stale entry (k168).
-
-=head1 METHODS
-
-=head2 run_task
-
-    $rex->run_task('task_name', param1 => 'value', ...);
-
-Execute a Rex task with parameters.
-
-=head2 install_server
-
-    my $result = $rex->install_server(
-        distribution => 'rke2',  # or 'k3s'
-        version      => '',      # empty = latest
-        token        => '...',   # see below if omitted
-        gpu          => 1,       # 0 skips GPU detection entirely
-        gpu_driver   => 'host',  # 'operator' leaves the host driver alone
-        gpu_toolkit  => 1,       # 0: no operator toolkit, so write CDI specs
-        gpu_amd_integrated => 0, # 1: set up an integrated AMD GPU too
-        pod_cidr     => '10.42.0.0/16',  # cluster-cidr and Cilium's pool
-        cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
-        node_ip      => '10.230.30.50',  # optional; or "v4,v6"
-        clean_cilium_residue => 1,       # optional; clear Cilium leftovers
-    );
-
-Install Kubernetes control plane. Detects NVIDIA hardware and installs the
-driver plus container toolkit unless C<gpu> is false or C<gpu_driver> is
-C<operator>.  With C<gpu_toolkit> false (F<ocp.yaml> C<gpu.toolkit: false>,
-k223) it also writes the node's CDI specs, which the GPU Operator's toolkit
-DaemonSet writes otherwise.  An integrated AMD GPU (the iGPU of a Ryzen CPU
-or APU) is set up only with C<gpu_amd_integrated> true (F<ocp.yaml>
-C<gpu.amd.integrated: true>, k253); omitted, it is left alone.
-
-C<pod_cidr> becomes the server's C<cluster-cidr> and the cluster pool Cilium
-is installed with, on RKE2 and k3s alike. Omitted, the Rexfile falls back to
-C<10.42.0.0/16>. A Cilium that already runs keeps the pool it has.
-
-C<cilium_helm_values> (F<ocp.yaml>'s C<cilium:>, merged by
-C<OCP::Config-E<gt>cilium_helm_values>) goes to C<install_cilium> as its
-C<helm_values>; an empty or missing hash passes none.
-
-C<node_ip> is the address the node registers as its C<InternalIP> (RKE2/K3s
-C<node-ip>): one IP, or C<"v4,v6"> for dual-stack, one per family -- only
-what the operator asked for (C<control_planes[].node_ip>), never a default.
-Pass it on a multi-homed host, where the default route's address -- what
-the node registers without it -- may not be reachable from the other nodes.
-It goes to the Rexfile as the C<node_ip> task parameter, and from there to
-Rex::Rancher, which writes it to C<config.yaml>. Omitted or empty, no
-C<node_ip> is passed at all, RKE2/K3s choose the address themselves, and
-Rex::Rancher keeps the C<node-ip> the node's C<config.yaml> already holds. A
-Rex::Rancher without node_ip support (rex-rancher k100) cannot set it: the
-task dies before it changes anything on the host. A re-run that changes the
-value is a C<[WARN]> from Rex::Rancher, since the node's Cilium agent pod then
-needs a restart.
-
-C<clean_cilium_residue> true (C<ocp apply --clean_cilium_residue>) clears
-the Cilium datapath state an earlier cluster left on a host without RKE2/K3s,
-without a reboot, where the install would refuse the host otherwise
-(L<Rex::Rancher::Uninstall/check_cilium_residue> with C<clean>). It goes to
-the Rexfile as the task parameter of that name, and only when true. What is
-still there afterwards fails the task, asking for a reboot.
-
-The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
-C<server> are C<advertised_host>. On k3s Cilium reaches the API server at
-C<node_api_host> instead, the address agents join the control plane at; it
-defaults to C<advertised_host>, which defaults to C<host>.
-
-When C<token> is omitted, an existing cluster's token is B<reused> rather than
-regenerated: the machine's on-disk C<server/token> is read first, and a fresh
-token is minted only when there is none. RKE2/K3s seal the datastore with this
-token at bootstrap and re-check it at the next start, so rotating it on a
-re-apply would arm a fatal reconcile failure on the following restart (k150).
-
-Returns hashref with C<token> and C<kubeconfig>.
-
-=head2 install_agent
-
-    $rex->install_agent(
-        distribution => 'rke2',
-        server       => 'https://cp-ip:9345',
-        token        => '...',
-        node_ip      => '10.230.30.50',  # optional; or "v4,v6"
-        clean_cilium_residue => 1,       # optional; clear Cilium leftovers
-    );
-
-Join node to cluster as worker. C<node_ip> is the address the agent
-registers by, as for L</install_server>; omitted or empty, none is passed,
-and the Rexfile has Rex::Rancher take the node-ip from the host's route to
-C<server> (C<node_ip_from_route>), as on every join.
-C<clean_cilium_residue> as for L</install_server>.
-
-=head2 fetch_kubeconfig_ssh
-
-    my $kubeconfig = $rex->fetch_kubeconfig_ssh('rke2');
-
-The server's admin kubeconfig, read over SSH from where the distribution
-writes it (L<Rex::Rancher::Distribution/kubeconfig>), with C<server> pointed at
-C<advertised_host> (L<Rex::Rancher::Server/patch_kubeconfig_server>) and the CA
-replaced by C<insecure-skip-tls-verify>. C<install_server> returns it as
-C<kubeconfig>.
-
-=cut

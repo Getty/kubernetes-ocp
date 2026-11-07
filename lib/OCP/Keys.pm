@@ -88,6 +88,16 @@ sub list_keys {
     return $data->{keys};
 }
 
+=head1 METHODS
+
+=method list_keys
+
+Returns arrayref of all keys with the SOPS/age layer removed: names, types,
+purposes and B<public> keys in plaintext, C<private> still encrypted. Needs
+F<.ocp/age.key> (or L</age_key>), never PIN2.
+
+=cut
+
 #
 # Get specific key
 #
@@ -100,6 +110,12 @@ sub get_key {
 
     return $key;
 }
+
+=method get_key($name)
+
+Returns specific key metadata.
+
+=cut
 
 #
 # Add new key (double encrypted)
@@ -156,6 +172,14 @@ sub add_key {
     return 1;
 }
 
+=method add_key(%params)
+
+Add new key with double encryption.
+
+Required params: name, type, private, pin2
+
+=cut
+
 #
 # Add a key that has a public half only (k216)
 #
@@ -195,6 +219,17 @@ sub add_public_key {
 
     return 1;
 }
+
+=method add_public_key(%params)
+
+    $keys->add_public_key(name => 'leitstand', type => 'ssh_ed25519',
+        purpose => 'operator', public => $line, age => 'age1...');
+
+Adds an entry with a public half and B<no> private one -- an operator's SSH
+key (k216). Required: name, type, public, purpose; C<age> is optional. Croaks
+when the name is taken.
+
+=cut
 
 #
 # The two-tier pair a secure-mode project starts with (ADR 0006)
@@ -247,6 +282,17 @@ sub add_cluster_keys {
     return \%made;
 }
 
+=method add_cluster_keys(pin2 => $pin2, datestamp => $stamp)
+
+Generates the pair a secure-mode project starts with -- C<robo-ssh-STAMP>
+(C<purpose: automation>, age only) and C<admin-ssh-STAMP> (C<purpose: admin>,
+age + PIN2) -- and adds both. C<datestamp> defaults to today (UTC,
+C<YYYYMMDD>). Returns C<< { automation => {...}, admin => {...} } >>, each
+with C<name>, C<public> and C<private>. C<ocp init> and C<ocp keys secure> use
+it.
+
+=cut
+
 # Moves this key file to $target -- a staging file becoming keys.yaml (k96).
 # Not a plain rename: the SOPS layer is written anew for the recipients
 # $target has (OCP::Secrets::recipients_for), because a .sops.yaml rule that
@@ -269,6 +315,14 @@ sub promote_to {
 
     return $dest;
 }
+
+=method promote_to($target)
+
+Moves this key file to C<$target>, re-encrypting the SOPS layer for
+C<$target>'s recipients, and returns the L<OCP::Keys> for it. C<ocp keys
+secure> turns its staging file into F<keys.yaml> with it.
+
+=cut
 
 #
 # Update key (re-encrypt with new PIN2)
@@ -310,6 +364,12 @@ sub deprecate_key {
     return $self->update_key($name, deprecated => 1);
 }
 
+=method deprecate_key($name)
+
+Mark key as deprecated (for migration tracking).
+
+=cut
+
 #
 # Delete key
 #
@@ -329,6 +389,12 @@ sub delete_key {
     $self->_write_keys_file_encrypted($data);
     return 1;
 }
+
+=method delete_key($name)
+
+Remove key from keys.yaml.
+
+=cut
 
 #
 # Decrypt key (PIN2 optional for automation keys)
@@ -364,6 +430,17 @@ sub decrypt_key {
         public  => $key->{public},
     };
 }
+
+=method decrypt_key($name, $pin2)
+
+Decrypt specific key, returns hashref with decrypted private key. C<$pin2> is
+required unless the key's purpose is C<automation>. Dies, naming the key, for
+an entry without a private half (an operator's).
+
+To read only a public key, use C<list_keys>/C<get_key> and take the C<public>
+field — that path needs no PIN2. C<ocp keys show> is the CLI for it.
+
+=cut
 
 #
 # Get automation key (no PIN2 needed!)
@@ -782,64 +859,3 @@ L<OCP::Secrets/age_key>: every decrypt reads it instead of F<.ocp/age.key>
 
     $secrets->unlock_age_key;
     my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);
-
-=head1 METHODS
-
-=head2 list_keys
-
-Returns arrayref of all keys with the SOPS/age layer removed: names, types,
-purposes and B<public> keys in plaintext, C<private> still encrypted. Needs
-F<.ocp/age.key> (or L</age_key>), never PIN2.
-
-=head2 get_key($name)
-
-Returns specific key metadata.
-
-=head2 add_key(%params)
-
-Add new key with double encryption.
-
-Required params: name, type, private, pin2
-
-=head2 add_public_key(%params)
-
-    $keys->add_public_key(name => 'leitstand', type => 'ssh_ed25519',
-        purpose => 'operator', public => $line, age => 'age1...');
-
-Adds an entry with a public half and B<no> private one -- an operator's SSH
-key (k216). Required: name, type, public, purpose; C<age> is optional. Croaks
-when the name is taken.
-
-=head2 add_cluster_keys(pin2 => $pin2, datestamp => $stamp)
-
-Generates the pair a secure-mode project starts with -- C<robo-ssh-STAMP>
-(C<purpose: automation>, age only) and C<admin-ssh-STAMP> (C<purpose: admin>,
-age + PIN2) -- and adds both. C<datestamp> defaults to today (UTC,
-C<YYYYMMDD>). Returns C<< { automation => {...}, admin => {...} } >>, each
-with C<name>, C<public> and C<private>. C<ocp init> and C<ocp keys secure> use
-it.
-
-=head2 promote_to($target)
-
-Moves this key file to C<$target>, re-encrypting the SOPS layer for
-C<$target>'s recipients, and returns the L<OCP::Keys> for it. C<ocp keys
-secure> turns its staging file into F<keys.yaml> with it.
-
-=head2 decrypt_key($name, $pin2)
-
-Decrypt specific key, returns hashref with decrypted private key. C<$pin2> is
-required unless the key's purpose is C<automation>. Dies, naming the key, for
-an entry without a private half (an operator's).
-
-To read only a public key, use C<list_keys>/C<get_key> and take the C<public>
-field — that path needs no PIN2. C<ocp keys show> is the CLI for it.
-
-=head2 deprecate_key($name)
-
-Mark key as deprecated (for migration tracking).
-
-=head2 delete_key($name)
-
-Remove key from keys.yaml.
-
-=cut

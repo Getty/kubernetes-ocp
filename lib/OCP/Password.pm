@@ -50,6 +50,21 @@ sub prompt_password {
     return $password;
 }
 
+=head1 FUNCTIONS
+
+=func prompt_password($prompt)
+
+Prompts for password with hidden input. Returns password string. The prompt
+is printed on STDERR, so a command's STDOUT stays its payload.
+
+With C<$OCP::Password::PINS_STDIN> true -- the C<--pins-stdin> option every
+command has, see L<OCP::Role::Cmd> -- the answer is the next line of STDIN
+instead of the terminal: one line per prompt, in prompt order, only the
+trailing newline stripped. A missing line dies naming the prompt that had
+none; there is no fallback to the terminal.
+
+=cut
+
 # One line off STDIN with the trailing newline stripped and nothing else -- a
 # PIN may begin or end in whitespace. Running out of lines is fatal: undef
 # would reach the caller as "wrong PIN", and falling back to the terminal
@@ -96,6 +111,17 @@ sub prompt_new_pin {
     return $value;
 }
 
+=func prompt_new_pin($pin, $purpose)
+
+    my $pin2 = prompt_new_pin('PIN2', 'admin SSH access');
+
+Sets a PIN: prompts C<Enter $pin ($purpose): >, then C<Confirm $pin: >, both
+through L</prompt_password> (so C<--pins-stdin> reads two lines). Dies when
+the two differ or the PIN is empty; returns it otherwise. C<ocp init> and
+C<ocp keys secure> set PIN1 and PIN2 with it.
+
+=cut
+
 #
 # Encrypt age.key with password
 #
@@ -125,6 +151,12 @@ sub encrypt_age_key {
     my $encrypted = $salt . $nonce . $tag . $ciphertext;
     return encode_base64($encrypted, '');
 }
+
+=func encrypt_age_key($age_key_content, $password)
+
+Encrypts age.key content with password. Returns base64 encoded ciphertext.
+
+=cut
 
 #
 # Decrypt age.key with password
@@ -166,6 +198,12 @@ sub decrypt_age_key {
 
     return $plaintext;
 }
+
+=func decrypt_age_key($encrypted_b64, $password)
+
+Decrypts age.key from base64 encoded ciphertext. Returns plaintext or dies.
+
+=cut
 
 #
 # Helpers
@@ -230,35 +268,3 @@ for defense-in-depth security.
 - Key derivation: PBKDF2-HMAC-SHA256 (100,000 iterations)
 - Random salt (16 bytes) per encryption
 - Random nonce (12 bytes) per encryption
-
-=head1 FUNCTIONS
-
-=head2 prompt_password($prompt)
-
-Prompts for password with hidden input. Returns password string. The prompt
-is printed on STDERR, so a command's STDOUT stays its payload.
-
-With C<$OCP::Password::PINS_STDIN> true -- the C<--pins-stdin> option every
-command has, see L<OCP::Role::Cmd> -- the answer is the next line of STDIN
-instead of the terminal: one line per prompt, in prompt order, only the
-trailing newline stripped. A missing line dies naming the prompt that had
-none; there is no fallback to the terminal.
-
-=head2 prompt_new_pin($pin, $purpose)
-
-    my $pin2 = prompt_new_pin('PIN2', 'admin SSH access');
-
-Sets a PIN: prompts C<Enter $pin ($purpose): >, then C<Confirm $pin: >, both
-through L</prompt_password> (so C<--pins-stdin> reads two lines). Dies when
-the two differ or the PIN is empty; returns it otherwise. C<ocp init> and
-C<ocp keys secure> set PIN1 and PIN2 with it.
-
-=head2 encrypt_age_key($age_key_content, $password)
-
-Encrypts age.key content with password. Returns base64 encoded ciphertext.
-
-=head2 decrypt_age_key($encrypted_b64, $password)
-
-Decrypts age.key from base64 encoded ciphertext. Returns plaintext or dies.
-
-=cut

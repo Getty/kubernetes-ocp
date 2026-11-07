@@ -24,6 +24,18 @@ sub make_parent {
     return $dir;
 }
 
+=head1 FUNCTIONS
+
+=func make_parent
+
+    OCP::StateDir::make_parent($file);
+
+Makes C<$file>'s directory, as L</make_dir> does. When that directory is
+named F<.ocp>, writes its F<.gitignore> as well, unless one is there. Returns
+the directory as a L<Path::Tiny>.
+
+=cut
+
 # Make $dir and the directories above it, unless it is there. A .ocp/ is made
 # 0700 (k372): the secrets in it are each 0600, but a directory at the umask
 # default (0755 under 022) still let every local user list it and read their
@@ -50,6 +62,19 @@ sub make_dir {
     return $dir;
 }
 
+=func make_dir
+
+    OCP::StateDir::make_dir(path('.ocp'));
+
+Makes C<$dir> and the directories above it, unless it is there. A directory
+named F<.ocp> is created mode C<0700>; the directories above it, and every
+other directory, get the default (C<0777> less the umask). A directory that is
+there is left as it is, mode included. Writes no F<.gitignore>: that is
+L</make_parent>'s and L</write_gitignore>'s. Returns the directory as a
+L<Path::Tiny>.
+
+=cut
+
 # Write $dir/.gitignore with $GITIGNORE, unless something is there already: a
 # .gitignore someone wrote or edited is never replaced. 1 when it wrote one.
 sub write_gitignore {
@@ -60,6 +85,15 @@ sub write_gitignore {
     $ignore->spew($GITIGNORE);
     return 1;
 }
+
+=func write_gitignore
+
+    my $wrote = OCP::StateDir::write_gitignore($dir);
+
+Writes F<$dir/.gitignore> with C<$OCP::StateDir::GITIGNORE> unless something
+by that name is there already. 1 when it wrote one, 0 otherwise.
+
+=cut
 
 1;
 
@@ -84,33 +118,3 @@ itself as an initialised project's does.
 
 Whichever command makes F<.ocp/> makes it mode C<0700>, so only its owner can
 list it. A F<.ocp/> that is there already keeps the mode it has.
-
-=head1 FUNCTIONS
-
-=head2 make_parent
-
-    OCP::StateDir::make_parent($file);
-
-Makes C<$file>'s directory, as L</make_dir> does. When that directory is
-named F<.ocp>, writes its F<.gitignore> as well, unless one is there. Returns
-the directory as a L<Path::Tiny>.
-
-=head2 make_dir
-
-    OCP::StateDir::make_dir(path('.ocp'));
-
-Makes C<$dir> and the directories above it, unless it is there. A directory
-named F<.ocp> is created mode C<0700>; the directories above it, and every
-other directory, get the default (C<0777> less the umask). A directory that is
-there is left as it is, mode included. Writes no F<.gitignore>: that is
-L</make_parent>'s and L</write_gitignore>'s. Returns the directory as a
-L<Path::Tiny>.
-
-=head2 write_gitignore
-
-    my $wrote = OCP::StateDir::write_gitignore($dir);
-
-Writes F<$dir/.gitignore> with C<$OCP::StateDir::GITIGNORE> unless something
-by that name is there already. 1 when it wrote one, 0 otherwise.
-
-=cut

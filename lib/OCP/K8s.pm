@@ -42,6 +42,24 @@ sub register {
     return $api;
 }
 
+=head1 METHODS
+
+=method register
+
+    OCP::K8s->register($api);
+
+Puts OCP's CRD classes on C<$api>'s C<with> list, the provider list
+L<Kubernetes::REST> merges into its inner L<IO::K8s> every time it builds one.
+So the two Kinds survive C<invalidate_discovery>, which C<ensure_crd> calls and
+which rebuilds the resource map from the cluster's discovery: written into
+C<< $api->resource_map >> they were lost there, and C<OCPNode> became an
+unknown resource or an L<IO::K8s::Unstructured>.
+
+Makes no request: the resource map is built when a name is first resolved, not
+here. Registering an api a second time adds nothing. Returns C<$api>.
+
+=cut
+
 # Write to a CR's /status subresource.
 #
 # OCPNode declares `subresources: {status: {}}`, and once a CRD does that the
@@ -98,6 +116,35 @@ sub patch_status {
     return $response;
 }
 
+=method patch_status
+
+    OCP::K8s->patch_status($api,
+        kind      => 'OCPNode',
+        name      => 'worker-1',
+        namespace => 'ocp-system',
+        status    => { phase => 'Ready', publicIP => '10.0.0.5' },
+    );
+
+Merge-patches C<$status> into the CR's C</status> subresource.
+
+C<OCPNode> enables the C<status> subresource, which means the Kubernetes API
+server B<silently discards> the C<status> stanza of any write aimed at the main
+resource endpoint — C<ensure>, C<update> and C<patch> all included. Such a write
+still returns 2xx, so a dropped status is invisible at the call site. Status
+therefore has to go through the separate C</status> endpoint, and this is the
+only method in OCP that writes it.
+
+The method itself is kind-agnostic, so it works for any resource whose CRD
+enables the subresource.
+
+It delegates to L<Kubernetes::REST/patch_status> (1.107 and later) and falls
+back to a hand-built C</status> request for older clients. The two paths return
+different things — an inflated object versus the raw response — so the return
+value is deliberately not part of this method's contract: it either writes the
+status or it dies.
+
+=cut
+
 # Evict one pod through the policy/v1 Eviction subresource -- what
 # `kubectl drain` does, without kubectl. Kubernetes::REST has no verb for it,
 # so the request is built from its public request seam (build_path /
@@ -128,6 +175,24 @@ sub evict {
     return ($response->status, $response->content);
 }
 
+=method evict
+
+    my ($status, $body) = OCP::K8s->evict($api,
+        name      => 'web-1',
+        namespace => 'apps',
+    );
+
+Asks the API server to evict one pod through the C<policy/v1> Eviction
+subresource, the call C<kubectl drain> makes.  Unlike a plain delete, an
+eviction honours PodDisruptionBudgets.
+
+Returns the HTTP status and the raw response body and does B<not> die on a 4xx:
+the caller has to tell C<429> (a budget refuses for now; try again), C<404>
+(the pod is already gone) and everything else apart.  Used by
+L<OCP::Node/Teardown> to drain a node.
+
+=cut
+
 1;
 
 __END__
@@ -149,65 +214,6 @@ calls return typed objects instead of bare hashes.
 
 Call C<register> on an API instance before issuing any CRD requests. The api
 L<OCP::Kubernetes> builds has them registered already.
-
-=head1 METHODS
-
-=head2 register
-
-    OCP::K8s->register($api);
-
-Puts OCP's CRD classes on C<$api>'s C<with> list, the provider list
-L<Kubernetes::REST> merges into its inner L<IO::K8s> every time it builds one.
-So the two Kinds survive C<invalidate_discovery>, which C<ensure_crd> calls and
-which rebuilds the resource map from the cluster's discovery: written into
-C<< $api->resource_map >> they were lost there, and C<OCPNode> became an
-unknown resource or an L<IO::K8s::Unstructured>.
-
-Makes no request: the resource map is built when a name is first resolved, not
-here. Registering an api a second time adds nothing. Returns C<$api>.
-
-=head2 patch_status
-
-    OCP::K8s->patch_status($api,
-        kind      => 'OCPNode',
-        name      => 'worker-1',
-        namespace => 'ocp-system',
-        status    => { phase => 'Ready', publicIP => '10.0.0.5' },
-    );
-
-Merge-patches C<$status> into the CR's C</status> subresource.
-
-C<OCPNode> enables the C<status> subresource, which means the Kubernetes API
-server B<silently discards> the C<status> stanza of any write aimed at the main
-resource endpoint — C<ensure>, C<update> and C<patch> all included. Such a write
-still returns 2xx, so a dropped status is invisible at the call site. Status
-therefore has to go through the separate C</status> endpoint, and this is the
-only method in OCP that writes it.
-
-The method itself is kind-agnostic, so it works for any resource whose CRD
-enables the subresource.
-
-It delegates to L<Kubernetes::REST/patch_status> (1.107 and later) and falls
-back to a hand-built C</status> request for older clients. The two paths return
-different things — an inflated object versus the raw response — so the return
-value is deliberately not part of this method's contract: it either writes the
-status or it dies.
-
-=head2 evict
-
-    my ($status, $body) = OCP::K8s->evict($api,
-        name      => 'web-1',
-        namespace => 'apps',
-    );
-
-Asks the API server to evict one pod through the C<policy/v1> Eviction
-subresource, the call C<kubectl drain> makes.  Unlike a plain delete, an
-eviction honours PodDisruptionBudgets.
-
-Returns the HTTP status and the raw response body and does B<not> die on a 4xx:
-the caller has to tell C<429> (a budget refuses for now; try again), C<404>
-(the pod is already gone) and everything else apart.  Used by
-L<OCP::Node/Teardown> to drain a node.
 
 =head1 SEE ALSO
 

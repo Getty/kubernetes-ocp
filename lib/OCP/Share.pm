@@ -55,6 +55,17 @@ sub candidates {
     return @dirs;
 }
 
+=head1 METHODS
+
+=method candidates
+
+    my @dirs = OCP::Share->candidates;
+
+The locations L</dir> considers, in order. C<OCP_SHARE_DIR> is not among them
+— it bypasses the search entirely.
+
+=cut
+
 sub dir {
     my ($class) = @_;
 
@@ -79,6 +90,15 @@ sub dir {
         . "Set OCP_SHARE_DIR to point at it.\n";
 }
 
+=method dir
+
+    my $share = OCP::Share->dir;
+
+The share directory as a L<Path::Tiny>. Dies when none of the candidates
+carries a F<Rexfile>.
+
+=cut
+
 sub rexfile {
     my ($class) = @_;
 
@@ -88,6 +108,14 @@ sub rexfile {
 
     return $rexfile;
 }
+
+=method rexfile
+
+    my $rexfile = OCP::Share->rexfile;
+
+The F<Rexfile> inside L</dir>.
+
+=cut
 
 1;
 
@@ -117,27 +145,3 @@ directory is the one next to the script that is running; C</opt/ocp/src/share>
 and L<File::ShareDir> follow as fallbacks. C<OCP_SHARE_DIR> overrides all of
 it and dies if it points at nothing, because a share directory found by
 accident is the bug this module exists to prevent.
-
-=head1 METHODS
-
-=head2 dir
-
-    my $share = OCP::Share->dir;
-
-The share directory as a L<Path::Tiny>. Dies when none of the candidates
-carries a F<Rexfile>.
-
-=head2 rexfile
-
-    my $rexfile = OCP::Share->rexfile;
-
-The F<Rexfile> inside L</dir>.
-
-=head2 candidates
-
-    my @dirs = OCP::Share->candidates;
-
-The locations L</dir> considers, in order. C<OCP_SHARE_DIR> is not among them
-— it bypasses the search entirely.
-
-=cut

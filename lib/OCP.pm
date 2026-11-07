@@ -237,6 +237,23 @@ sub run_cli {
     return $ret->[0] =~ /\A-?\d+\z/ ? $ret->[0] : 0;
 }
 
+=head1 METHODS
+
+=method run_cli
+
+    exit OCP->run_cli;
+
+Entry point used by F<bin/ocp>. Runs the command chain, turns exceptions
+into a single-line error message (unless C<--verbose> is given) and returns
+the process exit code.
+
+Every command word is resolved against its own level first. A word that
+names no command is reported on STDERR together with the commands that do
+exist, and the process exits non-zero — L<MooX::Cmd> would otherwise fall
+back to the enclosing command and report success.
+
+=cut
+
 # Split an exception into (message, is_internal). Anything that ends in a
 # source location was raised without a trailing newline, i.e. not meant for
 # the user.
@@ -492,21 +509,6 @@ Debug commands against the Hetzner Cloud API. Currently just
 C<list>; the cluster adapter lives in L<OCP::Provider::Hetzner>.
 
 =back
-
-=head1 METHODS
-
-=head2 run_cli
-
-    exit OCP->run_cli;
-
-Entry point used by F<bin/ocp>. Runs the command chain, turns exceptions
-into a single-line error message (unless C<--verbose> is given) and returns
-the process exit code.
-
-Every command word is resolved against its own level first. A word that
-names no command is reported on STDERR together with the commands that do
-exist, and the process exits non-zero — L<MooX::Cmd> would otherwise fall
-back to the enclosing command and report success.
 
 =head1 CONFIGURATION
 
