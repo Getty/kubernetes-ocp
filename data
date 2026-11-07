@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-11-07T00:05:22Z
+created: 2026-10-31T08:10:56Z
+id: 325
+priority: low
+started: 2026-11-06T19:36:59Z
+status: done
+tags:
+- config
+- decision
+title: 'Decide: an upper bound for a counted worker pool, and whether to warn on an
+  even control-plane count'
+updated: 2026-11-07T00:05:29Z
+---
+
+Found under k315 (2026-10-31), a policy choice for the maintainer, not a bug fix:
+- a counted worker pool (any provider but ssh) has no upper bound: `workers: [{provider: hetzner, nodes: 1000000000000}]` passes validate() and worker_ocpnodes builds that many OCPNodes (out of memory). There is no etcd reason for a number, as there is for control planes (7). Options: a fixed cap, the Hetzner project server limit, or none.
+- an even control-plane count (2, 4, 6) tolerates no more failures than one less, but works. Warn or not? validate() returns errors only; the precedent for a warning is a separate [WARN] method that Apply.pm prints (Config::robocop_arch_warning).
+
+From k361 (apply worker, 2026-10-31): the missing upper bound is also a memory hazard, not only a cost question. A hetzner or local pool with nodes: 1000000000000 passes validate() and worker_ocpnodes builds OCPNodes until memory runs out, in ocp apply and the keys commands. k361 closed it only for pools validate() refuses. An answer here needs a limit like $MAX_CONTROL_PLANE_NODES plus a validate() line.
+
+Maintainer's decision 2026-11-06 (hub perl-developer-bb, kubernetes-ocp-entscheidungen.md, e0ba4b5): a counted worker pool has at most 10 nodes, as a constant like $MAX_CONTROL_PLANE_NODES; validate() refuses 11 and more, and the line names the limit and the docs; the docs explain the limit and say we raise it when someone needs more. An even control-plane count: apply prints a [WARN], after the pattern of robocop_arch_warning.
+
+choices worker (2026-11-07): built. Config.pm $MAX_WORKER_POOL_NODES = 10; _pool_nodes_errors refuses a counted pool above it at workers[N].nodes, naming the limit and docs/configuration.md (ssh lists not counted). even_control_planes_warning: [WARN] on STDERR in apply for 2/4/6 rke2 control planes, counted WITH WARNINGS; k3s none. Worker's choice: the line sits at workers[N].nodes, so status, keys operator add|rm, keys secure --drop-bootstrap, node ls --json refuse it too; destroy does not read it. Docs say the limit is raised on demand. New t/325 (15 subtests). Red on 4b612c6: 7 subtests fail, 9 mutants killed. Binding 53 files, 801 tests, only t/52 red (Apply.pm line count, k406's, fixed in the next commit). Follow-up: k425.
+
+commit-ready, whole files
+
+committed 3993a24
