@@ -1,0 +1,16 @@
+---
+class: standard
+created: 2026-11-08T01:08:29Z
+id: 450
+priority: low
+status: todo
+tags:
+- keys
+- pin2
+title: Re-add an admin key so a key stored without its PIN2 layer gets one
+updated: 2026-11-08T01:08:29Z
+---
+
+From k390 (2026-11-06). Before the k390 fix, a PIN2 of "0" stored an admin key without its PIN2 layer. No ocp command re-creates an existing admin key, so Changes gives such users no advice.
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): build a path that re-adds an existing admin key with a PIN2 (re-encrypting it under both layers), and name it in Changes once it exists. Build after the release.
