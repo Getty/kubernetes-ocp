@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-06T19:34:04Z
+id: 412
+priority: low
+started: 2026-11-08T01:07:38Z
+status: todo
+tags:
+- secrets
+- decide
+title: 'Decide: should OCP::Keys add_key refuse an admin key without PIN2?'
+updated: 2026-11-08T01:07:38Z
+---
+
+Found by the k390 worker (2026-11-06). add_key with purpose admin and no PIN2 stores the key age-only, silently, while its purpose still says admin. OCP::Password::prompt_new_pin is the only guard today (it refuses an empty PIN2 at the prompt). Recommendation (main agent): refuse it in add_key itself (croak "admin key needs a PIN2"), so no caller can store an admin key without its PIN2 layer; automation keys stay age-only. Needs the maintainer's call because it changes the key store's contract.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): add_key refuses an admin key without a PIN2 itself (admin key needs a PIN2), so no caller can store one age-only. Automation keys stay age-only. Build after the release.
