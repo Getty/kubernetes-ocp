@@ -1,0 +1,27 @@
+---
+class: standard
+created: 2026-11-06T21:38:58Z
+id: 417
+priority: medium
+started: 2026-11-08T01:07:49Z
+status: todo
+tags:
+- apply
+- decision
+- nodes
+title: 'Control-plane readiness after the bootstrap: reconcile never checks it, CP
+  OCPNode always Ready, wrong Node judged'
+updated: 2026-11-08T01:07:49Z
+---
+
+Found under k336 (apply worker, 2026-11-06), not fixed there. Points in the notes below.
+
+1. Decision needed: the reconcile path never checks control-plane readiness, police1 nor police2+. A rerun after a bootstrap whose first CP never got Ready takes the reconcile path and can end SUCCESSFULLY with police1 still NotReady, its pods counting as still starting. The ADR 0017 amendment of 2026-11-06 records this as a known gap. Recommendation: reconcile judges every control plane once, Ready or a counted failed component, with the same proof as the bootstrap wait.
+
+2. CR::ensure_cp_ocpnode writes phase Ready unconditionally, on the fresh deploy and on every reconcile, so the node list shows police1 Ready while its Node is not. 3. The bootstrap Ready wait and node_not_ready_why look at the first Node listed, not the Node named after the control plane: harmless on a one-node fresh bootstrap, wrong anywhere else. 4. On a node that stays NotReady, the registry step, which must succeed, ends the run before the banner and before the Apply-did-not-complete line; the final error names the registry, not the node. The same holds for every must-succeed step on the deploy path.
+
+Doc drift from the same report: the ocp-usage skill around line 435 says an LB-IPAM failure is a WARN line and apply carries on, while the code prints a counted failure line. The Bootstrap.pm SYNOPSIS says bootstrap_control_plane returns the API handle, but it returns a hashref; podchecker flags a non-ASCII dash before the encoding line there. The OCP::Cmd::Apply POD says nothing about the banner or exit codes.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): point 1: reconcile judges every control plane once, Ready or a counted failed component, with the same proof as the bootstrap wait; the ADR 0017 amendment that records the gap is updated. Points 2-4 and the doc drift are fixed with it. Build after the release.
