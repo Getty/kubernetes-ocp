@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-11-07T03:38:39Z
+id: 439
+priority: low
+started: 2026-11-08T01:07:32Z
+status: todo
+tags:
+- state
+- drift
+- registry
+- decision
+title: 'registry.local DNS: read override snippets imported inside the root block
+  (needs an ADR 0022 decision)'
+updated: 2026-11-08T01:07:32Z
+---
+
+Split off k393 item 1. lib/OCP/Corefile.pm expands imports only at the top level, so *.override snippets imported inside the root block are not read: a second hosts plugin there would crash CoreDNS, and neither the writer nor the probe notices. The ADR 0022 amendment (e55898c) says override files are not read and OCP::Corefile expands only top-level imports (t/338 holds that), so reading them contradicts the ADR. Recommendation: amend ADR 0022 to read *.override only for counting hosts plugins (not for answering registry.local); then expand the in-block import in OCP::Corefile _build__expanded, flip the t/338 claim that the import inside the root block is not expanded, and doubled_hosts_block (k393) catches it. Decision for the maintainer: read override snippets for the hosts count, yes or no.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): amend ADR 0022: *.override snippets are read only to count hosts plugins, never to answer registry.local. Then expand the import inside the root block in OCP::Corefile _build__expanded, flip the t/338 claim, and doubled_hosts_block catches a second hosts plugin there. Build after the release.
