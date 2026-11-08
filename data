@@ -1,0 +1,28 @@
+---
+class: standard
+created: 2026-11-06T21:09:24Z
+id: 415
+priority: low
+started: 2026-11-08T01:07:44Z
+status: todo
+tags:
+- output
+- apply
+title: 'Apply lane: [WARN] lines still on STDOUT against the output-channel rule'
+updated: 2026-11-08T01:07:44Z
+---
+
+Found under k368 (2026-11-06, ocp-apply-worker, not fixed). The output-channel rule (.claude/rules/ocp-rules.md) puts everything that went wrong on STDERR; these [WARN]s still print on STDOUT:
+- lib/OCP/Cmd/Apply/Health.pm:357 "could not verify cluster health" -- a plain failure, the strongest candidate.
+- Health.pm:288 the per-pod "[WARN] ns/name -- reason" lines.
+- lib/OCP/Cmd/Apply.pm:103 and Health.pm:364 the robocop arch warning (robocop_arch_warning).
+- lib/OCP/Cmd/DeployImage.pm:295 ad-hoc override.
+- Unchecked: lib/OCP/Cmd/Apply/Workloads.pm:829 toolkit_switch_warning, and the "[WARN] host probes skipped" line Apply/Drift.pm:78 POD names.
+
+Also from k368: warn_unlisted_failed_ocpnodes (CR.pm) is never counted in {_apply_warnings} (its caller Apply/Drift.pm:616 drops the return), so a Failed OCPNode not in ocp.yaml leaves the banner without WITH WARNINGS. Whether it should count is a maintainer question (recommendation: count it).
+
+Each is either moved to STDERR with its test, or named as a deliberate exception on this card (the rule asks for exceptions in a ticket). Some may need a decision (the arch warning is a narrative line by design?).
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): (1) every [WARN] line listed on this card goes to STDERR, the robocop arch warning included, each with its test; no exceptions. (2) warn_unlisted_failed_ocpnodes counts in {_apply_warnings}: a Failed OCPNode not in ocp.yaml makes the banner WITH WARNINGS. Build after the release.
