@@ -1,0 +1,20 @@
+---
+class: standard
+created: 2026-11-07T02:05:26Z
+id: 430
+priority: low
+started: 2026-11-08T01:07:55Z
+status: todo
+tags:
+- errors
+- stderr
+title: 'STDERR label differs between commands: ocp status says ERROR: where the OCP.pm
+  renderer says Error:'
+updated: 2026-11-08T01:07:55Z
+---
+
+Found by k395 (8243616). ocp status, with and without --json, prints its cluster-API refusal on STDERR as ERROR: plus the line (Status.pm _collect_json, the text form likewise). ocp health --json and every command that dies through OCP.pm _report_error say Error: plus the line. k395 moved health --json onto the renderer, so the label now differs only between status and the rest. Decide one label for a refusal on STDERR (ADR 0031 is the renderer rule), then align Status.pm; t/384, t/387 and t/391-status-json-error.t pin the current status wording. Not changed in k395 because it is a wording decision across commands.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): the label for a refusal on STDERR is Error: everywhere (the ADR 0031 renderer). ocp status moves to it; t/384, t/387 and t/391-status-json-error.t follow. Build after the release.
