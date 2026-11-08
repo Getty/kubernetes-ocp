@@ -1,0 +1,20 @@
+---
+class: standard
+created: 2026-11-07T02:52:52Z
+id: 437
+priority: low
+started: 2026-11-08T01:08:06Z
+status: todo
+tags:
+- errors
+- wording
+title: 'ocp apply says an API error as Kubernetes API error (verb): CODE json, status
+  and drift as api_error_line'
+updated: 2026-11-08T01:08:06Z
+---
+
+Found by k403. The apply lane (read_or_absent, read_or_why, crd_get and their WARN and !! lines) says a failed read as could not read X: Kubernetes API error (get): CODE followed by the raw JSON body. ocp status, drift and destroy say the same error through OCP::ErrorLine api_error_line, a line naming the server and the reason. About 25 claims in 12 test files pin the apply wording, which is why k403 kept it. Decide one wording, then move the apply lane onto it. Wording decision first, then ocp-apply-worker.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): the apply lane says a failed API read through OCP::ErrorLine api_error_line, like status, drift and destroy; the raw JSON body goes. The ~25 pinned claims in 12 test files move with it. Build after the release.
