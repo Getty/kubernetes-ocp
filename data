@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-11-06T19:18:39Z
+id: 409
+priority: low
+started: 2026-11-08T01:07:20Z
+status: todo
+tags:
+- docker
+- infra
+title: 'ocp-build-image: the $REPO:cache comment says CI pushes the cache tag, nothing
+  does'
+updated: 2026-11-08T01:07:20Z
+---
+
+Found by the k407 worker (2026-11-06), not fixed there. share/bin/ocp-build-image:21-22 says the $REPO:cache tag is pushed from CI, and local builds benefit if it exists. Nothing in the repo writes it: no --cache-to, no push of :cache anywhere (.cicd scripts included). So --cache-from type=registry,... is a no-op (or noise on the legacy builder). Done = either the cache tag is written where the comment says, or the --cache-from and the comment go. Lane: ocp-infra-worker.
+
+2026-11-06 ocp-release-1106: not comment-only. Done needs a choice: write the cache tag (a registry push from CI, publish gate) or drop --cache-from (lines 142, 158) and the comment (21-22). Recommendation: drop both. Nothing writes the tag, so the flag is a no-op or noise on the legacy builder.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): drop --cache-from (lines 142, 158) and the $REPO:cache comment (lines 21-22). Nothing writes the tag. Build after the release.
