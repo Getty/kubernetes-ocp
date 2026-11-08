@@ -1,0 +1,21 @@
+---
+class: standard
+created: 2026-11-06T23:05:37Z
+id: 422
+priority: low
+started: 2026-11-08T01:07:26Z
+status: todo
+tags:
+- decision
+- robocop
+- cilium
+title: 'Decide: how a robocop-joined worker gets the Cilium leftover cleanup without
+  a reboot'
+updated: 2026-11-08T01:07:26Z
+---
+
+From k406 point 1 (2026-11-06). ocp apply and ocp node add take --clean_cilium_residue; robocop-joined workers do not, since no OCPNode or OCPNodeProvider field carries it. The refusal says: reboot a host robocop joins; ocp node add refuses the switch when robocop does the join. Recommendation (k406 worker): a per-node OCPNode spec field, e.g. spec.cleanCiliumResidue, set by ocp node add --clean_cilium_residue; robocop passes it to from_cr and clears it once the node is Ready, so it cannot fire again. Not a cluster-wide OCPNodeProvider flag: that would run a destructive cleanup on every host without anyone choosing the host. Either way a CRD change.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): a per-node OCPNode spec field, e.g. spec.cleanCiliumResidue. ocp node add --clean_cilium_residue sets it when robocop does the join; robocop passes it to from_cr and clears it once the node is Ready, so it cannot fire again. No cluster-wide OCPNodeProvider flag. CRD change; the refusal texts (reboot a host robocop joins, node add refusing the switch for robocop) follow. Build after the release.
