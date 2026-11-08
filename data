@@ -1,0 +1,19 @@
+---
+class: standard
+created: 2026-11-07T02:05:44Z
+id: 431
+priority: low
+started: 2026-11-08T01:08:01Z
+status: todo
+tags:
+- errors
+- json
+title: The JSON error field folds a refusal with a list into one long string
+updated: 2026-11-08T01:08:01Z
+---
+
+Found by k395 (8243616). OCP::ErrorLine::json_error makes the error field of status/health/node ls --json one line. A refusal written for STDERR with an indented list below it (OCP::Secrets no_kubeconfig_refusal, validate() refusals of several keys) becomes one long string, the list items joined by spaces. A script still reads one string, as wanted; a human reading the JSON loses the layout. Options: keep it (one string, the STDERR text has the layout), or add an optional errors array with one entry per line. Recommendation: keep it, the STDERR copy carries the layout. Left as is in k395.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): against the recommendation above: keep the one-string error field and add an optional errors array with one entry per line of the refusal, in status, health and node ls --json. Document the field. Build after the release.
