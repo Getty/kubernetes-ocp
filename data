@@ -1,0 +1,22 @@
+---
+class: standard
+created: 2026-11-14T05:56:11Z
+id: 451
+priority: medium
+status: backlog
+tags:
+- cert-manager
+- gateway
+- bug
+title: 'cert-manager: Gateway API nie eingeschaltet — die ACME-Issuer mit gatewayHTTPRoute-Solver
+  können keine Challenge lösen'
+updated: 2026-11-14T05:56:11Z
+---
+
+Gefunden im cihq-Cluster (cert-manager v1.21.2, von OCP aus dem Release-Manifest installiert), 14.11.2026, homelab-Agent.
+
+OCP::Cmd::Apply::Network::acme_issuer legt die Let's-Encrypt-ClusterIssuer mit http01.gatewayHTTPRoute (parentRef cilium-gateway) an. cert-manager löst Gateway-API-HTTP-01 aber nur mit --enable-gateway-api (bzw. enableGatewayAPI in der Controller-Konfiguration). Das Release-Manifest setzt das nicht, und OCP auch nicht. Folge: Mit ssl.email kommen Issuer, die Ready melden, deren Orders aber an der Challenge hängen bleiben. Im Log fehlt dann die Zeile "enabling the sig-network Gateway API certificate-shim and HTTP-01 solver".
+
+Im cihq-Cluster per Hand gesetzt: kubectl -n cert-manager patch deploy cert-manager --type json, Arg --enable-gateway-api angehängt. Danach funktioniert ein ACME-Issuer gegen die HQ-CA (sick-acme) mit HTTP-01 über das Cilium-Gateway, Order valid in unter einer Minute. Ein ocp apply/update, das cert-manager.yaml neu anwendet, nimmt den Patch wieder weg. Dann erneuert sich default-gateway-cert nicht mehr (30-Tage-Zertifikate).
+
+Wunsch: OCP setzt --enable-gateway-api (oder die Config), sobald Cilium mit Gateway API läuft, und ocp status meldet es als Drift, wenn es fehlt.
