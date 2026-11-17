@@ -20,7 +20,7 @@ requires 'Net::Async::Kubernetes', '0.012';
 requires 'Path::Tiny';
 requires 'Rex';
 requires 'Rex::GPU', '0.006';
-requires 'Rex::LibSSH', '0.005';
+requires 'Rex::LibSSH', '0.006';
 requires 'Rex::Rancher', '0.005';
 requires 'Term::ReadKey';
 requires 'Try::Tiny';

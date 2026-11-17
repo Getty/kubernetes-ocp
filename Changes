@@ -1175,3 +1175,4 @@ Revision history for OCP
       with an error.
     - The `registry.local` messages no longer say the root block is shadowed
       when the Corefile has no root block of its own.
+    - Requires Rex::LibSSH 0.006.
