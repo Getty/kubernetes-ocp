@@ -164,8 +164,9 @@ sub spec_paths { return () }
 
 # What reaching the first control plane reads of ocp.yaml, for the spec_paths
 # of each command that reaches it (k401): its address and name as
-# OCP::Config::cluster_status reads them -- the entry, its public_ip, else its
-# host, a local one's provider, and its name -- and the key to log in with
+# OCP::Config::cluster_status reads them -- the entry, its public_ip (its private_ip
+# under address: private, k453), else its host, a local one's provider, and
+# its name -- and the key to log in with
 # (cluster_ssh_key_spec_paths). Node add, update and deploy-robocop listed it
 # by hand, status and ssh in variants of their own, so a change to
 # cluster_status could leave a declaration behind; t/401 holds what
@@ -174,7 +175,7 @@ sub first_control_plane_spec_paths {
     my ($self) = @_;
     return (
         'control_planes', 'control_planes[1]',
-        map({ "control_planes[1].$_" } qw( provider public_ip host name )),
+        map({ "control_planes[1].$_" } qw( provider public_ip private_ip address host name )),
         $self->cluster_ssh_key_spec_paths,
     );
 }
@@ -811,7 +812,8 @@ nothing is not checked.
     return ($self->first_control_plane_spec_paths, 'kubernetes');
 
 The key paths reaching the first control plane reads: C<control_planes>, its
-first entry and that entry's C<provider>, C<public_ip>, C<host> and C<name>,
+first entry and that entry's C<provider>, C<public_ip>, C<private_ip>,
+C<address>, C<host> and C<name>,
 as L<OCP::Config/cluster_status> reads them, and
 L</cluster_ssh_key_spec_paths>. A command that reaches the first control plane
 returns them from its L</spec_paths>.

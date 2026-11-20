@@ -385,10 +385,38 @@ sub supervisor_port { shift->distribution eq 'k3s' ? 6443 : 9345 }
 # which for the ssh provider is `host` -- so a CP with `host: cp.vm` and a
 # public_ip had its first-apply workers join via a hostname they could not use,
 # and its later ones via the IP (k185).
+#
+# A control plane with address: private (k453) is reached at its private_ip
+# instead: its API listens for the cluster on the Hetzner network, and the
+# public address is closed to it.
 sub join_host {
     my ($self, $advertised) = @_;
-    my $ip = $self->_first_cp_string(($self->control_planes->[0] // {}), 'public_ip');
+    my $ip = $self->_first_cp_address($self->control_planes->[0] // {});
     return defined $ip && length $ip ? $ip : $advertised;
+}
+
+# Whether OCP reaches the control plane or pool $entry at its address in its
+# Hetzner network (k453): address: private. Anything else is the public
+# address, as before; validate() refuses a value that is neither.
+sub uses_private_address {
+    my ($class, $entry) = @_;
+    my $address = ref $entry eq 'HASH' ? $entry->{address} : undef;
+    return defined $address && !ref $address && $address eq 'private' ? 1 : 0;
+}
+
+# The first control plane's pinned address: private_ip under address:
+# private (k453), else public_ip. Refused as validate() refuses them.
+sub _first_cp_address {
+    my ($self, $cp) = @_;
+    return $self->_first_cp_string($cp, $self->uses_private_address($cp) ? 'private_ip' : 'public_ip');
+}
+
+# The names and addresses the control planes' tls_san: lists add to the API
+# server certificate (k453), every control plane's, in the order written.
+sub extra_tls_sans {
+    my ($self) = @_;
+    return map { ref $_ eq 'HASH' && ref $_->{tls_san} eq 'ARRAY' ? @{ $_->{tls_san} } : () }
+        @{ $self->control_planes };
 }
 
 sub join_url {
@@ -1216,7 +1244,8 @@ sub cluster_status {
     }
 
     my $cp = $self->control_planes->[0] // {};
-    my $ip = $self->_first_cp_string($cp, 'public_ip') // $self->_first_cp_string($cp, 'host');
+    # Under address: private its private_ip (k453), see join_host.
+    my $ip = $self->_first_cp_address($cp) // $self->_first_cp_string($cp, 'host');
 
     # A local control plane resolves its own address rather than the operator
     # pinning it. The machine ocp runs on IS the control plane, so its provider
@@ -1303,7 +1332,8 @@ our @ONE_NAME_KEYS = (
 
 # A control plane's own addresses (k340), one each as host is: public_ip is
 # the address workers join at (join_host) and the cluster is reached at
-# (cluster_status); private_ip is held against the cluster networks.
+# (cluster_status); private_ip is held against the cluster networks. Under
+# address: private (k453) private_ip takes public_ip's part.
 our @CP_ADDRESS_KEYS = (
     [ public_ip  => 'an IP address' ],
     [ private_ip => 'an IP address' ],
@@ -1350,13 +1380,21 @@ sub _first_cp_string {
 #
 # Not service (k357): `ocp init --provider local --service systemd` wrote it,
 # and nothing read it. It is refused with a hint that it can go.
+#
+# network, firewalls and address (k453): the Hetzner network and firewalls the
+# server is created in and with, and which of its addresses OCP uses
+# (create_server, uses_private_address); tls_san, the names the API server
+# certificate carries besides the addresses (extra_tls_sans).
 our @CONTROL_PLANE_KEYS = qw( provider host public_ip private_ip node_ip server_type location image
-                              name );
+                              name network firewalls address tls_san );
 
 # A pool's: what worker_ocpnodes makes its OCPNodes of, as ocp destroy, ocp
 # status and ocp node ls read them too. node_ip is refused on a pool by a
 # line of its own, so it is not one of them, nor an unknown key there.
-our @POOL_KEYS = qw( name provider nodes host server_type location image labels taints );
+# network, firewalls and address (k453), as on a control plane: worker_ocpnodes
+# copies them into every OCPNode of the pool.
+our @POOL_KEYS = qw( name provider nodes host server_type location image labels taints
+                     network firewalls address );
 
 # A mapping in an ssh pool's nodes: list (k355): worker_ocpnodes reads its
 # host and nothing else -- the worker is named after it --, as ocp destroy
@@ -1455,6 +1493,7 @@ said once):
     control_planes[I].provider   a provider OCP does not know
     control_planes[I].KEY        KEY no string: host, public_ip, private_ip,
                                  server_type, location, image, name
+    control_planes[I].address    neither public nor private
     network                      network: no mapping, or a key of it OCP
                                  does not know
     network.pod_cidr             no IPv4 CIDR, host bits set, too small
@@ -1505,7 +1544,7 @@ with the path it is at, so their order cannot differ.
 
 # The paths spec_errors answers for under a control plane and a pool (k306),
 # and the sections and keys that are one path each (k400).
-my @CP_PATH_KEYS   = ('provider', map { $_->[0] } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS);
+my @CP_PATH_KEYS   = ('provider', (map { $_->[0] } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS), 'address');
 my @POOL_PATH_KEYS = (qw( name provider nodes ), (map { $_->[0] } @ONE_NAME_KEYS), qw( labels taints ));
 my @SECTION_PATHS  = qw( name kubernetes control_planes network network.pod_cidr network.lb_pool network.l2
                          cilium gpu registry ssl system ssh lbipam nocert robocop robocop.security_level
@@ -1672,6 +1711,14 @@ sub _control_plane_lines {
             push @lines, _tagged(undef, $self->_node_ip_clashes($cp->{node_ip}, $idx, \%node_ip_at))
                 unless defined $err;
         }
+
+        # network, firewalls, address and tls_san (k453). The shape of
+        # address is at its path: cluster_status reads it.
+        for my $err (_network_key_errors($cp, $prov, 'control plane'), _tls_san_errors($cp)) {
+            my ($key, $msg) = @$err;
+            my $tag = $key eq 'address' && $msg =~ /\Amust be/ ? "$at.address" : undef;
+            push @lines, _tagged($tag, "$at: $key $msg");
+        }
     }
 
     return @lines;
@@ -1807,6 +1854,10 @@ sub _worker_lines {
                 }
             }
         }
+
+        # network, firewalls and address (k453), as on a control plane.
+        push @lines, _tagged(undef, map { "$where: $_->[0] $_->[1]" }
+            _network_key_errors($w, $wprov, 'worker pool'));
 
         # node_ip (k254) is one machine's address, so a pool takes none; nor
         # does an entry of its nodes list, which apply does not read it from.
@@ -1965,6 +2016,74 @@ sub _not_a_string {
     my ($value, $what) = @_;
     return undef unless ref $value;
     return "must be a string ($what), not " . _shown_value($value);
+}
+
+# The choices of address: (k453): the server's public address, as OCP has
+# always used, or its address in the Hetzner network named by network:.
+our @ADDRESS_CHOICES = qw( public private );
+
+# network, firewalls and address of the control plane or pool $entry (k453),
+# as [ key, what is wrong ] pairs; the caller says where. They name what
+# exists in the Hetzner project already -- OCP::Provider::Hetzner resolves
+# them and creates none --, so they are read for a hetzner entry only. An
+# entry whose provider OCP does not know has its line for that.
+sub _network_key_errors {
+    my ($entry, $prov, $kind) = @_;
+    my @errors;
+
+    my @set = grep { defined $entry->{$_} } qw( network firewalls address );
+    if (!ref $prov && OCP::Provider->known_type($prov) && $prov ne 'hetzner') {
+        return map { [ $_ => "is read for a hetzner $kind only: provider $prov creates no server, "
+            . "its machine is in the networks it is in -- delete it" ] } @set;
+    }
+
+    my $network = $entry->{network};
+    push @errors, [ network => 'must be the name or id of an existing Hetzner network, not '
+        . _shown_value($network) ]
+        if defined $network && (ref $network || !length $network);
+
+    my $firewalls = $entry->{firewalls};
+    if (defined $firewalls && ref $firewalls ne 'ARRAY') {
+        push @errors, [ firewalls => 'must be a list of names or ids of existing Hetzner firewalls, not '
+            . _shown_value($firewalls) ];
+    }
+    elsif (defined $firewalls) {
+        for my $n (1 .. @$firewalls) {
+            my $fw = $firewalls->[$n - 1];
+            push @errors, [ "firewalls[$n]" => 'must be the name or id of an existing Hetzner firewall, not '
+                . _shown_value($fw) ]
+                if !defined $fw || ref $fw || !length $fw;
+        }
+    }
+
+    my $address = $entry->{address};
+    if (defined $address && !_is_choice($address, @ADDRESS_CHOICES)) {
+        push @errors, [ address => 'must be ' . OCP::Choices::or_list(@ADDRESS_CHOICES) . ', not '
+            . _shown_value($address) ];
+    }
+    elsif (defined $address && $address eq 'private' && !(defined $network && length $network)) {
+        push @errors, [ address => 'is private, which needs network: the Hetzner network whose '
+            . 'address OCP is to use' ];
+    }
+
+    return @errors;
+}
+
+# A control plane's tls_san (k453): names or addresses the API server
+# certificate carries besides the control planes' own, as [ key, what is
+# wrong ] pairs.
+sub _tls_san_errors {
+    my ($entry) = @_;
+    my $sans = $entry->{tls_san};
+    return () unless defined $sans;
+    return [ tls_san => 'must be a list of names or addresses the API server certificate also '
+        . 'carries, not ' . _shown_value($sans) ] if ref $sans ne 'ARRAY';
+    return map {
+        my $san = $sans->[$_ - 1];
+        !defined $san || ref $san || $san !~ /\A[^\s,]+\z/
+            ? [ "tls_san[$_]" => 'must be a host name or IP address, not ' . _shown_value($san) ]
+            : ();
+    } 1 .. @$sans;
 }
 
 # Two control planes with one node-ip register at one address (k254), as the

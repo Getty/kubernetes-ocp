@@ -26,7 +26,8 @@
 #          cluster_ssh_key_spec_paths through the helper, and no control
 #          plane's public_ip or name, which it does not read
 #      (c) each of the five refuses a malformed path of the list it declares
-#          in its words; ssh does not refuse a public_ip or name
+#          in its words; ssh does not refuse a public_ip, private_ip, address
+#          or name (private_ip and address since k453)
 #
 # Network-free and cluster-free: no kubeconfig.yaml, no keys.yaml, hosts
 # *.invalid, and the prompts and SSH die in each child.
@@ -230,8 +231,9 @@ subtest 'what cluster_status and cluster_ssh_key read is the list' => sub {
     # machine's own, none.
     no warnings 'redefine';
     local *OCP::Provider::Local::_default_route_source_ip = sub { '10.0.0.2' };
+    # And, under address: private, its private_ip (k453).
     for my $cp ({ public_ip => '10.0.0.1', name => 'cp' }, { host => 'cp.k401.invalid' },
-                { provider => 'local' }, {}) {
+                { provider => 'local' }, {}, { address => 'private', private_ip => '10.0.0.3' }) {
         probed_config($dir, $cp)->cluster_status;
     }
     is probed_config($dir, { provider => 'local' })->cluster_status->{public_ip}, '10.0.0.2',
@@ -301,6 +303,10 @@ my @MALFORMED = (
     [ 'control_planes[1].provider',  { control_planes => [ { provider => [ 'a' ], host => 'cp.k401.invalid' } ] } ],
     [ 'control_planes[1].public_ip', { control_planes => [ { provider => 'ssh', host => 'cp.k401.invalid',
                                                              public_ip => [ 'a' ] } ] } ],
+    [ 'control_planes[1].private_ip', { control_planes => [ { provider => 'ssh', host => 'cp.k401.invalid',
+                                                              private_ip => [ 'a' ] } ] } ],
+    [ 'control_planes[1].address',   { control_planes => [ { provider => 'hetzner', server_type => 'cpx22',
+                                                             location => 'fsn1', address => [ 'a' ] } ] } ],
     [ 'control_planes[1].host',      { control_planes => [ { provider => 'ssh', host => [ 'a' ] } ] } ],
     [ 'control_planes[1].name',      { control_planes => [ { provider => 'ssh', host => 'cp.k401.invalid',
                                                              name => [ 'a' ] } ] } ],
@@ -320,7 +326,7 @@ subtest 'each command refuses a malformed path of the list, in its words' => sub
             my ($class, $who, $helper, $words, $argv) = @$c;
             my $what = "@$argv, $path";
             my $r = run_ocp($dir, setup(), @$argv);
-            if ($class eq 'OCP::Cmd::SSH' && $path =~ /\.(?:public_ip|name)\z/) {
+            if ($class eq 'OCP::Cmd::SSH' && $path =~ /\.(?:public_ip|private_ip|address|name)\z/) {
                 unlike $r->{err}, qr/has \d+ errors?:/, "$what: no refusal" or diag $r->{err};
                 like $r->{err}, qr/No cluster deployed yet/, "$what: on to the cluster" or diag $r->{err};
             }
