@@ -234,6 +234,25 @@ L</ssh_key_name>. When neither yields a key the call dies before anything is
 created, because a Hetzner server with an empty C<authorized_keys> runs,
 bills, and can never be logged in to.
 
+C<network>, C<firewalls> and C<address> take the named option, then the
+OCPNode spec (C<spec.network>, C<spec.firewalls>, C<spec.address>):
+
+    $prov->create_server(name => 'hz-police1', ...,
+        network   => 'cai-live',          # name or id
+        firewalls => [ 'cai-live-fw' ],   # names or ids
+        address   => 'private');
+
+C<network> and each firewall name one that exists in the Hetzner project:
+an id is taken as such, a name is looked up. The server is created in that
+network and with those firewalls. OCP creates none of them, so one that is
+not there dies before anything is ordered. C<address> is C<public> (default)
+or C<private>. With C<private>, the C<ip> this method and
+C<wait_for_running> report is the server's address in C<network>, not its
+public IPv4, and a C<private> without a C<network> dies. The returned hashref
+also carries C<address> and C<network_id> for C<wait_for_running>. A server
+that already exists is not moved into a network or given firewalls. Under
+C<private>, one that has no address in the network dies.
+
 =cut
 
 # First value that is present and non-empty. The empty string is treated as
@@ -254,23 +273,49 @@ sub create_server {
     my $node_name = $opts{node} // $name;
     my $cluster   = $opts{cluster} // $self->cluster_name;
 
-    # Idempotency: check if server already exists with matching labels
-    if ($cluster) {
-        my $existing = $self->server_exists($node_name);
-        if ($existing) {
-            return {
-                id           => $existing->id,
-                ip           => $existing->ipv4,
-                newly_created => 0,
-            };
-        }
-    }
-
     # OCP::Node::_provision passes the OCPNode spec rather than these options,
     # so reading only the options silently threw away every serverType,
     # location and image a user typed into `ocp node add`. Same defect and
     # same fix as OCP::Provider::SSH::resolve_host (k51, k92).
     my $spec = ref $opts{spec} eq 'HASH' ? $opts{spec} : {};
+
+    # The network, the firewalls and which address OCP uses (k453): the named
+    # option (the bootstrap), then the OCPNode spec (a worker robocop
+    # creates). Both name what exists in the project already; OCP creates
+    # none, so one that is not there refuses the server before anything is
+    # ordered. Resolved before the idempotency check too: an existing server
+    # under address: private is reached at its address in that network.
+    my $address  = _first_set($opts{address}, $spec->{address}) // 'public';
+    my $network  = _first_set($opts{network}, $spec->{network});
+    my $firewall_refs = ref $opts{firewalls} eq 'ARRAY' ? $opts{firewalls}
+                      : ref $spec->{firewalls} eq 'ARRAY' ? $spec->{firewalls} : [];
+    die "Refusing to create Hetzner server '$name' with address private and no network: "
+      . "there is no private address to use without one.\n"
+      . "Name the network (network: in ocp.yaml, spec.network on its OCPNode), or use the "
+      . "public address.\n"
+        if $address eq 'private' && !defined $network;
+    my $network_id = defined $network ? $self->_existing_id(networks => $network, $name) : undef;
+    my @firewall_ids = map { $self->_existing_id(firewalls => $_, $name) }
+                       grep { defined && length } @$firewall_refs;
+
+    # Idempotency: check if server already exists with matching labels
+    if ($cluster) {
+        my $existing = $self->server_exists($node_name);
+        if ($existing) {
+            my $ip = _server_address($existing, $address, $network_id);
+            die "Hetzner server '$name' exists, but has no address in network "
+              . "'$network': OCP does not move a server into a network. Attach it "
+              . "(hcloud server attach-to-network), or delete it so OCP creates it anew.\n"
+                if $address eq 'private' && !defined $ip;
+            return {
+                id           => $existing->id,
+                ip           => $ip,
+                newly_created => 0,
+                address      => $address,
+                network_id   => $network_id,
+            };
+        }
+    }
 
     # An explicitly passed key wins, then the cluster key this provider was
     # built with. An empty list is never a default: the machine would be
@@ -323,6 +368,8 @@ sub create_server {
         location    => _first_set($opts{location},    $spec->{location},
                                   $self->default_location,    'fsn1'),
         ssh_keys    => \@ssh_keys,
+        (defined $network_id ? (networks  => [ $network_id ]) : ()),
+        (@firewall_ids       ? (firewalls => \@firewall_ids)  : ()),
         labels      => {
             'ocp-cluster' => $cluster,
             'ocp-role'    => $opts{role} // 'control-plane',
@@ -334,8 +381,48 @@ sub create_server {
         id            => $server->id,
         ip            => undef,  # not yet available, need wait_for_running
         newly_created => 1,
+        address       => $address,
+        network_id    => $network_id,
         _server       => $server,
     };
+}
+
+# The id of the existing network or firewall $ref names (k453): an id as it
+# is, checked; a name looked up. $kind is the controller, networks or
+# firewalls. Dies in one line, naming $server, when there is none -- OCP
+# reuses them and creates none. The lookup by name pages through
+# list_all(name => ...), the API's own name filter, and takes the exact match
+# only.
+sub _existing_id {
+    my ($self, $kind, $ref, $server) = @_;
+    (my $what = $kind) =~ s/s\z//;
+    my $key = $kind eq 'networks' ? 'network' : 'firewalls';
+    my $none = "Hetzner server '$server': there is no Hetzner $what '$ref' in this "
+      . "project. OCP uses an existing $what and creates none: create it, or name one "
+      . "that exists ($key: in ocp.yaml, spec.$key on an OCPNode).\n";
+
+    if ($ref =~ /\A[0-9]+\z/) {
+        my $found = eval { $self->cloud->$kind->get($ref) };
+        return $found->id if $found;
+    }
+    my $list = $self->_api(sub { $self->cloud->$kind->list_all(name => $ref) });
+    my ($match) = grep { defined $_->name && $_->name eq $ref } @$list;
+    die $none unless $match;
+    return $match->id;
+}
+
+# The address of $server OCP uses (k453): its public IPv4, or under address
+# private its IP in network $network_id (in its first network when no id is
+# known). undef when it has none there.
+sub _server_address {
+    my ($server, $address, $network_id) = @_;
+    return $server->ipv4 unless ($address // 'public') eq 'private';
+    for my $net (@{ $server->private_net // [] }) {
+        next unless ref $net eq 'HASH';
+        next if defined $network_id && ($net->{network} // '') ne $network_id;
+        return $net->{ip} if defined $net->{ip} && length $net->{ip};
+    }
+    return undef;
 }
 
 =method wait_for_running
@@ -343,7 +430,10 @@ sub create_server {
     $prov->wait_for_running($info);
 
 Blocks until the server reported in C<$info> is in C<running> state, then
-mutates C<$info> in place to set C<ip> to the public IPv4 and returns it.
+mutates C<$info> in place to set C<ip> to the public IPv4 and returns it --
+or, when C<< $info->{address} >> is C<private>, to the server's address in
+the network C<< $info->{network_id} >> (or C<< $info->{network} >>, a name or
+id, which it resolves), dying when it has none there.
 C<$timeout> defaults to C<$OCP::Provider::Hetzner::ADDRESS_TIMEOUT>
 (120 s), and a server that does not get there in time makes this die rather
 than return an C<$info> with no C<ip>.
@@ -352,8 +442,9 @@ Any host key OCP's known_hosts (L<OCP::KnownHosts>) still holds for that
 address is removed: nothing has connected to this server yet, so a recorded
 key belongs to a previous machine Hetzner gave the address to.
 
-Only C<id> is read out of C<$info>, so a caller that holds nothing but the
-server id can build one: C<< { id => $id } >>.
+Only C<id> is required in C<$info>, so a caller that holds nothing but the
+server id can build one: C<< { id => $id } >>, plus C<address> and
+C<network> when the node is reached at its private address.
 
 Both paths call this. L<OCP::Cmd::Apply::Bootstrap> calls it right after
 C<create_server> for the control plane, and L<OCP::Node/_resolve_host>
@@ -378,11 +469,22 @@ sub wait_for_running {
     my ($self, $server_info, $timeout) = @_;
     $timeout //= $ADDRESS_TIMEOUT;
 
+    # Under address private (k453) the address is the server's in its
+    # network. A caller holding only the OCPNode spec (OCP::Node) names the
+    # network, not its id.
+    my $address = $server_info->{address} // 'public';
+    $server_info->{network_id} //= $self->_existing_id(networks => $server_info->{network},
+                                                        $server_info->{id})
+        if $address eq 'private' && defined $server_info->{network} && length $server_info->{network};
+
     my $server = $self->_api(sub { $self->cloud->servers->wait_for_status(
         $server_info->{id}, 'running', $timeout
     ) });
 
-    $server_info->{ip} = $server->ipv4;
+    $server_info->{ip} = _server_address($server, $address, $server_info->{network_id});
+    die "Hetzner server $server_info->{id} is running without an address in its network, "
+      . "though it is to be reached there (address: private).\n"
+        if $address eq 'private' && !defined $server_info->{ip};
 
     # Hetzner hands addresses out again. This is the moment OCP learns which
     # address the server has, so no connection to it has been made yet, and

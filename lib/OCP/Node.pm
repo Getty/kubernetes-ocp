@@ -509,7 +509,16 @@ sub _resolve_host {
     my $provider = $self->provider;
     return undef unless $provider && $provider->can('wait_for_running');
 
-    my $info = { id => $id };
+    # spec.address and spec.network (k453): a node to be reached at its
+    # address in a Hetzner network gets that address, not its public one. A
+    # provider that knows no networks takes them as the hashref it hands
+    # back.
+    my $spec = $self->cr->{spec} // {};
+    my $info = {
+        id => $id,
+        (defined $spec->{address} ? (address => $spec->{address}) : ()),
+        (defined $spec->{network} ? (network => $spec->{network}) : ()),
+    };
     # No budget named here on purpose: this is the same wait the control-plane
     # path makes in OCP::Cmd::Apply::Bootstrap, so it takes the same number
     # from the provider that owns the operation
@@ -526,7 +535,7 @@ sub _resolve_host {
     }
 
     $host = $info->{ip};
-    die "Provider server $id came up without a public address\n"
+    die "Provider server $id came up without an address\n"
         unless defined $host && length $host;
 
     # Persist before using it. `ocp node ls` prints status.publicIP, teardown
