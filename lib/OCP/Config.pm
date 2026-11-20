@@ -901,13 +901,153 @@ sub _cilium_shape_error {
     return 'cilium: must be a mapping (devices, helm_values)';
 }
 
-# The merged Helm values, {} when ocp.yaml sets none.
+# The merged Helm values, {} when ocp.yaml sets none. gateway: { mode:
+# host_network } (k454) adds the values of that mode underneath, so
+# helm_values keeps the last word on what the two share (envoy).
 sub cilium_helm_values {
     my $self = shift;
     my $c = $self->cilium_config;
     my %values = ref $c->{helm_values} eq 'HASH' ? %{ $c->{helm_values} } : ();
     $values{devices} = [ @{ $c->{devices} } ] if ref $c->{devices} eq 'ARRAY';
-    return \%values;
+    my $gateway = $self->gateway_helm_values;
+    return %$gateway ? _merge_values($gateway, \%values) : \%values;
+}
+
+# Deep merge, $over wins; mappings merge key by key, anything else replaces
+# -- as Rex::Rancher::Cilium merges helm_values over its own. A new structure.
+sub _merge_values {
+    my ($base, $over) = @_;
+    my %out = %$base;
+    for my $k (keys %$over) {
+        $out{$k} = ref $out{$k} eq 'HASH' && ref $over->{$k} eq 'HASH'
+            ? _merge_values($out{$k}, $over->{$k})
+            : $over->{$k};
+    }
+    return \%out;
+}
+
+# The Cilium Gateway's exposure (k454).
+#
+#   gateway:
+#     mode: host_network           # load_balancer (default) | host_network
+#     node_selector:               # host_network: the nodes Envoy listens on
+#       ocp.io/gateway: "true"
+#
+# load_balancer is what OCP has always done: the Gateway's Service is a
+# LoadBalancer, LB-IPAM (lbipam: true) hands it an address and L2
+# announcement makes that reachable -- which does not work on Hetzner Cloud,
+# whose network delivers only the addresses Hetzner assigned. host_network
+# is Cilium's Gateway API host-network mode: Envoy listens on the Gateway's
+# listener ports (80, 443) on every address of the nodes node_selector picks,
+# and something in front -- an edge proxy, a Primary IP -- sends traffic
+# there. Cilium applies the mode to every Gateway of the cluster, not to
+# cilium-gateway alone.
+#
+# Refused in validate()'s lines at gateway: a gateway: that is no mapping or
+# holds a key OCP does not know, a mode OCP does not know, host_network
+# without node_selector, node_selector without host_network, and a
+# cilium.helm_values that answers the same question (gatewayAPI.hostNetwork)
+# or takes Envoy out of its DaemonSet.
+our @GATEWAY_KEYS  = qw( mode node_selector );
+our @GATEWAY_MODES = qw( load_balancer host_network );
+
+sub gateway_config {
+    my ($self) = @_;
+    _refuse($self->spec_errors('gateway'));
+    return $self->spec->{gateway} // {};
+}
+
+sub gateway_mode { shift->gateway_config->{mode} // 'load_balancer' }
+
+sub gateway_host_network { shift->gateway_mode eq 'host_network' ? 1 : 0 }
+
+# The labels of the nodes Envoy listens on under host_network, {} otherwise.
+sub gateway_node_selector {
+    my ($self) = @_;
+    return {} unless $self->gateway_host_network;
+    return { %{ $self->gateway_config->{node_selector} } };
+}
+
+# The Cilium Helm values of the gateway mode: none for load_balancer, so a
+# cluster without gateway: gets the values it always got.
+#
+# host_network: the mode and its node selector, and NET_BIND_SERVICE for the
+# cilium-envoy DaemonSet. Envoy binds the listener ports, 80 and 443, and
+# Cilium's envoy starter drops every capability before it starts Envoy unless
+# keepCapNetBindService keeps that one -- which the container has to hold in
+# the first place. Helm replaces a list, so the list is the chart's own
+# (Cilium 1.20: NET_ADMIN, SYS_ADMIN) with NET_BIND_SERVICE added; check it
+# when the cilium pin moves.
+our @GATEWAY_ENVOY_CAPABILITIES = qw( NET_ADMIN SYS_ADMIN NET_BIND_SERVICE );
+
+sub gateway_helm_values {
+    my ($self) = @_;
+    return {} unless $self->gateway_host_network;
+    return {
+        gatewayAPI => {
+            hostNetwork => {
+                enabled => JSON::MaybeXS::true(),
+                nodes   => { matchLabels => $self->gateway_node_selector },
+            },
+        },
+        envoy => {
+            securityContext => {
+                capabilities => {
+                    keepCapNetBindService => JSON::MaybeXS::true(),
+                    envoy                 => [ @GATEWAY_ENVOY_CAPABILITIES ],
+                },
+            },
+        },
+    };
+}
+
+# validate()'s lines for gateway:, or none. $cilium is the cilium: section,
+# held against the mode.
+sub _gateway_errors {
+    my ($gw, $cilium) = @_;
+    return () unless defined $gw;
+    return 'gateway: must be a mapping (' . OCP::Choices::or_list(@GATEWAY_KEYS) . '), not '
+        . _shown_value($gw) unless ref $gw eq 'HASH';
+
+    my @errors = _unknown_keys('gateway', $gw, @GATEWAY_KEYS);
+
+    my $mode = $gw->{mode};
+    if (defined $mode && !_is_choice($mode, @GATEWAY_MODES)) {
+        push @errors, 'gateway.mode: must be ' . OCP::Choices::or_list(@GATEWAY_MODES)
+            . ', not ' . _shown_value($mode);
+        return @errors;
+    }
+
+    my $ns = $gw->{node_selector};
+    unless (defined $mode && $mode eq 'host_network') {
+        push @errors, 'gateway.node_selector: is read under gateway.mode: host_network only -- '
+            . 'delete it, or set that mode' if defined $ns;
+        return @errors;
+    }
+
+    if (!defined $ns) {
+        push @errors, 'gateway.mode is host_network, which needs gateway.node_selector: the labels '
+            . 'of the nodes Envoy listens on, e.g. { ocp.io/gateway: "true" }';
+    }
+    elsif (ref $ns ne 'HASH' || !%$ns) {
+        push @errors, 'gateway.node_selector: must be a non-empty mapping of label => value, not '
+            . _shown_value($ns);
+    }
+    else {
+        push @errors, OCP::NodeMeta->label_errors('gateway.node_selector', $ns);
+    }
+
+    my $hv = ref $cilium eq 'HASH' && ref $cilium->{helm_values} eq 'HASH'
+        ? $cilium->{helm_values} : {};
+    push @errors, 'gateway.mode host_network and cilium.helm_values.gatewayAPI.hostNetwork: '
+        . 'set one of them, not both'
+        if ref $hv->{gatewayAPI} eq 'HASH' && exists $hv->{gatewayAPI}{hostNetwork};
+    push @errors, 'gateway.mode host_network needs the cilium-envoy DaemonSet, and '
+        . 'cilium.helm_values.envoy.enabled false runs Envoy inside the Cilium agent, which '
+        . 'OCP grants no NET_BIND_SERVICE for ports 80 and 443 -- delete envoy.enabled'
+        if ref $hv->{envoy} eq 'HASH' && defined $hv->{envoy}{enabled} && !$hv->{envoy}{enabled};
+
+    return @errors;
 }
 
 # SSL configuration (for cert-manager). Refused in validate()'s words when
@@ -1449,6 +1589,7 @@ sub _spec_lines {
 
         _network_lines($spec->{network}),
         _tagged(cilium => $self->_validate_cilium),
+        _tagged(gateway => _gateway_errors($spec->{gateway}, $spec->{cilium})),
         $self->_gpu_lines,
 
         # registry: and ssl: (k379), the lines registry_config and
@@ -1500,6 +1641,8 @@ said once):
     network.lb_pool              every line under lb_pool:
     network.l2                   every line under l2:
     cilium                       every line under cilium:
+    gateway                      every line under gateway:, with a
+                                 cilium.helm_values that contradicts it
     gpu                          every line under gpu:, its switches with it
     registry                     every line under registry:
     ssl                          every line under ssl:
@@ -1547,7 +1690,7 @@ with the path it is at, so their order cannot differ.
 my @CP_PATH_KEYS   = ('provider', (map { $_->[0] } @ONE_NAME_KEYS, @CP_ADDRESS_KEYS, @CP_NAME_KEYS), 'address');
 my @POOL_PATH_KEYS = (qw( name provider nodes ), (map { $_->[0] } @ONE_NAME_KEYS), qw( labels taints ));
 my @SECTION_PATHS  = qw( name kubernetes control_planes network network.pod_cidr network.lb_pool network.l2
-                         cilium gpu registry ssl system ssh lbipam nocert robocop robocop.security_level
+                         cilium gateway gpu registry ssl system ssh lbipam nocert robocop robocop.security_level
                          robocop.image workers );
 
 sub spec_errors {
