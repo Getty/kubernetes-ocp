@@ -26,6 +26,17 @@ control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
                                # list both. An even count gets a [WARN].
   location: fsn1               # No HA client endpoint yet — see "Limits" in README.
   image: debian-13
+  network: cai-live            # optional, hetzner only: an EXISTING Hetzner
+                               # network (name or id) the server joins. OCP
+                               # creates and deletes no network
+  firewalls: [cai-live-fw]     # optional, hetzner only: EXISTING firewalls
+                               # (names or ids) attached at creation
+  address: private             # public (default) or private: which address OCP
+                               # uses -- private is the server's address in
+                               # `network` (needs it), see "A Hetzner cluster
+                               # on a private network" below
+  tls_san: [api.hz.example]    # optional, any provider: extra names or
+                               # addresses for the API server certificate
 
 workers:                       # optional pools; each becomes Pending OCPNode
   - name: pool1                # CRs on `ocp apply` (CR-first — see below)
@@ -33,6 +44,9 @@ workers:                       # optional pools; each becomes Pending OCPNode
     server_type: cpx22         # required on a hetzner pool: no default
     nodes: 3                   # a count, at most 10; an ssh pool lists its
                                # hosts instead
+    network: cai-live          # optional, as on the control plane: every
+    firewalls: [cai-live-fw]   # worker of the pool gets them (robocop too,
+    address: private           # through its OCPNode)
 
 ssh:
   private_key: .ocp/id_ed25519
@@ -131,6 +145,78 @@ join and registers its default route's address. On a host with several
 networks, set `node_ip:` when that is not the address the other nodes reach
 it by.
 
+## A Hetzner cluster on a private network
+
+A Hetzner control plane and a Hetzner worker pool can join a network and get
+firewalls that already exist in the Hetzner project:
+
+```yaml
+control_planes:
+  provider: hetzner
+  server_type: cpx32
+  location: fsn1
+  network: cai-live            # name or id
+  firewalls: [cai-live-fw]     # names or ids
+  address: private
+  tls_san: [api.hz.example]
+
+workers:
+  - name: w
+    provider: hetzner
+    server_type: cpx32
+    nodes: 2
+    network: cai-live
+    firewalls: [cai-live-fw]
+    address: private
+```
+
+OCP uses what is already there. It creates, changes and deletes no network
+and no firewall, and `ocp destroy` leaves them alone. A name is looked up in
+the project, and an id is taken as it is. A network or firewall that does not
+exist stops the server before it is ordered: `Hetzner server 'hz-police1':
+there is no Hetzner network 'cai-live' in this project. OCP uses an existing
+network and creates none: …`. The network needs a subnet in the location's
+network zone (`eu-central` for `fsn1`), or Hetzner gives the server no
+address in it. Firewalls are attached when the server is created. A server
+that already exists is not moved into a network, and it gets no firewalls.
+
+`address: private` makes the server's address in `network` the one OCP uses
+for everything:
+
+- SSH and the install connect there, so the machine that runs `ocp apply`
+  must reach the network, for example through a WireGuard tunnel to it.
+- The first control plane registers there (its `node-ip`), unless `node_ip:`
+  names another address. RKE2 then advertises the API and etcd on it.
+- The tls-san holds that address and every `tls_san:` name. It does not hold
+  the public address.
+- The kubeconfig `server:` and the URL the workers and further control planes
+  join at use that address. A worker that joins there registers its own
+  private address.
+- robocop reaches the workers it creates at their private address.
+  `status.publicIP` on the OCPNode is the address OCP connects to, so here it
+  holds the private one.
+
+On later `ocp apply` runs OCP finds the control plane by `private_ip:`, where
+it would read `public_ip:` with the public address. Set `private_ip:` to the
+first control plane's private address once it is known. `public_ip:` is not
+read under `address: private`.
+
+Without `address:` (or with `address: public`) a server in a network is
+still reached at its public address, as before.
+
+The servers keep their public IPv4, so they can reach the internet. The API
+(6443) and the supervisor (9345) still listen on every address. OCP does not
+bind them to the private one, so what keeps them off the public address is
+the firewall: give it no inbound rule for 6443 or 9345 from outside the
+network. Hetzner firewalls drop inbound traffic that no rule allows, and a
+firewall applies to the public interface only.
+
+Workers that robocop creates get `network`, `firewalls` and `address` through
+their OCPNode (`spec.network`, `spec.firewalls`, `spec.address`). The OCPNode
+CRD has to declare those fields before the OCPNodes are written; `ocp apply`
+applies it first. `ocp node add` has no flags for them yet. On a node added
+that way, set the fields in its spec.
+
 ## What `ocp apply` refuses in these keys
 
 `ocp apply` checks `ocp.yaml` first and lists every error at once on STDERR.
@@ -195,9 +281,10 @@ These shapes used to be read wrongly and are refused:
 - **An unknown key in a control plane or a worker pool** is refused, so a
   misspelt key cannot leave its default in force. A control plane takes
   `provider`, `host`, `public_ip`, `private_ip`, `node_ip`, `server_type`,
-  `location`, `image` and `name` (and `nodes` on the mapping form); a
-  worker pool takes `name`, `provider`, `nodes`, `host`, `server_type`,
-  `location`, `image`, `labels` and `taints`. `count:` gets a hint
+  `location`, `image`, `name`, `network`, `firewalls`, `address` and
+  `tls_san` (and `nodes` on the mapping form); a worker pool takes `name`,
+  `provider`, `nodes`, `host`, `server_type`, `location`, `image`, `labels`,
+  `taints`, `network`, `firewalls` and `address`. `count:` gets a hint
   (`count is read by nothing -- how many control planes there are is nodes:
   N`), and so does `service:`, which `ocp init --provider local --service
   systemd` used to write and nothing read (`control_planes[1].service: unknown
@@ -265,6 +352,21 @@ These shapes used to be read wrongly and are refused:
   give all 3 control planes the same address; list them one by one
   (control_planes: as a list), each with its own node_ip`. A pool the line
   cannot name by its `name` is quoted as `workers[N]`.
+- **`network:`, `firewalls:`, `address:` and `tls_san:`** (see "A Hetzner
+  cluster on a private network"). `network` is one name or id
+  (`control_planes[1]: network must be the name or id of an existing Hetzner
+  network, not a list`). `firewalls` is a list of them (`… firewalls must be
+  a list of names or ids of existing Hetzner firewalls, not 'cai-live-fw'`,
+  and `firewalls[2] must be the name or id of …` for one entry). `address` is
+  `public` or `private` (`… address must be public or private, not
+  'internal'`). `address: private` needs a `network` (`… address is private,
+  which needs network: the Hetzner network whose address OCP is to use`).
+  The first three are read for a `hetzner` control plane or pool only:
+  `worker pool 'l': firewalls is read for a hetzner worker pool only:
+  provider local creates no server, its machine is in the networks it is in
+  -- delete it`. `tls_san` is a list of host names or addresses on a control
+  plane of any provider (`control_planes[1]: tls_san[2] must be a host name
+  or IP address, not 'a b'`).
 
 ## `gpu.amd:` — AMD GPU nodes
 

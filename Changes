@@ -1177,3 +1177,10 @@ Revision history for OCP
     - The `registry.local` messages no longer say the root block is shadowed
       when the Corefile has no root block of its own.
     - Requires Rex::LibSSH 0.006.
+    - A Hetzner control plane or worker pool can join an existing network and
+      existing firewalls (`network:`, `firewalls:`, names or ids; OCP creates
+      and deletes none). With `address: private` OCP uses the server's
+      address in that network for SSH, the kubeconfig, the join URL and the
+      node-ip. `tls_san:` on a control plane adds names to the API server
+      certificate. Workers robocop creates get the same through their
+      OCPNode.
