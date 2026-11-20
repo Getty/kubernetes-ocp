@@ -175,10 +175,16 @@ sub host_name_parts {
 # Sorted for a deterministic config. The client-facing HA endpoint (LB / VIP /
 # DNS) is a separate, undecided design (k137, point 2) and is deliberately NOT
 # one of these entries.
+#
+# A control plane with address: private (k453) is known by its private_ip, not
+# its public_ip; and the names the control planes' tls_san: lists add go in
+# too -- an operator's own name for the API (api.hz.example).
 sub cp_tls_sans {
     my ($config, @extra) = @_;
-    my @addrs = map { $_->{public_ip} // $_->{host} } @{ $config->control_planes };
-    push @addrs, @extra;
+    my @addrs = map {
+        (OCP::Config->uses_private_address($_) ? $_->{private_ip} : $_->{public_ip}) // $_->{host}
+    } @{ $config->control_planes };
+    push @addrs, $config->extra_tls_sans, @extra;
     my %seen;
     return sort grep { defined && length && !$seen{$_}++ } @addrs;
 }
@@ -475,6 +481,14 @@ sub bootstrap_control_plane {
     my %placement = map { $_ => $first_cp->{$_} } qw( server_type image location );
     if ($provider eq 'hetzner') {
         $placement{$_} //= $OCP::Config::HETZNER_DEFAULTS{$_} for keys %placement;
+
+        # The existing Hetzner network and firewalls it is created in and
+        # with, and the address OCP reaches it at (k453). Under address:
+        # private create_server and wait_for_running report its address in
+        # that network, so from here on that is the address: SSH, the
+        # kubeconfig, the tls-san, the join URL.
+        $placement{$_} = $first_cp->{$_}
+            for grep { defined $first_cp->{$_} } qw( network firewalls address );
     }
 
     # Create server (idempotent for Hetzner — checks labels first)
@@ -594,8 +608,13 @@ sub bootstrap_control_plane {
     # addresses yet and police1's is the only one known at this point.
     my @tls_sans = cp_tls_sans($config, $advertised);
 
-    # The address police1 registers by, when ocp.yaml names one (k254).
+    # The address police1 registers by, when ocp.yaml names one (k254). Under
+    # address: private on Hetzner (k453), else its address in the network:
+    # police1 joins nothing, so it would register its default route's -- the
+    # public one -- and RKE2 would advertise the API and etcd there.
     my $node_ip = cp_node_ip($config);
+    $node_ip //= $cp_ip
+        if $provider eq 'hetzner' && OCP::Config->uses_private_address($first_cp);
 
     my $result;
     eval {
@@ -737,6 +756,10 @@ sub bootstrap_control_plane {
         cp_ip     => $config->join_host($advertised),
         provider  => $provider,
         ssh_key_path => $ssh_key_path,
+        # The node-ip the install was handed: cp_node_ip, or under address:
+        # private the address in the network (k453). Deploy records it as the
+        # control plane's status.nodeIP.
+        node_ip   => $node_ip,
     };
 }
 

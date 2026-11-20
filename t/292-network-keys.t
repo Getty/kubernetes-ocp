@@ -109,12 +109,19 @@ subtest 'the known keys are the keys the accessors read' => sub {
     }
 
     my $lib = path("$FindBin::Bin/../lib");
+    my %NODE_NETWORK_READERS = map { $_ => 1 }
+        qw( OCP/Node.pm OCP/Cmd/Apply/CR.pm OCP/Provider/Hetzner.pm );
     my (@outside, $seen);
     my $it = $lib->iterator({ recurse => 1 });
     while (my $f = $it->()) {
         next unless $f->is_file && $f =~ /\.pm\z/;
         $seen++;
         next if $f->relative($lib) eq 'OCP/Config.pm';
+        # k453: these read a node's own network: -- a control plane's or
+        # pool's Hetzner network, an OCPNode's spec.network, a server's
+        # private_net entry --, not ocp.yaml's network: section. Each read
+        # there is of an entry, a spec or a server, never of the config.
+        next if $NODE_NETWORK_READERS{ $f->relative($lib) . '' };
         push @outside, $f->relative($lib) . '' if $f->slurp_utf8 =~ /\{network\}/;
     }
     ok $seen > 50, "the whole of lib/ looked at ($seen modules)";

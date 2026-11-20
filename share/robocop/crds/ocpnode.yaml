@@ -51,6 +51,24 @@ spec:
               image:
                 type: string
                 description: "Hetzner image override"
+              # The Hetzner network and firewalls the server is created in and
+              # with, and the address OCP reaches it at (k453). They name what
+              # exists in the Hetzner project; OCP creates none. No default on
+              # address: absent is the public address, as before.
+              network:
+                type: string
+                description: "Name or id of an existing Hetzner network the server is created in"
+              firewalls:
+                type: array
+                items:
+                  type: string
+                description: "Names or ids of existing Hetzner firewalls the server is created with"
+              address:
+                type: string
+                enum:
+                - public
+                - private
+                description: "Address OCP reaches the server at: public (absent) or private, its address in spec.network"
 
               # SSH-specific overrides
               host:

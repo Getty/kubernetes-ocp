@@ -21,6 +21,7 @@ use OCP::Versions;
         api            => $api,
         cp_name        => $cp_name,
         cp_ip          => $cp_ip,
+        cp_node_ip     => $node_ip,        # optional: the node-ip the bootstrap handed
         provider       => $provider,
         ssh_key_path   => $ssh_key_path,
         deploy_step    => $deploy_step,    # step counter so messages stay ordered
@@ -232,14 +233,16 @@ sub deploy {
     $self->_ensure_providers($api, $config, $secrets);
     $self->_migrate_legacy_nodes($api);
     # deploy runs right after the bootstrap, which handed its install exactly
-    # this node-ip (k254), so it is both what is asked and what was handed.
+    # this node-ip (k254), so it is both what is asked and what was handed --
+    # unless the bootstrap derived one (address: private, k453): that one was
+    # handed, and is not asked for in ocp.yaml.
     my $cp_node_ip = OCP::Cmd::Apply::Bootstrap::cp_node_ip($config);
     $self->_ensure_cp_ocpnode($api, {
         name           => $cp_name,
         provider       => $provider,
         host           => $cp_ip,
         node_ip        => $cp_node_ip,
-        handed_node_ip => $cp_node_ip,
+        handed_node_ip => $args->{cp_node_ip} // $cp_node_ip,
     });
 
     # Additional control planes (police2+) join police1's embedded-etcd cluster

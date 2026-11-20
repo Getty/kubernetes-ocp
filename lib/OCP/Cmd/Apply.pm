@@ -255,6 +255,7 @@ sub execute {
         api          => $b->{api},
         cp_name      => $b->{cp_name},
         cp_ip        => $b->{cp_ip},
+        cp_node_ip   => $b->{node_ip},
         provider     => $provider,
         ssh_key_path => $b->{ssh_key_path},
         deploy_step  => $deploy_step,

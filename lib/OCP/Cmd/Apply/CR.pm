@@ -542,6 +542,8 @@ sub ensure_control_plane_ocpnodes {
         # off the stored CR -- stored because deploy ran ensure_crds before
         # this (k290, as for ensure_cp_ocpnode).
         $spec->{nodeIP}     = $cp->{node_ip}     if $cp->{node_ip};
+        # Its Hetzner network, firewalls and address (k453), as police1's.
+        %$spec = (%$spec, network_spec($cp));
 
         my $cr = {
             apiVersion => 'ocp.internal/v1',
@@ -654,6 +656,22 @@ sub migrate_legacy_nodes {
     }
 }
 
+# The OCPNode spec fields for the Hetzner network, firewalls and address of
+# the control plane or pool $entry (k453): spec.network, spec.firewalls,
+# spec.address, each only when set -- an OCPNode without them is created as
+# before, with its public address. Hetzner only; validate() refuses them
+# elsewhere.
+sub network_spec {
+    my ($entry) = @_;
+    return () unless ref $entry eq 'HASH' && ($entry->{provider} // 'hetzner') eq 'hetzner';
+    my %spec;
+    $spec{network}   = "$entry->{network}"        if defined $entry->{network} && length $entry->{network};
+    $spec{firewalls} = [ map { "$_" } @{ $entry->{firewalls} } ]
+        if ref $entry->{firewalls} eq 'ARRAY' && @{ $entry->{firewalls} };
+    $spec{address}   = $entry->{address}          if defined $entry->{address};
+    return %spec;
+}
+
 # The OCPNode CRs ocp.yaml asks for, one per worker, in pool order. Pure: it
 # reads the config and touches nothing. The one place the worker naming lives
 # ("<pool>-<i>" for machines OCP creates, the first host label for ssh), so
@@ -714,6 +732,9 @@ sub worker_ocpnodes {
             $spec->{serverType} = $pool->{server_type}      if $pool->{server_type};
             $spec->{image}      = $pool->{image}            if $pool->{image};
             $spec->{location}   = $pool->{location}         if $pool->{location};
+            # The pool's Hetzner network, firewalls and address (k453):
+            # OCP::Provider::Hetzner::create_server reads them off the spec.
+            %$spec = (%$spec, network_spec($pool));
 
             # Pool labels and taints (k211); OCP::Node applies them to the Node.
             my $labels = OCP::NodeMeta->spec_labels($pool->{labels});
