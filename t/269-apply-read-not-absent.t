@@ -172,7 +172,8 @@ subtest 'crd_get: undef only for a 404' => sub {
     sub gpu_enabled           { 1 }
     sub has_external_cache    { 0 }
     sub has_external_upstream { 0 }
-    sub deployed_file         { $_[0]{dir}->child('.ocp', 'deployed.yaml')->stringify }
+    sub gateway_host_network  { 0 }   # k454: the default, gateway.mode load_balancer
+    sub deployed_file        { $_[0]{dir}->child('.ocp', 'deployed.yaml')->stringify }
 }
 
 sub new_apply {

@@ -13,6 +13,7 @@ use JSON::PP ();
 use OCP::Config ();
 use OCP::Corefile;
 use OCP::Drift;
+use OCP::ErrorLine ();
 use OCP::Versions;
 use OCP::Cmd::Apply::K8s;
 
@@ -42,7 +43,8 @@ the registry being reachable by name:
 
 - cert-manager (downstream manifest + the issuer CRs that follow it)
 - the Cilium Gateway (HTTP+HTTPS, the LB-IPAM pool that hands it an IP,
-  the L2 announcement that makes the IP reachable)
+  the L2 announcement that makes the IP reachable -- or, under
+  C<gateway.mode: host_network>, the labelled nodes Envoy listens on)
 - the CoreDNS patch that turns registry.local into an address
 
 The Corefile machinery is purely textual: t/39 feeds in the stock k3s and
@@ -292,8 +294,18 @@ sub setup_cilium_gateway {
     # the spec as it stands -- the up-to-date run (k300). A Gateway the
     # controller never accepted, or accepted only in an earlier generation,
     # is still waited for, so skipping the wait hides nothing.
-    return $outcome if gateway_accepted($after);
+    _wait_gateway_accepted($self, $api, $gw_path) unless gateway_accepted($after);
 
+    # gateway: { mode: host_network } (k454): no LoadBalancer address is
+    # coming, Envoy listens on the labelled nodes. Say which they are.
+    report_gateway_nodes($self, $api, $config)
+        if $config && $config->gateway_host_network;
+
+    return $outcome;
+}
+
+sub _wait_gateway_accepted {
+    my ($self, $api, $gw_path) = @_;
     print "      Waiting for Gateway to be Accepted by Cilium...\n";
     # A read that fails is polled again like a Gateway not Accepted yet; when
     # the last one failed too, the death says its cause (k269).
@@ -303,13 +315,62 @@ sub setup_cilium_gateway {
         $read_err = $@;
         if (gateway_accepted($gw)) {
             print "      Gateway is accepted (Programmed will follow once cert-manager provides the Secret)\n";
-            return $outcome;
+            return;
         }
         $self->wait_seconds(2);
     }
     chomp $read_err if $read_err;
     die "Gateway 'cilium-gateway' did not become Accepted within 60s"
         . ($read_err ? "; the last read failed: $read_err" : '') . "\n";
+}
+
+# The nodes Envoy listens on under gateway.mode host_network (k454): those
+# whose labels hold every pair of gateway.node_selector, each with its
+# InternalIP -- the address an edge proxy sends the Gateway's traffic to.
+# Pure, so a test needs no cluster: $nodes are the IO::K8s Node objects
+# $api->list('Node') returns. Sorted by name.
+sub gateway_nodes {
+    my ($nodes, $selector) = @_;
+    my @found;
+    for my $node (@{ $nodes // [] }) {
+        my $labels = $node->metadata->labels // {};
+        next if grep { !defined $labels->{$_} || $labels->{$_} ne $selector->{$_} } keys %$selector;
+        my $status = $node->status;
+        my ($ip) = map { $_->address }
+            grep { ($_->type // '') eq 'InternalIP' } @{ ($status ? $status->addresses : undef) // [] };
+        push @found, { name => $node->metadata->name, address => $ip };
+    }
+    return [ sort { $a->{name} cmp $b->{name} } @found ];
+}
+
+# Says on STDOUT which nodes Envoy listens on. None is no error here: on a
+# first apply the Gateway comes before the workers, and the labelled worker
+# joins later. A Node list that fails is said on STDERR and fails nothing --
+# the Gateway itself is in place.
+sub report_gateway_nodes {
+    my ($self, $api, $config) = @_;
+    my $selector = $config->gateway_node_selector;
+    my $wanted = join ', ', map { "$_=$selector->{$_}" } sort keys %$selector;
+
+    my $list = eval {
+        OCP::Cmd::Apply::K8s::read_or_absent('Nodes (for the Gateway host network)',
+            sub { $api->list('Node') });
+    };
+    if (my $err = $@) {
+        print STDERR '  [!!] Gateway host network: the nodes were not read, so which of them carry '
+            . "$wanted is unknown: " . OCP::ErrorLine::one_line($err) . "\n";
+        return;
+    }
+
+    my $found = gateway_nodes($list ? $list->items : [], $selector);
+    if (!@$found) {
+        print "      Gateway host network: no node carries $wanted yet -- Envoy listens on 80/443 "
+            . "of each node that does, once it joins\n";
+        return;
+    }
+    print "      Gateway host network: Envoy listens on 80/443 of "
+        . join(', ', map { $_->{name} . (defined $_->{address} ? " ($_->{address})" : '') } @$found)
+        . "\n";
 }
 
 # Whether the Gateway $gw, as read, is Accepted by its controller: a condition
@@ -469,6 +530,11 @@ sub setup_lb_ipam {
         unless $crd_ready;
 
     $self->_server_side_apply_all($api, @$resources);
+
+    # Under gateway.mode host_network (k454) the Gateway gets no address from
+    # the pool: Envoy listens on the labelled nodes, which
+    # setup_cilium_gateway reported. The pool is for other Services.
+    return if $config && $config->gateway_host_network;
 
     # Verify Gateway got an IP (raw CRD get — Gateway has no IO::K8s class)
     $self->wait_seconds(2);
