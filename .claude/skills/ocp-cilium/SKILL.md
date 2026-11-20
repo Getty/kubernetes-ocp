@@ -134,6 +134,24 @@ and to every `upgrade_cilium` (drift remedy and `ocp update`, via
 `OCP::Drift->remedy_params`' `remedy_config`) — an upgrade without them would
 drop what the install set. IPAM stays OCP's: see the IPAM paragraph above.
 
+## Gateway host-network mode (`gateway:`, k454)
+
+`gateway: { mode: host_network, node_selector: {...} }` is for clusters where
+no LoadBalancer address can be reached (Hetzner Cloud: the network delivers
+only addresses Hetzner assigned, L2 announcement goes nowhere).
+`OCP::Config->gateway_helm_values` adds `gatewayAPI.hostNetwork.{enabled,
+nodes.matchLabels}` and, for the `cilium-envoy` DaemonSet,
+`envoy.securityContext.capabilities.keepCapNetBindService: true` plus the list
+`[NET_ADMIN, SYS_ADMIN, NET_BIND_SERVICE]` (Envoy binds 80/443; Helm replaces
+lists, so that is the 1.20 chart default plus one, so **check it on a cilium
+pin bump**). `cilium_helm_values` merges `cilium.helm_values` over it, and it
+travels like the rest of this section. `setup_cilium_gateway` then names the
+labelled nodes (`gateway_nodes`, `report_gateway_nodes`) instead of an LB
+address. `setup_lb_ipam` stops looking for one. Default `load_balancer`
+renders nothing, so a cluster without the key gets exactly the old values. A
+mode switch on a running cluster needs `ocp update --component cilium --force`.
+There is no drift probe for it yet.
+
 ## CRD Wait Pattern
 
 The Cilium operator registers its CRDs asynchronously. `setup_lb_ipam`

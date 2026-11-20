@@ -1184,3 +1184,9 @@ Revision history for OCP
       node-ip. `tls_san:` on a control plane adds names to the API server
       certificate. Workers robocop creates get the same through their
       OCPNode.
+    - New `gateway:` key: `mode: host_network` with a `node_selector` puts the
+      Cilium Gateway in Cilium's host-network mode; Envoy then listens on
+      80/443 of the labelled nodes, so an edge proxy can reach the Gateway at
+      a worker's private address, e.g. on Hetzner Cloud where an LB-IPAM
+      address is not reachable. The default `load_balancer` keeps today's
+      behaviour.

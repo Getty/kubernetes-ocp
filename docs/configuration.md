@@ -75,6 +75,15 @@ lbipam: false                  # optional, default false; the default LB pool
                                # takes over the host IP via ARP, breaking
                                # sshd/apiserver — opt in only with a plan
 
+gateway:                       # optional; how the Cilium Gateway is reached
+  mode: load_balancer          # load_balancer (default): a LoadBalancer
+                               # Service, addressed by LB-IPAM (lbipam: true).
+                               # host_network: Envoy listens on 80/443 of the
+                               # nodes node_selector picks -- for Hetzner
+                               # Cloud, see "The Cilium Gateway on Hetzner"
+  # node_selector:             # host_network only, and required there: the
+  #   ocp.io/gateway: "true"   # labels of those nodes (e.g. a pool's labels:)
+
 gpu:
   enabled: true                # default true; false skips GPU entirely
   driver: host                 # host (Rex installs it) | operator (GPU
@@ -216,6 +225,101 @@ their OCPNode (`spec.network`, `spec.firewalls`, `spec.address`). The OCPNode
 CRD has to declare those fields before the OCPNodes are written; `ocp apply`
 applies it first. `ocp node add` has no flags for them yet. On a node added
 that way, set the fields in its spec.
+
+## The Cilium Gateway on Hetzner: host-network mode
+
+The Cilium Gateway (`cilium-gateway` in `kube-system`) normally gets its
+address from a LoadBalancer Service: LB-IPAM hands out an address from
+`network.lb_pool` and an L2 announcement answers ARP for it. On Hetzner Cloud
+that address is unreachable. A Hetzner network delivers only the addresses
+Hetzner assigned, so an announced address goes nowhere, publicly or in the
+private network.
+
+`gateway: { mode: host_network }` puts Cilium's Gateway API in host-network
+mode instead. Envoy listens on the Gateway's listener ports, 80 and 443,
+directly on the nodes that `node_selector` picks. Something in front sends the
+traffic to those nodes' private addresses. In the setup this was built for, an
+edge machine outside the cluster holds the only public IP, and its Traefik
+forwards the components' host names to a gateway worker at its private
+address. No node needs a public IP and no hcloud Load Balancer is involved.
+
+```yaml
+gateway:
+  mode: host_network
+  node_selector:
+    ocp.io/gateway: "true"
+
+workers:
+  - name: gw                   # a pool of one: the gateway worker
+    provider: hetzner
+    server_type: cpx32
+    nodes: 1
+    network: cai-live
+    firewalls: [cai-live-fw]
+    address: private
+    labels:
+      ocp.io/gateway: "true"   # what node_selector picks
+```
+
+Any label works, and so does any node that carries it, a control plane
+included. A pool's `labels:` go on every worker of that pool, so a pool of one
+labels exactly one machine. Quote `"true"`: a label value is a string.
+
+OCP passes the mode to Cilium as Helm values: `gatewayAPI.hostNetwork.enabled`,
+`gatewayAPI.hostNetwork.nodes.matchLabels` from `node_selector`, and
+`NET_BIND_SERVICE` for the `cilium-envoy` DaemonSet
+(`envoy.securityContext.capabilities.keepCapNetBindService` plus that
+capability in its list). Cilium's Envoy starter drops every capability before
+Envoy starts unless it is told to keep that one, and without it Envoy cannot
+bind ports below 1024. The values reach the Cilium install and every Cilium
+upgrade. `cilium.helm_values` is merged over them, so it can still override
+the `envoy` part.
+
+`ocp apply` sets up the Gateway as before and waits until Cilium accepts it.
+Then it names the nodes Envoy listens on:
+`Gateway host network: Envoy listens on 80/443 of w1 (10.200.0.3)`. It does not
+wait for a LoadBalancer address, because none comes. On a first apply the
+Gateway is set up before the workers exist, so the line reads `no node carries
+ocp.io/gateway=true yet` and is no error. `lbipam: true` still works next to
+it, for other LoadBalancer Services.
+
+### Trade-offs
+
+- **One node unless you label more.** Traffic reaches the cluster only through
+  the labelled nodes. With one gateway node, losing it means losing ingress
+  until another node is labelled. For failover, label two or more workers and
+  list all of their private addresses as backends in the edge proxy, with a
+  health check.
+- **Envoy binds every address of the node.** That includes the node's public
+  IPv4. Keep the public side closed with the Hetzner firewall: give it no
+  inbound rule for 80 or 443. A firewall applies to the public interface only,
+  so the edge proxy still reaches the node through the network.
+- **The mode is cluster-wide.** Cilium applies host-network mode to every
+  Gateway of the cluster, not just `cilium-gateway`. Two Gateways with the
+  same listener port on the same node collide.
+- **Envoy has to run in its own DaemonSet**, Cilium's default since 1.16.
+  `cilium.helm_values.envoy.enabled: false` runs Envoy inside the Cilium agent,
+  where OCP grants no `NET_BIND_SERVICE`, so that combination is refused.
+- **A running cluster changes mode only with a Cilium upgrade.** `ocp apply`
+  does not re-run the Cilium Helm release. After changing `gateway:` on a
+  running cluster, run `ocp update --component cilium --force`, as for
+  `cilium:`. `ocp status` does not report a mode that differs from
+  `ocp.yaml`.
+
+### What was not chosen
+
+- **LB-IPAM with a private address.** Hetzner delivers an address it did not
+  assign only through a route in the network (`destination` → a server). OCP
+  would have to write that route into a network it does not own, and it creates
+  and changes no network.
+- **NodePort.** The edge proxy would have to target high ports that Kubernetes
+  picks per Service, instead of 80 and 443.
+- **A Primary IP on a worker.** You can still assign one by hand: a Hetzner
+  Primary IP on the gateway worker makes that worker publicly reachable, and
+  with `mode: host_network` Envoy answers on it. In that case the firewall must
+  allow 80/443 from outside, and every trade-off above applies to the public
+  address. OCP does not create or assign a Primary IP. Where an edge machine
+  holds the public IP, it is not needed.
 
 ## What `ocp apply` refuses in these keys
 
@@ -367,6 +471,19 @@ These shapes used to be read wrongly and are refused:
   -- delete it`. `tls_san` is a list of host names or addresses on a control
   plane of any provider (`control_planes[1]: tls_san[2] must be a host name
   or IP address, not 'a b'`).
+- **`gateway:`** (see "The Cilium Gateway on Hetzner: host-network mode")
+  takes `mode` and `node_selector`, and nothing else
+  (`gateway.nodes: unknown key (must be mode or node_selector)`). `mode` is
+  `load_balancer` or `host_network` (`gateway.mode: must be load_balancer or
+  host_network, not 'hostNetwork'`). `host_network` needs a `node_selector`
+  (`gateway.mode is host_network, which needs gateway.node_selector: the
+  labels of the nodes Envoy listens on, …`), and a `node_selector` without it
+  is read by nothing (`gateway.node_selector: is read under gateway.mode:
+  host_network only -- delete it, or set that mode`). The selector is a
+  non-empty mapping of label keys to string values, refused in the words a
+  pool's `labels:` are. Under `host_network`, `cilium.helm_values` must not set
+  `gatewayAPI.hostNetwork` too (`… set one of them, not both`) or
+  `envoy.enabled: false`.
 
 ## `gpu.amd:` — AMD GPU nodes
 
