@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-20T22:05:46Z
+id: 455
+priority: medium
+status: backlog
+tags:
+- hetzner
+- cai-live
+- rke2
+title: 'Hetzner: bind the rke2 API server and supervisor to the private address (bind-address)'
+updated: 2026-11-20T22:05:46Z
+---
+
+Follow-up to k453. Today only the attached Hetzner firewall keeps 6443/9345 off the public IP. The bind on the private address is the second layer. Blocker: Rex::Rancher points Cilium on rke2 at 127.0.0.1:6443, and install_server has no bind-address/advertise-address option. Needs a rex-rancher card (option + Cilium k8sServiceHost on the bind address), then OCP passes it under address: private. Check in the lab first. Decision cai-admin/Getty 2026-11-20: function before security, so backlog for now.
