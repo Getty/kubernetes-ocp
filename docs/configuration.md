@@ -29,7 +29,7 @@ control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
   network: cai-live            # optional, hetzner only: an EXISTING Hetzner
                                # network (name or id) the server joins. OCP
                                # creates and deletes no network
-  firewalls: [cai-live-fw]     # optional, hetzner only: EXISTING firewalls
+  firewalls: [cai-live-cluster] # optional, hetzner only: EXISTING firewalls
                                # (names or ids) attached at creation
   address: private             # public (default) or private: which address OCP
                                # uses -- private is the server's address in
@@ -45,7 +45,7 @@ workers:                       # optional pools; each becomes Pending OCPNode
     nodes: 3                   # a count, at most 10; an ssh pool lists its
                                # hosts instead
     network: cai-live          # optional, as on the control plane: every
-    firewalls: [cai-live-fw]   # worker of the pool gets them (robocop too,
+    firewalls: [cai-live-cluster] # worker of the pool gets them (robocop too,
     address: private           # through its OCPNode)
 
 ssh:
@@ -165,7 +165,7 @@ control_planes:
   server_type: cpx32
   location: fsn1
   network: cai-live            # name or id
-  firewalls: [cai-live-fw]     # names or ids
+  firewalls: [cai-live-cluster] # names or ids
   address: private
   tls_san: [api.hz.example]
 
@@ -175,7 +175,7 @@ workers:
     server_type: cpx32
     nodes: 2
     network: cai-live
-    firewalls: [cai-live-fw]
+    firewalls: [cai-live-cluster]
     address: private
 ```
 
@@ -220,6 +220,17 @@ the firewall: give it no inbound rule for 6443 or 9345 from outside the
 network. Hetzner firewalls drop inbound traffic that no rule allows, and a
 firewall applies to the public interface only.
 
+Give the cluster nodes a firewall of their own, never the one of an edge
+machine. An edge firewall opens the edge's public ports (80/443, a WireGuard
+port), and on a cluster node those would reach the API or, with
+`gateway.mode: host_network`, Envoy directly, past the edge. A firewall that
+is attached through a label selector reaches a cluster node too if the node
+carries that label, so check the labels as well as `firewalls:`. A cluster
+firewall allows SSH inbound from the machine that runs `ocp` and nothing else
+from outside. Traffic to 6443, 9345 and 80/443 comes from the network only
+(for example 10.200.0.0/16), and the firewall does not filter that traffic
+anyway.
+
 Workers that robocop creates get `network`, `firewalls` and `address` through
 their OCPNode (`spec.network`, `spec.firewalls`, `spec.address`). The OCPNode
 CRD has to declare those fields before the OCPNodes are written; `ocp apply`
@@ -255,7 +266,7 @@ workers:
     server_type: cpx32
     nodes: 1
     network: cai-live
-    firewalls: [cai-live-fw]
+    firewalls: [cai-live-cluster]
     address: private
     labels:
       ocp.io/gateway: "true"   # what node_selector picks
@@ -460,7 +471,7 @@ These shapes used to be read wrongly and are refused:
   cluster on a private network"). `network` is one name or id
   (`control_planes[1]: network must be the name or id of an existing Hetzner
   network, not a list`). `firewalls` is a list of them (`… firewalls must be
-  a list of names or ids of existing Hetzner firewalls, not 'cai-live-fw'`,
+  a list of names or ids of existing Hetzner firewalls, not 'cai-live-cluster'`,
   and `firewalls[2] must be the name or id of …` for one entry). `address` is
   `public` or `private` (`… address must be public or private, not
   'internal'`). `address: private` needs a `network` (`… address is private,
