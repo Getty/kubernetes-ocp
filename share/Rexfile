@@ -640,6 +640,8 @@ sub _install_server {
     # First: a node_ip this Rex::Rancher cannot set dies before anything on
     # the host is read or changed (k254, see _node_ip_opt).
     my @node_ip = _node_ip_opt($params);
+    # So do routes that are none (k456, see _route_list).
+    my $routes = _route_list($params);
 
     # tls-san arrives as a JSON array (the list OCP::Rex/OCP::Node build) or,
     # for a hand-run `rex ... --tls_san=1.2.3.4`, as a bare scalar.
@@ -693,6 +695,10 @@ sub _install_server {
     #   - last, with node_ip_from_route, the route to the join server (see
     #     _node_ip_opt).
     Rex::Rancher::Server::preflight_server(%opts);
+
+    # The static routes (k456), before RKE2 starts: the API server, etcd and
+    # Cilium come up with them in place.
+    _ensure_routes($routes);
 
     do_task "prepare_node", _node_params($params);
     # The GPU step's node labels join the install's after the checks up front,
@@ -793,6 +799,8 @@ sub _install_agent {
 
     # node_ip first, as for a server (see _node_ip_opt): it may die.
     my %opts = (_node_ip_opt($params), _agent_opts($distribution, $params));
+    # And routes that are none (k456), as for a server.
+    my $routes = _route_list($params);
 
     # The Cilium leftovers (k190), refused or cleared as for a server.
     _cilium_residue_check($params, 'worker');
@@ -803,6 +811,9 @@ sub _install_agent {
     # `kubeconfig` the control plane's version, read through the API.
     # install_agent asks again, first thing.
     Rex::Rancher::Agent::preflight_agent(%opts);
+
+    # The static routes (k456), before the agent starts, as for a server.
+    _ensure_routes($routes);
 
     do_task "prepare_node", _node_params($params);
     # The GPU step's node labels, after the checks as for a server.
@@ -825,6 +836,206 @@ sub _agent_opts {
         ($params->{kubeconfig} ? (kubeconfig => $params->{kubeconfig}) : ()),
         hold_running        => 1,
     );
+}
+
+# Static routes (k456): ocp.yaml's routes: on a Hetzner control plane or
+# pool, OCPNode spec.routes, as OCP::Rex hands them over -- a list of
+# { to => CIDR, via => IPv4 }, via resolved already (OCP::Provider::Hetzner
+# resolve_routes turns `gateway` into the first address of the network's
+# ip_range, e.g. 10.200.0.1). A Hetzner server keeps its public default route;
+# these lead single networks (the lab behind the network, say) through the
+# private interface.
+#
+# What the node gets, all of it OCP's own and nothing else touched:
+#   - /etc/ocp/routes, one "TO VIA" line per route: the data;
+#   - /usr/local/sbin/ocp-routes, which sets each with `ip route replace TO
+#     via VIA` -- idempotent, no dev: the kernel takes the private interface
+#     from the on-link route to the gateway the network's DHCP lease installs.
+#     With --wait N it retries for N seconds, for a boot where the private
+#     interface comes up after network-online;
+#   - ocp-routes.service, a oneshot after network-online.target and before
+#     the rke2/k3s units, enabled: set at every boot before Kubernetes starts;
+#   - ocp-routes.timer, every minute: whoever owns the private interface on
+#     the image (cloud-init with ifupdown or netplan/networkd, hc-utils'
+#     hc-net-ifup@, dhclient or dhcpcd -- Hetzner's docs name both paths and
+#     they change between images), an interface going down drops its routes,
+#     and the timer puts them back within a minute whatever brought it back;
+#   - the hooks that put them back at once: a dhclient exit hook (BOUND,
+#     RENEW, REBIND, REBOOT) and, where ifupdown is installed, an if-up.d
+#     script. Both run the script without waiting, and never fail the caller.
+#
+# The routes a previous run set and this one no longer lists are deleted
+# from the kernel now. An empty list removes OCP's routes, files and units;
+# no `routes` parameter at all (a hand-run, a provider OCP does not create
+# servers with) leaves the node exactly as it is.
+our $ROUTES_CONF   = '/etc/ocp/routes';
+our $ROUTES_SCRIPT = '/usr/local/sbin/ocp-routes';
+our $ROUTES_UNIT   = '/etc/systemd/system/ocp-routes.service';
+our $ROUTES_TIMER  = '/etc/systemd/system/ocp-routes.timer';
+our $ROUTES_DHCP   = '/etc/dhcp/dhclient-exit-hooks.d/ocp-routes';
+our $ROUTES_IFUP   = '/etc/network/if-up.d/ocp-routes';
+
+# One IPv4 address, one IPv4 CIDR: what may go into the `ip route` line.
+sub _is_ipv4 {
+    my ($ip) = @_;
+    return 0 unless defined $ip && !ref $ip && $ip =~ /\A([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\z/;
+    return !grep { $_ > 255 } $1, $2, $3, $4;
+}
+sub _is_ipv4_cidr {
+    my ($cidr) = @_;
+    return 0 unless defined $cidr && !ref $cidr && $cidr =~ m{\A([^/]+)/([0-9]{1,2})\z};
+    return $2 >= 1 && $2 <= 32 && _is_ipv4($1);
+}
+
+# The routes parameter, checked before the host is touched: undef when there
+# is none, else the list. Anything but a list of { to => CIDR, via => IPv4 }
+# dies -- the values go into shell commands, and a spec.routes written by
+# hand reaches here past ocp.yaml's validation.
+sub _route_list {
+    my ($params) = @_;
+    return undef unless exists $params->{routes} && defined $params->{routes};
+    my $routes = $params->{routes};
+    die "routes must be a list of { to, via }, not " . (ref $routes || "'$routes'") . "\n"
+        unless ref $routes eq 'ARRAY';
+    for my $n (1 .. @$routes) {
+        my $r = $routes->[$n - 1];
+        my ($to, $via) = ref $r eq 'HASH' ? @$r{qw( to via )} : ();
+        die "routes[$n]: to must be an IPv4 CIDR and via an IPv4 address (gateway is resolved "
+          . "by OCP before the install), not to " . ($to // 'none') . " via " . ($via // 'none') . "\n"
+            unless _is_ipv4_cidr($to) && _is_ipv4($via);
+    }
+    return [ map { +{ to => $_->{to}, via => $_->{via} } } @$routes ];
+}
+
+# The script and the units, as written to the node.
+sub _routes_script {
+    return <<'SH';
+#!/bin/sh
+# Written by OCP (k456): the static routes of ocp.yaml's routes:, listed in
+# /etc/ocp/routes as "TO VIA" lines, set with `ip route replace` (idempotent).
+# Run by ocp-routes.service at boot, ocp-routes.timer every minute, and the
+# dhclient and ifupdown hooks. --wait N retries for N seconds.
+conf=/etc/ocp/routes
+[ -r "$conf" ] || exit 0
+wait=0
+[ "$1" = "--wait" ] && wait="${2:-0}"
+end=$(( $(date +%s) + wait ))
+while :; do
+    failed=
+    while read -r to via rest; do
+        case "$to" in ''|'#'*) continue ;; esac
+        ip route replace "$to" via "$via" 2>/dev/null || failed="$failed $to via $via;"
+    done < "$conf"
+    [ -z "$failed" ] && exit 0
+    [ "$(date +%s)" -ge "$end" ] && break
+    sleep 2
+done
+echo "ocp-routes: could not set:$failed the gateway is not reachable (is the private interface up, is the server in the network?)" >&2
+exit 1
+SH
+}
+
+sub _routes_unit {
+    return <<'UNIT';
+# Written by OCP (k456): sets ocp.yaml's routes: at boot, before Kubernetes.
+[Unit]
+Description=OCP static routes (ocp.yaml routes:)
+Wants=network-online.target
+After=network-online.target
+Before=rke2-server.service rke2-agent.service k3s.service k3s-agent.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ocp-routes --wait 60
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+sub _routes_timer {
+    return <<'UNIT';
+# Written by OCP (k456): puts ocp.yaml's routes: back after the private
+# interface went down and up, whatever manages it.
+[Unit]
+Description=Re-set the OCP static routes every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=1min
+
+[Install]
+WantedBy=timers.target
+UNIT
+}
+
+sub _routes_dhclient_hook {
+    return <<'SH';
+# Written by OCP (k456): ocp.yaml's routes: back as soon as a lease is bound.
+case "$reason" in
+    BOUND|RENEW|REBIND|REBOOT) /usr/local/sbin/ocp-routes || true ;;
+esac
+SH
+}
+
+sub _routes_ifup_hook {
+    return <<'SH';
+#!/bin/sh
+# Written by OCP (k456): ocp.yaml's routes: back as soon as an interface is up.
+[ "$IFACE" = lo ] && exit 0
+/usr/local/sbin/ocp-routes || true
+exit 0
+SH
+}
+
+sub _ensure_routes {
+    my ($routes) = @_;
+    return unless $routes;
+
+    my %want = map { ("$_->{to} $_->{via}" => 1) } @$routes;
+    my $had  = is_file($ROUTES_CONF) ? (eval { cat $ROUTES_CONF } // '') : '';
+
+    # What an earlier run set and this one does not list: out of the kernel
+    # now -- the files below no longer name it, so nothing would ever again.
+    for my $line (split /\n/, $had) {
+        my ($to, $via) = split ' ', $line;
+        next unless _is_ipv4_cidr($to) && _is_ipv4($via) && !$want{"$to $via"};
+        run "ip route del $to via $via", auto_die => FALSE;
+        say "Removed route $to via $via: routes: no longer lists it";
+    }
+
+    unless (@$routes) {
+        return unless length $had || is_file($ROUTES_UNIT);
+        run "systemctl disable --now ocp-routes.timer ocp-routes.service", auto_die => FALSE;
+        unlink $_ for grep { is_file($_) }
+            $ROUTES_CONF, $ROUTES_SCRIPT, $ROUTES_UNIT, $ROUTES_TIMER, $ROUTES_DHCP, $ROUTES_IFUP;
+        run "systemctl daemon-reload", auto_die => FALSE;
+        say "Removed OCP's static routes: routes: lists none";
+        return;
+    }
+
+    file '/etc/ocp', ensure => 'directory';
+    file $ROUTES_CONF, mode => '0644',
+        content => "# Written by OCP (k456) from ocp.yaml's routes: -- TO VIA, one per line\n"
+                 . join('', map { "$_->{to} $_->{via}\n" } @$routes);
+    file $ROUTES_SCRIPT, mode => '0755', content => _routes_script();
+    file $ROUTES_UNIT,   mode => '0644', content => _routes_unit();
+    file $ROUTES_TIMER,  mode => '0644', content => _routes_timer();
+    file '/etc/dhcp/dhclient-exit-hooks.d', ensure => 'directory';
+    file $ROUTES_DHCP,   mode => '0644', content => _routes_dhclient_hook();
+    file $ROUTES_IFUP,   mode => '0755', content => _routes_ifup_hook()
+        if is_file('/etc/network/interfaces');
+
+    run "systemctl daemon-reload && systemctl enable ocp-routes.service ocp-routes.timer "
+      . "&& systemctl start ocp-routes.timer", auto_die => FALSE;
+    die "routes: could not enable ocp-routes.service and ocp-routes.timer (systemctl failed)\n" if $?;
+
+    # Set now, and fail the install when they cannot be: a node without its
+    # routes would come up Ready and not reach what they lead to.
+    my $out = run "$ROUTES_SCRIPT --wait 30 2>&1", auto_die => FALSE;
+    die "routes: " . ($out =~ /\S/ ? $out : "ocp-routes failed\n") if $?;
+    say "Static routes set: " . join(', ', map { "$_->{to} via $_->{via}" } @$routes);
+    return;
 }
 
 # node_labels as task params carry them: a list of key=value strings, or
