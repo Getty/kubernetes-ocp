@@ -69,6 +69,27 @@ spec:
                 - public
                 - private
                 description: "Address OCP reaches the server at: public (absent) or private, its address in spec.network"
+              # Static routes the node's OS gets (k456): to an IPv4 network,
+              # via the Hetzner network's gateway (resolved from the network's
+              # ip_range at install) or an address. Both land in an `ip route`
+              # command, hence the patterns; the Rexfile checks them again.
+              routes:
+                type: array
+                items:
+                  type: object
+                  required:
+                  - to
+                  - via
+                  properties:
+                    to:
+                      type: string
+                      pattern: '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$'
+                      description: "IPv4 network the route leads to, e.g. 10.230.30.0/24"
+                    via:
+                      type: string
+                      pattern: '^(gateway|[0-9]{1,3}(\.[0-9]{1,3}){3})$'
+                      description: "gateway (the first address of spec.network's ip_range) or an IPv4 next hop"
+                description: "Static routes written into the node's network configuration at install"
 
               # SSH-specific overrides
               host:

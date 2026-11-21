@@ -1525,16 +1525,20 @@ sub _first_cp_string {
 # server is created in and with, and which of its addresses OCP uses
 # (create_server, uses_private_address); tls_san, the names the API server
 # certificate carries besides the addresses (extra_tls_sans).
+#
+# routes (k456): static routes the node's OS gets, through the Hetzner
+# network's gateway or an address, as OCP::Cmd::Apply::CR::network_spec
+# copies them into the OCPNode spec and the install task writes them.
 our @CONTROL_PLANE_KEYS = qw( provider host public_ip private_ip node_ip server_type location image
-                              name network firewalls address tls_san );
+                              name network firewalls address tls_san routes );
 
 # A pool's: what worker_ocpnodes makes its OCPNodes of, as ocp destroy, ocp
 # status and ocp node ls read them too. node_ip is refused on a pool by a
 # line of its own, so it is not one of them, nor an unknown key there.
 # network, firewalls and address (k453), as on a control plane: worker_ocpnodes
-# copies them into every OCPNode of the pool.
+# copies them into every OCPNode of the pool. routes (k456) the same way.
 our @POOL_KEYS = qw( name provider nodes host server_type location image labels taints
-                     network firewalls address );
+                     network firewalls address routes );
 
 # A mapping in an ssh pool's nodes: list (k355): worker_ocpnodes reads its
 # host and nothing else -- the worker is named after it --, as ocp destroy
@@ -2176,8 +2180,14 @@ sub _network_key_errors {
 
     my @set = grep { defined $entry->{$_} } qw( network firewalls address );
     if (!ref $prov && OCP::Provider->known_type($prov) && $prov ne 'hetzner') {
-        return map { [ $_ => "is read for a hetzner $kind only: provider $prov creates no server, "
-            . "its machine is in the networks it is in -- delete it" ] } @set;
+        return (
+            (map { [ $_ => "is read for a hetzner $kind only: provider $prov creates no server, "
+                . "its machine is in the networks it is in -- delete it" ] } @set),
+            (defined $entry->{routes}
+                ? [ routes => "is read for a hetzner $kind only: OCP leaves the routes of a machine "
+                    . "it did not create to that machine -- set them there, and delete this" ]
+                : ()),
+        );
     }
 
     my $network = $entry->{network};
@@ -2209,6 +2219,75 @@ sub _network_key_errors {
             . 'address OCP is to use' ];
     }
 
+    push @errors, _route_errors($entry->{routes}, defined $network && !ref $network && length $network);
+
+    return @errors;
+}
+
+# The keys of one entry of routes: (k456).
+our @ROUTE_KEYS = qw( to via );
+
+# routes: of a hetzner control plane or pool (k456), as [ key, what is wrong ]
+# pairs: a list of { to: CIDR, via: gateway | IPv4 }. to is the IPv4 network
+# the route leads to, in its network-address form, once per list, and never
+# the default route: the server keeps its public default route. via is the
+# Hetzner network's gateway (gateway, which needs network:) or an address.
+# Both end up in an `ip route` command on the node (the Rexfile's
+# _ensure_routes checks them again), so nothing else passes.
+sub _route_errors {
+    my ($routes, $has_network) = @_;
+    return () unless defined $routes;
+    return [ routes => 'must be a list like [ { to: 10.230.30.0/24, via: gateway } ], not '
+        . _shown_value($routes) ] if ref $routes ne 'ARRAY';
+
+    my (@errors, %to_at);
+    for my $n (1 .. @$routes) {
+        my $r = $routes->[$n - 1];
+        my $at = "routes[$n]";
+        if (ref $r ne 'HASH') {
+            push @errors, [ $at => 'must be a mapping like { to: 10.230.30.0/24, via: gateway }, not '
+                . _shown_value($r) ];
+            next;
+        }
+        my %known = map { $_ => 1 } @ROUTE_KEYS;
+        push @errors, map { [ "$at.$_" => 'is an unknown key (must be '
+            . OCP::Choices::or_list(@ROUTE_KEYS) . ')' ] } grep { !$known{$_} } sort keys %$r;
+
+        my $to = $r->{to};
+        if (!defined $to) {
+            push @errors, [ $at => 'needs to: the IPv4 network the route leads to (e.g. 10.230.30.0/24)' ];
+        }
+        elsif (!_looks_like_cidr($to)) {
+            push @errors, [ "$at.to" => 'must be an IPv4 CIDR (e.g. 10.230.30.0/24), not ' . _shown_value($to) ];
+        }
+        else {
+            my ($net_ip, $bits) = _cidr_range($to);
+            my $canonical = _int_to_ipv4($net_ip) . "/$bits";
+            if ($to ne $canonical) {
+                push @errors, [ "$at.to" => "'$to' has host bits set; the network address is $canonical" ];
+            }
+            elsif ($bits == 0) {
+                push @errors, [ "$at.to" => "is the default route: the server keeps its public default "
+                    . 'route, and OCP does not replace it -- name the networks the route leads to' ];
+            }
+            elsif (defined $to_at{$canonical}) {
+                push @errors, [ "$at.to" => "'$to' is routed by routes[$to_at{$canonical}] already" ];
+            }
+            $to_at{$canonical} //= $n;
+        }
+
+        my $via = $r->{via};
+        if (!defined $via) {
+            push @errors, [ $at => 'needs via: gateway (the Hetzner network gateway) or an IPv4 address' ];
+        }
+        elsif (ref $via || ($via ne 'gateway' && !_looks_like_ipv4($via))) {
+            push @errors, [ "$at.via" => 'must be gateway or an IPv4 address, not ' . _shown_value($via) ];
+        }
+        elsif ($via eq 'gateway' && !$has_network) {
+            push @errors, [ "$at.via" => 'is gateway, which needs network: the Hetzner network whose '
+                . 'gateway the route goes through' ];
+        }
+    }
     return @errors;
 }
 

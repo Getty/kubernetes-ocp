@@ -60,7 +60,8 @@ sub errors_for {
 }
 
 my @CP_KEYS  = qw( provider host public_ip private_ip node_ip server_type location image name
-                   network firewalls address tls_san );   # the last four since k453
+                   network firewalls address tls_san routes );
+                   # network to tls_san since k453, routes since k456
 my $KEYS     = OCP::Choices::or_list(@CP_KEYS);
 my $MAP_KEYS = OCP::Choices::or_list(@CP_KEYS, 'nodes');
 my $GONE     = 'service is gone (ocp init wrote it, nothing read it) -- delete it';

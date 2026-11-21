@@ -658,7 +658,7 @@ sub migrate_legacy_nodes {
 
 # The OCPNode spec fields for the Hetzner network, firewalls and address of
 # the control plane or pool $entry (k453): spec.network, spec.firewalls,
-# spec.address, each only when set -- an OCPNode without them is created as
+# spec.address, and spec.routes (k456), each only when set -- an OCPNode without them is created as
 # before, with its public address. Hetzner only; validate() refuses them
 # elsewhere.
 sub network_spec {
@@ -669,6 +669,10 @@ sub network_spec {
     $spec{firewalls} = [ map { "$_" } @{ $entry->{firewalls} } ]
         if ref $entry->{firewalls} eq 'ARRAY' && @{ $entry->{firewalls} };
     $spec{address}   = $entry->{address}          if defined $entry->{address};
+    # Its static routes (k456), as written: via stays `gateway` here, the
+    # provider resolves it when the node is installed (OCP::Node).
+    $spec{routes}    = [ map { +{ to => "$_->{to}", via => "$_->{via}" } } @{ $entry->{routes} } ]
+        if ref $entry->{routes} eq 'ARRAY' && @{ $entry->{routes} };
     return %spec;
 }
 

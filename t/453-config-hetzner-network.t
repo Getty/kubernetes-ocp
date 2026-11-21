@@ -117,7 +117,7 @@ subtest 'an ssh or local entry takes none of them' => sub {
 subtest 'a key that is none of them is still unknown' => sub {
     my @lines = config_for({ control_planes => { %CP, networks => [ 'cai-live' ] } })->validate;
     is scalar(@lines), 1, 'one line';
-    like $lines[0], qr/\Acontrol_planes\[1\]\.networks: unknown key \(must be .*network, firewalls, address, tls_san, or nodes\)\z/,
+    like $lines[0], qr/\Acontrol_planes\[1\]\.networks: unknown key \(must be .*network, firewalls, address, tls_san, routes, or nodes\)\z/,
         'networks: unknown, the choices name network';
 };
 

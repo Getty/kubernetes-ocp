@@ -1344,14 +1344,15 @@ subtest 'ocp apply --dry-run on a list: the line on STDERR, exit 1' => sub {
 
 # --- 29. a worker pool's keys ------------------------------------------------------------------------
 
-# network, firewalls and address on both, tls_san on a control plane: k453.
+# network, firewalls and address on both, tls_san on a control plane: k453;
+# routes on both: k456.
 my $POOL_KEYS   = 'name, provider, nodes, host, server_type, location, image, labels, taints, network, '
-    . 'firewalls, or address';
+    . 'firewalls, address, or routes';
 # No service since k357 (t/357-control-plane-service.t): nothing read it.
 my $CP_KEYS     = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, '
-    . 'network, firewalls, address, or tls_san';
+    . 'network, firewalls, address, tls_san, or routes';
 my $CP_MAP_KEYS = 'provider, host, public_ip, private_ip, node_ip, server_type, location, image, name, '
-    . 'network, firewalls, address, tls_san, or nodes';
+    . 'network, firewalls, address, tls_san, routes, or nodes';
 
 subtest 'a key of a worker pool that is none of those read' => sub {
     my $hz = sub { +{ name => 'w', provider => 'hetzner', server_type => 'cx22', @_ } };
