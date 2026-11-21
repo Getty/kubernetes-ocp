@@ -1190,3 +1190,10 @@ Revision history for OCP
       a worker's private address, e.g. on Hetzner Cloud where an LB-IPAM
       address is not reachable. The default `load_balancer` keeps today's
       behaviour.
+    - New `routes:` on a Hetzner control plane and worker pool: static routes
+      `{ to: CIDR, via: gateway | IPv4 }` the nodes' OS gets before RKE2/K3s
+      start. `via: gateway` is the first address of the network's `ip_range`,
+      read from the Hetzner API at install. A systemd unit, a timer and
+      DHCP/ifupdown hooks keep the routes across reboots and the private
+      interface going down and up; workers robocop creates get them through
+      the OCPNode's `spec.routes`.

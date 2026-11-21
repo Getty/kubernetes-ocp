@@ -37,6 +37,11 @@ control_planes:                # Hash (1 CP), Hash + `nodes: N` (N identical
                                # on a private network" below
   tls_san: [api.hz.example]    # optional, any provider: extra names or
                                # addresses for the API server certificate
+  routes:                      # optional, hetzner only: static routes the
+    - to: 10.230.30.0/24       # node's OS gets; via: gateway is the first
+      via: gateway             # address of `network`'s ip_range (needs it),
+                               # or an IPv4 next hop. See "Static routes
+                               # through the network gateway" below
 
 workers:                       # optional pools; each becomes Pending OCPNode
   - name: pool1                # CRs on `ocp apply` (CR-first — see below)
@@ -47,6 +52,7 @@ workers:                       # optional pools; each becomes Pending OCPNode
     network: cai-live          # optional, as on the control plane: every
     firewalls: [cai-live-cluster] # worker of the pool gets them (robocop too,
     address: private           # through its OCPNode)
+    routes: [{ to: 10.230.30.0/24, via: gateway }]   # as on the control plane
 
 ssh:
   private_key: .ocp/id_ed25519
@@ -236,6 +242,74 @@ their OCPNode (`spec.network`, `spec.firewalls`, `spec.address`). The OCPNode
 CRD has to declare those fields before the OCPNodes are written; `ocp apply`
 applies it first. `ocp node add` has no flags for them yet. On a node added
 that way, set the fields in its spec.
+
+## Static routes through the network gateway
+
+A server in a Hetzner network keeps its public default route. It reaches the
+network itself through the private interface, but nothing that lies behind
+the network, such as a lab that a gateway machine in the network routes to.
+`routes:` on a Hetzner control plane or worker pool gives the nodes' OS a
+route for each such range:
+
+```yaml
+control_planes:
+  provider: hetzner
+  server_type: cpx32
+  location: fsn1
+  network: cai-live            # ip_range 10.200.0.0/16
+  address: private
+  routes:
+    - to: 10.230.30.0/24       # the lab
+      via: gateway             # 10.200.0.1
+
+workers:
+  - name: w
+    provider: hetzner
+    server_type: cpx32
+    nodes: 2
+    network: cai-live
+    address: private
+    routes: [{ to: 10.230.30.0/24, via: gateway }]
+```
+
+Each node then has `10.230.30.0/24 via 10.200.0.1`. For the traffic to
+arrive, the Hetzner network needs a route of its own for that range, to the
+machine that forwards it (`hcloud network add-route`). OCP does not set that
+route; whoever runs that machine sets it.
+
+`via: gateway` is the network's gateway: the first address of the
+network's `ip_range`, which Hetzner reserves for it (10.200.0.0/16 gives
+10.200.0.1). OCP reads the `ip_range` from the Hetzner API when it installs
+the node, so `via: gateway` needs `network:`. `via:` can also be an IPv4
+address, the next hop itself.
+
+The install writes the routes before RKE2 or K3s starts, so the API server,
+etcd and Cilium come up with them in place. If a route cannot be set,
+because the gateway is not reachable on the private interface, the install
+fails and names that route. The node keeps the routes:
+
+- `/etc/ocp/routes` lists them, and `/usr/local/sbin/ocp-routes` sets them
+  with `ip route replace`, which changes nothing when a route is already
+  there.
+- `ocp-routes.service` runs it at every boot, after `network-online.target`
+  and before the RKE2/K3s service. It waits up to 60 seconds for the gateway,
+  because the private interface can come up after `network-online.target`.
+- `ocp-routes.timer` runs the service every minute. When the private
+  interface goes down and comes back, its routes are gone. Whatever manages
+  the interface on the image (cloud-init with ifupdown or netplan, Hetzner's
+  `hc-utils`, dhclient or dhcpcd), the timer sets them again within a minute.
+- A dhclient exit hook and, where ifupdown is installed, an `if-up.d` script
+  set them again as soon as a lease is bound or the interface is up.
+
+Each `ocp apply` installs the first control plane again, so it gets the routes
+`ocp.yaml` lists now. A route that is no longer in the list is deleted, and
+`routes: []` or no `routes:` at all removes OCP's routes, units and files. A
+worker or a further control plane gets its routes when it is installed. Its
+OCPNode carries them as `spec.routes`, with `via: gateway` as written, and
+the provider resolves the gateway at that install. A node that is already
+Ready is not installed again, so it does not get a changed `routes:`; set the
+routes on it by hand, or replace the node. On an `ssh` or `local` machine
+OCP does not touch the routes, and `routes:` is refused there.
 
 ## The Cilium Gateway on Hetzner: host-network mode
 
@@ -482,6 +556,25 @@ These shapes used to be read wrongly and are refused:
   -- delete it`. `tls_san` is a list of host names or addresses on a control
   plane of any provider (`control_planes[1]: tls_san[2] must be a host name
   or IP address, not 'a b'`).
+- **`routes:`** (see "Static routes through the network gateway") is a list
+  (`control_planes[1]: routes must be a list like [ { to: 10.230.30.0/24,
+  via: gateway } ], not a mapping`) of mappings with `to` and `via` and no
+  other key (`… routes[1].dev is an unknown key (must be to or via)`). Each
+  needs both (`… routes[1] needs via: gateway (the Hetzner network gateway)
+  or an IPv4 address`). `to` is an IPv4 network in its network-address form
+  (`… routes[1].to must be an IPv4 CIDR (e.g. 10.230.30.0/24), not 'lab'`,
+  `… routes[1].to '10.230.30.7/24' has host bits set; the network address is
+  10.230.30.0/24`). It is never the default route (`… routes[1].to is the
+  default route: the server keeps its public default route, and OCP does not
+  replace it -- …`), and it is listed once (`… routes[2].to '10.230.30.0/24'
+  is routed by routes[1] already`). `via` is `gateway` or an IPv4 address
+  (`… routes[1].via must be gateway or an IPv4 address, not 'gw'`), and
+  `gateway` needs a `network` (`… routes[1].via is gateway, which needs
+  network: the Hetzner network whose gateway the route goes through`).
+  `routes:` is read for a `hetzner` control plane or pool only (`worker pool
+  'l': routes is read for a hetzner worker pool only: OCP leaves the routes of
+  a machine it did not create to that machine -- set them there, and delete
+  this`).
 - **`gateway:`** (see "The Cilium Gateway on Hetzner: host-network mode")
   takes `mode` and `node_selector`, and nothing else
   (`gateway.nodes: unknown key (must be mode or node_selector)`). `mode` is
