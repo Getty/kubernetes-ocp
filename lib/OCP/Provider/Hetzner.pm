@@ -395,6 +395,12 @@ sub create_server {
 # only.
 sub _existing_id {
     my ($self, $kind, $ref, $server) = @_;
+    return $self->_existing($kind, $ref, $server)->id;
+}
+
+# The existing network or firewall itself, as _existing_id finds it.
+sub _existing {
+    my ($self, $kind, $ref, $server) = @_;
     (my $what = $kind) =~ s/s\z//;
     my $key = $kind eq 'networks' ? 'network' : 'firewalls';
     my $none = "Hetzner server '$server': there is no Hetzner $what '$ref' in this "
@@ -403,12 +409,83 @@ sub _existing_id {
 
     if ($ref =~ /\A[0-9]+\z/) {
         my $found = eval { $self->cloud->$kind->get($ref) };
-        return $found->id if $found;
+        return $found if $found;
     }
     my $list = $self->_api(sub { $self->cloud->$kind->list_all(name => $ref) });
     my ($match) = grep { defined $_->name && $_->name eq $ref } @$list;
     die $none unless $match;
-    return $match->id;
+    return $match;
+}
+
+=method network_gateway
+
+    my $gw = $prov->network_gateway('cai-live');   # 10.200.0.1
+
+The gateway of the existing Hetzner network a name or id names: the first
+address of its C<ip_range> (10.200.0.0/16 gives 10.200.0.1). Every server in
+the network reaches the rest of it, and every route the network has, through
+that address; Hetzner documents it as the first address of the network, not
+of a subnet. Dies, as L</create_server> does, when there is no such network,
+and when the network reports no IPv4 C<ip_range>.
+
+=method resolve_routes
+
+    my $routes = $prov->resolve_routes(
+        [ { to => '10.230.30.0/24', via => 'gateway' } ],
+        network => 'cai-live', server => 'hz-police1');
+    # [ { to => '10.230.30.0/24', via => '10.200.0.1' } ]
+
+The routes of F<ocp.yaml>'s C<routes:> (or an OCPNode's C<spec.routes>) as the
+install task takes them (k456): C<via: gateway> becomes L</network_gateway> of
+C<network>, an address stays as it is. The network is looked up once, and only
+when a route names C<gateway>; one without C<network> dies. An empty or
+missing list is an empty list. C<server> names the machine in a refusal.
+
+=cut
+
+sub network_gateway {
+    my ($self, $network, $server) = @_;
+    my $net = $self->_existing(networks => $network, $server // '(none)');
+    my $gw  = gateway_of_range($net->ip_range);
+    die "Hetzner network '$network' reports no IPv4 ip_range (" . ($net->ip_range // 'none')
+      . "), so OCP cannot tell its gateway. Name the next hop as an address instead "
+      . "(routes: [{ to: ..., via: 10.x.y.1 }]).\n"
+        unless defined $gw;
+    return $gw;
+}
+
+sub resolve_routes {
+    my ($self, $routes, %o) = @_;
+    return [] unless ref $routes eq 'ARRAY' && @$routes;
+    my $gateway;
+    my @resolved;
+    for my $r (@$routes) {
+        my $via = $r->{via} // '';
+        if ($via eq 'gateway') {
+            my $server = $o{server} // '(none)';
+            die "Hetzner server '$server': a route via gateway needs the network whose gateway "
+              . "it is, and there is none (network: in ocp.yaml, spec.network on its OCPNode).\n"
+                unless defined $o{network} && length $o{network};
+            $gateway //= $self->network_gateway($o{network}, $server);
+            $via = $gateway;
+        }
+        push @resolved, { to => "$r->{to}", via => "$via" };
+    }
+    return \@resolved;
+}
+
+# The gateway of a Hetzner network with ip_range $cidr: its first address,
+# the network address plus one. undef for anything that is no IPv4 CIDR.
+sub gateway_of_range {
+    my ($cidr) = @_;
+    return undef unless defined $cidr
+        && $cidr =~ m{\A([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})\z};
+    my ($bits, @o) = ($5, $1, $2, $3, $4);
+    return undef if $bits > 30 || grep { $_ > 255 } @o;
+    my $ip   = ($o[0] << 24) | ($o[1] << 16) | ($o[2] << 8) | $o[3];
+    my $mask = $bits ? (0xFFFFFFFF << (32 - $bits)) & 0xFFFFFFFF : 0;
+    my $gw   = (($ip & $mask) + 1) & 0xFFFFFFFF;
+    return join '.', map { ($gw >> $_) & 255 } 24, 16, 8, 0;
 }
 
 # The address of $server OCP uses (k453): its public IPv4, or under address

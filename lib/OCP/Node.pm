@@ -1057,6 +1057,25 @@ sub _install_kubernetes {
         $params{pod_cidr} = $pod_cidr if defined $pod_cidr && length $pod_cidr;
     }
 
+    # spec.routes (k456): the static routes the node's OS gets, via: gateway
+    # resolved by the provider from spec.network's ip_range. Only a provider
+    # that creates servers in a network has resolve_routes (Hetzner); it
+    # always hands a list, an empty one too, so a node whose routes were
+    # dropped gets them removed on its next install. Other providers pass
+    # nothing, and the install task leaves the machine's routes alone. A
+    # network that cannot be read fails the node before the Rex run.
+    my $provider = $self->provider;
+    if ($provider && $provider->can('resolve_routes')) {
+        my $spec   = $self->cr->{spec} // {};
+        my $routes = eval { $provider->resolve_routes($spec->{routes},
+            network => $spec->{network}, server => $name) };
+        unless ($routes) {
+            $self->_patch_status(phase => 'Failed', message => 'spec.routes: ' . ($@ || "not resolved\n"));
+            return;
+        }
+        $params{routes} = $routes;
+    }
+
     # spec.labels at registration (k211), those the kubelet may set itself;
     # the rest, and every taint, follow through the API once the Node exists
     # (_converge_node_meta).

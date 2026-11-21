@@ -491,6 +491,17 @@ sub bootstrap_control_plane {
             for grep { defined $first_cp->{$_} } qw( network firewalls address );
     }
 
+    # Its static routes (k456), via: gateway resolved to the network's
+    # gateway now, before anything is ordered: a network that is not there
+    # refuses the run here. Always a list on Hetzner, an empty one too -- the
+    # install then removes routes an earlier ocp.yaml had. The ssh and local
+    # providers have no resolve_routes: OCP leaves their machines' routes
+    # alone (validate() refuses routes: on them).
+    my $routes = $provider eq 'hetzner' && $prov->can('resolve_routes')
+        ? $prov->resolve_routes($first_cp->{routes},
+            network => $first_cp->{network}, server => $cp_hostname)
+        : undef;
+
     # Create server (idempotent for Hetzner — checks labels first)
     my $server_info = $prov->create_server(
         name        => $cp_hostname,
@@ -638,6 +649,7 @@ sub bootstrap_control_plane {
             pod_cidr          => $config->pod_cidr,
             cilium_helm_values => $config->cilium_helm_values,
             (defined $node_ip ? (node_ip => $node_ip) : ()),
+            ($routes ? (routes => $routes) : ()),
             # --clean_cilium_residue (k406): clear, rather than refuse, what
             # Cilium left on the machine from an earlier cluster.
             ($self->clean_cilium_residue ? (clean_cilium_residue => 1) : ()),

@@ -110,7 +110,8 @@ subtest 'the known keys are the keys the accessors read' => sub {
 
     my $lib = path("$FindBin::Bin/../lib");
     my %NODE_NETWORK_READERS = map { $_ => 1 }
-        qw( OCP/Node.pm OCP/Cmd/Apply/CR.pm OCP/Provider/Hetzner.pm );
+        qw( OCP/Node.pm OCP/Cmd/Apply/CR.pm OCP/Provider/Hetzner.pm
+            OCP/Cmd/Apply/Bootstrap.pm );
     my (@outside, $seen);
     my $it = $lib->iterator({ recurse => 1 });
     while (my $f = $it->()) {
@@ -121,6 +122,8 @@ subtest 'the known keys are the keys the accessors read' => sub {
         # pool's Hetzner network, an OCPNode's spec.network, a server's
         # private_net entry --, not ocp.yaml's network: section. Each read
         # there is of an entry, a spec or a server, never of the config.
+        # Bootstrap since k456: the first control plane's network:, whose
+        # gateway its routes: go through.
         next if $NODE_NETWORK_READERS{ $f->relative($lib) . '' };
         push @outside, $f->relative($lib) . '' if $f->slurp_utf8 =~ /\{network\}/;
     }

@@ -423,6 +423,7 @@ sub install_server {
     $self->run_task($task,
         _node_ip_param($opts{node_ip}),
         _clean_cilium_residue_param($opts{clean_cilium_residue}),
+        _routes_param($opts{routes}),
         token             => $token,
         version           => $version,
         tls_san           => $tls_san,
@@ -486,6 +487,7 @@ sub install_server {
         cilium_helm_values => { devices => ['enP7s7.30'] },  # optional
         node_ip      => '10.230.30.50',  # optional; or "v4,v6"
         clean_cilium_residue => 1,       # optional; clear Cilium leftovers
+        routes       => [ { to => '10.230.30.0/24', via => '10.200.0.1' } ],  # optional
     );
 
 Install Kubernetes control plane. Detects NVIDIA hardware and installs the
@@ -524,6 +526,12 @@ without a reboot, where the install would refuse the host otherwise
 (L<Rex::Rancher::Uninstall/check_cilium_residue> with C<clean>). It goes to
 the Rexfile as the task parameter of that name, and only when true. What is
 still there afterwards fails the task, asking for a reboot.
+
+C<routes> (k456) is a list of C<{ to =E<gt> CIDR, via =E<gt> IPv4 }>, C<via>
+resolved already (L<OCP::Provider::Hetzner/resolve_routes>). It goes to the
+Rexfile as the task parameter of that name, which writes the routes into the
+node's network configuration before RKE2/K3s start. An empty list removes the
+routes an earlier install set; no list leaves the node's routes alone.
 
 The tls-san (unless C<tls_san> is given) and the returned kubeconfig's
 C<server> are C<advertised_host>. On k3s Cilium reaches the API server at
@@ -618,6 +626,7 @@ sub install_agent {
     $self->run_task($task,
         _node_ip_param($opts{node_ip}),
         _clean_cilium_residue_param($opts{clean_cilium_residue}),
+        _routes_param($opts{routes}),
         server            => $server,
         token             => $token,
         version           => $version,
@@ -647,13 +656,14 @@ sub install_agent {
         token        => '...',
         node_ip      => '10.230.30.50',  # optional; or "v4,v6"
         clean_cilium_residue => 1,       # optional; clear Cilium leftovers
+        routes       => [ { to => '10.230.30.0/24', via => '10.200.0.1' } ],  # optional
     );
 
 Join node to cluster as worker. C<node_ip> is the address the agent
 registers by, as for L</install_server>; omitted or empty, none is passed,
 and the Rexfile has Rex::Rancher take the node-ip from the host's route to
 C<server> (C<node_ip_from_route>), as on every join.
-C<clean_cilium_residue> as for L</install_server>.
+C<clean_cilium_residue> and C<routes> as for L</install_server>.
 
 =cut
 
@@ -672,6 +682,16 @@ sub _node_ip_param {
 sub _clean_cilium_residue_param {
     my ($clean) = @_;
     return $clean ? (clean_cilium_residue => 1) : ();
+}
+
+# routes as a task parameter (k456): a list of { to, via } with via an
+# address already (OCP::Provider::Hetzner::resolve_routes), passed whenever
+# the caller passes a list -- an empty one too: it has the install task
+# remove the routes OCP set on the node before. No list, no parameter, and
+# the install task leaves the node's routes alone.
+sub _routes_param {
+    my ($routes) = @_;
+    return ref $routes eq 'ARRAY' ? (routes => [ map { +{ to => $_->{to}, via => $_->{via} } } @$routes ]) : ();
 }
 
 # The cluster token a control plane is already sealed with, read straight off
