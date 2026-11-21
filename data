@@ -1,0 +1,14 @@
+---
+class: standard
+created: 2026-11-21T00:28:57Z
+id: 459
+priority: low
+status: backlog
+tags:
+- hetzner
+- routes
+title: 'Roll changed routes: out to nodes that are already Ready'
+updated: 2026-11-21T00:28:57Z
+---
+
+Follow-up to k456. routes: reaches a node only at its install: police1 gets it on every ocp apply, but a worker that is already Ready keeps the routes of its install when spec.routes or ocp.yaml routes: change. The live build does not need this (cai-admin 2026-11-21). Possible path: robocop/ocp apply re-runs only the routes part of the Rexfile (_ensure_routes) on Ready nodes whose spec.routes differ from the installed /etc/ocp/routes.
