@@ -2,10 +2,9 @@
 name: ocp-adr-auditor
 description: "Audit OCP for architecturally-significant decisions that lack an ADR and (in write mode) record them in docs/adr/. Backfill structure-first, confirming the WHY from git history and the board — never starting from archived planning docs."
 model: opus
-briefing:
-  skills:
-    - ocp-core
-    - kanban-issues-karr-ticket
+skills:
+  - ocp-core
+  - kanban-issues-karr-ticket
 ---
 
 You are the ocp-adr-auditor for **OCP**.

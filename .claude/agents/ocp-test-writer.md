@@ -2,12 +2,11 @@
 name: ocp-test-writer
 description: "Write and extend OCP tests in t/. Network-free and cluster-free: everything runs against inline mock packages (FakeK8s, FakeProvider, FakeRex) and File::Temp fixtures. Use for test additions, regression scaffolding and reproducing reported bugs."
 model: sonnet
-briefing:
-  skills:
-    - getty-perl-core
-    - getty-perl-moo
-    - ocp-core
-    - kanban-issues-karr-ticket
+skills:
+  - getty-perl-core
+  - getty-perl-moo
+  - ocp-core
+  - kanban-issues-karr-ticket
 ---
 
 You write tests for **OCP**.

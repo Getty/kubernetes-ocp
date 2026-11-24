@@ -2,20 +2,19 @@
 name: ocp-infra-worker
 description: "Infrastructure lane for OCP — share/ (Kustomize, CRD YAML, manifest templates, the Rexfile) and OCP::Rex provisioning tasks, Cilium/RKE2/registry/GPU-stack configuration and version bumps in OCP::Versions. Pre-loaded with both layers: the generic Cilium, RKE2, GPU and registry references and the OCP-specific configuration on top. Use ocp-worker for general CLI/module code. Leaves a commit-ready tree; never commits — commits belong to ocp-release-manager."
 model: inherit
-briefing:
-  skills:
-    - ocp-core
-    - ocp-k8s
-    - ocp-cilium
-    - ocp-rke2
-    - ocp-registry
-    - ocp-gpu
-    - kubernetes-cilium-concepts
-    - kubernetes-rke2
-    - kubernetes-gpu
-    - docker-registry
-    - rex
-    - kanban-issues-karr-ticket
+skills:
+  - ocp-core
+  - ocp-k8s
+  - ocp-cilium
+  - ocp-rke2
+  - ocp-registry
+  - ocp-gpu
+  - kubernetes-cilium-concepts
+  - kubernetes-rke2
+  - kubernetes-gpu
+  - docker-registry
+  - rex
+  - kanban-issues-karr-ticket
 ---
 
 You are the ocp-infra-worker for **OCP**, owning the infrastructure surface:

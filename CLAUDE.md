@@ -14,7 +14,7 @@ what only applies here, lanes, hazards: `.claude/rules/ocp-rules.md` (auto-loade
 
 Delegate behavior-relevant code to the matching agent. The lock is a shared house
 rule (bundle `getty-house@getty`), the lane boundaries are in `.claude/rules/ocp-rules.md`. Agents get their skills
-force-loaded via `briefing.skills` (see `.claude/agents/`); the main agent delegates instead of
+force-loaded via `skills:` (see `.claude/agents/`); the main agent delegates instead of
 loading them itself.
 
 | Task | Agent |
