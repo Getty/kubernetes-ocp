@@ -16,7 +16,7 @@ requires 'MooX::Cmd', '1.001';
 requires 'MooX::Options', '4.103';
 requires 'MooX::Singleton';
 requires 'namespace::clean';
-requires 'Net::Async::Kubernetes', '0.012';
+requires 'Net::Async::Kubernetes', '0.013';
 requires 'Path::Tiny';
 requires 'Rex';
 requires 'Rex::GPU', '0.006';

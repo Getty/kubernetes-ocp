@@ -1,6 +1,7 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Requires Net::Async::Kubernetes 0.013.
     - `ocp apply` now refuses an unknown key under `registry:` or `ssl:` (for
       example `ssl: { emial: … }` or `registry: { cahce: … }`), with a line
       like `ssl.emial: unknown key (must be email)`. Until now such a typo
