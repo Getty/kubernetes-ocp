@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-26T06:14:10Z
+created: 2026-11-06T21:55:25Z
+id: 419
+priority: low
+started: 2026-11-26T05:06:31Z
+status: done
+tags:
+- hetzner
+- robocop
+- destroy
+title: Hetzner 404 on delete_server (server already gone) fails robocop's teardown
+updated: 2026-11-26T06:14:10Z
+---
+
+Found under k406 (pin step, 2026-11-06), not new. A Hetzner 404 on delete_server, the server already gone, still fails robocop's teardown: Node.pm around line 1447 turns it into phase Failed. Since WWW::Hetzner 0.103 the error is a WWW::Hetzner::Error object with status and code (404 not_found), so OCP could recognise an already-deleted server as done instead of parsing text. Using the error object was out of scope for the release round. Done = a server Hetzner reports as not found counts as deleted on the teardown paths (robocop, ocp node rm, ocp destroy), with a test against a fake raising the real error object.
+
+2026-11-26 05:24 Done (uncommitted). Fix sits in the one place all three teardown paths share: OCP::Provider::Hetzner::delete_server (robocop and ocp node rm via OCP::Node->teardown, ocp destroy via its own loop). A delete answered by a WWW::Hetzner::Error with status 404 AND code not_found counts as deleted (host key still forgotten); every other refusal dies masked as before, incl. a 404 with another or no code (a proxy page). No change to OCP::Node or OCP::Cmd::Destroy. Lane note: Provider/Hetzner.pm is provider-worker's lane; done here because the card was dispatched to state and it is the minimal single-point fix. Files: lib/OCP/Provider/Hetzner.pm (delete_server + _server_gone, Scalar::Util blessed, POD), t/419-hetzner-delete-gone-server.t (new; real WWW::Hetzner client, fake wire raising the real error object; adapter, OCP::Node teardown, ocp destroy; reproduced red first). Verified: make test on t/419 t/373 green in Docker, plus t/16 t/19 t/168 t/236 t/396 via docker prove.
