@@ -1,0 +1,29 @@
+---
+claimed_at: 2026-11-26T10:00:23Z
+claimed_by: ocp-k440
+class: standard
+completed: 2026-11-26T09:59:50Z
+created: 2026-11-07T03:38:55Z
+id: 440
+priority: low
+started: 2026-11-26T08:43:16Z
+status: done
+tags:
+- state
+- drift
+- registry
+- docs
+title: 'registry.local DNS after k393: two server blocks with the same key unreported;
+  ADR 0022 and skill wording on snippets'
+updated: 2026-11-26T10:00:23Z
+---
+
+Found by k393, not fixed there. 1. Two server blocks with the same key (two .:53, or a coredns-custom snippet .:53 next to the Corefile own) are refused by CoreDNS (already defined). OCP::Corefile block_for takes the first (t/338 asserts that tie rule) and neither writer nor probe reports it; the other reading of a doubled root block. Lane: ocp-state-worker (writer side apply). 2. ADR 0022 and the ocp-registry skill say a snippet mapping the name to the control plane counts as solved, no drift; since k393 that holds only for a Corefile CoreDNS loads (a doubled hosts in any block wins). One sentence in the ADR amendment and the skill. Lane: ocp-adr-auditor / doc. 3. The k348 wording does not resolve ... CoreDNS refuses the Corefile is strictly true only after a restart; on reload CoreDNS keeps serving the previous config. Wording only.
+
+2026-11-26 08:47 adr-auditor (2026-11-26): ADR 0022 amendment + ocp-registry skill carry the k393 condition (a snippet counts as solved only when CoreDNS can load the Corefile; exception: a doubled root block an older OCP added, removed by apply, probe says missing) and the reload/restart distinction (from CoreDNS reload plugin docs, not run here). Point 3 wording was only in lib/, done by the state worker.
+
+2026-11-26 08:50 Point 1 + point 3 (lib wording) done, uncommitted in worktree agent-abfb807545ae2e65f. OCP::Corefile gains listener/bind_addresses/doubled_key: the first key two server blocks share (scheme/zone/port normalised, any block incl. coredns-custom imports and off-port blocks, a header listing a key twice; blocks binding disjoint addresses exempt). Writer (Apply::Network configure_registry_dns) dies before writing, naming key and both blocks; probe (Drift registry_dns_drift) returns a spec entry with manual step. Shared helpers OCP::Drift::corefile_key_twice / corefile_rejected. Point 3: every refuses -> rejects in lib, messages now say a running CoreDNS keeps serving its previous Corefile, a restarted one does not start; probe head is 'does not resolve from the CoreDNS Corefile'. block_for tie rule (t/338) unchanged. Tests: new t/440-registry-dns-doubled-key.t (red on unfixed lib: verified), t/338 asserts the new wording; make test TAG=k440 over t/440 t/393 t/338 t/39 t/268 t/269 t/328 t/312 t/38 t/381: PASS (10 files, 228 tests). Full suite not run (parallel agents).
+
+Committed 39a1d2e (lib), 95f541f (comment), 12d9aba and ce487f1 (ADR 0022); binding suite green on main ce487f1 (340 files, 4789 tests)
+
+Committed 39a1d2e (lib), 95f541f (comment), 12d9aba and ce487f1 (ADR 0022); binding suite green on main ce487f1 (340 files, 4789 tests)
