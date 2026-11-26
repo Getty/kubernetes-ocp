@@ -1,0 +1,15 @@
+---
+class: standard
+created: 2026-11-26T18:22:38Z
+id: 476
+priority: low
+status: backlog
+tags:
+- drift
+- decision
+title: 'Decide: spec_drift reads a status nodes: list nothing writes any more — remove
+  it or read the OCPNode CR'
+updated: 2026-11-26T18:22:38Z
+---
+
+Found under k475. OCP::Drift spec_drift compares the pinned public_ip with the nodes: list in .ocp/status.yaml (Config->nodes_status). Nothing in lib/ or bin/ writes that list since 8f2ce44 (CR-first apply): Config->save_node_status has no caller. So spec_drift reports nothing in any address mode. Options: remove spec_drift and save_node_status/nodes_status, or have it compare against the control plane OCPNode status.publicIP, choosing the address with uses_private_address. t/475-spec-drift-private-address.t guards the current state and fails if the list is written again.
