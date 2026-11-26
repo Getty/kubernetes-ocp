@@ -155,7 +155,7 @@ subtest 'there, the apply changed the spec: updated, waited for the new generati
 
 subtest 'a read before the apply that fails: no verdict, no apply' => sub {
     my $r = run_gateway([ 403, 'forbidden' ]);
-    is $r->{died}, "GET $GW_PATH failed: HTTP 403 forbidden\n", 'dies with the cause';
+    is $r->{died}, "GET $GW_PATH failed: The cluster API denied the request (403): forbidden\n", 'dies with the cause';
     is $r->{out}, '', 'neither created nor up to date';
     is scalar @{ $r->{applied} }, 0, 'nothing applied';
 };

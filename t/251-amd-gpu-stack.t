@@ -628,6 +628,17 @@ sub api_error {
         body    => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}),
     );
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
 
 subtest 'k269: an unreadable DaemonSet of a component to remove: it fails, the others carry on' => sub {
@@ -641,7 +652,7 @@ subtest 'k269: an unreadable DaemonSet of a component to remove: it fails, the o
         my $res = run_step($api);
         is_deeply $res->{fns}, [qw(deploy_amd_device_plugin deploy_amd_node_labeller)],
             "$code: no removal, and the plugin and the labeller still deployed";
-        like $res->{err}, qr{\[!!\] AMD GPU DRA driver setup failed: could not read DaemonSet kube-system/\Q$DS{dra}\E: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+        like $res->{err}, qr{\[!!\] AMD GPU DRA driver setup failed: could not read DaemonSet kube-system/\Q$DS{dra}\E: \Q${\ api_said($code, $reason)}\E},
             "$code: the failure, with its cause, on STDERR";
         is_deeply $res->{r}{failed}, ['AMD GPU DRA driver'], "$code: counted as failed";
         ok $api->{ds}{ $DS{dra} }, "$code: the DaemonSet is left in the cluster";
@@ -681,7 +692,7 @@ subtest 'k269: a recorded component whose DaemonSet cannot be read is not redepl
         my $res = run_step($api, dir => $first->{dir});
         is_deeply $res->{fns}, [], "$code: no deploy for a DaemonSet nobody could see";
         unlike $res->{out}, qr/device plugin (?:redeployed|updated)/, "$code: neither restored nor updated";
-        like $res->{err}, qr{\[!!\] AMD GPU device plugin setup failed: could not read DaemonSet kube-system/\Q$DS{device_plugin}\E: Kubernetes API error \(get\): $code },
+        like $res->{err}, qr{\[!!\] AMD GPU device plugin setup failed: could not read DaemonSet kube-system/\Q$DS{device_plugin}\E: \Q${\ api_said($code, $reason)}\E},
             "$code: the failure, with its cause";
         is_deeply $res->{r}{failed}, ['AMD GPU device plugin'], "$code: counted as failed";
         like $res->{out}, qr/\[ok\] AMD GPU node labeller up to date/, "$code: the labeller carries on";
@@ -695,7 +706,7 @@ subtest 'k269: the readiness wait names a read it could not make, not "not found
         my $api = AmdApi->new(fail_after_deploy => { labeller => api_error($code, $reason) });
         $api->node('synapse', $MARKER => 'true');
         my $res = run_step($api);
-        like $res->{err}, qr{AMD GPU node labeller not ready after 300s: could not read DaemonSet kube-system/\Q$DS{labeller}\E: Kubernetes API error \(get\): $code },
+        like $res->{err}, qr{AMD GPU node labeller not ready after 300s: could not read DaemonSet kube-system/\Q$DS{labeller}\E: \Q${\ api_said($code, $reason)}\E},
             "$code: DaemonSet -- what could not be read, and why";
         unlike $res->{err}, qr/not found/, "$code: DaemonSet -- not called not found";
         is $res->{waited}, OCP::Cmd::Apply::AMDGPU::ready_timeout(), "$code: read again for the whole budget";
@@ -705,13 +716,13 @@ subtest 'k269: the readiness wait names a read it could not make, not "not found
         $api->node('synapse', $MARKER => 'true');
         $api->{get_fails}{'Node/synapse'} = api_error($code, $reason);
         $res = run_step($api, gpu => "gpu:\n  amd:\n    labeller: false\n");
-        like $res->{err}, qr{AMD GPU device plugin not ready after 300s: could not read Node 'synapse': Kubernetes API error \(get\): $code },
+        like $res->{err}, qr{AMD GPU device plugin not ready after 300s: could not read Node 'synapse': \Q${\ api_said($code, $reason)}\E},
             "$code: Node -- not called a node without the GPU";
 
         $api = AmdApi->new(slices_status => $code);
         $api->node('synapse', $MARKER => 'true');
         $res = run_step($api, gpu => "gpu:\n  amd:\n    labeller: false\n    allocation: dra\n");
-        like $res->{err}, qr{AMD GPU DRA driver not ready after 300s: could not read ResourceSlices: GET /apis/resource\.k8s\.io/v1/resourceslices failed: HTTP $code slices refused},
+        like $res->{err}, qr{AMD GPU DRA driver not ready after 300s: could not read ResourceSlices: GET /apis/resource\.k8s\.io/v1/resourceslices failed: \Q${\ api_said($code)}\E: slices refused},
             "$code: ResourceSlices -- not called a node without a slice";
     }
 
@@ -1014,7 +1025,7 @@ subtest 'k277 after the worker join: a read that fails is not "no AMD node"' => 
             $api->{get_fails} = { "$kind/synapse" => api_error($code, $reason) };
             $res = run_step($api, dir => $dir, apply => $first->{apply}, after_join => $joined);
             like $res->{err},
-                qr{\A  \[!!\] AMD GPU stack not checked after the worker join: could not read \Q$what\E: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+                qr{\A  \[!!\] AMD GPU stack not checked after the worker join: could not read \Q$what\E: \Q${\ api_said($code, $reason)}\E\n\z},
                 "$kind $code: [!!] with the cause, on STDERR";
             is_deeply $res->{r}, ['AMD GPU stack'], "$kind $code: counted";
             is_deeply $res->{fns}, [], "$kind $code: nothing deployed on a guess";
@@ -1211,7 +1222,7 @@ subtest 'k261: a read the dry run cannot make -- could not be checked, its cause
         untouched($dry, "$code to remove");
         like $dry->{out}, qr/^  \[amd\] AMD GPU DRA driver could not be checked$/m, "$code: said on STDOUT";
         unlike $dry->{out}, qr/DRA driver (?:is|was|has)\b/, "$code: neither there nor gone";
-        like $dry->{err}, qr{\A  \[!!\] AMD GPU DRA driver not checked: could not read DaemonSet kube-system/\Q$DS{dra}\E: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+        like $dry->{err}, qr{\A  \[!!\] AMD GPU DRA driver not checked: could not read DaemonSet kube-system/\Q$DS{dra}\E: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: the cause, once, on STDERR";
         my @e = grep { $_->{kind} eq 'error' } @{ $dry->{r} };
         is_deeply [ map { $_->{label} } @e ], ['AMD GPU DRA driver'], "$code: one error entry";

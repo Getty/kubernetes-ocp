@@ -5,6 +5,7 @@ use strict;
 use warnings;
 
 use JSON::MaybeXS qw( decode_json );
+use Kubernetes::REST::APIError;
 use Path::Tiny qw(path);
 use YAML::XS ();
 
@@ -22,9 +23,11 @@ api from a kubeconfig string (through L<OCP::Role::Cmd/connect_cluster_api>, so
 the command handed in consumes that role), server-side apply a hash, parse and
 apply a multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path,
 and the reads a readiness wait and a single lookup make, which tell a 404 from
-a read that failed. C<read_or_why>, C<read_or_absent> and C<crd_get> say the
-cause of a failed read in one line, without a Perl source location
-(L<OCP::ErrorLine/one_line>), so whatever prints their words prints none.
+a read that failed. C<read_or_why>, C<read_or_absent>, C<crd_get>,
+C<resource_exists> and C<poll_deployment_ready> say the cause of a failed read
+in one line, without a Perl source location, an API error as the line naming
+the server and the reason that C<ocp status> and C<ocp destroy> say
+(L<OCP::ErrorLine/cause_line>), so whatever prints their words prints none.
 L<OCP::Cmd::Apply> keeps a C<_method> thin forwarder for C<api> (as
 C<_k8s_api>), C<server_side_apply>, C<server_side_apply_all>,
 C<apply_yaml_string>, C<apply_yaml_file>, C<poll_deployment_ready>,
@@ -199,8 +202,9 @@ sub poll_deployment_ready {
         $self->wait_seconds(5);
     }
     if ($read_err) {
-        # In one line, without a Perl source location (k435).
-        my $reason = OCP::ErrorLine::one_line($read_err);
+        # In one line, without a Perl source location (k435); an API error
+        # as status and destroy say it (k437).
+        my $reason = OCP::ErrorLine::cause_line($read_err);
         die "Deployment $namespace/$name not ready within ${timeout}s; the last read failed: $reason\n";
     }
     return 0;
@@ -216,8 +220,9 @@ sub resource_exists {
     my $obj = eval { $api->get($kind, $name, %opts) };
     if (my $err = $@) {
         return 0 if $err =~ /\b404\b/;
-        # In one line, without a Perl source location (k435).
-        my $reason = OCP::ErrorLine::one_line($err);
+        # In one line, without a Perl source location (k435); an API error
+        # as status and destroy say it (k437).
+        my $reason = OCP::ErrorLine::cause_line($err);
         my $where = join '/', grep { defined } $opts{namespace}, $name;
         die "could not read $kind $where: $reason\n";
     }
@@ -236,49 +241,58 @@ sub resource_exists {
 # flattened as it came, every [WARN] and [!!] that prints these words
 # printed both. one_line is handed the object, not its text, so a 599 is
 # said once (k395).
+#
+# k437: an API error is said as ocp status, drift and destroy say it --
+# OCP::ErrorLine::cause_line, which is api_error_line for an APIError: "The
+# cluster API at <server> denied the request (403 Forbidden): <message>"
+# instead of "Kubernetes API error (get): 403" and the raw JSON body.
 sub read_or_why {
     my ($what, $read) = @_;
     my $object = eval { $read->() };
     my $err = $@ or return ($object, undef);
     return (undef, "$err" =~ /\b404\b/ ? "$what not found"
-        : "could not read $what: ".OCP::ErrorLine::one_line($err));
+        : "could not read $what: ".OCP::ErrorLine::cause_line($err));
 }
 
 # A read asked once: what $read returns, or undef for a 404 -- and only for
 # one. Any other failure says nothing about the object and dies "could not
 # read <what>: <cause>"; the step it is part of reports it (k277). A wait
-# that reads again takes read_or_why. The cause in one line, as there (k403).
+# that reads again takes read_or_why. The cause in one line, as there (k403,
+# k437).
 sub read_or_absent {
     my ($what, $read) = @_;
     my $object = eval { $read->() };
     my $err = $@ or return $object;
     return undef if "$err" =~ /\b404\b/;
-    die "could not read $what: ".OCP::ErrorLine::one_line($err)."\n";
+    die "could not read $what: ".OCP::ErrorLine::cause_line($err)."\n";
 }
 
 # A raw GET of $resource_path (a CRD's object has no IO::K8s class OCP
 # reads), decoded. undef only for a 404; a failed request, any other error
 # status and a body that is no JSON die with the cause (k269), in one line
 # without a Perl source location (k403): a request that died, LWP's text in
-# a 599's body and decode_json's complaint each carry one.
+# a 599's body and decode_json's complaint each carry one. An error status
+# is said as the APIError the typed calls die with would be (k437): the raw
+# transport hands back the response, which is made one here.
 sub crd_get {
     my ($self, $api, $resource_path) = @_;
     my $response = eval { $api->_request('GET', $resource_path) };
     unless ($response) {
         die "GET $resource_path failed: "
-            .OCP::ErrorLine::one_line($@, empty => 'no response')."\n";
+            .OCP::ErrorLine::cause_line($@, empty => 'no response')."\n";
     }
     my $status = $response->status;
     return undef if $status == 404;
     if ($status >= 400) {
-        # A 599 is no answer: its body is LWP's text, which says the reason,
-        # a blank line, then the reason again with LWP's location. Its first
-        # line stands for it, as OCP::ErrorLine says a 599 (k436).
-        my $content = eval { $response->content } // '';
-        ($content) = $content =~ /^(.*\S.*)$/m if $status == 599;
-        my $body = OCP::ErrorLine::one_line($content, empty => '');
-        $body = substr($body, 0, 400);
-        die "GET $resource_path failed: HTTP $status $body\n";
+        # api_error_line says a 599 by the first line of LWP's text, which
+        # says its reason twice (k436), and an answer by its Status reason
+        # and message.
+        my $err = Kubernetes::REST::APIError->new(
+            code    => $status,
+            context => 'get',
+            body    => eval { $response->content } // '',
+        );
+        die "GET $resource_path failed: ".OCP::ErrorLine::cause_line($err)."\n";
     }
     my $object = eval { decode_json($response->content) };
     unless ($object) {

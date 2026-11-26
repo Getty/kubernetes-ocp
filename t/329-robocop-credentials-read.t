@@ -68,11 +68,22 @@ sub api_error {
     );
 }
 
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
+
 # The reads that are no verdict on the Secret: each with what its cause
 # reads like in the message.
 my @REFUSALS = (
-    [ '403', api_error(403, 'Forbidden'),     qr/Kubernetes API error \(get\): 403 .*"reason":"Forbidden"/ ],
-    [ '500', api_error(500, 'InternalError'), qr/Kubernetes API error \(get\): 500 .*"reason":"InternalError"/ ],
+    [ '403', api_error(403, 'Forbidden'),     qr/\Q${\ api_said(403, 'Forbidden')}\E/ ],
+    [ '500', api_error(500, 'InternalError'), qr/\Q${\ api_said(500, 'InternalError')}\E/ ],
     [ 'transport', "Connection refused\n",    qr/Connection refused/ ],
 );
 
@@ -308,7 +319,7 @@ subtest 'apply, operator identity: a Secret that cannot be read is not said to b
     });
     is $r->{rv}{state}, 'failed', 'the robocop step fails';
     unlike $r->{err}, qr/does not exist/, 'not told the Secret does not exist';
-    like $r->{err}, qr{could not read Secret ocp-system/robocop-credentials: Kubernetes API error \(get\): 403 },
+    like $r->{err}, qr{could not read Secret ocp-system/robocop-credentials: \Q${\ api_said(403, 'Forbidden')}\E},
         'told it could not be read, and why';
     is_deeply $api->ensured, [], 'nothing written';
 };

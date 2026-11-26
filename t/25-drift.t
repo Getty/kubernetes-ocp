@@ -715,7 +715,9 @@ for my $optional (@OPTIONAL) {
         ok(!$d->{self_healing}, "$label answering $code: not one a plain apply closes");
         like($d->{message}, qr/^\Q$label\E: could not read \Q$kind $where\E, drift unknown: /,
             "$label answering $code: the message names the object and says drift is unknown");
-        like($d->{message}, qr/\b$code\b.*\Q$reason\E/,
+        # api_error_line says the reason in words (k437).
+        (my $words = $reason) =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+        like($d->{message}, qr/\b$code\b.*\Q$words\E/,
             "$label answering $code: and carries the API error");
         is(scalar @warn, 1, "$label answering $code: one diagnosis on stderr");
         like($warn[0], qr/component_drift: get \Q$kind $where\E failed: .*\b$code\b/,

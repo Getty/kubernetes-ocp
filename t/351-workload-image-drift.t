@@ -78,6 +78,17 @@ sub api_error {
     return Kubernetes::REST::APIError->new(code => $code, context => 'get',
         body => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}));
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
 
 {
@@ -371,7 +382,7 @@ subtest 'k351: a workload whose image cannot be read is no verdict' => sub {
             $api->{refuse}{ $WL{$c}{key} } = { after => 1, error => api_error($code, $reason) };
             my $res = run_step($api, $dir, $c);
             (my $where = $WL{$c}{key}) =~ s{\A\w+/}{};
-            like $res->{died}, qr{\Acould not read \Q$WL{$c}{kind}\E \Q$where\E: Kubernetes API error \(get\): $code .*"reason":"$reason"}s,
+            like $res->{died}, qr{\Acould not read \Q$WL{$c}{kind}\E \Q$where\E: \Q${\ api_said($code, $reason)}\E}s,
                 "$c, $code: the step dies with the cause";
             is_deeply $res->{patches}, [], "$c, $code: and applies nothing it could not see";
             is_deeply $res->{record}, $first->{record}, "$c, $code: the record as it was";

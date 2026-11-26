@@ -397,7 +397,7 @@ sub report_gateway_nodes {
     };
     if (my $err = $@) {
         print STDERR '  [!!] Gateway host network: the nodes were not read, so which of them carry '
-            . "$wanted is unknown: " . OCP::ErrorLine::one_line($err) . "\n";
+            . "$wanted is unknown: " . OCP::ErrorLine::cause_line($err) . "\n";
         return;
     }
 

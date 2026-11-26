@@ -73,6 +73,17 @@ sub api_error {
     return Kubernetes::REST::APIError->new(code => $code, context => 'get',
         body => qq({"kind":"Status","status":"Failure","reason":"$reason","code":$code}));
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
 
 my $NFD_ONLY = { 'feature.node.kubernetes.io/system-os_release.ID' => 'ubuntu' };
@@ -243,7 +254,7 @@ subtest 'k277: the OCPNode -- a 404 leaves its name, a refusal fails the check' 
         my ($code, $reason) = @$refusal;
         $r = run_after_join(first => 'skipped', names => ['crag'], labels => { crag => $NFD_GPU },
             fails => { 'OCPNode/crag' => api_error($code, $reason) });
-        like $r->{died}, qr{\Acould not read OCPNode ocp-system/crag: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+        like $r->{died}, qr{\Acould not read OCPNode ocp-system/crag: \Q${\ api_said($code, $reason)}\E},
             "$code: dies with the cause (gpu_after_join says it, [!!], counted)";
         ok !$r->{calls}, "$code: no check on a guessed name";
         ok !(grep { $_ eq 'Node/crag' } @{ $r->{apply}{api}{gets} }), "$code: no Node read under the OCPNode's name";
@@ -264,7 +275,7 @@ subtest 'k277: the Node -- a refusal is no worker without a GPU' => sub {
             fails => { 'Node/crag' => api_error($code, $reason) });
         is $r->{died}, '', "$code throughout: no death";
         is $r->{apply}{waited}, 30, "$code throughout: read again for the whole budget";
-        like $r->{err}, qr{^  \[WARN\] NFD has not labelled crag after 30s; checking with what is there\n {9}the last read failed: could not read Node 'crag': Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+        like $r->{err}, qr{^  \[WARN\] NFD has not labelled crag after 30s; checking with what is there\n {9}the last read failed: could not read Node 'crag': \Q${\ api_said($code, $reason)}\E\n\z},
             "$code throughout: the last failed read named, on STDERR";
         unlike $r->{out}, qr/No NVIDIA GPU/, "$code throughout: not called GPU-less";
         is $r->{calls}, 1, "$code throughout: checked, setup_gpu_operator decides on what it sees";

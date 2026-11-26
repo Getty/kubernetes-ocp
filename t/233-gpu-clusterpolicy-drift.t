@@ -188,6 +188,17 @@ sub api_error {
     return Kubernetes::REST::APIError->new(code => $code, context => 'get',
         body => qq({"kind":"Status","status":"Failure","reason":"$reason","code":$code}));
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my $DENIED  = qq({"kind":"Status","status":"Failure","reason":"Forbidden","code":403});
 my $MISSING = qq({"kind":"Status","status":"Failure","reason":"NotFound","code":404});
 my $LIVE    = JSON::PP::encode_json(live());
@@ -222,9 +233,9 @@ subtest 'k276: the operator Deployment -- a 404 is no operator, a 403 is not kno
     is_deeply kinds($denied), ['error'], '403: one error entry, not "no operator"';
     is $denied->{found}[0]{label}, 'GPU Operator', '403: named';
     like $denied->{out},
-        qr{^  \[drift\] could not be checked: GPU Operator: could not read Deployment gpu-operator/gpu-operator: Kubernetes API error \(get\): 403 }m,
+        qr{^  \[drift\] could not be checked: GPU Operator: could not read Deployment gpu-operator/gpu-operator: \Q${\ api_said(403, 'Forbidden')}\E$}m,
         '403: could not be checked, with the cause';
-    like $denied->{err}, qr{^  \[!!\] GPU Operator not checked: could not read Deployment gpu-operator/gpu-operator: .*"Forbidden"}m,
+    like $denied->{err}, qr{^  \[!!\] GPU Operator not checked: could not read Deployment gpu-operator/gpu-operator: \Q${\ api_said(403, 'Forbidden')}\E$}m,
         '403: the cause on STDERR';
     is count($denied->{err}, qr/Forbidden/), 1, '403: once';
     is $denied->{gets}, 0, '403: nothing read past it';
@@ -249,9 +260,9 @@ subtest 'k276/k277: the ClusterPolicy -- a 404 is missing, a 403 is not known' =
     is_deeply kinds($denied), ['error'], '403: one error entry, not "no differences"';
     is $denied->{found}[0]{label}, 'GPU Operator ClusterPolicy', '403: named';
     like $denied->{out},
-        qr{^  \[drift\] could not be checked: GPU Operator ClusterPolicy: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+        qr{^  \[drift\] could not be checked: GPU Operator ClusterPolicy: GET \Q$CP_PATH\E failed: \Q${\ api_said(403, 'Forbidden')}\E$}m,
         '403: could not be checked, with the cause';
-    like $denied->{err}, qr{^  \[!!\] GPU Operator ClusterPolicy not checked: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+    like $denied->{err}, qr{^  \[!!\] GPU Operator ClusterPolicy not checked: GET \Q$CP_PATH\E failed: \Q${\ api_said(403, 'Forbidden')}\E$}m,
         '403: the cause on STDERR';
     is count($denied->{err}, qr/Forbidden/), 1, '403: once';
     is $denied->{gets}, 1, '403: not asked again for the gpu.toolkit warning';
@@ -278,9 +289,9 @@ subtest 'k276: the gpu.toolkit read -- a 404 is no ClusterPolicy, a 403 is not k
     is_deeply kinds($denied), ['error'], '403: one error entry, not "no ClusterPolicy"';
     is $denied->{found}[0]{label}, 'gpu.toolkit switch', '403: named';
     like $denied->{out},
-        qr{^  \[drift\] could not be checked: gpu\.toolkit switch: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+        qr{^  \[drift\] could not be checked: gpu\.toolkit switch: GET \Q$CP_PATH\E failed: \Q${\ api_said(403, 'Forbidden')}\E$}m,
         '403: could not be checked, with the cause';
-    like $denied->{err}, qr{^  \[!!\] gpu\.toolkit switch not checked: GET \Q$CP_PATH\E failed: HTTP 403 }m,
+    like $denied->{err}, qr{^  \[!!\] gpu\.toolkit switch not checked: GET \Q$CP_PATH\E failed: \Q${\ api_said(403, 'Forbidden')}\E$}m,
         '403: the cause on STDERR';
     is count($denied->{err}, qr/Forbidden/), 1, '403: once';
     unlike $denied->{out} . $denied->{err}, qr/\[WARN\]/, '403: no warning made up';

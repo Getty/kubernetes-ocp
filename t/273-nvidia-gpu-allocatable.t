@@ -68,6 +68,17 @@ sub api_error {
     );
 }
 
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
+
 {
     package FakeResponse;
     sub new     { my ($c, $status, $content) = @_; bless { status => $status, content => $content }, $c }
@@ -299,13 +310,13 @@ subtest 'apply k269: a failed read is no verdict; the last one is the why' => su
     for my $code (403, 500) {
         my $r = gpu_step(nodes => { crag => [ api_error($code, 'Refused') ] });
         is $r->{reads}{crag}, $READS, "$code: read again for the whole budget";
-        like $r->{died}, qr/\A\Q$MISS\Ecould not read Node 'crag': Kubernetes API error \(get\): $code .*"reason":"Refused"/,
+        like $r->{died}, qr/\A\Q$MISS\Ecould not read Node 'crag': \Q${\ api_said($code, 'Refused')}\E\n?\z/,
             "$code: the cause, not a node without a GPU";
         unlike $r->{died}, qr/not found|shows no/, "$code: neither absent nor GPU-less";
     }
 
     my $r = gpu_step(nodes => { crag => [ api_error(500, 'Blip'), api_error(403, 'Forbidden') ] });
-    like $r->{died}, qr/: 403 .*Forbidden/, 'the last failed read is named';
+    like $r->{died}, qr/\(403 Forbidden\)/, 'the last failed read is named';
     unlike $r->{died}, qr/Blip/, 'not an earlier one';
 
     $r = gpu_step(nodes => { crag => [ "404 Node/crag not found\n" ] });
@@ -547,7 +558,7 @@ subtest 'node add --gpu k285: allocatable 0 is said with why and ocp apply; the 
 subtest 'node add --gpu k269: an unreadable node is said as that' => sub {
     my $r = run_add($ONE, api_error(403, 'Forbidden'));
     is $r->{rv}, 0, 'exit 0';
-    like $r->{err}, qr/\A\Q$NOT_ENSURED\Ecould not read Node 'brain': Kubernetes API error \(get\): 403 .*\n\Q$WAY_ON\E\z/s,
+    like $r->{err}, qr/\A\Q$NOT_ENSURED\Ecould not read Node 'brain': \Q${\ api_said(403, 'Forbidden')}\E\n\Q$WAY_ON\E\z/s,
         'the cause of the last read, then ocp apply';
 };
 

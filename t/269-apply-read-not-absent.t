@@ -49,6 +49,17 @@ sub api_error {
         body    => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}),
     );
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
 
 {
@@ -97,11 +108,11 @@ subtest 'resource_exists: only a 404 is absent' => sub {
         $api->{objects}{'Namespace/-/ocp-system'}          = api_error($code, $reason);
         my $rv = eval { OCP::Cmd::Apply::K8s::resource_exists({}, $api, 'Deployment', 'ocp-cache',
             namespace => 'ocp-system') };
-        like $@, qr{\Acould not read Deployment ocp-system/ocp-cache: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+        like $@, qr{\Acould not read Deployment ocp-system/ocp-cache: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: dies, naming the object and the cause";
         ok !defined $rv, "$code: no answer";
         eval { OCP::Cmd::Apply::K8s::resource_exists({}, $api, 'Namespace', 'ocp-system') };
-        like $@, qr{\Acould not read Namespace ocp-system: Kubernetes API error \(get\): $code }, "$code: cluster-scoped";
+        like $@, qr{\Acould not read Namespace ocp-system: \Q${\ api_said($code, $reason)}\E\n\z}, "$code: cluster-scoped";
     }
 
     no warnings 'redefine';
@@ -127,7 +138,7 @@ subtest 'crd_get: undef only for a 404' => sub {
     for my $code (403, 500) {
         $api->{responses}{$path} = [ [ $code, "{\"reason\":\"refused\",\n \"code\":$code}" ] ];
         my $rv = eval { OCP::Cmd::Apply::K8s::crd_get({}, $api, $path) };
-        is $@, qq{GET $path failed: HTTP $code {"reason":"refused", "code":$code}\n}, "$code: dies with status and body";
+        is $@, qq{GET $path failed: ${\ api_said($code)}: {"reason":"refused", "code":$code}\n}, "$code: dies with status and body";
         ok !defined $rv, "$code: no answer";
     }
 
@@ -142,7 +153,7 @@ subtest 'crd_get: undef only for a 404' => sub {
     my $apply = OCP::Cmd::Apply->new(command_chain => [ bless {}, 'FakeOCP' ]);
     $api->{responses}{$path} = [ [ 403, 'forbidden' ] ];
     eval { $apply->_crd_get($api, $path) };
-    like $@, qr{\AGET \Q$path\E failed: HTTP 403 forbidden}, 'the Apply forwarder passes the death on';
+    like $@, qr{\AGET \Q$path\E failed: \Q${\ api_said(403)}\E: forbidden}, 'the Apply forwarder passes the death on';
 };
 
 #
@@ -191,7 +202,7 @@ subtest 'Registry: an unreadable registry is neither running nor gone' => sub {
         my ($code, $reason) = @$refusal;
         $api->{objects}{'Deployment/ocp-system/ocp-cache'} = api_error($code, $reason);
         my $rv = eval { OCP::Cmd::Apply::Registry::running($apply, FakeConfig->new) };
-        like $@, qr{\Acould not read Deployment ocp-system/ocp-cache: Kubernetes API error \(get\): $code },
+        like $@, qr{\Acould not read Deployment ocp-system/ocp-cache: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: dies with the cause, so setup reports it instead of redeploying";
         ok !defined $rv, "$code: no verdict";
     }
@@ -243,7 +254,7 @@ subtest 'GPU Operator: the ClusterPolicy state wait reads again, then says why i
         is $res->{outcome}, 'deployed', "$code: deployed";
         is $res->{reads}, 12, "$code: read for the whole wait";
         is $res->{err}, "  [WARN] ClusterPolicy state unknown: could not read ClusterPolicy gpu-cluster-policy:"
-            . " GET $CP_PATH failed: HTTP $code refused\n", "$code: the cause, on STDERR";
+            . " GET $CP_PATH failed: ${\ api_said($code)}: refused\n", "$code: the cause, on STDERR";
         unlike $res->{out}, qr/may still be reconciling/, "$code: not called a state it never saw";
     }
 
@@ -279,7 +290,7 @@ my $GW_THERE = [ 200, '{"metadata":{"generation":1}}' ];
 subtest 'Cilium Gateway: a read before the apply that fails dies with its cause' => sub {
     for my $code (403, 500) {
         my $res = gateway_setup([ $code, 'refused' ]);
-        is $res->{died}, "GET $GW_PATH failed: HTTP $code refused\n", "$code: the death names the cause";
+        is $res->{died}, "GET $GW_PATH failed: ${\ api_said($code)}: refused\n", "$code: the death names the cause";
         is $res->{reads}, 1, "$code: not polled";
         is $res->{applied}, 0, "$code: and not applied as if there were none";
         unlike $res->{out}, qr/Creating Cilium Gateway/, "$code: not called missing";
@@ -291,7 +302,7 @@ subtest 'Cilium Gateway: the Accepted wait reads again, then dies with the last 
         my $res = gateway_setup($GW_THERE, $GW_THERE, [ $code, 'refused' ]);
         is $res->{reads}, 2 + 30, "$code: read for the whole wait";
         is $res->{died}, "Gateway 'cilium-gateway' did not become Accepted within 60s;"
-            . " the last read failed: GET $GW_PATH failed: HTTP $code refused\n", "$code: the death names the cause";
+            . " the last read failed: GET $GW_PATH failed: ${\ api_said($code)}: refused\n", "$code: the death names the cause";
     }
 
     my $res = gateway_setup([ 404, '{}' ]);
@@ -320,7 +331,7 @@ subtest 'k277 read_or_absent: the object, undef for a 404, a death for the rest'
     for my $refusal (@REFUSALS) {
         my ($code, $reason) = @$refusal;
         my $rv = eval { $read->('ConfigMap kube-system/coredns', sub { die api_error($code, $reason) }) };
-        like $@, qr{\Acould not read ConfigMap kube-system/coredns: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+        like $@, qr{\Acould not read ConfigMap kube-system/coredns: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: dies, naming what and why";
         ok !defined $rv, "$code: no answer";
     }
@@ -339,7 +350,7 @@ subtest 'k277 GPU Operator: a Node list that fails is not "no GPU nodes"' => sub
         local *GpuApi::list = sub { die api_error($code, $reason) };
         my $res = gpu_setup([ 200, '{"status":{"state":"ready"}}' ]);
         like $res->{died},
-            qr{\Acould not read Nodes labelled feature\.node\.kubernetes\.io/pci-0300_10de\.present=true: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+            qr{\Acould not read Nodes labelled feature\.node\.kubernetes\.io/pci-0300_10de\.present=true: \Q${\ api_said($code, $reason)}\E},
             "$code: dies with the cause, so the step is [!!] instead of skipped";
         unlike $res->{out}, qr/No GPU nodes detected/, "$code: not called no GPU nodes";
         ok !defined $res->{outcome}, "$code: no verdict";
@@ -398,7 +409,7 @@ subtest 'k277 poll_deployment_ready: names the last failed read when it gives up
         my ($code, $reason) = @$refusal;
         $r = poll(api_error($code, $reason));
         like $r->{died},
-            qr{\ADeployment ocp-system/ocp-cache not ready within 20s; the last read failed: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\ADeployment ocp-system/ocp-cache not ready within 20s; the last read failed: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code throughout: dies with the cause, not \"not ready\"";
         is $r->{gets}, 4, "$code throughout: read for the whole wait";
 
@@ -465,7 +476,7 @@ subtest 'k277 registry.local DNS: a CoreDNS ConfigMap that cannot be read is not
         $r = registry_dns("ConfigMap/kube-system/$first"  => api_error($code, $reason),
                           "ConfigMap/kube-system/$second" => $cm);
         like $r->{died},
-            qr{\Acould not read ConfigMap kube-system/$first: Kubernetes API error \(get\): $code .*"reason":"$reason"},
+            qr{\Acould not read ConfigMap kube-system/$first: \Q${\ api_said($code, $reason)}\E},
             "$code on $first: dies with the cause";
         ok !defined $r->{patched}, "$code on $first: no verdict, so not \"up to date\"";
         is scalar @{ $r->{applied} }, 0, "$code on $first: and $second is not written over it";
@@ -508,7 +519,7 @@ subtest 'k277 LB-IPAM: the pool API wait names its last failed read' => sub {
     for my $code (403, 500) {
         $r = lb_wait([ $code, 'refused' ]);
         is $r->{died}, "CiliumLoadBalancerIPPool API (cilium.io/v2) not served after 300s;"
-            . " the last read failed: GET $POOL_PATH failed: HTTP $code refused\n",
+            . " the last read failed: GET $POOL_PATH failed: ${\ api_said($code)}: refused\n",
             "$code throughout: the cause, not only \"not served\"";
         is $r->{reads}, 30, "$code throughout: read for the whole wait";
 
@@ -554,7 +565,7 @@ subtest 'k277 GPU Operator: a running operator without its ClusterPolicy is not 
 
     $api->{responses}{$CP_PATH} = [ [ 403, 'refused' ] ];
     $r = $run->();
-    is $r->[3], "GET $CP_PATH failed: HTTP 403 refused\n", '403: dies with the cause, as since k269';
+    is $r->[3], "GET $CP_PATH failed: ${\ api_said(403)}: refused\n", '403: dies with the cause, as since k269';
 };
 
 #
@@ -624,7 +635,7 @@ subtest 'k318 LB-IPAM: a Node list that fails is no "only loopback available"' =
         my ($code, $reason) = @$refusal;
         $r = lb_loopback(api_error($code, $reason));
         like $r->{died},
-            qr{\Acould not read Nodes \(for an address instead of 127\.0\.0\.1\): Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\Acould not read Nodes \(for an address instead of 127\.0\.0\.1\): \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: dies with the cause, so the step is [!!] instead of a loopback pool";
         unlike $r->{out}, qr/Only loopback IP available/, "$code: not called only loopback";
         ok !defined $r->{pool_ip}, "$code: no pool built";

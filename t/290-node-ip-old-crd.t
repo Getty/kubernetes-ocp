@@ -339,8 +339,8 @@ subtest 'a CRD that does not serve v1, the version ocp writes: refused' => sub {
 
 subtest 'a CRD that cannot be read is no CRD that is fine: refused, with the cause' => sub {
     for my $case (
-        [ '403', [ 403, '{"kind":"Status","reason":"Forbidden","code":403}' ], qr/HTTP 403 .*Forbidden/ ],
-        [ '500', [ 500, '{"kind":"Status","reason":"InternalError","code":500}' ], qr/HTTP 500/ ],
+        [ '403', [ 403, '{"kind":"Status","reason":"Forbidden","code":403}' ], qr/The cluster API denied the request \(403 Forbidden\)\n/ ],
+        [ '500', [ 500, '{"kind":"Status","reason":"InternalError","code":500}' ], qr/The cluster API failed \(500 Internal Error\)\n/ ],
         [ 'no response', "connection refused\n", qr/connection refused/ ],
         [ 'no JSON', [ 200, '<html>proxy</html>' ], qr/no JSON/ ],
     ) {

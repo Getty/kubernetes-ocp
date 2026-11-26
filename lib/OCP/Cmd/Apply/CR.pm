@@ -394,7 +394,7 @@ sub warn_install_time_changes {
     };
     unless ($ok) {
         $warning = '  [WARN] gpu.amd.integrated not compared with the cluster\'s: '
-            . OCP::ErrorLine::one_line($@) . "\n";
+            . OCP::ErrorLine::cause_line($@) . "\n";
     }
     return 0 unless $warning;
     print STDERR $warning;
@@ -648,7 +648,7 @@ sub migrate_legacy_nodes {
             1;
         } or do {
             print STDERR "  [WARN] status for migrated OCPNode/$name stayed unwritten: "
-                .OCP::ErrorLine::one_line($@)."\n";
+                .OCP::ErrorLine::cause_line($@)."\n";
             push @{ $self->{_apply_warnings} }, "OCPNode/$name status" if ref $self;
         };
 
@@ -1063,7 +1063,7 @@ sub retire_unannotated_robocop_pods {
     };
     if (my $err = $@) {
         print STDERR "  [WARN] could not check for robocop pods without SIGTERM handling: "
-            .OCP::ErrorLine::one_line($err)."\n";
+            .OCP::ErrorLine::cause_line($err)."\n";
         push @{ $self->{_apply_warnings} }, 'robocop pods' if ref $self;
         return;
     }
@@ -1082,7 +1082,7 @@ sub retire_unannotated_robocop_pods {
         }
         else {
             print STDERR "  [WARN] could not delete robocop pod $name (no SIGTERM handling): "
-                .OCP::ErrorLine::one_line($@)."\n";
+                .OCP::ErrorLine::cause_line($@)."\n";
             push @{ $self->{_apply_warnings} }, "robocop pod $name" if ref $self;
         }
     }

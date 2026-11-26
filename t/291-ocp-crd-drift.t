@@ -464,7 +464,7 @@ subtest 'ensure_crds: a newer CRD is left as it is, not "fixed"' => sub {
 subtest 'ensure_crds: a CRD that cannot be read is not written over blind' => sub {
     my $api = FakeApi->new(crds => cluster(), raw_fail => { $NODE_CRD => [ 403, 'forbidden' ] });
     my $r = ensure_crds($api);
-    like $r->{died}, qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: HTTP 403 forbidden/, 'dies with the cause';
+    like $r->{died}, qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: The cluster API denied the request \(403\): forbidden/, 'dies with the cause';
     is_deeply [ grep { /\Q$NODE_CRD\E/ } @{ $api->{writes} } ], [], 'nothing written for it';
 };
 

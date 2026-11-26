@@ -62,6 +62,17 @@ sub api_error {
     );
 }
 
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
+
 # The next answer of a queue, the last one repeating.
 sub next_answer { my ($q) = @_; @$q > 1 ? shift @$q : $q->[0] }
 
@@ -278,7 +289,7 @@ subtest 'k327: a Node list that failed last is that line, with the cause' => sub
         my $r = bootstrap(nodes => [ api_error($code, $reason) ]);
         is $r->{died}, '', "$code throughout: the bootstrap goes on";
         like $r->{err},
-            qr{\A\Q$NOT_SEEN\E; the last read failed: could not read Nodes: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\A\Q$NOT_SEEN\E; the last read failed: could not read Nodes: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code throughout: one line on STDERR, the cause";
         is_deeply $r->{ssh_runs}, [], "$code throughout: nothing run over SSH";
 

@@ -1088,10 +1088,10 @@ sub nvidia_gpu_nodes {
         my $selector = "$label=true";
         my $list = eval { $api->list('Node', labelSelector => $selector) };
         if (my $err = $@) {
-            my $reason = "$err";
-            chomp $reason;
-            next if $reason =~ /\b404\b/;
-            die "could not read Nodes labelled $selector: $reason\n";
+            next if "$err" =~ /\b404\b/;
+            # In read_or_absent's words since k437: an API error as the
+            # line naming the server, no location, no raw body.
+            die "could not read Nodes labelled $selector: ".OCP::ErrorLine::cause_line($err)."\n";
         }
         my $items = _dig($list, 'items');
         push @nodes, grep { !$seen{ _dig($_, qw(metadata name)) // '' }++ }

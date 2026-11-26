@@ -132,7 +132,7 @@ sub deploy {
     if (my $err = $@) {
         # STDERR with its cause (k278), not counted, as on the reconcile path;
         # in one line, without a Perl source location (k435).
-        print STDERR '  [WARN] registry.local DNS setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+        print STDERR '  [WARN] registry.local DNS setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
     }
 
     # Deploy NFD (Node Feature Discovery) — always, detects hardware automatically.
@@ -152,7 +152,7 @@ sub deploy {
         # Only a real failure gets here ('skipped' is a return value), and it
         # leaves a cluster that has GPU nodes without GPU workloads. Said on
         # STDERR, counted, and the run ends non-zero (k203).
-        print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::one_line($@)."\n";
+        print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::cause_line($@)."\n";
         push @{ $self->{_failed_components} }, 'GPU Operator';
     } else {
         $self->_report_component('GPU Operator', $gpu_outcome, $gpu_changed);
@@ -201,7 +201,7 @@ sub deploy {
             # STDERR with its cause, and counted: the run ends APPLY
             # INCOMPLETE and non-zero (k278), as the reconcile path does; in
             # one line, without a Perl source location (k435).
-            print STDERR '  [!!] LB-IPAM setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [!!] LB-IPAM setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
             push @{ $self->{_failed_components} }, 'LB-IPAM';
         } else {
             print "  [ok] LB-IPAM ready\n";
@@ -336,7 +336,7 @@ sub gpu_after_join {
         $self->_setup_gpu_operator_after_join($config, $self->{_gpu_outcome}, @joined)
     };
     if (my $err = $@) {
-        print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+        print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
         return 0;
     }
     return 1 unless defined $outcome;    # no second check needed
@@ -394,7 +394,7 @@ sub robocop_step {
     # unreadable join token) the operator has to act on.
     unless ($deployed) {
         # In one line, without a Perl source location (k435).
-        print STDERR '  [!!] robocop deploy failed: '.OCP::ErrorLine::one_line($@)."\n";
+        print STDERR '  [!!] robocop deploy failed: '.OCP::ErrorLine::cause_line($@)."\n";
         return { state => 'failed', changed => 0 };
     }
 

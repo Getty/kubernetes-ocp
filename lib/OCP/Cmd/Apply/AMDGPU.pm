@@ -638,13 +638,13 @@ sub step {
     my @results = eval { setup($self, $config, %opt) };
     if (my $err = $@) {
         # In one line, without a Perl source location (k435).
-        print STDERR '  [!!] AMD GPU stack setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+        print STDERR '  [!!] AMD GPU stack setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
         push @{ $r->{failed} }, 'AMD GPU stack';
     }
     for my $res (@results) {
         if (defined $res->{error}) {
             print STDERR "  [!!] $res->{label} setup failed: "
-                .OCP::ErrorLine::one_line($res->{error})."\n";
+                .OCP::ErrorLine::cause_line($res->{error})."\n";
             print STDERR $res->{hint} if $res->{hint};
             push @{ $r->{failed} }, $res->{label};
             next;
@@ -734,7 +734,7 @@ sub dry_run {
 # on STDERR, and the entry the dry-run report counts as such.
 sub unchecked {
     my ($label, $err) = @_;
-    my $cause = OCP::ErrorLine::one_line($err);   # no Perl source location (k435)
+    my $cause = OCP::ErrorLine::cause_line($err);   # no Perl source location (k435)
     print "  [amd] $label could not be checked\n";
     print STDERR "  [!!] $label not checked: $cause\n";
     return { kind => 'error', label => $label, cause => $cause, message => "$label: $cause" };
@@ -787,7 +787,7 @@ sub after_join {
     if (my $err = $@) {
         # In one line, without a Perl source location (k435).
         print STDERR '  [!!] AMD GPU stack not checked after the worker join: '
-            .OCP::ErrorLine::one_line($err)."\n";
+            .OCP::ErrorLine::cause_line($err)."\n";
         return ('AMD GPU stack');
     }
     return unless @amd;

@@ -258,7 +258,7 @@ sub reconcile_components {
                 # unfinished (k226): said on STDERR, in the [!!] style. The
                 # cause in one line, without a Perl source location
                 # (OCP::ErrorLine, k403), as every [!!] below says its own.
-                my $why = OCP::ErrorLine::one_line($err);
+                my $why = OCP::ErrorLine::cause_line($err);
                 print STDERR $via_api
                     ? "  [!!] $entry->{label} update via the cluster API failed: $why\n"
                     : "  [!!] $entry->{remedy}{task} failed: $why\n";
@@ -301,7 +301,7 @@ sub reconcile_components {
             # The registry is required infrastructure ("MUST succeed" in the
             # deploy path: every image pull goes through it), so a failure is
             # an unfinished apply like cert-manager and the Gateway (k234).
-            print STDERR '  [!!] Registry setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [!!] Registry setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
             push @unresolved, 'Registry';
             push @{ $self->{_failed_components} }, 'Registry';
         }
@@ -334,7 +334,7 @@ sub reconcile_components {
             # STDERR with its cause (k278); not counted -- registry.local
             # names the local registry, the pull-through cache works without.
             # In one line, without a Perl source location (k435).
-            print STDERR '  [WARN] registry.local DNS setup failed: '.OCP::ErrorLine::one_line($@)."\n";
+            print STDERR '  [WARN] registry.local DNS setup failed: '.OCP::ErrorLine::cause_line($@)."\n";
         };
     }
 
@@ -348,7 +348,7 @@ sub reconcile_components {
         if (my $err = $@) {
             # STDERR with its cause (k278), in one line without a Perl
             # source location (k435).
-            print STDERR '  [WARN] NFD setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [WARN] NFD setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
         }
     }
 
@@ -372,7 +372,7 @@ sub reconcile_components {
             $self->{_gpu_outcome} = $outcome;
         };
         if (my $err = $@) {
-            print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [!!] GPU Operator setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
             push @unresolved, 'GPU Operator';
             push @{ $self->{_failed_components} }, 'GPU Operator';
         }
@@ -421,7 +421,7 @@ sub reconcile_components {
         };
         if (my $err = $@) {
             # "MUST succeed" in the deploy path: said on STDERR and counted (k231).
-            print STDERR '  [!!] cert-manager setup failed: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [!!] cert-manager setup failed: '.OCP::ErrorLine::cause_line($err)."\n";
             push @{ $self->{_failed_components} }, 'cert-manager';
         }
     }
@@ -441,7 +441,7 @@ sub reconcile_components {
             1;
         } or do {
             # "MUST succeed" in the deploy path: STDERR and counted (k231).
-            print STDERR '  [!!] Cilium Gateway setup failed: '.OCP::ErrorLine::one_line($@)."\n";
+            print STDERR '  [!!] Cilium Gateway setup failed: '.OCP::ErrorLine::cause_line($@)."\n";
             push @{ $self->{_failed_components} }, 'Cilium Gateway';
         };
     }
@@ -457,7 +457,7 @@ sub reconcile_components {
             # run is not complete (k278) -- a refused pool (k281) is the
             # user's to fix, not something a SUCCESSFULLY banner may hide.
             # The cause in one line, without a Perl source location (k435).
-            print STDERR '  [!!] LB-IPAM setup failed: '.OCP::ErrorLine::one_line($@)."\n";
+            print STDERR '  [!!] LB-IPAM setup failed: '.OCP::ErrorLine::cause_line($@)."\n";
             push @unresolved, 'LB-IPAM';
         }
     }
@@ -496,7 +496,7 @@ sub reconcile_components {
             # (k291), the update `ocp node add --node_ip` sends the user to
             # `ocp apply` for (k290).
             # The cause in one line, without a Perl source location (k435).
-            print STDERR '  [!!] node CR reconcile failed: '.OCP::ErrorLine::one_line($@)."\n";
+            print STDERR '  [!!] node CR reconcile failed: '.OCP::ErrorLine::cause_line($@)."\n";
             push @unresolved, 'node CRs';
         };
     }
@@ -549,7 +549,7 @@ sub reconcile_components {
         my $list_err = $@;
         if ($list_err) {
             print STDERR '  [!!] Could not list OCPNodes, workers were not checked: '
-                .OCP::ErrorLine::one_line($list_err)."\n";
+                .OCP::ErrorLine::cause_line($list_err)."\n";
             push @unresolved, 'workers';
         } elsif (!@missing) {
             print "  [ok] Every worker in ocp.yaml has an OCPNode\n"
@@ -588,7 +588,7 @@ sub reconcile_components {
             my %created = map { $_->{metadata}{name} => 1 } @missing;
             eval { OCP::Cmd::Apply::CR::check_worker_phases($self, $api, $config, \%created) };
             if (my $perr = $@) {
-                print STDERR '  [!!] Could not check worker phases: '.OCP::ErrorLine::one_line($perr)."\n";
+                print STDERR '  [!!] Could not check worker phases: '.OCP::ErrorLine::cause_line($perr)."\n";
                 push @unresolved, 'worker phases';
             }
         }
@@ -597,7 +597,7 @@ sub reconcile_components {
         # OCPNode (k211): spec.labels/spec.taints only, no re-drive, no key.
         my $meta = eval { OCP::Cmd::Apply::CR::sync_worker_meta($self, $api, $config) };
         if (my $err = $@) {
-            print STDERR '  [!!] Could not check worker labels/taints: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [!!] Could not check worker labels/taints: '.OCP::ErrorLine::cause_line($err)."\n";
             push @unresolved, 'worker labels/taints';
         } else {
             if (@{ $meta->{patched} }) {
@@ -625,7 +625,7 @@ sub reconcile_components {
     unless (($self->only // '') eq 'workers') {
         eval { OCP::Cmd::Apply::CR::check_control_plane_phases($self, $self->_k8s_api) };
         if (my $err = $@) {
-            print STDERR '  [!!] Could not check control-plane phases: '.OCP::ErrorLine::one_line($err)."\n";
+            print STDERR '  [!!] Could not check control-plane phases: '.OCP::ErrorLine::cause_line($err)."\n";
             push @unresolved, 'control-plane phases';
         }
     }
@@ -748,7 +748,7 @@ sub dry_run_report {
             OCP::Cmd::Apply::CR::missing_worker_ocpnodes($self, $self->_k8s_api, $config);
         };
         print STDERR '  [!!] Could not list OCPNodes, workers were not checked: '
-            .OCP::ErrorLine::one_line($@)."\n"
+            .OCP::ErrorLine::cause_line($@)."\n"
             if $@;
         print "  [workers] $_->{metadata}{name} has no OCPNode\n"
             . "          would create OCPNode/$_->{metadata}{name} and bring the worker up\n"
@@ -761,7 +761,7 @@ sub dry_run_report {
         my $meta = eval {
             OCP::Cmd::Apply::CR::sync_worker_meta($self, $self->_k8s_api, $config, dry_run => 1);
         };
-        print STDERR '  [!!] Could not check worker labels/taints: '.OCP::ErrorLine::one_line($@)."\n"
+        print STDERR '  [!!] Could not check worker labels/taints: '.OCP::ErrorLine::cause_line($@)."\n"
             if $@;
         @relabel = @{ $meta ? $meta->{patched} : [] };
         print "  [workers] $_: labels/taints differ from ocp.yaml\n"
@@ -846,7 +846,7 @@ sub gpu_dry_run {
         my ($label, $err) = @_;
         # One line, without a Perl source location (k435): the OCPNode-less
         # reads here (nvidia_gpu_nodes) die with the client's raw error.
-        my $cause = OCP::ErrorLine::one_line($err);
+        my $cause = OCP::ErrorLine::cause_line($err);
         my $entry = { kind => 'error', label => $label, cause => $cause,
                       message => "$label: $cause" };
         _say_unchecked($entry) unless $opt{quiet};

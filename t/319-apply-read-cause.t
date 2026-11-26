@@ -49,6 +49,17 @@ sub api_error {
         body    => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}),
     );
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
 
 # The next answer of a queue, the last one repeating.
@@ -126,7 +137,7 @@ subtest 'k319 Registry: a Deployment that cannot be read is not "not there"' => 
         my ($code, $reason) = @$refusal;
         $r = recreate('ocp-cache' => api_error($code, $reason), 'ocp-registry' => 'RollingUpdate');
         like $r->{died},
-            qr{\Acould not read Deployment ocp-system/ocp-cache: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\Acould not read Deployment ocp-system/ocp-cache: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: dies with the cause, so the registry step reports it";
         is_deeply $r->{patched}, [], "$code: and nothing after it is patched as if all were well";
     }
@@ -217,7 +228,7 @@ subtest 'k319 NFD: the nfd-worker wait names its last failed read' => sub {
         is $r->{rv}, 'deployed', "$code throughout: the label wait still decides";
         is $r->{ds_reads}, 12, "$code throughout: read for the whole wait";
         like $r->{err},
-            qr{\A  \[WARN\] nfd-worker not seen ready within 120s; the last read failed: could not read \Q$DS\E: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\A  \[WARN\] nfd-worker not seen ready within 120s; the last read failed: could not read \Q$DS\E: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code throughout: the cause, on STDERR";
         unlike $r->{out}, qr/could not read/, "$code throughout: not on STDOUT";
 
@@ -242,7 +253,7 @@ subtest 'k319 NFD: the label wait dies with its last failed read' => sub {
         my ($code, $reason) = @$refusal;
         $r = nfd(nodes => [ api_error($code, $reason) ]);
         like $r->{died},
-            qr{\ANFD labels not detected on any node after 120s; the last read failed: could not read Nodes: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\ANFD labels not detected on any node after 120s; the last read failed: could not read Nodes: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code throughout: the death names the cause";
         is $r->{node_reads}, 12, "$code throughout: read for the whole wait";
 
@@ -356,7 +367,7 @@ subtest 'k319 Bootstrap: the node-Ready wait names its last failed Node list' =>
         is $r->{died}, '', "$code throughout: the bootstrap goes on, as before";
         is $r->{lists}, 60, "$code throughout: listed for the whole wait";
         like $r->{err},
-            qr{\A  \[!!\] Node otho not seen Ready within 600s; the last read failed: could not read Nodes: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\A  \[!!\] Node otho not seen Ready within 600s; the last read failed: could not read Nodes: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code throughout: the cause, on STDERR";
         unlike $r->{out}, qr/could not read/, "$code throughout: not on STDOUT";
 

@@ -251,7 +251,10 @@ sub api_error_line {
              : $code >= 500 ? 'failed'
              :                'answered';
     (my $reason = $err->reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
-    my $message = one_line($err->message // $err->body, empty => '');
+    # The body only when it is no Status object (k437): a Status without a
+    # message is said by its code and reason, never as its raw JSON.
+    my $status  = defined $err->reason || defined $err->message;
+    my $message = one_line($status ? $err->message : $err->body, empty => '');
     $message = '' if lc $message eq lc $reason;
     return "$at $what (".join(' ', $code, length $reason ? $reason : ())
         .')'.(length $message ? ": $message" : '');

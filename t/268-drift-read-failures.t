@@ -120,7 +120,10 @@ sub is_unknown {
     ok !$d->{self_healing},               "$what: not one a plain apply closes";
     like $d->{message}, qr/^\Q$want{label}\E: could not \Q$want{could}\E, drift unknown: /,
         "$what: the message names the read and says drift is unknown";
-    like $d->{message}, qr/\b$want{code}\b.*\Q$want{reason}\E/, "$what: and carries the cause";
+    # api_error_line says the reason in words (k437); the CRD probe, a raw
+    # read, still says it as the Status body has it.
+    (my $words = $want{reason}) =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    like $d->{message}, qr/\b$want{code}\b.*(?:\Q$words\E|\Q$want{reason}\E)/, "$what: and carries the cause";
     is scalar @$warn, 1, "$what: one diagnosis on stderr";
     like $warn->[0], qr/^OCP::Drift::\Q$want{in}\E: \Q$want{failed}\E failed: .*\b$want{code}\b/,
         "$what: the diagnosis names the probe, the read and the status";

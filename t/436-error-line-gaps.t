@@ -20,7 +20,9 @@ use OCP::Drift;
 #      WARN and !! line. It goes now, as OCP.pm's _clean_message takes it.
 #   2. OCP::Cmd::Apply::K8s crd_get holds the raw HTTP response, not an
 #      APIError, so one_line could not see a 599: LWP's text said its reason
-#      twice. The first line of a 599's body stands for it.
+#      twice. The first line of a 599's body stands for it. (Since k437 the
+#      response is made an APIError and said by api_error_line, which says a
+#      599 by that first line too.)
 #   3. "user_line(err) // one_line(err)" stood written out in OCP::Drift and
 #      twice in ocp destroy; OCP::ErrorLine::cause_line is it, once.
 #
@@ -69,14 +71,15 @@ subtest 'crd_get: a 599 says LWP\'s reason once' => sub {
     my $lwp  = "Can't connect to 10.0.0.1:6443 (Connection refused)\n\n"
              . "Connection refused at /usr/share/perl5/LWP/Protocol/http.pm line 50.";
     eval { OCP::Cmd::Apply::K8s::crd_get({}, RawApi->new(Resp->new(599, $lwp)), $path) };
-    is $@, "GET $path failed: HTTP 599 Can't connect to 10.0.0.1:6443 (Connection refused)\n",
+    is $@, "GET $path failed: The cluster API could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)\n",
         'the first line of the body, said once, no location';
 
     eval { OCP::Cmd::Apply::K8s::crd_get({}, RawApi->new(Resp->new(599, "\n")), $path) };
-    is $@, "GET $path failed: HTTP 599 \n", 'a 599 without a reason: nothing invented';
+    is $@, "GET $path failed: The cluster API could not be reached: unknown error\n",
+        'a 599 without a reason: nothing invented';
 
     eval { OCP::Cmd::Apply::K8s::crd_get({}, RawApi->new(Resp->new(500, "first\nsecond")), $path) };
-    is $@, "GET $path failed: HTTP 500 first second\n", 'an answer: its body whole, as one line';
+    is $@, "GET $path failed: The cluster API failed (500): first second\n", 'an answer: its body whole, as one line';
 };
 
 # --- 3. cause_line ---------------------------------------------------------------

@@ -94,10 +94,12 @@ like "$E403",  qr/$LOCATION\.\n\z/, 'the 403 carries a location, as Kubernetes::
 like "$E599",  qr/$LOCATION/,       'the 599 too, LWP\'s inside it';
 like "$CROAK", qr/$LOCATION\.\n\z/, 'the croak too';
 
-# What one_line makes of each: the words the read helpers now say.
+# The words the read helpers now say: an API error as ocp status and
+# destroy say it (OCP::ErrorLine::api_error_line, k437), anything else as
+# one_line makes it.
 my %SAID = (
-    403   => "Kubernetes API error (get Deployment): 403 $B403",
-    599   => "Kubernetes API error (get Deployment): 599 Can't connect to 10.0.0.1:6443 (Connection refused)",
+    403   => 'The cluster API denied the request (403 Forbidden): deployments.apps "robocop" is forbidden',
+    599   => "The cluster API could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)",
     croak => 'the client broke',
 );
 my %ERR = (403 => $E403, 599 => $E599, croak => $CROAK);
@@ -155,8 +157,8 @@ subtest 'crd_get: every death in one line, without a location' => sub {
     is $@, "GET $path failed: the client broke\n", 'a request that died: its reason, no location';
 
     eval { OCP::Cmd::Apply::K8s::crd_get({}, RawApi->new($path => Resp->new(599, $LWP)), $path) };
-    like $@, qr/\AGET \Q$path\E failed: HTTP 599 Can't connect to 10\.0\.0\.1:6443 \(Connection refused\)/,
-        'a 599: LWP\'s reason';
+    is $@, "GET $path failed: The cluster API could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)\n",
+        'a 599: LWP\'s reason, once (k436), as api_error_line says it (k437)';
     unlike $@, $LOCATION, 'a 599: without LWP\'s location';
     like $@, qr/\A[^\n]*\n\z/, 'a 599: one line';
 

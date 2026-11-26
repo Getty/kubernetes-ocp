@@ -54,6 +54,17 @@ sub api_error {
         body    => qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code}),
     );
 }
+
+# k437: a failed API read as the apply lane says it now -- as ocp status,
+# drift and destroy do (OCP::ErrorLine::api_error_line): the server, what it
+# did and the status with its reason in words, no raw JSON body.
+sub api_said {
+    my ($code, $reason) = @_;
+    (my $words = $reason // '') =~ s/(?<=[a-z])(?=[A-Z])/ /g;
+    return 'The cluster API '
+        . ($code == 403 ? 'denied the request' : $code >= 500 ? 'failed' : 'answered')
+        . ' (' . join(' ', $code, length $words ? $words : ()) . ')';
+}
 my @REFUSALS = ([403, 'Forbidden'], [500, 'InternalError']);
 
 # The next answer of a queue, the last one repeating.
@@ -139,7 +150,7 @@ subtest 'k328 robocop_step: a Deployment that cannot be read is not "no Deployme
         is_deeply $r->{rv}, { state => 'failed', changed => 0 },
             "$code: the step failed -- which the callers count -- not a rollout called a change";
         like $r->{err},
-            qr{\A  \[!!\] robocop deploy failed: could not read Deployment ocp-system/robocop: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\A  \[!!\] robocop deploy failed: could not read Deployment ocp-system/robocop: \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: the cause, on STDERR";
         unlike $r->{out}, qr/could not read|\[ok\] robocop ready/, "$code: not on STDOUT, and no ready";
         is_deeply $r->{wrote}, [], "$code: nothing written after a read that failed";
@@ -338,7 +349,7 @@ subtest 'k328 NFD: the nfd-worker wait says why it ran out' => sub {
         my ($code, $reason) = @$refusal;
         $r = nfd([ 0, 1 ], api_error($code, $reason));
         like $r->{err},
-            qr{\A\Q$NOT_SEEN\E; the last read failed: could not read DaemonSet node-feature-discovery/nfd-worker: Kubernetes API error \(get\): $code .*"reason":"$reason".*\n\z},
+            qr{\A\Q$NOT_SEEN\E; the last read failed: could not read DaemonSet node-feature-discovery/nfd-worker: \Q${\ api_said($code, $reason)}\E\n\z},
             "none ready, then $code: the failed read, as k319 says it";
 
         $r = nfd(api_error($code, $reason), [ 0, 3 ]);

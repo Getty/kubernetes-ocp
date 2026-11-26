@@ -269,8 +269,8 @@ subtest 'the same CRDs: written as before' => sub {
 #### 3. unreadable
 
 for my $case (
-    [ '403',                 [ 403, 'forbidden' ],          qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: HTTP 403 forbidden/ ],
-    [ '500',                 [ 500, 'etcdserver: timeout' ], qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: HTTP 500 etcdserver: timeout/ ],
+    [ '403',                 [ 403, 'forbidden' ],          qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: The cluster API denied the request \(403\): forbidden/ ],
+    [ '500',                 [ 500, 'etcdserver: timeout' ], qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: The cluster API failed \(500\): etcdserver: timeout/ ],
     [ 'a transport failure', "connect: Connection refused\n", qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: connect: Connection refused/ ],
     [ 'an undecodable body', [ 200, 'not json' ],           qr/\AGET \Q$CRD_BASE$NODE_CRD\E: the answer is no JSON/ ],
 ) {
