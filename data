@@ -1,0 +1,50 @@
+---
+class: standard
+completed: 2026-11-26T18:14:14Z
+created: 2026-11-20T15:28:18Z
+id: 453
+priority: high
+started: 2026-11-20T21:06:00Z
+status: done
+tags:
+- hetzner
+- cai-live
+title: 'Hetzner pool: join an existing hcloud network, API only on the private address'
+updated: 2026-11-26T18:14:14Z
+---
+
+Context: cai-admin rebuilds CAI live on Hetzner (fsn1) as its own rke2 cluster hz (plan ~/cai-admin/docs/zwei-installationen-2026-11.md §7 card 1, §9). Network cai-live (10.200.0.0/16), firewall and Primary IPs already exist in the Hetzner project and must be reused, not recreated.
+Goal: a Hetzner pool can name an existing network (and firewall) by name/id; servers get a private IP there; node_ip and the rke2 API/supervisor use the private address; 6443/9345 are not reachable on the public IP (firewall rule or bind), tls-san carries the private name/IP and an optional extra name.
+First read what OCP already does for Hetzner (lib/OCP/Node.pm, Cmd/Apply, docs/configuration.md network/private_ip/node_ip) and write the gap into the card before building.
+Done when: unit tests (network-free) for config validation and the rendered rke2 config/firewall; docs/configuration.md; Changes; small commits.
+Limits: no real Hetzner calls in tests; no apply against any real cluster; nothing PIN-related changes.
+
+2026-11-20 21:11 Gap analysis (before building).
+HAVE: OCP::Provider::Hetzner create_server passes name/type/image/location/ssh_keys/labels only; wait_for_running/get_server_ip read the PUBLIC ipv4 only; the existing-server branch returns ipv4. Bootstrap uses that one address as SSH transport, advertised host (tls-san, kubeconfig server), cp_ip (join_url, registry DNS, LB-IPAM). node_ip is explicit-only (control_planes[].node_ip); without it police1 registers its default route = public IP. Joiners use node_ip_from_route, so a worker that joins the CP's PRIVATE address registers its private IP by itself. Config already takes control_planes[].public_ip/private_ip (strings; private_ip only held against cluster networks), join_host = pinned public_ip else advertised, cluster_status = public_ip else host, cp_tls_sans = public_ip//host of every CP. Workers: worker_ocpnodes copies server_type/location/image into OCPNode spec (serverType/location/image), OCP::Node::_provision hands the spec to create_server (rank 2), _resolve_host asks wait_for_running for status.publicIP.
+MISSING: (1) no ocp.yaml key for network/firewalls/address choice/extra tls-san; (2) provider never sends networks/firewalls, never reads private_net; (3) no way to make the private address the one OCP uses (transport, advertised, node_ip, join, kubeconfig, tls-san), on the bootstrap or on the reconcile path (join_host/cluster_status read public_ip); (4) OCPNode spec/CRD carries no network/firewalls/address, so robocop workers cannot get them; (5) nothing binds 6443/9345 to an address (Rex::Rancher install_server has no bind/advertise option).
+WWW::Hetzner (sibling source): servers->create takes networks=>[ids], firewalls=>[ids] (IDs only, API too), ipv4=>primary-ip-id; networks/firewalls have list/list_all(name=>) but no get_by_name, so OCP resolves names via list_all(name=>). Server has private_net (arrayref) but no private-IP accessor. Bug: create drops ipv4/ipv6 (Primary IP) unless public_net or enable_ipv4/6 is also passed. cpanfile requires WWW::Hetzner 0.103 while cpanfile.snapshot pins 0.102 (vendored via make vendor).
+DEVIATION from brief: network/firewalls/address go on the OCPNode spec (like serverType), not the OCPNodeProvider CR: the provider CR is one per type (hetzner-default), shared by the CP and every pool, so per-pool values cannot live there.
+
+2026-11-20 21:26 Design questions (built with the conservative default, open for the maintainer):
+Q1 bind: NOT built. rke2 bind-address would move the apiserver off 127.0.0.1:6443, which Rex::Rancher's Cilium (k8sServiceHost 127.0.0.1:6443 on rke2) and the server's own components use; Rex::Rancher::Server::install_server has no bind/advertise option either. Default: the firewall closes 6443/9345 on the public IP (Hetzner firewalls default-deny inbound and act on the public interface only); advertise/etcd move to the private IP through node-ip. Wanted? Needs a lab check and a rex-rancher ticket (option for bind-address/advertise-address, or a host-level drop rule).
+Q2 Primary IPs: not assigned. Servers get a fresh auto-delete Primary IP from Hetzner; the existing ones stay untouched. Reusing them needs a mapping primary IP -> server (one per CP? per pool node?) -- which? Note WWW::Hetzner create drops ipv4=>id unless enable_ipv4/public_net is passed too.
+Q3 no public IPv4 at all (egress via the edge NAT): not built, public IPv4 kept.
+Q4 shape: per-entry keys network/firewalls/address (+ tls_san on control planes), not a cluster-level switch; address: private needs network. Riding on the OCPNode spec, not OCPNodeProvider (per-type CR, shared by all pools).
+Q5 reconcile path: under address: private OCP reads control_planes[].private_ip where it read public_ip; nothing writes either back after the first apply (the operator pins it). Also found: Config::cluster_status says 'hetzner pins public_ip in the spec', but no code writes it.
+Q6 ocp node add has no --network/--firewall/--address; a hand-added node gets them only via its spec.
+
+2026-11-20 22:02 Done, uncommitted in worktree branch worktree-ocp-k453: ocp.yaml network/firewalls/address on hetzner control planes and pools, tls_san on control planes (validated, every line at once); OCP::Provider::Hetzner resolves existing network/firewalls by name or id (never creates any), sends networks/firewalls on create, reports the private address under address: private; bootstrap uses it for SSH, Rex, advertised host, node API host, join and node-ip, and puts tls_san names into the tls-san; worker and police2+ OCPNodes carry spec.network/firewalls/address (CRD updated) so robocop builds them the same way; docs/configuration.md has a private-network section and the refusals. Tests: t/453-config-hetzner-network.t, t/453-hetzner-network-provider.t, t/453-private-address-apply.t (all pass); t/401, t/296, t/357, t/292 updated for the larger key lists and the new readers. NOT the binding run: make test cannot vendor here (sibling checkouts missing under SIBLINGS_DIR), so the suite ran against the existing raudssus/ocp:latest image (2 weeks old): 22 files fail there on the unchanged tree too, and the same 22 with this change, nothing new. Among them t/16-node.t, t/308, t/74 touch this area. The binding make test still has to run. Not built: bind-address (Q1), Primary IP reuse (Q2), see the design note.
+
+Answers cai-admin 2026-11-20: (1) firewall only for now, bind-address goes to k455 (backlog, depends on rex-rancher). (2) Existing Primary IPs stay unassigned; the kept one goes to r2d2. (3) Public IPv4 stays, firewalled, as the default. Static routes to the lab network via the network gateway go on their own card, k456. (4) private_ip: set by hand after the first apply, documented in docs/configuration.md. (5) Build the robocop image with this change before the worker step.
+
+Committed on worktree-ocp-k453 (not pushed): 4907123 config keys, 4029689 provider, 2ee4607 bootstrap and robocop path, 3b8decd docs and Changes. Card stays in review for the maintainer.
+
+Note cai-admin 2026-11-20: the cluster nodes (cp1, w1) must NOT get the edge firewall cai-live. hive attaches it through the label selector cai-env=live, and it opens the edge's public ports 80/443 and udp/51820; on w1, Envoy (k454 host mode) would then be publicly reachable past the edge. The nodes need their own firewall, e.g. cai-live-cluster: inbound only SSH from the control room, nothing else public; 6443/9345/80/443 only from 10.200.0.0/16. The firewall itself is a hive card. docs/configuration.md gets a paragraph on this; the example name is now cai-live-cluster (branch worktree-ocp-k456, merged into worktree-ocp-k453 afterwards).
+
+Follow-up commit bf174a4: cluster nodes get a firewall of their own, never the edge's (docs/configuration.md), example name cai-live-cluster.
+
+2026-11-21 00:43 cai-admin-20: abgenommen (make test 4583, nur t/222 #5 rot wie auf main). Uebergabe an Getty: ff-merge worktree-ocp-k453 @32af960, push, Image bauen.
+
+2026-11-26 03:59 Branch worktree-ocp-k453 rebased onto main (no conflicts) and merged locally (fast-forward) at 3ab670e, not pushed. Backup: backup/k453-pre-rebase. Left in review: push and image are the maintainer's.
+
+Done; follow-ups landed in k474 (f51c9fc 53ae9f7 0fbad8e) and k475
