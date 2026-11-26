@@ -253,8 +253,8 @@ subtest 'an ssh node with no host recorded: said on STDERR, named at the end, ex
       . "[!!] Teardown INCOMPLETE: 2 machine(s) keep their RKE2/K3s install:\n"
       . "       - w1: no host recorded\n"
       . "       - w2: no host recorded\n"
-      . "     Nothing is billed for them through OCP. Once they are\n"
-      . "     reachable, run on each of them:\n"
+      . "     Nothing is billed for them through OCP. To tear them down by hand,\n"
+      . "     run on each of them:\n"
       . "       rke2-uninstall.sh   # or k3s-uninstall.sh / k3s-agent-uninstall.sh\n",
         'on STDERR: each skip as it comes, and both in the closing list';
     unlike $r->{out}, qr/Skipped|no host/, 'nothing of it on STDOUT';

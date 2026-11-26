@@ -4,6 +4,11 @@ Revision history for OCP
     - `ocp status` reports a changed `gateway.node_selector` as drift under
       `gateway.mode: host_network`, with the same manual step as a changed
       gateway mode (`ocp update --component cilium --force`).
+    - `ocp destroy` takes a node's host from `ocp.yaml` when `status.yaml`
+      or its OCPNode recorded none, instead of skipping its uninstall;
+      lists a node without a host as `-`; says every failed label search,
+      not only the first; and its closing list of machines that keep their
+      install no longer says to wait until they are reachable.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

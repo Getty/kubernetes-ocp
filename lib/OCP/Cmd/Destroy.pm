@@ -277,8 +277,16 @@ sub _collect_nodes {
         my ($have) = grep { defined } @by_key{@keys};
         if ($have) {
             # The same machine from a second source: fill in what the first
-            # did not know (a role, a providerId), never overwrite it.
-            $have->{$_} //= $node->{$_} for keys %$node;
+            # did not know (a role, a providerId), never overwrite it. A
+            # public_ip of '-' (or '') is one it did not know either (k432):
+            # an ocp.yaml pool's host, merged in after a status.yaml entry or
+            # an OCPNode that recorded none, was lost to it, and the
+            # uninstall skipped for want of a host that was known.
+            for my $k (keys %$node) {
+                $have->{$k} = $node->{$k}
+                    if !defined $have->{$k}
+                    || ($k eq 'public_ip' && ($have->{$k} eq '' || $have->{$k} eq '-'));
+            }
             $by_key{$_} = $have for @keys;
             return 0;
         }
@@ -401,7 +409,10 @@ sub _collect_nodes {
     # some source found nodes, so the fallback did not run, or it had no
     # hetzner control plane to say it for, or another search answered there.
     # A server only that search would find stays up, and nothing named it.
-    $self->_say_failed_search($config, @$_) for $search_said ? () : @failed;
+    # The fallback's line says the first failure only: a second one is said
+    # here all the same (k432).
+    $self->_say_failed_search($config, @$_)
+        for $search_said ? @failed[1 .. $#failed] : @failed;
 
     # A local pool's worker with the OCPNodes unread (k354), once the list is
     # complete: a local node on it clears this machine.
@@ -985,7 +996,7 @@ sub execute {
     print "Cluster: ", $config->name, "\n";
     print "Nodes to destroy:\n";
     for my $node (@$nodes) {
-        print "  - $node->{name} ($node->{provider}, $node->{public_ip})\n";
+        print "  - $node->{name} ($node->{provider}, " . ($node->{public_ip} // '-') . ")\n";
     }
     print "\n";
 
@@ -1258,8 +1269,10 @@ sub execute {
             my ($first) = split /\n/, $why;
             print STDERR "       - $host: $first\n";
         }
-        print  STDERR "     Nothing is billed for them through OCP. Once they are\n";
-        print  STDERR "     reachable, run on each of them:\n";
+        # Not "once they are reachable" (k432): one may be listed for having
+        # no host recorded, which no waiting makes reachable.
+        print  STDERR "     Nothing is billed for them through OCP. To tear them down by hand,\n";
+        print  STDERR "     run on each of them:\n";
         print  STDERR "       rke2-uninstall.sh   # or k3s-uninstall.sh / k3s-agent-uninstall.sh\n";
     }
 
