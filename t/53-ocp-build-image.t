@@ -177,6 +177,22 @@ subtest 'the build command is a plain docker build' => sub {
         'no builder selection';
 };
 
+# Nothing writes a $REPO:cache tag (no --cache-to, no push of it, CI
+# included), so pulling a build cache from it was a no-op at best (k409).
+# Both witnesses: what --dry-run prints and what the real path hands docker.
+subtest 'the build pulls no registry cache' => sub {
+    my $r = run_ocp_build(version => '0.0.1');
+    is $r->{exit}, 0, 'dry-run exits 0';
+    unlike $r->{stdout}, qr/--cache-from|:cache\b/,
+        'no --cache-from and no cache tag on the printed build line';
+
+    my $real = run_ocp_build(version => '0.0.1', no_dry_run => 1);
+    is $real->{exit}, 0, 'the real code path exits 0 against the mock docker';
+    like $real->{docker_log}, qr/^build$/m, 'docker build ran';
+    unlike $real->{docker_log}, qr/cache/,
+        'docker build got no cache argument';
+};
+
 subtest '--repo= overrides the default repository' => sub {
     my $r = run_ocp_build(
         version => '9.9.9',
@@ -189,8 +205,6 @@ subtest '--repo= overrides the default repository' => sub {
         'latest tag uses the overridden repo';
     like $r->{stdout}, qr/-t 'other\/x:9\.9\.9'/,
         'version tag uses the overridden repo';
-    like $r->{stdout}, qr/--cache-from 'type=registry,ref=other\/x:cache'/,
-        'cache-from follows the repo override';
 };
 
 subtest 'OCP_IMAGE_REPO env var matches --repo=' => sub {
@@ -216,8 +230,6 @@ subtest '--no-push drops the docker push commands' => sub {
         'the build itself is still printed';
     like $r->{stdout}, qr/^\s*raudssus\/ocp:latest$/m,
         'tags are still announced';
-    like $r->{stdout}, qr/--cache-from/,
-        'cache-from is present even without --push';
 };
 
 subtest '--dry-run never invokes docker' => sub {
