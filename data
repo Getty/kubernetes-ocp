@@ -1,0 +1,22 @@
+---
+claimed_at: 2026-11-26T10:01:06Z
+claimed_by: ocp-k463
+class: standard
+completed: 2026-11-26T10:00:35Z
+created: 2026-11-26T06:43:25Z
+id: 463
+priority: low
+started: 2026-11-26T08:43:37Z
+status: done
+tags:
+- errors
+- node
+title: 'ocp node rm: a failed OCPNode list is taken for an empty cluster in _node_names'
+updated: 2026-11-26T10:01:06Z
+---
+
+Found while doing k433. lib/OCP/Cmd/Node/Rm.pm _node_names: when listing OCPNodes fails while building the unknown-node refusal, it says "No OCPNode exists in this cluster" instead of naming the failed read. Same shape as k433 (provider_crs). Done = the failure is said in one line (OCP::ErrorLine user_line/one_line), with a test. Lane: ocp-apply-worker (node rm) or ocp-worker.
+
+2026-11-26 09:00 Done, tree uncommitted. lib/OCP/Cmd/Node/Rm.pm _node_names takes \my $unread like provider_crs. When the list fails, the rejection keeps 'Unknown node NAME.' and the next line says 'Could not read the OCPNodes from the cluster API: <cause_line>'. It no longer says 'No OCPNode exists' or gives a node add hint. t/75 claim changed: 'the failed list does not become the error' still holds, but its 'no 503 anywhere' check was the bug, so the cause is now asserted below the rejection. New t/463-node-rm-list-failure.t (403, 599, croak, plus an empty-list control) is red pre-fix and green after. Also found (not fixed): execute treats any failed OCPNode get, a 403 too, as 'Unknown node', so a node that exists can be called unknown. Same shape, worth its own card (apply lane).
+
+Committed 89b3269; binding suite green on main ce487f1 (340 files, 4789 tests)
