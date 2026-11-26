@@ -1,0 +1,32 @@
+---
+class: standard
+completed: 2026-11-26T06:15:25Z
+created: 2026-11-14T05:56:11Z
+id: 451
+priority: medium
+started: 2026-11-26T05:07:06Z
+status: done
+tags:
+- cert-manager
+- gateway
+- bug
+title: 'cert-manager: Gateway API nie eingeschaltet — die ACME-Issuer mit gatewayHTTPRoute-Solver
+  können keine Challenge lösen'
+updated: 2026-11-26T06:15:25Z
+---
+
+Gefunden im cihq-Cluster (cert-manager v1.21.2, von OCP aus dem Release-Manifest installiert), 14.11.2026, homelab-Agent.
+
+OCP::Cmd::Apply::Network::acme_issuer legt die Let's-Encrypt-ClusterIssuer mit http01.gatewayHTTPRoute (parentRef cilium-gateway) an. cert-manager löst Gateway-API-HTTP-01 aber nur mit --enable-gateway-api (bzw. enableGatewayAPI in der Controller-Konfiguration). Das Release-Manifest setzt das nicht, und OCP auch nicht. Folge: Mit ssl.email kommen Issuer, die Ready melden, deren Orders aber an der Challenge hängen bleiben. Im Log fehlt dann die Zeile "enabling the sig-network Gateway API certificate-shim and HTTP-01 solver".
+
+Im cihq-Cluster per Hand gesetzt: kubectl -n cert-manager patch deploy cert-manager --type json, Arg --enable-gateway-api angehängt. Danach funktioniert ein ACME-Issuer gegen die HQ-CA (sick-acme) mit HTTP-01 über das Cilium-Gateway, Order valid in unter einer Minute. Ein ocp apply/update, das cert-manager.yaml neu anwendet, nimmt den Patch wieder weg. Dann erneuert sich default-gateway-cert nicht mehr (30-Tage-Zertifikate).
+
+Wunsch: OCP setzt --enable-gateway-api (oder die Config), sobald Cilium mit Gateway API läuft, und ocp status meldet es als Drift, wenn es fehlt.
+
+2026-11-26 05:07 ocp-infra-worker: started. Reading the cert-manager apply path and OCP::Drift probes.
+
+2026-11-26 05:15 Decision: the flag is set on the Deployment args at apply time, not through a controller config file. apply_cert_manager in OCP::Cmd::Apply::Network parses the release manifest and applies it with the flag on the cert-manager-controller container (new sub cert_manager_with_gateway_api). A false value is replaced. A manifest without that Deployment or container dies. Config file rejected: it needs a ConfigMap plus volume and mount patched into the same Deployment, more upstream manifest rewritten for one bool. Always on: OCP has no switch turning the Cilium Gateway API off.
+
+2026-11-26 05:16 Drift: new separate sub OCP::Drift::cert_manager_gateway_api_drift, one line in detect, container and flag names shared with the writer. A controller without the flag is a spec entry carrying the existing API remedy upgrade_cert_manager at the pin, so the reconcile of ocp apply closes it by re-applying the manifest. component_drift and COMPONENT_PROBES untouched, since k458 works there.
+
+2026-11-26 05:31 Done: apply_cert_manager now applies the release manifest with the Gateway API flag on the cert-manager-controller container (new sub cert_manager_with_gateway_api in OCP::Cmd::Apply::Network). It is used by the first install, the apply step and the API remedy upgrade_cert_manager, so neither ocp apply nor ocp update removes the flag any more. New probe OCP::Drift::cert_manager_gateway_api_drift, called from detect: a controller without the flag is a spec entry with the cert-manager API remedy at the pin, which the reconcile in ocp apply runs. Nothing is reported under nocert, on a 404 or for a Deployment without that container. Any other failed read is an error entry. New test t/451 (fails against HEAD, passes now); t/198 fixture updated to carry the Deployment. 49 drift and apply neighbour tests pass in the Docker image. Files: lib/OCP/Cmd/Apply/Network.pm, lib/OCP/Drift.pm, t/451-cert-manager-gateway-api.t, t/198-cert-manager-upgrade-api.t. Not live-tested on any cluster.
