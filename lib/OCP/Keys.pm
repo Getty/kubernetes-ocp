@@ -638,14 +638,42 @@ F<keys.yaml> the age key does not open included.
 
 # get_admin_key, with a wrong PIN2 answered as "no key" instead of the
 # crypto line. Every other failure is rethrown unchanged.
+#
+# Except an admin key without its PIN2 layer (k466): every PIN2 fails on it
+# the way a wrong one does, so "Wrong PIN2" would send the operator after a
+# PIN2 that does not exist. has_pin2_layer tells the two apart, and the
+# refusal names the key and, in keys.yaml, the command that repairs it.
 sub unlock_admin_key {
     my ($self, $pin2, $name) = @_;
 
     my $admin = eval { $self->get_admin_key($pin2, $name) };
     return $admin if $admin;
     my $error = $@;
-    die $error if length $error && !$self->is_wrong_pin2($error);
+    return unless length $error;
+    die $error unless $self->is_wrong_pin2($error);
+
+    # The key get_admin_key tried: the one named, or the first admin key
+    # that is not deprecated.
+    my ($tried) = defined $name && length $name
+        ? ($name)
+        : map  { $_->{name} }
+          grep { ($_->{purpose} // '') eq 'admin' && !$_->{deprecated} } @{ $self->list_keys };
+    die $self->_no_pin2_layer_refusal($tried)
+        if defined $tried && !$self->has_pin2_layer($tried);
     return;
+}
+
+sub _no_pin2_layer_refusal {
+    my ($self, $name) = @_;
+
+    my $file = path($self->keys_file);
+    my $msg  = "ERROR: The admin key '$name' in ".$file->basename." has no PIN2 layer, so no PIN2\n"
+             . "       opens it: before the fix for a PIN2 of \"0\", ocp init and ocp keys\n"
+             . "       secure stored it under PIN1 alone.\n";
+    return $msg unless $file->absolute eq path($self->project_dir)->child('keys.yaml')->absolute;
+    return $msg
+         . "       Run 'ocp keys add-pin2' to set its PIN2. The key itself stays the\n"
+         . "       same, so no machine needs a new one.\n";
 }
 
 =method unlock_admin_key($pin2, $name)
@@ -657,7 +685,9 @@ L</get_admin_key> (the admin key named C<$name>, or the first one that is not
 deprecated), returning nothing for a wrong PIN2 as for no admin key. Any
 other failure -- a F<keys.yaml> the age key does not open, an empty C<$pin2>
 -- dies with its own message, unchanged, so it is never reported as a wrong
-PIN2.
+PIN2. An admin key without its PIN2 layer (L</has_pin2_layer>), which no
+PIN2 opens, dies naming the key, and for F<keys.yaml> names
+C<ocp keys add-pin2>, which puts the layer on.
 
 =cut
 

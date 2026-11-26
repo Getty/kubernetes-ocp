@@ -97,8 +97,11 @@ subtest 'has_pin2_layer' => sub {
     is $keys->has_pin2_layer('admin-ssh-bare'), 0, 'the pre-k390 admin key has none';
     is $keys->has_pin2_layer('admin-ssh-old'),  1, 'a layered admin key has one';
     is $keys->has_pin2_layer('robo-ssh-x'),     0, 'the robo key has none';
-    ok !$keys->unlock_admin_key($PIN2, 'admin-ssh-bare'),
+    # k466: refused naming add-pin2, where it used to come back as nothing,
+    # which every caller words as "Wrong PIN2".
+    ok !eval { $keys->unlock_admin_key($PIN2, 'admin-ssh-bare'); 1 },
         'the problem: no PIN2 opens the bare admin key';
+    like $@, qr/ocp keys add-pin2/, '... and the refusal names the repair';
 };
 
 subtest 'ocp keys add-pin2' => sub {

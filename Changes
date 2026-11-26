@@ -5,6 +5,8 @@ Revision history for OCP
       without loading its OCPNodeProvider, so a local control plane
       (providerRef local-default, which `ocp apply` never writes) is not
       marked Failed for a missing provider; it writes Ready once its Node is.
+    - An admin key without its PIN2 layer is refused by naming `ocp keys
+      add-pin2`, which puts the layer on, instead of "Wrong PIN2".
     - `ocp apply` repairs more bare `lastmodified` shapes in SOPS files (a
       value on the next line, `? lastmodified`, a flow-style `sops` mapping),
       and a file with invalid YAML is no longer reported as a failed repair.
