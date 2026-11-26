@@ -533,8 +533,12 @@ sub setup_lb_ipam {
                 }
             }
         }
+        # A pool nobody outside can reach is something wrong, if not fatal:
+        # a [WARN] on STDERR, counted in {_apply_warnings} so the banner
+        # reads WITH WARNINGS, as the other [WARN]s of the run (k462, k415).
         if ($node_ip =~ /^127\./) {
-            print "      WARNING: Only loopback IP available, LB-IPAM may not work externally\n";
+            print STDERR "      [WARN] Only loopback IP available, LB-IPAM may not work externally\n";
+            push @{ $self->{_apply_warnings} }, 'LB-IPAM loopback' if ref $self;
         }
     }
 

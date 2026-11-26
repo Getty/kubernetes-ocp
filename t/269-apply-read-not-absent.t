@@ -624,12 +624,12 @@ subtest 'k318 LB-IPAM: a Node list that fails is no "only loopback available"' =
 
     $r = lb_loopback(LoopList->new(LoopNode->new(LoopAddr->new(InternalIP => '127.0.0.1'))));
     is $r->{died}, '', 'only loopback: no death';
-    like $r->{out}, qr/Only loopback IP available/, 'only loopback: said, as before';
+    like $r->{err}, qr/\[WARN\] Only loopback IP available/, 'only loopback: said, on STDERR (k462)';
     is $r->{pool_ip}, '127.0.0.1', 'only loopback: the pool on it';
 
     $r = lb_loopback(api_error(404, 'NotFound'));
     is $r->{died}, '', '404: no death, nothing listed';
-    like $r->{out}, qr/Only loopback IP available/, '404: only loopback, as before';
+    like $r->{err}, qr/\[WARN\] Only loopback IP available/, '404: only loopback, on STDERR (k462)';
 
     for my $refusal (@REFUSALS) {
         my ($code, $reason) = @$refusal;
@@ -637,7 +637,7 @@ subtest 'k318 LB-IPAM: a Node list that fails is no "only loopback available"' =
         like $r->{died},
             qr{\Acould not read Nodes \(for an address instead of 127\.0\.0\.1\): \Q${\ api_said($code, $reason)}\E\n\z},
             "$code: dies with the cause, so the step is [!!] instead of a loopback pool";
-        unlike $r->{out}, qr/Only loopback IP available/, "$code: not called only loopback";
+        unlike $r->{out} . $r->{err}, qr/Only loopback IP available/, "$code: not called only loopback";
         ok !defined $r->{pool_ip}, "$code: no pool built";
         is $r->{applied}, 0, "$code: nothing applied";
     }

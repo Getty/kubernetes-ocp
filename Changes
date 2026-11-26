@@ -27,6 +27,9 @@ Revision history for OCP
       a list below it keeps its layout. `error` stays the one-line string.
     - `ocp status` says every refusal on STDERR under `Error:`, as every
       other command does, where it said `ERROR:` alone.
+    - The `ocp apply` note that only a loopback address is available for
+      LB-IPAM is a `[WARN]` on STDERR, as the other warnings of the run, and
+      makes the closing banner read WITH WARNINGS.
     - `ocp apply` says a failed read of the cluster API as `ocp status`,
       drift and `ocp destroy` do ("The cluster API at ... denied the request
       (403 Forbidden): ..."), not as the raw JSON body; an API answer without
