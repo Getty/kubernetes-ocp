@@ -7,6 +7,7 @@ use MooX::Options;
 use List::Util qw(first);
 use OCP::Choices;
 use OCP::Config;
+use OCP::ErrorLine ();
 use OCP::Node;
 use OCP::Provider;
 
@@ -67,17 +68,26 @@ sub _k8s {
 # nothing else. `ocp node ls` shows the same set with its columns; here only
 # the names matter, because a name is what `ocp node rm` takes.
 #
-# Tolerant on purpose (OCP::Role::Cmd::provider_crs was too, until k433 made
-# it say its failure): a list call that fails while a message is being built must not replace "that node does
-# not exist" with something worse. No list means the rejection says so
-# instead of offering an empty one.
+# A list that failed is no empty list (k463, as k433 made provider_crs say
+# its failure): taken for one, the rejection said "No OCPNode exists in this
+# cluster" and offered node add, the cause said nowhere. It still does not
+# replace "that node does not exist": the rejection keeps its first line, and
+# where the listing would stand it says the list failed, in one line -- an
+# APIError as the line naming the server, anything else without its source
+# location (cause_line). The caller passes \my $unread for it, as provider_crs'
+# unread.
 #
 # Private rather than a sibling of provider_crs in the role: one command
 # needs it. provider_crs earned its place there by having three callers.
 sub _node_names {
-    my ($self, $api, $ns) = @_;
+    my ($self, $api, $ns, $unread) = @_;
 
-    my $list = eval { $api->list('OCPNode', namespace => $ns) } or return ();
+    my $list = eval { $api->list('OCPNode', namespace => $ns) };
+    unless ($list) {
+        ${$unread} = 'Could not read the OCPNodes from the cluster API: '
+                   . OCP::ErrorLine::cause_line($@, empty => 'no answer');
+        return;
+    }
 
     return sort map { $api->k8s->object_to_struct($_)->{metadata}{name} }
                 @{ $list->items // [] };
@@ -99,7 +109,8 @@ sub execute {
         $api->get('OCPNode', name => $name, namespace => $ns);
     };
     if ($@ || !$cr_obj) {
-        die OCP::Choices::unknown('node', $name, [ $self->_node_names($api, $ns) ],
+        my @names = $self->_node_names($api, $ns, \my $unread);
+        die OCP::Choices::unknown('node', $name, defined $unread ? "$unread\n" : \@names,
             empty => "No OCPNode exists in this cluster;"
                    . " 'ocp node add' creates one.\n");
     }

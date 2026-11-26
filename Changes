@@ -20,6 +20,9 @@ Revision history for OCP
       Corefile's own): CoreDNS rejects such a Corefile. The message names the
       key and both blocks, and says a running CoreDNS keeps serving its
       previous Corefile while a restarted one does not start.
+    - `ocp node rm` of an unknown node, when the OCPNode list cannot be read,
+      says "Could not read the OCPNodes from the cluster API: ..." in one line
+      below the refusal, not "No OCPNode exists in this cluster".
     - A refused write of the control plane's OCPNode status is said as the
       line naming the server ("The cluster API denied the request (403
       Forbidden)"), not as the raw Status JSON; the robocop checks of

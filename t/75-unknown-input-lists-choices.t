@@ -169,7 +169,11 @@ subtest 'a listing that cannot be read does not replace the rejection' => sub {
 
     like $@, qr/^Unknown node 'nope'\./,
         'the message is still the one about the input';
-    unlike $@, qr/503/, 'the failed list call does not become the error';
+    # k463: the failed list is said below it, in one line -- it was left out,
+    # and on a cluster with no listing the rejection read "No OCPNode exists".
+    like $@, qr/\A[^\n]*\n^Could not read the OCPNodes from the cluster API: 503: the API did not answer\n\z/m,
+        'the failed list call is said below it, not made the error';
+    unlike $@, qr/No OCPNode exists|^Available:/m, 'and is no empty listing';
 };
 
 # -------------------------------------------------------------------------
