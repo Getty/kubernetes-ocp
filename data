@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-11-26T09:58:14Z
+claimed_by: ocp-k418
+class: standard
+completed: 2026-11-26T09:58:14Z
+created: 2026-11-06T21:55:14Z
+id: 418
+priority: low
+started: 2026-11-26T08:43:38Z
+status: done
+tags:
+- tests
+- secrets
+- hetzner
+title: 'Token masking tests: WWW::Hetzner 0.103 masks the body itself, so t/265 and
+  t/373 no longer prove OCP''s own masking'
+updated: 2026-11-26T09:58:14Z
+---
+
+Found under k406 (pin step, 2026-11-06). WWW::Hetzner 0.103 masks a token in the response body itself. So the API-refusal cases in t/265 and t/373 no longer prove that OCP's own masking is what hides the token; only t/373's transport-dies case still does. Done = each claim about OCP's masking is proven by a case the library does not mask already, e.g. a fake that raises an unmasked text, or the claim is dropped where OCP no longer masks anything itself.
+
+2026-11-26 08:51 Done (tests only, lib untouched). t/265: the 401-without-API-message case no longer echoes the token (it asserts only that the status is named); new subtest with an IO whose transport dies with 'Authorization: Bearer <token>' in its text, through the real WWW::Hetzner::Cloud + Picker + init path, with a precondition that WWW::Hetzner hands it on unmasked. t/373: the wire dies by default, so factory/apply/destroy/hetzner-list prove OCP's mask; the adapter subtest keeps the API-refuses half only for the one-line/what-was-said claims (no mask claim); new 'the wire' subtest pins the premise (library masks a refusal, not a dying transport). Verified: make test TAG=prov on both files PASS. Mutation: _masked made a no-op -> t/265 masking subtest red, t/373 7/10 subtests red, all of them mask claims (old tests under the same mutation: only the adapter subtest red). Open: OCP has two redundant mask layers (one_line mask=> and the k398 registry); removing either alone keeps both files green, so these tests prove 'OCP masks', not which layer.
+
+Committed 3ab4d93; binding suite green on main ce487f1 (340 files, 4789 tests)
