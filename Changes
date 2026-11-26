@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A server Hetzner reports as not found counts as deleted: robocop's
+      teardown, `ocp node rm` and `ocp destroy` end instead of failing on a
+      server that was already removed.
     - A failed Rex task's message in the OCPNode status names the task once
       ("Rex task 'install_rke2_agent' failed: ..."), no longer prefixed a
       second time.

@@ -4,6 +4,7 @@ package OCP::Provider::Hetzner;
 use Moo;
 use OCP::ErrorLine ();
 use OCP::KnownHosts;
+use Scalar::Util qw( blessed );
 use WWW::Hetzner::Cloud;
 
 =attr token
@@ -600,17 +601,37 @@ behind that key is gone. A
 C<delete_server(undef)> is a no-op — empty ids never call the API, so a
 teardown on an already-gone node does not cost a round trip.
 
+A server Hetzner answers with 404 C<not_found> is already gone, which is what
+the delete was for: it counts as deleted (k419), so a teardown whose server
+was removed by hand, or by an earlier run that died after the delete, ends
+instead of failing on every rerun. That is read from the
+L<WWW::Hetzner::Error> object, status and code both; every other refusal dies
+as before.
+
 =cut
 
 sub delete_server {
     my ($self, $server_id, %opts) = @_;
     return unless defined $server_id && length $server_id;
-    $self->_api(sub { $self->cloud->servers->delete($server_id) });
+    $self->_api(sub {
+        return if eval { $self->cloud->servers->delete($server_id); 1 };
+        my $err = $@;
+        die $err unless $self->_server_gone($err);
+        return;
+    });
 
     # The machine is gone; its host key goes with it (k168).
     OCP::KnownHosts->new->forget($opts{host})
         if defined $opts{host} && length $opts{host};
     return;
+}
+
+# A delete answered "no such server": the WWW::Hetzner::Error a 404
+# not_found raises (WWW::Hetzner 0.103), not a match on its text.
+sub _server_gone {
+    my ($self, $err) = @_;
+    return blessed($err) && $err->isa('WWW::Hetzner::Error')
+        && ($err->status // 0) == 404 && ($err->code // '') eq 'not_found';
 }
 
 =method cleanup_on_failure
