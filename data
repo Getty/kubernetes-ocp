@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-11-26T11:36:07Z
+created: 2026-11-26T10:18:15Z
+id: 473
+priority: low
+started: 2026-11-26T11:36:07Z
+status: done
+tags:
+- docs
+- k8s
+title: 'ocp-k8s skill: CRD Access Pattern still teaches a raw _request GET for CRDs'
+updated: 2026-11-26T11:36:07Z
+---
+
+Follow-up to k471. The repo-owned skill .claude/skills/ocp-k8s, section "CRD Access Pattern", still teaches a raw _request GET plus decode_json. Since k471 a CustomResourceDefinition is read with OCP::Drift::cluster_crd (typed get; undef only on 404) and writers use OCP::Cmd::Apply::K8s::crd_read; custom resources (Gateway, ClusterPolicy, ResourceSlice, LB-IPAM pools) still go through crd_get/_request. Update the section. Lane: ocp-doc-writer or ocp-worker.
+
+Committed 83a4413; make test green (342 files, 4810 tests)
