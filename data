@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-26T08:38:55Z
+created: 2026-11-08T01:08:29Z
+id: 450
+priority: low
+started: 2026-11-26T08:38:55Z
+status: done
+tags:
+- keys
+- pin2
+title: Re-add an admin key so a key stored without its PIN2 layer gets one
+updated: 2026-11-26T08:38:55Z
+---
+
+From k390 (2026-11-06). Before the k390 fix, a PIN2 of "0" stored an admin key without its PIN2 layer. No ocp command re-creates an existing admin key, so Changes gives such users no advice.
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): build a path that re-adds an existing admin key with a PIN2 (re-encrypting it under both layers), and name it in Changes once it exists. Build after the release.
+
+2026-11-26 06:40 CLI surface: new leaf 'ocp keys add-pin2' (OCP::Cmd::Keys::AddPin2, alias in OCP::COMMAND_ALIASES). Verb-first like 'recipients add'/'operator add'; a separate subcommand, not a flag on 'keys secure' (that is the dev->secure migration and refuses secure projects). Finds every purpose-admin entry whose age layer holds the private key itself (OCP::Keys::has_pin2_layer), asks a new PIN2 twice (prompt_new_pin, --pins-stdin), re-encrypts under age+PIN2 via OCP::Keys::add_pin2_layer (round-trip checked before write). Same key, no machine changes. Leaves layered keys alone; does not change an existing PIN2. Test t/450-add-pin2.t passes.
+
+2026-11-26 06:54 Done: 'ocp keys add-pin2' (OCP::Cmd::Keys::AddPin2 + alias in OCP.pm) with OCP::Keys::has_pin2_layer / add_pin2_layer. Same key re-encrypted under age + a new PIN2 (round-trip checked before write); layered keys and robo untouched; nothing to do -> exit 0, no prompt; no terminal / PIN mismatch -> refused, nothing written. t/209 'Available:' expectation gains add-pin2. t/450-add-pin2.t passes; targeted 46-file run PASS. Follow-ups: (1) a wrong-PIN2 failure on such a key could name 'ocp keys add-pin2' (needs a has_pin2_layer check in the unlock failure path); (2) ocp-usage skill / README list of ocp keys commands needs add-pin2 (doc-writer).
+
+2026-11-26 08:38 Committed f996fe7
