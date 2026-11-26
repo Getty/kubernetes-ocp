@@ -114,6 +114,39 @@ among them.
 
 =cut
 
+# k431: the errors field beside error: the same message, one entry per line
+# of it, so a refusal written for STDERR with a list below it keeps its
+# layout in the JSON. Each line as one_line makes it -- masked, no source
+# location, no indentation -- and a line nothing is left of (a blank, a bare
+# location) is no entry. The label goes off the first, as json_error takes it
+# off the whole, so the entries joined by one space are the error field. A
+# 599 is its one line as json_error says it: the lines of its body after the
+# first are LWP saying the reason again.
+sub json_errors {
+    my ($err) = @_;
+    return [ json_error($err) ] if _is_transport_error($err);
+    (my $text = defined $err ? "$err" : '') =~ s/\A\s*(?:ERROR|Error|error):\s*//;
+    my @lines = grep { length } map { one_line($_, empty => '') } split /\n/, $text;
+    return @lines ? \@lines : [ 'unknown error' ];
+}
+
+=func json_errors
+
+    my $entries = OCP::ErrorLine::json_errors($err);
+    # [ 'This project has no kubeconfig.yaml, so there is no cluster API to reach.',
+    #   "'ocp apply' writes it when it brings the cluster up. It is committed",
+    #   'with the project: on a clone, pull the commit that has it.' ]
+
+The C<errors> field of a C<--json> command's object, beside L</json_error>'s
+C<error>: an array reference holding C<$err> one entry per line, each line as
+L</one_line> makes it (secrets masked, no source location, no indentation),
+a line nothing is left of left out, and the leading C<ERROR:> (or C<Error:>,
+C<error:>) label off the first.  Joined by one space, the entries are
+L</json_error>'s string.  A L<Kubernetes::REST::APIError> of code C<599> is
+one entry, L</json_error>'s line.  C<['unknown error']> when nothing is left.
+
+=cut
+
 # k398: every secret this process has read -- a Hetzner token, from the
 # environment, secrets.yaml or a provider CR's Secret -- for the life of the
 # process. The code that reads one adds it; one_line, and OCP.pm's renderer

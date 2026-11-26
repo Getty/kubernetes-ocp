@@ -169,14 +169,15 @@ subtest 'the JSON error object, in one place' => sub {
     my $r = run_ocp($dir, $fails_with->("nodes failed\n"), 'node', 'ls', '--json');
     is $r->{signal}, 0, 'node ls --json, a user error: no signal';
     is $r->{exit}, 1, 'node ls --json, a user error: exit 1';
-    is_deeply one_document($r->{out}), { error => 'nodes failed' },
+    is_deeply one_document($r->{out}), { error => 'nodes failed', errors => ['nodes failed'] },
         'node ls --json, a user error: the object, the line as its error';
     is $r->{err}, "Error: nodes failed\n", 'node ls --json, a user error: STDERR says it';
 
     $r = run_ocp($dir, $fails_with->($e599), 'node', 'ls', '--json');
     is $r->{exit}, 1, 'node ls --json, a 599: exit 1';
     is_deeply one_document($r->{out}),
-        { error => 'The cluster API could not be reached: Connection refused' },
+        { error  => 'The cluster API could not be reached: Connection refused',
+          errors => ['The cluster API could not be reached: Connection refused'] },
         'node ls --json, a 599: the line as its error';
     is $r->{err}, "Error: The cluster API could not be reached: Connection refused\n",
         'node ls --json, a 599: STDERR says it';
@@ -220,7 +221,7 @@ subtest 'the sweep: every command, the one renderer' => sub {
         is $r->{exit}, 1, "$class: exit 1";
         is $r->{err}, "Error: $line\n", "$class: STDERR is the one line";
         unlike $r->{out} . $r->{err}, qr/internal error/, "$class: no internal error";
-        is_deeply one_document($r->{out}), { error => $line }, "$class --json: the object"
+        is_deeply one_document($r->{out}), { error => $line, errors => [$line] }, "$class --json: the object"
             if $class->can('json');
     }
 };

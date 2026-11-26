@@ -283,15 +283,16 @@ sub _collect_json {
         # looks, gone since cluster_exists saw it. A key problem dies inside
         # cluster_api in OCP::Secrets' words (k382), a client or API failure
         # is $why. STDERR is the text form's refusal, the error field the same
-        # words as one line, without its ERROR: -- OCP::ErrorLine::json_error,
-        # as ocp health and OCP.pm's renderer fill theirs (k395).
+        # words as one line, without its label -- OCP::ErrorLine::json_error,
+        # as ocp health and OCP.pm's renderer fill theirs (k395) -- and errors
+        # the same words one entry per line (k431).
         unless (defined $why) {
             my $refusal = OCP::Secrets->no_kubeconfig_refusal;
-            $out->{error} = OCP::ErrorLine::json_error($refusal);
+            $self->_set_json_error($out, $refusal);
             $self->_say_error($refusal);
             return 1;
         }
-        $out->{error} = OCP::ErrorLine::json_error($why);
+        $self->_set_json_error($out, $why);
         $self->_say_error($out->{error});
         return 1;
     }
@@ -300,8 +301,7 @@ sub _collect_json {
     my $nodes = eval { $k8s->list_nodes };
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
-        $out->{error} = OCP::ErrorLine::json_error(
-            $self->cluster_api_error($k8s, $error) // $error);
+        $self->_set_json_error($out, $self->cluster_api_error($k8s, $error) // $error);
         $self->_say_error($out->{error});
         return 1;
     }
@@ -341,11 +341,26 @@ sub _collect_json {
     # The exit and the error field of a cluster that cannot be read: the
     # object is the report as far as it got, error says what it is missing.
     if (defined $drift_error) {
-        $out->{error} = 'Cannot detect drift: '.OCP::ErrorLine::json_error($drift_error);
+        $self->_set_json_error($out, $drift_error, 'Cannot detect drift: ');
         return 1;
     }
 
     return 0;
+}
+
+# k431: the error of the --json object, twice: error, the message as one line
+# a script reads as one string (k395), and errors, the same message one entry
+# per line, so a refusal written over several lines -- a list below it --
+# keeps its layout for a human reading the JSON. The two always come
+# together. $prefix goes in front of the one line and the first entry.
+sub _set_json_error {
+    my ($self, $out, $err, $prefix) = @_;
+    $prefix //= '';
+    my @lines = @{ OCP::ErrorLine::json_errors($err) };
+    $lines[0] = $prefix.$lines[0];
+    $out->{error}  = $prefix.OCP::ErrorLine::json_error($err);
+    $out->{errors} = \@lines;
+    return;
 }
 
 # k430: a refusal on STDERR says it as every other command does, through the
@@ -895,14 +910,19 @@ pretty-printed, no timestamps or ages) on STDOUT; diagnostics go to STDERR.
 Two runs against an unchanged cluster print identical bytes, so a script can
 compare them.  The exit code is that of the text form: 1 when the API cannot
 be reached or drift detection dies (the object then carries an C<error>
-string -- the message as one line, without an C<Error:> label -- and whatever
-could be collected), else 0.
+string -- the message as one line, without an C<Error:> label --, an
+C<errors> array -- the same message one entry per line, so a refusal written
+over several lines keeps its layout (L<OCP::ErrorLine/json_errors>) -- and
+whatever could be collected), else 0.  C<errors> is there whenever C<error>
+is, and its entries joined by one space are C<error>; earlier builds had
+C<error> alone.
 
 A kubeconfig that cannot be decrypted is the exception: the key problem dies
 in L<OCP::Role::Cmd/cluster_api> before the object is built, so there is no
 report to carry an C<error>.  The error renderer of L<OCP> prints one JSON
 object holding only the C<error> string (the message as one line, without an
-C<Error:> label) on STDOUT, the message on STDERR, and the exit code is 1.
+C<Error:> label) and its C<errors> array on STDOUT, the message on STDERR,
+and the exit code is 1.
 
     {
        "cluster" : "mycluster",
@@ -947,7 +967,8 @@ report-only entry is C<false> as before.  The drift list includes the
 C<< kind => 'error' >> entry that L<OCP::Drift> reports when the API call behind a check failed: drift unknown
 for what it names, never C<fixable>.  When drift detection itself dies, the
 list is not empty but holds one such entry with C<component> C<drift>, and
-C<error> says C<Cannot detect drift: ...>.  An empty list means no drift was
+C<error> says C<Cannot detect drift: ...>, as the first entry of C<errors>
+does.  An empty list means no drift was
 found.  A node's
 C<gpu> is its C<nvidia.com/gpu> allocatable (0 when it has none), the same
 as C<gpu> in C<ocp node ls --json>, and C<gpu_capacity> its C<nvidia.com/gpu>

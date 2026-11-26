@@ -302,7 +302,8 @@ sub _clean_message {
 # tells a failure from a result by its type. STDERR says it as without --json.
 # A message of several lines -- a refusal such as OCP::Secrets'
 # no_kubeconfig_refusal -- is one line there, by OCP::ErrorLine::json_error,
-# as ocp status and ocp health fill their error field (k395).
+# as ocp status and ocp health fill their error field (k395); beside it,
+# errors holds it one entry per line (OCP::ErrorLine::json_errors, k431).
 #
 # Without $json it says the error on STDERR only, and ocp health --json calls
 # it so: its STDOUT is its own object, its STDERR the one ocp health says
@@ -315,7 +316,10 @@ sub _report_error {
     $msg = OCP::ErrorLine::mask_secrets($msg);
 
     print JSON::MaybeXS->new(canonical => 1, pretty => 1)
-        ->encode({ error => OCP::ErrorLine::json_error($msg) })
+        ->encode({
+            error  => OCP::ErrorLine::json_error($msg),
+            errors => OCP::ErrorLine::json_errors($msg),
+        })
         if $json;
 
     if ($verbose) {

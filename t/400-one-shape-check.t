@@ -352,6 +352,14 @@ sub json_field {
     return $error;
 }
 
+# The errors field beside it (k431): the same text one entry per line, the
+# label off the first, each line trimmed, a blank line none.
+sub json_lines {
+    my ($text) = @_;
+    (my $body = $text) =~ s/\AError: //;
+    return [ grep { length } map { s/\A\s+|\s+\z//gr =~ s/\s+/ /gr } split /\n/, $body ];
+}
+
 # --- 1. The role --------------------------------------------------------------------
 
 subtest 'node add: --gpu checks gpu:, in the one text, before anything' => sub {
@@ -612,7 +620,8 @@ subtest 'status: network: foo, in both forms, before the report' => sub {
 
     $r = run_ocp($dir, setup(), qw( status --json ));
     my $doc = eval { JSON::MaybeXS->new->decode($r->{out}) };
-    is_deeply $doc, { error => json_field($text) }, '--json: STDOUT is the one JSON error object, the text as one line'
+    is_deeply $doc, { error => json_field($text), errors => json_lines($text) },
+        '--json: STDOUT is the one JSON error object, the text as one line and line by line (k431)'
         or diag "STDOUT: $r->{out}";
     is $r->{err}, $text, '--json: STDERR says it';
     is $r->{exit}, 1, '--json: exit 1';
@@ -693,7 +702,8 @@ subtest 'node ls: a pool\'s taints: foo' => sub {
 
     my $r = run_ocp($dir, setup(), qw( node ls --json ));
     my $doc = eval { JSON::MaybeXS->new->decode($r->{out}) };
-    is_deeply $doc, { error => json_field($text) }, '--json: STDOUT is the one JSON error object, the text as one line'
+    is_deeply $doc, { error => json_field($text), errors => json_lines($text) },
+        '--json: STDOUT is the one JSON error object, the text as one line and line by line (k431)'
         or diag "STDOUT: $r->{out}";
     is $r->{err}, $text, '--json: STDERR says it';
     is $r->{exit}, 1, '--json: exit 1';

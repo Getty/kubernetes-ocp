@@ -153,7 +153,7 @@ subtest '--json error fields: one line, no label, in status, health and node ls'
         health => [ gone_on_cluster_api('OCP::Cmd::Health'), 1 ],
         node   => [ undef, 0 ],          # node ls: no kubeconfig.yaml at all
     );
-    my %field;
+    my (%field, %lines);
     for my $cmd (sort keys %case) {
         my ($setup, $kubeconfig) = @{ $case{$cmd} };
         my @words = $cmd eq 'node' ? ('node', 'ls') : ($cmd);
@@ -163,12 +163,15 @@ subtest '--json error fields: one line, no label, in status, health and node ls'
 
         is $json->{signal}, 0, "$what: no signal";
         is $json->{exit}, 1, "$what: exit 1";
-        my $error = one_document($json->{out})->{error} // '';
+        my $doc   = one_document($json->{out});
+        my $error = $doc->{error} // '';
         is $error, $refusal_line, "$what: error is the refusal, as one line";
         unlike $error, qr/\n/, "$what: error: one line";
         unlike $error, qr/\A(?:ERROR|Error|error):/, "$what: error: no label";
         unlike $error, qr/ERROR:/, "$what: error: no ERROR: anywhere in it";
         $field{$cmd} = $error;
+        $lines{$cmd} = $doc->{errors};
+        is join(' ', @{ $doc->{errors} // [] }), $error, "$what: errors joined by one space are error (k431)";
 
         is $json->{err}, $text->{err}, "$what: STDERR is what ocp @words says without --json";
         unlike $json->{err}, qr/(?:ERROR|Error): (?:ERROR|Error):/, "$what: STDERR: one label, not two";
@@ -177,6 +180,9 @@ subtest '--json error fields: one line, no label, in status, health and node ls'
     }
     is $field{health}, $field{status}, 'health --json: the field status --json has';
     is $field{node},   $field{status}, 'node ls --json: the field status --json has';
+    cmp_ok scalar @{ $lines{status} // [] }, '>', 1, 'status --json: errors, one entry per line of the refusal (k431)';
+    is_deeply $lines{health}, $lines{status}, 'health --json: the errors status --json has (k431)';
+    is_deeply $lines{node},   $lines{status}, 'node ls --json: the errors status --json has (k431)';
 
     # The labels as each command says the refusal: health and node ls stop
     # and OCP.pm's renderer says it, and since k430 status says it through
@@ -189,7 +195,7 @@ subtest '--json error fields: one line, no label, in status, health and node ls'
     like $h->{err}, qr/\AError: This project has no kubeconfig\.yaml/, 'health --json: the renderer\'s Error: label';
     my $n = run_ocp(project(kubeconfig => 0), undef, 'node', 'ls', '--json');
     like $n->{err}, qr/\AError: This project has no kubeconfig\.yaml/, 'node ls --json: the renderer\'s Error: label';
-    is_deeply [ sort keys %{ one_document($n->{out}) } ], ['error'], 'node ls --json: the error and nothing else';
+    is_deeply [ sort keys %{ one_document($n->{out}) } ], ['error', 'errors'], 'node ls --json: the error, its lines (k431), nothing else';
     my $hd = one_document($h->{out});
     ok exists $hd->{healthy} && !$hd->{healthy}, 'health --json: still its own object, not healthy';
     is_deeply $hd->{pods}, [], 'health --json: no pods';
@@ -254,7 +260,8 @@ subtest 'node ls --json, a discovery without Node: one line, not an internal err
     my $r = run_ocp(project(), $client, 'node', 'ls', '--json');
     is $r->{signal}, 0, 'no signal';
     is $r->{exit}, 1, 'exit 1';
-    is_deeply one_document($r->{out}), { error => $line }, 'JSON: the line as its error';
+    is_deeply one_document($r->{out}), { error => $line, errors => [$line] },
+        'JSON: the line as its error, and as its one entry (k431)';
     is $r->{err}, "Error: $line\n", 'STDERR: the one line';
     unlike $r->{err} . $r->{out}, qr/internal error|$LOCATION|unknown resource/i,
         "no internal error, no source location, not Kubernetes::REST's croak";

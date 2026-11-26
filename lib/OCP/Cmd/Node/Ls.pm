@@ -254,12 +254,17 @@ not answer or answers with an error, its discovery does not list the Kind
 C<Node>, or there is no C<ocp.yaml> or no kubeconfig -- STDOUT carries one
 object instead of the array, its C<error> the message the command stopped on
 as one line, without an C<Error:> label (for the API, the one line of
-L<OCP::Role::Cmd/cluster_api_error>), and the exit code is 1, as with
-C<ocp status --json> and C<ocp health --json>. STDERR says it as
-without C<--json>.
+L<OCP::Role::Cmd/cluster_api_error>), and its C<errors> the same message one
+entry per line, for a message written over several lines (a list below it)
+that keeps its layout there (L<OCP::ErrorLine/json_errors>; earlier builds
+had C<error> alone). The exit code is 1, as with C<ocp status --json> and
+C<ocp health --json>. STDERR says it as without C<--json>.
 
     {
-       "error" : "The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)"
+       "error" : "The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)",
+       "errors" : [
+          "The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)"
+       ]
     }
 
 An empty array is a cluster without OCPNodes; an object is a list that could

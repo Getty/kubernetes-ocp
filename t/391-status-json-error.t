@@ -78,6 +78,11 @@ sub run_status {
 my $refusal = OCP::Secrets->no_kubeconfig_refusal;
 (my $refusal_line = join ' ', map { s/\A\s+//r } split /\n/, $refusal) =~ s/\AERROR: //;
 
+# The same lines one entry each, the label off the first: the errors field
+# beside error (k431).
+my @refusal_lines = map { s/\A\s+|\s+\z//gr } split /\n/, $refusal;
+$refusal_lines[0] =~ s/\AERROR: //;
+
 # STDERR: the refusal as OCP.pm's renderer says it, "Error:" in place of its
 # own "ERROR:", the indented lines below as they are (k430).
 (my $said = $refusal) =~ s/\AERROR: /Error: /;
@@ -110,6 +115,11 @@ my ($json_rc, $json_out, $json_err);
         'error says kubeconfig.yaml is what is missing';
     is $error, $refusal_line, "error is OCP::Secrets' refusal, as one line";
     unlike $error, qr/\n|\AERROR/, 'error: one line, no ERROR: prefix';
+
+    # errors: the same refusal, one entry per line, so its layout is kept.
+    is_deeply $d->{errors}, \@refusal_lines, 'errors: the refusal one entry per line, no label (k431)';
+    cmp_ok scalar @{ $d->{errors} // [] }, '>', 1, 'errors: more than one entry for a refusal of several lines';
+    is join(' ', @{ $d->{errors} // [] }), $error, 'errors joined by one space are error';
 
     # STDERR: the refusal, as the text form prints it.
     is $json_err, $said, "STDERR: OCP::Secrets' refusal under Error:, and only that (k430)";

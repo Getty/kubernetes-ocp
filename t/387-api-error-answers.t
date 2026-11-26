@@ -210,7 +210,7 @@ my @commands = (
       } ],
     [ ['node', 'ls', '--json'], 'ocpnodes', 'Error', sub {
           my ($o, $line) = @_;
-          is_deeply json_of($o), { error => $line },
+          is_deeply json_of($o), { error => $line, errors => [$line] },
               'JSON: the line as its error, nothing else (k388)';
       } ],
     [ ['health'], 'pods', 'Error', sub {
@@ -302,7 +302,7 @@ my $s200  = lists_api(ocpnodes => [ 'OCPNodeList', 'ocp.internal/v1' ],
         is $st & 127, 0, 'no signal (alarm)';
         is $st >> 8, 1, 'exit 1';
         is $e, "Error: $line\n", 'STDERR: the line for the Nodes';
-        is_deeply json_of($o), { error => $line }, 'JSON: the object, not an empty list';
+        is_deeply json_of($o), { error => $line, errors => [$line] }, 'JSON: the object, not an empty list';
         unlike "$o$e", $perl_text, 'no Perl source location, no "internal error"';
     } or diag "exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
 }

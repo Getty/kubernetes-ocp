@@ -33,7 +33,9 @@ use OCP::Secrets;
 #      summary from ocp.yaml, that the cluster exists, the kubeconfig hint;
 #   5. --json keeps STDOUT pure JSON: status, health and node ls print an
 #      object with the error in it (node ls: that and nothing else, where it
-#      lists an array -- k388); STDERR says it as without --json;
+#      lists an array -- k388), and its errors, the same line as the one
+#      entry (k431); STDERR says it as without --json, labelled "Error:" by
+#      every command, ocp status too (k430);
 #   6. a kubeconfig no client can be built from is not "could not be
 #      reached": ocp status reports it as before.
 # And of the OCP::Role::Cmd methods that say it: only a transport failure
@@ -214,6 +216,7 @@ my @commands = (
           ok $doc->{deployed}, 'JSON: deployed';
           is_deeply $doc->{nodes}, [], 'JSON: no nodes';
           like $doc->{error} // '', qr/\A$unreachable\z/, 'JSON: error says it, as on STDERR';
+          is_deeply $doc->{errors}, [ $doc->{error} ], 'JSON: errors, the one line as its one entry (k431)';
       } ],
     [ ['node', 'ls'], sub {
           my ($o, $e) = @_;
@@ -225,7 +228,8 @@ my @commands = (
           like $e, qr/\AError: $unreachable\n\z/, 'STDERR: the API and why, one line, as without --json';
           my $doc = json_of($o);
           like $doc->{error} // '', qr/\A$unreachable\z/, 'JSON: error says it, as on STDERR';
-          is_deeply [ sort keys %$doc ], ['error'], 'JSON: the error and nothing else (k388)';
+          is_deeply [ sort keys %$doc ], ['error', 'errors'], 'JSON: the error, its lines, nothing else (k388, k431)';
+          is_deeply $doc->{errors}, [ $doc->{error} ], 'JSON: errors, the one line as its one entry (k431)';
       } ],
     [ ['health'], sub {
           my ($o, $e) = @_;
@@ -239,6 +243,7 @@ my @commands = (
           like $doc->{error} // '', qr/\A$unreachable\z/, 'JSON: error says it, as on STDERR';
           ok exists $doc->{healthy} && !$doc->{healthy}, 'JSON: not healthy';
           is_deeply $doc->{pods}, [], 'JSON: no pods';
+          is_deeply $doc->{errors}, [ $doc->{error} ], 'JSON: errors, the one line as its one entry (k431)';
       } ],
     [ ['provider', 'ls'], sub {
           my ($o, $e) = @_;
@@ -275,7 +280,8 @@ for my $c (@commands) {
         is $st & 127, 0, 'no signal (alarm)';
         is $st >> 8, 1, 'exit 1';
         is $e, "Error: $why\n", 'STDERR: as without --json';
-        is_deeply json_of($o), { error => $why }, 'JSON: the message as its error, nothing else';
+        is_deeply json_of($o), { error => $why, errors => [$why] },
+            'JSON: the message as its error and its one entry, nothing else';
     } or diag "exit=" . ($st >> 8) . "\n--- STDOUT:\n$o--- STDERR:\n$e";
 }
 

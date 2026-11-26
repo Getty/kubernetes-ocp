@@ -79,6 +79,7 @@ sub execute {
         if ($self->json) {
             print JSON::MaybeXS->new(canonical => 1, pretty => 1)->encode({
                 error   => OCP::ErrorLine::json_error($error),
+                errors  => OCP::ErrorLine::json_errors($error),
                 healthy => JSON::MaybeXS::false(),
                 pods    => [],
             });
@@ -169,8 +170,10 @@ STDOUT and nothing else; diagnostics go to STDERR.
 C<pods> is sorted by namespace, then name; C<state> is C<critical>,
 C<warning> or C<starting>.  C<healthy> is true when C<pods> is empty.  When
 the cluster cannot be reached the object has an C<error> string -- the
-message as one line, without an C<ERROR:> label --, an empty C<pods> and the
-exit code is 1.  STDERR says the error as C<ocp health> says it without
+message as one line, without an C<Error:> label --, an C<errors> array -- the
+same message one entry per line, see L<OCP::ErrorLine/json_errors> --, an
+empty C<pods> and the exit code is 1.  C<errors> is there whenever C<error>
+is; earlier builds had C<error> alone.  STDERR says the error as C<ocp health> says it without
 C<--json>.
 
 B<Known instability:> a pod stuck for a long time gets a reason such as
