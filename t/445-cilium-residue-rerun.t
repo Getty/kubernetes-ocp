@@ -516,7 +516,8 @@ workers:
 YAML
 
 # The refusal a joining node's install left in its OCPNode, as OCP::Node
-# writes it: the real Rexfile's, for that node.
+# writes it: the real Rexfile's, for that node, as OCP::Rex words it -- with
+# no prefix of OCP::Node's own in front since k449.
 sub joined_refusal {
   my ($task, $name) = @_;
   my $ok = eval {
@@ -524,7 +525,7 @@ sub joined_refusal {
       node_name => $name);
     1;
   };
-  return "Rex task failed: $@";
+  return OCP::Node->_rex_failed_message($@);
 }
 
 sub ocpnode {

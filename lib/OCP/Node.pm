@@ -873,6 +873,16 @@ sub _name_unresolved_message {
 
 sub _is_host_key_changed { return ref $_[1] && $_[1]->isa('OCP::SSH::HostKeyChanged') }
 
+# The status.message of a failed install (k449). OCP::Rex names a failed task
+# itself ("Rex task 'install_rke2_agent' failed: ...", pinned by t/219), and
+# the "Rex task failed: " in front of it said it twice. Only an error raised
+# before the task ran (learning the host key, a missing Rexfile) gets it.
+sub _rex_failed_message {
+    my ($self, $err) = @_;
+    $err //= 'unknown';
+    return "$err" =~ /\ARex task '[^']*' failed: / ? "$err" : 'Rex task failed: ' . $err;
+}
+
 sub _install_kubernetes {
     my $self = shift;
 
@@ -1099,7 +1109,7 @@ sub _install_kubernetes {
         $self->_patch_status(phase => 'Failed',
             message => $unresolved
                 ? $self->_name_unresolved_message($host)
-                : "Rex task failed: " . ($@ // 'unknown'));
+                : $self->_rex_failed_message($@));
         return;
     }
 

@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A failed Rex task's message in the OCPNode status names the task once
+      ("Rex task 'install_rke2_agent' failed: ..."), no longer prefixed a
+      second time.
     - Requires Net::Async::Kubernetes 0.013.
     - `ocp apply` now refuses an unknown key under `registry:` or `ssl:` (for
       example `ssl: { emial: … }` or `registry: { cahce: … }`), with a line
