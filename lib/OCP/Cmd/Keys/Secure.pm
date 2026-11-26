@@ -261,7 +261,12 @@ sub _staged_keys {
         unless $robo && $entry;
 
     my $pin2 = OCP::Password::prompt_password("Enter PIN2 (admin SSH access): ");
-    my $admin = eval { $keys->decrypt_key($entry->{name}, $pin2) };
+    die "ERROR: No PIN2 given, cannot decrypt the staged admin key $entry->{name}.\n"
+        unless defined $pin2 && length $pin2;
+
+    # Only a wrong PIN2 is refused as one (k427): any other failure -- an age
+    # key that does not open the staging file -- keeps its own words.
+    my $admin = $keys->unlock_admin_key($pin2, $entry->{name});
     die "ERROR: Wrong PIN2 for the staged admin key $entry->{name}.\n"
       . "       It is the PIN2 you set in the earlier run. Lost it? Remove\n"
       . "       .ocp/$STAGING and run 'ocp keys secure' again for a new pair.\n"

@@ -716,13 +716,12 @@ sub require_admin_approval {
     die "ERROR: No PIN2 given; $action refused.\n"
         unless defined $pin2 && length $pin2;
 
-    # A wrong PIN2 makes the double-decrypt die ("AES-GCM authentication
-    # failed"); catch it so the refusal reads as a PIN2 problem rather than a
-    # crypto-internals leak, and so nothing downstream mistakes it for success.
+    # Only a wrong PIN2 (or no admin key) is refused as one, never in crypto
+    # internals (k391); any other failure -- a .ocp/age.key that does not
+    # open keys.yaml, with the right PIN2 -- keeps its own words (k427).
     my $keys  = OCP::Keys->new(project_dir => $config->project_dir);
-    my $admin = eval { $keys->get_admin_key($pin2) };
-    die "ERROR: Wrong PIN2 or no admin key; $action refused.\n"
-        unless $admin;
+    my $admin = $keys->unlock_admin_key($pin2)
+        or die "ERROR: Wrong PIN2 or no admin key; $action refused.\n";
 
     return $admin;
 }

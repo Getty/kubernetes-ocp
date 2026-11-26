@@ -13,6 +13,10 @@ use OCP::Secrets;
 use Digest::SHA qw(sha256_hex);
 use MIME::Base64 qw(encode_base64 decode_base64);
 
+# What _aes_decrypt dies with when the PIN2 layer does not open: a wrong PIN2
+# (is_wrong_pin2).
+my $WRONG_PIN2 = "AES-GCM authentication failed\n";
+
 has ocp => (
     is      => 'lazy',
     default => sub { OCP->instance },
@@ -523,6 +527,54 @@ sub get_admin_key {
     return undef;
 }
 
+# A wrong PIN2 does not come back as undef from get_admin_key: the PIN2
+# layer's AES-GCM tag fails and _aes_decrypt dies with $WRONG_PIN2 -- crypto
+# internals, not words for a user (k391). Every caller that asks for PIN2
+# tells that failure from every other one here, in one place (k427): a
+# .ocp/age.key that does not open keys.yaml fails with the right PIN2 too,
+# and calling that a wrong PIN2 sends the operator after the wrong thing.
+sub is_wrong_pin2 {
+    my ($self, $error) = @_;
+    return 0 unless defined $error && !ref $error;
+    return $error eq $WRONG_PIN2 ? 1 : 0;
+}
+
+=method is_wrong_pin2($error)
+
+    my $admin = eval { $keys->decrypt_key($name, $pin2) };
+    warn "wrong PIN2\n" if !$admin && $keys->is_wrong_pin2($@);
+
+True when C<$error> is the failure a wrong PIN2 makes -- the PIN2 layer's
+authentication tag not matching -- and false for every other error, a
+F<keys.yaml> the age key does not open included.
+
+=cut
+
+# get_admin_key, with a wrong PIN2 answered as "no key" instead of the
+# crypto line. Every other failure is rethrown unchanged.
+sub unlock_admin_key {
+    my ($self, $pin2, $name) = @_;
+
+    my $admin = eval { $self->get_admin_key($pin2, $name) };
+    return $admin if $admin;
+    my $error = $@;
+    die $error if length $error && !$self->is_wrong_pin2($error);
+    return;
+}
+
+=method unlock_admin_key($pin2, $name)
+
+    my $admin = $keys->unlock_admin_key($pin2)
+        or die "ERROR: Wrong PIN2 or no admin key\n";
+
+L</get_admin_key> (the admin key named C<$name>, or the first one that is not
+deprecated), returning nothing for a wrong PIN2 as for no admin key. Any
+other failure -- a F<keys.yaml> the age key does not open, an empty C<$pin2>
+-- dies with its own message, unchanged, so it is never reported as a wrong
+PIN2.
+
+=cut
+
 # decrypt_all_to_disk used to live here: it wrote every decrypted key to
 # .ocp/keys/<name>[.pub]. It had no caller anywhere in lib/ or bin/, but its
 # POD promised the layout, so the docs and a deploy plan both assumed
@@ -660,10 +712,9 @@ sub _aes_decrypt {
     my $plaintext = $ae->decrypt_add($ciphertext);
     my $ok = $ae->decrypt_done($tag);
 
-    # A wrong PIN2 ends here. OCP::ClusterKey and OCP::Cmd::Apply tell it
-    # from every other failure by this line: change it, change them
-    # (t/391-*.t hold both).
-    die "AES-GCM authentication failed\n" unless $ok;
+    # A wrong PIN2 ends here; is_wrong_pin2 tells it from every other
+    # failure by this line (k427; t/391-*.t, t/427-*.t).
+    die $WRONG_PIN2 unless $ok;
 
     return $plaintext;
 }

@@ -206,12 +206,10 @@ sub execute {
         die "ERROR: No PIN2 given, cannot decrypt the admin key.\n"
             unless defined $pin2 && length $pin2;
 
-        # A wrong PIN2 dies in the PIN2 layer's decrypt, "AES-GCM authentication
-        # failed" (k391): refused as a PIN2 problem, as OCP::ClusterKey does.
-        # Any other failure (keys.yaml itself) keeps its own words.
-        $admin_key = eval { $keys->get_admin_key($pin2) };
-        die $@ if !$admin_key && $@ && $@ !~ /\AAES-GCM authentication failed/;
-        die "ERROR: Wrong PIN2 or no admin-key found!\n" unless $admin_key;
+        # Only a wrong PIN2 is refused as one (k391, k427), as OCP::ClusterKey
+        # does. Any other failure (keys.yaml itself) keeps its own words.
+        $admin_key = $keys->unlock_admin_key($pin2)
+            or die "ERROR: Wrong PIN2 or no admin-key found!\n";
 
         print "[ok] admin-key decrypted: $admin_key->{name}\n";
         print "[ok] Admin authenticated\n\n";

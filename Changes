@@ -41,7 +41,9 @@ Revision history for OCP
       instead of "AES-GCM authentication failed"; an empty PIN2 at `ocp
       apply` is refused by name instead of ending in an internal error.
       Other failures keep their own message rather than being blamed on the
-      PIN2.
+      PIN2
+      (a `.ocp/age.key` that does not open `keys.yaml` included), and an empty
+      PIN2 at `ocp keys secure` is refused by name.
     - When `ocp apply` finds no kubeconfig.yaml while reconciling, it says so
       on STDERR in the same words as the other commands and ends with exit 1
       as they do, instead of "Make sure .ocp/age.key exists." on STDOUT and
