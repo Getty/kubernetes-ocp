@@ -27,14 +27,14 @@ option keep_machine => (
     doc => 'Remove the OCPNode but leave its machine as it is: no server delete, no uninstall',
 );
 
-# What node rm reads of ocp.yaml, declared as its spec_paths: the bootstrap
-# key's path (ssh:, cluster_ssh_key), for an ssh node's teardown. Which node
-# that is only the cluster knows, so it is declared for every node but
-# --keep-machine, which contacts no machine. OCP::Role::Cmd refuses its
-# lines, validate()'s own, before the cluster is asked (k400).
+# What node rm reads of ocp.yaml, declared as its spec_paths: what
+# cluster_ssh_key reads (cluster_ssh_key_spec_paths, k438), for an ssh node's
+# teardown. Which node that is only the cluster knows, so it is declared for
+# every node but --keep-machine, which contacts no machine. OCP::Role::Cmd
+# refuses its lines, validate()'s own, before the cluster is asked (k400).
 sub spec_paths {
     my ($self) = @_;
-    return $self->keep_machine ? () : ('ssh');
+    return $self->keep_machine ? () : $self->cluster_ssh_key_spec_paths;
 }
 
 has k8s => (is => 'rw');

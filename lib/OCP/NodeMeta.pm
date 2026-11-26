@@ -114,10 +114,17 @@ sub parse_label {
 # ocp.yaml's pool labels / taints in OCPNode spec shape: label values as
 # strings, taints parsed from "key=value:Effect". Empty when none are set;
 # OCP::Config->validate has reported anything malformed before.
+#
+# A labels: that is no mapping, or a label that is no label, is refused as
+# spec_taints refuses taints (k438), in label_errors' words -- validate()'s --
+# under "worker pool: labels", the first of them: it dropped both without a
+# word. The same net behind the check every command runs first (k400).
 sub spec_labels {
   my ( $self, $labels ) = @_;
-  return {} unless ref $labels eq 'HASH';
-  return { map { $_ => ''.$labels->{$_} } grep { defined $labels->{$_} && !ref $labels->{$_} } keys %$labels };
+  return {} unless defined $labels;
+  my ($err) = $self->label_errors( 'worker pool: labels', $labels );
+  die $err."\n" if defined $err;
+  return { map { $_ => ''.$labels->{$_} } keys %$labels };
 }
 
 # A taints: that is no list, or an entry that is no taint, is refused in
@@ -358,7 +365,9 @@ that go to a user as they are.
 
 An F<ocp.yaml> worker pool's C<labels> mapping and C<taints> list in OCPNode
 spec shape. C<spec_taints> dies naming what is wrong when C<taints> is set
-and is no list, or holds an entry that is no taint.
+and is no list, or holds an entry that is no taint; C<spec_labels> likewise,
+with the first line of L</label_errors>, when C<labels> is set and is no
+mapping, or holds a key or value that is no label's.
 
 =method label_errors
 

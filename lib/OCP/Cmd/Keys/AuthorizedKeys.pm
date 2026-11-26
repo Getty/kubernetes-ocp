@@ -21,15 +21,17 @@ option purpose => (
 );
 
 # What authorized-keys reads of ocp.yaml, declared as its spec_paths: in dev
-# mode (no keys.yaml) the bootstrap key's public path (ssh:, _dev_mode_key),
-# for every purpose but operator, which dev mode refuses before reading it.
-# OCP::Role::Cmd refuses its lines, validate()'s own, on STDERR before
-# anything is printed (k400). Secure mode reads nothing of ocp.yaml.
+# mode (no keys.yaml) the bootstrap key's public path (_dev_mode_key), one of
+# the ssh: paths cluster_ssh_key reads, declared through
+# cluster_ssh_key_spec_paths (k438), for every purpose but operator, which
+# dev mode refuses before reading it. OCP::Role::Cmd refuses its lines,
+# validate()'s own, on STDERR before anything is printed (k400). Secure mode
+# reads nothing of ocp.yaml.
 sub spec_paths {
     my ( $self, $config ) = @_;
     return () if OCP::Keys->new( project_dir => $config->project_dir )->has_keys_file
         || ( $self->purpose // '' ) eq 'operator';
-    return ('ssh');
+    return $self->cluster_ssh_key_spec_paths;
 }
 
 # Which key does what, in secure mode (k209). Two keys reach machines, and an
