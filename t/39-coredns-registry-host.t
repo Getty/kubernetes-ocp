@@ -586,7 +586,7 @@ sub lb_ipam_pool {
     );
 
     my @applied;
-    my ($out, $err) = ('', '');
+    my ($out, $stderr, $err) = ('', '', '');
     {
         no warnings 'redefine';
         local *OCP::Cmd::Apply::_server_side_apply_all = sub {
@@ -595,15 +595,18 @@ sub lb_ipam_pool {
             die "stop\n";
         };
         open my $fh, '>', \$out or die $!;
+        open my $efh, '>', \$stderr or die $!;
         local *STDOUT = $fh;
+        local *STDERR = $efh;
         eval { $apply->_setup_lb_ipam($host); 1 } or $err = $@;
     }
 
     my ($pool) = grep { $_->{kind} eq 'CiliumLoadBalancerIPPool' } @applied;
     return {
         cidr => $pool ? $pool->{spec}{blocks}[0]{cidr} : undef,
-        out  => $out,
-        err  => $err,
+        out    => $out,
+        stderr => $stderr,
+        err    => $err,
     };
 }
 
@@ -632,8 +635,8 @@ subtest 'a node with nothing but loopback is warned about, not guessed at' => su
     my $r = lb_ipam_pool('127.0.0.1', LbAddr->new(InternalIP => '127.0.0.1'));
 
     is $r->{cidr}, '127.0.0.1/32', 'no address is invented';
-    like $r->{out}, qr/WARNING: Only loopback IP available/,
-        'the pool that will not work externally is called out';
+    like $r->{stderr}, qr/\[WARN\] Only loopback IP available/,
+        'the pool that will not work externally is called out, on STDERR (k462)';
 };
 
 subtest 'a name that resolves to nothing stops the step' => sub {
