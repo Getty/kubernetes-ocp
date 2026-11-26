@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-26T06:17:08Z
+created: 2026-11-07T00:33:09Z
+id: 427
+priority: low
+started: 2026-11-26T05:32:09Z
+status: done
+tags:
+- secrets
+- ux
+title: require_admin_approval and Keys::Secure call any get_admin_key failure a wrong
+  PIN2
+updated: 2026-11-26T06:17:08Z
+---
+
+Found on k391 (secrets + apply workers). Role::Cmd::require_admin_approval (~:696) and Keys::Secure (:264) wrap get_admin_key in a blanket eval: a .ocp/age.key that does not open keys.yaml, with the right PIN2, is reported as Wrong PIN2. ClusterKey and Apply now catch only the AES-GCM line (k391). Also require_admin_approval builds OCP::Keys without age_key (breaks a dry run on a clone if ever used there). A small OCP::Keys helper that recognises a wrong PIN2 would replace the three copies of the regex. Lane: secrets.
+
+2026-11-26 05:40 Done: OCP::Keys gains is_wrong_pin2($error) (true only for the exact line _aes_decrypt dies with, now one lexical constant) and unlock_admin_key($pin2, $name) (get_admin_key; nothing for a wrong PIN2, every other failure rethrown unchanged). All four PIN2 sites use it: Role::Cmd require_admin_approval and Keys::Secure _staged_keys (were blanket evals: a foreign .ocp/age.key or a private half the age key does not open, with the right PIN2, read 'Wrong PIN2'), ClusterKey and Cmd::Apply (were the k391 regex copies; same behaviour). Keys::Secure also says 'No PIN2 given' for an empty PIN2 instead of folding get_admin_key's croak into 'Wrong PIN2'. Not changed: require_admin_approval still builds OCP::Keys without age_key -- every caller (inject-key, secret_approved) runs ensure_age_key first, which caches .ocp/age.key, and none runs under dry-run; threading the caller's in-memory key through means a signature change in the apply lane for a path nobody takes -- left for a card if wanted. Repro: new t/427-wrong-pin2-only.t red against HEAD (foreign age key / foreign private half blamed on PIN2, in both gates; empty PIN2 in keys secure), green after. Verified in the image: t/427, t/391-wrong-pin2, t/391-apply-pin2-kubeconfig, t/05, t/71, t/216, t/96, t/18c, t/38, t/396, t/129, t/169, t/329, t/89, t/87 pass.
