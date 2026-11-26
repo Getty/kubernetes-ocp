@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-26T06:19:46Z
+created: 2026-11-07T00:01:28Z
+id: 424
+priority: low
+started: 2026-11-26T05:17:58Z
+status: done
+tags:
+- secrets
+- keys
+title: 'Check: ocp keys secure writes .ocp/keys.yaml.pending with plain spew and never
+  makes .ocp/'
+updated: 2026-11-26T06:19:46Z
+---
+
+Found by the k372 secrets worker, not run-verified. On a dev-mode clone under SOPS_AGE_KEY_FILE with no .ocp/, the pending write would probably fail (no directory), and it is a plain spew (umask mode). Reproduce first; if real, route it through OCP::StateDir::make_parent and a 0600 create. Lane: secrets.
+
+2026-11-26 05:25 Checked, not real -- no code change. Repro (in the image, scratch script, not in t/): dev-mode clone with only the committed files, no .ocp/, SOPS_AGE_KEY_FILE set to the project key, umask 022, OCP::Cmd::Keys::Secure->_staged_keys with PIN2 stubbed. Result: pending written; .ocp/ 0700 with its .gitignore; no plaintext key left behind. Why: add_cluster_keys calls Secrets::generate_ssh_key (ssh-keygen needs a file) before add_key writes the staging file, and generate_ssh_key makes .ocp/ through OCP::StateDir::make_parent. keys.yaml.pending is 0644 (umask), but it is the same SOPS document as keys.yaml, which is spewed at umask mode and committed: SOPS layer to the recipients, private halves age-encrypted to the project key, admin additionally PIN2. No plaintext lands, so a 0600 create buys nothing; left as is. Also found (not in scope): ssh-keygen's own output (key fingerprint, randomart) goes to STDOUT from generate_ssh_key during ocp init / ocp keys secure -- noise on the payload channel per the output-channels rule; candidate for a secrets-lane card (send ssh-keygen stdout to /dev/null or STDERR).
