@@ -481,7 +481,13 @@ subtest 'reconcile forms no verdict of its own' => sub {
 
 package CertManagerGate::Api {
     sub new { my ($c, %a) = @_; bless { have => $a{have} // {}, %a }, $c }
-    sub get { die "404 unexpected get\n" }
+    # ensure_crds reads each OCP CRD with a typed get before it writes it
+    # (k291, k471): this cluster has none, a 404. No other get is expected.
+    sub get {
+        my ($s, $kind) = @_;
+        die "Kubernetes API error (get $kind): 404 NotFound\n" if $kind eq 'CustomResourceDefinition';
+        die "404 unexpected get\n";
+    }
     sub list {
         my ($s, $kind) = @_;
         return $kind eq 'Node' ? { items => [] } : { items => [] };

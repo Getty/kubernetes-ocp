@@ -63,8 +63,7 @@ use YAML::XS ();
         return 1;
     }
     # _server_side_apply falls back to a hand-built path when the kind is not
-    # a registered class, then PATCHes the raw manifest. ensure_crds reads
-    # each CRD first (k291): this cluster has none yet, which is a 404.
+    # a registered class, then PATCHes the raw manifest. A raw GET is a 404.
     sub _request {
         my ($self, $method, $path, $body, %opts) = @_;
         return FakeResponse->new(404, '{"kind":"Status","code":404}') if $method eq 'GET';
@@ -75,6 +74,10 @@ use YAML::XS ();
     sub get {
         my ($self, $kind, $name, %args) = @_;
         push @{$self->{calls}}, ['get', $kind, $name, \%args];
+        # ensure_crds reads each CRD first (k291), with a typed get (k471):
+        # this cluster has none yet, which is a 404.
+        die "Kubernetes API error (get $kind): 404 NotFound\n"
+            if $kind eq 'CustomResourceDefinition';
         if ($kind eq 'Deployment') {
             return $self->{deployments}{$name};
         }
