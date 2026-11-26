@@ -188,6 +188,24 @@ passphrase directly and skips both the check and the prompt.
 
 =cut
 
+=method can_prompt
+
+    $secrets->ensure_age_key if OCP::ClusterKey->can_prompt;
+
+Whether anybody can be asked for a PIN in this run: C<$OCP::ClusterKey::INTERACTIVE>
+when it is defined, else C<--pins-stdin> (C<$OCP::Password::PINS_STDIN>) or a
+terminal on STDIN. The one rule every command consults before it prompts --
+the PIN2 guard here, C<ocp destroy>'s PIN1 unlock, C<ocp keys secure> -- so a
+change to it cannot leave one of them behind (k434).
+
+=cut
+
+sub can_prompt {
+    my ($class) = @_;
+    return $INTERACTIVE if defined $INTERACTIVE;
+    return $OCP::Password::PINS_STDIN || -t STDIN;
+}
+
 =method cache_slot
 
     my $slot = OCP::ClusterKey::cache_slot($config, %opt);
@@ -495,8 +513,7 @@ sub _unlock_admin_key {
     # STDIN up front, and OCP::Password dies naming the PIN if it is missing
     # rather than blocking, which is the failure this guard exists to avoid.
     my $interactive = exists $opt{interactive} ? $opt{interactive}
-                    : defined $INTERACTIVE     ? $INTERACTIVE
-                    :   $OCP::Password::PINS_STDIN || -t STDIN;
+                    : __PACKAGE__->can_prompt;
     unless ($interactive || defined $opt{pin2}) {
         die "ERROR: This cluster's machines trust the admin key (secure mode, "
           . "provider '$provider'),\n"

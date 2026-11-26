@@ -11,7 +11,6 @@ use OCP::Choices;
 use OCP::ClusterKey ();
 use OCP::Config;
 use OCP::ErrorLine ();
-use OCP::Password ();
 use OCP::Provider;
 use OCP::Secrets;
 
@@ -843,9 +842,10 @@ sub _say_hetzner_control_plane {
 #
 # Only where the lookup would need it: dev mode (no keys.yaml) reaches the
 # machines with the bootstrap key, which needs no age key. And PIN1 only with
-# someone to ask, in OCP::ClusterKey's test for it (_unlock_admin_key): with
-# nobody there the lookup refuses before it asks, the downgrade it always
-# was, and a PIN1 asked here would read a pipe. No key at all is left to the
+# someone to ask, by the rule the PIN2 prompt follows too (OCP::ClusterKey
+# can_prompt, k434): with nobody there the lookup refuses before it asks, the
+# downgrade it always was, and a PIN1 asked here would read a pipe. No key at
+# all is left to the
 # lookup as well: it refuses, and the uninstalls are skipped, as destroy goes
 # on without the API then (k399).
 sub _ssh_key_age_key {
@@ -860,9 +860,7 @@ sub _ssh_key_age_key {
         $secrets->check_local_age_key;
         return;
     }
-    my $asks = defined $OCP::ClusterKey::INTERACTIVE ? $OCP::ClusterKey::INTERACTIVE
-             : $OCP::Password::PINS_STDIN || -t STDIN;
-    $secrets->ensure_age_key if $asks;
+    $secrets->ensure_age_key if OCP::ClusterKey->can_prompt;
     return;
 }
 

@@ -602,11 +602,7 @@ sub _bootstrap_blob {
     return $self->_key_blob($line);
 }
 
-sub _can_prompt {
-    my ($self) = @_;
-    return $OCP::ClusterKey::INTERACTIVE if defined $OCP::ClusterKey::INTERACTIVE;
-    return $OCP::Password::PINS_STDIN || -t STDIN;
-}
+sub _can_prompt { OCP::ClusterKey->can_prompt }
 
 sub _find_share_dir { OCP::Share->dir }
 
