@@ -198,10 +198,23 @@ What a doubled `hosts` plugin does to name resolution depends on how CoreDNS
 meets the Corefile. CoreDNS rejects the configuration. On a reload it keeps
 serving the configuration it already had, and on a restart it does not start.
 "Does not resolve" is therefore strictly true only after a restart. This comes
-from CoreDNS's `reload` plugin documentation, not from a run here. The probe's
-message and the POD in `OCP::Drift`, `OCP::Corefile` and
-`OCP::Cmd::Apply::Network` still say it without that condition (the k348
-wording). That wording lives in `lib/` and is left to k440.
+from CoreDNS's `reload` plugin documentation, not from a run here. The k348
+wording ("CoreDNS refuses the Corefile", stated without that condition) is
+gone from `lib/` since k440 (39a1d2e). The probe's and the writer's messages,
+and the POD in `OCP::Drift`, `OCP::Corefile` and `OCP::Cmd::Apply::Network`,
+now say CoreDNS *rejects* the Corefile. The messages add, through
+`OCP::Drift::corefile_rejected`, that a running CoreDNS keeps serving its
+previous Corefile and a restarted one does not start.
+
+k440 added a second kind of Corefile that CoreDNS rejects: two server blocks
+that share a key ("already defined"), in the Corefile or across it and
+a `coredns-custom` snippet. Both sides check it first, with
+`OCP::Corefile::doubled_key`, before the doubled `hosts` plugin and before any
+record is read. `block_for` would take the first of the two, and CoreDNS takes
+neither. OCP adds and removes no server block, so the writer refuses
+(`configure_registry_dns` dies, `ocp apply leaves it as it is`), and the probe
+reports a `spec` entry with a `manual_step` that names the key. A snippet that
+maps the name to the control plane does not count as solved there either.
 
 The decision did not move. The snippet is still the operator's: OCP reads it
 and does not write it. What changed is the condition for counting it as
