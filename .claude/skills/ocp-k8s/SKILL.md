@@ -30,7 +30,8 @@ $api->k8s->add('IO::K8s::Cilium', 'IO::K8s::CertManager', 'IO::K8s::GatewayAPI')
 ```
 
 - Use `$api->list('Node')`, `$api->get('Deployment', $name, namespace => $ns)`
-- CRDs without IO::K8s classes: use raw `$api->_request('GET', $path)` and `JSON::PP::decode_json`
+- A CustomResourceDefinition is a typed read too, see "CRD Access Pattern"
+- Custom resources without IO::K8s classes: `crd_get`, see "CRD Access Pattern"
 - New objects: `$api->new_object('Job', metadata => {...}, spec => {...})`
 
 ## Hash-Based Reconciliation
@@ -74,11 +75,33 @@ Pluralization: standard K8s rules (s, es, ies).
 
 ## CRD Access Pattern
 
+**A CustomResourceDefinition** is a typed `get('CustomResourceDefinition', name => …)` (k471),
+never a `/customresourcedefinitions/` path (t/406 fails on one):
+
 ```perl
-my $path = '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy';
-my $response = $api->_request('GET', $path);
-my $obj = JSON::PP::decode_json($response->content) if $response->status < 400;
+my $crd = OCP::Drift->cluster_crd($api, 'ocpnodes.ocp.internal');   # plain hashref
 ```
+
+- `OCP::Drift->cluster_crd($api, $name)` returns the CRD as a plain hashref
+  (`object_to_struct`), `undef` only on 404, and dies with the client's error otherwise.
+- Writers (apply, deploy-robocop) use `OCP::Cmd::Apply::K8s::crd_read($self, $api, $name)`
+  (through the `_crd_read` wrappers in `Apply.pm` / `DeployRobocop.pm`, which tests override):
+  same result, but a non-404 failure dies `could not read CustomResourceDefinition <name>: <cause>`.
+- Neither calls `_request`.
+
+**Custom resources without IO::K8s classes** (Gateway, nvidia ClusterPolicy, ResourceSlice
+list, LB-IPAM pool list) go through `crd_get($self, $api, $path)` in `OCP::Cmd::Apply::K8s`
+(wrapper `_crd_get`): a raw `_request('GET', $path)`, decoded. `undef` only on 404; any other
+failure, or a non-JSON body, dies with the cause.
+
+```perl
+my $policy = $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy');
+```
+
+**`_request` is the one sanctioned private call into Kubernetes::REST** (allowlist `%ESCAPE`
+in t/406): SSA of a manifest, `crd_get`, and the robocop pod DELETE with `gracePeriodSeconds`
+in `Apply/CR.pm` (Kubernetes::REST `delete` lacks it, k420). Any other `->_name` call on
+Kubernetes::REST fails t/406.
 
 ## Namespace Creation
 
