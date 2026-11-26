@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-26T08:37:01Z
+created: 2026-11-07T02:50:21Z
+id: 433
+priority: low
+started: 2026-11-26T06:27:13Z
+status: done
+tags:
+- errors
+- provider
+title: OCP::Role::Cmd provider_crs swallows a failed OCPNodeProvider list
+updated: 2026-11-26T08:37:01Z
+---
+
+Found by k396 (fef5289), not fixed there. OCP::Role::Cmd::provider_crs takes a failed list of OCPNodeProvider CRs for an empty one, so ocp destroy (and every other caller) goes on as if the cluster had no provider CR, with nothing said. It should say the failure in one line (OCP::ErrorLine user_line), as the OCPNode list failure does since k396. Cross-cutting lane (role used by several commands).
+
+2026-11-26 06:27 Cause: OCP::Role::Cmd::provider_crs did eval{list} or return (). Fix: dies 'ERROR: Could not read the OCPNodeProviders from the cluster API: WHY' (WHY = OCP::ErrorLine user_line // one_line, as the OCPNode list since k396); unread => \my $why for callers that go on. Callers: provider_cr + node add die with it (were 'No OCPNodeProvider exists' / 'Unknown provider'); destroy says it on STDERR and goes on, _no_token_reason names it; Machines::_uses_hetzner returns undef + STDERR line -> keys secure counts the upload not done (rc 1), operator add prints the Hetzner note. New t/433-provider-list-failure.t, red against HEAD lib (9/13 subtests), green with fix.
+
+2026-11-26 06:34 Also found (not fixed, outside the card): lib/OCP/Cmd/Node/Rm.pm _node_names has the same shape -- a failed OCPNode list while building the unknown-node rejection says 'No OCPNode exists in this cluster'. Comment there updated only (it cited provider_crs as tolerant). Candidate card for the ocp board.
+
+2026-11-26 06:42 Done, uncommitted in worktree. lib/OCP/Role/Cmd.pm (provider_crs dies with one line or fills unread=>; provider_cr comment+POD), lib/OCP/Cmd/Destroy.pm (_say_providers_unread, _providers_unread, _no_token_reason), lib/OCP/Role/Cmd/Machines.pm (_uses_hetzner undef+STDERR), lib/OCP/Cmd/Keys/Secure.pm (unknown -> rc 1 + hint), lib/OCP/Cmd/Keys/Operator/Add.pm (note on unknown), lib/OCP/Cmd/Node/Rm.pm (comment only), Changes bullet, t/433-provider-list-failure.t. Verified: make test TAG=xcut on t/433 + 37 caller tests (destroy, node add/rm, keys, provider) PASS; t/433 red vs HEAD lib.
+
+2026-11-26 08:36 Committed 909bce5
