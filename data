@@ -1,0 +1,25 @@
+---
+class: standard
+completed: 2026-11-26T08:41:18Z
+created: 2026-11-07T02:52:52Z
+id: 437
+priority: low
+started: 2026-11-08T01:08:06Z
+status: done
+tags:
+- errors
+- wording
+title: 'ocp apply says an API error as Kubernetes API error (verb): CODE json, status
+  and drift as api_error_line'
+updated: 2026-11-26T08:41:18Z
+---
+
+Found by k403. The apply lane (read_or_absent, read_or_why, crd_get and their WARN and !! lines) says a failed read as could not read X: Kubernetes API error (get): CODE followed by the raw JSON body. ocp status, drift and destroy say the same error through OCP::ErrorLine api_error_line, a line naming the server and the reason. About 25 claims in 12 test files pin the apply wording, which is why k403 kept it. Decide one wording, then move the apply lane onto it. Wording decision first, then ocp-apply-worker.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): the apply lane says a failed API read through OCP::ErrorLine api_error_line, like status, drift and destroy; the raw JSON body goes. The ~25 pinned claims in 12 test files move with it. Build after the release.
+
+2026-11-26 07:03 Done (uncommitted). Per the 2026-11-08 decision the apply lane says a failed API read via OCP::ErrorLine::cause_line (= api_error_line for an APIError, with the endpoint set_cluster_endpoint holds): Apply/K8s.pm read_or_absent, read_or_why, resource_exists, poll_deployment_ready; crd_get builds a Kubernetes::REST::APIError from an error response and says 'GET P failed: <api_error_line>' (was 'HTTP N body', no 400-char cut any more); every apply-lane [!!]/[WARN] one_line site in Apply/Drift, Deploy, AMDGPU, Network(gateway host network), CR (warn_install_time_changes, migrate_legacy_nodes, retire_unannotated_robocop_pods) -> cause_line; OCP::Drift nvidia_gpu_nodes (the apply GPU step's read, promised read_or_absent's words) too. Left: CR.pm ensure_cp_ocpnode's two one_line WARNs (k417 is in that sub concurrently) -- one-word follow-up. Also fixed in ErrorLine::api_error_line: a Status body WITHOUT a message was said as its raw JSON (message // body), against its own POD; now code+reason only. That changes drift/status for such a body: t/25 and t/268 claims now match the reason in words. Claims moved: t/228 233 251 269 273 290 291 300 311 319 327 328 329 351 403 436 (+t/25, t/268). New t/437-apply-api-error-line.t (fails on pre-k437 tree). make test TAG=errline on 95 API-error/apply/drift/destroy/status files: PASS.
+
+2026-11-26 08:40 Committed cf11c2c
