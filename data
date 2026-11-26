@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-26T09:58:34Z
+claimed_by: ocp-k468
+class: standard
+completed: 2026-11-26T09:58:34Z
+created: 2026-11-26T08:47:01Z
+id: 468
+priority: high
+started: 2026-11-26T08:47:25Z
+status: done
+tags:
+- robocop
+- k417
+- regression-risk
+title: robocop may mark a NotReady local police1 Failed since k417 writes it Joining
+updated: 2026-11-26T09:58:34Z
+---
+
+Found by the adr-auditor while verifying the k417 ADR 0017 amendment (read from code, not run). Since k417 (9647f1d) ensure_cp_ocpnode writes police1 Joining when its Node is not Ready. robocop resync picks up every Joining OCPNode whatever its role and loads its providerRef before handing over; it marks the OCPNode Failed when the provider cannot be loaded. A local control plane points at local-default, which ensure_providers never writes. So on a cluster with a local control plane and robocop running, a NotReady police1 could be marked Failed (terminal). Watch events took this path before k417 too, but k417 makes the Joining state common. Done = robocop leaves observational control-plane OCPNodes (police1 / role control-plane written by ocp apply) alone, or only mirrors their Node Ready state, never marks them Failed for a missing provider; regression test in t/ with a Joining police1 on local-default. Lane: ocp-robocop-worker (check with ocp-state-worker on the observational OCPNode contract).
+
+2026-11-26 08:50 Reproduced (t/468-robocop-observed-control-plane.t, make test): a Joining police1 on providerRef local-default with no such OCPNodeProvider is marked Failed by the resync; the same for a Ready police1 on any watch event (pre-k417 path). Cause: Controller::_on_node_event loads the provider before OCP::Node for every phase, but OCP::Node's Joining (_wait_ready) and Ready (_verify) never use it. Fix plan: a control-plane OCPNode in Joining/Ready is reconciled without loading the provider (mirrors its Node only); Pending/Provisioning/Installing control planes (police2+) still need it.
+
+2026-11-26 08:52 Also found (apply lane, ocp-apply-worker): the ensure_cp_ocpnode comment in lib/OCP/Cmd/Apply/CR.pm still says 'robocop only ever reconciles workers ... no reconcile loop reads it back', contradicting its own k417 paragraph and robocop's actual behavior (it reconciles police1 via watch/resync). Open question for the dispatcher: a Joining/Ready WORKER whose OCPNodeProvider is gone is still marked Failed although OCP::Node does not need the provider in those phases either; left as is (scope: control planes).
+
+2026-11-26 08:52 Done, uncommitted in worktree. Controller::_on_node_event: a role control-plane OCPNode in Joining or Ready is handed to OCP::Node without loading its OCPNodeProvider (new _node_only; provider load moved into _load_provider, unchanged otherwise) -- it only mirrors its Node's Ready. Pending/Provisioning/Installing control planes and all workers load the provider as before. No change to ensure_cp_ocpnode needed (role + phase are the marker). Test t/468-robocop-observed-control-plane.t: 3 of 4 subtests red before the fix (resync Joining, watch Joining->Ready, watch Ready all marked Failed), green after. make test TAG=k468 on t/468 + 25 robocop/node tests: Files=26 Tests=322 PASS. Changes bullet added.
+
+Committed afc4443; binding suite green on main ce487f1 (340 files, 4789 tests)
