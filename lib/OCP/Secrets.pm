@@ -789,7 +789,8 @@ sub rotate_sops_files {
 # File::SOPS 0.001 and 0.002 wrote `lastmodified` as a PLAIN scalar, and OCP
 # images from 0219cfa to 80f3b36 carried 0.002. go-yaml resolves a bare
 # RFC3339 scalar to a time.Time where sops wants a string, so `sops -d`
-# refuses such a file (exit 1), and File::SOPS 0.005 warns on every read.
+# refuses such a file (exit 1), and File::SOPS warns on every read of one
+# (0.006, the pinned release, still does -- rotate's own read included).
 # Every write since 0.003 quotes it -- but OCP rewrites a file only when its
 # content or its recipients change, so a project at rest stays bare.
 #
@@ -863,21 +864,25 @@ sub bare_sops_lastmodified_files {
            grep { -f $_ && $self->_sops_lastmodified_bare($_->slurp_raw) } $self->_sops_files;
 }
 
-# Does this SOPS document carry its lastmodified as a bare timestamp? Read off
-# the text, because the parsed value is the same string either way. Only the
-# root `sops:` mapping counts -- `sops:` at column 0, through the indented
-# lines below it -- so a user's own `lastmodified` elsewhere never matches. A
-# quoted ("...", '...') or tagged (!!str) value never matches, which is what
-# keeps a second run a no-op. Shapes OCP never writes (flow style, the value
-# on the next line) do not match either: missing those leaves a file bare,
-# while a false match would rewrite a file for nothing.
+# Does this SOPS document carry its lastmodified as a bare timestamp? Asked of
+# File::SOPS->has_bare_lastmodified (k416): the check File::SOPS's read-side
+# warning makes, over the same load, so 1 here is exactly "File::SOPS warns on
+# reading this" -- no regex of our own to drift from it. It reads the style
+# off the YAML parser, so the shapes a hand edit produces (flow style, the
+# value on the next line, `? lastmodified`) count; a quoted or !!str value
+# does not, which is what keeps a second run a no-op; and only the root
+# `sops:` mapping is asked about, so a user's own `lastmodified` never counts.
+#
+# A document YAML::XS cannot read makes it croak, and here that answers 0.
+# The repair is cosmetic: an unreadable file cannot be rotated either, and
+# the run's own read of it is where that failure belongs. A croak here would
+# put the same YAML::XS message ahead of that read, as a repair failure, and
+# end a dry run (bare_sops_lastmodified_files) over a repair it only names.
 sub _sops_lastmodified_bare {
     my ($self, $raw) = @_;
 
-    my ($block) = $raw =~ /^sops:[ \t]*\n((?:[ \t][^\n]*\n?|\n)*)/m
-        or return 0;
-    return $block =~ /^[ \t]+lastmodified:[ \t]+\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)[ \t]*$/m
-        ? 1 : 0;
+    my $bare = eval { File::SOPS->has_bare_lastmodified(encrypted => $raw, format => 'yaml') };
+    return $bare ? 1 : 0;
 }
 
 #

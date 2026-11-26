@@ -5,6 +5,9 @@ Revision history for OCP
       without loading its OCPNodeProvider, so a local control plane
       (providerRef local-default, which `ocp apply` never writes) is not
       marked Failed for a missing provider; it writes Ready once its Node is.
+    - `ocp apply` repairs more bare `lastmodified` shapes in SOPS files (a
+      value on the next line, `? lastmodified`, a flow-style `sops` mapping),
+      and a file with invalid YAML is no longer reported as a failed repair.
     - `ocp status` reports a changed `gateway.node_selector` as drift under
       `gateway.mode: host_network`, with the same manual step as a changed
       gateway mode (`ocp update --component cilium --force`).
