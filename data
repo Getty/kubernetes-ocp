@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-26T11:36:44Z
+created: 2026-11-26T10:10:21Z
+id: 472
+priority: low
+started: 2026-11-26T11:15:24Z
+status: done
+tags:
+- gpu
+title: Real ocp apply repeats 'the GPU Operator check below re-applies the manifest'
+  per ClusterPolicy path; stale gpu_crds_differing comment
+updated: 2026-11-26T11:36:44Z
+---
+
+Left from k469 (dry-run side fixed there). (1) The real run still prints "the GPU Operator check below re-applies the manifest" once per differing ClusterPolicy path; say it once, like the dry run since k469. (2) lib/OCP/Drift.pm gpu_crds_differing: its code comment says it returns [name, label] pairs, the code returns names only (POD follows the code since k442). Lane: ocp-infra-worker.
+
+2026-11-26 11:16 Done, uncommitted in worktree. (1) lib/OCP/Cmd/Apply/Drift.pm reconcile_components: ClusterPolicy spec entries are named one per line, 'the GPU Operator check below re-applies the manifest' said once after them (as the dry run since k469). (2) lib/OCP/Drift.pm gpu_crds_differing comment: returns names, not [name, label]. Test: t/38-reconcile-path.t subtest k472 (two paths, re-apply once after them) - red before the fix (said twice), green after. Also, at the coordinator's request, own hunk for k471: lib/OCP/Cmd/Apply/K8s.pm crd_get comment rewritten (raw GET for custom resources without IO::K8s class; CRDs via crd_read). Verified: make test TAG=gpu3 on t/313 t/233 t/228 t/38 t/273 t/471 t/269 t/437 - All tests successful (145).
+
+Committed 930abe7; make test green (342 files, 4810 tests)
