@@ -1194,8 +1194,11 @@ sub retire_unannotated_robocop_pods {
     }
 
     for my $name (@old) {
-        # No delete() option for it in Kubernetes::REST: DeleteOptions go out
-        # as query parameters. A pod that is gone already (404) is fine.
+        # The raw escape on purpose (k420): Kubernetes::REST's delete takes
+        # propagationPolicy and nothing else (1.111, the pin) and croaks on
+        # any other option, so a grace period cannot go through it.
+        # DeleteOptions go out as query parameters. A pod that is gone
+        # already (404) is fine.
         my $resp = eval {
             $api->_request('DELETE', "/api/v1/namespaces/ocp-system/pods/$name",
                 undef, parameters => { gracePeriodSeconds => 30 });

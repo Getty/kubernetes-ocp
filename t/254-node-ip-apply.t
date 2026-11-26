@@ -539,7 +539,7 @@ package BootNode   { sub new { bless { struct => $_[1] }, $_[0] } sub status { B
 package BootIO     { sub new { bless {}, shift } sub object_to_struct { $_[1]{struct} } }
 package BootApi {
     sub new      { my ($c, @nodes) = @_; bless { nodes => [ map { BootNode->new($_) } @nodes ] }, $c }
-    sub _request { 1 }
+    sub get      { +{ metadata => { name => $_[2] } } }   # the connectivity check (k420)
     sub list     { FakeList->new($_[0]{nodes}) }
     sub k8s      { BootIO->new }
 }

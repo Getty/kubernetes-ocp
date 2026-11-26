@@ -303,7 +303,7 @@ subtest 'k319 NFD: the label wait dies with its last failed read' => sub {
     # 'False'), or what the list dies with; the last answer repeating.
     package BootApi;
     sub new      { my ($c, @a) = @_; bless { nodes => [ @a ], lists => 0 }, $c }
-    sub _request { 1 }
+    sub get      { +{ metadata => { name => $_[2] } } }   # the connectivity check (k420)
     sub k8s      { BootIO->new }
     sub list {
         my ($self) = @_;

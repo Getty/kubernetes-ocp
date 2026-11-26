@@ -407,11 +407,14 @@ sub gpu_crd_drift {
 # The cluster's CRD $name, as ($crd, $unknown): the decoded CRD, or undef
 # when the cluster has none -- a 404, and only a 404 (k268). Any other failure
 # leaves $crd undef and makes $unknown its error entry (drift unknown, the
-# cause carped once), built from %e: in, component, label. The same raw GET
-# as OCP::Cmd::Apply::K8s::crd_get, which the writers use: a CRD has no
-# IO::K8s class OCP reads. _request hands an HTTP error status back as the
-# response rather than dying, so the status and body are the cause; a body
-# that does not decode is one too.
+# cause carped once), built from %e: in, component, label. The raw escape
+# on purpose (k420): it is the same GET as OCP::Cmd::Apply::K8s::crd_get,
+# which the writers use, and the drift check and the writers have to read a
+# CRD the same way -- the one compares what the other is about to write. A
+# typed get would do (IO::K8s ships CustomResourceDefinition), but only for
+# both at once. _request hands an HTTP error status back as the response
+# rather than dying, so the status and body are the cause; a body that does
+# not decode is one too.
 sub _read_crd {
     my ($self, $name, %e) = @_;
     require JSON::PP;

@@ -20,6 +20,10 @@ Revision history for OCP
       Corefile's own): CoreDNS rejects such a Corefile. The message names the
       key and both blocks, and says a running CoreDNS keeps serving its
       previous Corefile while a restarted one does not start.
+    - `ocp apply` warns when the bootstrap's reachability check of the
+      cluster API gets no answer (a connection error or an error status),
+      with the cause in one line; an API that did not answer used to read
+      "API server reachable".
     - `ocp node rm` of an unknown node, when the OCPNode list cannot be read,
       says "Could not read the OCPNodes from the cluster API: ..." in one line
       below the refusal, not "No OCPNode exists in this cluster".

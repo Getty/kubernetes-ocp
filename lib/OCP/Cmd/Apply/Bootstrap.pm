@@ -6,6 +6,7 @@ use warnings;
 
 use OCP::ClusterKey;
 use OCP::Config;
+use OCP::ErrorLine ();
 use OCP::Keys;
 use OCP::Node;
 use OCP::Provider;
@@ -775,14 +776,17 @@ sub bootstrap_control_plane {
     print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
     my $node_ready = 0;
     {
-        # Quick connectivity check first
-        my $api_ok = eval { $api->_request('GET', '/api/v1/namespaces/kube-system'); 1 };
+        # Quick connectivity check first: the kube-system Namespace, typed
+        # (k420). The raw _request it was hands back an error status as the
+        # response, and a transport failure too (Kubernetes::REST's 599), so
+        # only a request that died was ever warned about -- an API that did
+        # not answer read "reachable". get dies with an APIError for both.
+        my $api_ok = eval { $api->get('Namespace', 'kube-system'); 1 };
         if ($api_ok) {
             print "      API server reachable\n";
         } else {
-            my $reason = "$@";
-            chomp $reason;
-            print STDERR "  [WARN] API server may not be reachable: $reason\n";
+            print STDERR "  [WARN] API server may not be reachable: "
+                . OCP::ErrorLine::cause_line($@) . "\n";
         }
 
         # The Node named after the control plane, not the first one listed

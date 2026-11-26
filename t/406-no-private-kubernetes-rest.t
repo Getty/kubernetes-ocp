@@ -32,11 +32,9 @@ use Kubernetes::REST ();
 
 # What OCP still calls on purpose, with the reason.
 my %ESCAPE = (
-    _request        => 'the raw request escape, for a request with no typed call',
-    _build_path     => 'used next to _request in OCP::Cmd::Apply::K8s and the patch_status'
-                     . ' fallback of OCP::K8s; Kubernetes::REST also has a public build_path',
-    _check_response => 'used next to _request in the patch_status fallback of OCP::K8s;'
-                     . ' Kubernetes::REST also has a public check_response',
+    _request        => 'the raw request escape: server-side apply of a manifest, the CRD'
+                     . ' reads of OCP::Cmd::Apply::K8s::crd_get and OCP::Drift::_read_crd,'
+                     . ' the robocop pod DELETE with a grace period (k420)',
 );
 
 my @files = sort { "$a" cmp "$b" } ( modules_under('lib'), path('bin')->children );
@@ -83,6 +81,15 @@ subtest 'nothing calls or probes _clear_k8s or _has_k8s' => sub {
     for my $name (qw(_clear_k8s _has_k8s)) {
         is_deeply $used{$name} // [], [], "no ->$name" or diag explain $used{$name};
     }
+};
+
+# k420: _build_path and _check_response left the escape list -- OCP calls the
+# public build_path, and the patch_status fallback that called both is gone.
+# Claim 2 holds them to that; this names them, so a rename in Kubernetes::REST
+# that dropped them from %private cannot make that claim pass vacuously.
+subtest 'the private twins of a public method stay out' => sub {
+    is_deeply $used{$_} // [], [], "no ->$_" or diag explain $used{$_}
+        for qw(_build_path _check_response);
 };
 
 subtest 'no private method of Kubernetes::REST but the escape' => sub {

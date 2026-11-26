@@ -18,7 +18,7 @@ $api->_request('PATCH', $path, $resource,
 ```
 
 - Always use `fieldManager => 'ocp'` and `force => 'true'`
-- Build paths via `_build_resource_path()` for CRDs, `$api->_build_path()` for registered types
+- Build paths via `_build_resource_path()` for CRDs, `$api->build_path()` for registered types (the public one, k420)
 - Multi-document YAML: parse with `YAML::XS::Load()`, apply each resource
 
 ## Typed API (IO::K8s)

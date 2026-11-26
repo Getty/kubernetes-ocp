@@ -39,13 +39,7 @@ sub capture_stdout (&) {
     return $out;
 }
 
-package FakeResponse {
-    sub new     { my ($c, %a) = @_; bless {%a}, $c }
-    sub status  { $_[0]{status} }
-    sub content { $_[0]{content} }
-}
-
-# Kubernetes::REST 1.107 grew a native patch_status, and OCP::K8s prefers it.
+# Kubernetes::REST 1.107 grew a native patch_status, and OCP::K8s calls it.
 # Its call form is the house one -- Kind in argument 0, then named arguments,
 # with the payload under 'patch' (not 'status'); it appends /status to the path
 # itself. The real method croaks on anything else, so the doubles below unpack
@@ -68,29 +62,21 @@ package StrictPatchStatus {
     }
 }
 
-# An api that offers only the raw transport, so OCP::K8s::patch_status has to
-# take the _request escape and build the /status path itself.
-package RawApi {
+# The native writer, recording each call unpacked as the client would unpack it,
+# and dying with what it is told to: Kubernetes::REST's patch_status writes the
+# /status subresource itself (since 1.107; the dist pins 1.111), so what OCP
+# owns is the call form and that a failure is not swallowed. The hand-built
+# /status request for older clients is gone (k420).
+package NativeApi {
     sub new { my ($c, %a) = @_; bless { calls => [], %a }, $c }
-    sub expand_class { "+OCP::K8s::$_[1]" }
-    sub _build_path {
-        my ($self, $class, %args) = @_;
-        return "/apis/ocp.internal/v1/namespaces/$args{namespace}/ocpnodes/$args{name}";
+    sub patch_status {
+        my ($self, @args) = @_;
+        push @{$self->{calls}}, StrictPatchStatus::unpack_args(@args);
+        die "Kubernetes API error (patch_status): $self->{status}\n"
+            if ($self->{status} // 200) >= 400;
+        return 1;
     }
-    sub _request {
-        my ($self, $method, $path, $body, %opts) = @_;
-        push @{$self->{calls}}, [$method, $path, $body, \%opts];
-        return FakeResponse->new(
-            status  => $self->{status}  // 200,
-            content => $self->{content} // '{}',
-        );
-    }
-    sub _check_response {
-        my ($self, $response, $context) = @_;
-        die "Kubernetes API error ($context): " . $response->status . "\n"
-            if $response->status >= 400;
-        return $response;
-    }
+    sub _request { die "must not reach the raw transport\n" }
 }
 
 # Reader side: the `ocp node ls` view of whatever the CR ends up holding.
@@ -108,32 +94,25 @@ package LsApi {
 
 package main;
 
-subtest 'patch_status writes the /status subresource, not the main endpoint' => sub {
-    my $api = RawApi->new;
+subtest 'patch_status goes to the client\'s /status writer, in that client\'s argument form' => sub {
+    # The flat %args OCP used to forward is exactly what the client croaks on.
+    my $api = NativeApi->new;
     OCP::K8s->patch_status($api,
-        kind      => 'OCPNode',
-        name      => 'cortex',
-        namespace => 'ocp-system',
-        status    => { phase => 'Ready', publicIP => '10.230.30.155' },
-    );
+        kind => 'OCPNode', name => 'w1',
+        namespace => 'ocp-system', status => { phase => 'Ready', publicIP => '10.230.30.155' });
 
-    is scalar @{$api->{calls}}, 1, 'one request issued';
-    my ($method, $path, $body, $opts) = @{$api->{calls}[0]};
-
-    is $method, 'PATCH', 'PATCH verb';
-    like $path, qr{/ocpnodes/cortex/status$},
-        'path addresses the /status subresource';
-    unlike $path, qr{/ocpnodes/cortex$},
-        'not the main resource endpoint, where status would be dropped';
-    is $opts->{content_type}, 'application/merge-patch+json',
-        'merge-patch content type';
-    is $body->{status}{phase}, 'Ready', 'phase in the body';
-    is $body->{status}{publicIP}, '10.230.30.155', 'IP in the body';
+    my @seen = @{$api->{calls}};
+    is scalar @seen, 1, 'native writer used, once';
+    is $seen[0]{kind}, 'OCPNode', 'Kind passed positionally, as the client wants it';
+    is $seen[0]{name}, 'w1', 'name named';
+    is $seen[0]{namespace}, 'ocp-system', 'namespace named';
+    is_deeply $seen[0]{patch}, { status => { phase => 'Ready', publicIP => '10.230.30.155' } },
+        'status handed through unchanged, wrapped in the patch payload';
 };
 
 subtest 'patch_status does not swallow an API error' => sub {
     for my $status (403, 404, 409, 500) {
-        my $api = RawApi->new(status => $status);
+        my $api = NativeApi->new(status => $status);
         my $ok = eval {
             OCP::K8s->patch_status($api,
                 kind => 'OCPNode', name => 'cortex',
@@ -143,34 +122,6 @@ subtest 'patch_status does not swallow an API error' => sub {
         ok !$ok, "HTTP $status makes the status write fail";
         like $@, qr/\b$status\b/, "HTTP $status appears in the message";
     }
-};
-
-subtest 'patch_status prefers the native writer, in that client\'s argument form' => sub {
-    # The raw escape below is only for clients older than 1.107. When the client
-    # has the native writer, the call must be made in that client's form -- the
-    # flat %args OCP used to forward is exactly what it croaks on.
-    my @seen;
-    my $api = bless {}, 'NativeApi';
-    {
-        no strict 'refs';
-        no warnings 'once';
-        *NativeApi::patch_status = sub {
-            my ($s, @args) = @_;
-            push @seen, StrictPatchStatus::unpack_args(@args);
-            return 1;
-        };
-        *NativeApi::_request = sub { die "must not reach the raw transport\n" };
-    }
-    OCP::K8s->patch_status($api,
-        kind => 'OCPNode', name => 'w1',
-        namespace => 'ocp-system', status => { phase => 'Ready' });
-
-    is scalar @seen, 1, 'native writer used';
-    is $seen[0]{kind}, 'OCPNode', 'Kind passed positionally, as the client wants it';
-    is $seen[0]{name}, 'w1', 'name named';
-    is $seen[0]{namespace}, 'ocp-system', 'namespace named';
-    is $seen[0]{patch}{status}{phase}, 'Ready',
-        'status handed through unchanged, wrapped in the patch payload';
 };
 
 #

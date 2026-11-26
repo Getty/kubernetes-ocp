@@ -124,7 +124,7 @@ sub server_side_apply {
     my $path;
     if ($class) {
         # May fail if class lacks api_version() (e.g. auto-generated CRD classes)
-        $path = eval { $api->_build_path($class, name => $name, ($ns ? (namespace => $ns) : ())) };
+        $path = eval { $api->build_path($class, name => $name, ($ns ? (namespace => $ns) : ())) };
     }
     if (!$path) {
         # Fallback: build path from resource hash (works for all resources)

@@ -33,27 +33,35 @@ use OCP::K8s::OCPNodeProvider;
     is $ph->{spec}{hetzner}{location}, 'fsn1', 'provider spec nested map kept';
 }
 
-# Construct a minimal Kubernetes::REST client without network access.
-# If that's not possible, fall back to a simpler test that just loads the classes.
+# The register half (k420). It used to build the client with no arguments, and
+# Kubernetes::REST->new dies without server and credentials, so it always took
+# a classes-load fallback and the registration itself never ran. A client needs
+# no network to be built: resource_map_from_cluster => 0 keeps the built-in map,
+# so neither register nor expand_class asks the cluster for discovery -- the
+# endpoint below is never contacted.
+is(OCP::K8s::OCPNode->api_version, 'ocp.internal/v1', 'api_version set');
+is(OCP::K8s::OCPNode->kind, 'OCPNode', 'kind derived from class name');
 
-my $api = eval { Kubernetes::REST->new };
-if (!$api) {
-    # Kubernetes::REST may require network / kubeconfig to instantiate.
-    # Just verify the classes load.
-    use_ok 'OCP::K8s::OCPNode';
-    use_ok 'OCP::K8s::OCPNodeProvider';
-    is(OCP::K8s::OCPNode->api_version, 'ocp.internal/v1', 'api_version set');
-    is(OCP::K8s::OCPNode->kind, 'OCPNode', 'kind derived from class name');
-    done_testing;
-    exit 0;
-}
+my $api = Kubernetes::REST->new(
+    server                    => { endpoint => 'https://127.0.0.1:1' },
+    credentials               => { token => 'k420-not-a-token' },
+    resource_map_from_cluster => 0,
+);
+
+# Resolving a name first builds the inner IO::K8s, so register has to merge
+# into a built one, add_provider's other path.
+isnt scalar(eval { $api->expand_class('OCPNode') }), 'OCP::K8s::OCPNode',
+    'control: before register, OCPNode is no class of OCP\'s';
+
+is(OCP::K8s->register($api), $api, 'register returns the api');
+is scalar(@{ $api->with }), 1, 'one provider on the with list';
 
 OCP::K8s->register($api);
+is scalar(@{ $api->with }), 1, 'a second register adds nothing';
 
-my $class = $api->expand_class('OCPNode');
-is $class, 'OCP::K8s::OCPNode', 'OCPNode resolves to OCP::K8s::OCPNode';
-
-my $prov_class = $api->expand_class('OCPNodeProvider');
-is $prov_class, 'OCP::K8s::OCPNodeProvider', 'OCPNodeProvider resolves';
+is $api->expand_class('OCPNode'), 'OCP::K8s::OCPNode',
+    'OCPNode resolves to OCP::K8s::OCPNode';
+is $api->expand_class('OCPNodeProvider'), 'OCP::K8s::OCPNodeProvider',
+    'OCPNodeProvider resolves';
 
 done_testing;

@@ -98,7 +98,6 @@ sub capture (&) {
     package T::Api;
     sub new { my ($c, %a) = @_; bless { node_lists => 0, ensured => [], status => {}, ocpnodes => [], %a }, $c }
     sub k8s { T::IO->new }
-    sub _request { 1 }
     sub _nodes { my ($s) = @_; my $q = $s->{nodes}; @$q > 1 ? shift @$q : $q->[0] }
     sub list {
         my ($s, $kind) = @_;
@@ -108,6 +107,8 @@ sub capture (&) {
     }
     sub get {
         my ($s, $kind, $name) = @_;
+        # The bootstrap's connectivity check reads the kube-system Namespace (k420).
+        return { metadata => { name => $name } } if $kind eq 'Namespace';
         my ($n) = grep { $_->{name} eq $name } @{ $s->{nodes}[0] };
         die Kubernetes::REST::APIError->new(code => 404, context => 'get',
             body => '{"kind":"Status","reason":"NotFound","code":404}') unless $n;

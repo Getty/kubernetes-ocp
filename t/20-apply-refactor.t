@@ -42,10 +42,9 @@ use YAML::XS ();
         push @{$self->{calls}}, ['ensure', $doc->{kind}, $doc->{metadata}{name}, $doc];
         return $doc;
     }
-    # OCP::K8s::patch_status prefers the native writer when the api provides
-    # one, so stubbing it here records the /status write without having to
-    # emulate _build_path and the raw transport. The raw path has its own
-    # coverage in t/36-ocpnode-status.t.
+    # OCP::K8s::patch_status calls the client's native writer, so stubbing it
+    # here records the /status write without emulating the transport
+    # (t/36-ocpnode-status.t holds the call form).
     #
     # The signature is Kubernetes::REST 1.107's: Kind positional, payload under
     # 'patch'. Unpacked strictly, because a double that also accepts the old

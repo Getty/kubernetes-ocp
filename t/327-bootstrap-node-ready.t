@@ -117,11 +117,17 @@ my $CNI_DOWN = 'container runtime network not ready: NetworkReady=false '
     # list('Node') answers from {nodes}, the last answer repeating: an
     # arrayref of Ready-condition hashes for one Node ('True' and 'False' are
     # short for a Ready condition with that status and nothing else), 'none'
-    # for an empty list, or what the list dies with. _request (the
-    # connectivity check) dies with {request_dies} when set.
+    # for an empty list, or what the list dies with. get (the connectivity
+    # check, the kube-system Namespace since k420) dies with {request_dies}
+    # when set; it is the one get the bootstrap makes.
     package BootApi;
     sub new { my ($c, %a) = @_; bless { lists => 0, %a }, $c }
-    sub _request { my ($self) = @_; die $self->{request_dies} if $self->{request_dies}; 1 }
+    sub get {
+        my ($self, $kind, $name) = @_;
+        push @{ $self->{gets} }, "$kind/$name";
+        die $self->{request_dies} if $self->{request_dies};
+        return { metadata => { name => $name } };
+    }
     sub k8s      { BootIO->new }
     sub list {
         my ($self) = @_;
@@ -341,6 +347,32 @@ subtest 'k327: node_not_ready_why' => sub {
     is $why->(BootList->new(BootNode->new([])), undef, 'otho'), ': it reports no Ready condition', 'no conditions';
     is $why->(BootList->new(BootNode->new([ BootCond->new(type => 'Ready', status => 'False', reason => 'R', message => '') ])), undef, 'otho'),
         ': Ready is False (R)', 'an empty message is left out';
+};
+
+
+# k420: the check was a raw _request, which hands an error status back as the
+# response and a transport failure too (Kubernetes::REST's 599): neither died,
+# so an API server that did not answer, or refused the credentials, read
+# "API server reachable". The typed get dies with an APIError for both, said
+# in one line by the cluster API's words.
+subtest 'k420: the connectivity check is a typed read, and an API error is said' => sub {
+    # No cluster client built in this process: the line names no server.
+    OCP::ErrorLine::set_cluster_endpoint(undef);
+    my $r = bootstrap(nodes => [ 'True' ]);
+    is_deeply $r->{api}{gets}, [ 'Namespace/kube-system' ], 'control: the kube-system Namespace, typed';
+
+    my $unreached = Kubernetes::REST::APIError->new(code => 599, context => 'get Namespace',
+        body => "Can't connect to 10.0.0.1:6443 (Connection refused)\n\nConnection refused at LWP/Protocol/http.pm line 50.\n");
+    for my $case ([ 'no answer (599)' => $unreached,
+                    "The cluster API could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)" ],
+                  [ 'a 401' => api_error(401, 'Unauthorized'),
+                    'The cluster API refused the credentials in the kubeconfig (401 Unauthorized)' ]) {
+        my ($what, $error, $line) = @$case;
+        $r = bootstrap(nodes => [ 'True' ], request_dies => $error);
+        is $r->{died}, '', "$what: the bootstrap goes on to the wait";
+        is $r->{err}, "  [WARN] API server may not be reachable: $line\n", "$what: one line on STDERR, in the API's words";
+        unlike $r->{out}, qr/API server reachable/, "$what: not said to be reachable";
+    }
 };
 
 done_testing;
