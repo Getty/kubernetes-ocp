@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-11-26T06:17:33Z
+created: 2026-11-07T00:33:19Z
+id: 428
+priority: low
+started: 2026-11-26T05:40:17Z
+status: done
+tags:
+- secrets
+- ux
+title: A stale cached .ocp/age.key dies at the first SOPS read as an internal error
+updated: 2026-11-26T06:17:33Z
+---
+
+Found on k391 (secrets worker). Secrets::_unlock_age_key trusts an existing .ocp/age.key without checking it against the project. A key that does not belong dies at the first SOPS read: 'Could not decrypt data key with any of the provided identities at lib/OCP/Keys.pm line 607.', rendered as an internal error. check_local_age_key exists for this, but only Init.pm calls it. Lane: secrets.
+
+2026-11-26 05:47 Done: new OCP::Secrets::check_cached_age_key (POD added). When the run reads the cached .ocp/age.key (no SOPS_AGE_KEY_FILE, no key in memory) and the committed SOPS files are bound to recipients, it dies unless the key opens one: a user error naming what the key opens and what each file needs, with advice that fits a cache -- with age.key.enc: mv .ocp/age.key and .ocp/age.pub aside, PIN1 unlocks anew (age.pub too, because restore_age_recipient never replaces an existing one); without age.key.enc (dev mode): keep a copy, it may be the only copy of that key, put the project's key in its place or use SOPS_AGE_KEY_FILE. Called in _unlock_age_key's has_age_key branch (ensure_age_key, unlock_age_key), in _read_identities (read_kubeconfig, read_all_secrets, decrypt_file), and by OCP::Keys::_read_keys_file_encrypted -- the card's internal error came from Keys, which asked nothing of the key before reading keys.yaml. check_local_age_key left unchanged: ocp init wraps its message in its own advice. Test claim changed: t/382-destroy-wrong-pin1.t subtest 'a foreign key in .ocp/' expected the generic 'This age key does not belong to this project.'; it now expects 'The cached .ocp/age.key does not belong to this project.' -- same claim (OCP::Secrets' refusal, user error, no PIN1, destroy stops), new words. t/427 accepts either wording for its foreign-age-key case. Repro: new t/428-stale-cached-age-key.t red against HEAD (7 of 10 subtests), green after. Verified in the image: t/428, t/382, plus 00, 01, 05, 101, 153, 212 x2, 216 x2, 24, 349 x2, 370, 371, 372, 375, 391 x3, 396, 399, 411, 423, 427, 70-init, 71-cluster-ssh-key, 89, 96-keys-secure all pass. Not run: the full suite (main agent's).
