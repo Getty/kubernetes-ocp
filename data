@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-26T08:38:26Z
+created: 2026-11-26T05:54:06Z
+id: 461
+priority: low
+started: 2026-11-26T06:22:06Z
+status: done
+tags:
+- output-channels
+- secrets
+title: ssh-keygen fingerprint and randomart land on STDOUT during ocp init and ocp
+  keys secure
+updated: 2026-11-26T08:38:26Z
+---
+
+Found while checking k424. ssh-keygen prints the fingerprint and randomart to STDOUT when OCP generates the SSH keys (ocp init, ocp keys secure), against the output-channel rule in .claude/rules/ocp-rules.md. Done = ssh-keygen output captured or sent to STDERR, with a test. Lane: ocp-secrets-worker.
+
+2026-11-26 06:33 Single exec site: OCP::Secrets::generate_ssh_key (ocp init bootstrap + add_cluster_keys for init/keys secure). Now runs ssh-keygen via OCP::Exec::capture_command; success output dropped, failure output (stderr+stdout) goes into the croak. Test t/461-ssh-keygen-stdout.t (fd-level STDOUT capture, incl. a secure ocp init) passes; 4/4 subtests fail against HEAD.
+
+2026-11-26 06:54 Done: OCP::Secrets::generate_ssh_key runs 'ssh-keygen -q' (silences file names, fingerprint and randomart; errors still go to STDERR). A first try through OCP::Exec::capture_command was dropped: IPC::Open3 loses output when the caller's STDOUT is an in-memory handle (broke t/209, t/96). Also found: that OCP::Exec/IPC::Open3 behaviour, a hazard for any test that captures via local *STDOUT around capture_command; possible card for the OCP::Exec owner. t/461-ssh-keygen-stdout.t (fd-level STDOUT, incl. secure ocp init) passes; subtests 1-3 fail against HEAD. Targeted 46-file run: PASS.
+
+2026-11-26 08:38 Committed 64273ef
