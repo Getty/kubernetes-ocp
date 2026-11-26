@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-26T06:14:34Z
+created: 2026-11-20T23:32:27Z
+id: 458
+priority: low
+started: 2026-11-26T05:06:38Z
+status: done
+tags:
+- cilium
+- gateway
+- drift
+title: 'ocp status: report drift when Cilium''s Gateway host-network mode differs
+  from ocp.yaml gateway:'
+updated: 2026-11-26T06:14:34Z
+---
+
+Follow-up to k454. gateway.mode: host_network renders gatewayAPI.hostNetwork.* into the Cilium Helm values; switching on a running cluster needs ocp update --component cilium --force. Nothing reports a cluster whose mode differs from ocp.yaml. Cheap probe: read gateway-api-hostnetwork-enabled from the cilium-config ConfigMap in OCP::Drift (state-worker lane) and compare with Config->gateway_host_network.
+
+2026-11-26 05:24 Done (uncommitted). New OCP::Drift::gateway_mode_drift, called from detect after pod_cidr_drift: reads gateway-api-hostnetwork-enabled from ConfigMap kube-system/cilium-config ('true' = host_network, else/absent = load_balancer) and compares with Config->gateway_host_network. Mismatch = kind spec, component cilium_gateway, no remedy, manual_step 'ocp update --component cilium --force'. 404 = nothing to compare; other read failures = error entry (drift unknown), as pod_cidr_drift. Compares the enabled flag only, not the node selector. Files: lib/OCP/Drift.pm (method + POD + detect line), t/458-gateway-mode-drift.t (new). Verified: make test t/458 green in Docker; detect/status/drift suites (t/25 t/182 t/262 t/268 t/291 t/312 t/230 t/332 t/11 t/38 t/403 t/454-*) green via docker prove.
