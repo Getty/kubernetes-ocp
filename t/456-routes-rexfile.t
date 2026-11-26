@@ -10,7 +10,8 @@
 #      /etc/ocp/routes ("TO VIA" lines), the ocp-routes script, the
 #      ocp-routes.service oneshot (after network-online, before the rke2/k3s
 #      units, enabled) and the ocp-routes.timer (every minute), the dhclient
-#      exit hook, and the ifupdown if-up.d hook where ifupdown is there; it
+#      exit hook, and the ifupdown hook where /etc/network/if-up.d/ is there
+#      (not where only /etc/network/interfaces is: netplan images, k474); it
 #      sets the routes at once and fails the install when they cannot be set
 #      -- all of it after the checks up front and before prepare_node and the
 #      install, so Kubernetes starts with them
@@ -40,6 +41,18 @@ use OCPTest::Rexfile;
 
 no warnings 'once';
 
+# The harness answers is_file, not is_dir: the one directory _ensure_routes
+# asks about is answered here, recorded like is_file.
+my %IS_DIR;
+OCPTest::Rexfile->load;
+{
+    no warnings 'redefine';
+    *OCPTest::Rexfile::Sandbox::is_dir = sub {
+        push @OCPTest::Rexfile::CALLS, { name => 'is_dir', args => [@_] };
+        return $IS_DIR{ $_[0] } ? 1 : 0;
+    };
+}
+
 my @R = ({ to => '10.230.30.0/24', via => '10.200.0.1' }, { to => '10.230.31.0/24', via => '10.200.0.9' });
 my @TASKS = map { ("install_${_}_server", "install_${_}_agent") } qw( rke2 k3s );
 
@@ -48,6 +61,7 @@ sub run_install {
     OCPTest::Rexfile->reset;
     %OCPTest::Rexfile::IS_FILE = %{ $o{is_file} // {} };
     %OCPTest::Rexfile::CAT     = %{ $o{cat}     // {} };
+    %IS_DIR                    = %{ $o{is_dir}  // {} };
     local $OCPTest::Rexfile::RUN = $o{run} // sub { ('', 0) };
     my $err = '';
     my $out = eval {
@@ -73,7 +87,7 @@ sub idx { my ($pred) = @_; OCPTest::Rexfile->index_of($pred) }
 subtest 'routes are written and set, before prepare_node and the install' => sub {
     for my $task (@TASKS) {
         my ($out, $err) = run_install($task, params => { routes => \@R },
-            is_file => { '/etc/network/interfaces' => 1 });
+            is_dir => { '/etc/network/if-up.d' => 1 });
         is $err, '', "$task: ran" or next;
 
         my $f = files_written();
@@ -111,6 +125,18 @@ subtest 'routes are written and set, before prepare_node and the install' => sub
 
     run_install('install_rke2_agent', params => { routes => \@R });
     ok !exists files_written()->{'/etc/network/if-up.d/ocp-routes'}, 'no ifupdown: no if-up.d hook';
+
+    # k474: /etc/network/interfaces without ifupdown's if-up.d (netplan
+    # images): the hook would have nowhere to go, so none is written and the
+    # install carries on -- the directory is what counts, not the file.
+    my ($nout, $nerr) = run_install('install_rke2_agent', params => { routes => \@R },
+        is_file => { '/etc/network/interfaces' => 1 });
+    is $nerr, '', 'interfaces but no if-up.d: the install runs';
+    ok !exists files_written()->{'/etc/network/if-up.d/ocp-routes'}, '... without the if-up.d hook';
+    ok grep({ $_->{args}[0] eq '/etc/network/if-up.d' } OCPTest::Rexfile->calls('is_dir')),
+        '... the if-up.d directory is what was asked';
+    ok grep({ $_ eq '/usr/local/sbin/ocp-routes --wait 30 2>&1' } OCPTest::Rexfile->commands),
+        '... and the routes are still set';
 
     my ($out, $err) = run_install('install_rke2_agent', params => { routes => \@R },
         run => sub { $_[0] =~ /ocp-routes --wait/ ? ("ocp-routes: could not set: 10.230.30.0/24 via 10.200.0.1;\n", 1) : ('', 0) });

@@ -1023,8 +1023,10 @@ sub _ensure_routes {
     file $ROUTES_TIMER,  mode => '0644', content => _routes_timer();
     file '/etc/dhcp/dhclient-exit-hooks.d', ensure => 'directory';
     file $ROUTES_DHCP,   mode => '0644', content => _routes_dhclient_hook();
+    # The directory, not /etc/network/interfaces: an image can carry that
+    # file without ifupdown (netplan), and the write would die (k474).
     file $ROUTES_IFUP,   mode => '0755', content => _routes_ifup_hook()
-        if is_file('/etc/network/interfaces');
+        if is_dir('/etc/network/if-up.d');
 
     run "systemctl daemon-reload && systemctl enable ocp-routes.service ocp-routes.timer "
       . "&& systemctl start ocp-routes.timer", auto_die => FALSE;

@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - The static-route hook for ifupdown is written only where
+      `/etc/network/if-up.d/` exists, so a netplan image that still has
+      `/etc/network/interfaces` no longer fails the install.
     - Drift probes reach a control plane on `address: private` at its
       `private_ip`. `ocp apply` refuses a Hetzner worker pool without
       `network:` when the first control plane is on `address: private`: its
