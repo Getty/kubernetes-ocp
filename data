@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-11-26T09:59:12Z
+claimed_by: ocp-k466
+class: standard
+completed: 2026-11-26T09:59:12Z
+created: 2026-11-26T07:11:30Z
+id: 466
+priority: low
+started: 2026-11-26T08:54:20Z
+status: done
+tags:
+- docs
+- secrets
+title: 'Docs: ocp keys add-pin2 in the ocp-usage skill and README; Wrong PIN2 could
+  point to it'
+updated: 2026-11-26T09:59:12Z
+---
+
+Follow-up to k450. The new ocp keys add-pin2 is not yet listed in the ocp-usage skill command list or README. Also: a user whose admin key lacks the PIN2 layer sees only "Wrong PIN2"; the refusal could name ocp keys add-pin2. Lanes: ocp-doc-writer (docs), ocp-secrets-worker (refusal hint).
+
+2026-11-26 08:54 Code half done (ocp-secrets-worker, uncommitted, worktree). OCP::Keys::unlock_admin_key: when the failure is a wrong PIN2 (is_wrong_pin2) and has_pin2_layer says the key it tried (named, or first non-deprecated admin) has no PIN2 layer, it now dies 'ERROR: The admin key NAME in keys.yaml has no PIN2 layer, so no PIN2 opens it ... Run ocp keys add-pin2 to set its PIN2' instead of returning nothing (which every caller worded as Wrong PIN2). Reaches the user through ocp apply, OCP::ClusterKey, require_admin_approval unchanged (they already let non-wrong-PIN2 dies through). In another keys file (keys.yaml.pending of ocp keys secure) the message names key + file but not add-pin2, which repairs keys.yaml only. Layered key + wrong PIN2: unchanged (nothing, callers say Wrong PIN2). Files: lib/OCP/Keys.pm (+POD of unlock_admin_key), t/466-no-pin2-layer-refusal.t (new), t/450-add-pin2.t (one assertion: unlock_admin_key on the bare key now dies naming add-pin2 instead of returning false -- claim replaced, see comment there). Verified: make test TAG=secrets2 t/466 t/450 t/427 t/390 t/71 t/391 t/382 PASS; t/466 fails against HEAD Keys.pm. DOCS PENDING: ocp keys add-pin2 in ocp-usage skill + README (ocp-doc-writer) -- card stays in-progress for that half.
+
+Committed 4d70b95 (code), bc51e03 (docs); binding suite green on main ce487f1 (340 files, 4789 tests)
