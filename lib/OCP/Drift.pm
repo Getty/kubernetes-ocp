@@ -679,6 +679,7 @@ sub detect {
         push @drift, $self->registry_dns_drift;
         push @drift, $self->pod_cidr_drift;
         push @drift, $self->gateway_mode_drift;
+        push @drift, $self->cert_manager_gateway_api_drift;
     }
     push @drift, $self->rex_probe_drift if $self->rex_prober;
 
@@ -1629,6 +1630,125 @@ C<ocp apply> re-runs the Helm release only for a version upgrade.
 No C<cilium-config> (a 404) is nothing to compare; a ConfigMap without the key
 reads as C<load_balancer>. Any other failed read is one C<kind =E<gt> 'error'>
 entry, drift unknown, as for L</component_drift>.
+
+=cut
+
+#
+# cert-manager's Gateway API support (k451)
+#
+# The ACME issuers OCP writes (OCP::Cmd::Apply::Network::acme_issuer) solve
+# HTTP-01 through a gatewayHTTPRoute on cilium-gateway. cert-manager answers
+# that solver only with --enable-gateway-api, which its release manifest does
+# not set: the issuers read Ready and every order hangs at the challenge.
+# OCP's apply of the manifest sets the flag (cert_manager_with_gateway_api);
+# this probe finds a controller running without it -- applied before k451, or
+# patched since -- and hands it the same API remedy as a version drift, which
+# re-applies the pinned manifest. The writer and this reader name the
+# container and the flag from here.
+our %CERT_MANAGER_CONTROLLER = (
+    namespace  => 'cert-manager',
+    deployment => 'cert-manager',
+    container  => 'cert-manager-controller',
+);
+our $CERT_MANAGER_GATEWAY_API_ARG = '--enable-gateway-api';
+
+# Whether the controller container of a cert-manager Deployment (plain hash or
+# IO::K8s object) runs with Gateway API support: 1 or 0, undef when it has no
+# such container. A bool flag the Go way: bare, or =true/=false; the last one
+# wins.
+sub cert_manager_gateway_api_on {
+    my ($deployment) = @_;
+    my ($container) = grep { (_dig($_, 'name') // '') eq $CERT_MANAGER_CONTROLLER{container} }
+        @{ _dig($deployment, qw(spec template spec containers)) // [] };
+    return undef unless $container;
+
+    my $on = 0;
+    for my $arg (@{ _dig($container, 'args') // [] }) {
+        next unless $arg =~ /\A\Q$CERT_MANAGER_GATEWAY_API_ARG\E(?:=(.*))?\z/;
+        $on = !defined $1 || $1 =~ /\A(?:1|t|true)\z/i ? 1 : 0;
+    }
+    return $on;
+}
+
+sub cert_manager_gateway_api_drift {
+    my ($self) = @_;
+
+    my $config = $self->config;
+    # A nocert that OCP::Config refuses is component_drift's error entry
+    # already; nocert: true has no cert-manager to ask.
+    my $no_cert = eval { $config->no_cert ? 1 : 0 };
+    return if !defined $no_cert || $no_cert;
+
+    my %c     = %CERT_MANAGER_CONTROLLER;
+    my $label = 'cert-manager Gateway API';
+    my $object = eval {
+        $self->api->get('Deployment', name => $c{deployment}, namespace => $c{namespace});
+    };
+    my $err = $@;
+    unless ($object) {
+        # A 404 is the cert-manager probe's 'missing' entry, not this one's.
+        my $unknown = $self->_unknown_drift($err,
+            in        => 'cert_manager_gateway_api_drift',
+            op        => 'get',
+            object    => "Deployment $c{namespace}/$c{deployment}",
+            component => 'cert_manager',
+            label     => $label,
+            expected  => 'enabled',
+        );
+        return $unknown if $unknown;
+        return;
+    }
+
+    # No controller container by that name is not compared, as an untagged
+    # image is not: what runs there is not the Deployment OCP applied, whose
+    # writer dies on a manifest without that container.
+    my $on = cert_manager_gateway_api_on($object);
+    return if !defined $on || $on;
+
+    my $pin = OCP::Versions->get_component_version('cert_manager');
+    return {
+        kind      => 'spec',
+        component => 'cert_manager',
+        label     => $label,
+        expected  => 'enabled',
+        actual    => 'disabled',
+        message   => "$label: $c{container} in Deployment $c{namespace}/$c{deployment}"
+                   . " runs without $CERT_MANAGER_GATEWAY_API_ARG; the ACME issuers' HTTP-01"
+                   . " challenges through cilium-gateway are never answered",
+        remedy    => defined $pin ? {
+            type   => 'api',
+            task   => 'upgrade_cert_manager',
+            params => $self->remedy_params($config, 'cert_manager', $pin),
+        } : undef,
+    };
+}
+
+=method cert_manager_gateway_api_on
+
+    my $on = OCP::Drift::cert_manager_gateway_api_on($deployment);
+
+Whether the C<cert-manager-controller> container of a cert-manager
+Deployment (hash or L<IO::K8s> object) runs with C<--enable-gateway-api>: 1
+or 0, C<undef> when it has no such container. The flag is read as Go reads a
+bool flag: bare or C<=true> is on, C<=false> off, the last one wins.
+
+=method cert_manager_gateway_api_drift
+
+The ACME issuers OCP writes solve HTTP-01 through a C<gatewayHTTPRoute> on
+C<cilium-gateway>, which cert-manager only answers with
+C<--enable-gateway-api>. OCP's apply of the cert-manager manifest sets it;
+this reads C<Deployment cert-manager/cert-manager> and reports a controller
+without it as a C<spec> entry, label C<cert-manager Gateway API>, whose remedy
+is the same API remedy as a cert-manager version drift
+(C<upgrade_cert_manager> at the pin): it re-applies the manifest, flag
+included, so C<ocp apply> closes it. A Deployment without a
+C<cert-manager-controller> container is not compared, as an untagged image
+is not.
+
+Nothing under C<nocert> (or a C<nocert> L<OCP::Config> refuses, which
+L</component_drift> reports). No Deployment (a 404) is the cert-manager
+probe's C<missing> entry, not this one's. Any other failed read is one
+C<kind =E<gt> 'error'> entry, drift unknown.
 
 =cut
 

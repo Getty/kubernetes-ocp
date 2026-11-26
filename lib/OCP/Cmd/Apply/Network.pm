@@ -6,6 +6,7 @@ use warnings;
 
 use HTTP::Tiny;
 use JSON::PP ();
+use YAML::XS ();
 
 # No `use Socket` here on purpose: both places that turned a configured host
 # into an address now go through OCP::Drift::resolve_address, and an import
@@ -26,6 +27,7 @@ our @COREDNS_CONFIGMAPS = @OCP::Drift::COREDNS_CONFIGMAPS;
 =head1 SYNOPSIS
 
     OCP::Cmd::Apply::Network::apply_cert_manager($apply);
+    my @resources = OCP::Cmd::Apply::Network::cert_manager_with_gateway_api(@manifest);
     OCP::Cmd::Apply::Network::wait_cert_manager_and_create_issuers($apply, $config);
     OCP::Cmd::Apply::Network::setup_cilium_gateway($apply, $config);
     OCP::Cmd::Apply::Network::setup_lb_ipam($apply, $node_ip, $config);
@@ -41,7 +43,8 @@ our @COREDNS_CONFIGMAPS = @OCP::Drift::COREDNS_CONFIGMAPS;
 The bits the apply path wires up *between* the cluster being reachable and
 the registry being reachable by name:
 
-- cert-manager (downstream manifest + the issuer CRs that follow it)
+- cert-manager (downstream manifest, its controller with
+  C<--enable-gateway-api>, + the issuer CRs that follow it)
 - the Cilium Gateway (HTTP+HTTPS, the LB-IPAM pool that hands it an IP,
   the L2 announcement that makes the IP reachable -- or, under
   C<gateway.mode: host_network>, the labelled nodes Envoy listens on)
@@ -72,8 +75,44 @@ sub apply_cert_manager {
     die "Failed to download cert-manager manifest: $response->{status} $response->{reason}\n"
         unless $response->{success};
 
-    # Parse multi-document YAML and server-side apply each resource
-    OCP::Cmd::Apply::K8s::apply_yaml_string($self, $api, $response->{content});
+    # Parse multi-document YAML and server-side apply each resource, the
+    # controller with Gateway API support on (k451).
+    my @resources = grep { $_ && ref $_ eq 'HASH' && $_->{kind} }
+        YAML::XS::Load($response->{content});
+    OCP::Cmd::Apply::K8s::server_side_apply($self, $api, $_)
+        for cert_manager_with_gateway_api(@resources);
+}
+
+# The resources of cert-manager's release manifest, with
+# --enable-gateway-api on the controller container of its Deployment (k451).
+# The ACME issuers below solve HTTP-01 through a gatewayHTTPRoute on
+# cilium-gateway, and cert-manager answers that solver only with the flag;
+# the release manifest does not set it. Cilium always runs with Gateway API
+# under OCP (its CRDs go in before Cilium), so the flag is always set. An
+# =false is replaced, not kept beside it. A manifest without that Deployment
+# or container dies: applying it as it came would leave every ACME order
+# hanging without a word. OCP::Drift::cert_manager_gateway_api_drift reads
+# the running Deployment against the same names.
+sub cert_manager_with_gateway_api {
+    my (@resources) = @_;
+
+    my %c   = %OCP::Drift::CERT_MANAGER_CONTROLLER;
+    my $arg = $OCP::Drift::CERT_MANAGER_GATEWAY_API_ARG;
+    my ($deployment) = grep {
+        $_->{kind} eq 'Deployment'
+            && ($_->{metadata}{name} // '') eq $c{deployment}
+            && ($_->{metadata}{namespace} // '') eq $c{namespace}
+    } @resources;
+    die "cert-manager manifest has no Deployment $c{namespace}/$c{deployment};"
+      . " cannot set $arg\n" unless $deployment;
+
+    my ($container) = grep { ($_->{name} // '') eq $c{container} }
+        @{ $deployment->{spec}{template}{spec}{containers} // [] };
+    die "cert-manager manifest: Deployment $c{namespace}/$c{deployment} has no"
+      . " $c{container} container; cannot set $arg\n" unless $container;
+
+    $container->{args} = [ (grep { !/\A\Q$arg\E(?:=|\z)/ } @{ $container->{args} // [] }), $arg ];
+    return @resources;
 }
 
 # Upgrade cert-manager on a running cluster (k198). The same server-side apply

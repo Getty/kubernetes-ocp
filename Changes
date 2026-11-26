@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - cert-manager is applied with `--enable-gateway-api`, so the ACME HTTP-01
+      challenges through the Cilium Gateway are answered. `ocp status`
+      reports a controller running without it, and `ocp apply` re-applies the
+      pinned manifest to close it.
     - `ocp-build-image` no longer pulls a `:cache` tag from the registry as
       build cache; the image builds from local layers.
     - `ocp status` reports drift when Cilium's Gateway host-network mode

@@ -16,6 +16,26 @@ use OCP::Drift;
 # server-side apply, from the CLI.
 #
 
+# The release manifest, cut down to what OCP touches: since k451 the apply sets
+# --enable-gateway-api on the controller, and dies on a manifest without it.
+my $MANIFEST = <<'YAML';
+kind: Namespace
+metadata:
+  name: cert-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: cert-manager-controller
+          args: [--v=2]
+YAML
+
 my @applied;
 my $polled;
 {
@@ -23,7 +43,7 @@ my $polled;
     local *HTTP::Tiny::get = sub {
         my ($s, $url) = @_;
         push @applied, "GET $url";
-        return { success => 1, content => "kind: Namespace\nmetadata:\n  name: cert-manager\n" };
+        return { success => 1, content => $MANIFEST };
     };
     local *OCP::Cmd::Apply::K8s::server_side_apply = sub {
         my ($self, $api, $res) = @_;
@@ -41,11 +61,12 @@ my $polled;
 
 like $applied[0], qr{releases/download/v1\.19\.0/cert-manager\.yaml}, 'downloads the requested version';
 is $applied[1], 'SSA Namespace/cert-manager', 'applies server-side';
+is $applied[2], 'SSA Deployment/cert-manager', 'the Deployment too';
 is $polled, 'cert-manager/cert-manager', 'waits for the Deployment';
 
 {
     no warnings 'redefine';
-    local *HTTP::Tiny::get = sub { { success => 1, content => "kind: Namespace\nmetadata:\n  name: x\n" } };
+    local *HTTP::Tiny::get = sub { { success => 1, content => $MANIFEST } };
     local *OCP::Cmd::Apply::K8s::server_side_apply = sub { };
     local *OCP::Cmd::Apply::K8s::poll_deployment_ready = sub { 0 };
     ok !eval { OCP::Cmd::Apply::Network::upgrade_cert_manager(bless({}, 'FakeCmd'), {}, 'v1.19.0'); 1 },
