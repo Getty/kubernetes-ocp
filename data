@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-11-26T05:05:09Z
+claimed_by: ocp-k457
+class: standard
+completed: 2026-11-26T05:05:09Z
+created: 2026-11-20T22:17:27Z
+id: 457
+priority: high
+started: 2026-11-26T04:00:52Z
+status: done
+tags:
+- build
+- deps
+title: 'make test broken on main: cpanfile requires Rex::LibSSH 0.006, neither released
+  nor vendored'
+updated: 2026-11-26T05:05:09Z
+---
+
+Commit 7c874d1 (Require Rex::LibSSH 0.006) raised the pin in cpanfile, but Rex::LibSSH 0.006 is not on CPAN (latest 0.005, no 0.006 tag in rex-libssh), cpanfile.snapshot holds 0.005, and rex-libssh is not in the Makefile VENDOR list. make build therefore fails in cpm install with "Failed to resolve Rex::LibSSH", and so does make test. Fix: add rex-libssh to VENDOR (after its dependencies; its GitHub home is already in SIBLING_HOMES) and adjust t/222, or put the pin back to 0.005 until the release. Found while verifying k453; there it was tested locally with rex-libssh added to the vendor set.
+
+Addendum: Rex::LibSSH 0.006 (HEAD of rex-libssh) in turn requires Net::LibSSH 0.005, which is not on CPAN either (latest 0.004). Both have to go into VENDOR: p5-net-libssh (home Getty/p5-net-libssh, not yet in SIBLING_HOMES), then rex-libssh.
+
+Effect in the test suite: t/222-vendor.t test 5 ('the default list is what cpanfile pins beyond the snapshot') fails as long as cpanfile asks for Rex::LibSSH 0.006 and VENDOR does not list rex-libssh.
+
+2026-11-26 04:03 Maintainer decision: vendor, not lower the pin. Added p5-net-libssh (home Getty/p5-net-libssh) to SIBLING_HOMES and p5-net-libssh rex-libssh to VENDOR before rex-gpu (rex-gpu and rex-rancher recommend Rex::LibSSH 0.006). cpanfile gains requires 'Net::LibSSH', '0.005' (t/222 needs a pin for every sibling with a home; the image really needs 0.005 via Rex::LibSSH 0.006). t/222 knows Net::LibSSH => p5-net-libssh. make vendor builds all 9 incl. Net-LibSSH-0.005, Rex-LibSSH-0.006. Running make test.
+
+2026-11-26 04:28 make test run 1 failed at image build: Net::Async::Kubernetes 0.013 (pinned in 1ffd19d, CPAN 0.012) also unvendored; the same failure as this card. Added p5-net-async-kubernetes to VENDOR after kubernetes-rest (it needs Kubernetes::REST 1.111). make test run 2 with VENDOR p5-crypt-age p5-file-sops p5-moox-cmd p5-www-hetzner p5-net-libssh rex-libssh rex-gpu kubernetes-rest p5-net-async-kubernetes rex-rancher: Files=309, Tests=4583, Result: PASS. Coordinator: Net::LibSSH 0.005 / Rex::LibSSH 0.006 are released, so move to snapshot instead of vendoring them; waiting for CPAN indexing.
+
+2026-11-26 05:02 Done. Net::LibSSH 0.005 and Rex::LibSSH 0.006 were released during the work, so in the end they are NOT vendored. cpanfile.snapshot moves to Alien-libssh 0.003, Net-LibSSH 0.005, Rex-LibSSH 0.006. make snapshot cannot run while cpanfile pins seven siblings above CPAN (carton: Couldn't find Crypt::Age 0.006 and the rest), so the three entries were edited by hand like k406, generated from the released tarballs' META.json by a generator that reproduces the old 0.002/0.004/0.005 entries byte for byte. Alien::libssh moves because Net::LibSSH 0.005 requires 0.003. Also: Net::Async::Kubernetes 0.013 (pinned in 1ffd19d, CPAN 0.012) was the second blocker; p5-net-async-kubernetes is in VENDOR after kubernetes-rest, with its Makefile comment updated. t/222 is unchanged. Verified: make test (Docker) Files=309, Tests=4583, Result: PASS. Earlier, with libssh vendored: the same 309/4583 PASS. The tree also has another agent's uncommitted edits (docs/adr/0016, docs/adr/README.md, lib/OCP/Cmd/Status.pm, t/52-apply-dispatcher.t), which are not k457's and were part of both runs.
+
+Committed ba2bd7c
