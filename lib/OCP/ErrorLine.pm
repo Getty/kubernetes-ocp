@@ -16,6 +16,11 @@ use Scalar::Util ();
 # Every source location goes, not only a last one: a die that wraps another
 # carries both, and LWP puts its own inside the message it hands on (k265).
 # _oneline took only one at the very end; it says it as Init does now.
+# The location is Perl's whole one (k436): once a line was read from a
+# filehandle -- the PINs --pins-stdin reads -- Perl appends ", <STDIN> line
+# N." (or "chunk N."), and only the " at FILE line N" before it went, so
+# every WARN and !! line after a PIN read ended in that remnant. OCP.pm's
+# _clean_message takes the same whole location (k403).
 # A secret the caller holds -- the token a request went out with -- is masked
 # before anything else, should an answer ever echo it back, and so is every
 # secret the registry below holds (k398). Nothing left is 'unknown error',
@@ -42,7 +47,7 @@ sub one_line {
     }
 
     my $line = _masked($text, $opt{mask});
-    $line =~ s/ at \S+ line \d+\.?//g;
+    $line =~ s/ at \S+ line \d+(?:, <[^>]*> (?:line|chunk) \d+)?\.?//g;
     $line =~ s/\s+/ /g;
     $line =~ s/\A | \z//g;
 
@@ -56,7 +61,8 @@ sub one_line {
     my $line = OCP::ErrorLine::one_line($err, %opt);
 
 C<$err> as a string (an exception object stringified), with every Perl
-source location (C< at FILE line N.>) taken out, each run of whitespace --
+source location (C< at FILE line N.>, and the C<, E<lt>STDINE<gt> line N.> Perl
+adds to it once a line was read from a filehandle) taken out, each run of whitespace --
 newlines too -- folded into one space, and none at either end.  For a
 L<Kubernetes::REST::APIError> of code C<599> (no answer) only the first line
 of its body is kept: the lines after it are LWP's, saying the same reason
@@ -372,6 +378,26 @@ C<spew>, C<append>, C<mkpath>, C<mkdir>, C<touch>), else the operation's
 first word.
 
 =back
+
+=cut
+
+# k436: the cause of a failure a command names in one line: the line
+# user_line has for a foreign exception it knows -- an API error naming the
+# server -- else one_line of it. The pattern stood written out in OCP::Drift
+# (_failed_line) and in ocp destroy; it is said here once.
+sub cause_line {
+    my ($err, %opt) = @_;
+    return user_line($err) // one_line($err, %opt);
+}
+
+=func cause_line
+
+    my $why = OCP::ErrorLine::cause_line($@, empty => 'no answer');
+    # The cluster API at https://10.0.0.1:6443 denied the request (403 Forbidden): ...
+
+The cause of a failure as one line: L</user_line> of C<$err> when it has one
+(a L<Kubernetes::REST::APIError>, a L<Path::Tiny::Error>), else L</one_line>
+of it.  C<%opt> goes to L</one_line> (C<mask>, C<empty>).
 
 =cut
 

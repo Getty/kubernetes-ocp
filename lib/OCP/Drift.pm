@@ -2037,7 +2037,7 @@ sub _say_failed {
 # _step_skips and _refused_drift word their causes.
 sub _failed_line {
     my ($err) = @_;
-    return OCP::ErrorLine::user_line($err) // OCP::ErrorLine::one_line($err);
+    return OCP::ErrorLine::cause_line($err);
 }
 
 # The entry for a probe whose skip_if OCP::Config refused (k332): whether

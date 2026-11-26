@@ -271,7 +271,12 @@ sub crd_get {
     my $status = $response->status;
     return undef if $status == 404;
     if ($status >= 400) {
-        my $body = OCP::ErrorLine::one_line(eval { $response->content }, empty => '');
+        # A 599 is no answer: its body is LWP's text, which says the reason,
+        # a blank line, then the reason again with LWP's location. Its first
+        # line stands for it, as OCP::ErrorLine says a 599 (k436).
+        my $content = eval { $response->content } // '';
+        ($content) = $content =~ /^(.*\S.*)$/m if $status == 599;
+        my $body = OCP::ErrorLine::one_line($content, empty => '');
         $body = substr($body, 0, 400);
         die "GET $resource_path failed: HTTP $status $body\n";
     }

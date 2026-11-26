@@ -497,8 +497,7 @@ sub _ocpnode_entries {
     unless ($list) {
         $self->_api_down(1);
         my $err = $@;
-        $self->_say_ocpnodes_unread(OCP::ErrorLine::user_line($err)
-            // OCP::ErrorLine::one_line($err, empty => 'no answer'));
+        $self->_say_ocpnodes_unread(OCP::ErrorLine::cause_line($err, empty => 'no answer'));
         return;
     }
 
@@ -573,8 +572,7 @@ sub _build_cr_hetzner {
         # API call, whose error names the server; anything else without its
         # source location.
         my $err = $@;
-        $self->_cr_hetzner_error->{$name} = OCP::ErrorLine::user_line($err)
-            // OCP::ErrorLine::one_line($err, empty => 'no adapter');
+        $self->_cr_hetzner_error->{$name} = OCP::ErrorLine::cause_line($err, empty => 'no adapter');
     }
 }
 
