@@ -301,15 +301,17 @@ fails and names that route. The node keeps the routes:
 - A dhclient exit hook and, where ifupdown is installed, an `if-up.d` script
   set them again as soon as a lease is bound or the interface is up.
 
-Each `ocp apply` installs the first control plane again, so it gets the routes
-`ocp.yaml` lists now. A route that is no longer in the list is deleted, and
-`routes: []` or no `routes:` at all removes OCP's routes, units and files. A
-worker or a further control plane gets its routes when it is installed. Its
-OCPNode carries them as `spec.routes`, with `via: gateway` as written, and
-the provider resolves the gateway at that install. A node that is already
-Ready is not installed again, so it does not get a changed `routes:`; set the
-routes on it by hand, or replace the node. On an `ssh` or `local` machine
-OCP does not touch the routes, and `routes:` is refused there.
+Routes are written when a node is installed, and only then. Once
+`kubeconfig.yaml` exists, `ocp apply` reconciles the cluster and does not
+install the first control plane again, so a changed `routes:`, a dropped route
+or `routes: []` does not reach it. A worker or a further control plane gets
+its routes when it is installed. Its OCPNode carries them as `spec.routes`,
+with `via: gateway` as written, and the provider resolves the gateway at that
+install. A node that is already Ready is not installed again, so it does not
+get a changed `routes:`. The same holds for a control plane that is already
+running: set the routes on it by hand (edit `/etc/ocp/routes`, then run
+`/usr/local/sbin/ocp-routes`), or replace the node. On an `ssh` or `local`
+machine OCP does not touch the routes, and `routes:` is refused there.
 
 ## The Cilium Gateway on Hetzner: host-network mode
 
@@ -388,8 +390,11 @@ it, for other LoadBalancer Services.
 - **A running cluster changes mode only with a Cilium upgrade.** `ocp apply`
   does not re-run the Cilium Helm release. After changing `gateway:` on a
   running cluster, run `ocp update --component cilium --force`, as for
-  `cilium:`. `ocp status` does not report a mode that differs from
-  `ocp.yaml`.
+  `cilium:`. `ocp status` reports a mode that differs from `ocp.yaml` as
+  drift: `Gateway mode: Cilium runs the Gateway in load_balancer mode,
+  ocp.yaml expects host_network (gateway.mode)`, with that command as the
+  step. It reads the mode from Cilium's `cilium-config` and reports a
+  differing `node_selector` the same way, as `Gateway node selector`.
 
 ### What was not chosen
 
