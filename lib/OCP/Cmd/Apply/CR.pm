@@ -703,9 +703,11 @@ sub worker_ocpnodes {
             $count = scalar @hosts || 1;
         }
         elsif (!(OCP::Provider->known_type($pool->{provider})
-                 && OCP::Config::_is_whole_number($count))) {
+                 && OCP::Config::_is_whole_number($count)
+                 && $count <= $OCP::Config::MAX_WORKER_POOL_NODES)) {
             # A count is taken where validate() takes one (k361): a whole
-            # number (OCP::Config::_pool_nodes_errors) on a pool whose
+            # number, at most $MAX_WORKER_POOL_NODES (k425; validate() refuses
+            # more since k325), (OCP::Config::_pool_nodes_errors) on a pool whose
             # provider OCP knows -- any other pool validate() refuses for its
             # provider, and asks nothing about its nodes:. Any other nodes:
             # stands for one worker, as control_planes() reads a count

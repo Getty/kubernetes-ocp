@@ -83,6 +83,9 @@ sub built {
 }
 
 subtest 'the guard is armed: it counts the OCPNodes of that loop' => sub {
+    # Below the pool limit: a count above $MAX_WORKER_POOL_NODES is no count
+    # since k425, so the guard is shown at a bound a count can pass.
+    local $LIMIT = $OCP::Config::MAX_WORKER_POOL_NODES - 1;
     my $r = built(config_from_text("  - name: hz\n    provider: hetzner\n    nodes: $LIMIT\n"));
     is $r->{died}, '', "$LIMIT: no death";
     is scalar @{ $r->{names} }, $LIMIT, "$LIMIT: $LIMIT OCPNodes";
@@ -94,7 +97,9 @@ subtest 'the guard is armed: it counts the OCPNodes of that loop' => sub {
 };
 
 subtest 'control: a count validate() takes is the count' => sub {
-    for my $case ([ 3, [ 'hz-1', 'hz-2', 'hz-3' ] ], [ 0, [] ]) {
+    my $max = $OCP::Config::MAX_WORKER_POOL_NODES;
+    for my $case ([ 3, [ 'hz-1', 'hz-2', 'hz-3' ] ], [ 0, [] ],
+                  [ $max, [ map { "hz-$_" } 1 .. $max ] ]) {
         my ($n, $names) = @$case;
         # server_type: validate() requires it of a hetzner pool (k308).
         my $config = config_from_text("  - name: hz\n    provider: hetzner\n    server_type: cpx22\n"
@@ -125,6 +130,13 @@ my @UNCOUNTED = (
       qr/\Aworker pool 'p': nodes must be a whole number/, 'hetzner-default' ],
     [ 'hetzner, nodes: two' => "    provider: hetzner\n    nodes: two\n",
       qr/\Aworker pool 'p': nodes must be a whole number/, 'hetzner-default' ],
+    # A whole number above the pool limit (k425): validate() refuses it
+    # (k325), so it is no count either.
+    [ 'hetzner, nodes: one above the limit' => "    provider: hetzner\n    nodes: "
+          . ($OCP::Config::MAX_WORKER_POOL_NODES + 1) . "\n",
+      qr/\Aworker pool 'p': nodes must be at most \Q$OCP::Config::MAX_WORKER_POOL_NODES\E/, 'hetzner-default' ],
+    [ 'hetzner, nodes: 1000000000000' => "    provider: hetzner\n    nodes: 1000000000000\n",
+      qr/\Aworker pool 'p': nodes must be at most/, 'hetzner-default' ],
 );
 
 for my $case (@UNCOUNTED) {
