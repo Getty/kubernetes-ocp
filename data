@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-26T08:37:29Z
+created: 2026-11-07T03:31:21Z
+id: 438
+priority: low
+started: 2026-11-26T06:27:27Z
+status: done
+tags:
+- config
+- validation
+title: 'NodeMeta spec_labels drops a labels: that is no mapping; node rm and keys
+  authorized-keys declare ssh by hand'
+updated: 2026-11-26T08:37:29Z
+---
+
+Found by k401, not fixed there. 1. lib/OCP/NodeMeta.pm spec_labels still drops, without a word, a labels: that is no mapping, and any value that is no string; the same shape spec_taints had before k401. The CLI check refuses both first, so it is the net behind it. 2. lib/OCP/Cmd/Node/Rm.pm (~:37) and lib/OCP/Cmd/Keys/AuthorizedKeys.pm (~:32) declare ssh by hand for cluster_ssh_key; both could return OCP::Role::Cmd cluster_ssh_key_spec_paths, as ssh does since k401. Lane: ocp-worker or choices.
+
+2026-11-26 06:34 1) NodeMeta::spec_labels: undef -> {}, else dies with the first label_errors line under 'worker pool: labels' (validate()'s words, one line), as spec_taints since k401; numbers still stringified. 2) Node::Rm and Keys::AuthorizedKeys spec_paths return $self->cluster_ssh_key_spec_paths. My choice for AuthorizedKeys: it reads only ssh.public_key (Config::ssh_public_key_path), a subset of what cluster_ssh_key reads; declaring the whole helper list follows the card. New t/438-spec-labels-net.t, red against HEAD lib (3/3 subtests), green with fix. No Changes bullet: validate() refuses both shapes first, the net is not user-visible.
+
+2026-11-26 06:42 Done, uncommitted in worktree. lib/OCP/NodeMeta.pm (spec_labels net + POD), lib/OCP/Cmd/Node/Rm.pm + lib/OCP/Cmd/Keys/AuthorizedKeys.pm (spec_paths via cluster_ssh_key_spec_paths), t/438-spec-labels-net.t. Verified: make test TAG=xcut on t/438 + 20 NodeMeta/worker_ocpnodes/rm/authorized-keys tests PASS; t/438 red vs HEAD lib.
+
+2026-11-26 08:37 Committed f6a543a
