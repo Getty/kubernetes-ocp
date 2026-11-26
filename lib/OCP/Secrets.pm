@@ -1136,8 +1136,11 @@ sub generate_ssh_key {
     # and the randomart on STDOUT, which during `ocp init` and `ocp keys
     # secure` is the command's narrative -- noise there, and against the
     # output-channel rule. -q silences exactly that; its errors still go to
-    # STDERR. Not captured through OCP::Exec: IPC::Open3 loses the output of a
-    # caller whose STDOUT is an in-memory handle, as the tests' are.
+    # STDERR. A plain system() because -q leaves nothing to capture. Since
+    # k465, OCP::Exec::capture_command spawns its child on file descriptors
+    # rather than on the caller's handles, so the in-memory STDOUT that kept
+    # it away from here once is no reason any more: it could be used, should
+    # the errors ever need to be part of the croak.
     system('ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', $key_path->stringify,
         '-C', 'ocp-cluster-key') == 0
         or croak "Failed to generate SSH key: $?";
