@@ -1,0 +1,24 @@
+---
+class: standard
+completed: 2026-11-26T08:36:03Z
+created: 2026-11-26T05:53:56Z
+id: 460
+priority: low
+started: 2026-11-26T06:21:45Z
+status: done
+tags:
+- drift
+- cilium
+- gateway
+title: 'ocp status: drift for a changed gateway.node_selector (Cilium hostNetwork
+  node label selector)'
+updated: 2026-11-26T08:36:03Z
+---
+
+Follow-up to k458. gateway_mode_drift compares only the on/off flag gateway-api-hostnetwork-enabled in cilium-config. A changed gateway.node_selector in ocp.yaml (cilium-config key gateway-api-hostnetwork-nodelabelselector) is not reported. Done = the selector is compared too, same remedy (ocp update --component cilium --force), network-free test. Lane: ocp-state-worker.
+
+2026-11-26 06:25 Red test t/460-gateway-selector-drift.t written. Serialization basis: Cilium v1.20.0 chart, templates/cilium-configmap.yaml renders gateway-api-hostnetwork-nodelabelselector via include mapToString of gatewayAPI.hostNetwork.nodes.matchLabels; _helpers.tpl mapToString = range $k,$v (Go: sorted keys), printf %s=%s, join ','. Plan: compare under host_network only, in gateway_mode_drift on the same ConfigMap read; mode mismatch stays the one entry.
+
+2026-11-26 06:27 Done: OCP::Drift gateway_mode_drift now also compares cilium-config gateway-api-hostnetwork-nodelabelselector with gateway.node_selector (via Config->cilium_helm_values gatewayAPI.hostNetwork.nodes.matchLabels, rendered as the Cilium 1.20 chart's mapToString does: key=value, keys sorted, joined ','; live pairs compared order/blank-insensitive). Under host_network on both sides only; a mode mismatch stays the single entry. Same ConfigMap read (test asserts one get). Entry: kind spec, component cilium_gateway, label 'Gateway node selector', no remedy, manual_step ocp update --component cilium --force. New t/460-gateway-selector-drift.t (red before fix: 4 failures in the drift subtest). t/458 fixture 'host_network matches' gained the selector key the chart always renders (claim unchanged). Verified: make test TAG=k460 on t/460, t/458, t/454-*, t/25, t/262, t/268, t/269, t/403, t/300: PASS (294 tests). Tree uncommitted.
+
+2026-11-26 08:35 Committed 15c13b8
