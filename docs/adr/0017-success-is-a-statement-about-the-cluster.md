@@ -400,11 +400,15 @@ Consequences:
   leaves no OCPNode for police1. The next `ocp apply` writes it.
 - A NotReady police1's OCPNode is now `Joining`, a phase robocop's resync
   picks up. Robocop hands it to `OCP::Node`, whose `Joining` step writes
-  `Ready` once the Node is. That runs only when robocop can load the OCPNode's
-  `providerRef`. A `local` control plane's `local-default` has no
-  OCPNodeProvider (`ensure_providers` skips it), and robocop marks an OCPNode
-  whose provider does not load `Failed`. Read from the code, not tested; noted
-  on k417.
+  `Ready` once the Node is. As first built under k417, that ran only when
+  robocop could load the OCPNode's `providerRef`. A `local` control plane's
+  `local-default` has no OCPNodeProvider (`ensure_providers` skips it), and
+  robocop marked an OCPNode whose provider did not load `Failed`, which is
+  terminal. k468 (afc4443) reproduced that in
+  `t/468-robocop-observed-control-plane.t` and closed it. For a control-plane
+  OCPNode in `Joining` or `Ready`, robocop no longer loads the provider
+  (`OCP::Robocop::Controller::_node_only`). It only mirrors the Node's `Ready`
+  into the phase, because `OCP::Node` asks no provider in those phases.
 
 Unverified: tested against fakes in `t/417-control-plane-ready.t`. It has not
 been seen on a live cluster. Recorded under k417.

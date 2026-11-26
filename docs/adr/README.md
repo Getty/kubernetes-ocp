@@ -210,9 +210,11 @@ and counts one not seen Ready. Two things the 2026-11-06 amendment said no
 longer hold. A first deploy that dies in the registry step over a NotReady
 control plane no longer ends `Error: …`: it ends `— APPLY INCOMPLETE` with the
 control plane named. The first control plane's OCPNode is no longer `Ready`
-regardless of its Node. The amendment also names a robocop path read from the
-code and not tested: a `local` control plane's OCPNode, now `Joining`, has no
-OCPNodeProvider for robocop's resync to load.
+regardless of its Node. The amendment also records what that did to robocop.
+A `local` control plane's OCPNode, now `Joining`, named an OCPNodeProvider
+that does not exist, and robocop's resync marked it `Failed`. k468 reproduced
+that and fixed it the same day: robocop no longer loads a provider for a
+control plane in `Joining` or `Ready`.
 
 0022 was amended again on 2026-11-26, under k440. The decision did not move.
 The 2026-11-07 amendment counted a snippet that maps the name to the control
