@@ -92,10 +92,12 @@ subtest 'execute stays within the dispatcher size budget' => sub {
     my $lines = () = $execute =~ /\n/g;
 
     # The brief said "dispatcher only, ~400 lines for Apply.pm". execute()
-    # is the bulk of the non-forwarder code; the rest is just option
-    # declarations and the _cp_identity / _dist_label / _setup_ssh_key
-    # forwarders. A hard ceiling on execute() is what keeps the
-    # dispatcher honest — adding inline logic here will trip it.
+    # is the bulk of the non-forwarder code; the rest is the three option
+    # declarations, _announce_control_planes and the @COREDNS_CONFIGMAPS
+    # alias. Every other sub is a one-line forwarder into an
+    # OCP::Cmd::Apply::* phase module (or OCP::Share). A hard ceiling on
+    # execute() is what keeps the dispatcher honest — adding inline logic
+    # here will trip it.
     ok $lines < 200,
         "execute() body is $lines lines (< 200)";
 };

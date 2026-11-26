@@ -46,7 +46,7 @@ it, or does nothing at all.
   It is a pure function, idempotent, corrects a changed control-plane IP in
   place, and `_corefile_drop_added_hosts` repairs a Corefile already broken by
   the previous behaviour — but only while more than one `hosts` block exists,
-  and never the last one.
+  and never the last one *(amended 2026-11-26, see below)*.
 - **Do not make the NVIDIA runtime the default.** Neither distribution does, and
   OCP will not do it through the back door. The documented path is
   `RuntimeClass nvidia`; anyone who really needs a default runtime uses
@@ -89,3 +89,25 @@ it, or does nothing at all.
 - OCP now depends on the distributions' runtime auto-detection continuing to
   work, and on the toolkit being installed before the distribution starts. Both
   were verified on k3s; the RKE2 `PATH` line is written and unverified.
+
+## Amendment 2026-11-26
+
+This ADR said under `## Decision`:
+
+> […] and `_corefile_drop_added_hosts` repairs a Corefile already broken by
+> the previous behaviour — but only while more than one `hosts` block exists,
+> and never the last one.
+
+The repair and its two limits still hold. The name does not. On 2026-08-14
+(4131d1c) the CoreDNS code moved to `OCP::Cmd::Apply::Network`, and
+`OCP::Cmd::Apply::_corefile_drop_added_hosts` became a forwarder to
+`OCP::Cmd::Apply::Network::corefile_drop_added_hosts`. Nothing called the
+forwarder, and k406 (9a4d448) removed it. The repair is now
+`OCP::Cmd::Apply::Network::corefile_drop_added_hosts`. Since k348 it hands the
+work to `OCP::Corefile::without_added_hosts`, so the drift probe can ask whether
+the repair is enough. `corefile_with_host` calls it first, so every patch runs
+the repair. The sentence keeps the old name because this ADR is a record; this
+section names the function that exists (k426).
+
+`_corefile_with_host` and `_configure_registry_dns`, the other two names above,
+are still forwarders in `OCP::Cmd::Apply` and still resolve.

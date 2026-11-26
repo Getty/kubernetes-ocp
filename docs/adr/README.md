@@ -196,6 +196,12 @@ answers from. And a `coredns-custom` snippet, which the ADR counted as solved,
 was read by neither side. k338 and k348 made both true. The amendment records
 what they read, and that `*.override` files are not read.
 
+0016 was amended on 2026-11-26 under k426. The decision did not move. One
+name in it did: `_corefile_drop_added_hosts` was a forwarder in
+`OCP::Cmd::Apply` that k406 removed because nothing called it. The repair it
+named is `OCP::Cmd::Apply::Network::corefile_drop_added_hosts`. The amendment
+says so and leaves the old sentence as it was written.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and
