@@ -214,6 +214,14 @@ regardless of its Node. The amendment also names a robocop path read from the
 code and not tested: a `local` control plane's OCPNode, now `Joining`, has no
 OCPNodeProvider for robocop's resync to load.
 
+0022 was amended again on 2026-11-26, under k440. The decision did not move.
+The 2026-11-07 amendment counted a snippet that maps the name to the control
+plane as solved. Since k393 that holds only for a Corefile CoreDNS loads: a
+`hosts` plugin doubled in any server block is reported first. The amendment
+also says that such a Corefile stops resolving the name only after a CoreDNS
+restart, because a reload keeps the previous configuration. The unconditional
+wording in `lib/` is left to k440.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and

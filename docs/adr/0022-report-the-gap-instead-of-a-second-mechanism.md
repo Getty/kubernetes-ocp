@@ -57,8 +57,8 @@ apply that is about to fix it — pointing at `ocp update` there would be wrong.
 `corefile_host_address` reads the mapping regardless of which block the line
 sits in *(amended 2026-11-07, see below)*. An operator who adds their own
 `coredns-custom` snippet therefore counts as solved and is not nagged about
-drift *(amended 2026-11-07, see below)*. The decision is not that the snippet
-is wrong; it is that OCP will not maintain it.
+drift *(amended 2026-11-07 and 2026-11-26, see below)*. The decision is not
+that the snippet is wrong; it is that OCP will not maintain it.
 
 Generalised: when a gap cannot be closed the same way on every supported target
 (ADR 0012), and the measured harm is a quiet, self-healing window, report the
@@ -152,7 +152,7 @@ the Corefile through one parser, `OCP::Corefile`:
   (`OCP::Drift::corefile_imports_custom`). k3s's stock Corefile has that
   import. The RKE2 chart's has none, so on RKE2 nothing changes.
 - **A snippet that maps the name to the control plane counts as solved.** There
-  is no drift, and the writer does nothing. One that maps it elsewhere, or has
+  is no drift, and the writer does nothing *(amended 2026-11-26, see below)*. One that maps it elsewhere, or has
   no record for it, is a `spec` entry with a `manual_step` and no remedy, named
   with the ConfigMap key it is in. That is drift `ocp apply` does not close.
   The writer does not write a root-block record the snippet would shadow. It
@@ -175,3 +175,34 @@ as written, because it is true of those four. `t/338-registry-dns-one-reading.t`
 drives the writer and the probe over the shadowing state and the k348 cases,
 and asserts that they agree. Neither k338 nor k348 records a run against a
 live cluster. Recorded under k392.
+
+## Amendment 2026-11-26 (k440)
+
+The amendment of 2026-11-07 says:
+
+> **A snippet that maps the name to the control plane counts as solved.** There
+> is no drift, and the writer does nothing.
+
+Since k393 (7496f84) that holds only for a Corefile CoreDNS loads. Before
+either side reads the record, the probe and the writer ask
+`OCP::Corefile::doubled_hosts_block` whether any server block runs the `hosts`
+plugin more than once: the root block or another, on any port, the Corefile's
+own or a `coredns-custom` snippet. A Corefile with such a block is reported
+however well the snippet answers. `registry_dns_drift` gives a `spec` entry
+with a `manual_step`, and `configure_registry_dns` dies with the reason, which
+the caller prints as a `[WARN]` on STDERR. The one exception is a doubled root
+block whose extra block is one an older OCP added. The writer takes that block
+out (k348), and the probe's entry is `missing`.
+
+What a doubled `hosts` plugin does to name resolution depends on how CoreDNS
+meets the Corefile. CoreDNS rejects the configuration. On a reload it keeps
+serving the configuration it already had, and on a restart it does not start.
+"Does not resolve" is therefore strictly true only after a restart. This comes
+from CoreDNS's `reload` plugin documentation, not from a run here. The probe's
+message and the POD in `OCP::Drift`, `OCP::Corefile` and
+`OCP::Cmd::Apply::Network` still say it without that condition (the k348
+wording). That wording lives in `lib/` and is left to k440.
+
+The decision did not move. The snippet is still the operator's: OCP reads it
+and does not write it. What changed is the condition for counting it as
+solved. Recorded under k440.

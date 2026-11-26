@@ -79,7 +79,11 @@ How the record is read and written (k338, k348; ADR 0022 amendment k392). Writer
   not), both sides also read `kube-system/coredns-custom` and take its `*.server` snippets
   as server blocks. `*.override` files are not read (k3s imports them inside the root block).
 - **A snippet that maps the name to the control plane counts as solved**: no drift, the
-  writer does nothing. One that maps it elsewhere or has no record is `spec` drift with a
+  writer does nothing. Since k393 that holds only for a Corefile CoreDNS loads: a server
+  block running the `hosts` plugin twice, in any block or snippet, is reported first
+  (`doubled_hosts_block`). CoreDNS rejects such a Corefile; on a reload it keeps serving
+  the previous one, so the name stops resolving only after a restart (ADR 0022 amendment
+  k440). One that maps it elsewhere or has no record is `spec` drift with a
   `manual_step` that `ocp apply` does not close; the writer dies with the reason and the
   caller prints it as `[WARN]` on STDERR instead of writing a root-block record the
   snippet would shadow.
