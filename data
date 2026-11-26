@@ -1,0 +1,40 @@
+---
+class: standard
+completed: 2026-11-26T18:14:43Z
+created: 2026-11-20T15:28:28Z
+id: 454
+priority: high
+started: 2026-11-20T22:38:23Z
+status: done
+tags:
+- hetzner
+- cai-live
+title: 'Hetzner: ingress for Cilium Gateway without L2 announcement (Primary IP on
+  a worker)'
+updated: 2026-11-26T18:14:43Z
+---
+
+Context: same as the network card (cai-admin plan §7 card 2). On Hetzner Cloud L2 announcement/LB-IPAM do not reach the internet; we want the Cilium Gateway reachable on a Primary IP attached to worker w1, without a paid hcloud Load Balancer for now.
+Goal: decide and implement the supported way (e.g. Cilium gatewayAPI hostNetwork mode on labelled nodes, or LB-IPAM with the Primary IP plus a node selector), configurable per pool/cluster in ocp.yaml; document the trade-offs (single node, failover = move the Primary IP).
+Related: #451 (cert-manager Gateway API switch for ACME HTTP-01) — fix together if it is the same code path.
+Done when: tests for rendering/validation, docs, Changes, small commits; the decision written into the card.
+Limits: no real Hetzner calls; no apply against real clusters.
+
+2026-11-20 21:04 cai-admin-20 (Getty 2026-11-20): Plan §11 hat entschieden — der Edge-Hexel von live (Traefik, Maschine r2d2) traegt die EINZIGE oeffentliche IP; die behaltene Primary IP 138.199.159.87 geht an r2d2 (hive#372), NICHT an w1. Ziel dieser Karte daher neu: der Cilium-Gateway des Clusters hz ist auf der PRIVATEN Adresse eines Workers im Netz cai-live erreichbar (z.B. hostNetwork auf gelabelten Nodes oder LB-IPAM mit privater IP/NodePort), ohne oeffentliche IP und ohne hcloud Load Balancer; Traefik am Edge leitet die Hostnamen der Komponenten dorthin. Primary IP auf einem Worker nur als dokumentierte Option, nicht Default.
+
+2026-11-20 22:42 Decision (ocp-infra-worker): Cilium Gateway API host-network mode. New ocp.yaml key gateway: { mode: host_network, node_selector: { LABEL: VALUE } }; default mode load_balancer = today's behaviour. OCP::Config::cilium_helm_values renders gatewayAPI.hostNetwork.enabled=true + hostNetwork.nodes.matchLabels=node_selector, plus envoy.securityContext.capabilities { keepCapNetBindService: true, envoy: [NET_ADMIN, SYS_ADMIN, NET_BIND_SERVICE] } (Cilium 1.20.0 chart: the envoy starter drops every capability unless keepCapNetBindService, so Envoy cannot bind 80/443 without it; the list repeats the chart default plus NET_BIND_SERVICE because Helm replaces lists). It travels as Cilium helm_values, which Rex::Rancher::Cilium deep-merges last over its own gatewayAPI.enabled -- no Rex::Rancher change needed; install (Bootstrap) and upgrade (OCP::Drift remedy_config -> upgrade_cilium, incl. the station walk) both carry it. Envoy then listens on 80/443 of the labelled nodes; the edge Traefik forwards to their private address. Label the gateway worker through a pool's labels: (a pool of one, e.g. gw). setup_cilium_gateway reports the labelled nodes and their InternalIP instead of expecting an LB address; setup_lb_ipam no longer reads a Gateway address in host mode.
+Rejected: (1) LB-IPAM with a private IP -- Hetzner routes nothing to an address it did not assign; it needs an hcloud network route (ip -> w1) written by OCP into a network it does not own (k453: OCP creates/changes no network), and L2 announcement does not work on Hetzner. (2) NodePort -- Traefik would target 3xxxx ports that change per Service; no fixed contract. (3) Primary IP on w1 -- against the edge decision (plan §11, only r2d2 is public); stays a documented option only, not built.
+Trade-offs: single node unless several are labelled (failover = label another worker, or Traefik lists several backends with health checks); Envoy binds every address of the node incl. the public one, so the k453 firewall must not allow 80/443 inbound; hostNetwork is cluster-wide in Cilium (every Gateway of the cluster, not just cilium-gateway); envoy.enabled false (embedded Envoy) is refused under host_network since the capability would then be needed on the agent; a mode switch on a running cluster takes ocp update --component cilium --force (ocp apply does not re-run the Cilium Helm release, same as cilium.devices).
+k451: different code path (cert-manager release manifest args in apply_cert_manager), not touched here; on live the edge terminates public TLS and the issuer comes from OpenBao.
+
+2026-11-20 23:17 Done (uncommitted, tree commit-ready): gateway: { mode: load_balancer|host_network, node_selector } in OCP::Config (validated at spec_errors path gateway; rendered into cilium_helm_values: gatewayAPI.hostNetwork + envoy NET_BIND_SERVICE, helm_values merged over it); OCP::Cmd::Apply::Network setup_cilium_gateway names the labelled nodes + InternalIP in host mode, setup_lb_ipam no longer reads a Gateway address there; docs/configuration.md section 'The Cilium Gateway on Hetzner: host-network mode' (trade-offs, rejected alternatives, Primary IP as manual option, refusals); ocp-cilium skill paragraph. Tests: t/454-gateway-config.t, t/454-gateway-host-network.t (incl. the real Rex::Rancher::Cilium 0.005 merge; mutation-checked), t/269 FakeConfig gained gateway_host_network. make test: 306 files, 4567 tests, only t/222-vendor.t test 5 fails (known, k457). Open: no drift probe for a mode differing from ocp.yaml (follow-up for ocp-state-worker); envoy capability list repeats the Cilium 1.20 chart default -- recheck on a cilium pin bump; not verified against a live cluster (Envoy actually binding 80/443 with the caps, Programmed status in host mode).
+
+Committed: 0046180 (Config + t/454-gateway-config.t), d24acfa (Network + t/454-gateway-host-network.t + t/269), 280df8b (docs, ocp-cilium skill, Changes). Stays in review.
+
+See note on k453: the gateway nodes must not get the edge firewall (cai-env=live), or Envoy in host mode is publicly reachable on 80/443.
+
+2026-11-21 00:43 cai-admin-20: abgenommen (make test 4583, nur t/222 #5 rot wie auf main). Uebergabe an Getty: ff-merge worktree-ocp-k453 @32af960, push, Image bauen.
+
+2026-11-26 03:59 Branch worktree-ocp-k453 rebased onto main (no conflicts) and merged locally (fast-forward) at 3ab670e, not pushed. Backup: backup/k453-pre-rebase. Left in review: push and image are the maintainer's.
+
+Done; follow-ups landed in k474 (f51c9fc 53ae9f7 0fbad8e) and k475
