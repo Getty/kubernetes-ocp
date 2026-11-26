@@ -407,8 +407,8 @@ my %STUB_RETURN = (
 my @touched;
 
 package DryRunResponse {
-    sub new     { bless {}, shift }
-    sub status  { 200 }
+    sub new     { my ($c, $status) = @_; bless { status => $status // 200 }, $c }
+    sub status  { $_[0]{status} }
     sub content { '{}' }
 }
 # The control plane's Node, Ready: the reconcile judges it by name since k417
@@ -453,6 +453,10 @@ package DryRunApi {
         # Every Node list but one by label: the control plane, Ready.
         return FakeList->new([ ReadyNode->new('cortex') ])
             if $kind eq 'Node' && !defined $opts{labelSelector};
+        # {nvidia}: NFD labelled the control plane NVIDIA, so the GPU step
+        # runs (k413).
+        return FakeList->new([ ReadyNode->new('cortex') ])
+            if $self->{nvidia} && $kind eq 'Node' && $opts{labelSelector} =~ /_10de\.present=true\z/;
         return FakeList->new([]);
     }
 
@@ -480,7 +484,8 @@ package DryRunApi {
     sub _request {
         my ($self, $method, $path) = @_;
         push @{ $method eq 'GET' ? $self->{reads} : $self->{writes} }, "$method $path";
-        return DryRunResponse->new;
+        # {absent}: paths the cluster answers 404 (k413).
+        return DryRunResponse->new($self->{absent} && $self->{absent}{$path} ? 404 : 200);
     }
 }
 package ReconcileOcp {
@@ -615,6 +620,8 @@ YAML
                           OCP::Versions->get_component_version('cilium')))),
                       %{ $opt{objects} // {} } },
         denied   => $opt{denied} // {},
+        absent   => $opt{absent} // {},
+        nvidia   => $opt{nvidia} ? 1 : 0,
         ocpnodes => { map { $_ => {
             apiVersion => 'ocp.internal/v1',
             kind       => 'OCPNode',
@@ -707,7 +714,13 @@ subtest 'a dry run reports what a real run would act on' => sub {
 # something a real run acts on, so it is not part of the count.
 #
 subtest 'k188: report-only drift is counted apart from what a real run does' => sub {
-    my $r = reconcile(dry_run => 1, objects => {
+    # The GPU Operator CRDs are not there: every other GET of this fake
+    # answers {} and the shipped CRDs differ from that -- report only too on
+    # a cluster without an NVIDIA node, where the GPU step leaves them (k413)
+    # -- and the count below is about the pod CIDR alone.
+    my $r = reconcile(dry_run => 1, absent => { map {
+        ("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$_->[0]" => 1)
+    } @OCP::Drift::GPU_CRDS }, objects => {
         'ConfigMap/kube-system/cilium-config' => {
             data => { 'cluster-pool-ipv4-cidr' => '10.0.0.0/8', 'ipam' => 'cluster-pool' },
         },
@@ -1633,19 +1646,23 @@ subtest 'k276: a GPU Operator the cluster refuses to show is not "no drift"' => 
     my $yaml = "nocert: true\n";
     my $line = qr{^  \[drift\] could not be checked: GPU Operator: could not read Deployment gpu-operator/gpu-operator: 403 forbidden}m;
 
-    my $ok = reconcile(yaml => $yaml);
+    # A node NFD labelled NVIDIA: only then does the GPU step -- and so the
+    # check -- read the operator's Deployment at all. Without one it skips
+    # before that read, in the real run and the dry run alike (k413).
+    my %gpu = (nvidia => 1);
+    my $ok = reconcile(yaml => $yaml, %gpu);
     like   $ok->{out}, qr/\[ok\] No drift detected/, 'control, real run: a 404 is no operator';
     unlike $ok->{out} . $ok->{err}, qr/could not be checked|not checked/, 'control: nothing unknown';
     is_deeply $ok->{failed}, [], 'control: nothing counted';
 
-    my $real = reconcile(yaml => $yaml, %deny);
+    my $real = reconcile(yaml => $yaml, %gpu, %deny);
     unlike $real->{out}, qr/\[ok\] No drift detected/, 'real run: no "No drift detected" over it';
     like   $real->{out}, $line, 'real run: could not be checked, with the cause';
     is scalar(() = $real->{err} =~ /403 forbidden/g), 1, 'real run: the cause on STDERR, once';
     is_deeply $real->{failed}, ['GPU Operator drift check'], 'real run: counted for the exit';
     unlike $real->{out}, qr/All \d+ component\(s\) up to date/, 'real run: not summarised as up to date';
 
-    my $dry = reconcile(yaml => $yaml, dry_run => 1, %deny);
+    my $dry = reconcile(yaml => $yaml, dry_run => 1, %gpu, %deny);
     unlike $dry->{out}, qr/\[ok\] No drift detected/, 'dry run: no "No drift detected" over it';
     like   $dry->{out}, $line, 'dry run: could not be checked, with the cause';
     is scalar(() = $dry->{err} =~ /403 forbidden/g), 1,
