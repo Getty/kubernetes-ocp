@@ -1319,3 +1319,5 @@ Revision history for OCP
       DHCP/ifupdown hooks keep the routes across reboots and the private
       interface going down and up; workers robocop creates get them through
       the OCPNode's `spec.routes`.
+    - `ocp node rm`: only a 404 makes the node unknown; any other failed read
+      is said and nothing is removed.

@@ -105,10 +105,21 @@ sub execute {
     my $api  = $self->_k8s;
     my $ns   = 'ocp-system';
 
+    # Only a 404 says there is no such node (k470). A read that failed
+    # otherwise -- RBAC, an apiserver 5xx, an API that does not answer -- says
+    # nothing about the node, and "Unknown node" with the ones that exist
+    # would call one unknown that may well be there. That is said as the
+    # failed read, in one line (cause_line), and nothing is torn down.
     my $cr_obj = eval {
         $api->get('OCPNode', name => $name, namespace => $ns);
     };
-    if ($@ || !$cr_obj) {
+    if (my $err = $@) {
+        die "Could not read OCPNode '$name' from the cluster API: "
+          . OCP::ErrorLine::cause_line($err, empty => 'no answer') . "\n"
+          . "Nothing was removed.\n"
+            unless "$err" =~ /\b404\b/;
+    }
+    unless ($cr_obj) {
         my @names = $self->_node_names($api, $ns, \my $unread);
         die OCP::Choices::unknown('node', $name, defined $unread ? "$unread\n" : \@names,
             empty => "No OCPNode exists in this cluster;"
@@ -330,6 +341,10 @@ nothing is torn down:
 
     Unknown node 'wroker-1'.
     Available: cp-lab, otho-gpu, worker-1
+
+Only a 404 makes a node unknown. A read of the OCPNode that fails otherwise
+-- access denied, an apiserver error, an API that does not answer -- is said
+as that failure, in one line, and nothing is torn down.
 
 =head1 OPTIONS
 
