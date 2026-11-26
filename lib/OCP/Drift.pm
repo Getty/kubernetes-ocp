@@ -678,6 +678,7 @@ sub detect {
         push @drift, $self->ocp_crd_drift;
         push @drift, $self->registry_dns_drift;
         push @drift, $self->pod_cidr_drift;
+        push @drift, $self->gateway_mode_drift;
     }
     push @drift, $self->rex_probe_drift if $self->rex_prober;
 
@@ -1565,6 +1566,69 @@ automatically, and C<upgrade_cilium> keeps the live pool.
 No C<cilium-config> (a 404) is nothing to compare. Any other failed read is
 one C<kind =E<gt> 'error'> entry, drift unknown, as for
 L</component_drift>.
+
+=cut
+
+#
+# Gateway mode drift (k458): Cilium's Gateway host-network mode vs. gateway:.
+#
+# gateway.mode: host_network travels as Cilium Helm values (k454), which reach
+# a running cluster only through the Helm release: ocp apply re-runs it on a
+# version upgrade only, so a mode switch takes ocp update --component cilium
+# --force. Report only, no remedy. Read from the cilium-config ConfigMap, as
+# pod_cidr_drift reads it: no ConfigMap is nothing to compare, an absent key is
+# a Cilium that is not in host-network mode.
+sub gateway_mode_drift {
+    my ($self) = @_;
+
+    my $config   = $self->config;
+    my $expected = $config->gateway_host_network ? 'host_network' : 'load_balancer';
+    my $cm = eval {
+        $self->api->get('ConfigMap', name => 'cilium-config', namespace => 'kube-system');
+    };
+    my $err = $@;
+    unless ($cm) {
+        my $unknown = $self->_unknown_drift($err,
+            in        => 'gateway_mode_drift',
+            op        => 'get',
+            object    => 'ConfigMap kube-system/cilium-config',
+            component => 'cilium_gateway',
+            label     => 'Gateway mode',
+            expected  => $expected,
+        );
+        return $unknown if $unknown;
+        return;
+    }
+    my $live   = _dig($cm, qw(data gateway-api-hostnetwork-enabled)) // '';
+    my $actual = lc($live) eq 'true' ? 'host_network' : 'load_balancer';
+    return if $actual eq $expected;
+
+    return {
+        kind        => 'spec',
+        component   => 'cilium_gateway',
+        label       => 'Gateway mode',
+        expected    => $expected,
+        actual      => $actual,
+        message     => "Gateway mode: Cilium runs the Gateway in $actual mode, ocp.yaml"
+                     . " expects $expected (gateway.mode); ocp apply does not re-run"
+                     . ' the Cilium Helm release',
+        manual_step => 'Switch the running Cilium: ocp update --component cilium --force',
+        remedy      => undef,
+    };
+}
+
+=method gateway_mode_drift
+
+Compares Cilium's Gateway host-network mode, C<gateway-api-hostnetwork-enabled>
+in the C<cilium-config> ConfigMap, with C<gateway.mode> of F<ocp.yaml>
+(L<OCP::Config/gateway_host_network>). A difference is a C<spec> entry,
+C<component =E<gt> 'cilium_gateway'>, with no remedy and the C<manual_step>
+C<ocp update --component cilium --force>: the mode is a Cilium Helm value, and
+C<ocp apply> re-runs the Helm release only for a version upgrade.
+
+No C<cilium-config> (a 404) is nothing to compare; a ConfigMap without the key
+reads as C<load_balancer>. Any other failed read is one C<kind =E<gt> 'error'>
+entry, drift unknown, as for L</component_drift>.
 
 =cut
 

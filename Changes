@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp status` reports drift when Cilium's Gateway host-network mode
+      differs from `gateway.mode` in ocp.yaml, with the step to switch it:
+      `ocp update --component cilium --force`.
     - A server Hetzner reports as not found counts as deleted: robocop's
       teardown, `ocp node rm` and `ocp destroy` end instead of failing on a
       server that was already removed.
