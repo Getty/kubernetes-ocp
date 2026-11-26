@@ -37,9 +37,16 @@ use OCP::SSH;
 #
 # Only the wire is fake: the client is the real WWW::Hetzner::Cloud each
 # command builds for itself, with the token from where the command reads it,
-# and every error is the one WWW::Hetzner raises. A request the test does not
-# answer is refused with 401 and a body that echoes the headers it was sent --
-# Authorization: Bearer <token> -- the way an answer or a transport reason can.
+# and every error is the one WWW::Hetzner raises or hands on. A request the
+# test does not answer fails with a text that echoes the headers it was sent --
+# Authorization: Bearer <token>.
+#
+# k418: since 0.103 WWW::Hetzner masks the token in every answer it parses
+# itself, so a refused request (401, the token echoed in the body) no longer
+# shows that OCP masks anything. A transport that dies does: WWW::Hetzner hands
+# that text on as it was raised, the token in it. So by default the wire dies;
+# only the adapter's subtest still lets the API refuse, for the line OCP makes
+# of it, not for the mask.
 #
 
 no warnings 'once';
@@ -49,7 +56,7 @@ my $CR_TOKEN = 'hzTOKEN-k373-cr-9876543210';
 
 our %ROUTES;            # "METHOD /path" => answer (no query string)
 our @SENT;              # "METHOD /path" of every request on the wire
-our $WIRE_DIES;         # the transport dies instead of answering
+our $WIRE_DIES = 1;     # the transport dies instead of the API refusing (401)
 
 sub wire {
     my ($io, $req) = @_;
@@ -69,12 +76,16 @@ sub wire {
 }
 
 # What the operator sees of an error: no token, the mask where it was, one line
-# without a Perl source location.
+# without a Perl source location. Without $masks (the API refused, and
+# WWW::Hetzner masked its answer itself) only the line is OCP's to prove.
 sub masked_line {
-    my ($err, $token, $what) = @_;
+    my ($err, $token, $what, $masks) = @_;
+    $masks //= 1;
     ok defined $err && length $err, "$what: it fails" or return;
-    unlike $err, qr/\Q$token\E/, "$what: without the token";
-    like   $err, qr/Bearer \*{8}/, "$what: masked where it was";
+    if ($masks) {
+        unlike $err, qr/\Q$token\E/, "$what: without the token";
+        like   $err, qr/Bearer \*{8}/, "$what: masked where it was";
+    }
     unlike $err, qr/ at \S+ line \d+/, "$what: no Perl source location";
     like   $err, qr/\A[^\n]+\n\z/, "$what: one line";
 }
@@ -84,9 +95,29 @@ sub died {
     return eval { $code->(); 1 } ? undef : $@;
 }
 
+# ---------------------------------------------------------------- the wire
+
+# What the cases below rest on (k418): WWW::Hetzner masks the token in a
+# refused answer itself, and hands a dying transport's text on with the token
+# in it -- so only the dying wire proves anything about OCP's own mask.
+subtest 'the wire: WWW::Hetzner masks a refusal, not a dying transport' => sub {
+    no warnings 'redefine';
+    local *WWW::Hetzner::LWPIO::call = \&wire;
+    local %ROUTES;
+    local @SENT;
+    my $cloud = WWW::Hetzner::Cloud->new(token => $TOKEN);
+    {
+        local $WIRE_DIES = 0;
+        my $err = died(sub { $cloud->servers->list_all });
+        like "$err", qr/Bearer \*{8}/, 'a refusal: WWW::Hetzner masked it already';
+    }
+    my $err = died(sub { $cloud->servers->list_all });
+    like "$err", qr/Bearer \Q$TOKEN\E/, 'a dying transport: the token comes through as it was';
+};
+
 # ---------------------------------------------------------------- the adapter
 
-subtest 'the Hetzner adapter: every request it makes fails masked' => sub {
+subtest 'the Hetzner adapter: every request it makes fails in one line, masked where WWW::Hetzner did not' => sub {
     for my $dies (0, 1) {
         local $WIRE_DIES = $dies;
         my $how = $dies ? 'the transport dies' : 'the API refuses';
@@ -108,7 +139,7 @@ subtest 'the Hetzner adapter: every request it makes fails masked' => sub {
         );
         for my $name (sort keys %calls) {
             my $err = died($calls{$name});
-            masked_line($err, $TOKEN, "$how, $name");
+            masked_line($err, $TOKEN, "$how, $name", $dies);
             like $err, $want, "$how, $name: what was said";
         }
 
@@ -118,8 +149,8 @@ subtest 'the Hetzner adapter: every request it makes fails masked' => sub {
             local $ROUTES{'GET /servers'} = { servers => [] };
             masked_line(died(sub {
                 $prov->create_server(name => 'police1', server_type => 'cpx22', ssh_keys => ['k']) }),
-                $TOKEN, "$how, create_server");
-            is $SENT[-1], 'POST /servers', 'create_server: the create was the request refused';
+                $TOKEN, "$how, create_server", $dies);
+            is $SENT[-1], 'POST /servers', 'create_server: the create was the request that failed';
         }
 
         my @warned;
@@ -128,9 +159,15 @@ subtest 'the Hetzner adapter: every request it makes fails masked' => sub {
             $prov->cleanup_on_failure(7);
         }
         is scalar @warned, 1, "$how, cleanup_on_failure: one warning";
-        unlike join('', @warned), qr/\Q$TOKEN\E/, "$how, cleanup_on_failure: without the token";
-        like   join('', @warned), qr/\ACleanup failed for server 7: [^\n]*Bearer \*{8}[^\n]*\n+\z/,
-            "$how, cleanup_on_failure: the masked line";
+        if ($dies) {
+            unlike join('', @warned), qr/\Q$TOKEN\E/, "$how, cleanup_on_failure: without the token";
+            like   join('', @warned), qr/\ACleanup failed for server 7: [^\n]*Bearer \*{8}[^\n]*\n+\z/,
+                "$how, cleanup_on_failure: the masked line";
+        }
+        else {
+            like join('', @warned), qr/\ACleanup failed for server 7: Hetzner API error: 401 Unauthorized /,
+                "$how, cleanup_on_failure: what was said";
+        }
         unlike join('', @warned), qr/ at \S+ line \d+/, "$how, cleanup_on_failure: no Perl source location";
         like   join('', @warned), qr/\A[^\n]+\n\z/, "$how, cleanup_on_failure: one line, no blank line after it (k363)";
 
@@ -282,10 +319,10 @@ sub bootstrap {
     return { out => $out, err => $err, sent => [@SENT] };
 }
 
-subtest 'ocp apply: the bootstrap says a refused Hetzner request without the token' => sub {
+subtest 'ocp apply: the bootstrap says a failed Hetzner request without the token' => sub {
     my $r = bootstrap();
-    is $r->{sent}[0], 'GET /ssh_keys', 'the key upload was the request refused';
-    like $r->{err}, qr/^Error: Hetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/m,
+    is $r->{sent}[0], 'GET /ssh_keys', 'the key upload was the request that failed';
+    like $r->{err}, qr/^Error: Can't connect to api\.hetzner\.cloud:443 [^\n]*Bearer \*{8}/m,
         'the error, masked';
     unlike "$r->{out}$r->{err}", qr/\Q$TOKEN\E/, 'the token nowhere on STDOUT or STDERR, --verbose included';
 
@@ -296,8 +333,8 @@ subtest 'ocp apply: the bootstrap says a refused Hetzner request without the tok
                                            fingerprint => 'f' } },
         'GET /servers'   => { servers => [] },
     );
-    is $r->{sent}[-1], 'POST /servers', 'then the server create was the request refused';
-    like $r->{err}, qr/^Error: Hetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/m,
+    is $r->{sent}[-1], 'POST /servers', 'then the server create was the request that failed';
+    like $r->{err}, qr/^Error: Can't connect to api\.hetzner\.cloud:443 [^\n]*Bearer \*{8}/m,
         'the error, masked';
     unlike "$r->{out}$r->{err}", qr/\Q$TOKEN\E/, 'the token nowhere on STDOUT or STDERR, --verbose included';
 };
@@ -335,10 +372,10 @@ nodes:
     public_ip: 1.1.1.1
 YAML
 
-subtest 'ocp destroy: a refused delete is said without the token' => sub {
+subtest 'ocp destroy: a failed delete is said without the token' => sub {
     my $r = destroy(project(status => $STATUS));
     ok scalar(grep { $_ eq 'DELETE /servers/111' } @{ $r->{sent} }), 'the delete went out';
-    like $r->{err}, qr/^  Warning: Hetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/m,
+    like $r->{err}, qr/^  Warning: Can't connect to api\.hetzner\.cloud:443 [^\n]*Bearer \*{8}/m,
         'the warning, masked';
     unlike "$r->{out}$r->{err}", qr/\Q$TOKEN\E/, 'the token nowhere on STDOUT or STDERR';
     is $r->{code}, 1, 'exit 1: the server is still there';
@@ -353,7 +390,7 @@ subtest 'ocp destroy: a delete that died of a wrapped error is one Warning line,
     local *OCP::Provider::Hetzner::delete_server = sub { die $WRAPPED =~ s/Server 7/Server 111/r };
     my $r = destroy(project(status => $STATUS));
     (my $line = $WRAPPED_LINE) =~ s/Server 7/Server 111/;
-    # The next block is the old-label search, failed under the same 401 and
+    # The next block is the old-label search, failed on the same wire and
     # said since k396; before, it was the INCOMPLETE block.
     like $r->{err}, qr/^  Warning: \Q$line\E\n\n\[!!\] The search under the old label ocp-cluster=hetzner-default failed: /m,
         'the warning: one line, then only the blank line the next [!!] block opens with';
@@ -362,10 +399,10 @@ subtest 'ocp destroy: a delete that died of a wrapped error is one Warning line,
     is $r->{code}, 1, 'exit 1: the server is still there';
 };
 
-subtest 'ocp destroy: a refused label search is said without the token' => sub {
+subtest 'ocp destroy: a failed label search is said without the token' => sub {
     my $r = destroy(project(status => "nodes: []\n"));
     ok scalar(grep { $_ eq 'GET /servers' } @{ $r->{sent} }), 'the label search went out';
-    like $r->{err}, qr/the label search failed: Hetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/,
+    like $r->{err}, qr/the label search failed: Can't connect to api\.hetzner\.cloud:443 [^\n]*Bearer \*{8}/,
         'the search failure, masked';
     unlike "$r->{out}$r->{err}", qr/\Q$TOKEN\E/, 'the token nowhere on STDOUT or STDERR';
 };
@@ -379,15 +416,15 @@ subtest "ocp destroy: a worker deleted with its provider CR's token, masked too"
     my $r = destroy(project(status => $STATUS), k8s => $k8s);
     ok scalar(grep { $_ eq 'DELETE /servers/222' } @{ $r->{sent} }), 'the worker delete went out';
     my @warnings = $r->{err} =~ /^  Warning: ([^\n]*)$/mg;
-    is scalar @warnings, 2, 'both deletes refused, both said';
-    like $_, qr/\AHetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/, 'masked' for @warnings;
+    is scalar @warnings, 2, 'both deletes failed, both said';
+    like $_, qr/\ACan't connect to api\.hetzner\.cloud:443 [^\n]*Bearer \*{8}/, 'masked' for @warnings;
     unlike "$r->{out}$r->{err}", qr/\Q$CR_TOKEN\E/, "the provider CR's token nowhere on STDOUT or STDERR";
     unlike "$r->{out}$r->{err}", qr/\Q$TOKEN\E/,    'the local token neither';
 };
 
 # ---------------------------------------------------------------- ocp hetzner list
 
-subtest 'ocp hetzner list: a refused listing is said without the token' => sub {
+subtest 'ocp hetzner list: a failed listing is said without the token' => sub {
     my $config = project();
     for my $verbose (0, 1) {
         my ($out, $err, $code) = ('', '');
@@ -406,7 +443,7 @@ subtest 'ocp hetzner list: a refused listing is said without the token' => sub {
         my $how = $verbose ? 'with --verbose' : 'without --verbose';
         is_deeply \@SENT, [ 'GET /servers' ], "$how: the listing went out";
         is $code, 1, "$how: exit 1";
-        like $err, qr/Hetzner API error: 401 Unauthorized [^\n]*Bearer \*{8}/, "$how: the error, masked";
+        like $err, qr/Can't connect to api\.hetzner\.cloud:443 [^\n]*Bearer \*{8}/, "$how: the error, masked";
         unlike "$out$err", qr/\Q$TOKEN\E/, "$how: the token nowhere on STDOUT or STDERR";
     }
 };

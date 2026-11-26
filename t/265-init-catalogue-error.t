@@ -36,6 +36,21 @@ package CannedIO {
     }
 }
 
+# An IO whose transport dies with the request in its text, Authorization header
+# and all. WWW::Hetzner masks the token in an answer it parses (0.103, k418);
+# a die out of the IO reaches OCP as it was raised, so here it is OCP's own
+# masking that keeps the token off STDERR.
+package DyingIO {
+    use Moo;
+    with 'WWW::Hetzner::Role::IO';
+    sub call {
+        my ($self, $req) = @_;
+        my $headers = $req->headers;
+        my $echo = join ' ', map { "$_: $headers->{$_}" } sort keys %$headers;
+        die "Can't connect to api.hetzner.cloud:443 ($echo) at /usr/share/perl5/LWP/Protocol/http.pm line 50.\n";
+    }
+}
+
 # Run the picker step of `ocp init` on $cloud; return the command object, its
 # STDOUT and STDERR, and whether the step returned instead of dying.
 sub run_picker {
@@ -90,14 +105,27 @@ subtest 'a 401 names what the API answered' => sub {
     nothing_asked_nothing_failed(@r);
 
     # No API message in the body: WWW::Hetzner reports the status and the body
-    # text. A body that echoes the credential must not carry it to STDERR.
+    # text. (A body that echoes the token WWW::Hetzner masks itself since
+    # 0.103 -- OCP's own masking is proven below, where nothing masked before.)
     my @bare = run_picker(WWW::Hetzner::Cloud->new(token => $TOKEN, io => CannedIO->new(
         status  => 401,
-        content => "Unauthorized\nBearer $TOKEN\n",
+        content => "Unauthorized\n",
     )));
-    like $bare[2], qr/\A\[!!\] Could not read the Hetzner catalogue: Hetzner API error: 401 Unauthorized Bearer \*{8} — keeping the defaults\n\z/,
-        'without an API message the status is named, the token masked';
+    like $bare[2], qr/\A\[!!\] Could not read the Hetzner catalogue: Hetzner API error: 401 Unauthorized — keeping the defaults\n\z/,
+        'without an API message the status is named';
     nothing_asked_nothing_failed(@bare);
+};
+
+subtest 'a transport that dies with the token in its text: OCP masks it' => sub {
+    my $cloud = WWW::Hetzner::Cloud->new(token => $TOKEN, io => DyingIO->new);
+    # The precondition: WWW::Hetzner hands the die on as it was raised.
+    my $raw = eval { $cloud->locations->list_all; 1 } ? die "the dying IO answered\n" : "$@";
+    like $raw, qr/Bearer \Q$TOKEN\E/, 'WWW::Hetzner passes the token on unmasked';
+
+    my @r = run_picker($cloud);
+    like $r[2], qr/\A\[!!\] Could not read the Hetzner catalogue: Can't connect to api\.hetzner\.cloud:443 \([^\n]*Bearer \*{8}[^\n]*\) — keeping the defaults\n\z/,
+        'STDERR names the failure, the token masked where it was';
+    nothing_asked_nothing_failed(@r);
 };
 
 subtest 'a network error names the connection that failed' => sub {
