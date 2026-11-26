@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-11-26T06:18:23Z
+created: 2026-11-07T00:04:14Z
+id: 425
+priority: low
+started: 2026-11-26T05:33:09Z
+status: done
+tags:
+- apply
+- config
+title: worker_ocpnodes has no upper clamp at the pool limit
+updated: 2026-11-26T06:18:23Z
+---
+
+Found by the k325 choices worker. lib/OCP/Cmd/Apply/CR.pm:683 worker_ocpnodes takes any whole nodes: as a count. Every command that reaches it refuses a pool above 10 first (workers[N].nodes in spec_paths), but a direct call does not. Clamp with && $count <= $OCP::Config::MAX_WORKER_POOL_NODES on the k361 condition; t/361's guard-is-armed subtest calls it with nodes: 1000 and needs changing. Lane: apply.
+
+2026-11-26 05:36 Done (uncommitted, ocp-apply-worker): lib/OCP/Cmd/Apply/CR.pm worker_ocpnodes takes a count only when it is also <= $OCP::Config::MAX_WORKER_POOL_NODES; anything above stands for one worker, as every other count validate() refuses. t/361: guard-is-armed subtest now runs at a local $LIMIT of MAX-1 (nodes: MAX-1 builds that many, MAX trips the guard); control adds nodes: MAX -> MAX OCPNodes; two new uncounted cases (MAX+1 and 1000000000000 on a hetzner pool, validate() line 'nodes must be at most'). Red against HEAD lib (both new cases fail, the 1e12 one on the guard), green with the fix: make test t/361 t/325 t/339 t/346 t/306 t/230 t/20 t/36 -> PASS.
