@@ -1,0 +1,24 @@
+---
+claimed_at: 2026-11-26T05:05:19Z
+claimed_by: ocp-k426
+class: standard
+completed: 2026-11-26T05:05:19Z
+created: 2026-11-07T00:16:22Z
+id: 426
+priority: low
+started: 2026-11-26T04:07:33Z
+status: done
+tags:
+- adr
+- docs
+title: ADR 0016 names _corefile_drop_added_hosts, a forwarder removed from Apply.pm
+updated: 2026-11-26T05:05:19Z
+---
+
+docs/adr/0016-leave-distribution-generated-config-to-the-distribution.md:47 names OCP::Cmd::Apply::_corefile_drop_added_hosts. The forwarder was dead and is removed (k406 follow-up, 2026-11-07); the function lives on as OCP::Cmd::Apply::Network::corefile_drop_added_hosts. Also t/52-apply-dispatcher.t:94-98 comment names forwarders loosely. Lane: ocp-adr-auditor (ADR), test-writer (comment).
+
+2026-11-26 04:06 ADR 0016: forwarder _corefile_drop_added_hosts removed in 9a4d448 (k406); function is OCP::Cmd::Apply::Network::corefile_drop_added_hosts (delegates to OCP::Corefile::without_added_hosts since k348). Recorded per docs/adr/README.md amendment form: inline '(amended 2026-11-26, see below)' marker + '## Amendment 2026-11-26' section quoting the old sentence; README provenance paragraph added. _corefile_with_host and _configure_registry_dns in the ADR still exist as Apply.pm forwarders, left as is. t/52 comment: now names what is non-forwarder in Apply.pm (3 options, _announce_control_planes, @COREDNS_CONFIGMAPS alias); comment only.
+
+2026-11-26 04:07 Done, not committed. docs/adr/0016 amended (inline marker + '## Amendment 2026-11-26' naming OCP::Cmd::Apply::Network::corefile_drop_added_hosts, forwarder removed in 9a4d448/k406), docs/adr/README.md provenance paragraph, t/52-apply-dispatcher.t comment only (git diff shows no non-comment line). Verified: grep for both names across lib/ t/ docs/; make test-host TESTS=t/52 PASS (4 tests). Binding make test NOT run: the image build failed in cpm install, most likely from the concurrent uncommitted cpanfile/Makefile edits by another agent (not touched here) -- reviewer to rerun make test TESTS=t/52-apply-dispatcher.t once that tree is consistent.
+
+Committed b4382c3
