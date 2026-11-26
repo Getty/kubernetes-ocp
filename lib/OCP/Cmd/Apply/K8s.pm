@@ -199,8 +199,8 @@ sub poll_deployment_ready {
         $self->wait_seconds(5);
     }
     if ($read_err) {
-        my $reason = "$read_err";
-        chomp $reason;
+        # In one line, without a Perl source location (k435).
+        my $reason = OCP::ErrorLine::one_line($read_err);
         die "Deployment $namespace/$name not ready within ${timeout}s; the last read failed: $reason\n";
     }
     return 0;
@@ -216,8 +216,8 @@ sub resource_exists {
     my $obj = eval { $api->get($kind, $name, %opts) };
     if (my $err = $@) {
         return 0 if $err =~ /\b404\b/;
-        my $reason = "$err";
-        chomp $reason;
+        # In one line, without a Perl source location (k435).
+        my $reason = OCP::ErrorLine::one_line($err);
         my $where = join '/', grep { defined } $opts{namespace}, $name;
         die "could not read $kind $where: $reason\n";
     }

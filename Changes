@@ -27,6 +27,10 @@ Revision history for OCP
       a list below it keeps its layout. `error` stays the one-line string.
     - `ocp status` says every refusal on STDERR under `Error:`, as every
       other command does, where it said `ERROR:` alone.
+    - `ocp apply` says each failing step in one line without a Perl source
+      location, also after `--pins-stdin`, and a 599 reason once: the registry
+      DNS and NFD warnings, the GPU Operator, AMD GPU, LB-IPAM, node and
+      robocop steps.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

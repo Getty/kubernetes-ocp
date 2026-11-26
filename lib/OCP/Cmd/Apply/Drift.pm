@@ -333,9 +333,8 @@ sub reconcile_components {
         } or do {
             # STDERR with its cause (k278); not counted -- registry.local
             # names the local registry, the pull-through cache works without.
-            my $err = $@;
-            $err .= "\n" unless $err =~ /\n\z/;
-            print STDERR "  [WARN] registry.local DNS setup failed: $err";
+            # In one line, without a Perl source location (k435).
+            print STDERR '  [WARN] registry.local DNS setup failed: '.OCP::ErrorLine::one_line($@)."\n";
         };
     }
 
@@ -347,9 +346,9 @@ sub reconcile_components {
             $updated += $self->_report_component('NFD', $self->_setup_nfd($config));
         };
         if (my $err = $@) {
-            # STDERR with its cause (k278).
-            $err .= "\n" unless $err =~ /\n\z/;
-            print STDERR "  [WARN] NFD setup failed: $err";
+            # STDERR with its cause (k278), in one line without a Perl
+            # source location (k435).
+            print STDERR '  [WARN] NFD setup failed: '.OCP::ErrorLine::one_line($err)."\n";
         }
     }
 
@@ -457,9 +456,8 @@ sub reconcile_components {
             # An opt-in that is not there: STDERR, with its cause, and the
             # run is not complete (k278) -- a refused pool (k281) is the
             # user's to fix, not something a SUCCESSFULLY banner may hide.
-            my $err = $@;
-            $err .= "\n" unless $err =~ /\n\z/;
-            print STDERR "  [!!] LB-IPAM setup failed: $err";
+            # The cause in one line, without a Perl source location (k435).
+            print STDERR '  [!!] LB-IPAM setup failed: '.OCP::ErrorLine::one_line($@)."\n";
             push @unresolved, 'LB-IPAM';
         }
     }
@@ -497,9 +495,8 @@ sub reconcile_components {
             # what puts a newer OCPNode/OCPNodeProvider CRD on the cluster
             # (k291), the update `ocp node add --node_ip` sends the user to
             # `ocp apply` for (k290).
-            my $err = $@;
-            $err .= "\n" unless $err =~ /\n\z/;
-            print STDERR "  [!!] node CR reconcile failed: $err";
+            # The cause in one line, without a Perl source location (k435).
+            print STDERR '  [!!] node CR reconcile failed: '.OCP::ErrorLine::one_line($@)."\n";
             push @unresolved, 'node CRs';
         };
     }
@@ -591,7 +588,7 @@ sub reconcile_components {
             my %created = map { $_->{metadata}{name} => 1 } @missing;
             eval { OCP::Cmd::Apply::CR::check_worker_phases($self, $api, $config, \%created) };
             if (my $perr = $@) {
-                print STDERR "  [!!] Could not check worker phases: $perr";
+                print STDERR '  [!!] Could not check worker phases: '.OCP::ErrorLine::one_line($perr)."\n";
                 push @unresolved, 'worker phases';
             }
         }
@@ -847,8 +844,9 @@ sub gpu_dry_run {
 
     my $unread = sub {
         my ($label, $err) = @_;
-        my $cause = "$err";
-        chomp $cause;
+        # One line, without a Perl source location (k435): the OCPNode-less
+        # reads here (nvidia_gpu_nodes) die with the client's raw error.
+        my $cause = OCP::ErrorLine::one_line($err);
         my $entry = { kind => 'error', label => $label, cause => $cause,
                       message => "$label: $cause" };
         _say_unchecked($entry) unless $opt{quiet};
