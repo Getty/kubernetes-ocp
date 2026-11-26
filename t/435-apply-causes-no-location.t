@@ -192,6 +192,9 @@ sub run_reconcile {
     local *OCP::Cmd::Apply::CR::sync_worker_meta              = sub { { patched => [], failed => [] } };
     local *OCP::Cmd::Apply::CR::warn_unlisted_failed_ocpnodes = sub { };
     local *OCP::Cmd::Apply::CR::check_control_plane_phases    = sub { };
+    # NoApi lists no Node; the control planes' Ready wait (k417) is t/417's,
+    # and would poll it 60 x 10 s here.
+    local *OCP::Cmd::Apply::CR::check_control_plane_ready     = sub { () };
 
     return capture { OCP::Cmd::Apply::Drift::reconcile_components($apply, $config); 1 };
 }
