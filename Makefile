@@ -25,7 +25,17 @@ TESTS ?= t/
 #
 # $(CURDIR), not $(PWD): make knows its own directory even under `make -C`,
 # the inherited PWD does not.
+#
+# A test file that hangs ends after TEST_TIMEOUT seconds instead of stalling
+# the run (k467): t/lib/OCPTest/Watchdog.pm, preloaded into every perl of the
+# run through PERL5OPT, arms itself in each test file, names the file on
+# STDERR when it kills it, and prove counts the file as failed. A watchdog
+# process, not alarm(), so tests that set their own alarm keep it. 0 = off:
+#   make test TESTS=t/400-one-shape-check.t TEST_TIMEOUT=0
+TEST_TIMEOUT ?= 300
 DOCKER_PROVE = docker run --rm -v $(CURDIR):/src:ro -w /src \
+	-e OCP_TEST_TIMEOUT=$(TEST_TIMEOUT) \
+	-e PERL5OPT='-I/src/t/lib -MOCPTest::Watchdog' \
 	--entrypoint prove $(IMAGE):$(TAG)
 
 .PHONY: all build test test-v test-host clean docker-test docker-push docker-release \
