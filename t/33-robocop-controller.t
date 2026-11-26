@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 use Test::More;
+use Carp ();
 use File::Temp ();
 use JSON::MaybeXS ();
 use Path::Tiny ();
@@ -68,6 +69,12 @@ package MockTransport {
             return $cr ? (200, $cr) : (404, { message => "ocpnodes \"$1\" not found" });
         }
         if ($path =~ m{/ocpnodeproviders/([^/]+)$}) {
+            # k443: any other answer of the API server, as a Status body.
+            if (my $code = $api->provider_status) {
+                return ($code, { kind => 'Status', apiVersion => 'v1',
+                    status => 'Failure', code => $code, reason => 'InternalError',
+                    message => 'etcdserver: request timed out' });
+            }
             my $p = $api->provider_cr;
             return $p ? (200, $p) : (404, { message => "ocpnodeproviders \"$1\" not found" });
         }
@@ -88,6 +95,7 @@ package StrictK8s {
     has requests    => (is => 'ro', default => sub { [] });
     has cr          => (is => 'rw');
     has provider_cr => (is => 'rw');
+    has provider_status => (is => 'rw');
 
     sub build {
         my (%args) = @_;
@@ -251,6 +259,65 @@ subtest 'a watch event whose provider cannot be loaded reaches _on_node_event' =
     is $sent->{phase}, 'Failed', 'phase Failed';
     like $sent->{message}, qr/OCPNodeProvider/,
         'the message names the provider that could not be loaded';
+    # k443: the message is what `ocp node ls` shows. It said the raw APIError
+    # with robocop's own source location, "... 404 {...} at
+    # lib/OCP/Robocop/Controller.pm line 1132.". A 404 is a provider that
+    # does not exist, and that is what it says now.
+    like $sent->{message},
+        qr{^Failed to load OCPNodeProvider/hetzner-a: it does not exist in namespace ocp-system -- },
+        'k443: a 404 says the named provider does not exist';
+    unlike $sent->{message}, qr/ line \d+/, 'k443: no Perl source location';
+    unlike $sent->{message}, qr/Kubernetes API error/, 'k443: not the raw APIError text';
+};
+
+subtest 'k443: any other API error is said as one line, no source location' => sub {
+    my $k = StrictK8s::build(
+        cr              => ocpnode(metadata =>
+            { name => 'w4', namespace => 'ocp-system', resourceVersion => '1' }),
+        provider_status => 500,
+    );
+    my $ctrl = OCP::Robocop::Controller->new(
+        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T',
+        distribution => 'rke2', pod_cidr => '10.42.0.0/16');
+
+    my $obj = $k->get('OCPNode', name => 'w4', namespace => 'ocp-system');
+    $ctrl->_handle_watch_object($obj);
+
+    my ($sent) = $k->status_patches;
+    is $sent->{phase}, 'Failed', 'phase Failed';
+    like $sent->{message},
+        qr{^Failed to load OCPNodeProvider/hetzner-a: The cluster API failed \(500 Internal Error\): etcdserver: request timed out -- },
+        'the API error in OCP::ErrorLine::api_error_line words';
+    unlike $sent->{message}, qr/ line \d+/, 'no Perl source location';
+};
+
+subtest 'k443: a provider that cannot be built is said without its source location' => sub {
+    my $k = StrictK8s::build(
+        cr          => ocpnode(metadata =>
+            { name => 'w5', namespace => 'ocp-system', resourceVersion => '1' }),
+        provider_cr => {
+            apiVersion => 'ocp.internal/v1', kind => 'OCPNodeProvider',
+            metadata   => { name => 'hetzner-a', namespace => 'ocp-system' },
+            spec       => { type => 'ssh' },
+        },
+    );
+    my $ctrl = OCP::Robocop::Controller->new(
+        kube => $k, ssh_key => 'K', server_url => 'U', join_token => 'T',
+        distribution => 'rke2', pod_cidr => '10.42.0.0/16');
+
+    {
+        no warnings 'redefine';
+        local *OCP::Provider::from_cr = sub { Carp::croak('spec.ssh.host is missing') };
+        my $obj = $k->get('OCPNode', name => 'w5', namespace => 'ocp-system');
+        $ctrl->_handle_watch_object($obj);
+    }
+
+    my ($sent) = $k->status_patches;
+    is $sent->{phase}, 'Failed', 'phase Failed';
+    like $sent->{message},
+        qr{^Failed to build provider from OCPNodeProvider/hetzner-a: spec\.ssh\.host is missing -- },
+        'the reason, as one line';
+    unlike $sent->{message}, qr/ line \d+/, 'no Perl source location';
 };
 
 subtest 'k186/k184: the controller hands its distribution and pod CIDR to OCP::Node' => sub {

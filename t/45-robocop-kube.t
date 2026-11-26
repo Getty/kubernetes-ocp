@@ -489,7 +489,9 @@ subtest '_on_node_event marks Failed when the provider CR cannot be loaded' => s
         ok $patch, 'a missing CR still triggers a status patch';
         my $sent = $JSON->decode($patch->{body});
         is $sent->{status}{phase}, 'Failed';
-        like $sent->{status}{message}, qr/not found/,
+        # k443: said as a provider that does not exist, no longer as the raw
+        # APIError text that carried the API's "not found".
+        like $sent->{status}{message}, qr/does not exist in namespace/,
             'message distinguishes absence from a real API error';
     };
 };

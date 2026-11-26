@@ -387,6 +387,12 @@ subtest 'a missing provider blocks the teardown visibly, finalizer kept' => sub 
     is $last->{phase}, 'Failed', 'Failed ...';
     like $last->{message}, qr{Teardown not started: cannot load OCPNodeProvider/p},
         '... saying why';
+    # k443: a 404 is a provider that does not exist, said without the raw
+    # APIError and robocop's own source location.
+    like $last->{message},
+        qr{Teardown not started: cannot load OCPNodeProvider/p: it does not exist in namespace ocp-system -- },
+        'k443: the 404 says the provider does not exist';
+    unlike $last->{message}, qr/ line \d+/, 'k443: no Perl source location';
     like $err, qr/Teardown not started/, 'and on STDERR';
     is scalar($k->reqs('PUT')), 0, 'the finalizer is not touched';
 };

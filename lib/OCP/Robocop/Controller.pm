@@ -17,6 +17,7 @@ use Try::Tiny;
 
 use OCP ();
 use OCP::Config ();
+use OCP::ErrorLine ();
 use OCP::K8s;
 use OCP::Kubernetes;
 use OCP::Node;
@@ -908,7 +909,7 @@ sub _reconcile_cr {
         # used to leave the CR with whatever phase it had -- usually Pending --
         # and the operator with only robocop's pod logs to read. Mark the CR
         # Failed so the failure is visible without the logs.
-        $self->_mark_failed($cr, $_);
+        $self->_mark_failed($cr, $self->_error_line($_));
     };
 }
 
@@ -998,7 +999,7 @@ sub _on_node_deleted {
     };
     unless ($provider_cr) {
         $self->_teardown_blocked($cr, 'cannot load OCPNodeProvider/'
-            . ($provider_name // '(none)') . ": $@");
+            . ($provider_name // '(none)') . ': ' . $self->_provider_load_error($@, $ns));
         return;
     }
 
@@ -1023,7 +1024,8 @@ sub _on_node_deleted {
     };
     unless ($provider) {
         $self->_teardown_blocked($cr,
-            "cannot build provider from OCPNodeProvider/$provider_name: $@");
+            "cannot build provider from OCPNodeProvider/$provider_name: "
+          . $self->_error_line($@));
         return;
     }
 
@@ -1063,7 +1065,7 @@ sub _on_node_deleted {
 sub _teardown_blocked {
     my ($self, $cr, $message) = @_;
     my $name = $cr->{metadata}{name} // '?';
-    chomp $message;
+    $message = OCP::ErrorLine::one_line($message);   # no source location (k443)
     $message = "Teardown not started: $message -- robocop retries every "
         . $self->resync_interval . 's';
     $self->log_error("$name: $message");
@@ -1134,16 +1136,16 @@ sub _on_node_event {
     if ($@ || !$provider_cr_obj) {
         $self->_mark_failed($cr,
             "Failed to load OCPNodeProvider/$provider_name: "
-          . ($@ ? $@ : 'not found'));
+          . $self->_provider_load_error($@, $ns));
         return;
     }
     my $provider_cr = $self->kube->k8s->object_to_struct($provider_cr_obj);
 
     my $provider = eval { OCP::Provider->from_cr($provider_cr, k8s => $self->kube) };
     if ($@) {
-        chomp $@;
         $self->_mark_failed($cr,
-            "Failed to build provider from OCPNodeProvider/$provider_name: $@");
+            "Failed to build provider from OCPNodeProvider/$provider_name: "
+          . $self->_error_line($@));
         return;
     }
 
@@ -1180,8 +1182,7 @@ sub _on_node_event {
         );
     };
     if ($@) {
-        chomp $@;
-        $self->_mark_failed($cr, "Failed to construct OCPNode: $@");
+        $self->_mark_failed($cr, 'Failed to construct OCPNode: '.$self->_error_line($@));
         return;
     }
 
@@ -1248,6 +1249,26 @@ sub retry_hint {
         . $name . '` and add it again with `ocp node add ' . $name . '`';
 }
 
+# k443: an exception as the one line status.message carries -- `ocp node ls`
+# shows it. A Kubernetes::REST::APIError in the CLI's words
+# (OCP::ErrorLine::api_error_line), anything else by OCP::ErrorLine::one_line:
+# never the raw text with robocop's own " at FILE line N.".
+sub _error_line {
+    my ($self, $err) = @_;
+    return OCP::ErrorLine::api_error_line($err) // OCP::ErrorLine::one_line($err);
+}
+
+# Why the OCPNodeProvider spec.providerRef names could not be read. A 404 is
+# a provider that does not exist, and is said as such.
+sub _provider_load_error {
+    my ($self, $err, $ns) = @_;
+    return 'it does not exist in namespace '.$ns
+        if !$err
+        || (Scalar::Util::blessed($err) && $err->isa('Kubernetes::REST::APIError')
+            && $err->code == 404);
+    return $self->_error_line($err);
+}
+
 sub _with_hint {
     my ($self, $name, $message) = @_;
     chomp $message;
@@ -1274,7 +1295,9 @@ sub _mark_failed {
     my $name = $cr->{metadata}{name}     // '?';
     my $ns   = $cr->{metadata}{namespace} // $self->namespace;
 
-    chomp $message;
+    # One line, no source location: status.message is what `ocp node ls`
+    # shows (k443). The callers say an exception by _error_line already.
+    $message = OCP::ErrorLine::one_line($message);
     $self->log_error("marking $name Failed: $message");
     $self->log_error("$name: " . $self->retry_hint($name));
 

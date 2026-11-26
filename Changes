@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - An OCPNode whose OCPNodeProvider is missing or unreadable carries a
+      one-line status message without a Perl source location; a 404 reads
+      "it does not exist in namespace NS".
     - cert-manager is applied with `--enable-gateway-api`, so the ACME HTTP-01
       challenges through the Cilium Gateway are answered. `ocp status`
       reports a controller running without it, and `ocp apply` re-applies the
