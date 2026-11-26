@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-26T11:13:37Z
+created: 2026-11-26T08:54:13Z
+id: 469
+priority: low
+started: 2026-11-26T10:02:47Z
+status: done
+tags:
+- gpu
+- dry-run
+title: ocp apply --dry-run says nothing where the real run would deploy the GPU Operator;
+  gpu_dry_run duplicates the re-apply line
+updated: 2026-11-26T11:13:37Z
+---
+
+Left from k413. (1) With gpu.enabled, an NFD-labelled NVIDIA node and no GPU Operator running, the real step deploys the operator but the dry run prints nothing about it: needs a "would deploy" line. (2) k413 item 3 not done: gpu_dry_run prints its own "would re-apply the GPU Operator manifest" lines next to Workloads::reapplies; both gate on gpu.enabled and nvidia_gpu_nodes. Routing gpu_dry_run through gpu_operator_step_skips would cost a second Node list (it needs the node objects for the toolkit warning). Lane: ocp-infra-worker.
+
+2026-11-26 10:09 Also found (not in scope, for the dispatcher): the real run's reconcile_components still prints 'the GPU Operator check below re-applies the manifest' once per ClusterPolicy path that differs (lib/OCP/Cmd/Apply/Drift.pm, the gpu_dry_run quiet loop) -- the same one-re-apply-said-N-times shape as item 2, on the real-run side. Left as is.
+
+2026-11-26 10:09 Done, tree uncommitted. (1) gpu_dry_run returns a kind=deploy entry where gpu.enabled, an NFD NVIDIA node and no gpu-operator Deployment: dry run prints '[gpu] GPU Operator is not running; N node(s) carry an NFD NVIDIA label / would deploy the GPU Operator', counted as an action; no drift, so 'No drift detected' and the real run's reconcile output are unchanged. (2) OCP::Drift gains gpu_step_nodes (nvidia_gpu_nodes memoized per detector, error included); gpu_operator_step_skips and gpu_dry_run (handed detector =>) gate on that one list; dry run prints 'would re-apply the GPU Operator manifest' once (none after the ClusterPolicy lines when the image-off-pin entry said it). Tests: t/313 four new subtests (red on HEAD lib, green now), t/233 two claims replaced (no operator + NVIDIA node is now a deploy entry), t/273 fake detector gets gpu_step_nodes. make test TAG=gpu2 on t/313 t/233 t/228-gpu-crd-drift t/38 t/273 and 25 related files: PASS.
+
+2026-11-26 11:11 Committed on main: ba602bc ; binding suite green (342 files, 4809 tests)
