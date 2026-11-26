@@ -27,7 +27,7 @@ use OCP::Cmd::Apply::DeployedHash;
 # claims:
 #   1. every writer that can make .ocp/ first makes it 0700 under umask 022:
 #      ocp init's step 3, generate_age_key, generate_ssh_key, the first PIN1
-#      unlock on a clone (_spew_secure), decrypt_kubeconfig_to_file into
+#      unlock on a clone (spew_secure), decrypt_kubeconfig_to_file into
 #      .ocp/, status.yaml (OCP::Config), deployed.yaml (DeployedHash), the
 #      project's known_hosts, a kubeconfig merged or written (-o) into .ocp/;
 #   2. each of them leaves a 0755 .ocp/ that is there at 0755 -- and so does
@@ -124,7 +124,7 @@ my @writers = (
           OCP::Secrets->new(project_dir => $_[0], ocp => $ocp)->generate_age_key } ],
     [ 'generate_ssh_key' => sub {
           OCP::Secrets->new(project_dir => $_[0], ocp => $ocp)->generate_ssh_key } ],
-    [ 'the first PIN1 unlock on a clone (_spew_secure)' => sub {
+    [ 'the first PIN1 unlock on a clone (spew_secure)' => sub {
           my ($dir) = @_;
           prompted($PIN1, sub { OCP::Secrets->new(project_dir => $dir, ocp => $ocp)->ensure_age_key });
       }, 'clone' ],

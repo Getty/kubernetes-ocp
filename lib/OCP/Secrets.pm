@@ -67,7 +67,9 @@ has age_key => (
 # leaves a real, if brief, world-readable window on the inode that ends up as
 # the key. Create-then-write is what
 # OCP::TempKeyPair and OCP::ClusterKey already do (via File::Temp, which opens
-# 0600 with O_EXCL); this is the same pattern for a named file.
+# 0600 with O_EXCL); this is the same pattern for a named file. Callable as a
+# class method: `ocp kubeconfig -o` and OCP::Kubeconfig->export write the
+# decrypted kubeconfig, and the export its backup, through it (k423).
 #
 # The directory is made here when it is missing (k360): a clone has no .ocp/
 # (it is gitignored), and the first PIN1 unlock caches .ocp/age.key through
@@ -76,7 +78,7 @@ has age_key => (
 # .ocp/ (ocp init, generate_age_key, known_hosts, status.yaml...), so its mode
 # does not depend on which command ran first; each secret in it is 0600 on
 # its own as well. A directory that is there keeps its mode.
-sub _spew_secure {
+sub spew_secure {
     my ($self, $path, $content) = @_;
 
     $path = path($path);
@@ -363,8 +365,8 @@ sub generate_age_key {
     my ($public_key, $secret_key) = Crypt::Age->generate_keypair;
 
     # Write files. The secret half is created 0600 from the start (see
-    # _spew_secure); the public half is public, so plain spew is fine.
-    $self->_spew_secure($key_file, $secret_key . "\n");
+    # spew_secure); the public half is public, so plain spew is fine.
+    $self->spew_secure($key_file, $secret_key . "\n");
 
     $pub_file->spew($public_key . "\n");
 
@@ -864,8 +866,8 @@ sub decrypt_age_key_with_password {
     my $age_key = $self->_open_age_key_enc($password);
 
     # Write to .ocp/age.key (cached), created 0600 without a world-readable
-    # staging file (see _spew_secure).
-    $self->_spew_secure($self->age_key_file, $age_key);
+    # staging file (see spew_secure).
+    $self->spew_secure($self->age_key_file, $age_key);
 
     # ...and the recipient half, which a clone has no other source for.
     $self->restore_age_recipient;
@@ -1168,7 +1170,7 @@ sub decrypt_kubeconfig_to_file {
     my $target = path($target_file);
     OCP::StateDir::make_parent($target);
 
-    $self->_spew_secure($target, $kubeconfig);
+    $self->spew_secure($target, $kubeconfig);
 
     return $target->stringify;
 }
@@ -1303,6 +1305,19 @@ bound to, and when there is no key at all -- each a message for the user that
 says what failed and what to do, not a Perl error. With no key and
 committed files encrypted to one, that message is the read refusal above;
 with nothing encrypted yet, it says to run C<ocp init>.
+
+=head2 spew_secure
+
+    $secrets->spew_secure($path, $content);
+    OCP::Secrets->spew_secure($path, $content);
+
+Writes C<$content> to C<$path>, created mode C<0600> before the first byte
+lands: for private key material and decrypted kubeconfigs, where a C<spew>
+followed by a C<chmod> leaves the file readable by others for a moment.
+Whatever is at C<$path> is removed first, a symlink included (a caller that
+means to write through one resolves it). The directory is made as
+L<OCP::StateDir/make_parent> makes it. Croaks when the file cannot be created
+or written.
 
 =head2 no_kubeconfig_refusal
 

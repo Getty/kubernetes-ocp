@@ -130,10 +130,10 @@ my @writers = (
           my ($dir) = @_;
           prompted($PIN1, sub { OCP::Secrets->new(project_dir => $dir, ocp => $ocp)->read_kubeconfig });
       }, 1 ],
-    [ 'the write that caches the key (_spew_secure, k360)' => sub {
+    [ 'the write that caches the key (spew_secure, k360)' => sub {
           my ($dir) = @_;
           OCP::Secrets->new(project_dir => $dir, ocp => $ocp)
-              ->_spew_secure($dir->child('.ocp', 'age.key'), "AGE-SECRET-KEY-1K371\n");
+              ->spew_secure($dir->child('.ocp', 'age.key'), "AGE-SECRET-KEY-1K371\n");
       } ],
     [ 'generate_age_key' => sub {
           OCP::Secrets->new(project_dir => $_[0], ocp => $ocp)->generate_age_key } ],

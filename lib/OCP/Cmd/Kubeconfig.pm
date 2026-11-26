@@ -11,7 +11,6 @@ use OCP::Config;
 use OCP::Kubeconfig;
 use OCP::ReadonlyKubeconfig;
 use OCP::Secrets;
-use OCP::StateDir;
 
 with 'OCP::Role::Cmd';
 
@@ -181,9 +180,12 @@ sub execute {
     if ($self->output) {
         # Write to specific file
         my $out_file = $self->output;
-        OCP::StateDir::make_parent($out_file);    # a .ocp/ 0700 (k372)
-        path($out_file)->spew($kubeconfig);
-        path($out_file)->chmod(0600);
+        # Created 0600, never spew-then-chmod (k423); its directory made as
+        # make_parent makes it, a .ocp/ 0700 (k372). A symlink is written
+        # through, as spew did.
+        my $out = path($out_file);
+        $out = $out->realpath if -l $out;
+        $secrets->spew_secure($out, $kubeconfig);
         print "Kubeconfig written to $out_file\n";
     } elsif ($self->export) {
         # Merge into the user's kubeconfig, keeping other clusters intact

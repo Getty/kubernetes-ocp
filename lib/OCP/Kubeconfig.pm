@@ -6,7 +6,7 @@ use warnings;
 use Path::Tiny qw(path);
 
 use OCP;
-use OCP::StateDir;
+use OCP::Secrets;
 
 # Named entry lists in a kubeconfig, and the key holding their payload.
 my %SECTIONS = (
@@ -186,21 +186,27 @@ sub export {
     my $name   = $args{name} // 'ocp';
     my $target = path($args{target} // $class->default_target);
 
+    # A symlinked kubeconfig (dotfiles) is written through, as spew did.
+    my $file = -l $target ? $target->realpath : $target;
+
     my $incoming = $class->parse($yaml);
     my $context  = $class->rename_entries($incoming, $name);
 
+    # The backup and the merged file hold credentials: both are created 0600
+    # before a byte lands, never spew/copy-then-chmod (k423). A plain copy
+    # left the backup at the umask default for good.
     my ($base, $backup) = ({}, undef);
-    if (-f $target) {
-        $base = $class->parse($target->slurp_utf8);
+    if (-f $file) {
+        my $previous = $file->slurp_raw;
+        $base = $class->parse($previous);
         $backup = path("$target.ocp-bak");
-        $target->copy($backup);
+        OCP::Secrets->spew_secure($backup, $previous);
     }
 
     my $merged = $class->merge($base, $incoming);
 
-    OCP::StateDir::make_parent($target);    # a .ocp/ 0700 (k372)
-    $target->spew_utf8(OCP->dump($merged));
-    $target->chmod(0600);
+    # Its directory made as make_parent makes it, a .ocp/ 0700 (k372).
+    OCP::Secrets->spew_secure($file, OCP->dump($merged));
 
     return {
         target  => "$target",
@@ -213,8 +219,9 @@ sub export {
 
     my $result = OCP::Kubeconfig->export(kubeconfig => $yaml, name => 'mycluster');
 
-Renames, merges and writes the target file with mode 0600, backing up an
-existing file as F<< <target>.ocp-bak >>. Returns a hashref with C<target>,
+Renames, merges and writes the target file, backing up an existing file as
+F<< <target>.ocp-bak >>. Both are created mode 0600 (L<OCP::Secrets/spew_secure>);
+a symlinked target is written through to the file it points at. Returns a hashref with C<target>,
 C<backup> and C<context>.
 
 =cut
