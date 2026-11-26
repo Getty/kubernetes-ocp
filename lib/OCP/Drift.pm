@@ -56,6 +56,16 @@ and the top of C<ocp apply> never grow a password prompt.
 has _step_answers => (is => 'lazy', init_arg => undef);
 sub _build__step_answers { {} }
 
+# The GPU step's Node list (nvidia_gpu_nodes over api), as [$err, \@nodes],
+# read once per detector: gpu_operator_step_skips and the dry run's
+# gpu_dry_run both gate on it, so one list is one answer for both (k469).
+has _gpu_step_nodes => (is => 'lazy', init_arg => undef);
+sub _build__gpu_step_nodes {
+    my ($self) = @_;
+    my @nodes = eval { $self->nvidia_gpu_nodes($self->api) };
+    return [ $@, \@nodes ];
+}
+
 # Where the AMD GPU stack runs (k250), by role, as { namespace, name } of its
 # DaemonSet. Rex::Rancher::K8s deploys it, not OCP, so these are the names that
 # library gives them. One table for every reader: the probes below, ocp apply's
@@ -1244,6 +1254,27 @@ sub _step_skips {
     });
 }
 
+# The nodes the GPU step runs for, from this detector's one read of them
+# (k469); a read that failed dies with its error on every ask.
+sub gpu_step_nodes {
+    my ($self) = @_;
+    my ($err, $nodes) = @{ $self->_gpu_step_nodes };
+    die $err if $err;
+    return @$nodes;
+}
+
+=method gpu_step_nodes
+
+    my @nodes = $detector->gpu_step_nodes;    # dies when the list failed
+
+L</nvidia_gpu_nodes> over the detector's C<api>, read once per detector:
+every later ask answers from that read, and a list that failed dies with the
+same error each time. L</gpu_operator_step_skips> asks it, and so does the
+dry run's C<gpu_dry_run> when it is handed the detector: the GPU step's gate
+is one Node list for both.
+
+=cut
+
 # step_skips of the GPU Operator probe (k313) and the GPU Operator CRD probe
 # (k413): setup_gpu_operator re-applies the operator and its CRDs only under
 # gpu.enabled and for a node NFD labelled NVIDIA, and anywhere else skips,
@@ -1256,7 +1287,7 @@ sub gpu_operator_step_skips {
     return 'gpu.enabled is false, so ocp apply leaves the GPU Operator as it is;'
         . ' with gpu.enabled: true it re-applies it.'
         unless $self->config->gpu_enabled;
-    return if $self->nvidia_gpu_nodes($self->api);
+    return if $self->gpu_step_nodes;
     return 'No node carries an NFD NVIDIA label (pci-0300_10de or pci-0302_10de),'
         . ' so ocp apply leaves the GPU Operator as it is.';
 }

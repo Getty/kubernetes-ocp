@@ -638,4 +638,112 @@ subtest 'the Node list refused, no operator running: the dry run foretells it as
     like $res->{died}, qr/^could not read Nodes labelled .*403/s, 'the real run: dies on it';
 };
 
+#
+# k469: (1) gpu.enabled, a node NFD labelled NVIDIA and no GPU Operator
+# running: the real step deploys it, and the dry run said nothing about it.
+# (2) The dry run promised "would re-apply the GPU Operator manifest" once
+# per ClusterPolicy path that differs, and once more for the image off its
+# pin -- one re-apply, said up to three times -- and gated each on a Node
+# list of its own. One gate now, the detector's one list, and one line.
+#
+
+my $DEPLOY = qr/^  \[gpu\] GPU Operator is not running; 1 node\(s\) carry an NFD NVIDIA label\n {10}would deploy the GPU Operator$/m;
+
+sub operator_gone {
+    delete $_[0]{objects}{'Deployment/gpu-operator/gpu-operator'} or die "no gpu-operator Deployment\n";
+}
+sub said_no_drift { $_[0]{out} =~ /^  \[ok\] No drift detected$/m ? 1 : 0 }
+
+subtest 'an NVIDIA node and gpu.enabled, no GPU Operator running: the dry run would deploy it, as the real run does' => sub {
+    my ($api, $dir) = deployed();
+    my $dry0 = dry_run($api, $dir);
+    unlike $dry0->{out}, qr/would deploy the GPU Operator/, 'control, running: nothing to deploy';
+    operator_gone($api);
+
+    my $dry = dry_run($api, $dir);
+    is $dry->{died}, '', 'the dry run: ran';
+    is_deeply $dry->{patches}, [], 'the dry run: writes nothing';
+    like $dry->{out}, $DEPLOY, 'the dry run: would deploy it';
+    is $dry->{actions}, $dry0->{actions} + 1, 'the dry run: one more difference a real run acts on';
+    is $dry->{unknown}, $dry0->{unknown}, 'the dry run: nothing more that could not be checked';
+    is said_no_drift($dry), said_no_drift($dry0), 'the dry run: no drift of its own -- "No drift detected" as before';
+
+    my $res = gpu_step($api, $dir);
+    is $res->{died}, '', 'the real run: does not die';
+    is $res->{rv}[0], 'restored', 'the real run: deploys it';
+    ok +(grep { $_->{kind} eq 'Deployment' && $_->{name} eq 'gpu-operator' } @{ $res->{patches} }),
+        'the real run: the operator applied';
+};
+
+for my $case (sort keys %SKIPS) {
+    my $s = $SKIPS{$case};
+    subtest "$case, no GPU Operator running: nothing to deploy, as the real run deploys nothing" => sub {
+        my ($api, $dir) = deployed();
+        $s->{turn}->($api, $dir);
+        my $dry0 = dry_run($api, $dir);
+        operator_gone($api);
+
+        my $dry = dry_run($api, $dir);
+        unlike $dry->{out}, qr/would deploy the GPU Operator|\[gpu\]/, 'the dry run: says nothing of it';
+        is $dry->{actions}, $dry0->{actions}, 'the dry run: no more differences a real run acts on';
+
+        my $res = gpu_step($api, $dir);
+        is_deeply $res->{rv}, ['skipped'], 'the real run: skips the GPU step';
+        is_deeply $res->{patches}, [], 'the real run: applies nothing';
+    };
+}
+
+# The NVIDIA Node lists a dry run makes, as nvidia_gpu_nodes reads: one per
+# label selector, so one list is two of them.
+sub nvidia_lists {
+    my ($api, $dir) = @_;
+    my $lists = 0;
+    my $r = do {
+        no warnings 'redefine';
+        my $orig = \&WlApi::list;
+        local *WlApi::list = sub {
+            my ($self, $kind, %a) = @_;
+            $lists++ if ($a{labelSelector} // '') =~ /_10de\.present=true\z/;
+            return $orig->(@_);
+        };
+        dry_run($api, $dir);
+    };
+    $r->{lists} = $lists;
+    return $r;
+}
+
+subtest 'the image off its pin and the ClusterPolicy differing: one re-apply, said once, on one Node list' => sub {
+    my ($api, $dir) = deployed();
+    my $dry0 = dry_run($api, $dir);
+    off_pin($api);
+    cluster_policy_edited($api);
+
+    my $dry = nvidia_lists($api, $dir);
+    is $dry->{died}, '', 'the dry run: ran';
+    like $dry->{out}, qr/^\Q$LINE\E\n {10}would re-apply the GPU Operator manifest$/m,
+        'the image off its pin: would re-apply';
+    like $dry->{out}, qr/^  \[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.driver\.enabled$/m,
+        'the ClusterPolicy difference: named';
+    is scalar(() = $dry->{out} =~ /would re-apply the GPU Operator manifest/g), 1,
+        'the re-apply: said once';
+    is $dry->{actions}, $dry0->{actions} + 2, 'the dry run: both differences counted, as before';
+    is $dry->{lists}, scalar(@OCP::Drift::NVIDIA_GPU_LABELS),
+        'one Node list for the probe and both GPU asks of the dry run';
+
+    my $res = gpu_step($api, $dir);
+    is $res->{rv}[0], 'updated', 'the real run: re-applies it, once';
+};
+
+subtest 'two ClusterPolicy paths that differ: one re-apply line, after them' => sub {
+    my ($api, $dir) = deployed();
+    cluster_policy_edited($api);
+    delete $api->{paths}{$CP_PATH}{spec}{toolkit} or die "no spec.toolkit in the ClusterPolicy\n";
+
+    my $dry = dry_run($api, $dir);
+    like $dry->{out},
+        qr/^  \[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.driver\.enabled\n  \[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.toolkit\n {10}would re-apply the GPU Operator manifest$/m,
+        'both named, the re-apply said once after them';
+    is scalar(() = $dry->{out} =~ /would re-apply the GPU Operator manifest/g), 1, 'and only there';
+};
+
 done_testing;

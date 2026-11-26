@@ -101,7 +101,13 @@ would not complete until it can be read".
 C<gpu_dry_run> covers the GPU step the same way, read-only. It reads the GPU
 Operator's Deployment and, as that step does, the nodes NFD labelled NVIDIA
 (L<OCP::Drift/nvidia_gpu_nodes>) -- without one the step skips, and so does
-this --, then compares its ClusterPolicy against the spec, and
+this --, the same Node list the GPU Operator probes gate on
+(L<OCP::Drift/gpu_step_nodes>), read once per run. No operator running there
+is one C<< kind =E<gt> 'deploy' >> entry, said as C<would deploy the GPU
+Operator> and counted as a difference a real run acts on, though no drift.
+Where it runs, it compares its ClusterPolicy against the spec, its
+differences followed by one C<would re-apply the GPU Operator manifest> --
+none when the image off its pin has said that already --, and
 outside quiet mode reads the ClusterPolicy again for the C<gpu.toolkit>
 warning. It returns entries of the same shape: one C<< kind =E<gt> 'spec' >>
 entry per ClusterPolicy path that differs, and one C<< kind =E<gt> 'error' >>
@@ -207,7 +213,10 @@ sub reconcile_components {
         # counted like a probe OCP::Drift could not read, the cause on
         # STDERR -- the dry run tells the operator this run would not
         # complete over it.
-        my @gpu = @$drift ? () : gpu_dry_run($self, $config, quiet => 1);
+        # An operator the GPU step deploys is no drift: that step says it
+        # below (k469).
+        my @gpu = @$drift ? () : grep { $_->{kind} ne 'deploy' }
+            gpu_dry_run($self, $config, quiet => 1, detector => $detector);
         for my $g (@gpu) {
             if ($g->{kind} eq 'error') {
                 _say_unchecked($g);
@@ -739,8 +748,12 @@ sub dry_run_report {
     };
     # The GPU findings are asked first, silently: "No drift detected" is only
     # true when they find nothing either (k234). They are printed below.
-    my @gpu_found = gpu_dry_run($self, $config, quiet => 1);
+    # A GPU Operator the step would deploy is no drift, as a worker it would
+    # create is none (k469). One detector, one Node list for every GPU ask.
+    my @gpu_found = grep { $_->{kind} ne 'deploy' }
+        gpu_dry_run($self, $config, quiet => 1, detector => $detector);
     print "  [ok] No drift detected\n" unless @$drift || @gpu_found;
+    my %reapply_said;
 
     for my $entry (@$drift) {
         if ($is_unknown->($entry)) {
@@ -758,8 +771,10 @@ sub dry_run_report {
         # NFD or the GPU Operator off its pin: its step reads the image as the
         # probe does and re-applies the manifest, at an unchanged hash too
         # (k351) -- where the step runs (k313).
-        print "          would re-apply the $entry->{label} manifest\n"
-            if OCP::Cmd::Apply::Workloads::reapplies($entry);
+        if (OCP::Cmd::Apply::Workloads::reapplies($entry)) {
+            print "          would re-apply the $entry->{label} manifest\n";
+            $reapply_said{ $entry->{component} } = 1;
+        }
     }
 
     # Workers without an OCPNode (k26): named, not created. The list is the
@@ -800,10 +815,14 @@ sub dry_run_report {
 
     # The GPU Operator's ClusterPolicy (lab notes 24, 27): its content against
     # the spec, and a gpu.toolkit switch -- both said by the real run's GPU
-    # step, so the read-only pass says them too. Only where the operator runs.
+    # step, so the read-only pass says them too. Only where the operator runs;
+    # where the step runs but the operator does not, that it would deploy it.
     # A read it could not make is counted with the probes that could not be
     # checked (k276).
-    my @gpu = gpu_dry_run($self, $config);
+    # Its differences are one re-apply of the manifest, said once -- not
+    # again when the image off its pin has said it above (k469).
+    my @gpu = gpu_dry_run($self, $config, detector => $detector,
+        reapply_said => $reapply_said{gpu_operator});
 
     # A gpu.amd.integrated the real run would record but not bring to the
     # nodes that joined before (k359): said as the real run says it, on
@@ -847,8 +866,8 @@ sub dry_run_report {
 }
 
 # The GPU half of the drift check, read-only: what the GPU step of a real run
-# would act on, and only where the operator runs and that step does too --
-# gpu.enabled, and a node NFD labelled NVIDIA (k313). One entry per ClusterPolicy
+# would act on, and only where that step runs -- gpu.enabled, and a node NFD
+# labelled NVIDIA (k313). Where the operator runs, one entry per ClusterPolicy
 # path that differs from the spec, { kind => 'spec', path, message }. The
 # gpu.toolkit warning is printed but is no entry of its own (the real run
 # only warns as well).
@@ -868,8 +887,17 @@ sub dry_run_report {
 # counts the one refused list once. A ClusterPolicy that could not be read is
 # not asked for again for the warning: one cause, said once.
 #
+# No operator running where the step runs is one { kind => 'deploy', label,
+# message } entry: the step deploys it (k469). No drift -- a caller that says
+# "No drift detected" leaves it out -- but a difference a real run acts on.
+#
+# detector: the run's OCP::Drift; the nodes are its gpu_step_nodes, the one
+# list its GPU Operator probes gate on (k469). Without it they are read here.
+#
 # quiet: nothing printed, the caller says what was found. Otherwise every
-# entry is said here, an error's cause on STDERR.
+# entry is said here, an error's cause on STDERR, and the ClusterPolicy
+# differences with one "would re-apply" line -- none under reapply_said, when
+# the caller has promised that re-apply already (k469).
 sub gpu_dry_run {
     my ($self, $config, %opt) = @_;
     return () unless $config->gpu_enabled;
@@ -892,14 +920,26 @@ sub gpu_dry_run {
     # as that step reads it, and first, as it does (k413): a failed list
     # fails the step whether or not the operator runs. Its entry names the
     # GPU Operator probes' step check, which the same list fails.
-    my @nvidia = eval { OCP::Drift->nvidia_gpu_nodes($api) };
+    # Handed the run's detector, the list is the one its GPU Operator probes
+    # gate on (k469): one Node list for the probes and every ask here.
+    my $detector = $opt{detector};
+    my @nvidia = eval { $detector ? $detector->gpu_step_nodes : OCP::Drift->nvidia_gpu_nodes($api) };
     return $unread->('GPU Operator', $@, step => 'gpu_operator_step_skips') if $@;
     return () unless @nvidia;
 
+    # No operator running is one the step deploys (k469): said and counted
+    # like the workers a real run would create, no drift of its own.
     my $running = eval { $self->_resource_exists($api, 'Deployment', 'gpu-operator',
         namespace => 'gpu-operator') };
     return $unread->('GPU Operator', $@) if $@;
-    return () unless $running;
+    unless ($running) {
+        my $deploy = { kind => 'deploy', label => 'GPU Operator',
+            message => 'GPU Operator is not running; ' . scalar(@nvidia)
+                . ' node(s) carry an NFD NVIDIA label' };
+        print "  [gpu] $deploy->{message}\n"
+            . "          would deploy the GPU Operator\n" unless $opt{quiet};
+        return $deploy;
+    }
 
     my @paths = eval {
         OCP::Cmd::Apply::Workloads::cluster_policy_differences($self, $config, $api)
@@ -908,8 +948,11 @@ sub gpu_dry_run {
     my @found = map { +{ kind => 'spec', path => $_,
         message => 'GPU Operator ' . OCP::Cmd::Apply::Workloads::cluster_policy_difference($_) } } @paths;
     return @found if $opt{quiet};
-    print "  [drift] $_->{message}\n"
-        . "          would re-apply the GPU Operator manifest\n" for @found;
+    # What the step does about them is one re-apply of the manifest: one
+    # line, and none when the caller has said it already (k469).
+    print "  [drift] $_->{message}\n" for @found;
+    print "          would re-apply the GPU Operator manifest\n"
+        if @found && !$opt{reapply_said};
 
     my $cp = eval { $self->_crd_get($api, '/apis/nvidia.com/v1/clusterpolicies/gpu-cluster-policy') };
     return (@found, $unread->('gpu.toolkit switch', $@)) if $@;

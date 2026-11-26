@@ -460,6 +460,8 @@ YAML
         local *OCP::Cmd::Apply::rex_prober          = sub { undef };
         local *OCP::Drift::new                      = sub { bless {}, 'NoDrift' };
         local *NoDrift::detect                      = sub { [] };
+        # The GPU step's Node list, which gpu_dry_run asks the detector for (k469).
+        local *NoDrift::gpu_step_nodes              = sub { OCP::Drift->nvidia_gpu_nodes($api) };
         local *OCP::Cmd::Apply::_setup_registry         = $done;
         local *OCP::Cmd::Apply::_configure_registry_dns = sub { 0 };
         local *OCP::Cmd::Apply::_setup_nfd              = $done;

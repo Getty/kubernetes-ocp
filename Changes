@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply --dry-run` says "would deploy the GPU Operator" when gpu.enabled
+      is set, NFD labelled an NVIDIA node and no operator runs, and says "would
+      re-apply the GPU Operator manifest" once; the GPU checks share one Node
+      list per run.
     - robocop reconciles a control plane's OCPNode in Joining or Ready
       without loading its OCPNodeProvider, so a local control plane
       (providerRef local-default, which `ocp apply` never writes) is not

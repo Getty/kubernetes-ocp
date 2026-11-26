@@ -114,8 +114,11 @@ subtest 'dry-run says both' => sub {
         open STDOUT, '>', \$out or die;
         @r = OCP::Cmd::Apply::Drift::gpu_dry_run(FakeApply->new(cp => live(), running => 0), FakeConfig->new);
     }
-    is_deeply \@r, [], 'no operator running: nothing';
-    is $out, '', 'and silent';
+    # k469: this was "nothing, and silent" -- but crag is NVIDIA, so the real
+    # step deploys the operator here, and the dry run says it would.
+    is_deeply [ map { $_->{kind} } @r ], ['deploy'], 'no operator running: the step would deploy it';
+    like $out, qr/^  \[gpu\] GPU Operator is not running; 1 node\(s\) carry an NFD NVIDIA label\n {10}would deploy the GPU Operator\n\z/,
+        'and says so, with no ClusterPolicy compared';
 };
 
 subtest 'quiet: the same finding, said nowhere (k234)' => sub {
@@ -225,8 +228,11 @@ sub count { my ($text, $re) = @_; scalar(() = $text =~ /$re/g) }
 
 subtest 'k276: the operator Deployment -- a 404 is no operator, a 403 is not known' => sub {
     my $none = read_dry(api => { deployment => api_error(404, 'NotFound') });
-    is_deeply $none->{found}, [], '404: nothing found';
-    is $none->{out} . $none->{err}, '', '404: nothing said';
+    # k469: "nothing found, nothing said" -- but the node is NVIDIA, so no
+    # operator is one the step deploys; the 404 is still an answer, no error.
+    is_deeply kinds($none), ['deploy'], '404: no operator, which the step would deploy';
+    like $none->{out}, qr/would deploy the GPU Operator/, '404: said as such';
+    is $none->{err}, '', '404: nothing on STDERR';
     is $none->{gets}, 0, '404: no ClusterPolicy asked for';
 
     my $denied = read_dry(api => { deployment => api_error(403, 'Forbidden') });
