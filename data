@@ -1,0 +1,20 @@
+---
+class: standard
+completed: 2026-11-26T08:41:47Z
+created: 2026-11-26T05:54:16Z
+id: 462
+priority: low
+started: 2026-11-26T07:03:23Z
+status: done
+tags:
+- output-channels
+- apply
+title: 'Apply/Network.pm: WARNING: Only loopback IP available printed on STDOUT'
+updated: 2026-11-26T08:41:47Z
+---
+
+Found while doing k415 (not on that card). lib/OCP/Cmd/Apply/Network.pm around 437 prints "WARNING: Only loopback IP available" on STDOUT and with a WARNING: label instead of [WARN]. Done = STDERR, house label, counted like the other k415 warnings if it is a warning of the run, with a test. Lane: ocp-apply-worker.
+
+2026-11-26 07:10 Done (uncommitted). Apply/Network.pm setup_lb_ipam: the only-loopback line goes to STDERR as '      [WARN] Only loopback IP available, LB-IPAM may not work externally' and is counted in {_apply_warnings} ('LB-IPAM loopback'), so the banner reads WITH WARNINGS (k415 pattern). Claims moved in t/269 (k318 subtest: the line now asserted on STDERR; the refusal cases check out+err). New t/462-lb-ipam-loopback-warn.t: STDERR, label, once, nothing on STDOUT, counted, banner WITH WARNINGS; another InternalIP: nothing warned, banner SUCCESSFULLY (fails on HEAD: 4 asserts). make test TAG=errline on t/462 t/269 t/454 t/78 t/415 t/231: PASS.
+
+2026-11-26 08:41 Committed c922bf6; test fix af470f0 (t/39 asserts the [WARN] on STDERR)
