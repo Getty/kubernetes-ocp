@@ -22,6 +22,10 @@ use Kubernetes::REST ();
 #      leading underscore and OCP does not define itself (OCP::NodeMeta has its
 #      own _json) -- except the names in %ESCAPE, and every name in %ESCAPE is
 #      still in use, so the list cannot outlive its reason.
+#   3. a CustomResourceDefinition is read with a typed get, not through the
+#      escape (k471): no code names the customresourcedefinitions path, and
+#      OCP::Drift::_read_crd and OCP::Cmd::Apply::K8s::crd_read call no
+#      _request.
 #
 # Code only: POD, full-line comments and everything after __END__ are not
 # calls. A method called through a variable ($api->$name) is not seen. Claim 2
@@ -32,9 +36,11 @@ use Kubernetes::REST ();
 
 # What OCP still calls on purpose, with the reason.
 my %ESCAPE = (
-    _request        => 'the raw request escape: server-side apply of a manifest, the CRD'
-                     . ' reads of OCP::Cmd::Apply::K8s::crd_get and OCP::Drift::_read_crd,'
-                     . ' the robocop pod DELETE with a grace period (k420)',
+    _request        => 'the raw request escape: server-side apply of a manifest, the'
+                     . ' custom-resource reads of OCP::Cmd::Apply::K8s::crd_get (Gateway,'
+                     . ' ClusterPolicy, ResourceSlice, LB-IPAM pools), the robocop pod DELETE'
+                     . ' with a grace period (k420). Not the CRDs themselves: those are a typed'
+                     . ' get since k471 (claim 3)',
 );
 
 my @files = sort { "$a" cmp "$b" } ( modules_under('lib'), path('bin')->children );
@@ -90,6 +96,25 @@ subtest 'nothing calls or probes _clear_k8s or _has_k8s' => sub {
 subtest 'the private twins of a public method stay out' => sub {
     is_deeply $used{$_} // [], [], "no ->$_" or diag explain $used{$_}
         for qw(_build_path _check_response);
+};
+
+subtest 'a CRD is read typed, not through the escape (k471)' => sub {
+    my @raw = map { my $f = $_; map { "$f:$_->[0]" } grep { $_->[1] =~ m{/customresourcedefinitions/} } @{ $code{$f} } }
+        sort keys %code;
+    is_deeply \@raw, [], 'no code builds a customresourcedefinitions path' or diag join "\n", @raw;
+
+    # The body of each reader, from its sub line to the next one.
+    for my $reader ([ 'lib/OCP/Drift.pm', qr/^sub (?:_read_crd|cluster_crd)\b/ ],
+                    [ 'lib/OCP/Cmd/Apply/K8s.pm', qr/^sub crd_read\b/ ]) {
+        my ($file, $start) = @$reader;
+        my ($in, @body);
+        for my $l (@{ $code{$file} }) {
+            $in = $l->[1] =~ $start ? 1 : $l->[1] =~ /^sub / ? 0 : $in;
+            push @body, $l->[1] if $in;
+        }
+        ok @body, "$file: the reader is there";
+        ok !grep({ /->\s*_request\b/ } @body), "$file: it calls no _request";
+    }
 };
 
 subtest 'no private method of Kubernetes::REST but the escape' => sub {

@@ -127,19 +127,11 @@ package AddApi {
     my $io = FakeIO->new;
     my ($crd) = grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'CustomResourceDefinition' }
         YAML::XS::LoadFile('share/robocop/crds/ocpnode.yaml');
-    my $crd_json = JSON::PP->new->canonical->encode($crd);
     sub new {
         my ($c, %a) = @_;
         return bless { ocpnodes => {}, nodes => {}, calls => [], %a }, $c;
     }
     sub k8s { $io }
-    sub _request {
-        my ($self, $method, $path) = @_;
-        push @{ $self->{calls} }, [ 'request', $method, $path ];
-        return $path eq '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ocpnodes.ocp.internal'
-            ? FakeResponse->new(200, $crd_json)
-            : FakeResponse->new(404, '{}');
-    }
     sub list {
         my ($self, $kind) = @_;
         push @{ $self->{calls} }, [ 'list', $kind ];
@@ -157,6 +149,11 @@ package AddApi {
         $name //= $o{name};
         push @{ $self->{calls} }, [ 'get', $kind, $name ];
         return $self->provider if $kind eq 'OCPNodeProvider';
+        # The CRD node add reads, by its Kind (k471).
+        if ($kind eq 'CustomResourceDefinition') {
+            return $crd if $name eq 'ocpnodes.ocp.internal';
+            die "404 CustomResourceDefinition $name not found\n";
+        }
         if ($kind eq 'Deployment') {
             return $self->{robocop} ? { status => { readyReplicas => 1 } } : undef;
         }

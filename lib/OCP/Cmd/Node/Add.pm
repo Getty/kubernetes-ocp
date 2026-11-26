@@ -708,7 +708,7 @@ sub _check_node_ip {
 # update needs its resourceVersion), and the refusal names the cause. v1 is
 # the only version the CRD ever had and the one ocp writes.
 #
-# Only a 404 is "no CRD" (crd_get, k269); any other failed read refuses with
+# Only a 404 is "no CRD" (crd_read, k269); any other failed read refuses with
 # its cause -- a CRD nobody could read is not one that is fine.
 my $OCPNODE_CRD = 'ocpnodes.ocp.internal';
 
@@ -717,8 +717,7 @@ sub _refuse_unstored_node_ip {
     return 1 unless $self->node_ip;
 
     my $crd = eval {
-        OCP::Cmd::Apply::K8s::crd_get($self, $api,
-            '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/' . $OCPNODE_CRD);
+        OCP::Cmd::Apply::K8s::crd_read($self, $api, $OCPNODE_CRD);
     };
     if (my $err = $@) {
         $err .= "\n" unless $err =~ /\n\z/;

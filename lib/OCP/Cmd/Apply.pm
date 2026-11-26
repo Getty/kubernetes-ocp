@@ -471,6 +471,11 @@ sub _crd_get {
     return OCP::Cmd::Apply::K8s::crd_get($self, $api, $resource_path);
 }
 
+sub _crd_read {
+    my ($self, $api, $name) = @_;
+    return OCP::Cmd::Apply::K8s::crd_read($self, $api, $name);
+}
+
 sub _setup_ssh_key {
     return OCP::Cmd::Apply::Bootstrap::setup_ssh_key(@_);
 }

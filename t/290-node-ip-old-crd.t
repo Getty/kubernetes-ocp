@@ -13,6 +13,7 @@ use JSON::PP ();
 use Path::Tiny qw(path);
 use Storable qw(dclone);
 use YAML::XS ();
+use Kubernetes::REST::APIError;
 
 use lib 'lib';
 
@@ -59,7 +60,7 @@ no warnings 'once';
 
 my $ASKED    = '10.230.30.50';
 my $WRONG    = '192.168.0.165';
-my $CRD_PATH = '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ocpnodes.ocp.internal';
+my $CRD_NAME = 'ocpnodes.ocp.internal';
 
 sub capture (&) {
     my ($code) = @_;
@@ -107,17 +108,12 @@ my $DIAG = OCP::Node->node_ip_mismatch(node_with('x', $WRONG), $ASKED);
 
 package FakeIO       { sub new { bless {}, shift } sub object_to_struct { $_[1] } }
 package FakeList     { sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
-package FakeResponse {
-    sub new     { my ($c, $status, $content) = @_; bless { status => $status, content => $content }, $c }
-    sub status  { $_[0]{status} }
-    sub content { $_[0]{content} }
-}
-
 # A cluster with one ssh provider, OCPNodes, Nodes and an OCPNode CRD.
 #
-# GET of the CRD (_request, as OCP::Cmd::Apply::K8s::crd_get makes it)
-# answers `crd` -- undef for a cluster without one -- or `crd_answer`: an
-# [ HTTP status, body ], or a string to die with (no response at all).
+# The typed get of the CRD (as OCP::Cmd::Apply::K8s::crd_read makes it,
+# k471) answers `crd` -- a 404 for a cluster without one -- or `crd_answer`:
+# the APIError of an [ HTTP status, body ], or a string to die with (no
+# answer at all, or a body the client could not decode).
 #
 # Writes prune what the CRD's v1 schema does not declare, at the top level of
 # spec and status, without an error -- what the API server does with a
@@ -143,16 +139,15 @@ package CrdApi {
         return FakeList->new([ $self->provider ]) if $kind eq 'OCPNodeProvider';
         return FakeList->new([]);
     }
-    sub _request {
-        my ($self, $method, $path) = @_;
-        push @{ $self->{calls} }, [ 'request', $method, $path ];
-        return FakeResponse->new(404, '{}') unless $path eq $CRD_PATH;
-        my $answer = $self->{crd_answer};
+    sub _crd {
+        my ($self, $name) = @_;
+        my $answer = $name eq $CRD_NAME ? $self->{crd_answer} : undef;
         die $answer if defined $answer && !ref $answer;
-        return FakeResponse->new(@$answer) if $answer;
-        return FakeResponse->new(404, '{"kind":"Status","reason":"NotFound","code":404}')
-            unless $self->{crd};
-        return FakeResponse->new(200, JSON::PP->new->canonical->encode($self->{crd}));
+        die Kubernetes::REST::APIError->new(code => $answer->[0], body => $answer->[1],
+            context => 'get CustomResourceDefinition') if $answer;
+        return $self->{crd} if $name eq $CRD_NAME && $self->{crd};
+        die Kubernetes::REST::APIError->new(code => 404, context => 'get CustomResourceDefinition',
+            body => '{"kind":"Status","reason":"NotFound","code":404}');
     }
     sub _pruned {
         my ($self, $part, $h) = @_;
@@ -167,6 +162,7 @@ package CrdApi {
         $name //= $o{name};
         push @{ $self->{calls} }, [ 'get', $kind, $name ];
         return $self->provider if $kind eq 'OCPNodeProvider';
+        return $self->_crd($name) if $kind eq 'CustomResourceDefinition';
         if ($kind eq 'Deployment') {
             return $self->{robocop} ? { status => { readyReplicas => 1 } } : undef;
         }
@@ -224,7 +220,10 @@ sub calls_of {
     my ($api, $what) = @_;
     return grep { $_->[0] eq $what } @{ $api->{calls} };
 }
-sub crd_reads { my ($api) = @_; return grep { $_->[2] eq $CRD_PATH } calls_of($api, 'request') }
+sub crd_reads {
+    my ($api) = @_;
+    return grep { $_->[1] eq 'CustomResourceDefinition' && $_->[2] eq $CRD_NAME } calls_of($api, 'get');
+}
 
 sub warn_lines { my ($err) = @_; return grep { /^\[WARN\] / } split /\n/, $err }
 
@@ -301,7 +300,7 @@ subtest 'old CRD, robocop off: refused before the OCPNode is written or the host
     unlike $r->{died}, qr/deploy-robocop/, 'not deploy-robocop: it would deploy robocop as well';
     refused_before_anything($r, $api, 'old CRD');
     is scalar(crd_reads($api)), 1, 'the CRD was read, once';
-    is scalar(calls_of($api, 'request')), 1, 'and only read: nothing re-applied from here';
+    ok !calls_of($api, 'request') && !calls_of($api, 'ensure'), 'and only read: nothing re-applied from here';
 };
 
 subtest 'old CRD, robocop running: refused before robocop could take the OCPNode up' => sub {
@@ -342,14 +341,16 @@ subtest 'a CRD that cannot be read is no CRD that is fine: refused, with the cau
         [ '403', [ 403, '{"kind":"Status","reason":"Forbidden","code":403}' ], qr/The cluster API denied the request \(403 Forbidden\)\n/ ],
         [ '500', [ 500, '{"kind":"Status","reason":"InternalError","code":500}' ], qr/The cluster API failed \(500 Internal Error\)\n/ ],
         [ 'no response', "connection refused\n", qr/connection refused/ ],
-        [ 'no JSON', [ 200, '<html>proxy</html>' ], qr/no JSON/ ],
+        # What the client dies with for a 200 whose body is no JSON.
+        [ 'no JSON', "malformed JSON string, neither tag, array, object, number, string or atom, at character offset 0 (before \"<html>proxy</html>\")\n",
+          qr/malformed JSON string/ ],
     ) {
         my ($what, $answer, $cause) = @$case;
         my $api = CrdApi->new(crd_answer => $answer);
         my $r   = run_add($api, node_ip => $ASKED);
         like $r->{died}, qr{\A--node_ip: could not check that this cluster stores spec\.nodeIP: },
             "$what: refused" or next;
-        like $r->{died}, qr{\Q$CRD_PATH\E}, "$what: names what it read";
+        like $r->{died}, qr{CustomResourceDefinition \Q$CRD_NAME\E}, "$what: names what it read";
         like $r->{died}, $cause, "$what: and why it could not";
         like $r->{died}, qr/Nothing was written\.\n\z/, "$what: nothing happened";
         refused_before_anything($r, $api, $what);
@@ -369,7 +370,7 @@ subtest 'without --node_ip: the CRD is not read, an old one is no reason to refu
     my $api = CrdApi->new(crd => $OLD_CRD);
     my $r   = run_add($api);
     is $r->{died}, '', 'node add ran' or return diag $r->{died};
-    ok !calls_of($api, 'request'), 'no CRD read';
+    ok !crd_reads($api), 'no CRD read';
     ok $api->{ocpnodes}{synapse}, 'the OCPNode was written';
 };
 

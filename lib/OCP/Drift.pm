@@ -392,9 +392,9 @@ Callable on the class.
 
 # [name, label] of every shipped GPU Operator CRD whose cluster copy differs.
 # A CRD the cluster does not have is not drift: the operator is optional, and
-# apply puts both in place with it. $get is how the CRD is read (a path GET
-# returning the decoded JSON or undef), so the reconcile path and this
-# detector read it the same way.
+# apply puts both in place with it. $get is how the CRD is read -- by name,
+# returning it as cluster_crd does, or undef --, so the reconcile path and
+# this detector read it the same way.
 sub gpu_crds_differing {
     my ($class, $get) = @_;
     require OCP::Share;
@@ -403,8 +403,7 @@ sub gpu_crds_differing {
     my @differ;
     for my $crd (@GPU_CRDS) {
         my ($name, $file) = @$crd;
-        my $have = $get->("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$name")
-            or next;
+        my $have = $get->($name) or next;
         my $want = eval { YAML::XS::LoadFile($dir->child($file)->stringify) } or next;
         next if $class->crd_fingerprint($have) eq $class->crd_fingerprint($want);
         push @differ, $name;
@@ -440,8 +439,7 @@ sub gpu_crd_drift {
     my ($self) = @_;
     my @unknown;
     my $get = sub {
-        my ($path) = @_;
-        (my $name = $path) =~ s{.*/}{};
+        my ($name) = @_;
         my ($crd, $unknown) = $self->_read_crd($name,
             in        => 'gpu_crd_drift',
             component => 'gpu_operator_crd',
@@ -486,32 +484,49 @@ unknown, the cause carped to stderr once; those come first in the list.
 
 =cut
 
-# The cluster's CRD $name, as ($crd, $unknown): the decoded CRD, or undef
-# when the cluster has none -- a 404, and only a 404 (k268). Any other failure
-# leaves $crd undef and makes $unknown its error entry (drift unknown, the
-# cause carped once), built from %e: in, component, label. The raw escape
-# on purpose (k420): it is the same GET as OCP::Cmd::Apply::K8s::crd_get,
-# which the writers use, and the drift check and the writers have to read a
-# CRD the same way -- the one compares what the other is about to write. A
-# typed get would do (IO::K8s ships CustomResourceDefinition), but only for
-# both at once. _request hands an HTTP error status back as the response
-# rather than dying, so the status and body are the cause; a body that does
-# not decode is one too.
+# The cluster's CustomResourceDefinition $name as a plain struct, or undef
+# when the cluster has none -- a 404, and only a 404 (k268). Any other
+# failure dies with the client's error as it came; the caller says it.
+#
+# The one way OCP reads a CRD from the cluster (k471). The drift check
+# (_read_crd below) and the writers (OCP::Cmd::Apply::K8s::crd_read, which
+# skip_newer_crd, the reconcile path's gpu_crds_differing and node add's
+# --node_ip check take) read it here: the one compares what the other is
+# about to write, so both have to see the same CRD. A typed get of
+# CustomResourceDefinition, made plain with object_to_struct; IO::K8s
+# round-trips the four CRDs OCP ships without loss, so crd_fingerprint and
+# crd_schema_diff see what the raw GET and decode_json handed them before
+# (k420; t/471 holds it).
+sub cluster_crd {
+    my ($self, $api, $name) = @_;
+    my $crd = eval { $api->get('CustomResourceDefinition', name => $name) };
+    if (my $err = $@) {
+        return undef if "$err" =~ /\b404\b/;
+        die $err;
+    }
+    return $crd ? $api->k8s->object_to_struct($crd) : undef;
+}
+
+=method cluster_crd
+
+    my $crd = OCP::Drift->cluster_crd($api, 'ocpnodes.ocp.internal');
+
+The cluster's C<CustomResourceDefinition> of that name as a plain hashref
+(a typed get, through C<object_to_struct>), or C<undef> when the cluster
+answers 404. Any other failure dies with the client's error. The drift check
+and the writers of OCP's and the GPU Operator's CRDs read a CRD through it
+alike.
+
+=cut
+
+# The cluster's CRD $name, as ($crd, $unknown): cluster_crd's struct, or
+# undef when the cluster has none. Any other failure leaves $crd undef and
+# makes $unknown its error entry (drift unknown, the cause carped once),
+# built from %e: in, component, label.
 sub _read_crd {
     my ($self, $name, %e) = @_;
-    require JSON::PP;
-    my $r = eval {
-        $self->api->_request('GET', "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$name")
-    };
-    my $err = $@;
-    if ($r && $r->status < 400) {
-        my $crd = eval { JSON::PP::decode_json($r->content) };
-        return $crd if $crd;
-        $err = "undecodable response body: $@";
-    }
-    elsif ($r) {
-        $err = $r->status . ' ' . ($r->content // '');
-    }
+    my $crd = eval { $self->cluster_crd($self->api, $name) };
+    my $err = $@ or return $crd;
     return (undef, $self->_unknown_drift($err,
         %e,
         op     => 'get',

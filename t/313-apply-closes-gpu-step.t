@@ -525,7 +525,9 @@ subtest 'the Node list refused under gpu.enabled: false: not read, by any of the
 # or not the operator runs, and once.
 #
 
-my $CRD_PATH = '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/clusterpolicies.nvidia.com';
+# The CRD is read with a typed get by its Kind (k471): the object the fake
+# keeps under that key, which the server-side apply above wrote.
+my $CRD_KEY = WlApi::key('CustomResourceDefinition', undef, 'clusterpolicies.nvidia.com');
 my $CRD_FOUND = qr/^GPU Operator CRD clusterpolicies\.nvidia\.com in the cluster differs from the one OCP ships/;
 my $CRD_LINE  = '  [drift] GPU Operator CRD clusterpolicies.nvidia.com in the cluster differs from the one OCP ships';
 
@@ -533,8 +535,8 @@ my $CRD_LINE  = '  [drift] GPU Operator CRD clusterpolicies.nvidia.com in the cl
 # fields -- the lab's case of k228.
 sub crd_stubbed {
     my ($api) = @_;
-    $api->{paths}{$CRD_PATH} or die "no CRD at $CRD_PATH\n";
-    $api->{paths}{$CRD_PATH} = { apiVersion => 'apiextensions.k8s.io/v1', kind => 'CustomResourceDefinition',
+    $api->{objects}{$CRD_KEY} or die "no CRD at $CRD_KEY\n";
+    $api->{objects}{$CRD_KEY} = { apiVersion => 'apiextensions.k8s.io/v1', kind => 'CustomResourceDefinition',
         metadata => { name => 'clusterpolicies.nvidia.com' },
         spec => { versions => [ { name => 'v1', schema => { openAPIV3Schema => { type => 'object' } } } ] } };
 }

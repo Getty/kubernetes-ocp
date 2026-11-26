@@ -7,6 +7,8 @@ use JSON::PP ();
 use Path::Tiny qw(path);
 use Storable qw(dclone);
 use YAML::XS ();
+use IO::K8s;
+use Kubernetes::REST::APIError;
 
 use lib 'lib';
 
@@ -45,7 +47,6 @@ no warnings 'once';
 #   5. ensure_crds dies with the path when share/robocop/crds is missing.
 #
 
-my $CRD_BASE = '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/';
 my $NODE_CRD = 'ocpnodes.ocp.internal';
 my $PROV_CRD = 'ocpnodeproviders.ocp.internal';
 
@@ -65,7 +66,8 @@ sub stored {
     my $copy = JSON::PP::decode_json(JSON::PP::encode_json($crd));
     $copy->{spec}{conversion} = { strategy => 'None' };
     $copy->{metadata}{resourceVersion} = '4711';
-    $copy->{status} = { acceptedNames => { kind => $crd->{spec}{names}{kind} }, storedVersions => ['v1'] };
+    $copy->{status} = { acceptedNames => { kind => $crd->{spec}{names}{kind}, plural => $crd->{spec}{names}{plural} },
+                        storedVersions => ['v1'] };
     return $copy;
 }
 
@@ -86,34 +88,42 @@ package FakeResponse {
 
 package FakeList { sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
 
-# A cluster's CRDs by name, served over _request the way the apiserver answers
-# a raw GET; a CRD it does not have is a 404. raw_fail answers a name with
-# [ status, body ], or dies with a string (no response at all). Every typed
-# get is a 404 and every list empty: the other probes find nothing to read.
-# Writes (_request PATCH, server-side apply) are recorded.
+# A cluster's CRDs by name, served by a typed get of CustomResourceDefinition
+# the way Kubernetes::REST hands them back: an IO::K8s object, made from the
+# JSON the apiserver answers with (k471; a raw GET over _request before). A
+# CRD it does not have is a 404. get_fail answers a name with the
+# APIError of [ status, body ], or dies with a string (no answer at all, or
+# a body the client could not decode). Every other typed get is a 404 and
+# every list empty: the other probes find nothing to read. Writes (_request
+# PATCH, server-side apply) are recorded.
 package FakeApi {
-    sub new { my ($c, %a) = @_; bless { crds => {}, raw_fail => {}, reads => [], writes => [], %a }, $c }
+    my $IO_K8S = IO::K8s->new;
+    sub new { my ($c, %a) = @_; bless { crds => {}, get_fail => {}, reads => [], writes => [], %a }, $c }
     sub k8s { $_[0] }
-    sub object_to_struct { $_[1] }
+    sub object_to_struct { $IO_K8S->object_to_struct($_[1]) }
     sub expand_class { undef }
-    sub get  { die "Kubernetes API error (get $_[1]): 404 NotFound\n" }
+    sub get {
+        my ($self, $kind, %a) = @_;
+        die "Kubernetes API error (get $kind): 404 NotFound\n"
+            unless $kind eq 'CustomResourceDefinition';
+        my $name = $a{name};
+        push @{ $self->{reads} }, $name;
+        if (my $fail = $self->{get_fail}{$name}) {
+            die $fail unless ref $fail;
+            die Kubernetes::REST::APIError->new(code => $fail->[0], body => $fail->[1],
+                context => "get $kind");
+        }
+        my $crd = $self->{crds}{$name}
+            or die Kubernetes::REST::APIError->new(code => 404, context => "get $kind",
+                body => '{"kind":"Status","reason":"NotFound","code":404}');
+        return $IO_K8S->json_to_object($kind, JSON::PP->new->canonical->utf8->encode($crd));
+    }
     sub list { FakeList->new([]) }
     sub _request {
         my ($self, $method, $path, $body) = @_;
-        if ($method ne 'GET') {
-            push @{ $self->{writes} }, "$method $body->{kind}/$body->{metadata}{name}";
-            return FakeResponse->new(200, '{}');
-        }
-        push @{ $self->{reads} }, $path;
-        my ($name) = $path =~ m{/customresourcedefinitions/([^/]+)\z}
-            or return FakeResponse->new(404, '{"kind":"Status","code":404}');
-        if (my $fail = $self->{raw_fail}{$name}) {
-            die $fail unless ref $fail;
-            return FakeResponse->new(@$fail);
-        }
-        my $crd = $self->{crds}{$name}
-            or return FakeResponse->new(404, '{"kind":"Status","reason":"NotFound","code":404}');
-        return FakeResponse->new(200, JSON::PP->new->canonical->utf8->encode($crd));
+        die "no raw GET expected: $path\n" if $method eq 'GET';
+        push @{ $self->{writes} }, "$method $body->{kind}/$body->{metadata}{name}";
+        return FakeResponse->new(200, '{}');
     }
 }
 
@@ -279,11 +289,12 @@ for my $case (
     [ '403', [ 403, '{"kind":"Status","reason":"Forbidden","code":403}' ], qr/403/ ],
     [ '500', [ 500, '{"kind":"Status","reason":"InternalError","code":500}' ], qr/500/ ],
     [ 'a transport failure', "connect: Connection refused\n", qr/Connection refused/ ],
-    [ 'an undecodable body', [ 200, 'not json' ], qr/undecodable response body/ ],
+    [ 'an undecodable body', "malformed JSON string, neither tag, array, object, number, string or atom, at character offset 0 (before \"not json\")\n",
+      qr/malformed JSON string/ ],
 ) {
     my ($what, $fail, $cause) = @$case;
     subtest "unreadable ($what): an error entry with its cause, never absent" => sub {
-        my $api = FakeApi->new(crds => cluster(), raw_fail => { $NODE_CRD => $fail });
+        my $api = FakeApi->new(crds => cluster(), get_fail => { $NODE_CRD => $fail });
         my ($warn, @e) = ocp_crd_entries($api);
         is scalar @e, 1, 'one entry, for the CRD that could not be read';
         my ($e) = @e;
@@ -419,11 +430,13 @@ subtest 'ocp apply --dry-run shows both directions' => sub {
     like $r->{out}, qr/^  0 difference\(s\) a real run would act on\.$/m, 'not an action';
     like $r->{out}, qr/^  1 more reported only/m, 'counted as reported only';
 
-    $r = run_dry(FakeApi->new(crds => cluster(), raw_fail => { $NODE_CRD => [ 403, 'forbidden' ] }));
-    like $r->{out}, qr/^  \[drift\] could not be checked: OCPNode CRD: could not read CustomResourceDefinition \Q$NODE_CRD\E, drift unknown: 403 forbidden$/m,
+    # The cause as every API error is said (k437) -- and as ensure_crds says
+    # the same read below: one reader since k471, so one wording.
+    $r = run_dry(FakeApi->new(crds => cluster(), get_fail => { $NODE_CRD => [ 403, 'forbidden' ] }));
+    like $r->{out}, qr/^  \[drift\] could not be checked: OCPNode CRD: could not read CustomResourceDefinition \Q$NODE_CRD\E, drift unknown: The cluster API denied the request \(403\): forbidden$/m,
         'an unreadable CRD: could not be checked';
     like $r->{out}, qr/^  1 more could not be checked/m, 'counted as unknown';
-    like $r->{err}, qr/OCP::Drift::ocp_crd_drift: get CustomResourceDefinition \Q$NODE_CRD\E failed: 403 forbidden/,
+    like $r->{err}, qr/OCP::Drift::ocp_crd_drift: get CustomResourceDefinition \Q$NODE_CRD\E failed: The cluster API denied the request \(403\): forbidden/,
         'the cause on STDERR';
 };
 
@@ -447,7 +460,7 @@ subtest 'ensure_crds: an older or absent CRD is applied' => sub {
         [ "PATCH CustomResourceDefinition/$PROV_CRD", "PATCH CustomResourceDefinition/$NODE_CRD" ],
         'both CRDs applied';
     like $r->{out}, qr/\[ok\] ensured CustomResourceDefinition\/\Q$NODE_CRD\E/, 'said';
-    is_deeply [ sort @{ $api->{reads} } ], [ sort map { $CRD_BASE . $_ } $NODE_CRD, $PROV_CRD ],
+    is_deeply [ sort @{ $api->{reads} } ], [ sort $NODE_CRD, $PROV_CRD ],
         'each read once before its apply';
 };
 
@@ -462,9 +475,9 @@ subtest 'ensure_crds: a newer CRD is left as it is, not "fixed"' => sub {
 };
 
 subtest 'ensure_crds: a CRD that cannot be read is not written over blind' => sub {
-    my $api = FakeApi->new(crds => cluster(), raw_fail => { $NODE_CRD => [ 403, 'forbidden' ] });
+    my $api = FakeApi->new(crds => cluster(), get_fail => { $NODE_CRD => [ 403, 'forbidden' ] });
     my $r = ensure_crds($api);
-    like $r->{died}, qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: The cluster API denied the request \(403\): forbidden/, 'dies with the cause';
+    like $r->{died}, qr/\Acould not read CustomResourceDefinition \Q$NODE_CRD\E: The cluster API denied the request \(403\): forbidden/, 'dies with the cause';
     is_deeply [ grep { /\Q$NODE_CRD\E/ } @{ $api->{writes} } ], [], 'nothing written for it';
 };
 

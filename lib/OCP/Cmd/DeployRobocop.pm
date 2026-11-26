@@ -113,11 +113,11 @@ sub _find_share_dir {
     return OCP::Share->dir;
 }
 
-# The raw read skip_newer_crd judges a CRD by, as OCP::Cmd::Apply has it:
+# The read skip_newer_crd judges a CRD by, as OCP::Cmd::Apply has it:
 # undef only for a 404, a death with the cause for anything else (k269).
-sub _crd_get {
-    my ($self, $api, $resource_path) = @_;
-    return OCP::Cmd::Apply::K8s::crd_get($self, $api, $resource_path);
+sub _crd_read {
+    my ($self, $api, $name) = @_;
+    return OCP::Cmd::Apply::K8s::crd_read($self, $api, $name);
 }
 
 1;

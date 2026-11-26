@@ -625,7 +625,7 @@ sub setup_gpu_operator {
     # the cluster are compared too (k228 point 3), so a stub or a CRD of
     # another release is put right instead of called up to date.
     my @crd_differ = $gpu_running
-        ? OCP::Drift->gpu_crds_differing(sub { $self->_crd_get($api, $_[0]) })
+        ? OCP::Drift->gpu_crds_differing(sub { $self->_crd_read($api, $_[0]) })
         : ();
     print "      CRD $_ differs from the shipped one, re-applying\n" for @crd_differ;
 

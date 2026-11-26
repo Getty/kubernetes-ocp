@@ -45,35 +45,29 @@ use OCP::Versions;
 
 {
     package Local::FakeApi;
+
+    # OCP's own CRDs as this ocp ships them (k291), read with a typed get of
+    # CustomResourceDefinition (k471); anything else is a 404, the GPU
+    # Operator's CRDs included.
+    my %OCP_CRDS = map { $_->{metadata}{name} => $_ }
+        map { YAML::XS::LoadFile("$_") }
+        Path::Tiny::path(__FILE__)->parent->parent->child(qw(share robocop crds))->children(qr/\.yaml$/);
+
     sub new { my ($class, %args) = @_; bless { objects => {}, %args }, $class }
+
+    sub k8s { IO::K8s->new }
 
     sub get {
         my ($self, $kind, %args) = @_;
         my $key = join '/', $kind, $args{namespace} // '', $args{name} // '';
+        return IO::K8s->new->struct_to_object($kind, $OCP_CRDS{ $args{name} })
+            if !$self->{objects}{$key}
+            && $kind eq 'CustomResourceDefinition' && $OCP_CRDS{ $args{name} // '' };
         return $self->{objects}{$key}
             // die "Kubernetes API error (get $kind): 404 $kind $args{name} not found\n";
     }
 
     sub list { { items => [] } }
-
-    # OCP's own CRDs as this ocp ships them (k291); anything else is a 404,
-    # the GPU Operator's CRDs included.
-    my %OCP_CRDS = map { $_->{metadata}{name} => $_ }
-        map { YAML::XS::LoadFile("$_") }
-        Path::Tiny::path(__FILE__)->parent->parent->child(qw(share robocop crds))->children(qr/\.yaml$/);
-    sub _request {
-        my ($self, $method, $path) = @_;
-        (my $name = $path) =~ s{.*/}{};
-        return Local::FakeResponse->new(200, JSON::PP->new->canonical->utf8->encode($OCP_CRDS{$name}))
-            if $path =~ m{/customresourcedefinitions/} && $OCP_CRDS{$name};
-        return Local::FakeResponse->new(404, '{"kind":"Status","code":404}');
-    }
-}
-{
-    package Local::FakeResponse;
-    sub new     { my ($class, $status, $content) = @_; bless { status => $status, content => $content }, $class }
-    sub status  { $_[0]{status} }
-    sub content { $_[0]{content} }
 }
 { package Local::FakeOCP; use Moo; has config => (is => 'ro', required => 1); sub verbose { 0 } }
 { package Local::FakeSecrets; sub new { bless {}, $_[0] } sub has_kubeconfig { 1 } sub read_kubeconfig { "apiVersion: v1\n" } }

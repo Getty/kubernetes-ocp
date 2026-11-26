@@ -1321,3 +1321,6 @@ Revision history for OCP
       the OCPNode's `spec.routes`.
     - `ocp node rm`: only a 404 makes the node unknown; any other failed read
       is said and nothing is removed.
+    - The drift check and `ocp apply`, `ocp deploy-robocop` and `ocp node add`
+      read a CRD through one typed read; an unreadable CRD is said like every
+      other failed API read.

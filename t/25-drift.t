@@ -20,13 +20,26 @@ use Kubernetes::REST::APIError;
 #
 
 package FakeApi {
+    # OCP's own CRDs are the ones share/robocop/crds ships, which every apply
+    # installs: t/291 is where they differ (k291). Read with a typed get of
+    # CustomResourceDefinition, as OCP::Drift::cluster_crd reads every CRD
+    # (k471). These fixtures have no GPU Operator CRDs, and a cluster without
+    # them answers 404 -- the only failure OCP::Drift reads as absent (k268).
+    my %OCP_CRDS = map { $_->{metadata}{name} => $_ }
+        map { YAML::XS::LoadFile("$_") }
+        Path::Tiny::path(__FILE__)->parent->parent->child(qw(share robocop crds))->children(qr/\.yaml$/);
+
     sub new { my ($class, %args) = @_; bless { objects => {}, lists => {}, %args }, $class }
+
+    sub k8s { IO::K8s->new }
 
     sub get {
         my ($self, $kind, %args) = @_;
         my $key = join '/', $kind, $args{namespace} // '', $args{name} // '';
         die $self->{get_die}{$key} if $self->{get_die}{$key};
         my $obj = $self->{objects}{$key};
+        $obj //= IO::K8s->new->struct_to_object($kind, $OCP_CRDS{ $args{name} })
+            if $kind eq 'CustomResourceDefinition' && $OCP_CRDS{ $args{name} // '' };
         # What Kubernetes::REST dies with for an object that is not there:
         # only a 404 reads as absent (k256).
         die "Kubernetes API error (get $kind): 404 $kind $args{name} not found\n" unless $obj;
@@ -38,28 +51,6 @@ package FakeApi {
         die $self->{list_die}{$kind} if $self->{list_die}{$kind};
         return $self->{lists}{$kind} // { items => [] };
     }
-
-    # The raw GET the CRDs are read with. These fixtures have no GPU
-    # Operator CRDs, and a cluster without them answers 404 -- the only
-    # failure OCP::Drift reads as absent (k268). OCP's own CRDs are the ones
-    # share/robocop/crds ships, which every apply installs: t/291 is where
-    # they differ (k291).
-    my %OCP_CRDS = map { $_->{metadata}{name} => $_ }
-        map { YAML::XS::LoadFile("$_") }
-        Path::Tiny::path(__FILE__)->parent->parent->child(qw(share robocop crds))->children(qr/\.yaml$/);
-    sub _request {
-        my ($self, $method, $path) = @_;
-        (my $name = $path) =~ s{.*/}{};
-        return FakeResponse->new(200, JSON::PP->new->canonical->utf8->encode($OCP_CRDS{$name}))
-            if $path =~ m{/customresourcedefinitions/} && $OCP_CRDS{$name};
-        return FakeResponse->new(404, '{"kind":"Status","code":404}');
-    }
-}
-
-package FakeResponse {
-    sub new     { my ($class, $status, $content) = @_; bless { status => $status, content => $content }, $class }
-    sub status  { $_[0]{status} }
-    sub content { $_[0]{content} }
 }
 
 sub deployment {

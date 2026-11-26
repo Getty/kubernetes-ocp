@@ -9,6 +9,7 @@ use Kubernetes::REST::APIError;
 use Path::Tiny qw(path);
 use YAML::XS ();
 
+use OCP::Drift ();
 use OCP::ErrorLine ();
 
 =head1 SYNOPSIS
@@ -21,9 +22,11 @@ use OCP::ErrorLine ();
 Small helpers that the in-cluster components share: build a L<Kubernetes::REST>
 api from a kubeconfig string (through L<OCP::Role::Cmd/connect_cluster_api>, so
 the command handed in consumes that role), server-side apply a hash, parse and
-apply a multi-document YAML, poll a Deployment until ready, raw C<GET> on a CRD path,
+apply a multi-document YAML, poll a Deployment until ready, raw C<GET> on a
+custom resource's path, read a C<CustomResourceDefinition> as the drift check
+does (C<crd_read>, through L<OCP::Drift/cluster_crd>),
 and the reads a readiness wait and a single lookup make, which tell a 404 from
-a read that failed. C<read_or_why>, C<read_or_absent>, C<crd_get>,
+a read that failed. C<read_or_why>, C<read_or_absent>, C<crd_get>, C<crd_read>,
 C<resource_exists> and C<poll_deployment_ready> say the cause of a failed read
 in one line, without a Perl source location, an API error as the line naming
 the server and the reason that C<ocp status> and C<ocp destroy> say
@@ -31,7 +34,7 @@ the server and the reason that C<ocp status> and C<ocp destroy> say
 L<OCP::Cmd::Apply> keeps a C<_method> thin forwarder for C<api> (as
 C<_k8s_api>), C<server_side_apply>, C<server_side_apply_all>,
 C<apply_yaml_string>, C<apply_yaml_file>, C<poll_deployment_ready>,
-C<resource_exists> and C<crd_get>, so the existing test surface
+C<resource_exists>, C<crd_get> and C<crd_read>, so the existing test surface
 (C<local *OCP::Cmd::Apply::_server_side_apply = ...>) keeps working.
 C<pluralize_kind> and C<build_resource_path> are used only in this module.
 The newer C<kubeconfig_path>, C<read_or_why> and C<read_or_absent>
@@ -267,8 +270,19 @@ sub read_or_absent {
     die "could not read $what: ".OCP::ErrorLine::cause_line($err)."\n";
 }
 
-# A raw GET of $resource_path (a CRD's object has no IO::K8s class OCP
-# reads), decoded. undef only for a 404; a failed request, any other error
+# The cluster's CustomResourceDefinition $name as a plain struct
+# (OCP::Drift::cluster_crd, the read the drift check makes too, k471), or
+# undef for a 404 -- and only for one. Any other failure dies "could not read
+# CustomResourceDefinition <name>: <cause>", the cause in one line
+# (read_or_absent).
+sub crd_read {
+    my ($self, $api, $name) = @_;
+    return read_or_absent("CustomResourceDefinition $name",
+        sub { OCP::Drift->cluster_crd($api, $name) });
+}
+
+# A raw GET of $resource_path (a custom resource's object has no IO::K8s
+# class OCP reads; the CRDs themselves are read with crd_read), decoded. undef only for a 404; a failed request, any other error
 # status and a body that is no JSON die with the cause (k269), in one line
 # without a Perl source location (k403): a request that died, LWP's text in
 # a 599's body and decode_json's complaint each carry one. An error status

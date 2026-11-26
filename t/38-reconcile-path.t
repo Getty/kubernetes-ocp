@@ -714,13 +714,12 @@ subtest 'a dry run reports what a real run would act on' => sub {
 # something a real run acts on, so it is not part of the count.
 #
 subtest 'k188: report-only drift is counted apart from what a real run does' => sub {
-    # The GPU Operator CRDs are not there: every other GET of this fake
-    # answers {} and the shipped CRDs differ from that -- report only too on
-    # a cluster without an NVIDIA node, where the GPU step leaves them (k413)
-    # -- and the count below is about the pod CIDR alone.
-    my $r = reconcile(dry_run => 1, absent => { map {
-        ("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$_->[0]" => 1)
-    } @OCP::Drift::GPU_CRDS }, objects => {
+    # The GPU Operator CRDs are not there: they are read with a typed get
+    # (k471), and this fake answers a 404 for every object it was not given
+    # -- a differing CRD would be report only too on a cluster without an
+    # NVIDIA node, where the GPU step leaves them (k413) -- and the count
+    # below is about the pod CIDR alone.
+    my $r = reconcile(dry_run => 1, objects => {
         'ConfigMap/kube-system/cilium-config' => {
             data => { 'cluster-pool-ipv4-cidr' => '10.0.0.0/8', 'ipam' => 'cluster-pool' },
         },

@@ -5,6 +5,8 @@ use Test::More;
 use JSON::PP ();
 use YAML::XS ();
 use Path::Tiny qw(path);
+use Storable ();
+use IO::K8s;
 
 use lib 'lib';
 
@@ -21,15 +23,17 @@ my %shipped = map {
     $_->[0] => YAML::XS::LoadFile("share/gpu-operator/crds/$_->[1]")
 } @OCP::Drift::GPU_CRDS;
 
-my $stub = { spec => { versions => [ { name => 'v1', served => JSON::PP::true, storage => JSON::PP::true,
-    schema => { openAPIV3Schema => { type => 'object', 'x-kubernetes-preserve-unknown-fields' => JSON::PP::true } } } ] } };
+# The ClusterPolicy CRD with a stub schema: what the apiserver stores of a CRD
+# (group, names, scope -- required, and IO::K8s holds the typed read to them,
+# k471), with a v1 that declares no spec fields.
+my $stub = { %{ Storable::dclone($shipped{'clusterpolicies.nvidia.com'}) } };
+$stub->{spec}{versions} = [ { name => 'v1', served => JSON::PP::true, storage => JSON::PP::true,
+    schema => { openAPIV3Schema => { type => 'object', 'x-kubernetes-preserve-unknown-fields' => JSON::PP::true } } } ];
 
+# gpu_crds_differing asks for a CRD by name (k471; by its path before).
 sub getter {
     my (%cluster) = @_;
-    return sub {
-        my ($name) = $_[0] =~ m{/customresourcedefinitions/(.+)\z} or return undef;
-        return $cluster{$name};
-    };
+    return sub { $cluster{ $_[0] } };
 }
 
 subtest 'fingerprint: version names and spec field names' => sub {
@@ -54,19 +58,16 @@ subtest 'gpu_crds_differing' => sub {
 
 subtest 'drift entry: self-healing where the GPU step runs, counted as an action' => sub {
     {
-        package FakeResp;
-        sub new { my ($c, $code, $body) = @_; bless { c => $code, b => $body }, $c }
-        sub status  { $_[0]{c} }
-        sub content { $_[0]{b} }
-    }
-    {
-        package FakeRawApi;
-        sub new { my ($c, %crds) = @_; bless { crds => \%crds }, $c }
-        sub _request {
-            my ($self, $m, $path) = @_;
-            my ($name) = $path =~ m{/customresourcedefinitions/(.+)\z};
-            my $crd = $name && $self->{crds}{$name};
-            return $crd ? FakeResp->new(200, JSON::PP::encode_json($crd)) : FakeResp->new(404, '{}');
+        # The CRDs by name, through a typed get of CustomResourceDefinition
+        # as Kubernetes::REST hands them back: IO::K8s objects (k471).
+        package FakeCrdApi;
+        sub new { my ($c, %crds) = @_; bless { crds => \%crds, io => IO::K8s->new }, $c }
+        sub k8s { $_[0]{io} }
+        sub get {
+            my ($self, $kind, %a) = @_;
+            my $crd = $kind eq 'CustomResourceDefinition' && $self->{crds}{ $a{name} }
+                or die "Kubernetes API error (get $kind): 404 NotFound\n";
+            return $self->{io}->json_to_object($kind, JSON::PP::encode_json($crd));
         }
         # A node NFD labelled NVIDIA: the GPU step runs, and re-applies the
         # CRDs (k413; t/313 has the clusters where it skips).
@@ -74,7 +75,7 @@ subtest 'drift entry: self-healing where the GPU step runs, counted as an action
     }
     { package FakeGpuConfig; sub new { bless {}, shift } sub gpu_enabled { 1 } }
     my $drift = OCP::Drift->new(config => FakeGpuConfig->new,
-        api => FakeRawApi->new(%shipped, 'clusterpolicies.nvidia.com' => $stub));
+        api => FakeCrdApi->new(%shipped, 'clusterpolicies.nvidia.com' => $stub));
     my @e = $drift->gpu_crd_drift;
     is scalar @e, 1, 'one entry';
     is $e[0]{component}, 'gpu_operator_crd', 'component';

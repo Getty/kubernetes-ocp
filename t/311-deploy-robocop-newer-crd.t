@@ -6,6 +6,8 @@ use JSON::PP ();
 use Path::Tiny ();
 use Storable qw(dclone);
 use YAML::XS ();
+use IO::K8s;
+use Kubernetes::REST::APIError;
 
 use lib 'lib';
 
@@ -34,7 +36,6 @@ use OCP::Config;
 #      dies with the cause. Only a 404 is "not there" (k269).
 #
 
-my $CRD_BASE = '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/';
 my $NODE_CRD = 'ocpnodes.ocp.internal';
 my $PROV_CRD = 'ocpnodeproviders.ocp.internal';
 
@@ -54,7 +55,8 @@ sub stored {
     my $copy = JSON::PP::decode_json(JSON::PP::encode_json($crd));
     $copy->{spec}{conversion} = { strategy => 'None' };
     $copy->{metadata}{resourceVersion} = '4711';
-    $copy->{status} = { acceptedNames => { kind => $crd->{spec}{names}{kind} }, storedVersions => ['v1'] };
+    $copy->{status} = { acceptedNames => { kind => $crd->{spec}{names}{kind}, plural => $crd->{spec}{names}{plural} },
+                        storedVersions => ['v1'] };
     return $copy;
 }
 
@@ -75,15 +77,18 @@ package FakeResponse {
 
 package FakeList { sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
 
-# A cluster's CRDs by name, served over _request the way the apiserver answers
-# a raw GET; a CRD it does not have is a 404. raw_fail answers a name with
-# [ status, body ], or dies with a string (no response at all). ensure()
+# A cluster's CRDs by name, served by a typed get of CustomResourceDefinition
+# the way Kubernetes::REST hands them back: an IO::K8s object, made from the
+# JSON the apiserver answers with (k471; a raw GET over _request before). A
+# CRD it does not have is a 404. get_fail answers a name with the APIError
+# of [ status, body ], or dies with a string (no answer at all). ensure()
 # (deploy-robocop's write) and a raw PATCH (ensure_crds' server-side apply)
 # are recorded; there are no robocop pods to retire.
 package FakeApi {
-    sub new { my ($c, %a) = @_; bless { crds => {}, raw_fail => {}, reads => [], writes => [], %a }, $c }
+    my $IO_K8S = IO::K8s->new;
+    sub new { my ($c, %a) = @_; bless { crds => {}, get_fail => {}, reads => [], writes => [], %a }, $c }
     sub k8s              { $_[0] }
-    sub object_to_struct { $_[1] }
+    sub object_to_struct { $IO_K8S->object_to_struct($_[1]) }
     sub expand_class     { undef }
     sub list             { FakeList->new([]) }
     sub ensure {
@@ -91,22 +96,27 @@ package FakeApi {
         push @{ $self->{writes} }, [ ensure => "$doc->{kind}/$doc->{metadata}{name}", $doc ];
         return $doc;
     }
-    sub _request {
-        my ($self, $method, $path, $body) = @_;
-        if ($method ne 'GET') {
-            push @{ $self->{writes} }, [ $method => "$body->{kind}/$body->{metadata}{name}", $body ];
-            return FakeResponse->new(200, '{}');
-        }
-        push @{ $self->{reads} }, $path;
-        my ($name) = $path =~ m{/customresourcedefinitions/([^/]+)\z}
-            or return FakeResponse->new(404, '{"kind":"Status","code":404}');
-        if (my $fail = $self->{raw_fail}{$name}) {
+    sub get {
+        my ($self, $kind, %a) = @_;
+        die "Kubernetes API error (get $kind): 404 NotFound\n"
+            unless $kind eq 'CustomResourceDefinition';
+        my $name = $a{name};
+        push @{ $self->{reads} }, $name;
+        if (my $fail = $self->{get_fail}{$name}) {
             die $fail unless ref $fail;
-            return FakeResponse->new(@$fail);
+            die Kubernetes::REST::APIError->new(code => $fail->[0], body => $fail->[1],
+                context => "get $kind");
         }
         my $crd = $self->{crds}{$name}
-            or return FakeResponse->new(404, '{"kind":"Status","reason":"NotFound","code":404}');
-        return FakeResponse->new(200, JSON::PP->new->canonical->utf8->encode($crd));
+            or die Kubernetes::REST::APIError->new(code => 404, context => "get $kind",
+                body => '{"kind":"Status","reason":"NotFound","code":404}');
+        return $IO_K8S->json_to_object($kind, JSON::PP->new->canonical->utf8->encode($crd));
+    }
+    sub _request {
+        my ($self, $method, $path, $body) = @_;
+        die "no raw GET expected: $path\n" if $method eq 'GET';
+        push @{ $self->{writes} }, [ $method => "$body->{kind}/$body->{metadata}{name}", $body ];
+        return FakeResponse->new(200, '{}');
     }
     sub written { [ map { $_->[1] } @{ $_[0]{writes} } ] }
 }
@@ -254,7 +264,7 @@ subtest 'an older CRD is updated, an absent one installed' => sub {
         "the older one with this ocp's schema";
     like $r->{out}, qr/\[ok\] ensured CustomResourceDefinition\/\Q$NODE_CRD\E/, 'said';
     unlike $r->{out}, qr/\[skip\]/, 'nothing skipped';
-    is_deeply [ sort @{ $api->{reads} } ], [ sort map { $CRD_BASE . $_ } $NODE_CRD, $PROV_CRD ],
+    is_deeply [ sort @{ $api->{reads} } ], [ sort $NODE_CRD, $PROV_CRD ],
         'each CRD read once before it is written';
 };
 
@@ -268,15 +278,20 @@ subtest 'the same CRDs: written as before' => sub {
 
 #### 3. unreadable
 
+my $UNREAD = "could not read CustomResourceDefinition $NODE_CRD";
+
 for my $case (
-    [ '403',                 [ 403, 'forbidden' ],          qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: The cluster API denied the request \(403\): forbidden/ ],
-    [ '500',                 [ 500, 'etcdserver: timeout' ], qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: The cluster API failed \(500\): etcdserver: timeout/ ],
-    [ 'a transport failure', "connect: Connection refused\n", qr/\AGET \Q$CRD_BASE$NODE_CRD\E failed: connect: Connection refused/ ],
-    [ 'an undecodable body', [ 200, 'not json' ],           qr/\AGET \Q$CRD_BASE$NODE_CRD\E: the answer is no JSON/ ],
+    [ '403',                 [ 403, 'forbidden' ],          qr/\A\Q$UNREAD\E: The cluster API denied the request \(403\): forbidden\n\z/ ],
+    [ '500',                 [ 500, 'etcdserver: timeout' ], qr/\A\Q$UNREAD\E: The cluster API failed \(500\): etcdserver: timeout\n\z/ ],
+    [ 'a transport failure', "connect: Connection refused\n", qr/\A\Q$UNREAD\E: connect: Connection refused\n\z/ ],
+    # What the client dies with for a 200 whose body is no JSON; said
+    # without its source location.
+    [ 'an undecodable body', "malformed JSON string, neither tag, array, object, number, string or atom, at character offset 0 (before \"not json\") at /opt/ocp/local/lib/perl5/Kubernetes/REST.pm line 1580.\n",
+      qr/\A\Q$UNREAD\E: malformed JSON string, .* \(before "not json"\)\n\z/ ],
 ) {
     my ($what, $fail, $cause) = @$case;
     subtest "a CRD that cannot be read ($what) is not written over blind" => sub {
-        my $api = FakeApi->new(crds => cluster(), raw_fail => { $NODE_CRD => $fail });
+        my $api = FakeApi->new(crds => cluster(), get_fail => { $NODE_CRD => $fail });
         my $r = deploy($api);
         like $r->{died}, $cause, 'deploy-robocop dies with the cause';
         is_deeply [ grep { /\Q$NODE_CRD\E/ } @{ $api->written } ], [], 'nothing written for it';

@@ -148,7 +148,7 @@ sub ensure_crds {
 # nodeIP k291 lost, the other way round). OCP::Drift reports it, with the way
 # out, and judges it by the same crd_schema_diff. False otherwise, and for a
 # document that is no CRD. Only a 404 is "not there"; a CRD that cannot be
-# read is not written over blind ($self->_crd_get dies with the cause, k269).
+# read is not written over blind ($self->_crd_read dies with the cause, k269).
 #
 # The one judgement both writers of OCP's CRDs make: ensure_crds (`ocp
 # apply`) and OCP::Cmd::DeployRobocop (`ocp deploy-robocop`, k311).
@@ -156,8 +156,7 @@ sub skip_newer_crd {
     my ($self, $api, $doc) = @_;
     return 0 unless $doc->{kind} eq 'CustomResourceDefinition';
 
-    my $live = $self->_crd_get($api,
-        '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/' . $doc->{metadata}{name});
+    my $live = $self->_crd_read($api, $doc->{metadata}{name});
     my (undef, $extra) = $live ? OCP::Drift->crd_schema_diff($live, $doc) : ();
     return 0 unless $extra && @$extra;
 

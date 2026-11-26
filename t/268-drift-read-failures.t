@@ -39,19 +39,13 @@ sub status_body {
     return qq({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"$reason","code":$code});
 }
 
-package FakeResponse {
-    sub new     { my ($c, $status, $content) = @_; bless { status => $status, content => $content }, $c }
-    sub status  { $_[0]{status} }
-    sub content { $_[0]{content} }
-}
-
 package FakeList { sub new { bless { items => $_[1] }, $_[0] } sub items { $_[0]{items} } }
 
 # Objects by "<Kind>/<namespace>/<name>"; anything not there answers 404, the
-# way the apiserver does. get_fail / list_fail / raw_fail make one read fail
-# with the given error instead; raw answers a _request path with a response.
+# way the apiserver does. get_fail / list_fail make one read fail with the
+# given error instead.
 package FakeApi {
-    sub new { my ($c, %a) = @_; bless { objects => {}, lists => {}, raw => {}, asked => [], %a }, $c }
+    sub new { my ($c, %a) = @_; bless { objects => {}, lists => {}, asked => [], %a }, $c }
     sub k8s { $_[0] }
     sub object_to_struct { $_[1] }
 
@@ -69,12 +63,6 @@ package FakeApi {
         die $self->{list_fail}{$kind} if $self->{list_fail}{$kind};
         my $items = $self->{lists}{$kind} // [];
         return $self->{hash_lists} ? { items => $items } : FakeList->new($items);
-    }
-
-    sub _request {
-        my ($self, $method, $path) = @_;
-        die $self->{raw_fail}{$path} if $self->{raw_fail}{$path};
-        return $self->{raw}{$path} // FakeResponse->new(404, main::status_body(404, 'NotFound'));
     }
 }
 
@@ -120,10 +108,10 @@ sub is_unknown {
     ok !$d->{self_healing},               "$what: not one a plain apply closes";
     like $d->{message}, qr/^\Q$want{label}\E: could not \Q$want{could}\E, drift unknown: /,
         "$what: the message names the read and says drift is unknown";
-    # api_error_line says the reason in words (k437); the CRD probe, a raw
-    # read, still says it as the Status body has it.
+    # api_error_line says the reason in words (k437) -- the CRD probe too,
+    # since it reads with a typed get (k471).
     (my $words = $want{reason}) =~ s/(?<=[a-z])(?=[A-Z])/ /g;
-    like $d->{message}, qr/\b$want{code}\b.*(?:\Q$words\E|\Q$want{reason}\E)/, "$what: and carries the cause";
+    like $d->{message}, qr/\b$want{code}\b.*\Q$words\E/, "$what: and carries the cause";
     is scalar @$warn, 1, "$what: one diagnosis on stderr";
     like $warn->[0], qr/^OCP::Drift::\Q$want{in}\E: \Q$want{failed}\E failed: .*\b$want{code}\b/,
         "$what: the diagnosis names the probe, the read and the status";
@@ -132,22 +120,26 @@ sub is_unknown {
 my @FAILURES = ([ 403, 'Forbidden' ], [ 500, 'InternalError' ]);
 
 #
-# gpu_crd_drift: the raw GET of the GPU Operator CRDs
+# gpu_crd_drift: the typed get of the GPU Operator CRDs (k471; a raw GET
+# before)
 #
 
 my $CRD = 'clusterpolicies.nvidia.com';
-my $CRD_PATH = "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$CRD";
+my $CRD_KEY = "CustomResourceDefinition//$CRD";
 
 subtest 'gpu_crd_drift: a 404 is a cluster without the CRD' => sub {
-    my ($warn, @e) = warned(sub { OCP::Drift->new(config => config(), api => FakeApi->new)->gpu_crd_drift });
+    my $api = FakeApi->new;
+    my ($warn, @e) = warned(sub { OCP::Drift->new(config => config(), api => $api)->gpu_crd_drift });
     is_deeply \@e, [], 'no entry';
     is_deeply $warn, [], 'nothing on stderr';
+    ok scalar(grep { $_ eq $CRD_KEY } @{ $api->{asked} }), 'the CRD was asked for, by its Kind';
 };
 
 for my $f (@FAILURES) {
     my ($code, $reason) = @$f;
     subtest "gpu_crd_drift: $code is drift unknown" => sub {
-        my $api = FakeApi->new(raw => { $CRD_PATH => FakeResponse->new($code, status_body($code, $reason)) });
+        my $api = FakeApi->new(get_fail => {
+            $CRD_KEY => api_error($code, $reason, 'get CustomResourceDefinition') });
         my ($warn, @e) = warned(sub { OCP::Drift->new(config => config(), api => $api)->gpu_crd_drift });
         is_unknown("CRD answering $code", \@e, $warn,
             component => 'gpu_operator_crd', label => "CRD $CRD",
@@ -156,19 +148,20 @@ for my $f (@FAILURES) {
     };
 }
 
-subtest 'gpu_crd_drift: a transport failure and an undecodable body are drift unknown too' => sub {
-    my $api = FakeApi->new(raw_fail => { $CRD_PATH => "Could not load resource map from cluster: connection refused\n" });
+subtest 'gpu_crd_drift: a read that dies otherwise is drift unknown too' => sub {
+    my $api = FakeApi->new(get_fail => { $CRD_KEY => "Could not load resource map from cluster: connection refused\n" });
     my ($warn, @e) = warned(sub { OCP::Drift->new(config => config(), api => $api)->gpu_crd_drift });
-    is scalar @e, 1, 'a _request that dies: one entry';
+    is scalar @e, 1, 'a get that dies: one entry';
     is $e[0]{kind}, 'error', 'an error entry';
     like $e[0]{message}, qr/connection refused/, 'carrying the reason';
     is scalar @$warn, 1, 'said on stderr';
 
-    $api = FakeApi->new(raw => { $CRD_PATH => FakeResponse->new(200, '<html>proxy</html>') });
+    # What the client dies with for a 200 whose body is no JSON.
+    $api = FakeApi->new(get_fail => { $CRD_KEY => "malformed JSON string, neither tag, array, object, number, string or atom, at character offset 0 (before \"<html>proxy</html>\")\n" });
     ($warn, @e) = warned(sub { OCP::Drift->new(config => config(), api => $api)->gpu_crd_drift });
     is scalar @e, 1, 'a 200 whose body is no JSON: one entry';
     is $e[0]{kind}, 'error', 'an error entry, not a missing CRD';
-    like $e[0]{message}, qr/undecodable response body/, 'saying why';
+    like $e[0]{message}, qr/malformed JSON/, 'saying why';
 };
 
 #
@@ -306,9 +299,8 @@ for my $f (@FAILURES) {
 subtest 'detect surfaces the error entries' => sub {
     my $fail = api_error(403, 'Forbidden', 'get');
     my $api = FakeApi->new(
-        get_fail  => { $K3S_CM => $fail, $CILIUM_CM => $fail },
+        get_fail  => { $K3S_CM => $fail, $CILIUM_CM => $fail, $CRD_KEY => $fail },
         list_fail => { OCPNode => api_error(403, 'Forbidden', 'list OCPNode') },
-        raw       => { $CRD_PATH => FakeResponse->new(403, status_body(403, 'Forbidden')) },
     );
     my $drift = OCP::Drift->new(config => config(), api => $api, rex_prober => sub { { stdout => '' } });
     my ($warn, $d) = warned(sub { $drift->detect });
