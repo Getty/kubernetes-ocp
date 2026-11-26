@@ -1,0 +1,15 @@
+{"action":"edit","agent":"ocp-k453","detail":"review","task_id":454,"ts":"2026-11-26T18:14:24Z"}
+{"action":"edit","agent":"frank@citiai.de","detail":"review","task_id":454,"ts":"2026-11-26T18:14:33Z"}
+{"action":"move","agent":"frank@citiai.de","detail":"done","task_id":454,"ts":"2026-11-26T18:14:43Z"}
+{"action":"edit","agent":"ocp-k453","detail":"review","task_id":456,"ts":"2026-11-26T18:14:52Z"}
+{"action":"edit","agent":"frank@citiai.de","detail":"review","task_id":456,"ts":"2026-11-26T18:15:02Z"}
+{"action":"move","agent":"frank@citiai.de","detail":"done","task_id":456,"ts":"2026-11-26T18:15:11Z"}
+{"action":"edit","agent":"frank@citiai.de","detail":"done","task_id":474,"ts":"2026-11-26T18:15:24Z"}
+{"action":"move","agent":"frank@citiai.de","detail":"todo","task_id":475,"ts":"2026-11-26T18:19:35Z"}
+{"action":"move","agent":"kubernetes-ocp","detail":"in-progress","task_id":475,"ts":"2026-11-26T18:19:46Z"}
+{"action":"edit","agent":"kubernetes-ocp","detail":"in-progress","task_id":475,"ts":"2026-11-26T18:21:59Z"}
+{"action":"handoff","agent":"kubernetes-ocp","detail":"review","task_id":475,"ts":"2026-11-26T18:22:09Z"}
+{"action":"create","agent":"frank@citiai.de","detail":"backlog","task_id":476,"ts":"2026-11-26T18:22:38Z"}
+{"action":"edit","agent":"frank@citiai.de","detail":"review","task_id":475,"ts":"2026-11-26T18:22:52Z"}
+{"action":"move","agent":"frank@citiai.de","detail":"done","task_id":475,"ts":"2026-11-26T18:23:02Z"}
+{"action":"edit","agent":"frank@citiai.de","detail":"done","task_id":475,"ts":"2026-11-26T18:23:11Z"}
