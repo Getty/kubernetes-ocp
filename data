@@ -1,0 +1,23 @@
+---
+claimed_at: 2026-11-26T10:00:45Z
+claimed_by: ocp-k464
+class: standard
+completed: 2026-11-26T10:00:07Z
+created: 2026-11-26T07:11:12Z
+id: 464
+priority: low
+started: 2026-11-26T08:43:27Z
+status: done
+tags:
+- errors
+title: 'cause_line leftovers: Destroy _stop_robocop, Role::Cmd cluster_api, CR ensure_cp_ocpnode'
+updated: 2026-11-26T10:00:45Z
+---
+
+Follow-up to k436/k437. OCP::ErrorLine::cause_line (user_line // one_line) exists since k436. Three places still write the pattern by hand or use plain one_line: lib/OCP/Cmd/Destroy.pm _stop_robocop, lib/OCP/Role/Cmd.pm cluster_api, lib/OCP/Cmd/Apply/CR.pm ensure_cp_ocpnode (two warnings, left alone while k417 worked that sub). Also robocop_dry_run prints two causes raw. Done = all through cause_line, tests adjusted. Lane: ocp-worker.
+
+2026-11-26 09:00 Done, tree uncommitted. Every site now goes through OCP::ErrorLine::cause_line: Destroy _stop_robocop and Role::Cmd cluster_api (refactor, same text), plus Role::Cmd provider_crs (k433 had the same pattern by hand). CR ensure_cp_ocpnode: both warnings; the status-write one changes, since an APIError from patch_status now reads 'The cluster API denied the request (403 Forbidden)' and not the raw Status JSON. Drift robocop_dry_run: both causes (STDERR and the error entries) are one line with no location. Also fixed the stale Ownership comment in ensure_cp_ocpnode: robocop re-reads a Joining/Ready control-plane OCPNode (coordinator request). New t/464-cause-line-leftovers.t is red on the pre-fix lib and green after. make test TAG=xcut2 on the affected set passes: t/329 330 356 367 381 38 399 433 464 and the k420/k463 set.
+
+Committed 4208911; binding suite green on main ce487f1 (340 files, 4789 tests)
+
+Committed 4208911; binding suite green on main ce487f1 (340 files, 4789 tests)
