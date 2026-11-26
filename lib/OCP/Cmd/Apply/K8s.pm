@@ -281,9 +281,11 @@ sub crd_read {
         sub { OCP::Drift->cluster_crd($api, $name) });
 }
 
-# A raw GET of $resource_path (a custom resource's object has no IO::K8s
-# class OCP reads; the CRDs themselves are read with crd_read), decoded. undef only for a 404; a failed request, any other error
-# status and a body that is no JSON die with the cause (k269), in one line
+# The raw GET for custom resources without an IO::K8s class OCP reads (the
+# Gateway, the ClusterPolicy, the ResourceSlice list, the LB-IPAM pools):
+# $resource_path's body, decoded. The CRDs themselves go through crd_read.
+# undef only for a 404; a failed request, any other error status and a body
+# that is no JSON die with the cause (k269), in one line
 # without a Perl source location (k403): a request that died, LWP's text in
 # a 599's body and decode_json's complaint each carry one. An error status
 # is said as the APIError the typed calls die with would be (k437): the raw
