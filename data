@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-26T11:36:25Z
+created: 2026-11-20T02:49:13Z
+id: 452
+priority: medium
+started: 2026-11-26T11:36:25Z
+status: done
+tags:
+- skills
+title: 'Skill ocp-usage entschlacken: 54k auf ~7k, Befehle, Schema, PIN-Recovery nach
+  references/'
+updated: 2026-11-26T11:36:25Z
+---
+
+Plan: ~/cai-admin/docs/skills-entschlacken-2026-11.md (cai-admin, 2026-11-20, Getty: zu viel Ballast in Skills). Regeln: skill-compressor (Verhalten erhalten), SKILL.md ≤ ~150 Zeilen bzw. ≤10k, Referenzdateien ≤8k eine Ebene tief, Description trigger-only ≤300 Zeichen, Namen nicht ändern (Briefings).
+Bleibt: Standard-Workflow, Befehlsübersicht einzeilig, PIN1/PIN2-Regeln, Drift-Verhalten, File Layout. Nach references/: commands.md, schema.md, pin-recovery.md, provider-modes.md. Naming-Abschnitt streichen. Description von ocp-gpu (366) kürzen. ocp-core wird in den cai-Repos deinstalliert (nur hier gebraucht).
+
+Committed 29b2c2e; make test green (342 files, 4810 tests)
