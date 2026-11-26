@@ -901,9 +901,10 @@ subtest 'k26: no workers in ocp.yaml, path unchanged' => sub {
 
     # One list stays: a worker added with `ocp node add` that went Failed is
     # named even when ocp.yaml lists no workers (k231, lab note 18).
-    # The other is the host probes naming the workers they skipped (k234).
-    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 2,
-        'OCPNodes are listed for the host-probe warning and the Failed check, nothing more';
+    # The other is the host probes naming the workers they skipped (k234),
+    # and the third the Failed control-plane check (k447).
+    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 3,
+        'OCPNodes are listed for the host-probe warning and the two Failed checks, nothing more';
     ok !touched($r, '_drive_workers') && !touched($r, '_ensure_robocop')
         && !touched($r, '_wait_robocop_ready'), 'no worker step';
     unlike $r->{out}, qr/worker/i, 'and no worker line in the output';

@@ -886,6 +886,35 @@ sub check_worker_phases {
     return @reported;
 }
 
+# Control-plane OCPNodes in phase Failed (k447): a police2 whose join was
+# refused -- for Cilium leftovers, say (k445) -- stays Failed, and neither
+# check_worker_phases nor warn_unlisted_failed_ocpnodes looks at a control
+# plane. Each is a [!!] on STDERR with its message and the way back (Failed is
+# terminal: the OCPNode goes, the machine stays, then node add), counted for
+# the exit as a Failed worker is. Every Failed control plane, listed in
+# ocp.yaml or added by `ocp node add`: either is a server the cluster lacks.
+# Dies when the list fails; returns the names it reported.
+sub check_control_plane_phases {
+    my ($self, $api) = @_;
+
+    my @reported;
+    for my $item (@{ $api->list('OCPNode', namespace => 'ocp-system')->items // [] }) {
+        my $h = $api->k8s->object_to_struct($item);
+        next unless ($h->{spec}{role} // '') eq 'control-plane';
+        next unless ($h->{status}{phase} // '') eq 'Failed';
+        my $n   = $h->{metadata}{name};
+        my $msg = $h->{status}{message};
+        my $add = "ocp node add $n --role control-plane"
+            . (length($h->{spec}{providerRef} // '') ? " --provider $h->{spec}{providerRef}" : '')
+            . (length($h->{spec}{host} // '')        ? " --host $h->{spec}{host}"            : '');
+        print STDERR "  [!!] control plane $n is Failed" . (length($msg // '') ? ": $msg" : '') . "\n";
+        print STDERR "       the way back: ocp node rm $n --keep_machine, then $add\n";
+        push @{ $self->{_failed_components} }, "control plane $n" if ref $self;
+        push @reported, $n;
+    }
+    return @reported;
+}
+
 # Pool labels and taints changed in ocp.yaml onto the worker OCPNodes that
 # already exist (k211, decision 2026-10-01), and from there onto the Nodes.
 # missing_worker_ocpnodes leaves existing OCPNodes alone on purpose (k26); this

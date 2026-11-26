@@ -622,6 +622,17 @@ sub reconcile_components {
         eval { OCP::Cmd::Apply::CR::warn_unlisted_failed_ocpnodes($self, $self->_k8s_api, $config) };
     }
 
+    # A Failed control-plane OCPNode (k447): named with its message and the
+    # way back, counted for the exit as a Failed worker is. Not with
+    # --only workers.
+    unless (($self->only // '') eq 'workers') {
+        eval { OCP::Cmd::Apply::CR::check_control_plane_phases($self, $self->_k8s_api) };
+        if (my $err = $@) {
+            print STDERR '  [!!] Could not check control-plane phases: '.OCP::ErrorLine::one_line($err)."\n";
+            push @unresolved, 'control-plane phases';
+        }
+    }
+
     # Summary. "All up to date" speaks for every step above, including those
     # that count a failure straight into {_failed_components} instead of
     # @unresolved: cert-manager, the Gateway, a Failed worker (k318).

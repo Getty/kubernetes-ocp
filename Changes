@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply` names a Failed control-plane OCPNode on STDERR with its
+      message and the way back (`ocp node rm NAME --keep_machine`, then `ocp
+      node add`), and counts it as a Failed worker is: the run is incomplete.
     - Every `[WARN]` of `ocp apply` and `ocp deploy-image` goes to STDERR:
       the robocop arch warning, the ad-hoc image override, a pod that is not
       well, a health check that could not run and the skipped host probes.

@@ -620,6 +620,16 @@ subtest 'ocp apply on the cluster that exists: a Failed node is not installed ag
       'the Failed worker is named, with its old refusal';
     ok scalar(grep { $_ eq 'worker 10-230-30-50' } @{ $apply->{_failed_components} // [] }),
       'and counted: the run does not complete';
+    # k447: the Failed control planes are named the same way, with the way back.
+    for my $cp ('police2', 'police3') {
+      like $err, qr/^  \[!!\] control plane $cp is Failed: \Q$police2\E$/m,
+        "$cp is named, with its old refusal (k447)";
+      like $err, qr/^\s+the way back: ocp node rm $cp --keep_machine, then ocp node add $cp --role control-plane --provider ssh-default$/m,
+        "and the way back for $cp";
+      ok scalar(grep { $_ eq "control plane $cp" } @{ $apply->{_failed_components} // [] }),
+        "and $cp counted like a Failed worker";
+    }
+    unlike $err, qr/control plane 10-230-30-51/, 'the Ready first control plane is not named';
   }
 };
 
