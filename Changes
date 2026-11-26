@@ -15,6 +15,9 @@ Revision history for OCP
       `ocp provider rm` stop with it, `ocp destroy` says it on STDERR and
       goes on, `ocp keys secure` says the Hetzner key upload was not done and
       exits 1, `ocp keys operator add` says it and gives the Hetzner note.
+    - `ocp init` and `ocp keys secure` no longer print the key file names,
+      fingerprint and randomart `ssh-keygen` writes for the generated SSH
+      keys.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

@@ -1126,7 +1126,14 @@ sub generate_ssh_key {
     # break out of the quotes in an interpolated command line and write the key
     # somewhere else (or run whatever the path spells). Same failure-report
     # shape as the other exec sites, e.g. OCP::SSH's scp helpers.
-    system('ssh-keygen', '-t', 'ed25519', '-N', '', '-f', $key_path->stringify,
+    #
+    # -q (k461): ssh-keygen prints the key pair's file names, the fingerprint
+    # and the randomart on STDOUT, which during `ocp init` and `ocp keys
+    # secure` is the command's narrative -- noise there, and against the
+    # output-channel rule. -q silences exactly that; its errors still go to
+    # STDERR. Not captured through OCP::Exec: IPC::Open3 loses the output of a
+    # caller whose STDOUT is an in-memory handle, as the tests' are.
+    system('ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', $key_path->stringify,
         '-C', 'ocp-cluster-key') == 0
         or croak "Failed to generate SSH key: $?";
 
