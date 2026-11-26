@@ -6,10 +6,9 @@ use warnings;
 use Carp qw(croak);
 use Errno qw(EINTR);
 use Exporter qw(import);
-use IPC::Open3 qw(open3);
+use Fcntl qw(F_DUPFD);
 use IO::Select;
 use POSIX qw(WNOHANG);
-use Symbol qw(gensym);
 
 our @EXPORT_OK = qw(capture_command);
 
@@ -23,7 +22,7 @@ our $TIMEOUT_EXIT = 124;
 #   timeout => seconds before the child is killed (undef = no deadline)
 #   stdin   => scalar sent to the child's stdin, then closed (optional)
 #
-# One place gets the open3 read loop right, so OCP::SSH and every ExistingHost
+# One place gets the read loop right, so OCP::SSH and every ExistingHost
 # provider (Local, SSH) share it instead of each carrying its own copy that
 # drifts. The three defects this fixes, all present in the hand-rolled
 # serial-read version it replaces:
@@ -36,6 +35,9 @@ our $TIMEOUT_EXIT = 124;
 #   R3 Signal death read as success. A child killed by a signal decodes to 0
 #      through `>> 8`, so the old code reported it as exit 0. The signal lives
 #      in the low 7 bits; report 128 + signal, the shell convention.
+#
+# The child's stdin, stdout and stderr are its file descriptors 0, 1 and 2,
+# whatever the caller's STDIN/STDOUT/STDERR handles are (k465) -- see _spawn.
 sub capture_command {
     my ($cmd, %opts) = @_;
     croak 'capture_command needs an arrayref command'
@@ -44,8 +46,7 @@ sub capture_command {
     my $timeout = $opts{timeout};   # undef -> no deadline
     my $stdin   = $opts{stdin};
 
-    my $err = gensym;
-    my $pid = open3(my $in, my $out, $err, @$cmd);
+    my ($pid, $in, $out, $err) = _spawn($cmd);
 
     # Feed stdin up front, then close it. Inputs here are small (a shell script
     # at most); a child that outruns the stdin pipe before we start draining is
@@ -127,6 +128,55 @@ sub capture_command {
         signal    => $signal,
         timed_out => $timed_out ? 1 : 0,
     };
+}
+
+# fork + exec with the three pipes on the child's fds 0, 1 and 2 -> (pid, the
+# write end of its stdin, the read ends of its stdout and stderr).
+#
+# Not IPC::Open3 (k465): open3 reopens the child's STDIN/STDOUT/STDERR *handles*
+# on the pipes, and that only lands on fds 0/1/2 while those handles sit on
+# them. A caller that has STDOUT on an in-memory handle -- every test that
+# captures output with `open STDOUT, '>', \$buf` -- has no fd 1 behind it, so
+# the pipe got a fresh fd, the exec'd program wrote to the real fd 1 (prove's
+# TAP stream, under a test), and {stdout} came back empty. dup2 onto the
+# numbers themselves does not care what the handles are.
+#
+# A failed exec dies in the parent with the reason, as open3 did: the child
+# writes errno down a pipe that the exec closes when it succeeds.
+sub _spawn {
+    my ($cmd) = @_;
+    my (%r, %w);
+    for my $p (qw( in out err exec )) {
+        pipe $r{$p}, $w{$p} or croak 'capture_command: pipe: '.$!;
+    }
+    my $pid = fork;
+    croak 'capture_command: fork: '.$! unless defined $pid;
+    unless ($pid) {
+        close $r{exec};
+        # Every source above 2 first, so a pipe that itself got fd 0, 1 or 2
+        # (the caller had closed one) is not overwritten before it is copied.
+        my @src = map { fcntl($_, F_DUPFD, 3) } $r{in}, $w{out}, $w{err};
+        if (3 == grep { defined } @src) {
+            POSIX::dup2($src[$_], $_) for 0 .. 2;
+            POSIX::close($_) for @src;
+            { no warnings 'exec'; exec @$cmd; }
+        }
+        print { $w{exec} } $!+0;
+        close $w{exec};
+        POSIX::_exit(127);
+    }
+    close $w{exec};
+    close $r{in};
+    close $w{out};
+    close $w{err};
+    my $errno = do { local $/; readline $r{exec} } // '';
+    close $r{exec};
+    if (length $errno) {
+        waitpid($pid, 0);
+        local $! = $errno;
+        croak 'capture_command: exec of '.join(' ', @$cmd).' failed: '.$!;
+    }
+    return ($pid, $w{in}, $r{out}, $r{err});
 }
 
 # TERM, a short grace, then KILL. The child is already past its deadline; the
