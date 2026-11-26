@@ -1,0 +1,21 @@
+---
+class: standard
+completed: 2026-11-26T11:13:55Z
+created: 2026-11-26T09:01:59Z
+id: 470
+priority: low
+started: 2026-11-26T10:02:57Z
+status: done
+tags:
+- errors
+- node
+title: 'ocp node rm: any failed OCPNode get, a 403 included, is reported as Unknown
+  node'
+updated: 2026-11-26T11:13:55Z
+---
+
+Found on k463. lib/OCP/Cmd/Node/Rm.pm execute treats every failed get of the named OCPNode as "Unknown node", so a node that exists but cannot be read (403, 5xx, unreachable API) is called unknown. Only a 404 should mean unknown; other failures should be said through OCP::ErrorLine cause_line. Done = that split with a test. Lane: ocp-apply-worker or ocp-worker.
+
+2026-11-26 10:05 Done (uncommitted, worktree): lib/OCP/Cmd/Node/Rm.pm execute -- only a 404 on the OCPNode get falls through to the Unknown-node rejection (with listing); any other failed get dies 'Could not read OCPNode NAME from the cluster API: <cause_line>' + 'Nothing was removed.', no list, no teardown. POD: one paragraph after the Unknown-node example. New t/470-node-rm-get-failure.t (404 control; 403, 500, 599, plain croak); red against the pre-change Rm.pm (lib overlay), green with it. make test TAG=xcut3 (image): t/18c, t/463, t/470, t/75, t/438 all PASS.
+
+2026-11-26 11:12 Committed on main: b12b5db ; binding suite green (342 files, 4809 tests)
