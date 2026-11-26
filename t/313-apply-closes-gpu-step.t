@@ -486,9 +486,15 @@ subtest 'the Node list refused: no verdict, in all three' => sub {
     is $json->{count}, $json0->{count}, 'status --json: no more fixable';
     is $json->{found}, $json0->{found}, 'status --json: and no more findings';
 
+    # k413: this said one more than at the pin -- the probe's entry counted
+    # beside gpu_dry_run's for the one refused list, which the real run meets
+    # once. Both name the GPU step check, and count as one.
     my $dry = dry_run($api, $dir);
     is $dry->{actions}, $dry0->{actions}, 'the dry run: no more differences a real run acts on';
-    is $dry->{unknown}, $dry0->{unknown} + 1, 'the dry run: one more that could not be checked';
+    is $dry0->{unknown}, 1, 'the dry run at the pin: the refused list could not be checked, once';
+    is $dry->{unknown}, $dry0->{unknown}, 'the dry run: the same one list, not one more';
+    like $dry->{out}, qr/^  \[drift\] could not be checked: GPU Operator runs v0\.0\.1/m,
+        'the dry run: still names what it found';
 
     my $res = gpu_step($api, $dir);
     like $res->{died}, qr{^could not read Nodes labelled feature\.node\.kubernetes\.io/pci-0300_10de\.present=true: .*403}s,
@@ -509,6 +515,127 @@ subtest 'the Node list refused under gpu.enabled: false: not read, by any of the
     my $res = gpu_step($api, $dir);
     is $res->{died}, '', 'the real run: does not die';
     is_deeply $res->{rv}, ['skipped'], 'the real run: skips before it lists a node';
+};
+
+#
+# k413: the GPU Operator CRD probe (gpu_crd_drift) was self_healing
+# everywhere, while setup_gpu_operator re-applies the CRDs only where it
+# runs. It asks the GPU step's question now, as the image probe does. And
+# the dry run meets a refused Node list as the real run does: first, whether
+# or not the operator runs, and once.
+#
+
+my $CRD_PATH = '/apis/apiextensions.k8s.io/v1/customresourcedefinitions/clusterpolicies.nvidia.com';
+my $CRD_FOUND = qr/^GPU Operator CRD clusterpolicies\.nvidia\.com in the cluster differs from the one OCP ships/;
+my $CRD_LINE  = '  [drift] GPU Operator CRD clusterpolicies.nvidia.com in the cluster differs from the one OCP ships';
+
+# The cluster's ClusterPolicy CRD swapped for a stub that declares no spec
+# fields -- the lab's case of k228.
+sub crd_stubbed {
+    my ($api) = @_;
+    $api->{paths}{$CRD_PATH} or die "no CRD at $CRD_PATH\n";
+    $api->{paths}{$CRD_PATH} = { apiVersion => 'apiextensions.k8s.io/v1', kind => 'CustomResourceDefinition',
+        metadata => { name => 'clusterpolicies.nvidia.com' },
+        spec => { versions => [ { name => 'v1', schema => { openAPIV3Schema => { type => 'object' } } } ] } };
+}
+sub crd_entries {
+    my ($api, $dir) = @_;
+    my $r = capture { OCP::Drift->new(config => config_for($dir), api => $api)->gpu_crd_drift };
+    die "gpu_crd_drift died: $r->{died}" if $r->{died};
+    return $r->{rv};
+}
+
+for my $case (sort keys %SKIPS) {
+    my $s = $SKIPS{$case};
+
+    subtest "$case: a GPU Operator CRD that differs -- report only, as the real run leaves it" => sub {
+        my ($api, $dir) = deployed();
+        $s->{turn}->($api, $dir);
+        my $text0 = status_of($api, $dir);
+        my $dry0  = dry_run($api, $dir);
+        is_deeply crd_entries($api, $dir), [], 'the shipped CRDs: the probe finds nothing';
+
+        crd_stubbed($api);
+
+        my ($entry, @more) = @{ crd_entries($api, $dir) };
+        is scalar @more, 0, 'the probe: one entry';
+        is $entry && $entry->{kind}, 'version', 'the probe: a finding';
+        like $entry && $entry->{message}, qr/$CRD_FOUND\z/, 'the probe: names the CRD, promises nothing';
+        ok $entry && !$entry->{self_healing}, 'the probe: not self_healing here';
+        like $entry && $entry->{manual_step}, $s->{why}, 'the probe: says why ocp apply leaves it';
+
+        my $text = status_of($api, $dir);
+        like $text->{out}, qr/^\Q$CRD_LINE\E\n {10}\S/m, 'status: names it, and why under it';
+        is $text->{count}, $text0->{count}, 'status: no more to reconcile automatically';
+
+        my $dry = dry_run($api, $dir);
+        is_deeply $dry->{patches}, [], 'the dry run: writes nothing';
+        like $dry->{out}, qr/^\Q$CRD_LINE\E\n {10}report only, a real run leaves it as it is$/m,
+            'the dry run: names it, report only';
+        is $dry->{actions}, $dry0->{actions}, 'the dry run: no more differences a real run acts on';
+        is $dry->{report_only}, $dry0->{report_only} + 1, 'the dry run: one more reported only';
+
+        my $res = gpu_step($api, $dir);
+        is_deeply $res->{rv}, ['skipped'], 'the real run: skips the GPU step';
+        is_deeply $res->{patches}, [], 'the real run: applies nothing';
+        like +(crd_entries($api, $dir)->[0] // {})->{message}, $CRD_FOUND, 'so the next status names it again';
+    };
+}
+
+subtest 'an NVIDIA node and gpu.enabled: a GPU Operator CRD that differs is closed, by all three' => sub {
+    my ($api, $dir) = deployed();
+    my $text0 = status_of($api, $dir);
+    my $dry0  = dry_run($api, $dir);
+    crd_stubbed($api);
+
+    my ($entry) = @{ crd_entries($api, $dir) };
+    ok $entry && $entry->{self_healing}, 'the probe: self_healing';
+    ok $entry && !defined $entry->{manual_step}, 'the probe: no manual step';
+    like $entry && $entry->{message}, qr/$CRD_FOUND; ocp apply re-applies it\z/, 'the probe: says ocp apply re-applies it';
+
+    is status_of($api, $dir)->{count}, $text0->{count} + 1, 'status: one more to reconcile automatically';
+    my $dry = dry_run($api, $dir);
+    is $dry->{actions}, $dry0->{actions} + 1, 'the dry run: one more difference a real run acts on';
+
+    my $res = gpu_step($api, $dir);
+    is $res->{rv}[0], 'updated', 'the real run: re-applies it';
+    is_deeply crd_entries($api, $dir), [], 'the real run: the shipped CRD back';
+};
+
+subtest 'the Node list refused, the image and a CRD off: one failure, counted once' => sub {
+    my ($api, $dir) = deployed();
+    $api->{refuse_list} = $REFUSED;
+    off_pin($api);
+    crd_stubbed($api);
+
+    my $r = capture { OCP::Drift->new(config => config_for($dir), api => $api)->detect };
+    my @gpu = grep { ($_->{component} // '') =~ /\Agpu_operator(?:_crd)?\z/ } @{ $r->{rv}[0] // [] };
+    is scalar(grep { $_->{kind} eq 'error' } @gpu), 2, 'the detector: both findings could not be told';
+    is scalar(() = $r->{err} =~ /403/g), 1, 'the detector: the refused list said once on STDERR';
+
+    my $dry = dry_run($api, $dir);
+    like $dry->{out}, qr/^  \[drift\] could not be checked: GPU Operator CRD clusterpolicies\.nvidia\.com/m,
+        'the dry run: names the CRD it found';
+    is $dry->{unknown}, 1, 'the dry run: one list that could not be read, counted once';
+
+    my $res = gpu_step($api, $dir);
+    like $res->{died}, qr/^could not read Nodes labelled .*403/s, 'the real run: fails once, at the GPU step';
+};
+
+subtest 'the Node list refused, no operator running: the dry run foretells it as the real run meets it' => sub {
+    my ($api, $dir) = deployed();
+    delete $api->{objects}{'Deployment/gpu-operator/gpu-operator'} or die "no gpu-operator Deployment\n";
+    my $dry0 = dry_run($api, $dir);
+    $api->{refuse_list} = $REFUSED;
+
+    my $dry = dry_run($api, $dir);
+    is $dry->{died}, '', 'the dry run: ran';
+    like $dry->{out}, qr/^  \[drift\] could not be checked: GPU Operator: could not read Nodes labelled .*403/m,
+        'the dry run: the refused list, as the step reads it';
+    is $dry->{unknown}, $dry0->{unknown} + 1, 'the dry run: one more that could not be checked';
+
+    my $res = gpu_step($api, $dir);
+    like $res->{died}, qr/^could not read Nodes labelled .*403/s, 'the real run: dies on it';
 };
 
 done_testing;

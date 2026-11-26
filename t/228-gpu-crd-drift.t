@@ -52,7 +52,7 @@ subtest 'gpu_crds_differing' => sub {
         ['clusterpolicies.nvidia.com'], 'the stub is found';
 };
 
-subtest 'drift entry: self-healing, counted as an action' => sub {
+subtest 'drift entry: self-healing where the GPU step runs, counted as an action' => sub {
     {
         package FakeResp;
         sub new { my ($c, $code, $body) = @_; bless { c => $code, b => $body }, $c }
@@ -68,14 +68,18 @@ subtest 'drift entry: self-healing, counted as an action' => sub {
             my $crd = $name && $self->{crds}{$name};
             return $crd ? FakeResp->new(200, JSON::PP::encode_json($crd)) : FakeResp->new(404, '{}');
         }
+        # A node NFD labelled NVIDIA: the GPU step runs, and re-applies the
+        # CRDs (k413; t/313 has the clusters where it skips).
+        sub list { +{ items => [ { metadata => { name => 'gpu1' } } ] } }
     }
-    my $drift = OCP::Drift->new(config => bless({}, 'OCP::Config'),
+    { package FakeGpuConfig; sub new { bless {}, shift } sub gpu_enabled { 1 } }
+    my $drift = OCP::Drift->new(config => FakeGpuConfig->new,
         api => FakeRawApi->new(%shipped, 'clusterpolicies.nvidia.com' => $stub));
     my @e = $drift->gpu_crd_drift;
     is scalar @e, 1, 'one entry';
     is $e[0]{component}, 'gpu_operator_crd', 'component';
     like $e[0]{message}, qr/clusterpolicies\.nvidia\.com .*differs.*ocp apply re-applies it/, 'message';
-    ok $e[0]{self_healing}, 'self-healing: the GPU step re-applies the CRDs';
+    ok $e[0]{self_healing}, 'self-healing: the GPU step re-applies the CRDs where it runs';
 };
 
 subtest 'apply compares the cluster CRDs before calling the operator up to date' => sub {

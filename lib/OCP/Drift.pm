@@ -23,6 +23,12 @@ has api => (is => 'ro');
 # missing `api` gives spec-only detection. Built by OCP::Role::Cmd::rex_prober.
 has rex_prober => (is => 'ro');
 
+# What each step_skips method answered, as [$why, $err], asked once per
+# detector: the GPU Operator image probe and the CRD probe ask the same GPU
+# step, and one refused Node list is one failure, carped once (k413).
+has _step_answers => (is => 'lazy', init_arg => undef);
+sub _build__step_answers { {} }
+
 # Where the AMD GPU stack runs (k250), by role, as { namespace, name } of its
 # DaemonSet. Rex::Rancher::K8s deploys it, not OCP, so these are the names that
 # library gives them. One table for every reader: the probes below, ocp apply's
@@ -204,7 +210,7 @@ our @COMPONENT_PROBES = (
         remedy       => undef,
         optional     => 1,
         self_healing => 1,
-        step_skips   => '_gpu_operator_step_skips',
+        step_skips   => 'gpu_operator_step_skips',
     },
     # The AMD GPU stack (k250), probed for the GPU operator's reasons: the
     # DaemonSets in %AMD_GPU_DAEMONSETS carry the pinned image as their first
@@ -354,6 +360,15 @@ sub gpu_crds_differing {
     return @differ;
 }
 
+# The GPU step re-applies the CRDs only where it runs, as it does the
+# operator: elsewhere a differing CRD is report only, and its manual_step
+# says why -- the GPU Operator probe's step_skips (k413).
+my %GPU_CRD_PROBE = (
+    component    => 'gpu_operator_crd',
+    self_healing => 1,
+    step_skips   => 'gpu_operator_step_skips',
+);
+
 sub gpu_crd_drift {
     my ($self) = @_;
     my @unknown;
@@ -369,16 +384,24 @@ sub gpu_crd_drift {
         return $crd;
     };
     my @differ = __PACKAGE__->gpu_crds_differing($get);
-    return @unknown, map {
-        +{
-            kind         => 'version',
-            component    => 'gpu_operator_crd',
-            label        => "CRD $_",
-            message      => "GPU Operator CRD $_ in the cluster differs from the one OCP ships; ocp apply re-applies it",
-            remedy       => undef,
-            self_healing => 1,
+    my @drift;
+    for my $name (@differ) {
+        my $found = "GPU Operator CRD $name in the cluster differs from the one OCP ships";
+        my ($skips, $unknown) = $self->_step_skips({ %GPU_CRD_PROBE, label => "CRD $name" }, undef, $found);
+        if ($unknown) {
+            push @drift, $unknown;
+            next;
         }
-    } @differ;
+        push @drift, {
+            kind      => 'version',
+            component => 'gpu_operator_crd',
+            label     => "CRD $name",
+            message   => defined $skips ? $found : $found.'; ocp apply re-applies it',
+            remedy    => undef,
+            (defined $skips ? (manual_step => $skips) : (self_healing => 1)),
+        };
+    }
+    return @unknown, @drift;
 }
 
 # The cluster's CRD $name, as ($crd, $unknown): the decoded CRD, or undef
@@ -1120,13 +1143,21 @@ the GPU operator probe read them here as well. Callable on the class.
 # probe is not self_healing or names no step_skips (k313). A step_skips that
 # cannot tell makes the entry one that could not be checked, returned as
 # (undef, $entry): its message what was found ($found) and that what ocp
-# apply does about it is unknown, with the cause, carped once.
+# apply does about it is unknown, with the cause. Each step_skips method is
+# asked once per detector (k413): the probes that share a step share its
+# answer, and its failure is carped once. The entry names the method as its
+# step, so a caller can count every entry of one failed step check as one.
 sub _step_skips {
     my ($self, $probe, $expected, $found) = @_;
     my $method = $probe->{self_healing} && $probe->{step_skips} or return;
-    my $why = eval { $self->$method };
-    my $err = $@ or return $why;
-    _say_failed("OCP::Drift::component_drift: whether ocp apply re-applies $probe->{label}: ", $err);
+    my $answer = $self->_step_answers->{$method} //= do {
+        my $why = eval { $self->$method };
+        my $err = $@;
+        _say_failed("OCP::Drift: whether ocp apply re-applies $probe->{label}: ", $err) if $err;
+        [ $why, $err ];
+    };
+    my ($why, $err) = @$answer;
+    return $why unless $err;
     return (undef, {
         kind      => 'error',
         component => $probe->{component},
@@ -1135,15 +1166,18 @@ sub _step_skips {
         actual    => undef,
         message   => "$found; whether ocp apply re-applies it is unknown: " . OCP::ErrorLine::one_line($err),
         remedy    => undef,
+        step      => $method,
     });
 }
 
-# step_skips of the GPU Operator probe (k313): setup_gpu_operator re-applies
-# the operator only under gpu.enabled and for a node NFD labelled NVIDIA,
-# and anywhere else skips, leaving it as it is. The same two reads that step
-# makes, in its order; a gpu.enabled OCP::Config refuses, or a Node list
-# that fails, dies here as it fails the step there.
-sub _gpu_operator_step_skips {
+# step_skips of the GPU Operator probe (k313) and the GPU Operator CRD probe
+# (k413): setup_gpu_operator re-applies the operator and its CRDs only under
+# gpu.enabled and for a node NFD labelled NVIDIA, and anywhere else skips,
+# leaving them as they are. The same two reads that step makes, in its
+# order; a gpu.enabled OCP::Config refuses, or a Node list that fails, dies
+# here as it fails the step there. The dry run's gpu_dry_run reads the same
+# nodes and names this check as its step when that list fails.
+sub gpu_operator_step_skips {
     my ($self) = @_;
     return 'gpu.enabled is false, so ocp apply leaves the GPU Operator as it is;'
         . ' with gpu.enabled: true it re-applies it.'
@@ -1152,6 +1186,19 @@ sub _gpu_operator_step_skips {
     return 'No node carries an NFD NVIDIA label (pci-0300_10de or pci-0302_10de),'
         . ' so ocp apply leaves the GPU Operator as it is.';
 }
+
+=method gpu_operator_step_skips
+
+    my $why = $detector->gpu_operator_step_skips;    # dies when it cannot tell
+
+Why the GPU step of C<ocp apply> skips this cluster -- C<gpu.enabled> is
+false, or no node NFD labelled NVIDIA (L</nvidia_gpu_nodes>) -- as one
+sentence, or nothing when the step runs. These are the step's own reads, in
+its order: a C<gpu.enabled> L<OCP::Config> refuses, or a Node list that
+fails, dies here as the step does. The GPU Operator probe and the GPU
+Operator CRD probe ask it, so neither tells another story than the step.
+
+=cut
 
 # The Kubernetes distribution itself. Upgrading it is a node-by-node dance,
 # so this is reported but never auto-remedied.
@@ -2361,6 +2408,11 @@ point the user at a manual step it is about to take itself.
 =item * B<manual_step> - optional; what the human does about an entry without a
 remedy, where C<ocp update> is not the answer either. The reconcile path prints
 it instead of its generic hint.
+
+=item * B<step> - on an C<error> entry only, when what could not be told is
+whether the step of C<ocp apply> that closes it runs (the GPU step, see
+L</gpu_operator_step_skips>): the name of that check. Entries naming the same
+one are one failed read, which the dry run counts once.
 
 =back
 

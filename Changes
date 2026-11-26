@@ -10,6 +10,10 @@ Revision history for OCP
     - `ocp apply` repairs more bare `lastmodified` shapes in SOPS files (a
       value on the next line, `? lastmodified`, a flow-style `sops` mapping),
       and a file with invalid YAML is no longer reported as a failed repair.
+    - `ocp status` reports a differing GPU Operator CRD as report only, with
+      its manual step, on a cluster where the GPU step skips (`gpu.enabled`
+      unset or no NFD-labelled NVIDIA node), where `ocp apply` leaves it. A
+      refused Node list counts once in the `ocp apply --dry-run` summary.
     - `ocp status` reports a changed `gateway.node_selector` as drift under
       `gateway.mode: host_network`, with the same manual step as a changed
       gateway mode (`ocp update --component cilium --force`).

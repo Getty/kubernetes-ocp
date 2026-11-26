@@ -818,10 +818,17 @@ sub dry_run_report {
     my %named = map { ($_->{label} // '') => 1 } @$drift;
     my @amd   = grep { !$named{ $_->{label} } } OCP::Cmd::Apply::AMDGPU::dry_run($self, $config);
 
+    # One failed read is one thing that could not be checked (k413): the
+    # entries of a step check that failed name it as their step -- the GPU
+    # Operator probe, its CRD probe and gpu_dry_run all ask whether the GPU
+    # step runs, and a refused Node list fails the real run once, at that
+    # step. Each is still said; the count is the reads.
+    my @errors      = grep { $is_unknown->($_) } @$drift, @gpu, @robocop, @amd;
+    my %step_seen;
     my $report_only = scalar grep { $is_report_only->($_) } @$drift;
-    my $unknown     = scalar grep { $is_unknown->($_) } @$drift, @gpu, @robocop, @amd;
+    my $unknown     = scalar grep { !defined $_->{step} || !$step_seen{ $_->{step} }++ } @errors;
     my $actions     = scalar(@$drift) + scalar(@gpu) + scalar(@robocop) + scalar(@amd)
-        - $report_only - $unknown + scalar(@missing) + scalar(@relabel);
+        - $report_only - scalar(@errors) + scalar(@missing) + scalar(@relabel);
 
     print "\n";
     print "  $actions difference(s) a real run would act on.\n";
@@ -846,14 +853,19 @@ sub dry_run_report {
 # gpu.toolkit warning is printed but is no entry of its own (the real run
 # only warns as well).
 #
-# A read that fails with anything but a 404 is no answer (k276). The three
-# here -- the operator's Deployment, the ClusterPolicy for its differences,
-# the ClusterPolicy again for the warning -- each took one for a false
-# answer: no operator, no differences, no ClusterPolicy. The NVIDIA nodes,
-# read after the Deployment (k313), are the same. Each is now an
-# { kind => 'error', label, cause, message } entry, drift unknown, the shape
-# of a probe OCP::Drift could not read (k267); the real run's GPU step makes
-# the same reads and fails on them. A ClusterPolicy that could not be read is
+# The NVIDIA nodes are read first, as the step reads them: a refused list
+# fails the real run whether or not the operator runs, so it is foretold here
+# before the Deployment is read (k413; it used to come after).
+#
+# A read that fails with anything but a 404 is no answer (k276). The four
+# here -- the NVIDIA nodes, the operator's Deployment, the ClusterPolicy for
+# its differences, the ClusterPolicy again for the warning -- each took one
+# for a false answer: no GPU node, no operator, no differences, no
+# ClusterPolicy. Each is now an { kind => 'error', label, cause, message }
+# entry, drift unknown, the shape of a probe OCP::Drift could not read
+# (k267); the real run's GPU step makes the same reads and fails on them. The
+# nodes' entry names its step as the probes' entries do, so the dry run
+# counts the one refused list once. A ClusterPolicy that could not be read is
 # not asked for again for the warning: one cause, said once.
 #
 # quiet: nothing printed, the caller says what was found. Otherwise every
@@ -865,27 +877,29 @@ sub gpu_dry_run {
     my $api = eval { $self->_k8s_api } or return ();
 
     my $unread = sub {
-        my ($label, $err) = @_;
+        my ($label, $err, %e) = @_;
         # One line, without a Perl source location (k435): the OCPNode-less
         # reads here (nvidia_gpu_nodes) die with the client's raw error.
         my $cause = OCP::ErrorLine::cause_line($err);
         my $entry = { kind => 'error', label => $label, cause => $cause,
-                      message => "$label: $cause" };
+                      message => "$label: $cause", %e };
         _say_unchecked($entry) unless $opt{quiet};
         return $entry;
     };
+
+    # A cluster without a node NFD labelled NVIDIA is one the real run's GPU
+    # step skips and leaves as it is: nothing it would re-apply (k313). Read
+    # as that step reads it, and first, as it does (k413): a failed list
+    # fails the step whether or not the operator runs. Its entry names the
+    # GPU Operator probes' step check, which the same list fails.
+    my @nvidia = eval { OCP::Drift->nvidia_gpu_nodes($api) };
+    return $unread->('GPU Operator', $@, step => 'gpu_operator_step_skips') if $@;
+    return () unless @nvidia;
 
     my $running = eval { $self->_resource_exists($api, 'Deployment', 'gpu-operator',
         namespace => 'gpu-operator') };
     return $unread->('GPU Operator', $@) if $@;
     return () unless $running;
-
-    # A running operator on a cluster without a node NFD labelled NVIDIA is
-    # one the real run's GPU step skips and leaves as it is: nothing it would
-    # re-apply (k313). Read as that step reads it, which a failed list fails.
-    my @nvidia = eval { OCP::Drift->nvidia_gpu_nodes($api) };
-    return $unread->('GPU Operator', $@) if $@;
-    return () unless @nvidia;
 
     my @paths = eval {
         OCP::Cmd::Apply::Workloads::cluster_policy_differences($self, $config, $api)
