@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - robocop reconciles a control plane's OCPNode in Joining or Ready
+      without loading its OCPNodeProvider, so a local control plane
+      (providerRef local-default, which `ocp apply` never writes) is not
+      marked Failed for a missing provider; it writes Ready once its Node is.
     - `ocp status` reports a changed `gateway.node_selector` as drift under
       `gateway.mode: host_network`, with the same manual step as a changed
       gateway mode (`ocp update --component cilium --force`).

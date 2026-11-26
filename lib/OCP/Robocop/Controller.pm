@@ -1120,6 +1120,63 @@ sub _on_node_event {
         return unless $has_key;
     }
 
+    # A control plane in Joining or Ready only has its Node read --
+    # OCP::Node's _wait_ready and _verify never ask the provider. police1's
+    # OCPNode is written by `ocp apply`, Joining while its Node is not Ready
+    # (k417), with a providerRef nothing may have written: local-default is
+    # not. Loading it failed such a police1 for good (k468), so it is not
+    # loaded: robocop only mirrors that Node's Ready into the phase.
+    my %provider_args;
+    unless ($self->_node_only($cr)) {
+        my $loaded = $self->_load_provider($cr) or return;
+        %provider_args = %$loaded;
+    }
+
+    my $node = eval {
+        OCP::Node->from_cr(
+            $cr,
+            k8s           => $self->kube,
+            ssh_key       => $self->ssh_key,
+            ssh_key_label => 'the robo key',
+            ssh_key_purpose => 'automation',   # a refusal names the robo key (k209)
+            server_url    => $self->server_url,
+            join_token    => $self->join_token,
+            distribution  => $self->distribution,
+            pod_cidr      => $self->pod_cidr,
+            # The pod's own service account as a kubeconfig, so a worker join
+            # gets Rex::Rancher's version-skew check too (k205).
+            kubeconfig    => OCP::Kubernetes->in_cluster_kubeconfig,
+            verbose       => $self->verbose,
+            reconciler_id => $self->reconciler_id,
+            logger        => $self->_node_logger,
+            %provider_args,
+        );
+    };
+    if ($@) {
+        $self->_mark_failed($cr, 'Failed to construct OCPNode: '.$self->_error_line($@));
+        return;
+    }
+
+    my $before = $node->phase;
+    $node->reconcile;
+    $self->_report_result($node, $before);
+}
+
+# Joining or Ready, role control-plane: see _on_node_event (k468).
+my %NODE_ONLY = map { $_ => 1 } qw( Joining Ready );
+
+sub _node_only {
+    my ($self, $cr) = @_;
+    return 0 unless ($cr->{spec}{role} // '') eq 'control-plane';
+    return $NODE_ONLY{ ($cr->{status} // {})->{phase} // 'Pending' } ? 1 : 0;
+}
+
+# The provider spec.providerRef names, and the cluster settings its CR
+# carries, as OCP::Node->from_cr arguments. Undef once the OCPNode is marked
+# Failed with the reason it could not be had.
+sub _load_provider {
+    my ($self, $cr) = @_;
+
     my $provider_name = $cr->{spec}{providerRef};
     unless ($provider_name) {
         $self->_mark_failed($cr,
@@ -1159,36 +1216,7 @@ sub _on_node_event {
     # ocp.yaml's system: block (timezone, locale, ntp), same channel (k217).
     my %system_flags = OCP::Provider->system_flags_from_cr($provider_cr);
 
-    my $node = eval {
-        OCP::Node->from_cr(
-            $cr,
-            k8s           => $self->kube,
-            provider      => $provider,
-            ssh_key       => $self->ssh_key,
-            ssh_key_label => 'the robo key',
-            ssh_key_purpose => 'automation',   # a refusal names the robo key (k209)
-            server_url    => $self->server_url,
-            join_token    => $self->join_token,
-            distribution  => $self->distribution,
-            pod_cidr      => $self->pod_cidr,
-            # The pod's own service account as a kubeconfig, so a worker join
-            # gets Rex::Rancher's version-skew check too (k205).
-            kubeconfig    => OCP::Kubernetes->in_cluster_kubeconfig,
-            verbose       => $self->verbose,
-            reconciler_id => $self->reconciler_id,
-            logger        => $self->_node_logger,
-            %gpu_flags,
-            %system_flags,
-        );
-    };
-    if ($@) {
-        $self->_mark_failed($cr, 'Failed to construct OCPNode: '.$self->_error_line($@));
-        return;
-    }
-
-    my $before = $node->phase;
-    $node->reconcile;
-    $self->_report_result($node, $before);
+    return { provider => $provider, %gpu_flags, %system_flags };
 }
 
 # The result of one reconcile, in the pod log (k176). OCP::Node records most
