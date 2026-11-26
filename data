@@ -1,0 +1,18 @@
+---
+class: standard
+completed: 2026-11-26T06:13:46Z
+created: 2026-11-07T05:25:34Z
+id: 449
+priority: medium
+started: 2026-11-26T05:06:20Z
+status: done
+tags:
+- node
+- cosmetic
+title: A failed Rex task's OCPNode message carries the prefix twice
+updated: 2026-11-26T06:13:46Z
+---
+
+Found during k445 (2026-11-07). The stored status.message reads "Rex task failed: Rex task 'install_rke2_agent' failed: ...", prefixed once by lib/OCP/Node.pm (around 1072) and once by OCP::Rex. Done when the message carries the prefix once, with the test that pins the wording adjusted. Lane: state (OCP::Node) or provider (OCP::Rex); check which side t/219-rex-task-failure-not-internal.t pins.
+
+2026-11-26 05:24 Done (uncommitted, worktree branch fast-forwarded to main 56cfdb0). t/219 pins OCP::Rex's wording ("Rex task 'NAME' failed: ..."), so OCP::Rex stays; OCP::Node no longer prefixes it: new OCP::Node::_rex_failed_message adds 'Rex task failed: ' only to an error that does not already name a failed Rex task (one raised before the task ran, e.g. learning the host key). Files: lib/OCP/Node.pm (helper + the one call site in _install_kubernetes), t/449-rex-failure-message-once.t (new; reproduced red first), t/445-cilium-residue-rerun.t (joined_refusal modelled the old doubled wording; now uses the helper). Verified: make test on t/449 t/445 t/219 green in the Docker image.
