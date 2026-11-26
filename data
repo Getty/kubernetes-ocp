@@ -1,0 +1,19 @@
+---
+class: standard
+completed: 2026-11-26T06:16:16Z
+created: 2026-11-07T00:01:19Z
+id: 423
+priority: low
+started: 2026-11-26T05:06:13Z
+status: done
+tags:
+- secrets
+- kubeconfig
+title: ocp kubeconfig -o and OCP::Kubeconfig export write the decrypted kubeconfig
+  with spew, then chmod 0600
+updated: 2026-11-26T06:16:16Z
+---
+
+Found by the k372 secrets worker. lib/OCP/Cmd/Kubeconfig.pm:185-186 and lib/OCP/Kubeconfig.pm export spew the kubeconfig and chmod 0600 afterwards: the brief world-readable window that Secrets::_spew_secure (create 0600, then write) exists to close. Lane: secrets.
+
+2026-11-26 05:17 Done: OCP::Secrets::_spew_secure is now public spew_secure (POD added; internal callers and t/371,t/372 labels renamed). ocp kubeconfig -o and OCP::Kubeconfig->export write through it (created 0600 before the first byte); the export's backup (.ocp-bak, was a File::Copy copy never chmod-ed: umask mode for good) too. Symlinked targets are resolved and written through, as spew did. Repro: new t/423-kubeconfig-secure-write.t (umask 0 + Path::Tiny::chmod no-op'd => creation mode is visible) red against HEAD (0666 x3), green after. Verified in the image: t/423, t/24, t/371, t/372, t/230, t/00-load, t/216, t/387, t/399, t/444, t/384 all pass.
