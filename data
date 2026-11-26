@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-26T08:37:57Z
+created: 2026-11-07T02:50:27Z
+id: 434
+priority: low
+started: 2026-11-26T06:21:25Z
+status: done
+tags:
+- secrets
+- refactor
+title: 'One predicate for whether a PIN can be asked: Destroy _ssh_key_age_key copies
+  ClusterKey'
+updated: 2026-11-26T08:37:57Z
+---
+
+Found by k396 (fef5289). Destroy.pm _ssh_key_age_key decides whether anyone can be asked for PIN1 with a copy of OCP::ClusterKey _unlock_admin_key test (OCP::ClusterKey INTERACTIVE, else OCP::Password PINS_STDIN or -t STDIN). A public predicate in OCP::Password or OCP::ClusterKey would remove the copy, so a change to the rule cannot leave destroy behind. Lane: ocp-secrets-worker.
+
+2026-11-26 06:30 Predicate: OCP::ClusterKey->can_prompt (INTERACTIVE if defined, else PINS_STDIN || -t STDIN). Consumers: ClusterKey _unlock_admin_key, Destroy _ssh_key_age_key (only that sub + its comment; unused 'use OCP::Password ()' dropped), Keys::Secure _can_prompt (third copy found, same lane) now delegate. Test t/434-can-prompt.t: passes; fails against HEAD lib.
+
+2026-11-26 06:54 Done: OCP::ClusterKey->can_prompt is the one predicate; ClusterKey _unlock_admin_key, Destroy _ssh_key_age_key (only that sub, its comment, and the now-unused 'use OCP::Password ()'), Keys::Secure _can_prompt delegate to it. t/434-can-prompt.t passes (fails against HEAD lib). Targeted make test TAG=secrets over 46 key/PIN/destroy files: PASS.
+
+2026-11-26 08:37 Committed 1cb54d4
