@@ -14,6 +14,12 @@ Revision history for OCP
       its manual step, on a cluster where the GPU step skips (`gpu.enabled`
       unset or no NFD-labelled NVIDIA node), where `ocp apply` leaves it. A
       refused Node list counts once in the `ocp apply --dry-run` summary.
+    - `ocp apply` stops before writing the `registry.local` record, and
+      `ocp status` reports a spec drift, when two CoreDNS server blocks share
+      a key (two `.:53`, or a `coredns-custom` snippet `.:53` next to the
+      Corefile's own): CoreDNS rejects such a Corefile. The message names the
+      key and both blocks, and says a running CoreDNS keeps serving its
+      previous Corefile while a restarted one does not start.
     - `ocp status` reports a changed `gateway.node_selector` as drift under
       `gateway.mode: host_network`, with the same manual step as a changed
       gateway mode (`ocp update --component cilium --force`).

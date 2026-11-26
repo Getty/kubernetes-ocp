@@ -646,9 +646,19 @@ sub configure_registry_dns {
     my $block   = $answers->block_for('registry.local');
     my $ours    = $block && $block->{root} && !defined $block->{file};
 
+    # Two server blocks with the same key are a Corefile CoreDNS rejects
+    # ("already defined"): a record written into either one resolves from
+    # neither. ocp apply adds and removes no server block, so it writes
+    # nothing and says so; the probe says the same (k440).
+    if (my $twice = $answers->doubled_key) {
+        die "ConfigMap kube-system/$cm_name: CoreDNS rejects its Corefile, as it "
+          . OCP::Drift::corefile_key_twice($twice)
+          . ' (' . OCP::Drift::corefile_rejected() . "); ocp apply leaves it as it is\n";
+    }
+
     # Where the record does not go into the root block, the Corefile stays as
     # it is: a server block in it that runs the hosts plugin twice, any block,
-    # stays one CoreDNS refuses. The probe says so too (k393).
+    # stays one CoreDNS rejects. The probe says so too (k393).
     if (!$ours and my $twice = $answers->doubled_hosts_block) {
         die _hosts_twice_error($cm_name, $twice, 0);
     }
@@ -670,7 +680,7 @@ sub configure_registry_dns {
 
     # corefile_with_host takes out the hosts block an older OCP added, and
     # only that. A root block that still runs the plugin twice is a Corefile
-    # CoreDNS refuses, record or not; the probe says so too (k348). So is any
+    # CoreDNS rejects, record or not; the probe says so too (k348). So is any
     # other block that does, snippets included (k393).
     my $result = OCP::Corefile->new(text => $patched, imports => $files);
     if (my $twice = $result->doubled_hosts_block) {
@@ -698,15 +708,16 @@ sub _hosts_twice_error {
     my ($cm_name, $block, $writes) = @_;
     my ($where, $tail) = OCP::Drift::corefile_hosts_twice($block, $writes);
     return "ConfigMap kube-system/$cm_name: its Corefile's $where runs the hosts plugin more than once,"
-        . " which CoreDNS refuses; $tail\n";
+        . ' which CoreDNS rejects (' . OCP::Drift::corefile_rejected() . "); $tail\n";
 }
 
 #
 # Point a name at an address in a Corefile.
 #
 # CoreDNS allows the hosts plugin only once per server block — a second one
-# and it refuses to start with "plugin/hosts: this plugin can only be used
-# once per Server Block", taking cluster DNS down with it. k3s ships a
+# and it rejects the Corefile with "plugin/hosts: this plugin can only be
+# used once per Server Block": a running CoreDNS keeps its previous config, a
+# restarted one does not start, taking cluster DNS down with it. k3s ships a
 # Corefile whose root block already runs hosts for /etc/coredns/NodeHosts (a
 # file k3s' own controller owns and rewrites), RKE2's has no hosts plugin at
 # all. So the record goes *into* an existing hosts block as an inline entry,
@@ -843,7 +854,7 @@ sub corefile_drop_added_hosts {
 Pure function: the Corefile without the hosts block an older OCP added to the
 root block, a C<hosts { ... }> that names no file and lists the name. Only
 while the root block runs the hosts plugin more than once, which CoreDNS
-refuses, and never the last one standing, which is the distribution's own. The
+rejects, and never the last one standing, which is the distribution's own. The
 text comes back as it is otherwise. L<OCP::Corefile/without_added_hosts> does
 the work, so the drift probe can ask whether this repair is enough.
 

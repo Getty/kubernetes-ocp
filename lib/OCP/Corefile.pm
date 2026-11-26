@@ -204,7 +204,7 @@ sub address_of {
 }
 
 # The lines in $block that run the hosts plugin. CoreDNS takes it once per
-# server block and refuses the whole Corefile over a second one ("plugin/hosts:
+# server block and rejects the whole Corefile over a second one ("plugin/hosts:
 # this plugin can only be used once per Server Block").
 sub hosts_lines {
   my ( $self, $block ) = @_;
@@ -214,13 +214,64 @@ sub hosts_lines {
 
 # The first server block that runs the hosts plugin more than once, or undef.
 # Any block, whatever its zone, port or file: CoreDNS sets up every block it
-# reads and refuses the whole Corefile over one of them, so a doubled hosts
+# reads and rejects the whole Corefile over one of them, so a doubled hosts
 # plugin in a block that answers nothing the cluster asks breaks the name all
 # the same (k393).
 sub doubled_hosts_block {
   my ( $self ) = @_;
   for my $block ( @{ $self->blocks } ) {
     return $block if ( () = $self->hosts_lines($block) ) > 1;
+  }
+  return;
+}
+
+# The listener a server block key asks CoreDNS for, as one string: the
+# transport (dns when none is written), the zone in lowercase without its
+# trailing dot, and the port (the transport's default when none is written).
+# Two keys that come out the same are the same listener, however written.
+sub listener {
+  my ( $self, $key ) = @_;
+  my ( $scheme, $host, $port ) = $key =~ m{^(?:([a-z0-9]+)://)?([^:\s]+?)(?::(\d+))?$}i
+    or return lc $key;
+  $scheme = lc( $scheme // 'dns' );
+  $host   = lc $host;
+  $host =~ s/\.\z// unless $host eq '.';
+  $port //= { dns => 53, tls => 853, quic => 853, grpc => 443, https => 443 }->{$scheme} // '';
+  return $scheme.'://'.$host.':'.$port;
+}
+
+# The addresses a block's bind plugin restricts it to; none without one,
+# which is every address.
+sub bind_addresses {
+  my ( $self, $block ) = @_;
+  my ( $lines, $depth ) = ( $self->lines, $self->depth );
+  return map { my ( undef, @at ) = split ' ', $lines->[$_]; @at }
+    grep { $depth->[$_] == 1 && $lines->[$_] =~ /^\s*bind\b/ } $block->{from} + 1 .. $block->{to} - 1;
+}
+
+# The first key two server blocks share, as { key, blocks => [ $first,
+# $second ] }, or undef. CoreDNS rejects the whole Corefile over it ("cannot
+# serve dns://.:53 - it is already defined"): two .:53 blocks, or a
+# coredns-custom snippet .:53 next to the Corefile's own (k440), or one
+# header listing it twice (`. .:53`, both blocks the same). Any block,
+# whatever its zone, port or file, as for doubled_hosts_block. Only blocks
+# that each bind to addresses the other does not may share a key; a block
+# without bind listens on all of them.
+sub doubled_key {
+  my ( $self ) = @_;
+  my %seen;
+  for my $block ( @{ $self->blocks } ) {
+    my @bind = $self->bind_addresses($block);
+    for my $key ( @{ $block->{keys} } ) {
+      my $listener = $self->listener($key);
+      for my $earlier ( @{ $seen{$listener} // [] } ) {
+        my ( $other, @other_bind ) = @$earlier;
+        my %bound = map { $_ => 1 } @other_bind;
+        next if @bind && @other_bind && !grep { $bound{$_} } @bind;
+        return { key => $key, blocks => [ $other, $block ] };
+      }
+      push @{ $seen{$listener} }, [ $block, @bind ];
+    }
   }
   return;
 }
@@ -382,7 +433,7 @@ L</blocks>.
   my @at = $corefile->hosts_lines( $corefile->root_block );
 
 The indexes in L</lines> of the block's hosts plugin lines. More than one is a
-Corefile CoreDNS refuses.
+Corefile CoreDNS rejects.
 
 =method doubled_hosts_block
 
@@ -390,7 +441,33 @@ Corefile CoreDNS refuses.
 
 The first server block in L</blocks> that runs the hosts plugin more than
 once, or undef. Every block counts, on any port and imported or not: CoreDNS
-refuses the whole Corefile over any one of them.
+rejects the whole Corefile over any one of them.
+
+=method listener
+
+  $corefile->listener('.');   # dns://.:53
+
+The listener a server block key asks for, as C<scheme://zone:port>: C<dns>
+when no scheme is written, the zone in lowercase without its trailing dot, the
+transport's default port when none is written. Keys with the same listener
+clash.
+
+=method bind_addresses
+
+  my @at = $corefile->bind_addresses($block);
+
+The addresses a block's C<bind> plugin restricts it to; none (every address)
+without one.
+
+=method doubled_key
+
+  my $twice = $corefile->doubled_key;   # { key => '.:53', blocks => [ $a, $b ] }
+
+The first key that two server blocks share (by L</listener>), with the two
+blocks (the same one twice when its header lists the key twice), or undef.
+CoreDNS rejects the whole Corefile over it ("it is already defined"). Every
+block counts, on any port and imported or not. Blocks that
+each C<bind> to addresses the other does not may share a key.
 
 =method without_added_hosts
 

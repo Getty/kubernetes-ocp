@@ -1414,8 +1414,26 @@ sub registry_dns_drift {
     my $block   = $answers->block_for($REGISTRY_HOSTNAME);
     my $ours    = $block && $block->{root} && !defined $block->{file};
 
+    # Two server blocks with the same key are a Corefile CoreDNS rejects
+    # ("already defined"), whichever block answers: block_for takes the first
+    # on a tie, CoreDNS takes none. ocp apply adds and removes no server
+    # block, so it stays as it is (k440).
+    if (my $twice = $answers->doubled_key) {
+        return {
+            %entry,
+            kind        => 'spec',
+            actual      => undef,
+            message     => "$REGISTRY_HOSTNAME does not resolve from the CoreDNS Corefile (expected $expected):"
+                . ' CoreDNS rejects it, as it ' . corefile_key_twice($twice)
+                . ' (' . corefile_rejected() . '); ocp apply leaves it as it is',
+            manual_step => "Leave server block key $twice->{key} in one server block only (the Corefile"
+                . " in ConfigMap kube-system/$cm_name and the coredns-custom snippets it imports),"
+                . ' then run ocp apply',
+        };
+    }
+
     # A server block running the hosts plugin twice is a Corefile CoreDNS
-    # refuses: nothing resolves, whatever the record says. Any block, the
+    # rejects: nothing resolves from it, whatever the record says. Any block, the
     # root block or another, the Corefile's own or a snippet (k393). The
     # writer takes out the hosts blocks an older OCP added to the root block
     # it writes the record into and nothing else (k348); where it does not
@@ -1426,8 +1444,9 @@ sub registry_dns_drift {
                 ->doubled_hosts_block
             : $now;
         my ($where, $tail) = corefile_hosts_twice($left // $now, $ours);
-        my $refused = "$REGISTRY_HOSTNAME does not resolve (expected $expected): CoreDNS refuses the"
-            . " Corefile, whose $where runs the hosts plugin more than once";
+        my $refused = "$REGISTRY_HOSTNAME does not resolve from the CoreDNS Corefile (expected $expected):"
+            . " CoreDNS rejects it, as its $where runs the hosts plugin more than once";
+        my $rejected = ' (' . corefile_rejected() . ')';
 
         if ($left) {
             my $in = defined $left->{file} ? $where : "$where of the Corefile in ConfigMap kube-system/$cm_name";
@@ -1435,7 +1454,7 @@ sub registry_dns_drift {
                 %entry,
                 kind        => 'spec',
                 actual      => undef,
-                message     => "$refused; $tail",
+                message     => "$refused$rejected; $tail",
                 manual_step => "Leave one hosts plugin in the $in, then run ocp apply",
             };
         }
@@ -1444,7 +1463,7 @@ sub registry_dns_drift {
             %entry,
             kind    => 'missing',
             actual  => undef,
-            message => "$refused, one of them a block an older ocp added; ocp apply restores it",
+            message => "$refused, one of them a block an older ocp added$rejected; ocp apply restores it",
         };
     }
 
@@ -1515,15 +1534,25 @@ Corefile imports from the C<coredns-custom> ConfigMap answer like its own
 does not); a server block answers only for plain DNS on port 53; the first
 CoreDNS ConfigMap that exists is the one read, and one without a C<Corefile>
 key is a C<spec> entry; a root block that runs the C<hosts> plugin more than
-once, which CoreDNS refuses, is C<missing> when the block an older OCP added is
+once, which CoreDNS rejects, is C<missing> when the block an older OCP added is
 what C<ocp apply> takes out, and C<spec> when one would still be left over.
 
-CoreDNS refuses the whole Corefile over any server block that runs the
+CoreDNS rejects the whole Corefile over any server block that runs the
 C<hosts> plugin more than once: the root block or another, on any port, the
 Corefile's own or a C<coredns-custom> snippet. Each of them is checked
 (L<OCP::Corefile/doubled_hosts_block>). C<ocp apply> repairs only the root
 block it writes the record into, so every other case is a C<spec> entry. That
 includes a doubled root block while another block answers for the name.
+
+CoreDNS also rejects a Corefile in which two server blocks share a key (two
+C<.:53>, or a C<coredns-custom> snippet C<.:53> next to the Corefile's own;
+L<OCP::Corefile/doubled_key>). C<ocp apply> adds and removes no server block,
+so that is a C<spec> entry naming the key and both blocks (k440).
+
+A rejected Corefile is one nothing resolves from, but not necessarily a
+CoreDNS that answers nothing: on a reload a running CoreDNS keeps serving its
+previous Corefile, and only one that restarts on it does not start
+(L</corefile_rejected>). The entry says both.
 
 A CoreDNS ConfigMap name answering 404 is not the distribution's, and the next
 name is read. When neither name exists, the writer stops with an error and the
@@ -2252,6 +2281,47 @@ for the Corefile's own, L</corefile_block_name> for any other. Also returns
 what C<ocp apply> does about it. It removes a C<hosts> block an older OCP
 added only from that root block, and only on a run that writes the record
 there (C<$writes>). Any other block it leaves as it is.
+
+=cut
+
+# A server block key two blocks share (OCP::Corefile's doubled_key), as the
+# writer's and the probe's messages name it (k440): the key and where it
+# stands twice. ocp apply never adds or removes a server block, so it closes
+# none of these.
+sub corefile_key_twice {
+    my ($twice) = @_;
+    my ($first, $second) = @{ $twice->{blocks} };
+    my @name = map { corefile_block_name($_) } $first, $second;
+    (my $both = $name[0]) =~ s/^server block\b/two server blocks/;
+    my $where = $first == $second    ? "the header of the $name[0]"
+              : $name[0] eq $name[1] ? $both
+              : "the $name[0] and the $name[1]";
+    return "defines server block key $twice->{key} twice, in $where";
+}
+
+=method corefile_key_twice
+
+    my $clause = OCP::Drift::corefile_key_twice($corefile->doubled_key);
+
+A server block key two blocks share, as the writer of the C<registry.local>
+record and L</registry_dns_drift> name it: the key and the two blocks
+(L</corefile_block_name>). CoreDNS rejects such a Corefile; C<ocp apply>
+leaves it as it is.
+
+=cut
+
+# What CoreDNS does with a Corefile it rejects, as the writer's and the
+# probe's messages say it. The reload plugin keeps the running server on its
+# previous config; a CoreDNS that starts on it does not start (k440).
+sub corefile_rejected {
+    return 'a running CoreDNS keeps serving its previous Corefile, a restarted one does not start';
+}
+
+=method corefile_rejected
+
+What CoreDNS does with a Corefile it rejects, as messages say it: a running
+CoreDNS keeps serving its previous Corefile (the C<reload> plugin does not
+swap in one it cannot load), a restarted one does not start.
 
 =cut
 

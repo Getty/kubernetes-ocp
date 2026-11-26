@@ -43,7 +43,7 @@ use OCP::Drift;
 # k348 closed the cases the two still read differently: the *.server snippets
 # a k3s Corefile imports from coredns-custom (they answer like the Corefile's
 # own blocks), a CoreDNS ConfigMap without a Corefile key (the probe read the
-# next name), a root block running the hosts plugin twice (CoreDNS refuses it;
+# next name), a root block running the hosts plugin twice (CoreDNS rejects it;
 # the writer repaired it, the probe saw a record), and blocks on another port
 # (they answer nothing the cluster asks).
 #
@@ -90,7 +90,7 @@ my $IMPORT = "import /etc/coredns/custom/*.server\n";
 my $K3S    = $ROOT . $IMPORT;
 
 # The hosts block an older OCP added to the root block next to the one the
-# distribution runs -- the duplicate CoreDNS refuses to start with (t/39)
+# distribution runs -- the duplicate CoreDNS rejects the Corefile over (t/39)
 sub with_added_hosts {
     my ($corefile, $ip) = @_;
     (my $out = $corefile) =~ s/^(    errors\n)/$1    hosts {\n        $ip registry.local\n        fallthrough\n    }\n/m;
@@ -215,7 +215,12 @@ my $THE_CARD = $CLUSTER_LOCAL . block_for_name('registry.local:53', $CP);
 # The causes both sides name for the k348 cases
 my $SNIPPET     = qr{server block registry\.local:53 \(ConfigMap kube-system/coredns-custom, key registry\.server\)};
 my $NO_COREFILE = qr{ConfigMap kube-system/coredns has no Corefile key};
-my $TWO_HOSTS   = qr/root block runs the hosts plugin more than once/;
+
+# k440: CoreDNS rejects such a Corefile, which is not "nothing resolves" on a
+# running server: its reload plugin keeps serving the previous Corefile, and
+# only a CoreDNS that restarts on it does not start. Both sides say both.
+my $REJECTED    = qr/\Q(a running CoreDNS keeps serving its previous Corefile, a restarted one does not start)\E/;
+my $TWO_HOSTS   = qr/root block runs the hosts plugin more than once.*$REJECTED/;
 
 my @CASES = (
     # [ what, Corefile, verdict, the cause both sides name when it is not closed ]
@@ -294,7 +299,7 @@ my @CASES = (
       { coredns => { NodeHosts => '' }, 'rke2-coredns-rke2-coredns' => { Corefile => with_host($ROOT, $CP) } } ],
 
     # k348: a root block running the hosts plugin twice is a Corefile CoreDNS
-    # refuses. ocp apply removes the block an older ocp added, and only that.
+    # rejects. ocp apply removes the block an older ocp added, and only that.
     [ 'k348: the hosts block an older ocp added, with the record',
       with_added_hosts($ROOT, $CP), 'closed by ocp apply' ],
     [ 'k348: the hosts block an older ocp added, with a stale record',
@@ -334,8 +339,13 @@ for my $case (@CASES) {
         is writer_verdict($w), $verdict, "and say what CoreDNS does: $verdict";
         diag "writer died: $w->{died}" if $w->{died} && $verdict ne 'not closed by ocp apply';
 
+        unlike $w->{died}, qr/CoreDNS refuses/, 'the writer does not say CoreDNS refuses it (k440)';
+        unlike $p->{message} // '', qr/CoreDNS refuses/, 'nor does the probe';
+
         if ($verdict eq 'closed by ocp apply') {
             like $p->{message}, qr/ocp apply restores it/, 'the probe says the run restores it';
+            like $p->{message}, $REJECTED, 'and what CoreDNS does with the Corefile meanwhile (k440)'
+                if $what =~ /hosts block an older ocp added/;
             is probe($w->{written}, %cm), undef, 'and after the write the probe finds nothing';
         }
         elsif ($verdict eq 'not closed by ocp apply') {
