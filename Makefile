@@ -64,14 +64,15 @@ build: | vendor/ORDER
 #   p5-www-hetzner   WWW::Hetzner 0.103
 #   rex-gpu          Rex::GPU 0.006
 #   kubernetes-rest  Kubernetes::REST 1.111
+#   p5-net-async-kubernetes  Net::Async::Kubernetes 0.013
 #   rex-rancher      Rex::Rancher 0.005
 # In install order: File::SOPS needs Crypt::Age, WWW::Hetzner and
-# Kubernetes::REST need MooX::Cmd, Rex::Rancher needs Kubernetes::REST and
-# takes Rex::GPU. An entry falls out on its release day, together with the
-# snapshot moving to that release.
+# Kubernetes::REST need MooX::Cmd, Net::Async::Kubernetes and Rex::Rancher
+# need Kubernetes::REST, Rex::Rancher takes Rex::GPU. An entry falls out on
+# its release day, together with the snapshot moving to that release.
 # CI vendors this same list; a name needs its GitHub home in SIBLING_HOMES
 # below, nothing in ci.yml. One line: t/222 rewrites it to test the CI step.
-VENDOR ?= p5-crypt-age p5-file-sops p5-moox-cmd p5-www-hetzner rex-gpu kubernetes-rest rex-rancher
+VENDOR ?= p5-crypt-age p5-file-sops p5-moox-cmd p5-www-hetzner rex-gpu kubernetes-rest p5-net-async-kubernetes rex-rancher
 
 # SIBLINGS_DIR is where the sibling checkouts live: by default the directory
 # that holds the main checkout, i.e. <dir> when git's common dir is
