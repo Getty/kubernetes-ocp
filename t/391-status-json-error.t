@@ -78,6 +78,10 @@ sub run_status {
 my $refusal = OCP::Secrets->no_kubeconfig_refusal;
 (my $refusal_line = join ' ', map { s/\A\s+//r } split /\n/, $refusal) =~ s/\AERROR: //;
 
+# STDERR: the refusal as OCP.pm's renderer says it, "Error:" in place of its
+# own "ERROR:", the indented lines below as they are (k430).
+(my $said = $refusal) =~ s/\AERROR: /Error: /;
+
 my ($json_rc, $json_out, $json_err);
 
 #### --json: kubeconfig.yaml gone after cluster_exists
@@ -108,7 +112,8 @@ my ($json_rc, $json_out, $json_err);
     unlike $error, qr/\n|\AERROR/, 'error: one line, no ERROR: prefix';
 
     # STDERR: the refusal, as the text form prints it.
-    is $json_err, $refusal, "STDERR: OCP::Secrets' refusal, and only that";
+    is $json_err, $said, "STDERR: OCP::Secrets' refusal under Error:, and only that (k430)";
+    unlike $json_err, qr/ERROR/, 'STDERR: no ERROR: label (k430)';
 }
 
 #### the text form in the same case: the same STDERR and exit
@@ -120,7 +125,7 @@ my ($json_rc, $json_out, $json_err);
     is $raced, 1, 'text form: the same race';
     is $rc, 1, 'text form: exit 1';
     is $rc, $json_rc, 'text form: the exit code of --json';
-    is $err, $refusal, "text form: STDERR is OCP::Secrets' refusal";
+    is $err, $said, "text form: STDERR is OCP::Secrets' refusal under Error: (k430)";
     is $err, $json_err, 'text form: the STDERR of --json';
     like $out, qr/^Cluster exists \(kubeconfig\.yaml found\)$/m, 'text form: STDOUT is the report';
     unlike $out, qr/age\.key|decrypt|ERROR/i, 'text form: neither the error nor its diagnosis on STDOUT';

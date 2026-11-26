@@ -21,6 +21,8 @@ Revision history for OCP
     - `ocp keys add-pin2` puts the PIN2 layer back on an admin key that was
       stored under PIN1 alone (a PIN2 of `0` was once taken for none): same
       key, re-encrypted under age and a new PIN2, so no machine changes.
+    - `ocp status` says every refusal on STDERR under `Error:`, as every
+      other command does, where it said `ERROR:` alone.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

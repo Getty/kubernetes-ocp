@@ -132,7 +132,8 @@ local *OCP::Cmd::Status::rex_prober = sub { undef };
     my $d = decode_json($out);
     like($d->{error}, qr/\AThis project has no kubeconfig\.yaml\b/, 'error field says what is missing');
     unlike($d->{error}, qr/age\.key|decrypt/, 'error field names no key');
-    is($err, OCP::Secrets->no_kubeconfig_refusal, 'diagnosis on STDERR, as the text form');
+    (my $said = OCP::Secrets->no_kubeconfig_refusal) =~ s/\AERROR: /Error: /;
+    is($err, $said, 'diagnosis on STDERR, as the text form, under Error: (k430)');
 }
 
 # API down

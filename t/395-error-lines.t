@@ -178,10 +178,13 @@ subtest '--json error fields: one line, no label, in status, health and node ls'
     is $field{health}, $field{status}, 'health --json: the field status --json has';
     is $field{node},   $field{status}, 'node ls --json: the field status --json has';
 
-    # The labels as each command says the refusal: status prints its text
-    # form's lines, health and node ls stop and OCP.pm's renderer says it.
+    # The labels as each command says the refusal: health and node ls stop
+    # and OCP.pm's renderer says it, and since k430 status says it through
+    # that renderer too: "Error:" in place of OCP::Secrets' own "ERROR:",
+    # its indented lines below as they are.
+    (my $rendered = $refusal) =~ s/\AERROR: /Error: /;
     my $s = run_ocp(project(), gone_on_cluster_api('OCP::Cmd::Status'), 'status', '--json');
-    is $s->{err}, $refusal, "status --json: STDERR is OCP::Secrets' refusal, as the text form prints it";
+    is $s->{err}, $rendered, "status --json: STDERR is OCP::Secrets' refusal under the renderer's Error: (k430)";
     my $h = run_ocp(project(), gone_on_cluster_api('OCP::Cmd::Health'), 'health', '--json');
     like $h->{err}, qr/\AError: This project has no kubeconfig\.yaml/, 'health --json: the renderer\'s Error: label';
     my $n = run_ocp(project(kubeconfig => 0), undef, 'node', 'ls', '--json');

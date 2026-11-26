@@ -96,7 +96,9 @@ sub run_status {
     # STDERR: the error and its diagnosis, nothing else.
     # read_kubeconfig is undef for no kubeconfig.yaml alone (k375): a key it
     # lacks is unlocked or refused inside it (k370).
-    is $err, OCP::Secrets->no_kubeconfig_refusal,
+    # Under the renderer's Error: label, as every command says it (k430).
+    (my $said = OCP::Secrets->no_kubeconfig_refusal) =~ s/\AERROR: /Error: /;
+    is $err, $said,
         'STDERR: the error with its diagnosis, and only that';
 }
 
@@ -119,7 +121,7 @@ sub run_status {
         'STDOUT: neither the error nor its cause';
 
     # STDERR: the error and the API's answer, in one line (k399).
-    is $err, "ERROR: connection refused\n",
+    is $err, "Error: connection refused\n",
         'STDERR: the error with its cause, and only that';
 }
 

@@ -452,7 +452,7 @@ subtest 'ocp status, the API does not answer: one line naming the server' => sub
     my ($st, $o, $e) = run_ocp(project(), 'status');
     is $st & 127, 0, 'no signal (alarm)';
     is $st >> 8, 1, 'exit 1';
-    like $e, qr{\AERROR: $unreachable\n\z}, 'STDERR: exactly the one line';
+    like $e, qr{\AError: $unreachable\n\z}, 'STDERR: exactly the one line';
     like $e, qr/\Q$server\E/, 'the server of the kubeconfig';
     unlike "$o$e", qr/ at \S+ line \d+/, 'no Perl location';
     like $o, qr/\nKubeconfig available\. Export with: ocp kubeconfig -e\n\z/,
@@ -467,7 +467,7 @@ subtest 'ocp status --json, the API does not answer: the line as its error' => s
     my $j = eval { JSON::MaybeXS->new->decode($o) };
     ok $j, 'STDOUT: one JSON document' or diag $o;
     like $j->{error} // '', qr{\A$unreachable\z}, 'its error: the line naming the server';
-    like $e, qr{\AERROR: $unreachable\n\z}, 'STDERR: exactly the one line';
+    like $e, qr{\AError: $unreachable\n\z}, 'STDERR: exactly the one line';
     unlike "$o$e", qr/ at \S+ line \d+/, 'no Perl location';
 };
 
@@ -477,7 +477,7 @@ subtest 'ocp status, a kubeconfig no client is built from: one line, no location
         ->save_kubeconfig("apiVersion: v1\nkind: Config\n");
     my ($st, $o, $e) = run_ocp($bad, 'status');
     is $st >> 8, 1, 'exit 1';
-    like $e, qr{\AERROR: [^\n]+\n\z}, 'STDERR: one ERROR: line';
+    like $e, qr{\AError: [^\n]+\n\z}, 'STDERR: one Error: line (k430)';
     unlike $e, qr/Cannot connect|could not be reached/, 'not called a connection failure';
     unlike "$o$e", qr/ at \S+ line \d+|internal error/i, 'no Perl location, no internal error';
 };

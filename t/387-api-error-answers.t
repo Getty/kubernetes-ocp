@@ -187,7 +187,7 @@ sub json_of {
 # Each command: its argv, the resource it asks for first, the label its
 # STDERR line carries, and what is left on STDOUT.
 my @commands = (
-    [ ['status'], 'nodes', 'ERROR', sub {
+    [ ['status'], 'nodes', 'Error', sub {
           my ($o, $line) = @_;
           like $o, qr/^Cluster: k387$/m,             'STDOUT: the spec summary';
           like $o, qr/^Control Planes: 1 \(ssh\)$/m, 'STDOUT: the control planes from ocp.yaml';
@@ -197,7 +197,7 @@ my @commands = (
               'STDOUT: the kubeconfig hint closes the report';
           unlike $o, qr/cluster API|ERROR/, 'STDOUT: not the error';
       } ],
-    [ ['status', '--json'], 'nodes', 'ERROR', sub {
+    [ ['status', '--json'], 'nodes', 'Error', sub {
           my ($o, $line) = @_;
           my $doc = json_of($o);
           is $doc->{cluster}, 'k387', 'JSON: the cluster from ocp.yaml';

@@ -136,12 +136,12 @@ sub execute {
     my ($api, $why) = $self->cluster_api(optional => 1);
     unless ($api) {
         unless (defined $why) {
-            print STDERR OCP::Secrets->no_kubeconfig_refusal;
+            $self->_say_error(OCP::Secrets->no_kubeconfig_refusal);
             return 1;
         }
         # A client that cannot be built, or an API that does not answer: one
         # line, naming the server when there is one (k384, k395).
-        print STDERR "ERROR: $why\n";
+        $self->_say_error($why);
         print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
@@ -155,7 +155,7 @@ sub execute {
     if (!$nodes || $@) {
         my $error = $@ || 'Unknown Kubernetes API error';
         my $line  = $self->cluster_api_error($k8s, $error) // OCP::ErrorLine::one_line($error);
-        print STDERR "ERROR: $line\n";
+        $self->_say_error($line);
         print "\nKubeconfig available. Export with: ocp kubeconfig -e\n";
         return 1;
     }
@@ -288,11 +288,11 @@ sub _collect_json {
         unless (defined $why) {
             my $refusal = OCP::Secrets->no_kubeconfig_refusal;
             $out->{error} = OCP::ErrorLine::json_error($refusal);
-            print STDERR $refusal;
+            $self->_say_error($refusal);
             return 1;
         }
         $out->{error} = OCP::ErrorLine::json_error($why);
-        print STDERR "ERROR: $out->{error}\n";
+        $self->_say_error($out->{error});
         return 1;
     }
 
@@ -302,7 +302,7 @@ sub _collect_json {
         my $error = $@ || 'Unknown Kubernetes API error';
         $out->{error} = OCP::ErrorLine::json_error(
             $self->cluster_api_error($k8s, $error) // $error);
-        print STDERR "ERROR: $out->{error}\n";
+        $self->_say_error($out->{error});
         return 1;
     }
 
@@ -346,6 +346,18 @@ sub _collect_json {
     }
 
     return 0;
+}
+
+# k430: a refusal on STDERR says it as every other command does, through the
+# one renderer in OCP.pm (ADR 0031): "Error:" and the message, a label the
+# message brings of its own (OCP::Secrets' "ERROR:") taken off first. It
+# said "ERROR:" here alone. Never --verbose's raw form: these are lines
+# already, and raw would print them without the label.
+sub _say_error {
+    my ($self, $msg) = @_;
+    $msg .= "\n" unless $msg =~ /\n\z/;
+    OCP::_report_error($msg, 0, 0);
+    return;
 }
 
 # gpu.toolkit and gpu.amd.integrated, { toolkit, amd_integrated } as 0/1, for
@@ -791,10 +803,13 @@ message on STDERR, the exit code 1, and the report on STDOUT ends at the line
 C<Cluster exists (kubeconfig.yaml found)>.  An API server that does not answer, or answers with an
 error status, is one line naming the server from the kubeconfig, what became
 of the request and why (L<OCP::Role::Cmd/cluster_api>); a kubeconfig no
-client can be built from is one C<ERROR:> line too:
+client can be built from is one C<Error:> line too:
 
-    ERROR: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
-    ERROR: The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)
+    Error: The cluster API at https://10.0.0.1:6443 could not be reached: Can't connect to 10.0.0.1:6443 (Connection refused)
+    Error: The cluster API at https://10.0.0.1:6443 refused the credentials in the kubeconfig (401 Unauthorized)
+
+The label is C<Error:>, as every other command says a refusal on STDERR
+(L<OCP>'s error renderer); earlier builds said C<ERROR:> here alone.
 
 Earlier builds printed the client's error as it came, Perl source locations
 included, under C<WARNING: Cannot connect to cluster API>.
@@ -880,14 +895,14 @@ pretty-printed, no timestamps or ages) on STDOUT; diagnostics go to STDERR.
 Two runs against an unchanged cluster print identical bytes, so a script can
 compare them.  The exit code is that of the text form: 1 when the API cannot
 be reached or drift detection dies (the object then carries an C<error>
-string -- the message as one line, without an C<ERROR:> label -- and whatever
+string -- the message as one line, without an C<Error:> label -- and whatever
 could be collected), else 0.
 
 A kubeconfig that cannot be decrypted is the exception: the key problem dies
 in L<OCP::Role::Cmd/cluster_api> before the object is built, so there is no
 report to carry an C<error>.  The error renderer of L<OCP> prints one JSON
 object holding only the C<error> string (the message as one line, without an
-C<ERROR:> label) on STDOUT, the message on STDERR, and the exit code is 1.
+C<Error:> label) on STDOUT, the message on STDERR, and the exit code is 1.
 
     {
        "cluster" : "mycluster",

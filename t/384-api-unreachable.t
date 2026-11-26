@@ -194,7 +194,7 @@ sub json_of {
 my @commands = (
     [ ['status'], sub {
           my ($o, $e) = @_;
-          like $e, qr/\AERROR: $unreachable\n\z/, 'STDERR: the API and why, one line, nothing else';
+          like $e, qr/\AError: $unreachable\n\z/, 'STDERR: the API and why, one line, nothing else';
           like $o, qr/^Cluster: k384$/m,         'STDOUT: the spec summary';
           like $o, qr/^=== Spec ===$/m,          'STDOUT: the spec section';
           like $o, qr/^Control Planes: 1 \(ssh\)$/m, 'STDOUT: the control planes from ocp.yaml';
@@ -207,7 +207,7 @@ my @commands = (
       } ],
     [ ['status', '--json'], sub {
           my ($o, $e) = @_;
-          like $e, qr/\AERROR: $unreachable\n\z/, 'STDERR: the API and why, one line, nothing else';
+          like $e, qr/\AError: $unreachable\n\z/, 'STDERR: the API and why, one line, nothing else';
           my $doc = json_of($o);
           is $doc->{cluster}, 'k384', 'JSON: the cluster from ocp.yaml';
           is $doc->{spec}{control_planes}{provider}, 'ssh', 'JSON: the spec from ocp.yaml';
@@ -291,7 +291,7 @@ for my $c (@commands) {
         ($st, $o, $e) = run_ocp($bad, 'status');
         is $st & 127, 0, 'no signal (alarm)';
         is $st >> 8, 1, 'exit 1';
-        like $e, qr/\AERROR: [^\n]*(?i:kubeconfig)[^\n]*\n\z/,
+        like $e, qr/\AError: [^\n]*(?i:kubeconfig)[^\n]*\n\z/,
             'STDERR: the build error, one line (k399)';
         unlike $e, qr/could not be reached|internal error/, 'not called unreachable, not internal';
         like $o, qr/\nKubeconfig available\. Export with: ocp kubeconfig -e\n\z/,
