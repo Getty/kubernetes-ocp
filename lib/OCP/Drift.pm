@@ -1602,7 +1602,7 @@ sub gateway_mode_drift {
     }
     my $live   = _dig($cm, qw(data gateway-api-hostnetwork-enabled)) // '';
     my $actual = lc($live) eq 'true' ? 'host_network' : 'load_balancer';
-    return if $actual eq $expected;
+    return $self->_gateway_selector_drift($cm) if $actual eq $expected;
 
     return {
         kind        => 'spec',
@@ -1618,6 +1618,40 @@ sub gateway_mode_drift {
     };
 }
 
+# The node selector of host_network (k460), from the same cilium-config read.
+# The Cilium 1.20 chart renders gatewayAPI.hostNetwork.nodes.matchLabels into
+# gateway-api-hostnetwork-nodelabelselector with its mapToString helper:
+# key=value pairs, keys sorted (a Go template range over a map), joined with
+# ",". Expected is that string of what Config->cilium_helm_values renders;
+# the live string is compared as a set of pairs, its order and blanks aside.
+# Under load_balancer OCP renders no selector and Cilium reads none.
+sub _gateway_selector_drift {
+    my ($self, $cm) = @_;
+
+    my $config = $self->config;
+    return unless $config->gateway_host_network;
+    my $labels = _dig($config->cilium_helm_values,
+        qw(gatewayAPI hostNetwork nodes matchLabels)) // {};
+    my @pairs    = map { $_ . '=' . $labels->{$_} } sort keys %$labels;
+    my $expected = join ',', @pairs;
+    my $actual   = _dig($cm, qw(data gateway-api-hostnetwork-nodelabelselector)) // '';
+    my @live     = grep { length } map { s/^\s+|\s+$//gr } split /,/, $actual;
+    return if join(',', sort @live) eq join(',', sort @pairs);
+
+    return {
+        kind        => 'spec',
+        component   => 'cilium_gateway',
+        label       => 'Gateway node selector',
+        expected    => $expected,
+        actual      => $actual,
+        message     => "Gateway node selector: Cilium runs the host-network Gateway on nodes '$actual',"
+                     . " ocp.yaml expects '$expected' (gateway.node_selector); ocp apply does not"
+                     . ' re-run the Cilium Helm release',
+        manual_step => 'Switch the running Cilium: ocp update --component cilium --force',
+        remedy      => undef,
+    };
+}
+
 =method gateway_mode_drift
 
 Compares Cilium's Gateway host-network mode, C<gateway-api-hostnetwork-enabled>
@@ -1626,6 +1660,14 @@ in the C<cilium-config> ConfigMap, with C<gateway.mode> of F<ocp.yaml>
 C<component =E<gt> 'cilium_gateway'>, with no remedy and the C<manual_step>
 C<ocp update --component cilium --force>: the mode is a Cilium Helm value, and
 C<ocp apply> re-runs the Helm release only for a version upgrade.
+
+Under C<host_network> on both sides it also compares
+C<gateway-api-hostnetwork-nodelabelselector> with C<gateway.node_selector>, as
+L<OCP::Config/cilium_helm_values> renders it and the Cilium chart writes it
+(C<key=value> pairs, keys sorted, joined with C<,>; the live pairs are compared
+in any order). A difference is a C<spec> entry labelled
+C<Gateway node selector> with the same manual step. A mode difference is the
+one entry; the selector is not compared then.
 
 No C<cilium-config> (a 404) is nothing to compare; a ConfigMap without the key
 reads as C<load_balancer>. Any other failed read is one C<kind =E<gt> 'error'>

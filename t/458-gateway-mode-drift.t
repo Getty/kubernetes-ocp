@@ -68,7 +68,9 @@ sub mode_drift {
 subtest 'the mode matches: no drift' => sub {
     is_deeply [ mode_drift($local, { 'gateway-api-hostnetwork-enabled' => 'false' }) ], [],
         'load_balancer, Cilium not in host-network mode';
-    is_deeply [ mode_drift($HOST, { 'gateway-api-hostnetwork-enabled' => 'true' }) ], [],
+    # The chart renders the node selector next to the flag; k460 compares it.
+    is_deeply [ mode_drift($HOST, { 'gateway-api-hostnetwork-enabled' => 'true',
+        'gateway-api-hostnetwork-nodelabelselector' => 'ocp.io/gateway=true' }) ], [],
         'host_network, Cilium in host-network mode';
     is_deeply [ mode_drift($local, { 'cluster-pool-ipv4-cidr' => '10.42.0.0/16' }) ], [],
         'load_balancer, the key absent (a Cilium that renders none): not host-network';
