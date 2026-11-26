@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-11-26T09:59:31Z
+claimed_by: ocp-k413
+class: standard
+completed: 2026-11-26T09:59:31Z
+created: 2026-11-06T20:21:14Z
+id: 413
+priority: low
+started: 2026-11-26T08:43:56Z
+status: done
+tags:
+- drift
+- gpu
+- status
+title: 'GPU Operator CRD probe: self_healing where setup_gpu_operator skips the cluster'
+updated: 2026-11-26T09:59:31Z
+---
+
+Found under k313 (2026-11-06). The GPU Operator CRD probe in OCP::Drift is self_healing, but setup_gpu_operator only re-applies those CRDs where the GPU step runs (gpu.enabled and a node NFD labelled NVIDIA). On a cluster the step skips, ocp status counts that drift as reconcilable and the dry run as an action, while a real ocp apply leaves it. k313 gave the GPU Operator image probe a step_skips (_gpu_operator_step_skips); the CRD probe needs the same. t/312 hands in ready-made entries and is not touched by it.
+
+Also from k313, same area: (1) one refused Node list counts twice in the dry run under "could not be checked" -- once from the detector (step_skips error entry), once from gpu_dry_run; the real run fails once, at the GPU step. (2) gpu_dry_run returns before its node read when the operator is not running, so the dry run does not foretell a refused Node list the real step would hit first. (3) gpu_dry_run prints its own "would re-apply the manifest" line for ClusterPolicy differences next to Workloads::reapplies; both follow the same gate now, but they are two copies.
+
+Done = the CRD probe follows the step as the image probe does; the dry run counts a refused Node list once and as the real run meets it.
+
+2026-11-26 08:53 Item (3) left as is: gpu_dry_run still prints its own 'would re-apply the GPU Operator manifest' for ClusterPolicy differences beside Workloads::reapplies. Both gates now read OCP::Drift->nvidia_gpu_nodes after gpu.enabled, but making gpu_dry_run call gpu_operator_step_skips would cost a second Node list (it needs the node objects for the toolkit warning). Also found: under gpu.enabled with an NVIDIA node and NO operator running, the real GPU step deploys the operator, but the dry run names nothing for it (optional probe, gpu_dry_run returns) -- a missing 'would deploy' line, for the dispatcher to file if wanted.
+
+2026-11-26 08:53 Done (uncommitted, worktree). OCP::Drift: gpu_crd_drift asks the GPU step's check (_step_skips with step_skips gpu_operator_step_skips, renamed public from _gpu_operator_step_skips, POD added): where the step skips, a differing CRD is report only with manual_step, no 'ocp apply re-applies it'; a refused Node list makes it an error entry. _step_skips answers once per detector (lazy _step_answers), carps once, and its error entries carry step => method. OCP::Cmd::Apply::Drift: gpu_dry_run lists the NVIDIA nodes first (before the operator Deployment), as setup_gpu_operator does, its error entry carrying the same step; dry_run_report counts error entries sharing a step once (actions still subtract every error entry). Tests: t/313 +4 subtests (CRD skip x2, control, refused list with image+CRD off counted once, refused list with no operator running) and its refused-list claim corrected (dry run unknown stays 1, was +1); t/228 fake gets gpu.enabled + an NVIDIA node. Red without the fix: 5 subtests of t/313 fail. Green: make test TAG=gpu on t/313 t/228 t/268 t/291 t/312 t/233 t/351 t/39 t/182 t/25 t/202-203 t/228-gpu-toolkit-switch t/381 (328 tests). Full suite not run (parallel agents).
+
+2026-11-26 09:40 t/38 red after integration (subtests 14, 58), cause confirmed: its DryRunApi has no node NFD labelled NVIDIA and answers 200 {} to every raw GET. (14) The GPU Operator CRDs read as {} differ from the shipped ones; before k413 that was a silent self_healing action, now correctly report only on a cluster without an NVIDIA node, so 'report only' counted 3, not the pod CIDR's 1. Claim kept (pod CIDR counted apart, alone): the subtest now has the GPU CRD paths answer 404, as it already pins CoreDNS. (58) k413 reads the NVIDIA nodes first, as setup_gpu_operator does; without one the step skips before the Deployment read, so the refused read was never reached. Claim kept, scoped to where the step reads it: the subtest's fake now has an NVIDIA-labelled node (option nvidia). Fake gained options absent (404 paths) and nvidia. No lib/ change. Green: make test TAG=gpu on t/38 t/313 t/228 t/25 t/268 t/312 (294 tests). Edited in the worktree fast-forwarded to main 2ac4710 (isolation blocks git in the main checkout); only t/38-reconcile-path.t changed.
+
+Committed 1f60ac0, e8a623a (t/38); binding suite green on main ce487f1 (340 files, 4789 tests)
