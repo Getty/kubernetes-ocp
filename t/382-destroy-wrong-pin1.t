@@ -237,7 +237,10 @@ subtest 'a foreign key in .ocp/: said, no PIN1 asked, and destroy stops' => sub 
     $clone->child('.ocp')->mkpath;
     $other->child('.ocp/age.key')->copy($clone->child('.ocp/age.key'));
     my $r = run_destroy($clone, '');
-    stopped_ok('foreign .ocp/age.key', $r, qr/^Error: This age key does not belong to this project\.$/m);
+    # A key found in .ocp/ is refused as a stale cache since k428, with the
+    # advice for one; still OCP::Secrets' refusal, as a user error.
+    stopped_ok('foreign .ocp/age.key', $r,
+        qr/^Error: The cached \.ocp\/age\.key does not belong to this project\.$/m);
     unlike $r->{err}, qr/\Q$PROMPT\E/, 'no PIN1 asked: the key is there already';
 };
 

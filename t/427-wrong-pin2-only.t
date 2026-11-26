@@ -146,8 +146,9 @@ subtest 'require_admin_approval: a foreign age key is not a wrong PIN2' => sub {
     my $r = with_pin($PIN2, sub { $apply->require_admin_approval(config_of($dir), 'Gate k427') });
     isnt $r->{died}, '', 'refused';
     unlike $r->{died}, qr/PIN2/, 'not blamed on the right PIN2';
-    # The SOPS read's own words: the age key, not the PIN2.
-    like $r->{died}, qr/Could not decrypt data key/,
+    # The SOPS read's own words, or OCP::Secrets' refusal of the key before
+    # it (k428): either way the age key, not the PIN2.
+    like $r->{died}, qr/Could not decrypt data key|does not belong to this project/,
         'but on what failed';
 };
 

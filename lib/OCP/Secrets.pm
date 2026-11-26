@@ -188,6 +188,7 @@ sub _read_identities {
         die $self->_no_age_key_refusal($file) unless $self->has_age_key_enc;
         $self->ensure_age_key;
     }
+    $self->check_cached_age_key;    # k428
     return $self->identities;
 }
 
@@ -526,6 +527,49 @@ sub check_local_age_key {
         if $self->sops_age_key_file;
     return 0 unless $self->has_age_key;
     return $self->_assert_key_matches_project($self->age_key_file->slurp);
+}
+
+# Is the cached .ocp/age.key -- when it is the key this run reads -- one the
+# project's files are encrypted to (k428)? Every reader trusted a key that
+# was there: one left from another project, or from before a re-key, went on
+# to the first SOPS read and died "Could not decrypt data key with any of the
+# provided identities at lib/OCP/Keys.pm line N." -- an internal error, from
+# OCP::Keys, which asks nothing of the key before reading keys.yaml. Checked
+# where the cache is taken as the key (_unlock_age_key, _read_identities) and
+# by OCP::Keys before keys.yaml is read.
+#
+# Not check_local_age_key's refusal: that one serves `ocp init`, which wraps
+# it in its own advice. This one says what fits a cache: with age.key.enc it
+# is a copy, moved aside and unlocked anew with PIN1; without one (dev mode)
+# it may be the only copy of some key, so it is never offered for removal.
+# Returns 1 when it fits or is not what this run reads; dies otherwise.
+sub check_cached_age_key {
+    my ($self) = @_;
+
+    return 1 if $self->sops_age_key_file || defined $self->age_key;
+    return 1 unless $self->has_age_key;
+
+    my $bound = $self->age_key_bindings;
+    return 1 unless @$bound;
+
+    my $public = eval { $self->_recipient_of_key($self->age_key_file->slurp) };
+    return 1 if defined $public && grep { $_->{recipient} eq $public } @$bound;
+
+    die "ERROR: The cached .ocp/age.key does not belong to this project.\n"
+      . (defined $public ? "  The key opens:   $public\n" : "  It holds no valid age key.\n")
+      . join('', map { sprintf "  %-16s %s\n", "$_->{file} needs:", $_->{recipient} } @$bound)
+      . "Nothing was done.\n\n"
+      . ($self->has_age_key_enc
+          ? ".ocp/ is a local cache (gitignored); the project key itself is in\n"
+          . "age.key.enc. Move the stale cache aside and run the command again --\n"
+          . "PIN1 then unlocks the project key from age.key.enc:\n"
+          . "  mv .ocp/age.key .ocp/age.key.stale\n"
+          . "  mv .ocp/age.pub .ocp/age.pub.stale\n"
+          : "This project has no age.key.enc, so .ocp/age.key may be the only copy\n"
+          . "of the key it holds: keep a copy of it. Then put the project's key in\n"
+          . "its place -- a dev-mode project (ocp init --nopassword) has it only on\n"
+          . "the machine that set it up -- or point SOPS_AGE_KEY_FILE at an identity\n"
+          . "the files above are encrypted to.\n");
 }
 
 # Rebuild .ocp/age.pub from .ocp/age.key when it is missing. Every encrypt
@@ -942,8 +986,9 @@ sub _unlock_age_key {
     # The project key in hand (k349): unlocked already, nothing to ask.
     return 1 if defined $self->age_key;
 
-    # If .ocp/age.key exists, we're good
+    # .ocp/age.key exists: the cache, if it is the project's (k428).
     if ($self->has_age_key) {
+        $self->check_cached_age_key;
         $self->restore_age_recipient if $opt{cache};
         return 1;
     }
@@ -1464,6 +1509,19 @@ timestamp, in C<sops_file_names> order: the files
 L</repair_sops_lastmodified> rewrites. Read off the text alone -- it
 needs no key, decrypts nothing and writes nothing -- so
 C<ocp apply --dry-run> can name them.
+
+=head2 check_cached_age_key
+
+    $secrets->check_cached_age_key;
+
+When this run reads the cached F<.ocp/age.key> (no C<SOPS_AGE_KEY_FILE>, no
+L</age_key> in hand), dies unless the project's SOPS files are encrypted to
+it: a user error naming the recipient the key opens and the one each file
+needs, with the way out that fits -- moving the cache aside for PIN1 to
+unlock F<age.key.enc> anew, or, without F<age.key.enc>, keeping it and
+putting the project's key in its place. Returns 1 otherwise, also when
+nothing is encrypted yet. L</ensure_age_key>, L</unlock_age_key>, every
+decrypting read and L<OCP::Keys> check it before the first SOPS read.
 
 =head2 restore_age_recipient
 

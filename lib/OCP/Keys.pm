@@ -760,6 +760,9 @@ sub _read_keys_file_encrypted {
 
     return {} unless -f $self->keys_file;
 
+    # A cached .ocp/age.key that is not the project's is refused as such,
+    # not left to die in the SOPS read below (k428).
+    $self->_secrets->check_cached_age_key;
     my @identities = $self->_secrets->identities;
 
     my $encrypted = $self->keys_file->slurp;

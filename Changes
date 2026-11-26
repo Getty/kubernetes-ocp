@@ -1,6 +1,11 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - A cached `.ocp/age.key` that does not belong to the project is refused
+      up front, naming the recipient it opens and the one each file needs,
+      with the way out (move the cache aside for PIN1 to unlock
+      `age.key.enc` anew), instead of dying at the first SOPS read as an
+      internal error.
     - `OCP::Keys::update_key` layers a new private half by the key's purpose
       (age only for an automation key, age + PIN2 otherwise) and croaks
       without a PIN2 where one is needed; the `add_key` POD names `pin2` as
