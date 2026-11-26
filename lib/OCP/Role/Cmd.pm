@@ -277,8 +277,7 @@ sub provider_crs {
     unless ($list) {
         my $err = $@;
         my $why = 'Could not read the OCPNodeProviders from the cluster API: '
-                . (OCP::ErrorLine::user_line($err)
-                   // OCP::ErrorLine::one_line($err, empty => 'no answer'));
+                . OCP::ErrorLine::cause_line($err, empty => 'no answer');
         die 'ERROR: '.$why."\n" unless $opt{unread};
         ${ $opt{unread} } = $why;
         return;
@@ -434,7 +433,7 @@ sub cluster_api {
 
     my $err = $@;
     delete @{$self}{qw( _cluster_api _cluster_kubernetes )};
-    my $why = OCP::ErrorLine::user_line($err) // OCP::ErrorLine::one_line($err);
+    my $why = OCP::ErrorLine::cause_line($err);
     $why =~ s/\AERROR:\s*//;
     return wantarray ? (undef, $why) : undef;
 }

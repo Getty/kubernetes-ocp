@@ -949,8 +949,11 @@ sub robocop_dry_run {
         $self->_robocop_credentials_state($api, $config, $secrets, $level,
             host => $cp_ip, read_only => 1);
     };
+    # Each cause in one line (k464): what dies here is not only
+    # read_or_absent's line -- the age key, the robo key -- and a croak
+    # carries its source location, an API error its raw body.
     if (my $err = $@) {
-        chomp(my $cause = $err);
+        my $cause = OCP::ErrorLine::cause_line($err);
         print "  [robocop] Secret/robocop-credentials could not be checked\n";
         print STDERR "  [!!] Secret/robocop-credentials not checked: $cause\n";
         push @found, { kind => 'error', label => 'Secret/robocop-credentials', cause => $cause,
@@ -970,7 +973,7 @@ sub robocop_dry_run {
     my $deployment = eval { OCP::Cmd::Apply::K8s::read_or_absent('Deployment ocp-system/robocop',
         sub { $api->get('Deployment', 'robocop', namespace => 'ocp-system') }) };
     if (my $err = $@) {
-        chomp(my $cause = $err);
+        my $cause = OCP::ErrorLine::cause_line($err);
         print "  [robocop] Deployment/robocop could not be checked\n";
         print STDERR "  [!!] Deployment/robocop not checked: $cause\n";
         push @found, { kind => 'error', label => 'Deployment/robocop', cause => $cause,

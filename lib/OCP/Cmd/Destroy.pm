@@ -906,7 +906,7 @@ sub _stop_robocop {
     my $err = $@ // q();
     return if $err =~ /\b404\b/;
     # One line, as every API error is said (k396).
-    my $why = OCP::ErrorLine::user_line($err) // OCP::ErrorLine::one_line($err);
+    my $why = OCP::ErrorLine::cause_line($err);
     print STDERR "  Warning: could not stop robocop ($why);"
                . " it may re-provision a worker.\n";
     return;

@@ -473,10 +473,12 @@ sub node_hash_not_ready_why {
 # A Ready write drops a message an earlier write left (a merge patch: null
 # deletes it).
 #
-# Ownership: robocop only ever reconciles workers, and on a CLI-only cluster it
-# is not running at all — so nobody but `ocp apply` can report the state of the
-# control plane it just bootstrapped. Hence status is written here, stamped
-# reconciler=cli, and stays observational: no reconcile loop reads it back.
+# Ownership: police1 is bootstrapped imperatively, never by a reconciler, and
+# on a CLI-only cluster robocop is not running at all — so `ocp apply` writes
+# the first status of this CR, stamped reconciler=cli. It is not left alone
+# after that: where robocop runs, its resync and watch re-read a Joining or
+# Ready control-plane OCPNode and mirror the Node's Ready state into it (the
+# paragraph above).
 #
 # Spec and status are two writes on purpose. The CRD enables the status
 # subresource, so the API server drops status from the ensure (see
@@ -516,11 +518,12 @@ sub ensure_cp_ocpnode {
     # STDERR (k330) -- the configured host is no answer to "could not look".
     # Each [WARN] of this sub is counted in {_apply_warnings}: the banner
     # reads WITH WARNINGS, the exit code stays 0 (k367). Each says its cause
-    # in one line, without a Perl source location (OCP::ErrorLine, k363).
+    # in one line, without a Perl source location (OCP::ErrorLine, k363);
+    # an API error as the line naming the server (cause_line, k464).
     my ($ip, $not_ready);
     my $node = eval { k8s_node($self, $api, $name) };
     if (my $err = $@) {
-        my $line = OCP::ErrorLine::one_line($err);
+        my $line = OCP::ErrorLine::cause_line($err);
         print STDERR "  [WARN] OCPNode/$name keeps the address it has: $line\n";
         push @{ $self->{_apply_warnings} }, "OCPNode/$name address" if ref $self;
         $not_ready = "its Node could not be read: $line";
@@ -553,7 +556,7 @@ sub ensure_cp_ocpnode {
         print "  [ok] ensured OCPNode/$name (control-plane, $phase)\n";
     } else {
         print STDERR "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: "
-            .OCP::ErrorLine::one_line($@)."\n";
+            .OCP::ErrorLine::cause_line($@)."\n";
         push @{ $self->{_apply_warnings} }, "OCPNode/$name status" if ref $self;
     }
 }

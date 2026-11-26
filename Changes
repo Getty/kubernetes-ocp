@@ -20,6 +20,11 @@ Revision history for OCP
       Corefile's own): CoreDNS rejects such a Corefile. The message names the
       key and both blocks, and says a running CoreDNS keeps serving its
       previous Corefile while a restarted one does not start.
+    - A refused write of the control plane's OCPNode status is said as the
+      line naming the server ("The cluster API denied the request (403
+      Forbidden)"), not as the raw Status JSON; the robocop checks of
+      `ocp apply --dry-run` say a failed read in one line without a Perl
+      source location.
     - `ocp status` reports a changed `gateway.node_selector` as drift under
       `gateway.mode: host_network`, with the same manual step as a changed
       gateway mode (`ocp update --component cilium --force`).
