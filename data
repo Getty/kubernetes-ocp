@@ -1,0 +1,31 @@
+---
+class: standard
+completed: 2026-11-26T06:17:58Z
+created: 2026-11-06T21:09:24Z
+id: 415
+priority: low
+started: 2026-11-08T01:07:44Z
+status: done
+tags:
+- output
+- apply
+title: 'Apply lane: [WARN] lines still on STDOUT against the output-channel rule'
+updated: 2026-11-26T06:17:58Z
+---
+
+Found under k368 (2026-11-06, ocp-apply-worker, not fixed). The output-channel rule (.claude/rules/ocp-rules.md) puts everything that went wrong on STDERR; these [WARN]s still print on STDOUT:
+- lib/OCP/Cmd/Apply/Health.pm:357 "could not verify cluster health" -- a plain failure, the strongest candidate.
+- Health.pm:288 the per-pod "[WARN] ns/name -- reason" lines.
+- lib/OCP/Cmd/Apply.pm:103 and Health.pm:364 the robocop arch warning (robocop_arch_warning).
+- lib/OCP/Cmd/DeployImage.pm:295 ad-hoc override.
+- Unchecked: lib/OCP/Cmd/Apply/Workloads.pm:829 toolkit_switch_warning, and the "[WARN] host probes skipped" line Apply/Drift.pm:78 POD names.
+
+Also from k368: warn_unlisted_failed_ocpnodes (CR.pm) is never counted in {_apply_warnings} (its caller Apply/Drift.pm:616 drops the return), so a Failed OCPNode not in ocp.yaml leaves the banner without WITH WARNINGS. Whether it should count is a maintainer question (recommendation: count it).
+
+Each is either moved to STDERR with its test, or named as a deliberate exception on this card (the rule asks for exceptions in a ticket). Some may need a decision (the arch warning is a narrative line by design?).
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): (1) every [WARN] line listed on this card goes to STDERR, the robocop arch warning included, each with its test; no exceptions. (2) warn_unlisted_failed_ocpnodes counts in {_apply_warnings}: a Failed OCPNode not in ocp.yaml makes the banner WITH WARNINGS. Build after the release.
+
+2026-11-26 05:32 Done (uncommitted, ocp-apply-worker): every listed [WARN] now on STDERR -- Health.pm could-not-verify-health, per-pod [WARN], robocop arch warning at both places (Apply.pm start of run, Health::finish), DeployImage ad-hoc override, host-probes-skipped line (Apply/Drift.pm, both prints). toolkit_switch_warning was already STDERR at both call sites (Workloads.pm, Drift.pm gpu_dry_run): nothing to do. warn_unlisted_failed_ocpnodes now pushes 'OCPNode NAME' into {_apply_warnings} (banner WITH WARNINGS, exit unchanged). Found and fixed on the way: Health::finish called robocop_arch_warning($self,$api), which read $self->config -- OCP::Cmd::Apply has no config method, so the eval swallowed the error and the runtime arch warning never printed; finish now passes its $config (optional 3rd arg, old 2-arg interface kept for t/197). Tests: new t/415-warn-on-stderr.t; updated t/231, t/37, t/38, t/54, t/374, t/381. Red against HEAD lib (every new assertion fails), green with the fix: make test on those + t/197-health, t/325, t/445 -> PASS. Not in scope, left: Apply/Network.pm:437 'WARNING: Only loopback IP available' still on STDOUT (not on this card).
