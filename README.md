@@ -437,6 +437,18 @@ ocp keys authorized-keys | ssh root@yourworker 'cat >> ~/.ssh/authorized_keys'
 ocp keys authorized-keys --purpose admin | ssh root@yourserver 'cat >> ~/.ssh/authorized_keys'
 ```
 
+**Put the PIN2 layer back on an admin key that was stored without it.** Before
+the fix for a PIN2 of `"0"`, `ocp init` and `ocp keys secure` stored the admin
+key under PIN1 alone. `ocp keys add-pin2` finds every such key, asks a new PIN2
+twice and re-encrypts the same key under both layers, so no machine needs
+anything. When every admin key has its PIN2 layer it says so and changes
+nothing; without a terminal (or `--pins-stdin`) it refuses and writes nothing.
+Commit `keys.yaml` afterwards:
+
+```bash
+ocp keys add-pin2
+```
+
 **Let another machine run `ocp apply` unattended** (a Leitstand) — it brings
 its own age identity and SSH key, and only the public halves enter the project:
 

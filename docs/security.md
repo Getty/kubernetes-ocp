@@ -51,6 +51,7 @@ Which commands prompt for what:
 | `ocp destroy` | PIN2 when an `ssh`/`local` node is involved |
 | `ocp deploy-robocop` | PIN1 (credentials come out of the encrypted files) |
 | `ocp keys secure` | sets PIN1 and PIN2 (each twice); PIN2 once when it continues, or for `--drop-bootstrap` on a secure project |
+| `ocp keys add-pin2` | PIN1 if `age.key` is not already unlocked, then a new PIN2 (twice); nothing when every admin key already has its PIN2 layer |
 | `ocp keys operator add` / `rm` | PIN1, and PIN2 when there are machines to reach |
 | anything, as an operator (`SOPS_AGE_KEY_FILE` + `OCP_OPERATOR_KEY`) | nothing — see below |
 
@@ -266,6 +267,12 @@ Stated plainly, because there is no support channel that can undo it:
 - **Lost PIN2** — the admin key is gone, and with it SSH access to every
   machine in the cluster. No recovery inside OCP either; out-of-band console
   access (Hetzner's web console, a KVM) is the only way back onto the machines.
+- **A PIN2 that was never set** — a project made before the fix for a PIN2 of
+  `"0"` can hold an admin key stored under PIN1 alone. That one is recoverable:
+  with PIN1, `ocp keys add-pin2` re-encrypts the same key under a new PIN2
+  (asked twice) and no machine changes. It touches only keys without the
+  layer; it cannot bring back a PIN2 that was set and lost. Commit `keys.yaml`
+  afterwards.
 - **Lost `.ocp/`** — harmless. A fresh `git clone` plus PIN1 regenerates it.
 
 ## See also

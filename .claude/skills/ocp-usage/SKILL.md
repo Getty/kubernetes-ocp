@@ -305,6 +305,19 @@ so do `--norestart`/`--nowait` (`t/54-deploy-image.t`).
   of what the machine lookup reads (`control_planes`, `workers`, hosts, a
   pool's `nodes`), in validate()'s words (k346). Errors go to STDERR, exit 1,
   before PIN1, the cluster or SSH.
+- `ocp keys add-pin2` — put the PIN2 layer back on an admin key stored without
+  it (k450; before k390 a PIN2 of `"0"` was read as none, so `ocp init` and
+  `ocp keys secure` stored the admin key under PIN1 alone while saying
+  "age+PIN2"; `OCP::Cmd::Keys::AddPin2`). Asks PIN1 if `age.key` is not already
+  unlocked, finds every admin key in `keys.yaml` without the layer
+  (`OCP::Keys::has_pin2_layer`), asks a new PIN2 twice, and re-encrypts each
+  under age + PIN2 (`add_pin2_layer`, verifies before it writes). The key is
+  the same key: no machine's `authorized_keys` changes. Commit `keys.yaml`
+  afterwards. `--pins-stdin` feeds it (PIN1 if asked, PIN2, PIN2 again). Every
+  admin key has the layer already → `[ok] … Nothing to do.`, exit 0. No
+  `keys.yaml` (dev mode) or no admin key → dies; no terminal and no
+  `--pins-stdin` → refuses, nothing written. Never changes an existing PIN2.
+  Prompts and errors on STDERR, what was done on STDOUT.
 - `ocp keys recipients ls|add AGE1|rm AGE1` — age recipients of the SOPS
   files (k212): project key always, plus the governing `.sops.yaml`'s rule.
   add/rm rewrite the project's own `.sops.yaml` (never one further up — edit
@@ -703,7 +716,8 @@ gpu:
   exit 1; `inject` needs only the public half → written normally.
 - **PIN2 prompts**: `ocp apply`, `ocp ssh`, `ocp update`, `ocp node add`,
   `ocp inject-key`, `ocp deploy-robocop`, `ocp keys secure`, `ocp keys
-  operator add|rm`, `ocp node rm` of an ssh node (not with `--keep-machine`),
+  operator add|rm` (`ocp keys add-pin2` asks for a new PIN2 twice, not the
+  existing one), `ocp node rm` of an ssh node (not with `--keep-machine`),
   and `ocp destroy` when the node list contains an ssh machine. PIN1
   prompts whenever only `age.key.enc` exists. Read-only paths
   (`ocp status`, drift detection, `--dry-run`) never prompt. They use the
@@ -761,10 +775,19 @@ by dropping the bootstrap key, and neither is covered anywhere else.
   `ocp` command. A `provider: ssh`/`local` control plane carries only the
   admin key, and no `ocp` command reaches anything without PIN2. So losing
   PIN2 still means out-of-band recovery for the control plane.
-- **No rotation command exists.** `ocp keys` has only `show` and
-  `authorized-keys` (both print public halves; plus `recipients`, which is
-  about age recipients, not SSH keys, and `secure`, which only moves a
-  dev-mode project that has no keys.yaml yet); `ocp init`, even
+- **PIN2 never set (admin key stored without its layer)** → recoverable, unlike
+  PIN2 lost. A PIN2 of `"0"` before k390 left the admin key under PIN1 alone,
+  so no PIN2 opens it; with PIN1, `ocp keys add-pin2` re-encrypts the same key
+  under age + a new PIN2 (k450) and nothing on the machines changes. It only
+  touches keys without the layer: a key that has one, whose PIN2 is lost, is
+  not helped by it, and it does not change an existing PIN2.
+- **No rotation command exists.** `ocp keys` has `show`, `authorized-keys`,
+  `recipients`, `operator`, `secure` and `add-pin2`, and none of them
+  rotates an SSH key: `show` and `authorized-keys` print public halves;
+  `recipients` is about age recipients, not SSH keys; `operator` registers
+  or revokes a Leitstand's own key; `secure` only moves a dev-mode project
+  that has no keys.yaml yet; `add-pin2` re-encrypts the same admin key under
+  a missing PIN2 layer. `ocp init`, even
   `--force`, skips key generation entirely whenever an automation-purpose
   key is already in `keys.yaml` (`OCP::Cmd::Init`, unconditional on
   `--force`). Adding a replacement admin key today needs
