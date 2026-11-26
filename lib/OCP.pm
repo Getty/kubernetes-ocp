@@ -57,25 +57,63 @@ sub BUILD {
 # YAML (central serialization)
 #
 
+=head1 METHODS
+
+=cut
+
 sub dump {
     my ($self, @resources) = @_;
     return join('', map { YAML::XS::Dump($_) } @resources);
 }
+
+=method dump
+
+    my $yaml = $ocp->dump($resource, ...);
+
+Returns the YAML of each resource (a hash or array reference), one document
+per resource, concatenated.  Booleans are written as C<true>/C<false>.
+
+=cut
 
 sub load {
     my ($self, $string) = @_;
     return YAML::XS::Load($string);
 }
 
+=method load
+
+    my $data = $ocp->load($yaml);
+
+Parses a YAML string with L<YAML::XS> and returns the (first) document.
+
+=cut
+
 sub dump_file {
     my ($self, $file, $data) = @_;
     return YAML::XS::DumpFile("$file", $data);
 }
 
+=method dump_file
+
+    $ocp->dump_file($file, $data);
+
+Writes C<$data> as YAML to C<$file> (a path or a L<Path::Tiny>), replacing it.
+
+=cut
+
 sub load_file {
     my ($self, $file) = @_;
     return YAML::XS::LoadFile("$file");
 }
+
+=method load_file
+
+    my $data = $ocp->load_file($file);
+
+Reads the YAML in C<$file> (a path or a L<Path::Tiny>) with L<YAML::XS> and
+returns the (first) document.
+
+=cut
 
 option verbose => (
     is      => 'ro',
@@ -238,8 +276,6 @@ sub run_cli {
     return $ret->[0] =~ /\A-?\d+\z/ ? $ret->[0] : 0;
 }
 
-=head1 METHODS
-
 =method run_cli
 
     exit OCP->run_cli;
@@ -387,6 +423,14 @@ HELP
 
     return 1;   # no command given is a usage error
 }
+
+=method execute
+
+Runs when C<ocp> is called without a command: prints the usage text -- the
+commands, the C<-c>/C<--config> and C<-v>/C<--verbose> options and a few
+examples -- to STDOUT and returns 1, because no command given is a usage error.
+
+=cut
 
 1;
 

@@ -201,11 +201,36 @@ my @ROLES = ('control-plane', 'worker');
 
 sub roles { return @ROLES }
 
+=head1 METHODS
+
+=method roles
+
+    my @roles = OCP::Node->roles;   # control-plane, worker
+
+The values C<spec.role> may take, in the order the OCPNode CRD lists them.
+The single source for the set on the Perl side: C<ocp node add> checks
+C<--role> against it before touching the API, so a typo is answered by OCP
+naming the two roles rather than by a raw Kubernetes 422 about an enum.
+
+The CRD in F<share/robocop/crds/ocpnode.yaml> spells the same set a second
+time -- it has to, nothing in a YAML schema can call Perl.  A test reads the
+enum and asserts it against this list, so the two cannot drift.
+
+=cut
+
 sub known_role {
     my ($class, $role) = @_;
     return 0 unless defined $role;
     return scalar grep { $_ eq $role } @ROLES;
 }
+
+=method known_role
+
+    die ... unless OCP::Node->known_role($role);
+
+True if C<$role> is one of L</roles>.  C<undef> is not.
+
+=cut
 
 # The finalizer that keeps a worker's OCPNode in the API until its machine is
 # cleaned up (k179). Deleting an OCPNode used to be the end of it: robocop
@@ -227,21 +252,81 @@ sub wants_finalizer {
     return 1;
 }
 
+=method wants_finalizer
+
+    OCP::Node->wants_finalizer($cr);
+
+Class method on an OCPNode as a plain hash.  True when the OCPNode should
+carry the C<ocp.internal/teardown> finalizer (see L</The teardown finalizer>):
+its C<spec.role> is C<worker> and it is not an observational one, marked by
+the C<ocp.internal/synthetic> annotation.  False for every control plane.
+
+=cut
+
 sub has_finalizer {
     my ($class, $cr) = @_;
     return scalar grep { $_ eq TEARDOWN_FINALIZER }
         @{ $cr->{metadata}{finalizers} // [] };
 }
 
+=method has_finalizer
+
+    OCP::Node->has_finalizer($cr);
+
+Class method on an OCPNode as a plain hash.  True when C<metadata.finalizers>
+holds C<ocp.internal/teardown>.
+
+=cut
+
 sub name      { $_[0]->cr->{metadata}{name} }
+
+=method name
+
+C<metadata.name> of the OCPNode.
+
+=cut
+
 sub role      { $_[0]->cr->{spec}{role} }
+
+=method role
+
+C<spec.role> of the OCPNode, C<worker> or C<control-plane> (see L</roles>);
+undef when the CR has none.
+
+=cut
+
 sub phase     { $_[0]->cr->{status}{phase} // 'Pending' }
+
+=method phase
+
+C<status.phase> of the OCPNode as the object holds it, C<Pending> when the
+status has none yet.  Follows the CR: it changes after every status write and
+after L</reconcile_until_ready> reads the CR again.
+
+=cut
+
 sub namespace { $_[0]->cr->{metadata}{namespace} // 'ocp-system' }
+
+=method namespace
+
+C<metadata.namespace> of the OCPNode, C<ocp-system> when the CR has none.
+
+=cut
 
 sub from_cr {
     my ($class, $cr, %deps) = @_;
     return $class->new(cr => $cr, %deps);
 }
+
+=method from_cr
+
+    my $node = OCP::Node->from_cr($cr, k8s => $api, provider => $provider, ...);
+
+Builds the node for the OCPNode C<$cr> (a plain hash).  Everything after it is
+passed to the constructor as it is, so C<k8s> is required and the other
+attributes (see L</Key Attributes>) are as they are there.
+
+=cut
 
 sub _rfc3339_now { Time::Piece::gmtime->strftime('%Y-%m-%dT%H:%M:%SZ') }
 
@@ -553,6 +638,16 @@ sub host_keys {
     return ref $keys eq 'ARRAY' ? @$keys : ();
 }
 
+=method host_keys
+
+    my @pins = $node->host_keys;
+
+The host keys pinned for this node, as C<status.hostKeys> holds them in the
+CR: a list of hashes with C<type>, C<key> and C<fingerprint>.  Empty when the
+node has none (see L</Host keys>).
+
+=cut
+
 # Point this node's known_hosts at what status.hostKeys says (empty: TOFU) and
 # return its path, for `local $ENV{OCP_KNOWN_HOSTS}`: OCP::SSH, OCP::Rex, the
 # Rexfile and the providers' own ssh all pick the file up from there, so no
@@ -754,8 +849,6 @@ sub host_key_mismatch_message {
     }
     return $overlap ? () : $self->host_key_message($host, @scan);
 }
-
-=head1 METHODS
 
 =head2 Host keys
 
@@ -1234,6 +1327,37 @@ sub node_ip_mismatch {
          . ', and keeps ' . (@internal > 1 ? 'those addresses' : 'that address') . $fix;
 }
 
+=method node_ip_mismatch
+
+    my $diag = OCP::Node->node_ip_mismatch($node_hash, $node_ip);
+    warn "[WARN] $name: $diag\n" if defined $diag;
+
+Whether a Kubernetes Node, as a plain hash (C<object_to_struct>), registered
+at the node-ip it was installed with.  C<undef> when C<$node_ip> is
+undef or empty, or when every address of it -- both, for C<"v4,v6"> -- is
+one of the Node's C<status.addresses> of type C<InternalIP>; addresses
+compare as IPs, so C<FD00:0::5> is C<fd00::5>.  Otherwise one line, without
+the node's name, for the caller to prefix: what it registered, what it was
+installed with, and the way out, which is the same every time -- the node
+keeps its address until RKE2/K3s comes up again with the node-ip in
+F<config.yaml>, and Cilium's agent keeps the old one until its pod on the
+node restarts as well:
+
+    registered InternalIP 192.168.0.165, not the node-ip 10.230.30.50 it was installed with, and keeps that address until it rejoins: re-run its install so config.yaml carries the node-ip and rke2/k3s restarts, then restart the Cilium agent pod on the node
+
+The address part of the other cases (the way out follows as above):
+
+    registered InternalIPs 192.168.0.165 and fd00::1, not the node-ip 10.230.30.50 it was installed with, and keeps those addresses until it rejoins: ...
+    registered InternalIP 10.230.30.50, not the node-ip 10.230.30.50,fd00::5 it was installed with (fd00::5 missing), and keeps that address until it rejoins: ...
+    registered no InternalIP, though it was installed with the node-ip 10.230.30.50, and has none until it rejoins: ...
+
+Pure: no I/O, no state.  The Ready transition asks it with
+C<status.nodeIP>, and C<ocp apply> can for the control plane it bootstraps
+without an OCPNode.  C<$node_ip> is taken as L<OCP::Choices/node_ip_error>
+accepts it (no whitespace).
+
+=cut
+
 # One spelling per address, so 'FD00:0::5' is the 'fd00::5' the kubelet
 # reports: the packed address, or the text when it is no IP literal.
 sub _ip_key {
@@ -1364,6 +1488,25 @@ sub reconcile {
     return 1;
 }
 
+=method reconcile
+
+    my $ok = $node->reconcile;
+
+Advances the node by one step, by its C<status.phase>: C<Pending> provisions,
+C<Provisioning> and C<Installing> install Kubernetes under the lease,
+C<Joining> waits for the Node to register and turn C<Ready>, C<Ready> verifies
+it (and converges labels and taints).  Returns false, doing nothing, for a
+C<Failed> or C<Terminating> node, and for a C<Pending>, C<Provisioning> or
+C<Installing> one whose C<spec.nodeIP> is refused (the node is then set
+C<Failed>).  Any other error sets the node C<Failed> with the error as
+C<status.message> and returns false.  Returns true otherwise -- also when
+another reconciler holds the lease, which is recorded in C<lease_conflict> and
+left to the holder, and when the node is not C<Ready> yet.  A changed host key
+leaves the phase alone and is recorded in C<host_key_mismatch>.  See
+L</Lease Mechanics>.
+
+=cut
+
 sub _refresh {
     my $self = shift;
     # This one runs inside a poll loop, so a failed read is not terminal: keep
@@ -1453,6 +1596,25 @@ sub reconcile_until_ready {
     }
     return 0;
 }
+
+=method reconcile_until_ready
+
+    my $ready = $node->reconcile_until_ready(
+        timeout  => 900,
+        interval => 5,
+        on_phase => sub { my ($phase, $message) = @_; ... },
+    );
+
+Reads the CR and calls L</reconcile> until the node is C<Ready> or C<Failed>.
+Returns 1 for C<Ready>, 0 for C<Failed> and 0 when C<timeout> (seconds,
+default C<$OCP::Node::READY_TIMEOUT>) runs out -- which only stops the
+watching, the CR keeps the phase it reached.  C<interval> (seconds, default 5)
+is the sleep between passes.  C<on_phase>, optional, is called with the phase
+and C<status.message> the first time each phase is seen.  Dies with the
+message when a pass meets a host key other than the pinned one, because waiting
+cannot change that.  See L</Waiting for Ready>.
+
+=cut
 
 # How long a drain may take, and how often it looks again.
 #
@@ -1617,6 +1779,23 @@ sub teardown {
 
     return 1;
 }
+
+=method teardown
+
+    $node->teardown;
+    $node->teardown(keep_machine => 1);
+
+Takes the node out of the cluster and off its machine: lease, cordon, drain,
+the provider's C<delete_server>, then the finalizer, the Kubernetes Node and
+the OCPNode.  Returns 1.  Dies, leaving the OCPNode in place, when the lease is
+held by someone else, when the machine's host key is not the pinned one (the
+node is then untouched; the message is in C<host_key_mismatch>), or when the
+cordon, the drain or the machine cleanup fails (phase C<Failed> with the
+reason; C<machine_cleanup_failed> is set when it failed at the machine).
+C<keep_machine> leaves out the machine cleanup and nothing else.  The steps
+and their reasons are under L</Teardown>.
+
+=cut
 
 # Delete one object, best-effort but never silently.
 #
@@ -2227,56 +2406,6 @@ the server delete or the uninstall, rather than before it.  C<ocp node rm>
 reads it to offer C<--keep-machine>; robocop retries.
 
 =back
-
-=head1 CLASS METHODS
-
-=head2 roles
-
-    my @roles = OCP::Node->roles;   # control-plane, worker
-
-The values C<spec.role> may take, in the order the OCPNode CRD lists them.
-The single source for the set on the Perl side: C<ocp node add> checks
-C<--role> against it before touching the API, so a typo is answered by OCP
-naming the two roles rather than by a raw Kubernetes 422 about an enum.
-
-The CRD in F<share/robocop/crds/ocpnode.yaml> spells the same set a second
-time -- it has to, nothing in a YAML schema can call Perl.  A test reads the
-enum and asserts it against this list, so the two cannot drift.
-
-=head2 known_role
-
-    die ... unless OCP::Node->known_role($role);
-
-True if C<$role> is one of L</roles>.  C<undef> is not.
-
-=head2 node_ip_mismatch
-
-    my $diag = OCP::Node->node_ip_mismatch($node_hash, $node_ip);
-    warn "[WARN] $name: $diag\n" if defined $diag;
-
-Whether a Kubernetes Node, as a plain hash (C<object_to_struct>), registered
-at the node-ip it was installed with.  C<undef> when C<$node_ip> is
-undef or empty, or when every address of it -- both, for C<"v4,v6"> -- is
-one of the Node's C<status.addresses> of type C<InternalIP>; addresses
-compare as IPs, so C<FD00:0::5> is C<fd00::5>.  Otherwise one line, without
-the node's name, for the caller to prefix: what it registered, what it was
-installed with, and the way out, which is the same every time -- the node
-keeps its address until RKE2/K3s comes up again with the node-ip in
-F<config.yaml>, and Cilium's agent keeps the old one until its pod on the
-node restarts as well:
-
-    registered InternalIP 192.168.0.165, not the node-ip 10.230.30.50 it was installed with, and keeps that address until it rejoins: re-run its install so config.yaml carries the node-ip and rke2/k3s restarts, then restart the Cilium agent pod on the node
-
-The address part of the other cases (the way out follows as above):
-
-    registered InternalIPs 192.168.0.165 and fd00::1, not the node-ip 10.230.30.50 it was installed with, and keeps those addresses until it rejoins: ...
-    registered InternalIP 10.230.30.50, not the node-ip 10.230.30.50,fd00::5 it was installed with (fd00::5 missing), and keeps that address until it rejoins: ...
-    registered no InternalIP, though it was installed with the node-ip 10.230.30.50, and has none until it rejoins: ...
-
-Pure: no I/O, no state.  The Ready transition asks it with
-C<status.nodeIP>, and C<ocp apply> can for the control plane it bootstraps
-without an OCPNode.  C<$node_ip> is taken as L<OCP::Choices/node_ip_error>
-accepts it (no whitespace).
 
 =head1 SEE ALSO
 

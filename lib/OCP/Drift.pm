@@ -11,8 +11,22 @@ use OCP::ErrorLine ();
 
 has config => (is => 'ro', required => 1);
 
+=head1 ATTRIBUTES
+
+=attr config
+
+An L<OCP::Config>. Required.
+
+=cut
+
 # Kubernetes::REST api. Without it only spec drift is detectable.
 has api => (is => 'ro');
+
+=attr api
+
+A L<Kubernetes::REST> API object. Without it, only spec drift is detected.
+
+=cut
 
 # A rex prober: a coderef, called as $prober->($host, $task, \%params), that
 # runs a read-only detection task over SSH on $host and returns OCP::Rex's
@@ -22,6 +36,19 @@ has api => (is => 'ro');
 # Without it, host-side probes are skipped, the same graceful degradation the
 # missing `api` gives spec-only detection. Built by OCP::Role::Cmd::rex_prober.
 has rex_prober => (is => 'ro');
+
+=attr rex_prober
+
+A coderef, called as C<< $prober->($host, $task, \%params) >>, that runs a
+read-only detection task over SSH on C<$host> and returns L<OCP::Rex>'s result
+(C<< { stdout => ..., exit => ... } >>), throws when the probe could not run
+(the host does not answer, its host key changed), or returns nothing for a
+probe it skipped. This is the second, SSH-side detection mode; without it, host-side
+probes are skipped just as spec-only detection skips the API when C<api> is
+absent. L<OCP::Role::Cmd/rex_prober> builds it, non-prompting, so C<ocp status>
+and the top of C<ocp apply> never grow a password prompt.
+
+=cut
 
 # What each step_skips method answered, as [$why, $err], asked once per
 # detector: the GPU Operator image probe and the CRD probe ask the same GPU
@@ -338,6 +365,21 @@ sub crd_fingerprint {
       @{ _dig($crd, qw(spec versions)) // [] };
 }
 
+=head1 METHODS
+
+=method crd_fingerprint
+
+    my $fp = OCP::Drift->crd_fingerprint($crd);
+
+What two CRDs (plain hashes) must agree on to count as the same: per version,
+sorted by name, the version name and the sorted names of the properties under
+C<spec>, as C<v1:a,b;v2:...>. Coarse on purpose: the API server stores a CRD
+normalised, so comparing the schemas as text would read as drift on every
+cluster, while the property names are what a stub or another release changes.
+Callable on the class.
+
+=cut
+
 # [name, label] of every shipped GPU Operator CRD whose cluster copy differs.
 # A CRD the cluster does not have is not drift: the operator is optional, and
 # apply puts both in place with it. $get is how the CRD is read (a path GET
@@ -359,6 +401,21 @@ sub gpu_crds_differing {
     }
     return @differ;
 }
+
+=method gpu_crds_differing
+
+    my @names = OCP::Drift->gpu_crds_differing($get);
+
+The names of the GPU Operator CRDs OCP ships (F<share/gpu-operator/crds>:
+C<clusterpolicies.nvidia.com>, C<nvidiadrivers.nvidia.com>) whose copy in the
+cluster differs from the shipped one, by L</crd_fingerprint>. C<$get> is a
+coderef called with the API path of the CRD that returns the decoded CRD, or
+undef when the cluster has none. A CRD the cluster does not have is not
+drift (the operator is optional, and C<ocp apply> puts both in place with it),
+and a shipped file that cannot be read is skipped. Callable on the class, so
+the reconcile path and L</gpu_crd_drift> read the CRDs the same way.
+
+=cut
 
 # The GPU step re-applies the CRDs only where it runs, as it does the
 # operator: elsewhere a differing CRD is report only, and its manual_step
@@ -403,6 +460,21 @@ sub gpu_crd_drift {
     }
     return @unknown, @drift;
 }
+
+=method gpu_crd_drift
+
+    my @entries = $detector->gpu_crd_drift;
+
+The GPU Operator CRDs in the cluster that differ from the ones OCP ships
+(L</gpu_crds_differing>). One entry per CRD, C<kind =E<gt> 'version'>,
+C<component =E<gt> 'gpu_operator_crd'>, label C<CRD NAME>, no remedy. Where the
+GPU step of C<ocp apply> runs, the entry is C<self_healing>; where it skips the
+cluster, the entry is report only and its C<manual_step> says why
+(L</gpu_operator_step_skips>). A CRD that cannot be read (anything but a 404),
+or a step check that cannot be made, is one C<kind =E<gt> 'error'> entry, drift
+unknown, the cause carped to stderr once; those come first in the list.
+
+=cut
 
 # The cluster's CRD $name, as ($crd, $unknown): the decoded CRD, or undef
 # when the cluster has none -- a 404, and only a 404 (k268). Any other failure
@@ -475,8 +547,6 @@ sub shipped_ocp_crds {
     return grep { ref $_ eq 'HASH' && ($_->{kind} // '') eq 'CustomResourceDefinition' }
         map { YAML::XS::LoadFile($_->stringify) } sort $dir->children(qr/\.ya?ml$/);
 }
-
-=head1 METHODS
 
 =method shipped_ocp_crds
 
@@ -667,7 +737,8 @@ an OCPNode CRD from before it declared C<spec.nodeIP> lost that field from
 C<ocp node add --node_ip> while the drift check said nothing. Compared are the property
 paths under C<spec> and C<status> (L</crd_schema_diff>), not the schemas as
 text, which the API server stores normalised. One entry per CRD that
-differs, C<component =E<gt> 'ocp_crd'>, label C<"$kind CRD">, no remedy:
+differs, C<component =E<gt> 'ocp_crd'>, label C<"$kind CRD">, and none carries
+a C<remedy>. What else an entry says depends on why the CRD differs:
 
 =over 4
 
@@ -2063,6 +2134,18 @@ sub probe_targets {
     return @hosts;
 }
 
+=method probe_targets
+
+    my @hosts = $detector->probe_targets;
+
+Every machine a host-side probe (L</rex_probe_drift>) would look at, once each:
+the control planes of F<ocp.yaml> by C<public_ip> (or C<host>), and the worker
+OCPNodes whose provider is C<ssh> or C<local> for the probes that select all
+machines. The command names them when it had to skip the probes. A failed
+OCPNode list leaves the workers out, with the cause carped once.
+
+=cut
+
 #
 # Helpers
 #
@@ -2256,8 +2339,13 @@ sub corefile_block_name {
 
 =method corefile_block_name
 
-A server block as messages name it: C<server block> and its keys, and for one
-imported from C<coredns-custom>, the ConfigMap key it is in.
+    my $name = OCP::Drift::corefile_block_name($block);
+
+A server block (a hash with C<keys>, and C<file> for one imported from another
+file; see L<OCP::Corefile>) as messages name it: C<server block> and its keys,
+and for one imported from C<coredns-custom>, the ConfigMap and key it is in
+(C<server block .:53 (ConfigMap kube-system/coredns-custom, key registry.server)>).
+A block imported from any other file names that path in parentheses.
 
 =cut
 
@@ -2491,23 +2579,3 @@ one are one failed read, which the dry run counts once.
 
 =back
 
-=head1 ATTRIBUTES
-
-=head2 config
-
-An L<OCP::Config>. Required.
-
-=head2 api
-
-A L<Kubernetes::REST> API object. Without it, only spec drift is detected.
-
-=head2 rex_prober
-
-A coderef, called as C<< $prober->($host, $task, \%params) >>, that runs a
-read-only detection task over SSH on C<$host> and returns L<OCP::Rex>'s result
-(C<< { stdout => ..., exit => ... } >>), throws when the probe could not run
-(the host does not answer, its host key changed), or returns nothing for a
-probe it skipped. This is the second, SSH-side detection mode; without it, host-side
-probes are skipped just as spec-only detection skips the API when C<api> is
-absent. L<OCP::Role::Cmd/rex_prober> builds it, non-prompting, so C<ocp status>
-and the top of C<ocp apply> never grow a password prompt.

@@ -49,6 +49,19 @@ has age_key => (
     is => 'ro',
 );
 
+=head1 ATTRIBUTES
+
+=attr age_key
+
+The project key in hand, as L<OCP::Secrets/unlock_age_key> leaves it in
+L<OCP::Secrets/age_key>: every decrypt reads it instead of F<.ocp/age.key>.
+C<undef> by default.
+
+    $secrets->unlock_age_key;
+    my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);
+
+=cut
+
 # Where the age identity and the project's recipient come from (k216:
 # SOPS_AGE_KEY_FILE, see OCP::Secrets::identities). One place for both, so
 # the key file and the SOPS files can never be read with different keys.
@@ -77,6 +90,17 @@ sub has_keys_file {
     return -f $self->keys_file;
 }
 
+=head1 METHODS
+
+=method has_keys_file
+
+    if ($keys->has_keys_file) { ... }
+
+True when the keys file (F<keys.yaml> unless C<keys_file> says otherwise)
+exists on disk. Only looks for the file; it decrypts nothing.
+
+=cut
+
 #
 # List all keys
 #
@@ -91,8 +115,6 @@ sub list_keys {
 
     return $data->{keys};
 }
-
-=head1 METHODS
 
 =method list_keys
 
@@ -586,6 +608,18 @@ sub get_automation_key {
     return undef;
 }
 
+=method get_automation_key($name)
+
+    my $robo = $keys->get_automation_key;
+    my $robo = $keys->get_automation_key('robo-ssh-20260815');
+
+Returns the decrypted key (see L</decrypt_key>) of an C<automation> key; no
+PIN2 is needed. With C<$name>, that key -- nothing when it does not exist or
+its purpose is not C<automation>. Without, the first C<automation> key that is
+not deprecated; C<undef> when there is none.
+
+=cut
+
 #
 # Get admin key (needs PIN2)
 #
@@ -612,6 +646,20 @@ sub get_admin_key {
 
     return undef;
 }
+
+=method get_admin_key($pin2, $name)
+
+    my $admin = $keys->get_admin_key($pin2);
+    my $admin = $keys->get_admin_key($pin2, 'admin-ssh-20260815');
+
+Returns the decrypted key (see L</decrypt_key>) of an C<admin> key. Croaks
+unless C<$pin2> is defined and not empty. With C<$name>, that key -- nothing
+when it does not exist or its purpose is not C<admin>. Without, the first
+C<admin> key that is not deprecated; C<undef> when there is none. A wrong
+C<$pin2> dies with the PIN2 layer's authentication failure; L</unlock_admin_key>
+answers it as no key instead.
+
+=cut
 
 # A wrong PIN2 does not come back as undef from get_admin_key: the PIN2
 # layer's AES-GCM tag fails and _aes_decrypt dies with $WRONG_PIN2 -- crypto
@@ -1048,13 +1096,3 @@ C<add_public_key>) have no C<private> at all, and an C<age> field: the
 operator's age recipient. Their private SSH key never leaves the operator's
 machine.
 
-=head1 ATTRIBUTES
-
-=head2 age_key
-
-The project key in hand, as L<OCP::Secrets/unlock_age_key> leaves it in
-L<OCP::Secrets/age_key>: every decrypt reads it instead of F<.ocp/age.key>.
-C<undef> by default.
-
-    $secrets->unlock_age_key;
-    my $keys = OCP::Keys->new(project_dir => $dir, age_key => $secrets->age_key);
