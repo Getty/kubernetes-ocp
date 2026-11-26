@@ -390,7 +390,7 @@ Callable on the class.
 
 =cut
 
-# [name, label] of every shipped GPU Operator CRD whose cluster copy differs.
+# The name of every shipped GPU Operator CRD whose cluster copy differs.
 # A CRD the cluster does not have is not drift: the operator is optional, and
 # apply puts both in place with it. $get is how the CRD is read -- by name,
 # returning it as cluster_crd does, or undef --, so the reconcile path and

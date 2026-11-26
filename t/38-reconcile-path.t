@@ -1396,6 +1396,21 @@ subtest 'k234 point 30: "No drift detected" only when the ClusterPolicy agrees t
     like   $dry->{out}, qr/ClusterPolicy differs/, 'dry run: named';
 };
 
+subtest 'k472: two ClusterPolicy paths that differ -- the real run says its re-apply once, after them' => sub {
+    no warnings 'redefine';
+    local *OCP::Drift::detect = sub { [] };
+    local *OCP::Cmd::Apply::Drift::gpu_dry_run = sub {
+        return map { +{ kind => 'spec', path => $_,
+            message => "GPU Operator ClusterPolicy differs from the spec at $_" } }
+            qw(spec.driver.enabled spec.toolkit);
+    };
+    my $real = reconcile();
+    like $real->{out},
+        qr/^  \[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.driver\.enabled\n  \[drift\] GPU Operator ClusterPolicy differs from the spec at spec\.toolkit\n {10}the GPU Operator check below re-applies the manifest$/m,
+        'both named, the re-apply said once after them';
+    is scalar(() = $real->{out} =~ /re-applies the manifest/g), 1, 'and only there';
+};
+
 subtest 'k234 point 30: nothing found anywhere still says so' => sub {
     no warnings 'redefine';
     local *OCP::Drift::detect = sub { [] };

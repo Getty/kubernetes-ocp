@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp apply`: a ClusterPolicy that differs at several paths names each
+      path and then says "the GPU Operator check below re-applies the
+      manifest" once, as the dry run does.
     - `ocp apply --dry-run` says "would deploy the GPU Operator" when gpu.enabled
       is set, NFD labelled an NVIDIA node and no operator runs, and says "would
       re-apply the GPU Operator manifest" once; the GPU checks share one Node

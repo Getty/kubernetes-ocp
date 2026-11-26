@@ -217,15 +217,19 @@ sub reconcile_components {
         # below (k469).
         my @gpu = @$drift ? () : grep { $_->{kind} ne 'deploy' }
             gpu_dry_run($self, $config, quiet => 1, detector => $detector);
+        # The ClusterPolicy differences are one re-apply of the manifest,
+        # said once after them, as the dry run says it (k469, k472).
+        my $reapply;
         for my $g (@gpu) {
             if ($g->{kind} eq 'error') {
                 _say_unchecked($g);
                 push @unresolved, "$g->{label} drift check";
                 next;
             }
-            print "  [drift] $g->{message}\n"
-                . "          the GPU Operator check below re-applies the manifest\n";
+            print "  [drift] $g->{message}\n";
+            $reapply = 1;
         }
+        print "          the GPU Operator check below re-applies the manifest\n" if $reapply;
         print "  [ok] No drift detected\n" unless @$drift || @gpu;
 
         for my $entry (@$drift) {
