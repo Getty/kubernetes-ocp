@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-26T06:15:50Z
+created: 2026-11-07T04:01:14Z
+id: 443
+priority: low
+started: 2026-11-26T05:25:07Z
+status: done
+tags:
+- robocop
+- errors
+title: robocop writes a raw API error with a Perl source location into an OCPNode's
+  Failed message
+updated: 2026-11-26T06:15:50Z
+---
+
+Found in the 2026-11-07 full suite run (release round, log of t/ on 7496f84). OCP::Robocop::Controller around line 1130 puts the raw eval error of kube->get OCPNodeProvider into _mark_failed, so status.message of the OCPNode reads: Failed to load OCPNodeProvider/hetzner-a: Kubernetes API error (get OCPNodeProvider): 404 {"message":"..."} at lib/OCP/Robocop/Controller.pm line 1132. That message is what ocp node ls shows. A 404 means the named provider does not exist and can be said as such; other errors can go through OCP::ErrorLine (one_line / api_error_line) like the CLI since k395 and k403. Check the other _mark_failed callers for the same raw $@. Done: no Perl location in status.message, a 404 says the provider is missing, a regression test pins both. Lane: ocp-robocop-worker.
+
+2026-11-26 05:25 Reproduced red in t/33 under the image (status.message read 'Failed to load OCPNodeProvider/hetzner-a: Kubernetes API error (get OCPNodeProvider): 404 {...} at lib/OCP/Robocop/Controller.pm line 1132.'). Fix in OCP::Robocop::Controller: _error_line (api_error_line // one_line), _provider_load_error (404 -> 'it does not exist in namespace NS'); _mark_failed and _teardown_blocked put their message through one_line as the last gate. Callers converted: provider load, provider build, OCPNode construct, the reconcile catch, both teardown-blocked paths.
+
+2026-11-26 05:25 Also found (for the dispatcher, ocp board): make build fails at HEAD 1ffd19d -- cpanfile requires Net::Async::Kubernetes 0.013, cpanfile.snapshot pins 0.012 and VENDOR has no p5-net-async-kubernetes, so cpm in the Dockerfile fails on NAK. make test therefore cannot rebuild; verification ran the Makefile's DOCKER_PROVE line by hand against the existing raudssus/ocp:latest (NAK 0.013, Kubernetes::REST 1.111, built ~30 min earlier).
+
+2026-11-26 05:25 Done: no Perl location in status.message; 404 on the providerRef says 'it does not exist in namespace NS' (reconcile and teardown); other errors via OCP::ErrorLine::api_error_line // one_line. Tests: t/33 (404, 500, croaking provider build), t/179 (teardown 404), t/45 regex updated to the new 404 wording (claim kept: absence distinguished from an API error). Red before fix, green after: 12 robocop test files, 95 tests PASS in raudssus/ocp:latest. Uncommitted.
