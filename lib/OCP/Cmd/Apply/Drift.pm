@@ -31,6 +31,13 @@ drift that has a remedy. Cluster-truth checks are unchanged from the deploy
 path; the only structural difference is which steps we tolerate leaving
 out (control-plane install and the other one-time bootstrap steps).
 
+The control planes are not installed or joined here, but they are judged:
+right after the drift check, before the registry, every control plane
+F<ocp.yaml> asks for is waited for and judged once by its Node's C<Ready>
+condition, with the first deploy's proof
+(L<OCP::Cmd::Apply::CR/check_control_plane_ready>, k417). One not seen
+Ready within 600 s is a failed component. C<--only workers> skips it.
+
 Workers are converged the way the OCPNode layer defines them: the OCPNode is
 the reflection of desired state and goes hand in hand with the k8s Node. A
 worker listed in F<ocp.yaml> that has no OCPNode is created on this path
@@ -283,6 +290,21 @@ sub reconcile_components {
                 push @unresolved, $entry->{label} // $entry->{component};
             }
         }
+    }
+
+    # The control planes (k417): every one ocp.yaml asks for is judged once,
+    # Ready or a counted failed component, with the first deploy's proof --
+    # see OCP::Cmd::Apply::CR::check_control_plane_ready. Before the
+    # registry, whose pods need a Ready node, so a NotReady control plane is
+    # the first [!!] of the run. Not with --only workers, as the phase check
+    # below.
+    unless (($self->only // '') eq 'workers') {
+        $checked++;
+        print "  [..] Checking control planes are Ready...\n";
+        eval { OCP::Cmd::Apply::CR::check_control_plane_ready($self, $self->_k8s_api, $config); 1 } or do {
+            print STDERR '  [!!] Could not check control-plane readiness: '.OCP::ErrorLine::one_line($@)."\n";
+            push @unresolved, 'control-plane readiness';
+        };
     }
 
     # Registry (always deployed — required infrastructure)

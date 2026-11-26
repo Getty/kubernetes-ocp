@@ -28,6 +28,15 @@ use OCP::Versions;
         deploy_step    => $deploy_step,    # step counter so messages stay ordered
     });
 
+    # The same, as `ocp apply` runs it after the bootstrap: the same args
+    # plus cp_ready, whether the bootstrap saw its control plane Ready. With
+    # it false a step that must succeed stops the deploy, not the run: an
+    # [!!] on STDERR, and undef back (k417).
+    my $step_or_undef = OCP::Cmd::Apply::Deploy::deploy_after_bootstrap($apply, {
+        %deploy_args,
+        cp_ready => $bootstrap->{ready},
+    });
+
     # robocop and the worker step, as the reconcile path runs them. robocop
     # comes first and on its own; the worker step only uses its answer:
     my $robocop = OCP::Cmd::Apply::Deploy::robocop_step($apply, $api, $config, {
@@ -318,6 +327,30 @@ sub deploy {
     }
 
     return $step;
+}
+
+# deploy, as `ocp apply` runs it after the bootstrap (k417). A step the deploy
+# cannot go on without (the registry, NFD, cert-manager, the Gateway) dies,
+# and the run with it: OCP.pm's "Error: ...", exit 1, no banner. On a control
+# plane the bootstrap did not see Ready ($args->{cp_ready} false) that error
+# is a consequence -- the registry's pods cannot be scheduled -- and it used
+# to be the last word, naming the registry instead of the node. Then the
+# step's error is one [!!] on STDERR, the steps after it do not run, and
+# undef comes back for the caller to go on to the single exit: APPLY
+# INCOMPLETE, non-zero, the control plane named first in "Apply did not
+# complete" (the bootstrap counted it). With a Ready control plane such a
+# death is the step's own and stays as it was.
+sub deploy_after_bootstrap {
+    my ($self, $args) = @_;
+    return deploy($self, $args) if $args->{cp_ready};
+
+    my $step;
+    return $step if eval { $step = deploy($self, $args); 1 };
+    print STDERR '  [!!] Deploy stopped: '.OCP::ErrorLine::one_line($@)."\n";
+    print STDERR "       the steps after it did not run; control plane $args->{cp_name} was not seen Ready,\n"
+               . "       and they need pods scheduled on it\n";
+    push @{ $self->{_failed_components} }, 'deploy steps';
+    return undef;
 }
 
 # The GPU check once more after workers came up: when the one before the

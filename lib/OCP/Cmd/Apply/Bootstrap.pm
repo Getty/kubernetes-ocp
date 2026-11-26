@@ -17,19 +17,32 @@ use OCP::Cmd::Apply::K8s ();
 
 =head1 SYNOPSIS
 
-    # One call: provision server, install K8s, wait for the node to be
-    # Ready (Cilium CNI up), save the kubeconfig. Returns the K8s api
-    # handle for the component deploy steps that follow. A node not Ready
-    # when the wait ends is counted as a failed component on $self, and
-    # the call returns all the same.
-    my $api = OCP::Cmd::Apply::Bootstrap::bootstrap_control_plane(
+    # One call: provision server, install K8s, save the kubeconfig, wait
+    # for the Node named after the control plane to be Ready (Cilium CNI
+    # up). Returns a hashref: the K8s api handle for the component deploy
+    # steps that follow, the control plane's identity and address, and
+    # whether its Node was seen Ready. A node not Ready when the wait ends
+    # is counted as a failed component on $self, and the call returns all
+    # the same.
+    my $b = OCP::Cmd::Apply::Bootstrap::bootstrap_control_plane(
         $self, $config, $secrets,
         admin_key      => $admin_key,
         ssh_public_key => $ssh_public_key,
         verbose        => $self->ocp->verbose,
     );
+    # $b->{api}, $b->{cp_name}, $b->{cp_hostname}, $b->{cp_domain},
+    # $b->{cp_ip}, $b->{provider}, $b->{ssh_key_path}, $b->{node_ip},
+    # $b->{ready}
 
-    # Pure identity helpers — same answer as the deploy path needs to
+    # The same Ready proof for any set of Nodes, by name: up to 60 lists,
+    # 10 s apart. The reconcile path judges every control plane with it.
+    my $wait = OCP::Cmd::Apply::Bootstrap::wait_nodes_ready($self, $api,
+        [ 'police1', 'police2' ]);
+    # $wait->{ready_after}{police1} -- seconds, for a Node seen Ready
+    # $wait->{why}{police2}         -- why not, for one that was not
+    # $wait->{seconds}              -- the whole wait, 600
+
+    # Pure identity helpers -- same answer as the deploy path needs to
     # write a control-plane OCPNode CR for a cluster this OCP did not
     # bootstrap itself.
     my $cp_id = OCP::Cmd::Apply::Bootstrap::cp_identity($config);
@@ -60,16 +73,24 @@ kubeconfig, and wait for the node to be Ready. Everything past that
 workers) lives in the other phase modules and is wired up by
 OCP::Cmd::Apply::execute.
 
-The wait for the node to be Ready lasts up to 600 seconds. A control plane
-that is not Ready when it ends is a failed component of the run: one C<[!!]>
-line on STDERR names the node and what the API said last (its C<Ready>
-condition with reason and message, or why the Node list could not be read),
-and C<ocp apply> ends C<APPLY INCOMPLETE> with a non-zero exit code, as it does
-for a further control plane or a worker that did not come up. The run goes on
-with the steps after it, as it does after a further control plane that did not
+The wait for the node to be Ready lasts up to 600 seconds and judges the Node
+named after the control plane (the name the install registers it by), not
+whichever Node the API lists first. A control plane that is not Ready when it
+ends is a failed component of the run: one C<[!!]> line on STDERR names the
+node and what the API said last (its C<Ready> condition with reason and
+message, no Node by that name, or why the Node list could not be read), and
+C<ocp apply> ends C<APPLY INCOMPLETE> with a non-zero exit code, as it does for
+a further control plane or a worker that did not come up. The run goes on with
+the steps after it, as it does after a further control plane that did not
 join. On a node that stays not Ready, the steps that need a pod running there
-fail with their own errors; one the deploy cannot go on without, such as the
-registry, ends the run with that error and a non-zero exit before the banner.
+fail with their own errors. One the deploy cannot go on without, such as the
+registry, stops the deploy: L<OCP::Cmd::Apply> says its error in one C<[!!]>
+line, and the run still ends at the banner, C<APPLY INCOMPLETE>, with the
+control plane named first in the closing C<Apply did not complete> line (k417).
+
+C<wait_nodes_ready> is that wait for any set of Nodes. The reconcile path of
+C<ocp apply> judges every control plane with it (k417), so the proof is the
+same on both paths.
 
 Splitting this out of execute() serves two purposes:
 
@@ -79,7 +100,7 @@ Splitting this out of execute() serves two purposes:
 
 One cohesive operation becomes one callable name. t/38's reconcile-path
 tests can stay narrow: the reconcile path never reaches provision /
-install / wait-ready, and the deploy path always does.
+install, and the deploy path always does.
 
 =item *
 
@@ -89,7 +110,7 @@ the same question as Drift and Node.
 
 =back
 
-The identity helpers (cp_identity, dist_label) live here too — they
+The identity helpers (cp_identity, dist_label) live here too -- they
 are spec-shaped, not state-shaped, so they belong with the deploy
 helpers rather than with the reconcile path.
 
@@ -221,25 +242,98 @@ sub warn_node_ip_mismatch {
     return;
 }
 
-# Why the node-Ready wait of the first deploy ended without a Ready Node, as
-# the end of its [!!] on STDERR (k327, k336): the last Node list's failure
-# (k319), or what the Ready condition of the Node the wait judged, the first
-# one, said -- its status, and the reason and message the kubelet gives
-# ("container runtime network not ready: ... cni plugin not initialized").
-# $nodes is that last list, undef for a 404.
+# The Node called $name in a Node list, or undef -- not the first one listed
+# (k417): on a fresh one-node bootstrap that is the same Node, anywhere else
+# it is whichever the API happens to list first.
+sub named_node {
+    my ($nodes, $name) = @_;
+    return undef unless $nodes && $nodes->items && defined $name;
+    my ($node) = grep { my $m = $_->metadata; $m && ($m->name // '') eq $name }
+                 @{ $nodes->items };
+    return $node;
+}
+
+# The status of a Node's Ready condition ('True', 'False', 'Unknown'), or
+# undef for no Node or no Ready condition.
+sub node_ready_status {
+    my ($node) = @_;
+    return undef unless $node && $node->status;
+    my ($ready) = grep { $_->type eq 'Ready' } @{ $node->status->conditions || [] };
+    return $ready ? $ready->status : undef;
+}
+
+# Why a node-Ready wait ended without the Node called $name Ready, as the end
+# of its [!!] on STDERR (k327, k336): the last Node list's failure (k319), or
+# what the Ready condition of that Node said -- its status, and the reason and
+# message the kubelet gives ("container runtime network not ready: ... cni
+# plugin not initialized"). The Node is looked up by name (k417), so a list
+# without it says so and names what it did list. $nodes is that last list,
+# undef for a 404.
 sub node_not_ready_why {
-    my ($nodes, $read_err) = @_;
+    my ($nodes, $read_err, $name) = @_;
     if ($read_err) {
         my $reason = "$read_err";
         chomp $reason;
         return "; the last read failed: $reason";
     }
-    my $node = $nodes && $nodes->items ? $nodes->items->[0] : undef;
-    return ': no Node listed' unless $node;
+    my @listed = $nodes && $nodes->items ? @{ $nodes->items } : ();
+    return ': no Node listed' unless @listed;
+    my $node = named_node($nodes, $name);
+    unless ($node) {
+        my @names = grep { length } map { my $m = $_->metadata; $m ? $m->name // '' : '' } @listed;
+        return ": no Node named $name listed"
+            . (@names ? ' (listed: ' . join(', ', @names) . ')' : '');
+    }
     my ($ready) = grep { $_->type eq 'Ready' } @{ $node->status->conditions || [] };
     return ': it reports no Ready condition' unless $ready;
     my $detail = join ': ', grep { length } map { $_ // '' } $ready->reason, $ready->message;
     return ': Ready is ' . $ready->status . (length $detail ? " ($detail)" : '');
+}
+
+# The node-Ready wait, for the Nodes named in @$names: up to $opt{attempts}
+# (60) Node lists, $opt{interval} (10) seconds apart, until each of them has
+# its Ready condition True. The first deploy's wait for its control plane,
+# and since k417 the reconcile path's judgement of every control plane: one
+# proof on both paths. A list that fails is polled again like a Node not
+# Ready yet; a 404 lists nothing and is no failure. Progress goes to STDOUT,
+# on the first list and every sixth; what to say about a Node that did not
+# turn Ready is the caller's. Returns
+#   { ready_after => { NAME => seconds }, why => { NAME => node_not_ready_why },
+#     nodes => the last list, seconds => the whole wait }
+sub wait_nodes_ready {
+    my ($self, $api, $names, %opt) = @_;
+    my $attempts = $opt{attempts} // 60;
+    my $interval = $opt{interval} // 10;
+
+    my %pending = map { $_ => 1 } @$names;
+    my (%ready_after, $read_err, $last_nodes);
+    for my $i (1 .. $attempts) {
+        my $nodes = eval { OCP::Cmd::Apply::K8s::read_or_absent('Nodes', sub { $api->list('Node') }) };
+        $read_err   = $@;
+        $last_nodes = $nodes;
+        for my $name (grep { $pending{$_} } @$names) {
+            next unless (node_ready_status(named_node($nodes, $name)) // '') eq 'True';
+            $ready_after{$name} = $i * $interval;
+            delete $pending{$name};
+        }
+        last unless %pending;
+        if ($i == 1 || $i % 6 == 0) {
+            my @waiting = grep { $pending{$_} } @$names;
+            my $status  = @$names == 1
+                ? node_ready_status(named_node($nodes, $waiting[0])) // 'unknown'
+                : join ' ', map { "$_=" . (node_ready_status(named_node($nodes, $_)) // 'unknown') } @waiting;
+            print "      ... waiting (${i}/${attempts}) status='$status'\n";
+        }
+        $self->wait_seconds($interval);
+    }
+
+    return {
+        ready_after => \%ready_after,
+        why         => { map { $_ => node_not_ready_why($last_nodes, $read_err, $_) }
+                         grep { $pending{$_} } @$names },
+        nodes       => $last_nodes,
+        seconds     => $attempts * $interval,
+    };
 }
 
 # Display name for a distribution id. Apply hardcoded "RKE2" in its
@@ -386,7 +480,7 @@ sub _robo_public_key {
 # wait-Ready. Returns the Kubernetes api handle plus the control-plane
 # identity the caller needs to write the OCPNode CR afterwards -- also when
 # the node was not seen Ready, which is counted in {_failed_components}
-# instead (k336).
+# instead (k336) and returned as {ready} false (k417).
 #
 # This is the call site that used to be 240 lines of inline Perl in
 # execute(). Splitting it does not change behaviour — same provider
@@ -679,6 +773,7 @@ sub bootstrap_control_plane {
     # Wait for node to be Ready (Cilium CNI must be running)
     # Nothing can be scheduled until the node is Ready!
     print "  [..] Waiting for node to be Ready (Cilium CNI)...\n";
+    my $node_ready = 0;
     {
         # Quick connectivity check first
         my $api_ok = eval { $api->_request('GET', '/api/v1/namespaces/kube-system'); 1 };
@@ -690,39 +785,13 @@ sub bootstrap_control_plane {
             print STDERR "  [WARN] API server may not be reachable: $reason\n";
         }
 
-        # A Node list that fails is polled again like a Node not Ready yet;
-        # when the last one failed too, its cause goes to STDERR (k319). A
-        # 404 lists nothing and is no failure.
-        my ($node_ready, $read_err, $last_nodes) = (0);
-        for my $i (1..60) {
-            my $nodes = eval { OCP::Cmd::Apply::K8s::read_or_absent('Nodes', sub { $api->list('Node') }) };
-            $read_err = $@;
-            $last_nodes = $nodes;
-            my $is_ready = 0;
-            if ($nodes && $nodes->items && @{ $nodes->items }) {
-                for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
-                    if ($cond->type eq 'Ready' && $cond->status eq 'True') {
-                        $is_ready = 1;
-                        last;
-                    }
-                }
-            }
-            if ($is_ready) {
-                print "  [ok] Node is Ready after ~${\ ($i * 10)}s\n";
-                warn_node_ip_mismatch($api, $nodes, $cp_name, $node_ip);
-                $node_ready = 1;
-                last;
-            }
-            if ($i == 1 || $i % 6 == 0) {
-                my $status = 'unknown';
-                if ($nodes && $nodes->items && @{ $nodes->items }) {
-                    for my $cond (@{ $nodes->items->[0]->status->conditions || [] }) {
-                        $status = $cond->status if $cond->type eq 'Ready';
-                    }
-                }
-                print "      ... waiting (${i}/60) status='$status'\n";
-            }
-            $self->wait_seconds(10);
+        # The Node named after the control plane, not the first one listed
+        # (k417). See wait_nodes_ready.
+        my $wait = wait_nodes_ready($self, $api, [ $cp_name ]);
+        if (defined(my $after = $wait->{ready_after}{$cp_name})) {
+            print "  [ok] Node is Ready after ~${after}s\n";
+            warn_node_ip_mismatch($api, $wait->{nodes}, $cp_name, $node_ip);
+            $node_ready = 1;
         }
         # Not Ready within 600s is a failed component (k336, the maintainer's
         # call of 2026-11-06), as a police2+ that did not join and a worker
@@ -738,9 +807,12 @@ sub bootstrap_control_plane {
         # after it run and each says for itself what it could not do. On a
         # node that stays NotReady nothing that needs a pod scheduled comes
         # up, and the registry step (MUST succeed, Deploy.pm) dies with its
-        # own timeout -- non-zero, before the banner, as before k336. A node
-        # that turns Ready late gets the stack deployed, and the run still
-        # ends incomplete: the wait did not see it Ready.
+        # own timeout. Since k417 that stops the deploy, not the run:
+        # OCP::Cmd::Apply::execute sees {ready} false below, says the step's
+        # error in an [!!] and ends at the banner, APPLY INCOMPLETE, with this
+        # control plane named first. A node that turns Ready late gets the
+        # stack deployed, and the run still ends incomplete: the wait did not
+        # see it Ready.
         #
         # An SSH fallback used to follow: RKE2's kubectl and rke2.yaml on the
         # node, on k3s as well, asking the apiserver this wait has just read,
@@ -748,8 +820,8 @@ sub bootstrap_control_plane {
         # condition's reason and message say why the node is not Ready; a
         # failed list says why nothing could be read (k319).
         unless ($node_ready) {
-            print STDERR "  [!!] Node $cp_name not seen Ready within 600s"
-                . node_not_ready_why($last_nodes, $read_err) . "\n";
+            print STDERR "  [!!] Node $cp_name not seen Ready within $wait->{seconds}s"
+                . $wait->{why}{$cp_name} . "\n";
             push @{ $self->{_failed_components} }, "control plane $cp_name";
         }
     }
@@ -772,6 +844,10 @@ sub bootstrap_control_plane {
         # private the address in the network (k453). Deploy records it as the
         # control plane's status.nodeIP.
         node_ip   => $node_ip,
+        # Whether the wait saw the control plane's Node Ready (k417): false is
+        # counted in {_failed_components} already, and tells execute that a
+        # deploy step that dies after it most likely died of this node.
+        ready     => $node_ready,
     };
 }
 

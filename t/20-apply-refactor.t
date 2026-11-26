@@ -248,6 +248,10 @@ subtest '_ensure_providers writes Namespace + hetzner Secret/Provider + ssh Prov
 
 subtest '_ensure_cp_ocpnode writes CP CR with phase=Ready' => sub {
     my $api = FakeApi->new;
+    # Over a Ready Node: since k417 the phase is what the Node says (t/417
+    # holds the NotReady side).
+    $api->{plain_nodes}{police1} = { metadata => { name => 'police1' },
+        status => { conditions => [ { type => 'Ready', status => 'True' } ] } };
     $apply->_ensure_cp_ocpnode($api, {
         name     => 'police1',
         provider => 'hetzner',

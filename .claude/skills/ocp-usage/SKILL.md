@@ -466,7 +466,9 @@ gpu:
   `start` + `stop`, never both, IPv4 only. Read only under `lbipam: true`.
   Unset, the pool is the node IP as a `/32`, on a single-node cluster only.
   On a multi-node cluster the LB-IPAM step refuses ("set network.lb_pool"),
-  and `ocp apply` prints that as `[WARN] LB-IPAM setup failed` and carries on.
+  and `ocp apply` prints that as `[!!] LB-IPAM setup failed` on STDERR and
+  carries on; LB-IPAM is a failed component, so the run ends
+  `APPLY INCOMPLETE`, exit 1 (k278).
 - **`l2`** (k127) shapes the `CiliumL2AnnouncementPolicy`, also only under
   `lbipam: true`.
   - `interfaces` (Go/RE2 regexes) replaces

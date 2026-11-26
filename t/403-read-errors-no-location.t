@@ -281,6 +281,7 @@ sub run_drift {
     local *OCP::Cmd::Apply::CR::sync_worker_meta            = $step->('meta', { patched => [], failed => [] });
     local *OCP::Cmd::Apply::CR::warn_unlisted_failed_ocpnodes = sub { };
     local *OCP::Cmd::Apply::CR::check_control_plane_phases    = sub { };
+    local *OCP::Cmd::Apply::CR::check_control_plane_ready     = sub { () };
 
     return capture { OCP::Cmd::Apply::Drift::reconcile_components($apply, $config); 1 };
 }

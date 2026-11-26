@@ -469,6 +469,8 @@ YAML
         local *OCP::Cmd::Apply::_ensure_providers       = sub { 1 };
         local *OCP::Cmd::Apply::_migrate_legacy_nodes   = sub { 1 };
         local *OCP::Cmd::Apply::_ensure_cp_ocpnode      = sub { 1 };
+        # The control plane's readiness (k417) is not what this holds.
+        local *OCP::Cmd::Apply::CR::check_control_plane_ready = sub { () };
         capture { OCP::Cmd::Apply::Drift::reconcile_components($apply, $config) };
     });
     is $died, '', 'the reconcile ran' or diag $died;

@@ -205,12 +205,14 @@ subtest 'k330 ensure_cp_ocpnode: a failed Node read keeps the recorded address, 
         my ($code, $reason) = @$refusal;
         $r = cp_ocpnode(api_error($code, $reason));
         is $r->{died}, '', "$code: no death -- the CR is observational";
-        is $r->{status}{phase}, 'Ready', "$code: the status is still written";
+        # The phase is what the Node says, and an unread Node says nothing:
+        # Joining, not Ready (k417).
+        is $r->{status}{phase}, 'Joining', "$code: the status is still written -- Joining, no Ready unread (k417)";
         ok !exists $r->{status}{publicIP},
             "$code: without publicIP, so the merge patch keeps the recorded one (not the configured host)";
         like $r->{err}, qr/\A  \[WARN\] OCPNode\/police1 keeps the address it has: could not read Node 'police1': .*\b$code\b.*\n\z/s,
             "$code: the cause on STDERR";
-        like $r->{out}, qr/\[ok\] ensured OCPNode\/police1 \(control-plane, Ready\)/, "$code: the CR is ensured";
+        like $r->{out}, qr/\[ok\] ensured OCPNode\/police1 \(control-plane, Joining\)/, "$code: the CR is ensured";
         unlike $r->{out}, qr/WARN/, "$code: nothing of it on STDOUT";
     }
 };

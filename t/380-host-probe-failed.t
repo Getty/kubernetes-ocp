@@ -256,6 +256,9 @@ my %STUB_RETURN = (
         };
     }
     *OCP::Cmd::Apply::AMDGPU::step = sub { +{ changed => 0, failed => [] } };
+    # The control planes' Ready wait (k417, t/417): FakeApi lists no Node,
+    # and this file is about the host probes.
+    *OCP::Cmd::Apply::CR::check_control_plane_ready = sub { () };
 }
 
 # One `ocp apply` reconcile in $dir, a dry run or a real one. The real run

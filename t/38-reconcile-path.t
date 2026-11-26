@@ -411,6 +411,19 @@ package DryRunResponse {
     sub status  { 200 }
     sub content { '{}' }
 }
+# The control plane's Node, Ready: the reconcile judges it by name since k417
+# (t/417 holds that judgement). Typed like an IO::K8s Node for the wait, a
+# plain struct for everything that reads it as one.
+package ReadyNode {
+    sub new      { my ($c, $name) = @_; bless { metadata => { name => $name },
+                       status => { conditions => [ { type => 'Ready', status => 'True' } ] } }, $c }
+    sub metadata { bless { %{ $_[0]{metadata} } }, 'ReadyNode::Meta' }
+    sub status   { bless { %{ $_[0]{status} } }, 'ReadyNode::Status' }
+}
+package ReadyNode::Meta   { sub name { $_[0]{name} } }
+package ReadyNode::Status { sub conditions { [ map { bless { %$_ }, 'ReadyNode::Cond' } @{ $_[0]{conditions} } ] } }
+package ReadyNode::Cond   { sub type { $_[0]{type} } sub status { $_[0]{status} } sub reason { } sub message { } }
+
 package DryRunApi {
     sub new { my ($c, %a) = @_; bless { writes => [], reads => [], objects => {}, %a }, $c }
 
@@ -433,10 +446,13 @@ package DryRunApi {
     # OCPNodes live in $self->{ocpnodes} (name => struct) so the worker step
     # can be watched: ensure() is the write, list() is what it reads.
     sub list {
-        my ($self, $kind) = @_;
+        my ($self, $kind, %opts) = @_;
         push @{ $self->{reads} }, "LIST $kind";
         return FakeList->new([ map { $self->{ocpnodes}{$_} }
             sort keys %{ $self->{ocpnodes} } ]) if $kind eq 'OCPNode';
+        # Every Node list but one by label: the control plane, Ready.
+        return FakeList->new([ ReadyNode->new('cortex') ])
+            if $kind eq 'Node' && !defined $opts{labelSelector};
         return FakeList->new([]);
     }
 
@@ -902,9 +918,10 @@ subtest 'k26: no workers in ocp.yaml, path unchanged' => sub {
     # One list stays: a worker added with `ocp node add` that went Failed is
     # named even when ocp.yaml lists no workers (k231, lab note 18).
     # The other is the host probes naming the workers they skipped (k234),
-    # and the third the Failed control-plane check (k447).
-    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 3,
-        'OCPNodes are listed for the host-probe warning and the two Failed checks, nothing more';
+    # the third the Failed control-plane check (k447), and the fourth the
+    # control-plane Ready check leaving the Failed ones to it (k417).
+    is scalar(grep { $_ eq 'LIST OCPNode' } @{ $r->{reads} }), 4,
+        'OCPNodes are listed for the host-probe warning, the two Failed checks and the Ready check, nothing more';
     ok !touched($r, '_drive_workers') && !touched($r, '_ensure_robocop')
         && !touched($r, '_wait_robocop_ready'), 'no worker step';
     unlike $r->{out}, qr/worker/i, 'and no worker line in the output';

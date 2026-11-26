@@ -117,7 +117,9 @@ package FakeProv {
 # loop exits at once and never sleeps.
 package FakeCond   { sub new { bless { t => $_[1], s => $_[2] }, $_[0] } sub type { $_[0]{t} } sub status { $_[0]{s} } }
 package FakeStatus { sub conditions { [ FakeCond->new('Ready', 'True') ] } }
-package FakeNodeObj { sub status { bless {}, 'FakeStatus' } }
+# Named after the control plane: the Ready wait judges its Node by name (k417).
+package FakeNodeObj { sub status { bless {}, 'FakeStatus' } sub metadata { bless {}, 'FakeNodeMeta' } }
+package FakeNodeMeta { sub name { 'police1' } }
 package FakeNodeList { sub items { [ bless {}, 'FakeNodeObj' ] } }
 package FakeApi {
     sub _request { 1 }

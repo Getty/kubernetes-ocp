@@ -38,6 +38,12 @@ Revision history for OCP
       location, also after `--pins-stdin`, and a 599 reason once: the registry
       DNS and NFD warnings, the GPU Operator, AMD GPU, LB-IPAM, node and
       robocop steps.
+    - `ocp apply` on an existing cluster waits up to 600 s for every control
+      plane and counts a NotReady one (APPLY INCOMPLETE, exit 1); both waits
+      judge the Node by the control plane's name; the first control plane's
+      OCPNode is Ready only over a Ready Node, else Joining with the reason;
+      a first deploy over a NotReady control plane ends at the banner naming
+      it instead of dying in the registry step.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

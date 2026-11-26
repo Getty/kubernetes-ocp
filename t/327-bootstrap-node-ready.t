@@ -101,9 +101,14 @@ my $CNI_DOWN = 'container runtime network not ready: NetworkReady=false '
     package BootStatus;
     sub new        { bless { c => $_[1] }, $_[0] }
     sub conditions { $_[0]{c} }
+    # The one Node is otho, the control plane's own: since k417 the wait
+    # judges the Node by that name (t/417 holds a list with others in it).
+    package BootMeta;
+    sub name { 'otho' }
     package BootNode;
-    sub new    { bless { c => $_[1] }, $_[0] }
-    sub status { BootStatus->new($_[0]{c}) }
+    sub new      { bless { c => $_[1] }, $_[0] }
+    sub status   { BootStatus->new($_[0]{c}) }
+    sub metadata { bless {}, 'BootMeta' }
     package BootList;
     sub new   { my ($c, @n) = @_; bless { n => [ @n ] }, $c }
     sub items { $_[0]{n} }
@@ -327,14 +332,14 @@ subtest 'k327: the API connectivity check says its failure on STDERR' => sub {
 
 subtest 'k327: node_not_ready_why' => sub {
     my $why = \&OCP::Cmd::Apply::Bootstrap::node_not_ready_why;
-    is $why->(undef, "could not read Nodes: boom\n"), '; the last read failed: could not read Nodes: boom',
+    is $why->(undef, "could not read Nodes: boom\n", 'otho'), '; the last read failed: could not read Nodes: boom',
         'a failed read wins, its newline dropped';
     is $why->(BootList->new(BootNode->new([ BootCond->new(type => 'Ready', status => 'True') ])),
-              "could not read Nodes: boom\n"),
+              "could not read Nodes: boom\n", 'otho'),
         '; the last read failed: could not read Nodes: boom', '... over any list';
-    is $why->(undef, ''), ': no Node listed', 'undef (a 404), no failure: no Node listed';
-    is $why->(BootList->new(BootNode->new([])), undef), ': it reports no Ready condition', 'no conditions';
-    is $why->(BootList->new(BootNode->new([ BootCond->new(type => 'Ready', status => 'False', reason => 'R', message => '') ])), undef),
+    is $why->(undef, '', 'otho'), ': no Node listed', 'undef (a 404), no failure: no Node listed';
+    is $why->(BootList->new(BootNode->new([])), undef, 'otho'), ': it reports no Ready condition', 'no conditions';
+    is $why->(BootList->new(BootNode->new([ BootCond->new(type => 'Ready', status => 'False', reason => 'R', message => '') ])), undef, 'otho'),
         ': Ready is False (R)', 'an empty message is left out';
 };
 

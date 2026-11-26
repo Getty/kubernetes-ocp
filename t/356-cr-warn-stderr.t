@@ -125,8 +125,9 @@ sub cp_ocpnode {
 }
 
 subtest 'k356 ensure_cp_ocpnode: an unwritten status is a [WARN] on STDERR, with its cause' => sub {
+    # No Node registered: since k417 the phase is Joining, not Ready (t/417).
     my $r = cp_ocpnode();
-    is $r->{out}, "  [ok] ensured OCPNode/police1 (control-plane, Ready)\n", 'control: the [ok] line on STDOUT';
+    is $r->{out}, "  [ok] ensured OCPNode/police1 (control-plane, Joining)\n", 'control: the [ok] line on STDOUT';
     is $r->{err}, '', 'control: nothing on STDERR';
 
     $r = cp_ocpnode(status_dies => { police1 => $FORBIDDEN });
@@ -147,7 +148,8 @@ subtest 'k363 ensure_cp_ocpnode: a Node it could not read is said in one line, w
     is $r->{err}, "  [WARN] OCPNode/police1 keeps the address it has: could not read Node 'police1': "
         . $SAID{$WRAPPED},
         'the [WARN] on STDERR: read_or_absent\'s words, the cause in one line, no location';
-    is $r->{out}, "  [ok] ensured OCPNode/police1 (control-plane, Ready)\n", 'STDOUT as before';
+    is $r->{out}, "  [ok] ensured OCPNode/police1 (control-plane, Joining)\n",
+        'STDOUT as before, the phase an unread Node gets since k417: Joining';
 };
 
 # --- 2. migrate_legacy_nodes -----------------------------------------------------

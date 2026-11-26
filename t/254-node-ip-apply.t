@@ -532,7 +532,10 @@ package BootProv {
 package BootCond   { sub new { bless { t => $_[1], s => $_[2] }, $_[0] } sub type { $_[0]{t} } sub status { $_[0]{s} } }
 package BootStatus { sub new { bless {}, shift } sub conditions { [ BootCond->new(Ready => 'True') ] } }
 # A typed Node: methods for the Ready wait, its struct for object_to_struct.
-package BootNode   { sub new { bless { struct => $_[1] }, $_[0] } sub status { BootStatus->new } }
+# Its name for the wait, which judges the Node by name (k417).
+package BootMeta   { sub name { $_[0]{name} } }
+package BootNode   { sub new { bless { struct => $_[1] }, $_[0] } sub status { BootStatus->new }
+                     sub metadata { bless { name => $_[0]{struct}{metadata}{name} }, 'BootMeta' } }
 package BootIO     { sub new { bless {}, shift } sub object_to_struct { $_[1]{struct} } }
 package BootApi {
     sub new      { my ($c, @nodes) = @_; bless { nodes => [ map { BootNode->new($_) } @nodes ] }, $c }
@@ -599,12 +602,17 @@ subtest 'bootstrap: a Ready police1 registered elsewhere -> [WARN] on STDERR' =>
     like $r->{out}, qr/\[ok\] Node is Ready/, 'the Ready line stands';
 };
 
-subtest 'bootstrap: no Node by its name -> the check that did not happen is said' => sub {
+# Until k417 the wait took the first Node listed, so a Ready police1 made otho
+# Ready and the node-ip check then said it found no Node named otho. The wait
+# now judges otho by name: with no such Node it is not Ready, and the [!!]
+# says so -- the node-ip check, which runs on a Ready control plane, does not
+# run at all.
+subtest 'bootstrap: no Node by its name -> not Ready, and no node-ip check' => sub {
     my $r = run_bootstrap(config_for($ONE_CP . "  node_ip: $ASKED\n"), node_with('police1', $ASKED));
     is $r->{died}, '', 'bootstrap ran' or return diag $r->{died};
-    is_deeply [ grep { /\[WARN\]/ } split /\n/, $r->{err} ],
-        [ "  [WARN] otho: InternalIP not checked against node_ip $ASKED: no Node named 'otho'" ],
-        'named, not passed';
+    is $r->{err}, "  [!!] Node otho not seen Ready within 600s: no Node named otho listed (listed: police1)\n",
+        'the [!!] names the Node it looked for and what it found instead';
+    unlike $r->{out}, qr/\[ok\] Node is Ready/, 'no Ready line';
 };
 
 # =============================================================================

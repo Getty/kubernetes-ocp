@@ -27,6 +27,7 @@ use OCP::SSH;
     my $left    = OCP::Cmd::Apply::CR::skip_newer_crd($cmd, $api, $crd_doc);
     OCP::Cmd::Apply::CR::ensure_providers($apply, $api, $config, $secrets);
     OCP::Cmd::Apply::CR::ensure_cp_ocpnode($apply, $api, $cp_info);
+    my @not_ready = OCP::Cmd::Apply::CR::check_control_plane_ready($apply, $api, $config);
     OCP::Cmd::Apply::CR::ensure_worker_ocpnodes($apply, $api, $config, \@names);
     my @crs     = OCP::Cmd::Apply::CR::worker_ocpnodes($config);
     my @missing = OCP::Cmd::Apply::CR::missing_worker_ocpnodes($apply, $api, $config);
@@ -69,6 +70,16 @@ L<OCP::Drift/crd_schema_diff>. A CRD it cannot read is not written over
 blind: it dies with the cause. C<skip_newer_crd> is that judgement for one
 CRD document, and C<ocp deploy-robocop> (L<OCP::Cmd::DeployRobocop>) makes it
 too.
+
+C<ensure_cp_ocpnode> writes the first control plane's OCPNode with the phase
+its Node has at that moment: C<Ready> when the Node named after the control
+plane is Ready, C<Joining> with a C<status.message> saying why when it is not
+or cannot be read (k417). C<check_control_plane_ready> is the reconcile
+path's judgement of every control plane F<ocp.yaml> asks for, with the proof
+the first deploy's wait uses (L<OCP::Cmd::Apply::Bootstrap/wait_nodes_ready>):
+one not seen Ready within 600 s is an C<[!!]> on STDERR, counted as
+C<control plane NAME> in C<{_failed_components}>. A control plane whose
+OCPNode is C<Failed> is left to C<check_control_plane_phases>.
 
 Every read here takes only a 404 for "not there"; any other failure
 is named with its cause, through L<OCP::Cmd::Apply::K8s>. C<migrate_legacy_nodes>
@@ -407,11 +418,22 @@ sub warn_install_time_changes {
 # only that: any other failed read dies with its cause (k330).
 sub k8s_node_ip {
     my ($self, $api, $name) = @_;
+    return node_address(k8s_node($self, $api, $name));
+}
 
+# The Node called $name as a plain hash, or undef for a 404; any other failed
+# read dies with its cause (k330).
+sub k8s_node {
+    my ($self, $api, $name) = @_;
     my $node = OCP::Cmd::Apply::K8s::read_or_absent("Node '$name'", sub { $api->get('Node', $name) })
         or return undef;
-    my $hash = ref($node) eq 'HASH' ? $node : $api->k8s->object_to_struct($node);
+    return ref($node) eq 'HASH' ? $node : $api->k8s->object_to_struct($node);
+}
 
+# The address of a Node hash (k8s_node_ip), or undef.
+sub node_address {
+    my ($hash) = @_;
+    return undef unless $hash;
     for my $want (qw(ExternalIP InternalIP)) {
         for my $addr (@{ $hash->{status}{addresses} // [] }) {
             return $addr->{address} if $addr->{type} eq $want && $addr->{address};
@@ -420,9 +442,36 @@ sub k8s_node_ip {
     return undef;
 }
 
-# Write an observational OCPNode CR for the just-bootstrapped control
-# plane with phase=Ready. CP reconcile is not in scope; this CR makes
-# `ocp node ls` show CP + workers uniformly.
+# Why a Node hash is not Ready, in the words node_not_ready_why
+# (OCP::Cmd::Apply::Bootstrap) uses for the wait -- or undef when its Ready
+# condition is True.
+sub node_hash_not_ready_why {
+    my ($name, $hash) = @_;
+    return "no Node named $name" unless $hash;
+    my ($ready) = grep { ($_->{type} // '') eq 'Ready' } @{ $hash->{status}{conditions} // [] };
+    return 'it reports no Ready condition' unless $ready;
+    return undef if ($ready->{status} // '') eq 'True';
+    my $detail = join ': ', grep { length } map { $_ // '' } $ready->{reason}, $ready->{message};
+    return 'Ready is ' . ($ready->{status} // '') . (length $detail ? " ($detail)" : '');
+}
+
+# Write an observational OCPNode CR for the first control plane. CP
+# reconcile is not in scope; this CR makes `ocp node ls` show CP + workers
+# uniformly.
+#
+# Its phase is what the Node says at the moment of the write (k417): Ready
+# when the Node named after the control plane has its Ready condition True,
+# Joining otherwise -- no Node, not Ready, or a Node that could not be read --
+# with status.message saying why. It used to be Ready unconditionally, so
+# `ocp node ls` showed police1 Ready over a Node that was not. Joining, of the
+# phases the CRD allows, is the one no reconciler acts on beyond waiting for
+# the Node: Pending would have robocop provision a server, Failed is terminal
+# and has `ocp apply` send the operator to `ocp node rm`. Robocop, where it
+# runs, re-reads a Joining OCPNode on its resync and writes Ready once the
+# Node is. Whether that is a failure of the run is not decided here: the
+# bootstrap's wait and the reconcile's check_control_plane_ready count it.
+# A Ready write drops a message an earlier write left (a merge patch: null
+# deletes it).
 #
 # Ownership: robocop only ever reconciles workers, and on a CLI-only cluster it
 # is not running at all — so nobody but `ocp apply` can report the state of the
@@ -468,14 +517,18 @@ sub ensure_cp_ocpnode {
     # Each [WARN] of this sub is counted in {_apply_warnings}: the banner
     # reads WITH WARNINGS, the exit code stays 0 (k367). Each says its cause
     # in one line, without a Perl source location (OCP::ErrorLine, k363).
-    my $ip = eval { k8s_node_ip($self, $api, $name) };
+    my ($ip, $not_ready);
+    my $node = eval { k8s_node($self, $api, $name) };
     if (my $err = $@) {
-        print STDERR "  [WARN] OCPNode/$name keeps the address it has: "
-            .OCP::ErrorLine::one_line($err)."\n";
+        my $line = OCP::ErrorLine::one_line($err);
+        print STDERR "  [WARN] OCPNode/$name keeps the address it has: $line\n";
         push @{ $self->{_apply_warnings} }, "OCPNode/$name address" if ref $self;
+        $not_ready = "its Node could not be read: $line";
     } else {
-        $ip //= $cp_info->{host};
+        $ip = node_address($node) // $cp_info->{host};
+        $not_ready = node_hash_not_ready_why($name, $node);
     }
+    my $phase = defined $not_ready ? 'Joining' : 'Ready';
 
     my $ok = eval {
         OCP::K8s->patch_status($api,
@@ -483,7 +536,8 @@ sub ensure_cp_ocpnode {
             name      => $name,
             namespace => $ns,
             status    => {
-                phase              => 'Ready',
+                phase              => $phase,
+                message            => defined $not_ready ? "Node $name not Ready: $not_ready" : undef,
                 ($ip ? (publicIP => $ip) : ()),
                 ($cp_info->{handed_node_ip} ? (nodeIP => $cp_info->{handed_node_ip}) : ()),
                 kubernetesNodeName => $name,
@@ -496,7 +550,7 @@ sub ensure_cp_ocpnode {
     # A status write that failed is a failure: its [WARN] goes to STDERR, with
     # the cause, and STDOUT claims no Ready (k356).
     if ($ok) {
-        print "  [ok] ensured OCPNode/$name (control-plane, Ready)\n";
+        print "  [ok] ensured OCPNode/$name (control-plane, $phase)\n";
     } else {
         print STDERR "  [WARN] ensured OCPNode/$name, but its status stayed unwritten: "
             .OCP::ErrorLine::one_line($@)."\n";
@@ -886,6 +940,74 @@ sub check_worker_phases {
     return @reported;
 }
 
+# $label into {_failed_components}, once: the closing "Apply did not complete"
+# line names each failed thing one time. A no-op for a class-method call.
+sub count_failed {
+    my ($self, $label) = @_;
+    return unless ref $self;
+    push @{ $self->{_failed_components} }, $label
+        unless grep { $_ eq $label } @{ $self->{_failed_components} // [] };
+    return;
+}
+
+# The control planes ocp.yaml asks for, by the name their Node registers
+# with: the first by cp_identity, police2+ on RKE2 by the names
+# ensure_control_plane_ocpnodes gives them (OCP::Node registers a joined node
+# under its OCPNode's name). k3s builds police1 only, by decision (k8).
+sub control_plane_names {
+    my ($config) = @_;
+    my @names = (OCP::Cmd::Apply::Bootstrap::cp_identity($config)->{name});
+    push @names, map { 'police' . ($_ + 1) } 1 .. $#{ $config->control_planes }
+        if ($config->distribution || 'rke2') eq 'rke2';
+    return @names;
+}
+
+# The reconcile path's judgement of the control planes (k417, the
+# maintainer's call of 2026-11-08): every control plane ocp.yaml asks for is
+# judged once, with the proof the first deploy's wait uses -- its Node, by
+# name, with the Ready condition True, waited for up to 600 s
+# (OCP::Cmd::Apply::Bootstrap::wait_nodes_ready). One that is Ready is
+# progress on STDOUT. One that is not is the bootstrap's [!!] on STDERR, with
+# what the API said last, counted as "control plane NAME": the run ends APPLY
+# INCOMPLETE and non-zero. Until k417 nothing on this path looked at a control
+# plane's Node: a rerun after a bootstrap whose police1 never got Ready could
+# end SUCCESSFULLY over it.
+#
+# A control plane whose OCPNode is Failed is left out: it is no node to wait
+# for, and check_control_plane_phases names it with the way back. A list of
+# the OCPNodes that fails leaves nobody out; that check says why. Returns the
+# names not seen Ready.
+sub check_control_plane_ready {
+    my ($self, $api, $config) = @_;
+
+    my %failed;
+    my $crs = eval {
+        OCP::Cmd::Apply::K8s::read_or_absent('OCPNodes',
+            sub { $api->list('OCPNode', namespace => 'ocp-system') });
+    };
+    for my $item ($crs ? @{ $crs->items // [] } : ()) {
+        my $h = $api->k8s->object_to_struct($item);
+        next unless ($h->{spec}{role} // '') eq 'control-plane';
+        $failed{ $h->{metadata}{name} } = 1 if ($h->{status}{phase} // '') eq 'Failed';
+    }
+
+    my @names = grep { !$failed{$_} } control_plane_names($config);
+    return () unless @names;
+
+    my $wait = OCP::Cmd::Apply::Bootstrap::wait_nodes_ready($self, $api, \@names);
+    my @not_ready;
+    for my $n (@names) {
+        if (exists $wait->{ready_after}{$n}) {
+            print "  [ok] control plane $n is Ready\n";
+            next;
+        }
+        print STDERR "  [!!] Node $n not seen Ready within $wait->{seconds}s$wait->{why}{$n}\n";
+        count_failed($self, "control plane $n");
+        push @not_ready, $n;
+    }
+    return @not_ready;
+}
+
 # Control-plane OCPNodes in phase Failed (k447): a police2 whose join was
 # refused -- for Cilium leftovers, say (k445) -- stays Failed, and neither
 # check_worker_phases nor warn_unlisted_failed_ocpnodes looks at a control
@@ -909,7 +1031,7 @@ sub check_control_plane_phases {
             . (length($h->{spec}{host} // '')        ? " --host $h->{spec}{host}"            : '');
         print STDERR "  [!!] control plane $n is Failed" . (length($msg // '') ? ": $msg" : '') . "\n";
         print STDERR "       the way back: ocp node rm $n --keep_machine, then $add\n";
-        push @{ $self->{_failed_components} }, "control plane $n" if ref $self;
+        count_failed($self, "control plane $n");
         push @reported, $n;
     }
     return @reported;

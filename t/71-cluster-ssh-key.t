@@ -1399,6 +1399,9 @@ subtest 'a declined remedy is not summarised as "up to date"' => sub {
         local *OCP::Cmd::Apply::_check_cluster_health = sub {
             { critical => [], warnings => [], starting => [] } };
         local *OCP::Cmd::Apply::_stamp_ocp_version = sub { };
+        # FakeNodeApi lists nothing; the control planes' Ready wait (k417)
+        # is t/417's.
+        local *OCP::Cmd::Apply::CR::check_control_plane_ready = sub { () };
         # The AMD GPU stack (k251) is a step of its own module, not a
         # forwarder: nothing to do here, like the writers below.
         local *OCP::Cmd::Apply::AMDGPU::setup = sub { () };
@@ -1449,6 +1452,9 @@ subtest 'cert-manager and Gateway setup failures are [!!] on STDERR and count (k
         local *OCP::Cmd::Apply::_check_cluster_health = sub {
             { critical => [], warnings => [], starting => [] } };
         local *OCP::Cmd::Apply::_stamp_ocp_version = sub { };
+        # FakeNodeApi lists nothing; the control planes' Ready wait (k417)
+        # is t/417's.
+        local *OCP::Cmd::Apply::CR::check_control_plane_ready = sub { () };
         for my $w (@writers) {
             *{"OCP::Cmd::Apply::$w"} = sub { 0 };
         }

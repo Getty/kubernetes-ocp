@@ -291,8 +291,12 @@ subtest 'k319 NFD: the label wait dies with its last failed read' => sub {
     sub reason { undef } sub message { undef }
     package BootStatus;
     sub new { bless { s => $_[1] }, $_[0] } sub conditions { [ BootCond->new($_[0]{s}) ] }
+    # otho's own Node: the Ready wait judges the Node by name (k417).
+    package BootMeta;
+    sub name { 'otho' }
     package BootNode;
     sub new { bless { s => $_[1] }, $_[0] } sub status { BootStatus->new($_[0]{s}) }
+    sub metadata { bless {}, 'BootMeta' }
     package BootIO;
     sub new { bless {}, shift } sub object_to_struct { +{ metadata => { name => 'otho' } } }
     # list('Node') answers from {nodes}: a Ready condition status ('True',

@@ -248,13 +248,16 @@ sub execute {
     # operator, cert-manager, Cilium Gateway, LB-IPAM, CR layer, workers.
     # Returns the final step counter so the health gate prints the right
     # "Step N: Verify cluster health" line. See OCP::Cmd::Apply::Deploy.
-    my $step = OCP::Cmd::Apply::Deploy::deploy($self, {
+    # On a control plane the bootstrap did not see Ready, a step that must
+    # succeed stops the deploy, not the run (k417): see deploy_after_bootstrap.
+    my $step = OCP::Cmd::Apply::Deploy::deploy_after_bootstrap($self, {
         config       => $config,
         secrets      => $secrets,
         api          => $b->{api},
         cp_name      => $b->{cp_name},
         cp_ip        => $b->{cp_ip},
         cp_node_ip   => $b->{node_ip},
+        cp_ready     => $b->{ready},
         provider     => $provider,
         ssh_key_path => $b->{ssh_key_path},
         deploy_step  => $deploy_step,
@@ -603,6 +606,26 @@ Deploys the control plane using the admin-ssh key (requires PIN2).
 B<Security:> Control planes are SACRED\! Only admin-key can deploy them.
 Workers are managed by robocop controller using robo-key.
 
+=head1 BANNER AND EXIT CODE
+
+Both paths, the first deploy and the reconcile of a cluster that exists, end
+in L<OCP::Cmd::Apply::Health/finish>: one banner on STDOUT, one exit code.
+C<SUCCESSFULLY!> and C<WITH WARNINGS> exit 0. C<APPLY INCOMPLETE> exits 1: a
+component failed, each named on STDERR where it happened and again in the
+closing C<Apply did not complete: ... failed.> line. A control plane whose
+Node was not seen Ready within 600 s is one, on both paths (k336, k417).
+C<CLUSTER IS NOT HEALTHY> exits 1: a pod in C<kube-system> is in a state
+waiting cannot heal.
+
+A run that dies before the banner ends C<Error: ...> on STDERR, exit 1: a
+refused F<ocp.yaml>, a wrong PIN, no F<kubeconfig.yaml>, a failed install, or
+a step the first deploy cannot go on without (the registry, NFD,
+cert-manager, the Gateway). When the bootstrap did not see its control plane
+Ready, that step's death is the node's doing and ends at the banner instead,
+C<APPLY INCOMPLETE>, the control plane named first
+(L<OCP::Cmd::Apply::Deploy/deploy_after_bootstrap>, k417). C<--dry-run>
+passes no verdict and exits 0.
+
 =opt clean_cilium_residue
 
     ocp apply --clean_cilium_residue
@@ -637,8 +660,9 @@ reboot.
 Bootstraps the first control plane imperatively, then switches to a CR-first
 flow: ensures the C<OCPNode>/C<OCPNodeProvider> CRDs, writes one
 C<OCPNodeProvider> (and backing Secret for Hetzner) per unique provider
-referenced in C<ocp.yaml>, writes an observational C<OCPNode> for the CP with
-C<phase: Ready>, and writes a C<Pending> C<OCPNode> per worker-pool entry.
+referenced in C<ocp.yaml>, writes an observational C<OCPNode> for the CP --
+C<phase: Ready> when its Node is Ready, C<Joining> with the reason when it is
+not (k417) -- and writes a C<Pending> C<OCPNode> per worker-pool entry.
 
 If C<robocop> is enabled (see L<OCP::Config/robocop_enabled>) the robocop
 Deployment is applied and given 60s to become ready; on success the CLI simply

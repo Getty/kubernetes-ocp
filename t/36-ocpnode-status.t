@@ -202,9 +202,10 @@ subtest 'apply gives the control plane a real phase and IP' => sub {
     my $api = ApplyApi->new(
         node => {
             metadata => { name => 'cortex' },
+            # Ready: since k417 the phase is what the Node says (t/417).
             status   => { addresses => [
                 { type => 'InternalIP', address => '10.230.30.155' },
-            ] },
+            ], conditions => [ { type => 'Ready', status => 'True' } ] },
         },
     );
 
@@ -266,9 +267,10 @@ subtest 'the three views agree: apply, the CR, and node ls' => sub {
     my $api = ApplyApi->new(
         node => {
             metadata => { name => 'cortex' },
+            # Ready: since k417 the phase is what the Node says (t/417).
             status   => { addresses => [
                 { type => 'InternalIP', address => '10.230.30.155' },
-            ] },
+            ], conditions => [ { type => 'Ready', status => 'True' } ] },
         },
     );
     capture_stdout {
