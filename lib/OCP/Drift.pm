@@ -2097,7 +2097,8 @@ workers' drift is unknown rather than reported clean.
 =cut
 
 # The machines a host_selector names. 'control_planes': the CPs from ocp.yaml,
-# addressed by their pinned public_ip (or host). 'machines': those plus every
+# addressed by their pinned public_ip -- private_ip under address: private --
+# (or host). 'machines': those plus every
 # worker OCPNode whose provider is ssh or local -- the machines OCP reaches by
 # an address of its own (status.publicIP, else spec.host); a Hetzner server or a
 # node robocop alone can reach is not probed (k234: a worker with the bare
@@ -2119,8 +2120,11 @@ sub _probe_hosts {
         push @hosts, $host if defined $host && length $host && $host ne '-' && !$seen{$host}++;
     };
 
+    # Under address: private (k453) a control plane is reached at its
+    # private_ip, as join_host, cluster_status and cp_tls_sans read it (k474).
     for my $cp (@{ $self->config->control_planes }) {
-        $add->($cp->{public_ip} // $cp->{host});
+        my $ip = $self->config->uses_private_address($cp) ? $cp->{private_ip} : $cp->{public_ip};
+        $add->($ip // $cp->{host});
     }
 
     if ($selector eq 'machines') {
@@ -2185,7 +2189,8 @@ sub probe_targets {
     my @hosts = $detector->probe_targets;
 
 Every machine a host-side probe (L</rex_probe_drift>) would look at, once each:
-the control planes of F<ocp.yaml> by C<public_ip> (or C<host>), and the worker
+the control planes of F<ocp.yaml> by C<public_ip> (C<private_ip> under
+C<address: private>; or C<host>), and the worker
 OCPNodes whose provider is C<ssh> or C<local> for the probes that select all
 machines. The command names them when it had to skip the probes. A failed
 OCPNode list leaves the workers out, with the cause carped once.

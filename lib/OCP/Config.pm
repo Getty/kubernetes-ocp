@@ -1915,6 +1915,7 @@ sub _worker_lines {
             . _shown_value($workers));
         $workers = [];
     }
+    my $cp_network = $self->_private_join_network;
     my $pool_n = 0;
     for my $w (@$workers) {
         $pool_n++;
@@ -2006,6 +2007,17 @@ sub _worker_lines {
         push @lines, _tagged(undef, map { "$where: $_->[0] $_->[1]" }
             _network_key_errors($w, $wprov, 'worker pool'));
 
+        # Under address: private the workers join the first control plane at
+        # its address in its Hetzner network (join_host, k453), which a
+        # server outside that network cannot reach: a hetzner pool there
+        # names a network (k474). A pool on address: private without one has
+        # its line above.
+        push @lines, _tagged(undef, "$where: network required -- the first control plane is on "
+            . "address: private, so its workers join it at its address in the Hetzner network "
+            . "'$cp_network', which a server outside that network cannot reach; add network: to the pool")
+            if defined $cp_network && !ref $wprov && $wprov eq 'hetzner'
+            && !defined $w->{network} && !$self->uses_private_address($w);
+
         # node_ip (k254) is one machine's address, so a pool takes none; nor
         # does an entry of its nodes list, which apply does not read it from.
         # Refused rather than ignored: ignored, the node would join on its
@@ -2044,6 +2056,17 @@ sub _worker_lines {
 sub _control_planes_shared {
     my ($self) = @_;
     return ref $self->spec->{control_planes} eq 'HASH' && @{ $self->control_planes } > 1 ? 1 : 0;
+}
+
+# The Hetzner network the workers join the first control plane in (k474):
+# its network: when it is on address: private, else undef. A first control
+# plane whose network: is no name has its own line (_network_key_errors).
+sub _private_join_network {
+    my ($self) = @_;
+    my $cp = $self->control_planes->[0];
+    return undef unless $self->uses_private_address($cp);
+    my $network = $cp->{network};
+    return defined $network && !ref $network && length $network ? $network : undef;
 }
 
 # How an error line names worker pool $n (1-based): by its name, or by its

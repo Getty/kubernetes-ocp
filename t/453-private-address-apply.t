@@ -159,7 +159,7 @@ subtest 'OCPNodes carry the pool\'s and police2+\'s network keys' => sub {
         workers => [
             { name => 'w', provider => 'hetzner', server_type => 'cpx32', nodes => 2,
               network => 'cai-live', firewalls => [ 'cai-live-fw' ], address => 'private' },
-            { name => 'p', provider => 'hetzner', server_type => 'cpx32' },
+            { name => 'p', provider => 'hetzner', server_type => 'cpx32', network => 'cai-live' },
         ],
     });
     is_deeply [ $config->validate ], [], 'a valid ocp.yaml';
@@ -170,7 +170,18 @@ subtest 'OCPNodes carry the pool\'s and police2+\'s network keys' => sub {
         is_deeply $cr->{spec}{firewalls}, [ 'cai-live-fw' ], "$cr->{metadata}{name}: spec.firewalls";
         is $cr->{spec}{address}, 'private', "$cr->{metadata}{name}: spec.address";
     }
-    ok !exists $crs[2]{spec}{$_}, "a pool without them: no spec.$_" for qw( network firewalls address );
+    is $crs[2]{spec}{network}, 'cai-live', 'a pool with a network alone: spec.network';
+    ok !exists $crs[2]{spec}{$_}, "and no spec.$_" for qw( firewalls address );
+
+    # A pool without any of them -- beside a control plane on the public
+    # address, as a pool beside a private one needs network: (k474).
+    my $plain = project({
+        control_planes => { %CP },
+        workers        => [ { name => 'p', provider => 'hetzner', server_type => 'cpx32' } ],
+    });
+    is_deeply [ $plain->validate ], [], 'a valid ocp.yaml';
+    my ($bare) = OCP::Cmd::Apply::CR::worker_ocpnodes($plain);
+    ok !exists $bare->{spec}{$_}, "a pool without them: no spec.$_" for qw( network firewalls address );
 
     package EnsureApi { sub new { bless {}, shift } sub ensure { push @main::ENSURED, $_[1] } }
     our @ENSURED;
