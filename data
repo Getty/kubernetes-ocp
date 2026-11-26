@@ -1,0 +1,22 @@
+---
+class: standard
+completed: 2026-11-26T18:23:02Z
+created: 2026-11-26T17:58:43Z
+id: 475
+priority: medium
+started: 2026-11-26T18:19:35Z
+status: done
+tags:
+- hetzner
+- drift
+title: 'spec_drift compares only public_ip: possible false drift under address: private'
+updated: 2026-11-26T18:23:11Z
+---
+
+Found while fixing k474. OCP::Drift spec_drift (~line 835) compares only public_ip against the recorded state. Under address: private (k453) status.publicIP holds the private address and private_ip is the pinned key, so a control plane may show false public_ip drift, or a changed private_ip may go unreported. Check what status records under address: private, then compare the address uses_private_address picks. Network-free test. Lane: ocp-state-worker.
+
+2026-11-26 18:21 Finding: no bug. spec_drift reads status.yaml nodes[].public_ip, and nothing in lib/ or bin/ writes status nodes: since the CR-first apply 8f2ce44 (D1) removed Config->save_node_status's last caller; before that it only recorded workers, under publicIp. The private address k453 reports goes to the OCPNode CR's status.publicIP, which spec_drift does not read. So no recorded control-plane address exists to hold private_ip against, and none can hold a private address under public_ip: no false public_ip drift, and private_ip has nothing recorded to drift from. Also found: spec_drift is effectively dead for every address mode (input never written); whether to drop it or point it at the CP OCPNode CR is a separate decision for the dispatcher.
+
+2026-11-26 18:22 No code change. Added t/475-spec-drift-private-address.t as regression guard: address: private with both/only-private pinned gives no spec drift on the status OCP writes; a recorded public_ip is still held against the pinned public_ip (public case unchanged); and a source guard fails if anything in lib/ or bin/ starts writing status nodes: (mutation-checked: a temp lib module calling save_node_status turns it red). make test TESTS='t/475-*.t t/474-private-address-follow-ups.t t/25-drift.t t/453-*.t': 6 files, 208 tests, PASS.
+
+Committed as c468260: regression test only, no code change. Follow-up (spec_drift dead for all address modes) is filed as a separate card.
