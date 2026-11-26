@@ -81,7 +81,8 @@ worker with it instead of reporting its CR as not found.
 
 Those two C<[WARN]>s, and the ones for an OCPNode status left unwritten
 (C<ensure_cp_ocpnode>, C<migrate_legacy_nodes>) and a robocop pod that could
-not be listed or deleted (C<retire_unannotated_robocop_pods>), are counted in
+not be listed or deleted (C<retire_unannotated_robocop_pods>), and a Failed
+OCPNode that F<ocp.yaml> does not list (C<warn_unlisted_failed_ocpnodes>), are counted in
 the apply's C<{_apply_warnings}>, as a worker not Ready yet is: the closing
 banner reads WITH WARNINGS, and the exit code stays as it was
 (L<OCP::Cmd::Apply::Health>). So is robocop not seen Ready, once, however many
@@ -816,9 +817,10 @@ sub missing_worker_ocpnodes {
 
 # Worker OCPNodes in phase Failed that ocp.yaml does not list -- one made by
 # `ocp node add`, say. `ocp apply` checks the spec, so these do not count for
-# its exit (k231), nor in {_apply_warnings}; but a Failed machine nobody is
-# told about is invisible, so each is named as a [WARN] with the way out. A
-# Failed machine is something wrong, so the line goes to STDERR (k368). A
+# its exit (k231); but a Failed machine nobody is told about is invisible, so
+# each is named as a [WARN] with the way out. A Failed machine is something
+# wrong, so the line goes to STDERR (k368) and is counted in
+# {_apply_warnings}: the banner reads WITH WARNINGS (k415). A
 # worker is "listed" by name or by host, the way missing_worker_ocpnodes
 # matches. Dies when the list fails; returns the names it warned about.
 sub warn_unlisted_failed_ocpnodes {
@@ -838,6 +840,7 @@ sub warn_unlisted_failed_ocpnodes {
         my $n = $h->{metadata}{name};
         next if $name{$n} || $host{ lc($h->{spec}{host} // '') };
         print STDERR "  [WARN] OCPNode $n is Failed and not in ocp.yaml (ocp node rm $n)\n";
+        push @{ $self->{_apply_warnings} }, "OCPNode $n" if ref $self;
         push @warned, $n;
     }
     return @warned;

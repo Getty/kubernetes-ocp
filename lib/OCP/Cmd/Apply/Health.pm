@@ -190,15 +190,18 @@ sub _no_amd64_cp {
 
 =method robocop_arch_warning
 
-C<< robocop_arch_warning($apply, $api) >> returns a C<[WARN]> line when robocop
-is enabled and the cluster's control-plane Nodes include no amd64 one, else
-undef. Reads the Nodes tolerantly: a failed or empty list warns nothing.
+C<< robocop_arch_warning($apply, $api, $config) >> returns a C<[WARN]> line
+when robocop is enabled and the cluster's control-plane Nodes include no amd64
+one, else undef. Reads the Nodes tolerantly: a failed or empty list warns
+nothing. C<$config> is the apply's L<OCP::Config>; without it
+C<< $apply->config >> is asked.
 
 =cut
 
 sub robocop_arch_warning {
-    my ($self, $api) = @_;
-    return unless $self->config->robocop_enabled;
+    my ($self, $api, $config) = @_;
+    $config //= $self->config;
+    return unless $config->robocop_enabled;
     return unless _no_amd64_cp($api);
     return '[WARN] robocop image is amd64 only, but no control-plane Node is amd64: '
         . 'the robocop pod stays Pending and worker joins through robocop do not run. '
@@ -284,8 +287,9 @@ sub print {
     for my $p (@{ $health->{critical} }) {
         printf STDERR "  [!!] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
     }
+    # A pod that is not well is something wrong, if not fatal: STDERR (k415).
     for my $p (@{ $health->{warnings} }) {
-        printf "  [WARN] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
+        printf STDERR "  [WARN] %s/%s — %s\n", $p->{namespace}, $p->{name}, $p->{reason};
     }
     for my $p (@{ $health->{starting} }) {
         printf "  [..] %s/%s — still starting\n", $p->{namespace}, $p->{name};
@@ -353,15 +357,17 @@ sub finish {
     my $health = eval { $self->_check_cluster_health($api) };
     unless ($health) {
         # A malfunctioning health check must not be the thing that fails a
-        # deploy that otherwise went fine.
-        print "  [WARN] could not verify cluster health: $@";
+        # deploy that otherwise went fine. Said on STDERR (k415).
+        print STDERR "  [WARN] could not verify cluster health: $@";
         $health = { critical => [], warnings => [], starting => [] };
     }
     $self->_print_health($health);
 
-    my $arch = eval { robocop_arch_warning($self, $api) };
+    # With the apply's own config (k415): OCP::Cmd::Apply has no ->config, so
+    # the eval used to swallow the missing method and the line never came.
+    my $arch = eval { robocop_arch_warning($self, $api, $config) };
     if ($arch) {
-        print "  $arch\n";
+        print STDERR "  $arch\n";
         push @{ $self->{_apply_warnings} }, 'robocop arch';
     }
 

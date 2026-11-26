@@ -22,7 +22,7 @@ use OCP::Rex;
 #
 # N18 a Failed worker OCPNode outside ocp.yaml: named, not counted for the
 #     exit. On STDERR since k368 (decision 2026-11-06): a Failed machine is
-#     something wrong.
+#     something wrong. Counted in {_apply_warnings} since k415.
 # N19 a pool host that already belongs to another OCPNode: counted.
 # N22 a Rex warning in the successful CLI join path: [WARN] on STDOUT.
 # 4b  Health.pm critical pods, 4c robocop's key label, 4d the PIN2 explanation.
@@ -87,6 +87,8 @@ subtest 'N18: a Failed worker outside ocp.yaml is named on STDERR, not counted' 
         'one WARN line on STDERR, with the way out';
     is $out, '', 'nothing on STDOUT';
     ok !$apply->{_failed_components}, 'and it does not count for the exit';
+    is_deeply $apply->{_apply_warnings}, [ 'OCPNode ghost' ],
+        'but it counts as a warning: the banner reads WITH WARNINGS (k415)';
 
     # No workers in ocp.yaml at all: the same node is still not invisible.
     ($out, $err) = capture_both(sub {
@@ -160,7 +162,10 @@ subtest '4b: critical pods are [!!] on STDERR' => sub {
     my ($out, $err) = capture_both(sub { OCP::Cmd::Apply::Health::print(undef, $health) });
     like   $err, qr{^  \[!!\] kube-system/cilium-x — CrashLoop$}m, 'on STDERR';
     unlike $out, qr/\[!!\]/, 'not on STDOUT';
-    like   $out, qr{\[WARN\] a/b}, 'warnings stay narrative';
+    # Was 'warnings stay narrative' (STDOUT); k415 moved every [WARN] of the
+    # apply lane to STDERR.
+    like   $err, qr{^  \[WARN\] a/b — slow$}m, 'warnings on STDERR too (k415)';
+    unlike $out, qr/\[WARN\]/, 'not on STDOUT';
 };
 
 subtest 'source claims: Bootstrap, Init, ClusterKey, robocop label' => sub {

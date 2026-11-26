@@ -106,13 +106,14 @@ sub execute {
 
     print "Cluster: ", $config->name, "\n\n";
 
-    # k197: the robocop image is amd64 only; say so before any work starts.
+    # k197: the robocop image is amd64 only; say so before any work starts,
+    # on STDERR (k415).
     if (my $arch = $config->robocop_arch_warning) {
-        print "$arch\n\n";
+        print STDERR "$arch\n";
         push @{ $self->{_apply_warnings} }, 'robocop arch';
     }
 
-    # k325: an even control-plane count, on STDERR (k368; robocop's: k415).
+    # k325: an even control-plane count, on STDERR (k368).
     if (my $even = $config->even_control_planes_warning) {
         print STDERR "$even\n";
         push @{ $self->{_apply_warnings} }, 'even control planes';

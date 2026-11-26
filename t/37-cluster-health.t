@@ -187,8 +187,9 @@ subtest 'the health report is printed, not swallowed' => sub {
     }
     like $err, qr/\[!!\].*kube-system\/coredns.*CrashLoopBackOff/,
         'critical finding printed loudly, on STDERR (k231)';
-    like $out, qr/\[WARN\].*gpu-operator\/nvidia-dcgm.*ImagePullBackOff/,
-        'warning printed as a warning';
+    like $err, qr/\[WARN\].*gpu-operator\/nvidia-dcgm.*ImagePullBackOff/,
+        'warning printed as a warning, on STDERR (k415)';
+    unlike $out, qr/\[WARN\]/, 'not on STDOUT';
 };
 
 subtest 'the success banner is not claimed over a broken cluster' => sub {

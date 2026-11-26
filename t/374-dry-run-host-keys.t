@@ -292,11 +292,12 @@ for my $case (
         is_deeply listing($dir), $before, 'the project directory, .ocp/ included, as it was'
             or diag explain listing($dir);
         ok(!OCP::KnownHosts->new(file => known_hosts($dir))->knows($HOST), 'no host key recorded');
-        like $r->{out}, $SKIP_LINE, 'the skip line says why: no recorded key, and a dry run records none';
-        like $r->{out}, qr/\Q${\ known_hosts($dir) }\E/, 'naming the file';
+        like $r->{err}, $SKIP_LINE, 'the skip line says why: no recorded key, and a dry run records none';
+        like $r->{err}, qr/\Q${\ known_hosts($dir) }\E/, 'naming the file';
+        unlike $r->{out}, qr/host probes skipped/, 'on STDERR, not STDOUT (k415)';
         is_deeply $r->{prompts}, [], 'no PIN: the project key is on disk';
         like $r->{out}, qr/\[Dry run - no changes made\]\n\z/, 'to its end';
-        is $r->{err}, '', 'nothing on STDERR';
+        is $r->{err} =~ s/$SKIP_LINE\n//r, '', 'nothing else on STDERR';
         is_deeply $r->{writes}, [], 'nothing written to the cluster';
     };
 }
@@ -310,7 +311,7 @@ subtest 'a host whose key is recorded: probed against it, nothing written' => su
 
     is $r->{died}, '', 'no death' or diag $r->{died};
     is_deeply $r->{contacts}, [ "rex $HOST" ], 'probed over rex, which verifies; no ssh to record a key';
-    unlike $r->{out}, qr/host probes skipped/, 'no skip line';
+    unlike $r->{out} . $r->{err}, qr/host probes skipped/, 'no skip line';
     like $r->{out}, qr/^  \[ok\] No drift detected$/m, 'the probe ran and found nothing';
     is $r->{err}, '', 'nothing on STDERR';
     is_deeply listing($dir), $before, 'the project directory as it was'
@@ -344,10 +345,10 @@ subtest 'a clone: PIN1 opens the robo key, the skip line names the missing host 
 
     is $r->{died}, '', 'no death' or diag $r->{died};
     is_deeply $r->{prompts}, [ 'Enter PIN1 (cluster access): ' ], 'PIN1 asked, once';
-    like $r->{out}, $SKIP_LINE, 'skipped: no recorded host key, and a dry run records none';
-    unlike $r->{out}, qr/no SSH key to probe with/, 'not for want of a key: the robo key is in reach';
+    like $r->{err}, $SKIP_LINE, 'skipped: no recorded host key, and a dry run records none (STDERR, k415)';
+    unlike $r->{out} . $r->{err}, qr/no SSH key to probe with/, 'not for want of a key: the robo key is in reach';
     is_deeply $r->{contacts}, [], 'the machine was not contacted';
-    is $r->{err}, '', 'nothing on STDERR';
+    is $r->{err} =~ s/$SKIP_LINE\n//r, '', 'nothing else on STDERR';
     is_deeply listing($dir), $before, 'the project directory as it was: no .ocp/'
         or diag explain listing($dir);
 };
@@ -362,7 +363,7 @@ subtest 'a clone whose .ocp/ holds the host key and no age key: probed with the 
     is $r->{died}, '', 'no death' or diag $r->{died};
     is_deeply $r->{prompts}, [ 'Enter PIN1 (cluster access): ' ], 'PIN1 asked, once';
     is_deeply $r->{contacts}, [ "rex $HOST" ], 'probed';
-    unlike $r->{out}, qr/host probes skipped/, 'no skip line';
+    unlike $r->{out} . $r->{err}, qr/host probes skipped/, 'no skip line';
     is $r->{err}, '', 'nothing on STDERR';
     is_deeply listing($dir), $before, 'the project directory as it was: no age key in .ocp/'
         or diag explain listing($dir);

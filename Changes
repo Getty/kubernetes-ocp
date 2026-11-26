@@ -1,6 +1,12 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - Every `[WARN]` of `ocp apply` and `ocp deploy-image` goes to STDERR:
+      the robocop arch warning, the ad-hoc image override, a pod that is not
+      well, a health check that could not run and the skipped host probes.
+      The robocop arch warning at the end of an apply now actually prints,
+      and a Failed OCPNode that `ocp.yaml` does not list makes the closing
+      banner read WITH WARNINGS.
     - A cached `.ocp/age.key` that does not belong to the project is refused
       up front, naming the recipient it opens and the one each file needs,
       with the way out (move the cache aside for PIN1 to unlock

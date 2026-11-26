@@ -228,11 +228,18 @@ subtest 'a health check that cannot run does not fail the apply' => sub {
         *ExplodingApi::list = sub { die "connection refused\n" };
         *ExplodingApi::k8s  = sub { $_[0] };
     }
-    my ($out, $rc) = capture_stdout {
-        $apply->_finish_apply(config => FakeConfig->new, api => $api);
-    };
+    my $err = '';
+    open my $efh, '>', \$err or die $!;
+    my ($out, $rc);
+    {
+        local *STDERR = $efh;
+        ($out, $rc) = capture_stdout {
+            $apply->_finish_apply(config => FakeConfig->new, api => $api);
+        };
+    }
     is $rc, 0, 'a broken check is not itself a deploy failure';
-    like $out, qr/\[WARN\] could not verify cluster health/, 'and says so';
+    like $err, qr/\[WARN\] could not verify cluster health/, 'and says so, on STDERR (k415)';
+    unlike $out, qr/could not verify cluster health/, 'not on STDOUT';
 };
 
 #
@@ -545,6 +552,13 @@ my (@driven, $key_asked);
     *OCP::Cmd::Apply::wait_seconds = sub { };
 }
 
+# STDERR without the host-probe skip line, a [WARN] on STDERR since k415:
+# this harness has no SSH key to probe with, so every reconcile prints it.
+sub err_without_probe_skip {
+    my ($r) = @_;
+    return $r->{err} =~ s/^  \[WARN\] host probes skipped on .*\n//mr;
+}
+
 sub reconcile {
     my (%opt) = @_;
 
@@ -848,7 +862,7 @@ subtest 'k26: a worker without an OCPNode is created, the others are left alone'
     like $r->{out}, qr/pinky/, 'progress names the worker being created';
     like $r->{out}, qr/1 component\(s\) updated/,
         'a worker brought up counts as an update in the summary';
-    is $r->{err}, '', 'nothing went wrong, nothing on STDERR';
+    is err_without_probe_skip($r), '', 'nothing went wrong, nothing else on STDERR';
 };
 
 subtest 'k26: nothing missing means no worker step at all' => sub {
@@ -992,7 +1006,7 @@ subtest 'k211: changed pool labels/taints are pulled onto existing workers' => s
     ok !$r->{key_asked}, 'no key asked for (no PIN2 prompt)';
     like $r->{out}, qr/labels\/taints updated: brain, pinky/, 'named in the progress';
     like $r->{out}, qr/1 component\(s\) updated/, 'and counted as an update';
-    is $r->{err}, '', 'nothing on STDERR';
+    is err_without_probe_skip($r), '', 'nothing else on STDERR';
 
     my $dry = reconcile(dry_run => 1, yaml => $LABELLED_WORKERS, ocpnodes => ['brain', 'pinky']);
     is_deeply $dry->{writes}, [], 'a dry run writes nothing';
@@ -1031,7 +1045,7 @@ subtest 'k173: robocop without workers is ensured on reconcile' => sub {
     like $r->{out}, qr/Checking robocop/, 'the step is named in the progress';
     like $r->{out}, qr/1 component\(s\) updated/,
         'a Deployment that was not there counts as an update';
-    is $r->{err}, '', 'nothing on STDERR';
+    is err_without_probe_skip($r), '', 'nothing else on STDERR';
 };
 
 subtest 'k173: a running robocop with nothing to write is up to date' => sub {
@@ -1147,7 +1161,7 @@ subtest 'k319: --dry-run -- a robocop Deployment that cannot be read is not "mis
             "$code: not missing, nothing to roll out";
         like $r->{out}, qr{^  \[robocop\] Deployment/robocop could not be checked$}m,
             "$code: could not be checked";
-        is $r->{err}, "  [!!] Deployment/robocop not checked: could not read Deployment ocp-system/robocop: $cause",
+        is err_without_probe_skip($r), "  [!!] Deployment/robocop not checked: could not read Deployment ocp-system/robocop: $cause",
             "$code: the cause, on STDERR";
         like $r->{out}, qr/^  1 difference\(s\) a real run would act on\.$/m,
             "$code: only the Secret counted as an action";

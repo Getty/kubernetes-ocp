@@ -368,7 +368,10 @@ sub every_branch_reached {
     }
     like $r->{out}, qr/\[Dry run - no changes made\]\n\z/, 'to its end';
     is $r->{died}, '', 'no death' or diag $r->{died};
-    is $r->{err} =~ s/^  \[WARN\] gpu\.toolkit changed .*?(?=^\S|^  \S|\z)//msr, '',
+    # The host-probe skip line is a [WARN] on STDERR since k415; the subtests
+    # below say when it is there.
+    is $r->{err} =~ s/^  \[WARN\] gpu\.toolkit changed .*?(?=^\S|^  \S|\z)//msr
+                 =~ s/^  \[WARN\] host probes skipped on .*\n//mr, '',
         'nothing else on STDERR';
     is_deeply $r->{writes}, [], 'nothing written to the cluster';
 }
@@ -385,8 +388,9 @@ subtest 'a clone: PIN1 once, every branch read, no .ocp/ after' => sub {
     every_branch_reached($r);
     is_deeply $r->{prompts}, [ 'Enter PIN1 (cluster access): ' ], 'PIN1 asked, once'
         or diag explain $r->{prompts};
-    like $r->{out}, qr/^  \[WARN\] host probes skipped on \Q$CP\E, \Q$WORKER_IP\E: its host key is not in /m,
-        'the host probes: both machines skipped for want of a recorded host key, not of an SSH key';
+    like $r->{err}, qr/^  \[WARN\] host probes skipped on \Q$CP\E, \Q$WORKER_IP\E: its host key is not in /m,
+        'the host probes: both machines skipped for want of a recorded host key, not of an SSH key (STDERR, k415)';
+    unlike $r->{out}, qr/host probes skipped/, 'not on STDOUT';
     is_deeply $r->{contacts}, [], 'no machine contacted';
     is_deeply listing($dir), $before, 'the project directory as it was: no .ocp/'
         or diag explain listing($dir);
@@ -404,7 +408,7 @@ subtest 'a clone whose hosts are known elsewhere: probed with the robo key, PIN1
     every_branch_reached($r);
     is_deeply $r->{prompts}, [ 'Enter PIN1 (cluster access): ' ], 'PIN1 asked, once'
         or diag explain $r->{prompts};
-    unlike $r->{out}, qr/host probes skipped/, 'no host skipped';
+    unlike $r->{out} . $r->{err}, qr/host probes skipped/, 'no host skipped';
     my %asked = map { $_ => 1 } @{ $r->{contacts} };
     is_deeply [ sort keys %asked ], [ "rex $CP", "rex $WORKER_IP" ],
         'both machines probed over rex, which verifies; no ssh to record a key';

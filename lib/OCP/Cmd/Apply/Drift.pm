@@ -191,7 +191,7 @@ sub reconcile_components {
             rex_prober => $self->rex_prober($config),
         );
         my $drift = $detector->detect;
-        print $self->host_probe_warning($detector);
+        print STDERR $self->host_probe_warning($detector);    # k415
 
         # The ClusterPolicy is checked by the GPU step further down, but a
         # run that says "No drift detected" and then names a drift tells two
@@ -692,7 +692,7 @@ sub dry_run_report {
             pinned_only => 1, age_key => $secrets && $secrets->age_key),
     );
     my $drift = $detector->detect;
-    print $self->host_probe_warning($detector);
+    print STDERR $self->host_probe_warning($detector);    # k415
 
     # A probe that could not be read (k119, k256) is neither: nothing is known
     # about it, and a real run ends short of spec over it (k267). robocop's

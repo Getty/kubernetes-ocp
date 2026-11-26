@@ -290,9 +290,10 @@ sub execute {
     my $patched = $self->_patch_image($api, $ns, $image, $env);
 
     # An override, not a setting (k227): the next `ocp apply` writes the
-    # Deployment from ocp.yaml again. Said here, where the operator is looking.
+    # Deployment from ocp.yaml again. Said here, where the operator is looking,
+    # on STDERR (k415).
     my $spec_image = OCP::Robocop::Manifest->image($config);
-    print "[WARN] ad-hoc override: ocp apply resets robocop to $spec_image; "
+    print STDERR "[WARN] ad-hoc override: ocp apply resets robocop to $spec_image; "
         . "set robocop.image in ocp.yaml to keep it\n"
         if $image ne $spec_image;
 
@@ -628,7 +629,7 @@ are issued against the live Deployment:
 This is an override, not a setting: C<ocp apply> and C<ocp deploy-robocop>
 write the Deployment from C<ocp.yaml> (C<robocop.image>, else the CLI's own
 version) and set the image back. When the image differs from that one, the
-command says so on STDOUT; to keep an image, set C<robocop.image>.
+command says so with a C<[WARN]> on STDERR; to keep an image, set C<robocop.image>.
 
 =over 4
 
