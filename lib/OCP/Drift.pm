@@ -1436,7 +1436,9 @@ sub registry_dns_drift {
     }
 
     # A server block running the hosts plugin twice is a Corefile CoreDNS
-    # rejects: nothing resolves from it, whatever the record says. Any block, the
+    # rejects: nothing resolves from it, whatever the record says: a running
+    # CoreDNS keeps serving its previous Corefile, a restarted one does not
+    # start at all (k440). Any block, the
     # root block or another, the Corefile's own or a snippet (k393). The
     # writer takes out the hosts blocks an older OCP added to the root block
     # it writes the record into and nothing else (k348); where it does not
