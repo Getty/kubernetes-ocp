@@ -782,9 +782,13 @@ described below.
 If the cluster has never been deployed the spec section is printed and the
 status section says so.  The kubeconfig is read through L<OCP::Secrets>, so
 the C<.ocp/age.key> must be present for the live-status section to render.
-When the kubeconfig cannot be decrypted or the API cannot be reached, the
-report on STDOUT stops there, the error and its diagnosis go to STDERR, and
-the exit code is 1.  An API server that does not answer, or answers with an
+When the API cannot be reached, the report on STDOUT stops there, the error
+and its diagnosis go to STDERR, and the exit code is 1.  A kubeconfig that
+cannot be decrypted is a key problem, not a missing cluster: it dies in
+L<OCP::Role::Cmd/cluster_api> in L<OCP::Secrets>' words, before any
+request, and the command ends through the error renderer of L<OCP> -- the
+message on STDERR, the exit code 1, and the report on STDOUT ends at the line
+C<Cluster exists (kubeconfig.yaml found)>.  An API server that does not answer, or answers with an
 error status, is one line naming the server from the kubeconfig, what became
 of the request and why (L<OCP::Role::Cmd/cluster_api>); a kubeconfig no
 client can be built from is one C<ERROR:> line too:
@@ -874,10 +878,16 @@ same as its C<amd_gpu> object, see L</JSON OUTPUT>.
 C<ocp status --json> prints exactly one JSON object (canonical: sorted keys,
 pretty-printed, no timestamps or ages) on STDOUT; diagnostics go to STDERR.
 Two runs against an unchanged cluster print identical bytes, so a script can
-compare them.  The exit code is that of the text form: 1 when the kubeconfig
-cannot be decrypted, the API cannot be reached or drift detection dies (the
-object then carries an C<error> string -- the message as one line, without
-an C<ERROR:> label -- and whatever could be collected), else 0.
+compare them.  The exit code is that of the text form: 1 when the API cannot
+be reached or drift detection dies (the object then carries an C<error>
+string -- the message as one line, without an C<ERROR:> label -- and whatever
+could be collected), else 0.
+
+A kubeconfig that cannot be decrypted is the exception: the key problem dies
+in L<OCP::Role::Cmd/cluster_api> before the object is built, so there is no
+report to carry an C<error>.  The error renderer of L<OCP> prints one JSON
+object holding only the C<error> string (the message as one line, without an
+C<ERROR:> label) on STDOUT, the message on STDERR, and the exit code is 1.
 
     {
        "cluster" : "mycluster",
