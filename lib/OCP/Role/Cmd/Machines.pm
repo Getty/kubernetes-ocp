@@ -170,14 +170,22 @@ sub _cluster_api {
 }
 
 # Hetzner is in this project when a control plane, a worker pool or an
-# OCPNodeProvider says so.
+# OCPNodeProvider says so. Undef when only the providers could tell and they
+# could not be read (k433): said on STDERR here, in one line, and the caller
+# says what the unknown answer costs it -- it was 0, "no Hetzner", unsaid.
 sub _uses_hetzner {
     my ( $self, $config, $api ) = @_;
 
     return 1 if grep { ($_->{provider} // 'hetzner') eq 'hetzner' } @{ $config->control_planes };
     return 1 if grep { ($_->{provider} // '') eq 'hetzner' } @{ $config->workers };
     return 0 unless $api;
-    return 1 if grep { ($_->{spec}{type} // '') eq 'hetzner' } $self->provider_crs($api);
+    my @crs = $self->provider_crs($api, unread => \my $unread);
+    if (defined $unread) {
+        print STDERR "[!!] $unread\n";
+        print STDERR "     Whether this project uses Hetzner is unknown.\n";
+        return;
+    }
+    return 1 if grep { ($_->{spec}{type} // '') eq 'hetzner' } @crs;
     return 0;
 }
 

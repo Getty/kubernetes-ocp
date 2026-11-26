@@ -115,6 +115,9 @@ has _api_down => (is => 'rw');
 # The OCPNodeProvider CRs as _ocpnode_entries read them, by name.
 has _provider_crs => (is => 'rw', default => sub { {} });
 
+# Why those CRs could not be read, in one line, when the list failed (k433).
+has _providers_unread => (is => 'rw');
+
 # The Hetzner adapters built from those CRs, by CR name, and why a CR gave
 # none (k181). Filled while the API answers, before anything is deleted.
 has _cr_hetzner       => (is => 'ro', default => sub { {} });
@@ -458,6 +461,20 @@ sub _say_ocpnodes_unread {
     return;
 }
 
+# The OCPNodeProvider list failed while the OCPNodes answered (k433): said on
+# STDERR with what it costs, and the run goes on -- a teardown does not stop
+# on a half-answering API. Each OCPNode then takes its type from the
+# "<type>-default" name or is named as not torn down; a Hetzner node without
+# the local token is named in the refusal, with this as the reason.
+sub _say_providers_unread {
+    my ($self, $why) = @_;
+    $self->_providers_unread($why);
+    print STDERR "[!!] $why\n";
+    print STDERR "     An OCPNode's provider type comes from a '<type>-default' name\n";
+    print STDERR "     only, and no provider CR's Hetzner token is used for a delete.\n";
+    return;
+}
+
 # Every OCPNode, every role, as [ node entry, alias addresses ]. The provider
 # TYPE comes from the OCPNodeProvider the node names; failing that from the
 # "<type>-default" name `ocp apply` gives the CRs it writes (the derivation
@@ -486,7 +503,12 @@ sub _ocpnode_entries {
         return;
     }
 
-    my %cr   = map { ($_->{metadata}{name} => $_) } $self->provider_crs($api);
+    # A provider list that fails is said, not taken for none (k433): without
+    # it a node's type comes from its "<type>-default" name alone, and a
+    # Hetzner node has no provider CR's token to be deleted with.
+    my %cr   = map { ($_->{metadata}{name} => $_) }
+               $self->provider_crs($api, unread => \my $unread);
+    $self->_say_providers_unread($unread) if defined $unread;
     my %type = map { ($_ => $cr{$_}{spec}{type}) } keys %cr;
     $self->_provider_crs(\%cr);
 
@@ -603,6 +625,8 @@ sub _no_token_reason {
     my $err = defined $ref ? $self->_cr_hetzner_error->{$ref} : undef;
     return "no local Hetzner token, and OCPNodeProvider/$ref gave none: $err"
         if defined $err;
+    return 'no local Hetzner token, and the OCPNodeProviders could not be read'
+        if defined $self->_providers_unread;
     return "no local Hetzner token, and no OCPNodeProvider/$ref in the cluster"
         if defined $ref;
     return 'no local Hetzner token, and no OCPNodeProvider token'

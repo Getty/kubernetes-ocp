@@ -267,7 +267,10 @@ sub _print_pending_operator {
 sub _print_hetzner_gap {
     my ( $self, $config, $api ) = @_;
 
-    return unless $self->_uses_hetzner($config, $api);
+    # Unknown (undef, k433: the providers could not be read, said on STDERR)
+    # gets the note as well: it holds if Hetzner is in use.
+    my $uses = $self->_uses_hetzner($config, $api);
+    return if defined $uses && !$uses;
     print "\n";
     print "[--] Hetzner: servers created from now on get the admin and robo keys only,\n";
     print "     not this one. Run 'ocp keys operator add' with the same arguments again\n";

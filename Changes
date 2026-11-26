@@ -9,6 +9,12 @@ Revision history for OCP
       lists a node without a host as `-`; says every failed label search,
       not only the first; and its closing list of machines that keep their
       install no longer says to wait until they are reachable.
+    - A failed read of the cluster's OCPNodeProviders is said in one line
+      ("Could not read the OCPNodeProviders from the cluster API: ...")
+      instead of being taken for a cluster without any: `ocp node add` and
+      `ocp provider rm` stop with it, `ocp destroy` says it on STDERR and
+      goes on, `ocp keys secure` says the Hetzner key upload was not done and
+      exits 1, `ocp keys operator add` says it and gives the Hetzner note.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

@@ -266,8 +266,23 @@ sub provider_crs {
 
     my $ns = $opt{namespace} // 'ocp-system';
 
-    my $list = eval { $api->list('OCPNodeProvider', namespace => $ns) }
-        or return ();
+    # A list that failed is no empty list (k433): taken for one, ocp destroy
+    # went on as if the cluster had no provider CR and node add answered "No
+    # OCPNodeProvider exists", the cause said nowhere. So it is said, in one
+    # line as the OCPNode list's failure is (k396): an APIError as the line
+    # naming the server, anything else without its source location. A caller
+    # that goes on without the providers passes unread => \my $why and says
+    # what that costs it; every other caller stops here.
+    my $list = eval { $api->list('OCPNodeProvider', namespace => $ns) };
+    unless ($list) {
+        my $err = $@;
+        my $why = 'Could not read the OCPNodeProviders from the cluster API: '
+                . (OCP::ErrorLine::user_line($err)
+                   // OCP::ErrorLine::one_line($err, empty => 'no answer'));
+        die 'ERROR: '.$why."\n" unless $opt{unread};
+        ${ $opt{unread} } = $why;
+        return;
+    }
 
     return sort { $a->{metadata}{name} cmp $b->{metadata}{name} }
            map  { $api->k8s->object_to_struct($_) } @{ $list->items // [] };
@@ -296,7 +311,8 @@ sub provider_cr {
 
     # The type hint only where it helps: on a cluster without any provider CR
     # the answer is "run ocp apply", and naming the CR that run would create
-    # would just say ocp apply twice.
+    # would just say ocp apply twice. A list that fails dies with its own
+    # line (k433): the get above most likely failed for the same reason.
     my @providers = $self->provider_crs($api, %opt);
     my $type_hint = (@providers && OCP::Provider->known_type($name))
         ? "'$name' is a provider type, not a provider name."
@@ -927,11 +943,17 @@ approval and is refused before any prompt.
 
     my @providers = $self->provider_crs($api);
     my @providers = $self->provider_crs($api, namespace => 'other');
+    my @providers = $self->provider_crs($api, unread => \my $why);
 
 Every C<OCPNodeProvider> CR in the namespace (C<ocp-system> by default) as
-plain hashes, sorted by name.  Returns an empty list when the cluster has
-none or when the list call fails, so it is safe to call while building an
-error message.
+plain hashes, sorted by name; an empty list when the cluster has none.  A list
+call that fails is not taken for an empty list: it dies with one line,
+C<ERROR: Could not read the OCPNodeProviders from the cluster API: WHY>, WHY
+being L<OCP::ErrorLine/user_line> for an exception that has one and
+L<OCP::ErrorLine/one_line> for anything else.  Given C<unread>, a scalar
+reference, it stores that line there instead (without C<ERROR:>) and returns
+an empty list, for a caller that goes on without the providers and says what
+that costs it.
 
 =method provider_choices
 
@@ -966,6 +988,9 @@ The last line appears only when the rejected name is a provider type and the
 cluster has providers at all; without any, the bootstrap hint is the whole
 answer.  A type is never resolved to the CR that happens to carry it:
 provider names and provider types are separate namespaces and may collide.
+When the providers cannot be listed either, it dies with
+L</provider_crs>' line instead: an API that does not answer is no unknown
+provider.
 
 =method cluster_api
 

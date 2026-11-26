@@ -410,7 +410,15 @@ sub _drop_bootstrap {
 sub _upload_to_hetzner {
     my ( $self, $config, $secrets, $api, $admin, $robo ) = @_;
 
-    return 1 unless $self->_uses_hetzner($config, $api);
+    my $uses = $self->_uses_hetzner($config, $api);
+    unless (defined $uses) {
+        # k433: it was "no Hetzner", and the upload skipped unsaid.
+        print STDERR "     If it does, the keys were not stored in the Hetzner project; add\n"
+          . "     them in the Hetzner console under " . $config->admin_ssh_key_name
+          . " and " . $config->robo_ssh_key_name . ".\n";
+        return 0;
+    }
+    return 1 unless $uses;
 
     my $token = $secrets->hetzner_token;
 

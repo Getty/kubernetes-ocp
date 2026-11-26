@@ -67,8 +67,8 @@ sub _k8s {
 # nothing else. `ocp node ls` shows the same set with its columns; here only
 # the names matter, because a name is what `ocp node rm` takes.
 #
-# Tolerant on purpose, exactly like OCP::Role::Cmd::provider_crs: a list call
-# that fails while a message is being built must not replace "that node does
+# Tolerant on purpose (OCP::Role::Cmd::provider_crs was too, until k433 made
+# it say its failure): a list call that fails while a message is being built must not replace "that node does
 # not exist" with something worse. No list means the rejection says so
 # instead of offering an empty one.
 #
