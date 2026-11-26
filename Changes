@@ -1,6 +1,10 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `OCP::Keys::update_key` layers a new private half by the key's purpose
+      (age only for an automation key, age + PIN2 otherwise) and croaks
+      without a PIN2 where one is needed; the `add_key` POD names `pin2` as
+      optional.
     - `ocp kubeconfig -o` and the kubeconfig export create the decrypted
       kubeconfig and its `.ocp-bak` backup with mode 0600 from the first
       byte; the backup no longer keeps the umask default.

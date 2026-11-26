@@ -174,9 +174,11 @@ sub add_key {
 
 =method add_key(%params)
 
-Add new key with double encryption.
-
-Required params: name, type, private, pin2
+Adds a key. Required params: name, type, private. Optional: public,
+C<purpose> (C<automation>, C<admin> or C<general>, the default) and
+C<pin2>. With a C<pin2> that is defined and not empty (C<"0"> is one) the
+private half is double encrypted (PIN2 + age); without one it gets the age
+layer only, as an automation key does. Croaks when the name is taken.
 
 =cut
 
@@ -325,9 +327,15 @@ secure> turns its staging file into F<keys.yaml> with it.
 =cut
 
 #
-# Update key (re-encrypt with new PIN2)
+# Update key (new private half, public half, deprecated flag)
 #
 
+# A new private half is layered as add_key layers it, by the key's purpose
+# (k411): an automation key age only, whatever pin2 holds -- robocop reads it
+# unattended -- and every other key age + PIN2, with a PIN2 that is defined
+# and not empty ("0" is one, k390). Without one it croaks before anything is
+# written: an undefined or empty pin2 derived the layer from an empty
+# password, a PIN2 layer in name only.
 sub update_key {
     my ($self, $name, %params) = @_;
 
@@ -337,9 +345,16 @@ sub update_key {
     my $found = 0;
     for my $key (@{$data->{keys}}) {
         if ($key->{name} eq $name) {
-            # Update fields
-            $key->{private} = $self->_double_encrypt($params{private}, $params{pin2})
-                if $params{private};
+            if ($params{private}) {
+                my $pin2 = $params{pin2};
+                if (($key->{purpose} // '') eq 'automation') {
+                    $key->{private} = $self->_single_encrypt($params{private});
+                } else {
+                    croak "update_key: PIN2 required for the private half of non-automation key '$name'"
+                        unless defined $pin2 && length $pin2;
+                    $key->{private} = $self->_double_encrypt($params{private}, $pin2);
+                }
+            }
             $key->{public} = $params{public} if $params{public};
             $key->{deprecated} = $params{deprecated} if defined $params{deprecated};
             $key->{updated} = _timestamp();
@@ -353,6 +368,20 @@ sub update_key {
     $self->_write_keys_file_encrypted($data);
     return 1;
 }
+
+=method update_key($name, %params)
+
+    $keys->update_key('admin-ssh-20260815', private => $pem, pin2 => $pin2);
+    $keys->update_key('robo-ssh-20260815', private => $pem);
+    $keys->update_key($name, deprecated => 1);
+
+Changes the entry named C<$name>: C<private>, C<public>, C<deprecated>. A new
+C<private> is layered by the key's purpose: an C<automation> key gets the age
+layer only (a C<pin2> is ignored), every other key age + PIN2 and needs a
+C<pin2> that is defined and not empty -- croaks without one, nothing written.
+Returns 1, or nothing when there is no such key.
+
+=cut
 
 #
 # Deprecate key (mark for migration)
