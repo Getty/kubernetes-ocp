@@ -258,8 +258,9 @@ The rule as `ocp apply` applies it, on the first deploy (no
   the kubeconfig is saved, and each later step says what it could not do. A
   step that must succeed still ends the run `Error: …`, non-zero, before the
   banner. In practice that is the registry, whose pods cannot be scheduled on
-  a NotReady node. A run that gets past those steps ends `— APPLY INCOMPLETE`,
-  also when the node turned Ready late: the wait did not see it Ready.
+  a NotReady node *(amended 2026-11-26, see below)*. A run that gets past
+  those steps ends `— APPLY INCOMPLETE`, also when the node turned Ready late:
+  the wait did not see it Ready.
 - **Further control planes** (police2+, RKE2 only) join through `OCP::Node`
   within `$OCP::Node::READY_TIMEOUT` (900 s). One not Ready when its join ends
   is `control plane NAME`, since k226.
@@ -312,9 +313,11 @@ Consequences:
   deploy red.
 - A first deploy that dies in the registry step still ends `Error: …` and
   names the registry. The node is named only in the `[!!]` line above it; the
-  run never reaches the closing `Apply did not complete` line.
+  run never reaches the closing `Apply did not complete` line *(amended
+  2026-11-26, see below)*.
 
-Known gap, recorded and not decided (open on k417): the reconcile path does not judge the
+Known gap, recorded and not decided (open on k417) *(amended 2026-11-26, see
+below)*: the reconcile path does not judge the
 control planes' readiness, and does not join police2+ again. There a control
 plane is judged only through steps that happen to wait for a pod on it. A
 component that has to roll out waits for its pods, and is counted under its
@@ -333,3 +336,75 @@ the node.
 Unverified: the new failure is tested in `t/327-bootstrap-node-ready.t`
 against a stubbed pod scan. It has not been seen on a live cluster. Recorded
 under k336.
+
+## Amendment 2026-11-26
+
+The amendment of 2026-11-06 closed on a gap it recorded and did not decide:
+
+> Known gap, recorded and not decided (open on k417): the reconcile path does
+> not judge the control planes' readiness, and does not join police2+ again.
+
+So a rerun could end `SUCCESSFULLY!` over a first control plane that was
+NotReady. The maintainer decided on 2026-11-08 (k417) that the reconcile path
+judges every control plane once, Ready or a counted failed component, with the
+same proof as the bootstrap's wait. Since k417 (9647f1d):
+
+- **Reconcile.** After the drift remedies and before the registry, every
+  control plane `ocp.yaml` asks for is judged
+  (`OCP::Cmd::Apply::CR::check_control_plane_ready`): police1 under the name
+  `cp_identity` gives it, and on RKE2 police2+ under the names their OCPNodes
+  carry. The proof is the bootstrap's: the Node by that name, its `Ready`
+  condition `True`, waited for 60 × 10 s = 600 s
+  (`OCP::Cmd::Apply::Bootstrap::wait_nodes_ready`). A control plane not seen
+  Ready gets the bootstrap's `[!!] Node NAME not seen Ready within 600s: …` on
+  STDERR and is counted as `control plane NAME`, so the run ends
+  `— APPLY INCOMPLETE`, non-zero. A control plane whose OCPNode is `Failed` is
+  left to the Failed-phase check (k447). `--only workers` skips the
+  judgement. A check that dies is one `[!!] Could not check control-plane
+  readiness` and is counted as unresolved.
+- **By name.** Both waits look up the Node named after the control plane.
+  Until k417 the bootstrap's wait, and the reason it printed, used the first
+  Node listed.
+- **The first control plane's OCPNode.** It is `Ready` only when its Node is
+  Ready at the moment of the write. Otherwise it is `Joining`, with
+  `status.message` saying why (`ensure_cp_ocpnode`). Before, it was `Ready`
+  unconditionally, so `ocp node ls` could show a NotReady police1 as Ready.
+  `Joining` was chosen because no reconciler acts on it beyond waiting for the
+  Node: `Pending` would have robocop provision a server, and `Failed` is
+  terminal.
+- **A must-succeed step on the first deploy.** When the bootstrap did not see
+  its control plane Ready, a deploy step that dies (in practice the registry)
+  no longer ends the run `Error: …` before the banner
+  (`OCP::Cmd::Apply::Deploy::deploy_after_bootstrap`). Its error becomes one
+  `[!!] Deploy stopped: …` line, and the steps after it do not run. `deploy
+  steps` is counted, and the run ends at the single exit, `— APPLY
+  INCOMPLETE`, with the control plane named first in `Apply did not
+  complete`. With a Ready control plane such a death is the step's own and
+  still ends `Error: …`.
+
+What no longer holds from 2026-11-06: the first-control-plane bullet's "a
+step that must succeed still ends the run `Error: …`", the second Consequence
+("A first deploy that dies in the registry step still ends `Error: …` and
+names the registry"), and the readiness half of the known gap. The other half
+of the known gap still holds: the reconcile path does not join police2+ again.
+It now judges them, so one that never joined is counted, where before it was
+not looked at.
+
+Consequences:
+
+- A reconcile can now wait up to 600 s: for a NotReady control plane, for a
+  configured police2+ that never joined, and for a Node list that keeps
+  failing. A reconcile whose control planes are Ready pays one OCPNode list
+  and one Node list.
+- A first deploy stopped in the registry step never reaches the CR step, so it
+  leaves no OCPNode for police1. The next `ocp apply` writes it.
+- A NotReady police1's OCPNode is now `Joining`, a phase robocop's resync
+  picks up. Robocop hands it to `OCP::Node`, whose `Joining` step writes
+  `Ready` once the Node is. That runs only when robocop can load the OCPNode's
+  `providerRef`. A `local` control plane's `local-default` has no
+  OCPNodeProvider (`ensure_providers` skips it), and robocop marks an OCPNode
+  whose provider does not load `Failed`. Read from the code, not tested; noted
+  on k417.
+
+Unverified: tested against fakes in `t/417-control-plane-ready.t`. It has not
+been seen on a live cluster. Recorded under k417.

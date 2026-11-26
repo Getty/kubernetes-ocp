@@ -202,6 +202,18 @@ name in it did: `_corefile_drop_added_hosts` was a forwarder in
 named is `OCP::Cmd::Apply::Network::corefile_drop_added_hosts`. The amendment
 says so and leaves the old sentence as it was written.
 
+0017 was amended a third time on 2026-11-26, under k417. The decision did
+not move. The 2026-11-06 amendment had left one gap open: the reconcile path
+did not judge the control planes' readiness. On 2026-11-08 the maintainer
+decided that it judges every control plane once, with the bootstrap's proof,
+and counts one not seen Ready. Two things the 2026-11-06 amendment said no
+longer hold. A first deploy that dies in the registry step over a NotReady
+control plane no longer ends `Error: …`: it ends `— APPLY INCOMPLETE` with the
+control plane named. The first control plane's OCPNode is no longer `Ready`
+regardless of its Node. The amendment also names a robocop path read from the
+code and not tested: a `local` control plane's OCPNode, now `Joining`, has no
+OCPNodeProvider for robocop's resync to load.
+
 Two ADRs carry rationale that could only be reconstructed, and say so inline:
 [0010](0010-cilium-is-the-whole-network-layer.md) (the rejection of Istio and
 Canal is recorded only as a statement, not in any commit or ticket) and
