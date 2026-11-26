@@ -1,0 +1,26 @@
+---
+claimed_at: 2026-11-26T09:57:54Z
+claimed_by: ocp-k465
+class: standard
+completed: 2026-11-26T09:57:54Z
+created: 2026-11-26T07:11:21Z
+id: 465
+priority: low
+started: 2026-11-26T08:47:19Z
+status: done
+tags:
+- tests
+- exec
+title: OCP::Exec capture_command output bypasses a test's in-memory STDOUT
+updated: 2026-11-26T09:57:54Z
+---
+
+Found on k461. When a test redirects STDOUT to an in-memory buffer, a command run through OCP::Exec::capture_command writes to the real STDOUT (fd 1), and the test's later STDOUT capture stays empty; t/209 and t/96 broke that way during k461 (k461 then used ssh-keygen -q instead). Check whether capture_command should capture the child's STDOUT fully (so nothing reaches fd 1) and whether other tests silently rely on this. Lane: ocp-worker.
+
+2026-11-26 09:08 Cause reproduced: IPC::Open3 reopens the child's STDIN/STDOUT/STDERR handles on its pipes; Perl only dup2s onto fd 0/1/2 when the handle already sits there. In-memory STDOUT (fileno -1) -> pipe on a fresh fd, the exec'd program writes to the real fd 1, {stdout} empty. Same for STDERR, and STDIN: with in-memory STDIN the stdin => text never reached the child (cat read fd 0, the parent then died of SIGPIPE). Decision: capture fully - own fork+exec that dup2s the pipes onto 0/1/2 (via F_DUPFD>=3 first, so a closed fd 0 is safe), exec failure still croaks in the parent with the reason (errno over a CLOEXEC pipe). Who relies on the old behaviour: traced every real capture_command call in a 75-file image run (all files that capture output in memory and touch Local/SSH/KnownHosts, plus t/81 t/406): only t/374 runs one with in-memory STDOUT/STDERR (ssh ... true from OCP::Rex::_ensure_host_key under OCP::Role::Cmd's probe sink); passes either way. Production: that probe sink (lib/OCP/Role/Cmd.pm, local *STDOUT to $sink around run_task) is the one in-memory caller; its ssh runs 'true', so no visible output change.
+
+2026-11-26 09:08 Also found (drift, Secrets lane): the comment above system('ssh-keygen', '-q', ...) in OCP::Secrets::generate_ssh_key says 'Not captured through OCP::Exec: IPC::Open3 loses the output of a caller whose STDOUT is an in-memory handle' - no longer true after this card. Left alone; ocp-secrets-worker can reword it or switch to capture_command.
+
+2026-11-26 09:08 Done: lib/OCP/Exec.pm - IPC::Open3 replaced by _spawn (fork, dup2 of the three pipes onto fds 0/1/2, exec; exec failure croaks 'capture_command: exec of CMD failed: REASON'). Read loop, timeout, signal decoding unchanged. New t/465-exec-in-memory-handles.t: in-memory STDOUT (captured, nothing on real fd 1 or the buffer), in-memory STDERR, in-memory STDIN with stdin =>, closed fd 0, exec failure. Against the old Exec.pm: subtests 1-2 fail, 3 dies of SIGPIPE. make test TAG=infra2 on t/00 t/465 t/81 t/374 t/96 t/209 t/461 t/168 t/406-uninstall t/325 t/415 t/33: PASS (12 files, 155 tests); traced 75-file image run PASS.
+
+Committed ea6bb09; binding suite green on main ce487f1 (340 files, 4789 tests)
