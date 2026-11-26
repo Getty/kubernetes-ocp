@@ -1,0 +1,29 @@
+---
+class: standard
+completed: 2026-11-26T18:13:46Z
+created: 2026-11-26T17:55:22Z
+id: 474
+priority: high
+started: 2026-11-26T18:13:46Z
+status: done
+tags:
+- hetzner
+- review-followup
+title: 'Hetzner follow-ups from the k453/k454/k456 review: drift probe address, pool
+  network check, routes docs'
+updated: 2026-11-26T18:15:24Z
+---
+
+Review of k453/k454/k456 (all on main, pushed 930abe7). Fix:
+1. lib/OCP/Drift.pm _probe_hosts (~2123) picks control planes by public_ip // host; under address: private it must use private_ip like every other k453 reader. Test: CP with only private_ip pinned is probed at the private address.
+2. OCP::Config validation (_network_key_errors / _worker_lines, ~2177): control plane address: private plus a Hetzner pool without network: passes validation, but its workers cannot reach the private join address on 9345. Refuse it (name the pool and the missing network:). Test.
+3. docs/configuration.md ~304-306 (k456): says each ocp apply reinstalls the first control plane so changed/dropped routes: reach it. False: once kubeconfig.yaml exists apply takes the reconcile path and routes are never touched. Say what is true (set by hand or replace the node), as for Ready workers (k459 is the backlog card for rolling routes).
+4. docs/configuration.md ~391-392 (k454): says ocp status does not report a differing gateway mode; since k458 gateway_mode_drift does.
+5. share/Rexfile ~1026: the if-up.d route hook is written when /etc/network/interfaces exists; check for /etc/network/if-up.d/ instead so an image without ifupdown does not die.
+Done when: tests for 1 and 2 (network-free), docs fixed, full make test green, Changes entry. Limits: no real Hetzner calls, no apply against a real cluster, no push.
+
+2026-11-26 17:57 Item 5 done (ocp-infra-worker, uncommitted): share/Rexfile _ensure_routes writes the if-up.d hook only if is_dir('/etc/network/if-up.d') (was is_file('/etc/network/interfaces')); runtime ip route part unchanged. t/456-routes-rexfile.t: stubs is_dir in the sandbox (harness OCPTest::Rexfile answers only is_file), positive cases now give the directory, new case interfaces-without-if-up.d (netplan) runs, writes no hook, asks is_dir for the directory, still sets routes. Red against HEAD's Rexfile (6 assertions), green with the fix; all 30 OCPTest::Rexfile-loading tests pass via make test (325 tests). Also found: an is_dir/%IS_DIR stub belongs in t/lib/OCPTest/Rexfile.pm next to is_file; kept test-local per brief scope.
+
+2026-11-26 17:58 Items 1+2 done (ocp-state-worker), uncommitted on main. 1: OCP::Drift _probe_hosts picks private_ip under address: private via OCP::Config->uses_private_address, same choice as cp_tls_sans/join_host; probe_targets POD says so. 2: OCP::Config _worker_lines refuses a hetzner pool without network: when the first control plane is on address: private (new _private_join_network); line names the pool, network: and the CP's network; skipped when the pool's own address: private already has its line. t/474-private-address-follow-ups.t new (red on HEAD lib, green now); t/453-private-address-apply.t subtest 3 adjusted: its pool 'p' was the now-refused shape. make test on 474, 453-*, 71, 25, 401, 456-routes-install, 296, 292: PASS. Also found (not fixed): Drift spec_drift (~line 835) still compares public_ip only; under address: private status public_ip is the private address, so a CP with both pinned could report false public_ip drift -- worth a look.
+
+Committed: f51c9fc, 53ae9f7, 0fbad8e. Not fixed: Drift spec_drift compares public_ip only; under address: private a CP with both pinned may report false drift.
