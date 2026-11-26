@@ -1,0 +1,27 @@
+---
+claimed_at: 2026-11-26T09:57:30Z
+claimed_by: ocp-k467
+class: standard
+completed: 2026-11-26T09:57:30Z
+created: 2026-11-26T08:19:49Z
+id: 467
+priority: medium
+started: 2026-11-26T08:43:28Z
+status: done
+tags:
+- tests
+- build
+title: 'make test: fail a test file fast that hangs instead of stalling the whole
+  suite'
+updated: 2026-11-26T09:57:30Z
+---
+
+During the wave-3 integration (2026-11-26) t/435 sat 23+ min in a real 60x10s wait (k417 x k435) and stalled the binding make test without a message. Proposal from the fix worker: give the image prove a per-file alarm (preloaded module via PERL5OPT or a prove plugin) so a hung file fails fast and names itself. Not package-level state in lib/. Also: t/400 alone takes ~183 s. Lane: ocp-worker (Makefile / test infra).
+
+2026-11-26 08:47 Watchdog process (t/lib/OCPTest/Watchdog.pm) preloaded via PERL5OPT in Makefile DOCKER_PROVE, TEST_TIMEOUT ?= 300 (OCP_TEST_TIMEOUT). Not alarm(): 19 t/ files set their own alarm (t/325, t/361, t/415 at file level, alarm 0 at end) and would cancel a preloaded alarm. Double-forked watchdog (no wait() in a test can collect it), test file in its own process group so forked children holding the TAP pipe die too. Verified: throwaway hanging test (with forked child) killed after 10 s with TEST_TIMEOUT=10, STDERR names the file, prove: Wstat 15, Result FAIL, 13 s wallclock. CI: ci.yml/.cicd only build+publish the image; no suite run, no dzil-test action in this repo.
+
+2026-11-26 09:07 Found and fixed in my own first cut: prove (TAP::Parser::Iterator::Process) selects on the test's STDOUT AND STDERR pipes until both hit EOF, so a watchdog keeping the test's STDERR held every file open until the limit (a 75-file run showed every file 'ok' only after 300 s). Watchdog now drops fds 0/1/2 and reopens the test's STDERR via /proc/<pid>/fd/2 only when it fires (Linux, as in the image). Re-verified: a quick file with its own alarm 5 ended at once, the throwaway hang file (with a forked child) was killed at TEST_TIMEOUT=20 naming itself, 25 s total; 75-file image run (incl. alarm users t/325 t/415 t/33 t/155 t/81) PASS in 61 s, watchdog never fired.
+
+2026-11-26 09:07 Done: Makefile DOCKER_PROVE passes OCP_TEST_TIMEOUT=$(TEST_TIMEOUT) (default 300, 0 = off) and PERL5OPT='-I/src/t/lib -MOCPTest::Watchdog'; new t/lib/OCPTest/Watchdog.pm arms only in a .t file: test file into its own process group, double-forked watchdog off fds 0-2 polls kill 0 each second, at the limit writes '# t/NNN.t: still running after N s, killed (...)' to the test's STDERR and TERM then KILL to the group. No alarm() (19 t/ files set their own), no lib/ state. Applies to make test and make test-v only; make test-host unchanged. CI: ci.yml/.cicd only vendor+build+publish the image (cpm --no-test), no suite run in CI, no dzil-test action here - nothing to align. Verified: make test TAG=infra2 with a throwaway hang file (TEST_TIMEOUT=10 and 20) - killed and named, Result FAIL in 13 s / 25 s; 12-file make test sample PASS. Margin: t/400 ~183 s alone vs the 300 s default under load.
+
+Committed 3501bd4; binding suite green on main ce487f1 (340 files, 4789 tests)
