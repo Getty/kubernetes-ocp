@@ -1,0 +1,30 @@
+---
+class: standard
+completed: 2026-11-26T18:15:11Z
+created: 2026-11-20T22:05:55Z
+id: 456
+priority: high
+started: 2026-11-20T23:44:08Z
+status: done
+tags:
+- hetzner
+- cai-live
+title: 'Hetzner: static routes per control plane/pool via the network gateway (routes:)'
+updated: 2026-11-26T18:15:11Z
+---
+
+Request from cai-admin on k453 (2026-11-20): cluster hz on live has to reach 10.230.30.0/24 (lab Skeids, cp-lab API) through the Hetzner network cai-live to r2d2 (tunnel wg-cai, hive#366). The servers keep a public default route, so the OS needs a route 10.230.30.0/24 via the network gateway (first address of the network, 10.200.0.1). Goal: ocp.yaml routes: [{to: CIDR, via: gateway|IP}] on a Hetzner CP/pool, validated, rendered into the node network config on install (persisting across reboots and DHCP renews of the private interface), workers through the OCPNode spec as in k453, tested network-free. The route on the Hetzner side (hcloud network route 10.230.30.0/24 via r2d2) belongs to hive, not to OCP.
+
+2026-11-20 23:49 Plan (ocp-infra-worker): routes: [{to: CIDR, via: gateway|IPv4}] on hetzner CP/pool, validated in OCP::Config; copied into OCPNode spec.routes (CRD field with patterns). 'gateway' resolved at install time by OCP::Provider::Hetzner (network ip_range base+1, the documented Hetzner gateway; same rule hive uses) -- deterministic, no on-node guessing. Rexfile step before prepare_node/rke2: /etc/ocp/routes + /usr/local/sbin/ocp-routes (idempotent ip route replace), ocp-routes.service (after network-online, Before rke2/k3s units) + ocp-routes.timer (1 min re-assert, catch-all for any DHCP/network owner), plus dhclient exit hook and ifupdown if-up.d hook for immediacy. Routes dropped from ocp.yaml are deleted on the next install run; empty routes on a hetzner node removes OCP's units. Design question: the Hetzner Debian 13 image's private-NIC owner (cloud-init/ifupdown vs hc-utils, dhclient vs dhcpcd vs networkd) could not be verified without a real server; the timer makes the guarantee independent of it.
+
+2026-11-21 00:11 Done (uncommitted, worktree branch worktree-ocp-k456, on top of k453+k454). routes: [{to, via: gateway|IPv4}] on hetzner CP/pool: OCP::Config validation (CIDR/host bits/default route/duplicate/via/gateway-needs-network/unknown keys/non-hetzner refused); OCPNode spec.routes + CRD (patterns); OCP::Provider::Hetzner network_gateway/resolve_routes (ip_range base+1, at install time); Bootstrap resolves before create_server and passes routes; OCP::Node resolves via its provider (Failed 'spec.routes: ...' on error); OCP::Rex passes routes; Rexfile _ensure_routes after preflight, before prepare_node/RKE2: /etc/ocp/routes, /usr/local/sbin/ocp-routes (ip route replace), ocp-routes.service (Before rke2/k3s) + 1-min timer + dhclient exit hook + ifupdown if-up.d hook; dropped routes deleted, empty list removes everything. Tests: t/456-routes-config.t, t/456-routes-install.t, t/456-routes-rexfile.t (script run against stand-in ip); key-list claims updated in t/296, t/357, t/453-config; t/292 allowlist +Bootstrap. Full make test: 309 files, 4583 tests, only t/222-vendor.t test 5 red (known, k457). Open: Hetzner Debian 13 NIC owner unverified on a real server; Ready workers do not get a changed routes: (no reinstall); ocp node add has no --route flag.
+
+Committed on worktree-ocp-k456: 152a610, 9bb1951, 55a46f7, 32af960. Stays in review.
+
+cai-admin 2026-11-21: via: <IPv4> without network: stays allowed. A roll-out path for changed routes on Ready nodes is not needed for the first live build; it is a separate backlog card.
+
+2026-11-21 00:43 cai-admin-20: abgenommen (make test 4583, nur t/222 #5 rot wie auf main). Uebergabe an Getty: ff-merge worktree-ocp-k453 @32af960, push, Image bauen.
+
+2026-11-26 04:00 Branch worktree-ocp-k453 rebased onto main (no conflicts) and merged locally (fast-forward) at 3ab670e, not pushed. Backup: backup/k453-pre-rebase. Left in review: push and image are the maintainer's.
+
+Done; follow-ups landed in k474 (f51c9fc 53ae9f7 0fbad8e) and k475
