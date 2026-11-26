@@ -11,7 +11,7 @@ with 'OCP::Role::Cmd';
 
 sub execute {
     my ($self, $args, $chain) = @_;
-    die "subcommand required: ocp keys [show|authorized-keys|recipients|operator|secure]\n";
+    die "subcommand required: ocp keys [show|authorized-keys|recipients|operator|secure|add-pin2]\n";
 }
 
 1;
@@ -32,13 +32,14 @@ __END__
     ocp keys operator rm leitstand    # its SSH key off every machine, its age key out
     ocp keys secure                   # dev mode -> secure mode, machines first
     ocp keys secure --drop-bootstrap  # ...and remove .ocp/id_ed25519 from them
+    ocp keys add-pin2                 # PIN2 layer onto an admin key stored without it
 
 =head1 DESCRIPTION
 
 Entry point for the C<ocp keys> subcommand group. Dispatches to
 L<OCP::Cmd::Keys::Show>, L<OCP::Cmd::Keys::AuthorizedKeys>,
-L<OCP::Cmd::Keys::Recipients>, L<OCP::Cmd::Keys::Operator> and
-L<OCP::Cmd::Keys::Secure>.
+L<OCP::Cmd::Keys::Recipients>, L<OCP::Cmd::Keys::Operator>,
+L<OCP::Cmd::Keys::Secure> and L<OCP::Cmd::Keys::AddPin2>.
 
 C<operator> registers and revokes an operator -- a Leitstand that runs
 C<ocp apply> unattended with its own age identity and SSH key: the key
@@ -56,7 +57,11 @@ the admin and robo keys, puts their public halves onto every machine while the
 bootstrap key still opens them, checks the admin key on each, and only then
 writes F<keys.yaml>.
 
-Apart from C<secure> and C<operator>, the group prints B<public> key material only
+C<add-pin2> re-adds an admin key stored without its PIN2 layer -- a PIN2 of
+C<"0"> before that was fixed -- under age and a new PIN2. The key itself does
+not change.
+
+Apart from C<secure>, C<operator> and C<add-pin2>, the group prints B<public> key material only
 (C<recipients add|rm> rewrite who the SOPS files are encrypted for, never a
 key). Private
 keys are reached through the commands that need them — L<OCP::Cmd::SSH> for
@@ -66,6 +71,7 @@ decrypted private key never has to touch the filesystem.
 =head1 SEE ALSO
 
 L<OCP::Cmd::Keys::Show>, L<OCP::Cmd::Keys::AuthorizedKeys>,
-L<OCP::Cmd::Keys::Operator>, L<OCP::Cmd::Keys::Secure>, L<OCP::Keys>
+L<OCP::Cmd::Keys::Operator>, L<OCP::Cmd::Keys::Secure>,
+L<OCP::Cmd::Keys::AddPin2>, L<OCP::Keys>
 
 =cut

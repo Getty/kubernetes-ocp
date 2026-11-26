@@ -18,6 +18,9 @@ Revision history for OCP
     - `ocp init` and `ocp keys secure` no longer print the key file names,
       fingerprint and randomart `ssh-keygen` writes for the generated SSH
       keys.
+    - `ocp keys add-pin2` puts the PIN2 layer back on an admin key that was
+      stored under PIN1 alone (a PIN2 of `0` was once taken for none): same
+      key, re-encrypted under age and a new PIN2, so no machine changes.
     - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
       Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
       `ocp node add` that come next, and exits 1 before it writes anything.

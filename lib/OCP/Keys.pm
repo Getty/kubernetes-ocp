@@ -388,6 +388,92 @@ Returns 1, or nothing when there is no such key.
 =cut
 
 #
+# The PIN2 layer of a key that should have one (k450)
+#
+
+# Before k390 a PIN2 of "0" was read as none, and add_key stored the admin
+# key under the age layer alone, purpose still admin. Such an entry cannot be
+# told from a layered one by its fields -- only by what is under its age
+# layer: the private key itself, where a PIN2 layer is base64.
+sub has_pin2_layer {
+    my ($self, $name) = @_;
+
+    my $key = $self->get_key($name)
+        or croak "has_pin2_layer: no key '$name' in keys.yaml";
+    croak "has_pin2_layer: key '$name' has no private half"
+        unless defined $key->{private} && length $key->{private};
+
+    my $inner = $self->_inner_decrypt($key->{private}, $name);
+    return $self->_is_private_key_text($inner) ? 0 : 1;
+}
+
+=method has_pin2_layer($name)
+
+    my @bare = grep { !$keys->has_pin2_layer($_->{name}) } @admin_entries;
+
+1 when the private half of the key named C<$name> has a PIN2 layer under
+its age layer, 0 when the age layer holds the private key itself -- an admin
+key stored before k390 with a PIN2 of C<"0">, or an C<automation> key, which
+never has one. Needs the project key (PIN1), never PIN2. Croaks for an
+unknown name or an entry without a private half.
+
+=cut
+
+# Puts the missing PIN2 layer under the age layer of $name. The private key
+# comes out of the age layer and goes back in under age + PIN2; the new half
+# is opened with $pin2 before it is written, so keys.yaml never holds a layer
+# that does not open to the key it replaces.
+sub add_pin2_layer {
+    my ($self, $name, $pin2) = @_;
+
+    croak "add_pin2_layer: PIN2 required" unless defined $pin2 && length $pin2;
+
+    my $data = $self->_read_keys_file_encrypted;
+    my ($key) = grep { $_->{name} eq $name } @{ ($data && $data->{keys}) || [] };
+    croak "add_pin2_layer: no key '$name' in keys.yaml" unless $key;
+    croak "add_pin2_layer: key '$name' is an automation key, which has no PIN2 layer"
+        if ($key->{purpose} // '') eq 'automation';
+    croak "add_pin2_layer: key '$name' has no private half"
+        unless defined $key->{private} && length $key->{private};
+
+    my $private = $self->_inner_decrypt($key->{private}, $name);
+    croak "add_pin2_layer: key '$name' has its PIN2 layer already"
+        unless $self->_is_private_key_text($private);
+
+    my $layered = $self->_double_encrypt($private, $pin2);
+    croak "add_pin2_layer: the new layer of '$name' does not open to its key; nothing written"
+        unless $self->_double_decrypt($layered, $pin2, $name) eq $private;
+
+    $key->{private} = $layered;
+    $key->{updated} = _timestamp();
+    $self->_write_keys_file_encrypted($data);
+    return 1;
+}
+
+=method add_pin2_layer($name, $pin2)
+
+    $keys->add_pin2_layer('admin-ssh-20260815', $pin2);
+
+Re-encrypts the private half of a key stored under the age layer alone (see
+L</has_pin2_layer>) under age + PIN2, as L</add_key> stores a key with a
+C<pin2>. The key itself is unchanged; the new half is checked to open with
+C<$pin2> before F<keys.yaml> is written. Croaks -- nothing written -- for an
+empty C<$pin2>, an unknown name, an C<automation> key, an entry without a
+private half, and a key that has its PIN2 layer already (changing a PIN2 is
+not this). C<ocp keys add-pin2> uses it.
+
+=cut
+
+# The age layer of an entry holds either a private key (no PIN2 layer) or
+# base64 (the PIN2 layer). ssh-keygen and every key format OCP stores begin
+# with a PEM armour line.
+sub _is_private_key_text {
+    my ($self, $text) = @_;
+    return 0 unless defined $text;
+    return $text =~ /\A\s*-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ ? 1 : 0;
+}
+
+#
 # Deprecate key (mark for migration)
 #
 

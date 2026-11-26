@@ -109,6 +109,7 @@ our %COMMAND_ALIASES = (
     'deploy-image'         => 'deployimage',
     'deploy-robocop'       => 'deployrobocop',
     'inject-key'           => 'injectkey',
+    'keys add-pin2'        => 'addpin2',
     'keys authorized-keys' => 'authorizedkeys',
     'node trust-host'      => 'trusthost',
 );

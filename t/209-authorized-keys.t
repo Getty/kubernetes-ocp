@@ -121,7 +121,7 @@ subtest 'dispatches as `ocp keys authorized-keys`, and only there' => sub {
 
     my @typo = ('keys', 'nope');
     eval { OCP::_resolve_commands('OCP', \@typo) };
-    like $@, qr/^Available: authorized-keys, operator, recipients, secure, show$/m,
+    like $@, qr/^Available: add-pin2, authorized-keys, operator, recipients, secure, show$/m,
         'a wrong word under keys lists it in its readable spelling';
 
     my @root = ('authorized-keys');
