@@ -1,0 +1,31 @@
+---
+claimed_at: 2026-11-26T09:58:53Z
+claimed_by: ocp-k416
+class: standard
+completed: 2026-11-26T09:58:53Z
+created: 2026-11-06T21:24:08Z
+id: 416
+priority: low
+started: 2026-11-26T08:53:36Z
+status: done
+tags:
+- secrets
+- sops
+- deps
+title: 'repair_sops_lastmodified: ask File::SOPS->has_bare_lastmodified instead of
+  OCP''s own regex'
+updated: 2026-11-26T09:58:53Z
+---
+
+From the hub (perl-developer-bb, 2026-11-06), not this release round. File::SOPS 0.006 (main 3ab0330, pushed) has a class method has_bare_lastmodified(file => $path) or (encrypted => $text), optionally with format. It returns 1 or 0, decrypts nothing and needs no identities; 1 means exactly that the read warning would fire (the warning text stayed byte-identical).
+
+OCP::Secrets->repair_sops_lastmodified asks this with its own regex today. Switch it to the library method. Differences to the regex:
+- it croaks on YAML it cannot read, so the call needs an eval (and a decision what an unreadable file means here);
+- it recognises flow style, a value on the following line and "? lastmodified", so it reports more files than the regex;
+- json/env/ini return 0.
+
+Pin: File::SOPS 0.006 (already the cpanfile pin since the k406 pin step). Related: k414 (the Secrets.pm:746 comment about 0.005 warning on every read).
+
+2026-11-26 08:53 Done (uncommitted, worktree): OCP::Secrets::_sops_lastmodified_bare now asks File::SOPS->has_bare_lastmodified(encrypted => $raw, format => 'yaml') instead of OCP's own regex. Decision on unreadable YAML (the method croaks): answered 0 under eval. Why: the repair is cosmetic and an unreadable file cannot be rotated anyway; the run's own read of the file is where that failure belongs. A croak would put the bare YAML::XS message ahead of it as a repair failure and end ocp apply --dry-run (bare_sops_lastmodified_files) over a repair it only names. Behaviour change vs. the regex: a broken file whose sops block still had a bare-looking line used to be named and then fail the rotate with a [!!] on STDERR; now it is silently skipped. New shapes (next-line value, ? lastmodified, flow-style sops mapping) are now named and repaired. k414 point: File::SOPS 0.006 still warns on every read of a bare file (Format::YAML _warn_plain_lastmodified on the read path, rotate's read included), so the $SIG{__WARN__} filter in repair_sops_lastmodified stays; the comment now says 0.006 still warns. Files: lib/OCP/Secrets.pm, t/416-bare-lastmodified-shapes.t (new). Verified: make test TAG=secrets2 on t/416 t/153 t/259 t/266 t/370 (+ k466 set) PASS; t/416 against the HEAD Secrets.pm fails the 3 new shapes + the unreadable case (test can fail). sops -d on a repaired flow-style file exits 0 in the image.
+
+Committed e5fc71f (with k414); binding suite green on main ce487f1 (340 files, 4789 tests)
