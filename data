@@ -1,0 +1,40 @@
+---
+class: standard
+completed: 2026-11-26T08:42:16Z
+created: 2026-11-06T21:38:58Z
+id: 417
+priority: medium
+started: 2026-11-08T01:07:49Z
+status: done
+tags:
+- apply
+- decision
+- nodes
+title: 'Control-plane readiness after the bootstrap: reconcile never checks it, CP
+  OCPNode always Ready, wrong Node judged'
+updated: 2026-11-26T10:01:31Z
+---
+
+Found under k336 (apply worker, 2026-11-06), not fixed there. Points in the notes below.
+
+1. Decision needed: the reconcile path never checks control-plane readiness, police1 nor police2+. A rerun after a bootstrap whose first CP never got Ready takes the reconcile path and can end SUCCESSFULLY with police1 still NotReady, its pods counting as still starting. The ADR 0017 amendment of 2026-11-06 records this as a known gap. Recommendation: reconcile judges every control plane once, Ready or a counted failed component, with the same proof as the bootstrap wait.
+
+2. CR::ensure_cp_ocpnode writes phase Ready unconditionally, on the fresh deploy and on every reconcile, so the node list shows police1 Ready while its Node is not. 3. The bootstrap Ready wait and node_not_ready_why look at the first Node listed, not the Node named after the control plane: harmless on a one-node fresh bootstrap, wrong anywhere else. 4. On a node that stays NotReady, the registry step, which must succeed, ends the run before the banner and before the Apply-did-not-complete line; the final error names the registry, not the node. The same holds for every must-succeed step on the deploy path.
+
+Doc drift from the same report: the ocp-usage skill around line 435 says an LB-IPAM failure is a WARN line and apply carries on, while the code prints a counted failure line. The Bootstrap.pm SYNOPSIS says bootstrap_control_plane returns the API handle, but it returns a hashref; podchecker flags a non-ASCII dash before the encoding line there. The OCP::Cmd::Apply POD says nothing about the banner or exit codes.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): point 1: reconcile judges every control plane once, Ready or a counted failed component, with the same proof as the bootstrap wait; the ADR 0017 amendment that records the gap is updated. Points 2-4 and the doc drift are fixed with it. Build after the release.
+
+2026-11-26 06:31 In progress (ocp-apply-worker): shared wait OCP::Cmd::Apply::Bootstrap::wait_nodes_ready judges Nodes by name (point 3); CR::check_control_plane_ready runs it on the reconcile path before the registry for every configured CP, Failed OCPNodes left to check_control_plane_phases (point 1); ensure_cp_ocpnode writes Ready only when the Node is Ready, else Joining + message (point 2; Joining chosen because Pending makes robocop provision and Failed is terminal); execute catches a deploy-step death after a NotReady bootstrap and ends at the banner, APPLY INCOMPLETE (point 4). Now fixing existing tests whose fakes have no Ready Node.
+
+2026-11-26 06:47 Existing tests whose fakes model no named, Ready control-plane Node updated (their claim kept where it was about something else, replaced where it was the old behaviour k417 changes: t/330, t/356 Joining for an unread/absent Node; t/254 'no Node by its name' is now not Ready instead of a node-ip WARN). Reconcile tests not about the control plane stub CR::check_control_plane_ready (t/273, t/380, t/403, t/71); t/38's fake lists a Ready cortex Node so the judgement runs there. Point-4 guard moved to OCP::Cmd::Apply::Deploy::deploy_after_bootstrap (t/52 size budget on Apply.pm).
+
+2026-11-26 06:51 Done (uncommitted tree in the k417 worktree). 1: CR::check_control_plane_ready judges every configured CP (police1 + police2..N on rke2) on the reconcile path, before the registry, with Bootstrap::wait_nodes_ready (same 60x10s proof); not Ready = [!!] + 'control plane NAME' counted; Failed CP OCPNodes skipped (phase check names them); --only workers skips. 2: ensure_cp_ocpnode writes Ready only over a Ready Node, else Joining + status.message. 3: wait and node_not_ready_why look up the Node by the CP's name. 4: Deploy::deploy_after_bootstrap: on a NotReady bootstrap a dying must-succeed step is one [!!] Deploy stopped line and the run ends APPLY INCOMPLETE, CP named first. Docs: Apply POD banner/exit codes, Bootstrap SYNOPSIS (hashref, ASCII), Drift/CR POD, ocp-usage LB-IPAM line. Verified: make test TAG=k417 on 19 touched/added files, PASS (272 tests); ~40 further apply/bootstrap tests PASS in the image. ADR 0017 amendment draft is in the worker report for the adr-auditor.
+
+2026-11-26 08:41 Committed 9647f1d. ADR 0017 amendment still pending (ocp-adr-auditor next).
+
+2026-11-26 08:46 ADR 0017 amendment 2026-11-26 written (ocp-adr-auditor, uncommitted, for the release-manager): reconcile judgement, by-name wait, police1 OCPNode Joining/Ready, deploy_after_bootstrap; inline markers on the 2026-11-06 sentences it supersedes (first-CP bullet's Error sentence, second Consequence, known gap); README provenance paragraph. Verified against HEAD af470f0: CR::check_control_plane_ready, ensure_cp_ocpnode, Bootstrap::wait_nodes_ready, Deploy::deploy_after_bootstrap, Drift.pm call site, Apply.pm POD. Corrections to the worker's draft: a Ready reconcile costs one OCPNode list plus one Node list, not one Node list; 'deploy steps' is counted too; a stopped first deploy never reaches the CR step, so it leaves no police1 OCPNode until the next apply. Also found (read from code, not tested): robocop's resync enqueues every Joining OCPNode regardless of role; the controller loads spec.providerRef before OCP::Node runs and marks the OCPNode Failed when it cannot. A local control plane's OCPNode carries providerRef local-default, and ensure_providers writes no local-default CR. So on a local-CP cluster running robocop, a NotReady police1 (now Joining) could be marked Failed by robocop. Watch events on that OCPNode take the same path, and they did before k417. Recorded in the ADR as a consequence; whether it needs a fix is not decided.
+
+ADR 0017 amendment committed: c020fbc, corrected by 7c175f1 (k468 closed the robocop path).
