@@ -1,0 +1,23 @@
+---
+class: standard
+completed: 2026-11-26T08:36:33Z
+created: 2026-11-07T02:50:15Z
+id: 432
+priority: low
+started: 2026-11-26T06:21:25Z
+status: done
+tags:
+- destroy
+- ux
+title: 'ocp destroy node collection: a later source host lost to //=, undef public_ip
+  printed, only the first of two failed searches said'
+updated: 2026-11-26T08:36:33Z
+---
+
+Found by k396 (fef5289), not fixed there. 1. Destroy.pm _collect_nodes merges its sources with //=, so a node keeps public_ip - even when a later source (an ocp.yaml pool host) knows the host; the uninstall is then skipped for want of a host that is known. 2. The node listing prints undef for a status.yaml entry without public_ip. 3. When no label search answered and two failed, only the first failure is said. 4. The closing text Once they are reachable... reads oddly for a machine with no host recorded. Lane: ocp-destroy-worker.
+
+2026-11-26 06:29 Causes, all in Destroy.pm: (1) _collect_nodes merge used //=, and '-' is defined, so an ocp.yaml pool host never replaced a status.yaml/OCPNode public_ip '-'; now '-' and '' count as unknown for public_ip, a known host still wins. (2) node listing interpolated public_ip raw; now // '-'. (3) with no search answering, the fallback line said failed[0] and search_said suppressed all of @failed; now failed[1..] are said by _say_failed_search. (4) closing line now 'To tear them down by hand, run on each of them:'. Regression test t/432-destroy-node-collection.t, red on all four claims before the fix.
+
+2026-11-26 06:29 Done, uncommitted in worktree. Destroy.pm: merge takes a later host over public_ip '-'/'', listing prints '-' for none, a second failed label search is said too, closing line reworded. t/396 expectation updated for the reworded line; new t/432. Verified: make test TAG=destroy over t/432 plus all 16 t/*destroy* tests: 17 files, 158 tests, PASS. Untouched: _ssh_key_age_key (k434), user_line/one_line sites (k436).
+
+2026-11-26 08:36 Committed 9c89c94
