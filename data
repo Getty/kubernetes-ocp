@@ -1,0 +1,26 @@
+---
+class: standard
+completed: 2026-11-26T08:39:52Z
+created: 2026-11-07T02:05:44Z
+id: 431
+priority: low
+started: 2026-11-08T01:08:01Z
+status: done
+tags:
+- errors
+- json
+title: The JSON error field folds a refusal with a list into one long string
+updated: 2026-11-26T08:39:52Z
+---
+
+Found by k395 (8243616). OCP::ErrorLine::json_error makes the error field of status/health/node ls --json one line. A refusal written for STDERR with an indented list below it (OCP::Secrets no_kubeconfig_refusal, validate() refusals of several keys) becomes one long string, the list items joined by spaces. A script still reads one string, as wanted; a human reading the JSON loses the layout. Options: keep it (one string, the STDERR text has the layout), or add an optional errors array with one entry per line. Recommendation: keep it, the STDERR copy carries the layout. Left as is in k395.
+
+
+
+Maintainer decision (Getty, 2026-11-08, hub decision page): against the recommendation above: keep the one-string error field and add an optional errors array with one entry per line of the refusal, in status, health and node ls --json. Document the field. Build after the release.
+
+2026-11-26 06:30 Added OCP::ErrorLine::json_errors (add-only; no existing sub changed): one entry per line of the message, each via one_line (masked, no location, trimmed), empty lines dropped, the label off the first; join(' ', errors) eq json_error; a 599 APIError is json_error's one line. errors sits beside error in status --json (all four error sites, drift prefix on the first entry), health --json, and OCP.pm _report_error's --json object (node ls --json and every other --json command that dies). My call: errors is present whenever error is (also for a one-line error, [error]), not only for multi-line ones -- a script never needs a fallback. This breaks k388's 'error and nothing else' object for node ls; t/384, t/387, t/395 updated. POD: Status, Health, Node::Ls, ErrorLine. Health.pm and OCP.pm hunks are one line / a few lines (outside the status lane).
+
+2026-11-26 06:42 Done, uncommitted in the worktree. New OCP::ErrorLine::json_errors (add-only). errors beside error in status --json (Status.pm _set_json_error), health --json (Health.pm, 1 line), OCP.pm _report_error's --json object (node ls --json and every --json command that dies, 3 lines). Present whenever error is. POD: Status, Health, Node::Ls, ErrorLine. New t/431-json-errors.t (unit + node ls --json with a list refusal); t/384, t/387, t/391, t/395, t/398, t/400 extended. make test TAG=status on 12 files: PASS. Full suite not run.
+
+2026-11-26 08:39 Committed 6811e55
