@@ -251,7 +251,7 @@ subtest 'a valid gpu: block passes: the run goes on to the GPU stack' => sub {
                                    amd => { allocation => 'dra' } } }), gpu => 1);
     is $r->{rc}, 0, 'exit 0';
     is $r->{err}, '', 'nothing on STDERR';
-    is_deeply $r->{steps}, [ 'kubeconfig (PIN1)', 'list OCPNodeProvider', 'get Deployment',
+    is_deeply $r->{steps}, [ 'kubeconfig (PIN1)', 'get OCPNode', 'list OCPNodeProvider', 'get Deployment',
                              'SSH probe (PIN2)', 'write OCPNode', 'join (CLI)', 'GPU stack' ],
         'every step, in order' or diag explain $r->{steps};
 };
@@ -342,7 +342,7 @@ subtest "spec_errors('gpu') is the filter's lines, on every gpu shape t/296 swee
                 my $r = add($dir, gpu => 1);
                 is_deeply { rc    => $r->{rc}, lines => [ $r->{err} =~ /^  - (.*)$/mg ],
                             steps => scalar @{ $r->{steps} } },
-                    { rc => @want ? 1 : 0, lines => \@want, steps => @want ? 0 : 7 },
+                    { rc => @want ? 1 : 0, lines => \@want, steps => @want ? 0 : 8 },
                     "$what: node add --gpu " . (@want ? 'refuses on them, nothing done' : 'goes on')
                     or diag explain [ @$r{qw( rc out err steps )} ];
             }

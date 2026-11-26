@@ -552,6 +552,11 @@ sub execute {
         die "--node_ip: $err\n";
     }
     my $api           = $self->_k8s;
+
+    # An OCPNode of this name that is Failed stays Failed (k448): before any
+    # write, probe or PIN, whatever the switches.
+    return 1 if $self->_say_failed_is_terminal($api);
+
     my $provider_hash = $self->_resolve_provider($api);
     my $provider_type = $provider_hash->{spec}{type}
         or die "Provider has no spec.type\n";
@@ -990,6 +995,38 @@ sub _stored_ocpnode {
     return $cr ? $api->k8s->object_to_struct($cr) : undef;
 }
 
+# An OCPNode of this name in phase Failed (k448). ensure keeps the stored
+# status, so the add used to read it back, repeat the old message and exit 1,
+# installing nothing, with no word that Failed is terminal. Said on STDERR: the
+# old message, that Failed is terminal, and the way back -- the rm that keeps
+# the machine, then this add again as the stored OCPNode asks for it. True
+# when it said so; an OCPNode that cannot be read is left to the add.
+sub _say_failed_is_terminal {
+    my ($self, $api) = @_;
+
+    my $h = $self->_stored_ocpnode($api) or return 0;
+    return 0 unless ($h->{status}{phase} // '') eq 'Failed';
+
+    my $name = $self->name;
+    my $spec = $h->{spec} // {};
+    my $msg  = $h->{status}{message};
+    my $add  = "ocp node add $name"
+        . (($spec->{role} // '') eq 'control-plane' ? ' --role control-plane' : '')
+        . (length($spec->{providerRef} // '') ? " --provider $spec->{providerRef}" : '')
+        . (length($spec->{host} // '')        ? " --host $spec->{host}"            : '');
+
+    my $line = 'Failed' . (length($msg // '') ? ": $msg" : '');
+    $line .= "\n" unless $line =~ /\n\z/;
+    print STDERR "  [!!] $line";
+    print STDERR "OCPNode $name is Failed, and Failed is terminal: ocp node add does not "
+      . "install it again, with any switch. Nothing was written. Remove the OCPNode "
+      . "first (the machine stays as it is), then add the node again:\n"
+      . "  ocp node rm $name --keep_machine\n"
+      . "  $add\n"
+      . "Repeat any --node_ip, --label, --taint, --gpu or --clean_cilium_residue it needs.\n";
+    return 1;
+}
+
 # The GPU vendors node $k8s_name shows, as soon as it shows one: 'amd' for the
 # AMD marker, 'nvidia' for an NFD NVIDIA label. Empty after gpu_label_timeout.
 sub _wait_gpu_vendors {
@@ -1214,8 +1251,9 @@ anything is written.
 
 The refusal leaves the node's C<OCPNode> in phase C<Failed>, and C<Failed> is
 terminal.  Running the same C<ocp node add> again, with the switch or without,
-reads that C<OCPNode> back, returns its old message and installs nothing.  The
-way back is a new C<OCPNode> on the machine as it is.  Read the node's
+meets that C<OCPNode> before it writes or installs anything: it says the old
+message, that C<Failed> is terminal and the two commands below on STDERR,
+and exits 1.  The way back is a new C<OCPNode> on the machine as it is.  Read the node's
 C<PROVIDER> and C<IP> in C<ocp node ls>, then remove the C<OCPNode> without
 touching the machine and add it again with the switch:
 

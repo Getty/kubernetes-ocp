@@ -1,6 +1,9 @@
 Revision history for OCP
 
 {{$NEXT}}
+    - `ocp node add` for a node whose OCPNode is Failed says on STDERR that
+      Failed is terminal, with the `ocp node rm NAME --keep_machine` and the
+      `ocp node add` that come next, and exits 1 before it writes anything.
     - `ocp apply` names a Failed control-plane OCPNode on STDERR with its
       message and the way back (`ocp node rm NAME --keep_machine`, then `ocp
       node add`), and counts it as a Failed worker is: the run is incomplete.

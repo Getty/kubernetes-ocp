@@ -469,6 +469,8 @@ for my $n (@ADDED) {
     is $api->{crs}{$name}{status}{phase}, 'Failed', 'the OCPNode stays Failed';
     is $api->{crs}{$name}{status}{message}, $message, 'with its message unchanged';
     like $err, qr/\[!!\] Failed: \Q$message\E/, 'the old refusal, said again';
+    like $err, qr/OCPNode \Q$name\E is Failed, and Failed is terminal/, 'and that Failed is terminal (k448)';
+    like $err, qr/^  ocp node rm \Q$name\E --keep_machine$/m, 'naming the rm first';
 
     # What the sentence has the operator note first.
     my $row = node_ls($api)->{$name};
